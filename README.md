@@ -36,6 +36,18 @@ claude --plugin-dir /path/to/coral
 
 The bundled output (`bridge/coral-server.cjs`) is included in the repository, so no build step is needed.
 
+### Statusline (Optional)
+
+Set up the coral HUD statusline for real-time session info:
+
+```
+/coral:statusline install
+```
+
+Displays: `opus 4.6 │ 5m │ 5h:56% wk:38% │ ctx:45%`
+
+To remove: `/coral:statusline uninstall`
+
 ## Usage
 
 ### Quick Execution
