@@ -165,7 +165,7 @@ allowed-tools: mcp__coral__codex_execute, mcp__coral__codex_session_send, mcp__c
 
 ## /coral:plan
 
-Collaborative planning with parallel Codex architect/critic reviews. Dynamically loads protocols from `agents/codex-architect.md` and `agents/codex-critic.md`.
+Claude-native planning with parallel architect/critic self-review. Uses `coral:architect` and `coral:critic` Task agents.
 
 **File**: `skills/plan/SKILL.md`
 
@@ -174,6 +174,32 @@ Collaborative planning with parallel Codex architect/critic reviews. Dynamically
 ```yaml
 ---
 name: plan
+description: Claude-native planning with parallel architect/critic self-review
+argument-hint: "[task description]"
+---
+```
+
+### Behavior
+
+1. Collect context + generate initial plan
+2. Parallel Claude-native architect + critic review (using `agents/architect.md` and `agents/critic.md`)
+3. Synthesize feedback (Adopt / Adapt / Defer / Diverge)
+4. Display round summary + iterate (max 5 rounds)
+5. Save final plan to `.claude/coral/plans/`
+
+---
+
+## /coral:coplan
+
+Collaborative planning with parallel Codex architect/critic reviews. Dynamically loads protocols from `agents/codex-architect.md` and `agents/codex-critic.md`.
+
+**File**: `skills/coplan/SKILL.md`
+
+### Configuration
+
+```yaml
+---
+name: coplan
 description: Collaborative planning with parallel Codex architect/critic reviews
 argument-hint: "[task description]"
 allowed-tools: mcp__coral__codex_execute, mcp__coral__codex_session_send
@@ -184,7 +210,7 @@ allowed-tools: mcp__coral__codex_execute, mcp__coral__codex_session_send
 
 1. Collect context + generate initial plan
 2. Parallel Codex architect + critic review (using `agents/codex-*.md` protocols)
-3. Evaluate feedback + selectively incorporate
+3. Synthesize feedback (Adopt / Adapt / Defer / Diverge)
 4. Display round summary + iterate (max 5 rounds)
 5. Save final plan to `.claude/coral/plans/`
 

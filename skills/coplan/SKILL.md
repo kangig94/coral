@@ -1,12 +1,13 @@
 ---
-name: plan
-description: Claude-native planning with parallel architect/critic self-review
+name: coplan
+description: Collaborative planning with parallel Codex architect/critic reviews
 argument-hint: "[task description]"
+allowed-tools: mcp__coral__codex_execute, mcp__coral__codex_session_send
 ---
 
-# Multi-Round Planning (Claude-native)
+# Multi-Round Collaborative Planning
 
-You (Claude) are the **Synthesizer**. You also spawn parallel **Architect** and **Critic** agents for review.
+You (Claude) are the **Synthesizer**. Codex provides parallel **Architect** and **Critic** perspectives.
 Your role is to synthesize multiple viewpoints into the strongest possible plan — not to defend your draft.
 Treat reviewer feedback as collaborative input. Engage with the substance, not the verdict.
 
@@ -45,17 +46,23 @@ Write a structured plan with these sections:
 
 ### Step 3: Parallel Review (Round 1)
 
-Launch **TWO Task agents simultaneously** (parallel, not sequential):
+Call `codex_execute` **TWICE simultaneously** (parallel, not sequential):
 
-**Architect agent:**
-- `subagent_type`: `coral:architect`
-- Prompt: Include the full plan content and ask for architecture review
-- The agent follows `agents/architect.md` protocol — it will read code, cite `file:line`, and provide severity-rated findings
+**Architect call:**
+1. Read `agents/codex-architect.md` to load the architect protocol
+2. Use the protocol's `<Prompt_Template>` to construct the Codex prompt
+3. Include the full plan content as CONTEXT
+4. Call `codex_execute` with the assembled prompt + `working_directory`
 
-**Critic agent:**
-- `subagent_type`: `coral:critic`
-- Prompt: Include the full plan content and ask for plan critique
-- The agent follows `agents/critic.md` protocol — it will verify file references, simulate implementation steps, and issue a verdict
+**Critic call:**
+1. Read `agents/codex-critic.md` to load the critic protocol
+2. Use the protocol's `<Prompt_Template>` to construct the Codex prompt
+3. Include the full plan content as CONTEXT
+4. Call `codex_execute` with the assembled prompt + `working_directory`
+
+Both calls MUST include the `working_directory` parameter set to the project root.
+
+**IMPORTANT**: Since raw thread_ids are used (not named sessions), `working_directory` is NOT stored automatically. You MUST pass `working_directory` on EVERY `codex_execute` and `codex_session_send` call throughout the entire planning process.
 
 ### Step 4: Synthesize Feedback
 
@@ -68,7 +75,7 @@ For each piece of feedback, classify by how you engage with it:
 | **Defer** | Insufficient evidence to judge — needs more context | Note it, investigate if possible, revisit next round |
 | **Diverge** | Does not apply to this context | Explain why the context differs |
 
-**Reference-based trust**: Findings with precise `file:line` references carry higher weight than unreferenced opinions. Engage seriously with referenced findings — they are grounded in actual code.
+**Reference-based trust**: Findings with precise `file:line` references carry higher weight than `[no-ref]` opinions. Engage seriously with referenced findings — they are grounded in actual code.
 
 ### Step 5: Show Round Summary
 
@@ -95,26 +102,28 @@ Present to the user — **NOT the full plan**, only a concise summary:
 
 ### Step 6: Iterate (Round 2+)
 
-Launch new parallel Task agents for each subsequent round. Include in the prompt:
+Use `codex_session_send` with the thread_ids from Step 3 to continue the same reviewer sessions:
 
 ```
-Here is the updated plan. How previous feedback was handled:
+Here is the updated plan. How your previous feedback was handled:
 - [Change 1]: [adopted / adapted — explanation]
 - [Change 2]: [deferred — what's missing / diverged — why context differs]
 
-Please review again, focusing on whether previous concerns are addressed
+Please review again, focusing on whether your previous concerns are addressed
 and whether the adaptations are sound.
 
 [UPDATED PLAN]
 {full updated plan content}
 ```
 
+Pass `working_directory` on every call. Each reviewer remembers their previous feedback via session continuity.
+
 ### Step 7: Max Rounds Handling
 
 - **Default maximum**: 5 rounds
 - If 5 rounds reached and still not satisfied:
   - Ask the user: "5 rounds reached. Continue for up to 5 more rounds, or finalize as-is?"
-  - If user approves: reset round counter, continue
+  - If user approves: reset round counter, continue with same threads
   - If user declines: finalize the current plan
 
 ### Step 8: Completion
@@ -124,3 +133,22 @@ When you are satisfied with the plan:
 1. Save the final plan to `.claude/coral/plans/{descriptive-name}.md`
 2. Present the complete plan to the user
 3. **DO NOT implement. DO NOT write any source code. Planning only.**
+
+## Error Handling
+
+| Scenario | Action |
+|----------|--------|
+| Architect call fails, Critic succeeds | Proceed with Critic feedback only |
+| Critic call fails, Architect succeeds | Proceed with Architect feedback only |
+| Both calls fail | Report to user, ask whether to retry or proceed manually |
+| One side hits rate limit | Report error, proceed with successful side only |
+| Response contains `errors[]` | Treat as partial result, use available feedback |
+
+## Result Presentation
+
+When presenting Codex review results, follow standard error handling:
+
+1. **Response only (no errors/warnings)**: Show the review content directly
+2. **Response + errors**: Show response first, then note the error
+3. **Errors only**: Report the error, skip that reviewer for this round
+4. **Warnings**: Append as brief notes after the review content
