@@ -1,0 +1,20 @@
+{
+  "name": "coral",
+  "version": "0.1.0",
+  "description": "Claude Code plugin — structured agents with Codex CLI bridge",
+  "author": {
+    "name": "kangig94"
+  },
+  "repository": "https://github.com/kangig94/coral",
+  "homepage": "https://github.com/kangig94/coral",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "plugin",
+    "agents",
+    "codex",
+    "bridge"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}

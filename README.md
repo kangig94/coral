@@ -1,0 +1,196 @@
+# Coral
+
+A Claude Code plugin that bridges Claude Code and OpenAI Codex CLI.
+
+## Installation
+
+### Via Marketplace (Recommended)
+
+```bash
+# 1. Install Codex CLI (required)
+npm install -g @openai/codex
+```
+
+Then in Claude Code:
+
+```
+# 2. Add to marketplace
+/plugin marketplace add https://github.com/kangig94/coral
+
+# 3. Install plugin
+/plugin install coral
+```
+
+MCP tools, agents, skills, and hooks are all available immediately.
+
+### Manual
+
+```bash
+# 1. Install Codex CLI (required)
+npm install -g @openai/codex
+
+# 2. Clone and load plugin
+git clone https://github.com/kangig94/coral.git
+claude --plugin-dir /path/to/coral
+```
+
+The bundled output (`bridge/coral-server.cjs`) is included in the repository, so no build step is needed.
+
+## Usage
+
+### Quick Execution
+
+Use slash commands to query Codex directly:
+
+```
+/coral:codex implement fibonacci sequence in Python
+/coral:codex analyze this code for security vulnerabilities
+```
+
+### Sessions (Multi-turn Conversations)
+
+Create sessions to maintain conversation context with Codex:
+
+```
+# Create session
+/coral:session create my-review analyze the auth logic in auth.ts
+
+# Follow-up
+/coral:session send my-review tell me more about JWT token expiry handling
+
+# Fork session (resume-based)
+/coral:session fork my-review
+
+# List sessions
+/coral:session list
+```
+
+### Claude-native Analysis
+
+Slash commands for Claude to analyze directly (default routing):
+
+```
+/coral:architect review the architecture of this module
+/coral:critic review this plan
+/coral:analyze investigate the root cause of this error
+```
+
+### Persistent Execution
+
+Use ralph for tasks that require guaranteed completion with verification:
+
+```
+/coral:ralph implement the caching layer and verify all tests pass
+```
+
+### Persistent Execution via Codex
+
+Use codex-ralph when you want Codex CLI to handle the execution loop:
+
+```
+/coral:codex-ralph implement the caching layer and verify all tests pass
+```
+
+### Agent Delegation
+
+Spawn agents via the Task tool. Claude-native is default; Codex is used only on explicit request:
+
+| Agent | Type | Purpose |
+|---|---|---|
+| `architect` | Claude-native | Architecture analysis (default) |
+| `critic` | Claude-native | Plan/code review (default) |
+| `analyst` | Claude-native | Requirements gap analysis (default) |
+| `ralph` | Claude-native | Persistent execution with verification (default) |
+| `codex-delegate` | Codex-bound | General — forwards all work to Codex |
+| `codex-architect` | Codex-bound | Architecture analysis via Codex |
+| `codex-critic` | Codex-bound | Critical review via Codex |
+| `codex-analyst` | Codex-bound | Analysis via Codex |
+| `codex-ralph` | Codex-bound | Persistent execution via Codex |
+
+## MCP Tools
+
+Five tools provided by the plugin:
+
+| Tool | Description |
+|---|---|
+| `codex_execute` | Send a prompt to Codex and receive a response |
+| `codex_session_create` | Create a named session |
+| `codex_session_send` | Send a follow-up message to an existing session |
+| `codex_session_list` | List registered sessions |
+| `codex_session_fork` | Fork a session to start a new conversation (resume-based) |
+
+All inputs are validated at runtime with zod schemas.
+
+## Configuration
+
+Adjust behavior with environment variables:
+
+```bash
+export CORAL_CODEX_TIMEOUT_MS=900000        # Timeout (default: 900000ms / 15 min)
+export CORAL_CODEX_MODEL=gpt-5.3-codex  # Default model
+```
+
+Or set them in `.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "CORAL_CODEX_TIMEOUT_MS": "600000",
+    "CORAL_CODEX_MODEL": "gpt-5.3-codex"
+  }
+}
+```
+
+## Development
+
+```bash
+npm install
+npm run build     # TypeScript compile + esbuild bundle
+npm test          # Run tests with vitest
+```
+
+## Adding New Agents
+
+### Codex-bound Agent
+
+Create `agents/codex-<name>.md` — it automatically becomes a Codex delegation agent:
+
+```yaml
+---
+name: codex-<name>
+description: <description>
+tools: mcp__coral__codex_execute, mcp__coral__codex_session_send
+---
+```
+
+### Claude-native Agent
+
+Create `agents/<name>.md` (without `codex-` prefix):
+
+```yaml
+---
+name: <name>
+description: "<description>. Use PROACTIVELY when [trigger]. NOT for [exclusion]."
+model: opus
+disallowedTools: Write, Edit
+---
+```
+
+## Documentation
+
+Detailed technical documentation is available in the `docs/` directory:
+
+- [Architecture](docs/architecture.md) — Architecture and data flow
+- [MCP Tools](docs/mcp-tools.md) — Input/output specs for all 5 tools
+- [Core Modules](docs/core-modules.md) — TypeScript module details
+- [Agents](docs/agents.md) — Agent definitions and routing guarantees
+- [Hooks](docs/hooks.md) — SubagentStart hook behavior
+- [Skills](docs/skills.md) — Slash command usage
+- [Build System](docs/build-system.md) — Build pipeline
+- [Configuration](docs/configuration.md) — Environment variables and config files
+
+## Requirements
+
+- Node.js 18+
+- Codex CLI v0.101+ (`npm install -g @openai/codex`)
+- jq (for hook scripts)

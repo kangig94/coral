@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "coral": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-server.cjs"]
+    }
+  }
+}
