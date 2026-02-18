@@ -12,7 +12,8 @@ await esbuild.build({
   target: 'node18',
   format: 'cjs',
   outfile: 'bridge/coral-server.cjs',
-  packages: 'external',
+  external: ['node:*'],
+  minify: true,
   define: {
     '__VERSION__': JSON.stringify(version),
   },
