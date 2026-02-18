@@ -75,6 +75,22 @@ Slash commands for Claude to analyze directly (default routing):
 /coral:analyze investigate the root cause of this error
 ```
 
+### Planning
+
+Claude-native planning with parallel architect/critic self-review:
+
+```
+/coral:plan add retry logic to the API client
+```
+
+Cross-model planning — Claude synthesizes, Codex reviews (architect + critic):
+
+```
+/coral:coplan redesign the session management system
+```
+
+Both use the synthesizer model — feedback is classified as Adopt / Adapt / Defer / Diverge. Plans are saved to `.claude/coral/plans/`.
+
 ### Persistent Execution
 
 Use ralph for tasks that require guaranteed completion with verification:
