@@ -2,7 +2,7 @@
 name: codex-ralph
 description: Persistent execution via Codex delegation — keeps working until done
 argument-hint: "[task description]"
-allowed-tools: mcp__coral__codex_execute, mcp__coral__codex_session_send, mcp__coral__codex_session_create
+allowed-tools: mcp__cx__codex_execute, mcp__cx__codex_session_send, mcp__cx__codex_session_create
 ---
 
 # Persistent Execution via Codex
@@ -13,9 +13,9 @@ Announce at start: "Using codex-ralph to execute this task via Codex with persis
 
 1. **Load protocol**: Read `agents/codex-ralph.md` to load the full codex-ralph protocol
 2. **Check session continuity**: Look for a previous `thread_id` from a `/codex-ralph` call in conversation history
-   - **Previous thread_id exists** → use `mcp__coral__codex_session_send` to continue
-   - **No previous thread_id** → use `mcp__coral__codex_session_create` to start a new session
-   - **User says "new" or wants a fresh start** → use `mcp__coral__codex_execute` regardless
+   - **Previous thread_id exists** → use `mcp__cx__codex_session_send` to continue
+   - **No previous thread_id** → use `mcp__cx__codex_session_create` to start a new session
+   - **User says "new" or wants a fresh start** → use `mcp__cx__codex_execute` regardless
 3. **Construct prompt**: Follow the protocol's `<Prompt_Template>` to assemble [SYSTEM]/[CONTEXT]/[TASK]
 4. **Enhance with context**: Add relevant file paths, code snippets, progress, and working_directory from the conversation
 5. **Call Codex**: Send the assembled prompt. MUST pass `working_directory` on every call.

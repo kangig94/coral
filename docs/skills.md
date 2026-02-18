@@ -15,7 +15,7 @@ Execute a prompt directly with Codex CLI. Automatic persona detection dynamicall
 name: codex
 description: Execute a prompt with OpenAI Codex CLI
 argument-hint: "[prompt]"
-allowed-tools: mcp__coral__codex_execute, mcp__coral__codex_session_send, mcp__coral__codex_session_create
+allowed-tools: mcp__cx__codex_execute, mcp__cx__codex_session_send, mcp__cx__codex_session_create
 ---
 ```
 
@@ -148,7 +148,7 @@ Persistent execution via Codex delegation. Delegates the execution loop to Codex
 name: codex-ralph
 description: Persistent execution via Codex delegation — keeps working until done
 argument-hint: "[task description]"
-allowed-tools: mcp__coral__codex_execute, mcp__coral__codex_session_send, mcp__coral__codex_session_create
+allowed-tools: mcp__cx__codex_execute, mcp__cx__codex_session_send, mcp__cx__codex_session_create
 ---
 ```
 
@@ -202,7 +202,7 @@ Collaborative planning with parallel Codex architect/critic reviews. Dynamically
 name: coplan
 description: Collaborative planning with parallel Codex architect/critic reviews
 argument-hint: "[task description]"
-allowed-tools: mcp__coral__codex_execute, mcp__coral__codex_session_send
+allowed-tools: mcp__cx__codex_execute, mcp__cx__codex_session_send
 ---
 ```
 
@@ -229,8 +229,8 @@ Manage Codex sessions. Supports 4 subcommands.
 name: session
 description: Manage Codex conversation sessions
 argument-hint: "[create|send|list|fork] [args...]"
-allowed-tools: mcp__coral__codex_session_create, mcp__coral__codex_session_send,
-               mcp__coral__codex_session_list, mcp__coral__codex_session_fork
+allowed-tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send,
+               mcp__cx__codex_session_list, mcp__cx__codex_session_fork
 ---
 ```
 

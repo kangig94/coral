@@ -1,6 +1,6 @@
 # MCP Tools
 
-The Coral MCP server provides 5 tools, all accessible via the `mcp__coral__` prefix.
+The Coral MCP server provides 5 tools, all accessible via the `mcp__cx__` prefix.
 
 All tool inputs are validated at runtime with zod schemas (`src/mcp/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
 

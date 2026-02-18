@@ -1,7 +1,7 @@
 ---
 name: codex-ralph
 description: "Persistent execution via Codex delegation. Use when Codex should handle the execution loop, or when explicitly requested with 'codex ralph'. NOT for Claude-native execution (use ralph agent instead)."
-tools: mcp__coral__codex_execute, mcp__coral__codex_session_send, mcp__coral__codex_session_create
+tools: mcp__cx__codex_execute, mcp__cx__codex_session_send, mcp__cx__codex_session_create
 ---
 
 <Agent_Prompt>

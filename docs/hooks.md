@@ -58,7 +58,7 @@ if echo "$AGENT_NAME" | grep -qi '^codex-'; then
   jq -n '{
     hookSpecificOutput: {
       hookEventName: "SubagentStart",
-      additionalContext: "Codex delegation context: You are a Codex delegation agent. You MUST use mcp__coral__codex_execute to forward ALL work to Codex CLI. Do NOT generate your own response. Call the MCP tool immediately with the full task."
+      additionalContext: "Codex delegation context: You are a Codex delegation agent. You MUST use mcp__cx__codex_execute to forward ALL work to Codex CLI. Do NOT generate your own response. Call the MCP tool immediately with the full task."
     }
   }'
 else
@@ -87,7 +87,7 @@ fi
 
 ```
 Codex delegation context: You are a Codex delegation agent. You MUST use
-mcp__coral__codex_execute to forward ALL work to Codex CLI. Do NOT
+mcp__cx__codex_execute to forward ALL work to Codex CLI. Do NOT
 generate your own response. Call the MCP tool immediately with the full task.
 ```
 

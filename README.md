@@ -175,7 +175,7 @@ Create `agents/codex-<name>.md` — it automatically becomes a Codex delegation 
 ---
 name: codex-<name>
 description: <description>
-tools: mcp__coral__codex_execute, mcp__coral__codex_session_send
+tools: mcp__cx__codex_execute, mcp__cx__codex_session_send
 ---
 ```
 

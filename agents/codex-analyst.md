@@ -1,7 +1,7 @@
 ---
 name: codex-analyst
 description: "Deep analysis and investigation via Codex delegation. Use when Codex-specific perspective is needed for root cause analysis, dependency tracing, or technical investigation. NOT for direct Claude-native analysis (use analyst agent instead)."
-tools: mcp__coral__codex_execute, mcp__coral__codex_session_send, mcp__coral__codex_session_create
+tools: mcp__cx__codex_execute, mcp__cx__codex_session_send, mcp__cx__codex_session_create
 ---
 
 <Agent_Prompt>

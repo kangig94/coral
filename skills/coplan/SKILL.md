@@ -2,7 +2,7 @@
 name: coplan
 description: Collaborative planning with parallel Codex architect/critic reviews
 argument-hint: "[task description]"
-allowed-tools: mcp__coral__codex_execute, mcp__coral__codex_session_send
+allowed-tools: mcp__cx__codex_execute, mcp__cx__codex_session_send
 ---
 
 # Multi-Round Collaborative Planning

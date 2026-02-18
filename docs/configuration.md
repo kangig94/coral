@@ -70,7 +70,7 @@ Registers the MCP server with Claude Code.
 
 | Field | Description |
 |---|---|
-| `coral` | MCP server name (tool prefix: `mcp__coral__*`) |
+| `cx` | MCP server name (tool prefix: `mcp__cx__*`) |
 | `command` | Execution command |
 | `args` | Execution arguments (`CLAUDE_PLUGIN_ROOT` is auto-replaced) |
 

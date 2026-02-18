@@ -2,7 +2,7 @@
 name: codex
 description: Execute a prompt with OpenAI Codex CLI
 argument-hint: "[prompt]"
-allowed-tools: mcp__coral__codex_execute, mcp__coral__codex_session_send, mcp__coral__codex_session_create
+allowed-tools: mcp__cx__codex_execute, mcp__cx__codex_session_send, mcp__cx__codex_session_create
 ---
 
 Send the user's request to Codex.
@@ -12,9 +12,9 @@ Send the user's request to Codex.
 ### 1. Session continuity
 
 Check the conversation history for a previous `/codex` call that returned a `thread_id`:
-- **Previous thread_id exists** → use `mcp__coral__codex_session_send` with that thread_id to continue the session
-- **No previous thread_id** → use `mcp__coral__codex_execute` to start a new session
-- **User says "new", "새로", or explicitly wants a fresh start** → use `mcp__coral__codex_execute` regardless
+- **Previous thread_id exists** → use `mcp__cx__codex_session_send` with that thread_id to continue the session
+- **No previous thread_id** → use `mcp__cx__codex_execute` to start a new session
+- **User says "new", "새로", or explicitly wants a fresh start** → use `mcp__cx__codex_execute` regardless
 
 ### 2. Analyze intent and select persona
 
@@ -66,8 +66,8 @@ Relevant files: src/foo.ts, src/bar.ts
 
 ### 5. Call Codex
 
-- New session: `mcp__coral__codex_execute` with the enhanced prompt
-- Continuing session: `mcp__coral__codex_session_send` with the thread_id and enhanced prompt
+- New session: `mcp__cx__codex_execute` with the enhanced prompt
+- Continuing session: `mcp__cx__codex_session_send` with the thread_id and enhanced prompt
 
 MUST pass `working_directory` on every `codex_execute` and `codex_session_send` call.
 

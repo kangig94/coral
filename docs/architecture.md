@@ -46,7 +46,7 @@
 
 ```
 User → /coral:codex "question"
-     → Skill calls mcp__coral__codex_execute
+     → Skill calls mcp__cx__codex_execute
      → Zod schema validation
      → MCP Server spawns codex exec
      → Codex CLI outputs JSONL to stdout
@@ -61,7 +61,7 @@ User → Task tool spawns codex-delegate agent
      → SubagentStart Hook fires (matcher: "codex-.*")
      → detect-codex-agent.sh detects "codex-" prefix
      → Delegation instructions injected via additionalContext
-     → Agent calls mcp__coral__codex_execute (tools restriction leaves no alternative)
+     → Agent calls mcp__cx__codex_execute (tools restriction leaves no alternative)
      → Codex response returned verbatim
 ```
 

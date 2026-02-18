@@ -3,7 +3,7 @@ name: session
 description: Manage Codex conversation sessions
 disable-model-invocation: true
 argument-hint: "[create|send|list|fork] [args...]"
-allowed-tools: mcp__coral__codex_session_create, mcp__coral__codex_session_send, mcp__coral__codex_session_list, mcp__coral__codex_session_fork
+allowed-tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send, mcp__cx__codex_session_list, mcp__cx__codex_session_fork
 ---
 
 Manage Codex sessions based on the command:
