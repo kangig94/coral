@@ -126,7 +126,23 @@ Pass `working_directory` on every call. Each reviewer remembers their previous f
   - If user approves: reset round counter, continue with same threads
   - If user declines: finalize the current plan
 
-### Step 8: Completion
+### Step 8: Claude-native Final Review
+
+After Codex rounds converge, launch **TWO Claude-native Task agents simultaneously** for final verification:
+
+**Architect agent:**
+- `subagent_type`: `coral:architect`
+- Prompt: Include the full plan and ask for architecture review
+- This is Claude reviewing Codex's reviewed plan — a cross-model check
+
+**Critic agent:**
+- `subagent_type`: `coral:critic`
+- Prompt: Include the full plan and ask for plan critique
+
+Synthesize this final round the same way (Adopt/Adapt/Defer/Diverge).
+If critical issues are found, revise the plan. No additional rounds needed — this is a single final gate.
+
+### Step 9: Completion
 
 When you are satisfied with the plan:
 

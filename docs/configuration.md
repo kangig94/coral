@@ -74,29 +74,25 @@ Registers the MCP server with Claude Code.
 | `command` | Execution command |
 | `args` | Execution arguments (`CLAUDE_PLUGIN_ROOT` is auto-replaced) |
 
-### .claude/coral/sessions.json — Session Registry
+### .claude/coral/sessions/<project-hash>/<session-name>.json — Session Files
 
-Runtime-managed session storage file.
+Runtime-managed per-session storage files.
 
 ```json
 {
-  "version": 1,
-  "sessions": {
-    "session-name": {
-      "name": "session-name",
-      "codexThreadId": "thread-uuid-from-codex",
-      "model": "gpt-5.3-codex",
-      "createdAt": "2026-02-18T08:30:00.000Z",
-      "lastUsedAt": "2026-02-18T09:15:00.000Z",
-      "workingDirectory": "/home/user/project"
-    }
-  }
+  "name": "session-name",
+  "codexThreadId": "thread-uuid-from-codex",
+  "model": "gpt-5.3-codex",
+  "createdAt": "2026-02-18T08:30:00.000Z",
+  "lastUsedAt": "2026-02-18T09:15:00.000Z",
+  "workingDirectory": "/home/user/project"
 }
 ```
 
-**Location**: `{workingDirectory}/.claude/coral/sessions.json`
-**Creation**: Auto-created by `SessionManager` (including directory)
-**Updates**: Written to disk immediately on session register, use, or delete (atomic write)
+**Location**: `~/.claude/coral/sessions/<project-hash>/<session-name>.json`
+**Project hash**: `sha256(resolve(workingDirectory)).slice(0, 12)`
+**Creation**: Auto-created by `SessionManager` (including project hash directory)
+**Updates**: Written to disk immediately on session register, use, or delete (atomic write via `*.tmp` + rename)
 
 ### hooks/hooks.json — Hook Configuration
 
@@ -154,6 +150,6 @@ See [Hooks documentation](./hooks.md) for details.
 .mcp.json                   -> Claude Code registers/starts the MCP server
 hooks/hooks.json            -> Claude Code configures the SubagentStart hook
 hooks/detect-codex-agent.sh -> Detection script executed by the hook
-.claude/coral/sessions.json -> Runtime session registry (auto-created)
+.claude/coral/sessions/<project-hash>/*.json -> Runtime per-session files (auto-created)
 bridge/coral-server.cjs     -> MCP server executable (committed, no build required)
 ```

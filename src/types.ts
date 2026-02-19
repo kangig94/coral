@@ -23,12 +23,6 @@ export interface SessionEntry {
   workingDirectory: string;
 }
 
-/** On-disk session registry format */
-export interface SessionRegistry {
-  version: 1;
-  sessions: Record<string, SessionEntry>;
-}
-
 /**
  * Codex JSONL event types (matches codex-rs/exec/src/exec_events.rs).
  *

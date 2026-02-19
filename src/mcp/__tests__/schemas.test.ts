@@ -60,6 +60,10 @@ describe('codexSessionCreateSchema', () => {
   it('rejects empty name', () => {
     expect(() => codexSessionCreateSchema.parse({ name: '', prompt: 'Hello' })).toThrow(ZodError);
   });
+
+  it('rejects invalid name characters', () => {
+    expect(() => codexSessionCreateSchema.parse({ name: 'bad name!', prompt: 'Hello' })).toThrow(ZodError);
+  });
 });
 
 describe('codexSessionSendSchema', () => {
@@ -111,6 +115,10 @@ describe('codexSessionForkSchema', () => {
   it('accepts without optional prompt', () => {
     const result = codexSessionForkSchema.parse({ session: 'abc' });
     expect(result.prompt).toBeUndefined();
+  });
+
+  it('rejects invalid fork session name', () => {
+    expect(() => codexSessionForkSchema.parse({ session: 'abc', name: 'bad name!' })).toThrow(ZodError);
   });
 
   it('rejects missing session', () => {

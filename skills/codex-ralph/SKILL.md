@@ -21,6 +21,20 @@ Announce at start: "Using codex-ralph to execute this task via Codex with persis
 5. **Call Codex**: Send the assembled prompt. MUST pass `working_directory` on every call.
 6. **Verify completion**: If Codex claims "done" without evidence, send a follow-up asking for verification output
 7. **Pause after 5 rounds**: Confirm direction with the user before continuing
+8. **Post-completion review**: After Codex reports success (tests pass, build succeeds), YOU (Claude) must review the actual changes before reporting to the user. See below.
+
+## Post-Completion Review
+
+**Tests passing does not mean the work is correct.** Codex may produce code that passes tests but diverges from the plan or requirements — especially for content that tests cannot cover (documentation, prompts, config files, CLAUDE.md, README, etc.).
+
+After Codex claims completion:
+1. **Read every changed file** that Codex modified
+2. **Compare against the plan/requirements** — does each file match what was specified?
+3. **Flag untestable content** — documentation, markdown, config, behavioral instructions: verify these match the plan verbatim where applicable
+4. **Fix discrepancies yourself** — do not send Codex back for content corrections; fix them directly
+5. **Report to the user** what Codex did correctly and what you corrected
+
+This step is mandatory. Never relay Codex's "done" claim to the user without completing this review.
 
 ## Context Enhancement
 

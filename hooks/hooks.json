@@ -1,5 +1,17 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cat \"${CLAUDE_PLUGIN_ROOT}/CLAUDE.md\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
     "SubagentStart": [
       {
         "matcher": "codex-.*",

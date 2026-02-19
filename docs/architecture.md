@@ -70,12 +70,24 @@ User → Task tool spawns codex-delegate agent
 ```
 User → codex_session_create(name="review", prompt="analyze auth.ts")
      → Codex execution → thread_id acquired (thread.started event)
-     → SessionManager registers in .claude/coral/sessions.json (atomic write)
+     → SessionManager writes ~/.claude/coral/sessions/<project-hash>/review.json (atomic write)
      → codex_session_send(session="review", prompt="follow-up question")
      → SessionManager looks up codexThreadId by name
      → codex exec resume THREAD_ID executed
      → lastUsedAt updated
 ```
+
+### 4. Session Storage Layout
+
+```
+~/.claude/coral/sessions/
+└── <project-hash>/                  # sha256(resolve(workingDirectory)).slice(0, 12)
+    ├── review.json
+    ├── auth-audit.json
+    └── perf-pass.json
+```
+
+Each file is a single `SessionEntry`. Corrupt files are skipped with a warning; valid files continue loading.
 
 ## Directory Structure
 
@@ -90,7 +102,7 @@ coral/
 │       ├── server.ts            # MCP server entry point (stdio)
 │       ├── schemas.ts           # Zod input validation schemas
 │       ├── codex-executor.ts    # Codex CLI execution logic
-│       ├── session-manager.ts   # Session registry + persistence
+│       ├── session-manager.ts   # Per-session file persistence
 │       ├── output-parser.ts     # JSONL event parsing
 │       ├── cli-detection.ts     # Codex CLI existence check
 │       └── __tests__/           # Tests (vitest)
@@ -148,7 +160,7 @@ server.ts
   ├── codex-executor.ts
   │     ├── output-parser.ts  (pure functions)
   │     └── cli-detection.ts  (caching singleton)
-  └── session-manager.ts      (file I/O, atomic writes)
+  └── session-manager.ts      (file I/O, per-session files, atomic writes)
 
 types.ts ← referenced by all modules
 ```
@@ -156,5 +168,5 @@ types.ts ← referenced by all modules
 - `schemas.ts` — zod schemas + type extraction (pure definitions)
 - `output-parser.ts` and `cli-detection.ts` — independent modules with no external dependencies
 - `codex-executor.ts` — combines parser and detection modules + process management
-- `session-manager.ts` — uses filesystem only (no Codex dependency)
+- `session-manager.ts` — uses filesystem only (no Codex dependency), stores one JSON file per session
 - `server.ts` — integrates MCP SDK + executor + session manager + graceful shutdown

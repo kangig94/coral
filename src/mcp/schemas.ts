@@ -21,7 +21,10 @@ export const codexExecuteSchema = z.object({
 });
 
 export const codexSessionCreateSchema = z.object({
-  name: z.string().min(1, 'Session name is required'),
+  name: z
+    .string()
+    .min(1, 'Session name is required')
+    .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/, 'Session name must be alphanumeric (with . _ - allowed)'),
   prompt: z.string().min(1, 'Prompt is required'),
   model: modelSchema,
   working_directory: z.string().optional(),
@@ -38,7 +41,10 @@ export const codexSessionListSchema = z.object({}).passthrough();
 
 export const codexSessionForkSchema = z.object({
   session: z.string().min(1, 'Session reference is required'),
-  name: z.string().optional(),
+  name: z
+    .string()
+    .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/, 'Session name must be alphanumeric (with . _ - allowed)')
+    .optional(),
   prompt: z.string().optional(),
   model: modelSchema,
   working_directory: z.string().optional(),

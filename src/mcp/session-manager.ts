@@ -1,106 +1,94 @@
-/**
- * Session registry manager.
- *
- * Persists named sessions to .claude/coral/sessions.json so they survive restarts.
- */
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, renameSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { createHash } from 'node:crypto';
+import type { SessionEntry } from '../types.js';
 
-import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
-import { join } from 'node:path';
-import type { SessionEntry, SessionRegistry } from '../types.js';
-
-const REGISTRY_DIR = join('.claude', 'coral');
-const REGISTRY_FILE = 'sessions.json';
+function projectHash(dir: string): string {
+  return createHash('sha256').update(resolve(dir)).digest('hex').slice(0, 12);
+}
 
 export class SessionManager {
-  private registryPath: string;
-  private registry: SessionRegistry;
+  private sessionDir: string;
 
-  constructor(workingDirectory?: string) {
-    const baseDir = workingDirectory ?? process.cwd();
-    const dir = join(baseDir, REGISTRY_DIR);
-    mkdirSync(dir, { recursive: true });
-    this.registryPath = join(dir, REGISTRY_FILE);
-    this.registry = this.load();
+  constructor(workingDirectory: string) {
+    this.sessionDir = join(homedir(), '.claude', 'coral', 'sessions', projectHash(workingDirectory));
+    mkdirSync(this.sessionDir, { recursive: true });
   }
 
-  private load(): SessionRegistry {
+  private sessionPath(name: string): string {
+    return join(this.sessionDir, `${name}.json`);
+  }
+
+  private readSession(name: string): SessionEntry | null {
     try {
-      const data = readFileSync(this.registryPath, 'utf-8');
-      return JSON.parse(data) as SessionRegistry;
+      const data = readFileSync(this.sessionPath(name), 'utf-8');
+      return JSON.parse(data) as SessionEntry;
     } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
       if (err instanceof SyntaxError) {
-        process.stderr.write(`Warning: Corrupt session registry at ${this.registryPath}, starting fresh\n`);
-      } else if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        throw err;
+        process.stderr.write(`Warning: Corrupt session file ${name}.json, skipping\n`);
+        return null;
       }
-      return { version: 1, sessions: {} };
+      throw err;
     }
   }
 
-  private save(): void {
-    const tmpPath = this.registryPath + '.tmp';
-    writeFileSync(tmpPath, JSON.stringify(this.registry, null, 2), 'utf-8');
-    renameSync(tmpPath, this.registryPath);
+  private writeSession(name: string, entry: SessionEntry): void {
+    const filePath = this.sessionPath(name);
+    const tmpPath = filePath + '.tmp';
+    writeFileSync(tmpPath, JSON.stringify(entry, null, 2), 'utf-8');
+    renameSync(tmpPath, filePath);
   }
 
-  /** Register a new named session */
-  register(
-    name: string,
-    codexThreadId: string,
-    model: string,
-    workingDirectory: string,
-  ): SessionEntry {
+  register(name: string, codexThreadId: string, model: string, workingDirectory: string): SessionEntry {
     const now = new Date().toISOString();
-    const entry: SessionEntry = {
-      name,
-      codexThreadId,
-      model,
-      createdAt: now,
-      lastUsedAt: now,
-      workingDirectory,
-    };
-    this.registry.sessions[name] = entry;
-    this.save();
+    const entry: SessionEntry = { name, codexThreadId, model, createdAt: now, lastUsedAt: now, workingDirectory };
+    this.writeSession(name, entry);
     return entry;
   }
 
-  /** Look up by name or thread ID (name takes priority) */
   get(nameOrId: string): SessionEntry | null {
-    if (this.registry.sessions[nameOrId]) {
-      return this.registry.sessions[nameOrId];
-    }
-    for (const entry of Object.values(this.registry.sessions)) {
-      if (entry.codexThreadId === nameOrId) {
-        return entry;
-      }
+    // Try direct name lookup first
+    const direct = this.readSession(nameOrId);
+    if (direct) return direct;
+    // Scan all sessions for threadId match
+    for (const entry of this.list()) {
+      if (entry.codexThreadId === nameOrId) return entry;
     }
     return null;
   }
 
-  /** List all registered sessions */
   list(): SessionEntry[] {
-    return Object.values(this.registry.sessions);
+    try {
+      const files = readdirSync(this.sessionDir).filter((f) => f.endsWith('.json') && !f.endsWith('.tmp'));
+      const entries: SessionEntry[] = [];
+      for (const file of files) {
+        const name = file.slice(0, -5); // remove .json
+        const entry = this.readSession(name);
+        if (entry) entries.push(entry);
+      }
+      return entries;
+    } catch {
+      return [];
+    }
   }
 
-  /** Update session fields (lastUsedAt is always updated) */
   updateSession(name: string, fields?: { model?: string }): void {
-    const entry = this.registry.sessions[name];
+    const entry = this.readSession(name);
     if (entry) {
       entry.lastUsedAt = new Date().toISOString();
-      if (fields?.model) {
-        entry.model = fields.model;
-      }
-      this.save();
+      if (fields?.model) entry.model = fields.model;
+      this.writeSession(name, entry);
     }
   }
 
-  /** Remove a session by name */
   remove(name: string): boolean {
-    if (this.registry.sessions[name]) {
-      delete this.registry.sessions[name];
-      this.save();
+    try {
+      unlinkSync(this.sessionPath(name));
       return true;
+    } catch {
+      return false;
     }
-    return false;
   }
 }

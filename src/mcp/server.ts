@@ -329,7 +329,7 @@ process.on('SIGINT', shutdown);
 let sessionManager: SessionManager;
 
 async function main() {
-  sessionManager = new SessionManager();
+  sessionManager = new SessionManager(process.cwd());
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

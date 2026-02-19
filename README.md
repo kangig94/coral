@@ -77,6 +77,17 @@ Create sessions to maintain conversation context with Codex:
 /coral:session list
 ```
 
+### Knowledge Base
+
+Coral automatically manages a knowledge base to prevent repeating mistakes across sessions:
+
+- **Memo**: During work, non-obvious discoveries are buffered to `~/.claude/coral/memo/`
+- **Lookup**: On errors, the KB at `{project}/.claude/coral/kb/` is checked before debugging from scratch
+- **Promotion**: On task completion, valuable memos are promoted to permanent KB entries
+- **Invalidation**: KB entries that contradict current code are updated or removed
+
+KB files are stored in the project directory (`.claude/coral/kb/`) for git-based multi-device sync. See `CLAUDE.md` for behavioral details.
+
 ### Claude-native Analysis
 
 Slash commands for Claude to analyze directly (default routing):
