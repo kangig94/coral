@@ -14,7 +14,7 @@ Send the user's request to Codex.
 Check the conversation history for a previous `/codex` call that returned a `thread_id`:
 - **Previous thread_id exists** → use `mcp__cx__codex_session_send` with that thread_id to continue the session
 - **No previous thread_id** → use `mcp__cx__codex_execute` to start a new session
-- **User says "new", "새로", or explicitly wants a fresh start** → use `mcp__cx__codex_execute` regardless
+- **User says "new" or explicitly wants a fresh start** → use `mcp__cx__codex_execute` regardless
 
 ### 2. Analyze intent and select persona
 

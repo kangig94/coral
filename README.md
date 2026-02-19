@@ -59,6 +59,17 @@ Use slash commands to query Codex directly:
 /coral:codex analyze this code for security vulnerabilities
 ```
 
+Consecutive `/coral:codex` calls automatically continue the same session — no need to create a named session for multi-turn conversations:
+
+```
+/coral:codex review auth.ts for security issues
+# ... Codex responds ...
+/coral:codex what about the token refresh logic?
+# continues the same Codex session
+```
+
+To start fresh instead of continuing, say "new" in your prompt.
+
 ### Sessions (Multi-turn Conversations)
 
 Create sessions to maintain conversation context with Codex:

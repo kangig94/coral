@@ -79,7 +79,7 @@ Promote to `{project}/.claude/coral/kb/<domain>-<topic>.md`:
     ## Pattern
     Right vs wrong approach — code blocks or examples.
 
-Delete processed memos after promotion.
+Clean up promoted sources: delete processed memos, remove promoted entries from MEMORY.md.
 
 ## Invalidation
 If a kb entry contradicts current code, update or delete it immediately.
