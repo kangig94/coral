@@ -1,8 +1,6 @@
 /**
  * Codex CLI execution logic.
- *
- * Spawns `codex exec` processes and collects output.
- * IMPORTANT: Never use console.log — this runs inside a stdio MCP server.
+ * Never use console.log — this runs inside a stdio MCP server.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -18,9 +16,7 @@ const SIGKILL_DELAY = 5_000; // 5 seconds after SIGTERM
 const MAX_CONCURRENT = parseInt(process.env.CORAL_MAX_CONCURRENT ?? '', 10) || 5;
 const STAGGER_MS = parseInt(process.env.CORAL_STAGGER_MS ?? '', 10) || 3_000;
 
-/**
- * Promise-based semaphore for limiting concurrent Codex processes.
- */
+/** Promise-based semaphore for concurrency limiting. */
 class Semaphore {
   private running = 0;
   private readonly queue: (() => void)[] = [];
@@ -49,15 +45,8 @@ class Semaphore {
     if (next) next();
   }
 
-  /** Current number of running tasks. Exposed for testing. */
-  get active(): number {
-    return this.running;
-  }
-
-  /** Current number of waiting tasks. Exposed for testing. */
-  get pending(): number {
-    return this.queue.length;
-  }
+  get active(): number { return this.running; }
+  get pending(): number { return this.queue.length; }
 }
 
 const semaphore = new Semaphore(MAX_CONCURRENT);
@@ -68,19 +57,10 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Stagger mutex serializes the read-sleep-update sequence.
- * Without this, multiple coroutines that acquire the concurrency semaphore
- * simultaneously could all read the same lastStartTime and start together,
- * defeating the burst prevention purpose.
- */
+/** Serializes read-sleep-update of lastStartTime to prevent burst starts. */
 const staggerMutex = new Semaphore(1);
 
-/**
- * Enforce minimum delay between process starts to prevent burst.
- * Serialized via staggerMutex to prevent concurrent coroutines from
- * reading the same lastStartTime and sleeping in parallel.
- */
+/** Enforce minimum delay between process starts. */
 async function enforceStagger(): Promise<void> {
   await staggerMutex.acquire();
   try {
@@ -94,16 +74,12 @@ async function enforceStagger(): Promise<void> {
   }
 }
 
-/** Track active child processes for graceful shutdown. */
 const activeChildren = new Set<ChildProcess>();
 
 function getModel(model?: string): string {
   return model?.trim() || DEFAULT_MODEL;
 }
 
-/**
- * Append data to a buffer string, enforcing a size limit.
- */
 function appendBuffer(current: string, chunk: string): string {
   const combined = current + chunk;
   if (combined.length > MAX_BUFFER) {
@@ -112,10 +88,7 @@ function appendBuffer(current: string, chunk: string): string {
   return combined;
 }
 
-/**
- * Spawn a Codex CLI process with given args and prompt via stdin.
- * Internal implementation -- use runCodex() which adds concurrency control.
- */
+/** Spawn a Codex CLI process. Use runCodex() for concurrency control. */
 function spawnCodex(
   args: string[],
   prompt: string | undefined,
@@ -144,7 +117,6 @@ function spawnCodex(
       reject(new Error(`Codex timed out after ${TIMEOUT_MS}ms`));
     }, TIMEOUT_MS);
 
-    /** Mark settled, stop the timeout, and untrack the child process. */
     function finish(): boolean {
       if (settled) return false;
       settled = true;
@@ -189,9 +161,7 @@ function assertNotShuttingDown(): void {
   if (shuttingDown) throw new Error('Server is shutting down');
 }
 
-/**
- * Run a Codex CLI command with concurrency control (semaphore + stagger).
- */
+/** Run a Codex CLI command with concurrency control. */
 async function runCodex(
   args: string[],
   prompt: string | undefined,
@@ -201,7 +171,6 @@ async function runCodex(
   try {
     assertNotShuttingDown();
     await enforceStagger();
-    // Re-check: killAllChildren() may have been called during the stagger sleep
     assertNotShuttingDown();
     return await spawnCodex(args, prompt, cwd);
   } finally {
@@ -209,9 +178,7 @@ async function runCodex(
   }
 }
 
-/**
- * Kill all tracked child processes (SIGTERM, then SIGKILL after 3s).
- */
+/** Kill all tracked child processes (SIGTERM, then SIGKILL after 3s). */
 export function killAllChildren(): void {
   shuttingDown = true;
   for (const child of activeChildren) {
@@ -227,20 +194,19 @@ export function killAllChildren(): void {
 }
 
 /**
- * One-shot execution: codex exec -m MODEL --json --full-auto
+ * Shared execution pipeline: detect CLI, spawn, parse JSONL output.
  */
-export async function executeOneShot(
+async function executeCodex(
+  args: string[],
   prompt: string,
-  model?: string,
+  resolvedModel: string,
   cwd?: string,
+  fallbackThreadId?: string,
 ): Promise<CodexExecResult> {
   const cli = await detectCodexCli();
   if (!cli.available) throw new Error(cli.error!);
 
-  const resolvedModel = getModel(model);
-  const args = ['exec', '-m', resolvedModel, '--json', '--full-auto'];
   const start = Date.now();
-
   const { stdout, stderr, code } = await runCodex(args, prompt, cwd);
 
   if (code !== 0 && !stdout.trim()) {
@@ -251,13 +217,25 @@ export async function executeOneShot(
 
   return {
     response: parsed.response,
-    threadId: parsed.threadId,
+    threadId: parsed.threadId ?? fallbackThreadId ?? null,
     model: resolvedModel,
     durationMs: Date.now() - start,
     exitCode: code,
     errors: parsed.errors,
     warnings: parsed.warnings,
   };
+}
+
+/**
+ * One-shot execution: codex exec -m MODEL --json --full-auto
+ */
+export async function executeOneShot(
+  prompt: string,
+  model?: string,
+  cwd?: string,
+): Promise<CodexExecResult> {
+  const resolvedModel = getModel(model);
+  return executeCodex(['exec', '-m', resolvedModel, '--json', '--full-auto'], prompt, resolvedModel, cwd);
 }
 
 /**
@@ -269,39 +247,17 @@ export async function executeResume(
   model?: string,
   cwd?: string,
 ): Promise<CodexExecResult> {
-  const cli = await detectCodexCli();
-  if (!cli.available) throw new Error(cli.error!);
-
   const resolvedModel = getModel(model);
-  const args = ['exec', 'resume', threadId, '-m', resolvedModel, '--json', '--full-auto'];
-  const start = Date.now();
-
-  const { stdout, stderr, code } = await runCodex(args, prompt, cwd);
-
-  if (code !== 0 && !stdout.trim()) {
-    throw new Error(`Codex resume exited with code ${code}: ${stderr || 'No output'}`);
-  }
-
-  const parsed = parseCodexJsonl(stdout);
-
-  return {
-    response: parsed.response,
-    threadId: parsed.threadId ?? threadId,
-    model: resolvedModel,
-    durationMs: Date.now() - start,
-    exitCode: code,
-    errors: parsed.errors,
-    warnings: parsed.warnings,
-  };
+  return executeCodex(
+    ['exec', 'resume', threadId, '-m', resolvedModel, '--json', '--full-auto'],
+    prompt,
+    resolvedModel,
+    cwd,
+    threadId,
+  );
 }
 
-/**
- * Fork a session by resuming with a new prompt.
- *
- * Note: `codex fork` is TUI-only and cannot be used non-interactively.
- * We simulate fork by using `codex exec resume` which continues the
- * conversation in the same thread.
- */
+/** Fork a session by resuming with a new prompt (codex fork is TUI-only). */
 export async function executeFork(
   threadId: string,
   prompt?: string,

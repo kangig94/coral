@@ -18,13 +18,20 @@ import { executeOneShot, executeResume, executeFork, killAllChildren, Semaphore,
 const mockDetect = vi.mocked(detectCodexCli);
 const mockSpawn = vi.mocked(spawn);
 
-// Top-level beforeEach: reset all shared state to prevent cross-test pollution
 beforeEach(() => {
   mockDetect.mockReset();
   mockSpawn.mockReset();
   _test.lastStartTime = 0;
   _test.resetShutdown();
 });
+
+function mockCliAvailable(): void {
+  mockDetect.mockResolvedValue({ available: true, version: '1.0.0' });
+}
+
+function jsonl(...lines: string[]): string {
+  return lines.join('\n');
+}
 
 function createMockProcess(stdout: string, code: number): ChildProcess {
   const proc = new EventEmitter() as ChildProcess;
@@ -34,13 +41,14 @@ function createMockProcess(stdout: string, code: number): ChildProcess {
     write(_chunk, _enc, cb) { cb(); },
   });
 
-  (proc as any).stdout = stdoutStream;
-  (proc as any).stderr = stderrStream;
-  (proc as any).stdin = stdinStream;
-  (proc as any).kill = vi.fn();
-  (proc as any).pid = 12345;
+  Object.assign(proc, {
+    stdout: stdoutStream,
+    stderr: stderrStream,
+    stdin: stdinStream,
+    kill: vi.fn(),
+    pid: 12345,
+  });
 
-  // Emit data and close after a tick
   setTimeout(() => {
     stdoutStream.push(stdout);
     stdoutStream.push(null);
@@ -52,14 +60,12 @@ function createMockProcess(stdout: string, code: number): ChildProcess {
 
 describe('executeOneShot', () => {
   it('spawns codex with correct args', async () => {
-    mockDetect.mockResolvedValue({ available: true, version: '1.0.0' });
-
-    const jsonl = [
+    mockCliAvailable();
+    const output = jsonl(
       '{"type":"thread.started","thread_id":"t-123"}',
       '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Hello"}}',
-    ].join('\n');
-
-    mockSpawn.mockReturnValue(createMockProcess(jsonl, 0));
+    );
+    mockSpawn.mockReturnValue(createMockProcess(output, 0));
 
     const result = await executeOneShot('test prompt', 'o4-mini', '/tmp');
 
@@ -83,20 +89,19 @@ describe('executeOneShot', () => {
   });
 
   it('throws on non-zero exit with no stdout', async () => {
-    mockDetect.mockResolvedValue({ available: true, version: '1.0.0' });
+    mockCliAvailable();
     mockSpawn.mockReturnValue(createMockProcess('', 1));
 
     await expect(executeOneShot('test')).rejects.toThrow('Codex exited with code 1');
   });
 
   it('returns exitCode when non-zero with stdout', async () => {
-    mockDetect.mockResolvedValue({ available: true, version: '1.0.0' });
-
-    const jsonl = [
+    mockCliAvailable();
+    const output = jsonl(
       '{"type":"error","message":"Rate limit"}',
       '{"type":"turn.failed","error":{"message":"Rate limit"}}',
-    ].join('\n');
-    mockSpawn.mockReturnValue(createMockProcess(jsonl, 1));
+    );
+    mockSpawn.mockReturnValue(createMockProcess(output, 1));
 
     const result = await executeOneShot('test');
     expect(result.exitCode).toBe(1);
@@ -105,10 +110,9 @@ describe('executeOneShot', () => {
   });
 
   it('uses default model when none provided', async () => {
-    mockDetect.mockResolvedValue({ available: true, version: '1.0.0' });
-
-    const jsonl = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
-    mockSpawn.mockReturnValue(createMockProcess(jsonl, 0));
+    mockCliAvailable();
+    const output = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
+    mockSpawn.mockReturnValue(createMockProcess(output, 0));
 
     const result = await executeOneShot('test');
     expect(result.model).toBe('gpt-5.3-codex');
@@ -118,11 +122,12 @@ describe('executeOneShot', () => {
 });
 
 describe('executeResume', () => {
-  it('passes correct resume args', async () => {
-    mockDetect.mockResolvedValue({ available: true, version: '1.0.0' });
+  const agentOk = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
 
-    const jsonl = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Resumed"}}\n';
-    mockSpawn.mockReturnValue(createMockProcess(jsonl, 0));
+  it('passes correct resume args', async () => {
+    mockCliAvailable();
+    const output = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Resumed"}}\n';
+    mockSpawn.mockReturnValue(createMockProcess(output, 0));
 
     const result = await executeResume('thread-abc', 'continue', 'gpt-4.1');
 
@@ -132,17 +137,14 @@ describe('executeResume', () => {
       expect.any(Object),
     );
     expect(result.response).toBe('Resumed');
-    // Falls back to provided threadId when no thread.started in output
     expect(result.threadId).toBe('thread-abc');
     expect(result.errors).toEqual([]);
     expect(result.warnings).toEqual([]);
   });
 
   it('passes working_directory as cwd to spawn', async () => {
-    mockDetect.mockResolvedValue({ available: true, version: '1.0.0' });
-
-    const jsonl = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
-    mockSpawn.mockReturnValue(createMockProcess(jsonl, 0));
+    mockCliAvailable();
+    mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
 
     await executeResume('thread-abc', 'review', undefined, '/home/user/project');
 
@@ -154,10 +156,8 @@ describe('executeResume', () => {
   });
 
   it('omits cwd when working_directory not provided', async () => {
-    mockDetect.mockResolvedValue({ available: true, version: '1.0.0' });
-
-    const jsonl = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
-    mockSpawn.mockReturnValue(createMockProcess(jsonl, 0));
+    mockCliAvailable();
+    mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
 
     await executeResume('thread-abc', 'review');
 
@@ -171,17 +171,15 @@ describe('executeResume', () => {
 
 describe('executeFork', () => {
   it('delegates to resume with default prompt', async () => {
-    mockDetect.mockResolvedValue({ available: true, version: '1.0.0' });
-
-    const jsonl = [
+    mockCliAvailable();
+    const output = jsonl(
       '{"type":"thread.started","thread_id":"t-fork"}',
       '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Forked"}}',
-    ].join('\n');
-    mockSpawn.mockReturnValue(createMockProcess(jsonl, 0));
+    );
+    mockSpawn.mockReturnValue(createMockProcess(output, 0));
 
     const result = await executeFork('thread-orig');
 
-    // Should use resume subcommand, not fork
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
       expect.arrayContaining(['exec', 'resume', 'thread-orig']),
@@ -194,38 +192,30 @@ describe('executeFork', () => {
   });
 
   it('passes custom prompt to resume', async () => {
-    mockDetect.mockResolvedValue({ available: true, version: '1.0.0' });
-
-    const jsonl = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Custom"}}\n';
-    mockSpawn.mockReturnValue(createMockProcess(jsonl, 0));
+    mockCliAvailable();
+    const output = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Custom"}}\n';
+    mockSpawn.mockReturnValue(createMockProcess(output, 0));
 
     await executeFork('t1', 'Do something new', 'o4-mini');
 
-    // Verify stdin receives the custom prompt (spawn is called, prompt sent via stdin)
     expect(mockSpawn).toHaveBeenCalled();
   });
 });
 
 describe('killAllChildren', () => {
   it('clears tracked processes after kill', async () => {
-    mockDetect.mockResolvedValue({ available: true, version: '1.0.0' });
+    mockCliAvailable();
+    const output = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
+    mockSpawn.mockReturnValue(createMockProcess(output, 0));
 
-    const jsonl = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
-    mockSpawn.mockReturnValue(createMockProcess(jsonl, 0));
-
-    // Execute to populate activeChildren
     await executeOneShot('test');
-
-    // First kill
     killAllChildren();
 
-    // Create a new mock process that tracks kill calls
-    const proc2 = createMockProcess(jsonl, 0);
+    const proc2 = createMockProcess(output, 0);
     const killSpy = vi.fn();
     (proc2 as any).kill = killSpy;
     mockSpawn.mockReturnValue(proc2);
 
-    // Second killAllChildren — should be no-op since Set was cleared
     killAllChildren();
     expect(killSpy).not.toHaveBeenCalled();
   });
@@ -270,44 +260,37 @@ describe('Semaphore', () => {
 });
 
 describe('stagger', () => {
-  it('delays execution when called within STAGGER_MS of last start', async () => {
-    mockDetect.mockResolvedValue({ available: true, version: '1.0.0' });
-    const jsonl = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
-    // Use mockImplementation to defer process creation until spawn() is actually called.
-    // mockReturnValue would create the process immediately, and its 10ms data timer
-    // would fire during the 3s stagger sleep — before spawnCodex subscribes to events.
-    mockSpawn.mockImplementation(() => createMockProcess(jsonl, 0) as any);
+  const agentOk = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
 
-    // Set lastStartTime to "just now" to force stagger delay
+  it('delays execution when called within STAGGER_MS of last start', async () => {
+    mockCliAvailable();
+    // Defer process creation so its 10ms data timer does not fire during the stagger sleep
+    mockSpawn.mockImplementation(() => createMockProcess(agentOk, 0) as any);
+
     _test.lastStartTime = Date.now();
     const start = Date.now();
     await executeOneShot('test');
     const elapsed = Date.now() - start;
 
-    // Should have waited at least close to STAGGER_MS (3000ms default)
-    // Use generous tolerance for CI environments
     expect(elapsed).toBeGreaterThanOrEqual(2500);
   }, 10_000);
 
   it('skips delay when enough time has passed since last start', async () => {
-    mockDetect.mockResolvedValue({ available: true, version: '1.0.0' });
-    const jsonl = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
-    mockSpawn.mockReturnValue(createMockProcess(jsonl, 0));
+    mockCliAvailable();
+    mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
 
-    // Set lastStartTime to 10 seconds ago (well beyond STAGGER_MS)
     _test.lastStartTime = Date.now() - 10_000;
     const start = Date.now();
     await executeOneShot('test');
     const elapsed = Date.now() - start;
 
-    // Should complete quickly without stagger delay
     expect(elapsed).toBeLessThan(1000);
   });
 });
 
 describe('shutdown guard', () => {
   it('rejects new requests after killAllChildren', async () => {
-    mockDetect.mockResolvedValue({ available: true, version: '1.0.0' });
+    mockCliAvailable();
     killAllChildren();
     await expect(executeOneShot('test')).rejects.toThrow('Server is shutting down');
   });

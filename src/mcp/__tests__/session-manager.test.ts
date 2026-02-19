@@ -1,8 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
-import { vi } from 'vitest';
 
 let tmpDir = '';
 
@@ -29,35 +28,41 @@ describe('SessionManager', () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('register creates an individual session file', () => {
-    const workingDirectory = join(tmpDir, 'project-a');
-    mkdirSync(workingDirectory, { recursive: true });
-    const mgr = new SessionManager(workingDirectory);
+  function setup(projectName: string): { mgr: SessionManager; workDir: string } {
+    const workDir = join(tmpDir, projectName);
+    mkdirSync(workDir, { recursive: true });
+    return { mgr: new SessionManager(workDir), workDir };
+  }
 
-    const entry = mgr.register('my-session', 'thread-abc', 'o4-mini', workingDirectory);
-    const expectedPath = join(sessionDir(tmpDir, workingDirectory), 'my-session.json');
+  function sessionFilePath(workDir: string, name: string): string {
+    return join(sessionDir(tmpDir, workDir), `${name}.json`);
+  }
+
+  function readSessionFile(workDir: string, name: string): Record<string, unknown> {
+    return JSON.parse(readFileSync(sessionFilePath(workDir, name), 'utf-8'));
+  }
+
+  it('register creates an individual session file', () => {
+    const { mgr, workDir } = setup('project-a');
+
+    const entry = mgr.register('my-session', 'thread-abc', 'o4-mini', workDir);
 
     expect(entry.name).toBe('my-session');
     expect(entry.codexThreadId).toBe('thread-abc');
-    expect(existsSync(expectedPath)).toBe(true);
+    expect(existsSync(sessionFilePath(workDir, 'my-session'))).toBe(true);
 
-    const fromDisk = JSON.parse(readFileSync(expectedPath, 'utf-8')) as {
-      name: string;
-      codexThreadId: string;
-      model: string;
-      workingDirectory: string;
-    };
-    expect(fromDisk.name).toBe('my-session');
-    expect(fromDisk.codexThreadId).toBe('thread-abc');
-    expect(fromDisk.model).toBe('o4-mini');
-    expect(fromDisk.workingDirectory).toBe(workingDirectory);
+    const fromDisk = readSessionFile(workDir, 'my-session');
+    expect(fromDisk).toMatchObject({
+      name: 'my-session',
+      codexThreadId: 'thread-abc',
+      model: 'o4-mini',
+      workingDirectory: workDir,
+    });
   });
 
   it('get finds a session by name via direct file lookup', () => {
-    const workingDirectory = join(tmpDir, 'project-b');
-    mkdirSync(workingDirectory, { recursive: true });
-    const mgr = new SessionManager(workingDirectory);
-    mgr.register('review', 'thread-1', 'o4-mini', workingDirectory);
+    const { mgr, workDir } = setup('project-b');
+    mgr.register('review', 'thread-1', 'o4-mini', workDir);
 
     const found = mgr.get('review');
     expect(found).not.toBeNull();
@@ -65,11 +70,9 @@ describe('SessionManager', () => {
   });
 
   it('get finds a session by threadId via directory scan', () => {
-    const workingDirectory = join(tmpDir, 'project-c');
-    mkdirSync(workingDirectory, { recursive: true });
-    const mgr = new SessionManager(workingDirectory);
-    mgr.register('alpha', 'thread-alpha', 'o4-mini', workingDirectory);
-    mgr.register('beta', 'thread-beta', 'o4-mini', workingDirectory);
+    const { mgr, workDir } = setup('project-c');
+    mgr.register('alpha', 'thread-alpha', 'o4-mini', workDir);
+    mgr.register('beta', 'thread-beta', 'o4-mini', workDir);
 
     const found = mgr.get('thread-beta');
     expect(found).not.toBeNull();
@@ -77,11 +80,9 @@ describe('SessionManager', () => {
   });
 
   it('list returns all valid sessions in the project directory', () => {
-    const workingDirectory = join(tmpDir, 'project-d');
-    mkdirSync(workingDirectory, { recursive: true });
-    const mgr = new SessionManager(workingDirectory);
-    mgr.register('one', 'thread-1', 'o4-mini', workingDirectory);
-    mgr.register('two', 'thread-2', 'o4-mini', workingDirectory);
+    const { mgr, workDir } = setup('project-d');
+    mgr.register('one', 'thread-1', 'o4-mini', workDir);
+    mgr.register('two', 'thread-2', 'o4-mini', workDir);
 
     const names = mgr
       .list()
@@ -91,41 +92,33 @@ describe('SessionManager', () => {
   });
 
   it('updateSession reads, mutates, and writes the session file', async () => {
-    const workingDirectory = join(tmpDir, 'project-e');
-    mkdirSync(workingDirectory, { recursive: true });
-    const mgr = new SessionManager(workingDirectory);
-    mgr.register('updatable', 'thread-up', 'old-model', workingDirectory);
+    const { mgr, workDir } = setup('project-e');
+    mgr.register('updatable', 'thread-up', 'old-model', workDir);
 
-    const filePath = join(sessionDir(tmpDir, workingDirectory), 'updatable.json');
-    const before = JSON.parse(readFileSync(filePath, 'utf-8')) as { lastUsedAt: string; model: string };
+    const before = readSessionFile(workDir, 'updatable');
 
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
     mgr.updateSession('updatable', { model: 'new-model' });
 
-    const after = JSON.parse(readFileSync(filePath, 'utf-8')) as { lastUsedAt: string; model: string };
+    const after = readSessionFile(workDir, 'updatable');
     expect(after.model).toBe('new-model');
     expect(after.lastUsedAt).not.toBe(before.lastUsedAt);
   });
 
   it('remove deletes the session file', () => {
-    const workingDirectory = join(tmpDir, 'project-f');
-    mkdirSync(workingDirectory, { recursive: true });
-    const mgr = new SessionManager(workingDirectory);
-    mgr.register('to-delete', 'thread-del', 'o4-mini', workingDirectory);
+    const { mgr, workDir } = setup('project-f');
+    mgr.register('to-delete', 'thread-del', 'o4-mini', workDir);
 
-    const filePath = join(sessionDir(tmpDir, workingDirectory), 'to-delete.json');
-    expect(existsSync(filePath)).toBe(true);
+    expect(existsSync(sessionFilePath(workDir, 'to-delete'))).toBe(true);
     expect(mgr.remove('to-delete')).toBe(true);
-    expect(existsSync(filePath)).toBe(false);
+    expect(existsSync(sessionFilePath(workDir, 'to-delete'))).toBe(false);
   });
 
   it('corrupt session files are skipped gracefully', () => {
-    const workingDirectory = join(tmpDir, 'project-g');
-    mkdirSync(workingDirectory, { recursive: true });
-    const mgr = new SessionManager(workingDirectory);
-    mgr.register('valid', 'thread-valid', 'o4-mini', workingDirectory);
+    const { mgr, workDir } = setup('project-g');
+    mgr.register('valid', 'thread-valid', 'o4-mini', workDir);
 
-    const brokenPath = join(sessionDir(tmpDir, workingDirectory), 'broken.json');
+    const brokenPath = join(sessionDir(tmpDir, workDir), 'broken.json');
     writeFileSync(brokenPath, '{invalid json!!!', 'utf-8');
 
     const all = mgr.list();

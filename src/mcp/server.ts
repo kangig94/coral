@@ -1,13 +1,4 @@
-/**
- * Coral MCP Server — stdio transport.
- *
- * Exposes 5 tools for Codex CLI integration:
- * - codex_execute: One-shot execution
- * - codex_session_create: Create a named session
- * - codex_session_send: Continue an existing session
- * - codex_session_list: List sessions
- * - codex_session_fork: Fork a session (resume-based simulation)
- */
+/** Coral MCP Server — stdio transport for Codex CLI integration. */
 
 declare const __VERSION__: string;
 
@@ -30,10 +21,6 @@ import {
   type CodexSessionSendInput,
   type CodexSessionForkInput,
 } from './schemas.js';
-
-// ---------------------------------------------------------------------------
-// Tool definitions
-// ---------------------------------------------------------------------------
 
 const tools = [
   {
@@ -108,15 +95,15 @@ const tools = [
   },
 ];
 
-// ---------------------------------------------------------------------------
-// Tool handlers
-// ---------------------------------------------------------------------------
-
 function textResult(text: string, isError = false) {
   return { content: [{ type: 'text' as const, text }], isError };
 }
 
-/** Conditional fields shared by all Codex result responses. */
+function jsonResult(data: Record<string, unknown>) {
+  return textResult(JSON.stringify(data, null, 2));
+}
+
+/** Conditional error/warning fields for Codex result responses. */
 function resultExtras(result: { exitCode: number | null; errors: string[]; warnings: string[] }) {
   return {
     ...(result.exitCode !== 0 && result.exitCode !== null ? { exit_code: result.exitCode } : {}),
@@ -132,96 +119,66 @@ async function handleCodexExecute(input: CodexExecuteInput, mgr: SessionManager)
     mgr.register(input.save_session, result.threadId, result.model, input.working_directory ?? process.cwd());
   }
 
-  return textResult(
-    JSON.stringify(
-      {
-        response: result.response,
-        thread_id: result.threadId,
-        model: result.model,
-        duration_ms: result.durationMs,
-        ...(input.save_session ? { saved_as: input.save_session } : {}),
-        ...resultExtras(result),
-      },
-      null,
-      2,
-    ),
-  );
+  return jsonResult({
+    response: result.response,
+    thread_id: result.threadId,
+    model: result.model,
+    duration_ms: result.durationMs,
+    ...(input.save_session ? { saved_as: input.save_session } : {}),
+    ...resultExtras(result),
+  });
 }
 
 async function handleSessionCreate(input: CodexSessionCreateInput, mgr: SessionManager) {
   const result = await executeOneShot(input.prompt, input.model, input.working_directory);
 
   if (!result.threadId) {
-    return textResult(
-      JSON.stringify({
-        response: result.response,
-        notice: 'No thread ID returned by Codex. Session not registered.',
-        model: result.model,
-        duration_ms: result.durationMs,
-        ...resultExtras(result),
-      }, null, 2),
-    );
+    return jsonResult({
+      response: result.response,
+      notice: 'No thread ID returned by Codex. Session not registered.',
+      model: result.model,
+      duration_ms: result.durationMs,
+      ...resultExtras(result),
+    });
   }
 
   mgr.register(input.name, result.threadId, result.model, input.working_directory ?? process.cwd());
 
-  return textResult(
-    JSON.stringify(
-      {
-        response: result.response,
-        thread_id: result.threadId,
-        session_name: input.name,
-        model: result.model,
-        duration_ms: result.durationMs,
-        ...resultExtras(result),
-      },
-      null,
-      2,
-    ),
-  );
+  return jsonResult({
+    response: result.response,
+    thread_id: result.threadId,
+    session_name: input.name,
+    model: result.model,
+    duration_ms: result.durationMs,
+    ...resultExtras(result),
+  });
 }
 
 async function handleSessionSend(input: CodexSessionSendInput, mgr: SessionManager) {
   const entry = mgr.get(input.session);
 
   if (!entry) {
-    // Fallback: treat input.session as a raw Codex thread ID.
-    // Safe: spawn() without shell:true passes args as-is to execve (no injection).
     const result = await executeResume(input.session, input.prompt, input.model, input.working_directory);
-    return textResult(
-      JSON.stringify(
-        {
-          response: result.response,
-          thread_id: result.threadId,
-          model: result.model,
-          duration_ms: result.durationMs,
-          ...(result.exitCode !== 0 && result.exitCode !== null ? { exit_code: result.exitCode } : {}),
-          ...(result.errors.length > 0 ? { errors: result.errors } : {}),
-          ...(result.warnings.length > 0 ? { warnings: result.warnings } : {}),
-        },
-        null,
-        2,
-      ),
-    );
+    return jsonResult({
+      response: result.response,
+      thread_id: result.threadId,
+      model: result.model,
+      duration_ms: result.durationMs,
+      ...resultExtras(result),
+    });
   }
 
   const result = await executeResume(entry.codexThreadId, input.prompt, input.model, input.working_directory ?? entry.workingDirectory);
   mgr.updateSession(entry.name, input.model ? { model: input.model } : undefined);
 
-  return textResult(
-    JSON.stringify(
-      {
-        response: result.response,
-        thread_id: result.threadId,
-        session_name: entry.name,
-        model: result.model,
-        duration_ms: result.durationMs,
-        ...resultExtras(result),
-      },
-      null,
-      2,
-    ),
-  );
+  return jsonResult({
+    response: result.response,
+    thread_id: result.threadId,
+    session_name: entry.name,
+    model: result.model,
+    duration_ms: result.durationMs,
+    ...resultExtras(result),
+  });
 }
 
 async function handleSessionList(mgr: SessionManager) {
@@ -234,13 +191,7 @@ async function handleSessionList(mgr: SessionManager) {
     working_directory: s.workingDirectory,
   }));
 
-  return textResult(
-    JSON.stringify(
-      { sessions: registered, total: registered.length },
-      null,
-      2,
-    ),
-  );
+  return jsonResult({ sessions: registered, total: registered.length });
 }
 
 async function handleSessionFork(input: CodexSessionForkInput, mgr: SessionManager) {
@@ -254,26 +205,16 @@ async function handleSessionFork(input: CodexSessionForkInput, mgr: SessionManag
     mgr.register(input.name, result.threadId, result.model, cwd ?? process.cwd());
   }
 
-  return textResult(
-    JSON.stringify(
-      {
-        response: result.response,
-        thread_id: result.threadId,
-        forked_from: sourceId,
-        ...(input.name ? { session_name: input.name } : {}),
-        model: result.model,
-        duration_ms: result.durationMs,
-        ...resultExtras(result),
-      },
-      null,
-      2,
-    ),
-  );
+  return jsonResult({
+    response: result.response,
+    thread_id: result.threadId,
+    forked_from: sourceId,
+    ...(input.name ? { session_name: input.name } : {}),
+    model: result.model,
+    duration_ms: result.durationMs,
+    ...resultExtras(result),
+  });
 }
-
-// ---------------------------------------------------------------------------
-// Server setup
-// ---------------------------------------------------------------------------
 
 const server = new Server(
   { name: 'coral', version: typeof __VERSION__ !== 'undefined' ? __VERSION__ : '0.1.0' },
@@ -309,10 +250,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// Graceful shutdown
-// ---------------------------------------------------------------------------
-
 function shutdown() {
   process.stderr.write('Coral MCP Server shutting down...\n');
   killAllChildren();
@@ -321,10 +258,6 @@ function shutdown() {
 
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
 
 let sessionManager: SessionManager;
 

@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { detectCodexCli, resetCliCache } from '../cli-detection.js';
 
-// Mock child_process.execFile
 vi.mock('node:child_process', () => ({
   execFile: vi.fn(),
 }));
@@ -10,6 +9,13 @@ import { execFile } from 'node:child_process';
 
 const mockExecFile = vi.mocked(execFile);
 
+function mockExecFileResult(error: Error | null, stdout: string): void {
+  mockExecFile.mockImplementation((_cmd, _args, _opts, callback) => {
+    (callback as Function)(error, stdout, '');
+    return {} as any;
+  });
+}
+
 describe('detectCodexCli', () => {
   beforeEach(() => {
     resetCliCache();
@@ -17,10 +23,7 @@ describe('detectCodexCli', () => {
   });
 
   it('returns available when codex is installed', async () => {
-    mockExecFile.mockImplementation((_cmd, _args, _opts, callback) => {
-      (callback as Function)(null, 'codex 1.2.3\n', '');
-      return {} as any;
-    });
+    mockExecFileResult(null, 'codex 1.2.3\n');
 
     const result = await detectCodexCli();
     expect(result.available).toBe(true);
@@ -28,10 +31,7 @@ describe('detectCodexCli', () => {
   });
 
   it('returns unavailable when codex is not found', async () => {
-    mockExecFile.mockImplementation((_cmd, _args, _opts, callback) => {
-      (callback as Function)(new Error('ENOENT'), '', '');
-      return {} as any;
-    });
+    mockExecFileResult(new Error('ENOENT'), '');
 
     const result = await detectCodexCli();
     expect(result.available).toBe(false);
@@ -39,10 +39,7 @@ describe('detectCodexCli', () => {
   });
 
   it('caches the result (execFile called only once)', async () => {
-    mockExecFile.mockImplementation((_cmd, _args, _opts, callback) => {
-      (callback as Function)(null, 'codex 1.0.0\n', '');
-      return {} as any;
-    });
+    mockExecFileResult(null, 'codex 1.0.0\n');
 
     await detectCodexCli();
     await detectCodexCli();
@@ -50,10 +47,7 @@ describe('detectCodexCli', () => {
   });
 
   it('re-detects after resetCliCache', async () => {
-    mockExecFile.mockImplementation((_cmd, _args, _opts, callback) => {
-      (callback as Function)(null, 'codex 2.0.0\n', '');
-      return {} as any;
-    });
+    mockExecFileResult(null, 'codex 2.0.0\n');
 
     await detectCodexCli();
     resetCliCache();

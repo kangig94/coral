@@ -157,9 +157,7 @@ describe('parseCodexJsonl', () => {
     expect(result.warnings).toEqual(['Deprecated API']);
   });
 
-  // --- New scenario tests ---
-
-  it('does not confuse [Error] in agent_message with actual errors (scenario 4)', () => {
+  it('does not confuse [Error] in agent_message with actual errors', () => {
     const output = [
       '{"type":"thread.started","thread_id":"t1"}',
       '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"[Error] 클래스를 사용하여 에러를 설계하세요."}}',
@@ -171,7 +169,7 @@ describe('parseCodexJsonl', () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it('separates partial response from rate limit error (scenario 3)', () => {
+  it('separates partial response from rate limit error', () => {
     const output = [
       '{"type":"thread.started","thread_id":"t1"}',
       '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"분석 결과는..."}}',
@@ -184,7 +182,7 @@ describe('parseCodexJsonl', () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it('handles error + warning + partial response (scenario 6)', () => {
+  it('handles error + warning + partial response', () => {
     const output = [
       '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"부분 결과"}}',
       '{"type":"item.completed","item":{"id":"w1","type":"error","message":"Deprecated"}}',
@@ -197,7 +195,7 @@ describe('parseCodexJsonl', () => {
     expect(result.warnings).toEqual(['Deprecated']);
   });
 
-  it('collects multiple distinct errors (scenario 9)', () => {
+  it('collects multiple distinct errors', () => {
     const output = [
       '{"type":"error","message":"Stream error"}',
       '{"type":"error","message":"Rate limit exceeded"}',
@@ -208,7 +206,7 @@ describe('parseCodexJsonl', () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it('handles warning-only with no response (scenario 10)', () => {
+  it('handles warning-only with no response', () => {
     const output = '{"type":"item.completed","item":{"id":"w1","type":"error","message":"Deprecated API usage"}}\n';
     const result = parseCodexJsonl(output);
     expect(result.response).toBe('');

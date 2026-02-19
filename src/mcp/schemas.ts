@@ -6,48 +6,51 @@
 
 import { z } from 'zod';
 
-const modelPattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+const identPattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
 const modelSchema = z
   .string()
-  .regex(modelPattern, 'Model name must be alphanumeric with dots, hyphens, or underscores')
+  .regex(identPattern, 'Model name must be alphanumeric with dots, hyphens, or underscores')
   .optional();
 
+const sessionNameSchema = z
+  .string()
+  .min(1, 'Session name is required')
+  .regex(identPattern, 'Session name must be alphanumeric (with . _ - allowed)');
+
+const promptSchema = z.string().min(1, 'Prompt is required');
+const sessionRefSchema = z.string().min(1, 'Session reference is required');
+const cwdSchema = z.string().optional();
+
 export const codexExecuteSchema = z.object({
-  prompt: z.string().min(1, 'Prompt is required'),
+  prompt: promptSchema,
   model: modelSchema,
-  working_directory: z.string().optional(),
+  working_directory: cwdSchema,
   save_session: z.string().optional(),
 });
 
 export const codexSessionCreateSchema = z.object({
-  name: z
-    .string()
-    .min(1, 'Session name is required')
-    .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/, 'Session name must be alphanumeric (with . _ - allowed)'),
-  prompt: z.string().min(1, 'Prompt is required'),
+  name: sessionNameSchema,
+  prompt: promptSchema,
   model: modelSchema,
-  working_directory: z.string().optional(),
+  working_directory: cwdSchema,
 });
 
 export const codexSessionSendSchema = z.object({
-  session: z.string().min(1, 'Session reference is required'),
-  prompt: z.string().min(1, 'Prompt is required'),
+  session: sessionRefSchema,
+  prompt: promptSchema,
   model: modelSchema,
-  working_directory: z.string().optional(),
+  working_directory: cwdSchema,
 });
 
 export const codexSessionListSchema = z.object({}).passthrough();
 
 export const codexSessionForkSchema = z.object({
-  session: z.string().min(1, 'Session reference is required'),
-  name: z
-    .string()
-    .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/, 'Session name must be alphanumeric (with . _ - allowed)')
-    .optional(),
+  session: sessionRefSchema,
+  name: sessionNameSchema.optional(),
   prompt: z.string().optional(),
   model: modelSchema,
-  working_directory: z.string().optional(),
+  working_directory: cwdSchema,
 });
 
 export type CodexExecuteInput = z.infer<typeof codexExecuteSchema>;
