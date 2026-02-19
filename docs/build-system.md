@@ -67,27 +67,11 @@ bridge/coral-server.cjs
 
 **File**: `scripts/build-server.mjs`
 
-```javascript
-import * as esbuild from 'esbuild';
-import { mkdirSync, readFileSync } from 'fs';
+The build script performs two tasks: version sync and esbuild bundling.
 
-mkdirSync('bridge', { recursive: true });
+### Version Sync
 
-const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
-
-await esbuild.build({
-  entryPoints: ['src/mcp/server.ts'],
-  bundle: true,
-  platform: 'node',
-  target: 'node18',
-  format: 'cjs',
-  outfile: 'bridge/coral-server.cjs',
-  packages: 'external',
-  define: {
-    '__VERSION__': JSON.stringify(version),
-  },
-});
-```
+`package.json` is the single source of truth for the version. On each build, the script syncs the version to `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` automatically.
 
 ### esbuild Settings
 
@@ -99,22 +83,17 @@ await esbuild.build({
 | `target` | `node18` | Generate Node 18+ compatible code |
 | `format` | `cjs` | CommonJS format (matches `.cjs` extension) |
 | `outfile` | `bridge/coral-server.cjs` | Bundle output path |
-| `packages` | `external` | Exclude all npm packages from bundle (resolved from `node_modules` at runtime) |
+| `external` | `['node:*']` | Externalize Node.js built-in modules |
+| `minify` | `true` | Minimize bundle size |
+| `banner` | `var __PLUGIN_ROOT__=...` | Resolve plugin root at runtime via CJS `__dirname` |
 | `define` | `{ '__VERSION__': ... }` | Inject package.json version at build time |
 
-### packages: 'external'
+### Build-time Injections
 
-The `packages: 'external'` setting excludes all npm packages (`@modelcontextprotocol/sdk`, `zod`, etc.) from the bundle. Node.js built-in modules are automatically externalized when `platform: 'node'`.
-
-### Version Injection
-
-The `version` field is read from `package.json` and injected as the `__VERSION__` constant at build time. Used during MCP server initialization in `server.ts`:
-
-```typescript
-declare const __VERSION__: string;
-// ...
-new Server({ name: 'coral', version: __VERSION__ }, ...)
-```
+| Constant | Source | Usage |
+|---|---|---|
+| `__VERSION__` | `package.json` version | MCP server initialization (`server.ts`) |
+| `__PLUGIN_ROOT__` | CJS `__dirname` + `..` | Runtime CLAUDE.md file reading for Codex prompt injection (`codex-executor.ts`) |
 
 ## Testing
 

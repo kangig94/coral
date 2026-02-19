@@ -3,41 +3,37 @@
 ## System Structure
 
 ```
-┌─────────────────────────────────────────────────┐
-│  Claude Code                                     │
-│                                                   │
-│  ┌──────────┐   ┌──────────────────┐             │
-│  │  Skills   │   │  SubagentStart   │             │
-│  │ /coral:*  │   │  Hook (injection)│             │
-│  └─────┬─────┘   └────────┬─────────┘             │
-│        │                  │ Fires on "codex-*"    │
-│        │                  │ Injects delegation    │
-│        ▼                  ▼                       │
-│  ┌────────────────────────────────┐               │
-│  │  MCP Server "coral"            │               │
-│  │  (bridge/coral-server.cjs)     │               │
-│  │                                │               │
-│  │  Tools:                        │               │
-│  │  - codex_execute               │               │
-│  │  - codex_session_create        │               │
-│  │  - codex_session_send          │               │
-│  │  - codex_session_list          │               │
-│  │  - codex_session_fork          │               │
-│  │                                │               │
-│  │  Hardening:                    │               │
-│  │  - Zod input validation        │               │
-│  │  - Process tracking + limits   │               │
-│  │  - Graceful shutdown (SIGTERM) │               │
-│  └──────────┬─────────────────────┘               │
-│             │                                     │
-└─────────────┼─────────────────────────────────────┘
-              ▼
-   ┌──────────────────────┐
-   │  Codex CLI (v0.101+) │
-   │  codex exec --json   │
-   │  --full-auto          │
-   │  JSONL event stream   │
-   └──────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│  Claude Code                                          │
+│                                                        │
+│  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐ │
+│  │ SessionStart  │  │ SubagentStart│  │   Skills    │ │
+│  │ Hook          │  │ Hook         │  │  /coral:*   │ │
+│  │ (CLAUDE.md    │  │ (codex-*     │  └──────┬──────┘ │
+│  │  injection)   │  │  delegation) │         │        │
+│  └──────────────┘  └──────┬───────┘         │        │
+│                           │                  │        │
+│                           ▼                  ▼        │
+│  ┌─────────────────────────────────────────────────┐  │
+│  │  MCP Server "coral" (bridge/coral-server.cjs)   │  │
+│  │                                                  │  │
+│  │  On new session:                                 │  │
+│  │  - Prepend CLAUDE.md to prompt                   │  │
+│  │  - --add-dir ~/.claude/coral/memo (sandbox)      │  │
+│  │                                                  │  │
+│  │  Tools: codex_execute, codex_session_create,     │  │
+│  │         codex_session_send, codex_session_list,  │  │
+│  │         codex_session_fork                       │  │
+│  └────────────────────┬────────────────────────────┘  │
+│                       │                                │
+└───────────────────────┼────────────────────────────────┘
+                        ▼
+             ┌──────────────────────┐
+             │  Codex CLI (v0.101+) │
+             │  codex exec --json   │
+             │  --full-auto          │
+             │  JSONL event stream   │
+             └──────────────────────┘
 ```
 
 ## Data Flow
@@ -89,13 +85,31 @@ User → codex_session_create(name="review", prompt="analyze auth.ts")
 
 Each file is a single `SessionEntry`. Corrupt files are skipped with a warning; valid files continue loading.
 
+### 5. Knowledge Base Storage
+
+```
+{project}/.claude/coral/kb/          # Git-tracked (multi-device sync)
+├── domain-topic.md
+└── ...
+
+~/.claude/coral/memo/                # Device-local (buffer before promotion)
+└── <project-hash>/
+    └── <timestamp>-<topic>.md
+```
+
+- **KB** is project-local and git-tracked for cross-device sync
+- **Memo** is global and device-local (ephemeral buffer)
+- Promotion: memo → kb (on task completion or plan approval)
+
 ## Directory Structure
 
 ```
 coral/
 ├── .claude-plugin/
-│   └── plugin.json              # Plugin manifest
+│   ├── plugin.json              # Plugin manifest
+│   └── marketplace.json         # Marketplace manifest
 ├── .mcp.json                    # MCP server registration
+├── CLAUDE.md                    # Behavioral guidelines + KB instructions
 ├── src/
 │   ├── types.ts                 # Shared type definitions (CodexThreadEvent etc.)
 │   └── mcp/
@@ -125,7 +139,11 @@ coral/
 │   ├── codex/
 │   │   └── SKILL.md             # /coral:codex (Codex CLI)
 │   ├── plan/
-│   │   └── SKILL.md             # /coral:plan (Codex architect/critic)
+│   │   └── SKILL.md             # /coral:plan (Claude-native planning)
+│   ├── coplan/
+│   │   └── SKILL.md             # /coral:coplan (cross-model planning)
+│   ├── statusline/
+│   │   └── SKILL.md             # /coral:statusline (HUD setup)
 │   └── session/
 │       └── SKILL.md             # /coral:session (session management)
 ├── agents/

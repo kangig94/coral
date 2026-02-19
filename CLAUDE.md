@@ -15,6 +15,7 @@ Don't assume. Don't hide confusion. Surface tradeoffs.
 
 ## 2. Simplicity First
 
+Efficient, simple, and elegant. The best solution feels inevitable.
 Minimum code that solves the problem. Nothing speculative.
 
 - No features beyond what was asked.
@@ -23,6 +24,8 @@ Minimum code that solves the problem. Nothing speculative.
 - No error handling for impossible scenarios.
 - If you write 200 lines and it could be 50, rewrite it.
 - Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+Pursue elegance. Efficient, simple code that feels inevitable — where no other solution seems possible — is the highest standard.
 
 ## 3. Surgical Changes
 
@@ -55,17 +58,18 @@ For multi-step tasks, state a brief plan:
 
 # Knowledge Base
 
-## Memo — during work
+## Memo — during work (including planning)
 When you discover something non-obvious (painful root cause, unexpected gotcha,
-"wish I knew earlier" pattern), write immediately to:
+"wish I knew earlier" pattern, or an exceptionally clever solution), write immediately to:
 `~/.claude/coral/memo/<project-hash>/<timestamp>-<topic>.md`
 Keep brief — one paragraph + context.
+If Explanatory/Learning output style is active, also memo any Insights worth preserving.
 
 ## Lookup — on error
 Before debugging from scratch, check `{project}/.claude/coral/kb/` for relevant entries.
 On plan/coplan start, review domain-related kb files.
 
-## Promotion — on task completion
+## Promotion — on task completion or plan approval
 Review all memos + MEMORY.md. Check existing kb entries first — discard duplicates,
 update existing entries if the memo refines them, only create new files for genuinely absent knowledge.
 

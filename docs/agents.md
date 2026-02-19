@@ -52,7 +52,7 @@ disallowedTools: Write, Edit
 ---
 ```
 
-**Role**: Verifies that work plans are clear, complete, and actionable. Provides severity-rated findings with OKAY/REJECT verdicts. Includes rationalization prevention to catch false completion claims.
+**Role**: Verifies that plans and code changes are clear, complete, and correct. For plans: simulates representative tasks step-by-step. For code: validates changes against intent, edge cases, and existing tests. Provides severity-rated findings with OKAY/REJECT verdicts.
 
 ---
 

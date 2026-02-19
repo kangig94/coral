@@ -3,7 +3,11 @@
  * Never use console.log — this runs inside a stdio MCP server.
  */
 
+
 import { spawn, type ChildProcess } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 import type { CodexExecResult } from '../types.js';
 import { parseCodexJsonl } from './output-parser.js';
 import { detectCodexCli } from './cli-detection.js';
@@ -229,13 +233,35 @@ async function executeCodex(
 /**
  * One-shot execution: codex exec -m MODEL --json --full-auto
  */
+declare const __PLUGIN_ROOT__: string;
+const pluginRoot: string = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..');
+let claudeMdCache: string | undefined;
+
+function getClaudeMd(): string {
+  if (claudeMdCache === undefined) {
+    try { claudeMdCache = readFileSync(join(pluginRoot, 'CLAUDE.md'), 'utf-8'); }
+    catch { claudeMdCache = ''; }
+  }
+  return claudeMdCache;
+}
+
+function prependClaudeMd(prompt: string): string {
+  const md = getClaudeMd();
+  return md ? `${md}\n\n---\n\n${prompt}` : prompt;
+}
+
+const memoDir = join(homedir(), '.claude', 'coral', 'memo');
+
 export async function executeOneShot(
   prompt: string,
   model?: string,
   cwd?: string,
 ): Promise<CodexExecResult> {
   const resolvedModel = getModel(model);
-  return executeCodex(['exec', '-m', resolvedModel, '--json', '--full-auto'], prompt, resolvedModel, cwd);
+  return executeCodex(
+    ['exec', '-m', resolvedModel, '--json', '--full-auto', '--add-dir', memoDir],
+    prependClaudeMd(prompt), resolvedModel, cwd,
+  );
 }
 
 /**
@@ -249,7 +275,7 @@ export async function executeResume(
 ): Promise<CodexExecResult> {
   const resolvedModel = getModel(model);
   return executeCodex(
-    ['exec', 'resume', threadId, '-m', resolvedModel, '--json', '--full-auto'],
+    ['exec', 'resume', threadId, '-m', resolvedModel, '--json', '--full-auto', '--add-dir', memoDir],
     prompt,
     resolvedModel,
     cwd,
@@ -275,4 +301,6 @@ export const _test = {
   get lastStartTime() { return lastStartTime; },
   set lastStartTime(v: number) { lastStartTime = v; },
   resetShutdown() { shuttingDown = false; },
+  set claudeMdCache(v: string | undefined) { claudeMdCache = v; },
+  prependClaudeMd,
 } as const;

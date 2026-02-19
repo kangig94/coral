@@ -242,3 +242,35 @@ allowed-tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send,
 | `send <name> <prompt>` | Send a follow-up message to an existing session |
 | `list` | List registered sessions |
 | `fork <name>` | Fork a session (resume-based) |
+
+---
+
+## /coral:statusline
+
+Install or remove the coral HUD statusline for Claude Code.
+
+**File**: `skills/statusline/SKILL.md`
+
+### Configuration
+
+```yaml
+---
+name: statusline
+description: Install or remove coral HUD statusline
+argument-hint: "[install|uninstall]"
+---
+```
+
+### Behavior
+
+1. **install**: Write HUD script to `~/.claude/hud/coral-hud.mjs`, configure `statusLine` in `~/.claude/settings.json`
+2. **uninstall**: Remove `statusLine` from settings, delete HUD script and cache
+
+### HUD Elements
+
+| Element | Source | Description |
+|---|---|---|
+| Model | stdin JSON | Current model name |
+| Session | stdin JSON | Session duration |
+| Rate limits | OAuth API | 5-hour and weekly usage (color-coded: green/yellow/red) |
+| Context | stdin JSON | Context window usage percentage (color-coded) |

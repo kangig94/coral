@@ -8,6 +8,8 @@ Environment variables, config files, and the plugin manifest.
 |---|---|---|
 | `CORAL_CODEX_TIMEOUT_MS` | `900000` (15 min) | Codex CLI execution timeout (milliseconds) |
 | `CORAL_CODEX_MODEL` | `gpt-5.3-codex` | Default Codex model |
+| `CORAL_MAX_CONCURRENT` | `5` | Max concurrent Codex processes |
+| `CORAL_STAGGER_MS` | `3000` | Minimum interval between process starts (ms) |
 
 ### Usage — Shell
 
@@ -35,23 +37,14 @@ Alternatively, set environment variables in `.claude/settings.json` (project-lev
 
 Metadata for Claude Code to recognize the plugin.
 
-```json
-{
-  "name": "coral",
-  "version": "0.1.0",
-  "description": "Claude Code plugin — structured agents with Codex CLI bridge",
-  "author": { "name": "kang" },
-  "license": "MIT"
-}
-```
-
 | Field | Description |
 |---|---|
 | `name` | Plugin name (used as skill prefix: `coral:*`) |
-| `version` | Semantic version |
+| `version` | Semantic version (auto-synced from `package.json` on build) |
 | `description` | Plugin description |
 | `author` | Author info |
-| `license` | License |
+
+Version is managed in `package.json` (single source of truth) and synced to `plugin.json` and `marketplace.json` automatically during build.
 
 ### .mcp.json — MCP Server Registration
 
@@ -60,7 +53,7 @@ Registers the MCP server with Claude Code.
 ```json
 {
   "mcpServers": {
-    "coral": {
+    "cx": {
       "command": "node",
       "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-server.cjs"]
     }
@@ -96,24 +89,10 @@ Runtime-managed per-session storage files.
 
 ### hooks/hooks.json — Hook Configuration
 
-```json
-{
-  "hooks": {
-    "SubagentStart": [
-      {
-        "matcher": "codex-.*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/detect-codex-agent.sh",
-            "timeout": 5
-          }
-        ]
-      }
-    ]
-  }
-}
-```
+Two hooks are configured:
+
+- **SessionStart**: Injects CLAUDE.md content into Claude's context at session start
+- **SubagentStart**: Detects `codex-*` agents and injects delegation instructions
 
 See [Hooks documentation](./hooks.md) for details.
 
@@ -148,7 +127,7 @@ See [Hooks documentation](./hooks.md) for details.
 ```
 .claude-plugin/plugin.json  -> Claude Code recognizes the plugin
 .mcp.json                   -> Claude Code registers/starts the MCP server
-hooks/hooks.json            -> Claude Code configures the SubagentStart hook
+hooks/hooks.json            -> Claude Code configures SessionStart + SubagentStart hooks
 hooks/detect-codex-agent.sh -> Detection script executed by the hook
 .claude/coral/sessions/<project-hash>/*.json -> Runtime per-session files (auto-created)
 bridge/coral-server.cjs     -> MCP server executable (committed, no build required)

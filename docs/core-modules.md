@@ -16,6 +16,9 @@ interface CodexExecResult {
   threadId: string | null; // Codex thread UUID (extracted from thread.started)
   model: string;           // Model used
   durationMs: number;      // Execution duration (ms)
+  exitCode: number | null; // Process exit code
+  errors: string[];        // Fatal error messages (deduplicated)
+  warnings: string[];      // Warning messages
 }
 ```
 
@@ -31,17 +34,6 @@ interface SessionEntry {
   createdAt: string;        // ISO 8601 creation time
   lastUsedAt: string;       // ISO 8601 last used time
   workingDirectory: string; // Session working directory
-}
-```
-
-### SessionRegistry
-
-Full session registry structure persisted to disk.
-
-```typescript
-interface SessionRegistry {
-  version: 1;                              // Schema version
-  sessions: Record<string, SessionEntry>;  // name -> entry mapping
 }
 ```
 
@@ -85,15 +77,17 @@ type CodexThreadItemDetails =
 
 Defines zod schemas for each of the 5 MCP tools. Runtime validation via `.parse()` at every handler entry point.
 
-### Model Validation
+### Shared Building Blocks
 
-```typescript
-const modelPattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
-```
+Duplicated patterns are extracted into reusable schemas:
 
-- First character must be alphanumeric (prevents leading dash -> flag injection)
-- Rest allows alphanumeric, `.`, `_`, `-`
-- Blocks shell metacharacters (`$`, `;`, `|`, etc.)
+| Schema | Usage |
+|---|---|
+| `identPattern` | Regex for model names and session names: `/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/` (prevents flag injection) |
+| `sessionNameSchema` | Session name validation with `identPattern` |
+| `promptSchema` | Non-empty prompt string (min 1 char) |
+| `sessionRefSchema` | Session name or thread ID reference |
+| `cwdSchema` | Optional working directory |
 
 ### Schema List
 
@@ -211,10 +205,11 @@ Automatically applied to all execution paths (executeOneShot, executeResume, exe
 One-shot execution.
 
 ```bash
-codex exec -m MODEL --json --full-auto < prompt
+codex exec -m MODEL --json --full-auto --add-dir ~/.claude/coral/memo < prompt
 ```
 
-- Passes prompt via stdin
+- Prepends CLAUDE.md content to the prompt (`prependClaudeMd`) — Codex receives project guidelines
+- Passes `--add-dir` for memo directory — Codex sandbox allows writing memos
 - Parses stdout with `parseCodexJsonl()`
 
 #### `executeResume(threadId, prompt, model?, cwd?): Promise<CodexExecResult>`
@@ -222,11 +217,12 @@ codex exec -m MODEL --json --full-auto < prompt
 Resume an existing session.
 
 ```bash
-codex exec resume THREAD_ID -m MODEL --json --full-auto < prompt
+codex exec resume THREAD_ID -m MODEL --json --full-auto --add-dir ~/.claude/coral/memo < prompt
 ```
 
 - Passes `resume` subcommand and thread ID as arguments
 - If no new thread ID is returned, retains the original
+- Does NOT prepend CLAUDE.md (already injected in the first turn)
 
 #### `executeFork(threadId, prompt?, model?, cwd?): Promise<CodexExecResult>`
 
@@ -239,6 +235,18 @@ Fork a session. Internally delegates to `executeResume()`.
 
 Terminates all tracked child processes. Sends SIGTERM, then escalates to SIGKILL if not terminated within 3 seconds. Called from `server.ts`'s graceful shutdown handler.
 
+### CLAUDE.md Injection
+
+On new sessions (`executeOneShot`), the plugin's CLAUDE.md is prepended to the prompt so Codex receives the same behavioral guidelines as Claude.
+
+- **Path resolution**: `__PLUGIN_ROOT__` is injected at build time via esbuild banner (`require("path").resolve(__dirname, "..")`)
+- **Caching**: CLAUDE.md content is read once and cached (`claudeMdCache`)
+- **Graceful fallback**: If CLAUDE.md cannot be read, prompt is sent unchanged
+
+### Memo Directory Access
+
+All Codex executions include `--add-dir ~/.claude/coral/memo` to grant write access to the memo directory within the Codex sandbox. This is the only home directory path exposed to Codex.
+
 ### console.log Prohibition
 
 This module runs inside a stdio MCP server. `console.log` writes to stdout, which would break the MCP protocol. All debug output must use `process.stderr.write()`.
@@ -247,71 +255,59 @@ This module runs inside a stdio MCP server. `console.log` writes to stdout, whic
 
 ## src/mcp/session-manager.ts — Session Management
 
-Class that persists a name-based session registry to `.claude/coral/sessions.json`.
+Per-session file persistence. Each session is stored as an individual JSON file.
 
-### Storage Path
+### Storage Layout
 
 ```
-{workingDirectory}/.claude/coral/sessions.json
+~/.claude/coral/sessions/
+└── <project-hash>/          # sha256(resolve(workingDirectory)).slice(0, 12)
+    ├── review.json
+    ├── auth-audit.json
+    └── perf-pass.json
 ```
 
-If `workingDirectory` is not specified, `process.cwd()` is used. Directory is auto-created with `mkdirSync` if it doesn't exist.
+Per-session files eliminate race conditions — concurrent sessions never touch the same file.
 
 ### Atomic Writes
 
 On save, data is first written to a temporary file (`.tmp`), then atomically swapped via `renameSync`. Prevents data loss from crashes during writes.
 
-### Error Classification
-
-On file load:
-- `ENOENT` -> Initialize with empty registry (normal)
-- `SyntaxError` -> Log warning to stderr, use empty registry (corrupted file)
-- Other -> Re-throw (unexpected error)
-
 ### SessionManager Class
 
-#### `constructor(workingDirectory?: string)`
+#### `constructor(workingDirectory: string)`
 
-Loads the registry file. Recovers or throws based on error classification.
+Computes project hash from working directory and creates the session directory if needed.
 
 #### `register(name, codexThreadId, model, workingDirectory): SessionEntry`
 
-Registers a new session. `createdAt` and `lastUsedAt` are set to current time. Written to disk immediately.
+Creates a new session file. `createdAt` and `lastUsedAt` are set to current time.
 
 #### `get(nameOrId): SessionEntry | null`
 
-Looks up a session.
-
-**Search priority:**
-1. `sessions[nameOrId]` — direct match by name
-2. Iterate `Object.values(sessions)` checking `codexThreadId === nameOrId` — search by thread ID
+Looks up a session. Searches by filename first, then scans all files for matching `codexThreadId`.
 
 #### `list(): SessionEntry[]`
 
-Returns all registered sessions as an array.
+Reads all session files in the project directory. Corrupt files are skipped with a warning.
 
 #### `updateSession(name, fields?: { model?: string }): void`
 
-Updates the specified session's `lastUsedAt` to current time. Also updates `model` if provided. Saved to disk.
+Updates `lastUsedAt` and optionally `model`. Saved to disk.
 
 #### `remove(name): boolean`
 
-Deletes a session. Returns `true` on success, `false` if session doesn't exist.
+Deletes the session file. Returns `true` on success, `false` if not found.
 
-### sessions.json Example
+### Session File Example
 
 ```json
 {
-  "version": 1,
-  "sessions": {
-    "my-review": {
-      "name": "my-review",
-      "codexThreadId": "abc-123-def",
-      "model": "gpt-5.3-codex",
-      "createdAt": "2026-02-18T08:30:00.000Z",
-      "lastUsedAt": "2026-02-18T09:15:00.000Z",
-      "workingDirectory": "/home/user/project"
-    }
-  }
+  "name": "my-review",
+  "codexThreadId": "abc-123-def",
+  "model": "gpt-5.3-codex",
+  "createdAt": "2026-02-18T08:30:00.000Z",
+  "lastUsedAt": "2026-02-18T09:15:00.000Z",
+  "workingDirectory": "/home/user/project"
 }
 ```

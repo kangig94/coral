@@ -25,18 +25,24 @@ One-shot Codex CLI execution. The most basic tool.
   "thread_id": "codex-thread-uuid-or-null",
   "model": "gpt-5.3-codex",
   "duration_ms": 3200,
-  "saved_as": "my-session"
+  "saved_as": "my-session",
+  "exit_code": 1,
+  "errors": ["fatal error message"],
+  "warnings": ["warning message"]
 }
 ```
+
+`exit_code`, `errors`, and `warnings` are conditionally included — only present when non-zero exit code or non-empty arrays.
 
 ### Internal Behavior
 
 1. Zod schema validation (`codexExecuteSchema`)
 2. Check CLI existence via `detectCodexCli()` (cached)
-3. Run `codex exec -m MODEL --json --full-auto`
-4. Pass prompt via stdin then close
-5. Parse stdout JSONL with `parseCodexJsonl()` -> `{ response, threadId }`
-6. If `save_session` is specified, call `SessionManager.register()`
+3. Prepend CLAUDE.md content to prompt (behavioral guidelines for Codex)
+4. Run `codex exec -m MODEL --json --full-auto --add-dir ~/.claude/coral/memo`
+5. Pass prompt via stdin then close
+6. Parse stdout JSONL with `parseCodexJsonl()` -> `{ response, threadId, errors, warnings }`
+7. If `save_session` is specified, call `SessionManager.register()`
 
 ---
 
@@ -61,11 +67,13 @@ Create a named Codex session. Internally calls `executeOneShot()` and registers 
   "thread_id": "codex-thread-uuid",
   "session_name": "my-review",
   "model": "gpt-5.3-codex",
-  "duration_ms": 4100
+  "duration_ms": 4100,
+  "errors": [],
+  "warnings": []
 }
 ```
 
-If no thread ID is returned, registration is skipped with a `warning` field.
+If no thread ID is returned, registration is skipped with a `notice` field. `errors`/`warnings`/`exit_code` are conditionally included.
 
 ---
 
@@ -99,7 +107,7 @@ Send a follow-up prompt to an existing session. Uses `codex exec resume THREAD_I
 }
 ```
 
-On success, the `lastUsedAt` timestamp is automatically updated.
+`errors`/`warnings`/`exit_code` conditionally included. On success, the `lastUsedAt` timestamp is automatically updated.
 
 ---
 
@@ -161,4 +169,4 @@ Fork an existing session to continue the conversation in a new branch.
 }
 ```
 
-If `name` is not specified, the session exists only in Codex and is not registered in the Coral registry.
+`errors`/`warnings`/`exit_code` conditionally included. If `name` is not specified, the session exists only in Codex and is not registered in the Coral registry.

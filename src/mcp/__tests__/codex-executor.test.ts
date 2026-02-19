@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ChildProcess } from 'node:child_process';
 import { EventEmitter, Readable, Writable } from 'node:stream';
 
@@ -58,6 +58,20 @@ function createMockProcess(stdout: string, code: number): ChildProcess {
   return proc;
 }
 
+describe('prependClaudeMd', () => {
+  it('prepends CLAUDE.md content to prompt', () => {
+    _test.claudeMdCache = '# Guidelines\nBe concise.';
+    expect(_test.prependClaudeMd('do something')).toBe('# Guidelines\nBe concise.\n\n---\n\ndo something');
+  });
+
+  it('returns prompt unchanged when CLAUDE.md is empty', () => {
+    _test.claudeMdCache = '';
+    expect(_test.prependClaudeMd('do something')).toBe('do something');
+  });
+
+  afterEach(() => { _test.claudeMdCache = undefined; });
+});
+
 describe('executeOneShot', () => {
   it('spawns codex with correct args', async () => {
     mockCliAvailable();
@@ -71,7 +85,7 @@ describe('executeOneShot', () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
-      ['exec', '-m', 'o4-mini', '--json', '--full-auto'],
+      ['exec', '-m', 'o4-mini', '--json', '--full-auto', '--add-dir', expect.stringContaining('.claude/coral/memo')],
       expect.objectContaining({ cwd: '/tmp' }),
     );
     expect(result.response).toBe('Hello');
@@ -133,7 +147,7 @@ describe('executeResume', () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
-      ['exec', 'resume', 'thread-abc', '-m', 'gpt-4.1', '--json', '--full-auto'],
+      ['exec', 'resume', 'thread-abc', '-m', 'gpt-4.1', '--json', '--full-auto', '--add-dir', expect.stringContaining('.claude/coral/memo')],
       expect.any(Object),
     );
     expect(result.response).toBe('Resumed');

@@ -1,10 +1,13 @@
 # Hooks
 
-Automatic routing of Codex agents via the SubagentStart hook.
+Two hooks provide automatic context injection and agent routing.
 
 ## Overview
 
-Claude Code's hook system executes shell scripts on specific events. Coral intercepts the `SubagentStart` event and injects delegation instructions into agents with a `codex-*` prefix.
+Claude Code's hook system executes shell scripts on specific events. Coral uses two hooks:
+
+1. **SessionStart** — Injects CLAUDE.md behavioral guidelines into every Claude session
+2. **SubagentStart** — Injects delegation instructions into agents with a `codex-*` prefix
 
 ## Hook Configuration
 
@@ -13,6 +16,18 @@ Claude Code's hook system executes shell scripts on specific events. Coral inter
 ```json
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cat \"${CLAUDE_PLUGIN_ROOT}/CLAUDE.md\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
     "SubagentStart": [
       {
         "matcher": "codex-.*",
@@ -28,6 +43,24 @@ Claude Code's hook system executes shell scripts on specific events. Coral inter
   }
 }
 ```
+
+## SessionStart Hook
+
+Injects the plugin's CLAUDE.md content into Claude's context at the start of every session. This ensures Claude always receives the behavioral guidelines (Simplicity First, Surgical Changes, etc.) and KB system instructions.
+
+### Configuration Fields
+
+| Field | Value | Description |
+|---|---|---|
+| `SessionStart` | | Event fired when a Claude session starts |
+| `matcher` | `"*"` | Matches all sessions |
+| `type` | `"command"` | Execute a shell command |
+| `command` | `cat "${CLAUDE_PLUGIN_ROOT}/CLAUDE.md"` | Outputs CLAUDE.md content (stdout is injected as context) |
+| `timeout` | `3` | 3-second timeout |
+
+> **Note**: Codex sessions receive CLAUDE.md through a separate mechanism — the MCP server prepends it to the prompt in `executeOneShot()`. See [Core Modules](./core-modules.md) for details.
+
+## SubagentStart Hook
 
 ### Configuration Fields
 
