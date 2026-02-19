@@ -1,62 +1,20 @@
 # MCP Tools
 
-The Coral MCP server provides 5 tools, all accessible via the `mcp__cx__` prefix.
+The Coral MCP server provides 4 tools, all accessible via the `mcp__cx__` prefix.
 
 All tool inputs are validated at runtime with zod schemas (`src/mcp/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
 
-## codex_execute
-
-One-shot Codex CLI execution. The most basic tool.
-
-### Input Schema
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `prompt` | string | Yes | Prompt to send to Codex (min 1 char) |
-| `model` | string | No | Model to use (default: `gpt-5.3-codex`, configurable via `CORAL_CODEX_MODEL`) |
-| `working_directory` | string | No | Codex working directory |
-| `save_session` | string | No | If specified, auto-registers the session with this name |
-
-### Output (JSON)
-
-```json
-{
-  "response": "Codex response text",
-  "thread_id": "codex-thread-uuid-or-null",
-  "model": "gpt-5.3-codex",
-  "duration_ms": 3200,
-  "saved_as": "my-session",
-  "exit_code": 1,
-  "errors": ["fatal error message"],
-  "warnings": ["warning message"]
-}
-```
-
-`exit_code`, `errors`, and `warnings` are conditionally included — only present when non-zero exit code or non-empty arrays.
-
-### Internal Behavior
-
-1. Zod schema validation (`codexExecuteSchema`)
-2. Check CLI existence via `detectCodexCli()` (cached)
-3. Prepend CLAUDE.md content to prompt (behavioral guidelines for Codex)
-4. Run `codex exec -m MODEL --json --full-auto`
-5. Pass prompt via stdin then close
-6. Parse stdout JSONL with `parseCodexJsonl()` -> `{ response, threadId, errors, warnings }`
-7. If `save_session` is specified, call `SessionManager.register()`
-
----
-
 ## codex_session_create
 
-Create a named Codex session. Internally calls `executeOneShot()` and registers the returned thread ID.
+Create a Codex session. The sole entry point for all Codex execution. Internally calls `executeOneShot()` and registers the returned thread ID.
 
 ### Input Schema
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `name` | string | Yes | Session name (min 1 char, used for later lookup/resume) |
-| `prompt` | string | Yes | Session start prompt (min 1 char) |
-| `model` | string | No | Model to use |
+| `name` | string | No | Session name (auto-generated as `session-{timestamp}` if omitted) |
+| `prompt` | string | Yes | Prompt to send to Codex (min 1 char) |
+| `model` | string | No | Model to use (default: `gpt-5.3-codex`, configurable via `CORAL_CODEX_MODEL`) |
 | `working_directory` | string | No | Working directory |
 
 ### Output (JSON)
@@ -88,6 +46,7 @@ Send a follow-up prompt to an existing session. Uses `codex exec resume THREAD_I
 | `session` | string | Yes | Session name or Codex thread ID (min 1 char) |
 | `prompt` | string | Yes | Follow-up prompt (min 1 char) |
 | `model` | string | No | Model to use |
+| `working_directory` | string | No | Working directory |
 
 ### Lookup Logic
 
@@ -155,6 +114,7 @@ Fork an existing session to continue the conversation in a new branch.
 | `name` | string | No | New session name (registered if specified) |
 | `prompt` | string | No | Additional prompt for the forked session |
 | `model` | string | No | Model to use |
+| `working_directory` | string | No | Working directory |
 
 ### Output (JSON)
 

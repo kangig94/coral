@@ -11,12 +11,10 @@ import {
 import { executeOneShot, executeResume, executeFork, killAllChildren } from './codex-executor.js';
 import { SessionManager } from './session-manager.js';
 import {
-  codexExecuteSchema,
   codexSessionCreateSchema,
   codexSessionSendSchema,
   codexSessionListSchema,
   codexSessionForkSchema,
-  type CodexExecuteInput,
   type CodexSessionCreateInput,
   type CodexSessionSendInput,
   type CodexSessionForkInput,
@@ -24,33 +22,18 @@ import {
 
 const tools = [
   {
-    name: 'codex_execute',
+    name: 'codex_session_create',
     description:
-      'Execute a one-shot prompt with OpenAI Codex CLI. Returns the Codex response, thread ID, model, duration, and any errors/warnings.',
+      'Execute a prompt with OpenAI Codex CLI. Creates a session and registers it for later continuation. This is the sole entry point for Codex execution.',
     inputSchema: {
       type: 'object' as const,
       properties: {
+        name: { type: 'string', description: 'Session name (optional, auto-generated if omitted)' },
         prompt: { type: 'string', description: 'The prompt to send to Codex (required)' },
         model: { type: 'string', description: 'Codex model to use (default: gpt-5.3-codex)' },
         working_directory: { type: 'string', description: 'Working directory for Codex execution' },
-        save_session: { type: 'string', description: 'If provided, save the session with this name to the registry' },
       },
       required: ['prompt'],
-    },
-  },
-  {
-    name: 'codex_session_create',
-    description:
-      'Create a new named Codex session. Executes the prompt and registers the session for later continuation.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        name: { type: 'string', description: 'Name for this session (required)' },
-        prompt: { type: 'string', description: 'Initial prompt to start the session (required)' },
-        model: { type: 'string', description: 'Codex model to use (default: gpt-5.3-codex)' },
-        working_directory: { type: 'string', description: 'Working directory for Codex execution' },
-      },
-      required: ['name', 'prompt'],
     },
   },
   {
@@ -112,24 +95,8 @@ function resultExtras(result: { exitCode: number | null; errors: string[]; warni
   };
 }
 
-async function handleCodexExecute(input: CodexExecuteInput, mgr: SessionManager) {
-  const result = await executeOneShot(input.prompt, input.model, input.working_directory);
-
-  if (input.save_session && result.threadId) {
-    mgr.register(input.save_session, result.threadId, result.model, input.working_directory ?? process.cwd());
-  }
-
-  return jsonResult({
-    response: result.response,
-    thread_id: result.threadId,
-    model: result.model,
-    duration_ms: result.durationMs,
-    ...(input.save_session ? { saved_as: input.save_session } : {}),
-    ...resultExtras(result),
-  });
-}
-
 async function handleSessionCreate(input: CodexSessionCreateInput, mgr: SessionManager) {
+  const sessionName = input.name ?? `session-${Date.now()}`;
   const result = await executeOneShot(input.prompt, input.model, input.working_directory);
 
   if (!result.threadId) {
@@ -142,12 +109,12 @@ async function handleSessionCreate(input: CodexSessionCreateInput, mgr: SessionM
     });
   }
 
-  mgr.register(input.name, result.threadId, result.model, input.working_directory ?? process.cwd());
+  mgr.register(sessionName, result.threadId, result.model, input.working_directory ?? process.cwd());
 
   return jsonResult({
     response: result.response,
     thread_id: result.threadId,
-    session_name: input.name,
+    session_name: sessionName,
     model: result.model,
     duration_ms: result.durationMs,
     ...resultExtras(result),
@@ -229,8 +196,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   try {
     switch (name) {
-      case 'codex_execute':
-        return await handleCodexExecute(codexExecuteSchema.parse(rawArgs), sessionManager);
       case 'codex_session_create':
         return await handleSessionCreate(codexSessionCreateSchema.parse(rawArgs), sessionManager);
       case 'codex_session_send':

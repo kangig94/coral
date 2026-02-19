@@ -166,7 +166,7 @@ Use `templates/CLAUDE.md.template` as the skeleton. Fill placeholders with proje
 - **Section 5 (Validation)**: Combine BLOCKING/STRONG/MINOR items from all domain references.
 - **Section 6 (Conventions)**: Detect from config (prettier, eslint, black, rustfmt, etc.) or use sensible defaults.
 
-**Merge rule**: If `.claude/CLAUDE.md` exists with `<!-- CORAL:MANAGED -->` markers, replace only managed sections. If exists without markers, append missing sections. If not exists, create from scratch.
+**Merge rule**: If `.claude/CLAUDE.md` exists with numbered sections (`## 1.` through `## 6.`), replace content within each section. If exists without numbered sections, append missing sections. If not exists, create from scratch.
 
 ### 6.3 Generate standard agents
 
@@ -314,6 +314,7 @@ Follow `references/writing-guide.md` for all generated content:
 - For new projects, mark uncertain sections explicitly
 
 ### CLAUDE.md
-- All `<!-- CORAL:MANAGED -->` markers present and properly paired
+- All 6 numbered sections present (`## 1.` through `## 6.`)
+- No HTML comment markers — section headers are the identifiers
 - Consultation matrix has concrete task-type → agent mappings
 - Validation checklist items are actionable and verifiable

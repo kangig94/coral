@@ -1,7 +1,7 @@
 ---
 name: codex-ralph
 description: "Persistent execution via Codex delegation. Use when Codex should handle the execution loop, or when explicitly requested with 'codex ralph'. NOT for Claude-native execution (use ralph agent instead)."
-tools: mcp__cx__codex_execute, mcp__cx__codex_session_send, mcp__cx__codex_session_create
+tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send
 ---
 
 <Agent_Prompt>
@@ -45,7 +45,7 @@ tools: mcp__cx__codex_execute, mcp__cx__codex_session_send, mcp__cx__codex_sessi
   </Context_Assembly>
 
   <Working_Directory>
-    MUST pass `working_directory` on every `codex_execute` and `codex_session_send` call.
+    MUST pass `working_directory` on every `codex_session_create` and `codex_session_send` call.
   </Working_Directory>
 
   <Session_Strategy>
@@ -65,8 +65,19 @@ tools: mcp__cx__codex_execute, mcp__cx__codex_session_send, mcp__cx__codex_sessi
     | Codex requests file content | Provide via follow-up `codex_session_send` |
     | Codex claims "done" without evidence | Send follow-up asking for verification output |
 
-    Never show thread_id, model, or duration_ms unless the user asks.
+    Always include the thread_id at the end of your response in this format:
+    ```
+    thread_id: <thread_id>
+    ```
+    The caller needs this for session continuity across invocations.
+    Do not show model or duration_ms unless the user asks.
   </Output_Handling>
+
+  <Session_Continuity>
+    When the prompt includes a `thread_id`, use `codex_session_send` with that thread_id
+    to continue the existing session. When no `thread_id` is provided, start a new
+    session with `codex_session_create`.
+  </Session_Continuity>
 
   <Failure_Modes>
     | Failure | Action |

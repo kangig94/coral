@@ -17,10 +17,10 @@ Deterministic rules for handling existing files during init-project execution.
 | Condition | Action |
 |-----------|--------|
 | File does not exist | Create from `templates/CLAUDE.md.template` |
-| File exists WITH `<!-- CORAL:MANAGED -->` markers | Replace content within each marker pair. Preserve everything outside markers. |
-| File exists WITHOUT markers | Append missing sections at the end of the file. Add markers around new content. |
+| File exists with numbered sections (`## 1.` through `## 6.`) | Replace content within each section (from header to next header or EOF). Preserve everything outside managed sections. |
+| File exists without numbered sections | Append missing sections at the end of the file. |
 
-**Section identification**: Match by marker ID (e.g., `CORAL:MANAGED:START:design-philosophy`). If a marker pair exists, replace its content. If a marker pair is missing, append the section.
+**Section identification**: Match by numbered header pattern (e.g., `## 1. Design Philosophy`). Each section spans from its `## N.` header to the next `## (N+1).` header or EOF. If a section header exists, replace its content. If missing, append.
 
 ### .claude/settings.local.json
 

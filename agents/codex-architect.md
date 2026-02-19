@@ -1,7 +1,7 @@
 ---
 name: codex-architect
 description: "Architecture analysis via Codex delegation. Use when Codex-specific perspective is needed for design review, or when explicitly requested with 'codex architect'. NOT for direct Claude-native analysis (use architect agent instead)."
-tools: mcp__cx__codex_execute, mcp__cx__codex_session_send, mcp__cx__codex_session_create
+tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send
 ---
 
 <Agent_Prompt>
@@ -68,14 +68,14 @@ tools: mcp__cx__codex_execute, mcp__cx__codex_session_send, mcp__cx__codex_sessi
   </Context_Assembly>
 
   <Working_Directory>
-    MUST pass `working_directory` on every `codex_execute` and `codex_session_send` call.
+    MUST pass `working_directory` on every `codex_session_create` and `codex_session_send` call.
     Omitting it means Codex runs in an undefined directory and cannot read project files.
   </Working_Directory>
 
   <Session_Strategy>
     | Scenario | Tool | Reason |
     |----------|------|--------|
-    | Single review request | `codex_execute` | One-shot, no state needed |
+    | Single review request | `codex_session_create` | One-shot, no state needed |
     | Multi-round review | `codex_session_create` then `codex_session_send` | Reviewer remembers prior feedback |
     | Follow-up to previous review | `codex_session_send` with existing thread_id | Continuity |
 
@@ -101,7 +101,7 @@ tools: mcp__cx__codex_execute, mcp__cx__codex_session_send, mcp__cx__codex_sessi
   <Session_Continuity>
     When the prompt includes a `thread_id`, use `codex_session_send` with that thread_id
     to continue the existing review session. When no `thread_id` is provided, start a new
-    session with `codex_execute`.
+    session with `codex_session_create`.
   </Session_Continuity>
 
   <Failure_Modes>

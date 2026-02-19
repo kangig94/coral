@@ -2,7 +2,6 @@
 name: codex-ralph
 description: Persistent execution via Codex delegation — keeps working until done
 argument-hint: "[task description]"
-allowed-tools: mcp__cx__codex_execute, mcp__cx__codex_session_send, mcp__cx__codex_session_create
 ---
 
 # Persistent Execution via Codex
@@ -11,40 +10,36 @@ Announce at start: "Using codex-ralph to execute this task via Codex with persis
 
 ## Execution
 
-1. **Load protocol**: Read `agents/codex-ralph.md` to load the full codex-ralph protocol
-2. **Check session continuity**: Look for a previous `thread_id` from a `/codex-ralph` call in conversation history
-   - **Previous thread_id exists** → use `mcp__cx__codex_session_send` to continue
-   - **No previous thread_id** → use `mcp__cx__codex_session_create` to start a new session
-   - **User says "new" or wants a fresh start** → use `mcp__cx__codex_execute` regardless
-3. **Construct prompt**: Follow the protocol's `<Prompt_Template>` to assemble [SYSTEM]/[CONTEXT]/[TASK]
-4. **Enhance with context**: Add relevant file paths, code snippets, progress, and working_directory from the conversation
-5. **Call Codex**: Send the assembled prompt. MUST pass `working_directory` on every call.
-6. **Verify completion**: If Codex claims "done" without evidence, send a follow-up asking for verification output
-7. **Pause after 5 rounds**: Confirm direction with the user before continuing
-8. **Post-completion review**: After Codex reports success (tests pass, build succeeds), YOU (Claude) must review the actual changes before reporting to the user. See below.
+1. **Check session continuity**: Look for a previous `thread_id` from a `/codex-ralph` call in conversation history
+2. **Gather context**: Collect from the conversation:
+   - Task description and acceptance criteria
+   - File paths and code sections relevant to the work
+   - Current progress and any prior verification results
+   - Error messages or symptoms if debugging
+   - Constraints or preferences stated by the user
+3. **Spawn agent**: Launch Task with `subagent_type: coral:codex-ralph` and the following prompt:
+   ```
+   thread_id: {previous thread_id, or omit this line}
+
+   [CONTEXT]
+   Working directory: /path/to/project
+   Relevant files: {file list}
+   {progress summary if continuing}
+
+   [TASK]
+   {User's original request}
+   ```
+4. **Post-completion review**: After the agent returns success, YOU (Claude) must review the actual changes before reporting to the user. See below.
 
 ## Post-Completion Review
 
-**Tests passing does not mean the work is correct.** Codex may produce code that passes tests but diverges from the plan or requirements — especially for content that tests cannot cover (documentation, prompts, config files, CLAUDE.md, README, etc.).
+**Tests passing does not mean the work is correct.** The agent may produce code that passes tests but diverges from the plan or requirements — especially for content that tests cannot cover (documentation, prompts, config files, CLAUDE.md, README, etc.).
 
-After Codex claims completion:
-1. **Read every changed file** that Codex modified
+After the agent reports completion:
+1. **Read every changed file** that the agent modified
 2. **Compare against the plan/requirements** — does each file match what was specified?
 3. **Flag untestable content** — documentation, markdown, config, behavioral instructions: verify these match the plan verbatim where applicable
-4. **Fix discrepancies yourself** — do not send Codex back for content corrections; fix them directly
-5. **Report to the user** what Codex did correctly and what you corrected
+4. **Fix discrepancies yourself** — do not send back for corrections; fix them directly
+5. **Report to the user** what was done correctly and what you corrected
 
-This step is mandatory. Never relay Codex's "done" claim to the user without completing this review.
-
-## Context Enhancement
-
-From the current conversation, identify and include:
-- Task description and acceptance criteria
-- File paths and code sections relevant to the work
-- Current progress and any prior verification results
-- Error messages or symptoms if debugging
-- Constraints or preferences stated by the user
-
-## Error Policy
-
-If `agents/codex-ralph.md` cannot be read, report the error to the user. Do not fall back to inline execution — the agent protocol is a required dependency.
+This step is mandatory. Never relay the agent's "done" claim to the user without completing this review.

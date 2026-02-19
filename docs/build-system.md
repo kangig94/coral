@@ -118,7 +118,7 @@ export default defineConfig({
 ```json
 {
   "mcpServers": {
-    "coral": {
+    "cx": {
       "command": "node",
       "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-server.cjs"]
     }

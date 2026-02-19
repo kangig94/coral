@@ -50,6 +50,22 @@ To remove: `/coral:statusline uninstall`
 
 ## Usage
 
+### Project Setup
+
+Initialize any project for AI-assisted development:
+
+```
+/coral:init-project
+```
+
+Generates tailored `.claude/CLAUDE.md`, domain-specific agents, architecture docs, dev guide, and settings — based on the project's detected tech stack. Supports 30+ domains across frontend, backend, mobile, infra, ML, systems, and GPU.
+
+For new projects, run with `new` to scaffold via conversation:
+
+```
+/coral:init-project new
+```
+
 ### Quick Execution
 
 Use slash commands to query Codex directly:
@@ -159,12 +175,11 @@ Spawn agents via the Task tool. Claude-native is default; Codex is used only on 
 
 ## MCP Tools
 
-Five tools provided by the plugin:
+Four tools provided by the plugin:
 
 | Tool | Description |
 |---|---|
-| `codex_execute` | Send a prompt to Codex and receive a response |
-| `codex_session_create` | Create a named session |
+| `codex_session_create` | Create a session and execute a prompt (name auto-generated if omitted) |
 | `codex_session_send` | Send a follow-up message to an existing session |
 | `codex_session_list` | List registered sessions |
 | `codex_session_fork` | Fork a session to start a new conversation (resume-based) |
@@ -209,7 +224,7 @@ Create `agents/codex-<name>.md` — it automatically becomes a Codex delegation 
 ---
 name: codex-<name>
 description: <description>
-tools: mcp__cx__codex_execute, mcp__cx__codex_session_send
+tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send
 ---
 ```
 
@@ -231,7 +246,7 @@ disallowedTools: Write, Edit
 Detailed technical documentation is available in the `docs/` directory:
 
 - [Architecture](docs/architecture.md) — Architecture and data flow
-- [MCP Tools](docs/mcp-tools.md) — Input/output specs for all 5 tools
+- [MCP Tools](docs/mcp-tools.md) — Input/output specs for all 4 tools
 - [Core Modules](docs/core-modules.md) — TypeScript module details
 - [Agents](docs/agents.md) — Agent definitions and routing guarantees
 - [Hooks](docs/hooks.md) — SubagentStart hook behavior

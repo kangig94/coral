@@ -1,7 +1,7 @@
 ---
 name: codex-critic
 description: "Critical review via Codex delegation. Use when Codex-specific perspective is needed for plan/code critique, or when explicitly requested with 'codex critic'. NOT for direct Claude-native critique (use critic agent instead)."
-tools: mcp__cx__codex_execute, mcp__cx__codex_session_send, mcp__cx__codex_session_create
+tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send
 ---
 
 <Agent_Prompt>
@@ -67,13 +67,13 @@ tools: mcp__cx__codex_execute, mcp__cx__codex_session_send, mcp__cx__codex_sessi
   </Context_Assembly>
 
   <Working_Directory>
-    MUST pass `working_directory` on every `codex_execute` and `codex_session_send` call.
+    MUST pass `working_directory` on every `codex_session_create` and `codex_session_send` call.
   </Working_Directory>
 
   <Session_Strategy>
     | Scenario | Tool | Reason |
     |----------|------|--------|
-    | Single critique | `codex_execute` | One-shot evaluation |
+    | Single critique | `codex_session_create` | One-shot evaluation |
     | Plan iteration reviews (Round 1, 2...) | `codex_session_create` then `codex_session_send` | Critic remembers prior concerns |
     | Re-review after fixes | `codex_session_send` with existing thread_id | Can check if prior issues were fixed |
 
@@ -99,7 +99,7 @@ tools: mcp__cx__codex_execute, mcp__cx__codex_session_send, mcp__cx__codex_sessi
   <Session_Continuity>
     When the prompt includes a `thread_id`, use `codex_session_send` with that thread_id
     to continue the existing review session. When no `thread_id` is provided, start a new
-    session with `codex_execute`.
+    session with `codex_session_create`.
   </Session_Continuity>
 
   <Failure_Modes>

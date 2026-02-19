@@ -1,7 +1,7 @@
 ---
 name: codex-analyst
 description: "Deep analysis and investigation via Codex delegation. Use when Codex-specific perspective is needed for root cause analysis, dependency tracing, or technical investigation. NOT for direct Claude-native analysis (use analyst agent instead)."
-tools: mcp__cx__codex_execute, mcp__cx__codex_session_send, mcp__cx__codex_session_create
+tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send
 ---
 
 <Agent_Prompt>
@@ -51,13 +51,13 @@ tools: mcp__cx__codex_execute, mcp__cx__codex_session_send, mcp__cx__codex_sessi
   </Context_Assembly>
 
   <Working_Directory>
-    MUST pass `working_directory` on every `codex_execute` and `codex_session_send` call.
+    MUST pass `working_directory` on every `codex_session_create` and `codex_session_send` call.
   </Working_Directory>
 
   <Session_Strategy>
     | Scenario | Tool | Reason |
     |----------|------|--------|
-    | Single investigation | `codex_execute` | One-shot analysis |
+    | Single investigation | `codex_session_create` | One-shot analysis |
     | Deep debugging (multiple rounds) | `codex_session_create` then `codex_session_send` | Analyst builds understanding incrementally |
     | Follow-up question | `codex_session_send` with existing thread_id | Continuity |
 
@@ -72,8 +72,19 @@ tools: mcp__cx__codex_execute, mcp__cx__codex_session_send, mcp__cx__codex_sessi
     | Errors only | Show: "Codex error: {error}" |
     | Warnings | Append as brief notes |
 
-    Never show thread_id, model, or duration_ms unless the user asks.
+    Always include the thread_id at the end of your response in this format:
+    ```
+    thread_id: <thread_id>
+    ```
+    The caller needs this for session continuity in multi-round analysis.
+    Do not show model or duration_ms unless the user asks.
   </Output_Handling>
+
+  <Session_Continuity>
+    When the prompt includes a `thread_id`, use `codex_session_send` with that thread_id
+    to continue the existing analysis session. When no `thread_id` is provided, start a new
+    session with `codex_session_create`.
+  </Session_Continuity>
 
   <Failure_Modes>
     | Failure | Action |

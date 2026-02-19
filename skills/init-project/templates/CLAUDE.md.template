@@ -1,6 +1,5 @@
 # {project-name} - Development Instructions
 
-<!-- CORAL:MANAGED:START:design-philosophy -->
 ## 1. Design Philosophy
 
 ### Core Principles
@@ -22,9 +21,7 @@ Key rules:
 - **Tiered Expertise**: OPUS for safety/orchestration, SONNET for domain/quality
 - **Mandatory Consultations**: Cross-domain changes require multiple agents
 - **Final validation**: review-orchestrator as mandatory last step
-<!-- CORAL:MANAGED:END:design-philosophy -->
 
-<!-- CORAL:MANAGED:START:project-overview -->
 ## 2. Project Overview
 
 {1-2 paragraph project description}
@@ -40,9 +37,7 @@ Key rules:
 ```bash
 {detected build/test/lint commands}
 ```
-<!-- CORAL:MANAGED:END:project-overview -->
 
-<!-- CORAL:MANAGED:START:agent-system -->
 ## 3. Agent System
 
 ### Agent Quick Reference
@@ -58,9 +53,7 @@ Key rules:
 | Task Type | Mandatory Agent | Recommended Agent |
 |-----------|----------------|-------------------|
 | {task type} | {agent} | {agent} |
-<!-- CORAL:MANAGED:END:agent-system -->
 
-<!-- CORAL:MANAGED:START:workflow -->
 ## 4. Development Workflow
 
 ### Before Implementation
@@ -75,9 +68,7 @@ Key rules:
 - Run **review-orchestrator** for final validation
 - BLOCKING items must pass before completion
 - STRONG items must be documented if skipped
-<!-- CORAL:MANAGED:END:workflow -->
 
-<!-- CORAL:MANAGED:START:validation -->
 ## 5. Validation Checklists
 
 ### BLOCKING (must pass)
@@ -90,13 +81,10 @@ Key rules:
 - Code complexity within thresholds
 - Naming conventions followed
 - No dead code introduced
-<!-- CORAL:MANAGED:END:validation -->
 
-<!-- CORAL:MANAGED:START:conventions -->
 ## 6. Conventions
 
 **Commits**: Conventional commits — `feat:`, `fix:`, `refactor:`, `docs:`, `test:`
 **Naming**: {detected or default naming conventions}
 **Tests**: {detected test framework and conventions}
 **Formatting**: {detected formatter — prettier, black, rustfmt, etc.}
-<!-- CORAL:MANAGED:END:conventions -->

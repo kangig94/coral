@@ -75,7 +75,7 @@ type CodexThreadItemDetails =
 
 ## src/mcp/schemas.ts — Zod Input Validation
 
-Defines zod schemas for each of the 5 MCP tools. Runtime validation via `.parse()` at every handler entry point.
+Defines zod schemas for each of the 4 MCP tools. Runtime validation via `.parse()` at every handler entry point.
 
 ### Shared Building Blocks
 
@@ -93,8 +93,7 @@ Duplicated patterns are extracted into reusable schemas:
 
 | Schema | Tool | Required Fields |
 |---|---|---|
-| `codexExecuteSchema` | `codex_execute` | `prompt` |
-| `codexSessionCreateSchema` | `codex_session_create` | `name`, `prompt` |
+| `codexSessionCreateSchema` | `codex_session_create` | `prompt` (optional: `name`) |
 | `codexSessionSendSchema` | `codex_session_send` | `session`, `prompt` (optional: `working_directory`) |
 | `codexSessionListSchema` | `codex_session_list` | (none) |
 | `codexSessionForkSchema` | `codex_session_fork` | `session` (optional: `working_directory`) |

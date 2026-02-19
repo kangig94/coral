@@ -20,7 +20,7 @@
 │  │  On new session:                                 │  │
 │  │  - Prepend CLAUDE.md to prompt                   │  │
 │  │                                                  │  │
-│  │  Tools: codex_execute, codex_session_create,     │  │
+│  │  Tools: codex_session_create,                     │  │
 │  │         codex_session_send, codex_session_list,  │  │
 │  │         codex_session_fork                       │  │
 │  └────────────────────┬────────────────────────────┘  │
@@ -37,26 +37,26 @@
 
 ## Data Flow
 
-### 1. Direct Execution (Skill or MCP Tool Call)
+### 1. Skill-to-Agent Routing
 
 ```
 User → /coral:codex "question"
-     → Skill calls mcp__cx__codex_execute
-     → Zod schema validation
-     → MCP Server spawns codex exec
-     → Codex CLI outputs JSONL to stdout
-     → parseCodexJsonl() extracts text + thread_id
-     → Result returned to user
+     → Skill detects persona (architect/critic/analyze/ralph/none)
+     → Skill spawns Task with selected subagent_type (coral:codex-*)
+     → SubagentStart Hook fires (matcher: "codex-.*")
+     → Delegation instructions injected via additionalContext
+     → Agent calls mcp__cx__codex_session_create
+     → Codex response returned to skill → user
 ```
 
-### 2. Agent Delegation (Automatic Routing)
+### 2. Direct Agent Delegation
 
 ```
 User → Task tool spawns codex-delegate agent
      → SubagentStart Hook fires (matcher: "codex-.*")
      → detect-codex-agent.sh detects "codex-" prefix
      → Delegation instructions injected via additionalContext
-     → Agent calls mcp__cx__codex_execute (tools restriction leaves no alternative)
+     → Agent calls mcp__cx__codex_session_create
      → Codex response returned verbatim
 ```
 

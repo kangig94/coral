@@ -4,7 +4,7 @@ Slash commands provided by the Coral plugin.
 
 ## /coral:codex
 
-Execute a prompt directly with Codex CLI. Automatic persona detection dynamically loads architect/critic/analyze/ralph prompts.
+Route Codex requests to the appropriate agent. Automatic persona detection selects the right Codex delegation agent.
 
 **File**: `skills/codex/SKILL.md`
 
@@ -15,17 +15,16 @@ Execute a prompt directly with Codex CLI. Automatic persona detection dynamicall
 name: codex
 description: Execute a prompt with OpenAI Codex CLI
 argument-hint: "[prompt]"
-allowed-tools: mcp__cx__codex_execute, mcp__cx__codex_session_send, mcp__cx__codex_session_create
 ---
 ```
 
 ### Behavior
 
-1. Check session continuity (existing thread_id → resume, new → execute)
-2. Analyze intent → select persona (architect/critic/analyze/ralph/none)
-3. If persona selected, dynamically load SYSTEM prompt from `agents/codex-*.md`
-4. Enhance with conversation context (file paths, code snippets, working_directory)
-5. Call Codex + display results
+1. Check session continuity (existing thread_id from conversation history)
+2. Analyze intent → select agent subagent_type (architect/critic/analyze/ralph/delegate)
+3. Gather context (file paths, code snippets, working_directory)
+4. Spawn Task with selected `subagent_type` (`coral:codex-*`) + prompt
+5. Present agent results
 
 ---
 
@@ -137,7 +136,7 @@ argument-hint: "[task description]"
 
 ## /coral:codex-ralph
 
-Persistent execution via Codex delegation. Delegates the execution loop to Codex CLI with session management.
+Persistent execution via Codex delegation. Routes to the `codex-ralph` agent for execution loop management.
 
 **File**: `skills/codex-ralph/SKILL.md`
 
@@ -148,18 +147,15 @@ Persistent execution via Codex delegation. Delegates the execution loop to Codex
 name: codex-ralph
 description: Persistent execution via Codex delegation — keeps working until done
 argument-hint: "[task description]"
-allowed-tools: mcp__cx__codex_execute, mcp__cx__codex_session_send, mcp__cx__codex_session_create
 ---
 ```
 
 ### Behavior
 
-1. Load `agents/codex-ralph.md` protocol
-2. Check session continuity (existing thread_id → resume, new → create session)
-3. Construct prompt using `<Prompt_Template>` ([SYSTEM]/[CONTEXT]/[TASK])
-4. Enhance with conversation context (file paths, progress, working_directory)
-5. Call Codex with persistent verification — challenge unverified "done" claims
-6. Pause after 5 rounds to confirm direction with user
+1. Check session continuity (existing thread_id from conversation history)
+2. Gather context (task description, file paths, progress, working_directory)
+3. Spawn Task with `subagent_type: coral:codex-ralph` + prompt
+4. Post-completion review: read every changed file, compare against requirements, fix discrepancies
 
 ---
 
@@ -264,14 +260,14 @@ argument-hint: "[existing|new]"
 1. Detect scenario: existing project (scan source) or new project (conversation)
 2. Identify domains — match against 9 Tier 1 categories or apply Tier 2 principle-based fallback
 3. Load domain references (`references/*.md`) and templates (`templates/*.md`)
-4. Generate artifacts with merge policy (skip existing agents, marker-based CLAUDE.md merge, deep-merge settings)
+4. Generate artifacts with merge policy (skip existing agents, header-based CLAUDE.md merge, deep-merge settings)
 5. Report generated files
 
 ### Generated Artifacts
 
 | Artifact | Always? | Description |
 |---|---|---|
-| `.claude/CLAUDE.md` | Yes | 6-section canonical structure with `<!-- CORAL:MANAGED -->` markers |
+| `.claude/CLAUDE.md` | Yes | 6-section canonical structure (numbered headers `## 1.` through `## 6.`) |
 | `.claude/agents/review-orchestrator.md` | Yes | Final validation supervisor (tier 0, opus) |
 | `.claude/agents/code-critic.md` | Yes | Code quality reviewer (tier 3, sonnet) |
 | `.claude/agents/ux-critic.md` | Conditional | UX reviewer — frontend/mobile/plugin only |

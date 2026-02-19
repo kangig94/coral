@@ -160,11 +160,11 @@ describe('parseCodexJsonl', () => {
   it('does not confuse [Error] in agent_message with actual errors', () => {
     const output = [
       '{"type":"thread.started","thread_id":"t1"}',
-      '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"[Error] 클래스를 사용하여 에러를 설계하세요."}}',
+      '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"[Error] Use the Error class to design your errors."}}',
       '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":20}}',
     ].join('\n');
     const result = parseCodexJsonl(output);
-    expect(result.response).toBe('[Error] 클래스를 사용하여 에러를 설계하세요.');
+    expect(result.response).toBe('[Error] Use the Error class to design your errors.');
     expect(result.errors).toEqual([]);
     expect(result.warnings).toEqual([]);
   });
@@ -172,25 +172,25 @@ describe('parseCodexJsonl', () => {
   it('separates partial response from rate limit error', () => {
     const output = [
       '{"type":"thread.started","thread_id":"t1"}',
-      '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"분석 결과는..."}}',
+      '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Analysis results..."}}',
       '{"type":"error","message":"Rate limit exceeded"}',
       '{"type":"turn.failed","error":{"message":"Rate limit exceeded"}}',
     ].join('\n');
     const result = parseCodexJsonl(output);
-    expect(result.response).toBe('분석 결과는...');
+    expect(result.response).toBe('Analysis results...');
     expect(result.errors).toEqual(['Rate limit exceeded']);
     expect(result.warnings).toEqual([]);
   });
 
   it('handles error + warning + partial response', () => {
     const output = [
-      '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"부분 결과"}}',
+      '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Partial result"}}',
       '{"type":"item.completed","item":{"id":"w1","type":"error","message":"Deprecated"}}',
       '{"type":"error","message":"Rate limit"}',
       '{"type":"turn.failed","error":{"message":"Rate limit"}}',
     ].join('\n');
     const result = parseCodexJsonl(output);
-    expect(result.response).toBe('부분 결과');
+    expect(result.response).toBe('Partial result');
     expect(result.errors).toEqual(['Rate limit']);
     expect(result.warnings).toEqual(['Deprecated']);
   });
