@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ChildProcess } from 'node:child_process';
 import { EventEmitter, Readable, Writable } from 'node:stream';
 
-// Mock dependencies
 vi.mock('../cli-detection.js', () => ({
   detectCodexCli: vi.fn(),
 }));
@@ -13,7 +12,7 @@ vi.mock('node:child_process', () => ({
 
 import { detectCodexCli } from '../cli-detection.js';
 import { spawn } from 'node:child_process';
-import { executeOneShot, executeResume, executeFork, killAllChildren, Semaphore, _test } from '../codex-executor.js';
+import { executeOneShot, executeResume, executeFork, killAllChildren, _test } from '../codex-executor.js';
 
 const mockDetect = vi.mocked(detectCodexCli);
 const mockSpawn = vi.mocked(spawn);
@@ -21,8 +20,6 @@ const mockSpawn = vi.mocked(spawn);
 beforeEach(() => {
   mockDetect.mockReset();
   mockSpawn.mockReset();
-  _test.lastStartTime = 0;
-  _test.resetShutdown();
 });
 
 function mockCliAvailable(): void {
@@ -59,6 +56,8 @@ function createMockProcess(stdout: string, code: number): ChildProcess {
 }
 
 describe('prependClaudeMd', () => {
+  afterEach(() => { _test.claudeMdCache = undefined; });
+
   it('prepends CLAUDE.md content to prompt', () => {
     _test.claudeMdCache = '# Guidelines\nBe concise.';
     expect(_test.prependClaudeMd('do something')).toBe('# Guidelines\nBe concise.\n\n---\n\ndo something');
@@ -68,8 +67,6 @@ describe('prependClaudeMd', () => {
     _test.claudeMdCache = '';
     expect(_test.prependClaudeMd('do something')).toBe('do something');
   });
-
-  afterEach(() => { _test.claudeMdCache = undefined; });
 });
 
 describe('executeOneShot', () => {
@@ -85,7 +82,7 @@ describe('executeOneShot', () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
-      ['exec', '-m', 'o4-mini', '--json', '--full-auto', '--add-dir', expect.stringContaining('.claude/coral/memo')],
+      ['exec', '-m', 'o4-mini', '--json', '--full-auto'],
       expect.objectContaining({ cwd: '/tmp' }),
     );
     expect(result.response).toBe('Hello');
@@ -147,7 +144,7 @@ describe('executeResume', () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
-      ['exec', 'resume', 'thread-abc', '-m', 'gpt-4.1', '--json', '--full-auto', '--add-dir', expect.stringContaining('.claude/coral/memo')],
+      ['exec', 'resume', 'thread-abc', '-m', 'gpt-4.1', '--json', '--full-auto'],
       expect.any(Object),
     );
     expect(result.response).toBe('Resumed');
@@ -232,80 +229,5 @@ describe('killAllChildren', () => {
 
     killAllChildren();
     expect(killSpy).not.toHaveBeenCalled();
-  });
-});
-
-describe('Semaphore', () => {
-  it('allows up to max concurrent acquires', async () => {
-    const sem = new Semaphore(2);
-    await sem.acquire();
-    await sem.acquire();
-    expect(sem.active).toBe(2);
-    expect(sem.pending).toBe(0);
-  });
-
-  it('queues excess acquires', async () => {
-    const sem = new Semaphore(1);
-    await sem.acquire();
-    // Second acquire should be pending
-    let resolved = false;
-    const p = sem.acquire().then(() => { resolved = true; });
-    expect(sem.pending).toBe(1);
-    expect(resolved).toBe(false);
-    sem.release();
-    await p;
-    expect(resolved).toBe(true);
-    expect(sem.active).toBe(1);
-  });
-
-  it('releases in FIFO order', async () => {
-    const sem = new Semaphore(1);
-    await sem.acquire();
-    const order: number[] = [];
-    const p1 = sem.acquire().then(() => order.push(1));
-    const p2 = sem.acquire().then(() => order.push(2));
-    sem.release();
-    await p1;
-    sem.release();
-    await p2;
-    expect(order).toEqual([1, 2]);
-    sem.release(); // cleanup
-  });
-});
-
-describe('stagger', () => {
-  const agentOk = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
-
-  it('delays execution when called within STAGGER_MS of last start', async () => {
-    mockCliAvailable();
-    // Defer process creation so its 10ms data timer does not fire during the stagger sleep
-    mockSpawn.mockImplementation(() => createMockProcess(agentOk, 0) as any);
-
-    _test.lastStartTime = Date.now();
-    const start = Date.now();
-    await executeOneShot('test');
-    const elapsed = Date.now() - start;
-
-    expect(elapsed).toBeGreaterThanOrEqual(2500);
-  }, 10_000);
-
-  it('skips delay when enough time has passed since last start', async () => {
-    mockCliAvailable();
-    mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
-
-    _test.lastStartTime = Date.now() - 10_000;
-    const start = Date.now();
-    await executeOneShot('test');
-    const elapsed = Date.now() - start;
-
-    expect(elapsed).toBeLessThan(1000);
-  });
-});
-
-describe('shutdown guard', () => {
-  it('rejects new requests after killAllChildren', async () => {
-    mockCliAvailable();
-    killAllChildren();
-    await expect(executeOneShot('test')).rejects.toThrow('Server is shutting down');
   });
 });

@@ -39,7 +39,7 @@ One-shot Codex CLI execution. The most basic tool.
 1. Zod schema validation (`codexExecuteSchema`)
 2. Check CLI existence via `detectCodexCli()` (cached)
 3. Prepend CLAUDE.md content to prompt (behavioral guidelines for Codex)
-4. Run `codex exec -m MODEL --json --full-auto --add-dir ~/.claude/coral/memo`
+4. Run `codex exec -m MODEL --json --full-auto`
 5. Pass prompt via stdin then close
 6. Parse stdout JSONL with `parseCodexJsonl()` -> `{ response, threadId, errors, warnings }`
 7. If `save_session` is specified, call `SessionManager.register()`

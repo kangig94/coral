@@ -20,9 +20,11 @@ Treat reviewer feedback as collaborative input. Engage with the substance, not t
 - Identify relevant files, requirements, and constraints mentioned
 - Read key files if needed to ground the plan in actual code
 
-### Step 2: Create Initial Plan
+### Step 2: Write Initial Plan to File
 
-Write a structured plan with these sections:
+Save the initial plan to `.claude/coral/plans/{descriptive-name}.md` **immediately** — do not keep it only in memory.
+
+Use this structure:
 
 ```markdown
 # [Plan Title]
@@ -43,21 +45,27 @@ Write a structured plan with these sections:
 [How to confirm the plan was implemented correctly]
 ```
 
-### Step 3: Parallel Review (Round 1)
+All subsequent edits happen directly on this file. The plan file is the single source of truth.
+
+### Step 3: Review Loop
+
+Repeat until both reviewers approve without CRITICAL or HIGH findings:
+
+#### 3a: Parallel Review
 
 Launch **TWO Task agents simultaneously** (parallel, not sequential):
 
 **Architect agent:**
 - `subagent_type`: `coral:architect`
-- Prompt: Include the full plan content and ask for architecture review
+- Prompt: Provide the plan file path and ask for architecture review. The agent will read the file directly.
 - The agent follows `agents/architect.md` protocol — it will read code, cite `file:line`, and provide severity-rated findings
 
 **Critic agent:**
 - `subagent_type`: `coral:critic`
-- Prompt: Include the full plan content and ask for plan critique
+- Prompt: Provide the plan file path and ask for plan critique. The agent will read the file directly.
 - The agent follows `agents/critic.md` protocol — it will verify file references, simulate implementation steps, and issue a verdict
 
-### Step 4: Synthesize Feedback
+#### 3b: Synthesize Feedback
 
 For each piece of feedback, classify by how you engage with it:
 
@@ -70,7 +78,11 @@ For each piece of feedback, classify by how you engage with it:
 
 **Reference-based trust**: Findings with precise `file:line` references carry higher weight than unreferenced opinions. Engage seriously with referenced findings — they are grounded in actual code.
 
-### Step 5: Show Round Summary
+#### 3c: Update Plan File
+
+If any Adopt or Adapt actions exist, **edit the plan file** with the changes. The file must always reflect the latest version.
+
+#### 3d: Show Round Summary
 
 Present to the user — **NOT the full plan**, only a concise summary:
 
@@ -90,37 +102,20 @@ Present to the user — **NOT the full plan**, only a concise summary:
 - **Adapt**: [insights taken but solved differently — how]
 - **Defer**: [items needing more context — what's missing]
 - **Diverge**: [items that don't apply — why the context differs]
-- **Next**: [whether another round is needed]
 ```
 
-### Step 6: Iterate (Round 2+)
+#### 3e: Exit Condition
 
-Launch new parallel Task agents for each subsequent round. Include in the prompt:
+- **Pass**: Both reviewers have no CRITICAL or HIGH findings → exit loop
+- **Continue**: Any CRITICAL or HIGH finding was Adopted or Adapted → must re-verify (go to 3a)
+- **Max rounds**: 5 rounds. If reached, ask user: "5 rounds reached. Continue or finalize as-is?"
 
-```
-Here is the updated plan. How previous feedback was handled:
-- [Change 1]: [adopted / adapted — explanation]
-- [Change 2]: [deferred — what's missing / diverged — why context differs]
+Changes that have not been re-verified by reviewers are not considered validated.
 
-Please review again, focusing on whether previous concerns are addressed
-and whether the adaptations are sound.
+### Step 4: Completion
 
-[UPDATED PLAN]
-{full updated plan content}
-```
+When the review loop exits:
 
-### Step 7: Max Rounds Handling
-
-- **Default maximum**: 5 rounds
-- If 5 rounds reached and still not satisfied:
-  - Ask the user: "5 rounds reached. Continue for up to 5 more rounds, or finalize as-is?"
-  - If user approves: reset round counter, continue
-  - If user declines: finalize the current plan
-
-### Step 8: Completion
-
-When you are satisfied with the plan:
-
-1. Save the final plan to `.claude/coral/plans/{descriptive-name}.md`
-2. Present the complete plan to the user
+1. The plan file at `.claude/coral/plans/{descriptive-name}.md` is already up to date
+2. Present the final plan to the user
 3. **DO NOT implement. DO NOT write any source code. Planning only.**

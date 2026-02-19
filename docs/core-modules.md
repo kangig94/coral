@@ -170,8 +170,6 @@ Core module that runs Codex CLI via `child_process.spawn` and collects results.
 |---|---|---|
 | `CORAL_CODEX_TIMEOUT_MS` | `900000` (15 min) | Codex execution timeout |
 | `CORAL_CODEX_MODEL` | `gpt-5.3-codex` | Default model |
-| `CORAL_MAX_CONCURRENT` | `5` | Max concurrent Codex processes |
-| `CORAL_STAGGER_MS` | `3000` | Minimum interval between process starts (ms) |
 
 ### Constants
 
@@ -185,18 +183,7 @@ Core module that runs Codex CLI via `child_process.spawn` and collects results.
 - **`activeChildren`**: `Set<ChildProcess>` tracking running child processes
 - **`appendBuffer()`**: Appends data to buffer, truncates with `[output truncated at 10MB]` message when limit is exceeded
 - **Timeout**: SIGTERM -> 5-second wait -> SIGKILL escalation
-- **`killAllChildren()`**: Sends SIGTERM -> SIGKILL escalation to all tracked child processes. Used during graceful shutdown. Sets `shuttingDown` flag to immediately reject queued requests.
-
-### Concurrency Control
-
-Semaphore-based concurrency limiting is applied at the `runCodex()` level.
-
-- **Semaphore**: Max `CORAL_MAX_CONCURRENT` concurrent processes
-- **Stagger**: Minimum `CORAL_STAGGER_MS` interval between process starts (burst prevention). Serialized via stagger mutex to prevent race conditions between concurrent coroutines.
-- **FIFO queue**: Excess requests wait in order
-- **Shutdown guard**: After `killAllChildren()`, new requests are immediately rejected (double-check after semaphore acquire + after stagger)
-
-Automatically applied to all execution paths (executeOneShot, executeResume, executeFork).
+- **`killAllChildren()`**: Sends SIGTERM -> SIGKILL escalation to all tracked child processes. Used during graceful shutdown.
 
 ### Public Functions
 
@@ -205,11 +192,10 @@ Automatically applied to all execution paths (executeOneShot, executeResume, exe
 One-shot execution.
 
 ```bash
-codex exec -m MODEL --json --full-auto --add-dir ~/.claude/coral/memo < prompt
+codex exec -m MODEL --json --full-auto < prompt
 ```
 
 - Prepends CLAUDE.md content to the prompt (`prependClaudeMd`) — Codex receives project guidelines
-- Passes `--add-dir` for memo directory — Codex sandbox allows writing memos
 - Parses stdout with `parseCodexJsonl()`
 
 #### `executeResume(threadId, prompt, model?, cwd?): Promise<CodexExecResult>`
@@ -217,7 +203,7 @@ codex exec -m MODEL --json --full-auto --add-dir ~/.claude/coral/memo < prompt
 Resume an existing session.
 
 ```bash
-codex exec resume THREAD_ID -m MODEL --json --full-auto --add-dir ~/.claude/coral/memo < prompt
+codex exec resume THREAD_ID -m MODEL --json --full-auto < prompt
 ```
 
 - Passes `resume` subcommand and thread ID as arguments
@@ -242,10 +228,6 @@ On new sessions (`executeOneShot`), the plugin's CLAUDE.md is prepended to the p
 - **Path resolution**: `__PLUGIN_ROOT__` is injected at build time via esbuild banner (`require("path").resolve(__dirname, "..")`)
 - **Caching**: CLAUDE.md content is read once and cached (`claudeMdCache`)
 - **Graceful fallback**: If CLAUDE.md cannot be read, prompt is sent unchanged
-
-### Memo Directory Access
-
-All Codex executions include `--add-dir ~/.claude/coral/memo` to grant write access to the memo directory within the Codex sandbox. This is the only home directory path exposed to Codex.
 
 ### console.log Prohibition
 

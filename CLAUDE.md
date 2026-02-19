@@ -61,7 +61,7 @@ For multi-step tasks, state a brief plan:
 ## Memo — during work (including planning)
 When you discover something non-obvious (painful root cause, unexpected gotcha,
 "wish I knew earlier" pattern, or an exceptionally clever solution), write immediately to:
-`~/.claude/coral/memo/<project-hash>/<timestamp>-<topic>.md`
+`.claude/coral/memo/<timestamp>-<topic>.md`
 Keep brief — one paragraph + context.
 If Explanatory/Learning output style is active, also memo any Insights worth preserving.
 

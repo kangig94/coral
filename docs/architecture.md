@@ -19,7 +19,6 @@
 │  │                                                  │  │
 │  │  On new session:                                 │  │
 │  │  - Prepend CLAUDE.md to prompt                   │  │
-│  │  - --add-dir ~/.claude/coral/memo (sandbox)      │  │
 │  │                                                  │  │
 │  │  Tools: codex_execute, codex_session_create,     │  │
 │  │         codex_session_send, codex_session_list,  │  │
@@ -92,13 +91,12 @@ Each file is a single `SessionEntry`. Corrupt files are skipped with a warning; 
 ├── domain-topic.md
 └── ...
 
-~/.claude/coral/memo/                # Device-local (buffer before promotion)
-└── <project-hash>/
-    └── <timestamp>-<topic>.md
+{project}/.claude/coral/memo/        # Gitignored (ephemeral buffer before promotion)
+└── <timestamp>-<topic>.md
 ```
 
 - **KB** is project-local and git-tracked for cross-device sync
-- **Memo** is global and device-local (ephemeral buffer)
+- **Memo** is project-local and gitignored (ephemeral buffer)
 - Promotion: memo → kb (on task completion or plan approval)
 
 ## Directory Structure

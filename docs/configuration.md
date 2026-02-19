@@ -8,8 +8,6 @@ Environment variables, config files, and the plugin manifest.
 |---|---|---|
 | `CORAL_CODEX_TIMEOUT_MS` | `900000` (15 min) | Codex CLI execution timeout (milliseconds) |
 | `CORAL_CODEX_MODEL` | `gpt-5.3-codex` | Default Codex model |
-| `CORAL_MAX_CONCURRENT` | `5` | Max concurrent Codex processes |
-| `CORAL_STAGGER_MS` | `3000` | Minimum interval between process starts (ms) |
 
 ### Usage — Shell
 

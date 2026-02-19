@@ -3,11 +3,9 @@
  * Never use console.log — this runs inside a stdio MCP server.
  */
 
-
 import { spawn, type ChildProcess } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
 import type { CodexExecResult } from '../types.js';
 import { parseCodexJsonl } from './output-parser.js';
 import { detectCodexCli } from './cli-detection.js';
@@ -17,66 +15,6 @@ const TIMEOUT_MS = parseInt(process.env.CORAL_CODEX_TIMEOUT_MS ?? '', 10) || DEF
 const DEFAULT_MODEL = process.env.CORAL_CODEX_MODEL ?? 'gpt-5.3-codex';
 const MAX_BUFFER = 10 * 1024 * 1024; // 10MB
 const SIGKILL_DELAY = 5_000; // 5 seconds after SIGTERM
-const MAX_CONCURRENT = parseInt(process.env.CORAL_MAX_CONCURRENT ?? '', 10) || 5;
-const STAGGER_MS = parseInt(process.env.CORAL_STAGGER_MS ?? '', 10) || 3_000;
-
-/** Promise-based semaphore for concurrency limiting. */
-class Semaphore {
-  private running = 0;
-  private readonly queue: (() => void)[] = [];
-
-  constructor(private readonly max: number) {}
-
-  acquire(): Promise<void> {
-    if (this.running < this.max) {
-      this.running++;
-      return Promise.resolve();
-    }
-    return new Promise<void>((resolve) => {
-      this.queue.push(() => {
-        this.running++;
-        resolve();
-      });
-    });
-  }
-
-  release(): void {
-    if (this.running <= 0) {
-      throw new Error('Semaphore: release called without matching acquire');
-    }
-    this.running--;
-    const next = this.queue.shift();
-    if (next) next();
-  }
-
-  get active(): number { return this.running; }
-  get pending(): number { return this.queue.length; }
-}
-
-const semaphore = new Semaphore(MAX_CONCURRENT);
-let lastStartTime = 0;
-let shuttingDown = false;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Serializes read-sleep-update of lastStartTime to prevent burst starts. */
-const staggerMutex = new Semaphore(1);
-
-/** Enforce minimum delay between process starts. */
-async function enforceStagger(): Promise<void> {
-  await staggerMutex.acquire();
-  try {
-    const gap = Date.now() - lastStartTime;
-    if (gap < STAGGER_MS) {
-      await sleep(STAGGER_MS - gap);
-    }
-    lastStartTime = Date.now();
-  } finally {
-    staggerMutex.release();
-  }
-}
 
 const activeChildren = new Set<ChildProcess>();
 
@@ -92,7 +30,7 @@ function appendBuffer(current: string, chunk: string): string {
   return combined;
 }
 
-/** Spawn a Codex CLI process. Use runCodex() for concurrency control. */
+/** Spawn a Codex CLI process and collect output. */
 function spawnCodex(
   args: string[],
   prompt: string | undefined,
@@ -161,30 +99,8 @@ function spawnCodex(
   });
 }
 
-function assertNotShuttingDown(): void {
-  if (shuttingDown) throw new Error('Server is shutting down');
-}
-
-/** Run a Codex CLI command with concurrency control. */
-async function runCodex(
-  args: string[],
-  prompt: string | undefined,
-  cwd?: string,
-): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  await semaphore.acquire();
-  try {
-    assertNotShuttingDown();
-    await enforceStagger();
-    assertNotShuttingDown();
-    return await spawnCodex(args, prompt, cwd);
-  } finally {
-    semaphore.release();
-  }
-}
-
 /** Kill all tracked child processes (SIGTERM, then SIGKILL after 3s). */
 export function killAllChildren(): void {
-  shuttingDown = true;
   for (const child of activeChildren) {
     try {
       child.kill('SIGTERM');
@@ -211,7 +127,7 @@ async function executeCodex(
   if (!cli.available) throw new Error(cli.error!);
 
   const start = Date.now();
-  const { stdout, stderr, code } = await runCodex(args, prompt, cwd);
+  const { stdout, stderr, code } = await spawnCodex(args, prompt, cwd);
 
   if (code !== 0 && !stdout.trim()) {
     throw new Error(`Codex exited with code ${code}: ${stderr || 'No output'}`);
@@ -230,9 +146,7 @@ async function executeCodex(
   };
 }
 
-/**
- * One-shot execution: codex exec -m MODEL --json --full-auto
- */
+// CLAUDE.md injection — prepend plugin guidelines to one-shot prompts
 declare const __PLUGIN_ROOT__: string;
 const pluginRoot: string = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..');
 let claudeMdCache: string | undefined;
@@ -250,8 +164,7 @@ function prependClaudeMd(prompt: string): string {
   return md ? `${md}\n\n---\n\n${prompt}` : prompt;
 }
 
-const memoDir = join(homedir(), '.claude', 'coral', 'memo');
-
+/** One-shot execution: codex exec -m MODEL --json --full-auto */
 export async function executeOneShot(
   prompt: string,
   model?: string,
@@ -259,7 +172,7 @@ export async function executeOneShot(
 ): Promise<CodexExecResult> {
   const resolvedModel = getModel(model);
   return executeCodex(
-    ['exec', '-m', resolvedModel, '--json', '--full-auto', '--add-dir', memoDir],
+    ['exec', '-m', resolvedModel, '--json', '--full-auto'],
     prependClaudeMd(prompt), resolvedModel, cwd,
   );
 }
@@ -275,7 +188,7 @@ export async function executeResume(
 ): Promise<CodexExecResult> {
   const resolvedModel = getModel(model);
   return executeCodex(
-    ['exec', 'resume', threadId, '-m', resolvedModel, '--json', '--full-auto', '--add-dir', memoDir],
+    ['exec', 'resume', threadId, '-m', resolvedModel, '--json', '--full-auto'],
     prompt,
     resolvedModel,
     cwd,
@@ -295,12 +208,7 @@ export async function executeFork(
 }
 
 // Test-only exports
-export { Semaphore };
 export const _test = {
-  get semaphore() { return semaphore; },
-  get lastStartTime() { return lastStartTime; },
-  set lastStartTime(v: number) { lastStartTime = v; },
-  resetShutdown() { shuttingDown = false; },
   set claudeMdCache(v: string | undefined) { claudeMdCache = v; },
   prependClaudeMd,
-} as const;
+};

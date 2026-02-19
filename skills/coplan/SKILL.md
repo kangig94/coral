@@ -2,7 +2,6 @@
 name: coplan
 description: Collaborative planning with parallel Codex architect/critic reviews
 argument-hint: "[task description]"
-allowed-tools: mcp__cx__codex_execute, mcp__cx__codex_session_send
 ---
 
 # Multi-Round Collaborative Planning
@@ -21,9 +20,11 @@ Treat reviewer feedback as collaborative input. Engage with the substance, not t
 - Identify relevant files, requirements, and constraints mentioned
 - Read key files if needed to ground the plan in actual code
 
-### Step 2: Create Initial Plan
+### Step 2: Write Initial Plan to File
 
-Write a structured plan with these sections:
+Save the initial plan to `.claude/coral/plans/{descriptive-name}.md` **immediately** — do not keep it only in memory.
+
+Use this structure:
 
 ```markdown
 # [Plan Title]
@@ -44,27 +45,43 @@ Write a structured plan with these sections:
 [How to confirm the plan was implemented correctly]
 ```
 
-### Step 3: Parallel Review (Round 1)
+All subsequent edits happen directly on this file. The plan file is the single source of truth.
 
-Call `codex_execute` **TWICE simultaneously** (parallel, not sequential):
+### Step 3: Codex Review Loop
 
-**Architect call:**
-1. Read `agents/codex-architect.md` to load the architect protocol
-2. Use the protocol's `<Prompt_Template>` to construct the Codex prompt
-3. Include the full plan content as CONTEXT
-4. Call `codex_execute` with the assembled prompt + `working_directory`
+Repeat until both reviewers approve without CRITICAL or HIGH findings:
 
-**Critic call:**
-1. Read `agents/codex-critic.md` to load the critic protocol
-2. Use the protocol's `<Prompt_Template>` to construct the Codex prompt
-3. Include the full plan content as CONTEXT
-4. Call `codex_execute` with the assembled prompt + `working_directory`
+#### 3a: Parallel Codex Review
 
-Both calls MUST include the `working_directory` parameter set to the project root.
+Launch **TWO Task agents simultaneously** (parallel, not sequential):
 
-**IMPORTANT**: Since raw thread_ids are used (not named sessions), `working_directory` is NOT stored automatically. You MUST pass `working_directory` on EVERY `codex_execute` and `codex_session_send` call throughout the entire planning process.
+**Architect agent:**
+- `subagent_type`: `coral:codex-architect`
+- Prompt: Provide the plan file path and the project's working directory. Ask for architecture review.
+- The agent will return the Codex `thread_id` at the end of its response
 
-### Step 4: Synthesize Feedback
+**Critic agent:**
+- `subagent_type`: `coral:codex-critic`
+- Prompt: Provide the plan file path and the project's working directory. Ask for plan critique.
+- The agent will return the Codex `thread_id` at the end of its response
+
+**IMPORTANT**: Extract and save the `thread_id` from each agent's response. You need these for session continuity in subsequent rounds.
+
+**For Round 2+**: Pass the `thread_id` from the previous round in the prompt so the agent uses `codex_session_send` for continuity:
+
+```
+thread_id: {thread_id from previous round}
+
+The plan file has been updated: {plan_file_path}
+How your previous feedback was handled:
+- [Change 1]: [adopted / adapted — explanation]
+- [Change 2]: [deferred — what's missing / diverged — why context differs]
+
+Re-read the plan file. Focus on whether your previous concerns are addressed
+and whether the adaptations are sound.
+```
+
+#### 3b: Synthesize Feedback
 
 For each piece of feedback, classify by how you engage with it:
 
@@ -77,7 +94,11 @@ For each piece of feedback, classify by how you engage with it:
 
 **Reference-based trust**: Findings with precise `file:line` references carry higher weight than `[no-ref]` opinions. Engage seriously with referenced findings — they are grounded in actual code.
 
-### Step 5: Show Round Summary
+#### 3c: Update Plan File
+
+If any Adopt or Adapt actions exist, **edit the plan file** with the changes. The file must always reflect the latest version.
+
+#### 3d: Show Round Summary
 
 Present to the user — **NOT the full plan**, only a concise summary:
 
@@ -97,74 +118,46 @@ Present to the user — **NOT the full plan**, only a concise summary:
 - **Adapt**: [insights taken but solved differently — how]
 - **Defer**: [items needing more context — what's missing]
 - **Diverge**: [items that don't apply — why the context differs]
-- **Next**: [whether another round is needed]
 ```
 
-### Step 6: Iterate (Round 2+)
+#### 3e: Exit Condition
 
-Use `codex_session_send` with the thread_ids from Step 3 to continue the same reviewer sessions:
+- **Pass**: Both reviewers have no CRITICAL or HIGH findings → exit loop
+- **Continue**: Any CRITICAL or HIGH finding was Adopted or Adapted → must re-verify (go to 3a)
+- **Max rounds**: 5 rounds. If reached, ask user: "5 rounds reached. Continue or finalize as-is?"
 
-```
-Here is the updated plan. How your previous feedback was handled:
-- [Change 1]: [adopted / adapted — explanation]
-- [Change 2]: [deferred — what's missing / diverged — why context differs]
+Changes that have not been re-verified by reviewers are not considered validated.
 
-Please review again, focusing on whether your previous concerns are addressed
-and whether the adaptations are sound.
+### Step 4: Claude-native Final Review
 
-[UPDATED PLAN]
-{full updated plan content}
-```
-
-Pass `working_directory` on every call. Each reviewer remembers their previous feedback via session continuity.
-
-### Step 7: Max Rounds Handling
-
-- **Default maximum**: 5 rounds
-- If 5 rounds reached and still not satisfied:
-  - Ask the user: "5 rounds reached. Continue for up to 5 more rounds, or finalize as-is?"
-  - If user approves: reset round counter, continue with same threads
-  - If user declines: finalize the current plan
-
-### Step 8: Claude-native Final Review
-
-After Codex rounds converge, launch **TWO Claude-native Task agents simultaneously** for final verification:
+After the Codex review loop converges, launch **TWO Claude-native Task agents simultaneously** for cross-model verification:
 
 **Architect agent:**
 - `subagent_type`: `coral:architect`
-- Prompt: Include the full plan and ask for architecture review
+- Prompt: Provide the plan file path and ask for architecture review. The agent will read the file directly.
 - This is Claude reviewing Codex's reviewed plan — a cross-model check
 
 **Critic agent:**
 - `subagent_type`: `coral:critic`
-- Prompt: Include the full plan and ask for plan critique
+- Prompt: Provide the plan file path and ask for plan critique. The agent will read the file directly.
 
 Synthesize this final round the same way (Adopt/Adapt/Defer/Diverge).
-If critical issues are found, revise the plan. No additional rounds needed — this is a single final gate.
+If any CRITICAL or HIGH finding is Adopted or Adapted, **edit the plan file** and re-run this step once more. Otherwise, pass.
 
-### Step 9: Completion
+### Step 5: Completion
 
-When you are satisfied with the plan:
+When all reviews pass:
 
-1. Save the final plan to `.claude/coral/plans/{descriptive-name}.md`
-2. Present the complete plan to the user
+1. The plan file at `.claude/coral/plans/{descriptive-name}.md` is already up to date
+2. Present the final plan to the user
 3. **DO NOT implement. DO NOT write any source code. Planning only.**
 
 ## Error Handling
 
 | Scenario | Action |
 |----------|--------|
-| Architect call fails, Critic succeeds | Proceed with Critic feedback only |
-| Critic call fails, Architect succeeds | Proceed with Architect feedback only |
-| Both calls fail | Report to user, ask whether to retry or proceed manually |
-| One side hits rate limit | Report error, proceed with successful side only |
-| Response contains `errors[]` | Treat as partial result, use available feedback |
-
-## Result Presentation
-
-When presenting Codex review results, follow standard error handling:
-
-1. **Response only (no errors/warnings)**: Show the review content directly
-2. **Response + errors**: Show response first, then note the error
-3. **Errors only**: Report the error, skip that reviewer for this round
-4. **Warnings**: Append as brief notes after the review content
+| Architect agent fails, Critic succeeds | Proceed with Critic feedback only |
+| Critic agent fails, Architect succeeds | Proceed with Architect feedback only |
+| Both agents fail | Report to user, ask whether to retry or proceed manually |
+| Agent returns without thread_id | Treat as one-shot; start fresh session next round |
+| Agent reports Codex error | Use available feedback, note the error |

@@ -181,11 +181,10 @@ argument-hint: "[task description]"
 
 ### Behavior
 
-1. Collect context + generate initial plan
-2. Parallel Claude-native architect + critic review (using `agents/architect.md` and `agents/critic.md`)
-3. Synthesize feedback (Adopt / Adapt / Defer / Diverge)
-4. Display round summary + iterate (max 5 rounds)
-5. Save final plan to `.claude/coral/plans/`
+1. Collect context + write initial plan to `.claude/coral/plans/` immediately
+2. Review loop (max 5 rounds): parallel architect + critic → synthesize → update plan file → re-verify
+3. Exit when no CRITICAL/HIGH findings remain
+4. Present final plan (file already up to date)
 
 ---
 
@@ -202,17 +201,16 @@ Collaborative planning with parallel Codex architect/critic reviews. Dynamically
 name: coplan
 description: Collaborative planning with parallel Codex architect/critic reviews
 argument-hint: "[task description]"
-allowed-tools: mcp__cx__codex_execute, mcp__cx__codex_session_send
 ---
 ```
 
 ### Behavior
 
-1. Collect context + generate initial plan
-2. Parallel Codex architect + critic review (using `agents/codex-*.md` protocols)
-3. Synthesize feedback (Adopt / Adapt / Defer / Diverge)
-4. Display round summary + iterate (max 5 rounds)
-5. Save final plan to `.claude/coral/plans/`
+1. Collect context + write initial plan to `.claude/coral/plans/` immediately
+2. Codex review loop (max 5 rounds): parallel codex-architect + codex-critic → synthesize → update plan file → re-verify
+3. Exit when no CRITICAL/HIGH findings remain
+4. Claude-native final review (`coral:architect`, `coral:critic`) — cross-model gate
+5. Present final plan (file already up to date)
 
 ---
 
@@ -242,6 +240,62 @@ allowed-tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send,
 | `send <name> <prompt>` | Send a follow-up message to an existing session |
 | `list` | List registered sessions |
 | `fork <name>` | Fork a session (resume-based) |
+
+---
+
+## /coral:init-project
+
+Initialize a project for AI-assisted development. Generates `.claude/CLAUDE.md`, specialized agents, docs, settings, and KB directory — tailored to the project's domain.
+
+**File**: `skills/init-project/SKILL.md`
+
+### Configuration
+
+```yaml
+---
+name: init-project
+description: Initialize project for AI-assisted development with agents, CLAUDE.md, docs, and settings
+argument-hint: "[existing|new]"
+---
+```
+
+### Behavior
+
+1. Detect scenario: existing project (scan source) or new project (conversation)
+2. Identify domains — match against 9 Tier 1 categories or apply Tier 2 principle-based fallback
+3. Load domain references (`references/*.md`) and templates (`templates/*.md`)
+4. Generate artifacts with merge policy (skip existing agents, marker-based CLAUDE.md merge, deep-merge settings)
+5. Report generated files
+
+### Generated Artifacts
+
+| Artifact | Always? | Description |
+|---|---|---|
+| `.claude/CLAUDE.md` | Yes | 6-section canonical structure with `<!-- CORAL:MANAGED -->` markers |
+| `.claude/agents/review-orchestrator.md` | Yes | Final validation supervisor (tier 0, opus) |
+| `.claude/agents/code-critic.md` | Yes | Code quality reviewer (tier 3, sonnet) |
+| `.claude/agents/ux-critic.md` | Conditional | UX reviewer — frontend/mobile/plugin only |
+| `.claude/agents/{domain}.md` | Yes | 3-5 domain-specific agents per detected domain |
+| `.claude/agents/TEMPLATE.md` | Yes | Agent structure standard |
+| `.claude/settings.local.json` | Yes | Build/test bash permissions |
+| `.claude/coral/kb/` | Yes | Empty KB directory |
+| `docs/ARCHITECTURE.md` | Yes | Real architecture documentation |
+| `docs/DEV_GUIDE.md` | Yes | Real development guide |
+| `.gitignore` | Append | Coral device-local file rules |
+
+### Supported Domains (Tier 1)
+
+| Category | Domains |
+|---|---|
+| Frontend | React, Vue, Svelte, Next.js, Angular |
+| Backend | Node.js/Express, Python/FastAPI/Django, Go, Rust, Java/Spring |
+| Mobile | React Native, Flutter, iOS/Swift, Android/Kotlin |
+| Plugin/Extension | VSCode, Chrome Extension, Obsidian, Claude Code Plugin |
+| Infra | Docker/K8s, Terraform, CI/CD |
+| Data | Spark, dbt, ETL pipelines |
+| ML/AI | PyTorch, TensorFlow, LLM Application |
+| Systems | C/C++, Embedded/RTOS |
+| GPU | CUDA/OptiX, Vulkan/Metal |
 
 ---
 
