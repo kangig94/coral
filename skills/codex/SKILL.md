@@ -4,16 +4,33 @@ description: Execute a prompt with OpenAI Codex CLI
 argument-hint: "[prompt]"
 ---
 
-Route the user's request to the appropriate Codex agent.
+Route the user's request to the appropriate Codex agent, or handle session management directly.
 
-## 1. Session continuity
+## 1. Session commands
+
+If the argument starts with `session`, handle directly (no agent spawn needed):
+
+| Command | Action | MCP Tool |
+|---------|--------|----------|
+| `session create <name> <prompt>` | Create a named session | `codex_session_create(name, prompt)` |
+| `session send <name> <prompt>` | Continue an existing session | `codex_session_send(session, prompt)` |
+| `session list` | List all sessions | `codex_session_list()` |
+| `session fork <name> [new-name]` | Fork a session | `codex_session_fork(session, name?)` |
+
+Present session results:
+- `list`: Show a table of sessions (name, model, last used)
+- `create`, `send`, `fork`: Show `response` as main content. If `errors` array present, append error notice. Never show `thread_id`, `model`, `duration_ms` unless asked.
+
+If the argument does NOT start with `session`, continue to step 2.
+
+## 2. Session continuity
 
 Check the conversation history for a previous `/codex` call that returned a `thread_id`:
 - **Previous thread_id exists** → include it in the agent prompt for session continuity
 - **No previous thread_id** → omit (agent will start a new session)
 - **User says "new" or explicitly wants a fresh start** → omit thread_id
 
-## 2. Analyze intent and select agent
+## 3. Analyze intent and select agent
 
 Based on the user's request, select the appropriate agent:
 
@@ -25,7 +42,7 @@ Based on the user's request, select the appropriate agent:
 | Persistent execution, keep going, don't stop | ralph, persistent, loop, don't stop, keep going, until done | `coral:codex-ralph` |
 | Code execution, fix, implement, modify, build | fix, implement, create, build, refactor, modify, write | `coral:codex-delegate` |
 
-## 3. Gather context
+## 4. Gather context
 
 Collect relevant context from the current conversation:
 - File paths mentioned or discussed
@@ -33,7 +50,7 @@ Collect relevant context from the current conversation:
 - Current working directory
 - Constraints or requirements established earlier
 
-## 4. Spawn agent
+## 5. Spawn agent
 
 Spawn a Task with the selected `subagent_type` and the following prompt structure:
 

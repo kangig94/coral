@@ -49,7 +49,24 @@ User → /coral:codex "question"
      → Codex response returned to skill → user
 ```
 
-### 2. Direct Agent Delegation
+### 2. Thin Skill → Agent Protocol Loading
+
+```
+User → /coral:plan "task description"
+     → Skill reads agents/planner.md (protocol injection)
+     → Claude executes planner protocol in main context
+     → Planner spawns Task(coral:architect) + Task(coral:critic) in parallel
+     → Review loop until converged → plan file written
+
+User → /coral:init-project
+     → Skill reads agents/init-project.md (protocol injection)
+     → Claude executes init-project protocol in main context
+     → Phase 1: Scan project → Phase 2: spawn Task(coral:planner)
+     → Planner returns verified plan → Phase 3: spawn Task(coral:ralph)
+     → Ralph generates artifacts → Phase 4: Report
+```
+
+### 3. Direct Agent Delegation
 
 ```
 User → Task tool spawns codex-delegate agent
@@ -60,7 +77,7 @@ User → Task tool spawns codex-delegate agent
      → Codex response returned verbatim
 ```
 
-### 3. Session-based Conversation
+### 4. Session-based Conversation
 
 ```
 User → codex_session_create(name="review", prompt="analyze auth.ts")
@@ -72,7 +89,7 @@ User → codex_session_create(name="review", prompt="analyze auth.ts")
      → lastUsedAt updated
 ```
 
-### 4. Session Storage Layout
+### 5. Session Storage Layout
 
 ```
 ~/.claude/coral/sessions/
@@ -84,7 +101,7 @@ User → codex_session_create(name="review", prompt="analyze auth.ts")
 
 Each file is a single `SessionEntry`. Corrupt files are skipped with a warning; valid files continue loading.
 
-### 5. Knowledge Base Storage
+### 6. Knowledge Base Storage
 
 ```
 {project}/.claude/coral/kb/          # Git-tracked (multi-device sync)
@@ -140,15 +157,15 @@ coral/
 │   │   └── SKILL.md             # /coral:plan (Claude-native planning)
 │   ├── coplan/
 │   │   └── SKILL.md             # /coral:coplan (cross-model planning)
-│   ├── statusline/
-│   │   └── SKILL.md             # /coral:statusline (HUD setup)
-│   └── session/
-│       └── SKILL.md             # /coral:session (session management)
+│   └── statusline/
+│       └── SKILL.md             # /coral:statusline (HUD setup)
 ├── agents/
 │   ├── architect.md             # Claude-native architecture analysis
 │   ├── critic.md                # Claude-native plan/code review
 │   ├── analyst.md               # Claude-native requirements gap analysis
 │   ├── ralph.md                 # Claude-native persistent execution loop
+│   ├── planner.md              # Claude-native multi-round planning
+│   ├── init-project.md         # Project initialization orchestrator
 │   ├── codex-delegate.md        # Codex general delegation
 │   ├── codex-architect.md       # Codex architecture analysis delegation
 │   ├── codex-critic.md          # Codex critical review delegation

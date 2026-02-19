@@ -16,11 +16,17 @@ Deterministic rules for handling existing files during init-project execution.
 
 | Condition | Action |
 |-----------|--------|
-| File does not exist | Create from `templates/CLAUDE.md.template` |
-| File exists with numbered sections (`## 1.` through `## 6.`) | Replace content within each section (from header to next header or EOF). Preserve everything outside managed sections. |
-| File exists without numbered sections | Append missing sections at the end of the file. |
+| File does not exist | Create slim hub from `templates/CLAUDE.md.template` |
+| File exists | **Skip** (may be monolithic or customized). Notify user. |
 
-**Section identification**: Match by numbered header pattern (e.g., `## 1. Design Philosophy`). Each section spans from its `## N.` header to the next `## (N+1).` header or EOF. If a section header exists, replace its content. If missing, append.
+### .claude/rules/*.md
+
+| Condition | Action |
+|-----------|--------|
+| Same-name file exists | **Skip**. Notify user: "Skipped rules/{name}.md — already exists." |
+| File does not exist | Create from rule template |
+
+No auto-migration of monolithic CLAUDE.md. Users with existing monolithic files keep them — the rules files are additive and coexist. Users can manually slim their CLAUDE.md when ready.
 
 ### .claude/settings.local.json
 
@@ -49,7 +55,7 @@ Deterministic rules for handling existing files during init-project execution.
 **Coral block format**:
 ```
 # Coral (device-local files)
-.claude/coral/
+.claude/coral/*
 !.claude/coral/kb/
 ```
 
@@ -71,7 +77,8 @@ Deterministic rules for handling existing files during init-project execution.
 
 Running `/coral:init-project` twice in succession produces no additional changes:
 - Agents: skipped (already exist)
-- CLAUDE.md: marker content is identical (no diff)
+- CLAUDE.md: skipped (already exists)
+- Rules files: skipped (already exist)
 - settings.local.json: no new entries to add (already present)
 - docs/: skipped (already exist)
 - .gitignore: Coral block already present (skipped)

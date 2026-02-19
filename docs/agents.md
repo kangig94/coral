@@ -91,6 +91,42 @@ model: opus
 
 ---
 
+### planner (Multi-Round Planning)
+
+**File**: `agents/planner.md`
+
+```yaml
+---
+name: planner
+description: "Multi-round planning with parallel reviewer verification. Use when a task needs a verified plan before implementation. NOT for direct execution (ralph) or one-shot analysis (architect)."
+model: opus
+---
+```
+
+**Role**: Synthesizer that writes and verifies plans through multi-round review. Spawns parallel reviewer agents (architect+critic or codex variants), synthesizes feedback using Adopt/Adapt/Defer/Diverge classification, and iterates until no CRITICAL/HIGH findings remain. Supports multi-phase review (e.g., Codex loop then Claude cross-review). Never implements — planning only.
+
+> Note: planner does NOT have `disallowedTools` because it needs Write/Edit to create and update plan files.
+
+---
+
+### init-project (Project Initialization Orchestrator)
+
+**File**: `agents/init-project.md`
+
+```yaml
+---
+name: init-project
+description: "Project initialization orchestrator. Scans project, plans artifacts with reviewer verification, generates everything via ralph. NOT for planning (planner) or manual generation."
+model: opus
+---
+```
+
+**Role**: Orchestrates project initialization through a 4-phase pipeline: scan (detect stack, identify domains) → plan (spawn planner for verified artifact planning) → execute (spawn ralph for file generation) → report. Keeps deterministic generation rules (merge policy, globs detection, directory creation) and passes them to ralph.
+
+> Note: init-project does NOT have `disallowedTools` because it needs to read files during the scan phase and may write intermediate results.
+
+---
+
 ## Codex-bound Agents (Delegation Agents)
 
 Proxy agents that delegate work to Codex CLI. Tool restrictions limit them to coral MCP tools only.
@@ -159,19 +195,19 @@ tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send
 
 ---
 
-### codex-ralph (Persistent Execution Delegation)
+### codex-ralph (Single-shot Codex Execution for Persistent Tasks)
 
 **File**: `agents/codex-ralph.md`
 
 ```yaml
 ---
 name: codex-ralph
-description: "Persistent execution via Codex delegation. Use when Codex should handle the execution loop, or when explicitly requested with 'codex ralph'. NOT for Claude-native execution (use ralph agent instead)."
+description: "Single-shot Codex execution for persistent tasks. Claude controls the loop externally. NOT for Claude-native execution (use ralph agent instead)."
 tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send
 ---
 ```
 
-**Role**: Relays persistent execution tasks to Codex and manages multi-round sessions until verified complete. Always uses sessions (multi-round by nature) with a 5-round checkpoint.
+**Role**: Executes a single round of work via Codex CLI. Claude (caller) controls the outer verification loop — spawning the agent repeatedly with thread_id for session continuity until all criteria pass.
 
 ---
 

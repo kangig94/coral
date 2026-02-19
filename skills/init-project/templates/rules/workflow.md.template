@@ -1,0 +1,14 @@
+# Development Workflow
+
+## Before Implementation
+- Read `docs/ARCHITECTURE.md` and `docs/DEV_GUIDE.md`
+- Identify required agent consultations from matrix above
+
+## During Implementation
+- Invoke domain agents per consultation matrix
+- Follow source tree policy and layer dependency rules
+
+## After Implementation — Review Gate
+- Run **review-orchestrator** for final validation
+- BLOCKING items must pass before completion
+- STRONG items must be documented if skipped

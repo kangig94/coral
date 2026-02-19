@@ -1,0 +1,16 @@
+---
+paths:
+  - "{glob}"
+---
+# Validation Checklists
+
+## BLOCKING (must pass)
+- {domain-specific blocking items}
+
+## STRONG (must document if skipped)
+- {domain-specific strong items}
+
+## MINOR (should document)
+- Code complexity within thresholds
+- Naming conventions followed
+- No dead code introduced

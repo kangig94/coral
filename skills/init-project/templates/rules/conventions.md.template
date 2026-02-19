@@ -1,0 +1,6 @@
+# Conventions
+
+**Commits**: Conventional commits — `feat:`, `fix:`, `refactor:`, `docs:`, `test:`
+**Naming**: {detected or default naming conventions}
+**Tests**: {detected test framework and conventions}
+**Formatting**: {detected formatter — prettier, black, rustfmt, etc.}

@@ -1,0 +1,15 @@
+# Agent System
+
+## Agent Quick Reference
+
+| Agent | Tier | Model | Purpose |
+|-------|------|-------|---------|
+| review-orchestrator | 0 | opus | Final validation supervisor |
+| code-critic | 3 | sonnet | Code quality review |
+| {domain agents} | {tier} | {model} | {purpose} |
+
+## Consultation Matrix
+
+| Task Type | Mandatory Agent | Recommended Agent |
+|-----------|----------------|-------------------|
+| {task type} | {agent} | {agent} |

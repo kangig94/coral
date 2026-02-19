@@ -283,9 +283,25 @@ async function renderLimits() {
   const data = {
     fiveHour: resp.five_hour?.utilization,
     weekly: resp.seven_day?.utilization,
+    fiveHourResetsAt: resp.five_hour?.resets_at || null,
+    weeklyResetsAt: resp.seven_day?.resets_at || null,
   };
   writeCache(data);
   return formatLimits(data);
+}
+
+function formatResetTime(isoString, mode) {
+  if (!isoString) return null;
+  const diffMs = new Date(isoString).getTime() - Date.now();
+  if (diffMs <= 0) return null;
+  const totalMin = Math.floor(diffMs / 60000);
+  const totalHr = Math.floor(totalMin / 60);
+  const totalDays = Math.floor(totalHr / 24);
+  if (mode === "wk" && totalHr >= 24) {
+    return `${(totalHr / 24).toFixed(1)}d`;
+  }
+  const mm = totalMin % 60;
+  return `${totalHr}:${String(mm).padStart(2, "0")}`;
 }
 
 function formatLimits(data) {
@@ -293,11 +309,15 @@ function formatLimits(data) {
   const parts = [];
   if (data.fiveHour != null) {
     const pct = Math.round(Math.min(100, Math.max(0, data.fiveHour)));
-    parts.push(`5h:${colorPct(pct)}`);
+    const reset = formatResetTime(data.fiveHourResetsAt, "5h");
+    const resetStr = reset ? ` ${DIM}(${reset})${RESET}` : "";
+    parts.push(`5h:${colorPct(pct)}${resetStr}`);
   }
   if (data.weekly != null) {
     const pct = Math.round(Math.min(100, Math.max(0, data.weekly)));
-    parts.push(`${DIM}wk:${RESET}${colorPct(pct)}`);
+    const reset = formatResetTime(data.weeklyResetsAt, "wk");
+    const resetStr = reset ? ` ${DIM}(${reset})${RESET}` : "";
+    parts.push(`${DIM}wk:${RESET}${colorPct(pct)}${resetStr}`);
   }
   return parts.length > 0 ? parts.join(" ") : null;
 }

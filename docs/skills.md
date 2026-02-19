@@ -4,7 +4,7 @@ Slash commands provided by the Coral plugin.
 
 ## /coral:codex
 
-Route Codex requests to the appropriate agent. Automatic persona detection selects the right Codex delegation agent.
+Route Codex requests to the appropriate agent, or manage Codex sessions directly. Single entry point for all Codex interactions.
 
 **File**: `skills/codex/SKILL.md`
 
@@ -20,11 +20,21 @@ argument-hint: "[prompt]"
 
 ### Behavior
 
-1. Check session continuity (existing thread_id from conversation history)
-2. Analyze intent → select agent subagent_type (architect/critic/analyze/ralph/delegate)
-3. Gather context (file paths, code snippets, working_directory)
-4. Spawn Task with selected `subagent_type` (`coral:codex-*`) + prompt
-5. Present agent results
+1. If argument starts with `session` → handle session command directly (create/send/list/fork via MCP tools)
+2. Check session continuity (existing thread_id from conversation history)
+3. Analyze intent → select agent subagent_type (architect/critic/analyze/ralph/delegate)
+4. Gather context (file paths, code snippets, working_directory)
+5. Spawn Task with selected `subagent_type` (`coral:codex-*`) + prompt
+6. Present agent results
+
+### Session Commands
+
+| Command | Example |
+|---|---|
+| `session create <name> <prompt>` | `/coral:codex session create review analyze auth.ts` |
+| `session send <name> <prompt>` | `/coral:codex session send review what about JWT?` |
+| `session list` | `/coral:codex session list` |
+| `session fork <name>` | `/coral:codex session fork review` |
 
 ---
 
@@ -136,7 +146,7 @@ argument-hint: "[task description]"
 
 ## /coral:codex-ralph
 
-Persistent execution via Codex delegation. Routes to the `codex-ralph` agent for execution loop management.
+Persistent execution via Codex with Claude-controlled verification loop. Claude orchestrates; Codex executes each round.
 
 **File**: `skills/codex-ralph/SKILL.md`
 
@@ -152,10 +162,12 @@ argument-hint: "[task description]"
 
 ### Behavior
 
-1. Check session continuity (existing thread_id from conversation history)
-2. Gather context (task description, file paths, progress, working_directory)
-3. Spawn Task with `subagent_type: coral:codex-ralph` + prompt
-4. Post-completion review: read every changed file, compare against requirements, fix discrepancies
+1. Gather context (task description, file paths, progress, working_directory)
+2. Claude-controlled loop (up to 5 rounds):
+   - Spawn `coral:codex-ralph` agent with task + thread_id (session continuity)
+   - Claude verifies changes (read files, run tests, compare against criteria)
+   - If not complete → re-spawn with updated progress context
+3. Post-completion review: read every changed file, compare against requirements, fix discrepancies
 
 ---
 
@@ -177,16 +189,16 @@ argument-hint: "[task description]"
 
 ### Behavior
 
-1. Collect context + write initial plan to `.claude/coral/plans/` immediately
-2. Review loop (max 5 rounds): parallel architect + critic → synthesize → update plan file → re-verify
-3. Exit when no CRITICAL/HIGH findings remain
-4. Present final plan (file already up to date)
+1. Load `agents/planner.md` protocol
+2. Configure reviewers: `coral:architect` and `coral:critic` (full review loop, up to 5 rounds)
+3. Execute planner protocol (gather context, write plan, review loop until no CRITICAL/HIGH, completion)
+4. Present final plan to the user
 
 ---
 
 ## /coral:coplan
 
-Collaborative planning with parallel Codex architect/critic reviews. Dynamically loads protocols from `agents/codex-architect.md` and `agents/codex-critic.md`.
+Collaborative planning with parallel Codex architect/critic reviews, followed by Claude cross-review.
 
 **File**: `skills/coplan/SKILL.md`
 
@@ -202,46 +214,18 @@ argument-hint: "[task description]"
 
 ### Behavior
 
-1. Collect context + write initial plan to `.claude/coral/plans/` immediately
-2. Codex review loop (max 5 rounds): parallel codex-architect + codex-critic → synthesize → update plan file → re-verify
-3. Exit when no CRITICAL/HIGH findings remain
-4. Claude-native final review (`coral:architect`, `coral:critic`) — cross-model gate
-5. Present final plan (file already up to date)
-
----
-
-## /coral:session
-
-Manage Codex sessions. Supports 4 subcommands.
-
-**File**: `skills/session/SKILL.md`
-
-### Configuration
-
-```yaml
----
-name: session
-description: Manage Codex conversation sessions
-argument-hint: "[create|send|list|fork] [args...]"
-allowed-tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send,
-               mcp__cx__codex_session_list, mcp__cx__codex_session_fork
----
-```
-
-### Subcommands
-
-| Subcommand | Description |
-|---|---|
-| `create <name> <prompt>` | Create a named session |
-| `send <name> <prompt>` | Send a follow-up message to an existing session |
-| `list` | List registered sessions |
-| `fork <name>` | Fork a session (resume-based) |
+1. Load `agents/planner.md` protocol
+2. Configure multi-phase review:
+   - Phase 1 reviewers: `coral:codex-architect` and `coral:codex-critic` (full review loop, up to 5 rounds)
+   - Phase 2 cross-reviewers: `coral:architect` and `coral:critic` (single verification pass + one retry)
+3. Execute planner protocol with multi-phase review
+4. Present final plan to the user
 
 ---
 
 ## /coral:init-project
 
-Initialize a project for AI-assisted development. Generates `.claude/CLAUDE.md`, specialized agents, docs, settings, and KB directory — tailored to the project's domain.
+Initialize a project for AI-assisted development. Generates `.claude/CLAUDE.md` (slim hub), `.claude/rules/` (modular rules), specialized agents, docs, settings, and KB directory — tailored to the project's domain.
 
 **File**: `skills/init-project/SKILL.md`
 
@@ -250,24 +234,31 @@ Initialize a project for AI-assisted development. Generates `.claude/CLAUDE.md`,
 ```yaml
 ---
 name: init-project
-description: Initialize project for AI-assisted development with agents, CLAUDE.md, docs, and settings
+description: Initialize project for AI-assisted development with rules, agents, CLAUDE.md, docs, and settings
 argument-hint: "[existing|new]"
 ---
 ```
 
 ### Behavior
 
-1. Detect scenario: existing project (scan source) or new project (conversation)
-2. Identify domains — match against 9 Tier 1 categories or apply Tier 2 principle-based fallback
-3. Load domain references (`references/*.md`) and templates (`templates/*.md`)
-4. Generate artifacts with merge policy (skip existing agents, header-based CLAUDE.md merge, deep-merge settings)
-5. Report generated files
+1. Load `agents/init-project.md` protocol
+2. Execute orchestration phases:
+   - **Scan**: Detect scenario, identify domains, load references
+   - **Plan**: Spawn planner agent for verified artifact planning (architect+critic review)
+   - **Execute**: Spawn ralph agent for file generation with deterministic merge rules
+   - **Report**: Summarize generated and skipped files
+3. Present final report to the user
 
 ### Generated Artifacts
 
 | Artifact | Always? | Description |
 |---|---|---|
-| `.claude/CLAUDE.md` | Yes | 6-section canonical structure (numbered headers `## 1.` through `## 6.`) |
+| `.claude/CLAUDE.md` | Yes | Slim hub: project overview + build commands |
+| `.claude/rules/design-philosophy.md` | Yes | Core principles, source tree policy, agent philosophy |
+| `.claude/rules/agents.md` | Yes | Agent quick reference table + consultation matrix |
+| `.claude/rules/workflow.md` | Yes | Development workflow + review gate |
+| `.claude/rules/conventions.md` | Yes | Commits, naming, tests, formatting |
+| `.claude/rules/{domain}/validation.md` | Yes | Domain validation checklist with `paths:` frontmatter |
 | `.claude/agents/review-orchestrator.md` | Yes | Final validation supervisor (tier 0, opus) |
 | `.claude/agents/code-critic.md` | Yes | Code quality reviewer (tier 3, sonnet) |
 | `.claude/agents/ux-critic.md` | Conditional | UX reviewer — frontend/mobile/plugin only |

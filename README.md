@@ -58,7 +58,7 @@ Initialize any project for AI-assisted development:
 /coral:init-project
 ```
 
-Generates tailored `.claude/CLAUDE.md`, domain-specific agents, architecture docs, dev guide, and settings — based on the project's detected tech stack. Supports 30+ domains across frontend, backend, mobile, infra, ML, systems, and GPU.
+Generates `.claude/CLAUDE.md` (slim hub), `.claude/rules/` (modular rules with `paths:` frontmatter), domain-specific agents, architecture docs, dev guide, and settings — based on the project's detected tech stack. Supports 30+ domains across frontend, backend, mobile, infra, ML, systems, and GPU.
 
 For new projects, run with `new` to scaffold via conversation:
 
@@ -88,20 +88,20 @@ To start fresh instead of continuing, say "new" in your prompt.
 
 ### Sessions (Multi-turn Conversations)
 
-Create sessions to maintain conversation context with Codex:
+Create named sessions to maintain conversation context with Codex:
 
 ```
 # Create session
-/coral:session create my-review analyze the auth logic in auth.ts
+/coral:codex session create my-review analyze the auth logic in auth.ts
 
 # Follow-up
-/coral:session send my-review tell me more about JWT token expiry handling
+/coral:codex session send my-review tell me more about JWT token expiry handling
 
 # Fork session (resume-based)
-/coral:session fork my-review
+/coral:codex session fork my-review
 
 # List sessions
-/coral:session list
+/coral:codex session list
 ```
 
 ### Knowledge Base
@@ -151,7 +151,7 @@ Use ralph for tasks that require guaranteed completion with verification:
 
 ### Persistent Execution via Codex
 
-Use codex-ralph when you want Codex CLI to handle the execution loop:
+Use codex-ralph for Codex-powered execution with Claude-controlled verification loop:
 
 ```
 /coral:codex-ralph implement the caching layer and verify all tests pass
@@ -167,11 +167,13 @@ Spawn agents via the Task tool. Claude-native is default; Codex is used only on 
 | `critic` | Claude-native | Plan/code review (default) |
 | `analyst` | Claude-native | Requirements gap analysis (default) |
 | `ralph` | Claude-native | Persistent execution with verification (default) |
+| `planner` | Claude-native | Multi-round planning with parallel reviewer verification |
+| `init-project` | Claude-native | Project initialization orchestrator (scan → plan → execute → report) |
 | `codex-delegate` | Codex-bound | General — forwards all work to Codex |
 | `codex-architect` | Codex-bound | Architecture analysis via Codex |
 | `codex-critic` | Codex-bound | Critical review via Codex |
 | `codex-analyst` | Codex-bound | Analysis via Codex |
-| `codex-ralph` | Codex-bound | Persistent execution via Codex |
+| `codex-ralph` | Codex-bound | Single-shot Codex execution (Claude controls loop) |
 
 ## MCP Tools
 

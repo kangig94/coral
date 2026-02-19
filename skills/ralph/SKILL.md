@@ -12,7 +12,7 @@ Announce at start: "Using ralph to execute this task with verification loop."
 
 1. **Load protocol**: Read `agents/ralph.md` to load the full ralph protocol
 2. **Apply the Iron Law**: NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
-3. **Execute the task**: Follow the protocol's `<Investigation_Protocol>` steps
+3. **Execute the task**: Follow the protocol's `<Investigation_Protocol>` steps (loops until all acceptance criteria pass)
 4. **Verification Gate**: Before any completion claim:
    - IDENTIFY what command proves the claim
    - RUN the command (fresh, complete)

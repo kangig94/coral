@@ -1,0 +1,21 @@
+# Design Philosophy
+
+## Core Principles
+
+{3-5 domain-specific principles, each 1 sentence + supporting bullets}
+
+## Source Tree Policy
+
+| Directory | Layer | Contents | Modification Rule |
+|-----------|-------|----------|-------------------|
+| {dir} | {layer} | {contents} | {rule} |
+
+Key rules:
+1. Layer dependency: code in Lx may only depend on L0..L(x-1)
+2. {Additional project-specific rules}
+
+## Agent System Philosophy
+
+- **Tiered Expertise**: OPUS for safety/orchestration, SONNET for domain/quality
+- **Mandatory Consultations**: Cross-domain changes require multiple agents
+- **Final validation**: review-orchestrator as mandatory last step

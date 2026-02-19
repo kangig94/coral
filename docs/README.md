@@ -7,7 +7,7 @@ A general-purpose Claude Code plugin that provides structured agents with a Code
 - **TypeScript MCP server** wrapping Codex CLI with 4 tools
 - **Agent auto-routing**: Hook + tools restriction + system prompt for triple-layer guarantee on `codex-*` prefix agents
 - **Session persistence**: Name-based session registry for multi-turn conversations (atomic writes)
-- **Skill commands**: `/coral:codex`, `/coral:session`, `/coral:architect`, `/coral:critic`, `/coral:analyze`, `/coral:ralph`, `/coral:codex-ralph`
+- **Skill commands**: `/coral:codex`, `/coral:architect`, `/coral:critic`, `/coral:analyze`, `/coral:ralph`, `/coral:codex-ralph`, `/coral:plan`, `/coral:coplan`, `/coral:init-project`
 - **Input validation**: Zod schema validation on all MCP tool inputs
 - **Process management**: Child process tracking, 10MB buffer limit, graceful shutdown
 
@@ -31,7 +31,7 @@ npm test          # Run tests with vitest
 | Document | Description |
 |---|---|
 | [Architecture](./architecture.md) | Architecture overview and data flow |
-| [MCP Tools](./mcp-tools.md) | Detailed specs for all 5 MCP tools |
+| [MCP Tools](./mcp-tools.md) | Detailed specs for all 4 MCP tools |
 | [Core Modules](./core-modules.md) | TypeScript core module descriptions |
 | [Agents](./agents.md) | Agent definitions and routing guarantees |
 | [Hooks](./hooks.md) | SubagentStart hook-based auto-routing |
