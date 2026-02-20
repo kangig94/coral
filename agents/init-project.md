@@ -101,7 +101,9 @@ model: opus
 
     ## Phase 2: Plan
 
-    Spawn the planner agent to create a verified plan:
+    Spawn the planner agent to create a verified plan.
+    **Evidence gate**: Phase 2 is complete ONLY when a plan file exists at `.claude/coral/plans/init-*.md`.
+    If no file exists on disk, Phase 2 did not execute correctly.
 
     ```
     Task(subagent_type="coral:planner", prompt="""
@@ -131,15 +133,23 @@ model: opus
 
     ## Phase 3: Execute
 
-    Spawn ralph to generate all artifacts per the plan:
+    **Precondition**: Plan file from Phase 2 must exist on disk. Verify with Glob before proceeding.
+    If plan file does not exist, STOP and report: "Phase 2 did not produce a plan file. Cannot proceed to Phase 3."
+    Do NOT attempt to write a plan or execute without one.
+
+    Spawn ralph to generate all artifacts per the plan.
+    **Evidence gate**: Phase 3 is complete ONLY when ralph's execution report lists created files.
+    If no files were created, Phase 3 did not execute correctly.
 
     ```
     Task(subagent_type="coral:ralph", prompt="""
       Task: Generate all artifacts per the plan.
       Plan file: {plan_file_path from Phase 2}
       Working directory: {project root}
-      Templates directory: skills/init-project/templates/
-      References directory: skills/init-project/references/
+      Templates directory: {skill_base_dir}/templates/
+      References directory: {skill_base_dir}/references/
+      Note: {skill_base_dir} is the absolute plugin path provided by the skill loading system.
+      Do NOT use relative paths — ralph runs in the target project directory, not the plugin directory.
 
       Deterministic generation rules (follow exactly):
 
@@ -275,8 +285,12 @@ model: opus
     Ralph returned: 14 files created, 2 skipped (already existed).
     </Good>
     <Bad>
-    "Detected React project. Generating standard React agents and CLAUDE.md directly."
-    — Skipped planning phase. Didn't load domain references. Didn't use planner or ralph.
+    "Good. The .claude/ directory is mostly clean... Let me create the directory structure
+     first, then generate all files in parallel batches."
+    — WRONG: Used mkdir + Write directly after Scan.
+      Evidence: No plan file in .claude/coral/plans/. No Task tool calls in output.
+      Result: 4 standard rules files missing, settings.local.json missing, no review.
+      Fix: Must spawn planner (Phase 2) then ralph (Phase 3) via Task tool.
     </Bad>
   </Examples>
 

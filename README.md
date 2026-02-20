@@ -226,7 +226,7 @@ Create `agents/codex-<name>.md` — it automatically becomes a Codex delegation 
 ---
 name: codex-<name>
 description: <description>
-tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send
+tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
 ---
 ```
 

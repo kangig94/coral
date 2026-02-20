@@ -61,7 +61,7 @@ Registers the MCP server with Claude Code.
 
 | Field | Description |
 |---|---|
-| `cx` | MCP server name (tool prefix: `mcp__cx__*`) |
+| `cx` | MCP server name (tool prefix in Claude Code: `mcp__plugin_coral_cx__*`) |
 | `command` | Execution command |
 | `args` | Execution arguments (`CLAUDE_PLUGIN_ROOT` is auto-replaced) |
 
@@ -90,7 +90,7 @@ Runtime-managed per-session storage files.
 Two hooks are configured:
 
 - **SessionStart**: Injects CLAUDE.md content into Claude's context at session start
-- **SubagentStart**: Detects `codex-*` agents and injects delegation instructions
+- **SubagentStart**: Detects `codex-*` agents (bare or namespaced) and injects delegation instructions
 
 See [Hooks documentation](./hooks.md) for details.
 

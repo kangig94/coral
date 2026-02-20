@@ -137,7 +137,10 @@ describe('executeResume', () => {
 
   it('passes correct resume args', async () => {
     mockCliAvailable();
-    const output = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Resumed"}}\n';
+    const output = jsonl(
+      '{"type":"thread.started","thread_id":"thread-abc"}',
+      '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Resumed"}}',
+    );
     mockSpawn.mockReturnValue(createMockProcess(output, 0));
 
     const result = await executeResume('thread-abc', 'continue', 'gpt-4.1');

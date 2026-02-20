@@ -7,7 +7,7 @@ Two hooks provide automatic context injection and agent routing.
 Claude Code's hook system executes shell scripts on specific events. Coral uses two hooks:
 
 1. **SessionStart** — Injects CLAUDE.md behavioral guidelines into every Claude session
-2. **SubagentStart** — Injects delegation instructions into agents with a `codex-*` prefix
+2. **SubagentStart** — Injects delegation instructions into agents with a `codex-` prefix (with or without `coral:` namespace)
 
 ## Hook Configuration
 
@@ -30,7 +30,7 @@ Claude Code's hook system executes shell scripts on specific events. Coral uses 
     ],
     "SubagentStart": [
       {
-        "matcher": "codex-.*",
+        "matcher": "(^|:)codex-",
         "hooks": [
           {
             "type": "command",
@@ -67,7 +67,7 @@ Injects the plugin's CLAUDE.md content into Claude's context at the start of eve
 | Field | Value | Description |
 |---|---|---|
 | `SubagentStart` | | Event fired when an agent starts |
-| `matcher` | `"codex-.*"` | Only execute hook for agents starting with `codex-` |
+| `matcher` | `"(^|:)codex-"` | Execute hook for agents with `codex-` prefix (bare or namespaced, e.g., `coral:codex-architect`) |
 | `type` | `"command"` | Execute a shell command |
 | `command` | `${CLAUDE_PLUGIN_ROOT}/hooks/detect-codex-agent.sh` | Detection script path (`CLAUDE_PLUGIN_ROOT` is auto-replaced with plugin root) |
 | `timeout` | `5` | 5-second timeout (hook is ignored if exceeded) |
@@ -86,8 +86,8 @@ command -v jq >/dev/null 2>&1 || exit 0
 INPUT=$(cat)
 AGENT_NAME=$(echo "$INPUT" | jq -r '.agent_name // .tool_input.name // ""')
 
-# Check for "codex-" prefix (case-insensitive)
-if echo "$AGENT_NAME" | grep -qi '^codex-'; then
+# Check for "codex-" prefix (case-insensitive, with optional namespace prefix)
+if echo "$AGENT_NAME" | grep -qiE '(^|:)codex-'; then
   # Ensure multi_agent feature is enabled in Codex config
   CODEX_CONFIG="$HOME/.codex/config.toml"
   if [ ! -f "$CODEX_CONFIG" ]; then
@@ -115,14 +115,14 @@ fi
 ### Execution Flow
 
 ```
-1. SubagentStart event fires (matcher: "codex-.*")
+1. SubagentStart event fires (matcher: "(^|:)codex-")
 2. Event JSON received via stdin
    e.g.: {"agent_name": "codex-delegate", "task": "..."}
 3. Check if jq is installed (if not, exit 0 — skip silently)
 4. Extract agent_name with jq
    - .agent_name field takes priority
    - Falls back to .tool_input.name
-5. Check for "codex-" prefix (case-insensitive)
+5. Check for "codex-" prefix (case-insensitive, supports `coral:codex-*` namespace)
 6a. Match found → output hookSpecificOutput JSON
     → Claude Code injects additionalContext into the agent
 6b. No match → exit 0 (no output, terminate silently)
@@ -150,4 +150,4 @@ This message is appended to the agent's system prompt, forcing the agent to call
 - Script must have execute permission (`chmod +x`)
 - If the 5-second timeout is exceeded, the hook is ignored and the agent runs normally
 - Invalid JSON output from the hook is ignored
-- Agents without the `codex-` prefix are filtered out at the matcher stage
+- Agents without the `codex-` prefix (bare or namespaced) are filtered out at the matcher stage

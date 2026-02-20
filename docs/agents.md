@@ -139,7 +139,7 @@ Proxy agents that delegate work to Codex CLI. Tool restrictions limit them to co
 ---
 name: codex-delegate
 description: Delegates ALL work to Codex CLI. Use for tasks needing OpenAI models.
-tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send
+tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
 ---
 ```
 
@@ -155,7 +155,7 @@ tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send
 ---
 name: codex-architect
 description: "Architecture analysis via Codex delegation. Use when Codex-specific perspective is needed for design review, or when explicitly requested with 'codex architect'. NOT for direct Claude-native analysis (use architect agent instead)."
-tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send
+tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
 ---
 ```
 
@@ -171,7 +171,7 @@ tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send
 ---
 name: codex-critic
 description: "Critical review via Codex delegation. Use when Codex-specific perspective is needed for plan/code critique, or when explicitly requested with 'codex critic'. NOT for direct Claude-native critique (use critic agent instead)."
-tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send
+tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
 ---
 ```
 
@@ -187,7 +187,7 @@ tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send
 ---
 name: codex-analyst
 description: "Deep analysis and investigation via Codex delegation. Use when Codex-specific perspective is needed for root cause analysis, dependency tracing, or technical investigation. NOT for direct Claude-native analysis (use analyst agent instead)."
-tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send
+tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
 ---
 ```
 
@@ -203,7 +203,7 @@ tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send
 ---
 name: codex-ralph
 description: "Single-shot Codex execution for persistent tasks. Claude controls the loop externally. NOT for Claude-native execution (use ralph agent instead)."
-tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send
+tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
 ---
 ```
 
@@ -217,7 +217,7 @@ Three layers ensure Codex-bound agents always delegate to Codex CLI:
 
 ### Layer 1: Hook-based Injection (100% guarantee)
 
-The `SubagentStart` hook fires when any agent matching `codex-.*` starts. It injects delegation instructions via `additionalContext`.
+The `SubagentStart` hook fires when any agent matching `(^|:)codex-` starts (both bare `codex-delegate` and namespaced `coral:codex-architect`). It injects delegation instructions via `additionalContext`.
 
 > Claude-native agents (`architect`, `critic`, `analyst`, `ralph`) lack the `codex-` prefix, so the hook never matches them.
 
@@ -243,7 +243,7 @@ Create `agents/codex-<name>.md` — it automatically becomes a Codex delegation 
 ---
 name: codex-<name>
 description: <description>
-tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send
+tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
 ---
 ```
 

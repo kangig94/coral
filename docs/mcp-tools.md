@@ -1,6 +1,6 @@
 # MCP Tools
 
-The Coral MCP server provides 4 tools, all accessible via the `mcp__cx__` prefix.
+The Coral MCP server provides 4 tools. Inside Claude Code's plugin system, tools are accessible via the `mcp__plugin_coral_cx__` prefix (composed as `mcp__plugin_<plugin>_<server>__<tool>`).
 
 All tool inputs are validated at runtime with zod schemas (`src/mcp/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
 
@@ -52,7 +52,7 @@ Send a follow-up prompt to an existing session. Uses `codex exec resume THREAD_I
 
 1. `SessionManager.get(session)` — search by name first
 2. If name doesn't match, search by `codexThreadId`
-3. If not in registry, use `session` value as raw Codex thread ID (passed to spawn without shell, so injection-safe)
+3. If not in registry, return error (`Session not found`). Raw thread IDs are not accepted — all sessions must be created via `codex_session_create`.
 
 ### Output (JSON)
 
@@ -110,7 +110,7 @@ Fork an existing session to continue the conversation in a new branch.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `session` | string | Yes | Source session name or thread ID (min 1 char) |
+| `session` | string | Yes | Source session name or registered thread ID (must exist in Coral registry) |
 | `name` | string | No | New session name (registered if specified) |
 | `prompt` | string | No | Additional prompt for the forked session |
 | `model` | string | No | Model to use |

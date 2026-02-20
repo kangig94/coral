@@ -121,7 +121,6 @@ async function executeCodex(
   prompt: string,
   resolvedModel: string,
   cwd?: string,
-  fallbackThreadId?: string,
 ): Promise<CodexExecResult> {
   const cli = await detectCodexCli();
   if (!cli.available) throw new Error(cli.error!);
@@ -137,7 +136,7 @@ async function executeCodex(
 
   return {
     response: parsed.response,
-    threadId: parsed.threadId ?? fallbackThreadId ?? null,
+    threadId: parsed.threadId ?? null,
     model: resolvedModel,
     durationMs: Date.now() - start,
     exitCode: code,
@@ -192,7 +191,6 @@ export async function executeResume(
     prompt,
     resolvedModel,
     cwd,
-    threadId,
   );
 }
 

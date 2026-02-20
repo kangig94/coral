@@ -43,9 +43,9 @@
 User → /coral:codex "question"
      → Skill detects persona (architect/critic/analyze/ralph/none)
      → Skill spawns Task with selected subagent_type (coral:codex-*)
-     → SubagentStart Hook fires (matcher: "codex-.*")
+     → SubagentStart Hook fires (matcher: "(^|:)codex-")
      → Delegation instructions injected via additionalContext
-     → Agent calls mcp__cx__codex_session_create
+     → Agent calls mcp__plugin_coral_cx__codex_session_create
      → Codex response returned to skill → user
 ```
 
@@ -70,10 +70,10 @@ User → /coral:init-project
 
 ```
 User → Task tool spawns codex-delegate agent
-     → SubagentStart Hook fires (matcher: "codex-.*")
-     → detect-codex-agent.sh detects "codex-" prefix
+     → SubagentStart Hook fires (matcher: "(^|:)codex-")
+     → detect-codex-agent.sh detects "codex-" prefix (with optional coral: namespace)
      → Delegation instructions injected via additionalContext
-     → Agent calls mcp__cx__codex_session_create
+     → Agent calls mcp__plugin_coral_cx__codex_session_create
      → Codex response returned verbatim
 ```
 
@@ -172,7 +172,7 @@ coral/
 │   ├── codex-analyst.md         # Codex analysis delegation
 │   └── codex-ralph.md           # Codex persistent execution delegation
 ├── hooks/
-│   ├── hooks.json               # Hook config (matcher: "codex-.*")
+│   ├── hooks.json               # Hook config (matcher: "(^|:)codex-")
 │   └── detect-codex-agent.sh    # SubagentStart detection script
 ├── scripts/
 │   └── build-server.mjs         # esbuild bundling

@@ -125,14 +125,10 @@ async function handleSessionSend(input: CodexSessionSendInput, mgr: SessionManag
   const entry = mgr.get(input.session);
 
   if (!entry) {
-    const result = await executeResume(input.session, input.prompt, input.model, input.working_directory);
-    return jsonResult({
-      response: result.response,
-      thread_id: result.threadId,
-      model: result.model,
-      duration_ms: result.durationMs,
-      ...resultExtras(result),
-    });
+    return textResult(
+      `Session not found: "${input.session}". Use codex_session_create to start a new session, or codex_session_list to see registered sessions.`,
+      true,
+    );
   }
 
   const result = await executeResume(entry.codexThreadId, input.prompt, input.model, input.working_directory ?? entry.workingDirectory);
@@ -163,10 +159,16 @@ async function handleSessionList(mgr: SessionManager) {
 
 async function handleSessionFork(input: CodexSessionForkInput, mgr: SessionManager) {
   const entry = mgr.get(input.session);
-  const sourceId = entry?.codexThreadId ?? input.session;
-  const cwd = input.working_directory ?? entry?.workingDirectory;
 
-  const result = await executeFork(sourceId, input.prompt, input.model, cwd);
+  if (!entry) {
+    return textResult(
+      `Session not found: "${input.session}". Use codex_session_create to start a new session, or codex_session_list to see registered sessions.`,
+      true,
+    );
+  }
+
+  const cwd = input.working_directory ?? entry.workingDirectory;
+  const result = await executeFork(entry.codexThreadId, input.prompt, input.model, cwd);
 
   if (input.name && result.threadId) {
     mgr.register(input.name, result.threadId, result.model, cwd ?? process.cwd());
@@ -175,7 +177,7 @@ async function handleSessionFork(input: CodexSessionForkInput, mgr: SessionManag
   return jsonResult({
     response: result.response,
     thread_id: result.threadId,
-    forked_from: sourceId,
+    forked_from: entry.codexThreadId,
     ...(input.name ? { session_name: input.name } : {}),
     model: result.model,
     duration_ms: result.durationMs,

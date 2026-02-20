@@ -8,7 +8,7 @@ INPUT=$(cat)
 AGENT_NAME=$(echo "$INPUT" | jq -r '.agent_name // .tool_input.name // ""')
 
 # Check for "codex-" prefix (case-insensitive)
-if echo "$AGENT_NAME" | grep -qi '^codex-'; then
+if echo "$AGENT_NAME" | grep -qiE '(^|:)codex-'; then
   # Ensure multi_agent feature is enabled in Codex config
   CODEX_CONFIG="$HOME/.codex/config.toml"
   if [ ! -f "$CODEX_CONFIG" ]; then

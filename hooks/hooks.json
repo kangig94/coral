@@ -14,7 +14,7 @@
     ],
     "SubagentStart": [
       {
-        "matcher": "codex-.*",
+        "matcher": "(^|:)codex-",
         "hooks": [
           {
             "type": "command",

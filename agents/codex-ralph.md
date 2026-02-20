@@ -1,7 +1,7 @@
 ---
 name: codex-ralph
 description: "Single-shot Codex execution for persistent tasks. Claude controls the loop externally. NOT for Claude-native execution (use ralph agent instead)."
-tools: mcp__cx__codex_session_create, mcp__cx__codex_session_send
+tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
 ---
 
 <Agent_Prompt>
