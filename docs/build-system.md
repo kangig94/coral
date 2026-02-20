@@ -13,7 +13,7 @@ TypeScript compilation and esbuild bundling pipeline.
 
 ## Bundle Commit Policy
 
-The `bridge/coral-server.cjs` bundle is committed to the repository. This means users can use the plugin by pointing to the plugin directory without running `npm install` + `npm run build`:
+The `bridge/coral-codex.cjs` bundle is committed to the repository. This means users can use the plugin by pointing to the plugin directory without running `npm install` + `npm run build`:
 
 ```bash
 claude --plugin-dir /path/to/coral
@@ -30,7 +30,7 @@ src/**/*.ts
 dist/**/*.js + dist/**/*.d.ts
     |
     v  esbuild (bundling)
-bridge/coral-server.cjs
+bridge/coral-codex.cjs
 ```
 
 ### Step 1: TypeScript Compilation
@@ -77,12 +77,12 @@ The build script performs two tasks: version sync and esbuild bundling.
 
 | Setting | Value | Reason |
 |---|---|---|
-| `entryPoints` | `src/mcp/server.ts` | MCP server entry point (TypeScript direct input) |
+| `entryPoints` | `src/codex/server.ts` | MCP server entry point (TypeScript direct input) |
 | `bundle` | `true` | Bundle all dependencies into a single file |
 | `platform` | `node` | Target Node.js environment |
 | `target` | `node18` | Generate Node 18+ compatible code |
 | `format` | `cjs` | CommonJS format (matches `.cjs` extension) |
-| `outfile` | `bridge/coral-server.cjs` | Bundle output path |
+| `outfile` | `bridge/coral-codex.cjs` | Bundle output path |
 | `external` | `['node:*']` | Externalize Node.js built-in modules |
 | `minify` | `true` | Minimize bundle size |
 | `banner` | `var __PLUGIN_ROOT__=...` | Resolve plugin root at runtime via CJS `__dirname` |
@@ -120,10 +120,10 @@ export default defineConfig({
   "mcpServers": {
     "cx": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-server.cjs"]
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-codex.cjs"]
     }
   }
 }
 ```
 
-Claude Code runs `node bridge/coral-server.cjs` to start the MCP server via stdio. `CLAUDE_PLUGIN_ROOT` is auto-replaced with the plugin root directory.
+Claude Code runs `node bridge/coral-codex.cjs` to start the MCP server via stdio. `CLAUDE_PLUGIN_ROOT` is auto-replaced with the plugin root directory.

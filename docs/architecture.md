@@ -15,7 +15,7 @@
 │                           │                 │         │
 │                           ▼                 ▼         │
 │  ┌─────────────────────────────────────────────────┐  │
-│  │  MCP Server "coral" (bridge/coral-server.cjs)   │  │
+│  │  MCP Server "coral" (bridge/coral-codex.cjs)   │  │
 │  │                                                 │  │
 │  │  On new session:                                │  │
 │  │  - Prepend CLAUDE.md to prompt                  │  │
@@ -129,7 +129,7 @@ coral/
 ├── CLAUDE.md                    # Behavioral guidelines + KB instructions
 ├── src/
 │   ├── types.ts                 # Shared type definitions (CodexThreadEvent etc.)
-│   └── mcp/
+│   └── codex/
 │       ├── server.ts            # MCP server entry point — wiring only (stdio, transport, signals)
 │       ├── server-handlers.ts   # Business logic handlers + dispatch (extracted from server.ts)
 │       ├── schemas.ts           # Zod input validation schemas
@@ -186,7 +186,7 @@ coral/
 ├── scripts/
 │   └── build-server.mjs         # esbuild bundling
 ├── bridge/
-│   └── coral-server.cjs         # Bundle output (committed, no build required)
+│   └── coral-codex.cjs         # Bundle output (committed, no build required)
 ├── docs/                        # Documentation
 ├── vitest.config.ts             # Test configuration
 ├── package.json

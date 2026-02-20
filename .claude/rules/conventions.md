@@ -44,7 +44,7 @@ Merge policy:
 ## Testing
 
 - Framework: vitest
-- Test files: `src/mcp/__tests__/<module>.test.ts`
+- Test files: `src/codex/__tests__/<module>.test.ts`
 - One test file per source module
 - Test naming: `describe('<module>')` with `it('should <behavior>')`
 - Mock external dependencies (Codex CLI, filesystem) -- never call real Codex in tests

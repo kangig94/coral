@@ -56,7 +56,12 @@ export const codexSessionForkSchema = z.object({
   background: backgroundSchema,
 });
 
+export const codexSessionAbortSchema = z.object({
+  session: sessionRefSchema,
+});
+
 export type CodexSessionCreateInput = z.infer<typeof codexSessionCreateSchema>;
 export type CodexSessionSendInput = z.infer<typeof codexSessionSendSchema>;
 export type CodexSessionListInput = z.infer<typeof codexSessionListSchema>;
 export type CodexSessionForkInput = z.infer<typeof codexSessionForkSchema>;
+export type CodexSessionAbortInput = z.infer<typeof codexSessionAbortSchema>;

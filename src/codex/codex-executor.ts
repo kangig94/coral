@@ -17,6 +17,42 @@ const SIGTERM_GRACE_MS = 5_000; // grace period before escalating to SIGKILL
 
 const activeChildren = new Set<ChildProcess>();
 
+// ─── Active Execution Registry ────────────────────────────────────────────────
+
+const activeExecutions = new Map<string, AbortController>();
+
+/** Register a session as actively executing. Returns the AbortController for signal threading. */
+export function registerExecution(sessionName: string): AbortController {
+  const existing = activeExecutions.get(sessionName);
+  if (existing) existing.abort(); // abort stale execution; AbortController.abort() is idempotent
+  const controller = new AbortController();
+  activeExecutions.set(sessionName, controller);
+  return controller;
+}
+
+/**
+ * Identity-safe unregister: only removes the entry if the registered controller matches.
+ * Prevents a stale finally block from removing a newer run's controller.
+ */
+export function unregisterExecution(sessionName: string, controller: AbortController): void {
+  if (activeExecutions.get(sessionName) === controller) {
+    activeExecutions.delete(sessionName);
+  }
+}
+
+/** Abort a running execution by session name. Returns true if an active execution was found. */
+export function abortExecution(sessionName: string): boolean {
+  const controller = activeExecutions.get(sessionName);
+  if (!controller) return false;
+  controller.abort();
+  return true;
+}
+
+/** List all currently active session names. */
+export function listActiveExecutions(): string[] {
+  return [...activeExecutions.keys()];
+}
+
 function getModel(model?: string): string {
   return model?.trim() || DEFAULT_MODEL;
 }
@@ -35,9 +71,11 @@ function spawnCodex(
   prompt: string | undefined,
   cwd?: string,
   onEvent?: (line: string) => void,
-): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  signal?: AbortSignal,
+): Promise<{ stdout: string; stderr: string; code: number | null; aborted: boolean }> {
   return new Promise((resolve, reject) => {
     let settled = false;
+    let abortedBySignal = false;
 
     const child = spawn('codex', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -81,6 +119,19 @@ function spawnCodex(
       return true;
     }
 
+    if (signal) {
+      const onAbort = () => {
+        if (settled) return;
+        abortedBySignal = true;
+        clearTimeout(idleTimer); // prevent idle-timeout rejection racing with abort
+        child.kill('SIGTERM');
+        const killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, SIGTERM_GRACE_MS);
+        child.on('close', () => clearTimeout(killTimer)); // clean up if process exits before grace period
+      };
+      if (signal.aborted) { onAbort(); }
+      else { signal.addEventListener('abort', onAbort, { once: true }); }
+    }
+
     let stdout = '';
     let stderr = '';
     let lineBuf = '';
@@ -105,7 +156,7 @@ function spawnCodex(
     });
 
     child.on('close', (code) => {
-      if (finish()) resolve({ stdout, stderr, code });
+      if (finish()) resolve({ stdout, stderr, code, aborted: abortedBySignal });
     });
 
     child.on('error', (err) => {
@@ -127,6 +178,12 @@ function spawnCodex(
 
 /** Kill all tracked child processes (SIGTERM, then SIGKILL after SIGTERM_GRACE_MS). */
 export function killAllChildren(): void {
+  // Abort all registered executions first (signals AbortController listeners)
+  for (const [, controller] of activeExecutions) {
+    controller.abort();
+  }
+  activeExecutions.clear();
+
   for (const child of activeChildren) {
     try {
       child.kill('SIGTERM');
@@ -148,14 +205,15 @@ async function executeCodex(
   resolvedModel: string,
   cwd?: string,
   onEvent?: (line: string) => void,
+  signal?: AbortSignal,
 ): Promise<CodexExecResult> {
   const cli = await detectCodexCli();
   if (!cli.available) throw new Error(cli.error!);
 
   const start = Date.now();
-  const { stdout, stderr, code } = await spawnCodex(args, prompt, cwd, onEvent);
+  const { stdout, stderr, code, aborted } = await spawnCodex(args, prompt, cwd, onEvent, signal);
 
-  if (code !== 0 && !stdout.trim()) {
+  if (code !== 0 && !stdout.trim() && !aborted) {
     throw new Error(`Codex exited with code ${code}: ${stderr || 'No output'}`);
   }
 
@@ -169,6 +227,7 @@ async function executeCodex(
     exitCode: code,
     errors: parsed.errors,
     warnings: parsed.warnings,
+    aborted,
   };
 }
 
@@ -205,11 +264,12 @@ export async function executeOneShot(
   cwd?: string,
   reasoningEffort?: string,
   onEvent?: (line: string) => void,
+  signal?: AbortSignal,
 ): Promise<CodexExecResult> {
   const resolvedModel = getModel(model);
   return executeCodex(
     ['exec', '-m', resolvedModel, ...BASE_FLAGS, ...extraFlags(reasoningEffort)],
-    prependClaudeMd(prompt), resolvedModel, cwd, onEvent,
+    prependClaudeMd(prompt), resolvedModel, cwd, onEvent, signal,
   );
 }
 
@@ -223,6 +283,7 @@ export async function executeResume(
   cwd?: string,
   reasoningEffort?: string,
   onEvent?: (line: string) => void,
+  signal?: AbortSignal,
 ): Promise<CodexExecResult> {
   const resolvedModel = getModel(model);
   return executeCodex(
@@ -231,6 +292,7 @@ export async function executeResume(
     resolvedModel,
     cwd,
     onEvent,
+    signal,
   );
 }
 
@@ -242,9 +304,10 @@ export async function executeFork(
   cwd?: string,
   reasoningEffort?: string,
   onEvent?: (line: string) => void,
+  signal?: AbortSignal,
 ): Promise<CodexExecResult> {
   const forkPrompt = prompt ?? 'Continue from where we left off.';
-  return executeResume(threadId, forkPrompt, model, cwd, reasoningEffort, onEvent);
+  return executeResume(threadId, forkPrompt, model, cwd, reasoningEffort, onEvent, signal);
 }
 
 // Test-only exports

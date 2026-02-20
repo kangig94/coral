@@ -73,7 +73,7 @@ type CodexThreadItemDetails =
 
 ---
 
-## src/mcp/schemas.ts — Zod Input Validation
+## src/codex/schemas.ts — Zod Input Validation
 
 Defines zod schemas for each of the 4 MCP tools. Runtime validation via `.parse()` at every handler entry point.
 
@@ -104,7 +104,7 @@ Types are extracted from each schema using `z.infer<>` for use in handlers.
 
 ---
 
-## src/mcp/cli-detection.ts — Codex CLI Detection
+## src/codex/cli-detection.ts — Codex CLI Detection
 
 Checks whether Codex CLI is installed and its version. **Checks once per server lifetime** and caches the result.
 
@@ -126,7 +126,7 @@ Resets the cache. Used in tests.
 
 ---
 
-## src/mcp/output-parser.ts — JSONL Output Parsing
+## src/codex/output-parser.ts — JSONL Output Parsing
 
 Extracts text and thread ID from Codex CLI `--json` mode JSONL output. **Single-pass pure function**.
 
@@ -161,7 +161,7 @@ Lines that fail JSON parsing are silently skipped (`continue`). Codex may inters
 
 ---
 
-## src/mcp/codex-executor.ts — Codex CLI Execution
+## src/codex/codex-executor.ts — Codex CLI Execution
 
 Core module that runs Codex CLI via `child_process.spawn` and collects results.
 
@@ -239,7 +239,7 @@ This module runs inside a stdio MCP server. `console.log` writes to stdout, whic
 
 ---
 
-## src/mcp/progress.ts — Progress File Utilities
+## src/codex/progress.ts — Progress File Utilities
 
 Pure helper functions for Codex execution visibility. No server dependencies.
 
@@ -281,7 +281,7 @@ Appends a terminal `completed` or `error` event to the progress file.
 
 ---
 
-## src/mcp/session-manager.ts — Session Management
+## src/codex/session-manager.ts — Session Management
 
 Per-session file persistence. Each session is stored as an individual JSON file.
 
@@ -342,7 +342,7 @@ Deletes the session file. Returns `true` on success, `false` if not found.
 
 ---
 
-## src/mcp/server-handlers.ts — Business Logic Handlers
+## src/codex/server-handlers.ts — Business Logic Handlers
 
 All MCP tool business logic, extracted from `server.ts` to enable independent testing. `server.ts` is the composition root (wiring only); this module contains all handlers and the dispatch switch.
 

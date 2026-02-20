@@ -50,7 +50,7 @@ Registers the MCP server with Claude Code.
   "mcpServers": {
     "cx": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-server.cjs"]
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-codex.cjs"]
     }
   }
 }
@@ -124,5 +124,5 @@ See [Hooks documentation](./hooks.md) for details.
 hooks/hooks.json            -> Claude Code configures SessionStart + SubagentStart hooks
 hooks/detect-codex-agent.sh -> Detection script executed by the hook
 .claude/coral/sessions/<project-hash>/*.json -> Runtime per-session files (auto-created)
-bridge/coral-server.cjs     -> MCP server executable (committed, no build required)
+bridge/coral-codex.cjs     -> MCP server executable (committed, no build required)
 ```

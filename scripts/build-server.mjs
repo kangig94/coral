@@ -18,12 +18,12 @@ for (const file of ['plugin.json', 'marketplace.json']) {
 }
 
 await esbuild.build({
-  entryPoints: ['src/mcp/server.ts'],
+  entryPoints: ['src/codex/server.ts'],
   bundle: true,
   platform: 'node',
   target: 'node18',
   format: 'cjs',
-  outfile: 'bridge/coral-server.cjs',
+  outfile: 'bridge/coral-codex.cjs',
   external: ['node:*'],
   minify: true,
   banner: { js: 'var __PLUGIN_ROOT__=require("path").resolve(__dirname,"..");' },
@@ -32,4 +32,4 @@ await esbuild.build({
   },
 });
 
-console.log('Built bridge/coral-server.cjs');
+console.log('Built bridge/coral-codex.cjs');

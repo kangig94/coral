@@ -4,16 +4,18 @@
  * server.ts is the composition root (wiring only).
  */
 
-import { executeOneShot, executeResume, executeFork } from './codex-executor.js';
+import { executeOneShot, executeResume, executeFork, registerExecution, unregisterExecution, abortExecution } from './codex-executor.js';
 import { SessionManager } from './session-manager.js';
 import {
   codexSessionCreateSchema,
   codexSessionSendSchema,
   codexSessionListSchema,
   codexSessionForkSchema,
+  codexSessionAbortSchema,
   type CodexSessionCreateInput,
   type CodexSessionSendInput,
   type CodexSessionForkInput,
+  type CodexSessionAbortInput,
 } from './schemas.js';
 import type { CodexThreadEvent } from '../types.js';
 import {
@@ -90,6 +92,17 @@ export const tools = [
       required: ['session'],
     },
   },
+  {
+    name: 'codex_session_abort',
+    description: 'Abort a running Codex session in the current process. The session can be resumed later with codex_session_send.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        session: { type: 'string', description: 'Session name or Codex thread ID to abort (required)' },
+      },
+      required: ['session'],
+    },
+  },
 ];
 
 export function textResult(text: string, isError = false): McpResult {
@@ -100,12 +113,13 @@ export function jsonResult(data: Record<string, unknown>): McpResult {
   return textResult(JSON.stringify(data, null, 2));
 }
 
-/** Conditional error/warning fields for Codex result responses. */
-export function resultExtras(result: { exitCode: number | null; errors: string[]; warnings: string[] }): Record<string, unknown> {
+/** Conditional error/warning/abort fields for Codex result responses. */
+export function resultExtras(result: { exitCode: number | null; errors: string[]; warnings: string[]; aborted?: boolean }): Record<string, unknown> {
   const extras: Record<string, unknown> = {};
   if (result.exitCode !== 0 && result.exitCode !== null) extras.exit_code = result.exitCode;
   if (result.errors.length > 0) extras.errors = result.errors;
   if (result.warnings.length > 0) extras.warnings = result.warnings;
+  if (result.aborted) extras.aborted = true;
   return extras;
 }
 
@@ -119,6 +133,11 @@ export function extractCompletionData(result: McpResult, sessionLabel: string): 
     model: data.model,
     duration_ms: data.duration_ms,
     ...(data.notice ? { notice: data.notice } : {}),
+    ...(data.aborted ? { aborted: true } : {}),
+    ...(data.non_resumable ? { non_resumable: true } : {}),
+    ...(data.exit_code !== undefined ? { exit_code: data.exit_code } : {}),
+    ...(Array.isArray(data.errors) ? { errors: data.errors } : {}),
+    ...(Array.isArray(data.warnings) ? { warnings: data.warnings } : {}),
   };
 }
 
@@ -204,28 +223,36 @@ export async function handleSessionCreate(input: CodexSessionCreateInput, mgr: S
   // input.name is always set by the dispatcher before calling this handler.
   // The fallback here is defensive — ensures safe direct invocation.
   const sessionName = input.name ?? `session-${Date.now()}`;
-  const result = await executeOneShot(input.prompt, input.model, input.working_directory, input.reasoning_effort, onEvent);
+  const controller = registerExecution(sessionName);
+  try {
+    const result = await executeOneShot(input.prompt, input.model, input.working_directory, input.reasoning_effort, onEvent, controller.signal);
 
-  if (!result.threadId) {
+    if (!result.threadId) {
+      return jsonResult({
+        response: result.response,
+        notice: result.aborted
+          ? 'Aborted before thread ID was received. This session cannot be resumed.'
+          : 'No thread ID returned by Codex. Session not registered.',
+        ...(result.aborted ? { aborted: true, non_resumable: true } : {}),
+        model: result.model,
+        duration_ms: result.durationMs,
+        ...resultExtras(result),
+      });
+    }
+
+    mgr.register(sessionName, result.threadId, result.model, input.working_directory ?? process.cwd());
+
     return jsonResult({
       response: result.response,
-      notice: 'No thread ID returned by Codex. Session not registered.',
+      thread_id: result.threadId,
+      session_name: sessionName,
       model: result.model,
       duration_ms: result.durationMs,
       ...resultExtras(result),
     });
+  } finally {
+    unregisterExecution(sessionName, controller);
   }
-
-  mgr.register(sessionName, result.threadId, result.model, input.working_directory ?? process.cwd());
-
-  return jsonResult({
-    response: result.response,
-    thread_id: result.threadId,
-    session_name: sessionName,
-    model: result.model,
-    duration_ms: result.durationMs,
-    ...resultExtras(result),
-  });
 }
 
 export async function handleSessionSend(input: CodexSessionSendInput, mgr: SessionManager, onEvent?: OnEventCallback): Promise<McpResult> {
@@ -234,17 +261,24 @@ export async function handleSessionSend(input: CodexSessionSendInput, mgr: Sessi
   const entry = mgr.get(input.session);
   if (!entry) return sessionNotFoundError(input.session);
 
-  const result = await executeResume(entry.codexThreadId, input.prompt, input.model, input.working_directory ?? entry.workingDirectory, input.reasoning_effort, onEvent);
-  mgr.updateSession(entry.name, input.model ? { model: input.model } : undefined);
+  const controller = registerExecution(entry.name);
+  try {
+    const result = await executeResume(entry.codexThreadId, input.prompt, input.model, input.working_directory ?? entry.workingDirectory, input.reasoning_effort, onEvent, controller.signal);
+    mgr.updateSession(entry.name, input.model ? { model: input.model } : undefined);
 
-  return jsonResult({
-    response: result.response,
-    thread_id: result.threadId,
-    session_name: entry.name,
-    model: result.model,
-    duration_ms: result.durationMs,
-    ...resultExtras(result),
-  });
+    return jsonResult({
+      response: result.response,
+      // Fall back to the known entry thread ID when abort fires before thread.started re-emits.
+      // The session remains resumable regardless; callers should rely on session name for resume.
+      thread_id: result.threadId ?? entry.codexThreadId,
+      session_name: entry.name,
+      model: result.model,
+      duration_ms: result.durationMs,
+      ...resultExtras(result),
+    });
+  } finally {
+    unregisterExecution(entry.name, controller);
+  }
 }
 
 export async function handleSessionList(mgr: SessionManager): Promise<McpResult> {
@@ -267,21 +301,40 @@ export async function handleSessionFork(input: CodexSessionForkInput, mgr: Sessi
   if (!entry) return sessionNotFoundError(input.session);
 
   const cwd = input.working_directory ?? entry.workingDirectory;
-  const result = await executeFork(entry.codexThreadId, input.prompt, input.model, cwd, input.reasoning_effort, onEvent);
+  const forkName = input.name ?? entry.name;
+  const controller = registerExecution(forkName);
+  try {
+    const result = await executeFork(entry.codexThreadId, input.prompt, input.model, cwd, input.reasoning_effort, onEvent, controller.signal);
 
-  if (input.name && result.threadId) {
-    mgr.register(input.name, result.threadId, result.model, cwd ?? process.cwd());
+    if (input.name && result.threadId) {
+      mgr.register(input.name, result.threadId, result.model, cwd ?? process.cwd());
+    }
+
+    return jsonResult({
+      response: result.response,
+      thread_id: result.threadId,
+      forked_from: entry.codexThreadId,
+      ...(input.name ? { session_name: input.name } : {}),
+      model: result.model,
+      duration_ms: result.durationMs,
+      ...resultExtras(result),
+    });
+  } finally {
+    unregisterExecution(forkName, controller);
   }
+}
 
-  return jsonResult({
-    response: result.response,
-    thread_id: result.threadId,
-    forked_from: entry.codexThreadId,
-    ...(input.name ? { session_name: input.name } : {}),
-    model: result.model,
-    duration_ms: result.durationMs,
-    ...resultExtras(result),
-  });
+export async function handleSessionAbort(input: CodexSessionAbortInput, mgr: SessionManager): Promise<McpResult> {
+  const entry = mgr.get(input.session);
+  const sessionName = entry?.name ?? input.session;
+  const aborted = abortExecution(sessionName);
+  if (!aborted) {
+    return textResult(
+      `No active execution found for session "${input.session}" in this process. The session may have already completed, still be initializing (thread ID not yet registered), or belong to a different MCP server instance.`,
+      true,
+    );
+  }
+  return jsonResult({ session_name: sessionName, status: 'abort_requested' });
 }
 
 /**
@@ -345,6 +398,10 @@ export async function handleToolCall(
         const label = input.name ?? entry?.name ?? input.session;
         return runForeground(label, name, progressToken, notify, (cb) =>
           handleSessionFork(input, sessionManager, cb));
+      }
+      case 'codex_session_abort': {
+        const input = codexSessionAbortSchema.parse(rawArgs);
+        return handleSessionAbort(input, sessionManager);
       }
       default:
         return textResult(`Unknown tool: ${name}`, true);

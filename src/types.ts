@@ -11,6 +11,8 @@ export interface CodexExecResult {
   exitCode: number | null;
   errors: string[];
   warnings: string[];
+  /** true when execution was aborted via AbortSignal */
+  aborted: boolean;
 }
 
 /** A named session entry in the registry */

@@ -34,7 +34,7 @@ paths:
 
 ## Plugin.json Sync
 
-- MCP tool declarations in `.claude-plugin/plugin.json` must match `tools` array in `src/mcp/server.ts`
+- MCP tool declarations in `.claude-plugin/plugin.json` must match `tools` array in `src/codex/server.ts`
 - Agent declarations in plugin.json must match files in `agents/`
 - Skill declarations must match directories in `skills/`
 - When adding a new MCP tool: update server.ts, schemas.ts, plugin.json, and docs/mcp-tools.md

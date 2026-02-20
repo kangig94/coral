@@ -2,7 +2,7 @@
 
 The Coral MCP server provides 4 tools. Inside Claude Code's plugin system, tools are accessible via the `mcp__plugin_coral_cx__` prefix (composed as `mcp__plugin_<plugin>_<server>__<tool>`).
 
-All tool inputs are validated at runtime with zod schemas (`src/mcp/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
+All tool inputs are validated at runtime with zod schemas (`src/codex/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
 
 ## codex_session_create
 
