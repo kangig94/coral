@@ -27,7 +27,6 @@ After ralph completes, verify these files exist. Missing files indicate protocol
 | Rules | `.claude/rules/design-philosophy.md` | Must exist |
 | Rules | `.claude/rules/validation.md` | Must exist |
 | Rules | `.claude/rules/conventions.md` | Must exist |
-| Rules | `.claude/rules/workflow.md` | Must exist |
 | Rules | `.claude/rules/{domain-specific}.md` | At least 1 per detected domain |
 | Agents | `.claude/agents/review-orchestrator.md` | Must exist |
 | Agents | `.claude/agents/code-critic.md` | Must exist |

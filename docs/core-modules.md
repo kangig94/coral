@@ -1,6 +1,8 @@
 # Core Modules
 
-Detailed description of the 8 core TypeScript modules.
+Detailed description of the TypeScript modules across both MCP servers.
+
+## Codex Server Modules (`src/codex/`)
 
 ## src/types.ts — Shared Type Definitions
 
@@ -407,3 +409,194 @@ Routes MCP tool calls to handlers. Parses input with Zod schemas, applies backgr
 - `tools` — MCP tool definitions array (used by `ListToolsRequestSchema` handler)
 - `activeBackgroundFiles` — `Set<string>` for shutdown cleanup
 - `OnEventCallback` type
+
+---
+
+## Discuss Server Modules (`src/discuss/`)
+
+The discuss server follows a **Functional Core / Imperative Shell** architecture:
+- **Pure functions** (`state-machine.ts`, `conditions.ts`, `transcript.ts`) have zero I/O imports
+- **I/O shell** (`session-store.ts`, `wait.ts`) handles filesystem operations
+- **Wiring** (`server.ts`, `server-handlers.ts`) connects tools to logic
+
+---
+
+### src/discuss/types.ts — Shared Type Definitions
+
+Defines all discuss types. Zero imports from `node:` or project modules.
+
+#### DiscussState
+
+```typescript
+interface DiscussState {
+  session_id: string;
+  session_dir: string;
+  topic: string;
+  status: 'bidding' | 'speaking' | 'voting' | 'ended';
+  step: number;
+  epoch: number;
+  quota_per_epoch: number;
+  agents: Record<string, AgentState>;
+  current_bids: Record<string, number | null>;
+  pending_bidders: string[];
+  current_speaker: string | null;
+  speaker_type: 'normal' | 'fallback' | 'cold_start' | null;
+  last_speech_step: number;        // monotonic marker for speech detection
+  transcript: TranscriptEntry[];   // structured transcript in state
+  transcript_rendered: number;     // tracks .md append position
+}
+```
+
+#### TranscriptEntry (Discriminated Union)
+
+5 entry types: `bids`, `speech`, `vote`, `epoch_summary`, `session_event`.
+
+#### Result\<T\>
+
+```typescript
+type Result<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: string; detail?: Record<string, unknown> };
+```
+
+Every state-modifying function returns `Result<T>` — errors are values, never thrown.
+
+#### WaitCondition
+
+```typescript
+type WaitCondition = 'all_bids' | 'speech_delivered' | 'action_needed';
+```
+
+---
+
+### src/discuss/state-machine.ts — Pure State Transitions
+
+All state-modifying logic. Zero I/O imports (`node:fs`, `node:path` are banned in this file).
+
+**Signature pattern**: `(state: DiscussState, ...args, now: string) → Result<T>`
+
+#### Key Functions
+
+| Function | Description |
+|---|---|
+| `initSession(input, sessionId, sessionDir, now)` | Create initial DiscussState from discuss_create input |
+| `applyBid(state, agent, score, now)` | Record a bid, remove from pending_bidders |
+| `resolveWinner(state, now)` | Resolve bidding round: winner, fallback, cold_start, vote_required, no_winner |
+| `applySpeech(state, agent, content, now)` | Record speech, set monotonic `last_speech_step`, advance step |
+| `applyEpochSummary(state, epoch, summary, now)` | Record epoch summary, validate epoch number |
+| `applyEnd(state, opts, now)` | Transition to ended status, record synthesis or force-end |
+
+#### Helpers
+
+| Function | Description |
+|---|---|
+| `parseDisplayName(persona, agentName)` | Extract `Name` from `# Name — Role` first line |
+| `randomSuffix()` | 4-char random alphanumeric suffix |
+| `formatDateId(date)` | Format as `YYYYMMDD-HHmmss` |
+| `topicSlug(topic)` | URL-safe slug preserving CJK characters |
+
+---
+
+### src/discuss/conditions.ts — Wait Condition Predicates
+
+Pure boolean predicates used by `discuss_wait` to detect when to unblock.
+
+| Predicate | Condition |
+|---|---|
+| `allBidsIn(state)` | All bids submitted AND status is bidding/voting |
+| `speechDelivered(state)` | `last_speech_step === step - 1` AND status is bidding (monotonic marker) |
+| `actionNeeded(agent)(state)` | Agent needs to bid, speak, or vote right now |
+
+---
+
+### src/discuss/wait.ts — Async File Polling
+
+Polls `state.json` at intervals until a predicate is true or timeout expires.
+
+#### `waitForCondition(statePath, predicate, timeoutMs, intervalMs?): Promise<WaitResult>`
+
+- Immediate first check before entering poll loop
+- `lastKnownGood` pattern: tracks last successful read so timeout always returns a valid state
+- Cancellation safety: stores `setTimeout` handle and clears on resolution
+- Transient read failures (mid-rename, corrupt JSON) are silently retried
+
+---
+
+### src/discuss/session-store.ts — I/O Shell
+
+Handles session directory management, atomic writes, cross-process locking, and legacy state migration.
+
+#### SessionLock
+
+Cross-process `mkdir`-based lock (POSIX atomic test-and-set). Stale lock detection via PID liveness check + 30s age threshold.
+
+#### normalizeState(raw)
+
+Migrates legacy state.json to current schema. Safe to call on already-normalized state. Works on raw `Record<string, unknown>` before casting to avoid TypeScript `in` narrowing issues on required fields.
+
+#### SessionStore Class
+
+| Method | Description |
+|---|---|
+| `createSessionDir(topic)` | Create session directory with collision detection (3 retries) |
+| `resolveDir(sessionId)` | Resolve directory from session_id prefix |
+| `load(fullSessionPath)` | Load and normalize state |
+| `save(fullSessionPath, state)` | Atomic write + incremental transcript.md append |
+| `initTranscript(fullSessionPath, topic)` | Write transcript.md header |
+| `withLock(fullSessionPath, fn)` | Acquire cross-process lock and run fn |
+
+---
+
+### src/discuss/transcript.ts — Transcript Rendering
+
+Pure functions operating on structured `TranscriptEntry[]`. Human-readable format with timestamps and soft 80 / hard 100 word-wrap. Supports Korean/CJK sentence-ending patterns for grace-zone detection.
+
+| Function | Description |
+|---|---|
+| `renderHeader(topic)` | Render transcript.md header |
+| `renderEntries(entries, agents)` | Render entries to markdown (speech, bids, vote, epoch_summary, session_event) |
+| `formatRecent(state, lastN?)` | Format recent transcript: summary of old entries + full recent entries |
+| `formatFull(state)` | Format all entries (restricted access — current speaker or ended session) |
+| `formatSummary(state)` | Format epoch-level summary overview |
+
+---
+
+### src/discuss/schemas.ts — Zod Input Validation
+
+Zod schemas for all 8 discuss MCP tools.
+
+| Schema | Tool | Required Fields |
+|---|---|---|
+| `discussCreateSchema` | `discuss_create` | `topic`, `agents` |
+| `discussBidSchema` | `discuss_bid` | `session`, `agent_name`, `score` |
+| `discussWaitSchema` | `discuss_wait` | `session`, `condition`, `timeout_seconds` |
+| `discussSpeakSchema` | `discuss_speak` | `session`, `agent_name`, `content` |
+| `discussTranscriptSchema` | `discuss_transcript` | `session` |
+| `discussStateSchema` | `discuss_state` | `session` |
+| `discussEndSchema` | `discuss_end` | `session` |
+| `discussEpochSummarySchema` | `discuss_epoch_summary` | `session`, `epoch`, `summary` |
+
+Notable validation: `discuss_wait` enforces per-condition timeout limits (all_bids: 60s, speech_delivered: 120s, action_needed: 180s) and requires `agent_name` for `action_needed` condition.
+
+---
+
+### src/discuss/server-handlers.ts — Tool Dispatch
+
+Routes MCP tool calls to state-machine functions via `SessionStore`. All discuss_wait calls use `waitForCondition` + auto-resolve inside lock.
+
+#### `handleToolCall(name, rawArgs, store): Promise<McpResult>`
+
+Dispatches to per-tool handlers. Zod validation at entry. Unknown tools return `isError` response.
+
+#### Key handler patterns
+
+- **discuss_create**: `initSession` (pure) → `store.save` (I/O)
+- **discuss_bid**: `store.withLock` → `applyBid` (pure) → if all bids in: `resolveWinner` (pure) → `store.save`
+- **discuss_wait**: `waitForCondition` (polling) → if `all_bids`: auto-resolve inside lock → return result
+- **discuss_speak**: `store.withLock` → `applySpeech` (pure) → `store.save`
+
+---
+
+### src/discuss/server.ts — MCP Server Entry Point
+
+Composition root (~40 lines). SDK + stdio transport setup, SessionStore initialization, shutdown signal handling. No business logic — delegates entirely to `server-handlers.ts`.

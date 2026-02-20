@@ -5,7 +5,7 @@ declare const __VERSION__: string;
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { DiscussManager } from './discuss-manager.js';
+import { SessionStore } from './session-store.js';
 import { tools, handleToolCall } from './server-handlers.js';
 
 const server = new Server(
@@ -13,13 +13,13 @@ const server = new Server(
   { capabilities: { tools: {} } },
 );
 
-const mgr = new DiscussManager(process.cwd());
+const store = new SessionStore(process.cwd());
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
-  return handleToolCall(name, args ?? {}, mgr);
+  return handleToolCall(name, args ?? {}, store);
 });
 
 function shutdown() {

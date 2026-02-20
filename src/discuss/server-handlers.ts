@@ -1,13 +1,26 @@
 /**
- * Coral Discuss MCP Server — tool definitions and dispatch handlers.
+ * Coral Discuss MCP Server — tool definitions and dispatch handlers (v2).
+ * Uses SessionStore + pure state-machine functions. discuss_resolve removed.
  */
 
 import { textResult, jsonResult, type McpResult } from '../shared/mcp-utils.js';
-import { DiscussManager } from './discuss-manager.js';
+import type { DiscussState } from './types.js';
+import { SessionStore } from './session-store.js';
+import {
+  initSession,
+  applyBid,
+  resolveWinner,
+  applySpeech,
+  applyEpochSummary,
+  applyEnd,
+} from './state-machine.js';
+import { allBidsIn, speechDelivered, actionNeeded } from './conditions.js';
+import { waitForCondition } from './wait.js';
+import { formatFull, formatRecent, formatSummary } from './transcript.js';
 import {
   discussCreateSchema,
   discussBidSchema,
-  discussResolveSchema,
+  discussWaitSchema,
   discussSpeakSchema,
   discussTranscriptSchema,
   discussStateSchema,
@@ -59,15 +72,17 @@ export const tools = [
     },
   },
   {
-    name: 'discuss_resolve',
-    description: 'Resolve current bidding to select next speaker. Returns winner, no_winner, vote_required, or end_vote.',
+    name: 'discuss_wait',
+    description: 'Block until condition fulfilled. all_bids: auto-resolves when all bids in. speech_delivered: waits for current speech to finish. action_needed: waits for this agent\'s turn.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         session: { type: 'string', description: 'Session ID' },
-        designate: { type: 'string', description: 'Forced speaker (cold_start only, all bids < 30)' },
+        condition: { type: 'string', enum: ['all_bids', 'speech_delivered', 'action_needed'], description: 'Condition to wait for' },
+        timeout_seconds: { type: 'number', description: 'Max wait: all_bids=60, speech_delivered=120, action_needed=180' },
+        agent_name: { type: 'string', description: 'Required for action_needed condition' },
       },
-      required: ['session'],
+      required: ['session', 'condition', 'timeout_seconds'],
     },
   },
   {
@@ -99,7 +114,7 @@ export const tools = [
   },
   {
     name: 'discuss_state',
-    description: 'Query current session state. Never exposes bid scores (teamlead-only via discuss_resolve).',
+    description: 'Query current session state. Bid scores only visible via discuss_wait("all_bids") auto-resolve.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -140,78 +155,228 @@ export const tools = [
 export async function handleToolCall(
   name: string,
   rawArgs: Record<string, unknown>,
-  mgr: DiscussManager,
+  store: SessionStore,
 ): Promise<McpResult> {
   try {
     switch (name) {
       case 'discuss_create': {
         const input = discussCreateSchema.parse(rawArgs);
-        const result = await mgr.create(input);
-        return jsonResult(result as Record<string, unknown>);
+        const now = new Date().toISOString();
+        const state = initSession(input, now);
+        const { sessionId, sessionDir, fullPath } = store.createSessionDir(input.topic);
+        state.session_id = sessionId;
+        state.session_dir = sessionDir;
+        state.team_name = `coral-dc-${sessionId}`;
+
+        await store.withLock(fullPath, async () => {
+          store.initTranscript(fullPath, input.topic);
+          store.save(fullPath, state);
+        });
+
+        return jsonResult({
+          session_id: sessionId,
+          session_dir: sessionDir,
+          team_name: state.team_name,
+          topic: input.topic,
+          agents: input.agents.map((a) => a.name),
+        });
       }
 
       case 'discuss_bid': {
         const input = discussBidSchema.parse(rawArgs);
-        const result = await mgr.submitBid(input.session, input.agent_name, input.score);
-        return jsonResult(result as Record<string, unknown>);
+        const sessionDir = store.resolveDir(input.session);
+        if (!sessionDir) return jsonResult({ error: 'session_not_found' });
+
+        const result = await store.withLock(sessionDir, async () => {
+          const state = store.load(sessionDir);
+          const res = applyBid(state, input.agent_name, input.score, new Date().toISOString());
+          if (!res.ok) return res;
+          store.save(sessionDir, res.value);
+          return { ok: true as const, value: { all_bids_in: res.value.pending_bidders.length === 0 } };
+        });
+
+        if (!result.ok) return jsonResult({ error: result.error, ...result.detail });
+        return jsonResult(result.value as Record<string, unknown>);
       }
 
-      case 'discuss_resolve': {
-        const input = discussResolveSchema.parse(rawArgs);
-        const result = await mgr.resolve(input.session, input.designate);
-        return jsonResult(result as Record<string, unknown>);
+      case 'discuss_wait': {
+        const input = discussWaitSchema.parse(rawArgs);
+        const sessionDir = store.resolveDir(input.session);
+        if (!sessionDir) return textResult('Error: session_not_found', true);
+
+        // Agent membership pre-check for action_needed (avoids burning full timeout on unknown agent)
+        if (input.condition === 'action_needed') {
+          const preState = store.load(sessionDir);
+          if (!preState.agents[input.agent_name!]) {
+            return jsonResult({ error: 'agent_not_found', agent_name: input.agent_name });
+          }
+        }
+
+        let pred: (s: DiscussState) => boolean;
+        if (input.condition === 'all_bids') {
+          pred = allBidsIn;
+        } else if (input.condition === 'speech_delivered') {
+          pred = speechDelivered;
+        } else {
+          pred = actionNeeded(input.agent_name!);
+        }
+
+        const statePath = store.statePath(sessionDir);
+        const waitResult = await waitForCondition(statePath, pred, input.timeout_seconds * 1000);
+
+        // Error guard: no valid state was ever read
+        if (waitResult.error) {
+          return textResult(`Error: ${waitResult.error}`, true);
+        }
+
+        // Auto-resolve on all_bids fulfillment
+        if (waitResult.fulfilled && input.condition === 'all_bids') {
+          const outcome = await store.withLock(sessionDir, async () => {
+            const state = store.load(sessionDir);
+            // TOCTOU guard: re-check FULL condition inside lock (stale wakeup detection)
+            if (!allBidsIn(state)) {
+              return { stale: true, status: state.status, step: state.step, epoch: state.epoch };
+            }
+            const now = new Date().toISOString();
+            const res = resolveWinner(state, now);
+            if (!res.ok) return { error: res.error, ...res.detail };
+            const [newState, resolveData] = res.value;
+            store.save(sessionDir, newState);
+            // Unwrap Result envelope — return ResolveResult directly to MCP
+            return resolveData as Record<string, unknown>;
+          });
+          return jsonResult({ fulfilled: true, elapsed_seconds: waitResult.elapsed_ms / 1000, ...outcome });
+        }
+
+        // Action-needed: tell agent what to do next
+        if (waitResult.fulfilled && input.condition === 'action_needed') {
+          const s = waitResult.state;
+          let action: string;
+          if (s.status === 'speaking') action = 'speak';
+          else if (s.status === 'voting') action = 'vote';
+          else action = 'bid';
+          return jsonResult({ fulfilled: true, action, elapsed_seconds: waitResult.elapsed_ms / 1000 });
+        }
+
+        // Generic return (speech_delivered or timeout)
+        return jsonResult({
+          fulfilled: waitResult.fulfilled,
+          elapsed_seconds: waitResult.elapsed_ms / 1000,
+          status: waitResult.state.status,
+          step: waitResult.state.step,
+          epoch: waitResult.state.epoch,
+        });
       }
 
       case 'discuss_speak': {
         const input = discussSpeakSchema.parse(rawArgs);
-        const result = await mgr.recordSpeech(input.session, input.agent_name, input.content);
-        return jsonResult(result as Record<string, unknown>);
+        const sessionDir = store.resolveDir(input.session);
+        if (!sessionDir) return jsonResult({ error: 'session_not_found' });
+
+        const result = await store.withLock(sessionDir, async () => {
+          const state = store.load(sessionDir);
+          const res = applySpeech(state, input.agent_name, input.content, new Date().toISOString());
+          if (!res.ok) return res;
+          store.save(sessionDir, res.value);
+          return { ok: true as const, value: { step: res.value.step, status: res.value.status } };
+        });
+
+        if (!result.ok) return jsonResult({ error: result.error, ...result.detail });
+        return jsonResult(result.value as Record<string, unknown>);
       }
 
       case 'discuss_transcript': {
         const input = discussTranscriptSchema.parse(rawArgs);
-        // Access control: mode=full requires agent_name=current_speaker OR status=ended
+        const sessionDir = store.resolveDir(input.session);
+        if (!sessionDir) return jsonResult({ error: 'session_not_found' });
+
+        const state = store.load(sessionDir);
+
+        // Full-transcript ACL: mode=full requires agent_name=current_speaker OR status=ended
         if (input.mode === 'full') {
-          const state = mgr.getState(input.session);
-          if ('error' in state) return jsonResult(state as Record<string, unknown>);
-          const status = state.status as string;
-          if (status !== 'ended') {
+          if (state.status !== 'ended') {
             if (!input.agent_name) {
               return jsonResult({ error: 'full_transcript_requires_speaker_or_ended' });
             }
-            const currentSpeaker = state.current_speaker as string | null;
-            if (input.agent_name !== currentSpeaker) {
+            if (input.agent_name !== state.current_speaker) {
               return jsonResult({ error: 'full_transcript_speaker_only' });
             }
           }
         }
-        const result = mgr.getTranscript(input.session, input.mode, input.last_n);
-        if (typeof result === 'object' && 'error' in result) {
-          return jsonResult(result as Record<string, unknown>);
+
+        let text: string;
+        if (input.mode === 'full') {
+          text = formatFull(state.transcript, state.agents);
+        } else if (input.mode === 'summary') {
+          text = formatSummary(state.transcript, state.agents);
+        } else {
+          const lastN = input.last_n ?? state.recent_turns;
+          text = formatRecent(state.transcript, lastN, state.agents);
         }
-        return textResult(result as string);
+        return textResult(text);
       }
 
       case 'discuss_state': {
         const input = discussStateSchema.parse(rawArgs);
-        const result = mgr.getState(input.session);
-        return jsonResult(result as Record<string, unknown>);
+        const sessionDir = store.resolveDir(input.session);
+        if (!sessionDir) return jsonResult({ error: 'session_not_found' });
+
+        const state = store.load(sessionDir);
+        return jsonResult({
+          session_id: state.session_id,
+          topic: state.topic,
+          status: state.status,
+          step: state.step,
+          epoch: state.epoch,
+          current_speaker: state.current_speaker,
+          speaker_type: state.speaker_type,
+          cold_start: state.cold_start,
+          quota_per_epoch: state.quota_per_epoch,
+          recent_turns: state.recent_turns,
+          agents: Object.fromEntries(
+            Object.entries(state.agents).map(([n, a]) => [
+              n,
+              { display_name: a.display_name, quota_remaining: a.quota_remaining, total_speaks: a.total_speaks, fallback_used: a.fallback_used },
+            ]),
+          ),
+          pending_bidders: state.pending_bidders,
+          eligible_count: Object.values(state.agents).filter((a) => a.quota_remaining > 0).length,
+          total_agents: Object.keys(state.agents).length,
+        });
       }
 
       case 'discuss_end': {
         const input = discussEndSchema.parse(rawArgs);
-        const result = await mgr.end(input.session, {
-          force: input.force,
-          reason: input.reason,
-          synthesis: input.synthesis,
+        const sessionDir = store.resolveDir(input.session);
+        if (!sessionDir) return jsonResult({ error: 'session_not_found' });
+
+        const result = await store.withLock(sessionDir, async () => {
+          const state = store.load(sessionDir);
+          const res = applyEnd(state, { force: input.force, reason: input.reason, synthesis: input.synthesis }, new Date().toISOString());
+          if (!res.ok) return res;
+          store.save(sessionDir, res.value);
+          return { ok: true as const, value: { ok: true, session_id: input.session } };
         });
-        return jsonResult(result as Record<string, unknown>);
+
+        if (!result.ok) return jsonResult({ error: result.error, ...result.detail });
+        return jsonResult(result.value as Record<string, unknown>);
       }
 
       case 'discuss_epoch_summary': {
         const input = discussEpochSummarySchema.parse(rawArgs);
-        const result = await mgr.recordEpochSummary(input.session, input.epoch, input.summary);
-        return jsonResult(result as Record<string, unknown>);
+        const sessionDir = store.resolveDir(input.session);
+        if (!sessionDir) return jsonResult({ error: 'session_not_found' });
+
+        const result = await store.withLock(sessionDir, async () => {
+          const state = store.load(sessionDir);
+          const res = applyEpochSummary(state, input.epoch, input.summary, new Date().toISOString());
+          if (!res.ok) return res;
+          store.save(sessionDir, res.value);
+          return { ok: true as const, value: { ok: true } };
+        });
+
+        if (!result.ok) return jsonResult({ error: result.error, ...result.detail });
+        return jsonResult(result.value as Record<string, unknown>);
       }
 
       default:

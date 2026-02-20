@@ -1,10 +1,9 @@
 /**
- * Transcript file operations for discuss sessions.
+ * Transcript rendering — pure functions operating on structured TranscriptEntry[].
  * Human-readable format with timestamps and soft 80 / hard 100 word-wrap.
  */
 
-import * as fs from 'node:fs';
-import * as path from 'node:path';
+import type { AgentState, TranscriptEntry } from './types.js';
 
 /** Soft and hard column limits for word-wrap. */
 const SOFT_LIMIT = 80;
@@ -37,7 +36,6 @@ export function wrapText(text: string, opts?: { soft?: number; hard?: number }):
       if (candidate.length <= soft) {
         current = candidate;
       } else if (candidate.length <= hard) {
-        // Grace zone: extend if current ends a sentence
         if (SENTENCE_END.test(current.trimEnd())) {
           lines.push(current);
           current = word;
@@ -45,9 +43,7 @@ export function wrapText(text: string, opts?: { soft?: number; hard?: number }):
           current = candidate;
         }
       } else {
-        // Past hard limit — flush current and start new line with word
         if (current) lines.push(current);
-        // Word itself may exceed hard limit — let it through as-is
         current = word;
       }
     }
@@ -57,113 +53,132 @@ export function wrapText(text: string, opts?: { soft?: number; hard?: number }):
   return lines.join('\n');
 }
 
-/** Format a Date as [YYYY-MM-DD HH:mm:ss]. */
-function formatTimestamp(d: Date): string {
+/** Format a Date as [HH:mm:ss] (short form for transcript headers). */
+function formatTimestamp(ts: string): string {
+  const d = new Date(ts);
   const pad = (n: number) => String(n).padStart(2, '0');
-  return `[${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}]`;
+  return `[${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}]`;
 }
 
 /** Generate a one-line summary: first sentence or first ~100 chars at word boundary. */
 export function generateOneLiner(content: string): string {
-  // Strip wrapped newlines for summary — use first line or first sentence
   const flat = content.replace(/\n/g, ' ').trim();
   const sentenceEnd = flat.search(/[.!?]\s/u);
-  if (sentenceEnd !== -1 && sentenceEnd < 120) {
-    return flat.slice(0, sentenceEnd + 1);
-  }
+  if (sentenceEnd !== -1 && sentenceEnd < 120) return flat.slice(0, sentenceEnd + 1);
   if (flat.length <= 100) return flat;
   const cut = flat.lastIndexOf(' ', 100);
   return cut > 0 ? flat.slice(0, cut) + '…' : flat.slice(0, 100) + '…';
 }
 
-/** Initialize transcript file with topic header and Epoch 1 marker. */
-export function initTranscript(filePath: string, topic: string): void {
-  const content = `# ${topic}\n\n## Epoch 1\n`;
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, content, 'utf8');
+// ─── Entry rendering ──────────────────────────────────────────────────────────
+
+/** Render structured entries to markdown text. Used by SessionStore.save() for incremental append. */
+export function renderEntries(
+  entries: TranscriptEntry[],
+  agents: Record<string, AgentState>,
+): string {
+  return entries.map((e) => renderEntry(e, agents)).join('');
 }
 
-/** Append a speech entry to the transcript. */
-export function appendSpeech(filePath: string, agentName: string, content: string): void {
-  const ts = formatTimestamp(new Date());
-  const wrapped = wrapText(content);
-  const entry = `\n### ${ts} ${agentName}\n${wrapped}\n`;
-  fs.appendFileSync(filePath, entry, 'utf8');
-}
-
-/**
- * Append an epoch summary header + entry.
- * Called by the teamlead at the start of a new epoch BEFORE the first bid.
- */
-export function appendEpochSummary(filePath: string, epoch: number, summary: string): void {
-  const ts = formatTimestamp(new Date());
-  const wrapped = wrapText(summary);
-  const entry = `\n## Epoch ${epoch}\n\n### ${ts} Epoch Summary (by Teamlead)\n${wrapped}\n`;
-  fs.appendFileSync(filePath, entry, 'utf8');
-}
-
-/** Read the full transcript file. */
-export function readFull(filePath: string): string {
-  if (!fs.existsSync(filePath)) return '';
-  return fs.readFileSync(filePath, 'utf8');
-}
-
-/**
- * Parse speech blocks from transcript.
- * Returns array of { name, content } in order.
- */
-function parseSpeeches(raw: string): Array<{ name: string; content: string }> {
-  const speeches: Array<{ name: string; content: string }> = [];
-  // Match ### [timestamp] AgentName blocks (skip "Epoch Summary" which is teamlead metadata)
-  const blockRe = /^### \[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] (.+)$/gm;
-  let match: RegExpExecArray | null;
-  const positions: Array<{ name: string; start: number }> = [];
-
-  while ((match = blockRe.exec(raw)) !== null) {
-    positions.push({ name: match[1], start: match.index + match[0].length });
+function renderEntry(e: TranscriptEntry, agents: Record<string, AgentState>): string {
+  switch (e.type) {
+    case 'bids': {
+      const rows = Object.entries(e.bids)
+        .sort(([, a], [, b]) => b - a)
+        .map(([name, score]) => {
+          const dn = agents[name]?.display_name ?? name;
+          return `| ${dn} (${name}) | ${score} |`;
+        })
+        .join('\n');
+      const winnerLine = e.winner
+        ? `> **Winner: ${agents[e.winner]?.display_name ?? e.winner}** (${e.resolve_type})`
+        : `> **No winner** (${e.resolve_type})`;
+      return `\n#### Bids — Step ${e.step}\n| Agent | Score |\n|-------|-------|\n${rows}\n${winnerLine}\n\n---\n`;
+    }
+    case 'speech': {
+      const ts = formatTimestamp(e.ts);
+      const wrapped = wrapText(e.content);
+      return `\n### ${ts} ${e.display_name} (${e.agent})\n${wrapped}\n`;
+    }
+    case 'vote': {
+      const rows = Object.entries(e.votes)
+        .map(([name, v]) => `| ${agents[name]?.display_name ?? name} (${name}) | ${v === 0 ? 'agree' : 'disagree'} |`)
+        .join('\n');
+      const verdict = e.unanimous ? 'Unanimous — ending discussion' : 'Not unanimous — continuing';
+      return `\n#### Vote — Epoch ${e.epoch}\n| Agent | Vote |\n|-------|------|\n${rows}\n> **${verdict}**\n\n---\n`;
+    }
+    case 'epoch_summary': {
+      const ts = formatTimestamp(e.ts);
+      const wrapped = wrapText(e.summary);
+      return `\n## Epoch ${e.epoch}\n\n### ${ts} Epoch Summary (by Teamlead)\n${wrapped}\n`;
+    }
+    case 'session_event': {
+      const ts = formatTimestamp(e.ts);
+      if (e.event === 'synthesis') {
+        const wrapped = wrapText(e.detail);
+        return `\n## Synthesis\n\n### ${ts} Discussion Summary\n${wrapped}\n`;
+      }
+      return `\n### ${ts} [${e.event}]\n${e.detail}\n`;
+    }
   }
+}
 
-  for (let i = 0; i < positions.length; i++) {
-    const end = i + 1 < positions.length ? positions[i + 1].start : raw.length;
-    // Find the start of the next ### marker to get real end of content
-    const nextMarkerSearch = raw.indexOf('\n### ', positions[i].start);
-    const contentEnd = nextMarkerSearch !== -1 && nextMarkerSearch < end ? nextMarkerSearch : end;
-    const content = raw.slice(positions[i].start, contentEnd).trim();
-    speeches.push({ name: positions[i].name, content });
-  }
+/** Render topic header for initial transcript.md. */
+export function renderHeader(topic: string): string {
+  return `# ${topic}\n\n## Epoch 1\n`;
+}
 
-  return speeches;
+// ─── Transcript read functions (operate on structured entries) ────────────────
+
+/** Return full render of all transcript entries. */
+export function formatFull(entries: TranscriptEntry[], agents: Record<string, AgentState>): string {
+  return renderHeader('') + renderEntries(entries, agents);
 }
 
 /**
- * Read recent N speeches in full + earlier as one-line summaries.
- * lastN defaults to session's recent_turns.
+ * Last N speech entries in full + earlier as one-line summaries.
+ * Non-speech entries (bids, votes, summaries) always appear in full.
  */
-export function readRecent(filePath: string, lastN: number): string {
-  const raw = readFull(filePath);
-  if (!raw) return '';
-  const speeches = parseSpeeches(raw);
-  if (speeches.length === 0) return raw;
-
+export function formatRecent(
+  entries: TranscriptEntry[],
+  lastN: number,
+  agents: Record<string, AgentState>,
+): string {
+  const speeches = entries.filter((e) => e.type === 'speech');
   const recentStart = Math.max(0, speeches.length - lastN);
-  const olderSummaries = speeches.slice(0, recentStart).map((s) => `- ${s.name}: ${generateOneLiner(s.content)}`);
-  const recentFull = speeches.slice(recentStart).map((s) => `### ${s.name}\n${s.content}`);
+  const recentSpeeches = new Set(speeches.slice(recentStart));
+
+  const olderSummaries: string[] = [];
+  const recentParts: string[] = [];
+
+  for (const e of entries) {
+    if (e.type !== 'speech') {
+      recentParts.push(renderEntry(e, agents));
+    } else if (recentSpeeches.has(e)) {
+      recentParts.push(renderEntry(e, agents));
+    } else {
+      const dn = e.display_name ?? e.agent;
+      olderSummaries.push(`- ${dn}: ${generateOneLiner(e.content)}`);
+    }
+  }
 
   const parts: string[] = [];
   if (olderSummaries.length > 0) {
     parts.push('## Earlier speeches (summary)\n' + olderSummaries.join('\n'));
   }
-  if (recentFull.length > 0) {
-    parts.push('## Recent speeches\n' + recentFull.join('\n\n'));
+  if (recentParts.length > 0) {
+    parts.push('## Recent\n' + recentParts.join(''));
   }
   return parts.join('\n\n');
 }
 
-/** Read all speeches as one-line summaries. */
-export function readSummary(filePath: string): string {
-  const raw = readFull(filePath);
-  if (!raw) return '';
-  const speeches = parseSpeeches(raw);
-  if (speeches.length === 0) return raw;
-  return speeches.map((s) => `- ${s.name}: ${generateOneLiner(s.content)}`).join('\n');
+/** Return all speech entries as one-line summaries. Non-speech entries are omitted. */
+export function formatSummary(
+  entries: TranscriptEntry[],
+  agents: Record<string, AgentState>,
+): string {
+  return entries
+    .filter((e): e is Extract<TranscriptEntry, { type: 'speech' }> => e.type === 'speech')
+    .map((e) => `- ${e.display_name ?? e.agent}: ${generateOneLiner(e.content)}`)
+    .join('\n');
 }

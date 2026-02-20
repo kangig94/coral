@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   discussCreateSchema,
   discussBidSchema,
-  discussResolveSchema,
+  discussWaitSchema,
   discussSpeakSchema,
   discussTranscriptSchema,
   discussStateSchema,
@@ -101,21 +101,42 @@ describe('discussBidSchema', () => {
   });
 });
 
-describe('discussResolveSchema', () => {
+describe('discussWaitSchema', () => {
   const session = '20260221-143052-a3x7';
 
-  it('should accept without designate', () => {
-    const result = discussResolveSchema.parse({ session });
-    expect(result.designate).toBeUndefined();
+  it('should accept all_bids up to 60s', () => {
+    const result = discussWaitSchema.parse({ session, condition: 'all_bids', timeout_seconds: 60 });
+    expect(result.condition).toBe('all_bids');
   });
 
-  it('should accept with valid designate', () => {
-    const result = discussResolveSchema.parse({ session, designate: 'architect' });
-    expect(result.designate).toBe('architect');
+  it('should reject all_bids timeout > 60s', () => {
+    expect(() => discussWaitSchema.parse({ session, condition: 'all_bids', timeout_seconds: 61 })).toThrow();
   });
 
-  it('should reject invalid designate', () => {
-    expect(() => discussResolveSchema.parse({ session, designate: 'invalid!' })).toThrow();
+  it('should accept speech_delivered up to 120s', () => {
+    const result = discussWaitSchema.parse({ session, condition: 'speech_delivered', timeout_seconds: 120 });
+    expect(result.condition).toBe('speech_delivered');
+  });
+
+  it('should reject speech_delivered timeout > 120s', () => {
+    expect(() => discussWaitSchema.parse({ session, condition: 'speech_delivered', timeout_seconds: 121 })).toThrow();
+  });
+
+  it('should accept action_needed with agent_name up to 180s', () => {
+    const result = discussWaitSchema.parse({ session, condition: 'action_needed', timeout_seconds: 180, agent_name: 'alice' });
+    expect(result.agent_name).toBe('alice');
+  });
+
+  it('should reject action_needed without agent_name', () => {
+    expect(() => discussWaitSchema.parse({ session, condition: 'action_needed', timeout_seconds: 60 })).toThrow(/agent_name/i);
+  });
+
+  it('should reject invalid condition', () => {
+    expect(() => discussWaitSchema.parse({ session, condition: 'unknown', timeout_seconds: 10 })).toThrow();
+  });
+
+  it('should reject timeout < 1', () => {
+    expect(() => discussWaitSchema.parse({ session, condition: 'all_bids', timeout_seconds: 0 })).toThrow();
   });
 });
 

@@ -1,8 +1,15 @@
 # MCP Tools
 
-The Coral MCP server provides 4 tools. Inside Claude Code's plugin system, tools are accessible via the `mcp__plugin_coral_cx__` prefix (composed as `mcp__plugin_<plugin>_<server>__<tool>`).
+Coral exposes two MCP servers, each with its own tool set:
 
-All tool inputs are validated at runtime with zod schemas (`src/codex/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
+- **`cx` (Codex)**: 4 tools for Codex CLI session management. Prefix: `mcp__plugin_coral_cx__`
+- **`dc` (Discuss)**: 8 tools for moderated multi-agent discussions. Prefix: `mcp__plugin_coral_dc__`
+
+All tool inputs are validated at runtime with zod schemas (`src/codex/schemas.ts`, `src/discuss/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
+
+---
+
+# Codex Tools (`cx`)
 
 ## codex_session_create
 
@@ -151,3 +158,229 @@ Fork an existing session to continue the conversation in a new branch.
 ```
 
 `errors`/`warnings`/`exit_code` conditionally included. If `name` is not specified, the session exists only in Codex and is not registered in the Coral registry.
+
+---
+
+# Discuss Tools (`dc`)
+
+The discuss MCP server manages moderated multi-agent discussion sessions. Sessions are stored as directories under `{project}/.claude/coral/discuss/`. State mutations are serialized via a cross-process `mkdir`-based lock.
+
+Session IDs follow the format `YYYYMMDD-HHmmss-xxxx` (timestamp + 4-char random suffix).
+
+---
+
+## discuss_create
+
+Initialize a new discussion session with agent personas.
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `topic` | string | Yes | Discussion topic |
+| `agents` | array | Yes | 2–8 agents, each with `name` (ASCII identifier) and `persona` (text) |
+| `quota_per_epoch` | integer | No | Max speeches per agent per epoch (default: 3, max: 10) |
+| `recent_turns` | integer | No | Recent turns shown in transcript (default: 5, max: 20) |
+
+### Output (JSON)
+
+```json
+{
+  "session_id": "20260221-143022-a1b2",
+  "session_dir": "20260221-143022-a1b2_ai-ethics",
+  "team_name": "coral-dc-20260221-143022-a1b2",
+  "agents": ["alice", "bob", "charlie"],
+  "topic": "AI ethics in healthcare",
+  "status": "bidding"
+}
+```
+
+---
+
+## discuss_bid
+
+Submit a speaking desire score. During regular bidding: 0–100 (higher = stronger desire to speak). During voting: 0 = agree to end, 1 = disagree (triggers new epoch).
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `session` | string | Yes | Session ID |
+| `agent_name` | string | Yes | Agent name |
+| `score` | integer | Yes | Desire score 0–100 (voting: 0=agree, 1=disagree) |
+
+### Output (JSON)
+
+```json
+{
+  "accepted": true,
+  "pending_bidders": ["charlie"]
+}
+```
+
+---
+
+## discuss_wait
+
+Block until a condition is fulfilled or timeout expires. This is the primary coordination mechanism — replaces manual polling of `discuss_state`.
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `session` | string | Yes | Session ID |
+| `condition` | string | Yes | `all_bids`, `speech_delivered`, or `action_needed` |
+| `timeout_seconds` | number | Yes | Max wait (limits: all_bids=60, speech_delivered=120, action_needed=180) |
+| `agent_name` | string | Conditional | Required for `action_needed` condition |
+
+### Conditions
+
+| Condition | Blocks Until | Used By |
+|---|---|---|
+| `all_bids` | All agents have submitted bids. Auto-resolves winner. | discuss-lead |
+| `speech_delivered` | Current speaker has called discuss_speak | discuss-lead |
+| `action_needed` | This agent has an action to perform (bid/speak/vote) | discussant |
+
+### Output — `all_bids` (auto-resolve)
+
+Returns one of 4 result shapes:
+
+```json
+{ "fulfilled": true, "winner": "alice", "resolve_type": "normal", "step": 3 }
+{ "fulfilled": true, "vote_required": true, "step": 3, "all_bids": {...} }
+{ "fulfilled": true, "no_winner": true, "step": 3, "reason": "..." }
+{ "fulfilled": true, "end_vote": true, "unanimous": true }
+```
+
+### Output — `action_needed`
+
+```json
+{ "fulfilled": true, "action": "bid", "elapsed_ms": 1200 }
+{ "fulfilled": true, "action": "speak", "elapsed_ms": 500 }
+{ "fulfilled": true, "action": "vote", "elapsed_ms": 800 }
+```
+
+### Output — timeout
+
+```json
+{ "fulfilled": false, "elapsed_ms": 60000 }
+```
+
+---
+
+## discuss_speak
+
+Record a speech. Only allowed when the calling agent is the current speaker.
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `session` | string | Yes | Session ID |
+| `agent_name` | string | Yes | Speaking agent name (must match current_speaker) |
+| `content` | string | Yes | Speech content |
+
+### Output (JSON)
+
+```json
+{
+  "recorded": true,
+  "step": 3,
+  "quota_remaining": 2
+}
+```
+
+---
+
+## discuss_transcript
+
+Read the discussion transcript. Three modes: `recent` (default, last N entries), `full` (restricted: current speaker or ended session), `summary` (epoch-level overview).
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `session` | string | Yes | Session ID |
+| `agent_name` | string | No | Caller agent name (required for `full` mode unless session ended) |
+| `mode` | string | No | `full`, `recent`, or `summary` (default: `recent`) |
+| `last_n` | integer | No | Override `recent_turns` setting (1–50) |
+
+### Output
+
+Returns formatted markdown transcript text.
+
+---
+
+## discuss_state
+
+Query current session state. Bid scores are NOT exposed — they are only visible via `discuss_wait(all_bids)` auto-resolve results.
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `session` | string | Yes | Session ID |
+
+### Output (JSON)
+
+```json
+{
+  "session_id": "20260221-143022-a1b2",
+  "status": "bidding",
+  "step": 5,
+  "epoch": 1,
+  "current_speaker": null,
+  "agents": {
+    "alice": { "quota_remaining": 2, "total_speaks": 1 },
+    "bob": { "quota_remaining": 3, "total_speaks": 0 }
+  }
+}
+```
+
+---
+
+## discuss_end
+
+Finalize the discussion. Normal end includes an optional synthesis. Force-end requires a reason string (used for timeouts or errors).
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `session` | string | Yes | Session ID |
+| `synthesis` | string | No | Conclusion/synthesis text |
+| `force` | boolean | No | Force-end during active speech or voting (default: false) |
+| `reason` | string | Conditional | Required when `force=true` |
+
+### Output (JSON)
+
+```json
+{
+  "ended": true,
+  "session_id": "20260221-143022-a1b2",
+  "final_step": 12,
+  "total_speeches": 8
+}
+```
+
+---
+
+## discuss_epoch_summary
+
+Append an epoch summary to the transcript. Teamlead-only. One summary per epoch, must match current epoch number.
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `session` | string | Yes | Session ID |
+| `epoch` | integer | Yes | Epoch number (must match current epoch, min: 1) |
+| `summary` | string | Yes | Summary of the completed epoch |
+
+### Output (JSON)
+
+```json
+{
+  "recorded": true,
+  "epoch": 1
+}

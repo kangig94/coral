@@ -15,7 +15,7 @@ Start a structured discussion with AI agents, each with a unique persona.
 3. **Generate personas**: Spawn `persona-generator` agents in parallel (one per role)
 4. **Initialize**: Call `discuss_create` with generated personas → get `session_id`
 5. **Spawn teammates**: Create Agent Team `coral-dc-{session_id}`, spawn `discussant` teammates
-6. **Run discussion**: Execute bidding → resolve → speak loop until termination
+6. **Run discussion**: Execute bidding → `discuss_wait(all_bids)` auto-resolve → speak loop until termination
 7. **Synthesize**: Call `discuss_end`, read full transcript, present structured summary
 
 ## Context Enhancement

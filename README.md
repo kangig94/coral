@@ -1,6 +1,6 @@
 # Coral
 
-A Claude Code plugin that bridges Claude Code and OpenAI Codex CLI.
+A Claude Code plugin providing structured agents with Codex CLI bridge and moderated multi-agent discussions.
 
 ## Installation
 
@@ -56,9 +56,24 @@ Generates `.claude/CLAUDE.md`, rules, agents, docs, and settings based on the de
 | `/coral:ralph` | Persistent execution loop (sonnet) | `implement the caching layer` |
 | `/coral:codex-ralph` | Persistent execution via Codex (sonnet) | `implement the caching layer` |
 | `/coral:init-project` | Project initialization orchestrator | `"React + FastAPI project"` |
+| `/coral:discuss` | Moderated multi-agent discussion | `AI ethics in healthcare` |
 | `/coral:statusline` | HUD statusline setup | `install` |
 
 Plans are saved to `.claude/coral/plans/`. Ralph skills are best for implementing an existing plan.
+
+### Discuss
+
+Start a moderated multi-agent discussion with diverse personas:
+
+```
+/coral:discuss AI ethics in healthcare
+```
+
+- Automatically generates 3–8 unique personas with diverse expertise and perspectives
+- Structured turn-taking via bidding system — no agent monopolizes
+- Pro/con debate mode auto-detected for adversarial topics
+- Multi-epoch support with quota refresh when agents vote to continue
+- Full transcript saved to `.claude/coral/discuss/`
 
 ## Knowledge Base
 
@@ -128,7 +143,7 @@ disallowedTools: Write, Edit
 Detailed technical documentation is available in the `docs/` directory:
 
 - [Architecture](docs/architecture.md) — Architecture and data flow
-- [MCP Tools](docs/mcp-tools.md) — Input/output specs for all 4 tools
+- [MCP Tools](docs/mcp-tools.md) — Input/output specs for all MCP tools (Codex + Discuss)
 - [Core Modules](docs/core-modules.md) — TypeScript module details
 - [Agents](docs/agents.md) — Agent definitions and routing guarantees
 - [Hooks](docs/hooks.md) — SubagentStart hook behavior

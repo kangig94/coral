@@ -1,6 +1,6 @@
 # Coral - Development Instructions
 
-Claude Code plugin providing structured agents with Codex CLI bridge. Exposes MCP tools (`codex_session_create`, `codex_session_send`, `codex_session_list`, `codex_session_fork`) over stdio transport. Includes skills (slash commands), hooks (SubagentStart delegation), and agent definitions for both Claude-native and Codex-delegated workflows.
+Claude Code plugin providing structured agents with Codex CLI bridge and moderated multi-agent discussions. Exposes two MCP servers: `cx` for Codex CLI tools (`codex_session_*`) and `dc` for discuss tools (`discuss_*`). Includes skills (slash commands), hooks (SubagentStart delegation), and agent definitions for Claude-native, Codex-delegated, and discuss workflows.
 
 **Critical Requirements**:
 - MCP protocol compliance: all tool responses must use `{ content: [{ type: "text", text }], isError }` format
@@ -32,3 +32,19 @@ npm run dev          # tsc --watch
 Update `version` in `package.json` and run `npm run build`. The build script automatically syncs the version to `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`, and injects `__VERSION__` into the bundle. `package.json` is the single source of truth — no other files need manual version updates.
 
 Rules in `.claude/rules/` are auto-loaded. Domain-specific rules activate based on file paths being edited via `paths:` frontmatter.
+
+## Workflow
+
+**Before**: Read `docs/architecture.md` and `docs/core-modules.md` for the module being modified. Check `.claude/coral/kb/` for existing knowledge. Identify mandatory consultations from matrix in `.claude/rules/agents.md`.
+
+**During**: Invoke domain agents per consultation matrix. On errors, check `.claude/coral/kb/` before debugging from scratch.
+
+**After Implementation** (strict order, fail-fast by cost):
+
+**Scope gate**: Steps 1-4 apply only when source-affecting files are modified (`src/`, `scripts/`, `package.json`, `tsconfig.json`). Non-source changes (`agents/`, `skills/`, `docs/`, `hooks/`, `.claude/`) skip to step 5.
+
+1. **Lint** — run linter if configured (cheapest check first)
+2. **Review Gate** — run review-orchestrator. BLOCKING items must pass before build.
+3. **Build** — `npm run build` (tsc + esbuild, must pass clean)
+4. **Test** — `npm test` (vitest, all tests must pass)
+5. **KB update** — review work for `.claude/coral/kb/` promotion if non-obvious lessons were learned

@@ -127,6 +127,64 @@ model: opus
 
 ---
 
+## Discuss Agents
+
+Agents for the moderated multi-agent discussion system. These agents coordinate via the `dc` MCP server (`discuss_*` tools) and Agent Teams.
+
+### discuss-lead (Discussion Moderator)
+
+**File**: `agents/discuss-lead.md`
+
+```yaml
+---
+name: discuss-lead
+description: "Discussion moderator protocol for the teamlead. Controls turns, manages bidding loop, handles termination. Never speaks on substance."
+model: opus
+---
+```
+
+**Role**: Orchestrates multi-agent discussions through structured turn-taking. Manages session setup, team creation, bidding coordination, turn resolution, termination voting, epoch transitions, and synthesis delivery. Never speaks on substance — only process control.
+
+**Protocol**: Setup (persona generation → discuss_create → team + teammates) → Discussion Loop (broadcast → discuss_wait(all_bids) → 5-way branch → discuss_wait(speech_delivered) → repeat) → Synthesis (discuss_end → full transcript → present to user → cleanup).
+
+> Note: discuss-lead does NOT have `disallowedTools` — it needs Task (spawn agents), SendMessage (broadcast), TeamCreate/TeamDelete, and all discuss MCP tools.
+
+---
+
+### discussant (Discussion Participant)
+
+**File**: `agents/discussant.md`
+
+```yaml
+---
+name: discussant
+description: "Discussion participant. Bids for speaking turns, researches evidence, delivers speeches via MCP discuss tools. Spawned as a teammate in Agent Teams."
+model: sonnet
+---
+```
+
+**Role**: Participates in discussions with a unique persona provided at spawn time. Follows the discuss_wait(action_needed) → act → loop cycle. Uses WebSearch for evidence gathering, reads transcript before speaking, and always notifies teamlead after speeches. Uses sonnet — the discussion protocol is well-defined, opus-level reasoning is unnecessary.
+
+---
+
+### persona-generator (Persona Creator)
+
+**File**: `agents/persona-generator.md`
+
+```yaml
+---
+name: persona-generator
+description: "Generate a diverse, differentiated discussion persona based on role and topic. Spawned in parallel by discuss-lead."
+model: opus
+---
+```
+
+**Role**: Single-shot persona generator. Reads the template (`skills/discuss/template/persona-template.md`), generates a unique persona differentiated from team_roles, and outputs clean raw markdown. Uses opus for high-quality persona creation that requires creativity and specificity.
+
+> Template: `skills/discuss/template/persona-template.md` defines the required structure (`# Name — Role`, 4 sections: Expertise, Perspective, Communication Style, Core Focus).
+
+---
+
 ## Codex-bound Agents (Delegation Agents)
 
 Proxy agents that delegate work to Codex CLI. Tool restrictions limit them to coral MCP tools only.

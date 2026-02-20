@@ -1,11 +1,11 @@
 /**
- * Zod schemas for MCP tool input validation — discuss_* tools.
+ * Zod schemas for MCP tool input validation — discuss_* tools (v2).
  */
 
 import { z } from 'zod';
 import { identPattern } from '../shared/mcp-utils.js';
 
-/** Session ID: YYYYMMDD-HHmmss-xxxx (timestamp + 4-char random suffix for uniqueness). */
+/** Session ID: YYYYMMDD-HHmmss-xxxx (timestamp + 4-char random suffix). */
 export const sessionIdPattern = /^[0-9]{8}-[0-9]{6}-[a-z0-9]{4}$/;
 
 // discuss_create — Initialize a discussion session
@@ -29,18 +29,31 @@ export const discussCreateSchema = z.object({
 });
 
 // discuss_bid — Submit speaking desire score (0–100)
-// Voting guard (status=voting: score must be 0 or 1) enforced in handler, not schema
+// Voting score guard (must be 0 or 1) is enforced in state-machine.ts:applyBid
 export const discussBidSchema = z.object({
   session: z.string().regex(sessionIdPattern),
   agent_name: z.string().regex(identPattern),
   score: z.number().int().min(0).max(100),
 });
 
-// discuss_resolve — Resolve current bidding (requires quorum)
-export const discussResolveSchema = z.object({
-  session: z.string().regex(sessionIdPattern),
-  designate: z.string().regex(identPattern).optional(),
-});
+// discuss_wait — Block until condition fulfilled or timeout
+const WAIT_TIMEOUT_LIMITS: Record<string, number> = { all_bids: 60, speech_delivered: 120, action_needed: 180 };
+
+export const discussWaitSchema = z
+  .object({
+    session: z.string().regex(sessionIdPattern),
+    condition: z.enum(['all_bids', 'speech_delivered', 'action_needed']),
+    timeout_seconds: z.number().min(1),
+    agent_name: z.string().regex(identPattern).optional(),
+  })
+  .refine(
+    (input) => input.timeout_seconds <= (WAIT_TIMEOUT_LIMITS[input.condition] ?? 60),
+    (input) => ({ message: `timeout_seconds exceeds ${WAIT_TIMEOUT_LIMITS[input.condition]}s limit for ${input.condition}` }),
+  )
+  .refine(
+    (input) => !(input.condition === 'action_needed' && !input.agent_name),
+    { message: 'agent_name required for action_needed condition' },
+  );
 
 // discuss_speak — Record speech (only allowed if agent has floor)
 export const discussSpeakSchema = z.object({
@@ -80,7 +93,7 @@ export const discussEndSchema = z
     }
   });
 
-// discuss_epoch_summary — Append epoch summary to transcript (teamlead-only, lock-protected)
+// discuss_epoch_summary — Append epoch summary (teamlead-only, lock-protected)
 export const discussEpochSummarySchema = z.object({
   session: z.string().regex(sessionIdPattern),
   epoch: z.number().int().min(1),
@@ -89,7 +102,7 @@ export const discussEpochSummarySchema = z.object({
 
 export type DiscussCreateInput = z.infer<typeof discussCreateSchema>;
 export type DiscussBidInput = z.infer<typeof discussBidSchema>;
-export type DiscussResolveInput = z.infer<typeof discussResolveSchema>;
+export type DiscussWaitInput = z.infer<typeof discussWaitSchema>;
 export type DiscussSpeakInput = z.infer<typeof discussSpeakSchema>;
 export type DiscussTranscriptInput = z.infer<typeof discussTranscriptSchema>;
 export type DiscussStateInput = z.infer<typeof discussStateSchema>;

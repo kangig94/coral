@@ -1,24 +1,26 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+/**
+ * Transcript rendering tests — pure functions operating on TranscriptEntry[].
+ */
+
+import { describe, it, expect } from 'vitest';
 import {
   wrapText,
   generateOneLiner,
-  initTranscript,
-  appendSpeech,
-  appendEpochSummary,
-  readFull,
-  readRecent,
-  readSummary,
+  renderEntries,
+  renderHeader,
+  formatRecent,
+  formatSummary,
 } from '../transcript.js';
+import type { AgentState, TranscriptEntry } from '../types.js';
 
-let tmpDir: string;
+const agents: Record<string, AgentState> = {
+  alice: { persona: '', display_name: 'Alice', quota_remaining: 3, total_speaks: 0, fallback_used: false },
+  bob: { persona: '', display_name: 'Bob', quota_remaining: 3, total_speaks: 0, fallback_used: false },
+};
 
-beforeEach(() => { tmpDir = mkdtempSync(join(tmpdir(), 'coral-transcript-')); });
-afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }); });
+const TS = '2026-01-01T10:00:00Z';
 
-const filePath = () => join(tmpDir, 'transcript.md');
+// ─── wrapText ────────────────────────────────────────────────────────────────
 
 describe('wrapText', () => {
   it('should pass through short text unchanged', () => {
@@ -34,31 +36,27 @@ describe('wrapText', () => {
   });
 
   it('should extend to sentence end in grace zone (80-100)', () => {
-    // Build a string where sentence end falls in grace zone
     const text = 'A'.repeat(75) + ' end sentence here. Next word here.';
     const result = wrapText(text);
     const firstLine = result.split('\n')[0];
-    // Should include 'here.' if it falls within hard limit
     expect(firstLine.endsWith('here.') || firstLine.length <= 100).toBe(true);
   });
 
   it('should hard-wrap at 100 chars when no sentence end', () => {
-    const longWord = 'word';
-    const text = Array(30).fill(longWord).join(' '); // well over 100
+    const text = Array(30).fill('word').join(' '); // well over 100
     const result = wrapText(text);
-    const lines = result.split('\n');
-    // All lines except possibly the last (trailing words) should be ≤ 100
-    for (const line of lines) {
+    for (const line of result.split('\n')) {
       expect(line.length).toBeLessThanOrEqual(104); // allow single word overflow
     }
   });
 
   it('should preserve empty lines (paragraph breaks)', () => {
     const text = 'First paragraph.\n\nSecond paragraph.';
-    const result = wrapText(text);
-    expect(result).toContain('\n\n');
+    expect(wrapText(text)).toContain('\n\n');
   });
 });
+
+// ─── generateOneLiner ─────────────────────────────────────────────────────────
 
 describe('generateOneLiner', () => {
   it('should return full text if under 100 chars', () => {
@@ -70,7 +68,7 @@ describe('generateOneLiner', () => {
     expect(generateOneLiner(text)).toBe('First sentence ends here.');
   });
 
-  it('should truncate at word boundary if no sentence', () => {
+  it('should truncate at word boundary with ellipsis if no sentence', () => {
     const text = 'A'.repeat(50) + ' B'.repeat(30);
     const result = generateOneLiner(text);
     expect(result.length).toBeLessThanOrEqual(103); // 100 + '…'
@@ -78,88 +76,159 @@ describe('generateOneLiner', () => {
   });
 });
 
-describe('initTranscript', () => {
-  it('should create file with topic header and Epoch 1', () => {
-    initTranscript(filePath(), 'Microservices Discussion');
-    const content = readFull(filePath());
-    expect(content).toContain('# Microservices Discussion');
-    expect(content).toContain('## Epoch 1');
+// ─── renderHeader ─────────────────────────────────────────────────────────────
+
+describe('renderHeader', () => {
+  it('should include topic and Epoch 1 header', () => {
+    const result = renderHeader('My Discussion');
+    expect(result).toContain('# My Discussion');
+    expect(result).toContain('## Epoch 1');
   });
 });
 
-describe('appendSpeech', () => {
-  it('should append timestamped speech entry', () => {
-    initTranscript(filePath(), 'Topic');
-    appendSpeech(filePath(), 'architect', 'Microservice architecture enables independent deployments.');
-    const content = readFull(filePath());
-    expect(content).toContain('### [');
-    expect(content).toContain('] architect');
-    expect(content).toContain('Microservice architecture enables');
+// ─── renderEntries ────────────────────────────────────────────────────────────
+
+describe('renderEntries', () => {
+  it('should return empty string for empty input', () => {
+    expect(renderEntries([], agents)).toBe('');
   });
 
-  it('should word-wrap long content', () => {
-    initTranscript(filePath(), 'Topic');
-    const longContent = 'word '.repeat(40); // 200 chars
-    appendSpeech(filePath(), 'speaker', longContent);
-    const content = readFull(filePath());
-    const lines = content.split('\n');
-    for (const line of lines) {
-      expect(line.length).toBeLessThanOrEqual(104);
-    }
+  it('should render speech entry with agent name and content', () => {
+    const entries: TranscriptEntry[] = [
+      { type: 'speech', step: 1, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'My argument.' },
+    ];
+    const result = renderEntries(entries, agents);
+    expect(result).toContain('Alice');
+    expect(result).toContain('My argument.');
+  });
+
+  it('should render bids entry with table and winner', () => {
+    const entries: TranscriptEntry[] = [
+      { type: 'bids', step: 1, epoch: 1, ts: TS, bids: { alice: 80, bob: 50 }, winner: 'alice', resolve_type: 'normal' },
+    ];
+    const result = renderEntries(entries, agents);
+    expect(result).toContain('80');
+    expect(result).toContain('Winner: Alice');
+  });
+
+  it('should render bids entry with no_winner when winner is null', () => {
+    const entries: TranscriptEntry[] = [
+      { type: 'bids', step: 1, epoch: 1, ts: TS, bids: { alice: 5, bob: 3 }, winner: null, resolve_type: 'no_winner' },
+    ];
+    const result = renderEntries(entries, agents);
+    expect(result).toContain('No winner');
+  });
+
+  it('should render vote entry with unanimous verdict', () => {
+    const entries: TranscriptEntry[] = [
+      { type: 'vote', epoch: 1, ts: TS, votes: { alice: 0, bob: 0 }, unanimous: true },
+    ];
+    const result = renderEntries(entries, agents);
+    expect(result).toContain('Unanimous');
+  });
+
+  it('should render vote entry with non-unanimous verdict', () => {
+    const entries: TranscriptEntry[] = [
+      { type: 'vote', epoch: 1, ts: TS, votes: { alice: 0, bob: 1 }, unanimous: false },
+    ];
+    const result = renderEntries(entries, agents);
+    expect(result).toContain('Not unanimous');
+  });
+
+  it('should render epoch_summary entry', () => {
+    const entries: TranscriptEntry[] = [
+      { type: 'epoch_summary', epoch: 1, ts: TS, summary: 'Key insights from epoch 1.' },
+    ];
+    const result = renderEntries(entries, agents);
+    expect(result).toContain('Epoch Summary');
+    expect(result).toContain('Key insights from epoch 1.');
+  });
+
+  it('should render session_event synthesis', () => {
+    const entries: TranscriptEntry[] = [
+      { type: 'session_event', epoch: 1, ts: TS, event: 'synthesis', detail: 'Final conclusion here.' },
+    ];
+    const result = renderEntries(entries, agents);
+    expect(result).toContain('Synthesis');
+    expect(result).toContain('Final conclusion here.');
+  });
+
+  it('should render session_event force_end', () => {
+    const entries: TranscriptEntry[] = [
+      { type: 'session_event', epoch: 1, ts: TS, event: 'force_end', detail: 'Timed out.' },
+    ];
+    const result = renderEntries(entries, agents);
+    expect(result).toContain('force_end');
+    expect(result).toContain('Timed out.');
   });
 });
 
-describe('appendEpochSummary', () => {
-  it('should append epoch header and summary', () => {
-    initTranscript(filePath(), 'Topic');
-    appendEpochSummary(filePath(), 2, 'Epoch 1 key arguments: ...');
-    const content = readFull(filePath());
-    expect(content).toContain('## Epoch 2');
-    expect(content).toContain('Epoch Summary (by Teamlead)');
-    expect(content).toContain('Epoch 1 key arguments');
+// ─── formatRecent ─────────────────────────────────────────────────────────────
+
+describe('formatRecent', () => {
+  it('should show last N speeches in full and earlier as one-line summaries', () => {
+    const entries: TranscriptEntry[] = [
+      { type: 'speech', step: 1, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'Alice first speech.' },
+      { type: 'speech', step: 2, epoch: 1, ts: TS, agent: 'bob', display_name: 'Bob', content: 'Bob response.' },
+      { type: 'speech', step: 3, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'Alice again.' },
+    ];
+    const result = formatRecent(entries, 2, agents);
+    expect(result).toContain('Earlier speeches');
+    expect(result).toContain('Alice first speech.'); // appears as summary
+    expect(result).toContain('Bob response.'); // in recent section (full)
+    expect(result).toContain('Alice again.'); // in recent section (full)
+  });
+
+  it('should show all in full when lastN >= speech count', () => {
+    const entries: TranscriptEntry[] = [
+      { type: 'speech', step: 1, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'Only speech.' },
+    ];
+    const result = formatRecent(entries, 5, agents);
+    expect(result).toContain('Only speech.');
+    expect(result).not.toContain('Earlier speeches');
+  });
+
+  it('should always include non-speech entries (bids, votes) in full', () => {
+    const entries: TranscriptEntry[] = [
+      { type: 'speech', step: 1, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'Old speech.' },
+      { type: 'bids', step: 2, epoch: 1, ts: TS, bids: { alice: 80 }, winner: 'alice', resolve_type: 'normal' },
+      { type: 'speech', step: 2, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'New speech.' },
+    ];
+    const result = formatRecent(entries, 1, agents); // only last 1 speech in full
+    expect(result).toContain('Step 2'); // bids always in recent section
+    expect(result).toContain('New speech.'); // last speech in full
+    expect(result).toContain('Old speech.'); // older speech in summary
+  });
+
+  it('should return empty string for empty entries', () => {
+    expect(formatRecent([], 5, agents)).toBe('');
   });
 });
 
-describe('readRecent', () => {
-  it('should return full text for recent speeches', () => {
-    initTranscript(filePath(), 'Topic');
-    appendSpeech(filePath(), 'alice', 'Alice speech.');
-    appendSpeech(filePath(), 'bob', 'Bob speech.');
-    appendSpeech(filePath(), 'carol', 'Carol speech.');
-    const result = readRecent(filePath(), 2);
-    // Last 2 (bob, carol) in full, alice as summary
-    expect(result).toContain('bob');
-    expect(result).toContain('carol');
+// ─── formatSummary ────────────────────────────────────────────────────────────
+
+describe('formatSummary', () => {
+  it('should return one-liner for each speech entry', () => {
+    const entries: TranscriptEntry[] = [
+      { type: 'speech', step: 1, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'Alice made a point.' },
+      { type: 'speech', step: 2, epoch: 1, ts: TS, agent: 'bob', display_name: 'Bob', content: 'Bob disagreed.' },
+    ];
+    const result = formatSummary(entries, agents);
+    expect(result).toContain('- Alice:');
+    expect(result).toContain('- Bob:');
   });
 
-  it('should show all as full when lastN >= total', () => {
-    initTranscript(filePath(), 'Topic');
-    appendSpeech(filePath(), 'alice', 'Alice speech.');
-    const result = readRecent(filePath(), 5);
-    expect(result).toContain('Alice speech.');
+  it('should omit non-speech entries', () => {
+    const entries: TranscriptEntry[] = [
+      { type: 'bids', step: 1, epoch: 1, ts: TS, bids: { alice: 80 }, winner: 'alice', resolve_type: 'normal' },
+      { type: 'speech', step: 1, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'Only this.' },
+    ];
+    const result = formatSummary(entries, agents);
+    expect(result).not.toContain('Bids');
+    expect(result).toContain('- Alice:');
   });
 
-  it('should handle empty transcript', () => {
-    initTranscript(filePath(), 'Topic');
-    const result = readRecent(filePath(), 3);
-    // No speeches yet — returns the raw header
-    expect(typeof result).toBe('string');
-  });
-});
-
-describe('readSummary', () => {
-  it('should return one-liner summaries', () => {
-    initTranscript(filePath(), 'Topic');
-    appendSpeech(filePath(), 'alice', 'Alice made a very interesting point about the topic.');
-    appendSpeech(filePath(), 'bob', 'Bob disagreed strongly.');
-    const result = readSummary(filePath());
-    expect(result).toContain('- alice:');
-    expect(result).toContain('- bob:');
-  });
-});
-
-describe('readFull', () => {
-  it('should return empty string for missing file', () => {
-    expect(readFull(join(tmpDir, 'missing.md'))).toBe('');
+  it('should return empty string for no speech entries', () => {
+    expect(formatSummary([], agents)).toBe('');
   });
 });

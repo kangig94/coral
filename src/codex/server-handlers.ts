@@ -109,19 +109,20 @@ export const tools = [
 /** Extract completion fields from a handler's JSON result for the progress file. */
 export function extractCompletionData(result: McpResult, sessionLabel: string): Record<string, unknown> {
   const data = JSON.parse(result.content[0].text);
-  return {
+  const out: Record<string, unknown> = {
     response: data.response,
     thread_id: data.thread_id ?? null,
     session_name: sessionLabel,
     model: data.model,
     duration_ms: data.duration_ms,
-    ...(data.notice ? { notice: data.notice } : {}),
-    ...(data.aborted ? { aborted: true } : {}),
-    ...(data.non_resumable ? { non_resumable: true } : {}),
-    ...(data.exit_code !== undefined ? { exit_code: data.exit_code } : {}),
-    ...(Array.isArray(data.errors) ? { errors: data.errors } : {}),
-    ...(Array.isArray(data.warnings) ? { warnings: data.warnings } : {}),
   };
+  if (data.notice) out.notice = data.notice;
+  if (data.aborted) out.aborted = true;
+  if (data.non_resumable) out.non_resumable = true;
+  if (data.exit_code !== undefined) out.exit_code = data.exit_code;
+  if (Array.isArray(data.errors)) out.errors = data.errors;
+  if (Array.isArray(data.warnings)) out.warnings = data.warnings;
+  return out;
 }
 
 /** Session-not-found error message with recovery hint. */
