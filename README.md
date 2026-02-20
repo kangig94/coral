@@ -27,18 +27,21 @@ To remove: `/coral:statusline uninstall`
 
 ## Usage
 
-```
-/coral:codex review auth.ts for security issues
-/coral:codex what about the token refresh logic?   # auto-continues session
-```
-
 Consecutive `/coral:codex` calls continue the same session. Say "new" to start fresh.
 
 ```
-/coral:init-project                                # set up AI-assisted dev for any project
+/coral:codex review auth.ts for security issues
+
+# auto-continues session
+/coral:codex what about the token refresh logic?
 ```
 
 Generates `.claude/CLAUDE.md`, rules, agents, docs, and settings based on the detected tech stack.
+
+```
+# set up AI-assisted dev for any project
+/coral:init-project "description of the project"
+```
 
 ### Skills
 
