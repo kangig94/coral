@@ -5,8 +5,7 @@
  */
 
 import { z } from 'zod';
-
-const identPattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+import { identPattern } from '../shared/mcp-utils.js';
 
 const modelSchema = z
   .string()

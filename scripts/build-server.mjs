@@ -17,19 +17,29 @@ for (const file of ['plugin.json', 'marketplace.json']) {
   if (changed) writeFileSync(path, JSON.stringify(json, null, 2) + '\n');
 }
 
-await esbuild.build({
-  entryPoints: ['src/codex/server.ts'],
+const sharedOpts = {
   bundle: true,
   platform: 'node',
   target: 'node18',
   format: 'cjs',
-  outfile: 'bridge/coral-codex.cjs',
   external: ['node:*'],
   minify: true,
   banner: { js: 'var __PLUGIN_ROOT__=require("path").resolve(__dirname,"..");' },
   define: {
     '__VERSION__': JSON.stringify(version),
   },
-});
+};
 
+await esbuild.build({
+  ...sharedOpts,
+  entryPoints: ['src/codex/server.ts'],
+  outfile: 'bridge/coral-codex.cjs',
+});
 console.log('Built bridge/coral-codex.cjs');
+
+await esbuild.build({
+  ...sharedOpts,
+  entryPoints: ['src/discuss/server.ts'],
+  outfile: 'bridge/coral-discuss.cjs',
+});
+console.log('Built bridge/coral-discuss.cjs');

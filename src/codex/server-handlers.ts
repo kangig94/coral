@@ -26,9 +26,10 @@ import {
   appendProgressEvent,
   appendFinalResult,
 } from './progress.js';
+import { type McpResult, textResult, jsonResult, resultExtras } from '../shared/mcp-utils.js';
 
-/** MCP CallTool response shape. */
-type McpResult = { content: [{ type: 'text'; text: string }]; isError: boolean };
+// Re-export shared primitives so existing imports from this module continue to work.
+export { textResult, jsonResult, resultExtras } from '../shared/mcp-utils.js';
 
 export type OnEventCallback = (line: string) => void;
 
@@ -104,24 +105,6 @@ export const tools = [
     },
   },
 ];
-
-export function textResult(text: string, isError = false): McpResult {
-  return { content: [{ type: 'text' as const, text }], isError };
-}
-
-export function jsonResult(data: Record<string, unknown>): McpResult {
-  return textResult(JSON.stringify(data, null, 2));
-}
-
-/** Conditional error/warning/abort fields for Codex result responses. */
-export function resultExtras(result: { exitCode: number | null; errors: string[]; warnings: string[]; aborted?: boolean }): Record<string, unknown> {
-  const extras: Record<string, unknown> = {};
-  if (result.exitCode !== 0 && result.exitCode !== null) extras.exit_code = result.exitCode;
-  if (result.errors.length > 0) extras.errors = result.errors;
-  if (result.warnings.length > 0) extras.warnings = result.warnings;
-  if (result.aborted) extras.aborted = true;
-  return extras;
-}
 
 /** Extract completion fields from a handler's JSON result for the progress file. */
 export function extractCompletionData(result: McpResult, sessionLabel: string): Record<string, unknown> {
