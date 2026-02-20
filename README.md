@@ -260,4 +260,3 @@ Detailed technical documentation is available in the `docs/` directory:
 
 - Node.js 18+
 - Codex CLI v0.101+ (`npm install -g @openai/codex`)
-- jq (for hook scripts)
