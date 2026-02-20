@@ -95,7 +95,7 @@ model: opus
     Evaluate based on what reviewers RETURNED this round (not your post-edit assessment):
     - **Continue**: Either reviewer returned CRITICAL or HIGH findings → edit plan (3d), then go to 3a for re-verification. If you edited the plan this round, you MUST re-verify.
     - **Pass**: Both reviewers returned NO CRITICAL or HIGH findings → exit loop (proceed to step 4 if multi-phase, else step 5)
-    - **Max rounds**: 5 → ask user to continue or finalize
+    - **Max rounds**: 5 → use `AskUserQuestion` to let the user choose: continue reviewing, finalize as-is, or abort
 
     NEVER exit the loop on a round where you edited the plan. Edits require re-verification.
 
