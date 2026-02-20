@@ -92,11 +92,12 @@ model: opus
       ### Synthesis: Adopt/Adapt/Defer/Diverge items
 
     **3f. Exit Condition**
-    - Pass: No CRITICAL or HIGH findings from either reviewer
-    - Continue: Any CRITICAL/HIGH Adopted or Adapted → re-verify (go to 3a)
-    - Max rounds: 5 → ask user to continue or finalize
+    Evaluate based on what reviewers RETURNED this round (not your post-edit assessment):
+    - **Continue**: Either reviewer returned CRITICAL or HIGH findings → edit plan (3d), then go to 3a for re-verification. If you edited the plan this round, you MUST re-verify.
+    - **Pass**: Both reviewers returned NO CRITICAL or HIGH findings → exit loop (proceed to step 4 if multi-phase, else step 5)
+    - **Max rounds**: 5 → ask user to continue or finalize
 
-    Changes that have not been re-verified by reviewers are not considered validated.
+    NEVER exit the loop on a round where you edited the plan. Edits require re-verification.
 
     ### 4. Multi-Phase Review (if specified by caller)
     After the primary review loop converges, run ONE additional review round with different reviewers:

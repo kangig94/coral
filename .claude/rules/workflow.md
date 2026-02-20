@@ -29,6 +29,8 @@
 
 ## Phase 3: After Implementation (strict order, fail-fast by cost)
 
+**Scope gate**: Steps 1-4 apply only when source-affecting files are modified (`src/`, `scripts/`, `package.json`, `tsconfig.json`). Non-source changes (`agents/`, `skills/`, `docs/`, `hooks/`, `.claude/`) skip to step 5.
+
 1. **Lint**: Run linter if configured (cheapest check first)
 
 2. **Review Gate** (before build): Invoke review-orchestrator for final validation (mandatory for non-trivial work). BLOCKING items must pass before proceeding to build.

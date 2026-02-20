@@ -10,6 +10,8 @@
 
 ## After Implementation (strict order, fail-fast by cost)
 
+**Scope gate**: Steps 1-4 apply only when source-affecting files are modified (e.g., source code, build config, dependencies). Non-source changes (docs, agent definitions, config prose) skip steps 1-4 entirely.
+
 ### 1. Lint
 - Run linter if available
 - Cheapest check — catches trivial issues immediately
