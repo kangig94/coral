@@ -3,35 +3,35 @@
 ## System Structure
 
 ```
-┌──────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────┐
 │  Claude Code                                          │
-│                                                        │
-│  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐ │
-│  │ SessionStart  │  │ SubagentStart│  │   Skills    │ │
-│  │ Hook          │  │ Hook         │  │  /coral:*   │ │
-│  │ (CLAUDE.md    │  │ (codex-*     │  └──────┬──────┘ │
-│  │  injection)   │  │  delegation) │         │        │
-│  └──────────────┘  └──────┬───────┘         │        │
-│                           │                  │        │
-│                           ▼                  ▼        │
+│                                                       │
+│  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐  │
+│  │ SessionStart │  │ SubagentStart│  │   Skills    │  │
+│  │ Hook         │  │ Hook         │  │  /coral:*   │  │
+│  │ (CLAUDE.md   │  │ (codex-*     │  └──────┬──────┘  │
+│  │  injection)  │  │  delegation) │         │         │
+│  └──────────────┘  └──────┬───────┘         │         │
+│                           │                 │         │
+│                           ▼                 ▼         │
 │  ┌─────────────────────────────────────────────────┐  │
 │  │  MCP Server "coral" (bridge/coral-server.cjs)   │  │
-│  │                                                  │  │
-│  │  On new session:                                 │  │
-│  │  - Prepend CLAUDE.md to prompt                   │  │
-│  │                                                  │  │
-│  │  Tools: codex_session_create,                     │  │
-│  │         codex_session_send, codex_session_list,  │  │
-│  │         codex_session_fork                       │  │
+│  │                                                 │  │
+│  │  On new session:                                │  │
+│  │  - Prepend CLAUDE.md to prompt                  │  │
+│  │                                                 │  │
+│  │  Tools: codex_session_create,                   │  │
+│  │         codex_session_send, codex_session_list, │  │
+│  │         codex_session_fork                      │  │
 │  └────────────────────┬────────────────────────────┘  │
-│                       │                                │
-└───────────────────────┼────────────────────────────────┘
+│                       │                               │
+└───────────────────────┼───────────────────────────────┘
                         ▼
              ┌──────────────────────┐
              │  Codex CLI (v0.101+) │
              │  codex exec --json   │
-             │  --full-auto          │
-             │  JSONL event stream   │
+             │  --full-auto         │
+             │  JSONL event stream  │
              └──────────────────────┘
 ```
 
@@ -41,12 +41,15 @@
 
 ```
 User → /coral:codex "question"
-     → Skill detects persona (architect/critic/analyze/ralph/none)
-     → Skill spawns Task with selected subagent_type (coral:codex-*)
-     → SubagentStart Hook fires (matcher: "(^|:)codex-")
-     → Delegation instructions injected via additionalContext
-     → Agent calls mcp__plugin_coral_cx__codex_session_create
-     → Codex response returned to skill → user
+     → Skill detects intent (review/investigate/ralph/general)
+     → Review intent:
+        → Spawn parallel subagents (coral:codex-architect + coral:codex-critic)
+        → SubagentStart Hook fires → delegation instructions injected
+        → Agents call codex_session_create → results synthesized
+     → Other intents:
+        → Skill reads agent protocol (agents/codex-*.md)
+        → Skill calls codex_session_create/send directly (no subagent)
+        → Codex response returned to user
 ```
 
 ### 2. Thin Skill → Agent Protocol Loading
@@ -70,9 +73,10 @@ User → /coral:init-project
 
 ```
 User → /codex skill analyzes intent
-     → Specialized agent needed? → Task tool spawns codex-architect/critic/analyst/ralph
-     → General request?          → Skill calls codex_session_create directly (no agent)
-     → User's prompt passed verbatim to Codex
+     → Review?   → Parallel subagent spawn (codex-architect + codex-critic)
+     → Analyze?  → Direct MCP call with analyst protocol (no subagent)
+     → Ralph?    → Direct MCP call with ralph protocol (no subagent)
+     → General?  → Direct MCP call, verbatim prompt (no subagent)
 ```
 
 ### 4. Session-based Conversation
@@ -132,12 +136,14 @@ coral/
 │       ├── session-manager.ts   # Per-session file persistence
 │       ├── output-parser.ts     # JSONL event parsing
 │       ├── cli-detection.ts     # Codex CLI existence check
+│       ├── progress.ts          # Progress file utilities
 │       └── __tests__/           # Tests (vitest)
 │           ├── schemas.test.ts
 │           ├── output-parser.test.ts
 │           ├── codex-executor.test.ts
 │           ├── session-manager.test.ts
-│           └── cli-detection.test.ts
+│           ├── cli-detection.test.ts
+│           └── server-progress.test.ts
 ├── skills/
 │   ├── architect/
 │   │   └── SKILL.md             # /coral:architect (Claude-native)
@@ -147,6 +153,8 @@ coral/
 │   │   └── SKILL.md             # /coral:analyze (Claude-native)
 │   ├── ralph/
 │   │   └── SKILL.md             # /coral:ralph (Claude-native)
+│   ├── codex-analyze/
+│   │   └── SKILL.md             # /coral:codex-analyze (Codex delegation)
 │   ├── codex-ralph/
 │   │   └── SKILL.md             # /coral:codex-ralph (Codex delegation)
 │   ├── codex/
@@ -162,8 +170,8 @@ coral/
 │   ├── critic.md                # Claude-native plan/code review
 │   ├── analyst.md               # Claude-native requirements gap analysis
 │   ├── ralph.md                 # Claude-native persistent execution loop
-│   ├── planner.md              # Claude-native multi-round planning
-│   ├── init-project.md         # Project initialization orchestrator
+│   ├── planner.md               # Claude-native multi-round planning
+│   ├── init-project.md          # Project initialization orchestrator
 │   ├── codex-architect.md       # Codex architecture analysis delegation
 │   ├── codex-critic.md          # Codex critical review delegation
 │   ├── codex-analyst.md         # Codex analysis delegation
@@ -190,13 +198,15 @@ server.ts
   ├── codex-executor.ts
   │     ├── output-parser.ts  (pure functions)
   │     └── cli-detection.ts  (caching singleton)
-  └── session-manager.ts      (file I/O, per-session files, atomic writes)
+  ├── session-manager.ts      (file I/O, per-session files, atomic writes)
+  └── progress.ts             (progress file I/O, pure helpers)
 
 types.ts ← referenced by all modules
 ```
 
 - `schemas.ts` — zod schemas + type extraction (pure definitions)
 - `output-parser.ts` and `cli-detection.ts` — independent modules with no external dependencies
-- `codex-executor.ts` — combines parser and detection modules + process management
+- `codex-executor.ts` — combines parser and detection modules + process management + idle timeout
 - `session-manager.ts` — uses filesystem only (no Codex dependency), stores one JSON file per session
-- `server.ts` — integrates MCP SDK + executor + session manager + graceful shutdown
+- `progress.ts` — progress file creation, event appending, cleanup (pure helpers, no server dependency)
+- `server.ts` — integrates MCP SDK + executor + session manager + progress + graceful shutdown

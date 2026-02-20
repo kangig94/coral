@@ -22,10 +22,14 @@ argument-hint: "[prompt]"
 
 1. If argument starts with `session` → handle session command directly (create/send/list/fork via MCP tools)
 2. Check session continuity (existing thread_id from conversation history)
-3. Analyze intent → select agent subagent_type (architect/critic/analyze/ralph/delegate)
+3. Analyze intent:
+   - **Review** → parallel subagent spawn (`coral:codex-architect` + `coral:codex-critic`), then synthesize
+   - **Investigation/debug** → direct MCP call with analyst protocol (read `agents/codex-analyst.md`)
+   - **Persistent execution** → direct MCP call with ralph protocol (read `agents/codex-ralph.md`)
+   - **Everything else** → direct MCP call with verbatim prompt
 4. Gather context (file paths, code snippets, working_directory)
-5. Spawn Task with selected `subagent_type` (`coral:codex-*`) + prompt
-6. Present agent results
+5. Execute via MCP tools directly or spawn parallel subagents (review only)
+6. Present results
 
 ### Session Commands
 
@@ -144,6 +148,31 @@ argument-hint: "[task description]"
 
 ---
 
+## /coral:codex-analyze
+
+Deep analysis via Codex delegation with Claude post-processing. Codex investigates; Claude verifies and presents.
+
+**File**: `skills/codex-analyze/SKILL.md`
+
+### Configuration
+
+```yaml
+---
+name: codex-analyze
+description: Deep analysis via Codex delegation with Claude post-processing
+argument-hint: "[investigation target or question]"
+---
+```
+
+### Behavior
+
+1. Load protocol: read `agents/codex-analyst.md` for prompt template
+2. Gather context (investigation target, file paths, error messages, what's been tried)
+3. Call Codex directly via `codex_session_create` (or `codex_session_send` for follow-ups) with `reasoning_effort: "xhigh"`
+4. Post-process: verify file:line references for CRITICAL/HIGH findings, filter unrelated findings, restructure by severity, synthesize summary
+
+---
+
 ## /coral:codex-ralph
 
 Persistent execution via Codex with Claude-controlled verification loop. Claude orchestrates; Codex executes each round.
@@ -162,12 +191,14 @@ argument-hint: "[task description]"
 
 ### Behavior
 
-1. Gather context (task description, file paths, progress, working_directory)
-2. Claude-controlled loop (up to 5 rounds):
-   - Spawn `coral:codex-ralph` agent with task + thread_id (session continuity)
+1. Load protocol: read `agents/codex-ralph.md` for prompt template
+2. Gather context (task description, file paths, progress, working_directory)
+3. Claude-controlled loop (up to 5 rounds):
+   - Call Codex via `codex_session_create` (first round) or `codex_session_send` (subsequent rounds)
+   - Save thread_id for session continuity
    - Claude verifies changes (read files, run tests, compare against criteria)
-   - If not complete → re-spawn with updated progress context
-3. Post-completion review: read every changed file, compare against requirements, fix discrepancies
+   - If not complete → loop with updated progress context
+4. Post-completion review: read every changed file, compare against requirements, fix discrepancies directly
 
 ---
 

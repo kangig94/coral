@@ -1,7 +1,8 @@
 ---
 name: ralph
-description: Persistent execution loop with verification — keeps working until done
+description: Persistent execution loop with verification (sonnet) — best for implementing an existing plan
 argument-hint: "[task description]"
+model: sonnet
 ---
 
 # Persistent Execution with Verification

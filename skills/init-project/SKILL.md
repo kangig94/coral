@@ -2,6 +2,7 @@
 name: init-project
 description: Initialize project for AI-assisted development with rules, agents, CLAUDE.md, and docs
 argument-hint: "[existing|new]"
+disable-model-invocation: true
 ---
 
 # Project Initialization

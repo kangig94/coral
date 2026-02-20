@@ -17,8 +17,9 @@ Create a Codex session. The sole entry point for all Codex execution. Internally
 | `model` | string | No | Model to use (default: `gpt-5.3-codex`, configurable via `CORAL_CODEX_MODEL`) |
 | `working_directory` | string | No | Working directory |
 | `reasoning_effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
+| `background` | boolean | No | Run in background (default: `false`). Returns immediately with progress info. |
 
-### Output (JSON)
+### Output — Foreground (default)
 
 ```json
 {
@@ -33,6 +34,21 @@ Create a Codex session. The sole entry point for all Codex execution. Internally
 ```
 
 If no thread ID is returned, registration is skipped with a `notice` field. `errors`/`warnings`/`exit_code` are conditionally included.
+
+During foreground execution, `[Codex]` prefixed progress messages are sent via `notifications/progress`.
+
+### Output — Background (`background: true`)
+
+```json
+{
+  "progress_id": "uuid",
+  "progress_file": "/tmp/coral-progress-uuid.jsonl",
+  "session_name": "my-review",
+  "status": "launched"
+}
+```
+
+Progress is written to the JSONL file with a terminal `completed` or `error` event on finish.
 
 ---
 
@@ -49,6 +65,7 @@ Send a follow-up prompt to an existing session. Uses `codex exec resume THREAD_I
 | `model` | string | No | Model to use |
 | `working_directory` | string | No | Working directory |
 | `reasoning_effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
+| `background` | boolean | No | Run in background (default: `false`) |
 
 ### Lookup Logic
 
@@ -118,6 +135,7 @@ Fork an existing session to continue the conversation in a new branch.
 | `model` | string | No | Model to use |
 | `working_directory` | string | No | Working directory |
 | `reasoning_effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
+| `background` | boolean | No | Run in background (default: `false`) |
 
 ### Output (JSON)
 

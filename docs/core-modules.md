@@ -1,6 +1,6 @@
 # Core Modules
 
-Detailed description of the 6 core TypeScript modules.
+Detailed description of the 7 core TypeScript modules.
 
 ## src/types.ts — Shared Type Definitions
 
@@ -88,15 +88,17 @@ Duplicated patterns are extracted into reusable schemas:
 | `promptSchema` | Non-empty prompt string (min 1 char) |
 | `sessionRefSchema` | Session name or thread ID reference |
 | `cwdSchema` | Optional working directory |
+| `reasoningEffortSchema` | Optional enum: `low`, `medium`, `high`, `xhigh` |
+| `backgroundSchema` | Boolean, default `false` — run in background |
 
 ### Schema List
 
-| Schema | Tool | Required Fields |
-|---|---|---|
-| `codexSessionCreateSchema` | `codex_session_create` | `prompt` (optional: `name`) |
-| `codexSessionSendSchema` | `codex_session_send` | `session`, `prompt` (optional: `working_directory`) |
-| `codexSessionListSchema` | `codex_session_list` | (none) |
-| `codexSessionForkSchema` | `codex_session_fork` | `session` (optional: `working_directory`) |
+| Schema | Tool | Required Fields | Optional Fields |
+|---|---|---|---|
+| `codexSessionCreateSchema` | `codex_session_create` | `prompt` | `name`, `model`, `working_directory`, `reasoning_effort`, `background` |
+| `codexSessionSendSchema` | `codex_session_send` | `session`, `prompt` | `model`, `working_directory`, `reasoning_effort`, `background` |
+| `codexSessionListSchema` | `codex_session_list` | (none) | |
+| `codexSessionForkSchema` | `codex_session_fork` | `session` | `name`, `prompt`, `model`, `working_directory`, `reasoning_effort`, `background` |
 
 Types are extracted from each schema using `z.infer<>` for use in handlers.
 
@@ -173,6 +175,7 @@ Core module that runs Codex CLI via `child_process.spawn` and collects results.
 
 | Constant | Value | Description |
 |---|---|---|
+| `IDLE_TIMEOUT` | 10 min | Inactivity timeout — kills process if no stdout/stderr activity |
 | `MAX_BUFFER` | 10MB | stdout/stderr buffer limit |
 | `SIGKILL_DELAY` | 5 sec | Wait time between SIGTERM and SIGKILL |
 
@@ -180,35 +183,38 @@ Core module that runs Codex CLI via `child_process.spawn` and collects results.
 
 - **`activeChildren`**: `Set<ChildProcess>` tracking running child processes
 - **`appendBuffer()`**: Appends data to buffer, truncates with `[output truncated at 10MB]` message when limit is exceeded
-- **Timeout**: SIGTERM -> 5-second wait -> SIGKILL escalation
+- **Idle timeout**: Process is killed if no output activity for 10 minutes (resets on every stdout/stderr data event)
+- **Escalation**: SIGTERM -> 5-second wait -> SIGKILL
 - **`killAllChildren()`**: Sends SIGTERM -> SIGKILL escalation to all tracked child processes. Used during graceful shutdown.
 
 ### Public Functions
 
-#### `executeOneShot(prompt, model?, cwd?): Promise<CodexExecResult>`
+#### `executeOneShot(prompt, model?, cwd?, reasoningEffort?, onEvent?): Promise<CodexExecResult>`
 
 One-shot execution.
 
 ```bash
-codex exec -m MODEL --json --full-auto < prompt
+codex exec -m MODEL --json --full-auto [--reasoning-effort LEVEL] < prompt
 ```
 
 - Prepends CLAUDE.md content to the prompt (`prependClaudeMd`) — Codex receives project guidelines
 - Parses stdout with `parseCodexJsonl()`
+- `onEvent` callback receives each JSONL line as it arrives (used for progress reporting)
+- `reasoningEffort` maps to `--reasoning-effort` CLI flag
 
-#### `executeResume(threadId, prompt, model?, cwd?): Promise<CodexExecResult>`
+#### `executeResume(threadId, prompt, model?, cwd?, reasoningEffort?, onEvent?): Promise<CodexExecResult>`
 
 Resume an existing session.
 
 ```bash
-codex exec resume THREAD_ID -m MODEL --json --full-auto < prompt
+codex exec resume THREAD_ID -m MODEL --json --full-auto [--reasoning-effort LEVEL] < prompt
 ```
 
 - Passes `resume` subcommand and thread ID as arguments
 - If no new thread ID is returned, retains the original
 - Does NOT prepend CLAUDE.md (already injected in the first turn)
 
-#### `executeFork(threadId, prompt?, model?, cwd?): Promise<CodexExecResult>`
+#### `executeFork(threadId, prompt?, model?, cwd?, reasoningEffort?, onEvent?): Promise<CodexExecResult>`
 
 Fork a session. Internally delegates to `executeResume()`.
 
@@ -230,6 +236,48 @@ On new sessions (`executeOneShot`), the plugin's CLAUDE.md is prepended to the p
 ### console.log Prohibition
 
 This module runs inside a stdio MCP server. `console.log` writes to stdout, which would break the MCP protocol. All debug output must use `process.stderr.write()`.
+
+---
+
+## src/mcp/progress.ts — Progress File Utilities
+
+Pure helper functions for Codex execution visibility. No server dependencies.
+
+### Functions
+
+#### `createProgressFile(session, tool): string`
+
+Creates a JSONL progress file in `$TMPDIR` with a metadata header. Returns the file path (`/tmp/coral-progress-<uuid>.jsonl`).
+
+#### `removeProgressFile(filePath): void`
+
+Deletes a progress file. Swallows errors (file may not exist). Called after foreground execution completes.
+
+#### `extractProgressMessage(event): string | null`
+
+Extracts a human-readable message from a `CodexThreadEvent`. Used for both `notifications/progress` display and progress file entries.
+
+| Event Type | Message |
+|---|---|
+| `turn.started` | `Processing...` |
+| `item.completed` + `reasoning` | First 120 chars of reasoning text |
+| `item.completed` + `web_search` | `Searching: <query>` |
+| `item.completed` + `agent_message` | `Generating response...` |
+| `item.completed` + `command_execution` | `Running: <command>` |
+| `item.completed` + `file_change` | `Editing: <path>` |
+| `item.completed` + `mcp_tool_call` | `Calling: <tool>` |
+
+#### `extractProgressId(filePath): string | null`
+
+Extracts the UUID from a progress file path.
+
+#### `appendProgressEvent(filePath, eventType, message): void`
+
+Appends a progress event line to the JSONL file. Non-fatal on write errors.
+
+#### `appendFinalResult(filePath, event, data): void`
+
+Appends a terminal `completed` or `error` event to the progress file.
 
 ---
 

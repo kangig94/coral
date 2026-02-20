@@ -139,6 +139,7 @@ Proxy agents that delegate work to Codex CLI. Tool restrictions limit them to co
 ---
 name: codex-architect
 description: "Architecture analysis via Codex delegation. Use when Codex-specific perspective is needed for design review, or when explicitly requested with 'codex architect'. NOT for direct Claude-native analysis (use architect agent instead)."
+model: sonnet
 tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
 ---
 ```
@@ -155,6 +156,7 @@ tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_s
 ---
 name: codex-critic
 description: "Critical review via Codex delegation. Use when Codex-specific perspective is needed for plan/code critique, or when explicitly requested with 'codex critic'. NOT for direct Claude-native critique (use critic agent instead)."
+model: sonnet
 tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
 ---
 ```
@@ -171,6 +173,7 @@ tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_s
 ---
 name: codex-analyst
 description: "Deep analysis and investigation via Codex delegation. Use when Codex-specific perspective is needed for root cause analysis, dependency tracing, or technical investigation. NOT for direct Claude-native analysis (use analyst agent instead)."
+model: sonnet
 tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
 ---
 ```
@@ -187,6 +190,7 @@ tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_s
 ---
 name: codex-ralph
 description: "Single-shot Codex execution for persistent tasks. Claude controls the loop externally. NOT for Claude-native execution (use ralph agent instead)."
+model: sonnet
 tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
 ---
 ```

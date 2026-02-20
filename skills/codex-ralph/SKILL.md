@@ -1,7 +1,9 @@
 ---
 name: codex-ralph
-description: Persistent execution via Codex delegation — keeps working until done
+description: Persistent execution via Codex delegation (sonnet) — best for implementing an existing plan
 argument-hint: "[task description]"
+model: sonnet
+disable-model-invocation: true
 ---
 
 # Persistent Execution via Codex
@@ -10,29 +12,22 @@ Claude controls the loop. Codex executes each round. Claude verifies after each 
 
 Announce at start: "Using codex-ralph to execute this task via Codex with Claude-controlled verification loop."
 
+## Execution
+
+1. **Load protocol**: Read `agents/codex-ralph.md` for the prompt template and system instructions
+2. **Gather context**: Collect task description, acceptance criteria, file paths, constraints from conversation
+
 ## Execution Loop
 
-1. **Gather context**: Collect task description, acceptance criteria, file paths, constraints from conversation
-2. **Spawn agent**: Launch Task with `subagent_type: coral:codex-ralph`:
-   ```
-   thread_id: {thread_id from previous round, or omit on first round}
-
-   [CONTEXT]
-   Working directory: /path/to/project
-   Relevant files: {file list}
-   {progress summary: what's done, what remains}
-
-   [TASK]
-   {User's original request, or remaining work for this round}
-   ```
-3. **Extract thread_id**: Save the `thread_id` from the agent's response for session continuity
-4. **Verify**: YOU (Claude, main context) verify the changes:
+1. **Call Codex**: Use `codex_session_create` (first round) or `codex_session_send` with saved thread_id (subsequent rounds). Follow the protocol's prompt template. Pass `working_directory` and `reasoning_effort: "high"`.
+2. **Save thread_id** from the response for session continuity
+3. **Verify** the changes yourself:
    - Read changed files
    - Run tests/build/lint as appropriate
    - Compare against acceptance criteria
-5. **Loop decision**:
+4. **Loop decision**:
    - All criteria pass → exit loop, go to Post-Completion Review
-   - Not complete → go to step 2 with thread_id + updated progress context
+   - Not complete → go to step 1 with thread_id + updated progress context
    - Max 5 rounds → ask user whether to continue or finalize
 
 ## Post-Completion Review
@@ -48,4 +43,4 @@ After the loop exits:
 
 ## Error Policy
 
-If agent spawn fails, report the error. Do not fall back to inline Codex calls — the agent is a required dependency.
+If `agents/codex-ralph.md` cannot be read, report the error to the user. Do not fall back to inline execution — the agent protocol is a required dependency.

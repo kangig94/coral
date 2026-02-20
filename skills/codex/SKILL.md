@@ -4,7 +4,7 @@ description: Execute a prompt with OpenAI Codex CLI
 argument-hint: "[prompt]"
 ---
 
-Route the user's request to the appropriate Codex agent, or handle session management directly.
+Route the user's request to Codex. Call MCP tools directly for most tasks; spawn parallel subagents only for review.
 
 **Do NOT output any text before the tool call.** All steps below are internal routing logic — execute them silently. The user should only see the final result from "Presenting the result."
 
@@ -28,21 +28,18 @@ If the argument does NOT start with `session`, continue to step 2.
 ## 2. Session continuity
 
 Check the conversation history for a previous `/codex` call that returned a `thread_id`:
-- **Previous thread_id exists** → use it for session continuity (step 5b: `codex_session_send`, step 5a: include in agent prompt)
-- **No previous thread_id** → start fresh (step 5b: `codex_session_create`, step 5a: omit thread_id)
-- **User says "new" or explicitly wants a fresh start** → start fresh
+- **Previous thread_id exists** → use `codex_session_send` for continuity
+- **No previous thread_id** → use `codex_session_create`
+- **User says "new" or explicitly wants a fresh start** → use `codex_session_create`
 
 ## 3. Analyze intent
 
-Based on the user's request, determine if a specialized agent is needed:
-
-| Intent | Keywords | Agent (subagent_type) |
-|--------|----------|-----------------------|
-| Structure review, design evaluation, pattern analysis | review, architecture, design, pattern, trade-off, structure | `coral:codex-architect` |
-| Critical review, find flaws, evaluate plan | critique, evaluate, flaws, review plan, verify | `coral:codex-critic` |
-| Investigation, root cause, debug, dependency analysis | debug, investigate, analyze, why, root cause, trace | `coral:codex-analyst` |
-| Persistent execution, keep going, don't stop | ralph, persistent, loop, don't stop, keep going, until done | `coral:codex-ralph` |
-| **Everything else** | general questions, search, code tasks, conversation | **No agent — direct MCP call (step 5b)** |
+| Intent | Keywords | Execution |
+|--------|----------|-----------|
+| **Review** (architecture + critique) | review, evaluate, check, audit | **Parallel subagent spawn** (step 5a) |
+| Investigation, root cause, debug | debug, investigate, analyze, why, root cause, trace | Direct MCP call with analyst protocol (step 5b) |
+| Persistent execution | ralph, persistent, loop, don't stop, keep going, until done | Direct MCP call with ralph protocol (step 5b) |
+| **Everything else** | general questions, search, code tasks | **Direct MCP call, verbatim prompt** (step 5c) |
 
 ## 4. Gather context
 
@@ -52,29 +49,26 @@ Collect relevant context from the current conversation:
 - Current working directory
 - Constraints or requirements established earlier
 
-## 5a. Specialized agent (architect/critic/analyst/ralph matched)
+## 5a. Review (parallel subagent spawn)
 
-MUST spawn a Task agent. Do NOT call MCP tools directly.
+Spawn TWO Task agents in a SINGLE message (parallel):
+- `subagent_type: coral:codex-architect` — architecture/design perspective
+- `subagent_type: coral:codex-critic` — critical review/flaw finding
 
-Spawn a Task with the selected `subagent_type` and the following prompt structure:
+Provide each with the gathered context and working directory.
 
-```
-thread_id: {previous thread_id, or omit this line}
+After both return, **synthesize**:
+1. Merge findings, deduplicate overlapping issues
+2. Order by severity (CRITICAL > HIGH > MEDIUM > LOW)
+3. Present as a unified review with verified file:line references
 
-[CONTEXT]
-Working directory: /path/to/project
-Relevant files: src/foo.ts, src/bar.ts
-[Previous context summary if relevant]
+## 5b. Specialized intent (analyst, ralph)
 
-[TASK]
-{User's original request}
-```
+Read the relevant agent protocol (`agents/codex-analyst.md` or `agents/codex-ralph.md`) for the prompt template. Call `codex_session_create` or `codex_session_send` directly, following the protocol's structure. Pass `working_directory` and appropriate `reasoning_effort`.
 
-## 5b. General request (no specialized agent matched)
+## 5c. General request
 
-MUST call MCP tool directly. Do NOT spawn a Task agent.
-
-Pass the user's prompt **verbatim** — do not rephrase, enrich, or add information.
+Call MCP tool directly. Pass the user's prompt **verbatim** — do not rephrase, enrich, or add information.
 
 | Condition | Action |
 |-----------|--------|
@@ -83,28 +77,9 @@ Pass the user's prompt **verbatim** — do not rephrase, enrich, or add informat
 
 ## Presenting the result
 
-Present the result (from agent or MCP tool) following these rules:
+1. **Response only (no errors)**: Show response as the main content.
+2. **Response + errors**: Show response first, then: `Codex stopped: [error]. Resume with /codex to continue.`
+3. **Errors only**: Show: `Codex error: [error message]`
+4. **Warnings**: Append after the response as a brief note.
 
-1. **Response only (no errors)**: Show response as the main content. No extra decoration needed.
-
-2. **Response + errors (partial result)**: Show response first, then add a separator and error notice:
-   ```
-   [response content]
-
-   ---
-   Codex stopped: [error message]
-   Partial response shown above. Resume with /codex to continue.
-   ```
-
-3. **Errors only (empty response)**: Show error directly:
-   ```
-   Codex error: [error message]
-   ```
-
-4. **Warnings present**: Append after the response as a brief note.
-
-5. **Multiple errors or warnings**: List each on its own line.
-
-Key rules:
-- Always show response content first when it exists.
-- Never show `thread_id`, `model`, `duration_ms` unless the user asks.
+Never show `thread_id`, `model`, `duration_ms` unless the user asks.

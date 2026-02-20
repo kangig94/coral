@@ -2,6 +2,7 @@
 name: statusline
 description: Install or remove coral HUD statusline
 argument-hint: "[install|uninstall]"
+disable-model-invocation: true
 ---
 
 # Coral Statusline
