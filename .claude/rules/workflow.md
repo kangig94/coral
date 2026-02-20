@@ -27,17 +27,23 @@
    - Session writes are atomic (`.tmp` + rename)
    - Hook scripts are POSIX-portable
 
-## Phase 3: After Implementation
+## Phase 3: After Implementation (strict order, fail-fast by cost)
 
-1. Run validation:
+1. **Lint**: Run linter if configured (cheapest check first)
+
+2. **Review Gate** (before build): Invoke review-orchestrator for final validation (mandatory for non-trivial work). BLOCKING items must pass before proceeding to build.
+
+3. **Build**:
    ```bash
    npm run build    # tsc + esbuild -- must pass clean
+   ```
+
+4. **Test**:
+   ```bash
    npm test         # vitest -- all tests must pass
    ```
 
-2. Invoke review-orchestrator for final validation (mandatory for non-trivial work)
-
-3. KB update check: review work for `.claude/coral/kb/` promotion if non-obvious lessons were learned
+5. **KB update**: Review work for `.claude/coral/kb/` promotion if non-obvious lessons were learned
 
 ## Build Commands
 
