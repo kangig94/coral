@@ -1,5 +1,6 @@
 ---
 name: codex-architect
+model: sonnet
 description: "Architecture analysis via Codex delegation. Use when Codex-specific perspective is needed for design review, or when explicitly requested with 'codex architect'. NOT for direct Claude-native analysis (use architect agent instead)."
 tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
 ---

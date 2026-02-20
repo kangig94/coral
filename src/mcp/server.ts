@@ -19,6 +19,8 @@ import {
   type CodexSessionSendInput,
   type CodexSessionForkInput,
 } from './schemas.js';
+import type { CodexThreadEvent } from '../types.js';
+import { createProgressFile, removeProgressFile, extractProgressId, extractProgressMessage, appendProgressEvent, appendFinalResult } from './progress.js';
 
 const tools = [
   {
@@ -33,6 +35,7 @@ const tools = [
         model: { type: 'string', description: 'Codex model to use (default: gpt-5.3-codex)' },
         working_directory: { type: 'string', description: 'Working directory for Codex execution' },
         reasoning_effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh'], description: 'Model reasoning effort level' },
+        background: { type: 'boolean', description: 'Run in background. Returns progress_id immediately.', default: false },
       },
       required: ['prompt'],
     },
@@ -49,6 +52,7 @@ const tools = [
         model: { type: 'string', description: 'Codex model to use' },
         working_directory: { type: 'string', description: 'Working directory for Codex execution' },
         reasoning_effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh'], description: 'Model reasoning effort level' },
+        background: { type: 'boolean', description: 'Run in background. Returns progress_id immediately.', default: false },
       },
       required: ['session', 'prompt'],
     },
@@ -75,6 +79,7 @@ const tools = [
         model: { type: 'string', description: 'Codex model to use' },
         working_directory: { type: 'string', description: 'Working directory for Codex execution' },
         reasoning_effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh'], description: 'Model reasoning effort level' },
+        background: { type: 'boolean', description: 'Run in background. Returns progress_id immediately.', default: false },
       },
       required: ['session'],
     },
@@ -90,17 +95,110 @@ function jsonResult(data: Record<string, unknown>) {
 }
 
 /** Conditional error/warning fields for Codex result responses. */
-function resultExtras(result: { exitCode: number | null; errors: string[]; warnings: string[] }) {
-  return {
-    ...(result.exitCode !== 0 && result.exitCode !== null ? { exit_code: result.exitCode } : {}),
-    ...(result.errors.length > 0 ? { errors: result.errors } : {}),
-    ...(result.warnings.length > 0 ? { warnings: result.warnings } : {}),
+function resultExtras(result: { exitCode: number | null; errors: string[]; warnings: string[] }): Record<string, unknown> {
+  const extras: Record<string, unknown> = {};
+  if (result.exitCode !== 0 && result.exitCode !== null) extras.exit_code = result.exitCode;
+  if (result.errors.length > 0) extras.errors = result.errors;
+  if (result.warnings.length > 0) extras.warnings = result.warnings;
+  return extras;
+}
+
+type OnEventCallback = (line: string) => void;
+
+/** Build an onEvent callback that writes to a progress file and optionally sends MCP notifications. */
+function makeEventCallback(opts: {
+  progressFile: string;
+  progressToken?: string | number;
+  notify?: (n: { method: string; params: Record<string, unknown> }) => Promise<void>;
+}): OnEventCallback {
+  let counter = 0;
+  return (line: string) => {
+    try {
+      const event = JSON.parse(line) as CodexThreadEvent;
+      const message = extractProgressMessage(event);
+      if (!message) return;
+      if (opts.progressToken != null && opts.notify) {
+        void opts.notify({
+          method: 'notifications/progress',
+          params: { progressToken: opts.progressToken, progress: ++counter, message: `[Codex] ${message}` },
+        }).catch(() => {});
+      }
+      appendProgressEvent(opts.progressFile, event.type, message);
+    } catch { /* ignore non-JSON lines */ }
   };
 }
 
-async function handleSessionCreate(input: CodexSessionCreateInput, mgr: SessionManager) {
+/** Track active background progress files for shutdown cleanup. */
+const activeBackgroundFiles = new Set<string>();
+
+/** Extract completion fields from a handler's JSON result for the progress file. */
+function extractCompletionData(result: ReturnType<typeof jsonResult>, sessionLabel: string): Record<string, unknown> {
+  const data = JSON.parse(result.content[0].text);
+  return {
+    response: data.response,
+    thread_id: data.thread_id ?? null,
+    session_name: sessionLabel,
+    model: data.model,
+    duration_ms: data.duration_ms,
+    ...(data.notice ? { notice: data.notice } : {}),
+  };
+}
+
+/**
+ * Launch a handler in the background with a progress file.
+ * Writes final result/error events and returns immediately with a "launched" response.
+ */
+function launchBackground(
+  sessionLabel: string,
+  toolName: string,
+  handler: (cb: OnEventCallback) => Promise<ReturnType<typeof jsonResult>>,
+): ReturnType<typeof jsonResult> {
+  const pFile = createProgressFile(sessionLabel, toolName);
+  const progressId = extractProgressId(pFile);
+  const cb = makeEventCallback({ progressFile: pFile });
+  activeBackgroundFiles.add(pFile);
+
+  handler(cb).then((result) => {
+    appendFinalResult(pFile, 'completed', extractCompletionData(result, sessionLabel));
+  }).catch((err) => {
+    try { appendFinalResult(pFile, 'error', { error: err instanceof Error ? err.message : String(err) }); } catch {}
+  }).finally(() => { activeBackgroundFiles.delete(pFile); });
+
+  return jsonResult({ progress_id: progressId, progress_file: pFile, session_name: sessionLabel, status: 'launched' });
+}
+
+/**
+ * Run a handler in the foreground, optionally with MCP progress notifications.
+ * Creates and cleans up a progress file when a progress token is present.
+ */
+async function runForeground(
+  sessionLabel: string,
+  toolName: string,
+  progressToken: string | number | undefined,
+  notify: ((n: { method: string; params: Record<string, unknown> }) => Promise<void>) | undefined,
+  handler: (cb?: OnEventCallback) => Promise<ReturnType<typeof jsonResult>>,
+): Promise<ReturnType<typeof jsonResult>> {
+  const hasPT = progressToken != null && notify != null;
+  const pFile = hasPT ? createProgressFile(sessionLabel, toolName) : undefined;
+  const cb = hasPT ? makeEventCallback({ progressFile: pFile!, progressToken, notify }) : undefined;
+  try {
+    return await handler(cb);
+  } finally {
+    if (pFile) removeProgressFile(pFile);
+  }
+}
+
+/** Session-not-found error message. */
+function sessionNotFoundError(ref: string): ReturnType<typeof textResult> {
+  return textResult(
+    `Session not found: "${ref}". Use codex_session_create to start a new session, or codex_session_list to see registered sessions.`,
+    true,
+  );
+}
+
+async function handleSessionCreate(input: CodexSessionCreateInput, mgr: SessionManager, onEvent?: OnEventCallback) {
   const sessionName = input.name ?? `session-${Date.now()}`;
-  const result = await executeOneShot(input.prompt, input.model, input.working_directory, input.reasoning_effort);
+  const result = await executeOneShot(input.prompt, input.model, input.working_directory, input.reasoning_effort, onEvent);
 
   if (!result.threadId) {
     return jsonResult({
@@ -124,17 +222,11 @@ async function handleSessionCreate(input: CodexSessionCreateInput, mgr: SessionM
   });
 }
 
-async function handleSessionSend(input: CodexSessionSendInput, mgr: SessionManager) {
+async function handleSessionSend(input: CodexSessionSendInput, mgr: SessionManager, onEvent?: OnEventCallback) {
   const entry = mgr.get(input.session);
+  if (!entry) return sessionNotFoundError(input.session);
 
-  if (!entry) {
-    return textResult(
-      `Session not found: "${input.session}". Use codex_session_create to start a new session, or codex_session_list to see registered sessions.`,
-      true,
-    );
-  }
-
-  const result = await executeResume(entry.codexThreadId, input.prompt, input.model, input.working_directory ?? entry.workingDirectory, input.reasoning_effort);
+  const result = await executeResume(entry.codexThreadId, input.prompt, input.model, input.working_directory ?? entry.workingDirectory, input.reasoning_effort, onEvent);
   mgr.updateSession(entry.name, input.model ? { model: input.model } : undefined);
 
   return jsonResult({
@@ -160,18 +252,12 @@ async function handleSessionList(mgr: SessionManager) {
   return jsonResult({ sessions: registered, total: registered.length });
 }
 
-async function handleSessionFork(input: CodexSessionForkInput, mgr: SessionManager) {
+async function handleSessionFork(input: CodexSessionForkInput, mgr: SessionManager, onEvent?: OnEventCallback) {
   const entry = mgr.get(input.session);
-
-  if (!entry) {
-    return textResult(
-      `Session not found: "${input.session}". Use codex_session_create to start a new session, or codex_session_list to see registered sessions.`,
-      true,
-    );
-  }
+  if (!entry) return sessionNotFoundError(input.session);
 
   const cwd = input.working_directory ?? entry.workingDirectory;
-  const result = await executeFork(entry.codexThreadId, input.prompt, input.model, cwd, input.reasoning_effort);
+  const result = await executeFork(entry.codexThreadId, input.prompt, input.model, cwd, input.reasoning_effort, onEvent);
 
   if (input.name && result.threadId) {
     mgr.register(input.name, result.threadId, result.model, cwd ?? process.cwd());
@@ -195,21 +281,61 @@ const server = new Server(
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const { name, arguments: args } = request.params;
   const rawArgs = args ?? {};
 
+  const progressToken = extra._meta?.progressToken;
+  const notify = (progressToken != null && extra.sendNotification)
+    ? extra.sendNotification.bind(extra)
+    : undefined;
+
   try {
     switch (name) {
-      case 'codex_session_create':
-        return await handleSessionCreate(codexSessionCreateSchema.parse(rawArgs), sessionManager);
-      case 'codex_session_send':
-        return await handleSessionSend(codexSessionSendSchema.parse(rawArgs), sessionManager);
+      case 'codex_session_create': {
+        const input = codexSessionCreateSchema.parse(rawArgs);
+        const sessionName = input.name ?? `session-${Date.now()}`;
+        const createInput = { ...input, name: sessionName };
+
+        if (input.background) {
+          return launchBackground(sessionName, name, (cb) =>
+            handleSessionCreate(createInput, sessionManager, cb));
+        }
+
+        return runForeground(sessionName, name, progressToken, notify, (cb) =>
+          handleSessionCreate(createInput, sessionManager, cb));
+      }
+      case 'codex_session_send': {
+        const input = codexSessionSendSchema.parse(rawArgs);
+        const entry = sessionManager.get(input.session);
+
+        if (input.background) {
+          if (!entry) return sessionNotFoundError(input.session);
+          return launchBackground(entry.name, name, (cb) =>
+            handleSessionSend(input, sessionManager, cb));
+        }
+
+        const label = entry?.name ?? input.session;
+        return runForeground(label, name, progressToken, notify, (cb) =>
+          handleSessionSend(input, sessionManager, cb));
+      }
       case 'codex_session_list':
         codexSessionListSchema.parse(rawArgs);
         return await handleSessionList(sessionManager);
-      case 'codex_session_fork':
-        return await handleSessionFork(codexSessionForkSchema.parse(rawArgs), sessionManager);
+      case 'codex_session_fork': {
+        const input = codexSessionForkSchema.parse(rawArgs);
+        const entry = sessionManager.get(input.session);
+
+        if (input.background) {
+          if (!entry) return sessionNotFoundError(input.session);
+          return launchBackground(input.name ?? entry.name, name, (cb) =>
+            handleSessionFork(input, sessionManager, cb));
+        }
+
+        const label = input.name ?? entry?.name ?? input.session;
+        return runForeground(label, name, progressToken, notify, (cb) =>
+          handleSessionFork(input, sessionManager, cb));
+      }
       default:
         return textResult(`Unknown tool: ${name}`, true);
     }
@@ -222,6 +348,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 function shutdown() {
   process.stderr.write('Coral MCP Server shutting down...\n');
+  for (const pFile of activeBackgroundFiles) {
+    appendFinalResult(pFile, 'error', { error: 'Server shutting down' });
+  }
+  activeBackgroundFiles.clear();
   killAllChildren();
   server.close().finally(() => process.exit(0));
 }

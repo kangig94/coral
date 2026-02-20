@@ -1,5 +1,6 @@
 ---
 name: codex-ralph
+model: sonnet
 description: "Single-shot Codex execution for persistent tasks. Claude controls the loop externally. NOT for Claude-native execution (use ralph agent instead)."
 tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
 ---

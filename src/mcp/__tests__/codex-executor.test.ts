@@ -230,6 +230,75 @@ describe('executeFork', () => {
   });
 });
 
+describe('idle timeout', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function createIdleProcess(): ChildProcess & { kill: ReturnType<typeof vi.fn> } {
+    const proc = new EventEmitter() as ChildProcess;
+    const stdoutStream = new Readable({ read() {} });
+    const stderrStream = new Readable({ read() {} });
+    const stdinStream = new Writable({ write(_chunk, _enc, cb) { cb(); } });
+    Object.assign(proc, {
+      stdout: stdoutStream,
+      stderr: stderrStream,
+      stdin: stdinStream,
+      kill: vi.fn(),
+      pid: 99999,
+    });
+    return proc as ChildProcess & { kill: ReturnType<typeof vi.fn> };
+  }
+
+  it('kills process after 10 minutes of inactivity', async () => {
+    mockCliAvailable();
+    const proc = createIdleProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const promise = executeOneShot('test');
+    promise.catch(() => {}); // prevent unhandled rejection warning
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+
+    await expect(promise).rejects.toThrow('inactivity');
+    expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
+  });
+
+  it('does not kill active process producing output', async () => {
+    mockCliAvailable();
+    const proc = createIdleProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const promise = executeOneShot('test');
+
+    // Emit data every 5 minutes — should reset idle timer each time
+    for (let i = 0; i < 4; i++) {
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+      (proc.stdout as Readable).push('{"type":"turn.started"}\n');
+    }
+
+    expect(proc.kill).not.toHaveBeenCalled();
+
+    // Now let it finish
+    (proc.stdout as Readable).push('{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Done"}}\n');
+    (proc.stdout as Readable).push(null);
+    proc.emit('close', 0);
+
+    const result = await promise;
+    expect(result.response).toBe('Done');
+  });
+
+  it('error message derives duration from constant', async () => {
+    mockCliAvailable();
+    const proc = createIdleProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const promise = executeOneShot('test');
+    promise.catch(() => {}); // prevent unhandled rejection warning
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+
+    await expect(promise).rejects.toThrow('10 minutes of inactivity');
+  });
+});
+
 describe('killAllChildren', () => {
   it('clears tracked processes after kill', async () => {
     mockCliAvailable();

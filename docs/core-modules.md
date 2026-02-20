@@ -167,7 +167,6 @@ Core module that runs Codex CLI via `child_process.spawn` and collects results.
 
 | Variable | Default | Description |
 |---|---|---|
-| `CORAL_CODEX_TIMEOUT_MS` | `900000` (15 min) | Codex execution timeout |
 | `CORAL_CODEX_MODEL` | `gpt-5.3-codex` | Default model |
 
 ### Constants

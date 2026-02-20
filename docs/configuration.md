@@ -6,13 +6,11 @@ Environment variables, config files, and the plugin manifest.
 
 | Variable | Default | Description |
 |---|---|---|
-| `CORAL_CODEX_TIMEOUT_MS` | `900000` (15 min) | Codex CLI execution timeout (milliseconds) |
 | `CORAL_CODEX_MODEL` | `gpt-5.3-codex` | Default Codex model |
 
 ### Usage — Shell
 
 ```bash
-export CORAL_CODEX_TIMEOUT_MS=600000
 export CORAL_CODEX_MODEL=gpt-5.3-codex
 ```
 
@@ -23,7 +21,6 @@ Alternatively, set environment variables in `.claude/settings.json` (project-lev
 ```json
 {
   "env": {
-    "CORAL_CODEX_TIMEOUT_MS": "600000",
     "CORAL_CODEX_MODEL": "gpt-5.3-codex"
   }
 }

@@ -187,12 +187,17 @@ Four tools provided by the plugin:
 
 All inputs are validated at runtime with zod schemas.
 
+**Background execution**: `create`, `send`, and `fork` accept a `background` parameter (default: `false`). When `true`, the tool returns immediately with `{ progress_id, progress_file, status: "launched" }`. Progress is written to a JSONL file at `/tmp/coral-progress-{uuid}.jsonl` with a terminal `completed` or `error` event.
+
+**Progress display**: During foreground execution, `[Codex]` prefixed progress messages are shown in the Claude Code UI via `notifications/progress`.
+
+**Idle timeout**: Codex processes are killed after 10 minutes of inactivity (no stdout/stderr output). Active processes are never killed.
+
 ## Configuration
 
 Adjust behavior with environment variables:
 
 ```bash
-export CORAL_CODEX_TIMEOUT_MS=900000        # Timeout (default: 900000ms / 15 min)
 export CORAL_CODEX_MODEL=gpt-5.3-codex  # Default model
 ```
 
@@ -201,7 +206,6 @@ Or set them in `.claude/settings.json`:
 ```json
 {
   "env": {
-    "CORAL_CODEX_TIMEOUT_MS": "600000",
     "CORAL_CODEX_MODEL": "gpt-5.3-codex"
   }
 }

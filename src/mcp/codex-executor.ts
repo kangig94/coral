@@ -10,8 +10,7 @@ import type { CodexExecResult } from '../types.js';
 import { parseCodexJsonl } from './output-parser.js';
 import { detectCodexCli } from './cli-detection.js';
 
-const DEFAULT_TIMEOUT = 15 * 60 * 1000; // 15 minutes
-const TIMEOUT_MS = parseInt(process.env.CORAL_CODEX_TIMEOUT_MS ?? '', 10) || DEFAULT_TIMEOUT;
+const IDLE_TIMEOUT = 10 * 60 * 1000; // 10 minutes of inactivity
 const DEFAULT_MODEL = process.env.CORAL_CODEX_MODEL ?? 'gpt-5.3-codex';
 const MAX_BUFFER = 10 * 1024 * 1024; // 10MB
 const SIGKILL_DELAY = 5_000; // 5 seconds after SIGTERM
@@ -35,6 +34,7 @@ function spawnCodex(
   args: string[],
   prompt: string | undefined,
   cwd?: string,
+  onEvent?: (line: string) => void,
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -47,8 +47,22 @@ function spawnCodex(
 
     activeChildren.add(child);
 
-    const timeoutHandle = setTimeout(() => {
+    let lastActivity = Date.now();
+    let idleTimer = setTimeout(onIdle, IDLE_TIMEOUT);
+
+    function resetIdle() {
+      lastActivity = Date.now();
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(onIdle, IDLE_TIMEOUT);
+    }
+
+    function onIdle() {
       if (settled) return;
+      const elapsed = Date.now() - lastActivity;
+      if (elapsed < IDLE_TIMEOUT) {
+        idleTimer = setTimeout(onIdle, IDLE_TIMEOUT - elapsed);
+        return;
+      }
       settled = true;
       child.kill('SIGTERM');
       const killTimer = setTimeout(() => {
@@ -56,25 +70,37 @@ function spawnCodex(
       }, SIGKILL_DELAY);
       child.on('close', () => clearTimeout(killTimer));
       activeChildren.delete(child);
-      reject(new Error(`Codex timed out after ${TIMEOUT_MS}ms`));
-    }, TIMEOUT_MS);
+      reject(new Error(`Codex killed after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`));
+    }
 
     function finish(): boolean {
       if (settled) return false;
       settled = true;
-      clearTimeout(timeoutHandle);
+      clearTimeout(idleTimer);
       activeChildren.delete(child);
       return true;
     }
 
     let stdout = '';
     let stderr = '';
+    let lineBuf = '';
 
     child.stdout.on('data', (data: Buffer) => {
-      stdout = appendBuffer(stdout, data.toString());
+      const chunk = data.toString();
+      resetIdle();
+      stdout = appendBuffer(stdout, chunk);
+      if (onEvent) {
+        lineBuf += chunk;
+        const parts = lineBuf.split('\n');
+        lineBuf = parts.pop()!;
+        for (const line of parts) {
+          if (line.trim()) onEvent(line);
+        }
+      }
     });
 
     child.stderr.on('data', (data: Buffer) => {
+      resetIdle();
       stderr = appendBuffer(stderr, data.toString());
     });
 
@@ -121,12 +147,13 @@ async function executeCodex(
   prompt: string,
   resolvedModel: string,
   cwd?: string,
+  onEvent?: (line: string) => void,
 ): Promise<CodexExecResult> {
   const cli = await detectCodexCli();
   if (!cli.available) throw new Error(cli.error!);
 
   const start = Date.now();
-  const { stdout, stderr, code } = await spawnCodex(args, prompt, cwd);
+  const { stdout, stderr, code } = await spawnCodex(args, prompt, cwd, onEvent);
 
   if (code !== 0 && !stdout.trim()) {
     throw new Error(`Codex exited with code ${code}: ${stderr || 'No output'}`);
@@ -168,8 +195,7 @@ const BASE_FLAGS = ['--json', '--full-auto', '-c', 'web_search=live'];
 
 /** Build optional CLI flags for reasoning_effort. */
 function extraFlags(reasoningEffort?: string): string[] {
-  if (reasoningEffort) return ['-c', `model_reasoning_effort=${reasoningEffort}`];
-  return [];
+  return reasoningEffort ? ['-c', `model_reasoning_effort=${reasoningEffort}`] : [];
 }
 
 /** One-shot execution: codex exec -m MODEL --json --full-auto */
@@ -178,11 +204,12 @@ export async function executeOneShot(
   model?: string,
   cwd?: string,
   reasoningEffort?: string,
+  onEvent?: (line: string) => void,
 ): Promise<CodexExecResult> {
   const resolvedModel = getModel(model);
   return executeCodex(
     ['exec', '-m', resolvedModel, ...BASE_FLAGS, ...extraFlags(reasoningEffort)],
-    prependClaudeMd(prompt), resolvedModel, cwd,
+    prependClaudeMd(prompt), resolvedModel, cwd, onEvent,
   );
 }
 
@@ -195,6 +222,7 @@ export async function executeResume(
   model?: string,
   cwd?: string,
   reasoningEffort?: string,
+  onEvent?: (line: string) => void,
 ): Promise<CodexExecResult> {
   const resolvedModel = getModel(model);
   return executeCodex(
@@ -202,6 +230,7 @@ export async function executeResume(
     prompt,
     resolvedModel,
     cwd,
+    onEvent,
   );
 }
 
@@ -212,9 +241,10 @@ export async function executeFork(
   model?: string,
   cwd?: string,
   reasoningEffort?: string,
+  onEvent?: (line: string) => void,
 ): Promise<CodexExecResult> {
   const forkPrompt = prompt ?? 'Continue from where we left off.';
-  return executeResume(threadId, forkPrompt, model, cwd, reasoningEffort);
+  return executeResume(threadId, forkPrompt, model, cwd, reasoningEffort, onEvent);
 }
 
 // Test-only exports

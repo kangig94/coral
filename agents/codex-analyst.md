@@ -1,5 +1,6 @@
 ---
 name: codex-analyst
+model: sonnet
 description: "Deep analysis and investigation via Codex delegation. Use when Codex-specific perspective is needed for root cause analysis, dependency tracing, or technical investigation. NOT for direct Claude-native analysis (use analyst agent instead)."
 tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
 ---

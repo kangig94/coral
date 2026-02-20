@@ -24,6 +24,7 @@ const cwdSchema = z.string().optional();
 const reasoningEffortSchema = z
   .enum(['low', 'medium', 'high', 'xhigh'])
   .optional();
+const backgroundSchema = z.boolean().default(false);
 
 export const codexSessionCreateSchema = z.object({
   name: sessionNameSchema.optional(),
@@ -31,6 +32,7 @@ export const codexSessionCreateSchema = z.object({
   model: modelSchema,
   working_directory: cwdSchema,
   reasoning_effort: reasoningEffortSchema,
+  background: backgroundSchema,
 });
 
 export const codexSessionSendSchema = z.object({
@@ -39,6 +41,7 @@ export const codexSessionSendSchema = z.object({
   model: modelSchema,
   working_directory: cwdSchema,
   reasoning_effort: reasoningEffortSchema,
+  background: backgroundSchema,
 });
 
 export const codexSessionListSchema = z.object({}).passthrough();
@@ -50,6 +53,7 @@ export const codexSessionForkSchema = z.object({
   model: modelSchema,
   working_directory: cwdSchema,
   reasoning_effort: reasoningEffortSchema,
+  background: backgroundSchema,
 });
 
 export type CodexSessionCreateInput = z.infer<typeof codexSessionCreateSchema>;

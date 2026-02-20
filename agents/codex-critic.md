@@ -1,5 +1,6 @@
 ---
 name: codex-critic
+model: sonnet
 description: "Critical review via Codex delegation. Use when Codex-specific perspective is needed for plan/code critique, or when explicitly requested with 'codex critic'. NOT for direct Claude-native critique (use critic agent instead)."
 tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
 ---
