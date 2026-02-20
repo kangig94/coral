@@ -1,5 +1,15 @@
 # Conventions
 
+## Git Workflow
+
+- **`main`**: Release branch. Always deployable. Never commit directly.
+- **`dev`**: Integration branch. Feature branches merge here.
+- **Feature branches**: Branch from `dev`, merge back to `dev` via PR or merge.
+- **Release**: When `dev` is stable, merge `dev` → `main` and bump version.
+- **Hotfix**: Fix on `dev`, merge to `main`. Cherry-pick if `dev` has unreleased WIP.
+
+Branch naming: `feature/`, `fix/`, `refactor/`, `docs/`, `chore/` prefixes.
+
 ## Commit Style
 
 - Prefix: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`
