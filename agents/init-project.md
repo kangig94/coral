@@ -171,11 +171,9 @@ model: opus
       4. Agent merge: Skip if same-name file exists.
          Model assignment: tier 0-1 = opus, tier 2-3 = sonnet. Never haiku.
 
-      5. settings.local.json merge: Deep-merge. Add new entries, preserve existing, deduplicate.
+      5. Docs merge: Skip if exists.
 
-      6. Docs merge: Skip if exists.
-
-      7. .gitignore: Append Coral block if not already present:
+      6. .gitignore: Append Coral block if not already present:
          # Coral (device-local files)
          .claude/coral/*
          !.claude/coral/kb/
@@ -282,7 +280,7 @@ model: opus
      first, then generate all files in parallel batches."
     — WRONG: Used mkdir + Write directly after Scan. Skipped plan and review entirely.
       Evidence: No plan file in .claude/coral/plans/. No reviewer Task calls in output.
-      Result: 4 standard rules files missing, settings.local.json missing, no review.
+      Result: 4 standard rules files missing, no review.
       Fix: Must write plan (Phase 2), run reviewer loop, then spawn ralph (Phase 3).
     </Bad>
   </Examples>

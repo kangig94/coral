@@ -264,7 +264,6 @@ argument-hint: "[existing|new]"
 | `.claude/agents/ux-critic.md` | Conditional | UX reviewer — frontend/mobile/plugin only |
 | `.claude/agents/{domain}.md` | Yes | 3-5 domain-specific agents per detected domain |
 | `.claude/agents/TEMPLATE.md` | Yes | Agent structure standard |
-| `.claude/settings.local.json` | Yes | Build/test bash permissions |
 | `.claude/coral/kb/` | Yes | Empty KB directory |
 | `docs/ARCHITECTURE.md` | Yes | Real architecture documentation |
 | `docs/DEV_GUIDE.md` | Yes | Real development guide |

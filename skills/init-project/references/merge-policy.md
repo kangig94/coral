@@ -28,15 +28,6 @@ Deterministic rules for handling existing files during init-project execution.
 
 No auto-migration of monolithic CLAUDE.md. Users with existing monolithic files keep them - the rules files are additive and coexist. Users can manually slim their CLAUDE.md when ready.
 
-### .claude/settings.local.json
-
-| Condition | Action |
-|-----------|--------|
-| File does not exist | Create with detected permissions |
-| File exists | Read existing JSON. Add new `permissions.allow` entries that don't already exist. Preserve all existing keys. Never remove entries. |
-
-**Array handling**: Deduplicate by exact string match. Preserve ordering of existing entries, append new ones at end.
-
 ### docs/*.md
 
 | Condition | Action |
@@ -79,7 +70,6 @@ Running `/coral:init-project` twice in succession produces no additional changes
 - Agents: skipped (already exist)
 - CLAUDE.md: skipped (already exists)
 - Rules files: skipped (already exist)
-- settings.local.json: no new entries to add (already present)
 - docs/: skipped (already exist)
 - .gitignore: Coral block already present (skipped)
 - KB directory: already exists (no-op)

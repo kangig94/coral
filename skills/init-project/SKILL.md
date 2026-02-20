@@ -1,6 +1,6 @@
 ---
 name: init-project
-description: Initialize project for AI-assisted development with rules, agents, CLAUDE.md, docs, and settings
+description: Initialize project for AI-assisted development with rules, agents, CLAUDE.md, and docs
 argument-hint: "[existing|new]"
 ---
 
@@ -32,7 +32,6 @@ After ralph completes, verify these files exist. Missing files indicate protocol
 | Agents | `.claude/agents/code-critic.md` | Must exist |
 | Agents | `.claude/agents/TEMPLATE.md` | Must exist |
 | Agents | `.claude/agents/{domain-specific}.md` | Per plan |
-| Settings | `.claude/settings.local.json` | Must exist |
 | KB | `.claude/coral/kb/` | Directory must exist |
 | Git | `.gitignore` contains Coral block | Must contain `# Coral` |
 
