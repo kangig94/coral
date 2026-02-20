@@ -40,6 +40,11 @@ After the loop exits:
 3. **Flag untestable content** — documentation, markdown, config: verify these match the plan
 4. **Fix discrepancies yourself** — do not send back to Codex; fix them directly
 5. **Report to the user** what was done correctly and what you corrected
+6. **Post-implementation sequence** (strict order, fail-fast by cost):
+   a. **Lint**: Run linter if available. Cheapest check first.
+   b. **Parallel validation**: Spawn `coral:architect` for architecture review. Additionally, if `.claude/rules/workflow.md` exists, read it and execute its validation steps (e.g., review-orchestrator) as parallel subagents alongside architect. Both must pass before proceeding to build.
+   c. **Build**: Run the project's build command.
+   d. **Test**: Run the test suite after build succeeds.
 
 ## Error Policy
 

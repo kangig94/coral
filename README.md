@@ -21,7 +21,7 @@ Set up the coral HUD statusline for real-time session info:
 /coral:statusline install
 ```
 
-Displays: `opus 4.6 │ 5m │ 5h:56% wk:38% │ ctx:45%`
+Displays: `opus 4.6 │ 5m │ 5h:56% (3:12) wk:38% (5.2d) │ ctx:45%`
 
 To remove: `/coral:statusline uninstall`
 
@@ -55,6 +55,8 @@ Generates `.claude/CLAUDE.md`, rules, agents, docs, and settings based on the de
 | `/coral:coplan` | Cross-model planning (Codex reviews) | `redesign the session management system` |
 | `/coral:ralph` | Persistent execution loop (sonnet) | `implement the caching layer` |
 | `/coral:codex-ralph` | Persistent execution via Codex (sonnet) | `implement the caching layer` |
+| `/coral:init-project` | Project initialization orchestrator | `"React + FastAPI project"` |
+| `/coral:statusline` | HUD statusline setup | `install` |
 
 Plans are saved to `.claude/coral/plans/`. Ralph skills are best for implementing an existing plan.
 

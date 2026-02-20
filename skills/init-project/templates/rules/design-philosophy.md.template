@@ -1,5 +1,10 @@
 # Design Philosophy
 
+<!-- GENERATION RULE: This file must contain only STABLE PRINCIPLES — not volatile facts.
+     Module dependency graphs, specific file lists, and current architecture details
+     belong in docs/ (architecture.md, core-modules.md). Reference docs instead of duplicating.
+     Test: if content needs updating on refactor (without principle change), it belongs in docs. -->
+
 ## Core Principles
 
 {3-5 domain-specific principles, each 1 sentence + supporting bullets}
@@ -13,6 +18,10 @@
 Key rules:
 1. Layer dependency: code in Lx may only depend on L0..L(x-1)
 2. {Additional project-specific rules}
+
+## Module Structure
+
+Dependency direction is strict: the composition root imports from lower modules; lower modules never import from the composition root. See `docs/architecture.md` for the current dependency graph.
 
 ## Agent System Philosophy
 

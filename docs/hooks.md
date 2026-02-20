@@ -76,37 +76,43 @@ Injects the plugin's CLAUDE.md content into Claude's context at the start of eve
 
 **File**: `hooks/detect-codex-agent.sh`
 
-```bash
-#!/bin/bash
+```sh
+#!/bin/sh
 # SubagentStart hook: detect codex-* agents and inject delegation instructions.
-# Reads SubagentStart event JSON from stdin.
-
-command -v jq >/dev/null 2>&1 || exit 0
+# Reads SubagentStart event JSON from stdin. No external dependencies, POSIX-portable.
 
 INPUT=$(cat)
-AGENT_NAME=$(echo "$INPUT" | jq -r '.agent_name // .tool_input.name // ""')
 
-# Check for "codex-" prefix (case-insensitive, with optional namespace prefix)
+# Extract agent_name from JSON (POSIX-safe, no grep -P)
+AGENT_NAME=$(echo "$INPUT" | sed -n 's/.*"agent_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+[ -z "$AGENT_NAME" ] && AGENT_NAME=$(echo "$INPUT" | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+[ -z "$AGENT_NAME" ] && exit 0
+
+# Check for "codex-" prefix (case-insensitive)
 if echo "$AGENT_NAME" | grep -qiE '(^|:)codex-'; then
   # Ensure multi_agent feature is enabled in Codex config
   CODEX_CONFIG="$HOME/.codex/config.toml"
   if [ ! -f "$CODEX_CONFIG" ]; then
     mkdir -p "$HOME/.codex"
     printf '[features]\nmulti_agent = true\n' > "$CODEX_CONFIG"
-  elif ! grep -q 'multi_agent' "$CODEX_CONFIG"; then
-    if grep -q '^\[features\]' "$CODEX_CONFIG"; then
-      sed -i '/^\[features\]/a multi_agent = true' "$CODEX_CONFIG"
+  elif grep -q 'multi_agent[[:space:]]*=[[:space:]]*true' "$CODEX_CONFIG"; then
+    : # already enabled
+  else
+    # Remove any existing multi_agent line, then add correct one
+    TMP=$(mktemp)
+    grep -v 'multi_agent' "$CODEX_CONFIG" > "$TMP"
+    if grep -q '^\[features\]' "$TMP"; then
+      awk '/^\[features\]/{print; print "multi_agent = true"; next} {print}' "$TMP" > "$CODEX_CONFIG"
     else
+      cat "$TMP" > "$CODEX_CONFIG"
       printf '\n[features]\nmulti_agent = true\n' >> "$CODEX_CONFIG"
     fi
+    rm -f "$TMP"
   fi
 
-  jq -n '{
-    hookSpecificOutput: {
-      hookEventName: "SubagentStart",
-      additionalContext: "Codex delegation context: You are a Codex delegation agent. You MUST use the appropriate Codex MCP tool (codex_session_create or codex_session_send) to forward ALL work to Codex CLI. Do NOT generate your own response in place of calling Codex. Call the MCP tool immediately with the full task."
-    }
-  }'
+  cat <<'HOOK_JSON'
+{"hookSpecificOutput":{"hookEventName":"SubagentStart","additionalContext":"Codex delegation context: You are a Codex delegation agent. You MUST use the appropriate Codex MCP tool (codex_session_create or codex_session_send) to forward ALL work to Codex CLI. Do NOT generate your own response in place of calling Codex. Call the MCP tool immediately with the full task."}}
+HOOK_JSON
 else
   exit 0
 fi
@@ -118,14 +124,14 @@ fi
 1. SubagentStart event fires (matcher: "(^|:)codex-")
 2. Event JSON received via stdin
    e.g.: {"agent_name": "codex-architect", "task": "..."}
-3. Check if jq is installed (if not, exit 0 — skip silently)
-4. Extract agent_name with jq
-   - .agent_name field takes priority
-   - Falls back to .tool_input.name
-5. Check for "codex-" prefix (case-insensitive, supports `coral:codex-*` namespace)
-6a. Match found → output hookSpecificOutput JSON
+3. Extract agent_name via sed (POSIX-safe, no external dependencies)
+   - "agent_name" field takes priority
+   - Falls back to "name" field
+   - Exit 0 if neither found
+4. Check for "codex-" prefix (case-insensitive, supports `coral:codex-*` namespace)
+5a. Match found → ensure Codex multi_agent config, output hookSpecificOutput JSON
     → Claude Code injects additionalContext into the agent
-6b. No match → exit 0 (no output, terminate silently)
+5b. No match → exit 0 (no output, terminate silently)
     → Hook ignored, agent runs normally
 ```
 
@@ -142,8 +148,7 @@ This message is appended to the agent's system prompt, forcing the agent to call
 
 ## Dependencies
 
-- `jq` — Required for JSON parsing (hook skips silently if missing)
-- `grep` — Used for pattern matching
+No external dependencies. Uses only POSIX utilities: `sed`, `grep`, `awk`, `cat`, `printf`, `mktemp`.
 
 ## Notes
 

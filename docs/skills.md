@@ -128,8 +128,9 @@ Persistent execution loop with verification. Keeps working until done with evide
 ```yaml
 ---
 name: ralph
-description: Persistent execution loop with verification — keeps working until done
+description: Persistent execution loop with verification (sonnet) — best for implementing an existing plan
 argument-hint: "[task description]"
+model: sonnet
 ---
 ```
 
@@ -144,7 +145,11 @@ argument-hint: "[task description]"
    - READ the output, check exit code
    - VERIFY the output confirms the claim
    - ONLY THEN make the claim
-5. Request architect verification before declaring task complete
+5. Post-implementation sequence (strict order, fail-fast by cost):
+   - Lint: run linter if available
+   - Parallel validation: spawn `coral:architect` + project reviewer (e.g., review-orchestrator from `.claude/rules/workflow.md`) as parallel subagents. Must pass before build.
+   - Build: run project build command
+   - Test: run test suite after build succeeds
 
 ---
 
@@ -199,6 +204,11 @@ argument-hint: "[task description]"
    - Claude verifies changes (read files, run tests, compare against criteria)
    - If not complete → loop with updated progress context
 4. Post-completion review: read every changed file, compare against requirements, fix discrepancies directly
+5. Post-implementation sequence (strict order, fail-fast by cost):
+   - Lint: run linter if available
+   - Parallel validation: spawn `coral:architect` + project reviewer (e.g., review-orchestrator from `.claude/rules/workflow.md`) as parallel subagents. Must pass before build.
+   - Build: run project build command
+   - Test: run test suite after build succeeds
 
 ---
 
@@ -223,7 +233,8 @@ argument-hint: "[task description]"
 1. Load `agents/planner.md` protocol
 2. Configure reviewers: `coral:architect` and `coral:critic` (full review loop, up to 5 rounds)
 3. Execute planner protocol (gather context, write plan, review loop until no CRITICAL/HIGH, completion)
-4. Present final plan to the user
+4. Project validation: if `.claude/rules/workflow.md` exists, execute its post-planning validation steps (e.g., review-orchestrator). If validation fails, revise and re-validate.
+5. Present final plan to the user
 
 ---
 
@@ -250,7 +261,8 @@ argument-hint: "[task description]"
    - Phase 1 reviewers: `coral:codex-architect` and `coral:codex-critic` (full review loop, up to 5 rounds)
    - Phase 2 cross-reviewers: `coral:architect` and `coral:critic` (single verification pass + one retry)
 3. Execute planner protocol with multi-phase review
-4. Present final plan to the user
+4. Project validation: if `.claude/rules/workflow.md` exists, execute its post-planning validation steps (e.g., review-orchestrator). If validation fails, revise and re-validate.
+5. Present final plan to the user
 
 ---
 

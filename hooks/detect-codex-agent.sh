@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # SubagentStart hook: detect codex-* agents and inject delegation instructions.
 # Reads SubagentStart event JSON from stdin. No external dependencies, POSIX-portable.
 
@@ -23,7 +23,7 @@ if echo "$AGENT_NAME" | grep -qiE '(^|:)codex-'; then
     TMP=$(mktemp)
     grep -v 'multi_agent' "$CODEX_CONFIG" > "$TMP"
     if grep -q '^\[features\]' "$TMP"; then
-      sed '/^\[features\]/a multi_agent = true' "$TMP" > "$CODEX_CONFIG"
+      awk '/^\[features\]/{print; print "multi_agent = true"; next} {print}' "$TMP" > "$CODEX_CONFIG"
     else
       cat "$TMP" > "$CODEX_CONFIG"
       printf '\n[features]\nmulti_agent = true\n' >> "$CODEX_CONFIG"

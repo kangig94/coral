@@ -43,6 +43,23 @@ Every generated agent MUST include these sections:
    - BAD: "When changing important code"
    - GOOD: "When modifying GPU memory allocation functions"
 
+## Rules vs Docs Boundary
+
+Rules contain **principles** (stable, rarely change). Docs contain **facts** (change with code). Rules may REFERENCE docs but must never DUPLICATE doc content.
+
+| Content Type | Belongs In | Example |
+|---|---|---|
+| Modification policy per directory | Rules (design-philosophy) | "csrc/bindings/ must not include CUDA headers" |
+| Dependency direction principle | Rules (design-philosophy) | "Code in layer Lx may only depend on L0..L(x-1)" |
+| Current module dependency graph | Docs (architecture.md) | `server.ts → server-handlers.ts → ...` |
+| Specific file list / line counts | Docs (core-modules.md) | "server.ts is 58 lines of wiring" |
+| Naming conventions | Rules (conventions) | "snake_case for MCP tools, camelCase for TypeScript" |
+| Current API surface | Docs (mcp-tools.md) | Tool parameter tables |
+
+**Test**: If the content needs updating when you refactor code (without changing any principle), it belongs in docs — not rules.
+
+When rules need to reference architecture, use: `See docs/architecture.md for the current module graph.`
+
 ## Doc Writing Rules
 
 ### ARCHITECTURE.md Requirements

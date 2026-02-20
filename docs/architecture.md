@@ -130,7 +130,8 @@ coral/
 ├── src/
 │   ├── types.ts                 # Shared type definitions (CodexThreadEvent etc.)
 │   └── mcp/
-│       ├── server.ts            # MCP server entry point (stdio)
+│       ├── server.ts            # MCP server entry point — wiring only (stdio, transport, signals)
+│       ├── server-handlers.ts   # Business logic handlers + dispatch (extracted from server.ts)
 │       ├── schemas.ts           # Zod input validation schemas
 │       ├── codex-executor.ts    # Codex CLI execution logic
 │       ├── session-manager.ts   # Per-session file persistence
@@ -138,6 +139,7 @@ coral/
 │       ├── cli-detection.ts     # Codex CLI existence check
 │       ├── progress.ts          # Progress file utilities
 │       └── __tests__/           # Tests (vitest)
+│           ├── server-handlers.test.ts
 │           ├── schemas.test.ts
 │           ├── output-parser.test.ts
 │           ├── codex-executor.test.ts
@@ -159,6 +161,8 @@ coral/
 │   │   └── SKILL.md             # /coral:codex-ralph (Codex delegation)
 │   ├── codex/
 │   │   └── SKILL.md             # /coral:codex (Codex CLI)
+│   ├── init-project/
+│   │   └── SKILL.md             # /coral:init-project (project initialization)
 │   ├── plan/
 │   │   └── SKILL.md             # /coral:plan (Claude-native planning)
 │   ├── coplan/
@@ -193,20 +197,22 @@ coral/
 ## Module Dependency Graph
 
 ```
-server.ts
-  ├── schemas.ts        (zod input validation)
-  ├── codex-executor.ts
-  │     ├── output-parser.ts  (pure functions)
-  │     └── cli-detection.ts  (caching singleton)
-  ├── session-manager.ts      (file I/O, per-session files, atomic writes)
-  └── progress.ts             (progress file I/O, pure helpers)
+server.ts  (wiring only — SDK setup, transport, signals)
+  └── server-handlers.ts  (business logic, dispatch, background/foreground)
+        ├── schemas.ts        (zod input validation)
+        ├── codex-executor.ts
+        │     ├── output-parser.ts  (pure functions)
+        │     └── cli-detection.ts  (caching singleton)
+        ├── session-manager.ts      (file I/O, per-session files, atomic writes)
+        └── progress.ts             (progress file I/O, pure helpers)
 
 types.ts ← referenced by all modules
 ```
 
+- `server.ts` — composition root (~58 lines). SDK + transport setup, `progressToken`/`notify` extraction, shutdown, signals. No business logic.
+- `server-handlers.ts` — all MCP tool handlers, dispatch switch, background/foreground execution, progress callbacks
 - `schemas.ts` — zod schemas + type extraction (pure definitions)
 - `output-parser.ts` and `cli-detection.ts` — independent modules with no external dependencies
 - `codex-executor.ts` — combines parser and detection modules + process management + idle timeout
 - `session-manager.ts` — uses filesystem only (no Codex dependency), stores one JSON file per session
 - `progress.ts` — progress file creation, event appending, cleanup (pure helpers, no server dependency)
-- `server.ts` — integrates MCP SDK + executor + session manager + progress + graceful shutdown

@@ -114,7 +114,6 @@ See [Hooks documentation](./hooks.md) for details.
 | Tool | Purpose | Installation |
 |---|---|---|
 | Codex CLI v0.101+ | OpenAI model execution | `npm install -g @openai/codex` |
-| jq | JSON parsing in hook scripts | System package manager (hook skips silently if missing) |
 | Node.js 18+ | Runtime | nvm, etc. |
 
 ## File Role Summary

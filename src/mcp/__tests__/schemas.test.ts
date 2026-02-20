@@ -91,9 +91,8 @@ describe('codexSessionListSchema', () => {
     expect(result).toEqual({});
   });
 
-  it('passes through unknown properties', () => {
-    const result = codexSessionListSchema.parse({ extra: true });
-    expect(result).toHaveProperty('extra', true);
+  it('rejects unknown properties', () => {
+    expect(() => codexSessionListSchema.parse({ extra: true })).toThrow();
   });
 });
 

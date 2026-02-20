@@ -44,7 +44,7 @@ export const codexSessionSendSchema = z.object({
   background: backgroundSchema,
 });
 
-export const codexSessionListSchema = z.object({}).passthrough();
+export const codexSessionListSchema = z.object({}).strict();
 
 export const codexSessionForkSchema = z.object({
   session: sessionRefSchema,

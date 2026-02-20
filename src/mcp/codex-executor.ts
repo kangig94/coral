@@ -13,7 +13,7 @@ import { detectCodexCli } from './cli-detection.js';
 const IDLE_TIMEOUT = 10 * 60 * 1000; // 10 minutes of inactivity
 const DEFAULT_MODEL = process.env.CORAL_CODEX_MODEL ?? 'gpt-5.3-codex';
 const MAX_BUFFER = 10 * 1024 * 1024; // 10MB
-const SIGKILL_DELAY = 5_000; // 5 seconds after SIGTERM
+const SIGTERM_GRACE_MS = 5_000; // grace period before escalating to SIGKILL
 
 const activeChildren = new Set<ChildProcess>();
 
@@ -67,7 +67,7 @@ function spawnCodex(
       child.kill('SIGTERM');
       const killTimer = setTimeout(() => {
         try { child.kill('SIGKILL'); } catch { /* already dead */ }
-      }, SIGKILL_DELAY);
+      }, SIGTERM_GRACE_MS);
       child.on('close', () => clearTimeout(killTimer));
       activeChildren.delete(child);
       reject(new Error(`Codex killed after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`));
@@ -125,7 +125,7 @@ function spawnCodex(
   });
 }
 
-/** Kill all tracked child processes (SIGTERM, then SIGKILL after 3s). */
+/** Kill all tracked child processes (SIGTERM, then SIGKILL after SIGTERM_GRACE_MS). */
 export function killAllChildren(): void {
   for (const child of activeChildren) {
     try {
@@ -133,7 +133,7 @@ export function killAllChildren(): void {
     } catch { /* already dead */ }
     const killTimer = setTimeout(() => {
       try { child.kill('SIGKILL'); } catch { /* already dead */ }
-    }, 3_000);
+    }, SIGTERM_GRACE_MS);
     child.on('close', () => clearTimeout(killTimer));
   }
   activeChildren.clear();

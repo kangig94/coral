@@ -81,11 +81,11 @@ disallowedTools: Write, Edit
 ---
 name: ralph
 description: "Persistent execution loop with verification. Use when a task requires guaranteed completion with evidence-based verification. Loops until all work is done and verified. NOT for one-shot tasks (use executor) or planning (use planner)."
-model: opus
+model: sonnet
 ---
 ```
 
-**Role**: Persistent task executor that loops until work is fully complete with verified evidence. Enforces the Iron Law: no completion claims without fresh verification evidence. Includes a verification gate (IDENTIFY → RUN → READ → VERIFY → CLAIM), iteration cap, and circuit breaker.
+**Role**: Persistent task executor that loops until work is fully complete with verified evidence. Enforces the Iron Law: no completion claims without fresh verification evidence. Includes a verification gate (IDENTIFY → RUN → READ → VERIFY → CLAIM), iteration cap, and circuit breaker. Uses sonnet — ralph executes plans that have already been reviewed by architect/critic, so opus-level reasoning is unnecessary.
 
 > Note: ralph does NOT have `disallowedTools` because it needs Write/Edit access to execute tasks.
 

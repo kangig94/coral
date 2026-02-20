@@ -1,6 +1,6 @@
 # Core Modules
 
-Detailed description of the 7 core TypeScript modules.
+Detailed description of the 8 core TypeScript modules.
 
 ## src/types.ts — Shared Type Definitions
 
@@ -177,7 +177,7 @@ Core module that runs Codex CLI via `child_process.spawn` and collects results.
 |---|---|---|
 | `IDLE_TIMEOUT` | 10 min | Inactivity timeout — kills process if no stdout/stderr activity |
 | `MAX_BUFFER` | 10MB | stdout/stderr buffer limit |
-| `SIGKILL_DELAY` | 5 sec | Wait time between SIGTERM and SIGKILL |
+| `SIGTERM_GRACE_MS` | 5 sec | Grace period before escalating SIGTERM to SIGKILL |
 
 ### Process Management
 
@@ -223,7 +223,7 @@ Fork a session. Internally delegates to `executeResume()`.
 
 #### `killAllChildren(): void`
 
-Terminates all tracked child processes. Sends SIGTERM, then escalates to SIGKILL if not terminated within 3 seconds. Called from `server.ts`'s graceful shutdown handler.
+Terminates all tracked child processes. Sends SIGTERM, then escalates to SIGKILL after `SIGTERM_GRACE_MS` (5 seconds). Called from `server.ts`'s graceful shutdown handler.
 
 ### CLAUDE.md Injection
 
@@ -339,3 +339,71 @@ Deletes the session file. Returns `true` on success, `false` if not found.
   "workingDirectory": "/home/user/project"
 }
 ```
+
+---
+
+## src/mcp/server-handlers.ts — Business Logic Handlers
+
+All MCP tool business logic, extracted from `server.ts` to enable independent testing. `server.ts` is the composition root (wiring only); this module contains all handlers and the dispatch switch.
+
+### MCP Response Helpers
+
+#### `textResult(text, isError?): McpResult`
+
+Wraps a string in the MCP `{ content: [{ type: "text", text }], isError }` format.
+
+#### `jsonResult(data): McpResult`
+
+Stringifies an object with 2-space indent and wraps via `textResult`.
+
+#### `resultExtras(result): Record<string, unknown>`
+
+Extracts conditional fields (`exit_code`, `errors`, `warnings`) from a Codex result. Returns an empty object when all are nominal.
+
+#### `sessionNotFoundError(ref): McpResult`
+
+Returns an `isError: true` response with recovery hint (use `codex_session_create` or `codex_session_list`).
+
+### Progress & Background Execution
+
+#### `makeEventCallback(opts): OnEventCallback`
+
+Builds a callback that processes Codex JSONL events. Writes to the progress file via `appendProgressEvent` and optionally sends `notifications/progress` with `[Codex]` prefix and incrementing counter.
+
+#### `launchBackground(sessionLabel, toolName, handler): McpResult`
+
+Launches a handler asynchronously with a progress file. Returns immediately with `{ progress_id, progress_file, session_name, status: "launched" }`. The `.then()` chain writes a `completed` event; `.catch()` writes an `error` event; `.finally()` removes the file from `activeBackgroundFiles`.
+
+#### `runForeground(sessionLabel, toolName, progressToken, notify, handler): Promise<McpResult>`
+
+Runs a handler synchronously. Creates a progress file only when `progressToken` is present (for MCP notification support). Cleans up the progress file in `finally`.
+
+### Tool Handlers
+
+#### `handleSessionCreate(input, mgr, onEvent?): Promise<McpResult>`
+
+Executes `executeOneShot`, registers the session if a thread ID is returned, returns the response. The `name` field is always pre-set by the dispatcher (defensive fallback for direct invocation).
+
+#### `handleSessionSend(input, mgr, onEvent?): Promise<McpResult>`
+
+Looks up the session, executes `executeResume` with the stored thread ID, updates `lastUsedAt`. Internal session guard for safe direct invocation (defense in depth — dispatcher also checks).
+
+#### `handleSessionList(mgr): Promise<McpResult>`
+
+Maps all registered sessions to the output format with `sessions` array and `total` count.
+
+#### `handleSessionFork(input, mgr, onEvent?): Promise<McpResult>`
+
+Executes `executeFork` with the source session's thread ID. Registers a new session only if both `name` and `threadId` are present. Internal session guard (defense in depth).
+
+### Dispatcher
+
+#### `handleToolCall(name, rawArgs, sessionManager, progressToken?, notify?): Promise<McpResult>`
+
+Routes MCP tool calls to handlers. Parses input with Zod schemas, applies background/foreground branching, and catches validation errors as `isError` responses. Owns session name generation for `codex_session_create`.
+
+### Exports
+
+- `tools` — MCP tool definitions array (used by `ListToolsRequestSchema` handler)
+- `activeBackgroundFiles` — `Set<string>` for shutdown cleanup
+- `OnEventCallback` type
