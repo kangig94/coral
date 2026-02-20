@@ -5,11 +5,11 @@ A Claude Code plugin that bridges Claude Code and OpenAI Codex CLI.
 ## Installation
 
 ```bash
-npm install -g @openai/codex                                    # Codex CLI
-```
+# Codex CLI
+npm install -g @openai/codex
 
-```
-/plugin marketplace add https://github.com/kangig94/coral       # in Claude Code
+# in Claude Code
+/plugin marketplace add https://github.com/kangig94/coral
 /plugin install coral
 ```
 
