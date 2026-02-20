@@ -163,15 +163,25 @@ function prependClaudeMd(prompt: string): string {
   return md ? `${md}\n\n---\n\n${prompt}` : prompt;
 }
 
+/** Base flags shared by all exec modes. Web search is always enabled. */
+const BASE_FLAGS = ['--json', '--full-auto', '-c', 'web_search=live'];
+
+/** Build optional CLI flags for reasoning_effort. */
+function extraFlags(reasoningEffort?: string): string[] {
+  if (reasoningEffort) return ['-c', `model_reasoning_effort=${reasoningEffort}`];
+  return [];
+}
+
 /** One-shot execution: codex exec -m MODEL --json --full-auto */
 export async function executeOneShot(
   prompt: string,
   model?: string,
   cwd?: string,
+  reasoningEffort?: string,
 ): Promise<CodexExecResult> {
   const resolvedModel = getModel(model);
   return executeCodex(
-    ['exec', '-m', resolvedModel, '--json', '--full-auto'],
+    ['exec', '-m', resolvedModel, ...BASE_FLAGS, ...extraFlags(reasoningEffort)],
     prependClaudeMd(prompt), resolvedModel, cwd,
   );
 }
@@ -184,10 +194,11 @@ export async function executeResume(
   prompt: string,
   model?: string,
   cwd?: string,
+  reasoningEffort?: string,
 ): Promise<CodexExecResult> {
   const resolvedModel = getModel(model);
   return executeCodex(
-    ['exec', 'resume', threadId, '-m', resolvedModel, '--json', '--full-auto'],
+    ['exec', 'resume', threadId, '-m', resolvedModel, ...BASE_FLAGS, ...extraFlags(reasoningEffort)],
     prompt,
     resolvedModel,
     cwd,
@@ -200,9 +211,10 @@ export async function executeFork(
   prompt?: string,
   model?: string,
   cwd?: string,
+  reasoningEffort?: string,
 ): Promise<CodexExecResult> {
   const forkPrompt = prompt ?? 'Continue from where we left off.';
-  return executeResume(threadId, forkPrompt, model, cwd);
+  return executeResume(threadId, forkPrompt, model, cwd, reasoningEffort);
 }
 
 // Test-only exports

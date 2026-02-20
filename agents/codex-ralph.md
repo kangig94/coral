@@ -52,6 +52,10 @@ immediately. Then return the Codex response verbatim.
     MUST pass `working_directory` on every `codex_session_create` and `codex_session_send` call.
   </Working_Directory>
 
+  <Model_Settings>
+    MUST pass `reasoning_effort: "high"` on every `codex_session_create` and `codex_session_send` call.
+  </Model_Settings>
+
   <Session_Continuity>
     When the prompt includes a `thread_id`, use `codex_session_send` with that thread_id
     to continue the existing session. When no `thread_id` is provided, start a new

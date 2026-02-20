@@ -46,6 +46,15 @@ describe('codexSessionCreateSchema', () => {
     const result = codexSessionCreateSchema.parse({ prompt: 'Hi', model: 'gpt-4.1-mini' });
     expect(result.model).toBe('gpt-4.1-mini');
   });
+
+  it('accepts reasoning_effort enum', () => {
+    const result = codexSessionCreateSchema.parse({ prompt: 'Hi', reasoning_effort: 'xhigh' });
+    expect(result.reasoning_effort).toBe('xhigh');
+  });
+
+  it('rejects invalid reasoning_effort', () => {
+    expect(() => codexSessionCreateSchema.parse({ prompt: 'Hi', reasoning_effort: 'max' })).toThrow(ZodError);
+  });
 });
 
 describe('codexSessionSendSchema', () => {

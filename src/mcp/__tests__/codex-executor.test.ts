@@ -82,7 +82,7 @@ describe('executeOneShot', () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
-      ['exec', '-m', 'o4-mini', '--json', '--full-auto'],
+      ['exec', '-m', 'o4-mini', '--json', '--full-auto', '-c', 'web_search=live'],
       expect.objectContaining({ cwd: '/tmp' }),
     );
     expect(result.response).toBe('Hello');
@@ -120,6 +120,20 @@ describe('executeOneShot', () => {
     expect(result.errors).toEqual(['Rate limit']);
   });
 
+  it('appends -c model_reasoning_effort when set', async () => {
+    mockCliAvailable();
+    const output = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
+    mockSpawn.mockReturnValue(createMockProcess(output, 0));
+
+    await executeOneShot('test', 'o4-mini', '/tmp', 'xhigh');
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      'codex',
+      ['exec', '-m', 'o4-mini', '--json', '--full-auto', '-c', 'web_search=live', '-c', 'model_reasoning_effort=xhigh'],
+      expect.objectContaining({ cwd: '/tmp' }),
+    );
+  });
+
   it('uses default model when none provided', async () => {
     mockCliAvailable();
     const output = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
@@ -147,7 +161,7 @@ describe('executeResume', () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
-      ['exec', 'resume', 'thread-abc', '-m', 'gpt-4.1', '--json', '--full-auto'],
+      ['exec', 'resume', 'thread-abc', '-m', 'gpt-4.1', '--json', '--full-auto', '-c', 'web_search=live'],
       expect.any(Object),
     );
     expect(result.response).toBe('Resumed');

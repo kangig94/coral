@@ -77,6 +77,11 @@ immediately. Then return the Codex response verbatim.
     Omitting it means Codex runs in an undefined directory and cannot read project files.
   </Working_Directory>
 
+  <Model_Settings>
+    MUST pass `reasoning_effort: "xhigh"` on every `codex_session_create` and `codex_session_send` call.
+    Architecture analysis requires maximum reasoning depth.
+  </Model_Settings>
+
   <Session_Strategy>
     | Scenario | Tool | Reason |
     |----------|------|--------|

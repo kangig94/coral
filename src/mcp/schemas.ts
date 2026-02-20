@@ -21,12 +21,16 @@ const sessionNameSchema = z
 const promptSchema = z.string().min(1, 'Prompt is required');
 const sessionRefSchema = z.string().min(1, 'Session reference is required');
 const cwdSchema = z.string().optional();
+const reasoningEffortSchema = z
+  .enum(['low', 'medium', 'high', 'xhigh'])
+  .optional();
 
 export const codexSessionCreateSchema = z.object({
   name: sessionNameSchema.optional(),
   prompt: promptSchema,
   model: modelSchema,
   working_directory: cwdSchema,
+  reasoning_effort: reasoningEffortSchema,
 });
 
 export const codexSessionSendSchema = z.object({
@@ -34,6 +38,7 @@ export const codexSessionSendSchema = z.object({
   prompt: promptSchema,
   model: modelSchema,
   working_directory: cwdSchema,
+  reasoning_effort: reasoningEffortSchema,
 });
 
 export const codexSessionListSchema = z.object({}).passthrough();
@@ -44,6 +49,7 @@ export const codexSessionForkSchema = z.object({
   prompt: z.string().optional(),
   model: modelSchema,
   working_directory: cwdSchema,
+  reasoning_effort: reasoningEffortSchema,
 });
 
 export type CodexSessionCreateInput = z.infer<typeof codexSessionCreateSchema>;

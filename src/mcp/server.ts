@@ -32,6 +32,7 @@ const tools = [
         prompt: { type: 'string', description: 'The prompt to send to Codex (required)' },
         model: { type: 'string', description: 'Codex model to use (default: gpt-5.3-codex)' },
         working_directory: { type: 'string', description: 'Working directory for Codex execution' },
+        reasoning_effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh'], description: 'Model reasoning effort level' },
       },
       required: ['prompt'],
     },
@@ -47,6 +48,7 @@ const tools = [
         prompt: { type: 'string', description: 'Follow-up prompt (required)' },
         model: { type: 'string', description: 'Codex model to use' },
         working_directory: { type: 'string', description: 'Working directory for Codex execution' },
+        reasoning_effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh'], description: 'Model reasoning effort level' },
       },
       required: ['session', 'prompt'],
     },
@@ -72,6 +74,7 @@ const tools = [
         prompt: { type: 'string', description: 'Optional prompt for the forked session' },
         model: { type: 'string', description: 'Codex model to use' },
         working_directory: { type: 'string', description: 'Working directory for Codex execution' },
+        reasoning_effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh'], description: 'Model reasoning effort level' },
       },
       required: ['session'],
     },
@@ -97,7 +100,7 @@ function resultExtras(result: { exitCode: number | null; errors: string[]; warni
 
 async function handleSessionCreate(input: CodexSessionCreateInput, mgr: SessionManager) {
   const sessionName = input.name ?? `session-${Date.now()}`;
-  const result = await executeOneShot(input.prompt, input.model, input.working_directory);
+  const result = await executeOneShot(input.prompt, input.model, input.working_directory, input.reasoning_effort);
 
   if (!result.threadId) {
     return jsonResult({
@@ -131,7 +134,7 @@ async function handleSessionSend(input: CodexSessionSendInput, mgr: SessionManag
     );
   }
 
-  const result = await executeResume(entry.codexThreadId, input.prompt, input.model, input.working_directory ?? entry.workingDirectory);
+  const result = await executeResume(entry.codexThreadId, input.prompt, input.model, input.working_directory ?? entry.workingDirectory, input.reasoning_effort);
   mgr.updateSession(entry.name, input.model ? { model: input.model } : undefined);
 
   return jsonResult({
@@ -168,7 +171,7 @@ async function handleSessionFork(input: CodexSessionForkInput, mgr: SessionManag
   }
 
   const cwd = input.working_directory ?? entry.workingDirectory;
-  const result = await executeFork(entry.codexThreadId, input.prompt, input.model, cwd);
+  const result = await executeFork(entry.codexThreadId, input.prompt, input.model, cwd, input.reasoning_effort);
 
   if (input.name && result.threadId) {
     mgr.register(input.name, result.threadId, result.model, cwd ?? process.cwd());

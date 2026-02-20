@@ -16,6 +16,7 @@ Create a Codex session. The sole entry point for all Codex execution. Internally
 | `prompt` | string | Yes | Prompt to send to Codex (min 1 char) |
 | `model` | string | No | Model to use (default: `gpt-5.3-codex`, configurable via `CORAL_CODEX_MODEL`) |
 | `working_directory` | string | No | Working directory |
+| `reasoning_effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
 
 ### Output (JSON)
 
@@ -47,6 +48,7 @@ Send a follow-up prompt to an existing session. Uses `codex exec resume THREAD_I
 | `prompt` | string | Yes | Follow-up prompt (min 1 char) |
 | `model` | string | No | Model to use |
 | `working_directory` | string | No | Working directory |
+| `reasoning_effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
 
 ### Lookup Logic
 
@@ -115,6 +117,7 @@ Fork an existing session to continue the conversation in a new branch.
 | `prompt` | string | No | Additional prompt for the forked session |
 | `model` | string | No | Model to use |
 | `working_directory` | string | No | Working directory |
+| `reasoning_effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
 
 ### Output (JSON)
 

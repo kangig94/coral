@@ -59,6 +59,11 @@ immediately. Then return the Codex response verbatim.
     MUST pass `working_directory` on every `codex_session_create` and `codex_session_send` call.
   </Working_Directory>
 
+  <Model_Settings>
+    MUST pass `reasoning_effort: "xhigh"` on every `codex_session_create` and `codex_session_send` call.
+    Deep analysis requires maximum reasoning depth.
+  </Model_Settings>
+
   <Session_Strategy>
     | Scenario | Tool | Reason |
     |----------|------|--------|
