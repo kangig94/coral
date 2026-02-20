@@ -8,7 +8,7 @@
 - Invoke domain agents per consultation matrix
 - Follow source tree policy and layer dependency rules
 
-## After Implementation — Review Gate
+## After Implementation - Review Gate
 - Run **review-orchestrator** for final validation
 - BLOCKING items must pass before completion
 - STRONG items must be documented if skipped

@@ -1,4 +1,4 @@
-# {project-name} — Development Instructions
+# {project-name} - Development Instructions
 
 {1-2 paragraph project description}
 
@@ -6,8 +6,8 @@
 - {Non-negotiable requirements}
 
 **Key Documentation**:
-- `docs/ARCHITECTURE.md` — Architecture design
-- `docs/DEV_GUIDE.md` — Developer guide
+- `docs/ARCHITECTURE.md` - Architecture design
+- `docs/DEV_GUIDE.md` - Developer guide
 
 **Build Commands**:
 ```bash

@@ -8,7 +8,7 @@ Deterministic rules for handling existing files during init-project execution.
 
 | Condition | Action |
 |-----------|--------|
-| Same-name file exists | **Skip**. Notify user: "Skipped {name}.md — already exists." |
+| Same-name file exists | **Skip**. Notify user: "Skipped {name}.md - already exists." |
 | File does not exist | Create from template or domain reference |
 | User requests refresh | Overwrite with latest template content |
 
@@ -23,10 +23,10 @@ Deterministic rules for handling existing files during init-project execution.
 
 | Condition | Action |
 |-----------|--------|
-| Same-name file exists | **Skip**. Notify user: "Skipped rules/{name}.md — already exists." |
+| Same-name file exists | **Skip**. Notify user: "Skipped rules/{name}.md - already exists." |
 | File does not exist | Create from rule template |
 
-No auto-migration of monolithic CLAUDE.md. Users with existing monolithic files keep them — the rules files are additive and coexist. Users can manually slim their CLAUDE.md when ready.
+No auto-migration of monolithic CLAUDE.md. Users with existing monolithic files keep them - the rules files are additive and coexist. Users can manually slim their CLAUDE.md when ready.
 
 ### .claude/settings.local.json
 
@@ -41,7 +41,7 @@ No auto-migration of monolithic CLAUDE.md. Users with existing monolithic files 
 
 | Condition | Action |
 |-----------|--------|
-| File exists | **Skip**. Notify user: "Skipped docs/{name}.md — already exists." |
+| File exists | **Skip**. Notify user: "Skipped docs/{name}.md - already exists." |
 | File does not exist | Create with real content |
 
 ### .gitignore

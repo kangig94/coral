@@ -45,7 +45,7 @@
 
 ### Mandatory Concerns
 - **Refs**: All inter-model dependencies via ref(), no hardcoded table names
-- **Materialization**: Table vs view vs incremental — choose based on size and freshness needs
+- **Materialization**: Table vs view vs incremental - choose based on size and freshness needs
 - **Tests**: Unique, not_null, accepted_values on all primary keys and critical columns
 - **Documentation**: All models and columns documented in schema.yml
 

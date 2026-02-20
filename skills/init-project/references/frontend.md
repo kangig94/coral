@@ -5,7 +5,7 @@
 ### Required Agents
 | Agent | Tier | Model | Purpose |
 |-------|------|-------|---------|
-| state-guardian | 1 | opus | Prevents state management bugs — race conditions, stale closures, unnecessary re-renders |
+| state-guardian | 1 | opus | Prevents state management bugs - race conditions, stale closures, unnecessary re-renders |
 | render-optimizer | 2 | sonnet | Identifies unnecessary re-renders, missing memoization, expensive computations in render path |
 | accessibility-checker | 2 | sonnet | WCAG compliance, ARIA attributes, keyboard navigation, screen reader compatibility |
 

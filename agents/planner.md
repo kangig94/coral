@@ -51,12 +51,18 @@ model: opus
     Repeat until exit condition:
 
     **3a. Parallel Review**
-    Spawn TWO reviewer agents simultaneously (Task tool, parallel):
-    - Reviewer A (subagent_type from prompt, e.g., coral:architect)
-    - Reviewer B (subagent_type from prompt, e.g., coral:critic)
+    Spawn TWO reviewer agents simultaneously using the Task tool in a SINGLE message (parallel):
+    - Reviewer A (subagent_type from caller's prompt, e.g., coral:architect)
+    - Reviewer B (subagent_type from caller's prompt, e.g., coral:critic)
     Provide each: plan file path, working directory, relevant context.
 
+    **IMPORTANT**: Use EXACTLY the reviewer types specified by the caller. Do NOT substitute
+    codex-* variants (e.g., coral:codex-architect) unless the caller explicitly requested them.
+    Codex variants are for `/coral:coplan` only. Direct MCP tool calls are NEVER a substitute
+    for spawning reviewer agents — you must use the Task tool.
+
     **3b. Thread Tracking (Codex reviewers only)**
+    Only applies when the caller specifies codex-* reviewers (e.g., coral:codex-architect).
     If a reviewer returns a `thread_id`, save it.
     On Round 2+, include in prompt:
       thread_id: {saved id}
@@ -92,9 +98,9 @@ model: opus
 
     Changes that have not been re-verified by reviewers are not considered validated.
 
-    ### 4. Multi-Phase Review (if specified)
+    ### 4. Multi-Phase Review (if specified by caller)
     After the primary review loop converges, run ONE additional review round with different reviewers:
-    - Spawn the cross-review agents (e.g., Claude architect+critic after Codex loop)
+    - Spawn the cross-review agents specified by the caller (e.g., coral:architect + coral:critic after a Codex loop)
     - Synthesize feedback (3c)
     - If any CRITICAL/HIGH is Adopted or Adapted, edit the plan and re-run this step ONCE MORE
     - Otherwise, pass

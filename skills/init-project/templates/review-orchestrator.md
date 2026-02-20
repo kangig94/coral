@@ -75,17 +75,17 @@ git diff --name-only HEAD~1 | xargs grep -n 'TODO\|FIXME' 2>/dev/null
 ```markdown
 ## Review: [scope description]
 
-### Tier 1 — Safety
+### Tier 1 - Safety
 | Agent | Verdict | Findings |
 |-------|---------|----------|
 | {agent} | PASS/FAIL | {summary} |
 
-### Tier 2 — Domain
+### Tier 2 - Domain
 | Agent | Verdict | Findings |
 |-------|---------|----------|
 | {agent} | PASS/FAIL | {summary} |
 
-### Tier 3 — Quality
+### Tier 3 - Quality
 | Agent | Verdict | Findings |
 |-------|---------|----------|
 | {agent} | PASS/FAIL | {summary} |

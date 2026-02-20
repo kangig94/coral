@@ -138,7 +138,7 @@ async def create_user(request: Request):
 ### Required Agents
 | Agent | Tier | Model | Purpose |
 |-------|------|-------|---------|
-| error-guardian | 1 | opus | Error handling completeness — no ignored errors, proper wrapping |
+| error-guardian | 1 | opus | Error handling completeness - no ignored errors, proper wrapping |
 | concurrency-safety | 1 | opus | Goroutine leaks, race conditions, channel safety |
 | api-guardian | 2 | sonnet | HTTP handler patterns, middleware chain, input validation |
 
