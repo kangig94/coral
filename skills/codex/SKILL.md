@@ -6,6 +6,8 @@ argument-hint: "[prompt]"
 
 Route the user's request to the appropriate Codex agent, or handle session management directly.
 
+**Do NOT output any text before the tool call.** All steps below are internal routing logic — execute them silently. The user should only see the final result from "Presenting the result."
+
 ## 1. Session commands
 
 If the argument starts with `session`, handle directly (no agent spawn needed):
@@ -26,13 +28,13 @@ If the argument does NOT start with `session`, continue to step 2.
 ## 2. Session continuity
 
 Check the conversation history for a previous `/codex` call that returned a `thread_id`:
-- **Previous thread_id exists** → include it in the agent prompt for session continuity
-- **No previous thread_id** → omit (agent will start a new session)
-- **User says "new" or explicitly wants a fresh start** → omit thread_id
+- **Previous thread_id exists** → use it for session continuity (step 5b: `codex_session_send`, step 5a: include in agent prompt)
+- **No previous thread_id** → start fresh (step 5b: `codex_session_create`, step 5a: omit thread_id)
+- **User says "new" or explicitly wants a fresh start** → start fresh
 
-## 3. Analyze intent and select agent
+## 3. Analyze intent
 
-Based on the user's request, select the appropriate agent:
+Based on the user's request, determine if a specialized agent is needed:
 
 | Intent | Keywords | Agent (subagent_type) |
 |--------|----------|-----------------------|
@@ -40,7 +42,7 @@ Based on the user's request, select the appropriate agent:
 | Critical review, find flaws, evaluate plan | critique, evaluate, flaws, review plan, verify | `coral:codex-critic` |
 | Investigation, root cause, debug, dependency analysis | debug, investigate, analyze, why, root cause, trace | `coral:codex-analyst` |
 | Persistent execution, keep going, don't stop | ralph, persistent, loop, don't stop, keep going, until done | `coral:codex-ralph` |
-| Code execution, fix, implement, modify, build | fix, implement, create, build, refactor, modify, write | `coral:codex-delegate` |
+| **Everything else** | general questions, search, code tasks, conversation | **No agent — direct MCP call (step 5b)** |
 
 ## 4. Gather context
 
@@ -50,7 +52,9 @@ Collect relevant context from the current conversation:
 - Current working directory
 - Constraints or requirements established earlier
 
-## 5. Spawn agent
+## 5a. Specialized agent (architect/critic/analyst/ralph matched)
+
+MUST spawn a Task agent. Do NOT call MCP tools directly.
 
 Spawn a Task with the selected `subagent_type` and the following prompt structure:
 
@@ -66,9 +70,20 @@ Relevant files: src/foo.ts, src/bar.ts
 {User's original request}
 ```
 
+## 5b. General request (no specialized agent matched)
+
+MUST call MCP tool directly. Do NOT spawn a Task agent.
+
+Pass the user's prompt **verbatim** — do not rephrase, enrich, or add information.
+
+| Condition | Action |
+|-----------|--------|
+| No previous thread_id | `codex_session_create(prompt: user's verbatim prompt, working_directory: cwd)` |
+| Previous thread_id exists | `codex_session_send(session: session_name, prompt: user's verbatim prompt, working_directory: cwd)` |
+
 ## Presenting the result
 
-The agent returns a response. Present it following these rules:
+Present the result (from agent or MCP tool) following these rules:
 
 1. **Response only (no errors)**: Show response as the main content. No extra decoration needed.
 

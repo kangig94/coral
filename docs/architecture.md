@@ -66,15 +66,13 @@ User → /coral:init-project
      → Ralph generates artifacts → Phase 4: Report
 ```
 
-### 3. Direct Agent Delegation
+### 3. Direct Codex Execution (via /codex skill)
 
 ```
-User → Task tool spawns codex-delegate agent
-     → SubagentStart Hook fires (matcher: "(^|:)codex-")
-     → detect-codex-agent.sh detects "codex-" prefix (with optional coral: namespace)
-     → Delegation instructions injected via additionalContext
-     → Agent calls mcp__plugin_coral_cx__codex_session_create
-     → Codex response returned verbatim
+User → /codex skill analyzes intent
+     → Specialized agent needed? → Task tool spawns codex-architect/critic/analyst/ralph
+     → General request?          → Skill calls codex_session_create directly (no agent)
+     → User's prompt passed verbatim to Codex
 ```
 
 ### 4. Session-based Conversation
@@ -166,7 +164,6 @@ coral/
 │   ├── ralph.md                 # Claude-native persistent execution loop
 │   ├── planner.md              # Claude-native multi-round planning
 │   ├── init-project.md         # Project initialization orchestrator
-│   ├── codex-delegate.md        # Codex general delegation
 │   ├── codex-architect.md       # Codex architecture analysis delegation
 │   ├── codex-critic.md          # Codex critical review delegation
 │   ├── codex-analyst.md         # Codex analysis delegation

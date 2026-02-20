@@ -117,7 +117,7 @@ fi
 ```
 1. SubagentStart event fires (matcher: "(^|:)codex-")
 2. Event JSON received via stdin
-   e.g.: {"agent_name": "codex-delegate", "task": "..."}
+   e.g.: {"agent_name": "codex-architect", "task": "..."}
 3. Check if jq is installed (if not, exit 0 — skip silently)
 4. Extract agent_name with jq
    - .agent_name field takes priority

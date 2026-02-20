@@ -131,22 +131,6 @@ model: opus
 
 Proxy agents that delegate work to Codex CLI. Tool restrictions limit them to coral MCP tools only.
 
-### codex-delegate (General Delegation)
-
-**File**: `agents/codex-delegate.md`
-
-```yaml
----
-name: codex-delegate
-description: Delegates ALL work to Codex CLI. Use for tasks needing OpenAI models.
-tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
----
-```
-
-**Role**: Pure proxy that forwards all work to Codex CLI verbatim.
-
----
-
 ### codex-architect (Architecture Analysis Delegation)
 
 **File**: `agents/codex-architect.md`
@@ -217,7 +201,7 @@ Three layers ensure Codex-bound agents always delegate to Codex CLI:
 
 ### Layer 1: Hook-based Injection (100% guarantee)
 
-The `SubagentStart` hook fires when any agent matching `(^|:)codex-` starts (both bare `codex-delegate` and namespaced `coral:codex-architect`). It injects delegation instructions via `additionalContext`.
+The `SubagentStart` hook fires when any agent matching `(^|:)codex-` starts (e.g., `codex-architect`, `coral:codex-ralph`). It injects delegation instructions via `additionalContext`.
 
 > Claude-native agents (`architect`, `critic`, `analyst`, `ralph`) lack the `codex-` prefix, so the hook never matches them.
 

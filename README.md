@@ -169,7 +169,6 @@ Spawn agents via the Task tool. Claude-native is default; Codex is used only on 
 | `ralph` | Claude-native | Persistent execution with verification (default) |
 | `planner` | Claude-native | Multi-round planning with parallel reviewer verification |
 | `init-project` | Claude-native | Project initialization orchestrator (scan → plan → execute → report) |
-| `codex-delegate` | Codex-bound | General — forwards all work to Codex |
 | `codex-architect` | Codex-bound | Architecture analysis via Codex |
 | `codex-critic` | Codex-bound | Critical review via Codex |
 | `codex-analyst` | Codex-bound | Analysis via Codex |

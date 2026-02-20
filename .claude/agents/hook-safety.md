@@ -65,7 +65,7 @@ read -p "Continue?" answer
 }
 ```
 ```
-Matches: "codex-delegate", "coral:codex-architect", "coral:codex-ralph"
+Matches: "codex-architect", "coral:codex-architect", "coral:codex-ralph"
 Does NOT match: "architect", "ralph", "my-codex"
 ```
 **Why**: The matcher regex must handle both bare names (`codex-*`) and namespaced names (`coral:codex-*`).
@@ -110,7 +110,7 @@ grep -A1 '"timeout"' hooks/hooks.json
 grep '"matcher"' hooks/hooks.json
 
 # Test hook script with mock input
-echo '{"agent_name":"codex-delegate"}' | bash hooks/detect-codex-agent.sh
+echo '{"agent_name":"codex-architect"}' | bash hooks/detect-codex-agent.sh
 
 # Test no-op case
 echo '{"agent_name":"architect"}' | bash hooks/detect-codex-agent.sh; echo "exit: $?"
