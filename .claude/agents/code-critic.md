@@ -56,20 +56,20 @@ For each changed function:
 ### Pattern 3: Convention Adherence
 ```typescript
 // CORRECT: kebab-case files, camelCase functions, PascalCase types
-// src/mcp/session-manager.ts
+// src/codex/session-manager.ts
 export class SessionManager { ... }
 export function parseCodexJsonl() { ... }
 
 // WRONG: inconsistent naming
-// src/mcp/SessionManager.ts
+// src/codex/SessionManager.ts
 export class session_manager { ... }
 ```
 **Why**: Inconsistent code increases cognitive load for all contributors.
 
 ### Pattern 4: Test Coverage
 ```
-For each changed module in src/mcp/:
-- Has corresponding test in src/mcp/__tests__/<module>.test.ts?
+For each changed module in src/codex/:
+- Has corresponding test in src/codex/__tests__/<module>.test.ts?
 - Edge cases covered (empty input, corrupt data, timeout)?
 - Error paths tested (spawn failure, invalid JSON)?
 ```
@@ -95,13 +95,13 @@ For each changed module in src/mcp/:
 ## Detection Commands
 ```bash
 # Find long functions in TypeScript source
-grep -n 'function\|export async function\|export function' src/mcp/*.ts
+grep -n 'function\|export async function\|export function' src/codex/*.ts
 
 # Find TODOs in recent changes
 git diff --name-only | xargs grep -n 'TODO\|FIXME\|HACK' 2>/dev/null
 
 # Check test file existence for each source module
-ls src/mcp/__tests__/*.test.ts
+ls src/codex/__tests__/*.test.ts
 
 # Run tests to verify coverage
 npm test
@@ -110,11 +110,11 @@ npm test
 ## Key Files
 | File | Concern |
 |------|---------|
-| `src/mcp/server.ts` | Composition root, handler patterns |
-| `src/mcp/schemas.ts` | Zod schema conventions |
-| `src/mcp/codex-executor.ts` | Process management patterns |
-| `src/mcp/session-manager.ts` | File I/O patterns |
-| `src/mcp/__tests__/` | Test coverage verification |
+| `src/codex/server.ts` | Composition root, handler patterns |
+| `src/codex/schemas.ts` | Zod schema conventions |
+| `src/codex/codex-executor.ts` | Process management patterns |
+| `src/codex/session-manager.ts` | File I/O patterns |
+| `src/codex/__tests__/` | Test coverage verification |
 | `.claude/rules/conventions.md` | Naming and style rules |
 
 ## Output Format

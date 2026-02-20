@@ -43,14 +43,18 @@ Version is managed in `package.json` (single source of truth) and synced to `plu
 
 ### .mcp.json — MCP Server Registration
 
-Registers the MCP server with Claude Code.
+Registers both MCP servers with Claude Code.
 
 ```json
 {
   "mcpServers": {
     "cx": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-server.cjs"]
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-codex.cjs"]
+    },
+    "dc": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-discuss.cjs"]
     }
   }
 }
@@ -58,7 +62,8 @@ Registers the MCP server with Claude Code.
 
 | Field | Description |
 |---|---|
-| `cx` | MCP server name (tool prefix in Claude Code: `mcp__plugin_coral_cx__*`) |
+| `cx` | Codex MCP server (tool prefix: `mcp__plugin_coral_cx__*`) — Codex CLI session tools |
+| `dc` | Discuss MCP server (tool prefix: `mcp__plugin_coral_dc__*`) — discussion session tools |
 | `command` | Execution command |
 | `args` | Execution arguments (`CLAUDE_PLUGIN_ROOT` is auto-replaced) |
 
@@ -116,13 +121,31 @@ See [Hooks documentation](./hooks.md) for details.
 | Codex CLI v0.101+ | OpenAI model execution | `npm install -g @openai/codex` |
 | Node.js 18+ | Runtime | nvm, etc. |
 
+### {project}/.claude/coral/discuss/ — Discuss Session Storage
+
+Runtime-managed discuss session directories. Created by the `dc` MCP server.
+
+```
+{project}/.claude/coral/discuss/
+└── 20260221-143022-a1b2_ai-ethics/
+    ├── state.json          # Session state (atomic writes via .tmp + rename)
+    └── transcript.md       # Human-readable transcript (incremental append)
+```
+
+**Location**: `{project}/.claude/coral/discuss/{session_dir}/`
+**Session ID format**: `YYYYMMDD-HHmmss-xxxx` (timestamp + 4-char random suffix)
+**Directory name**: `{session_id}_{topic_slug}` (slug preserves CJK characters)
+**Concurrency**: Cross-process `mkdir`-based lock (`state.lock/`) serializes state mutations
+
 ## File Role Summary
 
 ```
 .claude-plugin/plugin.json  -> Claude Code recognizes the plugin
-.mcp.json                   -> Claude Code registers/starts the MCP server
+.mcp.json                   -> Claude Code registers/starts both MCP servers (cx + dc)
 hooks/hooks.json            -> Claude Code configures SessionStart + SubagentStart hooks
 hooks/detect-codex-agent.sh -> Detection script executed by the hook
-.claude/coral/sessions/<project-hash>/*.json -> Runtime per-session files (auto-created)
-bridge/coral-server.cjs     -> MCP server executable (committed, no build required)
+.claude/coral/sessions/<project-hash>/*.json -> Runtime Codex session files (auto-created)
+.claude/coral/discuss/<session-dir>/         -> Runtime discuss session dirs (auto-created)
+bridge/coral-codex.cjs     -> Codex MCP server executable (committed)
+bridge/coral-discuss.cjs   -> Discuss MCP server executable (committed)
 ```

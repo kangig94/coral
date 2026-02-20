@@ -23,6 +23,18 @@
           }
         ]
       }
+    ],
+    "TeammateIdle": [
+      {
+        "matcher": "dc-*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/discuss-idle-guard.sh",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }

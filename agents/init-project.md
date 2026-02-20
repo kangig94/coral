@@ -149,10 +149,10 @@ model: opus
       2. CLAUDE.md generation:
          - Skip if .claude/CLAUDE.md exists. Do not overwrite.
          - When creating: follow templates/CLAUDE.md.template structure exactly.
-         - CLAUDE.md is a SLIM HUB only: project description, critical requirements, key docs, build commands.
-         - Do NOT put validation checklists, agent tables, consultation matrices, or workflow steps in CLAUDE.md.
-         - Rules in .claude/rules/ are AUTO-LOADED by Claude Code with the same priority as CLAUDE.md.
-         - Duplicating rules content in CLAUDE.md wastes context and creates maintenance burden.
+         - CLAUDE.md is the HUB: project description, critical requirements, key docs, build commands, and post-implementation workflow.
+         - Post-implementation workflow (lint → review → build → test) MUST be in CLAUDE.md — rules/ files lose enforcement during context compression.
+         - Do NOT put validation checklists, agent tables, or consultation matrices in CLAUDE.md — those belong in rules/ files.
+         - Rules in .claude/rules/ are auto-loaded by Claude Code. Domain-specific rules use `paths:` frontmatter for conditional activation.
 
       3. Rules file merge: Skip if same-name file exists.
          - Universal rules: no frontmatter

@@ -12,7 +12,7 @@ vi.mock('node:child_process', () => ({
 
 import { detectCodexCli } from '../cli-detection.js';
 import { spawn } from 'node:child_process';
-import { executeOneShot, executeResume, executeFork, killAllChildren, _test } from '../codex-executor.js';
+import { executeOneShot, executeResume, executeFork, killAllChildren, registerExecution, unregisterExecution, abortExecution, _test } from '../codex-executor.js';
 
 const mockDetect = vi.mocked(detectCodexCli);
 const mockSpawn = vi.mocked(spawn);
@@ -296,6 +296,152 @@ describe('idle timeout', () => {
     await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
 
     await expect(promise).rejects.toThrow('10 minutes of inactivity');
+  });
+});
+
+/** Process that never closes on its own — caller controls close event. */
+function createManualProcess() {
+  const proc = new EventEmitter() as ChildProcess;
+  const stdoutStream = new Readable({ read() {} });
+  const stderrStream = new Readable({ read() {} });
+  const stdinStream = new Writable({ write(_chunk, _enc, cb) { cb(); } });
+  Object.assign(proc, { stdout: stdoutStream, stderr: stderrStream, stdin: stdinStream, kill: vi.fn(), pid: 42 });
+  return proc as ChildProcess & { kill: ReturnType<typeof vi.fn> };
+}
+
+describe('abort signal', () => {
+  // executeOneShot awaits detectCodexCli() as a microtask before calling spawnCodex.
+  // We must yield one tick (await Promise.resolve()) so that spawnCodex runs and
+  // attaches its event listeners before we push data or emit close.
+
+  it('resolves with aborted=true and preserves partial output when signal fires', async () => {
+    mockCliAvailable();
+    const proc = createManualProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const controller = new AbortController();
+    const promise = executeOneShot('test', undefined, undefined, undefined, undefined, controller.signal);
+
+    await Promise.resolve(); // let detectCodexCli resolve and spawnCodex attach listeners
+
+    // emit('data') fires the listener synchronously (unlike push() which buffers)
+    (proc.stdout as Readable).emit('data', Buffer.from('{"type":"thread.started","thread_id":"t-partial"}\n'));
+    controller.abort();
+    proc.emit('close', null);
+
+    const result = await promise;
+    expect(result.aborted).toBe(true);
+    expect(result.threadId).toBe('t-partial');
+  });
+
+  it('does not throw on abort with empty stdout', async () => {
+    mockCliAvailable();
+    const proc = createManualProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const controller = new AbortController();
+    const promise = executeOneShot('test', undefined, undefined, undefined, undefined, controller.signal);
+
+    await Promise.resolve();
+    controller.abort();
+    proc.emit('close', 1); // non-zero exit, no stdout — normally would throw
+
+    await expect(promise).resolves.toMatchObject({ aborted: true });
+  });
+
+  it('is a no-op when abort fires after natural completion', async () => {
+    mockCliAvailable();
+    const proc = createManualProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const controller = new AbortController();
+    const promise = executeOneShot('test', undefined, undefined, undefined, undefined, controller.signal);
+
+    await Promise.resolve();
+    (proc.stdout as Readable).emit('data', Buffer.from('{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Done"}}\n'));
+    proc.emit('close', 0);
+
+    const result = await promise;
+    expect(result.aborted).toBe(false);
+    expect(result.response).toBe('Done');
+    expect(() => controller.abort()).not.toThrow();
+  });
+
+  describe('with fake timers', () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('clears idle timer on abort (no rejection race)', async () => {
+      mockCliAvailable();
+      const proc = createManualProcess();
+      mockSpawn.mockReturnValue(proc);
+
+      const controller = new AbortController();
+      const promise = executeOneShot('test', undefined, undefined, undefined, undefined, controller.signal);
+
+      await vi.advanceTimersByTimeAsync(0); // flush microtasks so spawnCodex attaches listeners
+
+      controller.abort();
+      proc.emit('close', null);
+
+      // Advance past idle timeout — should NOT reject since timer was cleared on abort
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000 + 1000);
+
+      await expect(promise).resolves.toMatchObject({ aborted: true });
+    });
+  });
+});
+
+describe('execution registry', () => {
+  afterEach(() => {
+    // Clean up any registered executions to avoid cross-test leakage
+    abortExecution('reg-session');
+    abortExecution('session-x');
+  });
+
+  it('registers and returns an AbortController', () => {
+    const controller = registerExecution('reg-session');
+    expect(controller).toBeInstanceOf(AbortController);
+    expect(controller.signal.aborted).toBe(false);
+    unregisterExecution('reg-session', controller);
+  });
+
+  it('abortExecution returns true and aborts the signal', () => {
+    const controller = registerExecution('reg-session');
+    const result = abortExecution('reg-session');
+    expect(result).toBe(true);
+    expect(controller.signal.aborted).toBe(true);
+    unregisterExecution('reg-session', controller);
+  });
+
+  it('abortExecution returns false for unknown session', () => {
+    expect(abortExecution('does-not-exist')).toBe(false);
+  });
+
+  it('aborts stale execution when re-registering the same name', () => {
+    const controllerA = registerExecution('reg-session');
+    const controllerB = registerExecution('reg-session'); // should abort A
+    expect(controllerA.signal.aborted).toBe(true);
+    expect(controllerB.signal.aborted).toBe(false);
+    unregisterExecution('reg-session', controllerB);
+  });
+
+  it('identity-safe: stale finally does not remove newer controller', () => {
+    const controllerA = registerExecution('session-x');
+    const controllerB = registerExecution('session-x'); // replaces A
+
+    // Simulate A's finally block running after B took over
+    unregisterExecution('session-x', controllerA); // must be a no-op
+
+    // B is still registered and abortable
+    expect(abortExecution('session-x')).toBe(true);
+    unregisterExecution('session-x', controllerB);
+  });
+
+  it('unregisterExecution removes entry when controller matches', () => {
+    const controller = registerExecution('reg-session');
+    unregisterExecution('reg-session', controller);
+    expect(abortExecution('reg-session')).toBe(false);
   });
 });
 

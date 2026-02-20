@@ -3,36 +3,37 @@
 ## System Structure
 
 ```
-┌───────────────────────────────────────────────────────┐
-│  Claude Code                                          │
-│                                                       │
-│  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐  │
-│  │ SessionStart │  │ SubagentStart│  │   Skills    │  │
-│  │ Hook         │  │ Hook         │  │  /coral:*   │  │
-│  │ (CLAUDE.md   │  │ (codex-*     │  └──────┬──────┘  │
-│  │  injection)  │  │  delegation) │         │         │
-│  └──────────────┘  └──────┬───────┘         │         │
-│                           │                 │         │
-│                           ▼                 ▼         │
-│  ┌─────────────────────────────────────────────────┐  │
-│  │  MCP Server "coral" (bridge/coral-server.cjs)   │  │
-│  │                                                 │  │
-│  │  On new session:                                │  │
-│  │  - Prepend CLAUDE.md to prompt                  │  │
-│  │                                                 │  │
-│  │  Tools: codex_session_create,                   │  │
-│  │         codex_session_send, codex_session_list, │  │
-│  │         codex_session_fork                      │  │
-│  └────────────────────┬────────────────────────────┘  │
-│                       │                               │
-└───────────────────────┼───────────────────────────────┘
-                        ▼
-             ┌──────────────────────┐
-             │  Codex CLI (v0.101+) │
-             │  codex exec --json   │
-             │  --full-auto         │
-             │  JSONL event stream  │
-             └──────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│  Claude Code                                                         │
+│                                                                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────────┐  │
+│  │ SessionStart │  │ SubagentStart│  │   Skills /coral:*          │  │
+│  │ Hook         │  │ Hook         │  │   discuss, codex, plan,    │  │
+│  │ (CLAUDE.md   │  │ (codex-*     │  │   ralph, architect, ...    │  │
+│  │  injection)  │  │  delegation) │  └──────────┬─────────────────┘  │
+│  └──────────────┘  └──────┬───────┘             │                    │
+│                           │            ┌────────┴────────┐           │
+│                           ▼            ▼                 ▼           │
+│  ┌──────────────────────────────┐  ┌──────────────────────────────┐  │
+│  │  MCP Server "cx"            │  │  MCP Server "dc"             │  │
+│  │  (bridge/coral-codex.cjs)   │  │  (bridge/coral-discuss.cjs)  │  │
+│  │                              │  │                              │  │
+│  │  Tools: codex_session_*     │  │  Tools: discuss_*            │  │
+│  │  (create, send, list, fork) │  │  (create, bid, wait, speak,  │  │
+│  │                              │  │   transcript, state, end,    │  │
+│  │  Session: ~/.claude/coral/  │  │   epoch_summary)             │  │
+│  │           sessions/          │  │                              │  │
+│  └──────────────┬───────────────┘  │  Session: {project}/.claude/ │  │
+│                 │                   │           coral/discuss/     │  │
+│                 │                   └──────────────────────────────┘  │
+└─────────────────┼────────────────────────────────────────────────────┘
+                  ▼
+       ┌──────────────────────┐
+       │  Codex CLI (v0.101+) │
+       │  codex exec --json   │
+       │  --full-auto         │
+       │  JSONL event stream  │
+       └──────────────────────┘
 ```
 
 ## Data Flow
@@ -79,7 +80,29 @@ User → /codex skill analyzes intent
      → General?  → Direct MCP call, verbatim prompt (no subagent)
 ```
 
-### 4. Session-based Conversation
+### 4. Discuss — Moderated Multi-Agent Discussion
+
+```
+User → /coral:discuss "AI ethics in healthcare"
+     → Skill reads agents/discuss-lead.md (protocol injection)
+     → Moderator analyzes topic → determines 3-8 roles
+     → Spawns persona-generator agents in parallel (Task tool)
+     → discuss_create({ topic, agents }) → session_id, session_dir
+     → TeamCreate "coral-dc-{session_id}"
+     → Spawns discussant teammates (dc-{agent_name})
+     → Discussion Loop:
+        → Broadcast "Step N. Call discuss_bid."
+        → discuss_wait(all_bids) → auto-resolves → 5-way branch
+          → winner → notify → discuss_wait(speech_delivered) → broadcast transcript
+          → vote_required → voting round
+          → no_winner → synthesis
+          → end_vote → synthesis or epoch transition
+          → timeout → force end
+     → discuss_end → full transcript → synthesis → present to user
+     → Shutdown teammates, TeamDelete
+```
+
+### 5. Session-based Conversation (Codex)
 
 ```
 User → codex_session_create(name="review", prompt="analyze auth.ts")
@@ -91,7 +114,7 @@ User → codex_session_create(name="review", prompt="analyze auth.ts")
      → lastUsedAt updated
 ```
 
-### 5. Session Storage Layout
+### 6. Session Storage Layout (Codex)
 
 ```
 ~/.claude/coral/sessions/
@@ -103,7 +126,19 @@ User → codex_session_create(name="review", prompt="analyze auth.ts")
 
 Each file is a single `SessionEntry`. Corrupt files are skipped with a warning; valid files continue loading.
 
-### 6. Knowledge Base Storage
+### 7. Session Storage Layout (Discuss)
+
+```
+{project}/.claude/coral/discuss/
+└── 20260221-143022-a1b2_ai-ethics/
+    ├── state.json          # Atomic writes via .tmp + rename
+    ├── state.lock/         # Cross-process mkdir lock (transient)
+    └── transcript.md       # Incremental append (human-readable)
+```
+
+Each session directory is created atomically with collision detection. State mutations are serialized via a cross-process `mkdir`-based lock (`state.lock/`). Transcript.md is append-only — `transcript_rendered` cursor tracks which entries have been written to .md.
+
+### 8. Knowledge Base Storage
 
 ```
 {project}/.claude/coral/kb/          # Git-tracked (multi-device sync)
@@ -129,23 +164,43 @@ coral/
 ├── CLAUDE.md                    # Behavioral guidelines + KB instructions
 ├── src/
 │   ├── types.ts                 # Shared type definitions (CodexThreadEvent etc.)
-│   └── mcp/
-│       ├── server.ts            # MCP server entry point — wiring only (stdio, transport, signals)
-│       ├── server-handlers.ts   # Business logic handlers + dispatch (extracted from server.ts)
-│       ├── schemas.ts           # Zod input validation schemas
-│       ├── codex-executor.ts    # Codex CLI execution logic
-│       ├── session-manager.ts   # Per-session file persistence
-│       ├── output-parser.ts     # JSONL event parsing
-│       ├── cli-detection.ts     # Codex CLI existence check
-│       ├── progress.ts          # Progress file utilities
+│   ├── shared/
+│   │   └── mcp-utils.ts         # Shared MCP response helpers (textResult, jsonResult)
+│   ├── codex/
+│   │   ├── server.ts            # Codex MCP server entry point (stdio, transport, signals)
+│   │   ├── server-handlers.ts   # Business logic handlers + dispatch
+│   │   ├── schemas.ts           # Zod input validation schemas
+│   │   ├── codex-executor.ts    # Codex CLI execution logic
+│   │   ├── session-manager.ts   # Per-session file persistence
+│   │   ├── output-parser.ts     # JSONL event parsing
+│   │   ├── cli-detection.ts     # Codex CLI existence check
+│   │   ├── progress.ts          # Progress file utilities
+│   │   └── __tests__/           # Tests (vitest)
+│   │       ├── server-handlers.test.ts
+│   │       ├── schemas.test.ts
+│   │       ├── output-parser.test.ts
+│   │       ├── codex-executor.test.ts
+│   │       ├── session-manager.test.ts
+│   │       ├── cli-detection.test.ts
+│   │       └── server-progress.test.ts
+│   └── discuss/
+│       ├── server.ts            # Discuss MCP server entry point (stdio, transport, signals)
+│       ├── server-handlers.ts   # Tool definitions + dispatch (discuss_* tools)
+│       ├── schemas.ts           # Zod schemas for discuss_* tool inputs
+│       ├── state-machine.ts     # Pure state transitions (zero I/O)
+│       ├── session-store.ts     # I/O shell: atomic writes, cross-process lock, migration
+│       ├── conditions.ts        # Pure condition predicates for discuss_wait
+│       ├── wait.ts              # Async file polling (waitForCondition)
+│       ├── transcript.ts        # Transcript rendering (pure functions)
+│       ├── types.ts             # DiscussState, TranscriptEntry, Result<T>, WaitCondition
 │       └── __tests__/           # Tests (vitest)
-│           ├── server-handlers.test.ts
+│           ├── state-machine.test.ts
+│           ├── conditions.test.ts
+│           ├── session-store.test.ts
+│           ├── wait.test.ts
+│           ├── transcript.test.ts
 │           ├── schemas.test.ts
-│           ├── output-parser.test.ts
-│           ├── codex-executor.test.ts
-│           ├── session-manager.test.ts
-│           ├── cli-detection.test.ts
-│           └── server-progress.test.ts
+│           └── server-handlers.test.ts
 ├── skills/
 │   ├── architect/
 │   │   └── SKILL.md             # /coral:architect (Claude-native)
@@ -155,6 +210,10 @@ coral/
 │   │   └── SKILL.md             # /coral:analyze (Claude-native)
 │   ├── ralph/
 │   │   └── SKILL.md             # /coral:ralph (Claude-native)
+│   ├── discuss/
+│   │   ├── SKILL.md             # /coral:discuss (multi-agent discussion)
+│   │   └── template/
+│   │       └── persona-template.md  # Persona structure template
 │   ├── codex-analyze/
 │   │   └── SKILL.md             # /coral:codex-analyze (Codex delegation)
 │   ├── codex-ralph/
@@ -176,6 +235,9 @@ coral/
 │   ├── ralph.md                 # Claude-native persistent execution loop
 │   ├── planner.md               # Claude-native multi-round planning
 │   ├── init-project.md          # Project initialization orchestrator
+│   ├── discuss-lead.md          # Discussion moderator protocol
+│   ├── discussant.md            # Discussion participant protocol
+│   ├── persona-generator.md     # Persona creation agent
 │   ├── codex-architect.md       # Codex architecture analysis delegation
 │   ├── codex-critic.md          # Codex critical review delegation
 │   ├── codex-analyst.md         # Codex analysis delegation
@@ -186,7 +248,8 @@ coral/
 ├── scripts/
 │   └── build-server.mjs         # esbuild bundling
 ├── bridge/
-│   └── coral-server.cjs         # Bundle output (committed, no build required)
+│   ├── coral-codex.cjs         # Codex MCP server bundle (committed)
+│   └── coral-discuss.cjs       # Discuss MCP server bundle (committed)
 ├── docs/                        # Documentation
 ├── vitest.config.ts             # Test configuration
 ├── package.json
@@ -196,23 +259,42 @@ coral/
 
 ## Module Dependency Graph
 
-```
-server.ts  (wiring only — SDK setup, transport, signals)
-  └── server-handlers.ts  (business logic, dispatch, background/foreground)
-        ├── schemas.ts        (zod input validation)
-        ├── codex-executor.ts
-        │     ├── output-parser.ts  (pure functions)
-        │     └── cli-detection.ts  (caching singleton)
-        ├── session-manager.ts      (file I/O, per-session files, atomic writes)
-        └── progress.ts             (progress file I/O, pure helpers)
+### Codex Server (`cx`)
 
-types.ts ← referenced by all modules
+```
+codex/server.ts  (wiring only — SDK setup, transport, signals)
+  └── codex/server-handlers.ts  (business logic, dispatch, background/foreground)
+        ├── codex/schemas.ts        (zod input validation)
+        ├── codex/codex-executor.ts
+        │     ├── codex/output-parser.ts  (pure functions)
+        │     └── codex/cli-detection.ts  (caching singleton)
+        ├── codex/session-manager.ts      (file I/O, per-session files, atomic writes)
+        ├── codex/progress.ts             (progress file I/O, pure helpers)
+        └── shared/mcp-utils.ts           (textResult, jsonResult)
+
+types.ts ← referenced by all codex modules
 ```
 
-- `server.ts` — composition root (~58 lines). SDK + transport setup, `progressToken`/`notify` extraction, shutdown, signals. No business logic.
-- `server-handlers.ts` — all MCP tool handlers, dispatch switch, background/foreground execution, progress callbacks
-- `schemas.ts` — zod schemas + type extraction (pure definitions)
-- `output-parser.ts` and `cli-detection.ts` — independent modules with no external dependencies
-- `codex-executor.ts` — combines parser and detection modules + process management + idle timeout
-- `session-manager.ts` — uses filesystem only (no Codex dependency), stores one JSON file per session
-- `progress.ts` — progress file creation, event appending, cleanup (pure helpers, no server dependency)
+### Discuss Server (`dc`)
+
+```
+discuss/server.ts  (wiring only — SDK setup, transport, signals)
+  └── discuss/server-handlers.ts  (tool dispatch + discuss_wait integration)
+        ├── discuss/schemas.ts          (zod input validation)
+        ├── discuss/state-machine.ts    (pure state transitions, zero I/O)
+        ├── discuss/session-store.ts    (I/O shell: atomic writes, cross-process lock)
+        │     └── discuss/transcript.ts (rendering, called via save())
+        ├── discuss/conditions.ts       (pure predicates for discuss_wait)
+        ├── discuss/wait.ts             (async file polling)
+        └── shared/mcp-utils.ts         (textResult, jsonResult)
+
+discuss/types.ts ← referenced by all discuss modules
+```
+
+### Key Design: Functional Core / Imperative Shell
+
+The discuss server separates pure logic from I/O:
+- **Functional Core** (`state-machine.ts`): all state transitions are pure functions `(state, args) → Result<T>`. Zero `node:fs` imports. Fully testable without filesystem.
+- **Imperative Shell** (`session-store.ts`): handles atomic writes, cross-process locking, state migration, and incremental transcript append.
+- **Condition predicates** (`conditions.ts`): pure boolean functions used by `discuss_wait` to detect when to unblock.
+- **Wait module** (`wait.ts`): polls `state.json` at intervals until a predicate is true or timeout expires.

@@ -328,6 +328,50 @@ argument-hint: "[existing|new]"
 
 ---
 
+## /coral:discuss
+
+Moderated multi-agent discussion via Agent Teams. Spawns diverse personas and manages structured turn-taking.
+
+**File**: `skills/discuss/SKILL.md`
+
+### Configuration
+
+```yaml
+---
+name: discuss
+description: Moderated multi-agent discussion via Agent Teams
+argument-hint: "[topic]"
+---
+```
+
+### Behavior
+
+1. Load `agents/discuss-lead.md` protocol
+2. Analyze topic: determine team composition (3–8 roles), detect debate mode
+3. Spawn `persona-generator` agents in parallel (one per role) to create unique personas
+4. Call `discuss_create` with generated personas → get `session_id`
+5. Create Agent Team `coral-dc-{session_id}`, spawn `discussant` teammates
+6. Run discussion: bidding → `discuss_wait(all_bids)` auto-resolve → speak → broadcast → repeat
+7. On termination: `discuss_end`, read full transcript, present structured synthesis
+
+### Discussion Modes
+
+| Mode | Trigger | Behavior |
+|---|---|---|
+| General | Default | Open discussion with diverse perspectives |
+| Debate | Topic contains "pro/con", "vs", "should" | Stance collection → balance check → devil's advocate assignment |
+
+### Session Storage
+
+```
+{project}/.claude/coral/discuss/
+└── 20260221-143022-a1b2_ai-ethics/
+    ├── state.json
+    └── transcript.md
+```
+
+---
+
 ## /coral:statusline
 
 Install or remove the coral HUD statusline for Claude Code.

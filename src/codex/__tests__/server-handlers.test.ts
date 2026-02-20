@@ -7,6 +7,9 @@ vi.mock('../codex-executor.js', () => ({
   executeOneShot: vi.fn(),
   executeResume: vi.fn(),
   executeFork: vi.fn(),
+  registerExecution: vi.fn(() => ({ signal: undefined })),
+  unregisterExecution: vi.fn(),
+  abortExecution: vi.fn(),
 }));
 
 vi.mock('../progress.js', () => ({
@@ -23,7 +26,7 @@ vi.mock('node:os', () => ({
   homedir: () => tmpDir,
 }));
 
-import { executeOneShot, executeResume, executeFork } from '../codex-executor.js';
+import { executeOneShot, executeResume, executeFork, abortExecution } from '../codex-executor.js';
 import {
   createProgressFile,
   extractProgressId,
@@ -43,6 +46,7 @@ import {
   handleSessionSend,
   handleSessionList,
   handleSessionFork,
+  handleSessionAbort,
   handleToolCall,
   activeBackgroundFiles,
 } from '../server-handlers.js';
@@ -56,6 +60,7 @@ function makeExecResult(overrides: Partial<CodexExecResult> = {}): CodexExecResu
     exitCode: 0,
     errors: [],
     warnings: [],
+    aborted: false,
     ...overrides,
   };
 }
@@ -109,6 +114,15 @@ describe('resultExtras', () => {
   it('omits exit_code when exitCode is null', () => {
     expect(resultExtras({ exitCode: null, errors: [], warnings: [] })).toEqual({});
   });
+
+  it('includes aborted: true when aborted is true', () => {
+    expect(resultExtras({ exitCode: null, errors: [], warnings: [], aborted: true })).toEqual({ aborted: true });
+  });
+
+  it('omits aborted when false or undefined', () => {
+    expect(resultExtras({ exitCode: 0, errors: [], warnings: [], aborted: false })).toEqual({});
+    expect(resultExtras({ exitCode: 0, errors: [], warnings: [] })).toEqual({});
+  });
 });
 
 describe('sessionNotFoundError', () => {
@@ -138,6 +152,28 @@ describe('extractCompletionData', () => {
   it('omits notice field when absent', () => {
     const result = jsonResult({ response: 'hi', thread_id: 't-1', model: 'o4-mini', duration_ms: 10 });
     expect(extractCompletionData(result, 'test')).not.toHaveProperty('notice');
+  });
+
+  it('forwards aborted and non_resumable when present', () => {
+    const result = jsonResult({ response: '', thread_id: null, model: 'o4-mini', duration_ms: 50, aborted: true, non_resumable: true });
+    const data = extractCompletionData(result, 'test');
+    expect(data.aborted).toBe(true);
+    expect(data.non_resumable).toBe(true);
+  });
+
+  it('omits aborted and non_resumable when absent', () => {
+    const result = jsonResult({ response: 'hi', thread_id: 't-1', model: 'o4-mini', duration_ms: 10 });
+    const data = extractCompletionData(result, 'test');
+    expect(data).not.toHaveProperty('aborted');
+    expect(data).not.toHaveProperty('non_resumable');
+  });
+
+  it('forwards exit_code, errors, warnings when present', () => {
+    const result = jsonResult({ response: '', thread_id: 't-1', model: 'o4-mini', duration_ms: 10, exit_code: 1, errors: ['e'], warnings: ['w'] });
+    const data = extractCompletionData(result, 'test');
+    expect(data.exit_code).toBe(1);
+    expect(data.errors).toEqual(['e']);
+    expect(data.warnings).toEqual(['w']);
   });
 });
 
@@ -249,7 +285,7 @@ describe('handleSessionSend', () => {
   it('passes entry codexThreadId and workingDirectory to executeResume', async () => {
     vi.mocked(executeResume).mockResolvedValue(makeExecResult());
     await handleSessionSend({ session: 'test-session', prompt: 'hi', background: false }, mgr);
-    expect(executeResume).toHaveBeenCalledWith('thread-001', 'hi', undefined, '/workspace', undefined, undefined);
+    expect(executeResume).toHaveBeenCalledWith('thread-001', 'hi', undefined, '/workspace', undefined, undefined, undefined);
   });
 });
 
@@ -317,7 +353,7 @@ describe('handleSessionFork', () => {
   it('uses entry workingDirectory when input omits it', async () => {
     vi.mocked(executeFork).mockResolvedValue(makeExecResult());
     await handleSessionFork({ session: 'base-session', background: false }, mgr);
-    expect(executeFork).toHaveBeenCalledWith('thread-base', undefined, undefined, '/workspace', undefined, undefined);
+    expect(executeFork).toHaveBeenCalledWith('thread-base', undefined, undefined, '/workspace', undefined, undefined, undefined);
   });
 
   it('foreground with non-existent session → isError via handler (not dispatcher)', async () => {
@@ -327,7 +363,44 @@ describe('handleSessionFork', () => {
   });
 });
 
-// ─── H. handleToolCall dispatch + validation ──────────────────────────────────
+// ─── H. handleSessionAbort ───────────────────────────────────────────────────
+
+describe('handleSessionAbort', () => {
+  beforeEach(() => {
+    mgr.register('active-session', 'thread-999', 'o4-mini', '/workspace');
+  });
+
+  it('returns abort_requested when execution is active', async () => {
+    vi.mocked(abortExecution).mockReturnValue(true);
+    const result = await handleSessionAbort({ session: 'active-session' }, mgr);
+    expect(result.isError).toBe(false);
+    const data = JSON.parse(result.content[0].text);
+    expect(data.status).toBe('abort_requested');
+    expect(data.session_name).toBe('active-session');
+  });
+
+  it('returns isError when no active execution found', async () => {
+    vi.mocked(abortExecution).mockReturnValue(false);
+    const result = await handleSessionAbort({ session: 'active-session' }, mgr);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('No active execution found');
+  });
+
+  it('resolves by canonical name when session exists', async () => {
+    vi.mocked(abortExecution).mockReturnValue(true);
+    await handleSessionAbort({ session: 'active-session' }, mgr);
+    expect(abortExecution).toHaveBeenCalledWith('active-session');
+  });
+
+  it('falls back to raw ref when session not registered', async () => {
+    vi.mocked(abortExecution).mockReturnValue(true);
+    await handleSessionAbort({ session: 'unregistered-name' }, mgr);
+    // session not in mgr → falls back to input.session as the key
+    expect(abortExecution).toHaveBeenCalledWith('unregistered-name');
+  });
+});
+
+// ─── I. handleToolCall dispatch + validation ──────────────────────────────────
 
 describe('handleToolCall', () => {
   beforeEach(() => {
@@ -389,6 +462,20 @@ describe('handleToolCall', () => {
 
   it('Zod: fork without session → isError: true', async () => {
     const result = await handleToolCall('codex_session_fork', { prompt: 'hi' }, mgr);
+    expect(result.isError).toBe(true);
+  });
+
+  it('routes codex_session_abort to handleSessionAbort', async () => {
+    vi.mocked(abortExecution).mockReturnValue(true);
+    mgr.register('session-to-abort', 'thread-ab', 'o4-mini', '/workspace');
+    const result = await handleToolCall('codex_session_abort', { session: 'session-to-abort' }, mgr);
+    expect(result.isError).toBe(false);
+    const data = JSON.parse(result.content[0].text);
+    expect(data.status).toBe('abort_requested');
+  });
+
+  it('Zod: abort without session → isError: true', async () => {
+    const result = await handleToolCall('codex_session_abort', {}, mgr);
     expect(result.isError).toBe(true);
   });
 

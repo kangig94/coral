@@ -1,1 +1,1 @@
-bridge/coral-server.cjs -diff linguist-generated=true
+bridge/coral-codex.cjs -diff linguist-generated=true

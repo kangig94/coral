@@ -2,7 +2,11 @@
   "mcpServers": {
     "cx": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-server.cjs"]
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-codex.cjs"]
+    },
+    "dc": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-discuss.cjs"]
     }
   }
 }

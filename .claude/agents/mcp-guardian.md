@@ -16,11 +16,11 @@ The MCP server is the single communication channel between Claude Code and Codex
 
 | Situation | Priority |
 |-----------|----------|
-| Any change to `src/mcp/server.ts` (tool handlers) | MANDATORY |
-| Any change to `src/mcp/schemas.ts` (Zod schemas) | MANDATORY |
-| Any change to `src/mcp/codex-executor.ts` (process management) | MANDATORY |
-| Any change to `src/mcp/session-manager.ts` (persistence) | MANDATORY |
-| Any change to `src/mcp/output-parser.ts` (JSONL parsing) | RECOMMENDED |
+| Any change to `src/codex/server.ts` (tool handlers) | MANDATORY |
+| Any change to `src/codex/schemas.ts` (Zod schemas) | MANDATORY |
+| Any change to `src/codex/codex-executor.ts` (process management) | MANDATORY |
+| Any change to `src/codex/session-manager.ts` (persistence) | MANDATORY |
+| Any change to `src/codex/output-parser.ts` (JSONL parsing) | RECOMMENDED |
 | New MCP tool addition | MANDATORY |
 
 ## Mandatory Consultations
@@ -105,7 +105,7 @@ process.on('SIGINT', shutdown);
 
 | Bug | Symptom | Detection | Fix |
 |-----|---------|-----------|-----|
-| `console.log` in server code | Tool calls return garbled responses | `grep -rn 'console.log' src/mcp/` | Replace with `process.stderr.write` |
+| `console.log` in server code | Tool calls return garbled responses | `grep -rn 'console.log' src/codex/` | Replace with `process.stderr.write` |
 | Missing Zod validation | Unexpected crashes on malformed input | Check each `case` in switch handler has `.parse()` | Add `schema.parse(rawArgs)` before handler call |
 | Non-atomic session write | Corrupt `.json` files after crash | Check for `writeFileSync` without tmp+rename | Use `writeFileSync(tmp) + renameSync(tmp, target)` |
 | Untracked child process | Orphaned Codex processes after server exit | Check `activeChildren.add()` in spawn path | Add child to set immediately after `spawn()` |
@@ -115,7 +115,7 @@ process.on('SIGINT', shutdown);
 ## Validation Checklist
 - [ ] Every tool handler validates input with Zod schema before execution
 - [ ] All tool responses use `{ content: [{ type: "text", text }], isError }` format
-- [ ] No `console.log` anywhere in `src/mcp/` (use `process.stderr.write`)
+- [ ] No `console.log` anywhere in `src/codex/` (use `process.stderr.write`)
 - [ ] Unknown tool names return `isError: true` response (not thrown error)
 - [ ] Session writes use atomic tmp+rename pattern
 - [ ] Corrupt session files are skipped with warning, not crash
@@ -127,16 +127,16 @@ process.on('SIGINT', shutdown);
 ## Detection Commands
 ```bash
 # Find console.log violations in MCP server code
-grep -rn 'console\.log' src/mcp/
+grep -rn 'console\.log' src/codex/
 
 # Verify all tool handlers have Zod validation
-grep -A2 "case 'codex_session" src/mcp/server.ts
+grep -A2 "case 'codex_session" src/codex/server.ts
 
 # Check for non-atomic writes in session manager
-grep -n 'writeFileSync' src/mcp/session-manager.ts
+grep -n 'writeFileSync' src/codex/session-manager.ts
 
 # Verify shutdown handlers exist
-grep -n 'SIGTERM\|SIGINT\|killAllChildren' src/mcp/server.ts
+grep -n 'SIGTERM\|SIGINT\|killAllChildren' src/codex/server.ts
 
 # Run test suite for MCP modules
 npm test
@@ -145,12 +145,12 @@ npm test
 ## Key Files
 | File | Concern |
 |------|---------|
-| `src/mcp/server.ts` | Tool handlers, response format, shutdown |
-| `src/mcp/schemas.ts` | Zod schemas must match inputSchema declarations |
-| `src/mcp/codex-executor.ts` | Process spawn, timeout, child tracking |
-| `src/mcp/session-manager.ts` | Atomic writes, corrupt file handling |
-| `src/mcp/output-parser.ts` | JSONL parsing contract with Codex CLI |
-| `src/mcp/cli-detection.ts` | CLI availability check caching |
+| `src/codex/server.ts` | Tool handlers, response format, shutdown |
+| `src/codex/schemas.ts` | Zod schemas must match inputSchema declarations |
+| `src/codex/codex-executor.ts` | Process spawn, timeout, child tracking |
+| `src/codex/session-manager.ts` | Atomic writes, corrupt file handling |
+| `src/codex/output-parser.ts` | JSONL parsing contract with Codex CLI |
+| `src/codex/cli-detection.ts` | CLI availability check caching |
 
 ## Output Format
 

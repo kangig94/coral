@@ -107,23 +107,23 @@ Level 3 (expert): codex_session_create(prompt="...", working_directory="/other/p
 ## Detection Commands
 ```bash
 # Find all tool descriptions in server.ts
-grep -A2 "description:" src/mcp/server.ts
+grep -A2 "description:" src/codex/server.ts
 
 # Find all error messages
-grep -n "textResult(" src/mcp/server.ts | grep "true"
+grep -n "textResult(" src/codex/server.ts | grep "true"
 
 # List all SKILL.md files and their descriptions
 for f in skills/*/SKILL.md; do echo "=== $f ==="; head -5 "$f"; done
 
 # Check argument hint completeness
-grep -A3 "description:" src/mcp/server.ts | grep -v "^--$"
+grep -A3 "description:" src/codex/server.ts | grep -v "^--$"
 ```
 
 ## Key Files
 | File | Concern |
 |------|---------|
-| `src/mcp/server.ts` | Tool descriptions, argument hints, error messages |
-| `src/mcp/schemas.ts` | Zod error messages (user-facing on validation failure) |
+| `src/codex/server.ts` | Tool descriptions, argument hints, error messages |
+| `src/codex/schemas.ts` | Zod error messages (user-facing on validation failure) |
 | `skills/*/SKILL.md` | Skill discoverability and descriptions |
 | `agents/*.md` | Agent descriptions (shown in agent selection) |
 
