@@ -10,6 +10,8 @@
 
 Branch naming: `feature/`, `fix/`, `refactor/`, `docs/`, `chore/` prefixes.
 
+Merge policy: **rebase only**. Keep linear history on `main` and `dev`.
+
 ## Commit Style
 
 - Prefix: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`
