@@ -3,14 +3,16 @@
 ## Git Workflow
 
 - **`main`**: Release branch. Always deployable. Never commit directly.
-- **`dev`**: Integration branch. Feature branches merge here.
-- **Feature branches**: Branch from `dev`, merge back to `dev` via PR or merge.
-- **Release**: When `dev` is stable, merge `dev` → `main` and bump version.
-- **Hotfix**: Fix on `dev`, merge to `main`. Cherry-pick if `dev` has unreleased WIP.
+- **`dev`**: Integration branch. Feature branches merge here. Direct commits allowed for small changes.
+- **Feature branches**: Branch from `dev`, rebase merge back to `dev` via PR.
+- **Release**: When `dev` is stable, squash merge `dev` → `main` via PR.
+- **Hotfix**: Fix on `dev`, squash merge to `main`. Cherry-pick if `dev` has unreleased WIP.
 
 Branch naming: `feature/`, `fix/`, `refactor/`, `docs/`, `chore/` prefixes.
 
-Merge policy: **rebase only**. Keep linear history on `main` and `dev`.
+Merge policy:
+- **feature → dev**: rebase (preserve individual commits, partial revert possible)
+- **dev → main**: squash (one commit per release, traceable via PR link `(#N)`)
 
 ## Commit Style
 

@@ -85,6 +85,17 @@ npm run build     # TypeScript compile + esbuild bundle
 npm test          # Run tests with vitest
 ```
 
+### Git Workflow
+
+- **`main`**: Release branch. Always deployable.
+- **`dev`**: Integration branch. Direct commits allowed for small changes.
+- **Feature branches**: Branch from `dev`, rebase merge back via PR.
+- **Release**: Squash merge `dev` → `main` via PR.
+
+Merge policy:
+- **feature → dev**: rebase (preserve individual commits)
+- **dev → main**: squash (one commit per release, traceable via `(#N)`)
+
 ## Adding New Agents
 
 ### Codex-bound Agent

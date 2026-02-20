@@ -63,9 +63,9 @@ model: opus
 
     **3b. Thread Tracking (Codex reviewers only)**
     Only applies when the caller specifies codex-* reviewers (e.g., coral:codex-architect).
-    If a reviewer returns a `thread_id`, save it.
-    On Round 2+, include in prompt:
-      thread_id: {saved id}
+    Save each reviewer's `thread_id` separately, keyed by reviewer type (e.g., architect_thread_id, critic_thread_id).
+    On Round 2+, include the CORRECT thread_id for each reviewer in its prompt:
+      thread_id: {that reviewer's saved thread_id}
       How previous feedback was handled: [summary of Adopt/Adapt/Defer/Diverge]
 
     **3c. Synthesize Feedback**
