@@ -294,7 +294,7 @@ async function handleDiscussOp(input: DiscussOpInput, store: SessionStore): Prom
 
       // When agent_name provided: track read under lock for bid enforcement.
       // When absent: lockless read (no tracking needed).
-      const { agent_name: caller } = input;
+      const caller = input.agent_name;
       const state = caller
         ? await store.withLock(sessionDir, async () => {
             const s = store.load(sessionDir);

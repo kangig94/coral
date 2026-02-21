@@ -81,6 +81,39 @@ function makeBidEntry(
   return { type: 'bids', step: state.step, epoch: state.epoch, ts: now, bids: allBids, winner, resolve_type: resolveType };
 }
 
+/** Transition state to speaking with a resolved winner. */
+function startSpeaking(
+  state: DiscussState,
+  allBids: Record<string, number>,
+  winner: string,
+  resolveType: 'normal' | 'fallback' | 'cold_start',
+  now: string,
+  extraState?: Partial<DiscussState>,
+): Result<[DiscussState, ResolveResult]> {
+  const newState: DiscussState = {
+    ...appendEntry(state, makeBidEntry(state, allBids, winner, resolveType, now), now),
+    current_speaker: winner, speaker_type: resolveType, status: 'speaking', cold_start: false,
+    ...extraState,
+  };
+  return { ok: true, value: [newState, { winner, step: state.step, resolve_type: resolveType }] };
+}
+
+/** Return a no-winner resolution with a bids transcript entry. */
+function noWinnerResult(
+  state: DiscussState,
+  allBids: Record<string, number>,
+  reason: string,
+  now: string,
+): Result<[DiscussState, ResolveResult]> {
+  return {
+    ok: true,
+    value: [
+      appendEntry(state, makeBidEntry(state, allBids, null, 'no_winner', now), now),
+      { no_winner: true, step: state.step, reason },
+    ],
+  };
+}
+
 /** Append a transcript entry to state. Sets both updated_at and last_activity_at. */
 function appendEntry(state: DiscussState, entry: TranscriptEntry, now: string): DiscussState {
   return { ...state, updated_at: now, last_activity_at: now, transcript: [...state.transcript, entry] };
@@ -240,12 +273,7 @@ export function resolveWinner(state: DiscussState, now: string): Result<[Discuss
     .sort(cmp);
 
   if (primaryPool.length > 0) {
-    const [winnerName] = primaryPool[0];
-    const newState: DiscussState = {
-      ...appendEntry(state, makeBidEntry(state, allBids, winnerName, 'normal', now), now),
-      current_speaker: winnerName, speaker_type: 'normal', status: 'speaking', cold_start: false,
-    };
-    return { ok: true, value: [newState, { winner: winnerName, step: state.step, resolve_type: 'normal' }] };
+    return startSpeaking(state, allBids, primaryPool[0][0], 'normal', now);
   }
 
   // ── Step 2: Fallback pool (quota=0, fallback_used=false, score >= threshold) ──
@@ -259,12 +287,9 @@ export function resolveWinner(state: DiscussState, now: string): Result<[Discuss
 
   if (fallbackPool.length > 0) {
     const [winnerName] = fallbackPool[0];
-    const newState: DiscussState = {
-      ...appendEntry(state, makeBidEntry(state, allBids, winnerName, 'fallback', now), now),
+    return startSpeaking(state, allBids, winnerName, 'fallback', now, {
       agents: { ...state.agents, [winnerName]: { ...state.agents[winnerName], fallback_used: true } },
-      current_speaker: winnerName, speaker_type: 'fallback', status: 'speaking', cold_start: false,
-    };
-    return { ok: true, value: [newState, { winner: winnerName, step: state.step, resolve_type: 'fallback' }] };
+    });
   }
 
   // ── Both pools empty ──────────────────────────────────────────────────────
@@ -275,21 +300,11 @@ export function resolveWinner(state: DiscussState, now: string): Result<[Discuss
     if (state.cold_start) {
       const picked = coldStartPick(state);
       if (picked !== null) {
-        const newState: DiscussState = {
-          ...appendEntry(state, makeBidEntry(state, allBids, picked, 'cold_start', now), now),
-          current_speaker: picked, speaker_type: 'cold_start', status: 'speaking', cold_start: false,
-        };
-        return { ok: true, value: [newState, { winner: picked, step: state.step, resolve_type: 'cold_start' }] };
+        return startSpeaking(state, allBids, picked, 'cold_start', now);
       }
     }
     // Natural end: all below threshold, cold_start=false (or no eligible agents)
-    return {
-      ok: true,
-      value: [
-        appendEntry(state, makeBidEntry(state, allBids, null, 'no_winner', now), now),
-        { no_winner: true, step: state.step, reason: 'all_below_threshold' },
-      ],
-    };
+    return noWinnerResult(state, allBids, 'all_below_threshold', now);
   }
 
   // ── Step 4: Check if truly all exhausted ─────────────────────────────────
@@ -300,13 +315,7 @@ export function resolveWinner(state: DiscussState, now: string): Result<[Discuss
 
   if (!allExhausted) {
     // Structurally blocked but NOT all exhausted (agents with quota bid below threshold)
-    return {
-      ok: true,
-      value: [
-        appendEntry(state, makeBidEntry(state, allBids, null, 'no_winner', now), now),
-        { no_winner: true, step: state.step, reason: 'all_blocked' },
-      ],
-    };
+    return noWinnerResult(state, allBids, 'all_blocked', now);
   }
 
   // ── Step 5: All exhausted + desire exists → epoch transition ──────────────
@@ -325,7 +334,7 @@ export function resolveWinner(state: DiscussState, now: string): Result<[Discuss
       epoch: state.epoch + 1, cold_start: true,
       current_speaker: null, speaker_type: null, agents,
       step: state.step + 1, transcript_read_step,
-      epoch_summary_written: null,  // reset for new epoch
+      epoch_summary_written: null,
     });
     return {
       ok: true,
@@ -337,13 +346,7 @@ export function resolveWinner(state: DiscussState, now: string): Result<[Discuss
   }
 
   // max_epochs reached — no more extensions
-  return {
-    ok: true,
-    value: [
-      appendEntry(state, makeBidEntry(state, allBids, null, 'no_winner', now), now),
-      { no_winner: true, step: state.step, reason: 'max_epochs_reached' },
-    ],
-  };
+  return noWinnerResult(state, allBids, 'max_epochs_reached', now);
 }
 
 /** Record a speech from the current speaker. */

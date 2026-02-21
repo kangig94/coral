@@ -17,6 +17,15 @@ const SIGTERM_GRACE_MS = 5_000; // grace period before escalating to SIGKILL
 
 const activeChildren = new Set<ChildProcess>();
 
+/** Send SIGTERM, then escalate to SIGKILL after grace period. */
+function gracefulKill(child: ChildProcess): void {
+  try { child.kill('SIGTERM'); } catch { /* already dead */ }
+  const killTimer = setTimeout(() => {
+    try { child.kill('SIGKILL'); } catch { /* already dead */ }
+  }, SIGTERM_GRACE_MS);
+  child.on('close', () => clearTimeout(killTimer));
+}
+
 // ─── Active Execution Registry ────────────────────────────────────────────────
 
 const activeExecutions = new Map<string, AbortController>();
@@ -84,8 +93,8 @@ function spawnCodex(
 
     const child = spawn('codex', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
-      ...(cwd ? { cwd } : {}),
-      ...(process.platform === 'win32' ? { shell: true } : {}),
+      cwd: cwd || undefined,
+      shell: process.platform === 'win32',
     });
 
     activeChildren.add(child);
@@ -100,11 +109,7 @@ function spawnCodex(
     function onIdle() {
       if (settled) return;
       settled = true;
-      child.kill('SIGTERM');
-      const killTimer = setTimeout(() => {
-        try { child.kill('SIGKILL'); } catch { /* already dead */ }
-      }, SIGTERM_GRACE_MS);
-      child.on('close', () => clearTimeout(killTimer));
+      gracefulKill(child);
       activeChildren.delete(child);
       reject(new Error(`Codex killed after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`));
     }
@@ -122,9 +127,7 @@ function spawnCodex(
         if (settled) return;
         abortedBySignal = true;
         clearTimeout(idleTimer); // prevent idle-timeout rejection racing with abort
-        child.kill('SIGTERM');
-        const killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, SIGTERM_GRACE_MS);
-        child.on('close', () => clearTimeout(killTimer)); // clean up if process exits before grace period
+        gracefulKill(child);
       };
       if (signal.aborted) { onAbort(); }
       else { signal.addEventListener('abort', onAbort, { once: true }); }
@@ -183,13 +186,7 @@ export function killAllChildren(): void {
   activeExecutions.clear();
 
   for (const child of activeChildren) {
-    try {
-      child.kill('SIGTERM');
-    } catch { /* already dead */ }
-    const killTimer = setTimeout(() => {
-      try { child.kill('SIGKILL'); } catch { /* already dead */ }
-    }, SIGTERM_GRACE_MS);
-    child.on('close', () => clearTimeout(killTimer));
+    gracefulKill(child);
   }
   activeChildren.clear();
 }
