@@ -87,6 +87,10 @@ export function normalizeState(raw: Record<string, unknown>): DiscussState {
   if (raw['last_speech_step'] === undefined) raw['last_speech_step'] = 0;
   if (raw['transcript'] === undefined) raw['transcript'] = [];
   if (raw['transcript_rendered'] === undefined) raw['transcript_rendered'] = 0;
+  // Intentionally 50, not the original 30 — threshold was raised after real-world testing
+  // showed 30 was too permissive (discussions resolved before all agents were ready).
+  if (raw['bid_threshold'] === undefined) raw['bid_threshold'] = 50;
+  if (raw['transcript_read_step'] === undefined) raw['transcript_read_step'] = {};
   // display_name migration: parse from persona if missing or empty
   const agents = raw['agents'] as Record<string, AgentState>;
   for (const [name, a] of Object.entries(agents)) {

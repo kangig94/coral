@@ -85,22 +85,15 @@ function spawnCodex(
 
     activeChildren.add(child);
 
-    let lastActivity = Date.now();
     let idleTimer = setTimeout(onIdle, IDLE_TIMEOUT);
 
     function resetIdle() {
-      lastActivity = Date.now();
       clearTimeout(idleTimer);
       idleTimer = setTimeout(onIdle, IDLE_TIMEOUT);
     }
 
     function onIdle() {
       if (settled) return;
-      const elapsed = Date.now() - lastActivity;
-      if (elapsed < IDLE_TIMEOUT) {
-        idleTimer = setTimeout(onIdle, IDLE_TIMEOUT - elapsed);
-        return;
-      }
       settled = true;
       child.kill('SIGTERM');
       const killTimer = setTimeout(() => {

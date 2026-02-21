@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionStore } from '../session-store.js';
 import { handleToolCall } from '../server-handlers.js';
+import { startBidding } from '../state-machine.js';
 
 let tmpDir: string;
 let store: SessionStore;
@@ -23,7 +24,15 @@ afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }); });
 async function createSession() {
   const r = await handleToolCall('discuss_create', { topic: 'Test', agents: AGENTS }, store);
   const data = JSON.parse(r.content[0].text) as { session_id: string };
-  return data.session_id;
+  const sid = data.session_id;
+  // Transition setup → bidding directly via store (no timeout needed)
+  const sessionDir = store.resolveDir(sid)!;
+  await store.withLock(sessionDir, async () => {
+    const s = store.load(sessionDir);
+    const res = startBidding(s, new Date().toISOString());
+    if (res.ok) store.save(sessionDir, res.value);
+  });
+  return sid;
 }
 
 /** Submit all bids and auto-resolve via discuss_wait (returns immediately when all bids in). */
@@ -40,6 +49,13 @@ describe('discuss_create', () => {
     const data = JSON.parse(result.content[0].text);
     expect(data.session_id).toMatch(/^\d{8}-\d{6}-[a-z0-9]{4}$/);
     expect(data.team_name).toContain('coral-dc-');
+  });
+
+  it('should return status=setup and bid_threshold=50', async () => {
+    const result = await handleToolCall('discuss_create', { topic: 'AI Ethics', agents: AGENTS }, store);
+    const data = JSON.parse(result.content[0].text);
+    expect(data.status).toBe('setup');
+    expect(data.bid_threshold).toBe(50);
   });
 
   it('should return Zod error for invalid input', async () => {
@@ -65,6 +81,29 @@ describe('discuss_bid', () => {
   it('should return error for invalid session ID format', async () => {
     const result = await handleToolCall('discuss_bid', { session: 'bad', agent_name: 'alice', score: 50 }, store);
     expect(result.isError).toBe(true);
+  });
+
+  it('should reject bid after speech when transcript not read', async () => {
+    const sid = await createSession();
+    await bidAndResolve(sid, 80, 20); // alice wins
+    await handleToolCall('discuss_speak', { session: sid, agent_name: 'alice', content: 'My argument.' }, store);
+    // Round 2: alice bids without reading transcript first
+    const result = await handleToolCall('discuss_bid', { session: sid, agent_name: 'alice', score: 80 }, store);
+    const data = JSON.parse(result.content[0].text);
+    expect(data).toHaveProperty('error', 'read_transcript_first');
+  });
+
+  it('should accept bid after speech when transcript was read', async () => {
+    const sid = await createSession();
+    await bidAndResolve(sid, 80, 20); // alice wins
+    await handleToolCall('discuss_speak', { session: sid, agent_name: 'alice', content: 'My argument.' }, store);
+    // Alice reads transcript first
+    await handleToolCall('discuss_transcript', { session: sid, agent_name: 'alice', mode: 'recent' }, store);
+    // Now bid succeeds
+    const result = await handleToolCall('discuss_bid', { session: sid, agent_name: 'alice', score: 80 }, store);
+    expect(result.isError).toBe(false);
+    const data = JSON.parse(result.content[0].text);
+    expect(data).toHaveProperty('all_bids_in');
   });
 });
 
@@ -154,6 +193,14 @@ describe('discuss_transcript', () => {
     const data = JSON.parse(result.content[0].text);
     expect(data).toHaveProperty('error', 'full_transcript_speaker_only');
   });
+
+  it('should track transcript_read_step when agent_name provided', async () => {
+    const sid = await createSession();
+    await handleToolCall('discuss_transcript', { session: sid, agent_name: 'alice', mode: 'recent' }, store);
+    const sessionDir = store.resolveDir(sid)!;
+    const state = store.load(sessionDir);
+    expect(state.transcript_read_step['alice']).toBe(state.step);
+  });
 });
 
 describe('discuss_state', () => {
@@ -164,6 +211,13 @@ describe('discuss_state', () => {
     expect(data).not.toHaveProperty('current_bids');
     expect(data).toHaveProperty('status', 'bidding');
     expect(data).toHaveProperty('pending_bidders');
+  });
+
+  it('should include bid_threshold in state', async () => {
+    const sid = await createSession();
+    const result = await handleToolCall('discuss_state', { session: sid }, store);
+    const data = JSON.parse(result.content[0].text);
+    expect(data).toHaveProperty('bid_threshold', 50);
   });
 
   it('should include display_name in agent info', async () => {

@@ -28,7 +28,7 @@ model: opus
     |----|-------|
     | Use discuss_wait for ALL blocking waits | Poll discuss_state manually in a loop |
     | Broadcast step announcements before each bid round | Speak on the discussion substance |
-    | Shut down teammates and delete team at the end | Leave orphaned teammates after synthesis |
+    | Call TeamDelete after discuss_end (agents self-terminate on session_ended) | Leave orphaned teams after synthesis |
     | Force-end on timeout with a reason string | Wait indefinitely when discuss_wait times out |
     | Assign devil's advocate when debate balance is off | Allow 5v1 debate imbalances |
 
@@ -73,7 +73,7 @@ model: opus
 
     Repeat until termination:
 
-    1. Broadcast: "Step N. Call `discuss_bid`."
+    1. Call `discuss_state({ session })` to get `bid_threshold`. Broadcast: "Step N. Bid threshold: {bid_threshold}/100. Call `discuss_bid` with score 0–100 (must be ≥ {bid_threshold} to compete for the floor)."
     2. **`discuss_wait({ session, condition: 'all_bids', timeout_seconds: 60 })`** — auto-resolves when all bids submitted. Branch on result:
        - 2a. `{ fulfilled: true, winner, resolve_type, step }` → proceed to step 3
        - 2b. `{ fulfilled: true, vote_required: true }` → go to **Termination Vote**
@@ -117,7 +117,7 @@ model: opus
     2. `discuss_transcript({ session, mode: "full" })` (allowed because status=ended)
     3. Generate structured summary: key arguments, turning points, conclusions, unresolved questions
     4. Present to user
-    5. Shutdown teammates (SendMessage shutdown_request to each), TeamDelete `coral-dc-{session_id}`
+    5. Agents self-terminate when they detect `session_ended`. Proceed directly to TeamDelete(`coral-dc-{session_id}`). If TeamDelete fails (agents still exiting), retry once.
   </Protocol>
 
   <Tool_Usage>
@@ -168,7 +168,7 @@ model: opus
     - Did I broadcast step announcements before each bid round?
     - Did I broadcast "Read transcript" after each speech?
     - Did I handle all 5 discuss_wait outcomes (winner, vote_required, no_winner, end_vote, timeout)?
-    - Did I shut down teammates and call TeamDelete after synthesis?
+    - Did I call TeamDelete after synthesis (no shutdown_request needed — agents self-terminate)?
     - Did I present structured synthesis to the user?
   </Final_Checklist>
 </Agent_Prompt>

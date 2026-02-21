@@ -36,10 +36,10 @@ Agents express desire to speak with a score from 0 to 100:
 | Score Range | Meaning |
 |-------------|---------|
 | 0 | Nothing to say (signals desire to end) |
-| 1–29 | Interested but not confident (skipped for floor eligibility) |
-| 30–100 | Eligible to speak (higher = stronger desire) |
+| 1–(threshold−1) | Interested but below cutline (cold-start or fallback only) |
+| threshold–100 | Eligible to speak normally (higher = stronger desire) |
 
-The threshold of 30 separates "I want to speak" from "I have something but I'm not ready."
+The default threshold is **50**. Configurable via the `CORAL_DISCUSS_BID_THRESHOLD` environment variable (range: 1–100). The threshold is visible in every `discuss_create` and `discuss_state` response so all participants know the cutline.
 
 ## Discussion Flow
 
@@ -90,7 +90,7 @@ The discussion ends through one of these paths:
 
 | Trigger | What Happens |
 |---------|--------------|
-| All agents bid below 30 (non-cold-start) | Natural end — everyone has said their piece |
+| All agents bid below bid_threshold (non-cold-start) | Natural end — everyone has said their piece |
 | Unanimous termination vote | All agents agree to stop |
 | Timeout | Agent doesn't bid or speak in time → force-end |
 
@@ -100,13 +100,13 @@ When all bids are in, the MCP server resolves the winner through a 4-step cascad
 
 ### Step 1: Primary Pool
 
-Agents with **quota remaining** AND **score >= 30** compete. Highest score wins.
+Agents with **quota remaining** AND **score ≥ bid_threshold** compete. Highest score wins.
 
 **Tiebreaker**: Fewer total speaks wins (fairness) → alphabetical (deterministic).
 
 ### Step 2: Fallback Pool
 
-If no primary candidates: agents with **quota exhausted** AND **score >= 30** AND **haven't used fallback** compete. This is a one-time emergency opportunity per epoch.
+If no primary candidates: agents with **quota exhausted** AND **score ≥ bid_threshold** AND **haven't used fallback** compete. This is a one-time emergency opportunity per epoch.
 
 ### Step 3: Cold Start Auto-Pick
 
@@ -114,7 +114,7 @@ If both pools are empty AND it's a cold start (first round of an epoch): the ser
 
 ### Step 4: Vote Required
 
-If both pools are empty but some agents scored >= 30 (structurally blocked — all eligible agents are quota-exhausted and already used fallback): trigger a termination vote.
+If both pools are empty but some agents scored >= bid_threshold (structurally blocked — all eligible agents are quota-exhausted and already used fallback): trigger a termination vote.
 
 ## Termination Vote
 
@@ -203,10 +203,12 @@ The moderator never speaks on substance — only process control:
 All discussion rules are internalized in the MCP server's state machine (`state-machine.ts`). The state machine is **pure** — zero I/O, fully testable. State transitions:
 
 ```
-bidding → speaking → bidding → ... → voting → bidding (new epoch) or ended
-              ↓                          ↓
-           (force-end)              (unanimous vote → ended)
+setup → bidding → speaking → bidding → ... → voting → bidding (new epoch) or ended
+                      ↓                          ↓
+                   (force-end)              (unanimous vote → ended)
 ```
+
+The `setup` status is a race-condition gate: `discuss_create` returns immediately with `status: 'setup'`. The `discuss_wait("all_bids")` caller (moderator) transitions to `bidding` under the cross-process lock before accepting bids — ensuring all agents are spawned before bidding begins.
 
 ### Cross-Process Safety
 
@@ -254,10 +256,10 @@ The transcript is maintained in both structured (JSON in `state.json`) and human
 ## Epoch 1
 
 #### Bids — Step 1
-| Agent | Score |
-|-------|-------|
-| Kim Jimin (conservative-critic) | 85 |
-| Park Soojin (progressive-economist) | 72 |
+| Agent | Score | Quota |
+|-------|-------|-------|
+| Kim Jimin (conservative-critic) | 85 | 3 |
+| Park Soojin (progressive-economist) | 72 | 3 |
 > **Winner: Kim Jimin** (normal)
 
 ---
@@ -285,11 +287,29 @@ The economic argument for microservices centers on team independence...
 
 The `full` mode restriction ensures agents don't front-run the discussion by reading ahead.
 
+## Configuration
+
+| Environment Variable | Default | Range | Description |
+|---------------------|---------|-------|-------------|
+| `CORAL_DISCUSS_BID_THRESHOLD` | 50 | 1–100 | Minimum bid score for floor eligibility |
+
+Set in `.claude/settings.json` under the `env` field:
+```json
+{
+  "env": {
+    "CORAL_DISCUSS_BID_THRESHOLD": "70"
+  }
+}
+```
+
+The threshold is stored per-session at creation time (not re-read from env mid-session) and surfaced in `discuss_create` and `discuss_state` responses so all participants know the cutline.
+
 ## Quick Reference
 
 | Concept | Value | Notes |
 |---------|-------|-------|
-| Min bid threshold | 30 | Score >= 30 required for floor eligibility |
+| Default bid threshold | 50 | Configurable via `CORAL_DISCUSS_BID_THRESHOLD` (1–100) |
+| Session status on create | `setup` | Transitions to `bidding` when moderator calls `discuss_wait("all_bids")` |
 | Default quota | 3 per epoch | Configurable via `quota_per_epoch` |
 | Max agents | 8 | Min: 2 |
 | Recent turns | 5 | Configurable via `recent_turns` |

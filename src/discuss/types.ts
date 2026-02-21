@@ -33,7 +33,7 @@ export interface DiscussState {
   session_id: string;
   session_dir: string;
   topic: string;
-  status: 'bidding' | 'speaking' | 'voting' | 'ended';
+  status: 'setup' | 'bidding' | 'speaking' | 'voting' | 'ended';
   step: number;
   epoch: number;
   quota_per_epoch: number;
@@ -52,6 +52,8 @@ export interface DiscussState {
   last_speech_step: number;        // monotonic marker: set to step when speech recorded
   transcript: TranscriptEntry[];   // structured transcript in state
   transcript_rendered: number;     // tracks .md append position
+  bid_threshold: number;           // minimum bid score to win the floor (default 50)
+  transcript_read_step: Record<string, number>; // last step when agent called discuss_transcript (bid enforcement)
 }
 
 // ─── Result<T> for pure functions ─────────────────────────────────────────────

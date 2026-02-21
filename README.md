@@ -63,17 +63,39 @@ Plans are saved to `.claude/coral/plans/`. Ralph skills are best for implementin
 
 ### Discuss
 
-Start a moderated multi-agent discussion with diverse personas:
+Coral's moderated multi-agent discussion system. Multiple AI agents with distinct personas debate a topic through structured turn-taking — all coordinated by a dedicated MCP server that enforces fair participation, prevents deadlocks, and ensures clean termination.
 
 ```
 /coral:discuss AI ethics in healthcare
+/coral:discuss pros and cons of microservices vs monolith
+/coral:discuss should AI-generated art be copyrightable
 ```
 
-- Automatically generates 3–8 unique personas with diverse expertise and perspectives
-- Structured turn-taking via bidding system — no agent monopolizes
-- Pro/con debate mode auto-detected for adversarial topics
-- Multi-epoch support with quota refresh when agents vote to continue
-- Full transcript saved to `.claude/coral/discuss/`
+**How it works:**
+
+1. **Persona generation** — Coral analyzes the topic and spawns 3-8 unique personas in parallel (e.g., bioethicist, patient advocate, AI researcher, hospital administrator). Each has distinct expertise, communication style, and perspective biases.
+
+2. **Bidding for the floor** — Each round, agents bid 0-100 on how strongly they want to speak. The highest bidder above the threshold wins. This prevents any single agent from monopolizing and surfaces the most urgent arguments first.
+
+3. **Evidence-backed speeches** — Winners research via web search before speaking. The server enforces that all agents read the latest transcript before bidding — no uninformed participation allowed.
+
+4. **Multi-epoch continuation** — When all speaking quotas are exhausted, agents vote: agree to end (0) or continue (1). A single dissenting vote triggers a new epoch with fresh quotas for everyone. Discussions go as deep as the agents need.
+
+5. **Structured synthesis** — When the discussion concludes, the moderator generates a structured summary: key arguments, turning points, points of consensus, and unresolved questions.
+
+**Debate mode** — Topics with adversarial framing (pro/con, vs, should/should not) automatically activate debate mode. Agents declare stances, and if the sides are imbalanced (e.g., 5 pro vs 1 con), Coral assigns a devil's advocate from the majority to argue the opposing position.
+
+**Architecture:**
+
+```
+discuss-lead (moderator)
+  ├── persona-generator ×N (parallel)
+  ├── discuss MCP server (state, enforcement, transcript)
+  └── dc-{agent} ×N (discussant teammates)
+        └── discuss_wait → bid/speak/vote loop
+```
+
+The MCP server owns all state transitions. Agents cannot speak out of turn, bid without reading context, or bypass the voting protocol. Transcripts are saved to `.claude/coral/discuss/` as both structured JSON and readable Markdown.
 
 ## Knowledge Base
 
