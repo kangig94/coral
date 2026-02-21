@@ -145,7 +145,7 @@ model: opus
 
 **Role**: Orchestrates multi-agent discussions through structured turn-taking. Manages session setup, team creation, bidding coordination, turn resolution, epoch transitions (auto-triggered by server), and synthesis delivery. Never speaks on substance — only process control.
 
-**Protocol**: Setup (persona generation → `discuss({ op: "create", ... })` → team + teammates) → Discussion Loop (broadcast → discuss({ op: "wait", condition: "all_bids", ... }) → 4-way branch → discuss({ op: "wait", condition: "speech_delivered", ... }) → repeat) → Synthesis (`discuss({ op: "end", ... })` → full transcript → present to user → cleanup).
+**Protocol**: Setup (persona generation → `discuss({ "op": "create", ... })` → team + teammates) → Discussion Loop (broadcast → discuss({ "op": "wait", condition: "all_bids", ... }) → 4-way branch → discuss({ "op": "wait", condition: "speech_delivered", ... }) → repeat) → Synthesis (`discuss({ "op": "end", ... })` → full transcript → present to user → cleanup).
 
 > Note: discuss-lead does NOT have `disallowedTools` — it needs Task (spawn agents), SendMessage (broadcast), TeamCreate/TeamDelete, and all discuss MCP tools.
 
@@ -200,7 +200,7 @@ Proxy agents that delegate work to Codex CLI. Tool restrictions limit them to co
 name: codex-proxy
 description: "Codex delegation proxy for analyst/architect/critic/ralph roles. Use when Codex-specific perspective is needed for analysis, review, critique, or execution."
 model: sonnet
-tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
+tools: mcp__plugin_coral_cx__codex
 ---
 ```
 
@@ -251,7 +251,7 @@ If a standalone Codex agent is truly needed (rare), create `agents/codex-<name>.
 ---
 name: codex-<name>
 description: <description>
-tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
+tools: mcp__plugin_coral_cx__codex
 ---
 ```
 

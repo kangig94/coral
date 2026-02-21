@@ -187,6 +187,6 @@ export function formatSummary(
 ): string {
   return entries
     .filter((e): e is Extract<TranscriptEntry, { type: 'speech' }> => e.type === 'speech')
-    .map((e) => `- ${e.display_name ?? e.agent}: ${generateOneLiner(e.content)}`)
+    .map((e) => `- ${e.display_name}: ${generateOneLiner(e.content)}`)
     .join('\n');
 }

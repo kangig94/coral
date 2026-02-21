@@ -19,7 +19,7 @@ Announce at start: "Using codex-ralph to execute this task via Codex with Claude
 
 ## Execution Loop
 
-1. **Call Codex**: Use `codex_session_create` (first round) or `codex_session_send` with saved thread_id (subsequent rounds). Follow the protocol's prompt template. Pass `working_directory` and `reasoning_effort: "high"`.
+1. **Call Codex**: Use `codex({ op: "exec", ... })` (first round) or `codex({ op: "exec", session: <thread_id>, ... })` with saved thread_id (subsequent rounds). Follow the protocol's prompt template. Pass `working_directory` and `reasoning_effort: "high"`.
 2. **Save thread_id** from the response for session continuity
 3. **Verify** the changes yourself:
    - Read changed files
@@ -48,7 +48,7 @@ After the loop exits:
 
 ## Sandbox bypass
 
-When operating in bypass permissions mode, pass `dangerously_bypass_sandbox: true` to all `codex_session_create` and `codex_session_send` calls. Otherwise, omit the field.
+When operating in bypass permissions mode, pass `dangerously_bypass_sandbox: true` to all `codex({ op: "exec", ... })` calls. Otherwise, omit the field.
 
 ## Error Policy
 

@@ -33,11 +33,11 @@
 
 Examples:
 ```
-@mcp-guardian Review schema validation in codex_session_create handler
+@mcp-guardian Review schema validation in codex dispatcher.
 @hook-safety Check timeout handling in detect-codex-agent.sh
 @skill-quality Validate frontmatter in skills/plan/SKILL.md
 @code-critic Review elegance of output-parser.ts
-@ux-critic Check argument hints for codex_session_send tool
+@ux-critic Check argument hints for codex tool (operation: send)
 ```
 
 Provide file paths and specific concerns. Consult agents early (before implementation) for guidance and late (after implementation) for validation.

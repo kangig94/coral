@@ -38,7 +38,7 @@ PR procedure (dev → main):
 - **Functions**: camelCase (`parseCodexJsonl`, `detectCodexCli`)
 - **Constants**: UPPER_SNAKE for true constants (`MAX_BUFFER`, `DEFAULT_TIMEOUT`), camelCase for derived values
 - **Zod schemas**: camelCase with `Schema` suffix (`codexSessionCreateSchema`)
-- **MCP tool names**: snake_case (`codex_session_create`)
+- **MCP tool names**: unified MCP tool name (`codex`) plus required `op` field for command selection
 - **Agent files**: kebab-case markdown (`mcp-guardian.md`)
 - **Skill directories**: kebab-case (`codex-ralph/`)
 

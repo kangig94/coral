@@ -91,7 +91,7 @@ describe('extractProgressMessage', () => {
 
 describe('createProgressFile', () => {
   it('creates a JSONL file with metadata header', () => {
-    const filePath = createProgressFile('test-session', 'codex_session_create');
+    const filePath = createProgressFile('test-session', 'codex');
     filesToClean.push(filePath);
 
     expect(existsSync(filePath)).toBe(true);
@@ -102,13 +102,13 @@ describe('createProgressFile', () => {
     const meta = JSON.parse(content);
     expect(meta.progressId).toBeTypeOf('string');
     expect(meta.session).toBe('test-session');
-    expect(meta.tool).toBe('codex_session_create');
+    expect(meta.tool).toBe('codex');
     expect(meta.startedAt).toBeTypeOf('number');
   });
 
   it('generates unique file paths for concurrent calls', () => {
-    const f1 = createProgressFile('same-name', 'codex_session_create');
-    const f2 = createProgressFile('same-name', 'codex_session_create');
+    const f1 = createProgressFile('same-name', 'codex');
+    const f2 = createProgressFile('same-name', 'codex');
     filesToClean.push(f1, f2);
 
     expect(f1).not.toBe(f2);
@@ -117,7 +117,7 @@ describe('createProgressFile', () => {
 
 describe('appendProgressEvent', () => {
   it('appends JSONL lines to progress file', () => {
-    const filePath = createProgressFile('test', 'codex_session_create');
+    const filePath = createProgressFile('test', 'codex');
     filesToClean.push(filePath);
 
     appendProgressEvent(filePath, 'turn.started', 'Processing...');
@@ -143,7 +143,7 @@ describe('appendProgressEvent', () => {
 
 describe('extractProgressId', () => {
   it('extracts UUID from progress file path', () => {
-    const filePath = createProgressFile('test', 'codex_session_create');
+    const filePath = createProgressFile('test', 'codex');
     filesToClean.push(filePath);
 
     const id = extractProgressId(filePath);
@@ -161,7 +161,7 @@ describe('extractProgressId', () => {
 
 describe('appendFinalResult', () => {
   it('writes completed event with result data', () => {
-    const filePath = createProgressFile('test', 'codex_session_create');
+    const filePath = createProgressFile('test', 'codex');
     filesToClean.push(filePath);
 
     appendFinalResult(filePath, 'completed', {
@@ -181,7 +181,7 @@ describe('appendFinalResult', () => {
   });
 
   it('writes error event', () => {
-    const filePath = createProgressFile('test', 'codex_session_create');
+    const filePath = createProgressFile('test', 'codex');
     filesToClean.push(filePath);
 
     appendFinalResult(filePath, 'error', { error: 'Codex timed out' });

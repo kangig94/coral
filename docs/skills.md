@@ -173,7 +173,7 @@ argument-hint: "[investigation target or question]"
 
 1. Load protocol: read `agents/codex-proxy.md`, use `### Role: analyst` section for prompt template
 2. Gather context (investigation target, file paths, error messages, what's been tried)
-3. Call Codex directly via `codex_session_create` (or `codex_session_send` for follow-ups) with `reasoning_effort: "xhigh"`
+3. Call Codex directly via `codex({ op: "exec", ... })` for all rounds, with `session` included for follow-ups, and `reasoning_effort: "xhigh"`.
 4. Post-process: verify file:line references for CRITICAL/HIGH findings, filter unrelated findings, restructure by severity, synthesize summary
 
 ---
@@ -199,7 +199,7 @@ argument-hint: "[task description]"
 1. Load protocol: read `agents/codex-proxy.md`, use `### Role: ralph` section for prompt template
 2. Gather context (task description, file paths, progress, working_directory)
 3. Claude-controlled loop (up to 5 rounds):
-   - Call Codex via `codex_session_create` (first round) or `codex_session_send` (subsequent rounds)
+   - Call Codex via `codex({ op: "exec", ... })` (first round) or `codex({ op: "exec", session, ... })` (subsequent rounds)
    - Save thread_id for session continuity
    - Claude verifies changes (read files, run tests, compare against criteria)
    - If not complete → loop with updated progress context
@@ -348,7 +348,7 @@ argument-hint: "[topic]"
 1. Load `agents/discuss-lead.md` protocol
 2. Analyze topic: determine team composition (3–8 roles), detect debate mode
 3. Spawn `persona-generator` agents in parallel (one per role) to create unique personas
-4. Call `discuss({ op: "create", ... })` with generated personas → get `session_id`
+4. Call `discuss({ "op": "create", ... })` with generated personas → get `session_id`
 5. Create Agent Team `coral-dc-{session_id}`, spawn `discussant` teammates
 6. Run discussion: bidding → `discuss({ op: "wait", condition: "all_bids", ... })` auto-resolve → speak → broadcast → repeat
 7. On termination: `discuss({ op: "end", ... })`, read full transcript, present structured synthesis

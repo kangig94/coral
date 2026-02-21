@@ -36,10 +36,8 @@ import {
   appendFinalResult,
 } from '../progress.js';
 import { SessionManager } from '../session-manager.js';
+import { textResult, jsonResult, resultExtras } from '../../shared/mcp-utils.js';
 import {
-  textResult,
-  jsonResult,
-  resultExtras,
   extractCompletionData,
   sessionNotFoundError,
   makeEventCallback,
@@ -49,6 +47,7 @@ import {
   handleSessionFork,
   handleSessionAbort,
   handleToolCall,
+  tools,
   activeBackgroundFiles,
 } from '../server-handlers.js';
 
@@ -131,7 +130,7 @@ describe('sessionNotFoundError', () => {
     const result = sessionNotFoundError('my-session');
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('my-session');
-    expect(result.content[0].text).toContain('codex_session_create');
+    expect(result.content[0].text).toContain('codex');
   });
 });
 
@@ -435,29 +434,34 @@ describe('handleToolCall', () => {
     vi.mocked(extractProgressId).mockReturnValue('uuid-123');
   });
 
-  it('routes codex_session_create to handleSessionCreate', async () => {
-    const result = await handleToolCall('codex_session_create', { prompt: 'hello' }, mgr);
+  it('registers exactly one codex tool', () => {
+    expect(tools).toHaveLength(1);
+    expect(tools[0].name).toBe('codex');
+  });
+
+  it('routes codex exec(no session) to handleSessionCreate', async () => {
+    const result = await handleToolCall('codex', { op: 'exec', prompt: 'hello' }, mgr);
     expect(result.isError).toBe(false);
     expect(executeOneShot).toHaveBeenCalled();
   });
 
-  it('routes codex_session_send to handleSessionSend', async () => {
+  it('routes codex exec(session) to handleSessionSend', async () => {
     mgr.register('session-1', 'thread-1', 'o4-mini', '/workspace');
-    const result = await handleToolCall('codex_session_send', { session: 'session-1', prompt: 'hi' }, mgr);
+    const result = await handleToolCall('codex', { op: 'exec', session: 'session-1', prompt: 'hi' }, mgr);
     expect(result.isError).toBe(false);
     expect(executeResume).toHaveBeenCalled();
   });
 
-  it('routes codex_session_list to handleSessionList', async () => {
-    const result = await handleToolCall('codex_session_list', {}, mgr);
+  it('routes codex list to handleSessionList', async () => {
+    const result = await handleToolCall('codex', { op: 'list' }, mgr);
     expect(result.isError).toBe(false);
     const data = JSON.parse(result.content[0].text);
     expect(data).toHaveProperty('sessions');
   });
 
-  it('routes codex_session_fork to handleSessionFork', async () => {
+  it('routes codex fork to handleSessionFork', async () => {
     mgr.register('session-1', 'thread-1', 'o4-mini', '/workspace');
-    const result = await handleToolCall('codex_session_fork', { session: 'session-1' }, mgr);
+    const result = await handleToolCall('codex', { op: 'fork', session: 'session-1' }, mgr);
     expect(result.isError).toBe(false);
     expect(executeFork).toHaveBeenCalled();
   });
@@ -468,45 +472,101 @@ describe('handleToolCall', () => {
     expect(result.content[0].text).toContain('Unknown tool: nonexistent_tool');
   });
 
-  it('Zod: create without prompt → isError: true', async () => {
-    const result = await handleToolCall('codex_session_create', {}, mgr);
+  it('Zod: exec without prompt → isError: true', async () => {
+    const result = await handleToolCall('codex', { op: 'exec' }, mgr);
     expect(result.isError).toBe(true);
   });
 
-  it('Zod: send without session → isError: true', async () => {
-    const result = await handleToolCall('codex_session_send', { prompt: 'hi' }, mgr);
+  it('Zod: exec with session but without prompt → isError: true', async () => {
+    const result = await handleToolCall('codex', { op: 'exec', session: 'session-1' }, mgr);
     expect(result.isError).toBe(true);
   });
 
   it('Zod: list with unknown props → isError: true (strict rejects)', async () => {
-    const result = await handleToolCall('codex_session_list', { unknown: true }, mgr);
+    const result = await handleToolCall('codex', { op: 'list', unknown: true }, mgr);
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('Unrecognized key');
   });
 
   it('Zod: fork without session → isError: true', async () => {
-    const result = await handleToolCall('codex_session_fork', { prompt: 'hi' }, mgr);
+    const result = await handleToolCall('codex', { op: 'fork', prompt: 'hi' }, mgr);
     expect(result.isError).toBe(true);
   });
 
-  it('routes codex_session_abort to handleSessionAbort', async () => {
+  it('routes codex abort to handleSessionAbort', async () => {
     vi.mocked(abortExecution).mockReturnValue(true);
     mgr.register('session-to-abort', 'thread-ab', 'o4-mini', '/workspace');
-    const result = await handleToolCall('codex_session_abort', { session: 'session-to-abort' }, mgr);
+    const result = await handleToolCall('codex', { op: 'abort', session: 'session-to-abort' }, mgr);
     expect(result.isError).toBe(false);
     const data = JSON.parse(result.content[0].text);
     expect(data.status).toBe('abort_requested');
   });
 
   it('Zod: abort without session → isError: true', async () => {
-    const result = await handleToolCall('codex_session_abort', {}, mgr);
+    const result = await handleToolCall('codex', { op: 'abort' }, mgr);
     expect(result.isError).toBe(true);
   });
 
-  it('send with non-existent session → early isError from dispatcher guard', async () => {
-    const result = await handleToolCall('codex_session_send', { session: 'nonexistent', prompt: 'hi' }, mgr);
+  it('unknown op returns structured error', async () => {
+    const result = await handleToolCall('codex', { op: 'invalid_op' }, mgr);
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content[0].text)).toEqual({ error: 'unknown_op', op: 'invalid_op' });
+  });
+
+  it('missing op falls through to generic Zod error, not unknown_op', async () => {
+    const result = await handleToolCall('codex', {}, mgr);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).not.toContain('unknown_op');
+  });
+
+  it('exec(session) with non-existent session → early isError from dispatcher guard', async () => {
+    const result = await handleToolCall('codex', { op: 'exec', session: 'nonexistent', prompt: 'hi' }, mgr);
     expect(result.isError).toBe(true);
     expect(executeResume).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain('Session not found: "nonexistent"');
+  });
+
+  it('exec without session uses executeOneShot', async () => {
+    vi.mocked(executeOneShot).mockResolvedValue(makeExecResult());
+    const result = await handleToolCall('codex', { op: 'exec', prompt: 'hello' }, mgr);
+    expect(result.isError).toBe(false);
+    expect(executeOneShot).toHaveBeenCalled();
+    expect(executeResume).not.toHaveBeenCalled();
+    const data = JSON.parse(result.content[0].text);
+    expect(data).toHaveProperty('session_name');
+  });
+
+  it('exec(session) uses executeResume', async () => {
+    mgr.register('session-1', 'thread-1', 'o4-mini', '/workspace');
+    vi.mocked(executeResume).mockResolvedValue(makeExecResult());
+    const result = await handleToolCall('codex', { op: 'exec', session: 'session-1', prompt: 'follow-up' }, mgr);
+    expect(result.isError).toBe(false);
+    expect(executeResume).toHaveBeenCalledWith('thread-1', 'follow-up', undefined, '/workspace', undefined, false, undefined, undefined);
+    expect(executeOneShot).not.toHaveBeenCalled();
+  });
+
+  it('exec(session, name) ignores name and uses target session', async () => {
+    mgr.register('base-session', 'thread-1', 'o4-mini', '/workspace');
+    vi.mocked(executeResume).mockResolvedValue(makeExecResult());
+    const result = await handleToolCall('codex', { op: 'exec', session: 'base-session', name: 'attempted-name', prompt: 'follow-up' }, mgr);
+    expect(result.isError).toBe(false);
+    const data = JSON.parse(result.content[0].text);
+    expect(data.session_name).toBe('base-session');
+    expect(mgr.get('attempted-name')).toBeNull();
+  });
+
+  it('unknown op "create" returns unknown_op', async () => {
+    const legacyCreate = { ['op']: 'create', prompt: 'hello' } as const;
+    const result = await handleToolCall('codex', legacyCreate as any, mgr);
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content[0].text)).toEqual({ error: 'unknown_op', ['op']: 'create' });
+  });
+
+  it('unknown op "send" returns unknown_op', async () => {
+    const legacySend = { ['op']: 'send', session: 'session-1', prompt: 'hello' } as const;
+    const result = await handleToolCall('codex', legacySend as any, mgr);
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content[0].text)).toEqual({ error: 'unknown_op', ['op']: 'send' });
   });
 });
 
@@ -518,28 +578,28 @@ describe('background/foreground branching', () => {
     vi.mocked(extractProgressId).mockReturnValue('uuid-123');
   });
 
-  it('create with background: true → returns immediately with progress_id + status: launched', async () => {
+  it('exec(no session) with background: true → returns immediately with progress_id + status: launched', async () => {
     vi.mocked(executeOneShot).mockResolvedValue(makeExecResult());
-    const result = await handleToolCall('codex_session_create', { prompt: 'hello', background: true }, mgr);
+    const result = await handleToolCall('codex', { op: 'exec', prompt: 'hello', background: true }, mgr);
     const data = JSON.parse(result.content[0].text);
     expect(data.progress_id).toBe('uuid-123');
     expect(data.status).toBe('launched');
   });
 
-  it('send with background + missing session → returns error, not launched', async () => {
-    const result = await handleToolCall('codex_session_send', { session: 'none', prompt: 'hi', background: true }, mgr);
+  it('exec(session) with background + missing session → returns error, not launched', async () => {
+    const result = await handleToolCall('codex', { op: 'exec', session: 'none', prompt: 'hi', background: true }, mgr);
     expect(result.isError).toBe(true);
     expect(result.content[0].text).not.toContain('launched');
   });
 
   it('fork with background + missing session → returns error, not launched', async () => {
-    const result = await handleToolCall('codex_session_fork', { session: 'none', background: true }, mgr);
+    const result = await handleToolCall('codex', { op: 'fork', session: 'none', background: true }, mgr);
     expect(result.isError).toBe(true);
   });
 
   it('foreground without progressToken → createProgressFile not called', async () => {
     vi.mocked(executeOneShot).mockResolvedValue(makeExecResult());
-    await handleToolCall('codex_session_create', { prompt: 'hello' }, mgr);
+    await handleToolCall('codex', { op: 'exec', prompt: 'hello' }, mgr);
     expect(createProgressFile).not.toHaveBeenCalled();
   });
 
@@ -547,7 +607,7 @@ describe('background/foreground branching', () => {
     let resolveExec!: (v: CodexExecResult) => void;
     vi.mocked(executeOneShot).mockReturnValue(new Promise(r => { resolveExec = r; }));
 
-    handleToolCall('codex_session_create', { prompt: 'hello', background: true }, mgr);
+    handleToolCall('codex', { op: 'exec', prompt: 'hello', background: true }, mgr);
 
     resolveExec(makeExecResult());
     await new Promise(r => setTimeout(r, 10));
@@ -559,7 +619,7 @@ describe('background/foreground branching', () => {
     let rejectExec!: (e: Error) => void;
     vi.mocked(executeOneShot).mockReturnValue(new Promise((_, r) => { rejectExec = r; }));
 
-    handleToolCall('codex_session_create', { prompt: 'hello', background: true }, mgr);
+    handleToolCall('codex', { op: 'exec', prompt: 'hello', background: true }, mgr);
 
     rejectExec(new Error('codex failed'));
     await new Promise(r => setTimeout(r, 10));
@@ -571,7 +631,7 @@ describe('background/foreground branching', () => {
     let resolveExec!: (v: CodexExecResult) => void;
     vi.mocked(executeOneShot).mockReturnValue(new Promise(r => { resolveExec = r; }));
 
-    handleToolCall('codex_session_create', { prompt: 'hello', background: true }, mgr);
+    handleToolCall('codex', { op: 'exec', prompt: 'hello', background: true }, mgr);
 
     expect(activeBackgroundFiles.has('/tmp/progress.jsonl')).toBe(true);
 

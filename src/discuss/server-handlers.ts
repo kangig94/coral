@@ -23,8 +23,6 @@ import { formatFull, formatRecent, formatSummary } from './transcript.js';
 import { seedPersonas } from './persona-seed.js';
 import { discussOpSchema, discussPersonaSeedSchema, type DiscussOpInput } from './schemas.js';
 
-export { textResult, jsonResult };
-
 /** Resolve session directory or return a not-found error. */
 function resolveSession(store: SessionStore, sessionId: string): string | McpResult {
   const dir = store.resolveDir(sessionId);

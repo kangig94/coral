@@ -57,11 +57,6 @@ export function abortExecution(sessionName: string): boolean {
   return true;
 }
 
-/** List all currently active session names. */
-export function listActiveExecutions(): string[] {
-  return [...activeExecutions.keys()];
-}
-
 /** Check if a session is currently executing. */
 export function isExecutionActive(sessionName: string): boolean {
   return activeExecutions.has(sessionName);

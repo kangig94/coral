@@ -33,7 +33,7 @@ Reviews plugin user experience: skill discoverability via slash commands, MCP to
 ```typescript
 // GOOD: Clear descriptions, sensible defaults, required fields obvious
 {
-  name: 'codex_session_create',
+  name: 'codex',
   inputSchema: {
     properties: {
       prompt: { type: 'string', description: 'The prompt to send to Codex (required)' },
@@ -59,7 +59,7 @@ Reviews plugin user experience: skill discoverability via slash commands, MCP to
 ```typescript
 // GOOD: Explains what went wrong + recovery action
 return textResult(
-  `Session not found: "${input.session}". Use codex_session_create to start a new session, or codex_session_list to see registered sessions.`,
+  `Session not found: "${input.session}". Use codex({ op: "exec" }) to start a new session, or codex({ op: "list" }) to see registered sessions.`,
   true,
 );
 
@@ -90,9 +90,9 @@ description: "Planning"
 
 ### Pattern 4: Progressive Disclosure
 ```
-Level 1 (simple): codex_session_create(prompt="review auth.ts")
-Level 2 (custom): codex_session_create(prompt="...", model="gpt-5.3-codex", name="auth-review")
-Level 3 (expert): codex_session_create(prompt="...", working_directory="/other/project")
+Level 1 (simple): codex({ op: "exec", prompt="review auth.ts" })
+Level 2 (custom): codex({ op: "exec", prompt="...", model="gpt-5.3-codex", name="auth-review" })
+Level 3 (expert): codex({ op: "exec", prompt="...", working_directory="/other/project" })
 ```
 **Why**: Common operations should be one-liners. Advanced options available but not required.
 

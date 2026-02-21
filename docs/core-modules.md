@@ -77,7 +77,7 @@ type CodexThreadItemDetails =
 
 ## src/codex/schemas.ts — Zod Input Validation
 
-Defines zod schemas for each of the 4 MCP tools. Runtime validation via `.parse()` at every handler entry point.
+Defines a discriminated-union Zod schema for the unified `codex` MCP tool. Runtime validation uses `.parse()` at every handler entry point.
 
 ### Shared Building Blocks
 
@@ -97,12 +97,9 @@ Duplicated patterns are extracted into reusable schemas:
 
 | Schema | Tool | Required Fields | Optional Fields |
 |---|---|---|---|
-| `codexSessionCreateSchema` | `codex_session_create` | `prompt` | `name`, `model`, `working_directory`, `reasoning_effort`, `background` |
-| `codexSessionSendSchema` | `codex_session_send` | `session`, `prompt` | `model`, `working_directory`, `reasoning_effort`, `background` |
-| `codexSessionListSchema` | `codex_session_list` | (none) | |
-| `codexSessionForkSchema` | `codex_session_fork` | `session` | `name`, `prompt`, `model`, `working_directory`, `reasoning_effort`, `background` |
+| `codexOpSchema` | `codex` | `op` (`exec`, `list`, `fork`, `abort`) | Discriminator-specific fields per op |
 
-Types are extracted from each schema using `z.infer<>` for use in handlers.
+Types are extracted from the discriminated schema with `z.infer<>` for use in handlers.
 
 ---
 
@@ -364,7 +361,7 @@ Extracts conditional fields (`exit_code`, `errors`, `warnings`) from a Codex res
 
 #### `sessionNotFoundError(ref): McpResult`
 
-Returns an `isError: true` response with recovery hint (use `codex_session_create` or `codex_session_list`).
+Returns an `isError: true` response with recovery hint (use `codex({ op: "exec" })` or `codex({ op: "list" })`).
 
 ### Progress & Background Execution
 
@@ -402,7 +399,7 @@ Executes `executeFork` with the source session's thread ID. Registers a new sess
 
 #### `handleToolCall(name, rawArgs, sessionManager, progressToken?, notify?): Promise<McpResult>`
 
-Routes MCP tool calls to handlers. Parses input with Zod schemas, applies background/foreground branching, and catches validation errors as `isError` responses. Owns session name generation for `codex_session_create`.
+Routes MCP tool calls to handlers. Parses input with Zod schemas, applies background/foreground branching, and catches validation errors as `isError` responses. Owns session name generation for `codex`.
 
 ### Exports
 
@@ -479,7 +476,7 @@ All state-modifying logic. Zero I/O imports (`node:fs`, `node:path` are banned i
 
 | Function | Description |
 |---|---|
-| `initSession(input, sessionId, sessionDir, now)` | Create initial DiscussState from `discuss({ op: "create", ... })` input |
+| `initSession(input, sessionId, sessionDir, now)` | Create initial DiscussState from `discuss({ "op": "create", ... })` input |
 | `applyBid(state, agent, score, now)` | Record a bid, remove from pending_bidders |
 | `resolveWinner(state, now)` | Resolve bidding round: winner, fallback, cold_start, epoch_transition, max_epochs_reached, no_winner |
 | `applySpeech(state, agent, content, now)` | Record speech, set monotonic `last_speech_step`, advance step |
@@ -584,7 +581,7 @@ Dispatches to per-tool handlers. Zod validation at entry. Unknown tools return `
 
 #### Key handler patterns
 
-- **`discuss({ op: "create", ... })`**: `initSession` (pure) → `store.save` (I/O)
+- **`discuss({ "op": "create", ... })`**: `initSession` (pure) → `store.save` (I/O)
 - **`discuss({ op: "bid", ... })`**: `store.withLock` → `applyBid` (pure) → if all bids in: `resolveWinner` (pure) → `store.save`
 - **`discuss({ op: "wait", ... })`**: `waitForCondition` (polling) → if `all_bids`: auto-resolve inside lock → return result
 - **`discuss({ op: "speak", ... })`**: `store.withLock` → `applySpeech` (pure) → `store.save`

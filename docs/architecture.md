@@ -3,37 +3,38 @@
 ## System Structure
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│  Claude Code                                                         │
-│                                                                      │
-│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────────┐  │
-│  │ SessionStart │  │ SubagentStart│  │   Skills /coral:*          │  │
-│  │ Hook         │  │ Hook         │  │   discuss, codex, plan,    │  │
-│  │ (CLAUDE.md   │  │ (codex-*     │  │   ralph, architect, ...    │  │
-│  │  injection)  │  │  delegation) │  └──────────┬─────────────────┘  │
-│  └──────────────┘  └──────┬───────┘             │                    │
-│                           │            ┌────────┴────────┐           │
-│                           ▼            ▼                 ▼           │
-│  ┌──────────────────────────────┐  ┌──────────────────────────────┐  │
-│  │  MCP Server "cx"            │  │  MCP Server "dc"             │  │
-│  │  (bridge/coral-codex.cjs)   │  │  (bridge/coral-discuss.cjs)  │  │
-│  │                              │  │                              │  │
-│  │  Tools: codex_session_*     │  │  Tools: discuss + 8 ops      │  │
-│  │  (create, send, list, fork) │  │  (create/bid/wait/speak/     │  │
-│  │                              │  │   transcript/state/end/      │  │
-│  │  Session: ~/.claude/coral/  │  │   epoch_summary), persona_seed│ │
-│  │           sessions/          │  │                              │  │
-│  └──────────────┬───────────────┘  │  Session: {project}/.claude/ │  │
-│                 │                   │           coral/discuss/     │  │
-│                 │                   └──────────────────────────────┘  │
-└─────────────────┼────────────────────────────────────────────────────┘
-                  ▼
-       ┌──────────────────────┐
-       │  Codex CLI (v0.101+) │
-       │  codex exec --json   │
-       │  --full-auto         │
-       │  JSONL event stream  │
-       └──────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────┐
+│  Claude Code                                                              │
+│                                                                           │
+│  ┌──────────────┐  ┌───────────────┐  ┌────────────────────────────────┐  │
+│  │ SessionStart │  │ SubagentStart │  │  Skills /coral:*               │  │
+│  │ Hook         │  │ Hook          │  │  discuss, codex, plan,         │  │
+│  │ (CLAUDE.md   │  │ (codex-*      │  │  ralph, architect, ...         │  │
+│  │  injection)  │  │  delegation)  │  └───────────────┬────────────────┘  │
+│  └──────────────┘  └───────┬───────┘                  │                   │
+│                            │                ┌─────────┴─────────┐         │
+│                            ▼                ▼                   ▼         │
+│  ┌────────────────────────────────┐  ┌─────────────────────────────────┐  │
+│  │  MCP Server "cx"               │  │  MCP Server "dc"                │  │
+│  │  (bridge/coral-codex.cjs)      │  │  (bridge/coral-discuss.cjs)     │  │
+│  │                                │  │                                 │  │
+│  │  Tools: codex                  │  │  Tools: discuss + 8 ops         │  │
+│  │  (exec, list, fork, abort)     │  │  (create/bid/wait/speak/        │  │
+│  │                                │  │   transcript/state/end/         │  │
+│  │                                │  │   epoch_summary), persona_seed  │  │
+│  │  Session: ~/.claude/coral/     │  │                                 │  │
+│  │           sessions/            │  │  Session: {project}/.claude/    │  │
+│  │                                │  │           coral/discuss/        │  │
+│  └───────────────┬────────────────┘  └─────────────────────────────────┘  │
+│                  │                                                        │
+└──────────────────┼────────────────────────────────────────────────────────┘
+                   ▼
+        ┌──────────────────────┐
+        │  Codex CLI (v0.104+) │
+        │  codex exec --json   │
+        │  --full-auto         │
+        │  JSONL event stream  │
+        └──────────────────────┘
 ```
 
 ## Data Flow
@@ -46,10 +47,10 @@ User → /coral:codex "question"
      → Review intent:
         → Spawn parallel subagents (coral:codex-proxy Role:architect + coral:codex-proxy Role:critic)
         → SubagentStart Hook fires → delegation instructions injected
-        → Agents call codex_session_create → results synthesized
+     → Agents call codex({ op: "exec", ... }) → results synthesized
      → Other intents:
         → Skill reads agent protocol (agents/codex-proxy.md)
-        → Skill calls codex_session_create/send directly (no subagent)
+     → Skill calls codex({ op: "exec" }) directly (no subagent)
         → Codex response returned to user
 ```
 
@@ -87,7 +88,7 @@ User → /coral:discuss "AI ethics in healthcare"
      → Skill reads agents/discuss-lead.md (protocol injection)
      → Moderator analyzes topic → determines 3-8 roles
      → Spawns persona-generator agents in parallel (Task tool)
-     → discuss({ op: "create", topic, agents }) → session_id, session_dir
+     → discuss({ "op": "create", topic, agents }) → session_id, session_dir
      → TeamCreate "coral-dc-{session_id}"
      → Spawns discussant teammates (dc-{agent_name})
      → Discussion Loop:
@@ -104,10 +105,10 @@ User → /coral:discuss "AI ethics in healthcare"
 ### 5. Session-based Conversation (Codex)
 
 ```
-User → codex_session_create(name="review", prompt="analyze auth.ts")
+User → codex({ op: "exec", name="review", prompt="analyze auth.ts" })
      → Codex execution → thread_id acquired (thread.started event)
      → SessionManager writes ~/.claude/coral/sessions/<project-hash>/review.json (atomic write)
-     → codex_session_send(session="review", prompt="follow-up question")
+     → codex({ op: "exec", session="review", prompt="follow-up question" })
      → SessionManager looks up codexThreadId by name
      → codex exec resume THREAD_ID executed
      → lastUsedAt updated

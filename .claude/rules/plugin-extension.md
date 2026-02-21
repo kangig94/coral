@@ -51,4 +51,4 @@ SubagentStart hook fires
   -> if no match: exit 0 (no-op)
 ```
 
-The delegation instruction tells the agent to call `codex_session_create` MCP tool immediately rather than generating its own response.
+The delegation instruction tells the agent to call `codex({ op: "exec", ... })` MCP tool immediately rather than generating its own response.

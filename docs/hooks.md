@@ -111,7 +111,7 @@ if echo "$AGENT_NAME" | grep -qiE '(^|:)codex-'; then
   fi
 
   cat <<'HOOK_JSON'
-{"hookSpecificOutput":{"hookEventName":"SubagentStart","additionalContext":"Codex delegation context: You are a Codex delegation agent. You MUST use the appropriate Codex MCP tool (codex_session_create or codex_session_send) to forward ALL work to Codex CLI. Do NOT generate your own response in place of calling Codex. Call the MCP tool immediately with the full task."}}
+{"hookSpecificOutput":{"hookEventName":"SubagentStart","additionalContext":"Codex delegation context: You are a Codex delegation agent. You MUST use the appropriate Codex MCP tool (`codex({ op: \"create\", ... })` or `codex({ op: \"send\", ... })`) to forward ALL work to Codex CLI. Do NOT generate your own response in place of calling Codex. Call the MCP tool immediately with the full task."}}
 HOOK_JSON
 else
   exit 0
@@ -139,7 +139,7 @@ fi
 
 ```
 Codex delegation context: You are a Codex delegation agent. You MUST use
-the appropriate Codex MCP tool (codex_session_create or codex_session_send)
+the appropriate Codex MCP tool (`codex({ op: \"create\", ... })` or `codex({ op: \"send\", ... })`)
 to forward ALL work to Codex CLI. Do NOT generate your own response in
 place of calling Codex. Call the MCP tool immediately with the full task.
 ```

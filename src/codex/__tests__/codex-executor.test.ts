@@ -140,7 +140,7 @@ describe('executeOneShot', () => {
     mockSpawn.mockReturnValue(createMockProcess(output, 0));
 
     const result = await executeOneShot('test');
-    expect(result.model).toBe('gpt-5.3-codex');
+    expect(result.model).toBe(process.env.CORAL_CODEX_MODEL ?? 'gpt-5.3-codex');
     expect(result.errors).toEqual([]);
     expect(result.warnings).toEqual([]);
   });

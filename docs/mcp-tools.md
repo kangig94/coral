@@ -2,7 +2,7 @@
 
 Coral exposes two MCP servers, each with its own tool set:
 
-- **`cx` (Codex)**: 4 tools for Codex CLI session management. Prefix: `mcp__plugin_coral_cx__`
+- **`cx` (Codex)**: 1 tool for Codex CLI session management. Prefix: `mcp__plugin_coral_cx__`
 - **`dc` (Discuss)**: 2 tools for moderated multi-agent discussions. Prefix: `mcp__plugin_coral_dc__`
 
 All tool inputs are validated at runtime with zod schemas (`src/codex/schemas.ts`, `src/discuss/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
@@ -11,9 +11,19 @@ All tool inputs are validated at runtime with zod schemas (`src/codex/schemas.ts
 
 # Codex Tools (`cx`)
 
-## codex_session_create
+## codex
 
-Create a Codex session. The sole entry point for all Codex execution. Internally calls `executeOneShot()` and registers the returned thread ID.
+Single entry point for all Codex execution. Use the required `op` discriminator.
+
+### Input Envelope
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `op` | string | Yes | One of: `exec`, `list`, `fork`, `abort` |
+
+### op: exec
+
+Create a new Codex session when `session` is omitted (calls `executeOneShot()`) or resume an existing session when `session` is present (calls `executeResume()`).
 
 ### Input Schema
 
@@ -60,7 +70,7 @@ Progress is written to the JSONL file with a terminal `completed` or `error` eve
 
 ---
 
-## codex_session_send
+### op: exec
 
 Send a follow-up prompt to an existing session. Uses `codex exec resume THREAD_ID` to continue the conversation.
 
@@ -68,8 +78,8 @@ Send a follow-up prompt to an existing session. Uses `codex exec resume THREAD_I
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `session` | string | Yes | Session name or Codex thread ID (min 1 char) |
-| `prompt` | string | Yes | Follow-up prompt (min 1 char) |
+| `session` | string | No | Session name or Codex thread ID (min 1 char). Omit to start a new session. |
+| `prompt` | string | Yes | Prompt to send (min 1 char). Required for both create and resume cases. |
 | `model` | string | No | Model to use |
 | `working_directory` | string | No | Working directory |
 | `reasoning_effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
@@ -80,7 +90,7 @@ Send a follow-up prompt to an existing session. Uses `codex exec resume THREAD_I
 
 1. `SessionManager.get(session)` — search by name first
 2. If name doesn't match, search by `codexThreadId`
-3. If not in registry, return error (`Session not found`). Raw thread IDs are not accepted — all sessions must be created via `codex_session_create`.
+3. If not in registry, return error (`Session not found`). Raw thread IDs are not accepted — all sessions must be created via `codex({ op: "exec", ... })`.
 
 ### Output (JSON)
 
@@ -98,13 +108,13 @@ Send a follow-up prompt to an existing session. Uses `codex exec resume THREAD_I
 
 ---
 
-## codex_session_list
+### op: list
 
 Return the list of registered sessions.
 
 ### Input Schema
 
-No parameters (empty object).
+No parameters (empty object). This envelope is strict.
 
 ### Output (JSON)
 
@@ -131,7 +141,7 @@ Only shows sessions registered in the Coral registry.
 
 ---
 
-## codex_session_fork
+### op: fork
 
 Fork an existing session to continue the conversation in a new branch.
 
@@ -165,6 +175,25 @@ Fork an existing session to continue the conversation in a new branch.
 
 `errors`/`warnings`/`exit_code` conditionally included. If `name` is not specified, the session exists only in Codex and is not registered in the Coral registry.
 
+### op: abort
+
+Abort an active execution.
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `session` | string | Yes | Session name or thread ID |
+
+### Output (JSON)
+
+```json
+{
+  "session_name": "my-review",
+  "status": "abort_requested"
+}
+```
+
 ---
 
 # Discuss Tools (`dc`)
@@ -185,7 +214,7 @@ Unified discussion session tool. Select behavior with the required `op` field.
 |---|---|---|---|
 | `op` | string | Yes | One of: `create`, `bid`, `wait`, `speak`, `transcript`, `state`, `end`, `epoch_summary` |
 
-### op: create
+### operation: create
 
 Initialize a new discussion session with agent personas.
 
@@ -459,7 +488,7 @@ The coupling is through the **agent protocol layer**, not the MCP servers themse
 |-----------|------|
 | `discuss-lead.md` | Spawns `persona-generator` agents (via Task tool) and `discussant` teammates for discussions |
 | `agents/codex-*.md` | Codex-delegated agents that can be spawned independently or within discuss workflows |
-| `hooks/detect-codex-agent.sh` | SubagentStart hook detects `codex-` prefix in agent names, injects delegation instructions to call `codex_session_create` |
+| `hooks/detect-codex-agent.sh` | SubagentStart hook detects `codex-` prefix in agent names, injects delegation instructions to call `codex({ op: "exec", ... })` |
 
 The discuss system itself does **not** spawn codex-prefixed agents. The coupling only exists when a user or external workflow spawns a codex-delegated agent that happens to run within a discuss context.
 

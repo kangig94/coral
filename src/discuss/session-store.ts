@@ -113,11 +113,6 @@ export class SessionStore {
     return match ? path.join(this.discussDir, match) : null;
   }
 
-  /** Full filesystem path for a session directory. */
-  fullPath(sessionDir: string): string {
-    return path.join(this.discussDir, path.basename(sessionDir));
-  }
-
   /** Path to state.json for a session. */
   statePath(fullSessionPath: string): string {
     return path.join(fullSessionPath, 'state.json');

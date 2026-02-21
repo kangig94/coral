@@ -51,14 +51,14 @@ return { content: [{ text: "result" }], isError: false };
 ### Pattern 2: Schema-First Validation
 ```typescript
 // CORRECT: Zod validation before any execution logic
-case 'codex_session_create':
+  case 'codex':
   return await handleSessionCreate(
     codexSessionCreateSchema.parse(rawArgs),  // validate FIRST
     sessionManager
   );
 
 // WRONG: Using raw args directly
-case 'codex_session_create':
+  case 'codex':
   return await handleSessionCreate(rawArgs as any, sessionManager);
 ```
 **Why**: Unvalidated input can crash handlers in ways that produce non-MCP error responses.
