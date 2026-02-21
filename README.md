@@ -140,6 +140,8 @@ The MCP server owns all state transitions. Agents cannot speak out of turn or bi
 | `/coral:coplan` | Cross-model planning (Codex reviews) | `redesign the session management system` |
 | `/coral:ralph` | Persistent execution loop (sonnet) | `implement the caching layer` |
 | `/coral:codex-ralph` | Persistent execution via Codex (sonnet) | `implement the caching layer` |
+| `/coral:code-simplifier` | Simplify and refine code for clarity | `simplify the output parser` |
+| `/coral:debug` | Bug diagnosis, planning, and fix execution | `why does session lookup return null?` |
 | `/coral:init-project` | Project initialization orchestrator | `"React + FastAPI project"` |
 | `/coral:discuss` | Moderated multi-agent discussion | `AI ethics in healthcare` |
 | `/coral:statusline` | HUD statusline setup | `install` |
