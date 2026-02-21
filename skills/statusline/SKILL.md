@@ -126,21 +126,21 @@ const STALE_AGENT_MS = 30 * 60 * 1000;
 
 function readTranscriptTail(transcriptPath) {
   if (!transcriptPath) return null;
+  let fd;
   try {
-    const fd = openSync(transcriptPath, "r");
-    try {
-      const { size } = fstatSync(fd);
-      const readSize = Math.min(size, 500 * 1024);
-      const buf = Buffer.alloc(readSize);
-      readSync(fd, buf, 0, readSize, size - readSize);
-      const lines = buf.toString("utf-8").split("\n");
-      if (size > readSize) lines.shift(); // drop potentially incomplete first line
-      return lines;
-    } finally {
-      closeSync(fd);
-    }
-  } catch {}
-  return null;
+    fd = openSync(transcriptPath, "r");
+    const { size } = fstatSync(fd);
+    const readSize = Math.min(size, 500 * 1024);
+    const buf = Buffer.alloc(readSize);
+    readSync(fd, buf, 0, readSize, size - readSize);
+    const lines = buf.toString("utf-8").split("\n");
+    if (size > readSize) lines.shift(); // drop potentially incomplete first line
+    return lines;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 function parseLastSkill(lines) {
@@ -374,6 +374,10 @@ function fetchUsage(accessToken) {
   });
 }
 
+function clampPct(val) {
+  return Math.round(Math.min(100, Math.max(0, val)));
+}
+
 function colorPct(pct) {
   let color = GREEN;
   if (pct >= 90) color = RED;
@@ -394,21 +398,21 @@ function formatResetTime(isoString, mode) {
   return `${totalHr}:${String(mm).padStart(2, "0")}`;
 }
 
+function formatWindow(label, val, resetsAt, mode, dim = false) {
+  if (val == null) return null;
+  const pct = clampPct(val);
+  const reset = formatResetTime(resetsAt, mode);
+  const resetStr = reset ? ` ${DIM}(${reset})${RESET}` : "";
+  const prefix = dim ? `${DIM}${label}:${RESET}` : `${label}:`;
+  return `${prefix}${colorPct(pct)}${resetStr}`;
+}
+
 function formatLimits(data) {
   if (!data) return null;
-  const parts = [];
-  if (data.fiveHour != null) {
-    const pct = Math.round(Math.min(100, Math.max(0, data.fiveHour)));
-    const reset = formatResetTime(data.fiveHourResetsAt, "5h");
-    const resetStr = reset ? ` ${DIM}(${reset})${RESET}` : "";
-    parts.push(`5h:${colorPct(pct)}${resetStr}`);
-  }
-  if (data.weekly != null) {
-    const pct = Math.round(Math.min(100, Math.max(0, data.weekly)));
-    const reset = formatResetTime(data.weeklyResetsAt, "wk");
-    const resetStr = reset ? ` ${DIM}(${reset})${RESET}` : "";
-    parts.push(`${DIM}wk:${RESET}${colorPct(pct)}${resetStr}`);
-  }
+  const parts = [
+    formatWindow("5h", data.fiveHour, data.fiveHourResetsAt, "5h"),
+    formatWindow("wk", data.weekly, data.weeklyResetsAt, "wk", true),
+  ].filter(Boolean);
   return parts.length > 0 ? parts.join(" ") : null;
 }
 
@@ -528,12 +532,14 @@ async function fetchCodexUsage(accessToken, accountId, signal) {
   }
 }
 
+function readRawCache(path) {
+  try { return JSON.parse(readFileSync(path, "utf-8")); } catch { return null; }
+}
+
 async function renderCodexData() {
   if (!existsSync(CODEX_FLAG_FILE)) return null;
 
-  // Read raw cache for both data freshness check and cached token
-  let rawCache = null;
-  try { rawCache = JSON.parse(readFileSync(CODEX_CACHE_FILE, "utf-8")); } catch {}
+  const rawCache = readRawCache(CODEX_CACHE_FILE);
 
   // Return cached data if fresh
   if (rawCache?.ts) {
@@ -544,38 +550,32 @@ async function renderCodexData() {
     }
   }
 
-  // Single 5s AbortController spans all network calls (fetch + refresh + retry)
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
 
   try {
-    // Always read auth.json for accountId (never cached)
     const creds = readCodexCredentials();
     if (!creds) return null;
 
     // Prefer cached token if not expired (independent of data TTL)
-    let token = creds.accessToken;
-    if (rawCache?.cachedToken?.expiresAt && Date.now() < rawCache.cachedToken.expiresAt) {
-      token = rawCache.cachedToken.accessToken;
-    }
+    let token = rawCache?.cachedToken?.expiresAt > Date.now()
+      ? rawCache.cachedToken.accessToken
+      : creds.accessToken;
 
-    // Fetch usage
     let result = await fetchCodexUsage(token, creds.accountId, controller.signal);
 
-    // 401: refresh once and retry with same deadline
+    // 401: refresh once and retry within same deadline
     if (result?.unauthorized) {
       const newToken = await refreshCodexToken(creds.refreshToken, controller.signal);
-      if (newToken) {
-        token = newToken;
-        result = await fetchCodexUsage(token, creds.accountId, controller.signal);
-      } else {
-        result = null;
-      }
+      if (!newToken) { writeCacheFile(CODEX_CACHE_FILE, null, true); return null; }
+      token = newToken;
+      result = await fetchCodexUsage(token, creds.accountId, controller.signal);
     }
 
-    // Cache and return
     if (result && !result.unauthorized) {
-      writeCacheFile(CODEX_CACHE_FILE, result, false, { cachedToken: { accessToken: token, expiresAt: Date.now() + 600_000 } });
+      writeCacheFile(CODEX_CACHE_FILE, result, false, {
+        cachedToken: { accessToken: token, expiresAt: Date.now() + 600_000 },
+      });
       return result;
     }
 
@@ -600,6 +600,12 @@ function padVisual(str, len) {
   return pad > 0 ? str + " ".repeat(pad) : str;
 }
 
+function alignColumns(a, b) {
+  if (!a || !b) return [a, b];
+  const w = Math.max(visualLen(a), visualLen(b));
+  return [padVisual(a, w), padVisual(b, w)];
+}
+
 async function main() {
   const input = await readStdin();
   if (!input) {
@@ -607,30 +613,23 @@ async function main() {
     return;
   }
 
-  const [limits, codexData] = await Promise.allSettled([
-    renderLimits(),
-    renderCodexData(),
-  ]).then(results => results.map(r => r.status === "fulfilled" ? r.value : null));
+  const safe = (p) => p.catch(() => null);
+  const [limits, codexData] = await Promise.all([
+    safe(renderLimits()),
+    safe(renderCodexData()),
+  ]);
 
-  // Column alignment: model name + limits (up to second │)
+  // Column alignment: model name + limits (up to second |)
   const claudeModel = renderModel(input);
-  const codexModel = codexData?.modelName || null;
-  let col1Claude = claudeModel;
-  let col1Codex = codexModel;
-  if (claudeModel && codexModel) {
-    const w = Math.max(claudeModel.length, codexModel.length);
-    col1Claude = claudeModel.padEnd(w);
-    col1Codex = codexModel.padEnd(w);
-  }
+  const envModel = process.env.CORAL_CODEX_MODEL || "gpt-5.3-codex";
+  const addonTier = codexData?.additionalLabel?.toLowerCase() || null;
+  const hasAddon = addonTier ? envModel.toLowerCase().endsWith(`-${addonTier}`) : false;
+  const baseModel = hasAddon ? envModel.slice(0, envModel.lastIndexOf("-")) : envModel;
+  const codexModel = codexData ? baseModel : null;
 
+  let [col1Claude, col1Codex] = alignColumns(claudeModel, codexModel);
   const codexLimits = codexData ? formatLimits(codexData.codex) : null;
-  let col2Claude = limits;
-  let col2Codex = codexLimits;
-  if (limits && codexLimits) {
-    const w = Math.max(visualLen(limits), visualLen(codexLimits));
-    col2Claude = padVisual(limits, w);
-    col2Codex = padVisual(codexLimits, w);
-  }
+  const [col2Claude, col2Codex] = alignColumns(limits, codexLimits);
 
   // Line 1: Claude
   const line1 = [
@@ -645,7 +644,9 @@ async function main() {
 
   // Line 2: Codex (only if data available)
   if (codexData) {
-    const sparkStr = codexData.spark ? `${codexData.additionalLabel} ${formatLimits(codexData.spark)}` : null;
+    const sparkLabel = hasAddon ? `${GREEN}${codexData.additionalLabel}${RESET}` : codexData.additionalLabel;
+    const sparkStr = codexData.spark ? `${sparkLabel} ${formatLimits(codexData.spark)}` : null;
+    if (col1Codex) col1Codex = hasAddon ? col1Codex : `${GREEN}${col1Codex}${RESET}`;
     const line2 = [
       col1Codex,
       col2Codex,
