@@ -48,6 +48,7 @@ export interface DiscussState {
   team_name: string;
   created_at: string;
   updated_at: string;
+  last_activity_at: string;        // updated on all state mutations, used for TTL cleanup
   // v2 additions:
   last_speech_step: number;        // monotonic marker: set to step when speech recorded
   transcript: TranscriptEntry[];   // structured transcript in state

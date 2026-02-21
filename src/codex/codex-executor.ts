@@ -53,6 +53,11 @@ export function listActiveExecutions(): string[] {
   return [...activeExecutions.keys()];
 }
 
+/** Check if a session is currently executing. */
+export function isExecutionActive(sessionName: string): boolean {
+  return activeExecutions.has(sessionName);
+}
+
 function getModel(model?: string): string {
   return model?.trim() || DEFAULT_MODEL;
 }

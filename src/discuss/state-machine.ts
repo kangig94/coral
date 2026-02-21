@@ -16,23 +16,22 @@ export function randomSuffix(): string {
   return Math.random().toString(36).slice(2, 6).padEnd(4, '0');
 }
 
-/** Format a Date as YYYYMMDD-HHmmss. */
+/** Format a Date as yymmdd-HHmm (compact timestamp for session IDs). */
 export function formatDateId(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
-  return (
-    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
-    `-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
-  );
+  const yy = String(d.getFullYear()).slice(2);
+  return `${yy}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
 }
 
-/** Generate topic slug: lowercase, CJK preserved, hyphens for spaces, ~40 chars. */
+/** Generate topic slug: Unicode letters/digits preserved, hyphens for spaces, ~40 chars. */
 export function topicSlug(topic: string): string {
   const slug = topic
     .toLowerCase()
     .replace(/\s+/g, '-')
-    .replace(/[^\u0020-\u007E\uAC00-\uD7A3\u4E00-\u9FFF\u3040-\u30FFa-z0-9-]/g, '')
+    .replace(/[^\p{L}\p{N}-]/gu, '')
     .replace(/-{2,}/g, '-')
     .replace(/^-|-$/g, '');
+  if (!slug) return 'untitled';
   if (slug.length <= 40) return slug;
   const cut = slug.lastIndexOf('-', 40);
   return cut > 0 ? slug.slice(0, cut) : slug.slice(0, 40);
@@ -81,9 +80,9 @@ function makeBidEntry(
   return { type: 'bids', step: state.step, epoch: state.epoch, ts: now, bids: allBids, winner, resolve_type: resolveType };
 }
 
-/** Append a transcript entry to state. */
+/** Append a transcript entry to state. Sets both updated_at and last_activity_at. */
 function appendEntry(state: DiscussState, entry: TranscriptEntry, now: string): DiscussState {
-  return { ...state, updated_at: now, transcript: [...state.transcript, entry] };
+  return { ...state, updated_at: now, last_activity_at: now, transcript: [...state.transcript, entry] };
 }
 
 /** Reset current_bids to null and rebuild pending_bidders from agent keys (immutable). */
@@ -144,6 +143,7 @@ export function initSession(input: DiscussCreateInput, now: string, bidThreshold
     team_name: '',
     created_at: now,
     updated_at: now,
+    last_activity_at: now,
     last_speech_step: 0,
     transcript: [],
     transcript_rendered: 0,
@@ -157,7 +157,7 @@ export function startBidding(state: DiscussState, now: string): Result<DiscussSt
   if (state.status !== 'setup') {
     return { ok: false, error: 'not_in_setup', detail: { current: state.status } };
   }
-  return { ok: true, value: { ...state, status: 'bidding', updated_at: now } };
+  return { ok: true, value: { ...state, status: 'bidding', updated_at: now, last_activity_at: now } };
 }
 
 /** Submit a bid. Returns updated state or error. */
@@ -201,6 +201,7 @@ export function applyBid(
       current_bids: { ...state.current_bids, [agentName]: score },
       pending_bidders,
       updated_at: now,
+      last_activity_at: now,
     },
   };
 }
@@ -431,6 +432,7 @@ export function applyEnd(
       current_speaker: null,
       speaker_type: null,
       updated_at: now,
+      last_activity_at: now,
       transcript: [...state.transcript, ...entries],
     },
   };

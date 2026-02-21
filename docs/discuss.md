@@ -218,7 +218,7 @@ Each discussant agent runs its own MCP server process. All state mutations are s
 
 ```
 {project}/.claude/coral/discuss/
-└── 20260221-143022-a1b2_microservices-vs-monolithic/
+└── 260221-1430-a1b2-microservices-vs-monolithic/
     ├── state.json          # Atomic writes (write .tmp, rename)
     ├── state.lock/         # Cross-process lock directory
     └── transcript.md       # Human-readable log (incremental append)

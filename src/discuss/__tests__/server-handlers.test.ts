@@ -47,7 +47,7 @@ describe('discuss_create', () => {
     const result = await handleToolCall('discuss_create', { topic: 'AI Ethics', agents: AGENTS }, store);
     expect(result.isError).toBe(false);
     const data = JSON.parse(result.content[0].text);
-    expect(data.session_id).toMatch(/^\d{8}-\d{6}-[a-z0-9]{4}$/);
+    expect(data.session_id).toMatch(/^\d{6}-\d{4}-[a-z0-9]{4}$/);
     expect(data.team_name).toContain('coral-dc-');
   });
 

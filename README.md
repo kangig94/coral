@@ -43,24 +43,6 @@ Generates `.claude/CLAUDE.md`, rules, agents, docs, and settings based on the de
 /coral:init-project "description of the project"
 ```
 
-### Skills
-
-| Skill | Description | Example |
-|---|---|---|
-| `/coral:architect` | Architecture review (Claude) | `review the architecture of this module` |
-| `/coral:critic` | Plan/code critique (Claude) | `review this plan` |
-| `/coral:analyze` | Deep analysis (Claude) | `investigate the root cause of this error` |
-| `/coral:codex-analyze` | Deep analysis (Codex + Claude synthesis) | `investigate why the session lookup is slow` |
-| `/coral:plan` | Planning with architect/critic review | `add retry logic to the API client` |
-| `/coral:coplan` | Cross-model planning (Codex reviews) | `redesign the session management system` |
-| `/coral:ralph` | Persistent execution loop (sonnet) | `implement the caching layer` |
-| `/coral:codex-ralph` | Persistent execution via Codex (sonnet) | `implement the caching layer` |
-| `/coral:init-project` | Project initialization orchestrator | `"React + FastAPI project"` |
-| `/coral:discuss` | Moderated multi-agent discussion | `AI ethics in healthcare` |
-| `/coral:statusline` | HUD statusline setup | `install` |
-
-Plans are saved to `.claude/coral/plans/`. Ralph skills are best for implementing an existing plan.
-
 ### Discuss
 
 Coral's moderated multi-agent discussion system. Multiple AI agents with distinct personas debate a topic through structured turn-taking — all coordinated by a dedicated MCP server that enforces fair participation, prevents deadlocks, and ensures clean termination.
@@ -97,22 +79,50 @@ discuss-lead (moderator)
 
 The MCP server owns all state transitions. Agents cannot speak out of turn, bid without reading context, or bypass the voting protocol. Transcripts are saved to `.claude/coral/discuss/` as both structured JSON and readable Markdown.
 
+### Skills
+
+| Skill | Description | Example |
+|---|---|---|
+| `/coral:architect` | Architecture review (Claude) | `review the architecture of this module` |
+| `/coral:critic` | Plan/code critique (Claude) | `review this plan` |
+| `/coral:analyze` | Deep analysis (Claude) | `investigate the root cause of this error` |
+| `/coral:codex-analyze` | Deep analysis (Codex + Claude synthesis) | `investigate why the session lookup is slow` |
+| `/coral:plan` | Planning with architect/critic review | `add retry logic to the API client` |
+| `/coral:coplan` | Cross-model planning (Codex reviews) | `redesign the session management system` |
+| `/coral:ralph` | Persistent execution loop (sonnet) | `implement the caching layer` |
+| `/coral:codex-ralph` | Persistent execution via Codex (sonnet) | `implement the caching layer` |
+| `/coral:init-project` | Project initialization orchestrator | `"React + FastAPI project"` |
+| `/coral:discuss` | Moderated multi-agent discussion | `AI ethics in healthcare` |
+| `/coral:statusline` | HUD statusline setup | `install` |
+
+Plans are saved to `.claude/coral/plans/`. Ralph skills are best for implementing an existing plan.
+
 ## Knowledge Base
 
 Coral automatically manages a project-local KB (`.claude/coral/kb/`) to prevent repeating mistakes across sessions. Non-obvious discoveries are buffered as memos during work, checked on errors before debugging from scratch, and promoted to permanent entries on task completion. Git-tracked for multi-device sync.
 
 ## Configuration
 
-```bash
-export CORAL_CODEX_MODEL=gpt-5.3-codex  # Default model
+| Variable | Default | Description |
+|---|---|---|
+| `CORAL_CODEX_MODEL` | `gpt-5.3-codex` | Default Codex CLI model |
+| `CORAL_DISCUSS_BID_THRESHOLD` | `50` | Minimum bid score (1-100) for floor eligibility in discussions |
+| `CORAL_DISCUSS_TTL_DAYS` | `30` | Days before completed discuss sessions are auto-pruned |
+| `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(unset)_ | **Required** for `/coral:discuss`. Set to `1` to enable Agent Teams. |
 
-# Or set in .claude/settings.json:
+Set in `.claude/settings.json` (persists across sessions):
+
+```json
 {
   "env": {
-    "CORAL_CODEX_MODEL": "gpt-5.3-codex"
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "CORAL_DISCUSS_BID_THRESHOLD": "50",
+    "CORAL_DISCUSS_TTL_DAYS": "30"
   }
 }
 ```
+
+Or via shell: `export CORAL_CODEX_MODEL=gpt-5.3-codex`
 
 ## Development
 

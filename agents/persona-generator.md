@@ -28,6 +28,7 @@ model: opus
     - **topic**: The discussion topic (for contextual expertise calibration)
     - **team_roles**: All roles in the team (for differentiation)
     - **diversity_hint** (optional): Differentiating characteristic (e.g., "junior engineer", "startup background")
+    - **name_culture** (optional): Cultural origin for the persona's name (e.g., "Korean", "Nigerian", "Brazilian"). When provided, the name MUST reflect this cultural background.
     - **debate_stance** (optional): "pro" or "con" — align perspective and concerns with this stance
   </Input>
 
@@ -35,7 +36,7 @@ model: opus
     1. **Read the template**: Read `skills/discuss/template/persona-template.md`. Do NOT improvise the structure — the template defines required sections and invariants.
     2. **Parse input**: Extract role, topic, team_roles, diversity_hint, debate_stance from spawn prompt.
     3. **Design differentiation**: Review team_roles. Ensure this persona's background, methodology, and values differ from all others. When two roles share a profession, differentiate by: experience level, industry, methodology preference, or value priorities.
-    4. **Generate persona**: Follow template structure exactly. Give a realistic name fitting the role and cultural background. Keep each section 2–4 sentences.
+    4. **Generate persona**: Follow template structure exactly. If name_culture is provided, give a name from that cultural background; otherwise choose a name fitting the role's context. Keep each section 2–4 sentences.
     5. **Apply debate_stance if provided**: Let the persona's perspective and concerns naturally align with the stance. Do NOT force explicit pro/con labeling — let it emerge from their background and priorities.
     6. **Output ONLY the persona** — no preamble ("Here's the persona..."), no explanation, no XML tags in output.
   </Protocol>

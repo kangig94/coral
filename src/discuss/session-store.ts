@@ -91,6 +91,7 @@ export function normalizeState(raw: Record<string, unknown>): DiscussState {
   // showed 30 was too permissive (discussions resolved before all agents were ready).
   if (raw['bid_threshold'] === undefined) raw['bid_threshold'] = 50;
   if (raw['transcript_read_step'] === undefined) raw['transcript_read_step'] = {};
+  if (raw['last_activity_at'] === undefined) raw['last_activity_at'] = raw['updated_at'] ?? raw['created_at'] ?? '';
   // display_name migration: parse from persona if missing or empty
   const agents = raw['agents'] as Record<string, AgentState>;
   for (const [name, a] of Object.entries(agents)) {
@@ -121,7 +122,7 @@ export class SessionStore {
   createSessionDir(topic: string): { sessionId: string; sessionDir: string; fullPath: string } {
     for (let attempt = 0; attempt < 3; attempt++) {
       const sessionId = `${formatDateId(new Date())}-${randomSuffix()}`;
-      const sessionDir = `${sessionId}_${topicSlug(topic)}`;
+      const sessionDir = `${sessionId}-${topicSlug(topic)}`;
       const fullPath = path.join(this.discussDir, sessionDir);
       try {
         fs.mkdirSync(fullPath, { recursive: false });
@@ -139,7 +140,7 @@ export class SessionStore {
   resolveDir(sessionId: string): string | null {
     if (!fs.existsSync(this.discussDir)) return null;
     const entries = fs.readdirSync(this.discussDir);
-    const match = entries.find((e) => e.startsWith(sessionId + '_') || e === sessionId);
+    const match = entries.find((e) => e.startsWith(sessionId + '-') || e.startsWith(sessionId + '_') || e === sessionId);
     return match ? path.join(this.discussDir, match) : null;
   }
 
@@ -184,5 +185,29 @@ export class SessionStore {
   /** Acquire lock and run fn. Returns fn's result. */
   async withLock<T>(fullSessionPath: string, fn: () => Promise<T>): Promise<T> {
     return this.lock.acquire(fullSessionPath, fn);
+  }
+
+  /** Remove ended sessions older than CORAL_DISCUSS_TTL_DAYS (default 30). Returns count removed. */
+  cleanupExpiredSessions(): number {
+    const ttlDays = parseInt(process.env.CORAL_DISCUSS_TTL_DAYS ?? '', 10);
+    const ttl = (Number.isFinite(ttlDays) && ttlDays > 0) ? ttlDays : 30;
+    const cutoff = Date.now() - ttl * 24 * 60 * 60 * 1000;
+    let removed = 0;
+
+    if (!fs.existsSync(this.discussDir)) return 0;
+    for (const entry of fs.readdirSync(this.discussDir)) {
+      const fullPath = path.join(this.discussDir, entry);
+      const statePath = path.join(fullPath, 'state.json');
+      try {
+        const raw = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
+        if (raw['status'] !== 'ended') continue; // never delete active sessions
+        const ts = String(raw['last_activity_at'] || raw['updated_at'] || raw['created_at'] || '');
+        if (new Date(ts).getTime() < cutoff) {
+          fs.rmSync(fullPath, { recursive: true, force: true });
+          removed++;
+        }
+      } catch { continue; } // skip unreadable/corrupt sessions
+    }
+    return removed;
   }
 }

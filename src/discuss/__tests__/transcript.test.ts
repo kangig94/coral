@@ -189,16 +189,28 @@ describe('formatRecent', () => {
     expect(result).not.toContain('Earlier speeches');
   });
 
-  it('should always include non-speech entries (bids, votes) in full', () => {
+  it('should exclude non-speech entries (bids, votes)', () => {
     const entries: TranscriptEntry[] = [
       { type: 'speech', step: 1, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'Old speech.' },
       { type: 'bids', step: 2, epoch: 1, ts: TS, bids: { alice: 80 }, winner: 'alice', resolve_type: 'normal' },
       { type: 'speech', step: 2, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'New speech.' },
     ];
-    const result = formatRecent(entries, 1, agents); // only last 1 speech in full
-    expect(result).toContain('Step 2'); // bids always in recent section
+    const result = formatRecent(entries, 1, agents);
+    expect(result).not.toContain('Step 2');  // bids excluded
+    expect(result).not.toContain('Bids');    // no bid table
     expect(result).toContain('New speech.'); // last speech in full
     expect(result).toContain('Old speech.'); // older speech in summary
+    expect(result).toContain('Alice');       // speaker identity preserved
+  });
+
+  it('should show speaker display_name in both summary and recent sections', () => {
+    const entries: TranscriptEntry[] = [
+      { type: 'speech', step: 1, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'First.' },
+      { type: 'speech', step: 2, epoch: 1, ts: TS, agent: 'bob', display_name: 'Bob', content: 'Second.' },
+    ];
+    const result = formatRecent(entries, 1, agents);
+    expect(result).toContain('- Alice:'); // older speech summary with name prefix
+    expect(result).toContain('Bob');      // recent speech header with name
   });
 
   it('should return empty string for empty entries', () => {

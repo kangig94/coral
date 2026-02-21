@@ -115,12 +115,15 @@ No parameters (empty object).
       "model": "gpt-5.3-codex",
       "created_at": "2026-02-18T08:30:00.000Z",
       "last_used_at": "2026-02-18T09:15:00.000Z",
-      "working_directory": "/home/user/project"
+      "working_directory": "/home/user/project",
+      "status": "completed"
     }
   ],
   "total": 1
 }
 ```
+
+`status` is `"running"` while a prompt is being executed, `"completed"` otherwise.
 
 Only shows sessions registered in the Coral registry.
 
@@ -165,7 +168,7 @@ Fork an existing session to continue the conversation in a new branch.
 
 The discuss MCP server manages moderated multi-agent discussion sessions. Sessions are stored as directories under `{project}/.claude/coral/discuss/`. State mutations are serialized via a cross-process `mkdir`-based lock.
 
-Session IDs follow the format `YYYYMMDD-HHmmss-xxxx` (timestamp + 4-char random suffix).
+Session IDs follow the format `yymmdd-HHmm-xxxx` (compact timestamp + 4-char random suffix). Legacy format `YYYYMMDD-HHmmss-xxxx` is also accepted.
 
 ---
 
@@ -186,12 +189,12 @@ Initialize a new discussion session with agent personas.
 
 ```json
 {
-  "session_id": "20260221-143022-a1b2",
-  "session_dir": "20260221-143022-a1b2_ai-ethics",
-  "team_name": "coral-dc-20260221-143022-a1b2",
+  "session_id": "260221-1430-a1b2",
+  "session_dir": "260221-1430-a1b2-ai-ethics",
+  "team_name": "coral-dc-260221-1430-a1b2",
   "agents": ["alice", "bob", "charlie"],
   "topic": "AI ethics in healthcare",
-  "status": "bidding"
+  "status": "setup"
 }
 ```
 
@@ -325,7 +328,7 @@ Query current session state. Bid scores are NOT exposed — they are only visibl
 
 ```json
 {
-  "session_id": "20260221-143022-a1b2",
+  "session_id": "260221-1430-a1b2",
   "status": "bidding",
   "step": 5,
   "epoch": 1,
@@ -357,7 +360,7 @@ Finalize the discussion. Normal end includes an optional synthesis. Force-end re
 ```json
 {
   "ended": true,
-  "session_id": "20260221-143022-a1b2",
+  "session_id": "260221-1430-a1b2",
   "final_step": 12,
   "total_speeches": 8
 }
@@ -384,3 +387,38 @@ Append an epoch summary to the transcript. Teamlead-only. One summary per epoch,
   "recorded": true,
   "epoch": 1
 }
+```
+
+---
+
+# cx ↔ dc Integration
+
+The `cx` (Codex) and `dc` (Discuss) MCP servers do **not** communicate directly at runtime. They are independent processes with no shared state or IPC.
+
+## Coupling Points
+
+The coupling is through the **agent protocol layer**, not the MCP servers themselves:
+
+| Component | Role |
+|-----------|------|
+| `discuss-lead.md` | Spawns `persona-generator` agents (via Task tool) and `discussant` teammates for discussions |
+| `agents/codex-*.md` | Codex-delegated agents that can be spawned independently or within discuss workflows |
+| `hooks/detect-codex-agent.sh` | SubagentStart hook detects `codex-` prefix in agent names, injects delegation instructions to call `codex_session_create` |
+
+The discuss system itself does **not** spawn codex-prefixed agents. The coupling only exists when a user or external workflow spawns a codex-delegated agent that happens to run within a discuss context.
+
+## Session Naming Convention
+
+- Discuss session IDs: `yymmdd-HHmm-xxxx` (managed by dc)
+- Discuss session dirs: `{session_id}-{topic_slug}` (managed by dc)
+- Discuss teams: `coral-dc-{session_id}` (managed by Claude Code Agent Teams)
+- Codex sessions: `session-{timestamp}` or user-provided name (managed by cx)
+
+These namespaces do not overlap. Collision risk is between discuss sessions only (mitigated by 4-char random suffix per timestamp-minute).
+
+## Contract
+
+1. **dc never calls cx tools** — the discuss MCP server has no dependency on the codex MCP server
+2. **cx never reads dc state** — Codex sessions have no awareness of discuss sessions
+3. **Hook is the sole bridge** — `detect-codex-agent.sh` is the single point where a codex-delegated workflow and the Codex CLI connect
+4. **Modifying either server independently is safe** — as long as the hook contract (agent name prefix matching) is preserved

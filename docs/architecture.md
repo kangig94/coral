@@ -130,7 +130,7 @@ Each file is a single `SessionEntry`. Corrupt files are skipped with a warning; 
 
 ```
 {project}/.claude/coral/discuss/
-└── 20260221-143022-a1b2_ai-ethics/
+└── 260221-1430-a1b2-ai-ethics/
     ├── state.json          # Atomic writes via .tmp + rename
     ├── state.lock/         # Cross-process mkdir lock (transient)
     └── transcript.md       # Incremental append (human-readable)
