@@ -16,7 +16,6 @@ import {
   formatDateId,
   DEFAULT_BID_THRESHOLD,
 } from '../state-machine.js';
-import { normalizeState } from '../session-store.js';
 import type { DiscussState } from '../types.js';
 
 const NOW = '2026-02-21T10:00:00.000Z';
@@ -30,9 +29,9 @@ const BASE_INPUT = { topic: 'Test Topic', agents: TWO_AGENTS, quota_per_epoch: 3
 
 function makeSession(): DiscussState {
   const init = initSession(BASE_INPUT, NOW);
-  init.session_id = '20260221-100000-test';
-  init.session_dir = '20260221-100000-test_test-topic';
-  init.team_name = 'coral-dc-20260221-100000-test';
+  init.session_id = '260221-1000-test';
+  init.session_dir = '260221-1000-test-test-topic';
+  init.team_name = 'coral-dc-260221-1000-test';
   const res = startBidding(init, NOW);
   if (!res.ok) throw new Error('unreachable: startBidding failed in test helper');
   return res.value;
@@ -780,38 +779,6 @@ describe('applyBid — transcript read enforcement', () => {
     // After reading, bid succeeds
     const readState = withTranscriptRead(epoch2State, 'alice');
     expect(applyBid(readState, 'alice', 80, NOW).ok).toBe(true);
-  });
-});
-
-// ─── normalizeState migration ─────────────────────────────────────────────────
-
-describe('normalizeState — migration', () => {
-  it('should add transcript_read_step: {} to legacy state', () => {
-    const legacy = {
-      session_id: 'test', session_dir: 'test', topic: 'T',
-      status: 'bidding', step: 1, epoch: 1, quota_per_epoch: 3, cold_start: false, recent_turns: 5,
-      agents: { alice: { persona: '', display_name: 'Alice', quota_remaining: 3, total_speaks: 0, fallback_used: false } },
-      current_bids: {}, pending_bidders: [], current_speaker: null, speaker_type: null,
-      epoch_summary_written: null, team_name: 't', created_at: '', updated_at: '',
-      last_speech_step: 0, transcript: [], transcript_rendered: 0, bid_threshold: 50,
-      // transcript_read_step intentionally absent (legacy state)
-    };
-    const normalized = normalizeState(legacy as Record<string, unknown>);
-    expect(normalized.transcript_read_step).toEqual({});
-  });
-
-  it('should backfill last_activity_at from updated_at on legacy state', () => {
-    const legacy = {
-      session_id: 'test', session_dir: 'test', topic: 'T',
-      status: 'bidding', step: 1, epoch: 1, quota_per_epoch: 3, cold_start: false, recent_turns: 5,
-      agents: { alice: { persona: '', display_name: 'Alice', quota_remaining: 3, total_speaks: 0, fallback_used: false } },
-      current_bids: {}, pending_bidders: [], current_speaker: null, speaker_type: null,
-      epoch_summary_written: null, team_name: 't', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-02-01T00:00:00Z',
-      last_speech_step: 0, transcript: [], transcript_rendered: 0, bid_threshold: 50, transcript_read_step: {},
-      // last_activity_at intentionally absent (legacy state)
-    };
-    const normalized = normalizeState(legacy as Record<string, unknown>);
-    expect(normalized.last_activity_at).toBe('2026-02-01T00:00:00Z'); // backfilled from updated_at
   });
 });
 

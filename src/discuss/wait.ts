@@ -5,16 +5,12 @@
  */
 
 import * as fs from 'node:fs';
-import { normalizeState } from './session-store.js';
 import type { DiscussState } from './types.js';
 
-/** Result of waitForCondition. error field is set only when no valid state was ever read. */
-export type WaitResult = {
-  fulfilled: boolean;
-  elapsed_ms: number;
-  state: DiscussState;
-  error?: string;
-};
+/** Result of waitForCondition. Discriminated on `error`: when set, no valid state was ever read. */
+export type WaitResult =
+  | { fulfilled: boolean; elapsed_ms: number; state: DiscussState; error: null }
+  | { fulfilled: false; elapsed_ms: number; state: null; error: string };
 
 /**
  * Poll state.json until predicate returns true or timeoutMs expires.
@@ -36,7 +32,7 @@ export async function waitForCondition(
   // Immediate first check before entering poll loop
   const initial = await tryReadState(statePath);
   if (initial && predicate(initial)) {
-    return { fulfilled: true, elapsed_ms: 0, state: initial };
+    return { fulfilled: true, elapsed_ms: 0, state: initial, error: null };
   }
 
   let lastKnownGood: DiscussState | null = initial;
@@ -54,16 +50,15 @@ export async function waitForCondition(
       if (state) lastKnownGood = state;
 
       if (state && predicate(state)) {
-        done({ fulfilled: true, elapsed_ms: Date.now() - start, state });
+        done({ fulfilled: true, elapsed_ms: Date.now() - start, state, error: null });
         return;
       }
 
       if (Date.now() - start >= timeoutMs) {
         if (lastKnownGood) {
-          done({ fulfilled: false, elapsed_ms: Date.now() - start, state: lastKnownGood });
+          done({ fulfilled: false, elapsed_ms: Date.now() - start, state: lastKnownGood, error: null });
         } else {
-          // No valid state ever read — explicit error (not a runtime crash)
-          done({ fulfilled: false, elapsed_ms: Date.now() - start, state: null as unknown as DiscussState, error: 'state_unavailable' });
+          done({ fulfilled: false, elapsed_ms: Date.now() - start, state: null, error: 'state_unavailable' });
         }
         return;
       }
@@ -78,8 +73,7 @@ export async function waitForCondition(
 /** Safe async read — returns null if file is mid-rename, missing, or corrupt JSON. */
 async function tryReadState(p: string): Promise<DiscussState | null> {
   try {
-    const raw = await fs.promises.readFile(p, 'utf8');
-    return normalizeState(JSON.parse(raw) as Record<string, unknown>);
+    return JSON.parse(await fs.promises.readFile(p, 'utf8')) as DiscussState;
   } catch {
     return null;
   }

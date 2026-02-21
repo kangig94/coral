@@ -58,8 +58,9 @@ describe('waitForCondition', () => {
     writeState(makeState({ status: 'ended' }));
     const result = await waitForCondition(join(tmpDir, 'state.json'), isEnded, 5000, INTERVAL);
     expect(result.fulfilled).toBe(true);
+    expect(result.error).toBeNull();
     expect(result.elapsed_ms).toBeLessThan(INTERVAL); // resolved before first poll
-    expect(result.state.status).toBe('ended');
+    expect(result.state!.status).toBe('ended');
   });
 
   it('should poll until condition becomes true', async () => {
@@ -71,15 +72,15 @@ describe('waitForCondition', () => {
 
     const result = await waitForCondition(statePath, isEnded, 2000, INTERVAL);
     expect(result.fulfilled).toBe(true);
-    expect(result.state.status).toBe('ended');
+    expect(result.state!.status).toBe('ended');
   });
 
   it('should return fulfilled=false with lastKnownGood on timeout', async () => {
     writeState(makeState({ status: 'bidding' }));
     const result = await waitForCondition(join(tmpDir, 'state.json'), isEnded, 100, INTERVAL);
     expect(result.fulfilled).toBe(false);
-    expect(result.error).toBeUndefined();
-    expect(result.state.status).toBe('bidding'); // lastKnownGood state
+    expect(result.error).toBeNull();
+    expect(result.state!.status).toBe('bidding'); // lastKnownGood state
     expect(result.elapsed_ms).toBeGreaterThanOrEqual(100);
   });
 
@@ -100,7 +101,7 @@ describe('waitForCondition', () => {
 
     const result = await waitForCondition(statePath, isEnded, 2000, INTERVAL);
     expect(result.fulfilled).toBe(true);
-    expect(result.state.status).toBe('ended');
+    expect(result.state!.status).toBe('ended');
   });
 
   it('should use lastKnownGood on timeout after transient read errors', async () => {
@@ -112,7 +113,7 @@ describe('waitForCondition', () => {
 
     const result = await waitForCondition(statePath, isEnded, 150, INTERVAL);
     expect(result.fulfilled).toBe(false);
-    expect(result.error).toBeUndefined(); // lastKnownGood exists from initial read
-    expect(result.state.status).toBe('bidding');
+    expect(result.error).toBeNull(); // lastKnownGood exists from initial read
+    expect(result.state!.status).toBe('bidding');
   });
 });
