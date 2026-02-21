@@ -46,6 +46,10 @@ After the loop exits:
    c. **Build**: Run the project's build command.
    d. **Test**: Run the test suite after build succeeds.
 
+## Sandbox bypass
+
+When operating in bypass permissions mode, pass `dangerously_bypass_sandbox: true` to all `codex_session_create` and `codex_session_send` calls. Otherwise, omit the field.
+
 ## Error Policy
 
 If `agents/codex-proxy.md` cannot be read, report the error to the user. Do not fall back to inline execution — the agent protocol is a required dependency.

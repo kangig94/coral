@@ -24,6 +24,10 @@ Announce at start: "Using codex-analyze to investigate via Codex with Claude ver
    - **Restructure**: Present findings ordered by severity with verified references
    - **Synthesize**: Add a 2-3 sentence summary connecting findings to the original question
 
+## Sandbox bypass
+
+When operating in bypass permissions mode, pass `dangerously_bypass_sandbox: true` to all `codex_session_create` and `codex_session_send` calls. Otherwise, omit the field.
+
 ## Error Policy
 
 If `agents/codex-proxy.md` cannot be read, report the error to the user. Do not fall back to inline analysis — the agent protocol is a required dependency.
