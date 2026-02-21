@@ -265,7 +265,7 @@ export async function handleSessionSend(input: CodexSessionSendInput, mgr: Sessi
   }
 }
 
-export async function handleSessionList(mgr: SessionManager): Promise<McpResult> {
+export function handleSessionList(mgr: SessionManager): McpResult {
   const registered = mgr.list().map((s) => ({
     name: s.name,
     thread_id: s.codexThreadId,
@@ -365,7 +365,7 @@ export async function handleToolCall(
       }
       case 'codex_session_list':
         codexSessionListSchema.parse(rawArgs);
-        return await handleSessionList(sessionManager);
+        return handleSessionList(sessionManager);
       case 'codex_session_fork': {
         const input = codexSessionForkSchema.parse(rawArgs);
         const entry = sessionManager.get(input.session);

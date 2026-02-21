@@ -32,6 +32,8 @@ function makeState(overrides: Partial<DiscussState> = {}): DiscussState {
     last_speech_step: 0,
     transcript: [],
     transcript_rendered: 0,
+    bid_threshold: 50,
+    transcript_read_step: {},
     ...overrides,
   };
 }
@@ -66,6 +68,11 @@ describe('allBidsIn', () => {
       pending_bidders: [], // leftover from previous round
       current_speaker: 'alice',
     });
+    expect(allBidsIn(state)).toBe(false);
+  });
+
+  it('should return false in setup status', () => {
+    const state = makeState({ status: 'setup' as const, pending_bidders: [] });
     expect(allBidsIn(state)).toBe(false);
   });
 
@@ -153,8 +160,13 @@ describe('actionNeeded', () => {
     expect(actionNeeded('nobody')(state)).toBe(false);
   });
 
-  it('should return false in ended status', () => {
-    const state = makeState({ status: 'ended' });
+  it('should return false in setup status', () => {
+    const state = makeState({ status: 'setup' as const });
     expect(actionNeeded('alice')(state)).toBe(false);
+  });
+
+  it('should return true in ended status (wake agents to exit loop)', () => {
+    const state = makeState({ status: 'ended' });
+    expect(actionNeeded('alice')(state)).toBe(true);
   });
 });

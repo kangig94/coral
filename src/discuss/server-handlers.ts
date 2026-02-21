@@ -4,15 +4,17 @@
  */
 
 import { textResult, jsonResult, type McpResult } from '../shared/mcp-utils.js';
-import type { DiscussState } from './types.js';
+import type { DiscussState, Result } from './types.js';
 import { SessionStore } from './session-store.js';
 import {
   initSession,
+  startBidding,
   applyBid,
   resolveWinner,
   applySpeech,
   applyEpochSummary,
   applyEnd,
+  DEFAULT_BID_THRESHOLD,
 } from './state-machine.js';
 import { allBidsIn, speechDelivered, actionNeeded } from './conditions.js';
 import { waitForCondition } from './wait.js';
@@ -29,6 +31,44 @@ import {
 } from './schemas.js';
 
 export { textResult, jsonResult };
+
+/** Resolve session directory or return a not-found error. */
+function resolveSession(store: SessionStore, sessionId: string): string | McpResult {
+  const dir = store.resolveDir(sessionId);
+  return dir ?? jsonResult({ error: 'session_not_found' });
+}
+
+/**
+ * Lock-load-apply-save pattern used by most mutating handlers.
+ * Applies a state-machine function under lock, saves on success, returns Result.
+ */
+async function mutateSession<T>(
+  store: SessionStore,
+  sessionDir: string,
+  apply: (state: DiscussState) => Result<DiscussState>,
+  extract: (state: DiscussState) => T,
+): Promise<Result<T>> {
+  return store.withLock(sessionDir, async () => {
+    const state = store.load(sessionDir);
+    const res = apply(state);
+    if (!res.ok) return res;
+    store.save(sessionDir, res.value);
+    return { ok: true as const, value: extract(res.value) };
+  });
+}
+
+/** Convert a Result to an McpResult. */
+function resultToMcp(result: Result<Record<string, unknown>>): McpResult {
+  if (!result.ok) return jsonResult({ error: result.error, ...result.detail });
+  return jsonResult(result.value);
+}
+
+/** Map discuss state status to action name for action_needed responses. */
+const STATUS_TO_ACTION: Record<string, string> = {
+  ended: 'session_ended',
+  speaking: 'speak',
+  voting: 'vote',
+};
 
 export const tools = [
   {
@@ -162,7 +202,10 @@ export async function handleToolCall(
       case 'discuss_create': {
         const input = discussCreateSchema.parse(rawArgs);
         const now = new Date().toISOString();
-        const state = initSession(input, now);
+        const rawThreshold = parseInt(process.env.CORAL_DISCUSS_BID_THRESHOLD ?? '', 10);
+        const bidThreshold = (Number.isFinite(rawThreshold) && rawThreshold >= 1 && rawThreshold <= 100)
+          ? rawThreshold : DEFAULT_BID_THRESHOLD;
+        const state = initSession(input, now, bidThreshold);
         const { sessionId, sessionDir, fullPath } = store.createSessionDir(input.topic);
         state.session_id = sessionId;
         state.session_dir = sessionDir;
@@ -178,25 +221,23 @@ export async function handleToolCall(
           session_dir: sessionDir,
           team_name: state.team_name,
           topic: input.topic,
+          status: state.status,
+          bid_threshold: state.bid_threshold,
           agents: input.agents.map((a) => a.name),
         });
       }
 
       case 'discuss_bid': {
         const input = discussBidSchema.parse(rawArgs);
-        const sessionDir = store.resolveDir(input.session);
-        if (!sessionDir) return jsonResult({ error: 'session_not_found' });
+        const sessionDir = resolveSession(store, input.session);
+        if (typeof sessionDir !== 'string') return sessionDir;
 
-        const result = await store.withLock(sessionDir, async () => {
-          const state = store.load(sessionDir);
-          const res = applyBid(state, input.agent_name, input.score, new Date().toISOString());
-          if (!res.ok) return res;
-          store.save(sessionDir, res.value);
-          return { ok: true as const, value: { all_bids_in: res.value.pending_bidders.length === 0 } };
-        });
-
-        if (!result.ok) return jsonResult({ error: result.error, ...result.detail });
-        return jsonResult(result.value as Record<string, unknown>);
+        const result = await mutateSession(
+          store, sessionDir,
+          (s) => applyBid(s, input.agent_name, input.score, new Date().toISOString()),
+          (s) => ({ all_bids_in: s.pending_bidders.length === 0 }),
+        );
+        return resultToMcp(result as Result<Record<string, unknown>>);
       }
 
       case 'discuss_wait': {
@@ -212,19 +253,28 @@ export async function handleToolCall(
           }
         }
 
-        let pred: (s: DiscussState) => boolean;
+        // Auto-start: transition setup -> bidding BEFORE the poll loop begins.
+        // Without this, allBidsIn predicate never fires (it requires status=bidding/voting).
         if (input.condition === 'all_bids') {
-          pred = allBidsIn;
-        } else if (input.condition === 'speech_delivered') {
-          pred = speechDelivered;
-        } else {
-          pred = actionNeeded(input.agent_name!);
+          await store.withLock(sessionDir, async () => {
+            const s = store.load(sessionDir);
+            if (s.status === 'setup') {
+              const res = startBidding(s, new Date().toISOString());
+              if (res.ok) store.save(sessionDir, res.value);
+            }
+          });
         }
+
+        const predicates: Record<string, (s: DiscussState) => boolean> = {
+          all_bids: allBidsIn,
+          speech_delivered: speechDelivered,
+          action_needed: actionNeeded(input.agent_name!),
+        };
+        const pred = predicates[input.condition];
 
         const statePath = store.statePath(sessionDir);
         const waitResult = await waitForCondition(statePath, pred, input.timeout_seconds * 1000);
 
-        // Error guard: no valid state was ever read
         if (waitResult.error) {
           return textResult(`Error: ${waitResult.error}`, true);
         }
@@ -233,16 +283,14 @@ export async function handleToolCall(
         if (waitResult.fulfilled && input.condition === 'all_bids') {
           const outcome = await store.withLock(sessionDir, async () => {
             const state = store.load(sessionDir);
-            // TOCTOU guard: re-check FULL condition inside lock (stale wakeup detection)
+            // TOCTOU guard: re-check condition inside lock (stale wakeup detection)
             if (!allBidsIn(state)) {
               return { stale: true, status: state.status, step: state.step, epoch: state.epoch };
             }
-            const now = new Date().toISOString();
-            const res = resolveWinner(state, now);
+            const res = resolveWinner(state, new Date().toISOString());
             if (!res.ok) return { error: res.error, ...res.detail };
             const [newState, resolveData] = res.value;
             store.save(sessionDir, newState);
-            // Unwrap Result envelope — return ResolveResult directly to MCP
             return resolveData as Record<string, unknown>;
           });
           return jsonResult({ fulfilled: true, elapsed_seconds: waitResult.elapsed_ms / 1000, ...outcome });
@@ -251,11 +299,14 @@ export async function handleToolCall(
         // Action-needed: tell agent what to do next
         if (waitResult.fulfilled && input.condition === 'action_needed') {
           const s = waitResult.state;
-          let action: string;
-          if (s.status === 'speaking') action = 'speak';
-          else if (s.status === 'voting') action = 'vote';
-          else action = 'bid';
-          return jsonResult({ fulfilled: true, action, elapsed_seconds: waitResult.elapsed_ms / 1000 });
+          const action = STATUS_TO_ACTION[s.status] ?? 'bid';
+          return jsonResult({
+            fulfilled: true,
+            action,
+            elapsed_seconds: waitResult.elapsed_ms / 1000,
+            epoch: s.epoch,
+            quota_remaining: s.agents[input.agent_name!]?.quota_remaining ?? 0,
+          });
         }
 
         // Generic return (speech_delivered or timeout)
@@ -270,56 +321,68 @@ export async function handleToolCall(
 
       case 'discuss_speak': {
         const input = discussSpeakSchema.parse(rawArgs);
-        const sessionDir = store.resolveDir(input.session);
-        if (!sessionDir) return jsonResult({ error: 'session_not_found' });
+        const sessionDir = resolveSession(store, input.session);
+        if (typeof sessionDir !== 'string') return sessionDir;
 
-        const result = await store.withLock(sessionDir, async () => {
-          const state = store.load(sessionDir);
-          const res = applySpeech(state, input.agent_name, input.content, new Date().toISOString());
-          if (!res.ok) return res;
-          store.save(sessionDir, res.value);
-          return { ok: true as const, value: { step: res.value.step, status: res.value.status } };
-        });
-
-        if (!result.ok) return jsonResult({ error: result.error, ...result.detail });
-        return jsonResult(result.value as Record<string, unknown>);
+        const result = await mutateSession(
+          store, sessionDir,
+          (s) => applySpeech(s, input.agent_name, input.content, new Date().toISOString()),
+          (s) => ({ step: s.step, status: s.status }),
+        );
+        return resultToMcp(result as Result<Record<string, unknown>>);
       }
 
       case 'discuss_transcript': {
         const input = discussTranscriptSchema.parse(rawArgs);
-        const sessionDir = store.resolveDir(input.session);
-        if (!sessionDir) return jsonResult({ error: 'session_not_found' });
+        const sessionDir = resolveSession(store, input.session);
+        if (typeof sessionDir !== 'string') return sessionDir;
 
-        const state = store.load(sessionDir);
+        // When agent_name provided: track read under lock for bid enforcement.
+        // When absent: lockless read (backward compatible, no tracking needed).
+        const state = input.agent_name
+          ? await store.withLock(sessionDir, async () => {
+              const s = store.load(sessionDir);
+              if (s.agents[input.agent_name!] && (s.transcript_read_step[input.agent_name!] ?? 0) < s.step) {
+                const updated = {
+                  ...s,
+                  transcript_read_step: { ...s.transcript_read_step, [input.agent_name!]: s.step },
+                  updated_at: new Date().toISOString(),
+                };
+                store.save(sessionDir, updated);
+                return updated;
+              }
+              return s;
+            })
+          : store.load(sessionDir);
 
         // Full-transcript ACL: mode=full requires agent_name=current_speaker OR status=ended
-        if (input.mode === 'full') {
-          if (state.status !== 'ended') {
-            if (!input.agent_name) {
-              return jsonResult({ error: 'full_transcript_requires_speaker_or_ended' });
-            }
-            if (input.agent_name !== state.current_speaker) {
-              return jsonResult({ error: 'full_transcript_speaker_only' });
-            }
+        if (input.mode === 'full' && state.status !== 'ended') {
+          if (!input.agent_name) {
+            return jsonResult({ error: 'full_transcript_requires_speaker_or_ended' });
+          }
+          if (input.agent_name !== state.current_speaker) {
+            return jsonResult({ error: 'full_transcript_speaker_only' });
           }
         }
 
         let text: string;
-        if (input.mode === 'full') {
-          text = formatFull(state.transcript, state.agents);
-        } else if (input.mode === 'summary') {
-          text = formatSummary(state.transcript, state.agents);
-        } else {
-          const lastN = input.last_n ?? state.recent_turns;
-          text = formatRecent(state.transcript, lastN, state.agents);
+        switch (input.mode) {
+          case 'full':
+            text = formatFull(state.transcript, state.agents);
+            break;
+          case 'summary':
+            text = formatSummary(state.transcript, state.agents);
+            break;
+          default:
+            text = formatRecent(state.transcript, input.last_n ?? state.recent_turns, state.agents);
         }
         return textResult(text);
       }
 
       case 'discuss_state': {
         const input = discussStateSchema.parse(rawArgs);
-        const sessionDir = store.resolveDir(input.session);
-        if (!sessionDir) return jsonResult({ error: 'session_not_found' });
+        const sessionDir = resolveSession(store, input.session);
+        if (typeof sessionDir !== 'string') return sessionDir;
 
         const state = store.load(sessionDir);
         return jsonResult({
@@ -332,6 +395,7 @@ export async function handleToolCall(
           speaker_type: state.speaker_type,
           cold_start: state.cold_start,
           quota_per_epoch: state.quota_per_epoch,
+          bid_threshold: state.bid_threshold,
           recent_turns: state.recent_turns,
           agents: Object.fromEntries(
             Object.entries(state.agents).map(([n, a]) => [
@@ -347,36 +411,28 @@ export async function handleToolCall(
 
       case 'discuss_end': {
         const input = discussEndSchema.parse(rawArgs);
-        const sessionDir = store.resolveDir(input.session);
-        if (!sessionDir) return jsonResult({ error: 'session_not_found' });
+        const sessionDir = resolveSession(store, input.session);
+        if (typeof sessionDir !== 'string') return sessionDir;
 
-        const result = await store.withLock(sessionDir, async () => {
-          const state = store.load(sessionDir);
-          const res = applyEnd(state, { force: input.force, reason: input.reason, synthesis: input.synthesis }, new Date().toISOString());
-          if (!res.ok) return res;
-          store.save(sessionDir, res.value);
-          return { ok: true as const, value: { ok: true, session_id: input.session } };
-        });
-
-        if (!result.ok) return jsonResult({ error: result.error, ...result.detail });
-        return jsonResult(result.value as Record<string, unknown>);
+        const result = await mutateSession(
+          store, sessionDir,
+          (s) => applyEnd(s, { force: input.force, reason: input.reason, synthesis: input.synthesis }, new Date().toISOString()),
+          () => ({ ok: true, session_id: input.session }),
+        );
+        return resultToMcp(result as Result<Record<string, unknown>>);
       }
 
       case 'discuss_epoch_summary': {
         const input = discussEpochSummarySchema.parse(rawArgs);
-        const sessionDir = store.resolveDir(input.session);
-        if (!sessionDir) return jsonResult({ error: 'session_not_found' });
+        const sessionDir = resolveSession(store, input.session);
+        if (typeof sessionDir !== 'string') return sessionDir;
 
-        const result = await store.withLock(sessionDir, async () => {
-          const state = store.load(sessionDir);
-          const res = applyEpochSummary(state, input.epoch, input.summary, new Date().toISOString());
-          if (!res.ok) return res;
-          store.save(sessionDir, res.value);
-          return { ok: true as const, value: { ok: true } };
-        });
-
-        if (!result.ok) return jsonResult({ error: result.error, ...result.detail });
-        return jsonResult(result.value as Record<string, unknown>);
+        const result = await mutateSession(
+          store, sessionDir,
+          (s) => applyEpochSummary(s, input.epoch, input.summary, new Date().toISOString()),
+          () => ({ ok: true }),
+        );
+        return resultToMcp(result as Result<Record<string, unknown>>);
       }
 
       default:

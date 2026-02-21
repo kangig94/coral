@@ -29,11 +29,14 @@ export const speechDelivered = (s: DiscussState): boolean =>
   s.status === 'bidding' && s.last_speech_step === s.step - 1;
 
 /**
- * Agent has something to do right now.
+ * Agent has something to do right now — or session ended (wake up to exit loop).
  *
  * current_bids[agent] === null means bid not yet submitted (resetBids sets all to null).
+ * `ended` fires the predicate so agents blocked on discuss_wait("action_needed")
+ * unblock immediately instead of burning 180s timeout.
  */
 export const actionNeeded = (agent: string) => (s: DiscussState): boolean =>
+  s.status === 'ended' ||
   (s.status === 'bidding' && s.current_bids[agent] === null) ||
   (s.status === 'speaking' && s.current_speaker === agent) ||
   (s.status === 'voting' && s.current_bids[agent] === null);

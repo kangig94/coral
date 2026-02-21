@@ -109,6 +109,7 @@ describe('renderEntries', () => {
     const result = renderEntries(entries, agents);
     expect(result).toContain('80');
     expect(result).toContain('Winner: Alice');
+    expect(result).toContain('Quota');
   });
 
   it('should render bids entry with no_winner when winner is null', () => {

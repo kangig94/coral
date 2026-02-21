@@ -7,7 +7,7 @@
 import type { AgentState, DiscussState, Result, ResolveResult, TranscriptEntry } from './types.js';
 import type { DiscussCreateInput } from './schemas.js';
 
-const MIN_BID_THRESHOLD = 30;
+export const DEFAULT_BID_THRESHOLD = 50;
 
 // ─── ID helpers ───────────────────────────────────────────────────────────────
 
@@ -46,7 +46,8 @@ export function topicSlug(topic: string): string {
  */
 export function parseDisplayName(persona: string, agentName: string): string {
   const firstLine = persona.split('\n')[0] ?? '';
-  const match = firstLine.match(/^#\s*(.+?)\s*[—–-]\s*/);
+  const stripped = firstLine.replace(/^#\s*/, '');
+  const match = stripped.match(/^(.+?)\s+[—–-]\s+/);
   return match?.[1]?.trim() || agentName;
 }
 
@@ -112,7 +113,7 @@ function coldStartPick(state: DiscussState): string | null {
 // ─── State machine functions ──────────────────────────────────────────────────
 
 /** Create initial session state (session_id/session_dir/team_name filled by caller). */
-export function initSession(input: DiscussCreateInput, now: string): DiscussState {
+export function initSession(input: DiscussCreateInput, now: string, bidThreshold = DEFAULT_BID_THRESHOLD): DiscussState {
   const agents: Record<string, AgentState> = {};
   for (const a of input.agents) {
     agents[a.name] = {
@@ -128,7 +129,7 @@ export function initSession(input: DiscussCreateInput, now: string): DiscussStat
     session_id: '',
     session_dir: '',
     topic: input.topic,
-    status: 'bidding',
+    status: 'setup',
     step: 1,
     epoch: 1,
     quota_per_epoch: input.quota_per_epoch,
@@ -146,7 +147,17 @@ export function initSession(input: DiscussCreateInput, now: string): DiscussStat
     last_speech_step: 0,
     transcript: [],
     transcript_rendered: 0,
+    bid_threshold: bidThreshold,
+    transcript_read_step: {},
   };
+}
+
+/** Transition session from setup to bidding. Called by discuss_wait("all_bids") handler. */
+export function startBidding(state: DiscussState, now: string): Result<DiscussState> {
+  if (state.status !== 'setup') {
+    return { ok: false, error: 'not_in_setup', detail: { current: state.status } };
+  }
+  return { ok: true, value: { ...state, status: 'bidding', updated_at: now } };
 }
 
 /** Submit a bid. Returns updated state or error. */
@@ -157,7 +168,10 @@ export function applyBid(
   now: string,
 ): Result<DiscussState> {
   if (state.status !== 'bidding' && state.status !== 'voting') {
-    return { ok: false, error: 'invalid_status', detail: { current: state.status, hint: 'Not in bidding phase. Call discuss_wait to wait for your turn.' } };
+    const hint = state.status === 'setup'
+      ? 'Session is in setup phase. Wait for teamlead to call discuss_wait("all_bids") first.'
+      : 'Not in bidding phase. Call discuss_wait to wait for your turn.';
+    return { ok: false, error: 'invalid_status', detail: { current: state.status, hint } };
   }
   if (!state.agents[agentName]) {
     return { ok: false, error: 'agent_not_found', detail: { agent_name: agentName } };
@@ -167,6 +181,17 @@ export function applyBid(
   }
   if (state.status === 'voting' && score !== 0 && score !== 1) {
     return { ok: false, error: 'voting_score_invalid', detail: { valid_scores: [0, 1] } };
+  }
+  // Transcript read enforcement: after the first speech, agents must read transcript before bidding.
+  // Exempt: first round of epoch 1 (last_speech_step === 0), voting rounds (status !== 'bidding').
+  // Epoch boundary: resolveVote increments step on non-unanimous vote, so old read steps become stale.
+  if (state.status === 'bidding' && state.last_speech_step > 0) {
+    const readStep = state.transcript_read_step[agentName] ?? 0;
+    if (readStep < state.step) {
+      return { ok: false, error: 'read_transcript_first', detail: {
+        hint: 'Call discuss_transcript before bidding. Read recent speeches first.',
+      } };
+    }
   }
   const pending_bidders = state.pending_bidders.filter((n) => n !== agentName);
   return {
@@ -207,7 +232,7 @@ function resolveVote(state: DiscussState, now: string): Result<[DiscussState, Re
   }
   const newState = resetBids({
     ...withVote, epoch: state.epoch + 1, cold_start: true, status: 'bidding',
-    current_speaker: null, speaker_type: null, agents,
+    current_speaker: null, speaker_type: null, agents, step: state.step + 1,
   });
   return { ok: true, value: [newState, { end_vote: true, unanimous: false }] };
 }
@@ -232,10 +257,12 @@ export function resolveWinner(state: DiscussState, now: string): Result<[Discuss
   const allBids: Record<string, number> = {};
   for (const [n, v] of Object.entries(state.current_bids)) allBids[n] = v as number;
 
+  const threshold = state.bid_threshold;
+
   // ── Step 1: Primary pool (quota > 0, score >= threshold) ─────────────────
   const cmp = (a: [string, number], b: [string, number]) => compareBidCandidates(state.agents, allBids, a, b);
   const primaryPool = Object.entries(allBids)
-    .filter(([n, s]) => s >= MIN_BID_THRESHOLD && state.agents[n].quota_remaining > 0)
+    .filter(([n, s]) => s >= threshold && state.agents[n].quota_remaining > 0)
     .sort(cmp);
 
   if (primaryPool.length > 0) {
@@ -250,7 +277,7 @@ export function resolveWinner(state: DiscussState, now: string): Result<[Discuss
   // ── Step 2: Fallback pool (quota=0, fallback_used=false, score >= threshold) ──
   const fallbackPool = Object.entries(allBids)
     .filter(([n, s]) =>
-      s >= MIN_BID_THRESHOLD &&
+      s >= threshold &&
       state.agents[n].quota_remaining === 0 &&
       !state.agents[n].fallback_used,
     )
@@ -267,7 +294,7 @@ export function resolveWinner(state: DiscussState, now: string): Result<[Discuss
   }
 
   // ── Both pools empty ──────────────────────────────────────────────────────
-  const allBelowThreshold = Object.values(allBids).every((s) => s < MIN_BID_THRESHOLD);
+  const allBelowThreshold = Object.values(allBids).every((s) => s < threshold);
 
   if (allBelowThreshold) {
     // Step 3: Cold start auto-pick (when cold_start=true)
@@ -339,6 +366,9 @@ export function applyEpochSummary(
   summary: string,
   now: string,
 ): Result<DiscussState> {
+  if (state.status === 'setup') {
+    return { ok: false, error: 'session_not_started' };
+  }
   if (state.status === 'ended') {
     return { ok: false, error: 'session_ended' };
   }
@@ -355,7 +385,11 @@ export function applyEpochSummary(
   };
 }
 
-/** End the discussion session. */
+/**
+ * End the discussion session.
+ * `setup` status is intentionally allowed without force — ending before discussion
+ * starts is a valid cancel (e.g., setup failed, agents didn't spawn).
+ */
 export function applyEnd(
   state: DiscussState,
   opts: { force?: boolean; reason?: string; synthesis?: string },

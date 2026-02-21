@@ -28,3 +28,25 @@ const speechDelivered = (s: DiscussState) =>
 ```
 
 The predicate `last_speech_step === step - 1` is true from the moment `applySpeech` completes until the first `applyBid` of the next round — a stable window of seconds rather than microseconds.
+
+## Extension: Step Increment as Epoch Boundary Enforcement Signal
+
+The same monotonic `step` can serve dual duty as an enforcement watermark. When `transcript_read_step[agent]` tracks the `step` at which an agent last called `discuss_transcript`, incrementing `step` at any epoch boundary instantly invalidates all prior reads:
+
+```typescript
+// In resolveVote (non-unanimous vote → epoch transition):
+const newState = resetBids({
+  ...withVote, epoch: state.epoch + 1, cold_start: true, status: 'bidding',
+  step: state.step + 1,  // ← increment creates gap: agent's readStep < new step
+});
+
+// In applyBid enforcement:
+if (state.status === 'bidding' && state.last_speech_step > 0) {
+  const readStep = state.transcript_read_step[agentName] ?? 0;
+  if (readStep < state.step) return { ok: false, error: 'read_transcript_first' };
+}
+```
+
+Agents who read during epoch 1 (setting `readStep = 3`) find their read stale at epoch 2 start (`step = 4`). No new field needed — `step` is already the authoritative monotonic counter.
+
+Key insight: `speechDelivered` predicate (`last_speech_step === step - 1`) remains safe after this increment because `last_speech_step` was set during the previous epoch's last speech, NOT at `step - 1` after the increment.

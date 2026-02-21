@@ -87,13 +87,14 @@ function renderEntry(e: TranscriptEntry, agents: Record<string, AgentState>): st
         .sort(([, a], [, b]) => b - a)
         .map(([name, score]) => {
           const dn = agents[name]?.display_name ?? name;
-          return `| ${dn} (${name}) | ${score} |`;
+          const q = agents[name]?.quota_remaining;
+          return `| ${dn} (${name}) | ${score} | ${q ?? '?'} |`;
         })
         .join('\n');
       const winnerLine = e.winner
         ? `> **Winner: ${agents[e.winner]?.display_name ?? e.winner}** (${e.resolve_type})`
         : `> **No winner** (${e.resolve_type})`;
-      return `\n#### Bids — Step ${e.step}\n| Agent | Score |\n|-------|-------|\n${rows}\n${winnerLine}\n\n---\n`;
+      return `\n#### Bids — Step ${e.step}\n| Agent | Score | Quota |\n|-------|-------|-------|\n${rows}\n${winnerLine}\n\n---\n`;
     }
     case 'speech': {
       const ts = formatTimestamp(e.ts);

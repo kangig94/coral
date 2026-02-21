@@ -14,6 +14,16 @@ Merge policy:
 - **feature → dev**: rebase (preserve individual commits, partial revert possible)
 - **dev → main**: squash (one commit per release, traceable via PR link `(#N)`)
 
+PR procedure (dev → main):
+1. Commit all changes on `dev`, run build + tests
+2. `git fetch origin main`
+3. `git rebase --onto origin/main <last-squash-merged-commit> dev` — drops commits already in main via prior squash merge, replays only new commits onto main
+4. Verify: `git log --oneline origin/main..dev` should show only new commits
+5. `npm run build && npm test` — re-verify after rebase
+6. `git push origin dev --force-with-lease`
+7. `gh pr create --base main --head dev` (or update existing PR)
+8. Squash merge on GitHub, then repeat step 3 before next PR to keep dev clean
+
 ## Commit Style
 
 - Prefix: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`

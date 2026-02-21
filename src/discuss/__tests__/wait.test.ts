@@ -40,6 +40,8 @@ function makeState(overrides: Partial<DiscussState> = {}): DiscussState {
     last_speech_step: 0,
     transcript: [],
     transcript_rendered: 0,
+    bid_threshold: 50,
+    transcript_read_step: {},
     ...overrides,
   };
 }
