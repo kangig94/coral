@@ -11,8 +11,8 @@ import type { DiscussState } from './types.js';
  * Phase guard rationale: without `status` check, this was trivially true in `speaking`
  * status because pending_bidders from the previous round remains empty until resetBids.
  */
-export const allBidsIn = (s: DiscussState): boolean =>
-  s.status === 'bidding' && s.pending_bidders.length === 0;
+export const allBidsIn = (state: DiscussState): boolean =>
+  state.status === 'bidding' && state.pending_bidders.length === 0;
 
 /**
  * Speech was delivered: step advanced past speaking into bidding (monotonic marker).
@@ -24,8 +24,8 @@ export const allBidsIn = (s: DiscussState): boolean =>
  * Step-relative rationale: `last_speech_step === step` would be immediately false
  * because step was already incremented. The `- 1` accounts for this.
  */
-export const speechDelivered = (s: DiscussState): boolean =>
-  s.status === 'bidding' && s.last_speech_step === s.step - 1;
+export const speechDelivered = (state: DiscussState): boolean =>
+  state.status === 'bidding' && state.last_speech_step === state.step - 1;
 
 /**
  * Agent has something to do right now - or session ended (wake up to exit loop).

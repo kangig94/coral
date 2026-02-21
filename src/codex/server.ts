@@ -11,7 +11,10 @@ import { appendFinalResult } from './progress.js';
 import { tools, handleToolCall, activeBackgroundFiles } from './server-handlers.js';
 
 const server = new Server(
-  { name: 'coral', version: typeof __VERSION__ !== 'undefined' ? __VERSION__ : '0.1.0' },
+  {
+    name: 'coral',
+    version: typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0',
+  },
   { capabilities: { tools: {} } },
 );
 
@@ -22,9 +25,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const rawArgs = args ?? {};
 
   const progressToken = extra._meta?.progressToken;
-  const notify = (progressToken != null && extra.sendNotification)
-    ? extra.sendNotification.bind(extra)
-    : undefined;
+  const notify = progressToken == null ? undefined : extra.sendNotification?.bind(extra);
 
   return handleToolCall(name, rawArgs, sessionManager, progressToken, notify);
 });

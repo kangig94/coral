@@ -74,6 +74,10 @@ export function generateOneLiner(content: string): string {
   return cut > 0 ? flat.slice(0, cut) + '…' : flat.slice(0, 100) + '…';
 }
 
+function summarizeSpeech(agentName: string, content: string): string {
+  return `- ${agentName}: ${generateOneLiner(content)}`;
+}
+
 // ─── Entry rendering ──────────────────────────────────────────────────────────
 
 /** Render structured entries to markdown text. Used by SessionStore.save() for incremental append. */
@@ -166,7 +170,7 @@ export function formatRecent(
     if (i >= recentStart) {
       recentParts.push(renderEntry(speeches[i], agents));
     } else {
-      olderSummaries.push(`- ${speeches[i].display_name}: ${generateOneLiner(speeches[i].content)}`);
+      olderSummaries.push(summarizeSpeech(speeches[i].display_name, speeches[i].content));
     }
   }
 
@@ -183,10 +187,10 @@ export function formatRecent(
 /** Return all speech entries as one-line summaries. Non-speech entries are omitted. */
 export function formatSummary(
   entries: TranscriptEntry[],
-  agents: Record<string, AgentState>,
+  _agents: Record<string, AgentState>,
 ): string {
   return entries
     .filter((e): e is Extract<TranscriptEntry, { type: 'speech' }> => e.type === 'speech')
-    .map((e) => `- ${e.display_name}: ${generateOneLiner(e.content)}`)
+    .map((e) => summarizeSpeech(e.display_name, e.content))
     .join('\n');
 }

@@ -32,20 +32,23 @@ export function extractProgressMessage(event: CodexThreadEvent): string | null {
   // Record cast avoids union narrowing issues with the catch-all CodexThreadItemDetails variant
   const item = event.item as Record<string, unknown>;
   switch (item.type) {
-    case 'reasoning':
+    case 'reasoning': {
       return typeof item.text === 'string' ? item.text.slice(0, 120) : null;
-    case 'web_search':
-      return `Searching: ${item.query}`;
+    }
+    case 'web_search': {
+      return typeof item.query === 'string' ? `Searching: ${item.query}` : null;
+    }
     case 'agent_message':
       return 'Generating response...';
-    case 'command_execution':
-      return `Running: ${item.command}`;
+    case 'command_execution': {
+      return typeof item.command === 'string' ? `Running: ${item.command}` : null;
+    }
     case 'file_change': {
       const changes = item.changes as Array<{ path: string }> | undefined;
       return `Editing: ${changes?.[0]?.path ?? 'file'}`;
     }
     case 'mcp_tool_call':
-      return `Calling: ${item.tool}`;
+      return typeof item.tool === 'string' ? `Calling: ${item.tool}` : null;
     default:
       return null;
   }

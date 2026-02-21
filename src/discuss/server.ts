@@ -9,7 +9,7 @@ import { SessionStore } from './session-store.js';
 import { tools, handleToolCall } from './server-handlers.js';
 
 const server = new Server(
-  { name: 'coral-discuss', version: typeof __VERSION__ !== 'undefined' ? __VERSION__ : '0.1.0' },
+  { name: 'coral-discuss', version: typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0' },
   { capabilities: { tools: {} } },
 );
 

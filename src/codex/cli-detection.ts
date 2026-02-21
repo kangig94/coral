@@ -5,11 +5,11 @@
 
 import { execFile } from 'node:child_process';
 
-interface CliInfo {
+type CliInfo = {
   available: boolean;
   version?: string;
   error?: string;
-}
+};
 
 let cached: CliInfo | null = null;
 

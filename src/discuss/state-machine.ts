@@ -60,14 +60,18 @@ export function parseDisplayName(persona: string, agentName: string): string {
 function compareBidCandidates(
   agents: Record<string, AgentState>,
   bids: Record<string, number>,
-  [aName]: [string, number],
-  [bName]: [string, number],
+  leftCandidate: [string, number],
+  rightCandidate: [string, number],
 ): number {
-  const aScore = bids[aName], bScore = bids[bName];
-  if (aScore !== bScore) return bScore - aScore;
-  const aSpeaks = agents[aName].total_speaks, bSpeaks = agents[bName].total_speaks;
-  if (aSpeaks !== bSpeaks) return aSpeaks - bSpeaks;
-  return aName < bName ? -1 : 1;
+  const [leftName] = leftCandidate;
+  const [rightName] = rightCandidate;
+  const leftScore = bids[leftName];
+  const rightScore = bids[rightName];
+  if (leftScore !== rightScore) return rightScore - leftScore;
+  const leftSpeaks = agents[leftName].total_speaks;
+  const rightSpeaks = agents[rightName].total_speaks;
+  if (leftSpeaks !== rightSpeaks) return leftSpeaks - rightSpeaks;
+  return leftName < rightName ? -1 : 1;
 }
 
 /** Build a bids transcript entry. */

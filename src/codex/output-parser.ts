@@ -17,7 +17,7 @@ export interface ParsedCodexOutput {
  * so we deduplicate them via a Set.
  */
 export function parseCodexJsonl(output: string): ParsedCodexOutput {
-  const lines = output.trim().split('\n').filter((l) => l.trim());
+  const lines = output.split('\n').filter((l) => l.trim() !== '');
   const messages: string[] = [];
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -25,38 +25,43 @@ export function parseCodexJsonl(output: string): ParsedCodexOutput {
   const seenErrors = new Set<string>();
 
   for (const line of lines) {
+    let event: Record<string, unknown>;
     try {
-      const event = JSON.parse(line);
-
-      if (event.type === 'thread.started' && event.thread_id) {
-        threadId = event.thread_id;
-        continue;
-      }
-
-      if (event.type === 'item.completed' && event.item) {
-        if (event.item.type === 'agent_message' && event.item.text) {
-          messages.push(event.item.text);
-        }
-        if (event.item.type === 'error' && event.item.message) {
-          warnings.push(event.item.message);
-        }
-        continue;
-      }
-
-      if (event.type === 'error' && event.message) {
-        seenErrors.add(event.message);
-        errors.push(event.message);
-        continue;
-      }
-
-      if (event.type === 'turn.failed' && event.error?.message) {
-        if (!seenErrors.has(event.error.message)) {
-          errors.push(event.error.message);
-        }
-        continue;
-      }
+      event = JSON.parse(line);
     } catch {
       // Non-JSON lines (debug output) are ignored
+      continue;
+    }
+
+    if (event.type === 'thread.started' && typeof event.thread_id === 'string') {
+      threadId = event.thread_id;
+      continue;
+    }
+
+    if (event.type === 'item.completed' && event.item && typeof event.item === 'object') {
+      const item = event.item as Record<string, unknown>;
+      if (item.type === 'agent_message' && typeof item.text === 'string') {
+        messages.push(item.text);
+      }
+      if (item.type === 'error' && typeof item.message === 'string') {
+        warnings.push(item.message);
+      }
+      continue;
+    }
+
+    if (event.type === 'error' && typeof event.message === 'string') {
+      const errorMessage = event.message;
+      seenErrors.add(errorMessage);
+      errors.push(errorMessage);
+      continue;
+    }
+
+    if (event.type === 'turn.failed') {
+      const failMessage = (event as { error?: { message?: unknown } }).error?.message;
+      if (typeof failMessage === 'string' && !seenErrors.has(failMessage)) {
+        errors.push(failMessage);
+      }
+      continue;
     }
   }
 

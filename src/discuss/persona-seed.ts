@@ -373,6 +373,7 @@ export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput>
     : (input.seed >>> 0);
   const rng = createSeededRng(seedUsed);
   const pool = cartesianProduct(input.controversy_axes);
+  const requestedCount = input.n;
 
   if (pool.length > MAX_POOL_SIZE) {
     return {
@@ -386,7 +387,7 @@ export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput>
     };
   }
 
-  if (pool.length === 1 && input.n > 1) {
+  if (pool.length === 1 && requestedCount > 1) {
     return {
       ok: false,
       error: 'pool_degenerate',
@@ -400,7 +401,7 @@ export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput>
 
   const sigma = Math.sqrt(input.controversy_axes.length / 2);
 
-  const uniqueCount = Math.min(input.n, pool.length);
+  const uniqueCount = Math.min(requestedCount, pool.length);
   let selectedPoolIndexes: number[];
 
   if (uniqueCount === 0) {
@@ -418,7 +419,7 @@ export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput>
 
   // Reuse: when n > pool_size, pick extras by largest hamming distance from selected set
   const reuseOrder = rankReuseSlots(selectedPoolIndexes, pool);
-  const tones = assignTones(input.n, rng);
+  const tones = assignTones(requestedCount, rng);
   const assignments: PersonaAssignment[] = [];
 
   for (let i = 0; i < uniqueCount; i += 1) {
@@ -428,7 +429,7 @@ export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput>
     });
   }
 
-  for (let i = uniqueCount; i < input.n; i += 1) {
+  for (let i = uniqueCount; i < requestedCount; i += 1) {
     const sourceSlot = reuseOrder[(i - uniqueCount) % reuseOrder.length];
     assignments.push({
       positions: buildPositionRecord(input.controversy_axes, pool[selectedPoolIndexes[sourceSlot]]),
