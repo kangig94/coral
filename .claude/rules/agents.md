@@ -8,6 +8,7 @@
 | mcp-guardian | `.claude/agents/mcp-guardian.md` | opus | 1 | MCP protocol compliance, tool schema validation |
 | hook-safety | `.claude/agents/hook-safety.md` | sonnet | 2 | Hook timeout safety, side effect management |
 | skill-quality | `.claude/agents/skill-quality.md` | sonnet | 2 | SKILL.md quality, frontmatter correctness |
+| debugger | `agents/debugger.md` | opus | 1 | Systematic bug diagnosis, hypothesis testing, root cause analysis |
 | code-critic | `.claude/agents/code-critic.md` | sonnet | 3 | Code quality, elegance, complexity |
 | ux-critic | `.claude/agents/ux-critic.md` | sonnet | 3 | Plugin UX, skill discoverability, MCP tool ergonomics |
 
@@ -23,6 +24,7 @@
 | Session manager changes | mcp-guardian, code-critic | -- | Atomic writes + error handling |
 | Output parser changes | mcp-guardian | code-critic | JSONL contract correctness |
 | New MCP tool addition | mcp-guardian, ux-critic | code-critic | Protocol + ergonomics + quality |
+| Bug diagnosis/debugging | debugger | architect | Hypothesis-driven root cause analysis |
 | Any implementation complete | review-orchestrator | -- | Final validation gate |
 
 ## Invocation Protocol

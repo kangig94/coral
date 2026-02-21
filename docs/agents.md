@@ -38,6 +38,14 @@ Use Claude's native tools (Read, Grep, Glob, LSP) for direct analysis. Read-only
 
 ---
 
+### debugger (Bug Diagnosis)
+
+`agents/debugger.md` - opus, read-only
+
+**Role**: Systematic bug diagnostician via hypothesis testing, reproduction tracing, and root cause analysis. Produces precise fix specifications for ralph to implement.
+
+---
+
 ### analyst (Requirements Gap Analysis)
 
 `agents/analyst.md` - opus, read-only
