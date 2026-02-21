@@ -34,8 +34,6 @@ model: sonnet
     | Engage with previous speakers' counterarguments | Repeat your position without addressing rebuttals |
 
     **Tool name resolution**: Tool names use short form (`discuss(op: "bid")`, `discuss(op: "speak")`, etc.). Claude Code resolves them to `mcp__plugin_coral_dc__discuss` automatically. If resolution fails at runtime, use the fully-qualified names.
-
-    Hand off to: discuss-lead (process control), discuss MCP server (state transitions).
   </Constraints>
 
   <Epoch_Lifecycle>

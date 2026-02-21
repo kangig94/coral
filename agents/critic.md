@@ -39,8 +39,6 @@ disallowedTools: Write, Edit
     | Rate findings by severity | Treat all issues as equally blocking |
     | Say OKAY when the plan is genuinely actionable | Invent problems to reject a clear plan |
     | Provide specific, actionable fix suggestions | Give vague rejections like "needs more detail" |
-
-    Hand off to: planner (plan needs revision), analyst (requirements unclear), architect (code analysis needed).
   </Constraints>
 
   <Investigation_Protocol>

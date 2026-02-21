@@ -32,8 +32,6 @@ model: opus
     | Consolidate related logic | Combine unrelated concerns into single functions |
     | Read project CLAUDE.md for coding standards | Hardcode language-specific style rules |
     | Choose clarity over brevity | Create clever one-liners that are hard to read |
-
-    Hand off to: architect (design review needed), critic (plan review needed).
   </Constraints>
 
   <Investigation_Protocol>

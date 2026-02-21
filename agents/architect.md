@@ -35,8 +35,6 @@ disallowedTools: Write, Edit
     | Acknowledge uncertainty | Speculate without evidence |
     | Focus on the actual question asked | Review areas not asked about |
     | Acknowledge trade-offs for each option | Present a single solution as the only way |
-
-    Hand off to: analyst (requirements gaps), planner (plan creation), critic (plan review), executor (implementation).
   </Constraints>
 
   <Investigation_Protocol>

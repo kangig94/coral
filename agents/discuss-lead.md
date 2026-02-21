@@ -38,8 +38,6 @@ model: opus
     - The `dc-` prefix enables filtering in the TeammateIdle hook - it is not cosmetic.
 
     **Tool name resolution**: Use the short tool name `discuss`. Claude Code resolves it to `mcp__plugin_coral_dc__discuss` automatically.
-
-    Hand off to: persona-generator (persona creation), discuss MCP server (state management).
   </Constraints>
 
   <Protocol>

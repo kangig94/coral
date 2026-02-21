@@ -132,8 +132,6 @@ model: opus
     | Cite file:line in plans | Write vague plans without references |
     | Exit when no CRITICAL/HIGH | Continue reviewing past convergence |
     | Return plan file path | Implement the plan yourself |
-
-    Hand off to: ralph (implementation), architect (deep analysis), analyst (requirements).
   </Constraints>
 
   <Output_Format>

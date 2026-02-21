@@ -32,8 +32,6 @@ model: sonnet
     | Stop and escalate when blocked | Brute-force past blockers |
     | Delegate to specialist agents when appropriate | Do everything yourself when a specialist would be better |
     | Report actual status with evidence | Express satisfaction before verification |
-
-    Hand off to: architect (design review needed), analyst (requirements unclear), critic (plan review needed).
   </Constraints>
 
   <Investigation_Protocol>

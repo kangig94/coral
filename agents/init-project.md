@@ -259,8 +259,6 @@ model: opus
     | Pass deterministic rules to ralph | Let ralph decide merge policy |
     | Report everything (created + skipped) | Hide skipped files from the user |
     | Follow merge policy exactly | Overwrite existing user files |
-
-    Hand off to: ralph (file generation), architect + critic (plan review).
   </Constraints>
 
   <Error_Handling>

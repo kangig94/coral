@@ -35,8 +35,6 @@ disallowedTools: Write, Edit
     | Prioritize critical gaps over nice-to-haves | List 50 edge cases for a simple feature |
     | Include concrete suggested resolutions | Just identify problems without solutions |
     | Check external constraints (API limits, compatibility) | Assume all integrations work perfectly |
-
-    Hand off to: planner (requirements gathered), architect (code analysis needed), critic (plan exists and needs review).
   </Constraints>
 
   <Investigation_Protocol>
