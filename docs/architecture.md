@@ -21,8 +21,8 @@
 │  │  Tools: codex_session_*     │  │  Tools: discuss_*            │  │
 │  │  (create, send, list, fork) │  │  (create, bid, wait, speak,  │  │
 │  │                              │  │   transcript, state, end,    │  │
-│  │  Session: ~/.claude/coral/  │  │   epoch_summary)             │  │
-│  │           sessions/          │  │                              │  │
+│  │  Session: ~/.claude/coral/  │  │   epoch_summary,             │  │
+│  │           sessions/          │  │   persona_seed)              │  │
 │  └──────────────┬───────────────┘  │  Session: {project}/.claude/ │  │
 │                 │                   │           coral/discuss/     │  │
 │                 │                   └──────────────────────────────┘  │
@@ -191,6 +191,7 @@ coral/
 │       ├── conditions.ts        # Pure condition predicates for discuss_wait
 │       ├── wait.ts              # Async file polling (waitForCondition)
 │       ├── transcript.ts        # Transcript rendering (pure functions)
+│       ├── persona-seed.ts      # k-DPP persona seeding (pure functions, zero I/O)
 │       ├── types.ts             # DiscussState, TranscriptEntry, Result<T>, WaitCondition
 │       └── __tests__/           # Tests (vitest)
 │           ├── state-machine.test.ts
@@ -199,7 +200,8 @@ coral/
 │           ├── wait.test.ts
 │           ├── transcript.test.ts
 │           ├── schemas.test.ts
-│           └── server-handlers.test.ts
+│           ├── server-handlers.test.ts
+│           └── persona-seed.test.ts
 ├── skills/
 │   ├── architect/
 │   │   └── SKILL.md             # /coral:architect (Claude-native)
@@ -280,6 +282,7 @@ discuss/server.ts  (wiring only — SDK setup, transport, signals)
         ├── discuss/state-machine.ts    (pure state transitions, zero I/O)
         ├── discuss/session-store.ts    (I/O shell: atomic writes, cross-process lock)
         │     └── discuss/transcript.ts (rendering, called via save())
+        ├── discuss/persona-seed.ts      (pure k-DPP sampling, zero I/O)
         ├── discuss/conditions.ts       (pure predicates for discuss_wait)
         ├── discuss/wait.ts             (async file polling)
         └── shared/mcp-utils.ts         (textResult, jsonResult)

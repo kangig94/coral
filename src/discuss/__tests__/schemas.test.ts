@@ -8,6 +8,7 @@ import {
   discussStateSchema,
   discussEndSchema,
   discussEpochSummarySchema,
+  discussPersonaSeedSchema,
   sessionIdPattern,
 } from '../schemas.js';
 
@@ -211,5 +212,61 @@ describe('discussSpeakSchema', () => {
   it('should accept valid speech', () => {
     const result = discussSpeakSchema.parse({ session, agent_name: 'architect', content: 'Microservices are...' });
     expect(result.content).toBeTruthy();
+  });
+});
+
+describe('discussPersonaSeedSchema', () => {
+  const valid = {
+    controversy_axes: [
+      { axis: 'cost', positions: ['high', 'low'] },
+      { axis: 'risk', positions: ['high', 'low'] },
+    ],
+    n: 4,
+    seed: 42,
+  };
+
+  it('should parse valid input', () => {
+    const result = discussPersonaSeedSchema.parse(valid);
+    expect(result.n).toBe(4);
+    expect(result.seed).toBe(42);
+  });
+
+  it('should reject duplicate axis names', () => {
+    expect(() =>
+      discussPersonaSeedSchema.parse({
+        ...valid,
+        controversy_axes: [
+          { axis: 'cost', positions: ['high', 'low'] },
+          { axis: 'cost', positions: ['strict', 'relaxed'] },
+        ],
+      }),
+    ).toThrow(/axis names must be unique/i);
+  });
+
+  it('should reject duplicate positions within an axis', () => {
+    expect(() =>
+      discussPersonaSeedSchema.parse({
+        ...valid,
+        controversy_axes: [
+          { axis: 'cost', positions: ['high', 'high'] },
+          { axis: 'risk', positions: ['high', 'low'] },
+        ],
+      }),
+    ).toThrow(/positions within an axis must be unique/i);
+  });
+
+  it('should reject out-of-range n', () => {
+    expect(() => discussPersonaSeedSchema.parse({ ...valid, n: 0 })).toThrow();
+    expect(() => discussPersonaSeedSchema.parse({ ...valid, n: 9 })).toThrow();
+  });
+
+  it('should default seed to null and accept explicit null', () => {
+    const withNull = discussPersonaSeedSchema.parse({ ...valid, seed: null });
+    const withoutSeed = discussPersonaSeedSchema.parse({
+      controversy_axes: valid.controversy_axes,
+      n: valid.n,
+    });
+    expect(withNull.seed).toBeNull();
+    expect(withoutSeed.seed).toBeNull();
   });
 });

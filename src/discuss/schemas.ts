@@ -99,6 +99,24 @@ export const discussEpochSummarySchema = z.object({
   summary: z.string().min(1),
 });
 
+// discuss_persona_seed — Generate k-DPP diverse persona assignments
+export const discussPersonaSeedSchema = z.object({
+  controversy_axes: z.array(z.object({
+    axis: z.string().min(1),
+    positions: z.array(z.string().min(1)).min(1).max(10)
+      .refine(
+        (positions) => new Set(positions).size === positions.length,
+        'Positions within an axis must be unique',
+      ),
+  })).min(1).max(10)
+    .refine(
+      (axes) => new Set(axes.map((a) => a.axis)).size === axes.length,
+      'Axis names must be unique',
+    ),
+  n: z.number().int().min(1).max(8),
+  seed: z.number().int().nullable().default(null),
+});
+
 export type DiscussCreateInput = z.infer<typeof discussCreateSchema>;
 export type DiscussBidInput = z.infer<typeof discussBidSchema>;
 export type DiscussWaitInput = z.infer<typeof discussWaitSchema>;
@@ -107,3 +125,4 @@ export type DiscussTranscriptInput = z.infer<typeof discussTranscriptSchema>;
 export type DiscussStateInput = z.infer<typeof discussStateSchema>;
 export type DiscussEndInput = z.infer<typeof discussEndSchema>;
 export type DiscussEpochSummaryInput = z.infer<typeof discussEpochSummarySchema>;
+export type DiscussPersonaSeedInput = z.infer<typeof discussPersonaSeedSchema>;

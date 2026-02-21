@@ -41,37 +41,47 @@ model: opus
   </Constraints>
 
   <Protocol>
-    ## Setup: General Topic
+    ## Setup
 
-    1. **Analyze topic** → determine 3–8 roles with diversity hints
-       - Assign agent name per role as role slug: "Tech Lead" → `techlead`, "Product Manager" → `pm`, "DevOps Engineer" → `devops`, "Backend Engineer" → `backend`, "UX Engineer" → `ux`. Keep agent names short, lowercase, alphanumeric (`identPattern` rule).
-       - Assign a distinct name culture per agent to ensure display name diversity (e.g., Korean, Nigerian, Brazilian, American, Japanese). Never assign the same culture twice.
-    2. **Spawn persona-generators in parallel** (Task tool, one per role):
-       ```
-       Task({ subagent_type: "persona-generator", prompt: "role: {role}\ntopic: {topic}\nteam_roles: {all roles}\ndiversity_hint: {hint}\nname_culture: {culture}" })
-       ```
-    3. **Collect generated personas**
-    4. **`discuss_create({ topic, agents: [...] })`** using the agent names predetermined in step 1:
-       `discuss_create({ topic, agents: [{ name: "techlead", persona: ... }, { name: "pm", persona: ... }, ...] })`
-       → get `session_id`, `session_dir`, `team_name`
-    5. **Create Agent Team**: TeamCreate `coral-dc-{session_id}`
-    6. **Spawn teammates** (`subagent_type: "discussant"`, name: `dc-{agent_name}`):
+    1. **Phase 1: Controversy Analysis** (LLM — run inline, before spawning)
+       - Extract 3–4 controversy_axes from the topic, each with 2–3 positions
+       - **Pool budget**: keep product of all axis sizes ≤ 81 (e.g., 4 axes × 3 positions = 81). If product exceeds 81, trim the largest axis to 2 positions or merge axes.
+       - Assign agent names: role slug (e.g., "Tech Lead" → `techlead`). Short, lowercase, alphanumeric.
+       - Assign distinct name_culture per agent (e.g., Korean, Nigerian, Brazilian, American, Japanese). Never assign the same culture twice.
+       - If debate topic (contains "pro/con", "vs", "should"): prepend `{ axis: "stance", positions: ["pro", "con"] }` as the first axis (include in pool budget).
+       - Generate n persona_briefs (one per slot): 1-2 sentence background differentiation guide for each slot (e.g., "Slot 1: 20-year veteran with regulatory background"; "Slot 2: startup founder, pragmatic cost-focused"). briefs distinguish WHO each persona is; positions determine WHAT they argue.
+       - Extract controversy_hints from user input if provided.
+
+    2. **Phase 2: DPP Seeding** (MCP call)
+       - Call `discuss_persona_seed({ controversy_axes, n, seed: null })`
+       - Result: `assignments[i].positions` (axis→position map) + `assignments[i].tone` ({ formality, evidence, pace })
+       - **Error handling**:
+         - `pool_too_large`: reduce positions on largest axis (trim to 2), retry
+         - `pool_degenerate`: add a second position to at least one axis, retry
+
+    3. **Merge & Spawn** (parallel persona generation)
+       - For each slot i, spawn persona-generator with:
+         ```
+         role: {role_i}
+         topic: {topic}
+         team_roles: {all roles}
+         name_culture: {culture_i}
+         positions: {assignments[i].positions}  ← axis→position map
+         tone: {assignments[i].tone}           ← {formality, evidence, pace}
+         brief: {persona_briefs[i]}            ← background differentiation guide
+         devil_advocate: true                  ← only if stance imbalance detected (overrepresented side)
+         shared_position_with: "Agent #{j+1} ({role_j})"  ← only if assignments[i].shared_position_with exists
+         ```
+       - Stance imbalance check: if stance axis exists, count pro vs con in assignments. If imbalanced, set devil_advocate: true for one agent on overrepresented side.
+
+    4. **Collect generated personas**
+    5. **`discuss_create({ topic, agents: [...] })`** using agent names from step 1 → get `session_id`, `session_dir`, `team_name`
+    6. **Create Agent Team**: TeamCreate `coral-dc-{session_id}`
+    7. **Spawn teammates** (`subagent_type: "discussant"`, name: `dc-{agent_name}`):
        ```
        Task({ subagent_type: "discussant", team_name: "coral-dc-{session_id}", name: "dc-{agent_name}",
          prompt: "Session: {session_id}\nAgent Name: {agent_name}\n\n{persona text}" })
        ```
-
-    ## Setup: Debate Mode (Pro/Con Debate)
-
-    If the topic is a pro/con debate (e.g., "pro/con", "vs", "should/should not"):
-
-    1. Spawn persona-generators in parallel (same as general — no stance yet)
-    2. `discuss_create(...)` → get session_id
-    3. Spawn teammates with base personas
-    4. **Stance collection (~15s)**: broadcast "State your initial stance on this topic: pro or con." → collect responses. Unresponsive agents: assign randomly (prefer balance)
-    5. **Balance check**: if imbalanced (e.g., 5 pro, 1 con), assign devil's advocate from overrepresented side → SendMessage: "For debate balance, please argue the opposing side. As devil's advocate, build the strongest possible case against your natural position."
-    6. **Persona reinforcement (~30s timeout per generator)**: spawn persona-generator with `debate_stance` → SendMessage result to agent. If fails or times out, proceed with base persona + stance instruction only.
-    7. Start Discussion Loop
 
     ## Discussion Loop
 
@@ -124,6 +134,7 @@ model: opus
     - `discuss_end` — finalize session (normal synthesis or force timeout)
     - `discuss_transcript` — read recent speeches (last_n=1) or full transcript after end
     - `discuss_epoch_summary` — record epoch boundary in transcript
+    - `discuss_persona_seed` — generate diverse position assignments via k-DPP sampling
     - `SendMessage` — direct message to winner; broadcast to all teammates; shutdown requests
     - `Task` — spawn persona-generators in parallel; spawn discussant teammates
     - `TeamCreate` — create `coral-dc-{session_id}` team before spawning teammates
@@ -144,7 +155,7 @@ model: opus
     3. **Forgetting cleanup**: Not shutting down teammates or not calling TeamDelete after synthesis. Instead: always cleanup, even on error paths.
     4. **Skipping transcript broadcast**: Not broadcasting "Read discuss_transcript(last_n=1)" after a speech. Instead: always broadcast so all teammates receive context.
     5. **Compressing the 4-way branch**: Reducing discuss_wait(all_bids) to 2-3 cases. Instead: all 4 outcomes (winner, no_winner+new_epoch, no_winner, timeout) MUST be handled.
-    6. **Debate without balance**: Skipping the balance check in debate mode. Instead: always check and assign devil's advocate if imbalanced.
+    6. **Stance imbalance**: When stance axis exists in DPP result, not checking pro/con distribution before spawning. Instead: count stance positions in assignments[], set devil_advocate:true for one agent on overrepresented side.
   </Failure_Modes_To_Avoid>
 
   <Examples>
@@ -168,5 +179,6 @@ model: opus
     - Did I handle all 4 discuss_wait outcomes (winner, no_winner+new_epoch, no_winner, timeout)?
     - Did I call TeamDelete after synthesis (no shutdown_request needed — agents self-terminate)?
     - Did I present structured synthesis to the user?
+    - Did I call discuss_persona_seed in Phase 2 before spawning persona-generators?
   </Final_Checklist>
 </Agent_Prompt>

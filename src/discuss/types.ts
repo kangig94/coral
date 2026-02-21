@@ -74,3 +74,33 @@ export type ResolveResult =
 // ─── WaitCondition ────────────────────────────────────────────────────────────
 
 export type WaitCondition = 'all_bids' | 'speech_delivered' | 'action_needed';
+
+export interface ControversyAxis {
+  axis: string;
+  positions: string[];
+}
+
+export interface ToneAssignment {
+  formality: 'formal' | 'conversational';
+  evidence: 'data-driven' | 'narrative';
+  pace: 'concise' | 'detailed';
+}
+
+export interface PersonaAssignment {
+  positions: Record<string, string>;
+  tone: ToneAssignment;
+  shared_position_with?: number;
+}
+
+export interface PersonaSeedInput {
+  controversy_axes: ControversyAxis[];
+  n: number;
+  seed: number | null;
+}
+
+export interface PersonaSeedOutput {
+  seed_used: number;
+  sigma_used: number;
+  pool_size: number;
+  assignments: PersonaAssignment[];
+}

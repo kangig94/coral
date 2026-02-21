@@ -38,12 +38,23 @@
     2-4 sentences. Defines the agent's lens for evaluating discussion topics.
   </Section>
 
+  <Section name="Position" optional="true">
+    ## Position
+    {1-2 sentence summary of key stances for moderator reference}
+
+    Include ONLY when `positions` field is provided by discuss-lead.
+    Keep brief: "Advocates for market-driven regulation; skeptical of top-down mandates."
+    This section is for moderator reference — discussants use Perspective for substance.
+  </Section>
+
   <Invariants>
     - First line MUST be `# Name — Role` (parsed by `parseDisplayName()` in state-machine.ts)
-    - All 4 sections MUST be present as markdown headers (## Expertise, ## Perspective, ## Communication Style, ## Core Focus)
-    - Each section 2-4 sentences (concise personas work better than verbose ones)
+    - 4 required sections MUST be present as markdown headers: ## Expertise, ## Perspective, ## Communication Style, ## Core Focus
+    - 1 optional section: ## Position (include only when `positions` input is provided)
+    - Each section 2-4 sentences (concise personas work better than verbose ones); Position section 1-2 sentences
     - Name must be realistic and culturally appropriate for the role
-    - When debate_stance is "pro" or "con", perspective and core focus should naturally align
+    - `positions` must emerge naturally in Perspective — do NOT list as key-value pairs
+    - `tone` determines Communication Style register, not just word choice
     - Output must be raw markdown — NO XML tags in the generated persona output
     - This template's XML tags are instructional for the persona-generator to read — they do NOT appear in output
   </Invariants>

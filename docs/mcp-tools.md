@@ -3,7 +3,7 @@
 Coral exposes two MCP servers, each with its own tool set:
 
 - **`cx` (Codex)**: 4 tools for Codex CLI session management. Prefix: `mcp__plugin_coral_cx__`
-- **`dc` (Discuss)**: 8 tools for moderated multi-agent discussions. Prefix: `mcp__plugin_coral_dc__`
+- **`dc` (Discuss)**: 9 tools for moderated multi-agent discussions. Prefix: `mcp__plugin_coral_dc__`
 
 All tool inputs are validated at runtime with zod schemas (`src/codex/schemas.ts`, `src/discuss/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
 
@@ -390,6 +390,64 @@ Append an epoch summary to the transcript. Teamlead-only. One summary per epoch,
   "epoch": 1
 }
 ```
+
+---
+
+## discuss_persona_seed
+
+Generate diverse persona position assignments using k-DPP (Determinantal Point Process) sampling on controversy axes. Returns deterministic assignments with seed for reproducibility.
+
+### Algorithm
+
+1. Builds a Gaussian RBF kernel over the Cartesian product of all axis positions: `L[i][j] = exp(-hamming²/(2σ²))`, σ = √(dims/2)
+2. Samples k items exactly from the k-DPP distribution (Kulesza & Taskar 2012, Algorithm 1): ESP backward sampling + Gram-Schmidt sequential sampling
+3. Assigns tone independently via seeded shuffle of 8 TONE_AXES combinations: `{ formality, evidence, pace }`
+4. When n > pool_size (and pool > 1): additional slots reuse existing assignments with `shared_position_with` index
+
+Mathematical guarantee: identical position combinations have selection probability = 0 (determinant property).
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `controversy_axes` | array | Yes | Axes with positions. Axis names must be unique; positions within each axis must be unique. |
+| `controversy_axes[].axis` | string | Yes | Axis name (e.g., "regulation", "stance") |
+| `controversy_axes[].positions` | string[] | Yes | 1–10 positions for this axis |
+| `n` | integer | Yes | Number of persona assignments (1–8) |
+| `seed` | integer \| null | No | RNG seed for reproducibility. `null` = random (default) |
+
+**Pool size constraint**: The Cartesian product of all axis sizes must not exceed 256. Recommended: keep product ≤ 81 (e.g., 3 axes × 3 positions, or 4 axes × 2-3 positions).
+
+### Output (JSON)
+
+```json
+{
+  "seed_used": 42,
+  "sigma_used": 1.4142135623730951,
+  "pool_size": 8,
+  "assignments": [
+    {
+      "positions": { "stance": "pro", "regulation": "market-driven" },
+      "tone": { "formality": "formal", "evidence": "data-driven", "pace": "concise" }
+    },
+    {
+      "positions": { "stance": "con", "regulation": "market-driven" },
+      "tone": { "formality": "conversational", "evidence": "narrative", "pace": "detailed" },
+      "shared_position_with": 1
+    }
+  ]
+}
+```
+
+`seed_used` can be passed back as `seed` to reproduce identical assignments.
+`shared_position_with` is a 0-based index into `assignments` — present only when n > pool_size.
+
+### Error Responses
+
+| Error | Cause | `detail` fields |
+|---|---|---|
+| `pool_too_large` | Cartesian product > 256 | `actual_pool_size`, `max_pool_size: 256`, `hint: "Reduce axes or positions"` |
+| `pool_degenerate` | pool_size = 1 and n > 1 | `pool_size: 1`, `requested_n`, `hint: "All axes have single position"` |
 
 ---
 

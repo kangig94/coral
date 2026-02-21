@@ -20,6 +20,7 @@ import {
 import { allBidsIn, speechDelivered, actionNeeded } from './conditions.js';
 import { waitForCondition } from './wait.js';
 import { formatFull, formatRecent, formatSummary } from './transcript.js';
+import { seedPersonas } from './persona-seed.js';
 import {
   discussCreateSchema,
   discussBidSchema,
@@ -29,6 +30,7 @@ import {
   discussStateSchema,
   discussEndSchema,
   discussEpochSummarySchema,
+  discussPersonaSeedSchema,
 } from './schemas.js';
 
 export { textResult, jsonResult };
@@ -188,6 +190,32 @@ export const tools = [
         summary: { type: 'string', description: 'Summary of the completed epoch' },
       },
       required: ['session', 'epoch', 'summary'],
+    },
+  },
+  {
+    name: 'discuss_persona_seed',
+    description: 'Generate diverse persona position assignments using k-DPP sampling on controversy axes. Returns seed_used for reproducibility.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        controversy_axes: {
+          type: 'array',
+          description: 'Controversy axes with positions. Axis names must be unique. Positions within each axis must be unique.',
+          items: {
+            type: 'object',
+            properties: {
+              axis: { type: 'string' },
+              positions: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 10 },
+            },
+            required: ['axis', 'positions'],
+          },
+          minItems: 1,
+          maxItems: 10,
+        },
+        n: { type: 'integer', description: 'Number of persona assignments (1-8)', minimum: 1, maximum: 8 },
+        seed: { type: ['integer', 'null'], description: 'RNG seed for reproducibility. Null = random seed.' },
+      },
+      required: ['controversy_axes', 'n'],
     },
   },
 ];
@@ -441,6 +469,11 @@ export async function handleToolCall(
           () => ({ ok: true }),
         );
         return resultToMcp(result);
+      }
+
+      case 'discuss_persona_seed': {
+        const input = discussPersonaSeedSchema.parse(rawArgs);
+        return resultToMcp(seedPersonas(input));
       }
 
       default:

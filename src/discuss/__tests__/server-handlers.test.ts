@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionStore } from '../session-store.js';
-import { handleToolCall } from '../server-handlers.js';
+import { handleToolCall, tools } from '../server-handlers.js';
 import { startBidding } from '../state-machine.js';
 
 let tmpDir: string;
@@ -264,5 +264,121 @@ describe('unknown tool', () => {
     const result = await handleToolCall('discuss_unknown', {}, store);
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('Unknown tool');
+  });
+});
+
+describe('discuss_persona_seed', () => {
+  const validInput = {
+    controversy_axes: [
+      { axis: 'cost', positions: ['high', 'low'] },
+      { axis: 'risk', positions: ['high', 'low'] },
+    ],
+    n: 4,
+    seed: 1234,
+  };
+
+  it('should appear in tools array', () => {
+    expect(tools.some((tool) => tool.name === 'discuss_persona_seed')).toBe(true);
+  });
+
+  it('should return seed_used and assignments for valid input', async () => {
+    const result = await handleToolCall('discuss_persona_seed', validInput, store);
+    expect(result.isError).toBe(false);
+    const data = JSON.parse(result.content[0].text);
+    expect(data).toHaveProperty('seed_used');
+    expect(data).toHaveProperty('assignments');
+    expect(Array.isArray(data.assignments)).toBe(true);
+  });
+
+  it('should return Zod error for invalid input', async () => {
+    const result = await handleToolCall('discuss_persona_seed', { ...validInput, n: 0 }, store);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Error:');
+  });
+
+  it('should replay identical result when reusing returned seed_used', async () => {
+    const first = await handleToolCall('discuss_persona_seed', { ...validInput, seed: null }, store);
+    const firstData = JSON.parse(first.content[0].text);
+    expect(typeof firstData.seed_used).toBe('number');
+
+    const second = await handleToolCall('discuss_persona_seed', { ...validInput, seed: firstData.seed_used }, store);
+    const secondData = JSON.parse(second.content[0].text);
+
+    expect(secondData.seed_used).toBe(firstData.seed_used);
+    expect(secondData.assignments).toEqual(firstData.assignments);
+  });
+
+  it('should return structured pool_degenerate error', async () => {
+    const result = await handleToolCall(
+      'discuss_persona_seed',
+      {
+        controversy_axes: [
+          { axis: 'only1', positions: ['x'] },
+          { axis: 'only2', positions: ['y'] },
+        ],
+        n: 2,
+      },
+      store,
+    );
+
+    const data = JSON.parse(result.content[0].text);
+    expect(data).toHaveProperty('error', 'pool_degenerate');
+    expect(data).toHaveProperty('pool_size', 1);
+  });
+
+  it('should return structured pool_too_large error', async () => {
+    const result = await handleToolCall(
+      'discuss_persona_seed',
+      {
+        controversy_axes: [
+          { axis: 'a', positions: ['1', '2', '3', '4'] },
+          { axis: 'b', positions: ['1', '2', '3', '4'] },
+          { axis: 'c', positions: ['1', '2', '3', '4'] },
+          { axis: 'd', positions: ['1', '2', '3', '4', '5'] },
+        ],
+        n: 4,
+      },
+      store,
+    );
+
+    const data = JSON.parse(result.content[0].text);
+    expect(data).toHaveProperty('error', 'pool_too_large');
+    expect(data).toHaveProperty('actual_pool_size', 320);
+    expect(data).toHaveProperty('max_pool_size', 256);
+  });
+
+  it('should allow 256 combinations and reject >256 combinations', async () => {
+    const atBoundary = await handleToolCall(
+      'discuss_persona_seed',
+      {
+        controversy_axes: [
+          { axis: 'a', positions: ['1', '2', '3', '4'] },
+          { axis: 'b', positions: ['1', '2', '3', '4'] },
+          { axis: 'c', positions: ['1', '2', '3', '4'] },
+          { axis: 'd', positions: ['1', '2', '3', '4'] },
+        ],
+        n: 1,
+      },
+      store,
+    );
+    const atBoundaryData = JSON.parse(atBoundary.content[0].text);
+    expect(atBoundaryData).toHaveProperty('pool_size', 256);
+    expect(atBoundaryData).not.toHaveProperty('error');
+
+    const aboveBoundary = await handleToolCall(
+      'discuss_persona_seed',
+      {
+        controversy_axes: [
+          { axis: 'a', positions: ['1', '2', '3', '4'] },
+          { axis: 'b', positions: ['1', '2', '3', '4'] },
+          { axis: 'c', positions: ['1', '2', '3', '4'] },
+          { axis: 'd', positions: ['1', '2', '3', '4', '5'] },
+        ],
+        n: 1,
+      },
+      store,
+    );
+    const aboveBoundaryData = JSON.parse(aboveBoundary.content[0].text);
+    expect(aboveBoundaryData).toHaveProperty('error', 'pool_too_large');
   });
 });

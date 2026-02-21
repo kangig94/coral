@@ -1,7 +1,7 @@
 ---
 name: discuss
 description: Moderated multi-agent discussion via Agent Teams
-argument-hint: "[topic]"
+argument-hint: "[topic] [--hints axis1:pos1,pos2 axis2:pos1,pos2]"
 ---
 
 # Moderated Multi-Agent Discussion
@@ -50,6 +50,7 @@ From the user's request, identify:
 - Preferred team size (default: 4–6 agents)
 - Whether it's a pro/con debate (triggers debate mode)
 - Any specific perspectives or roles requested
+- Any controversy hints provided via `--hints` (pre-specified axes to include in Phase 1 analysis)
 
 ## Error Policy
 
