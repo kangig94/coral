@@ -9,7 +9,7 @@ import { startBidding } from '../state-machine.js';
 let tmpDir: string;
 let store: SessionStore;
 
-const SESSION = '20260221-143052-a3x7';
+const SESSION = '260221-1430-a3x7';
 const AGENTS = [
   { name: 'alice', persona: 'Alice the architect' },
   { name: 'bob', persona: 'Bob the critic' },

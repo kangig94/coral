@@ -1,12 +1,12 @@
 /**
- * Zod schemas for MCP tool input validation — discuss_* tools (v2).
+ * Zod schemas for MCP tool input validation — discuss_* tools.
  */
 
 import { z } from 'zod';
 import { identPattern } from '../shared/mcp-utils.js';
 
-/** Session ID: yymmdd-HHmm-xxxx (compact timestamp + 4-char random suffix). Legacy: YYYYMMDD-HHmmss-xxxx. */
-export const sessionIdPattern = /^[0-9]{6}-[0-9]{4}-[a-z0-9]{4}$|^[0-9]{8}-[0-9]{6}-[a-z0-9]{4}$/;
+/** Session ID: yymmdd-HHmm-xxxx (compact timestamp + 4-char random suffix). */
+export const sessionIdPattern = /^[0-9]{6}-[0-9]{4}-[a-z0-9]{4}$/;
 
 // discuss_create — Initialize a discussion session
 export const discussCreateSchema = z.object({
@@ -51,7 +51,7 @@ export const discussWaitSchema = z
     (input) => ({ message: `timeout_seconds exceeds ${WAIT_TIMEOUT_LIMITS[input.condition]}s limit for ${input.condition}` }),
   )
   .refine(
-    (input) => !(input.condition === 'action_needed' && !input.agent_name),
+    (input) => input.condition !== 'action_needed' || input.agent_name != null,
     { message: 'agent_name required for action_needed condition' },
   );
 

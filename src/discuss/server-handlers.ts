@@ -1,6 +1,6 @@
 /**
- * Coral Discuss MCP Server — tool definitions and dispatch handlers (v2).
- * Uses SessionStore + pure state-machine functions. discuss_resolve removed.
+ * Coral Discuss MCP Server — tool definitions and dispatch handlers.
+ * Uses SessionStore + pure state-machine functions.
  */
 
 import { textResult, jsonResult, type McpResult } from '../shared/mcp-utils.js';
@@ -58,9 +58,9 @@ async function mutateSession<T>(
 }
 
 /** Convert a Result to an McpResult. */
-function resultToMcp(result: Result<Record<string, unknown>>): McpResult {
+function resultToMcp(result: Result<unknown>): McpResult {
   if (!result.ok) return jsonResult({ error: result.error, ...result.detail });
-  return jsonResult(result.value);
+  return jsonResult(result.value as Record<string, unknown>);
 }
 
 /** Map discuss state status to action name for action_needed responses. */
@@ -238,7 +238,7 @@ export async function handleToolCall(
           (s) => applyBid(s, input.agent_name, input.score, new Date().toISOString()),
           (s) => ({ all_bids_in: s.pending_bidders.length === 0 }),
         );
-        return resultToMcp(result as Result<Record<string, unknown>>);
+        return resultToMcp(result);
       }
 
       case 'discuss_wait': {
@@ -280,6 +280,9 @@ export async function handleToolCall(
           return textResult(`Error: ${waitResult.error}`, true);
         }
 
+        // After error check, state is guaranteed non-null (discriminated union narrowing)
+        const waitState = waitResult.state!;
+
         // Auto-resolve on all_bids fulfillment
         if (waitResult.fulfilled && input.condition === 'all_bids') {
           const outcome = await store.withLock(sessionDir, async () => {
@@ -299,14 +302,13 @@ export async function handleToolCall(
 
         // Action-needed: tell agent what to do next
         if (waitResult.fulfilled && input.condition === 'action_needed') {
-          const s = waitResult.state;
-          const action = STATUS_TO_ACTION[s.status] ?? 'bid';
+          const action = STATUS_TO_ACTION[waitState.status] ?? 'bid';
           return jsonResult({
             fulfilled: true,
             action,
             elapsed_seconds: waitResult.elapsed_ms / 1000,
-            epoch: s.epoch,
-            quota_remaining: s.agents[input.agent_name!]?.quota_remaining ?? 0,
+            epoch: waitState.epoch,
+            quota_remaining: waitState.agents[input.agent_name!]?.quota_remaining ?? 0,
           });
         }
 
@@ -314,9 +316,9 @@ export async function handleToolCall(
         return jsonResult({
           fulfilled: waitResult.fulfilled,
           elapsed_seconds: waitResult.elapsed_ms / 1000,
-          status: waitResult.state.status,
-          step: waitResult.state.step,
-          epoch: waitResult.state.epoch,
+          status: waitState.status,
+          step: waitState.step,
+          epoch: waitState.epoch,
         });
       }
 
@@ -330,7 +332,7 @@ export async function handleToolCall(
           (s) => applySpeech(s, input.agent_name, input.content, new Date().toISOString()),
           (s) => ({ step: s.step, status: s.status }),
         );
-        return resultToMcp(result as Result<Record<string, unknown>>);
+        return resultToMcp(result);
       }
 
       case 'discuss_transcript': {
@@ -339,7 +341,7 @@ export async function handleToolCall(
         if (typeof sessionDir !== 'string') return sessionDir;
 
         // When agent_name provided: track read under lock for bid enforcement.
-        // When absent: lockless read (backward compatible, no tracking needed).
+        // When absent: lockless read (no tracking needed).
         const { agent_name: caller } = input;
         const state = caller
           ? await store.withLock(sessionDir, async () => {
@@ -423,7 +425,7 @@ export async function handleToolCall(
           (s) => applyEnd(s, { force: input.force, reason: input.reason, synthesis: input.synthesis }, new Date().toISOString()),
           () => ({ ok: true, session_id: input.session }),
         );
-        return resultToMcp(result as Result<Record<string, unknown>>);
+        return resultToMcp(result);
       }
 
       case 'discuss_epoch_summary': {
@@ -436,7 +438,7 @@ export async function handleToolCall(
           (s) => applyEpochSummary(s, input.epoch, input.summary, new Date().toISOString()),
           () => ({ ok: true }),
         );
-        return resultToMcp(result as Result<Record<string, unknown>>);
+        return resultToMcp(result);
       }
 
       default:

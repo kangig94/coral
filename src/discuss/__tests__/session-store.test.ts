@@ -1,12 +1,12 @@
 /**
- * SessionStore tests — atomic writes, locking, normalizeState migration.
+ * SessionStore tests — atomic writes, locking, session lifecycle.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { SessionStore, normalizeState } from '../session-store.js';
+import { SessionStore } from '../session-store.js';
 import { initSession } from '../state-machine.js';
 import type { DiscussState } from '../types.js';
 
@@ -35,64 +35,6 @@ function createAndSaveSession(topic = 'Test Topic') {
   return { sessionId, fullPath, state };
 }
 
-// ─── normalizeState ───────────────────────────────────────────────────────────
-
-describe('normalizeState', () => {
-  it('should add v2 fields to legacy state', () => {
-    const legacy = {
-      session_id: 'test', topic: 'x', status: 'bidding', step: 1, epoch: 1,
-      agents: { alice: { persona: 'p', quota_remaining: 3, total_speaks: 0, fallback_used: false } },
-      current_bids: { alice: null }, pending_bidders: ['alice'],
-      current_speaker: null, speaker_type: null, epoch_summary_written: null,
-      team_name: 't', created_at: 'x', updated_at: 'x', session_dir: 'x',
-      cold_start: true, quota_per_epoch: 3, recent_turns: 5,
-    } as Record<string, unknown>;
-
-    const result = normalizeState(legacy);
-    expect(result.last_speech_step).toBe(0);
-    expect(result.transcript).toEqual([]);
-    expect(result.transcript_rendered).toBe(0);
-  });
-
-  it('should parse display_name from persona first line', () => {
-    const raw = {
-      session_id: 'test', topic: 'x', status: 'bidding', step: 1, epoch: 1,
-      agents: { alice: { persona: '# Alice — Architect\nPersona body.', quota_remaining: 3, total_speaks: 0, fallback_used: false } },
-      current_bids: { alice: null }, pending_bidders: ['alice'],
-      current_speaker: null, speaker_type: null, epoch_summary_written: null,
-      team_name: 't', created_at: 'x', updated_at: 'x', session_dir: 'x',
-      cold_start: true, quota_per_epoch: 3, recent_turns: 5,
-      last_speech_step: 0, transcript: [], transcript_rendered: 0,
-    } as Record<string, unknown>;
-
-    const result = normalizeState(raw);
-    expect(result.agents['alice'].display_name).toBe('Alice');
-  });
-
-  it('should migrate speaker_type "designated" to "cold_start"', () => {
-    const raw = {
-      session_id: 'test', topic: 'x', status: 'speaking', step: 2, epoch: 1,
-      agents: { alice: { persona: 'p', display_name: 'Alice', quota_remaining: 3, total_speaks: 0, fallback_used: false } },
-      current_bids: { alice: null }, pending_bidders: [],
-      current_speaker: 'alice', speaker_type: 'designated', epoch_summary_written: null,
-      team_name: 't', created_at: 'x', updated_at: 'x', session_dir: 'x',
-      cold_start: false, quota_per_epoch: 3, recent_turns: 5,
-      last_speech_step: 0, transcript: [], transcript_rendered: 0,
-    } as Record<string, unknown>;
-
-    const result = normalizeState(raw);
-    expect(result.speaker_type).toBe('cold_start');
-  });
-
-  it('should not modify already-normalized state', () => {
-    const { state } = createAndSaveSession();
-    const loaded = store.load(state.session_dir);
-    const renormalized = normalizeState(loaded as unknown as Record<string, unknown>);
-    expect(renormalized.last_speech_step).toBe(0);
-    expect(renormalized.transcript).toEqual([]);
-  });
-});
-
 // ─── SessionStore.createSessionDir ───────────────────────────────────────────
 
 describe('createSessionDir', () => {
@@ -118,7 +60,7 @@ describe('resolveDir', () => {
   });
 
   it('should return null for unknown session', () => {
-    const resolved = store.resolveDir('99999999-999999-zzzz');
+    const resolved = store.resolveDir('999999-9999-zzzz');
     expect(resolved).toBeNull();
   });
 });

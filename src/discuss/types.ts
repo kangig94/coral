@@ -1,5 +1,5 @@
 /**
- * Shared types for the discuss MCP server (v2).
+ * Shared types for the discuss MCP server.
  * Pure data — zero imports from node: or project modules.
  */
 
@@ -8,14 +8,14 @@
 export type TranscriptEntry =
   | { type: 'bids'; step: number; epoch: number; ts: string;
       bids: Record<string, number>; winner: string | null;
-      resolve_type: 'normal' | 'fallback' | 'cold_start' | 'vote_required' | 'no_winner' }
+      resolve_type: 'normal' | 'fallback' | 'cold_start' | 'vote_required' | 'no_winner'; }
   | { type: 'speech'; step: number; epoch: number; ts: string;
-      agent: string; display_name: string; content: string }
+      agent: string; display_name: string; content: string; }
   | { type: 'vote'; epoch: number; ts: string;
-      votes: Record<string, number>; unanimous: boolean }
-  | { type: 'epoch_summary'; epoch: number; ts: string; summary: string }
+      votes: Record<string, number>; unanimous: boolean; }
+  | { type: 'epoch_summary'; epoch: number; ts: string; summary: string; }
   | { type: 'session_event'; epoch: number; ts: string;
-      event: 'force_end' | 'synthesis'; detail: string }
+      event: 'force_end' | 'synthesis'; detail: string; };
 
 // ─── AgentState ───────────────────────────────────────────────────────────────
 
@@ -49,7 +49,6 @@ export interface DiscussState {
   created_at: string;
   updated_at: string;
   last_activity_at: string;        // updated on all state mutations, used for TTL cleanup
-  // v2 additions:
   last_speech_step: number;        // monotonic marker: set to step when speech recorded
   transcript: TranscriptEntry[];   // structured transcript in state
   transcript_rendered: number;     // tracks .md append position

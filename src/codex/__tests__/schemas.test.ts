@@ -76,7 +76,7 @@ describe('codexSessionSendSchema', () => {
     expect(result.working_directory).toBe('/home/user/project');
   });
 
-  it('accepts without working_directory (backwards compatible)', () => {
+  it('accepts without working_directory (optional)', () => {
     const result = codexSessionSendSchema.parse({
       session: 'my-session',
       prompt: 'Review this',

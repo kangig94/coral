@@ -12,17 +12,14 @@ import {
 } from '../schemas.js';
 
 describe('sessionIdPattern', () => {
-  it('should match new-format session IDs (yymmdd-HHmm-xxxx)', () => {
+  it('should match valid session IDs (yymmdd-HHmm-xxxx)', () => {
     expect(sessionIdPattern.test('260221-1430-a3x7')).toBe(true);
     expect(sessionIdPattern.test('260101-0000-zzzz')).toBe(true);
   });
-  it('should match legacy session IDs (YYYYMMDD-HHmmss-xxxx)', () => {
-    expect(sessionIdPattern.test('20260221-143052-a3x7')).toBe(true);
-    expect(sessionIdPattern.test('20260101-000000-zzzz')).toBe(true);
-  });
   it('should reject invalid session IDs', () => {
     expect(sessionIdPattern.test('260221-1430')).toBe(false); // missing suffix
-    expect(sessionIdPattern.test('20260221-143052')).toBe(false); // missing suffix (legacy)
+    expect(sessionIdPattern.test('20260221-143052')).toBe(false); // missing suffix
+    expect(sessionIdPattern.test('20260221-143052-a3x7')).toBe(false); // old 8-digit-year format
     expect(sessionIdPattern.test('2026-02-21-143052-a3x7')).toBe(false); // wrong date format
     expect(sessionIdPattern.test('')).toBe(false);
     expect(sessionIdPattern.test('../etc/passwd')).toBe(false);
@@ -83,7 +80,7 @@ describe('discussCreateSchema', () => {
 });
 
 describe('discussBidSchema', () => {
-  const validSession = '20260221-143052-a3x7';
+  const validSession = '260221-1430-a3x7';
 
   it('should accept valid bid', () => {
     const result = discussBidSchema.parse({ session: validSession, agent_name: 'architect', score: 75 });
@@ -107,7 +104,7 @@ describe('discussBidSchema', () => {
 });
 
 describe('discussWaitSchema', () => {
-  const session = '20260221-143052-a3x7';
+  const session = '260221-1430-a3x7';
 
   it('should accept all_bids up to 60s', () => {
     const result = discussWaitSchema.parse({ session, condition: 'all_bids', timeout_seconds: 60 });
@@ -146,7 +143,7 @@ describe('discussWaitSchema', () => {
 });
 
 describe('discussEndSchema', () => {
-  const session = '20260221-143052-a3x7';
+  const session = '260221-1430-a3x7';
 
   it('should accept normal end', () => {
     const result = discussEndSchema.parse({ session });
@@ -161,7 +158,7 @@ describe('discussEndSchema', () => {
 });
 
 describe('discussEpochSummarySchema', () => {
-  const session = '20260221-143052-a3x7';
+  const session = '260221-1430-a3x7';
 
   it('should accept valid input', () => {
     const result = discussEpochSummarySchema.parse({ session, epoch: 1, summary: 'Key points...' });
@@ -178,7 +175,7 @@ describe('discussEpochSummarySchema', () => {
 });
 
 describe('discussTranscriptSchema', () => {
-  const session = '20260221-143052-a3x7';
+  const session = '260221-1430-a3x7';
 
   it('should default mode to recent', () => {
     const result = discussTranscriptSchema.parse({ session });
@@ -199,13 +196,13 @@ describe('discussTranscriptSchema', () => {
 
 describe('discussStateSchema', () => {
   it('should accept valid session ID', () => {
-    const result = discussStateSchema.parse({ session: '20260221-143052-a3x7' });
+    const result = discussStateSchema.parse({ session: '260221-1430-a3x7' });
     expect(result.session).toBeTruthy();
   });
 });
 
 describe('discussSpeakSchema', () => {
-  const session = '20260221-143052-a3x7';
+  const session = '260221-1430-a3x7';
 
   it('should require non-empty content', () => {
     expect(() => discussSpeakSchema.parse({ session, agent_name: 'a', content: '' })).toThrow();

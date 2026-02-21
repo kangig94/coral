@@ -1,14 +1,14 @@
 /**
  * Session store — I/O shell for discuss sessions.
  * Handles atomic writes, cross-process locking, session directory management,
- * incremental transcript append, and legacy state migration.
+ * and incremental transcript append.
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { renderEntries, renderHeader } from './transcript.js';
-import { parseDisplayName, randomSuffix, formatDateId, topicSlug } from './state-machine.js';
-import type { AgentState, DiscussState } from './types.js';
+import { randomSuffix, formatDateId, topicSlug } from './state-machine.js';
+import type { DiscussState } from './types.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -55,9 +55,8 @@ class SessionLock {
             const dashIdx = content.indexOf('-');
             const ownerPid = parseInt(content.slice(0, dashIdx), 10);
             const lockTime = parseInt(content.slice(dashIdx + 1), 10);
-            const isAlive = (() => {
-              try { process.kill(ownerPid, 0); return true; } catch { return false; }
-            })();
+            let isAlive = false;
+            try { process.kill(ownerPid, 0); isAlive = true; } catch { /* process not running */ }
             // 30s staleness threshold — 150x the lock hold budget (~200ms max)
             const isStale = !isAlive || (Date.now() - lockTime > 30_000);
             if (isStale) {
@@ -74,36 +73,6 @@ class SessionLock {
     }
     throw new Error(`Lock timeout for session ${sessionDir}`);
   }
-}
-
-// ─── State migration ──────────────────────────────────────────────────────────
-
-/**
- * Normalize legacy state.json to v2 schema.
- * Safe to call on already-normalized state.
- */
-export function normalizeState(raw: Record<string, unknown>): DiscussState {
-  // Work on raw dict to avoid TypeScript narrowing conflicts on required fields
-  if (raw['last_speech_step'] === undefined) raw['last_speech_step'] = 0;
-  if (raw['transcript'] === undefined) raw['transcript'] = [];
-  if (raw['transcript_rendered'] === undefined) raw['transcript_rendered'] = 0;
-  // Intentionally 50, not the original 30 — threshold was raised after real-world testing
-  // showed 30 was too permissive (discussions resolved before all agents were ready).
-  if (raw['bid_threshold'] === undefined) raw['bid_threshold'] = 50;
-  if (raw['transcript_read_step'] === undefined) raw['transcript_read_step'] = {};
-  if (raw['last_activity_at'] === undefined) raw['last_activity_at'] = raw['updated_at'] ?? raw['created_at'] ?? '';
-  // display_name migration: parse from persona if missing or empty
-  const agents = raw['agents'] as Record<string, AgentState>;
-  for (const [name, a] of Object.entries(agents)) {
-    if (!a.display_name) {
-      a.display_name = parseDisplayName(a.persona, name);
-    }
-  }
-  // speaker_type migration: 'designated' → 'cold_start'
-  if (raw['speaker_type'] === 'designated') {
-    raw['speaker_type'] = 'cold_start';
-  }
-  return raw as unknown as DiscussState;
 }
 
 // ─── Session store ────────────────────────────────────────────────────────────
@@ -140,7 +109,7 @@ export class SessionStore {
   resolveDir(sessionId: string): string | null {
     if (!fs.existsSync(this.discussDir)) return null;
     const entries = fs.readdirSync(this.discussDir);
-    const match = entries.find((e) => e.startsWith(sessionId + '-') || e.startsWith(sessionId + '_') || e === sessionId);
+    const match = entries.find((e) => e.startsWith(sessionId + '-') || e === sessionId);
     return match ? path.join(this.discussDir, match) : null;
   }
 
@@ -154,10 +123,9 @@ export class SessionStore {
     return path.join(fullSessionPath, 'state.json');
   }
 
-  /** Load and normalize state. Call inside withLock for mutations. */
+  /** Load state from disk. Call inside withLock for mutations. */
   load(fullSessionPath: string): DiscussState {
-    const raw = JSON.parse(fs.readFileSync(this.statePath(fullSessionPath), 'utf8')) as Record<string, unknown>;
-    return normalizeState(raw);
+    return JSON.parse(fs.readFileSync(this.statePath(fullSessionPath), 'utf8')) as DiscussState;
   }
 
   /**
@@ -201,7 +169,7 @@ export class SessionStore {
       try {
         const raw = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
         if (raw['status'] !== 'ended') continue; // never delete active sessions
-        const ts = String(raw['last_activity_at'] || raw['updated_at'] || raw['created_at'] || '');
+        const ts = String(raw['last_activity_at'] || '');
         if (new Date(ts).getTime() < cutoff) {
           fs.rmSync(fullPath, { recursive: true, force: true });
           removed++;
