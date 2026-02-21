@@ -3,7 +3,7 @@
 Coral exposes two MCP servers, each with its own tool set:
 
 - **`cx` (Codex)**: 4 tools for Codex CLI session management. Prefix: `mcp__plugin_coral_cx__`
-- **`dc` (Discuss)**: 9 tools for moderated multi-agent discussions. Prefix: `mcp__plugin_coral_dc__`
+- **`dc` (Discuss)**: 2 tools for moderated multi-agent discussions. Prefix: `mcp__plugin_coral_dc__`
 
 All tool inputs are validated at runtime with zod schemas (`src/codex/schemas.ts`, `src/discuss/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
 
@@ -175,11 +175,21 @@ Session IDs follow the format `yymmdd-HHmm-xxxx` (compact timestamp + 4-char ran
 
 ---
 
-## discuss_create
+## discuss
+
+Unified discussion session tool. Select behavior with the required `op` field.
+
+### Input Schema (Envelope)
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `op` | string | Yes | One of: `create`, `bid`, `wait`, `speak`, `transcript`, `state`, `end`, `epoch_summary` |
+
+### op: create
 
 Initialize a new discussion session with agent personas.
 
-### Input Schema
+#### Input Schema
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -188,7 +198,7 @@ Initialize a new discussion session with agent personas.
 | `quota_per_epoch` | integer | No | Max speeches per agent per epoch (default: 3, max: 10) |
 | `recent_turns` | integer | No | Recent turns shown in transcript (default: 5, max: 20) |
 
-### Output (JSON)
+#### Output (JSON)
 
 ```json
 {
@@ -201,13 +211,11 @@ Initialize a new discussion session with agent personas.
 }
 ```
 
----
-
-## discuss_bid
+### op: bid
 
 Submit a speaking desire score 0–100 (higher = stronger desire to speak).
 
-### Input Schema
+#### Input Schema
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -215,7 +223,7 @@ Submit a speaking desire score 0–100 (higher = stronger desire to speak).
 | `agent_name` | string | Yes | Agent name |
 | `score` | integer | Yes | Desire score 0–100 |
 
-### Output (JSON)
+#### Output (JSON)
 
 ```json
 {
@@ -224,13 +232,11 @@ Submit a speaking desire score 0–100 (higher = stronger desire to speak).
 }
 ```
 
----
+### op: wait
 
-## discuss_wait
+Block until a condition is fulfilled or timeout expires. This is the primary coordination mechanism and replaces manual polling of `discuss({ op: "state", ... })`.
 
-Block until a condition is fulfilled or timeout expires. This is the primary coordination mechanism — replaces manual polling of `discuss_state`.
-
-### Input Schema
+#### Input Schema
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -239,15 +245,15 @@ Block until a condition is fulfilled or timeout expires. This is the primary coo
 | `timeout_seconds` | number | Yes | Max wait (limits: all_bids=60, speech_delivered=120, action_needed=180) |
 | `agent_name` | string | Conditional | Required for `action_needed` condition |
 
-### Conditions
+#### Conditions
 
 | Condition | Blocks Until | Used By |
 |---|---|---|
 | `all_bids` | All agents have submitted bids. Auto-resolves winner. | discuss-lead |
-| `speech_delivered` | Current speaker has called discuss_speak | discuss-lead |
+| `speech_delivered` | Current speaker has called `discuss({ op: "speak", ... })` | discuss-lead |
 | `action_needed` | This agent has an action to perform (bid/speak) | discussant |
 
-### Output — `all_bids` (auto-resolve)
+#### Output — `all_bids` (auto-resolve)
 
 Returns one of 4 result shapes:
 
@@ -257,7 +263,7 @@ Returns one of 4 result shapes:
 { "fulfilled": true, "no_winner": true, "step": 3, "reason": "all_below_threshold" }
 ```
 
-### Output — `action_needed`
+#### Output — `action_needed`
 
 ```json
 { "fulfilled": true, "action": "bid", "epoch": 1, "your_speaks": 2 }
@@ -265,19 +271,17 @@ Returns one of 4 result shapes:
 { "fulfilled": true, "action": "session_ended", "epoch": 2, "your_speaks": 4 }
 ```
 
-### Output — timeout
+#### Output — timeout
 
 ```json
 { "fulfilled": false, "elapsed_ms": 60000 }
 ```
 
----
-
-## discuss_speak
+### op: speak
 
 Record a speech. Only allowed when the calling agent is the current speaker.
 
-### Input Schema
+#### Input Schema
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -285,7 +289,7 @@ Record a speech. Only allowed when the calling agent is the current speaker.
 | `agent_name` | string | Yes | Speaking agent name (must match current_speaker) |
 | `content` | string | Yes | Speech content |
 
-### Output (JSON)
+#### Output (JSON)
 
 ```json
 {
@@ -295,13 +299,11 @@ Record a speech. Only allowed when the calling agent is the current speaker.
 }
 ```
 
----
-
-## discuss_transcript
+### op: transcript
 
 Read the discussion transcript. Three modes: `recent` (default, last N entries), `full` (restricted: current speaker or ended session), `summary` (epoch-level overview).
 
-### Input Schema
+#### Input Schema
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -310,23 +312,21 @@ Read the discussion transcript. Three modes: `recent` (default, last N entries),
 | `mode` | string | No | `full`, `recent`, or `summary` (default: `recent`) |
 | `last_n` | integer | No | Override `recent_turns` setting (1–50) |
 
-### Output
+#### Output
 
 Returns formatted markdown transcript text.
 
----
+### op: state
 
-## discuss_state
+Query current session state. Bid scores are NOT exposed; they are only visible via `discuss({ op: "wait", condition: "all_bids", ... })` auto-resolve results.
 
-Query current session state. Bid scores are NOT exposed — they are only visible via `discuss_wait(all_bids)` auto-resolve results.
-
-### Input Schema
+#### Input Schema
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `session` | string | Yes | Session ID |
 
-### Output (JSON)
+#### Output (JSON)
 
 ```json
 {
@@ -342,13 +342,11 @@ Query current session state. Bid scores are NOT exposed — they are only visibl
 }
 ```
 
----
-
-## discuss_end
+### op: end
 
 Finalize the discussion. Normal end includes an optional synthesis. Force-end requires a reason string (used for timeouts or errors).
 
-### Input Schema
+#### Input Schema
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -357,7 +355,7 @@ Finalize the discussion. Normal end includes an optional synthesis. Force-end re
 | `force` | boolean | No | Force-end during active speech (default: false) |
 | `reason` | string | Conditional | Required when `force=true` |
 
-### Output (JSON)
+#### Output (JSON)
 
 ```json
 {
@@ -368,13 +366,11 @@ Finalize the discussion. Normal end includes an optional synthesis. Force-end re
 }
 ```
 
----
-
-## discuss_epoch_summary
+### op: epoch_summary
 
 Append an epoch summary to the transcript. Teamlead-only. One summary per epoch, must match current epoch number.
 
-### Input Schema
+#### Input Schema
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -382,7 +378,7 @@ Append an epoch summary to the transcript. Teamlead-only. One summary per epoch,
 | `epoch` | integer | Yes | Epoch number (must match current epoch, min: 1) |
 | `summary` | string | Yes | Summary of the completed epoch |
 
-### Output (JSON)
+#### Output (JSON)
 
 ```json
 {

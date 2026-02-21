@@ -1,13 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  discussCreateSchema,
-  discussBidSchema,
-  discussWaitSchema,
-  discussSpeakSchema,
-  discussTranscriptSchema,
-  discussStateSchema,
-  discussEndSchema,
-  discussEpochSummarySchema,
+  discussOpSchema,
   discussPersonaSeedSchema,
   sessionIdPattern,
 } from '../schemas.js';
@@ -27,8 +20,10 @@ describe('sessionIdPattern', () => {
   });
 });
 
-describe('discussCreateSchema', () => {
-  const valid = {
+describe('discussOpSchema', () => {
+  const session = '260221-1430-a3x7';
+  const baseCreate = {
+    op: 'create' as const,
     topic: 'Microservices vs Monolith',
     agents: [
       { name: 'architect', persona: 'Senior software architect...' },
@@ -36,25 +31,72 @@ describe('discussCreateSchema', () => {
     ],
   };
 
-  it('should accept valid input with defaults', () => {
-    const result = discussCreateSchema.parse(valid);
+  it('should parse create op with defaults', () => {
+    const result = discussOpSchema.parse(baseCreate);
+    expect(result.op).toBe('create');
+    if (result.op !== 'create') throw new Error('unexpected op');
     expect(result.quota_per_epoch).toBe(3);
     expect(result.recent_turns).toBe(5);
   });
 
-  it('should reject < 2 agents', () => {
-    expect(() => discussCreateSchema.parse({ ...valid, agents: [valid.agents[0]] })).toThrow();
+  it('should parse bid op', () => {
+    const result = discussOpSchema.parse({ op: 'bid', session, agent_name: 'architect', score: 75 });
+    expect(result.op).toBe('bid');
   });
 
-  it('should reject > 8 agents', () => {
+  it('should parse wait op', () => {
+    const result = discussOpSchema.parse({ op: 'wait', session, condition: 'all_bids', timeout_seconds: 5 });
+    expect(result.op).toBe('wait');
+  });
+
+  it('should parse speak op', () => {
+    const result = discussOpSchema.parse({ op: 'speak', session, agent_name: 'architect', content: 'Hello' });
+    expect(result.op).toBe('speak');
+  });
+
+  it('should parse transcript op and default mode to recent', () => {
+    const result = discussOpSchema.parse({ op: 'transcript', session });
+    expect(result.op).toBe('transcript');
+    if (result.op !== 'transcript') throw new Error('unexpected op');
+    expect(result.mode).toBe('recent');
+  });
+
+  it('should parse state op', () => {
+    const result = discussOpSchema.parse({ op: 'state', session });
+    expect(result.op).toBe('state');
+  });
+
+  it('should parse end op', () => {
+    const result = discussOpSchema.parse({ op: 'end', session });
+    expect(result.op).toBe('end');
+  });
+
+  it('should parse epoch_summary op', () => {
+    const result = discussOpSchema.parse({ op: 'epoch_summary', session, epoch: 1, summary: 'Key points...' });
+    expect(result.op).toBe('epoch_summary');
+  });
+
+  it('should reject invalid op discriminator value', () => {
+    expect(() => discussOpSchema.parse({ op: 'invalid_op' })).toThrow();
+  });
+
+  it('should reject missing op discriminator', () => {
+    expect(() => discussOpSchema.parse({ session })).toThrow();
+  });
+
+  it('should reject create with < 2 agents', () => {
+    expect(() => discussOpSchema.parse({ ...baseCreate, agents: [baseCreate.agents[0]] })).toThrow();
+  });
+
+  it('should reject create with > 8 agents', () => {
     const manyAgents = Array.from({ length: 9 }, (_, i) => ({ name: `agent${i}`, persona: 'p' }));
-    expect(() => discussCreateSchema.parse({ ...valid, agents: manyAgents })).toThrow();
+    expect(() => discussOpSchema.parse({ ...baseCreate, agents: manyAgents })).toThrow();
   });
 
-  it('should reject duplicate agent names', () => {
+  it('should reject duplicate agent names in create', () => {
     expect(() =>
-      discussCreateSchema.parse({
-        ...valid,
+      discussOpSchema.parse({
+        ...baseCreate,
         agents: [
           { name: 'architect', persona: 'p1' },
           { name: 'architect', persona: 'p2' },
@@ -63,155 +105,71 @@ describe('discussCreateSchema', () => {
     ).toThrow(/unique/i);
   });
 
-  it('should reject agent names with invalid characters', () => {
+  it('should reject invalid agent name chars in create', () => {
     expect(() =>
-      discussCreateSchema.parse({
-        ...valid,
+      discussOpSchema.parse({
+        ...baseCreate,
         agents: [{ name: 'invalid!', persona: 'p' }, { name: 'critic', persona: 'p' }],
       }),
     ).toThrow();
   });
 
-  it('should enforce quota_per_epoch bounds', () => {
-    expect(() => discussCreateSchema.parse({ ...valid, quota_per_epoch: 0 })).toThrow();
-    expect(() => discussCreateSchema.parse({ ...valid, quota_per_epoch: 11 })).toThrow();
-    expect(discussCreateSchema.parse({ ...valid, quota_per_epoch: 1 }).quota_per_epoch).toBe(1);
-    expect(discussCreateSchema.parse({ ...valid, quota_per_epoch: 10 }).quota_per_epoch).toBe(10);
-  });
-});
-
-describe('discussBidSchema', () => {
-  const validSession = '260221-1430-a3x7';
-
-  it('should accept valid bid', () => {
-    const result = discussBidSchema.parse({ session: validSession, agent_name: 'architect', score: 75 });
-    expect(result.score).toBe(75);
+  it('should enforce create quota_per_epoch bounds', () => {
+    expect(() => discussOpSchema.parse({ ...baseCreate, quota_per_epoch: 0 })).toThrow();
+    expect(() => discussOpSchema.parse({ ...baseCreate, quota_per_epoch: 11 })).toThrow();
+    const min = discussOpSchema.parse({ ...baseCreate, quota_per_epoch: 1 });
+    const max = discussOpSchema.parse({ ...baseCreate, quota_per_epoch: 10 });
+    expect(min.op).toBe('create');
+    expect(max.op).toBe('create');
   });
 
-  it('should accept boundary scores', () => {
-    expect(discussBidSchema.parse({ session: validSession, agent_name: 'a', score: 0 }).score).toBe(0);
-    expect(discussBidSchema.parse({ session: validSession, agent_name: 'a', score: 100 }).score).toBe(100);
+  it('should reject bid score out of range', () => {
+    expect(() => discussOpSchema.parse({ op: 'bid', session, agent_name: 'a', score: -1 })).toThrow();
+    expect(() => discussOpSchema.parse({ op: 'bid', session, agent_name: 'a', score: 101 })).toThrow();
   });
 
-  it('should reject score out of range', () => {
-    expect(() => discussBidSchema.parse({ session: validSession, agent_name: 'a', score: -1 })).toThrow();
-    expect(() => discussBidSchema.parse({ session: validSession, agent_name: 'a', score: 101 })).toThrow();
+  it('should reject bid with invalid session ID format', () => {
+    expect(() => discussOpSchema.parse({ op: 'bid', session: 'bad-session', agent_name: 'a', score: 50 })).toThrow();
+    expect(() => discussOpSchema.parse({ op: 'bid', session: '../etc', agent_name: 'a', score: 50 })).toThrow();
   });
 
-  it('should reject invalid session ID format', () => {
-    expect(() => discussBidSchema.parse({ session: 'bad-session', agent_name: 'a', score: 50 })).toThrow();
-    expect(() => discussBidSchema.parse({ session: '../etc', agent_name: 'a', score: 50 })).toThrow();
-  });
-});
-
-describe('discussWaitSchema', () => {
-  const session = '260221-1430-a3x7';
-
-  it('should accept all_bids up to 60s', () => {
-    const result = discussWaitSchema.parse({ session, condition: 'all_bids', timeout_seconds: 60 });
-    expect(result.condition).toBe('all_bids');
+  it('should reject wait with invalid condition', () => {
+    expect(() => discussOpSchema.parse({ op: 'wait', session, condition: 'unknown', timeout_seconds: 10 })).toThrow();
   });
 
-  it('should reject all_bids timeout > 60s', () => {
-    expect(() => discussWaitSchema.parse({ session, condition: 'all_bids', timeout_seconds: 61 })).toThrow();
+  it('should reject wait with timeout < 1', () => {
+    expect(() => discussOpSchema.parse({ op: 'wait', session, condition: 'all_bids', timeout_seconds: 0 })).toThrow();
   });
 
-  it('should accept speech_delivered up to 120s', () => {
-    const result = discussWaitSchema.parse({ session, condition: 'speech_delivered', timeout_seconds: 120 });
-    expect(result.condition).toBe('speech_delivered');
+  it('should allow wait action_needed without agent_name structurally', () => {
+    const result = discussOpSchema.parse({ op: 'wait', session, condition: 'action_needed', timeout_seconds: 10 });
+    expect(result.op).toBe('wait');
   });
 
-  it('should reject speech_delivered timeout > 120s', () => {
-    expect(() => discussWaitSchema.parse({ session, condition: 'speech_delivered', timeout_seconds: 121 })).toThrow();
+  it('should reject speak with empty content', () => {
+    expect(() => discussOpSchema.parse({ op: 'speak', session, agent_name: 'a', content: '' })).toThrow();
   });
 
-  it('should accept action_needed with agent_name up to 180s', () => {
-    const result = discussWaitSchema.parse({ session, condition: 'action_needed', timeout_seconds: 180, agent_name: 'alice' });
-    expect(result.agent_name).toBe('alice');
+  it('should accept transcript modes and enforce last_n bounds', () => {
+    const full = discussOpSchema.parse({ op: 'transcript', session, mode: 'full' });
+    const summary = discussOpSchema.parse({ op: 'transcript', session, mode: 'summary' });
+    expect(full.op).toBe('transcript');
+    expect(summary.op).toBe('transcript');
+    expect(() => discussOpSchema.parse({ op: 'transcript', session, last_n: 0 })).toThrow();
+    expect(() => discussOpSchema.parse({ op: 'transcript', session, last_n: 51 })).toThrow();
   });
 
-  it('should reject action_needed without agent_name', () => {
-    expect(() => discussWaitSchema.parse({ session, condition: 'action_needed', timeout_seconds: 60 })).toThrow(/agent_name/i);
+  it('should keep end validation structural only', () => {
+    const result = discussOpSchema.parse({ op: 'end', session, force: true });
+    expect(result.op).toBe('end');
   });
 
-  it('should reject invalid condition', () => {
-    expect(() => discussWaitSchema.parse({ session, condition: 'unknown', timeout_seconds: 10 })).toThrow();
+  it('should reject epoch_summary with epoch < 1', () => {
+    expect(() => discussOpSchema.parse({ op: 'epoch_summary', session, epoch: 0, summary: 'x' })).toThrow();
   });
 
-  it('should reject timeout < 1', () => {
-    expect(() => discussWaitSchema.parse({ session, condition: 'all_bids', timeout_seconds: 0 })).toThrow();
-  });
-});
-
-describe('discussEndSchema', () => {
-  const session = '260221-1430-a3x7';
-
-  it('should accept normal end', () => {
-    const result = discussEndSchema.parse({ session });
-    expect(result.force).toBe(false);
-  });
-
-  it('should require reason when force=true', () => {
-    expect(() => discussEndSchema.parse({ session, force: true })).toThrow(/reason/i);
-    expect(() => discussEndSchema.parse({ session, force: true, reason: '   ' })).toThrow(/reason/i);
-    expect(discussEndSchema.parse({ session, force: true, reason: 'timeout' }).reason).toBe('timeout');
-  });
-});
-
-describe('discussEpochSummarySchema', () => {
-  const session = '260221-1430-a3x7';
-
-  it('should accept valid input', () => {
-    const result = discussEpochSummarySchema.parse({ session, epoch: 1, summary: 'Key points...' });
-    expect(result.epoch).toBe(1);
-  });
-
-  it('should reject epoch < 1', () => {
-    expect(() => discussEpochSummarySchema.parse({ session, epoch: 0, summary: 'x' })).toThrow();
-  });
-
-  it('should reject empty summary', () => {
-    expect(() => discussEpochSummarySchema.parse({ session, epoch: 1, summary: '' })).toThrow();
-  });
-});
-
-describe('discussTranscriptSchema', () => {
-  const session = '260221-1430-a3x7';
-
-  it('should default mode to recent', () => {
-    const result = discussTranscriptSchema.parse({ session });
-    expect(result.mode).toBe('recent');
-  });
-
-  it('should accept all modes', () => {
-    expect(discussTranscriptSchema.parse({ session, mode: 'full' }).mode).toBe('full');
-    expect(discussTranscriptSchema.parse({ session, mode: 'summary' }).mode).toBe('summary');
-  });
-
-  it('should enforce last_n bounds', () => {
-    expect(() => discussTranscriptSchema.parse({ session, last_n: 0 })).toThrow();
-    expect(() => discussTranscriptSchema.parse({ session, last_n: 51 })).toThrow();
-    expect(discussTranscriptSchema.parse({ session, last_n: 10 }).last_n).toBe(10);
-  });
-});
-
-describe('discussStateSchema', () => {
-  it('should accept valid session ID', () => {
-    const result = discussStateSchema.parse({ session: '260221-1430-a3x7' });
-    expect(result.session).toBeTruthy();
-  });
-});
-
-describe('discussSpeakSchema', () => {
-  const session = '260221-1430-a3x7';
-
-  it('should require non-empty content', () => {
-    expect(() => discussSpeakSchema.parse({ session, agent_name: 'a', content: '' })).toThrow();
-  });
-
-  it('should accept valid speech', () => {
-    const result = discussSpeakSchema.parse({ session, agent_name: 'architect', content: 'Microservices are...' });
-    expect(result.content).toBeTruthy();
+  it('should reject epoch_summary with empty summary', () => {
+    expect(() => discussOpSchema.parse({ op: 'epoch_summary', session, epoch: 1, summary: '' })).toThrow();
   });
 });
 

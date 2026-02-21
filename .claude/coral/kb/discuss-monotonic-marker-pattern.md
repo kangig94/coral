@@ -31,7 +31,7 @@ The predicate `last_speech_step === step - 1` is true from the moment `applySpee
 
 ## Extension: Step Increment as Epoch Boundary Enforcement Signal
 
-The same monotonic `step` can serve dual duty as an enforcement watermark. When `transcript_read_step[agent]` tracks the `step` at which an agent last called `discuss_transcript`, incrementing `step` at any epoch boundary instantly invalidates all prior reads:
+The same monotonic `step` can serve dual duty as an enforcement watermark. When `transcript_read_step[agent]` tracks the `step` at which an agent last called `discuss({ op: "transcript", ... })`, incrementing `step` at any epoch boundary instantly invalidates all prior reads:
 
 ```typescript
 // In resolveVote (non-unanimous vote → epoch transition):

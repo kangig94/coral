@@ -22,10 +22,10 @@ beforeEach(() => {
 afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }); });
 
 async function createSession() {
-  const r = await handleToolCall('discuss_create', { topic: 'Test', agents: AGENTS }, store);
+  const r = await handleToolCall('discuss', { op: 'create', topic: 'Test', agents: AGENTS }, store);
   const data = JSON.parse(r.content[0].text) as { session_id: string };
   const sid = data.session_id;
-  // Transition setup → bidding directly via store (no timeout needed)
+  // Transition setup -> bidding directly via store (no timeout needed)
   const sessionDir = store.resolveDir(sid)!;
   await store.withLock(sessionDir, async () => {
     const s = store.load(sessionDir);
@@ -35,16 +35,39 @@ async function createSession() {
   return sid;
 }
 
-/** Submit all bids and auto-resolve via discuss_wait (returns immediately when all bids in). */
+/** Submit all bids and auto-resolve via discuss wait (returns immediately when all bids in). */
 async function bidAndResolve(sid: string, aliceScore: number, bobScore: number) {
-  await handleToolCall('discuss_bid', { session: sid, agent_name: 'alice', score: aliceScore }, store);
-  await handleToolCall('discuss_bid', { session: sid, agent_name: 'bob', score: bobScore }, store);
-  return handleToolCall('discuss_wait', { session: sid, condition: 'all_bids', timeout_seconds: 5 }, store);
+  await handleToolCall('discuss', { op: 'bid', session: sid, agent_name: 'alice', score: aliceScore }, store);
+  await handleToolCall('discuss', { op: 'bid', session: sid, agent_name: 'bob', score: bobScore }, store);
+  return handleToolCall('discuss', { op: 'wait', session: sid, condition: 'all_bids', timeout_seconds: 5 }, store);
 }
+
+describe('tool registration and op contract', () => {
+  it('should expose exactly two tools', () => {
+    expect(tools).toHaveLength(2);
+  });
+
+  it('should expose discuss and discuss_persona_seed', () => {
+    expect(tools.map((tool) => tool.name).sort()).toEqual(['discuss', 'discuss_persona_seed']);
+  });
+
+  it('should return unknown_op for invalid op values', async () => {
+    const result = await handleToolCall('discuss', { op: 'invalid_op' }, store);
+    expect(result.isError).toBe(false);
+    const data = JSON.parse(result.content[0].text);
+    expect(data).toHaveProperty('error', 'unknown_op');
+  });
+
+  it('should treat missing op as validation error, not unknown_op', async () => {
+    const result = await handleToolCall('discuss', {}, store);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).not.toContain('unknown_op');
+  });
+});
 
 describe('discuss_create', () => {
   it('should create session and return session_id', async () => {
-    const result = await handleToolCall('discuss_create', { topic: 'AI Ethics', agents: AGENTS }, store);
+    const result = await handleToolCall('discuss', { op: 'create', topic: 'AI Ethics', agents: AGENTS }, store);
     expect(result.isError).toBe(false);
     const data = JSON.parse(result.content[0].text);
     expect(data.session_id).toMatch(/^\d{6}-\d{4}-[a-z0-9]{4}$/);
@@ -52,19 +75,19 @@ describe('discuss_create', () => {
   });
 
   it('should return status=setup and bid_threshold=50', async () => {
-    const result = await handleToolCall('discuss_create', { topic: 'AI Ethics', agents: AGENTS }, store);
+    const result = await handleToolCall('discuss', { op: 'create', topic: 'AI Ethics', agents: AGENTS }, store);
     const data = JSON.parse(result.content[0].text);
     expect(data.status).toBe('setup');
     expect(data.bid_threshold).toBe(50);
   });
 
   it('should return Zod error for invalid input', async () => {
-    const result = await handleToolCall('discuss_create', { topic: '', agents: AGENTS }, store);
+    const result = await handleToolCall('discuss', { op: 'create', topic: '', agents: AGENTS }, store);
     expect(result.isError).toBe(true);
   });
 
   it('should reject single agent', async () => {
-    const result = await handleToolCall('discuss_create', { topic: 'x', agents: [AGENTS[0]] }, store);
+    const result = await handleToolCall('discuss', { op: 'create', topic: 'x', agents: [AGENTS[0]] }, store);
     expect(result.isError).toBe(true);
   });
 });
@@ -72,23 +95,23 @@ describe('discuss_create', () => {
 describe('discuss_bid', () => {
   it('should accept valid bid', async () => {
     const sid = await createSession();
-    const result = await handleToolCall('discuss_bid', { session: sid, agent_name: 'alice', score: 75 }, store);
+    const result = await handleToolCall('discuss', { op: 'bid', session: sid, agent_name: 'alice', score: 75 }, store);
     expect(result.isError).toBe(false);
     const data = JSON.parse(result.content[0].text);
     expect(data).toHaveProperty('all_bids_in');
   });
 
   it('should return error for invalid session ID format', async () => {
-    const result = await handleToolCall('discuss_bid', { session: 'bad', agent_name: 'alice', score: 50 }, store);
+    const result = await handleToolCall('discuss', { op: 'bid', session: 'bad', agent_name: 'alice', score: 50 }, store);
     expect(result.isError).toBe(true);
   });
 
   it('should reject bid after speech when transcript not read', async () => {
     const sid = await createSession();
     await bidAndResolve(sid, 80, 20); // alice wins
-    await handleToolCall('discuss_speak', { session: sid, agent_name: 'alice', content: 'My argument.' }, store);
+    await handleToolCall('discuss', { op: 'speak', session: sid, agent_name: 'alice', content: 'My argument.' }, store);
     // Round 2: alice bids without reading transcript first
-    const result = await handleToolCall('discuss_bid', { session: sid, agent_name: 'alice', score: 80 }, store);
+    const result = await handleToolCall('discuss', { op: 'bid', session: sid, agent_name: 'alice', score: 80 }, store);
     const data = JSON.parse(result.content[0].text);
     expect(data).toHaveProperty('error', 'read_transcript_first');
   });
@@ -96,11 +119,11 @@ describe('discuss_bid', () => {
   it('should accept bid after speech when transcript was read', async () => {
     const sid = await createSession();
     await bidAndResolve(sid, 80, 20); // alice wins
-    await handleToolCall('discuss_speak', { session: sid, agent_name: 'alice', content: 'My argument.' }, store);
+    await handleToolCall('discuss', { op: 'speak', session: sid, agent_name: 'alice', content: 'My argument.' }, store);
     // Alice reads transcript first
-    await handleToolCall('discuss_transcript', { session: sid, agent_name: 'alice', mode: 'recent' }, store);
+    await handleToolCall('discuss', { op: 'transcript', session: sid, agent_name: 'alice', mode: 'recent' }, store);
     // Now bid succeeds
-    const result = await handleToolCall('discuss_bid', { session: sid, agent_name: 'alice', score: 80 }, store);
+    const result = await handleToolCall('discuss', { op: 'bid', session: sid, agent_name: 'alice', score: 80 }, store);
     expect(result.isError).toBe(false);
     const data = JSON.parse(result.content[0].text);
     expect(data).toHaveProperty('all_bids_in');
@@ -109,14 +132,14 @@ describe('discuss_bid', () => {
 
 describe('discuss_wait', () => {
   it('should return session_not_found for unknown session', async () => {
-    const result = await handleToolCall('discuss_wait', { session: SESSION, condition: 'all_bids', timeout_seconds: 1 }, store);
+    const result = await handleToolCall('discuss', { op: 'wait', session: SESSION, condition: 'all_bids', timeout_seconds: 1 }, store);
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('session_not_found');
   });
 
   it('should return agent_not_found for unknown agent with action_needed', async () => {
     const sid = await createSession();
-    const result = await handleToolCall('discuss_wait', { session: sid, condition: 'action_needed', agent_name: 'nobody', timeout_seconds: 1 }, store);
+    const result = await handleToolCall('discuss', { op: 'wait', session: sid, condition: 'action_needed', agent_name: 'nobody', timeout_seconds: 1 }, store);
     const data = JSON.parse(result.content[0].text);
     expect(data).toHaveProperty('error', 'agent_not_found');
   });
@@ -133,13 +156,20 @@ describe('discuss_wait', () => {
 
   it('should auto-pick cold start winner when all bids below threshold', async () => {
     const sid = await createSession();
-    // All below 30 — cold_start=true at session start → auto-pick alice (fewer speaks, same)
+    // All below threshold and cold_start=true -> auto-pick by fairness/desire tie-break
     const result = await bidAndResolve(sid, 5, 3);
     expect(result.isError).toBe(false);
     const data = JSON.parse(result.content[0].text);
     expect(data).toHaveProperty('fulfilled', true);
-    expect(data).toHaveProperty('winner'); // cold_start auto-pick
+    expect(data).toHaveProperty('winner');
     expect(data).toHaveProperty('resolve_type', 'cold_start');
+  });
+
+  it('should enforce wait timeout limits at handler layer', async () => {
+    const sid = await createSession();
+    const result = await handleToolCall('discuss', { op: 'wait', session: sid, condition: 'all_bids', timeout_seconds: 61 }, store);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('timeout_seconds exceeds 60s limit for all_bids');
   });
 });
 
@@ -147,7 +177,7 @@ describe('discuss_speak', () => {
   it('should record speech for current speaker', async () => {
     const sid = await createSession();
     await bidAndResolve(sid, 80, 20); // alice wins
-    const result = await handleToolCall('discuss_speak', { session: sid, agent_name: 'alice', content: 'My argument.' }, store);
+    const result = await handleToolCall('discuss', { op: 'speak', session: sid, agent_name: 'alice', content: 'My argument.' }, store);
     const data = JSON.parse(result.content[0].text);
     expect(data).toHaveProperty('step', 2);
     expect(data).toHaveProperty('status', 'bidding');
@@ -156,7 +186,7 @@ describe('discuss_speak', () => {
   it('should reject wrong speaker', async () => {
     const sid = await createSession();
     await bidAndResolve(sid, 80, 20); // alice wins
-    const result = await handleToolCall('discuss_speak', { session: sid, agent_name: 'bob', content: 'Unauthorized.' }, store);
+    const result = await handleToolCall('discuss', { op: 'speak', session: sid, agent_name: 'bob', content: 'Unauthorized.' }, store);
     const data = JSON.parse(result.content[0].text);
     expect(data).toHaveProperty('error', 'not_your_turn');
   });
@@ -165,14 +195,14 @@ describe('discuss_speak', () => {
 describe('discuss_transcript', () => {
   it('should return transcript in recent mode', async () => {
     const sid = await createSession();
-    const result = await handleToolCall('discuss_transcript', { session: sid, mode: 'recent' }, store);
+    const result = await handleToolCall('discuss', { op: 'transcript', session: sid, mode: 'recent' }, store);
     expect(result.isError).toBe(false);
     expect(typeof result.content[0].text).toBe('string');
   });
 
   it('should reject full mode without agent_name (not ended)', async () => {
     const sid = await createSession();
-    const result = await handleToolCall('discuss_transcript', { session: sid, mode: 'full' }, store);
+    const result = await handleToolCall('discuss', { op: 'transcript', session: sid, mode: 'full' }, store);
     expect(result.isError).toBe(false);
     const data = JSON.parse(result.content[0].text);
     expect(data).toHaveProperty('error', 'full_transcript_requires_speaker_or_ended');
@@ -180,23 +210,23 @@ describe('discuss_transcript', () => {
 
   it('should allow full mode when status=ended (agent_name optional)', async () => {
     const sid = await createSession();
-    await handleToolCall('discuss_end', { session: sid }, store);
-    const result = await handleToolCall('discuss_transcript', { session: sid, mode: 'full' }, store);
+    await handleToolCall('discuss', { op: 'end', session: sid }, store);
+    const result = await handleToolCall('discuss', { op: 'transcript', session: sid, mode: 'full' }, store);
     expect(result.isError).toBe(false);
     expect(typeof result.content[0].text).toBe('string');
   });
 
   it('should reject full mode for non-current-speaker (not ended)', async () => {
     const sid = await createSession();
-    await bidAndResolve(sid, 80, 20); // alice wins → status=speaking
-    const result = await handleToolCall('discuss_transcript', { session: sid, agent_name: 'bob', mode: 'full' }, store);
+    await bidAndResolve(sid, 80, 20); // alice wins -> status=speaking
+    const result = await handleToolCall('discuss', { op: 'transcript', session: sid, agent_name: 'bob', mode: 'full' }, store);
     const data = JSON.parse(result.content[0].text);
     expect(data).toHaveProperty('error', 'full_transcript_speaker_only');
   });
 
   it('should track transcript_read_step when agent_name provided', async () => {
     const sid = await createSession();
-    await handleToolCall('discuss_transcript', { session: sid, agent_name: 'alice', mode: 'recent' }, store);
+    await handleToolCall('discuss', { op: 'transcript', session: sid, agent_name: 'alice', mode: 'recent' }, store);
     const sessionDir = store.resolveDir(sid)!;
     const state = store.load(sessionDir);
     expect(state.transcript_read_step['alice']).toBe(state.step);
@@ -206,7 +236,7 @@ describe('discuss_transcript', () => {
 describe('discuss_state', () => {
   it('should return state without current_bids', async () => {
     const sid = await createSession();
-    const result = await handleToolCall('discuss_state', { session: sid }, store);
+    const result = await handleToolCall('discuss', { op: 'state', session: sid }, store);
     const data = JSON.parse(result.content[0].text);
     expect(data).not.toHaveProperty('current_bids');
     expect(data).toHaveProperty('status', 'bidding');
@@ -215,45 +245,55 @@ describe('discuss_state', () => {
 
   it('should include bid_threshold in state', async () => {
     const sid = await createSession();
-    const result = await handleToolCall('discuss_state', { session: sid }, store);
+    const result = await handleToolCall('discuss', { op: 'state', session: sid }, store);
     const data = JSON.parse(result.content[0].text);
     expect(data).toHaveProperty('bid_threshold', 50);
   });
 
   it('should include display_name in agent info', async () => {
     const sid = await createSession();
-    const result = await handleToolCall('discuss_state', { session: sid }, store);
+    const result = await handleToolCall('discuss', { op: 'state', session: sid }, store);
     const data = JSON.parse(result.content[0].text) as { agents: Record<string, { display_name: string }> };
     expect(data.agents['alice']).toHaveProperty('display_name');
+  });
+
+  it('should not expose sealed-bid fields after bids', async () => {
+    const sid = await createSession();
+    await handleToolCall('discuss', { op: 'bid', session: sid, agent_name: 'alice', score: 80 }, store);
+    const result = await handleToolCall('discuss', { op: 'state', session: sid }, store);
+    const data = JSON.parse(result.content[0].text);
+    expect(data).not.toHaveProperty('current_bids');
+    expect(data).not.toHaveProperty('scores');
   });
 });
 
 describe('discuss_end', () => {
   it('should end session normally', async () => {
     const sid = await createSession();
-    const result = await handleToolCall('discuss_end', { session: sid }, store);
+    const result = await handleToolCall('discuss', { op: 'end', session: sid }, store);
     const data = JSON.parse(result.content[0].text);
     expect(data).toHaveProperty('ok', true);
   });
 
-  it('should return Zod error when force=true without reason', async () => {
+  it('should enforce force+reason at handler layer', async () => {
     const sid = await createSession();
-    const result = await handleToolCall('discuss_end', { session: sid, force: true }, store);
+    const result = await handleToolCall('discuss', { op: 'end', session: sid, force: true }, store);
     expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('reason is required when force=true');
   });
 });
 
 describe('discuss_epoch_summary', () => {
   it('should append epoch summary', async () => {
     const sid = await createSession();
-    const result = await handleToolCall('discuss_epoch_summary', { session: sid, epoch: 1, summary: 'Key points.' }, store);
+    const result = await handleToolCall('discuss', { op: 'epoch_summary', session: sid, epoch: 1, summary: 'Key points.' }, store);
     const data = JSON.parse(result.content[0].text);
     expect(data).toHaveProperty('ok', true);
   });
 
   it('should reject wrong epoch', async () => {
     const sid = await createSession();
-    const result = await handleToolCall('discuss_epoch_summary', { session: sid, epoch: 2, summary: 'Wrong epoch.' }, store);
+    const result = await handleToolCall('discuss', { op: 'epoch_summary', session: sid, epoch: 2, summary: 'Wrong epoch.' }, store);
     const data = JSON.parse(result.content[0].text);
     expect(data).toHaveProperty('error', 'epoch_mismatch');
   });

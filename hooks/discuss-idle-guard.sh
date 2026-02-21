@@ -66,7 +66,7 @@ pending_bidders=$(sed -n 's/.*"pending_bidders"[[:space:]]*:[[:space:]]*\(\[[^]]
 # Bidding: agent hasn't bid yet
 if [ "$status" = "bidding" ]; then
   if printf '%s' "$pending_bidders" | grep -Fq "\"$agent_name\""; then
-    printf '%s\n' "Call \`discuss_bid\` to submit your bid." >&2
+    printf '%s\n' "Call \`discuss\` with op: \"bid\" to submit your bid." >&2
     _exit_code=2
   fi
   exit 0
@@ -74,7 +74,7 @@ fi
 
 # Speaking: agent has the floor
 if [ "$status" = "speaking" ] && [ "$current_speaker" = "$agent_name" ]; then
-  printf '%s\n' "Call \`discuss_speak\` to deliver your speech." >&2
+  printf '%s\n' "Call \`discuss\` with op: \"speak\" to deliver your speech." >&2
   _exit_code=2
   exit 0
 fi
@@ -82,7 +82,7 @@ fi
 # Voting: agent hasn't voted yet
 if [ "$status" = "voting" ]; then
   if printf '%s' "$pending_bidders" | grep -Fq "\"$agent_name\""; then
-    printf '%s\n' "Termination vote: call \`discuss_bid\` with 0=agree to end, 1=disagree." >&2
+    printf '%s\n' "Termination vote: call \`discuss\` with op: \"bid\" — 0=agree to end, 1=disagree." >&2
     _exit_code=2
   fi
   exit 0

@@ -115,7 +115,7 @@ discuss-lead (moderator)
   ├── persona-generator ×N (parallel)
   ├── discuss MCP server (state, enforcement, transcript)
   └── dc-{agent} ×N (discussant teammates)
-        └── discuss_wait → bid/speak loop
+        └── `discuss({ op: "wait", ... })` → bid/speak loop
 ```
 
 The MCP server owns all state transitions. Agents cannot speak out of turn or bid without reading context. Bid scores are sealed — never returned in any API response. Transcripts are saved to `.claude/coral/discuss/` as both structured JSON and readable Markdown.

@@ -18,11 +18,11 @@
 │  │  MCP Server "cx"            │  │  MCP Server "dc"             │  │
 │  │  (bridge/coral-codex.cjs)   │  │  (bridge/coral-discuss.cjs)  │  │
 │  │                              │  │                              │  │
-│  │  Tools: codex_session_*     │  │  Tools: discuss_*            │  │
-│  │  (create, send, list, fork) │  │  (create, bid, wait, speak,  │  │
-│  │                              │  │   transcript, state, end,    │  │
-│  │  Session: ~/.claude/coral/  │  │   epoch_summary,             │  │
-│  │           sessions/          │  │   persona_seed)              │  │
+│  │  Tools: codex_session_*     │  │  Tools: discuss + 8 ops      │  │
+│  │  (create, send, list, fork) │  │  (create/bid/wait/speak/     │  │
+│  │                              │  │   transcript/state/end/      │  │
+│  │  Session: ~/.claude/coral/  │  │   epoch_summary), persona_seed│ │
+│  │           sessions/          │  │                              │  │
 │  └──────────────┬───────────────┘  │  Session: {project}/.claude/ │  │
 │                 │                   │           coral/discuss/     │  │
 │                 │                   └──────────────────────────────┘  │
@@ -87,17 +87,17 @@ User → /coral:discuss "AI ethics in healthcare"
      → Skill reads agents/discuss-lead.md (protocol injection)
      → Moderator analyzes topic → determines 3-8 roles
      → Spawns persona-generator agents in parallel (Task tool)
-     → discuss_create({ topic, agents }) → session_id, session_dir
+     → discuss({ op: "create", topic, agents }) → session_id, session_dir
      → TeamCreate "coral-dc-{session_id}"
      → Spawns discussant teammates (dc-{agent_name})
      → Discussion Loop:
-        → Broadcast "Step N. Call discuss_bid."
-        → discuss_wait(all_bids) → auto-resolves → 4-way branch
-          → winner → notify → discuss_wait(speech_delivered) → broadcast transcript
+        → Broadcast "Step N. Call `discuss({ op: "bid", ... })`."
+        → discuss({ op: "wait", condition: "all_bids", ... }) → auto-resolves → 4-way branch
+          → winner → notify → discuss({ op: "wait", condition: "speech_delivered", ... }) → broadcast transcript
           → no_winner + new_epoch → epoch transition (server auto-reset quotas)
           → no_winner → synthesis (all_below_threshold / all_blocked / max_epochs_reached)
           → timeout → force end
-     → discuss_end → full transcript → synthesis → present to user
+     → `discuss({ op: "end", ... })` → full transcript → synthesis → present to user
      → Shutdown teammates, TeamDelete
 ```
 
@@ -184,11 +184,11 @@ coral/
 │   │       └── server-progress.test.ts
 │   └── discuss/
 │       ├── server.ts            # Discuss MCP server entry point (stdio, transport, signals)
-│       ├── server-handlers.ts   # Tool definitions + dispatch (discuss_* tools)
-│       ├── schemas.ts           # Zod schemas for discuss_* tool inputs
+│       ├── server-handlers.ts   # Tool definitions + dispatch (discuss + op routing)
+│       ├── schemas.ts           # Zod schemas (`discussOpSchema`, persona seed)
 │       ├── state-machine.ts     # Pure state transitions (zero I/O)
 │       ├── session-store.ts     # I/O shell: atomic writes, cross-process lock, migration
-│       ├── conditions.ts        # Pure condition predicates for discuss_wait
+│       ├── conditions.ts        # Pure condition predicates for `discuss({ op: "wait", ... })`
 │       ├── wait.ts              # Async file polling (waitForCondition)
 │       ├── transcript.ts        # Transcript rendering (pure functions)
 │       ├── persona-seed.ts      # k-DPP persona seeding (pure functions, zero I/O)
@@ -277,13 +277,13 @@ types.ts ← referenced by all codex modules
 
 ```
 discuss/server.ts  (wiring only — SDK setup, transport, signals)
-  └── discuss/server-handlers.ts  (tool dispatch + discuss_wait integration)
+  └── discuss/server-handlers.ts  (tool dispatch + `discuss({ op: "wait", ... })` integration)
         ├── discuss/schemas.ts          (zod input validation)
         ├── discuss/state-machine.ts    (pure state transitions, zero I/O)
         ├── discuss/session-store.ts    (I/O shell: atomic writes, cross-process lock)
         │     └── discuss/transcript.ts (rendering, called via save())
         ├── discuss/persona-seed.ts      (pure k-DPP sampling, zero I/O)
-        ├── discuss/conditions.ts       (pure predicates for discuss_wait)
+        ├── discuss/conditions.ts       (pure predicates for `discuss({ op: "wait", ... })`)
         ├── discuss/wait.ts             (async file polling)
         └── shared/mcp-utils.ts         (textResult, jsonResult)
 
@@ -295,5 +295,5 @@ discuss/types.ts ← referenced by all discuss modules
 The discuss server separates pure logic from I/O:
 - **Functional Core** (`state-machine.ts`): all state transitions are pure functions `(state, args) → Result<T>`. Zero `node:fs` imports. Fully testable without filesystem.
 - **Imperative Shell** (`session-store.ts`): handles atomic writes, cross-process locking, state migration, and incremental transcript append.
-- **Condition predicates** (`conditions.ts`): pure boolean functions used by `discuss_wait` to detect when to unblock.
+- **Condition predicates** (`conditions.ts`): pure boolean functions used by `discuss({ op: "wait", ... })` to detect when to unblock.
 - **Wait module** (`wait.ts`): polls `state.json` at intervals until a predicate is true or timeout expires.

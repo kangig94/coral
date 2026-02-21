@@ -479,7 +479,7 @@ All state-modifying logic. Zero I/O imports (`node:fs`, `node:path` are banned i
 
 | Function | Description |
 |---|---|
-| `initSession(input, sessionId, sessionDir, now)` | Create initial DiscussState from discuss_create input |
+| `initSession(input, sessionId, sessionDir, now)` | Create initial DiscussState from `discuss({ op: "create", ... })` input |
 | `applyBid(state, agent, score, now)` | Record a bid, remove from pending_bidders |
 | `resolveWinner(state, now)` | Resolve bidding round: winner, fallback, cold_start, epoch_transition, max_epochs_reached, no_winner |
 | `applySpeech(state, agent, content, now)` | Record speech, set monotonic `last_speech_step`, advance step |
@@ -499,7 +499,7 @@ All state-modifying logic. Zero I/O imports (`node:fs`, `node:path` are banned i
 
 ### src/discuss/conditions.ts — Wait Condition Predicates
 
-Pure boolean predicates used by `discuss_wait` to detect when to unblock.
+Pure boolean predicates used by `discuss({ op: "wait", ... })` to detect when to unblock.
 
 | Predicate | Condition |
 |---|---|
@@ -563,26 +563,20 @@ Pure functions operating on structured `TranscriptEntry[]`. Human-readable forma
 
 ### src/discuss/schemas.ts — Zod Input Validation
 
-Zod schemas for all 8 discuss MCP tools.
+Zod schemas for the unified discuss API.
 
 | Schema | Tool | Required Fields |
 |---|---|---|
-| `discussCreateSchema` | `discuss_create` | `topic`, `agents` |
-| `discussBidSchema` | `discuss_bid` | `session`, `agent_name`, `score` |
-| `discussWaitSchema` | `discuss_wait` | `session`, `condition`, `timeout_seconds` |
-| `discussSpeakSchema` | `discuss_speak` | `session`, `agent_name`, `content` |
-| `discussTranscriptSchema` | `discuss_transcript` | `session` |
-| `discussStateSchema` | `discuss_state` | `session` |
-| `discussEndSchema` | `discuss_end` | `session` |
-| `discussEpochSummarySchema` | `discuss_epoch_summary` | `session`, `epoch`, `summary` |
+| `discussOpSchema` | `discuss` (`op` discriminated union) | `op` + op-specific fields (`create`, `bid`, `wait`, `speak`, `transcript`, `state`, `end`, `epoch_summary`) |
+| `discussPersonaSeedSchema` | `discuss_persona_seed` | `controversy_axes`, `n` |
 
-Notable validation: `discuss_wait` enforces per-condition timeout limits (all_bids: 60s, speech_delivered: 120s, action_needed: 180s) and requires `agent_name` for `action_needed` condition.
+Notable validation: `discussOpSchema` handles structural validation for all ops; cross-field wait/end constraints are enforced in `server-handlers.ts`.
 
 ---
 
 ### src/discuss/server-handlers.ts — Tool Dispatch
 
-Routes MCP tool calls to state-machine functions via `SessionStore`. All discuss_wait calls use `waitForCondition` + auto-resolve inside lock.
+Routes MCP tool calls to state-machine functions via `SessionStore`. All `discuss({ op: "wait", ... })` calls use `waitForCondition` + auto-resolve inside lock.
 
 #### `handleToolCall(name, rawArgs, store): Promise<McpResult>`
 
@@ -590,10 +584,10 @@ Dispatches to per-tool handlers. Zod validation at entry. Unknown tools return `
 
 #### Key handler patterns
 
-- **discuss_create**: `initSession` (pure) → `store.save` (I/O)
-- **discuss_bid**: `store.withLock` → `applyBid` (pure) → if all bids in: `resolveWinner` (pure) → `store.save`
-- **discuss_wait**: `waitForCondition` (polling) → if `all_bids`: auto-resolve inside lock → return result
-- **discuss_speak**: `store.withLock` → `applySpeech` (pure) → `store.save`
+- **`discuss({ op: "create", ... })`**: `initSession` (pure) → `store.save` (I/O)
+- **`discuss({ op: "bid", ... })`**: `store.withLock` → `applyBid` (pure) → if all bids in: `resolveWinner` (pure) → `store.save`
+- **`discuss({ op: "wait", ... })`**: `waitForCondition` (polling) → if `all_bids`: auto-resolve inside lock → return result
+- **`discuss({ op: "speak", ... })`**: `store.withLock` → `applySpeech` (pure) → `store.save`
 
 ---
 

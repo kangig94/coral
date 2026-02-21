@@ -348,10 +348,10 @@ argument-hint: "[topic]"
 1. Load `agents/discuss-lead.md` protocol
 2. Analyze topic: determine team composition (3–8 roles), detect debate mode
 3. Spawn `persona-generator` agents in parallel (one per role) to create unique personas
-4. Call `discuss_create` with generated personas → get `session_id`
+4. Call `discuss({ op: "create", ... })` with generated personas → get `session_id`
 5. Create Agent Team `coral-dc-{session_id}`, spawn `discussant` teammates
-6. Run discussion: bidding → `discuss_wait(all_bids)` auto-resolve → speak → broadcast → repeat
-7. On termination: `discuss_end`, read full transcript, present structured synthesis
+6. Run discussion: bidding → `discuss({ op: "wait", condition: "all_bids", ... })` auto-resolve → speak → broadcast → repeat
+7. On termination: `discuss({ op: "end", ... })`, read full transcript, present structured synthesis
 
 ### Discussion Modes
 

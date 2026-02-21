@@ -21,17 +21,7 @@ import { allBidsIn, speechDelivered, actionNeeded } from './conditions.js';
 import { waitForCondition } from './wait.js';
 import { formatFull, formatRecent, formatSummary } from './transcript.js';
 import { seedPersonas } from './persona-seed.js';
-import {
-  discussCreateSchema,
-  discussBidSchema,
-  discussWaitSchema,
-  discussSpeakSchema,
-  discussTranscriptSchema,
-  discussStateSchema,
-  discussEndSchema,
-  discussEpochSummarySchema,
-  discussPersonaSeedSchema,
-} from './schemas.js';
+import { discussOpSchema, discussPersonaSeedSchema, type DiscussOpInput } from './schemas.js';
 
 export { textResult, jsonResult };
 
@@ -72,17 +62,36 @@ const STATUS_TO_ACTION: Record<string, string> = {
   speaking: 'speak',
 };
 
+const WAIT_TIMEOUT_LIMITS: Record<string, number> = { all_bids: 60, speech_delivered: 120, action_needed: 180 };
+
+function validateWaitConstraints(input: Extract<DiscussOpInput, { op: 'wait' }>): void {
+  const limit = WAIT_TIMEOUT_LIMITS[input.condition] ?? 60;
+  if (input.timeout_seconds > limit) throw new Error(`timeout_seconds exceeds ${limit}s limit for ${input.condition}`);
+  if (input.condition === 'action_needed' && !input.agent_name) throw new Error('agent_name required for action_needed condition');
+}
+
+function validateEndConstraints(input: Extract<DiscussOpInput, { op: 'end' }>): void {
+  if (input.force && !input.reason?.trim()) throw new Error('reason is required when force=true');
+}
+
 export const tools = [
   {
-    name: 'discuss_create',
-    description: 'Initialize a new discussion session with agent personas and return session_id.',
+    name: 'discuss',
+    description: 'Multi-agent discussion session management. Use op field to select operation: create (initialize session), bid (submit speaking desire 0-100), wait (block until condition), speak (record speech), transcript (read transcript), state (query state), end (finalize), epoch_summary (append summary).',
     inputSchema: {
       type: 'object' as const,
       properties: {
-        topic: { type: 'string', description: 'Discussion topic' },
+        op: {
+          type: 'string',
+          enum: ['create', 'bid', 'wait', 'speak', 'transcript', 'state', 'end', 'epoch_summary'],
+          description: 'Operation. create: topic+agents required. bid: session+agent_name+score. wait: session+condition+timeout_seconds. speak: session+agent_name+content. transcript: session required. state: session required. end: session required. epoch_summary: session+epoch+summary.',
+        },
+        session: { type: 'string', description: 'Session ID (required for all ops except create)' },
+        agent_name: { type: 'string', description: 'Agent name' },
+        topic: { type: 'string', description: 'Discussion topic (create)' },
         agents: {
           type: 'array',
-          description: 'List of agents (2–8). Each has name (ASCII identifier) and persona text.',
+          description: 'Agent list (create)',
           items: {
             type: 'object',
             properties: {
@@ -94,102 +103,21 @@ export const tools = [
           minItems: 2,
           maxItems: 8,
         },
-        quota_per_epoch: { type: 'integer', description: 'Max speeches per agent per epoch (default 3)', default: 3 },
-        recent_turns: { type: 'integer', description: 'Recent turns shown in transcript (default 5)', default: 5 },
+        quota_per_epoch: { type: 'integer', description: 'Max speeches per agent per epoch (create, default 3)' },
+        recent_turns: { type: 'integer', description: 'Recent turns in transcript (create, default 5)' },
+        score: { type: 'integer', description: 'Desire score 0-100 (bid)', minimum: 0, maximum: 100 },
+        condition: { type: 'string', enum: ['all_bids', 'speech_delivered', 'action_needed'], description: 'Wait condition' },
+        timeout_seconds: { type: 'number', description: 'Max wait seconds (limits: all_bids=60, speech_delivered=120, action_needed=180)' },
+        content: { type: 'string', description: 'Speech content (speak)' },
+        mode: { type: 'string', enum: ['full', 'recent', 'summary'], description: 'Transcript mode (default: recent)' },
+        last_n: { type: 'integer', description: 'Last N entries (transcript)', minimum: 1, maximum: 50 },
+        synthesis: { type: 'string', description: 'Synthesis text (end)' },
+        force: { type: 'boolean', description: 'Force-end (end)' },
+        reason: { type: 'string', description: 'Force reason (end, required when force=true)' },
+        epoch: { type: 'integer', description: 'Epoch number (epoch_summary)', minimum: 1 },
+        summary: { type: 'string', description: 'Epoch summary text (epoch_summary)' },
       },
-      required: ['topic', 'agents'],
-    },
-  },
-  {
-    name: 'discuss_bid',
-    description: 'Submit speaking desire score 0–100.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        session: { type: 'string', description: 'Session ID' },
-        agent_name: { type: 'string', description: 'Agent name' },
-        score: { type: 'integer', description: 'Desire score 0–100 (higher = stronger desire to speak)', minimum: 0, maximum: 100 },
-      },
-      required: ['session', 'agent_name', 'score'],
-    },
-  },
-  {
-    name: 'discuss_wait',
-    description: 'Block until condition fulfilled. all_bids: auto-resolves when all bids in. speech_delivered: waits for current speech to finish. action_needed: waits for this agent\'s turn.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        session: { type: 'string', description: 'Session ID' },
-        condition: { type: 'string', enum: ['all_bids', 'speech_delivered', 'action_needed'], description: 'Condition to wait for' },
-        timeout_seconds: { type: 'number', description: 'Max wait: all_bids=60, speech_delivered=120, action_needed=180' },
-        agent_name: { type: 'string', description: 'Required for action_needed condition' },
-      },
-      required: ['session', 'condition', 'timeout_seconds'],
-    },
-  },
-  {
-    name: 'discuss_speak',
-    description: 'Record speech. Only allowed for the current speaker (current_speaker must match agent_name).',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        session: { type: 'string', description: 'Session ID' },
-        agent_name: { type: 'string', description: 'Speaking agent name' },
-        content: { type: 'string', description: 'Speech content' },
-      },
-      required: ['session', 'agent_name', 'content'],
-    },
-  },
-  {
-    name: 'discuss_transcript',
-    description: 'Read transcript. mode=full restricted to current speaker or when status=ended.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        session: { type: 'string', description: 'Session ID' },
-        agent_name: { type: 'string', description: 'Caller agent name (required for full mode unless ended)' },
-        mode: { type: 'string', enum: ['full', 'recent', 'summary'], default: 'recent' },
-        last_n: { type: 'integer', description: 'Number of recent speeches to show in full (overrides recent_turns)', minimum: 1, maximum: 50 },
-      },
-      required: ['session'],
-    },
-  },
-  {
-    name: 'discuss_state',
-    description: 'Query current session state.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        session: { type: 'string', description: 'Session ID' },
-      },
-      required: ['session'],
-    },
-  },
-  {
-    name: 'discuss_end',
-    description: 'Finalize the discussion. Requires force=true+reason when ending during active speech.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        session: { type: 'string', description: 'Session ID' },
-        synthesis: { type: 'string', description: 'Optional synthesis/conclusion text' },
-        force: { type: 'boolean', description: 'Force-end during speaking', default: false },
-        reason: { type: 'string', description: 'Required when force=true' },
-      },
-      required: ['session'],
-    },
-  },
-  {
-    name: 'discuss_epoch_summary',
-    description: 'Append epoch summary to transcript. Teamlead-only. One per epoch, must match current epoch.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        session: { type: 'string', description: 'Session ID' },
-        epoch: { type: 'integer', description: 'Epoch number (must match current epoch)', minimum: 1 },
-        summary: { type: 'string', description: 'Summary of the completed epoch' },
-      },
-      required: ['session', 'epoch', 'summary'],
+      required: ['op'],
     },
   },
   {
@@ -220,6 +148,255 @@ export const tools = [
   },
 ];
 
+async function handleDiscussOp(input: DiscussOpInput, store: SessionStore): Promise<McpResult> {
+  switch (input.op) {
+    case 'create': {
+      store.cleanupExpiredSessions();
+      const now = new Date().toISOString();
+      const rawThreshold = parseInt(process.env.CORAL_DISCUSS_BID_THRESHOLD ?? '', 10);
+      const bidThreshold = (Number.isFinite(rawThreshold) && rawThreshold >= 1 && rawThreshold <= 100)
+        ? rawThreshold : DEFAULT_BID_THRESHOLD;
+      const rawMaxEpochs = parseInt(process.env.CORAL_DISCUSS_MAX_EPOCHS ?? '', 10);
+      const maxEpochs = (Number.isFinite(rawMaxEpochs) && rawMaxEpochs >= 1 && rawMaxEpochs <= 10)
+        ? rawMaxEpochs : DEFAULT_MAX_EPOCHS;
+      const state = initSession(input, now, bidThreshold, maxEpochs);
+      const { sessionId, sessionDir, fullPath } = store.createSessionDir(input.topic);
+      state.session_id = sessionId;
+      state.session_dir = sessionDir;
+      state.team_name = `coral-dc-${sessionId}`;
+
+      await store.withLock(fullPath, async () => {
+        store.initTranscript(fullPath, input.topic);
+        store.save(fullPath, state);
+      });
+
+      return jsonResult({
+        session_id: sessionId,
+        session_dir: sessionDir,
+        team_name: state.team_name,
+        topic: input.topic,
+        status: state.status,
+        bid_threshold: state.bid_threshold,
+        max_epochs: state.max_epochs,
+        agents: input.agents.map((a) => a.name),
+      });
+    }
+
+    case 'bid': {
+      const sessionDir = resolveSession(store, input.session);
+      if (typeof sessionDir !== 'string') return sessionDir;
+
+      const result = await mutateSession(
+        store,
+        sessionDir,
+        (s) => applyBid(s, input.agent_name, input.score, new Date().toISOString()),
+        (s) => ({ all_bids_in: s.pending_bidders.length === 0 }),
+      );
+      return resultToMcp(result);
+    }
+
+    case 'wait': {
+      const sessionDir = store.resolveDir(input.session);
+      if (!sessionDir) return textResult('Error: session_not_found', true);
+
+      // Agent membership pre-check for action_needed (avoids burning full timeout on unknown agent)
+      if (input.condition === 'action_needed') {
+        const preState = store.load(sessionDir);
+        if (!preState.agents[input.agent_name!]) {
+          return jsonResult({ error: 'agent_not_found', agent_name: input.agent_name });
+        }
+      }
+
+      // Auto-start: transition setup -> bidding BEFORE the poll loop begins.
+      // Without this, allBidsIn predicate never fires (it requires status=bidding).
+      if (input.condition === 'all_bids') {
+        await store.withLock(sessionDir, async () => {
+          const s = store.load(sessionDir);
+          if (s.status === 'setup') {
+            const res = startBidding(s, new Date().toISOString());
+            if (res.ok) store.save(sessionDir, res.value);
+          }
+        });
+      }
+
+      const predicates: Record<string, (s: DiscussState) => boolean> = {
+        all_bids: allBidsIn,
+        speech_delivered: speechDelivered,
+        action_needed: actionNeeded(input.agent_name!),
+      };
+      const pred = predicates[input.condition];
+
+      const statePath = store.statePath(sessionDir);
+      const waitResult = await waitForCondition(statePath, pred, input.timeout_seconds * 1000);
+
+      if (waitResult.error) {
+        return textResult(`Error: ${waitResult.error}`, true);
+      }
+
+      // After error check, state is guaranteed non-null (discriminated union narrowing)
+      const waitState = waitResult.state!;
+
+      // Auto-resolve on all_bids fulfillment
+      if (waitResult.fulfilled && input.condition === 'all_bids') {
+        const outcome = await store.withLock(sessionDir, async () => {
+          const state = store.load(sessionDir);
+          // TOCTOU guard: re-check condition inside lock (stale wakeup detection)
+          if (!allBidsIn(state)) {
+            return { stale: true, status: state.status, step: state.step, epoch: state.epoch };
+          }
+          const res = resolveWinner(state, new Date().toISOString());
+          if (!res.ok) return { error: res.error, ...res.detail };
+          const [newState, resolveData] = res.value;
+          store.save(sessionDir, newState);
+          return resolveData as Record<string, unknown>;
+        });
+        return jsonResult({ fulfilled: true, elapsed_seconds: waitResult.elapsed_ms / 1000, ...outcome });
+      }
+
+      // Action-needed: tell agent what to do next (information veil: your_speaks, not quota_remaining)
+      if (waitResult.fulfilled && input.condition === 'action_needed') {
+        const action = STATUS_TO_ACTION[waitState.status] ?? 'bid';
+        return jsonResult({
+          fulfilled: true,
+          action,
+          elapsed_seconds: waitResult.elapsed_ms / 1000,
+          epoch: waitState.epoch,
+          your_speaks: waitState.agents[input.agent_name!]?.total_speaks ?? 0,
+        });
+      }
+
+      // Generic return (speech_delivered or timeout)
+      return jsonResult({
+        fulfilled: waitResult.fulfilled,
+        elapsed_seconds: waitResult.elapsed_ms / 1000,
+        status: waitState.status,
+        step: waitState.step,
+        epoch: waitState.epoch,
+      });
+    }
+
+    case 'speak': {
+      const sessionDir = resolveSession(store, input.session);
+      if (typeof sessionDir !== 'string') return sessionDir;
+
+      const result = await mutateSession(
+        store,
+        sessionDir,
+        (s) => applySpeech(s, input.agent_name, input.content, new Date().toISOString()),
+        (s) => ({ step: s.step, status: s.status }),
+      );
+      return resultToMcp(result);
+    }
+
+    case 'transcript': {
+      const sessionDir = resolveSession(store, input.session);
+      if (typeof sessionDir !== 'string') return sessionDir;
+
+      // When agent_name provided: track read under lock for bid enforcement.
+      // When absent: lockless read (no tracking needed).
+      const { agent_name: caller } = input;
+      const state = caller
+        ? await store.withLock(sessionDir, async () => {
+            const s = store.load(sessionDir);
+            if (s.agents[caller] && (s.transcript_read_step[caller] ?? 0) < s.step) {
+              const ts = new Date().toISOString();
+              const updated = {
+                ...s,
+                transcript_read_step: { ...s.transcript_read_step, [caller]: s.step },
+                updated_at: ts,
+                last_activity_at: ts,
+              };
+              store.save(sessionDir, updated);
+              return updated;
+            }
+            return s;
+          })
+        : store.load(sessionDir);
+
+      // Full-transcript ACL: mode=full requires agent_name=current_speaker OR status=ended
+      if (input.mode === 'full' && state.status !== 'ended') {
+        if (!caller) {
+          return jsonResult({ error: 'full_transcript_requires_speaker_or_ended' });
+        }
+        if (caller !== state.current_speaker) {
+          return jsonResult({ error: 'full_transcript_speaker_only' });
+        }
+      }
+
+      let text: string;
+      switch (input.mode) {
+        case 'full':
+          text = formatFull(state.transcript, state.agents);
+          break;
+        case 'summary':
+          text = formatSummary(state.transcript, state.agents);
+          break;
+        default:
+          text = formatRecent(state.transcript, input.last_n ?? state.recent_turns, state.agents);
+      }
+      return textResult(text);
+    }
+
+    case 'state': {
+      const sessionDir = resolveSession(store, input.session);
+      if (typeof sessionDir !== 'string') return sessionDir;
+
+      const state = store.load(sessionDir);
+      return jsonResult({
+        session_id: state.session_id,
+        topic: state.topic,
+        status: state.status,
+        step: state.step,
+        epoch: state.epoch,
+        current_speaker: state.current_speaker,
+        speaker_type: state.speaker_type,
+        cold_start: state.cold_start,
+        bid_threshold: state.bid_threshold,
+        recent_turns: state.recent_turns,
+        agents: Object.fromEntries(
+          Object.entries(state.agents).map(([n, a]) => [
+            n,
+            { display_name: a.display_name, total_speaks: a.total_speaks },
+          ]),
+        ),
+        pending_bidders: state.pending_bidders,
+        total_agents: Object.keys(state.agents).length,
+      });
+    }
+
+    case 'end': {
+      const sessionDir = resolveSession(store, input.session);
+      if (typeof sessionDir !== 'string') return sessionDir;
+
+      const result = await mutateSession(
+        store,
+        sessionDir,
+        (s) => applyEnd(s, { force: input.force, reason: input.reason, synthesis: input.synthesis }, new Date().toISOString()),
+        () => ({ ok: true, session_id: input.session }),
+      );
+      return resultToMcp(result);
+    }
+
+    case 'epoch_summary': {
+      const sessionDir = resolveSession(store, input.session);
+      if (typeof sessionDir !== 'string') return sessionDir;
+
+      const result = await mutateSession(
+        store,
+        sessionDir,
+        (s) => applyEpochSummary(s, input.epoch, input.summary, new Date().toISOString()),
+        () => ({ ok: true }),
+      );
+      return resultToMcp(result);
+    }
+
+    default: {
+      const _exhaustive: never = input;
+      return textResult(`Unhandled op: ${(_exhaustive as DiscussOpInput).op}`, true);
+    }
+  }
+}
+
 export async function handleToolCall(
   name: string,
   rawArgs: Record<string, unknown>,
@@ -227,248 +404,19 @@ export async function handleToolCall(
 ): Promise<McpResult> {
   try {
     switch (name) {
-      case 'discuss_create': {
-        const input = discussCreateSchema.parse(rawArgs);
-        store.cleanupExpiredSessions();
-        const now = new Date().toISOString();
-        const rawThreshold = parseInt(process.env.CORAL_DISCUSS_BID_THRESHOLD ?? '', 10);
-        const bidThreshold = (Number.isFinite(rawThreshold) && rawThreshold >= 1 && rawThreshold <= 100)
-          ? rawThreshold : DEFAULT_BID_THRESHOLD;
-        const rawMaxEpochs = parseInt(process.env.CORAL_DISCUSS_MAX_EPOCHS ?? '', 10);
-        const maxEpochs = (Number.isFinite(rawMaxEpochs) && rawMaxEpochs >= 1 && rawMaxEpochs <= 10)
-          ? rawMaxEpochs : DEFAULT_MAX_EPOCHS;
-        const state = initSession(input, now, bidThreshold, maxEpochs);
-        const { sessionId, sessionDir, fullPath } = store.createSessionDir(input.topic);
-        state.session_id = sessionId;
-        state.session_dir = sessionDir;
-        state.team_name = `coral-dc-${sessionId}`;
-
-        await store.withLock(fullPath, async () => {
-          store.initTranscript(fullPath, input.topic);
-          store.save(fullPath, state);
-        });
-
-        return jsonResult({
-          session_id: sessionId,
-          session_dir: sessionDir,
-          team_name: state.team_name,
-          topic: input.topic,
-          status: state.status,
-          bid_threshold: state.bid_threshold,
-          max_epochs: state.max_epochs,
-          agents: input.agents.map((a) => a.name),
-        });
-      }
-
-      case 'discuss_bid': {
-        const input = discussBidSchema.parse(rawArgs);
-        const sessionDir = resolveSession(store, input.session);
-        if (typeof sessionDir !== 'string') return sessionDir;
-
-        const result = await mutateSession(
-          store, sessionDir,
-          (s) => applyBid(s, input.agent_name, input.score, new Date().toISOString()),
-          (s) => ({ all_bids_in: s.pending_bidders.length === 0 }),
-        );
-        return resultToMcp(result);
-      }
-
-      case 'discuss_wait': {
-        const input = discussWaitSchema.parse(rawArgs);
-        const sessionDir = store.resolveDir(input.session);
-        if (!sessionDir) return textResult('Error: session_not_found', true);
-
-        // Agent membership pre-check for action_needed (avoids burning full timeout on unknown agent)
-        if (input.condition === 'action_needed') {
-          const preState = store.load(sessionDir);
-          if (!preState.agents[input.agent_name!]) {
-            return jsonResult({ error: 'agent_not_found', agent_name: input.agent_name });
+      case 'discuss': {
+        const parsed = discussOpSchema.safeParse(rawArgs);
+        if (!parsed.success) {
+          const rawOp = (rawArgs as Record<string, unknown>).op;
+          if (rawOp !== undefined && parsed.error.issues.some((i) => i.code === 'invalid_union_discriminator')) {
+            return jsonResult({ error: 'unknown_op', op: rawOp });
           }
+          throw parsed.error;
         }
-
-        // Auto-start: transition setup -> bidding BEFORE the poll loop begins.
-        // Without this, allBidsIn predicate never fires (it requires status=bidding).
-        if (input.condition === 'all_bids') {
-          await store.withLock(sessionDir, async () => {
-            const s = store.load(sessionDir);
-            if (s.status === 'setup') {
-              const res = startBidding(s, new Date().toISOString());
-              if (res.ok) store.save(sessionDir, res.value);
-            }
-          });
-        }
-
-        const predicates: Record<string, (s: DiscussState) => boolean> = {
-          all_bids: allBidsIn,
-          speech_delivered: speechDelivered,
-          action_needed: actionNeeded(input.agent_name!),
-        };
-        const pred = predicates[input.condition];
-
-        const statePath = store.statePath(sessionDir);
-        const waitResult = await waitForCondition(statePath, pred, input.timeout_seconds * 1000);
-
-        if (waitResult.error) {
-          return textResult(`Error: ${waitResult.error}`, true);
-        }
-
-        // After error check, state is guaranteed non-null (discriminated union narrowing)
-        const waitState = waitResult.state!;
-
-        // Auto-resolve on all_bids fulfillment
-        if (waitResult.fulfilled && input.condition === 'all_bids') {
-          const outcome = await store.withLock(sessionDir, async () => {
-            const state = store.load(sessionDir);
-            // TOCTOU guard: re-check condition inside lock (stale wakeup detection)
-            if (!allBidsIn(state)) {
-              return { stale: true, status: state.status, step: state.step, epoch: state.epoch };
-            }
-            const res = resolveWinner(state, new Date().toISOString());
-            if (!res.ok) return { error: res.error, ...res.detail };
-            const [newState, resolveData] = res.value;
-            store.save(sessionDir, newState);
-            return resolveData as Record<string, unknown>;
-          });
-          return jsonResult({ fulfilled: true, elapsed_seconds: waitResult.elapsed_ms / 1000, ...outcome });
-        }
-
-        // Action-needed: tell agent what to do next (information veil: your_speaks, not quota_remaining)
-        if (waitResult.fulfilled && input.condition === 'action_needed') {
-          const action = STATUS_TO_ACTION[waitState.status] ?? 'bid';
-          return jsonResult({
-            fulfilled: true,
-            action,
-            elapsed_seconds: waitResult.elapsed_ms / 1000,
-            epoch: waitState.epoch,
-            your_speaks: waitState.agents[input.agent_name!]?.total_speaks ?? 0,
-          });
-        }
-
-        // Generic return (speech_delivered or timeout)
-        return jsonResult({
-          fulfilled: waitResult.fulfilled,
-          elapsed_seconds: waitResult.elapsed_ms / 1000,
-          status: waitState.status,
-          step: waitState.step,
-          epoch: waitState.epoch,
-        });
-      }
-
-      case 'discuss_speak': {
-        const input = discussSpeakSchema.parse(rawArgs);
-        const sessionDir = resolveSession(store, input.session);
-        if (typeof sessionDir !== 'string') return sessionDir;
-
-        const result = await mutateSession(
-          store, sessionDir,
-          (s) => applySpeech(s, input.agent_name, input.content, new Date().toISOString()),
-          (s) => ({ step: s.step, status: s.status }),
-        );
-        return resultToMcp(result);
-      }
-
-      case 'discuss_transcript': {
-        const input = discussTranscriptSchema.parse(rawArgs);
-        const sessionDir = resolveSession(store, input.session);
-        if (typeof sessionDir !== 'string') return sessionDir;
-
-        // When agent_name provided: track read under lock for bid enforcement.
-        // When absent: lockless read (no tracking needed).
-        const { agent_name: caller } = input;
-        const state = caller
-          ? await store.withLock(sessionDir, async () => {
-              const s = store.load(sessionDir);
-              if (s.agents[caller] && (s.transcript_read_step[caller] ?? 0) < s.step) {
-                const ts = new Date().toISOString();
-                const updated = {
-                  ...s,
-                  transcript_read_step: { ...s.transcript_read_step, [caller]: s.step },
-                  updated_at: ts,
-                  last_activity_at: ts,
-                };
-                store.save(sessionDir, updated);
-                return updated;
-              }
-              return s;
-            })
-          : store.load(sessionDir);
-
-        // Full-transcript ACL: mode=full requires agent_name=current_speaker OR status=ended
-        if (input.mode === 'full' && state.status !== 'ended') {
-          if (!caller) {
-            return jsonResult({ error: 'full_transcript_requires_speaker_or_ended' });
-          }
-          if (caller !== state.current_speaker) {
-            return jsonResult({ error: 'full_transcript_speaker_only' });
-          }
-        }
-
-        let text: string;
-        switch (input.mode) {
-          case 'full':
-            text = formatFull(state.transcript, state.agents);
-            break;
-          case 'summary':
-            text = formatSummary(state.transcript, state.agents);
-            break;
-          default:
-            text = formatRecent(state.transcript, input.last_n ?? state.recent_turns, state.agents);
-        }
-        return textResult(text);
-      }
-
-      case 'discuss_state': {
-        const input = discussStateSchema.parse(rawArgs);
-        const sessionDir = resolveSession(store, input.session);
-        if (typeof sessionDir !== 'string') return sessionDir;
-
-        const state = store.load(sessionDir);
-        return jsonResult({
-          session_id: state.session_id,
-          topic: state.topic,
-          status: state.status,
-          step: state.step,
-          epoch: state.epoch,
-          current_speaker: state.current_speaker,
-          speaker_type: state.speaker_type,
-          cold_start: state.cold_start,
-          bid_threshold: state.bid_threshold,  // rule (reserve price), kept visible
-          recent_turns: state.recent_turns,
-          agents: Object.fromEntries(
-            Object.entries(state.agents).map(([n, a]) => [
-              n,
-              { display_name: a.display_name, total_speaks: a.total_speaks },
-            ]),
-          ),
-          pending_bidders: state.pending_bidders,
-          total_agents: Object.keys(state.agents).length,
-        });
-      }
-
-      case 'discuss_end': {
-        const input = discussEndSchema.parse(rawArgs);
-        const sessionDir = resolveSession(store, input.session);
-        if (typeof sessionDir !== 'string') return sessionDir;
-
-        const result = await mutateSession(
-          store, sessionDir,
-          (s) => applyEnd(s, { force: input.force, reason: input.reason, synthesis: input.synthesis }, new Date().toISOString()),
-          () => ({ ok: true, session_id: input.session }),
-        );
-        return resultToMcp(result);
-      }
-
-      case 'discuss_epoch_summary': {
-        const input = discussEpochSummarySchema.parse(rawArgs);
-        const sessionDir = resolveSession(store, input.session);
-        if (typeof sessionDir !== 'string') return sessionDir;
-
-        const result = await mutateSession(
-          store, sessionDir,
-          (s) => applyEpochSummary(s, input.epoch, input.summary, new Date().toISOString()),
-          () => ({ ok: true }),
-        );
-        return resultToMcp(result);
+        const input = parsed.data;
+        if (input.op === 'wait') validateWaitConstraints(input);
+        if (input.op === 'end') validateEndConstraints(input);
+        return handleDiscussOp(input, store);
       }
 
       case 'discuss_persona_seed': {

@@ -38,10 +38,10 @@ Before any other action, verify the Agent Teams environment:
 2. **Load protocol**: Read `agents/discuss-lead.md` to load the full discussion lead protocol
 3. **Analyze topic**: Determine team composition (roles, debate mode detection)
 4. **Generate personas**: Spawn `persona-generator` agents in parallel (one per role)
-5. **Initialize**: Call `discuss_create` with generated personas → get `session_id`
+5. **Initialize**: Call `discuss({ op: "create", ... })` with generated personas → get `session_id`
 6. **Spawn teammates**: Create Agent Team `coral-dc-{session_id}`, spawn `discussant` teammates
-7. **Run discussion**: Execute bidding → `discuss_wait(all_bids)` auto-resolve → speak loop until termination
-8. **Synthesize**: Call `discuss_end`, read full transcript, present structured summary
+7. **Run discussion**: Execute bidding → `discuss(op: "wait", condition: "all_bids")` auto-resolve → speak loop until termination
+8. **Synthesize**: Call `discuss({ op: "end", ... })`, read full transcript, present structured summary
 
 ## Context Enhancement
 

@@ -159,7 +159,7 @@ export function initSession(
   };
 }
 
-/** Transition session from setup to bidding. Called by discuss_wait("all_bids") handler. */
+/** Transition session from setup to bidding. Called by discuss({ op: "wait", condition: "all_bids" }) handler. */
 export function startBidding(state: DiscussState, now: string): Result<DiscussState> {
   if (state.status !== 'setup') {
     return { ok: false, error: 'not_in_setup', detail: { current: state.status } };
@@ -176,15 +176,15 @@ export function applyBid(
 ): Result<DiscussState> {
   if (state.status !== 'bidding') {
     const hint = state.status === 'setup'
-      ? 'Session is in setup phase. Wait for teamlead to call discuss_wait("all_bids") first.'
-      : 'Not in bidding phase. Call discuss_wait to wait for your turn.';
+      ? 'Session is in setup phase. Wait for teamlead to call discuss({ op: "wait", condition: "all_bids" }) first.'
+      : 'Not in bidding phase. Call discuss(op: "wait") to wait for your turn.';
     return { ok: false, error: 'invalid_status', detail: { current: state.status, hint } };
   }
   if (!state.agents[agentName]) {
     return { ok: false, error: 'agent_not_found', detail: { agent_name: agentName } };
   }
   if (state.current_bids[agentName] !== null) {
-    return { ok: false, error: 'already_bid', detail: { agent_name: agentName, hint: 'Already bid this round. Call discuss_wait for next round.' } };
+    return { ok: false, error: 'already_bid', detail: { agent_name: agentName, hint: 'Already bid this round. Call discuss(op: "wait") for next round.' } };
   }
   // Transcript read enforcement: after the first speech, agents must read transcript before bidding.
   // Exempt: first round of epoch 1 (last_speech_step === 0).
@@ -193,7 +193,7 @@ export function applyBid(
     const readStep = state.transcript_read_step[agentName] ?? 0;
     if (readStep < state.step) {
       return { ok: false, error: 'read_transcript_first', detail: {
-        hint: 'Call discuss_transcript before bidding. Read recent speeches first.',
+        hint: 'Call discuss(op: "transcript") before bidding. Read recent speeches first.',
       } };
     }
   }
