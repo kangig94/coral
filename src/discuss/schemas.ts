@@ -29,7 +29,6 @@ export const discussCreateSchema = z.object({
 });
 
 // discuss_bid — Submit speaking desire score (0–100)
-// Voting score guard (must be 0 or 1) is enforced in state-machine.ts:applyBid
 export const discussBidSchema = z.object({
   session: z.string().regex(sessionIdPattern),
   agent_name: z.string().regex(identPattern),

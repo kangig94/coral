@@ -143,9 +143,9 @@ model: opus
 ---
 ```
 
-**Role**: Orchestrates multi-agent discussions through structured turn-taking. Manages session setup, team creation, bidding coordination, turn resolution, termination voting, epoch transitions, and synthesis delivery. Never speaks on substance — only process control.
+**Role**: Orchestrates multi-agent discussions through structured turn-taking. Manages session setup, team creation, bidding coordination, turn resolution, epoch transitions (auto-triggered by server), and synthesis delivery. Never speaks on substance — only process control.
 
-**Protocol**: Setup (persona generation → discuss_create → team + teammates) → Discussion Loop (broadcast → discuss_wait(all_bids) → 5-way branch → discuss_wait(speech_delivered) → repeat) → Synthesis (discuss_end → full transcript → present to user → cleanup).
+**Protocol**: Setup (persona generation → discuss_create → team + teammates) → Discussion Loop (broadcast → discuss_wait(all_bids) → 4-way branch → discuss_wait(speech_delivered) → repeat) → Synthesis (discuss_end → full transcript → present to user → cleanup).
 
 > Note: discuss-lead does NOT have `disallowedTools` — it needs Task (spawn agents), SendMessage (broadcast), TeamCreate/TeamDelete, and all discuss MCP tools.
 

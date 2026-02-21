@@ -23,6 +23,7 @@ function makeState(overrides: Partial<DiscussState> = {}): DiscussState {
     status: 'bidding',
     step: 1,
     epoch: 1,
+    max_epochs: 2,
     quota_per_epoch: 3,
     cold_start: false,
     recent_turns: 5,

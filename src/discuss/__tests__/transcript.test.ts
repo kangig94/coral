@@ -7,7 +7,9 @@ import {
   wrapText,
   generateOneLiner,
   renderEntries,
+  renderEntry,
   renderHeader,
+  formatFull,
   formatRecent,
   formatSummary,
 } from '../transcript.js';
@@ -120,22 +122,6 @@ describe('renderEntries', () => {
     expect(result).toContain('No winner');
   });
 
-  it('should render vote entry with unanimous verdict', () => {
-    const entries: TranscriptEntry[] = [
-      { type: 'vote', epoch: 1, ts: TS, votes: { alice: 0, bob: 0 }, unanimous: true },
-    ];
-    const result = renderEntries(entries, agents);
-    expect(result).toContain('Unanimous');
-  });
-
-  it('should render vote entry with non-unanimous verdict', () => {
-    const entries: TranscriptEntry[] = [
-      { type: 'vote', epoch: 1, ts: TS, votes: { alice: 0, bob: 1 }, unanimous: false },
-    ];
-    const result = renderEntries(entries, agents);
-    expect(result).toContain('Not unanimous');
-  });
-
   it('should render epoch_summary entry', () => {
     const entries: TranscriptEntry[] = [
       { type: 'epoch_summary', epoch: 1, ts: TS, summary: 'Key insights from epoch 1.' },
@@ -164,6 +150,41 @@ describe('renderEntries', () => {
   });
 });
 
+// ─── formatFull (information veil) ───────────────────────────────────────────
+
+describe('formatFull', () => {
+  it('should show winner name from bids entry but not scores', () => {
+    const entries: TranscriptEntry[] = [
+      { type: 'bids', step: 1, epoch: 1, ts: TS, bids: { alice: 80, bob: 50 }, winner: 'alice', resolve_type: 'normal' },
+      { type: 'speech', step: 1, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'My argument.' },
+    ];
+    const result = formatFull(entries, agents);
+    expect(result).toContain('Speaker: Alice');  // winner revealed
+    expect(result).not.toContain('80');           // bid score hidden
+    expect(result).not.toContain('50');           // bid score hidden
+    expect(result).toContain('My argument.');
+  });
+
+  it('should skip no_winner bids entries (information veil)', () => {
+    const entries: TranscriptEntry[] = [
+      { type: 'bids', step: 1, epoch: 1, ts: TS, bids: { alice: 5, bob: 3 }, winner: null, resolve_type: 'no_winner' },
+    ];
+    const result = formatFull(entries, agents);
+    expect(result).not.toContain('Speaker');
+    expect(result).not.toContain('5');  // score hidden
+  });
+
+  it('should render speech and epoch_summary entries unmodified', () => {
+    const entries: TranscriptEntry[] = [
+      { type: 'speech', step: 1, epoch: 1, ts: TS, agent: 'bob', display_name: 'Bob', content: 'Bob speaks.' },
+      { type: 'epoch_summary', epoch: 1, ts: TS, summary: 'Epoch conclusion.' },
+    ];
+    const result = formatFull(entries, agents);
+    expect(result).toContain('Bob speaks.');
+    expect(result).toContain('Epoch conclusion.');
+  });
+});
+
 // ─── formatRecent ─────────────────────────────────────────────────────────────
 
 describe('formatRecent', () => {
@@ -189,7 +210,7 @@ describe('formatRecent', () => {
     expect(result).not.toContain('Earlier speeches');
   });
 
-  it('should exclude non-speech entries (bids, votes)', () => {
+  it('should exclude non-speech entries (bids)', () => {
     const entries: TranscriptEntry[] = [
       { type: 'speech', step: 1, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'Old speech.' },
       { type: 'bids', step: 2, epoch: 1, ts: TS, bids: { alice: 80 }, winner: 'alice', resolve_type: 'normal' },

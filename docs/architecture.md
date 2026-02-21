@@ -92,11 +92,10 @@ User → /coral:discuss "AI ethics in healthcare"
      → Spawns discussant teammates (dc-{agent_name})
      → Discussion Loop:
         → Broadcast "Step N. Call discuss_bid."
-        → discuss_wait(all_bids) → auto-resolves → 5-way branch
+        → discuss_wait(all_bids) → auto-resolves → 4-way branch
           → winner → notify → discuss_wait(speech_delivered) → broadcast transcript
-          → vote_required → voting round
-          → no_winner → synthesis
-          → end_vote → synthesis or epoch transition
+          → no_winner + new_epoch → epoch transition (server auto-reset quotas)
+          → no_winner → synthesis (all_below_threshold / all_blocked / max_epochs_reached)
           → timeout → force end
      → discuss_end → full transcript → synthesis → present to user
      → Shutdown teammates, TeamDelete

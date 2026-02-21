@@ -8,11 +8,9 @@
 export type TranscriptEntry =
   | { type: 'bids'; step: number; epoch: number; ts: string;
       bids: Record<string, number>; winner: string | null;
-      resolve_type: 'normal' | 'fallback' | 'cold_start' | 'vote_required' | 'no_winner'; }
+      resolve_type: 'normal' | 'fallback' | 'cold_start' | 'no_winner'; }
   | { type: 'speech'; step: number; epoch: number; ts: string;
       agent: string; display_name: string; content: string; }
-  | { type: 'vote'; epoch: number; ts: string;
-      votes: Record<string, number>; unanimous: boolean; }
   | { type: 'epoch_summary'; epoch: number; ts: string; summary: string; }
   | { type: 'session_event'; epoch: number; ts: string;
       event: 'force_end' | 'synthesis'; detail: string; };
@@ -33,9 +31,10 @@ export interface DiscussState {
   session_id: string;
   session_dir: string;
   topic: string;
-  status: 'setup' | 'bidding' | 'speaking' | 'voting' | 'ended';
+  status: 'setup' | 'bidding' | 'speaking' | 'ended';
   step: number;
   epoch: number;
+  max_epochs: number;
   quota_per_epoch: number;
   cold_start: boolean;
   recent_turns: number;
@@ -64,12 +63,13 @@ export type Result<T> =
 
 // ─── ResolveResult ────────────────────────────────────────────────────────────
 
+/**
+ * Sealed-bid design: individual bid scores are never returned to any caller.
+ * The audit trail (all_bids) lives in state.json transcript entries only.
+ */
 export type ResolveResult =
-  | { winner: string; step: number; score?: number; all_bids: Record<string, number>;
-      resolve_type: 'normal' | 'fallback' | 'cold_start' }
-  | { no_winner: true; step: number; reason: string; all_bids: Record<string, number> }
-  | { vote_required: true; step: number; all_bids: Record<string, number> }
-  | { end_vote: true; unanimous: boolean };
+  | { winner: string; step: number; resolve_type: 'normal' | 'fallback' | 'cold_start' }
+  | { no_winner: true; step: number; reason: string; new_epoch?: boolean; epoch?: number };
 
 // ─── WaitCondition ────────────────────────────────────────────────────────────
 

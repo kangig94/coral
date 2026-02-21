@@ -432,7 +432,7 @@ interface DiscussState {
   session_id: string;
   session_dir: string;
   topic: string;
-  status: 'bidding' | 'speaking' | 'voting' | 'ended';
+  status: 'setup' | 'bidding' | 'speaking' | 'ended';
   step: number;
   epoch: number;
   quota_per_epoch: number;
@@ -449,7 +449,7 @@ interface DiscussState {
 
 #### TranscriptEntry (Discriminated Union)
 
-5 entry types: `bids`, `speech`, `vote`, `epoch_summary`, `session_event`.
+4 entry types: `bids`, `speech`, `epoch_summary`, `session_event`.
 
 #### Result\<T\>
 
@@ -481,7 +481,7 @@ All state-modifying logic. Zero I/O imports (`node:fs`, `node:path` are banned i
 |---|---|
 | `initSession(input, sessionId, sessionDir, now)` | Create initial DiscussState from discuss_create input |
 | `applyBid(state, agent, score, now)` | Record a bid, remove from pending_bidders |
-| `resolveWinner(state, now)` | Resolve bidding round: winner, fallback, cold_start, vote_required, no_winner |
+| `resolveWinner(state, now)` | Resolve bidding round: winner, fallback, cold_start, epoch_transition, max_epochs_reached, no_winner |
 | `applySpeech(state, agent, content, now)` | Record speech, set monotonic `last_speech_step`, advance step |
 | `applyEpochSummary(state, epoch, summary, now)` | Record epoch summary, validate epoch number |
 | `applyEnd(state, opts, now)` | Transition to ended status, record synthesis or force-end |
@@ -503,7 +503,7 @@ Pure boolean predicates used by `discuss_wait` to detect when to unblock.
 
 | Predicate | Condition |
 |---|---|
-| `allBidsIn(state)` | All bids submitted AND status is bidding/voting |
+| `allBidsIn(state)` | All bids submitted AND status is bidding |
 | `speechDelivered(state)` | `last_speech_step === step - 1` AND status is bidding (monotonic marker) |
 | `actionNeeded(agent)(state)` | Agent needs to bid, speak, or vote right now |
 

@@ -15,6 +15,7 @@ import {
   applyEpochSummary,
   applyEnd,
   DEFAULT_BID_THRESHOLD,
+  DEFAULT_MAX_EPOCHS,
 } from './state-machine.js';
 import { allBidsIn, speechDelivered, actionNeeded } from './conditions.js';
 import { waitForCondition } from './wait.js';
@@ -67,7 +68,6 @@ function resultToMcp(result: Result<unknown>): McpResult {
 const STATUS_TO_ACTION: Record<string, string> = {
   ended: 'session_ended',
   speaking: 'speak',
-  voting: 'vote',
 };
 
 export const tools = [
@@ -100,13 +100,13 @@ export const tools = [
   },
   {
     name: 'discuss_bid',
-    description: 'Submit speaking desire score 0–100. In voting mode: 0=agree to end, 1=disagree.',
+    description: 'Submit speaking desire score 0–100.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         session: { type: 'string', description: 'Session ID' },
         agent_name: { type: 'string', description: 'Agent name' },
-        score: { type: 'integer', description: 'Desire score 0–100 (voting: 0=agree, 1=disagree)', minimum: 0, maximum: 100 },
+        score: { type: 'integer', description: 'Desire score 0–100 (higher = stronger desire to speak)', minimum: 0, maximum: 100 },
       },
       required: ['session', 'agent_name', 'score'],
     },
@@ -154,7 +154,7 @@ export const tools = [
   },
   {
     name: 'discuss_state',
-    description: 'Query current session state. Bid scores only visible via discuss_wait("all_bids") auto-resolve.',
+    description: 'Query current session state.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -165,13 +165,13 @@ export const tools = [
   },
   {
     name: 'discuss_end',
-    description: 'Finalize the discussion. Requires force=true+reason when ending during active speech or non-unanimous vote.',
+    description: 'Finalize the discussion. Requires force=true+reason when ending during active speech.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         session: { type: 'string', description: 'Session ID' },
         synthesis: { type: 'string', description: 'Optional synthesis/conclusion text' },
-        force: { type: 'boolean', description: 'Force-end during speaking or voting', default: false },
+        force: { type: 'boolean', description: 'Force-end during speaking', default: false },
         reason: { type: 'string', description: 'Required when force=true' },
       },
       required: ['session'],
@@ -206,7 +206,10 @@ export async function handleToolCall(
         const rawThreshold = parseInt(process.env.CORAL_DISCUSS_BID_THRESHOLD ?? '', 10);
         const bidThreshold = (Number.isFinite(rawThreshold) && rawThreshold >= 1 && rawThreshold <= 100)
           ? rawThreshold : DEFAULT_BID_THRESHOLD;
-        const state = initSession(input, now, bidThreshold);
+        const rawMaxEpochs = parseInt(process.env.CORAL_DISCUSS_MAX_EPOCHS ?? '', 10);
+        const maxEpochs = (Number.isFinite(rawMaxEpochs) && rawMaxEpochs >= 1 && rawMaxEpochs <= 10)
+          ? rawMaxEpochs : DEFAULT_MAX_EPOCHS;
+        const state = initSession(input, now, bidThreshold, maxEpochs);
         const { sessionId, sessionDir, fullPath } = store.createSessionDir(input.topic);
         state.session_id = sessionId;
         state.session_dir = sessionDir;
@@ -224,6 +227,7 @@ export async function handleToolCall(
           topic: input.topic,
           status: state.status,
           bid_threshold: state.bid_threshold,
+          max_epochs: state.max_epochs,
           agents: input.agents.map((a) => a.name),
         });
       }
@@ -255,7 +259,7 @@ export async function handleToolCall(
         }
 
         // Auto-start: transition setup -> bidding BEFORE the poll loop begins.
-        // Without this, allBidsIn predicate never fires (it requires status=bidding/voting).
+        // Without this, allBidsIn predicate never fires (it requires status=bidding).
         if (input.condition === 'all_bids') {
           await store.withLock(sessionDir, async () => {
             const s = store.load(sessionDir);
@@ -300,7 +304,7 @@ export async function handleToolCall(
           return jsonResult({ fulfilled: true, elapsed_seconds: waitResult.elapsed_ms / 1000, ...outcome });
         }
 
-        // Action-needed: tell agent what to do next
+        // Action-needed: tell agent what to do next (information veil: your_speaks, not quota_remaining)
         if (waitResult.fulfilled && input.condition === 'action_needed') {
           const action = STATUS_TO_ACTION[waitState.status] ?? 'bid';
           return jsonResult({
@@ -308,7 +312,7 @@ export async function handleToolCall(
             action,
             elapsed_seconds: waitResult.elapsed_ms / 1000,
             epoch: waitState.epoch,
-            quota_remaining: waitState.agents[input.agent_name!]?.quota_remaining ?? 0,
+            your_speaks: waitState.agents[input.agent_name!]?.total_speaks ?? 0,
           });
         }
 
@@ -400,17 +404,15 @@ export async function handleToolCall(
           current_speaker: state.current_speaker,
           speaker_type: state.speaker_type,
           cold_start: state.cold_start,
-          quota_per_epoch: state.quota_per_epoch,
-          bid_threshold: state.bid_threshold,
+          bid_threshold: state.bid_threshold,  // rule (reserve price), kept visible
           recent_turns: state.recent_turns,
           agents: Object.fromEntries(
             Object.entries(state.agents).map(([n, a]) => [
               n,
-              { display_name: a.display_name, quota_remaining: a.quota_remaining, total_speaks: a.total_speaks, fallback_used: a.fallback_used },
+              { display_name: a.display_name, total_speaks: a.total_speaks },
             ]),
           ),
           pending_bidders: state.pending_bidders,
-          eligible_count: Object.values(state.agents).filter((a) => a.quota_remaining > 0).length,
           total_agents: Object.keys(state.agents).length,
         });
       }
