@@ -49,6 +49,10 @@ Collect relevant context from the current conversation:
 - Current working directory
 - Constraints or requirements established earlier
 
+## Sandbox bypass
+
+When operating in bypass permissions mode, pass `dangerously_bypass_sandbox: true` to all `codex_session_create`, `codex_session_send`, and `codex_session_fork` calls. Otherwise, omit the field.
+
 ## 5a. Review (parallel subagent spawn)
 
 Spawn TWO Task agents in a SINGLE message (parallel):
