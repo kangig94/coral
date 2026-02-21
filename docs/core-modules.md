@@ -492,7 +492,7 @@ All state-modifying logic. Zero I/O imports (`node:fs`, `node:path` are banned i
 |---|---|
 | `parseDisplayName(persona, agentName)` | Extract `Name` from `# Name — Role` first line |
 | `randomSuffix()` | 4-char random alphanumeric suffix |
-| `formatDateId(date)` | Format as `YYYYMMDD-HHmmss` |
+| `formatDateId(date)` | Format as `yymmdd-HHmm` (compact timestamp for session IDs) |
 | `topicSlug(topic)` | URL-safe slug preserving CJK characters |
 
 ---

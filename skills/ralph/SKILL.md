@@ -22,7 +22,7 @@ Announce at start: "Using ralph to execute this task with verification loop."
    - ONLY THEN make the claim
 5. **Post-implementation sequence** (strict order, fail-fast by cost):
    a. **Lint**: Run linter if available. Cheapest check first.
-   b. **Parallel validation**: Spawn `coral:architect` for architecture review. Additionally, if `.claude/rules/workflow.md` exists, read it and execute its validation steps (e.g., review-orchestrator) as parallel subagents alongside architect. Both must pass before proceeding to build.
+   b. **Parallel validation**: Spawn `coral:architect` for architecture review. Additionally, if project instructions define workflow rules (e.g., review-orchestrator), execute them as parallel subagents alongside architect. Both must pass before proceeding to build.
    c. **Build**: Run the project's build command.
    d. **Test**: Run the test suite after build succeeds.
 

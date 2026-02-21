@@ -7,6 +7,9 @@ Environment variables, config files, and the plugin manifest.
 | Variable | Default | Description |
 |---|---|---|
 | `CORAL_CODEX_MODEL` | `gpt-5.3-codex` | Default Codex model |
+| `CORAL_DISCUSS_BID_THRESHOLD` | `50` | Minimum bid score (1–100) for discuss floor eligibility |
+| `CORAL_DISCUSS_TTL_DAYS` | `30` | Days before completed discuss sessions are auto-pruned |
+| `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(unset)_ | Required for `/coral:discuss`. Set to `1`. |
 
 ### Usage — Shell
 
@@ -127,14 +130,14 @@ Runtime-managed discuss session directories. Created by the `dc` MCP server.
 
 ```
 {project}/.claude/coral/discuss/
-└── 20260221-143022-a1b2_ai-ethics/
+└── 260221-1430-a1b2-ai-ethics/
     ├── state.json          # Session state (atomic writes via .tmp + rename)
     └── transcript.md       # Human-readable transcript (incremental append)
 ```
 
 **Location**: `{project}/.claude/coral/discuss/{session_dir}/`
-**Session ID format**: `YYYYMMDD-HHmmss-xxxx` (timestamp + 4-char random suffix)
-**Directory name**: `{session_id}_{topic_slug}` (slug preserves CJK characters)
+**Session ID format**: `yymmdd-HHmm-xxxx` (compact timestamp + 4-char random suffix)
+**Directory name**: `{session_id}-{topic_slug}` (slug preserves CJK characters)
 **Concurrency**: Cross-process `mkdir`-based lock (`state.lock/`) serializes state mutations
 
 ## File Role Summary

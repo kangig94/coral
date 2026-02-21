@@ -12,12 +12,17 @@ import {
 } from '../schemas.js';
 
 describe('sessionIdPattern', () => {
-  it('should match valid session IDs', () => {
+  it('should match new-format session IDs (yymmdd-HHmm-xxxx)', () => {
+    expect(sessionIdPattern.test('260221-1430-a3x7')).toBe(true);
+    expect(sessionIdPattern.test('260101-0000-zzzz')).toBe(true);
+  });
+  it('should match legacy session IDs (YYYYMMDD-HHmmss-xxxx)', () => {
     expect(sessionIdPattern.test('20260221-143052-a3x7')).toBe(true);
     expect(sessionIdPattern.test('20260101-000000-zzzz')).toBe(true);
   });
   it('should reject invalid session IDs', () => {
-    expect(sessionIdPattern.test('20260221-143052')).toBe(false); // missing suffix
+    expect(sessionIdPattern.test('260221-1430')).toBe(false); // missing suffix
+    expect(sessionIdPattern.test('20260221-143052')).toBe(false); // missing suffix (legacy)
     expect(sessionIdPattern.test('2026-02-21-143052-a3x7')).toBe(false); // wrong date format
     expect(sessionIdPattern.test('')).toBe(false);
     expect(sessionIdPattern.test('../etc/passwd')).toBe(false);

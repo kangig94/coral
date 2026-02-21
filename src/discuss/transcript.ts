@@ -138,28 +138,26 @@ export function formatFull(entries: TranscriptEntry[], agents: Record<string, Ag
 
 /**
  * Last N speech entries in full + earlier as one-line summaries.
- * Non-speech entries (bids, votes, summaries) always appear in full.
+ * Non-speech entries (bids, votes, epoch summaries) are excluded.
  */
 export function formatRecent(
   entries: TranscriptEntry[],
   lastN: number,
   agents: Record<string, AgentState>,
 ): string {
-  const speeches = entries.filter((e) => e.type === 'speech');
+  const speeches = entries.filter(
+    (e): e is Extract<TranscriptEntry, { type: 'speech' }> => e.type === 'speech',
+  );
   const recentStart = Math.max(0, speeches.length - lastN);
-  const recentSpeeches = new Set(speeches.slice(recentStart));
 
   const olderSummaries: string[] = [];
   const recentParts: string[] = [];
 
-  for (const e of entries) {
-    if (e.type !== 'speech') {
-      recentParts.push(renderEntry(e, agents));
-    } else if (recentSpeeches.has(e)) {
-      recentParts.push(renderEntry(e, agents));
+  for (let i = 0; i < speeches.length; i++) {
+    if (i >= recentStart) {
+      recentParts.push(renderEntry(speeches[i], agents));
     } else {
-      const dn = e.display_name ?? e.agent;
-      olderSummaries.push(`- ${dn}: ${generateOneLiner(e.content)}`);
+      olderSummaries.push(`- ${speeches[i].display_name}: ${generateOneLiner(speeches[i].content)}`);
     }
   }
 

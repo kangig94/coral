@@ -44,12 +44,16 @@ model: opus
     ## Setup: General Topic
 
     1. **Analyze topic** → determine 3–8 roles with diversity hints
+       - Assign agent name per role as role slug: "Tech Lead" → `techlead`, "Product Manager" → `pm`, "DevOps Engineer" → `devops`, "Backend Engineer" → `backend`, "UX Engineer" → `ux`. Keep agent names short, lowercase, alphanumeric (`identPattern` rule).
+       - Assign a distinct name culture per agent to ensure display name diversity (e.g., Korean, Nigerian, Brazilian, American, Japanese). Never assign the same culture twice.
     2. **Spawn persona-generators in parallel** (Task tool, one per role):
        ```
-       Task({ subagent_type: "persona-generator", prompt: "role: {role}\ntopic: {topic}\nteam_roles: {all roles}\ndiversity_hint: {hint}" })
+       Task({ subagent_type: "persona-generator", prompt: "role: {role}\ntopic: {topic}\nteam_roles: {all roles}\ndiversity_hint: {hint}\nname_culture: {culture}" })
        ```
     3. **Collect generated personas**
-    4. **`discuss_create({ topic, agents: [...] })`** → get `session_id`, `session_dir`, `team_name`
+    4. **`discuss_create({ topic, agents: [...] })`** using the agent names predetermined in step 1:
+       `discuss_create({ topic, agents: [{ name: "techlead", persona: ... }, { name: "pm", persona: ... }, ...] })`
+       → get `session_id`, `session_dir`, `team_name`
     5. **Create Agent Team**: TeamCreate `coral-dc-{session_id}`
     6. **Spawn teammates** (`subagent_type: "discussant"`, name: `dc-{agent_name}`):
        ```
@@ -113,11 +117,22 @@ model: opus
 
     ## Synthesis and Cleanup
 
-    1. `discuss_end({ session, synthesis: "..." })` — sets status=ended
+    1. `discuss_end({ session, synthesis: "..." })` — sets status=ended. The synthesis MUST follow this structure:
+
+       ```
+       ## Key Decisions
+       - [Numbered list of decisions reached with brief rationale]
+
+       ## Open Questions
+       - [Issues raised but not resolved]
+
+       ## Recommended Next Steps
+       - [Concrete, actionable items derived from the discussion]
+       ```
+
     2. `discuss_transcript({ session, mode: "full" })` (allowed because status=ended)
-    3. Generate structured summary: key arguments, turning points, conclusions, unresolved questions
-    4. Present to user
-    5. Agents self-terminate when they detect `session_ended`. Proceed directly to TeamDelete(`coral-dc-{session_id}`). If TeamDelete fails (agents still exiting), retry once.
+    3. Present the structured synthesis to user (the synthesis is already recorded in transcript.md)
+    4. Agents self-terminate when they detect `session_ended`. Proceed directly to TeamDelete(`coral-dc-{session_id}`). If TeamDelete fails (agents still exiting), retry once.
   </Protocol>
 
   <Tool_Usage>

@@ -201,6 +201,7 @@ export async function handleToolCall(
     switch (name) {
       case 'discuss_create': {
         const input = discussCreateSchema.parse(rawArgs);
+        store.cleanupExpiredSessions();
         const now = new Date().toISOString();
         const rawThreshold = parseInt(process.env.CORAL_DISCUSS_BID_THRESHOLD ?? '', 10);
         const bidThreshold = (Number.isFinite(rawThreshold) && rawThreshold >= 1 && rawThreshold <= 100)
@@ -339,14 +340,17 @@ export async function handleToolCall(
 
         // When agent_name provided: track read under lock for bid enforcement.
         // When absent: lockless read (backward compatible, no tracking needed).
-        const state = input.agent_name
+        const { agent_name: caller } = input;
+        const state = caller
           ? await store.withLock(sessionDir, async () => {
               const s = store.load(sessionDir);
-              if (s.agents[input.agent_name!] && (s.transcript_read_step[input.agent_name!] ?? 0) < s.step) {
+              if (s.agents[caller] && (s.transcript_read_step[caller] ?? 0) < s.step) {
+                const ts = new Date().toISOString();
                 const updated = {
                   ...s,
-                  transcript_read_step: { ...s.transcript_read_step, [input.agent_name!]: s.step },
-                  updated_at: new Date().toISOString(),
+                  transcript_read_step: { ...s.transcript_read_step, [caller]: s.step },
+                  updated_at: ts,
+                  last_activity_at: ts,
                 };
                 store.save(sessionDir, updated);
                 return updated;
@@ -357,10 +361,10 @@ export async function handleToolCall(
 
         // Full-transcript ACL: mode=full requires agent_name=current_speaker OR status=ended
         if (input.mode === 'full' && state.status !== 'ended') {
-          if (!input.agent_name) {
+          if (!caller) {
             return jsonResult({ error: 'full_transcript_requires_speaker_or_ended' });
           }
-          if (input.agent_name !== state.current_speaker) {
+          if (caller !== state.current_speaker) {
             return jsonResult({ error: 'full_transcript_speaker_only' });
           }
         }

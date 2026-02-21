@@ -147,7 +147,7 @@ model: sonnet
    - ONLY THEN make the claim
 5. Post-implementation sequence (strict order, fail-fast by cost):
    - Lint: run linter if available
-   - Parallel validation: spawn `coral:architect` + project reviewer (e.g., review-orchestrator from `.claude/rules/workflow.md`) as parallel subagents. Must pass before build.
+   - Parallel validation: spawn `coral:architect` + project reviewer (e.g., review-orchestrator per project workflow rules) as parallel subagents. Must pass before build.
    - Build: run project build command
    - Test: run test suite after build succeeds
 
@@ -206,7 +206,7 @@ argument-hint: "[task description]"
 4. Post-completion review: read every changed file, compare against requirements, fix discrepancies directly
 5. Post-implementation sequence (strict order, fail-fast by cost):
    - Lint: run linter if available
-   - Parallel validation: spawn `coral:architect` + project reviewer (e.g., review-orchestrator from `.claude/rules/workflow.md`) as parallel subagents. Must pass before build.
+   - Parallel validation: spawn `coral:architect` + project reviewer (e.g., review-orchestrator per project workflow rules) as parallel subagents. Must pass before build.
    - Build: run project build command
    - Test: run test suite after build succeeds
 
@@ -233,7 +233,7 @@ argument-hint: "[task description]"
 1. Load `agents/planner.md` protocol
 2. Configure reviewers: `coral:architect` and `coral:critic` (full review loop, up to 5 rounds)
 3. Execute planner protocol (gather context, write plan, review loop until no CRITICAL/HIGH, completion)
-4. Project validation: if `.claude/rules/workflow.md` exists, execute its post-planning validation steps (e.g., review-orchestrator). If validation fails, revise and re-validate.
+4. Project validation: if project instructions define workflow rules (e.g., review-orchestrator), follow them. If validation fails, revise and re-validate.
 5. Present final plan to the user
 
 ---
@@ -261,7 +261,7 @@ argument-hint: "[task description]"
    - Phase 1 reviewers: `coral:codex-architect` and `coral:codex-critic` (full review loop, up to 5 rounds)
    - Phase 2 cross-reviewers: `coral:architect` and `coral:critic` (single verification pass + one retry)
 3. Execute planner protocol with multi-phase review
-4. Project validation: if `.claude/rules/workflow.md` exists, execute its post-planning validation steps (e.g., review-orchestrator). If validation fails, revise and re-validate.
+4. Project validation: if project instructions define workflow rules (e.g., review-orchestrator), follow them. If validation fails, revise and re-validate.
 5. Present final plan to the user
 
 ---
@@ -299,7 +299,6 @@ argument-hint: "[existing|new]"
 | `.claude/CLAUDE.md` | Yes | Slim hub: project overview + build commands |
 | `.claude/rules/design-philosophy.md` | Yes | Core principles, source tree policy, agent philosophy |
 | `.claude/rules/agents.md` | Yes | Agent quick reference table + consultation matrix |
-| `.claude/rules/workflow.md` | Yes | Development workflow + review gate |
 | `.claude/rules/conventions.md` | Yes | Commits, naming, tests, formatting |
 | `.claude/rules/{domain}/validation.md` | Yes | Domain validation checklist with `paths:` frontmatter |
 | `.claude/agents/review-orchestrator.md` | Yes | Final validation supervisor (tier 0, opus) |
@@ -365,7 +364,7 @@ argument-hint: "[topic]"
 
 ```
 {project}/.claude/coral/discuss/
-└── 20260221-143022-a1b2_ai-ethics/
+└── 260221-1430-a1b2-ai-ethics/
     ├── state.json
     └── transcript.md
 ```

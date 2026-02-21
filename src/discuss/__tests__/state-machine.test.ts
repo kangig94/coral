@@ -12,6 +12,8 @@ import {
   applyEnd,
   applyEpochSummary,
   parseDisplayName,
+  topicSlug,
+  formatDateId,
   DEFAULT_BID_THRESHOLD,
 } from '../state-machine.js';
 import { normalizeState } from '../session-store.js';
@@ -73,6 +75,46 @@ describe('parseDisplayName', () => {
   it('should never return empty string', () => {
     expect(parseDisplayName('', 'fallback')).toBe('fallback');
     expect(parseDisplayName('# — dash only', 'fallback')).toBe('fallback');
+  });
+});
+
+// ─── topicSlug ───────────────────────────────────────────────────────────────
+
+describe('topicSlug', () => {
+  it('should strip filesystem-unsafe characters', () => {
+    expect(topicSlug('A/B testing?')).toBe('ab-testing');
+  });
+
+  it('should preserve Korean characters', () => {
+    expect(topicSlug('한글 토픽')).toBe('한글-토픽');
+  });
+
+  it('should preserve CJK characters', () => {
+    expect(topicSlug('日本語テスト')).toBe('日本語テスト');
+  });
+
+  it('should handle mixed scripts', () => {
+    expect(topicSlug('Hello 世界!')).toBe('hello-世界');
+  });
+
+  it('should return untitled for empty result', () => {
+    expect(topicSlug('!!!???')).toBe('untitled');
+    expect(topicSlug('///\\\\:::')).toBe('untitled');
+  });
+
+  it('should collapse multiple hyphens', () => {
+    expect(topicSlug('hello   world')).toBe('hello-world');
+  });
+
+  it('should strip leading/trailing hyphens', () => {
+    expect(topicSlug(' hello ')).toBe('hello');
+  });
+
+  it('should truncate at word boundary around 40 chars', () => {
+    const long = 'this is a very long topic that exceeds forty characters significantly';
+    const slug = topicSlug(long);
+    expect(slug.length).toBeLessThanOrEqual(40);
+    expect(slug.endsWith('-')).toBe(false);
   });
 });
 
@@ -757,6 +799,20 @@ describe('normalizeState — migration', () => {
     const normalized = normalizeState(legacy as Record<string, unknown>);
     expect(normalized.transcript_read_step).toEqual({});
   });
+
+  it('should backfill last_activity_at from updated_at on legacy state', () => {
+    const legacy = {
+      session_id: 'test', session_dir: 'test', topic: 'T',
+      status: 'bidding', step: 1, epoch: 1, quota_per_epoch: 3, cold_start: false, recent_turns: 5,
+      agents: { alice: { persona: '', display_name: 'Alice', quota_remaining: 3, total_speaks: 0, fallback_used: false } },
+      current_bids: {}, pending_bidders: [], current_speaker: null, speaker_type: null,
+      epoch_summary_written: null, team_name: 't', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-02-01T00:00:00Z',
+      last_speech_step: 0, transcript: [], transcript_rendered: 0, bid_threshold: 50, transcript_read_step: {},
+      // last_activity_at intentionally absent (legacy state)
+    };
+    const normalized = normalizeState(legacy as Record<string, unknown>);
+    expect(normalized.last_activity_at).toBe('2026-02-01T00:00:00Z'); // backfilled from updated_at
+  });
 });
 
 // ─── pending_bidders invariant ────────────────────────────────────────────────
@@ -778,5 +834,74 @@ describe('pending_bidders invariant', () => {
     expect(sp.ok).toBe(true);
     if (!sp.ok) return;
     expect(sp.value.pending_bidders.sort()).toEqual(['alice', 'bob']); // all reset
+  });
+});
+
+// ─── formatDateId ─────────────────────────────────────────────────────────────
+
+describe('formatDateId', () => {
+  it('should produce yymmdd-HHmm format', () => {
+    const d = new Date('2026-02-21T15:20:00Z');
+    expect(formatDateId(d)).toMatch(/^\d{6}-\d{4}$/);
+  });
+
+  it('should use 2-digit year', () => {
+    const d = new Date('2026-02-21T15:20:00Z');
+    const result = formatDateId(d);
+    expect(result.startsWith('26')).toBe(true);
+  });
+
+  it('should zero-pad month, day, hours, minutes', () => {
+    const d = new Date('2026-01-05T08:03:00Z');
+    // Should be '260105-0803' (in local time — just verify format, not exact value)
+    expect(formatDateId(d)).toMatch(/^\d{6}-\d{4}$/);
+  });
+});
+
+// ─── last_activity_at propagation ────────────────────────────────────────────
+
+describe('last_activity_at', () => {
+  const LATER = '2026-02-21T11:00:00.000Z';
+
+  it('should be set on initSession', () => {
+    const state = initSession(BASE_INPUT, NOW);
+    expect(state.last_activity_at).toBe(NOW);
+  });
+
+  it('should be updated by startBidding', () => {
+    const init = initSession(BASE_INPUT, NOW);
+    const res = startBidding(init, LATER);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.last_activity_at).toBe(LATER);
+  });
+
+  it('should be updated by applySpeech (via appendEntry)', () => {
+    const state = makeSession();
+    const s1 = applyBid(state, 'alice', 80, NOW);
+    const s2 = applyBid(s1.ok ? s1.value : state, 'bob', 50, NOW);
+    const r = resolveWinner(s2.ok ? s2.value : state, NOW);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const sp = applySpeech(r.value[0], 'alice', 'Hello', LATER);
+    expect(sp.ok).toBe(true);
+    if (!sp.ok) return;
+    expect(sp.value.last_activity_at).toBe(LATER);
+  });
+
+  it('should be updated by applyBid', () => {
+    const state = makeSession();
+    const res = applyBid(state, 'alice', 80, LATER);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.last_activity_at).toBe(LATER);
+  });
+
+  it('should be updated by applyEnd', () => {
+    const state = makeSession();
+    const res = applyEnd(state, {}, LATER);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.last_activity_at).toBe(LATER);
   });
 });

@@ -4,7 +4,7 @@
  * server.ts is the composition root (wiring only).
  */
 
-import { executeOneShot, executeResume, executeFork, registerExecution, unregisterExecution, abortExecution } from './codex-executor.js';
+import { executeOneShot, executeResume, executeFork, registerExecution, unregisterExecution, abortExecution, isExecutionActive } from './codex-executor.js';
 import { SessionManager } from './session-manager.js';
 import {
   codexSessionCreateSchema,
@@ -273,6 +273,7 @@ export function handleSessionList(mgr: SessionManager): McpResult {
     created_at: s.createdAt,
     last_used_at: s.lastUsedAt,
     working_directory: s.workingDirectory,
+    status: isExecutionActive(s.name) ? 'running' : 'completed',
   }));
 
   return jsonResult({ sessions: registered, total: registered.length });

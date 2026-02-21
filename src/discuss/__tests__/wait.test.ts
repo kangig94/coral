@@ -37,6 +37,7 @@ function makeState(overrides: Partial<DiscussState> = {}): DiscussState {
     team_name: 'test',
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',
+    last_activity_at: '2026-01-01T00:00:00Z',
     last_speech_step: 0,
     transcript: [],
     transcript_rendered: 0,

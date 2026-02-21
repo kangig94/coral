@@ -10,6 +10,7 @@ vi.mock('../codex-executor.js', () => ({
   registerExecution: vi.fn(() => ({ signal: undefined })),
   unregisterExecution: vi.fn(),
   abortExecution: vi.fn(),
+  isExecutionActive: vi.fn(() => false),
 }));
 
 vi.mock('../progress.js', () => ({
@@ -26,7 +27,7 @@ vi.mock('node:os', () => ({
   homedir: () => tmpDir,
 }));
 
-import { executeOneShot, executeResume, executeFork, abortExecution } from '../codex-executor.js';
+import { executeOneShot, executeResume, executeFork, abortExecution, isExecutionActive } from '../codex-executor.js';
 import {
   createProgressFile,
   extractProgressId,
@@ -310,6 +311,23 @@ describe('handleSessionList', () => {
       model: 'o4-mini',
       working_directory: '/workspace',
     });
+  });
+
+  it('should return status=completed when not executing', async () => {
+    vi.mocked(isExecutionActive).mockReturnValue(false);
+    mgr.register('idle-session', 'thread-1', 'o4-mini', '/workspace');
+    const result = await handleSessionList(mgr);
+    const data = JSON.parse(result.content[0].text);
+    expect(data.sessions[0].status).toBe('completed');
+  });
+
+  it('should return status=running when actively executing', async () => {
+    vi.mocked(isExecutionActive).mockReturnValue(true);
+    mgr.register('active-session', 'thread-1', 'o4-mini', '/workspace');
+    const result = await handleSessionList(mgr);
+    const data = JSON.parse(result.content[0].text);
+    expect(data.sessions[0].status).toBe('running');
+    vi.mocked(isExecutionActive).mockReturnValue(false); // restore default
   });
 });
 

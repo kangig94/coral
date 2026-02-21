@@ -5,8 +5,8 @@
 import { z } from 'zod';
 import { identPattern } from '../shared/mcp-utils.js';
 
-/** Session ID: YYYYMMDD-HHmmss-xxxx (timestamp + 4-char random suffix). */
-export const sessionIdPattern = /^[0-9]{8}-[0-9]{6}-[a-z0-9]{4}$/;
+/** Session ID: yymmdd-HHmm-xxxx (compact timestamp + 4-char random suffix). Legacy: YYYYMMDD-HHmmss-xxxx. */
+export const sessionIdPattern = /^[0-9]{6}-[0-9]{4}-[a-z0-9]{4}$|^[0-9]{8}-[0-9]{6}-[a-z0-9]{4}$/;
 
 // discuss_create — Initialize a discussion session
 export const discussCreateSchema = z.object({

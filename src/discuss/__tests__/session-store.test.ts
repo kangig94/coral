@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionStore, normalizeState } from '../session-store.js';
@@ -98,7 +98,7 @@ describe('normalizeState', () => {
 describe('createSessionDir', () => {
   it('should create directory with session ID format', () => {
     const { sessionId, fullPath } = store.createSessionDir('My Topic');
-    expect(sessionId).toMatch(/^\d{8}-\d{6}-[a-z0-9]{4}$/);
+    expect(sessionId).toMatch(/^\d{6}-\d{4}-[a-z0-9]{4}$/);
     expect(existsSync(fullPath)).toBe(true);
   });
 
@@ -194,6 +194,49 @@ describe('save and load', () => {
 });
 
 // ─── SessionStore.withLock ────────────────────────────────────────────────────
+
+// ─── SessionStore.cleanupExpiredSessions ──────────────────────────────────────
+
+describe('cleanupExpiredSessions', () => {
+  function saveSessionWithStatus(topic: string, status: string, lastActivity: Date) {
+    const { sessionId, fullPath } = store.createSessionDir(topic);
+    const state = initSession({ topic, agents: AGENTS, quota_per_epoch: 3, recent_turns: 5 }, new Date().toISOString());
+    state.session_id = sessionId;
+    state.session_dir = fullPath;
+    state.team_name = `coral-dc-${sessionId}`;
+    // Write raw state with custom status/last_activity_at
+    const raw = { ...state, status, last_activity_at: lastActivity.toISOString() };
+    writeFileSync(join(fullPath, 'state.json'), JSON.stringify(raw, null, 2));
+    return { sessionId, fullPath };
+  }
+
+  it('should remove ended sessions older than TTL', () => {
+    const old = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000); // 31 days ago
+    const { fullPath } = saveSessionWithStatus('Old Topic', 'ended', old);
+    const removed = store.cleanupExpiredSessions();
+    expect(removed).toBe(1);
+    expect(existsSync(fullPath)).toBe(false);
+  });
+
+  it('should preserve ended sessions within TTL', () => {
+    const recent = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000); // 5 days ago
+    const { fullPath } = saveSessionWithStatus('Recent Topic', 'ended', recent);
+    const removed = store.cleanupExpiredSessions();
+    expect(removed).toBe(0);
+    expect(existsSync(fullPath)).toBe(true);
+  });
+
+  it('should never remove active sessions', () => {
+    const old = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
+    const { fullPath } = saveSessionWithStatus('Active Topic', 'bidding', old);
+    store.cleanupExpiredSessions();
+    expect(existsSync(fullPath)).toBe(true);
+  });
+
+  it('should return 0 when no sessions exist', () => {
+    expect(store.cleanupExpiredSessions()).toBe(0);
+  });
+});
 
 describe('withLock', () => {
   it('should serialize concurrent access', async () => {
