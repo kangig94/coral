@@ -109,6 +109,7 @@ Coral automatically manages a project-local KB (`.claude/coral/kb/`) to prevent 
 | `CORAL_DISCUSS_BID_THRESHOLD` | `50` | Minimum bid score (1-100) for floor eligibility in discussions |
 | `CORAL_DISCUSS_TTL_DAYS` | `30` | Days before completed discuss sessions are auto-pruned |
 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(unset)_ | **Required** for `/coral:discuss`. Set to `1` to enable Agent Teams. |
+| `ENABLE_TOOL_SEARCH` | `auto` | Lazy-load MCP tool definitions instead of injecting all into system prompt. `auto` (≥10%), `auto:5` (≥5%), `true` (always on). |
 
 Set in `.claude/settings.json` (persists across sessions):
 
@@ -117,7 +118,8 @@ Set in `.claude/settings.json` (persists across sessions):
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
     "CORAL_DISCUSS_BID_THRESHOLD": "50",
-    "CORAL_DISCUSS_TTL_DAYS": "30"
+    "CORAL_DISCUSS_TTL_DAYS": "30",
+    "ENABLE_TOOL_SEARCH": "auto:5"
   }
 }
 ```
