@@ -10,17 +10,11 @@ Execute a multi-round planning session with architect/critic review.
 
 ## Execution
 
-0. **Enter plan mode**: Call `EnterPlanMode` before any other work.
 1. **Load protocol**: Read `agents/planner.md` to load the full planner protocol. **You** execute it directly - do NOT spawn a planner agent.
 2. **Configure reviewers**: Use `coral:architect` and `coral:critic` as reviewers (full review loop, up to 5 rounds). Only reviewers are spawned as subagents.
 3. **Execute protocol**: Follow the planner protocol steps yourself (gather context, write plan, review loop until no CRITICAL/HIGH, completion)
 4. **Project validation**: If project instructions define workflow rules (e.g., review gates, post-implementation steps), follow them. If validation fails, revise the plan to address the issues and re-validate until it passes.
-5. **Present plan**: Call `ExitPlanMode` to present the final plan for user approval.
-6. **Execution handoff**: After approval, use `AskUserQuestion` to let the user choose:
-   - `/ralph` (Claude-native execution)
-   - `/codex-ralph` (Codex delegation)
-   - End planning (exit plan mode only, no execution)
-   If an execution method is chosen, immediately invoke that skill.
+5. **Present plan**: Show the final plan to the user
 
 ## Context Enhancement
 
