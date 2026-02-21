@@ -21,6 +21,7 @@ Announce at start: "Using ralph to execute this task with verification loop."
    - VERIFY the output confirms the claim
    - ONLY THEN make the claim
 5. **Post-implementation sequence** (strict order, fail-fast by cost):
+   **Scope gate**: Steps a-d apply only when source-affecting files are modified (`src/`, `scripts/`, `package.json`, `tsconfig.json`). Non-source changes (`agents/`, `skills/`, `docs/`, `hooks/`, `.claude/`) skip directly to completion.
    a. **Lint**: Run linter if available. Cheapest check first.
    b. **Parallel validation**: Spawn `coral:architect` for architecture review. Additionally, if project instructions define workflow rules (e.g., review-orchestrator), execute them as parallel subagents alongside architect. Both must pass before proceeding to build.
    c. **Build**: Run the project's build command.

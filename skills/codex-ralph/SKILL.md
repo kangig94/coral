@@ -23,8 +23,8 @@ Announce at start: "Using codex-ralph to execute this task via Codex with Claude
 2. **Save thread_id** from the response for session continuity
 3. **Verify** the changes yourself:
    - Read changed files
-   - Run tests/build/lint as appropriate
    - Compare against acceptance criteria
+   - Use LSP/type-check only. NEVER run build or test during the execution loop.
 4. **Loop decision**:
    - All criteria pass → exit loop, go to Post-Completion Review
    - Not complete → go to step 1 with thread_id + updated progress context
@@ -41,6 +41,7 @@ After the loop exits:
 4. **Fix discrepancies yourself** - do not send back to Codex; fix them directly
 5. **Report to the user** what was done correctly and what you corrected
 6. **Post-implementation sequence** (strict order, fail-fast by cost):
+   **Scope gate**: Steps a-d apply only when source-affecting files are modified (`src/`, `scripts/`, `package.json`, `tsconfig.json`). Non-source changes (`agents/`, `skills/`, `docs/`, `hooks/`, `.claude/`) skip directly to completion.
    a. **Lint**: Run linter if available. Cheapest check first.
    b. **Parallel validation**: Spawn `coral:architect` for architecture review. Additionally, if project instructions define workflow rules (e.g., review-orchestrator), execute them as parallel subagents alongside architect. Both must pass before proceeding to build.
    c. **Build**: Run the project's build command.

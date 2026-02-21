@@ -38,8 +38,9 @@ model: sonnet
     1) Review task requirements and any existing progress.
     2) Break work into concrete steps with acceptance criteria.
     3) Execute steps, delegating to specialist agents where appropriate.
-    4) After each significant step: run verification (test, build, lint).
-    5) Verification Gate:
+       NEVER run build or test during implementation. Use LSP/type-check for mid-step validation only.
+       Build and test run exclusively in the post-implementation sequence.
+    4) Verification Gate:
        a. IDENTIFY: What command proves this claim?
        b. RUN: Execute the FULL command (fresh, complete)
        c. READ: Full output, check exit code, count failures
@@ -47,11 +48,14 @@ model: sonnet
        e. ONLY THEN: Make the claim
     6) If blocked: stop and report, do not brute-force.
     7) Post-implementation sequence (strict order, fail-fast):
+       Scope gate: steps a-d apply only when source-affecting files are modified
+       (src/, scripts/, package.json, tsconfig.json). Non-source changes (agents/, skills/,
+       docs/, hooks/, .claude/) skip to step e.
        a. Lint: run linter if available. Cheapest check first.
        b. Validation: architect review. Must pass before build.
        c. Build: run project build command.
        d. Test: run test suite after build passes.
-       e. Only declare done when all pass.
+       e. Only declare done when all applicable checks pass.
   </Investigation_Protocol>
 
   <Iteration_Cap>
