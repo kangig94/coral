@@ -26,29 +26,39 @@ Manage the coral HUD statusline for Claude Code.
    }
    ```
    Replace `~` with the actual home directory path.
-5. Confirm installation to the user
+5. Check if `~/.codex/auth.json` exists:
+   - If yes, ask the user: "Codex login detected. Display Codex usage in statusline?"
+     - **yes** → create `~/.claude/hud/.coral-codex-enabled` (empty file)
+     - **no** → delete `~/.claude/hud/.coral-codex-enabled` and `~/.claude/hud/.coral-codex-usage-cache.json` if they exist
+   - If no `auth.json`, skip silently (do not create or delete any Codex files)
+6. Confirm installation to the user
 
 ### uninstall
 
 1. Read `~/.claude/settings.json`
 2. Remove the `statusLine` key
-3. Delete `~/.claude/hud/coral-hud.mjs` and `~/.claude/hud/.coral-usage-cache.json`
+3. Delete the following files if they exist:
+   - `~/.claude/hud/coral-hud.mjs`
+   - `~/.claude/hud/.coral-usage-cache.json`
+   - `~/.claude/hud/.coral-codex-usage-cache.json`
+   - `~/.claude/hud/.coral-codex-enabled`
 4. Confirm removal to the user
 
 ---
 
 ## HUD Script
 
-Write the following script **exactly** to `~/.claude/hud/coral-hud.mjs`:
+Write the following script to `~/.claude/hud/coral-hud.mjs` to update the HUD to the latest version:
 
 ```javascript
 #!/usr/bin/env node
 
 // Coral HUD Statusline
-// Elements: model | session | context | limits
+// Line 1: model │ limits │ ctx │ session │ skill
+// Line 2: codex model │ codex limits │ spark limits
 
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from "fs";
-import { join, dirname } from "path";
+import { readFileSync, existsSync, writeFileSync, mkdirSync, openSync, fstatSync, readSync, closeSync } from "fs";
+import { join } from "path";
 import { homedir } from "os";
 import { execSync } from "child_process";
 import https from "https";
@@ -59,6 +69,10 @@ const YELLOW = "\x1b[33m";
 const RED = "\x1b[31m";
 const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
+const CYAN = "\x1b[36m";
+
+const CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+const CODEX_USER_AGENT = "codex_cli_rs/0.104.0";
 
 // --- stdin ---
 
@@ -83,7 +97,7 @@ async function readStdin() {
 function renderModel(input) {
   if (!input.model) return null;
   const name = input.model.display_name || input.model.id || "";
-  return name.toLowerCase();
+  return name.toLowerCase().replace(/^claude\s+/, "");
 }
 
 function renderSession(input) {
@@ -105,21 +119,122 @@ function renderContext(input) {
   let color = GREEN;
   if (pct > 85) color = RED;
   else if (pct > 70) color = YELLOW;
-  return `ctx:${color}${pct}%${RESET}`;
+  return `ctx:${color}${String(pct).padStart(2)}%${RESET}`;
 }
 
-// --- rate limits via OAuth API ---
+const STALE_AGENT_MS = 30 * 60 * 1000;
+
+function readTranscriptTail(transcriptPath) {
+  if (!transcriptPath) return null;
+  try {
+    const fd = openSync(transcriptPath, "r");
+    try {
+      const { size } = fstatSync(fd);
+      const readSize = Math.min(size, 500 * 1024);
+      const buf = Buffer.alloc(readSize);
+      readSync(fd, buf, 0, readSize, size - readSize);
+      const lines = buf.toString("utf-8").split("\n");
+      if (size > readSize) lines.shift(); // drop potentially incomplete first line
+      return lines;
+    } finally {
+      closeSync(fd);
+    }
+  } catch {}
+  return null;
+}
+
+function parseLastSkill(lines) {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    // Case 1: user-typed slash command → user message with <command-message> tag
+    if (line.includes("command-message")) {
+      try {
+        const entry = JSON.parse(line);
+        const content = entry?.message?.content;
+        if (typeof content === "string") {
+          const m = content.match(/<command-message>([^<]+)<\/command-message>/);
+          if (m?.[1]) return m[1];
+        }
+      } catch {}
+    }
+    // Case 2: Claude-invoked Skill tool_use (e.g. ralph calling /commit)
+    if (line.includes('"tool_use"') && (line.includes('"Skill"') || line.includes('"proxy_Skill"'))) {
+      try {
+        const entry = JSON.parse(line);
+        const blocks = entry?.message?.content;
+        if (!Array.isArray(blocks)) continue;
+        for (let j = blocks.length - 1; j >= 0; j--) {
+          const block = blocks[j];
+          if (block.type === "tool_use"
+              && (block.name === "Skill" || block.name === "proxy_Skill")
+              && block.input?.skill) {
+            return block.input.skill;
+          }
+        }
+      } catch {}
+    }
+  }
+  return null;
+}
+
+function parseRunningAgents(lines) {
+  const agentMap = new Map();
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try {
+      const entry = JSON.parse(line);
+      const content = entry?.message?.content;
+      const ts = entry.timestamp ? new Date(entry.timestamp) : null;
+      if (!Array.isArray(content)) continue;
+      for (const block of content) {
+        if (block.type === "tool_use"
+            && (block.name === "Task" || block.name === "proxy_Task")
+            && block.id) {
+          agentMap.set(block.id, {
+            subagent_type: block.input?.subagent_type || "unknown",
+            startTime: ts,
+          });
+        }
+        if (block.type === "tool_result" && block.tool_use_id) {
+          agentMap.delete(block.tool_use_id);
+        }
+      }
+    } catch {}
+  }
+  const now = Date.now();
+  return Array.from(agentMap.values()).filter(a =>
+    !a.startTime || now - a.startTime.getTime() < STALE_AGENT_MS
+  );
+}
+
+function renderActivity(input) {
+  const lines = readTranscriptTail(input.transcript_path);
+  if (!lines) return null;
+  const running = parseRunningAgents(lines);
+  if (running.length > 0) {
+    const counts = {};
+    for (const a of running) counts[a.subagent_type] = (counts[a.subagent_type] || 0) + 1;
+    const str = Object.entries(counts).map(([t, c]) => c > 1 ? `${t}×${c}` : t).join(" ");
+    return `${DIM}${str}${RESET}`;
+  }
+  const skill = parseLastSkill(lines);
+  if (!skill) return null;
+  return `${CYAN}${skill}${RESET}`;
+}
+
+// --- cache ---
 
 const CACHE_DIR = join(homedir(), ".claude", "hud");
 const CACHE_FILE = join(CACHE_DIR, ".coral-usage-cache.json");
+const CODEX_CACHE_FILE = join(CACHE_DIR, ".coral-codex-usage-cache.json");
+const CODEX_FLAG_FILE = join(CACHE_DIR, ".coral-codex-enabled");
 const CACHE_TTL_MS = 30_000;
 const CACHE_FAIL_TTL_MS = 15_000;
 const API_TIMEOUT_MS = 5_000;
 
-function readCache() {
+function readCacheFile(path) {
   try {
-    if (!existsSync(CACHE_FILE)) return null;
-    const cache = JSON.parse(readFileSync(CACHE_FILE, "utf-8"));
+    const cache = JSON.parse(readFileSync(path, "utf-8"));
     const ttl = cache.error ? CACHE_FAIL_TTL_MS : CACHE_TTL_MS;
     if (Date.now() - cache.ts > ttl) return null;
     return cache.data;
@@ -128,12 +243,15 @@ function readCache() {
   }
 }
 
-function writeCache(data, error = false) {
+function writeCacheFile(path, data, error = false, extra = null) {
   try {
     if (!existsSync(CACHE_DIR)) mkdirSync(CACHE_DIR, { recursive: true });
-    writeFileSync(CACHE_FILE, JSON.stringify({ ts: Date.now(), data, error }));
+    const payload = { ts: Date.now(), data, error, ...extra };
+    writeFileSync(path, JSON.stringify(payload), { mode: 0o600 });
   } catch {}
 }
+
+// --- Claude rate limits ---
 
 const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 
@@ -217,14 +335,9 @@ function refreshToken(refreshTok) {
 
 async function getCredentials() {
   const creds = readRawCredentials();
-  if (!creds || !creds.accessToken) return null;
-
-  // Check if expired
+  if (!creds?.accessToken) return null;
   if (creds.expiresAt && creds.expiresAt <= Date.now()) {
-    if (creds.refreshToken) {
-      return await refreshToken(creds.refreshToken);
-    }
-    return null;
+    return creds.refreshToken ? refreshToken(creds.refreshToken) : null;
   }
   return creds.accessToken;
 }
@@ -265,30 +378,7 @@ function colorPct(pct) {
   let color = GREEN;
   if (pct >= 90) color = RED;
   else if (pct >= 70) color = YELLOW;
-  return `${color}${pct}%${RESET}`;
-}
-
-async function renderLimits() {
-  const cached = readCache();
-  if (cached) return formatLimits(cached);
-
-  const token = await getCredentials();
-  if (!token) return null;
-
-  const resp = await fetchUsage(token);
-  if (!resp) {
-    writeCache(null, true);
-    return null;
-  }
-
-  const data = {
-    fiveHour: resp.five_hour?.utilization,
-    weekly: resp.seven_day?.utilization,
-    fiveHourResetsAt: resp.five_hour?.resets_at || null,
-    weeklyResetsAt: resp.seven_day?.resets_at || null,
-  };
-  writeCache(data);
-  return formatLimits(data);
+  return `${color}${String(pct).padStart(2)}%${RESET}`;
 }
 
 function formatResetTime(isoString, mode) {
@@ -297,7 +387,6 @@ function formatResetTime(isoString, mode) {
   if (diffMs <= 0) return null;
   const totalMin = Math.floor(diffMs / 60000);
   const totalHr = Math.floor(totalMin / 60);
-  const totalDays = Math.floor(totalHr / 24);
   if (mode === "wk" && totalHr >= 24) {
     return `${(totalHr / 24).toFixed(1)}d`;
   }
@@ -323,7 +412,193 @@ function formatLimits(data) {
   return parts.length > 0 ? parts.join(" ") : null;
 }
 
+async function renderLimits() {
+  const cached = readCacheFile(CACHE_FILE);
+  if (cached) return formatLimits(cached);
+
+  const token = await getCredentials();
+  if (!token) return null;
+
+  const resp = await fetchUsage(token);
+  if (!resp) {
+    writeCacheFile(CACHE_FILE, null, true);
+    return null;
+  }
+
+  const data = {
+    fiveHour: resp.five_hour?.utilization,
+    weekly: resp.seven_day?.utilization,
+    fiveHourResetsAt: resp.five_hour?.resets_at || null,
+    weeklyResetsAt: resp.seven_day?.resets_at || null,
+  };
+  writeCacheFile(CACHE_FILE, data);
+  return formatLimits(data);
+}
+
+// --- Codex rate limits ---
+
+function readCodexCredentials() {
+  try {
+    const authPath = join(homedir(), ".codex", "auth.json");
+    if (!existsSync(authPath)) return null;
+    const parsed = JSON.parse(readFileSync(authPath, "utf-8"));
+    const { access_token, refresh_token, account_id } = parsed.tokens || {};
+    if (!account_id) return null;
+    return { accessToken: access_token, refreshToken: refresh_token, accountId: account_id };
+  } catch {
+    return null;
+  }
+}
+
+async function refreshCodexToken(refreshTok, signal) {
+  try {
+    const resp = await fetch("https://auth.openai.com/oauth/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: CODEX_CLIENT_ID,
+        refresh_token: refreshTok,
+        scope: "openid profile email",
+      }),
+      signal,
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data.access_token || null;
+  } catch {
+    return null;
+  }
+}
+
+function parseLimitsFromRl(rl) {
+  if (!rl) return null;
+  function parseWindow(w) {
+    if (!w) return { pct: null, resetsAt: null };
+    return {
+      pct: w.used_percent ?? null,
+      resetsAt: w.reset_at != null ? new Date(w.reset_at * 1000).toISOString() : null,
+    };
+  }
+  const pri = parseWindow(rl.primary_window);
+  const sec = parseWindow(rl.secondary_window);
+  return {
+    fiveHour: pri.pct, weekly: sec.pct,
+    fiveHourResetsAt: pri.resetsAt, weeklyResetsAt: sec.resetsAt,
+  };
+}
+
+async function fetchCodexUsage(accessToken, accountId, signal) {
+  try {
+    const resp = await fetch("https://chatgpt.com/backend-api/wham/usage", {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "chatgpt-account-id": accountId,
+        "User-Agent": CODEX_USER_AGENT,
+        originator: "codex_cli_rs",
+      },
+      signal,
+    });
+    if (resp.status === 401) return { unauthorized: true };
+    if (!resp.ok) return null;
+    const body = await resp.json();
+
+    const codex = parseLimitsFromRl(body.rate_limit);
+
+    let spark = null;
+    let modelName = "codex";
+    let additionalLabel = "spark";
+    const addEntry = (body.additional_rate_limits || [])
+      .find(e => e.metered_feature === "codex_bengalfox");
+    if (addEntry?.limit_name) {
+      const lower = addEntry.limit_name.toLowerCase();
+      const lastDash = lower.lastIndexOf("-");
+      if (lastDash >= 0) {
+        modelName = lower.slice(0, lastDash);
+        additionalLabel = lower.slice(lastDash + 1);
+      } else {
+        modelName = lower;
+      }
+      spark = parseLimitsFromRl(addEntry.rate_limit);
+    }
+
+    return { codex, spark, modelName, additionalLabel };
+  } catch {
+    return null;
+  }
+}
+
+async function renderCodexData() {
+  if (!existsSync(CODEX_FLAG_FILE)) return null;
+
+  // Read raw cache for both data freshness check and cached token
+  let rawCache = null;
+  try { rawCache = JSON.parse(readFileSync(CODEX_CACHE_FILE, "utf-8")); } catch {}
+
+  // Return cached data if fresh
+  if (rawCache?.ts) {
+    const age = Date.now() - rawCache.ts;
+    if (rawCache.error && age <= CACHE_FAIL_TTL_MS) return null;
+    if (!rawCache.error && age <= CACHE_TTL_MS && rawCache.data) {
+      return rawCache.data;
+    }
+  }
+
+  // Single 5s AbortController spans all network calls (fetch + refresh + retry)
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+
+  try {
+    // Always read auth.json for accountId (never cached)
+    const creds = readCodexCredentials();
+    if (!creds) return null;
+
+    // Prefer cached token if not expired (independent of data TTL)
+    let token = creds.accessToken;
+    if (rawCache?.cachedToken?.expiresAt && Date.now() < rawCache.cachedToken.expiresAt) {
+      token = rawCache.cachedToken.accessToken;
+    }
+
+    // Fetch usage
+    let result = await fetchCodexUsage(token, creds.accountId, controller.signal);
+
+    // 401: refresh once and retry with same deadline
+    if (result?.unauthorized) {
+      const newToken = await refreshCodexToken(creds.refreshToken, controller.signal);
+      if (newToken) {
+        token = newToken;
+        result = await fetchCodexUsage(token, creds.accountId, controller.signal);
+      } else {
+        result = null;
+      }
+    }
+
+    // Cache and return
+    if (result && !result.unauthorized) {
+      writeCacheFile(CODEX_CACHE_FILE, result, false, { cachedToken: { accessToken: token, expiresAt: Date.now() + 600_000 } });
+      return result;
+    }
+
+    writeCacheFile(CODEX_CACHE_FILE, null, true);
+    return null;
+  } catch {
+    writeCacheFile(CODEX_CACHE_FILE, null, true);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // --- main ---
+
+function visualLen(str) {
+  return str.replace(/\x1b\[[0-9;]*m/g, "").length;
+}
+
+function padVisual(str, len) {
+  const pad = len - visualLen(str);
+  return pad > 0 ? str + " ".repeat(pad) : str;
+}
 
 async function main() {
   const input = await readStdin();
@@ -332,16 +607,56 @@ async function main() {
     return;
   }
 
-  const limits = await renderLimits();
+  const [limits, codexData] = await Promise.allSettled([
+    renderLimits(),
+    renderCodexData(),
+  ]).then(results => results.map(r => r.status === "fulfilled" ? r.value : null));
 
-  const elements = [
-    renderModel(input),
-    renderSession(input),
-    limits,
+  // Column alignment: model name + limits (up to second │)
+  const claudeModel = renderModel(input);
+  const codexModel = codexData?.modelName || null;
+  let col1Claude = claudeModel;
+  let col1Codex = codexModel;
+  if (claudeModel && codexModel) {
+    const w = Math.max(claudeModel.length, codexModel.length);
+    col1Claude = claudeModel.padEnd(w);
+    col1Codex = codexModel.padEnd(w);
+  }
+
+  const codexLimits = codexData ? formatLimits(codexData.codex) : null;
+  let col2Claude = limits;
+  let col2Codex = codexLimits;
+  if (limits && codexLimits) {
+    const w = Math.max(visualLen(limits), visualLen(codexLimits));
+    col2Claude = padVisual(limits, w);
+    col2Codex = padVisual(codexLimits, w);
+  }
+
+  // Line 1: Claude
+  const line1 = [
+    col1Claude,
+    col2Claude,
     renderContext(input),
+    renderSession(input),
+    renderActivity(input),
   ].filter(Boolean);
 
-  process.stdout.write(elements.join(SEP));
+  let output = line1.join(SEP);
+
+  // Line 2: Codex (only if data available)
+  if (codexData) {
+    const sparkStr = codexData.spark ? `${codexData.additionalLabel} ${formatLimits(codexData.spark)}` : null;
+    const line2 = [
+      col1Codex,
+      col2Codex,
+      sparkStr,
+    ].filter(Boolean);
+    if (line2.length > 0) {
+      output += "\n" + line2.join(SEP);
+    }
+  }
+
+  process.stdout.write(output);
 }
 
 main().catch(() => process.stdout.write(""));
@@ -349,10 +664,13 @@ main().catch(() => process.stdout.write(""));
 
 ## Notes
 
-- The HUD script must be written **exactly as shown above** — do not modify the logic
 - `~` must be expanded to the real home directory in both the file path and settings.json command
 - If re-running install, overwrite the existing script (this updates the HUD to the latest version)
-- Rate limits are fetched from `api.anthropic.com/api/oauth/usage` using OAuth credentials
-- Results are cached for 30 seconds to avoid excessive API calls
-- Token refresh is automatic when credentials expire
-- If credentials are unavailable (e.g., API key users), rate limits are silently omitted
+- Claude rate limits are fetched from `api.anthropic.com/api/oauth/usage` using OAuth credentials
+- Codex rate limits and spark limits are fetched from `chatgpt.com/backend-api/wham/usage` (GET, no token cost); requires Codex login (`~/.codex/auth.json`)
+- Two-line layout: Line 1 (Claude) shows model, limits, ctx, session, and last active skill; Line 2 (Codex) shows codex model, codex limits, and spark limits
+- Skill detection reads last 200KB of `transcript_path` JSONL (tail-read for performance), finds last `Skill` or `proxy_Skill` tool_use block
+- Both fetches run in parallel; either section is silently omitted on failure
+- Results are cached for 30 seconds to avoid excessive API calls (`~/.claude/hud/.coral-usage-cache.json`, `~/.claude/hud/.coral-codex-usage-cache.json`)
+- Codex opt-in is controlled by `~/.claude/hud/.coral-codex-enabled` flag file; managed during install
+- If credentials are unavailable (e.g., API key users or Codex not installed), the respective rate limit section is silently omitted

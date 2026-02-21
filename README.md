@@ -21,7 +21,17 @@ Set up the coral HUD statusline for real-time session info:
 /coral:statusline install
 ```
 
-Displays: `opus 4.6 │ 5m │ 5h:56% (3:12) wk:38% (5.2d) │ ctx:45%`
+Displays a two-line HUD:
+
+```
+sonnet 4.6 │ 5h:56% (3:12) wk:38% (5.2d) │ ctx:45% │ #abc1234 │ skill:plan
+codex      │ 5h:72% (1:30) wk:45%          │ spark 5h:12%
+```
+
+- **Line 1 (always)**: model, Claude rate limits, context usage, session ID, last active skill
+- **Line 2 (optional)**: Codex model, Codex rate limits, spark limits — shown only when Codex is installed (`~/.codex/auth.json` exists) and opted in during install
+
+If Codex is detected during install, you'll be asked whether to display Codex usage. You can re-run install at any time to update the HUD or toggle the setting.
 
 To remove: `/coral:statusline uninstall`
 
