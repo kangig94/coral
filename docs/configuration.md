@@ -48,42 +48,9 @@ Version is managed in `package.json` (single source of truth) and synced to `plu
 
 Registers both MCP servers with Claude Code.
 
-```json
-{
-  "mcpServers": {
-    "cx": {
-      "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-codex.cjs"]
-    },
-    "dc": {
-      "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-discuss.cjs"]
-    }
-  }
-}
-```
-
-| Field | Description |
-|---|---|
-| `cx` | Codex MCP server (tool prefix: `mcp__plugin_coral_cx__*`) — Codex CLI session tools |
-| `dc` | Discuss MCP server (tool prefix: `mcp__plugin_coral_dc__*`) — discussion session tools |
-| `command` | Execution command |
-| `args` | Execution arguments (`CLAUDE_PLUGIN_ROOT` is auto-replaced) |
-
 ### .claude/coral/sessions/<project-hash>/<session-name>.json — Session Files
 
 Runtime-managed per-session storage files.
-
-```json
-{
-  "name": "session-name",
-  "codexThreadId": "thread-uuid-from-codex",
-  "model": "gpt-5.3-codex",
-  "createdAt": "2026-02-18T08:30:00.000Z",
-  "lastUsedAt": "2026-02-18T09:15:00.000Z",
-  "workingDirectory": "/home/user/project"
-}
-```
 
 **Location**: `~/.claude/coral/sessions/<project-hash>/<session-name>.json`
 **Project hash**: `sha256(resolve(workingDirectory)).slice(0, 12)`
@@ -127,13 +94,6 @@ See [Hooks documentation](./hooks.md) for details.
 ### {project}/.claude/coral/discuss/ — Discuss Session Storage
 
 Runtime-managed discuss session directories. Created by the `dc` MCP server.
-
-```
-{project}/.claude/coral/discuss/
-└── 260221-1430-a1b2-ai-ethics/
-    ├── state.json          # Session state (atomic writes via .tmp + rename)
-    └── transcript.md       # Human-readable transcript (incremental append)
-```
 
 **Location**: `{project}/.claude/coral/discuss/{session_dir}/`
 **Session ID format**: `yymmdd-HHmm-xxxx` (compact timestamp + 4-char random suffix)

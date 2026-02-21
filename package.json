@@ -1,7 +1,7 @@
 {
   "name": "coral",
   "version": "0.2.3",
-  "description": "Claude Code plugin — structured agents with Codex CLI bridge",
+  "description": "Claude Code plugin - structured agents with Codex CLI bridge",
   "type": "module",
   "scripts": {
     "build": "tsc && node scripts/build-server.mjs",

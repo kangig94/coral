@@ -67,7 +67,7 @@ When rules need to reference architecture, use: `See docs/architecture.md for th
 1. **Layer diagram** - ASCII or table showing module dependencies
 2. **Dependency rules** - "Code in Lx may only depend on L0..L(x-1)"
 3. **Modification policy** per directory - who can change what, with what restrictions
-4. **Key files table** - File | Role | Sensitivity
+4. **Key files** - List critical and non-obvious files only (5-15 entries, not exhaustive). Do not list every file in the repository.
 5. **Must reference actual project paths** - no placeholders like `src/modules/`
 
 For existing projects: derive from scanned directory structure and import graph.
@@ -103,6 +103,7 @@ Quality rules:
 - Reference **actual file paths** in the project, not generic placeholders
 - Keep sections **concise** - every sentence should add value
 - Include **examples** where patterns are non-obvious
+- **Docs describe architecture decisions and navigation — not source contents.** Any content that becomes stale when a function signature or schema field changes belongs in source code, not docs.
 
 ## Best Practices
 

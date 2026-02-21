@@ -29,7 +29,7 @@ npm run dev          # tsc --watch
 ```
 
 **Version Upgrade**:
-Update `version` in `package.json` and run `npm run build`. The build script automatically syncs the version to `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`, and injects `__VERSION__` into the bundle. `package.json` is the single source of truth — no other files need manual version updates.
+Update `version` in `package.json` and run `npm run build`. The build script automatically syncs the version to `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`, and injects `__VERSION__` into the bundle. `package.json` is the single source of truth - no other files need manual version updates.
 
 Rules in `.claude/rules/` are auto-loaded. Domain-specific rules activate based on file paths being edited via `paths:` frontmatter.
 
@@ -43,8 +43,8 @@ Rules in `.claude/rules/` are auto-loaded. Domain-specific rules activate based 
 
 **Scope gate**: Steps 1-4 apply only when source-affecting files are modified (`src/`, `scripts/`, `package.json`, `tsconfig.json`). Non-source changes (`agents/`, `skills/`, `docs/`, `hooks/`, `.claude/`) skip to step 5.
 
-1. **Lint** — run linter if configured (cheapest check first)
-2. **Review Gate** — run review-orchestrator. BLOCKING items must pass before build.
-3. **Build** — `npm run build` (tsc + esbuild, must pass clean)
-4. **Test** — `npm test` (vitest, all tests must pass)
-5. **KB update** — review work for `.claude/coral/kb/` promotion if non-obvious lessons were learned
+1. **Lint** - run linter if configured (cheapest check first)
+2. **Review Gate** - run review-orchestrator. BLOCKING items must pass before build.
+3. **Build** - `npm run build` (tsc + esbuild, must pass clean)
+4. **Test** - `npm test` (vitest, all tests must pass)
+5. **KB update** - review work for `.claude/coral/kb/` promotion if non-obvious lessons were learned

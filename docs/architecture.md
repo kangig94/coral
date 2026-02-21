@@ -157,96 +157,24 @@ Each session directory is created atomically with collision detection. State mut
 
 ```
 coral/
-├── .claude-plugin/
-│   ├── plugin.json              # Plugin manifest
-│   └── marketplace.json         # Marketplace manifest
-├── .mcp.json                    # MCP server registration
-├── CLAUDE.md                    # Behavioral guidelines + KB instructions
+├── .claude-plugin/              # Plugin + marketplace manifests
 ├── src/
-│   ├── types.ts                 # Shared type definitions (CodexThreadEvent etc.)
-│   ├── shared/
-│   │   └── mcp-utils.ts         # Shared MCP response helpers (textResult, jsonResult)
-│   ├── codex/
-│   │   ├── server.ts            # Codex MCP server entry point (stdio, transport, signals)
-│   │   ├── server-handlers.ts   # Business logic handlers + dispatch
-│   │   ├── schemas.ts           # Zod input validation schemas
-│   │   ├── codex-executor.ts    # Codex CLI execution logic
-│   │   ├── session-manager.ts   # Per-session file persistence
-│   │   ├── output-parser.ts     # JSONL event parsing
-│   │   ├── cli-detection.ts     # Codex CLI existence check
-│   │   ├── progress.ts          # Progress file utilities
-│   │   └── __tests__/           # Tests (vitest)
-│   │       ├── server-handlers.test.ts
-│   │       ├── schemas.test.ts
-│   │       ├── output-parser.test.ts
-│   │       ├── codex-executor.test.ts
-│   │       ├── session-manager.test.ts
-│   │       ├── cli-detection.test.ts
-│   │       └── server-progress.test.ts
-│   └── discuss/
-│       ├── server.ts            # Discuss MCP server entry point (stdio, transport, signals)
-│       ├── server-handlers.ts   # Tool definitions + dispatch (discuss + op routing)
-│       ├── schemas.ts           # Zod schemas (`discussOpSchema`, persona seed)
-│       ├── state-machine.ts     # Pure state transitions (zero I/O)
-│       ├── session-store.ts     # I/O shell: atomic writes, cross-process lock, migration
-│       ├── conditions.ts        # Pure condition predicates for `discuss({ op: "wait", ... })`
-│       ├── wait.ts              # Async file polling (waitForCondition)
-│       ├── transcript.ts        # Transcript rendering (pure functions)
-│       ├── persona-seed.ts      # k-DPP persona seeding (pure functions, zero I/O)
-│       ├── types.ts             # DiscussState, TranscriptEntry, Result<T>, WaitCondition
-│       └── __tests__/           # Tests (vitest)
-│           ├── state-machine.test.ts
-│           ├── conditions.test.ts
-│           ├── session-store.test.ts
-│           ├── wait.test.ts
-│           ├── transcript.test.ts
-│           ├── schemas.test.ts
-│           ├── server-handlers.test.ts
-│           └── persona-seed.test.ts
-├── skills/
-│   ├── analyze/
-│   │   └── SKILL.md             # /coral:analyze (Claude-native)
-│   ├── ralph/
-│   │   └── SKILL.md             # /coral:ralph (Claude-native)
-│   ├── discuss/
-│   │   ├── SKILL.md             # /coral:discuss (multi-agent discussion)
-│   │   └── template/
-│   │       └── persona-template.md  # Persona structure template
-│   ├── codex-analyze/
-│   │   └── SKILL.md             # /coral:codex-analyze (Codex delegation)
-│   ├── codex-ralph/
-│   │   └── SKILL.md             # /coral:codex-ralph (Codex delegation)
-│   ├── codex/
-│   │   └── SKILL.md             # /coral:codex (Codex CLI)
-│   ├── init-project/
-│   │   └── SKILL.md             # /coral:init-project (project initialization)
-│   ├── plan/
-│   │   └── SKILL.md             # /coral:plan (Claude-native planning)
-│   ├── coplan/
-│   │   └── SKILL.md             # /coral:coplan (cross-model planning)
-│   └── statusline/
-│       └── SKILL.md             # /coral:statusline (HUD setup)
-├── agents/
-│   ├── architect.md             # Claude-native architecture analysis
-│   ├── critic.md                # Claude-native plan/code review
-│   ├── analyst.md               # Claude-native requirements gap analysis
-│   ├── ralph.md                 # Claude-native persistent execution loop
-│   ├── planner.md               # Claude-native multi-round planning
-│   ├── init-project.md          # Project initialization orchestrator
-│   ├── discuss-lead.md          # Discussion moderator protocol
-│   ├── discussant.md            # Discussion participant protocol
-│   ├── persona-generator.md     # Persona creation agent
-│   └── codex-proxy.md           # Codex delegation proxy (analyst/architect/critic/ralph roles)
+│   ├── types.ts                 # Shared type definitions
+│   ├── shared/                  # Shared MCP utilities
+│   ├── codex/                   # Codex MCP server (cx)
+│   └── discuss/                 # Discuss MCP server (dc)
+├── skills/                      # Slash command SKILL.md files (one dir per skill)
+├── agents/                      # Agent protocol definitions
 ├── hooks/
-│   ├── hooks.json               # Hook config (matcher: "(^|:)codex-")
-│   └── detect-codex-agent.sh    # SubagentStart detection script
+│   ├── hooks.json               # Hook config (matcher, timeout)
+│   └── detect-codex-agent.sh   # SubagentStart detection script
 ├── scripts/
-│   └── build-server.mjs         # esbuild bundling
+│   └── build-server.mjs        # esbuild bundling
 ├── bridge/
 │   ├── coral-codex.cjs         # Codex MCP server bundle (committed)
 │   └── coral-discuss.cjs       # Discuss MCP server bundle (committed)
 ├── docs/                        # Documentation
-├── vitest.config.ts             # Test configuration
+├── vitest.config.ts
 ├── package.json
 ├── tsconfig.json
 └── .gitignore
