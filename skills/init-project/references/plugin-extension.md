@@ -114,7 +114,7 @@
 
 ### Recommended Docs (Plugin/Extension)
 
-No standalone domain docs required — plugin architecture is well-served by the universal docs.
+No standalone domain docs required - plugin architecture is well-served by the universal docs.
 
 **Architecture Sections**: Plugin projects should include these in `docs/ARCHITECTURE.md`:
 - Extension point catalog (hooks, events, APIs exposed to users)

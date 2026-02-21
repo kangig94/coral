@@ -12,12 +12,12 @@ Announce at start: "Using codex-analyze to investigate via Codex with Claude ver
 
 ## Execution
 
-1. **Load protocol**: Read `agents/codex-proxy.md` for the prompt template and system instructions. Use the analyst role's prompt template (`### Role: analyst` section).
+1. **Load protocol**: Read `agents/codex-proxy.md` for the prompt template and system instructions. Use the analyst role's prompt template (`### Role: analyst` section). **You** call Codex directly - do NOT spawn a codex-proxy agent.
 2. **Gather context**: From the conversation, collect:
    - Investigation target and specific question
    - File paths, error messages, stack traces
    - What has been tried or ruled out
-3. **Call Codex**: Use `codex_session_create` (or `codex_session_send` for follow-ups) directly, following the protocol's prompt template. Pass `working_directory` and `reasoning_effort: "xhigh"`.
+3. **Call Codex**: Use `codex({ op: "exec", ... })` directly, following the protocol's prompt template. Pass `working_directory` and `reasoning_effort: "xhigh"`.
 4. **Post-process** the raw Codex response:
    - **Verify references**: For CRITICAL/HIGH findings, Read the cited file:line to confirm accuracy. Drop findings with incorrect references.
    - **Filter**: Remove findings unrelated to the user's question
@@ -26,8 +26,8 @@ Announce at start: "Using codex-analyze to investigate via Codex with Claude ver
 
 ## Sandbox bypass
 
-When operating in bypass permissions mode, pass `dangerously_bypass_sandbox: true` to all `codex_session_create` and `codex_session_send` calls. Otherwise, omit the field.
+Pass `bypass: true` only when the user explicitly requests bypass mode. Otherwise, omit the field.
 
 ## Error Policy
 
-If `agents/codex-proxy.md` cannot be read, report the error to the user. Do not fall back to inline analysis — the agent protocol is a required dependency.
+If `agents/codex-proxy.md` cannot be read, report the error to the user. Do not fall back to inline analysis - the agent protocol is a required dependency.

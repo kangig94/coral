@@ -152,7 +152,7 @@ Inherits all React agents plus:
 
 ### Recommended Docs (Frontend)
 
-No standalone domain docs required — frontend architecture is well-served by the universal docs.
+No standalone domain docs required - frontend architecture is well-served by the universal docs.
 
 **Architecture Sections**: Frontend projects should include these in `docs/ARCHITECTURE.md`:
 - Component hierarchy and organization pattern (atomic, feature-based, etc.)

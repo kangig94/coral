@@ -31,7 +31,7 @@ for (const name of Object.keys(state.agents)) {
 ```
 
 Information veil boundaries:
-- `discuss_state`: returns `total_speaks` (count-up), never `quota_remaining` (count-down)
+- `discuss({ op: "state", ... })`: returns `total_speaks` (count-up), never `quota_remaining` (count-down)
 - `formatFull`: bid entries filtered to `> **Speaker: Name**` only — scores hidden
-- `discuss_wait(action_needed)`: returns `your_speaks`, never bid scores or quota
+- `discuss({ op: "wait", condition: "action_needed", ... })`: returns `your_speaks`, never bid scores or quota
 - Audit trail: full bid scores in `state.json` transcript + `transcript.md` for humans

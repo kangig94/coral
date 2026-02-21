@@ -7,7 +7,6 @@ import { execFile } from 'node:child_process';
 
 interface CliInfo {
   available: boolean;
-  path?: string;
   version?: string;
   error?: string;
 }
@@ -27,7 +26,7 @@ export async function detectCodexCli(): Promise<CliInfo> {
         });
       } else {
         const version = stdout.trim();
-        resolve({ available: true, version, path: 'codex' });
+        resolve({ available: true, version });
       }
     });
   });

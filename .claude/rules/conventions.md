@@ -17,9 +17,9 @@ Merge policy:
 PR procedure (dev → main):
 1. Commit all changes on `dev`, run build + tests
 2. `git fetch origin main`
-3. `git rebase --onto origin/main <last-squash-merged-commit> dev` — drops commits already in main via prior squash merge, replays only new commits onto main
+3. `git rebase --onto origin/main <last-squash-merged-commit> dev` - drops commits already in main via prior squash merge, replays only new commits onto main
 4. Verify: `git log --oneline origin/main..dev` should show only new commits
-5. `npm run build && npm test` — re-verify after rebase
+5. `npm run build && npm test` - re-verify after rebase
 6. `git push origin dev --force-with-lease`
 7. `gh pr create --base main --head dev` (or update existing PR)
 8. Squash merge on GitHub, then repeat step 3 before next PR to keep dev clean
@@ -38,7 +38,7 @@ PR procedure (dev → main):
 - **Functions**: camelCase (`parseCodexJsonl`, `detectCodexCli`)
 - **Constants**: UPPER_SNAKE for true constants (`MAX_BUFFER`, `DEFAULT_TIMEOUT`), camelCase for derived values
 - **Zod schemas**: camelCase with `Schema` suffix (`codexSessionCreateSchema`)
-- **MCP tool names**: snake_case (`codex_session_create`)
+- **MCP tool names**: unified MCP tool name (`codex`) plus required `op` field for command selection
 - **Agent files**: kebab-case markdown (`mcp-guardian.md`)
 - **Skill directories**: kebab-case (`codex-ralph/`)
 

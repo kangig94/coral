@@ -1,5 +1,5 @@
 /**
- * Transcript rendering tests — pure functions operating on TranscriptEntry[].
+ * Transcript rendering tests - pure functions operating on TranscriptEntry[].
  */
 
 import { describe, it, expect } from 'vitest';

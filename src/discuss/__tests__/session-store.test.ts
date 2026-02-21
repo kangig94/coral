@@ -1,5 +1,5 @@
 /**
- * SessionStore tests — atomic writes, locking, session lifecycle.
+ * SessionStore tests - atomic writes, locking, session lifecycle.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -185,13 +185,13 @@ describe('withLock', () => {
     const { fullPath, state } = createAndSaveSession();
     const results: number[] = [];
 
-    // Two concurrent lock acquisitions — order should be serialized
+    // Two concurrent lock acquisitions - order should be serialized
     await Promise.all([
       store.withLock(fullPath, async () => { results.push(1); await new Promise((r) => setTimeout(r, 20)); results.push(2); }),
       store.withLock(fullPath, async () => { results.push(3); }),
     ]);
 
-    // Serialized: [1, 2, 3] or [3, 1, 2] — never interleaved [1, 3, 2]
+    // Serialized: [1, 2, 3] or [3, 1, 2] - never interleaved [1, 3, 2]
     const idx1 = results.indexOf(1);
     const idx2 = results.indexOf(2);
     const idx3 = results.indexOf(3);

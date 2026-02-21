@@ -1,5 +1,5 @@
 /**
- * Session store — I/O shell for discuss sessions.
+ * Session store - I/O shell for discuss sessions.
  * Handles atomic writes, cross-process locking, session directory management,
  * and incremental transcript append.
  */
@@ -28,7 +28,7 @@ function writeStateAtomic(filePath: string, state: DiscussState): void {
 
 /**
  * Cross-process mkdir-based lock (POSIX atomic test-and-set).
- * No external dependencies — uses filesystem atomicity.
+ * No external dependencies - uses filesystem atomicity.
  */
 class SessionLock {
   async acquire<T>(sessionDir: string, fn: () => Promise<T>): Promise<T> {
@@ -57,14 +57,14 @@ class SessionLock {
             const lockTime = parseInt(content.slice(dashIdx + 1), 10);
             let isAlive = false;
             try { process.kill(ownerPid, 0); isAlive = true; } catch { /* process not running */ }
-            // 30s staleness threshold — 150x the lock hold budget (~200ms max)
+            // 30s staleness threshold - 150x the lock hold budget (~200ms max)
             const isStale = !isAlive || (Date.now() - lockTime > 30_000);
             if (isStale) {
               try { fs.unlinkSync(pidFile); } catch { /* ignore */ }
               try { fs.rmdirSync(lockDir); } catch { /* ignore */ }
               continue;
             }
-          } catch { /* pid file unreadable — retry with backoff */ }
+          } catch { /* pid file unreadable - retry with backoff */ }
           await sleep(baseDelay * Math.pow(2, Math.min(i, 5)) + Math.random() * baseDelay);
           continue;
         }
@@ -111,11 +111,6 @@ export class SessionStore {
     const entries = fs.readdirSync(this.discussDir);
     const match = entries.find((e) => e.startsWith(sessionId + '-') || e === sessionId);
     return match ? path.join(this.discussDir, match) : null;
-  }
-
-  /** Full filesystem path for a session directory. */
-  fullPath(sessionDir: string): string {
-    return path.join(this.discussDir, path.basename(sessionDir));
   }
 
   /** Path to state.json for a session. */

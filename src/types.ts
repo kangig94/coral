@@ -41,7 +41,7 @@ export type CodexThreadEvent =
   | { type: 'error'; message: string };
 
 /**
- * ThreadItem — flattened representation of a thread item.
+ * ThreadItem - flattened representation of a thread item.
  * The `type` field discriminates the payload (serde flatten + tag = "type").
  */
 export type CodexThreadItem = { id: string } & CodexThreadItemDetails;

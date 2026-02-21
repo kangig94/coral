@@ -1,5 +1,5 @@
 /**
- * Discuss wait module — blocking condition-based file watcher.
+ * Discuss wait module - blocking condition-based file watcher.
  * Polls state.json at intervals until predicate is true or timeout expires.
  * Uses clearTimeout on resolution to prevent orphaned timer chains.
  */
@@ -70,7 +70,7 @@ export async function waitForCondition(
   });
 }
 
-/** Safe async read — returns null if file is mid-rename, missing, or corrupt JSON. */
+/** Safe async read - returns null if file is mid-rename, missing, or corrupt JSON. */
 async function tryReadState(p: string): Promise<DiscussState | null> {
   try {
     return JSON.parse(await fs.promises.readFile(p, 'utf8')) as DiscussState;

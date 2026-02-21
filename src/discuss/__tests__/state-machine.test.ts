@@ -1,5 +1,5 @@
 /**
- * Pure state machine tests — no filesystem, no async.
+ * Pure state machine tests - no filesystem, no async.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -38,7 +38,7 @@ function makeSession(): DiscussState {
   return res.value;
 }
 
-/** Stamp transcript_read_step[agent] = state.step — simulates calling discuss_transcript. */
+/** Stamp transcript_read_step[agent] = state.step - simulates calling discuss_transcript. */
 function withTranscriptRead(state: DiscussState, ...agents: string[]): DiscussState {
   const trs = { ...state.transcript_read_step };
   for (const a of agents) trs[a] = state.step;
@@ -245,9 +245,9 @@ describe('applyBid', () => {
   });
 });
 
-// ─── resolveWinner — primary pool ────────────────────────────────────────────
+// ─── resolveWinner - primary pool ────────────────────────────────────────────
 
-describe('resolveWinner — primary pool', () => {
+describe('resolveWinner - primary pool', () => {
   function bidBoth(state: DiscussState, aliceScore: number, bobScore: number): DiscussState {
     const s1 = applyBid(state, 'alice', aliceScore, NOW);
     const s2 = applyBid(s1.ok ? s1.value : state, 'bob', bobScore, NOW);
@@ -291,7 +291,7 @@ describe('resolveWinner — primary pool', () => {
     expect(r2.ok).toBe(true);
     if (!r2.ok) return;
 
-    // Step 2: same scores again — bob should win (fewer speaks)
+    // Step 2: same scores again - bob should win (fewer speaks)
     const afterSpeech = r2.value;
     const state2 = bidBoth(withTranscriptRead(afterSpeech, 'alice', 'bob'), 80, 80);
     const res2 = resolveWinner(state2, NOW);
@@ -312,9 +312,9 @@ describe('resolveWinner — primary pool', () => {
   });
 });
 
-// ─── resolveWinner — cold start ──────────────────────────────────────────────
+// ─── resolveWinner - cold start ──────────────────────────────────────────────
 
-describe('resolveWinner — cold start (auto-pick)', () => {
+describe('resolveWinner - cold start (auto-pick)', () => {
   it('should auto-pick speaker on cold start when all below threshold', () => {
     const state = makeSession();
     const s1 = applyBid(state, 'alice', 5, NOW);
@@ -361,9 +361,9 @@ describe('resolveWinner — cold start (auto-pick)', () => {
   });
 });
 
-// ─── resolveWinner — fallback pool ───────────────────────────────────────────
+// ─── resolveWinner - fallback pool ───────────────────────────────────────────
 
-describe('resolveWinner — fallback pool', () => {
+describe('resolveWinner - fallback pool', () => {
   it('should use fallback pool when quota exhausted', () => {
     // quota=1, alice exhausts quota after 1 speech
     const input = { ...BASE_INPUT, quota_per_epoch: 1 };
@@ -534,9 +534,9 @@ describe('applySpeech', () => {
   });
 });
 
-// ─── resolveWinner — auto epoch transition ────────────────────────────────────
+// ─── resolveWinner - auto epoch transition ────────────────────────────────────
 
-describe('resolveWinner — auto epoch transition', () => {
+describe('resolveWinner - auto epoch transition', () => {
   /** Fabricate state where both agents are fully exhausted but still desire to speak. */
   function makeExhaustedState(epochNum: number, maxEpochs: number): DiscussState {
     const state = makeSession();
@@ -579,7 +579,7 @@ describe('resolveWinner — auto epoch transition', () => {
     const res = resolveWinner(state, NOW);
     if (!res.ok) return;
     const [newState] = res.value;
-    // readStep stamped to new step — agents can bid without re-reading
+    // readStep stamped to new step - agents can bid without re-reading
     expect(newState.transcript_read_step['alice']).toBe(newState.step);
     expect(newState.transcript_read_step['bob']).toBe(newState.step);
     const bidRes = applyBid(newState, 'alice', 80, NOW);
@@ -695,9 +695,9 @@ describe('applyEnd', () => {
   });
 });
 
-// ─── applyBid — transcript read enforcement ───────────────────────────────────
+// ─── applyBid - transcript read enforcement ───────────────────────────────────
 
-describe('applyBid — transcript read enforcement', () => {
+describe('applyBid - transcript read enforcement', () => {
   function makeAfterSpeech(): DiscussState {
     const state = makeSession();
     const s1 = applyBid(state, 'alice', 80, NOW);
@@ -732,7 +732,7 @@ describe('applyBid — transcript read enforcement', () => {
 
   it('should NOT require re-read after auto epoch transition (readStep stamped to new step)', () => {
     // After epoch transition: step incremented AND readStep stamped to new step.
-    // Agents arrive in epoch 2 with readStep >= step pre-satisfied — no forced re-read.
+    // Agents arrive in epoch 2 with readStep >= step pre-satisfied - no forced re-read.
     const transitionedState: DiscussState = {
       ...makeSession(),
       step: 4, epoch: 2, max_epochs: 2,
@@ -795,7 +795,7 @@ describe('formatDateId', () => {
 
   it('should zero-pad month, day, hours, minutes', () => {
     const d = new Date('2026-01-05T08:03:00Z');
-    // Should be '260105-0803' (in local time — just verify format, not exact value)
+    // Should be '260105-0803' (in local time - just verify format, not exact value)
     expect(formatDateId(d)).toMatch(/^\d{6}-\d{4}$/);
   });
 });

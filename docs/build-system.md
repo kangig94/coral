@@ -36,37 +36,11 @@ bridge/coral-discuss.cjs   (src/discuss/server.ts)
 
 ### Step 1: TypeScript Compilation
 
-`tsc` compiles all `.ts` files under `src/`.
-
-**Key tsconfig.json settings:**
-
-```json
-{
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "strict": true,
-    "outDir": "dist",
-    "rootDir": "src",
-    "declaration": true,
-    "sourceMap": true
-  }
-}
-```
-
-| Setting | Value | Reason |
-|---|---|---|
-| `target` | ES2022 | Use Node 18+ features (top-level await, etc.) |
-| `module` | NodeNext | ESM + `.js` extension import support |
-| `strict` | true | Maximum type safety |
-| `declaration` | true | Generate `.d.ts` files (for library usage) |
+`tsc` compiles all `.ts` files under `src/`. ES2022 for Node 18+, NodeNext for ESM, strict mode. See `tsconfig.json`.
 
 ### Step 2: esbuild Bundling
 
 `scripts/build-server.mjs` runs esbuild to produce a single CJS bundle.
-
-**File**: `scripts/build-server.mjs`
 
 The build script performs two tasks: version sync and esbuild bundling.
 
@@ -104,31 +78,8 @@ Run tests with vitest:
 npm test
 ```
 
-**vitest.config.ts:**
-
-```typescript
-export default defineConfig({
-  test: {
-    include: ['src/**/*.test.ts'],
-  },
-});
-```
+Tests live in `src/**/__tests__/`. See `vitest.config.ts`.
 
 ## Connection to .mcp.json
 
-```json
-{
-  "mcpServers": {
-    "cx": {
-      "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-codex.cjs"]
-    },
-    "dc": {
-      "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-discuss.cjs"]
-    }
-  }
-}
-```
-
-Claude Code runs both MCP servers via stdio. `cx` provides Codex CLI tools (`codex_session_*`), `dc` provides discuss tools (`discuss_*`). `CLAUDE_PLUGIN_ROOT` is auto-replaced with the plugin root directory.
+Claude Code runs both MCP servers via stdio. `cx` provides Codex CLI tools (`codex_session_*`), `dc` provides discuss tools (`discuss_*`). `CLAUDE_PLUGIN_ROOT` is auto-replaced with the plugin root directory. See `.mcp.json`.

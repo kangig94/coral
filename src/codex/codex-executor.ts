@@ -1,6 +1,6 @@
 /**
  * Codex CLI execution logic.
- * Never use console.log — this runs inside a stdio MCP server.
+ * Never use console.log - this runs inside a stdio MCP server.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -16,6 +16,15 @@ const MAX_BUFFER = 10 * 1024 * 1024; // 10MB
 const SIGTERM_GRACE_MS = 5_000; // grace period before escalating to SIGKILL
 
 const activeChildren = new Set<ChildProcess>();
+
+/** Send SIGTERM, then escalate to SIGKILL after grace period. */
+function gracefulKill(child: ChildProcess): void {
+  try { child.kill('SIGTERM'); } catch { /* already dead */ }
+  const killTimer = setTimeout(() => {
+    try { child.kill('SIGKILL'); } catch { /* already dead */ }
+  }, SIGTERM_GRACE_MS);
+  child.on('close', () => clearTimeout(killTimer));
+}
 
 // ─── Active Execution Registry ────────────────────────────────────────────────
 
@@ -46,11 +55,6 @@ export function abortExecution(sessionName: string): boolean {
   if (!controller) return false;
   controller.abort();
   return true;
-}
-
-/** List all currently active session names. */
-export function listActiveExecutions(): string[] {
-  return [...activeExecutions.keys()];
 }
 
 /** Check if a session is currently executing. */
@@ -84,8 +88,8 @@ function spawnCodex(
 
     const child = spawn('codex', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
-      ...(cwd ? { cwd } : {}),
-      ...(process.platform === 'win32' ? { shell: true } : {}),
+      cwd: cwd || undefined,
+      shell: process.platform === 'win32',
     });
 
     activeChildren.add(child);
@@ -100,11 +104,7 @@ function spawnCodex(
     function onIdle() {
       if (settled) return;
       settled = true;
-      child.kill('SIGTERM');
-      const killTimer = setTimeout(() => {
-        try { child.kill('SIGKILL'); } catch { /* already dead */ }
-      }, SIGTERM_GRACE_MS);
-      child.on('close', () => clearTimeout(killTimer));
+      gracefulKill(child);
       activeChildren.delete(child);
       reject(new Error(`Codex killed after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`));
     }
@@ -122,9 +122,7 @@ function spawnCodex(
         if (settled) return;
         abortedBySignal = true;
         clearTimeout(idleTimer); // prevent idle-timeout rejection racing with abort
-        child.kill('SIGTERM');
-        const killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, SIGTERM_GRACE_MS);
-        child.on('close', () => clearTimeout(killTimer)); // clean up if process exits before grace period
+        gracefulKill(child);
       };
       if (signal.aborted) { onAbort(); }
       else { signal.addEventListener('abort', onAbort, { once: true }); }
@@ -183,13 +181,7 @@ export function killAllChildren(): void {
   activeExecutions.clear();
 
   for (const child of activeChildren) {
-    try {
-      child.kill('SIGTERM');
-    } catch { /* already dead */ }
-    const killTimer = setTimeout(() => {
-      try { child.kill('SIGKILL'); } catch { /* already dead */ }
-    }, SIGTERM_GRACE_MS);
-    child.on('close', () => clearTimeout(killTimer));
+    gracefulKill(child);
   }
   activeChildren.clear();
 }
@@ -229,7 +221,7 @@ async function executeCodex(
   };
 }
 
-// CLAUDE.md injection — prepend plugin guidelines to one-shot prompts
+// CLAUDE.md injection - prepend plugin guidelines to one-shot prompts
 declare const __PLUGIN_ROOT__: string;
 const pluginRoot: string = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..');
 let claudeMdCache: string | undefined;

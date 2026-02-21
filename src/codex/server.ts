@@ -1,4 +1,4 @@
-/** Coral MCP Server — stdio transport for Codex CLI integration. */
+/** Coral MCP Server - stdio transport for Codex CLI integration. */
 
 declare const __VERSION__: string;
 

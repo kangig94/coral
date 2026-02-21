@@ -9,7 +9,7 @@ Tradeoff: These guidelines bias toward caution over speed. For trivial tasks, us
 Don't assume. Don't hide confusion. Surface tradeoffs.
 
 - State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them — don't pick silently.
+- If multiple interpretations exist, present them - don't pick silently.
 - If a simpler approach exists, say so. Push back when warranted.
 - If something is unclear, stop. Name what's confusing. Ask.
 
@@ -25,7 +25,7 @@ Minimum code that solves the problem. Nothing speculative.
 - If you write 200 lines and it could be 50, rewrite it.
 - Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
 
-Pursue elegance. Efficient, simple code that feels inevitable — where no other solution seems possible — is the highest standard.
+Pursue elegance. Efficient, simple code that feels inevitable - where no other solution seems possible - is the highest standard.
 
 ## 3. Surgical Changes
 
@@ -35,7 +35,7 @@ When editing existing code:
 - Don't "improve" adjacent code, comments, or formatting.
 - Don't refactor things that aren't broken.
 - Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it — don't delete it.
+- If you notice unrelated dead code, mention it - don't delete it.
 
 When your changes create orphans:
 - Remove imports/variables/functions that YOUR changes made unused.
@@ -58,30 +58,30 @@ For multi-step tasks, state a brief plan:
 
 # Knowledge Base
 
-## Memo — during work (including planning)
+## Memo - during work (including planning)
 When you discover something non-obvious (painful root cause, unexpected gotcha,
 "wish I knew earlier" pattern, or an exceptionally clever solution), write immediately to:
 `.claude/coral/memo/<timestamp>-<topic>.md`
-Keep brief — one paragraph + context.
+Keep brief - one paragraph + context.
 If Explanatory/Learning output style is active, also memo any Insights worth preserving.
 
-## Lookup — on error
+## Lookup - on error
 Before debugging from scratch, check `{project}/.claude/coral/kb/` for relevant entries.
 On plan/coplan start, review domain-related kb files.
 
-## Promotion — on task/plan completion, or in common conversation when a memo captures a reusable lesson
-Review all memos + MEMORY.md. Check existing kb entries first — discard duplicates,
+## Promotion - on task/plan completion, or in common conversation when a memo captures a reusable lesson
+Review all memos + MEMORY.md. Check existing kb entries first - discard duplicates,
 update existing entries if the memo refines them, only create new files for genuinely absent knowledge.
 
 Promote to `{project}/.claude/coral/kb/<domain>-<topic>.md`:
 
     # <Title>
     ## Rule
-    One paragraph — state the lesson directly.
+    One paragraph - state the lesson directly.
     ## Why
     What goes wrong without this knowledge.
     ## Pattern
-    Right vs wrong approach — code blocks or examples.
+    Right vs wrong approach - code blocks or examples.
 
 Clean up promoted sources: delete processed memos, remove promoted entries from MEMORY.md.
 

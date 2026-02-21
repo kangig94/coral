@@ -1,6 +1,6 @@
 /**
  * Progress file utilities for Codex execution visibility.
- * Pure helpers — no server dependencies.
+ * Pure helpers - no server dependencies.
  */
 
 import { appendFileSync, unlinkSync, writeFileSync } from 'node:fs';

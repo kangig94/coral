@@ -2,8 +2,8 @@
 
 Coral exposes two MCP servers, each with its own tool set:
 
-- **`cx` (Codex)**: 4 tools for Codex CLI session management. Prefix: `mcp__plugin_coral_cx__`
-- **`dc` (Discuss)**: 8 tools for moderated multi-agent discussions. Prefix: `mcp__plugin_coral_dc__`
+- **`cx` (Codex)**: 1 tool for Codex CLI session management. Prefix: `mcp__plugin_coral_cx__`
+- **`dc` (Discuss)**: 2 tools for moderated multi-agent discussions. Prefix: `mcp__plugin_coral_dc__`
 
 All tool inputs are validated at runtime with zod schemas (`src/codex/schemas.ts`, `src/discuss/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
 
@@ -11,9 +11,19 @@ All tool inputs are validated at runtime with zod schemas (`src/codex/schemas.ts
 
 # Codex Tools (`cx`)
 
-## codex_session_create
+## codex
 
-Create a Codex session. The sole entry point for all Codex execution. Internally calls `executeOneShot()` and registers the returned thread ID.
+Single entry point for all Codex execution. Use the required `op` discriminator.
+
+### Input Envelope
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `op` | string | Yes | One of: `exec`, `list`, `fork`, `abort` |
+
+### op: exec
+
+Create a new Codex session when `session` is omitted (calls `executeOneShot()`) or resume an existing session when `session` is present (calls `executeResume()`).
 
 ### Input Schema
 
@@ -25,9 +35,9 @@ Create a Codex session. The sole entry point for all Codex execution. Internally
 | `working_directory` | string | No | Working directory |
 | `reasoning_effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
 | `background` | boolean | No | Run in background (default: `false`). Returns immediately with progress info. |
-| `dangerously_bypass_sandbox` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when Claude Code is in bypass permissions mode (⏵⏵). |
+| `bypass` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when the user explicitly requests bypass mode. |
 
-### Output — Foreground (default)
+### Output - Foreground (default)
 
 ```json
 {
@@ -45,7 +55,7 @@ If no thread ID is returned, registration is skipped with a `notice` field. `err
 
 During foreground execution, `[Codex]` prefixed progress messages are sent via `notifications/progress`.
 
-### Output — Background (`background: true`)
+### Output - Background (`background: true`)
 
 ```json
 {
@@ -60,7 +70,7 @@ Progress is written to the JSONL file with a terminal `completed` or `error` eve
 
 ---
 
-## codex_session_send
+### op: exec
 
 Send a follow-up prompt to an existing session. Uses `codex exec resume THREAD_ID` to continue the conversation.
 
@@ -68,19 +78,19 @@ Send a follow-up prompt to an existing session. Uses `codex exec resume THREAD_I
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `session` | string | Yes | Session name or Codex thread ID (min 1 char) |
-| `prompt` | string | Yes | Follow-up prompt (min 1 char) |
+| `session` | string | No | Session name or Codex thread ID (min 1 char). Omit to start a new session. |
+| `prompt` | string | Yes | Prompt to send (min 1 char). Required for both create and resume cases. |
 | `model` | string | No | Model to use |
 | `working_directory` | string | No | Working directory |
 | `reasoning_effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
 | `background` | boolean | No | Run in background (default: `false`) |
-| `dangerously_bypass_sandbox` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when Claude Code is in bypass permissions mode (⏵⏵). |
+| `bypass` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when the user explicitly requests bypass mode. |
 
 ### Lookup Logic
 
-1. `SessionManager.get(session)` — search by name first
+1. `SessionManager.get(session)` - search by name first
 2. If name doesn't match, search by `codexThreadId`
-3. If not in registry, return error (`Session not found`). Raw thread IDs are not accepted — all sessions must be created via `codex_session_create`.
+3. If not in registry, return error (`Session not found`). Raw thread IDs are not accepted - all sessions must be created via `codex({ op: "exec", ... })`.
 
 ### Output (JSON)
 
@@ -98,13 +108,13 @@ Send a follow-up prompt to an existing session. Uses `codex exec resume THREAD_I
 
 ---
 
-## codex_session_list
+### op: list
 
 Return the list of registered sessions.
 
 ### Input Schema
 
-No parameters (empty object).
+No parameters (empty object). This envelope is strict.
 
 ### Output (JSON)
 
@@ -131,7 +141,7 @@ Only shows sessions registered in the Coral registry.
 
 ---
 
-## codex_session_fork
+### op: fork
 
 Fork an existing session to continue the conversation in a new branch.
 
@@ -148,7 +158,7 @@ Fork an existing session to continue the conversation in a new branch.
 | `working_directory` | string | No | Working directory |
 | `reasoning_effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
 | `background` | boolean | No | Run in background (default: `false`) |
-| `dangerously_bypass_sandbox` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when Claude Code is in bypass permissions mode (⏵⏵). |
+| `bypass` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when the user explicitly requests bypass mode. |
 
 ### Output (JSON)
 
@@ -165,6 +175,25 @@ Fork an existing session to continue the conversation in a new branch.
 
 `errors`/`warnings`/`exit_code` conditionally included. If `name` is not specified, the session exists only in Codex and is not registered in the Coral registry.
 
+### op: abort
+
+Abort an active execution.
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `session` | string | Yes | Session name or thread ID |
+
+### Output (JSON)
+
+```json
+{
+  "session_name": "my-review",
+  "status": "abort_requested"
+}
+```
+
 ---
 
 # Discuss Tools (`dc`)
@@ -175,11 +204,21 @@ Session IDs follow the format `yymmdd-HHmm-xxxx` (compact timestamp + 4-char ran
 
 ---
 
-## discuss_create
+## discuss
+
+Unified discussion session tool. Select behavior with the required `op` field.
+
+### Input Schema (Envelope)
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `op` | string | Yes | One of: `create`, `bid`, `wait`, `speak`, `transcript`, `state`, `end`, `epoch_summary` |
+
+### operation: create
 
 Initialize a new discussion session with agent personas.
 
-### Input Schema
+#### Input Schema
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -188,7 +227,7 @@ Initialize a new discussion session with agent personas.
 | `quota_per_epoch` | integer | No | Max speeches per agent per epoch (default: 3, max: 10) |
 | `recent_turns` | integer | No | Recent turns shown in transcript (default: 5, max: 20) |
 
-### Output (JSON)
+#### Output (JSON)
 
 ```json
 {
@@ -201,13 +240,11 @@ Initialize a new discussion session with agent personas.
 }
 ```
 
----
-
-## discuss_bid
+### op: bid
 
 Submit a speaking desire score 0–100 (higher = stronger desire to speak).
 
-### Input Schema
+#### Input Schema
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -215,7 +252,7 @@ Submit a speaking desire score 0–100 (higher = stronger desire to speak).
 | `agent_name` | string | Yes | Agent name |
 | `score` | integer | Yes | Desire score 0–100 |
 
-### Output (JSON)
+#### Output (JSON)
 
 ```json
 {
@@ -224,13 +261,11 @@ Submit a speaking desire score 0–100 (higher = stronger desire to speak).
 }
 ```
 
----
+### op: wait
 
-## discuss_wait
+Block until a condition is fulfilled or timeout expires. This is the primary coordination mechanism and replaces manual polling of `discuss({ op: "state", ... })`.
 
-Block until a condition is fulfilled or timeout expires. This is the primary coordination mechanism — replaces manual polling of `discuss_state`.
-
-### Input Schema
+#### Input Schema
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -239,15 +274,15 @@ Block until a condition is fulfilled or timeout expires. This is the primary coo
 | `timeout_seconds` | number | Yes | Max wait (limits: all_bids=60, speech_delivered=120, action_needed=180) |
 | `agent_name` | string | Conditional | Required for `action_needed` condition |
 
-### Conditions
+#### Conditions
 
 | Condition | Blocks Until | Used By |
 |---|---|---|
 | `all_bids` | All agents have submitted bids. Auto-resolves winner. | discuss-lead |
-| `speech_delivered` | Current speaker has called discuss_speak | discuss-lead |
+| `speech_delivered` | Current speaker has called `discuss({ op: "speak", ... })` | discuss-lead |
 | `action_needed` | This agent has an action to perform (bid/speak) | discussant |
 
-### Output — `all_bids` (auto-resolve)
+#### Output - `all_bids` (auto-resolve)
 
 Returns one of 4 result shapes:
 
@@ -257,7 +292,7 @@ Returns one of 4 result shapes:
 { "fulfilled": true, "no_winner": true, "step": 3, "reason": "all_below_threshold" }
 ```
 
-### Output — `action_needed`
+#### Output - `action_needed`
 
 ```json
 { "fulfilled": true, "action": "bid", "epoch": 1, "your_speaks": 2 }
@@ -265,19 +300,17 @@ Returns one of 4 result shapes:
 { "fulfilled": true, "action": "session_ended", "epoch": 2, "your_speaks": 4 }
 ```
 
-### Output — timeout
+#### Output - timeout
 
 ```json
 { "fulfilled": false, "elapsed_ms": 60000 }
 ```
 
----
-
-## discuss_speak
+### op: speak
 
 Record a speech. Only allowed when the calling agent is the current speaker.
 
-### Input Schema
+#### Input Schema
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -285,7 +318,7 @@ Record a speech. Only allowed when the calling agent is the current speaker.
 | `agent_name` | string | Yes | Speaking agent name (must match current_speaker) |
 | `content` | string | Yes | Speech content |
 
-### Output (JSON)
+#### Output (JSON)
 
 ```json
 {
@@ -295,13 +328,11 @@ Record a speech. Only allowed when the calling agent is the current speaker.
 }
 ```
 
----
-
-## discuss_transcript
+### op: transcript
 
 Read the discussion transcript. Three modes: `recent` (default, last N entries), `full` (restricted: current speaker or ended session), `summary` (epoch-level overview).
 
-### Input Schema
+#### Input Schema
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -310,23 +341,21 @@ Read the discussion transcript. Three modes: `recent` (default, last N entries),
 | `mode` | string | No | `full`, `recent`, or `summary` (default: `recent`) |
 | `last_n` | integer | No | Override `recent_turns` setting (1–50) |
 
-### Output
+#### Output
 
 Returns formatted markdown transcript text.
 
----
+### op: state
 
-## discuss_state
+Query current session state. Bid scores are NOT exposed; they are only visible via `discuss({ op: "wait", condition: "all_bids", ... })` auto-resolve results.
 
-Query current session state. Bid scores are NOT exposed — they are only visible via `discuss_wait(all_bids)` auto-resolve results.
-
-### Input Schema
+#### Input Schema
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `session` | string | Yes | Session ID |
 
-### Output (JSON)
+#### Output (JSON)
 
 ```json
 {
@@ -342,13 +371,11 @@ Query current session state. Bid scores are NOT exposed — they are only visibl
 }
 ```
 
----
-
-## discuss_end
+### op: end
 
 Finalize the discussion. Normal end includes an optional synthesis. Force-end requires a reason string (used for timeouts or errors).
 
-### Input Schema
+#### Input Schema
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -357,7 +384,7 @@ Finalize the discussion. Normal end includes an optional synthesis. Force-end re
 | `force` | boolean | No | Force-end during active speech (default: false) |
 | `reason` | string | Conditional | Required when `force=true` |
 
-### Output (JSON)
+#### Output (JSON)
 
 ```json
 {
@@ -368,13 +395,11 @@ Finalize the discussion. Normal end includes an optional synthesis. Force-end re
 }
 ```
 
----
-
-## discuss_epoch_summary
+### op: epoch_summary
 
 Append an epoch summary to the transcript. Teamlead-only. One summary per epoch, must match current epoch number.
 
-### Input Schema
+#### Input Schema
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -382,7 +407,7 @@ Append an epoch summary to the transcript. Teamlead-only. One summary per epoch,
 | `epoch` | integer | Yes | Epoch number (must match current epoch, min: 1) |
 | `summary` | string | Yes | Summary of the completed epoch |
 
-### Output (JSON)
+#### Output (JSON)
 
 ```json
 {
@@ -390,6 +415,64 @@ Append an epoch summary to the transcript. Teamlead-only. One summary per epoch,
   "epoch": 1
 }
 ```
+
+---
+
+## discuss_persona_seed
+
+Generate diverse persona position assignments using k-DPP (Determinantal Point Process) sampling on controversy axes. Returns deterministic assignments with seed for reproducibility.
+
+### Algorithm
+
+1. Builds a Gaussian RBF kernel over the Cartesian product of all axis positions: `L[i][j] = exp(-hamming²/(2σ²))`, σ = √(dims/2)
+2. Samples k items exactly from the k-DPP distribution (Kulesza & Taskar 2012, Algorithm 1): ESP backward sampling + Gram-Schmidt sequential sampling
+3. Assigns tone independently via seeded shuffle of 8 TONE_AXES combinations: `{ formality, evidence, pace }`
+4. When n > pool_size (and pool > 1): additional slots reuse existing assignments with `shared_position_with` index
+
+Mathematical guarantee: identical position combinations have selection probability = 0 (determinant property).
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `controversy_axes` | array | Yes | Axes with positions. Axis names must be unique; positions within each axis must be unique. |
+| `controversy_axes[].axis` | string | Yes | Axis name (e.g., "regulation", "stance") |
+| `controversy_axes[].positions` | string[] | Yes | 1–10 positions for this axis |
+| `n` | integer | Yes | Number of persona assignments (1–8) |
+| `seed` | integer \| null | No | RNG seed for reproducibility. `null` = random (default) |
+
+**Pool size constraint**: The Cartesian product of all axis sizes must not exceed 256. Recommended: keep product ≤ 81 (e.g., 3 axes × 3 positions, or 4 axes × 2-3 positions).
+
+### Output (JSON)
+
+```json
+{
+  "seed_used": 42,
+  "sigma_used": 1.4142135623730951,
+  "pool_size": 8,
+  "assignments": [
+    {
+      "positions": { "stance": "pro", "regulation": "market-driven" },
+      "tone": { "formality": "formal", "evidence": "data-driven", "pace": "concise" }
+    },
+    {
+      "positions": { "stance": "con", "regulation": "market-driven" },
+      "tone": { "formality": "conversational", "evidence": "narrative", "pace": "detailed" },
+      "shared_position_with": 1
+    }
+  ]
+}
+```
+
+`seed_used` can be passed back as `seed` to reproduce identical assignments.
+`shared_position_with` is a 0-based index into `assignments` - present only when n > pool_size.
+
+### Error Responses
+
+| Error | Cause | `detail` fields |
+|---|---|---|
+| `pool_too_large` | Cartesian product > 256 | `actual_pool_size`, `max_pool_size: 256`, `hint: "Reduce axes or positions"` |
+| `pool_degenerate` | pool_size = 1 and n > 1 | `pool_size: 1`, `requested_n`, `hint: "All axes have single position"` |
 
 ---
 
@@ -405,7 +488,7 @@ The coupling is through the **agent protocol layer**, not the MCP servers themse
 |-----------|------|
 | `discuss-lead.md` | Spawns `persona-generator` agents (via Task tool) and `discussant` teammates for discussions |
 | `agents/codex-*.md` | Codex-delegated agents that can be spawned independently or within discuss workflows |
-| `hooks/detect-codex-agent.sh` | SubagentStart hook detects `codex-` prefix in agent names, injects delegation instructions to call `codex_session_create` |
+| `hooks/detect-codex-agent.sh` | SubagentStart hook detects `codex-` prefix in agent names, injects delegation instructions to call `codex({ op: "exec", ... })` |
 
 The discuss system itself does **not** spawn codex-prefixed agents. The coupling only exists when a user or external workflow spawns a codex-delegated agent that happens to run within a discuss context.
 
@@ -420,7 +503,7 @@ These namespaces do not overlap. Collision risk is between discuss sessions only
 
 ## Contract
 
-1. **dc never calls cx tools** — the discuss MCP server has no dependency on the codex MCP server
-2. **cx never reads dc state** — Codex sessions have no awareness of discuss sessions
-3. **Hook is the sole bridge** — `detect-codex-agent.sh` is the single point where a codex-delegated workflow and the Codex CLI connect
-4. **Modifying either server independently is safe** — as long as the hook contract (agent name prefix matching) is preserved
+1. **dc never calls cx tools** - the discuss MCP server has no dependency on the codex MCP server
+2. **cx never reads dc state** - Codex sessions have no awareness of discuss sessions
+3. **Hook is the sole bridge** - `detect-codex-agent.sh` is the single point where a codex-delegated workflow and the Codex CLI connect
+4. **Modifying either server independently is safe** - as long as the hook contract (agent name prefix matching) is preserved

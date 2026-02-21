@@ -25,4 +25,4 @@ From the current conversation, identify and include in your analysis:
 
 ## Error Policy
 
-If `agents/analyst.md` cannot be read, report the error to the user. Do not fall back to inline analysis — the agent protocol is a required dependency.
+If `agents/analyst.md` cannot be read, report the error to the user. Do not fall back to inline analysis - the agent protocol is a required dependency.

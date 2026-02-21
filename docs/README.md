@@ -7,14 +7,14 @@ A general-purpose Claude Code plugin that provides structured agents with a Code
 - **TypeScript MCP server** wrapping Codex CLI with 4 tools
 - **Agent auto-routing**: Hook + tools restriction + system prompt for triple-layer guarantee on `codex-*` prefix agents
 - **Session persistence**: Name-based session registry for multi-turn conversations (atomic writes)
-- **Skill commands**: `/coral:codex`, `/coral:architect`, `/coral:critic`, `/coral:analyze`, `/coral:ralph`, `/coral:codex-ralph`, `/coral:plan`, `/coral:coplan`, `/coral:init-project`
+- **Skill commands**: `/coral:codex`, `/coral:analyze`, `/coral:codex-analyze`, `/coral:plan`, `/coral:coplan`, `/coral:ralph`, `/coral:codex-ralph`, `/coral:init-project`, `/coral:discuss`, `/coral:statusline`
 - **Input validation**: Zod schema validation on all MCP tool inputs
 - **Process management**: Child process tracking, 10MB buffer limit, graceful shutdown
 
 ## Quick Start
 
 ```bash
-# Bundle is included in the repo — no build required
+# Bundle is included in the repo - no build required
 claude --plugin-dir /path/to/coral
 ```
 

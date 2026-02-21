@@ -1,6 +1,6 @@
 /**
- * Discuss session condition predicates — pure functions, zero I/O.
- * Used by discuss_wait to detect when to unblock and by auto-resolve to re-check inside lock.
+ * Discuss session condition predicates - pure functions, zero I/O.
+ * Used by discuss(op: "wait") to detect when to unblock and by auto-resolve to re-check inside lock.
  */
 
 import type { DiscussState } from './types.js';
@@ -28,10 +28,10 @@ export const speechDelivered = (s: DiscussState): boolean =>
   s.status === 'bidding' && s.last_speech_step === s.step - 1;
 
 /**
- * Agent has something to do right now — or session ended (wake up to exit loop).
+ * Agent has something to do right now - or session ended (wake up to exit loop).
  *
  * current_bids[agent] === null means bid not yet submitted (resetBids sets all to null).
- * `ended` fires the predicate so agents blocked on discuss_wait("action_needed")
+ * `ended` fires the predicate so agents blocked on discuss(op: "wait", condition: "action_needed")
  * unblock immediately instead of burning 180s timeout.
  */
 export const actionNeeded = (agent: string) => (s: DiscussState): boolean =>

@@ -237,8 +237,8 @@ func (s *Server) GetUser(id string) *User {
 
 | Doc | Content | Priority | Condition |
 |-----|---------|----------|-----------|
-| `docs/api-reference.md` | Endpoint catalog with methods, paths, request/response schemas, auth requirements, error codes | Strong | Any project with HTTP endpoints |
-| `docs/database-schema.md` | Table/collection definitions, relationships, indexes, migration history, seed data | Conditional | ORM, migration tool, or DB driver detected |
+| `docs/api-reference.md` | API design conventions, auth strategy, error response format, versioning policy | Strong | Any project with HTTP endpoints |
+| `docs/database-schema.md` | Data model architecture, relationship patterns, migration strategy, naming conventions | Conditional | ORM, migration tool, or DB driver detected |
 
 **Architecture Sections**: Backend projects should include these in `docs/ARCHITECTURE.md`:
 - Request lifecycle (middleware chain, auth, validation, handler, response)

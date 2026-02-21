@@ -6,7 +6,7 @@ argument-hint: "[prompt]"
 
 Route the user's request to Codex. Call MCP tools directly for most tasks; spawn parallel subagents only for review.
 
-**Do NOT output any text before the tool call.** All steps below are internal routing logic — execute them silently. The user should only see the final result from "Presenting the result."
+**Do NOT output any text before the tool call.** All steps below are internal routing logic - execute them silently. The user should only see the final result from "Presenting the result."
 
 ## 1. Session commands
 
@@ -14,23 +14,23 @@ If the argument starts with `session`, handle directly (no agent spawn needed):
 
 | Command | Action | MCP Tool |
 |---------|--------|----------|
-| `session create <name> <prompt>` | Create a named session | `codex_session_create(name, prompt)` |
-| `session send <name> <prompt>` | Continue an existing session | `codex_session_send(session, prompt)` |
-| `session list` | List all sessions | `codex_session_list()` |
-| `session fork <name> [new-name]` | Fork a session | `codex_session_fork(session, name?)` |
+| `session create <name> <prompt>` | Create a named session | `codex({ op: "exec", name, prompt })` |
+| `session send <name> <prompt>` | Continue an existing session | `codex({ op: "exec", session: name, prompt })` |
+| `session list` | List all sessions | `codex({ op: "list" })` |
+| `session fork <name> [new-name]` | Fork a session | `codex({ op: "fork", session: name, name: newName })` |
 
 Present session results:
 - `list`: Show a table of sessions (name, model, last used)
-- `create`, `send`, `fork`: Show `response` as main content. If `errors` array present, append error notice. Never show `thread_id`, `model`, `duration_ms` unless asked.
+- `exec`, `fork`: Show `response` as main content. If `errors` array present, append error notice. Never show `thread_id`, `model`, `duration_ms` unless asked.
 
 If the argument does NOT start with `session`, continue to step 2.
 
 ## 2. Session continuity
 
 Check the conversation history for a previous `/codex` call that returned a `thread_id`:
-- **Previous thread_id exists** → use `codex_session_send` for continuity
-- **No previous thread_id** → use `codex_session_create`
-- **User says "new" or explicitly wants a fresh start** → use `codex_session_create`
+- **Previous thread_id exists** → use `codex({ op: "exec", session, prompt })` for continuity
+- **No previous thread_id** → use `codex({ op: "exec", prompt })`
+- **User says "new" or explicitly wants a fresh start** → use `codex({ op: "exec", prompt })`
 
 ## 3. Analyze intent
 
@@ -51,13 +51,13 @@ Collect relevant context from the current conversation:
 
 ## Sandbox bypass
 
-When operating in bypass permissions mode, pass `dangerously_bypass_sandbox: true` to all `codex_session_create`, `codex_session_send`, and `codex_session_fork` calls. Otherwise, omit the field.
+Pass `bypass: true` only when the user explicitly requests bypass mode. Otherwise, omit the field.
 
 ## 5a. Review (parallel subagent spawn)
 
 Spawn TWO Task agents in a SINGLE message (parallel):
-- `subagent_type: coral:codex-proxy` with `Role: architect` in the prompt — architecture/design perspective
-- `subagent_type: coral:codex-proxy` with `Role: critic` in the prompt — critical review/flaw finding
+- `subagent_type: coral:codex-proxy` with `Role: architect` in the prompt - architecture/design perspective
+- `subagent_type: coral:codex-proxy` with `Role: critic` in the prompt - critical review/flaw finding
 
 Provide each with the gathered context, working directory, and their respective `Role:` prefix.
 
@@ -68,16 +68,16 @@ After both return, **synthesize**:
 
 ## 5b. Specialized intent (analyst, ralph)
 
-Read the unified agent protocol (`agents/codex-proxy.md`) for the prompt template. Use `Role: analyst` for investigation/debug intents and `Role: ralph` for persistent execution intents. Call `codex_session_create` or `codex_session_send` directly, following the protocol's structure for that role. Pass `working_directory` and appropriate `reasoning_effort`.
+Read the unified agent protocol (`agents/codex-proxy.md`) for the prompt template. Use `Role: analyst` for investigation/debug intents and `Role: ralph` for persistent execution intents. **You** call `codex({ op: "exec", ... })` directly - do NOT spawn a codex-proxy agent. Follow the protocol's structure for that role. Pass `working_directory` and appropriate `reasoning_effort`.
 
 ## 5c. General request
 
-Call MCP tool directly. Pass the user's prompt **verbatim** — do not rephrase, enrich, or add information.
+Call MCP tool directly. Pass the user's prompt **verbatim** - do not rephrase, enrich, or add information.
 
 | Condition | Action |
 |-----------|--------|
-| No previous thread_id | `codex_session_create(prompt: user's verbatim prompt, working_directory: cwd)` |
-| Previous thread_id exists | `codex_session_send(session: session_name, prompt: user's verbatim prompt, working_directory: cwd)` |
+| No previous thread_id | `codex({ op: "exec", prompt: user's verbatim prompt, working_directory: cwd })` |
+| Previous thread_id exists | `codex({ op: "exec", session: session_name, prompt: user's verbatim prompt, working_directory: cwd })` |
 
 ## Presenting the result
 

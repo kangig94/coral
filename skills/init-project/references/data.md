@@ -92,7 +92,7 @@
 
 | Doc | Content | Priority | Condition |
 |-----|---------|----------|-----------|
-| `docs/data-dictionary.md` | Source systems, table/column definitions, types, business meaning, ownership | Strong | Any data project |
+| `docs/data-dictionary.md` | Data model relationships, naming conventions, ownership, business meaning per domain | Strong | Any data project |
 
 **Architecture Sections**: Data projects should include these in `docs/ARCHITECTURE.md`:
 - Pipeline DAG structure and scheduling

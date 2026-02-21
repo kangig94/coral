@@ -11,13 +11,13 @@ Environment variables, config files, and the plugin manifest.
 | `CORAL_DISCUSS_TTL_DAYS` | `30` | Days before completed discuss sessions are auto-pruned |
 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(unset)_ | Required for `/coral:discuss`. Set to `1`. |
 
-### Usage — Shell
+### Usage - Shell
 
 ```bash
 export CORAL_CODEX_MODEL=gpt-5.3-codex
 ```
 
-### Usage — .claude/settings.json
+### Usage - .claude/settings.json
 
 Alternatively, set environment variables in `.claude/settings.json` (project-level or global). This persists across sessions without shell exports.
 
@@ -31,7 +31,7 @@ Alternatively, set environment variables in `.claude/settings.json` (project-lev
 
 ## Config Files
 
-### .claude-plugin/plugin.json — Plugin Manifest
+### .claude-plugin/plugin.json - Plugin Manifest
 
 Metadata for Claude Code to recognize the plugin.
 
@@ -44,53 +44,20 @@ Metadata for Claude Code to recognize the plugin.
 
 Version is managed in `package.json` (single source of truth) and synced to `plugin.json` and `marketplace.json` automatically during build.
 
-### .mcp.json — MCP Server Registration
+### .mcp.json - MCP Server Registration
 
 Registers both MCP servers with Claude Code.
 
-```json
-{
-  "mcpServers": {
-    "cx": {
-      "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-codex.cjs"]
-    },
-    "dc": {
-      "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-discuss.cjs"]
-    }
-  }
-}
-```
-
-| Field | Description |
-|---|---|
-| `cx` | Codex MCP server (tool prefix: `mcp__plugin_coral_cx__*`) — Codex CLI session tools |
-| `dc` | Discuss MCP server (tool prefix: `mcp__plugin_coral_dc__*`) — discussion session tools |
-| `command` | Execution command |
-| `args` | Execution arguments (`CLAUDE_PLUGIN_ROOT` is auto-replaced) |
-
-### .claude/coral/sessions/<project-hash>/<session-name>.json — Session Files
+### .claude/coral/sessions/<project-hash>/<session-name>.json - Session Files
 
 Runtime-managed per-session storage files.
-
-```json
-{
-  "name": "session-name",
-  "codexThreadId": "thread-uuid-from-codex",
-  "model": "gpt-5.3-codex",
-  "createdAt": "2026-02-18T08:30:00.000Z",
-  "lastUsedAt": "2026-02-18T09:15:00.000Z",
-  "workingDirectory": "/home/user/project"
-}
-```
 
 **Location**: `~/.claude/coral/sessions/<project-hash>/<session-name>.json`
 **Project hash**: `sha256(resolve(workingDirectory)).slice(0, 12)`
 **Creation**: Auto-created by `SessionManager` (including project hash directory)
 **Updates**: Written to disk immediately on session register, use, or delete (atomic write via `*.tmp` + rename)
 
-### hooks/hooks.json — Hook Configuration
+### hooks/hooks.json - Hook Configuration
 
 Two hooks are configured:
 
@@ -124,16 +91,9 @@ See [Hooks documentation](./hooks.md) for details.
 | Codex CLI v0.101+ | OpenAI model execution | `npm install -g @openai/codex` |
 | Node.js 18+ | Runtime | nvm, etc. |
 
-### {project}/.claude/coral/discuss/ — Discuss Session Storage
+### {project}/.claude/coral/discuss/ - Discuss Session Storage
 
 Runtime-managed discuss session directories. Created by the `dc` MCP server.
-
-```
-{project}/.claude/coral/discuss/
-└── 260221-1430-a1b2-ai-ethics/
-    ├── state.json          # Session state (atomic writes via .tmp + rename)
-    └── transcript.md       # Human-readable transcript (incremental append)
-```
 
 **Location**: `{project}/.claude/coral/discuss/{session_dir}/`
 **Session ID format**: `yymmdd-HHmm-xxxx` (compact timestamp + 4-char random suffix)

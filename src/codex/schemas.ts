@@ -1,7 +1,7 @@
 /**
  * Zod schemas for MCP tool input validation.
  *
- * Each schema validates and types the arguments for one Coral MCP tool.
+ * One unified `codex` tool drives all session operations via an `op` discriminator.
  */
 
 import { z } from 'zod';
@@ -26,29 +26,24 @@ const reasoningEffortSchema = z
 const backgroundSchema = z.boolean().default(false);
 const bypassSandboxSchema = z.boolean().default(false);
 
-export const codexSessionCreateSchema = z.object({
+const execShape = z.object({
+  op: z.literal('exec'),
+  prompt: promptSchema,
+  session: sessionRefSchema.optional(),
   name: sessionNameSchema.optional(),
-  prompt: promptSchema,
   model: modelSchema,
   working_directory: cwdSchema,
   reasoning_effort: reasoningEffortSchema,
   background: backgroundSchema,
-  dangerously_bypass_sandbox: bypassSandboxSchema,
+  bypass: bypassSandboxSchema,
 });
 
-export const codexSessionSendSchema = z.object({
-  session: sessionRefSchema,
-  prompt: promptSchema,
-  model: modelSchema,
-  working_directory: cwdSchema,
-  reasoning_effort: reasoningEffortSchema,
-  background: backgroundSchema,
-  dangerously_bypass_sandbox: bypassSandboxSchema,
-});
+const listShape = z.object({
+  op: z.literal('list'),
+}).strict();
 
-export const codexSessionListSchema = z.object({}).strict();
-
-export const codexSessionForkSchema = z.object({
+const forkShape = z.object({
+  op: z.literal('fork'),
   session: sessionRefSchema,
   name: sessionNameSchema.optional(),
   prompt: z.string().optional(),
@@ -56,15 +51,23 @@ export const codexSessionForkSchema = z.object({
   working_directory: cwdSchema,
   reasoning_effort: reasoningEffortSchema,
   background: backgroundSchema,
-  dangerously_bypass_sandbox: bypassSandboxSchema,
+  bypass: bypassSandboxSchema,
 });
 
-export const codexSessionAbortSchema = z.object({
+const abortShape = z.object({
+  op: z.literal('abort'),
   session: sessionRefSchema,
 });
 
-export type CodexSessionCreateInput = z.infer<typeof codexSessionCreateSchema>;
-export type CodexSessionSendInput = z.infer<typeof codexSessionSendSchema>;
-export type CodexSessionListInput = z.infer<typeof codexSessionListSchema>;
-export type CodexSessionForkInput = z.infer<typeof codexSessionForkSchema>;
-export type CodexSessionAbortInput = z.infer<typeof codexSessionAbortSchema>;
+export const codexOpSchema = z.discriminatedUnion('op', [
+  execShape,
+  listShape,
+  forkShape,
+  abortShape,
+]);
+
+export type CodexOpInput = z.infer<typeof codexOpSchema>;
+export type CodexSessionCreateInput = Omit<Extract<CodexOpInput, { op: 'exec' }>, 'op' | 'session'>;
+export type CodexSessionSendInput = Omit<Extract<CodexOpInput, { op: 'exec' }>, 'op' | 'name'> & { session: string };
+export type CodexSessionForkInput = Omit<Extract<CodexOpInput, { op: 'fork' }>, 'op'>;
+export type CodexSessionAbortInput = Omit<Extract<CodexOpInput, { op: 'abort' }>, 'op'>;

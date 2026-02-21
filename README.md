@@ -21,7 +21,17 @@ Set up the coral HUD statusline for real-time session info:
 /coral:statusline install
 ```
 
-Displays: `opus 4.6 │ 5m │ 5h:56% (3:12) wk:38% (5.2d) │ ctx:45%`
+Displays a two-line HUD:
+
+```
+opus 4.6      │ 5h:39% (1:23) wk:36% (5.2d) │ ctx:58% │ 50m │ coral:analyze    
+gpt-5.3-codex │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
+```
+
+- **Line 1 (always)**: model, Claude rate limits, context usage, session ID, last active skill
+- **Line 2 (optional)**: Codex model, Codex rate limits, spark limits - shown only when Codex is installed (`~/.codex/auth.json` exists) and opted in during install
+
+If Codex is detected during install, you'll be asked whether to display Codex usage. You can re-run install at any time to update the HUD or toggle the setting.
 
 To remove: `/coral:statusline uninstall`
 
@@ -58,16 +68,16 @@ Without this, Claude works generically. With this, it validates hooks, catches i
 **How to describe your project:**
 
 ```bash
-# existing project — just run it, Coral scans automatically
+# existing project - just run it, Coral scans automatically
 /coral:init-project
 
-# tech stack hint — helps when source files are sparse
+# tech stack hint - helps when source files are sparse
 /coral:init-project "React + FastAPI"
 
-# full description — best for new or complex projects
+# full description - best for new or complex projects
 /coral:init-project "multi-tenant SaaS REST API with Go, must be serverless"
 
-# with reference material — Coral reads these before planning
+# with reference material - Coral reads these before planning
 /coral:init-project "CLI tool like ref/existing-cli, see docs/spec.md"
 ```
 
@@ -86,7 +96,7 @@ Consecutive `/coral:codex` calls continue the same session. Say "new" to start f
 
 ### Discuss
 
-Coral's moderated multi-agent discussion system. Multiple AI agents with distinct personas debate a topic through structured turn-taking — all coordinated by a dedicated MCP server that enforces fair participation, prevents deadlocks, and ensures clean termination.
+Coral's moderated multi-agent discussion system. Multiple AI agents with distinct personas debate a topic through structured turn-taking - all coordinated by a dedicated MCP server that enforces fair participation, prevents deadlocks, and ensures clean termination.
 
 ```
 /coral:discuss AI ethics in healthcare
@@ -96,17 +106,17 @@ Coral's moderated multi-agent discussion system. Multiple AI agents with distinc
 
 **How it works:**
 
-1. **Persona generation** — Coral analyzes the topic and spawns 3-8 unique personas in parallel (e.g., bioethicist, patient advocate, AI researcher, hospital administrator). Each has distinct expertise, communication style, and perspective biases.
+1. **Persona generation** - Coral analyzes the topic and spawns 3-8 unique personas in parallel (e.g., bioethicist, patient advocate, AI researcher, hospital administrator). Each has distinct expertise, communication style, and perspective biases.
 
-2. **Bidding for the floor** — Each round, agents bid 0-100 on how strongly they want to speak. The highest bidder above the threshold wins. This prevents any single agent from monopolizing and surfaces the most urgent arguments first.
+2. **Bidding for the floor** - Each round, agents bid 0-100 on how strongly they want to speak. The highest bidder above the threshold wins. This prevents any single agent from monopolizing and surfaces the most urgent arguments first.
 
-3. **Evidence-backed speeches** — Winners research via web search before speaking. The server enforces that all agents read the latest transcript before bidding — no uninformed participation allowed.
+3. **Evidence-backed speeches** - Winners research via web search before speaking. The server enforces that all agents read the latest transcript before bidding - no uninformed participation allowed.
 
-4. **Multi-epoch continuation** — When all speaking quotas and fallback turns are exhausted, the server automatically transitions to a new epoch with fresh quotas (up to `CORAL_DISCUSS_MAX_EPOCHS`, default: 2). No termination vote — continuation is structural, not negotiated.
+4. **Multi-epoch continuation** - When all speaking quotas and fallback turns are exhausted, the server automatically transitions to a new epoch with fresh quotas (up to `CORAL_DISCUSS_MAX_EPOCHS`, default: 2). No termination vote - continuation is structural, not negotiated.
 
-5. **Structured synthesis** — When the discussion concludes, the moderator generates a structured summary: key arguments, turning points, points of consensus, and unresolved questions.
+5. **Structured synthesis** - When the discussion concludes, the moderator generates a structured summary: key arguments, turning points, points of consensus, and unresolved questions.
 
-**Debate mode** — Topics with adversarial framing (pro/con, vs, should/should not) automatically activate debate mode. Agents declare stances, and if the sides are imbalanced (e.g., 5 pro vs 1 con), Coral assigns a devil's advocate from the majority to argue the opposing position.
+**Debate mode** - Topics with adversarial framing (pro/con, vs, should/should not) automatically activate debate mode. Agents declare stances, and if the sides are imbalanced (e.g., 5 pro vs 1 con), Coral assigns a devil's advocate from the majority to argue the opposing position.
 
 **Architecture:**
 
@@ -115,23 +125,23 @@ discuss-lead (moderator)
   ├── persona-generator ×N (parallel)
   ├── discuss MCP server (state, enforcement, transcript)
   └── dc-{agent} ×N (discussant teammates)
-        └── discuss_wait → bid/speak loop
+        └── `discuss({ op: "wait", ... })` → bid/speak loop
 ```
 
-The MCP server owns all state transitions. Agents cannot speak out of turn or bid without reading context. Bid scores are sealed — never returned in any API response. Transcripts are saved to `.claude/coral/discuss/` as both structured JSON and readable Markdown.
+The MCP server owns all state transitions. Agents cannot speak out of turn or bid without reading context. Bid scores are sealed - never returned in any API response. Transcripts are saved to `.claude/coral/discuss/` as both structured JSON and readable Markdown.
 
 ### Skills
 
 | Skill | Description | Example |
 |---|---|---|
-| `/coral:architect` | Architecture review (Claude) | `review the architecture of this module` |
-| `/coral:critic` | Plan/code critique (Claude) | `review this plan` |
 | `/coral:analyze` | Deep analysis (Claude) | `investigate the root cause of this error` |
 | `/coral:codex-analyze` | Deep analysis (Codex + Claude synthesis) | `investigate why the session lookup is slow` |
 | `/coral:plan` | Planning with architect/critic review | `add retry logic to the API client` |
 | `/coral:coplan` | Cross-model planning (Codex reviews) | `redesign the session management system` |
 | `/coral:ralph` | Persistent execution loop (sonnet) | `implement the caching layer` |
 | `/coral:codex-ralph` | Persistent execution via Codex (sonnet) | `implement the caching layer` |
+| `/coral:code-simplifier` | Simplify and refine code for clarity | `simplify the output parser` |
+| `/coral:debug` | Bug diagnosis, planning, and fix execution | `why does session lookup return null?` |
 | `/coral:init-project` | Project initialization orchestrator | `"React + FastAPI project"` |
 | `/coral:discuss` | Moderated multi-agent discussion | `AI ethics in healthcare` |
 | `/coral:statusline` | HUD statusline setup | `install` |
@@ -192,13 +202,13 @@ Merge policy:
 
 ### Codex-bound Agent
 
-Create `agents/codex-<name>.md` — it automatically becomes a Codex delegation agent:
+Create `agents/codex-<name>.md` - it automatically becomes a Codex delegation agent:
 
 ```yaml
 ---
 name: codex-<name>
 description: <description>
-tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
+tools: mcp__plugin_coral_cx__codex
 ---
 ```
 
@@ -219,14 +229,14 @@ disallowedTools: Write, Edit
 
 Detailed technical documentation is available in the `docs/` directory:
 
-- [Architecture](docs/architecture.md) — Architecture and data flow
-- [MCP Tools](docs/mcp-tools.md) — Input/output specs for all MCP tools (Codex + Discuss)
-- [Core Modules](docs/core-modules.md) — TypeScript module details
-- [Agents](docs/agents.md) — Agent definitions and routing guarantees
-- [Hooks](docs/hooks.md) — SubagentStart hook behavior
-- [Skills](docs/skills.md) — Slash command usage
-- [Build System](docs/build-system.md) — Build pipeline
-- [Configuration](docs/configuration.md) — Environment variables and config files
+- [Architecture](docs/architecture.md) - Architecture and data flow
+- [MCP Tools](docs/mcp-tools.md) - Input/output specs for all MCP tools (Codex + Discuss)
+- [Core Modules](docs/core-modules.md) - TypeScript module details
+- [Agents](docs/agents.md) - Agent definitions and routing guarantees
+- [Hooks](docs/hooks.md) - SubagentStart hook behavior
+- [Skills](docs/skills.md) - Slash command usage
+- [Build System](docs/build-system.md) - Build pipeline
+- [Configuration](docs/configuration.md) - Environment variables and config files
 
 ## Requirements
 

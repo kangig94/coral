@@ -1,7 +1,7 @@
 ---
 name: discuss
 description: Moderated multi-agent discussion via Agent Teams
-argument-hint: "[topic]"
+argument-hint: "[topic] [--hints axis1:pos1,pos2 axis2:pos1,pos2]"
 ---
 
 # Moderated Multi-Agent Discussion
@@ -25,7 +25,7 @@ Before any other action, verify the Agent Teams environment:
    }
    ```
 
-   Then STOP — do not proceed with discussion setup.
+   Then STOP - do not proceed with discussion setup.
 
 ## Execution
 
@@ -38,18 +38,19 @@ Before any other action, verify the Agent Teams environment:
 2. **Load protocol**: Read `agents/discuss-lead.md` to load the full discussion lead protocol
 3. **Analyze topic**: Determine team composition (roles, debate mode detection)
 4. **Generate personas**: Spawn `persona-generator` agents in parallel (one per role)
-5. **Initialize**: Call `discuss_create` with generated personas → get `session_id`
+5. **Initialize**: Call `discuss({ op: "create", ... })` with generated personas → get `session_id`
 6. **Spawn teammates**: Create Agent Team `coral-dc-{session_id}`, spawn `discussant` teammates
-7. **Run discussion**: Execute bidding → `discuss_wait(all_bids)` auto-resolve → speak loop until termination
-8. **Synthesize**: Call `discuss_end`, read full transcript, present structured summary
+7. **Run discussion**: Execute bidding → `discuss(op: "wait", condition: "all_bids")` auto-resolve → speak loop until termination
+8. **Synthesize**: Call `discuss({ op: "end", ... })`, read full transcript, present structured summary
 
 ## Context Enhancement
 
 From the user's request, identify:
-- Discussion topic (required — gather interactively if not provided)
+- Discussion topic (required - gather interactively if not provided)
 - Preferred team size (default: 4–6 agents)
 - Whether it's a pro/con debate (triggers debate mode)
 - Any specific perspectives or roles requested
+- Any controversy hints provided via `--hints` (pre-specified axes to include in Phase 1 analysis)
 
 ## Error Policy
 
