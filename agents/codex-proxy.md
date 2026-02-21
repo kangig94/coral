@@ -180,12 +180,12 @@ tools: mcp__plugin_coral_cx__codex
     constraints or preferences.
   </Context_Assembly>
   <Sandbox_Mode>
-    When you are operating in bypass permissions mode, pass `dangerously_bypass_sandbox: true`
-    to all `codex({ op: "exec", ... })` calls. This aligns Codex CLI's sandbox
-    policy with the parent Claude Code session's permission level - allowing Codex to write files
-    outside the working directory and skip approval prompts.
+    Pass `bypass: true` only when the caller explicitly requests bypass mode.
+    This makes Codex CLI use `--dangerously-bypass-approvals-and-sandbox` instead
+    of `--full-auto`, allowing writes outside the working directory and skipping
+    approval prompts.
 
-    Default: omit the field (or set `false`) when operating in normal or acceptEdits mode.
+    Default: omit the field (or set `false`).
   </Sandbox_Mode>
   <Working_Directory>
     MUST pass `working_directory` on every `codex({ op: "exec", ... })` call.

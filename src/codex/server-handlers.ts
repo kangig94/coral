@@ -46,7 +46,7 @@ export const tools = [
         working_directory: { type: 'string', description: 'Working directory for Codex execution' },
         reasoning_effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh'], description: 'Model reasoning effort level' },
         background: { type: 'boolean', description: 'Run in background, return progress_id immediately.', default: false },
-        dangerously_bypass_sandbox: { type: 'boolean', description: 'Bypass Codex sandbox and approval checks. Only set when permitted.', default: false },
+        bypass: { type: 'boolean', description: 'Bypass Codex sandbox and approval checks. Only set when the user explicitly requests bypass mode.', default: false },
       },
       required: ['op'],
     },
@@ -156,7 +156,7 @@ export async function handleSessionCreate(input: CodexSessionCreateInput, mgr: S
   const sessionName = input.name ?? `session-${Date.now()}`;
   const controller = registerExecution(sessionName);
   try {
-    const result = await executeOneShot(input.prompt, input.model, input.working_directory, input.reasoning_effort, input.dangerously_bypass_sandbox, onEvent, controller.signal);
+    const result = await executeOneShot(input.prompt, input.model, input.working_directory, input.reasoning_effort, input.bypass, onEvent, controller.signal);
 
     if (!result.threadId) {
       return jsonResult({
@@ -194,7 +194,7 @@ export async function handleSessionSend(input: CodexSessionSendInput, mgr: Sessi
 
   const controller = registerExecution(entry.name);
   try {
-    const result = await executeResume(entry.codexThreadId, input.prompt, input.model, input.working_directory ?? entry.workingDirectory, input.reasoning_effort, input.dangerously_bypass_sandbox, onEvent, controller.signal);
+    const result = await executeResume(entry.codexThreadId, input.prompt, input.model, input.working_directory ?? entry.workingDirectory, input.reasoning_effort, input.bypass, onEvent, controller.signal);
     mgr.updateSession(entry.name, input.model ? { model: input.model } : undefined);
 
     return jsonResult({
@@ -236,7 +236,7 @@ export async function handleSessionFork(input: CodexSessionForkInput, mgr: Sessi
   const forkName = input.name ?? entry.name;
   const controller = registerExecution(forkName);
   try {
-    const result = await executeFork(entry.codexThreadId, input.prompt, input.model, cwd, input.reasoning_effort, input.dangerously_bypass_sandbox, onEvent, controller.signal);
+    const result = await executeFork(entry.codexThreadId, input.prompt, input.model, cwd, input.reasoning_effort, input.bypass, onEvent, controller.signal);
 
     if (input.name && result.threadId) {
       mgr.register(input.name, result.threadId, result.model, cwd ?? process.cwd());

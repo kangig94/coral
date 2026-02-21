@@ -226,7 +226,7 @@ describe('makeEventCallback', () => {
 describe('handleSessionCreate', () => {
   it('success with threadId → registers session and returns response + session_name', async () => {
     vi.mocked(executeOneShot).mockResolvedValue(makeExecResult());
-    const result = await handleSessionCreate({ prompt: 'hi', name: 'my-session', background: false, dangerously_bypass_sandbox: false }, mgr);
+    const result = await handleSessionCreate({ prompt: 'hi', name: 'my-session', background: false, bypass: false }, mgr);
     expect(result.isError).toBe(false);
     const data = JSON.parse(result.content[0].text);
     expect(data.response).toBe('test response');
@@ -237,7 +237,7 @@ describe('handleSessionCreate', () => {
 
   it('success without threadId → returns notice and does NOT register', async () => {
     vi.mocked(executeOneShot).mockResolvedValue(makeExecResult({ threadId: null }));
-    const result = await handleSessionCreate({ prompt: 'hi', name: 'no-thread', background: false, dangerously_bypass_sandbox: false }, mgr);
+    const result = await handleSessionCreate({ prompt: 'hi', name: 'no-thread', background: false, bypass: false }, mgr);
     const data = JSON.parse(result.content[0].text);
     expect(data.notice).toContain('No thread ID');
     expect(mgr.get('no-thread')).toBeNull();
@@ -245,7 +245,7 @@ describe('handleSessionCreate', () => {
 
   it('includes errors and warnings in response via resultExtras', async () => {
     vi.mocked(executeOneShot).mockResolvedValue(makeExecResult({ exitCode: 1, errors: ['err'], warnings: ['warn'] }));
-    const result = await handleSessionCreate({ prompt: 'hi', name: 'test', background: false, dangerously_bypass_sandbox: false }, mgr);
+    const result = await handleSessionCreate({ prompt: 'hi', name: 'test', background: false, bypass: false }, mgr);
     const data = JSON.parse(result.content[0].text);
     expect(data.exit_code).toBe(1);
     expect(data.errors).toEqual(['err']);
@@ -254,7 +254,7 @@ describe('handleSessionCreate', () => {
 
   it('uses the provided name (dispatcher owns generation)', async () => {
     vi.mocked(executeOneShot).mockResolvedValue(makeExecResult());
-    const result = await handleSessionCreate({ prompt: 'hi', name: 'explicit-name', background: false, dangerously_bypass_sandbox: false }, mgr);
+    const result = await handleSessionCreate({ prompt: 'hi', name: 'explicit-name', background: false, bypass: false }, mgr);
     const data = JSON.parse(result.content[0].text);
     expect(data.session_name).toBe('explicit-name');
   });
@@ -269,7 +269,7 @@ describe('handleSessionSend', () => {
 
   it('success → returns response and calls updateSession', async () => {
     vi.mocked(executeResume).mockResolvedValue(makeExecResult({ threadId: 'thread-001' }));
-    const result = await handleSessionSend({ session: 'test-session', prompt: 'follow up', background: false, dangerously_bypass_sandbox: false }, mgr);
+    const result = await handleSessionSend({ session: 'test-session', prompt: 'follow up', background: false, bypass: false }, mgr);
     expect(result.isError).toBe(false);
     const data = JSON.parse(result.content[0].text);
     expect(data.response).toBe('test response');
@@ -277,20 +277,20 @@ describe('handleSessionSend', () => {
   });
 
   it('session not found → isError: true (internal handler guard)', async () => {
-    const result = await handleSessionSend({ session: 'nonexistent', prompt: 'hi', background: false, dangerously_bypass_sandbox: false }, mgr);
+    const result = await handleSessionSend({ session: 'nonexistent', prompt: 'hi', background: false, bypass: false }, mgr);
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('nonexistent');
   });
 
   it('passes entry codexThreadId and workingDirectory to executeResume', async () => {
     vi.mocked(executeResume).mockResolvedValue(makeExecResult());
-    await handleSessionSend({ session: 'test-session', prompt: 'hi', background: false, dangerously_bypass_sandbox: false }, mgr);
+    await handleSessionSend({ session: 'test-session', prompt: 'hi', background: false, bypass: false }, mgr);
     expect(executeResume).toHaveBeenCalledWith('thread-001', 'hi', undefined, '/workspace', undefined, false, undefined, undefined);
   });
 
-  it('threads dangerously_bypass_sandbox=true to executeResume', async () => {
+  it('threads bypass=true to executeResume', async () => {
     vi.mocked(executeResume).mockResolvedValue(makeExecResult());
-    await handleSessionSend({ session: 'test-session', prompt: 'hi', background: false, dangerously_bypass_sandbox: true }, mgr);
+    await handleSessionSend({ session: 'test-session', prompt: 'hi', background: false, bypass: true }, mgr);
     expect(executeResume).toHaveBeenCalledWith('thread-001', 'hi', undefined, '/workspace', undefined, true, undefined, undefined);
   });
 });
@@ -345,7 +345,7 @@ describe('handleSessionFork', () => {
 
   it('success with name + threadId → registers new session, includes forked_from', async () => {
     vi.mocked(executeFork).mockResolvedValue(makeExecResult({ threadId: 'thread-fork' }));
-    const result = await handleSessionFork({ session: 'base-session', name: 'forked', background: false, dangerously_bypass_sandbox: false }, mgr);
+    const result = await handleSessionFork({ session: 'base-session', name: 'forked', background: false, bypass: false }, mgr);
     const data = JSON.parse(result.content[0].text);
     expect(data.forked_from).toBe('thread-base');
     expect(data.session_name).toBe('forked');
@@ -354,7 +354,7 @@ describe('handleSessionFork', () => {
 
   it('success without name → does not register, no session_name in response', async () => {
     vi.mocked(executeFork).mockResolvedValue(makeExecResult({ threadId: 'thread-fork' }));
-    const result = await handleSessionFork({ session: 'base-session', background: false, dangerously_bypass_sandbox: false }, mgr);
+    const result = await handleSessionFork({ session: 'base-session', background: false, bypass: false }, mgr);
     const data = JSON.parse(result.content[0].text);
     expect(data.session_name).toBeUndefined();
     expect(mgr.get('thread-fork')).toBeNull();
@@ -362,25 +362,25 @@ describe('handleSessionFork', () => {
 
   it('success with name but no threadId → does not register', async () => {
     vi.mocked(executeFork).mockResolvedValue(makeExecResult({ threadId: null }));
-    const result = await handleSessionFork({ session: 'base-session', name: 'forked', background: false, dangerously_bypass_sandbox: false }, mgr);
+    const result = await handleSessionFork({ session: 'base-session', name: 'forked', background: false, bypass: false }, mgr);
     expect(result.isError).toBe(false);
     expect(mgr.get('forked')).toBeNull();
   });
 
   it('session not found → isError: true (internal handler guard)', async () => {
-    const result = await handleSessionFork({ session: 'nonexistent', background: false, dangerously_bypass_sandbox: false }, mgr);
+    const result = await handleSessionFork({ session: 'nonexistent', background: false, bypass: false }, mgr);
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('nonexistent');
   });
 
   it('uses entry workingDirectory when input omits it', async () => {
     vi.mocked(executeFork).mockResolvedValue(makeExecResult());
-    await handleSessionFork({ session: 'base-session', background: false, dangerously_bypass_sandbox: false }, mgr);
+    await handleSessionFork({ session: 'base-session', background: false, bypass: false }, mgr);
     expect(executeFork).toHaveBeenCalledWith('thread-base', undefined, undefined, '/workspace', undefined, false, undefined, undefined);
   });
 
   it('foreground with non-existent session → isError via handler (not dispatcher)', async () => {
-    const result = await handleSessionFork({ session: 'ghost', background: false, dangerously_bypass_sandbox: false }, mgr);
+    const result = await handleSessionFork({ session: 'ghost', background: false, bypass: false }, mgr);
     expect(result.isError).toBe(true);
     expect(executeFork).not.toHaveBeenCalled();
   });

@@ -51,7 +51,7 @@ Collect relevant context from the current conversation:
 
 ## Sandbox bypass
 
-When operating in bypass permissions mode, pass `dangerously_bypass_sandbox: true` to all `codex({ op: "exec", ... })` and `codex({ op: "fork", ... })` calls. Otherwise, omit the field.
+Pass `bypass: true` only when the user explicitly requests bypass mode. Otherwise, omit the field.
 
 ## 5a. Review (parallel subagent spawn)
 

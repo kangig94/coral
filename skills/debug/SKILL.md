@@ -55,8 +55,7 @@ Strip the prefix before passing the prompt to the execution path.
 
 ## Sandbox bypass
 
-When operating in bypass permissions mode, pass `dangerously_bypass_sandbox: true` to all
-`codex({ op: "exec", ... })` calls. Otherwise, omit the field.
+Pass `bypass: true` only when the user explicitly requests bypass mode. Otherwise, omit the field.
 
 ## Error Policy
 

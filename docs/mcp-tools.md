@@ -35,7 +35,7 @@ Create a new Codex session when `session` is omitted (calls `executeOneShot()`) 
 | `working_directory` | string | No | Working directory |
 | `reasoning_effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
 | `background` | boolean | No | Run in background (default: `false`). Returns immediately with progress info. |
-| `dangerously_bypass_sandbox` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when Claude Code is in bypass permissions mode (⏵⏵). |
+| `bypass` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when the user explicitly requests bypass mode. |
 
 ### Output - Foreground (default)
 
@@ -84,7 +84,7 @@ Send a follow-up prompt to an existing session. Uses `codex exec resume THREAD_I
 | `working_directory` | string | No | Working directory |
 | `reasoning_effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
 | `background` | boolean | No | Run in background (default: `false`) |
-| `dangerously_bypass_sandbox` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when Claude Code is in bypass permissions mode (⏵⏵). |
+| `bypass` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when the user explicitly requests bypass mode. |
 
 ### Lookup Logic
 
@@ -158,7 +158,7 @@ Fork an existing session to continue the conversation in a new branch.
 | `working_directory` | string | No | Working directory |
 | `reasoning_effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
 | `background` | boolean | No | Run in background (default: `false`) |
-| `dangerously_bypass_sandbox` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when Claude Code is in bypass permissions mode (⏵⏵). |
+| `bypass` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when the user explicitly requests bypass mode. |
 
 ### Output (JSON)
 

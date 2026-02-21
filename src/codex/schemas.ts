@@ -35,7 +35,7 @@ const execShape = z.object({
   working_directory: cwdSchema,
   reasoning_effort: reasoningEffortSchema,
   background: backgroundSchema,
-  dangerously_bypass_sandbox: bypassSandboxSchema,
+  bypass: bypassSandboxSchema,
 });
 
 const listShape = z.object({
@@ -51,7 +51,7 @@ const forkShape = z.object({
   working_directory: cwdSchema,
   reasoning_effort: reasoningEffortSchema,
   background: backgroundSchema,
-  dangerously_bypass_sandbox: bypassSandboxSchema,
+  bypass: bypassSandboxSchema,
 });
 
 const abortShape = z.object({
