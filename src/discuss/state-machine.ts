@@ -51,6 +51,23 @@ export function parseDisplayName(persona: string, agentName: string): string {
   return match?.[1]?.trim() || agentName;
 }
 
+// ─── Agent name resolution ────────────────────────────────────────────────────
+
+/**
+ * Resolve teammate name → session agent name.
+ * Handles Agent Teams dedup suffix: "architect-1" → "architect".
+ * Schema-level transform already strips dc- prefix, so input is e.g. "architect-1".
+ * Returns null if no matching agent found.
+ */
+export function resolveAgentName(
+  agents: Record<string, AgentState>,
+  name: string,
+): string | null {
+  if (agents[name]) return name;
+  const stripped = name.replace(/-\d+$/, '');
+  return stripped !== name && agents[stripped] ? stripped : null;
+}
+
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 /**
@@ -217,29 +234,30 @@ export function applyBid(
       : 'Not in bidding phase. Call discuss(op: "wait") to wait for your turn.';
     return { ok: false, error: 'invalid_status', detail: { current: state.status, hint } };
   }
-  if (!state.agents[agentName]) {
+  const name = resolveAgentName(state.agents, agentName);
+  if (!name) {
     return { ok: false, error: 'agent_not_found', detail: { agent_name: agentName } };
   }
-  if (state.current_bids[agentName] !== null) {
-    return { ok: false, error: 'already_bid', detail: { agent_name: agentName, hint: 'Already bid this round. Call discuss(op: "wait") for next round.' } };
+  if (state.current_bids[name] !== null) {
+    return { ok: false, error: 'already_bid', detail: { agent_name: name, hint: 'Already bid this round. Call discuss(op: "wait") for next round.' } };
   }
   // Transcript read enforcement: after the first speech, agents must read transcript before bidding.
   // Exempt: first round of epoch 1 (last_speech_step === 0).
   // Epoch boundary: transcript_read_step is stamped on epoch transition so agents don't need re-read.
   if (state.last_speech_step > 0) {
-    const readStep = state.transcript_read_step[agentName] ?? 0;
+    const readStep = state.transcript_read_step[name] ?? 0;
     if (readStep < state.step) {
       return { ok: false, error: 'read_transcript_first', detail: {
         hint: 'Call discuss(op: "transcript") before bidding. Read recent speeches first.',
       } };
     }
   }
-  const pending_bidders = state.pending_bidders.filter((n) => n !== agentName);
+  const pending_bidders = state.pending_bidders.filter((n) => n !== name);
   return {
     ok: true,
     value: {
       ...state,
-      current_bids: { ...state.current_bids, [agentName]: score },
+      current_bids: { ...state.current_bids, [name]: score },
       pending_bidders,
       updated_at: now,
       last_activity_at: now,
@@ -363,17 +381,21 @@ export function applySpeech(
   if (state.status !== 'speaking') {
     return { ok: false, error: 'invalid_status', detail: { current: state.status, hint: 'Not your turn. Call discuss_wait to wait.' } };
   }
-  if (state.current_speaker !== agentName) {
+  const name = resolveAgentName(state.agents, agentName);
+  if (!name) {
+    return { ok: false, error: 'agent_not_found', detail: { agent_name: agentName } };
+  }
+  if (state.current_speaker !== name) {
     return { ok: false, error: 'not_your_turn', detail: { current_speaker: state.current_speaker } };
   }
 
-  const display_name = state.agents[agentName]?.display_name ?? agentName;
+  const display_name = state.agents[name].display_name;
   const speechEntry: TranscriptEntry = {
     type: 'speech', step: state.step, epoch: state.epoch, ts: now,
-    agent: agentName, display_name, content,
+    agent: name, display_name, content,
   };
 
-  const updatedAgent = { ...state.agents[agentName], total_speaks: state.agents[agentName].total_speaks + 1 };
+  const updatedAgent = { ...state.agents[name], total_speaks: state.agents[name].total_speaks + 1 };
   if (state.speaker_type === 'normal') {
     updatedAgent.quota_remaining -= 1;
   }
@@ -381,7 +403,7 @@ export function applySpeech(
   // Set last_speech_step = step (monotonic marker), then increment step
   const newState = resetBids({
     ...appendEntry(state, speechEntry, now),
-    agents: { ...state.agents, [agentName]: updatedAgent },
+    agents: { ...state.agents, [name]: updatedAgent },
     current_speaker: null, speaker_type: null,
     step: state.step + 1, last_speech_step: state.step, status: 'bidding',
   });

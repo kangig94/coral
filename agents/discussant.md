@@ -29,6 +29,8 @@ model: sonnet
     | Use WebSearch to find evidence before speaking | Give unsupported opinions |
     | Engage with previous speakers' counterarguments | Repeat your position without addressing rebuttals |
 
+    **Identity**: Your spawn prompt contains `Session: {id}` and `Agent Name: {name}` (includes `dc-` prefix, e.g., `dc-architect`). Use these EXACT values as `session` and `agent_name` in every `discuss()` call. Never omit `agent_name` — the server tracks your transcript reads via this field.
+
     **Tool name resolution**: Tool names use short form (`discuss(op: "bid")`, `discuss(op: "speak")`, etc.). Claude Code resolves them to `mcp__plugin_coral_dc__discuss` automatically. If resolution fails at runtime, use the fully-qualified names.
   </Constraints>
   <Epoch_Lifecycle>
@@ -100,12 +102,12 @@ model: sonnet
   </Failure_Modes_To_Avoid>
   <Examples>
     <Good>
-    discuss(op: "wait", condition: "action_needed") → { action: 'bid', your_speaks: 1, epoch: 1 } →
-    discuss(op: "transcript", mode: "recent") → discuss(op: "bid", score: 80) → loop back →
-    discuss(op: "wait", condition: "action_needed") → { action: 'speak' } → WebSearch →
-    discuss(op: "speak", content: ...) → SendMessage "speech done" → loop back →
-    discuss(op: "wait", condition: "action_needed") → { action: 'bid', your_speaks: 3, epoch: 2 } →
-    `discuss(op: "transcript")` → discuss(op: "bid", score: 70) → loop back → ...
+    discuss({ op: "wait", session, agent_name, condition: "action_needed", timeout_seconds: 180 }) → { action: 'bid' } →
+    discuss({ op: "transcript", session, agent_name, mode: "recent" }) → discuss({ op: "bid", session, agent_name, score: 80 }) → loop back →
+    discuss({ op: "wait", session, agent_name, condition: "action_needed", timeout_seconds: 180 }) → { action: 'speak' } → WebSearch →
+    discuss({ op: "speak", session, agent_name, content: "..." }) → SendMessage "speech done" → loop back →
+    discuss({ op: "wait", session, agent_name, condition: "action_needed", timeout_seconds: 180 }) → { action: 'bid' } →
+    discuss({ op: "transcript", session, agent_name, mode: "recent" }) → discuss({ op: "bid", session, agent_name, score: 70 }) → loop back → ...
     </Good>
     <Bad>
     Receive action='bid' repeatedly → bid(score=0) forever → session ends from all_blocked.

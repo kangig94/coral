@@ -14,6 +14,7 @@ import {
   applySpeech,
   applyEpochSummary,
   applyEnd,
+  resolveAgentName,
   DEFAULT_BID_THRESHOLD,
   DEFAULT_MAX_EPOCHS,
 } from './state-machine.js';
@@ -199,11 +200,14 @@ async function handleDiscussOp(input: DiscussOpInput, store: SessionStore): Prom
       if (!sessionDir) return textResult('Error: session_not_found', true);
 
       // Agent membership pre-check for action_needed (avoids burning full timeout on unknown agent)
+      let resolvedAgent = input.agent_name;
       if (input.condition === 'action_needed') {
         const preState = store.load(sessionDir);
-        if (!preState.agents[input.agent_name!]) {
+        const resolved = resolveAgentName(preState.agents, input.agent_name!);
+        if (!resolved) {
           return jsonResult({ error: 'agent_not_found', agent_name: input.agent_name });
         }
+        resolvedAgent = resolved;
       }
 
       // Auto-start: transition setup -> bidding BEFORE the poll loop begins.
@@ -221,7 +225,7 @@ async function handleDiscussOp(input: DiscussOpInput, store: SessionStore): Prom
       const predicates: Record<string, (s: DiscussState) => boolean> = {
         all_bids: allBidsIn,
         speech_delivered: speechDelivered,
-        action_needed: actionNeeded(input.agent_name!),
+        action_needed: actionNeeded(resolvedAgent!),
       };
       const pred = predicates[input.condition];
 
@@ -260,7 +264,7 @@ async function handleDiscussOp(input: DiscussOpInput, store: SessionStore): Prom
           action,
           elapsed_seconds: waitResult.elapsed_ms / 1000,
           epoch: waitState.epoch,
-          your_speaks: waitState.agents[input.agent_name!]?.total_speaks ?? 0,
+          your_speaks: waitState.agents[resolvedAgent!]?.total_speaks ?? 0,
         });
       }
 
@@ -291,17 +295,19 @@ async function handleDiscussOp(input: DiscussOpInput, store: SessionStore): Prom
       const sessionDir = resolveSession(store, input.session);
       if (typeof sessionDir !== 'string') return sessionDir;
 
-      // When agent_name provided: track read under lock for bid enforcement.
+      // When agent_name provided: resolve + track read under lock for bid enforcement.
       // When absent: lockless read (no tracking needed).
       const caller = input.agent_name;
+      let resolvedCaller: string | null | undefined; // null=not found, undefined=no caller
       const state = caller
         ? await store.withLock(sessionDir, async () => {
             const s = store.load(sessionDir);
-            if (s.agents[caller] && (s.transcript_read_step[caller] ?? 0) < s.step) {
+            resolvedCaller = resolveAgentName(s.agents, caller);
+            if (resolvedCaller && (s.transcript_read_step[resolvedCaller] ?? 0) < s.step) {
               const ts = nowIsoString();
               const updated = {
                 ...s,
-                transcript_read_step: { ...s.transcript_read_step, [caller]: s.step },
+                transcript_read_step: { ...s.transcript_read_step, [resolvedCaller]: s.step },
                 updated_at: ts,
                 last_activity_at: ts,
               };
@@ -312,12 +318,22 @@ async function handleDiscussOp(input: DiscussOpInput, store: SessionStore): Prom
           })
         : store.load(sessionDir);
 
+      // Fail loudly on unknown agent (was silent before — Bug #2 root cause)
+      if (resolvedCaller === null) {
+        return jsonResult({
+          error: 'agent_not_found_in_session',
+          agent_name: caller,
+          available_agents: Object.keys(state.agents),
+          hint: 'Use the agent name from session creation, not the teammate system name.',
+        });
+      }
+
       // Full-transcript ACL: mode=full requires agent_name=current_speaker OR status=ended
       if (input.mode === 'full' && state.status !== 'ended') {
-        if (!caller) {
+        if (!resolvedCaller) {
           return jsonResult({ error: 'full_transcript_requires_speaker_or_ended' });
         }
-        if (caller !== state.current_speaker) {
+        if (resolvedCaller !== state.current_speaker) {
           return jsonResult({ error: 'full_transcript_speaker_only' });
         }
       }

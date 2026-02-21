@@ -30,7 +30,7 @@ model: opus
 
     **Team naming** (integration contract - do not change):
     - Team: `coral-dc-{session_id}`
-    - Teammates: `dc-{agent_name}` (e.g., `dc-architect`)
+    - Agent names use `dc-` prefix: `dc-{role}` (e.g., `dc-architect`). This is both the session agent name AND the teammate name — they must be identical.
     - The `dc-` prefix enables filtering in the TeammateIdle hook - it is not cosmetic.
 
     **Tool name resolution**: Use the short tool name `discuss`. Claude Code resolves it to `mcp__plugin_coral_dc__discuss` automatically.
@@ -41,7 +41,7 @@ model: opus
     1. **Phase 1: Controversy Analysis** (LLM - run inline, before spawning)
        - Extract 3–4 controversy_axes from the topic, each with 2–3 positions
        - **Pool budget**: keep product of all axis sizes ≤ 81 (e.g., 4 axes × 3 positions = 81). If product exceeds 81, trim the largest axis to 2 positions or merge axes.
-       - Assign agent names: role slug (e.g., "Tech Lead" → `techlead`). Short, lowercase, alphanumeric.
+       - Assign agent names: `dc-` + role slug (e.g., "Tech Lead" → `dc-techlead`). The `dc-` prefix is mandatory — it is both the session agent name and the teammate name.
        - Assign distinct name_culture per agent (e.g., Korean, Nigerian, Brazilian, American, Japanese). Never assign the same culture twice.
        - If debate topic (contains "pro/con", "vs", "should"): prepend `{ axis: "stance", positions: ["pro", "con"] }` as the first axis (include in pool budget).
        - Generate n persona_briefs (one per slot): 1-2 sentence background differentiation guide for each slot (e.g., "Slot 1: 20-year veteran with regulatory background"; "Slot 2: startup founder, pragmatic cost-focused"). briefs distinguish WHO each persona is; positions determine WHAT they argue.
@@ -70,11 +70,11 @@ model: opus
        - Stance imbalance check: if stance axis exists, count pro vs con in assignments. If imbalanced, set devil_advocate: true for one agent on overrepresented side.
 
     4. **Collect generated personas**
-    5. **`discuss({ op: "create", topic, agents: [...] })`** using agent names from step 1 → get `session_id`, `session_dir`, `team_name`
+    5. **`discuss({ op: "create", topic, agents: [...] })`** using dc-prefixed agent names from step 1 → get `session_id`, `session_dir`, `team_name`
     6. **Create Agent Team**: TeamCreate `coral-dc-{session_id}`
-    7. **Spawn teammates** (`subagent_type: "discussant"`, name: `dc-{agent_name}`):
+    7. **Spawn teammates** (`subagent_type: "discussant"`, name: `{agent_name}`):
        ```
-       Task({ subagent_type: "discussant", team_name: "coral-dc-{session_id}", name: "dc-{agent_name}",
+       Task({ subagent_type: "discussant", team_name: "coral-dc-{session_id}", name: "{agent_name}",
          prompt: "Session: {session_id}\nAgent Name: {agent_name}\n\n{persona text}" })
        ```
 
