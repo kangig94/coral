@@ -32,8 +32,9 @@ if [ ! -d "$PWD/.claude/coral/discuss" ]; then
   exit 0
 fi
 
-# Step 3: Derive logical agent name (strip dc- prefix)
-agent_name="${teammate_name#dc-}"
+# Step 3: Session agent name = teammate name (sessions use dc-prefixed names).
+# Strip Agent Teams dedup suffix if present: dc-architect-1 → dc-architect.
+agent_name=$(printf '%s' "$teammate_name" | sed 's/-[0-9][0-9]*$//')
 
 # Step 4: Extract session_id from team_name (coral-dc-{session_id})
 session_id="${team_name#coral-dc-}"
@@ -56,16 +57,23 @@ if [ -z "$state_file" ]; then
   exit 0
 fi
 
-# Step 6: Read state fields (flat top-level fields only - no nested parsing)
+# Step 6: Read state fields
 status=$(sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$state_file" | head -1)
 current_speaker=$(sed -n 's/.*"current_speaker"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$state_file" | head -1)
-pending_bidders=$(sed -n 's/.*"pending_bidders"[[:space:]]*:[[:space:]]*\(\[[^]]*\]\).*/\1/p' "$state_file" | head -1)
+
+# Multi-line safe: extract pending_bidders JSON block via sed range addressing,
+# then check for agent name. JSON.stringify(null,2) always outputs non-empty
+# arrays across multiple lines, so single-line sed capture cannot work.
+agent_is_pending() {
+  sed -n '/^[[:space:]]*"pending_bidders"[[:space:]]*:/,/^[[:space:]]*\]/p' "$state_file" \
+    | grep -Fq "\"$1\""
+}
 
 # Step 7: Block idle if agent has pending action
 
 # Bidding: agent hasn't bid yet
 if [ "$status" = "bidding" ]; then
-  if printf '%s' "$pending_bidders" | grep -Fq "\"$agent_name\""; then
+  if agent_is_pending "$agent_name"; then
     printf '%s\n' "Call \`discuss\` with op: \"bid\" to submit your bid." >&2
     _exit_code=2
   fi
@@ -81,7 +89,7 @@ fi
 
 # Voting: agent hasn't voted yet
 if [ "$status" = "voting" ]; then
-  if printf '%s' "$pending_bidders" | grep -Fq "\"$agent_name\""; then
+  if agent_is_pending "$agent_name"; then
     printf '%s\n' "Termination vote: call \`discuss\` with op: \"bid\" - 0=agree to end, 1=disagree." >&2
     _exit_code=2
   fi
