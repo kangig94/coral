@@ -1,5 +1,5 @@
 /**
- * Discuss state machine — pure functions, zero I/O.
+ * Discuss state machine - pure functions, zero I/O.
  * Every state-modifying function: (state, ...args, now: string) → Result<T>.
  * Invariant: zero `node:fs` / `node:path` imports in this file.
  */
@@ -41,8 +41,8 @@ export function topicSlug(topic: string): string {
 // ─── Display name ─────────────────────────────────────────────────────────────
 
 /**
- * Parse display_name from persona first line `# Name — Role`.
- * Falls back to agentName — never returns empty string.
+ * Parse display_name from persona first line `# Name - Role`.
+ * Falls back to agentName - never returns empty string.
  */
 export function parseDisplayName(persona: string, agentName: string): string {
   const firstLine = persona.split('\n')[0] ?? '';
@@ -260,7 +260,7 @@ export function resolveWinner(state: DiscussState, now: string): Result<[Discuss
     return { ok: false, error: 'quorum_not_met', detail: { missing } };
   }
 
-  // Build allBids snapshot — used for audit entry and pool filtering only
+  // Build allBids snapshot - used for audit entry and pool filtering only
   const allBids: Record<string, number> = {};
   for (const [n, v] of Object.entries(state.current_bids)) allBids[n] = v as number;
 
@@ -324,7 +324,7 @@ export function resolveWinner(state: DiscussState, now: string): Result<[Discuss
     for (const [name, a] of Object.entries(state.agents)) {
       agents[name] = { ...a, quota_remaining: state.quota_per_epoch, fallback_used: false };
     }
-    // Stamp transcript_read_step for all agents — prevents forced re-read at epoch boundary
+    // Stamp transcript_read_step for all agents - prevents forced re-read at epoch boundary
     const transcript_read_step: Record<string, number> = {};
     for (const name of Object.keys(state.agents)) {
       transcript_read_step[name] = state.step + 1;
@@ -345,7 +345,7 @@ export function resolveWinner(state: DiscussState, now: string): Result<[Discuss
     };
   }
 
-  // max_epochs reached — no more extensions
+  // max_epochs reached - no more extensions
   return noWinnerResult(state, allBids, 'max_epochs_reached', now);
 }
 
@@ -412,7 +412,7 @@ export function applyEpochSummary(
 
 /**
  * End the discussion session.
- * `setup` status is intentionally allowed without force — ending before discussion
+ * `setup` status is intentionally allowed without force - ending before discussion
  * starts is a valid cancel (e.g., setup failed, agents didn't spawn).
  */
 export function applyEnd(

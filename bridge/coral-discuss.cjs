@@ -37,7 +37,7 @@ var __PLUGIN_ROOT__=require("path").resolve(__dirname,"..");
 `)){if(o.trim()===""){s.push("");continue}let i=o.split(" "),a="";for(let c of i){let l=a?`${a} ${c}`:c;l.length<=r?a=l:l.length<=n?bS.test(a.trimEnd())?(s.push(a),a=c):a=l:(a&&s.push(a),a=c)}a&&s.push(a)}return s.join(`
 `)}function Kc(t){let e=new Date(t),r=n=>String(n).padStart(2,"0");return`[${r(e.getHours())}:${r(e.getMinutes())}:${r(e.getSeconds())}]`}function Ph(t){let e=t.replace(/\n/g," ").trim(),r=e.search(/[.!?]\s/u);if(r!==-1&&r<120)return e.slice(0,r+1);if(e.length<=100)return e;let n=e.lastIndexOf(" ",100);return n>0?e.slice(0,n)+"\u2026":e.slice(0,100)+"\u2026"}function Th(t,e){return t.map(r=>Wc(r,e)).join("")}function Wc(t,e){switch(t.type){case"bids":{let r=Object.entries(t.bids).sort(([,s],[,o])=>o-s).map(([s,o])=>{let i=e[s]?.display_name??s,a=e[s]?.quota_remaining;return`| ${i} (${s}) | ${o} | ${a??"?"} |`}).join(`
 `),n=t.winner?`> **Winner: ${e[t.winner]?.display_name??t.winner}** (${t.resolve_type})`:`> **No winner** (${t.resolve_type})`;return`
-#### Bids \u2014 Step ${t.step}
+#### Bids - Step ${t.step}
 | Agent | Score | Quota |
 |-------|-------|-------|
 ${r}
