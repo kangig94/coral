@@ -183,6 +183,15 @@ tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_s
     constraints or preferences.
   </Context_Assembly>
 
+  <Sandbox_Mode>
+    When you are operating in bypass permissions mode (⏵⏵), pass `dangerously_bypass_sandbox: true`
+    to all `codex_session_create` and `codex_session_send` calls. This aligns Codex CLI's sandbox
+    policy with the parent Claude Code session's permission level — allowing Codex to write files
+    outside the working directory and skip approval prompts.
+
+    Default: omit the field (or set `false`) when operating in normal or acceptEdits mode.
+  </Sandbox_Mode>
+
   <Working_Directory>
     MUST pass `working_directory` on every `codex_session_create` and `codex_session_send` call.
     Omitting it means Codex runs in an undefined directory and cannot read project files.

@@ -144,6 +144,34 @@ describe('executeOneShot', () => {
     expect(result.errors).toEqual([]);
     expect(result.warnings).toEqual([]);
   });
+
+  it('uses --dangerously-bypass-approvals-and-sandbox when bypassSandbox=true', async () => {
+    mockCliAvailable();
+    const output = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
+    mockSpawn.mockReturnValue(createMockProcess(output, 0));
+
+    await executeOneShot('test', 'o4-mini', '/tmp', undefined, true);
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      'codex',
+      ['exec', '-m', 'o4-mini', '--json', '--dangerously-bypass-approvals-and-sandbox', '-c', 'web_search=live'],
+      expect.objectContaining({ cwd: '/tmp' }),
+    );
+  });
+
+  it('uses --full-auto when bypassSandbox=false (default)', async () => {
+    mockCliAvailable();
+    const output = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
+    mockSpawn.mockReturnValue(createMockProcess(output, 0));
+
+    await executeOneShot('test', 'o4-mini', '/tmp', undefined, false);
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      'codex',
+      ['exec', '-m', 'o4-mini', '--json', '--full-auto', '-c', 'web_search=live'],
+      expect.objectContaining({ cwd: '/tmp' }),
+    );
+  });
 });
 
 describe('executeResume', () => {
@@ -193,6 +221,19 @@ describe('executeResume', () => {
       'codex',
       expect.any(Array),
       expect.not.objectContaining({ cwd: expect.anything() }),
+    );
+  });
+
+  it('uses --dangerously-bypass-approvals-and-sandbox when bypassSandbox=true', async () => {
+    mockCliAvailable();
+    mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
+
+    await executeResume('thread-abc', 'continue', 'gpt-4.1', undefined, undefined, true);
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      'codex',
+      ['exec', 'resume', 'thread-abc', '-m', 'gpt-4.1', '--json', '--dangerously-bypass-approvals-and-sandbox', '-c', 'web_search=live'],
+      expect.any(Object),
     );
   });
 });
@@ -320,7 +361,7 @@ describe('abort signal', () => {
     mockSpawn.mockReturnValue(proc);
 
     const controller = new AbortController();
-    const promise = executeOneShot('test', undefined, undefined, undefined, undefined, controller.signal);
+    const promise = executeOneShot('test', undefined, undefined, undefined, undefined, undefined, controller.signal);
 
     await Promise.resolve(); // let detectCodexCli resolve and spawnCodex attach listeners
 
@@ -340,7 +381,7 @@ describe('abort signal', () => {
     mockSpawn.mockReturnValue(proc);
 
     const controller = new AbortController();
-    const promise = executeOneShot('test', undefined, undefined, undefined, undefined, controller.signal);
+    const promise = executeOneShot('test', undefined, undefined, undefined, undefined, undefined, controller.signal);
 
     await Promise.resolve();
     controller.abort();
@@ -355,7 +396,7 @@ describe('abort signal', () => {
     mockSpawn.mockReturnValue(proc);
 
     const controller = new AbortController();
-    const promise = executeOneShot('test', undefined, undefined, undefined, undefined, controller.signal);
+    const promise = executeOneShot('test', undefined, undefined, undefined, undefined, undefined, controller.signal);
 
     await Promise.resolve();
     (proc.stdout as Readable).emit('data', Buffer.from('{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Done"}}\n'));
@@ -377,7 +418,7 @@ describe('abort signal', () => {
       mockSpawn.mockReturnValue(proc);
 
       const controller = new AbortController();
-      const promise = executeOneShot('test', undefined, undefined, undefined, undefined, controller.signal);
+      const promise = executeOneShot('test', undefined, undefined, undefined, undefined, undefined, controller.signal);
 
       await vi.advanceTimersByTimeAsync(0); // flush microtasks so spawnCodex attaches listeners
 
