@@ -1,6 +1,6 @@
 /**
  * Shared MCP utilities used by both cx (Codex) and dc (Discuss) servers.
- * Note: resultExtras is Codex-specific — dc server should NOT import it.
+ * Note: resultExtras is Codex-specific - dc server should NOT import it.
  */
 
 /** MCP CallTool response shape. */
@@ -19,7 +19,7 @@ export function jsonResult(data: Record<string, unknown>): McpResult {
 
 /**
  * Conditional error/warning/abort fields for Codex result responses.
- * Codex-specific — dc server should NOT import this.
+ * Codex-specific - dc server should NOT import this.
  */
 export function resultExtras(result: { exitCode: number | null; errors: string[]; warnings: string[]; aborted?: boolean }): Record<string, unknown> {
   const extras: Record<string, unknown> = {};

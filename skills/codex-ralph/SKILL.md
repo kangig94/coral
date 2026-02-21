@@ -1,6 +1,6 @@
 ---
 name: codex-ralph
-description: Persistent execution via Codex delegation (sonnet) — best for implementing an existing plan
+description: Persistent execution via Codex delegation (sonnet) - best for implementing an existing plan
 argument-hint: "[task description]"
 model: sonnet
 disable-model-invocation: true
@@ -14,7 +14,7 @@ Announce at start: "Using codex-ralph to execute this task via Codex with Claude
 
 ## Execution
 
-1. **Load protocol**: Read `agents/codex-proxy.md` for the prompt template and system instructions. Use the ralph role's prompt template (`### Role: ralph` section). **You** call Codex directly — do NOT spawn a codex-proxy agent.
+1. **Load protocol**: Read `agents/codex-proxy.md` for the prompt template and system instructions. Use the ralph role's prompt template (`### Role: ralph` section). **You** call Codex directly - do NOT spawn a codex-proxy agent.
 2. **Gather context**: Collect task description, acceptance criteria, file paths, constraints from conversation
 
 ## Execution Loop
@@ -32,13 +32,13 @@ Announce at start: "Using codex-ralph to execute this task via Codex with Claude
 
 ## Post-Completion Review
 
-**Tests passing does not mean the work is correct.** Codex may produce code that passes tests but diverges from the plan — especially for untestable content (docs, prompts, config).
+**Tests passing does not mean the work is correct.** Codex may produce code that passes tests but diverges from the plan - especially for untestable content (docs, prompts, config).
 
 After the loop exits:
 1. **Read every changed file** that Codex modified across all rounds
-2. **Compare against the plan/requirements** — does each file match what was specified?
-3. **Flag untestable content** — documentation, markdown, config: verify these match the plan
-4. **Fix discrepancies yourself** — do not send back to Codex; fix them directly
+2. **Compare against the plan/requirements** - does each file match what was specified?
+3. **Flag untestable content** - documentation, markdown, config: verify these match the plan
+4. **Fix discrepancies yourself** - do not send back to Codex; fix them directly
 5. **Report to the user** what was done correctly and what you corrected
 6. **Post-implementation sequence** (strict order, fail-fast by cost):
    a. **Lint**: Run linter if available. Cheapest check first.
@@ -52,4 +52,4 @@ When operating in bypass permissions mode, pass `dangerously_bypass_sandbox: tru
 
 ## Error Policy
 
-If `agents/codex-proxy.md` cannot be read, report the error to the user. Do not fall back to inline execution — the agent protocol is a required dependency.
+If `agents/codex-proxy.md` cannot be read, report the error to the user. Do not fall back to inline execution - the agent protocol is a required dependency.

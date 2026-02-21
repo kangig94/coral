@@ -6,8 +6,8 @@ Two hooks provide automatic context injection and agent routing.
 
 Claude Code's hook system executes shell scripts on specific events. Coral uses two hooks:
 
-1. **SessionStart** — Injects CLAUDE.md behavioral guidelines into every Claude session
-2. **SubagentStart** — Injects delegation instructions into agents with a `codex-` prefix (with or without `coral:` namespace)
+1. **SessionStart** - Injects CLAUDE.md behavioral guidelines into every Claude session
+2. **SubagentStart** - Injects delegation instructions into agents with a `codex-` prefix (with or without `coral:` namespace)
 
 ## Hook Configuration
 
@@ -17,7 +17,7 @@ Configuration: `hooks/hooks.json`. Script: `hooks/detect-codex-agent.sh`.
 
 Injects the plugin's CLAUDE.md content into Claude's context at the start of every session. This ensures Claude always receives the behavioral guidelines (Simplicity First, Surgical Changes, etc.) and KB system instructions.
 
-> **Note**: Codex sessions receive CLAUDE.md through a separate mechanism — the MCP server prepends it to the prompt in `executeOneShot()`. See [Core Modules](./core-modules.md) for details.
+> **Note**: Codex sessions receive CLAUDE.md through a separate mechanism - the MCP server prepends it to the prompt in `executeOneShot()`. See [Core Modules](./core-modules.md) for details.
 
 ## SubagentStart Hook
 
@@ -25,7 +25,7 @@ Matches agents with the `codex-` prefix (bare or namespaced, e.g., `coral:codex-
 
 ## Detection Script
 
-`hooks/detect-codex-agent.sh` reads the SubagentStart event JSON from stdin, extracts `agent_name`, and outputs delegation instructions as `hookSpecificOutput` JSON. POSIX-portable — no external dependencies beyond `sed`, `grep`, `awk`.
+`hooks/detect-codex-agent.sh` reads the SubagentStart event JSON from stdin, extracts `agent_name`, and outputs delegation instructions as `hookSpecificOutput` JSON. POSIX-portable - no external dependencies beyond `sed`, `grep`, `awk`.
 
 ### Execution Flow
 

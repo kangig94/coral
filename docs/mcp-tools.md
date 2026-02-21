@@ -37,7 +37,7 @@ Create a new Codex session when `session` is omitted (calls `executeOneShot()`) 
 | `background` | boolean | No | Run in background (default: `false`). Returns immediately with progress info. |
 | `dangerously_bypass_sandbox` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when Claude Code is in bypass permissions mode (⏵⏵). |
 
-### Output — Foreground (default)
+### Output - Foreground (default)
 
 ```json
 {
@@ -55,7 +55,7 @@ If no thread ID is returned, registration is skipped with a `notice` field. `err
 
 During foreground execution, `[Codex]` prefixed progress messages are sent via `notifications/progress`.
 
-### Output — Background (`background: true`)
+### Output - Background (`background: true`)
 
 ```json
 {
@@ -88,9 +88,9 @@ Send a follow-up prompt to an existing session. Uses `codex exec resume THREAD_I
 
 ### Lookup Logic
 
-1. `SessionManager.get(session)` — search by name first
+1. `SessionManager.get(session)` - search by name first
 2. If name doesn't match, search by `codexThreadId`
-3. If not in registry, return error (`Session not found`). Raw thread IDs are not accepted — all sessions must be created via `codex({ op: "exec", ... })`.
+3. If not in registry, return error (`Session not found`). Raw thread IDs are not accepted - all sessions must be created via `codex({ op: "exec", ... })`.
 
 ### Output (JSON)
 
@@ -282,7 +282,7 @@ Block until a condition is fulfilled or timeout expires. This is the primary coo
 | `speech_delivered` | Current speaker has called `discuss({ op: "speak", ... })` | discuss-lead |
 | `action_needed` | This agent has an action to perform (bid/speak) | discussant |
 
-#### Output — `all_bids` (auto-resolve)
+#### Output - `all_bids` (auto-resolve)
 
 Returns one of 4 result shapes:
 
@@ -292,7 +292,7 @@ Returns one of 4 result shapes:
 { "fulfilled": true, "no_winner": true, "step": 3, "reason": "all_below_threshold" }
 ```
 
-#### Output — `action_needed`
+#### Output - `action_needed`
 
 ```json
 { "fulfilled": true, "action": "bid", "epoch": 1, "your_speaks": 2 }
@@ -300,7 +300,7 @@ Returns one of 4 result shapes:
 { "fulfilled": true, "action": "session_ended", "epoch": 2, "your_speaks": 4 }
 ```
 
-#### Output — timeout
+#### Output - timeout
 
 ```json
 { "fulfilled": false, "elapsed_ms": 60000 }
@@ -465,7 +465,7 @@ Mathematical guarantee: identical position combinations have selection probabili
 ```
 
 `seed_used` can be passed back as `seed` to reproduce identical assignments.
-`shared_position_with` is a 0-based index into `assignments` — present only when n > pool_size.
+`shared_position_with` is a 0-based index into `assignments` - present only when n > pool_size.
 
 ### Error Responses
 
@@ -503,7 +503,7 @@ These namespaces do not overlap. Collision risk is between discuss sessions only
 
 ## Contract
 
-1. **dc never calls cx tools** — the discuss MCP server has no dependency on the codex MCP server
-2. **cx never reads dc state** — Codex sessions have no awareness of discuss sessions
-3. **Hook is the sole bridge** — `detect-codex-agent.sh` is the single point where a codex-delegated workflow and the Codex CLI connect
-4. **Modifying either server independently is safe** — as long as the hook contract (agent name prefix matching) is preserved
+1. **dc never calls cx tools** - the discuss MCP server has no dependency on the codex MCP server
+2. **cx never reads dc state** - Codex sessions have no awareness of discuss sessions
+3. **Hook is the sole bridge** - `detect-codex-agent.sh` is the single point where a codex-delegated workflow and the Codex CLI connect
+4. **Modifying either server independently is safe** - as long as the hook contract (agent name prefix matching) is preserved

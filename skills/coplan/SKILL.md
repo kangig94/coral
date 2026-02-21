@@ -10,7 +10,7 @@ Execute a multi-round planning session with Codex review followed by Claude cros
 
 ## Execution
 
-1. **Load protocol**: Read `agents/planner.md` to load the full planner protocol. **You** execute it directly — do NOT spawn a planner agent.
+1. **Load protocol**: Read `agents/planner.md` to load the full planner protocol. **You** execute it directly - do NOT spawn a planner agent.
 2. **Configure multi-phase review**:
    - Phase 1 reviewers: `coral:codex-proxy` with `Role: architect` and `coral:codex-proxy` with `Role: critic` (full review loop, up to 5 rounds)
    - Phase 2 cross-reviewers: `coral:architect` and `coral:critic` (single verification pass + one retry)

@@ -1,4 +1,4 @@
-# Discuss — Moderated Multi-Agent Discussion
+# Discuss - Moderated Multi-Agent Discussion
 
 A structured, turn-based discussion system where multiple AI agents debate a topic with unique personas, managed by an automated moderator. Built on Claude Code Agent Teams and the `dc` MCP server.
 
@@ -59,7 +59,7 @@ Moderator broadcasts → "Step N. Call `discuss({ op: "bid", ... })`."
    ↓
 Each agent submits a bid score (0–100) via `discuss({ op: "bid", ... })`
    ↓
-Moderator calls discuss({ op: "wait", condition: "all_bids", ... }) — blocks until all bids arrive
+Moderator calls discuss({ op: "wait", condition: "all_bids", ... }) - blocks until all bids arrive
    ↓
 MCP server auto-resolves the winner (see Resolution Rules below)
 ```
@@ -82,7 +82,7 @@ All agents read the new speech
 Back to bidding round
 ```
 
-Speech timeout: The moderator uses a staged wait — first 90 seconds, then a 30-second warning, then force-end if still no speech.
+Speech timeout: The moderator uses a staged wait - first 90 seconds, then a 30-second warning, then force-end if still no speech.
 
 ### 4. Termination
 
@@ -90,9 +90,9 @@ The discussion ends through one of these paths:
 
 | Trigger | What Happens |
 |---------|--------------|
-| All agents bid below bid_threshold (non-cold-start) | Natural end — everyone has said their piece |
-| All blocked (quota+fallback exhausted for some, others below threshold) | Server returns no_winner — moderator synthesizes |
-| Max epochs reached (all exhausted, epoch >= max_epochs) | Server returns no_winner + max_epochs_reached — moderator synthesizes |
+| All agents bid below bid_threshold (non-cold-start) | Natural end - everyone has said their piece |
+| All blocked (quota+fallback exhausted for some, others below threshold) | Server returns no_winner - moderator synthesizes |
+| Max epochs reached (all exhausted, epoch >= max_epochs) | Server returns no_winner + max_epochs_reached - moderator synthesizes |
 | Timeout | Agent doesn't bid or speak in time → force-end |
 
 ## Resolution Rules
@@ -124,7 +124,7 @@ If both pools are empty (not cold-start) and some bids ≥ bid_threshold:
 
 ## Epoch Transitions
 
-Epoch transitions are **automatic** — no agent vote required.
+Epoch transitions are **automatic** - no agent vote required.
 
 When the server detects allExhausted (all agents have used quota AND fallback) with remaining desire (some bids ≥ threshold) AND `epoch < max_epochs`:
 
@@ -136,7 +136,7 @@ When the server detects allExhausted (all agents have used quota AND fallback) w
 6. Moderator writes epoch summary (recap of previous epoch's arguments)
 7. New bidding round begins
 
-**Sealed-bid design**: Individual bid scores are never returned in any API response. They are recorded in `state.json` for audit but hidden from all agents — including the moderator. The winner's identity is revealed; scores are not.
+**Sealed-bid design**: Individual bid scores are never returned in any API response. They are recorded in `state.json` for audit but hidden from all agents - including the moderator. The winner's identity is revealed; scores are not.
 
 ## Discussion Modes
 
@@ -159,7 +159,7 @@ Target: 50/50 split (±1 for odd numbers).
 
 ## Bid Score Visibility (Sealed-Bid Design)
 
-Bid scores are sealed — they are never returned in any API response:
+Bid scores are sealed - they are never returned in any API response:
 
 | Information | Who Can See |
 |-------------|-------------|
@@ -186,7 +186,7 @@ Agents must call `discuss({ op: "wait", ... })` before every action. Premature t
 
 ### Moderator (discuss-lead)
 
-The moderator never speaks on substance — only process control:
+The moderator never speaks on substance - only process control:
 
 - Broadcasts bid instructions
 - Uses `discuss({ op: "wait", condition: "all_bids", ... })` for bid collection (auto-resolves winner)
@@ -198,7 +198,7 @@ The moderator never speaks on substance — only process control:
 
 ### State Machine
 
-All discussion rules are internalized in the MCP server's state machine (`state-machine.ts`). The state machine is **pure** — zero I/O, fully testable. State transitions:
+All discussion rules are internalized in the MCP server's state machine (`state-machine.ts`). The state machine is **pure** - zero I/O, fully testable. State transitions:
 
 ```
 setup → bidding → speaking → bidding → ... → bidding (epoch auto-transition) or ended
@@ -206,11 +206,11 @@ setup → bidding → speaking → bidding → ... → bidding (epoch auto-trans
                    (force-end)
 ```
 
-The `setup` status is a race-condition gate: `discuss({ op: "create", ... })` returns immediately with `status: 'setup'`. The `discuss({ op: "wait", condition: "all_bids", ... })` caller (moderator) transitions to `bidding` under the cross-process lock before accepting bids — ensuring all agents are spawned before bidding begins.
+The `setup` status is a race-condition gate: `discuss({ op: "create", ... })` returns immediately with `status: 'setup'`. The `discuss({ op: "wait", condition: "all_bids", ... })` caller (moderator) transitions to `bidding` under the cross-process lock before accepting bids - ensuring all agents are spawned before bidding begins.
 
 ### Cross-Process Safety
 
-Each discussant agent runs its own MCP server process. All state mutations are serialized via a POSIX `mkdir`-based lock — atomic test-and-set with PID tracking and stale lock recovery.
+Each discussant agent runs its own MCP server process. All state mutations are serialized via a POSIX `mkdir`-based lock - atomic test-and-set with PID tracking and stale lock recovery.
 
 ### Session Storage
 
@@ -242,7 +242,7 @@ The `discuss({ op: "wait", ... })` MCP tool replaces manual polling with server-
 | `speech_delivered` | Current speaker has delivered their speech | Moderator |
 | `action_needed` | This specific agent has something to do (bid/speak) | Discussants |
 
-This design keeps the moderator's context window lean — no polling loops, no wasted API calls.
+This design keeps the moderator's context window lean - no polling loops, no wasted API calls.
 
 ## Transcript Format
 
@@ -253,7 +253,7 @@ The transcript is maintained in both structured (JSON in `state.json`) and human
 
 ## Epoch 1
 
-#### Bids — Step 1
+#### Bids - Step 1
 | Agent | Score | Quota |
 |-------|-------|-------|
 | Kim Jimin (conservative-critic) | 85 | 3 |
@@ -265,7 +265,7 @@ The transcript is maintained in both structured (JSON in `state.json`) and human
 ### [2026-02-21 14:31:15] Kim Jimin (conservative-critic)
 
 Microservices introduce operational complexity that most organizations
-underestimate. Netflix's success is survivorship bias — we don't hear
+underestimate. Netflix's success is survivorship bias - we don't hear
 about the companies that failed during their migration...
 
 ---

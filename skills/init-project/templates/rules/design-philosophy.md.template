@@ -1,6 +1,6 @@
 # Design Philosophy
 
-<!-- GENERATION RULE: This file must contain only STABLE PRINCIPLES — not volatile facts.
+<!-- GENERATION RULE: This file must contain only STABLE PRINCIPLES - not volatile facts.
      Module dependency graphs, specific file lists, and current architecture details
      belong in docs/ (architecture.md, core-modules.md). Reference docs instead of duplicating.
      Test: if content needs updating on refactor (without principle change), it belongs in docs. -->

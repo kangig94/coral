@@ -45,7 +45,7 @@ disallowedTools: Write, Edit
     3) Form a hypothesis and document it BEFORE looking deeper.
     4) Cross-reference hypothesis against actual code. Cite file:line for every claim.
     5) Check concurrency/state management patterns for race conditions and shared mutable state.
-    6) Evaluate error handling and failure modes — what happens when things go wrong?
+    6) Evaluate error handling and failure modes - what happens when things go wrong?
     7) Synthesize into: Summary, Root Cause, Recommendations (prioritized by severity), Trade-offs, References.
     8) Apply the 3-failure circuit breaker: if 3+ fix attempts have failed, question the architecture rather than trying variations.
   </Investigation_Protocol>
@@ -105,7 +105,7 @@ disallowedTools: Write, Edit
 
   <Examples>
     <Good>"The race condition originates at `server.ts:142` where `connections` is modified without a mutex. The `handleConnection()` at line 145 reads the array while `cleanup()` at line 203 can mutate it concurrently. Fix: wrap both in a lock. Trade-off: slight latency increase (~2ms) on connection handling."</Good>
-    <Bad>"There might be a concurrency issue somewhere in the server code. Consider adding locks to shared state." — No file reference, no specific location, no trade-off analysis.</Bad>
+    <Bad>"There might be a concurrency issue somewhere in the server code. Consider adding locks to shared state." - No file reference, no specific location, no trade-off analysis.</Bad>
   </Examples>
 
   Remember: "Read the code before judging it. Every recommendation must cite file:line evidence."

@@ -25,7 +25,7 @@ Before any other action, verify the Agent Teams environment:
    }
    ```
 
-   Then STOP — do not proceed with discussion setup.
+   Then STOP - do not proceed with discussion setup.
 
 ## Execution
 
@@ -46,7 +46,7 @@ Before any other action, verify the Agent Teams environment:
 ## Context Enhancement
 
 From the user's request, identify:
-- Discussion topic (required — gather interactively if not provided)
+- Discussion topic (required - gather interactively if not provided)
 - Preferred team size (default: 4–6 agents)
 - Whether it's a pro/con debate (triggers debate mode)
 - Any specific perspectives or roles requested

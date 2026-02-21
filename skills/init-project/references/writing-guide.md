@@ -56,7 +56,7 @@ Rules contain **principles** (stable, rarely change). Docs contain **facts** (ch
 | Naming conventions | Rules (conventions) | "snake_case for MCP tools, camelCase for TypeScript" |
 | Current API surface | Docs (mcp-tools.md) | Tool parameter tables |
 
-**Test**: If the content needs updating when you refactor code (without changing any principle), it belongs in docs — not rules.
+**Test**: If the content needs updating when you refactor code (without changing any principle), it belongs in docs - not rules.
 
 When rules need to reference architecture, use: `See docs/architecture.md for the current module graph.`
 
@@ -91,10 +91,10 @@ Domain references define recommended docs with two priority levels:
 
 Quality rules:
 
-1. **Real content only** — never generate empty boilerplate. If the scan doesn't reveal enough to populate a doc, skip it and note in the report.
-2. **Actual project references** — use real file paths, table names, endpoints from the scan. No placeholders.
-3. **Standard formats** — `model-card.md` follows Google Model Cards format, `api-reference.md` follows OpenAPI-style structure, `data-dictionary.md` uses source/table/column hierarchy.
-4. **Architecture Sections** — domain-specific sections listed in references are appended to `ARCHITECTURE.md`, not created as separate files.
+1. **Real content only** - never generate empty boilerplate. If the scan doesn't reveal enough to populate a doc, skip it and note in the report.
+2. **Actual project references** - use real file paths, table names, endpoints from the scan. No placeholders.
+3. **Standard formats** - `model-card.md` follows Google Model Cards format, `api-reference.md` follows OpenAPI-style structure, `data-dictionary.md` uses source/table/column hierarchy.
+4. **Architecture Sections** - domain-specific sections listed in references are appended to `ARCHITECTURE.md`, not created as separate files.
 
 ### General Doc Quality
 
@@ -103,7 +103,7 @@ Quality rules:
 - Reference **actual file paths** in the project, not generic placeholders
 - Keep sections **concise** - every sentence should add value
 - Include **examples** where patterns are non-obvious
-- **Docs describe architecture decisions and navigation — not source contents.** Any content that becomes stale when a function signature or schema field changes belongs in source code, not docs.
+- **Docs describe architecture decisions and navigation - not source contents.** Any content that becomes stale when a function signature or schema field changes belongs in source code, not docs.
 
 ## Best Practices
 

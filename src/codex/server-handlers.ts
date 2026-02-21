@@ -1,5 +1,5 @@
 /**
- * Coral MCP Server — business logic handlers and utilities.
+ * Coral MCP Server - business logic handlers and utilities.
  * Extracted from server.ts to enable independent testing.
  * server.ts is the composition root (wiring only).
  */
@@ -152,7 +152,7 @@ export async function runForeground(
 
 export async function handleSessionCreate(input: CodexSessionCreateInput, mgr: SessionManager, onEvent?: OnEventCallback): Promise<McpResult> {
   // input.name is always set by the dispatcher before calling this handler.
-  // The fallback here is defensive — ensures safe direct invocation.
+  // The fallback here is defensive - ensures safe direct invocation.
   const sessionName = input.name ?? `session-${Date.now()}`;
   const controller = registerExecution(sessionName);
   try {
@@ -228,7 +228,7 @@ export function handleSessionList(mgr: SessionManager): McpResult {
 
 export async function handleSessionFork(input: CodexSessionForkInput, mgr: SessionManager, onEvent?: OnEventCallback): Promise<McpResult> {
   // Note: dispatcher checks session existence for fork background mode only.
-  // Foreground path delegates this check here — intentional asymmetry to avoid double lookup.
+  // Foreground path delegates this check here - intentional asymmetry to avoid double lookup.
   const entry = mgr.get(input.session);
   if (!entry) return sessionNotFoundError(input.session);
 

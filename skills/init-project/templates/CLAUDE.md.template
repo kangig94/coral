@@ -26,7 +26,7 @@ Rules in `.claude/rules/` are auto-loaded. Domain-specific rules activate based 
 
 **Scope gate**: Steps 1-4 apply only when source-affecting files are modified (source code, build config, dependencies). Non-source changes (docs, agent definitions, config prose) skip entirely.
 
-1. **Lint** — run linter if available (cheapest check first)
-2. **Review Gate** — run review-orchestrator. BLOCKING items must pass before build.
-3. **Build** — run project build command
-4. **Test** — run test suite. All tests must pass before declaring complete.
+1. **Lint** - run linter if available (cheapest check first)
+2. **Review Gate** - run review-orchestrator. BLOCKING items must pass before build.
+3. **Build** - run project build command
+4. **Test** - run test suite. All tests must pass before declaring complete.

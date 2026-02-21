@@ -14,7 +14,7 @@ A general-purpose Claude Code plugin that provides structured agents with a Code
 ## Quick Start
 
 ```bash
-# Bundle is included in the repo — no build required
+# Bundle is included in the repo - no build required
 claude --plugin-dir /path/to/coral
 ```
 

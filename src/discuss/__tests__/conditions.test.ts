@@ -1,5 +1,5 @@
 /**
- * Condition predicate tests — pure functions, no I/O.
+ * Condition predicate tests - pure functions, no I/O.
  */
 
 import { describe, it, expect } from 'vitest';

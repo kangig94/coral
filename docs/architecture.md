@@ -81,7 +81,7 @@ User → /codex skill analyzes intent
      → General?  → Direct MCP call, verbatim prompt (no subagent)
 ```
 
-### 4. Discuss — Moderated Multi-Agent Discussion
+### 4. Discuss - Moderated Multi-Agent Discussion
 
 ```
 User → /coral:discuss "AI ethics in healthcare"
@@ -136,7 +136,7 @@ Each file is a single `SessionEntry`. Corrupt files are skipped with a warning; 
     └── transcript.md       # Incremental append (human-readable)
 ```
 
-Each session directory is created atomically with collision detection. State mutations are serialized via a cross-process `mkdir`-based lock (`state.lock/`). Transcript.md is append-only — `transcript_rendered` cursor tracks which entries have been written to .md.
+Each session directory is created atomically with collision detection. State mutations are serialized via a cross-process `mkdir`-based lock (`state.lock/`). Transcript.md is append-only - `transcript_rendered` cursor tracks which entries have been written to .md.
 
 ### 8. Knowledge Base Storage
 
@@ -185,7 +185,7 @@ coral/
 ### Codex Server (`cx`)
 
 ```
-codex/server.ts  (wiring only — SDK setup, transport, signals)
+codex/server.ts  (wiring only - SDK setup, transport, signals)
   └── codex/server-handlers.ts  (business logic, dispatch, background/foreground)
         ├── codex/schemas.ts        (zod input validation)
         ├── codex/codex-executor.ts
@@ -201,7 +201,7 @@ types.ts ← referenced by all codex modules
 ### Discuss Server (`dc`)
 
 ```
-discuss/server.ts  (wiring only — SDK setup, transport, signals)
+discuss/server.ts  (wiring only - SDK setup, transport, signals)
   └── discuss/server-handlers.ts  (tool dispatch + `discuss({ op: "wait", ... })` integration)
         ├── discuss/schemas.ts          (zod input validation)
         ├── discuss/state-machine.ts    (pure state transitions, zero I/O)

@@ -1,6 +1,6 @@
 ---
 name: ralph
-description: Persistent execution loop with verification (sonnet) — best for implementing an existing plan
+description: Persistent execution loop with verification (sonnet) - best for implementing an existing plan
 argument-hint: "[task description]"
 model: sonnet
 ---
@@ -36,4 +36,4 @@ From the current conversation, identify and include:
 
 ## Error Policy
 
-If `agents/ralph.md` cannot be read, report the error to the user. Do not fall back to inline execution — the agent protocol is a required dependency.
+If `agents/ralph.md` cannot be read, report the error to the user. Do not fall back to inline execution - the agent protocol is a required dependency.

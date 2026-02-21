@@ -58,10 +58,10 @@ disallowedTools: Write, Edit
   <Rationalization_Prevention>
     | Excuse | Reality |
     |--------|---------|
-    | "Plan looks comprehensive" | Read every file reference — verify, don't assume |
+    | "Plan looks comprehensive" | Read every file reference - verify, don't assume |
     | "The approach seems sound" | Simulate 2-3 tasks step by step |
     | "Minor issue, not blocking" | Rate by severity, let the verdict reflect it |
-    | "I've seen plans like this work" | This plan, this codebase — verify specifically |
+    | "I've seen plans like this work" | This plan, this codebase - verify specifically |
   </Rationalization_Prevention>
 
   <Tool_Usage>

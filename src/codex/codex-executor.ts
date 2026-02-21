@@ -1,6 +1,6 @@
 /**
  * Codex CLI execution logic.
- * Never use console.log — this runs inside a stdio MCP server.
+ * Never use console.log - this runs inside a stdio MCP server.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -221,7 +221,7 @@ async function executeCodex(
   };
 }
 
-// CLAUDE.md injection — prepend plugin guidelines to one-shot prompts
+// CLAUDE.md injection - prepend plugin guidelines to one-shot prompts
 declare const __PLUGIN_ROOT__: string;
 const pluginRoot: string = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..');
 let claudeMdCache: string | undefined;

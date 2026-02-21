@@ -10,7 +10,7 @@ Execute a multi-round planning session with architect/critic review.
 
 ## Execution
 
-1. **Load protocol**: Read `agents/planner.md` to load the full planner protocol. **You** execute it directly — do NOT spawn a planner agent.
+1. **Load protocol**: Read `agents/planner.md` to load the full planner protocol. **You** execute it directly - do NOT spawn a planner agent.
 2. **Configure reviewers**: Use `coral:architect` and `coral:critic` as reviewers (full review loop, up to 5 rounds). Only reviewers are spawned as subagents.
 3. **Execute protocol**: Follow the planner protocol steps yourself (gather context, write plan, review loop until no CRITICAL/HIGH, completion)
 4. **Project validation**: If project instructions define workflow rules (e.g., review gates, post-implementation steps), follow them. If validation fails, revise the plan to address the issues and re-validate until it passes.

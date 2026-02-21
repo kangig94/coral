@@ -1,5 +1,5 @@
 /**
- * k-DPP based persona seed assignment — pure functions (auto-seed uses Math.random when seed=null), zero I/O.
+ * k-DPP based persona seed assignment - pure functions (auto-seed uses Math.random when seed=null), zero I/O.
  * Algorithm: Kulesza & Taskar (2012), "Determinantal Point Processes for Machine Learning"
  */
 
@@ -18,7 +18,7 @@ const EPS = 1e-12;
 const UINT32_SIZE = 0x1_0000_0000;
 
 // ── Seeded RNG ────────────────────────────────────────────────────────────────
-// mulberry32 PRNG — deterministic, uniform [0, 1)
+// mulberry32 PRNG - deterministic, uniform [0, 1)
 export function createSeededRng(seed: number): () => number {
   let t = seed >>> 0;
   return () => {

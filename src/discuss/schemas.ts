@@ -1,5 +1,5 @@
 /**
- * Zod schemas for MCP tool input validation — discuss/discuss_persona_seed tools.
+ * Zod schemas for MCP tool input validation - discuss/discuss_persona_seed tools.
  */
 
 import { z } from 'zod';
@@ -95,7 +95,7 @@ export const discussOpSchema = z.discriminatedUnion('op', [
 export type DiscussOpInput = z.infer<typeof discussOpSchema>;
 export type DiscussCreateInput = Omit<Extract<DiscussOpInput, { op: 'create' }>, 'op'>;
 
-// discuss_persona_seed — Generate k-DPP diverse persona assignments
+// discuss_persona_seed - Generate k-DPP diverse persona assignments
 export const discussPersonaSeedSchema = z.object({
   controversy_axes: z.array(z.object({
     axis: z.string().min(1),

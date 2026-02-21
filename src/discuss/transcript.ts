@@ -1,10 +1,10 @@
 /**
- * Transcript rendering — pure functions operating on structured TranscriptEntry[].
+ * Transcript rendering - pure functions operating on structured TranscriptEntry[].
  * Human-readable format with timestamps and soft 80 / hard 100 word-wrap.
  *
  * Two rendering paths:
  * - renderEntries: full audit output for transcript.md (scores, quotas, all data)
- * - formatFull: agent-facing view (bids filtered to speaker name only — information veil)
+ * - formatFull: agent-facing view (bids filtered to speaker name only - information veil)
  */
 
 import type { AgentState, TranscriptEntry } from './types.js';
@@ -98,7 +98,7 @@ export function renderEntry(e: TranscriptEntry, agents: Record<string, AgentStat
       const winnerLine = e.winner
         ? `> **Winner: ${agents[e.winner]?.display_name ?? e.winner}** (${e.resolve_type})`
         : `> **No winner** (${e.resolve_type})`;
-      return `\n#### Bids — Step ${e.step}\n| Agent | Score | Quota |\n|-------|-------|-------|\n${rows}\n${winnerLine}\n\n---\n`;
+      return `\n#### Bids - Step ${e.step}\n| Agent | Score | Quota |\n|-------|-------|-------|\n${rows}\n${winnerLine}\n\n---\n`;
     }
     case 'speech': {
       const ts = formatTimestamp(e.ts);

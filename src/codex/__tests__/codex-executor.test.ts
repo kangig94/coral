@@ -310,7 +310,7 @@ describe('idle timeout', () => {
 
     const promise = executeOneShot('test');
 
-    // Emit data every 5 minutes — should reset idle timer each time
+    // Emit data every 5 minutes - should reset idle timer each time
     for (let i = 0; i < 4; i++) {
       await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
       (proc.stdout as Readable).push('{"type":"turn.started"}\n');
@@ -340,7 +340,7 @@ describe('idle timeout', () => {
   });
 });
 
-/** Process that never closes on its own — caller controls close event. */
+/** Process that never closes on its own - caller controls close event. */
 function createManualProcess() {
   const proc = new EventEmitter() as ChildProcess;
   const stdoutStream = new Readable({ read() {} });
@@ -385,7 +385,7 @@ describe('abort signal', () => {
 
     await Promise.resolve();
     controller.abort();
-    proc.emit('close', 1); // non-zero exit, no stdout — normally would throw
+    proc.emit('close', 1); // non-zero exit, no stdout - normally would throw
 
     await expect(promise).resolves.toMatchObject({ aborted: true });
   });
@@ -425,7 +425,7 @@ describe('abort signal', () => {
       controller.abort();
       proc.emit('close', null);
 
-      // Advance past idle timeout — should NOT reject since timer was cleared on abort
+      // Advance past idle timeout - should NOT reject since timer was cleared on abort
       await vi.advanceTimersByTimeAsync(10 * 60 * 1000 + 1000);
 
       await expect(promise).resolves.toMatchObject({ aborted: true });

@@ -1,5 +1,5 @@
 #!/bin/sh
-# discuss-idle-guard.sh — TeammateIdle hook for discuss sessions.
+# discuss-idle-guard.sh - TeammateIdle hook for discuss sessions.
 # Blocks idle when an agent has a pending bid, speech, or vote.
 # Fail-open: unhandled errors default to exit 0 (allow idle).
 #
@@ -38,7 +38,7 @@ agent_name="${teammate_name#dc-}"
 # Step 4: Extract session_id from team_name (coral-dc-{session_id})
 session_id="${team_name#coral-dc-}"
 if [ "$session_id" = "$team_name" ]; then
-  # team_name didn't have coral-dc- prefix — not a discuss team
+  # team_name didn't have coral-dc- prefix - not a discuss team
   exit 0
 fi
 
@@ -56,7 +56,7 @@ if [ -z "$state_file" ]; then
   exit 0
 fi
 
-# Step 6: Read state fields (flat top-level fields only — no nested parsing)
+# Step 6: Read state fields (flat top-level fields only - no nested parsing)
 status=$(sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$state_file" | head -1)
 current_speaker=$(sed -n 's/.*"current_speaker"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$state_file" | head -1)
 pending_bidders=$(sed -n 's/.*"pending_bidders"[[:space:]]*:[[:space:]]*\(\[[^]]*\]\).*/\1/p' "$state_file" | head -1)
@@ -82,11 +82,11 @@ fi
 # Voting: agent hasn't voted yet
 if [ "$status" = "voting" ]; then
   if printf '%s' "$pending_bidders" | grep -Fq "\"$agent_name\""; then
-    printf '%s\n' "Termination vote: call \`discuss\` with op: \"bid\" — 0=agree to end, 1=disagree." >&2
+    printf '%s\n' "Termination vote: call \`discuss\` with op: \"bid\" - 0=agree to end, 1=disagree." >&2
     _exit_code=2
   fi
   exit 0
 fi
 
-# All other statuses (ended, etc.) — allow idle
+# All other statuses (ended, etc.) - allow idle
 exit 0

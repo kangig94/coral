@@ -6,7 +6,7 @@ argument-hint: "[prompt]"
 
 Route the user's request to Codex. Call MCP tools directly for most tasks; spawn parallel subagents only for review.
 
-**Do NOT output any text before the tool call.** All steps below are internal routing logic — execute them silently. The user should only see the final result from "Presenting the result."
+**Do NOT output any text before the tool call.** All steps below are internal routing logic - execute them silently. The user should only see the final result from "Presenting the result."
 
 ## 1. Session commands
 
@@ -56,8 +56,8 @@ When operating in bypass permissions mode, pass `dangerously_bypass_sandbox: tru
 ## 5a. Review (parallel subagent spawn)
 
 Spawn TWO Task agents in a SINGLE message (parallel):
-- `subagent_type: coral:codex-proxy` with `Role: architect` in the prompt — architecture/design perspective
-- `subagent_type: coral:codex-proxy` with `Role: critic` in the prompt — critical review/flaw finding
+- `subagent_type: coral:codex-proxy` with `Role: architect` in the prompt - architecture/design perspective
+- `subagent_type: coral:codex-proxy` with `Role: critic` in the prompt - critical review/flaw finding
 
 Provide each with the gathered context, working directory, and their respective `Role:` prefix.
 
@@ -68,11 +68,11 @@ After both return, **synthesize**:
 
 ## 5b. Specialized intent (analyst, ralph)
 
-Read the unified agent protocol (`agents/codex-proxy.md`) for the prompt template. Use `Role: analyst` for investigation/debug intents and `Role: ralph` for persistent execution intents. **You** call `codex({ op: "exec", ... })` directly — do NOT spawn a codex-proxy agent. Follow the protocol's structure for that role. Pass `working_directory` and appropriate `reasoning_effort`.
+Read the unified agent protocol (`agents/codex-proxy.md`) for the prompt template. Use `Role: analyst` for investigation/debug intents and `Role: ralph` for persistent execution intents. **You** call `codex({ op: "exec", ... })` directly - do NOT spawn a codex-proxy agent. Follow the protocol's structure for that role. Pass `working_directory` and appropriate `reasoning_effort`.
 
 ## 5c. General request
 
-Call MCP tool directly. Pass the user's prompt **verbatim** — do not rephrase, enrich, or add information.
+Call MCP tool directly. Pass the user's prompt **verbatim** - do not rephrase, enrich, or add information.
 
 | Condition | Action |
 |-----------|--------|

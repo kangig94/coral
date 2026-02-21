@@ -1,5 +1,5 @@
 /**
- * waitForCondition tests — async file polling with real tmpdir.
+ * waitForCondition tests - async file polling with real tmpdir.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -86,7 +86,7 @@ describe('waitForCondition', () => {
   });
 
   it('should return error=state_unavailable when file never exists', async () => {
-    // No state.json written — file does not exist at all
+    // No state.json written - file does not exist at all
     const result = await waitForCondition(join(tmpDir, 'state.json'), isEnded, 100, INTERVAL);
     expect(result.fulfilled).toBe(false);
     expect(result.error).toBe('state_unavailable');
@@ -109,7 +109,7 @@ describe('waitForCondition', () => {
     writeState(makeState({ status: 'bidding' }));
     const statePath = join(tmpDir, 'state.json');
 
-    // Replace with unparseable content — stays corrupt until timeout
+    // Replace with unparseable content - stays corrupt until timeout
     setTimeout(() => writeFileSync(statePath, 'not-json'), INTERVAL + 5);
 
     const result = await waitForCondition(statePath, isEnded, 150, INTERVAL);

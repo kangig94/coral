@@ -1,6 +1,6 @@
 /**
  * Shared types for the discuss MCP server.
- * Pure data — zero imports from node: or project modules.
+ * Pure data - zero imports from node: or project modules.
  */
 
 // ─── Transcript entries (discriminated union) ────────────────────────────────
@@ -19,7 +19,7 @@ export type TranscriptEntry =
 
 export interface AgentState {
   persona: string;
-  display_name: string;       // parsed from persona first line `# Name — Role`
+  display_name: string;       // parsed from persona first line `# Name - Role`
   quota_remaining: number;
   total_speaks: number;
   fallback_used: boolean;

@@ -1,5 +1,5 @@
 /**
- * Coral Discuss MCP Server — tool definitions and dispatch handlers.
+ * Coral Discuss MCP Server - tool definitions and dispatch handlers.
  * Uses SessionStore + pure state-machine functions.
  */
 

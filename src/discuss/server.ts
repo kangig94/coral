@@ -1,4 +1,4 @@
-/** Coral Discuss MCP Server — stdio transport for discussion session management. */
+/** Coral Discuss MCP Server - stdio transport for discussion session management. */
 
 declare const __VERSION__: string;
 
