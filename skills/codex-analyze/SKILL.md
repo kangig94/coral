@@ -12,7 +12,7 @@ Announce at start: "Using codex-analyze to investigate via Codex with Claude ver
 
 ## Execution
 
-1. **Load protocol**: Read `agents/codex-analyst.md` for the prompt template and system instructions
+1. **Load protocol**: Read `agents/codex-proxy.md` for the prompt template and system instructions. Use the analyst role's prompt template (`### Role: analyst` section).
 2. **Gather context**: From the conversation, collect:
    - Investigation target and specific question
    - File paths, error messages, stack traces
@@ -26,4 +26,4 @@ Announce at start: "Using codex-analyze to investigate via Codex with Claude ver
 
 ## Error Policy
 
-If `agents/codex-analyst.md` cannot be read, report the error to the user. Do not fall back to inline analysis — the agent protocol is a required dependency.
+If `agents/codex-proxy.md` cannot be read, report the error to the user. Do not fall back to inline analysis — the agent protocol is a required dependency.

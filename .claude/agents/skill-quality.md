@@ -63,8 +63,8 @@ arguments:
 ### Pattern 3: Agent References
 ```markdown
 <!-- CORRECT: References existing agent file -->
-Spawn Task with subagent_type: coral:codex-architect
-<!-- Agent file exists: agents/codex-architect.md -->
+Spawn Task with subagent_type: coral:codex-proxy
+<!-- Agent file exists: agents/codex-proxy.md -->
 
 <!-- WRONG: References non-existent agent -->
 Spawn Task with subagent_type: coral:codex-reviewer

@@ -52,10 +52,10 @@ Collect relevant context from the current conversation:
 ## 5a. Review (parallel subagent spawn)
 
 Spawn TWO Task agents in a SINGLE message (parallel):
-- `subagent_type: coral:codex-architect` — architecture/design perspective
-- `subagent_type: coral:codex-critic` — critical review/flaw finding
+- `subagent_type: coral:codex-proxy` with `Role: architect` in the prompt — architecture/design perspective
+- `subagent_type: coral:codex-proxy` with `Role: critic` in the prompt — critical review/flaw finding
 
-Provide each with the gathered context and working directory.
+Provide each with the gathered context, working directory, and their respective `Role:` prefix.
 
 After both return, **synthesize**:
 1. Merge findings, deduplicate overlapping issues
@@ -64,7 +64,7 @@ After both return, **synthesize**:
 
 ## 5b. Specialized intent (analyst, ralph)
 
-Read the relevant agent protocol (`agents/codex-analyst.md` or `agents/codex-ralph.md`) for the prompt template. Call `codex_session_create` or `codex_session_send` directly, following the protocol's structure. Pass `working_directory` and appropriate `reasoning_effort`.
+Read the unified agent protocol (`agents/codex-proxy.md`) for the prompt template. Use `Role: analyst` for investigation/debug intents and `Role: ralph` for persistent execution intents. Call `codex_session_create` or `codex_session_send` directly, following the protocol's structure for that role. Pass `working_directory` and appropriate `reasoning_effort`.
 
 ## 5c. General request
 

@@ -14,7 +14,7 @@ Announce at start: "Using codex-ralph to execute this task via Codex with Claude
 
 ## Execution
 
-1. **Load protocol**: Read `agents/codex-ralph.md` for the prompt template and system instructions
+1. **Load protocol**: Read `agents/codex-proxy.md` for the prompt template and system instructions. Use the ralph role's prompt template (`### Role: ralph` section).
 2. **Gather context**: Collect task description, acceptance criteria, file paths, constraints from conversation
 
 ## Execution Loop
@@ -48,4 +48,4 @@ After the loop exits:
 
 ## Error Policy
 
-If `agents/codex-ralph.md` cannot be read, report the error to the user. Do not fall back to inline execution — the agent protocol is a required dependency.
+If `agents/codex-proxy.md` cannot be read, report the error to the user. Do not fall back to inline execution — the agent protocol is a required dependency.
