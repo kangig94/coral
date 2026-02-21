@@ -24,6 +24,7 @@ const reasoningEffortSchema = z
   .enum(['low', 'medium', 'high', 'xhigh'])
   .optional();
 const backgroundSchema = z.boolean().default(false);
+const bypassSandboxSchema = z.boolean().default(false);
 
 export const codexSessionCreateSchema = z.object({
   name: sessionNameSchema.optional(),
@@ -32,6 +33,7 @@ export const codexSessionCreateSchema = z.object({
   working_directory: cwdSchema,
   reasoning_effort: reasoningEffortSchema,
   background: backgroundSchema,
+  dangerously_bypass_sandbox: bypassSandboxSchema,
 });
 
 export const codexSessionSendSchema = z.object({
@@ -41,6 +43,7 @@ export const codexSessionSendSchema = z.object({
   working_directory: cwdSchema,
   reasoning_effort: reasoningEffortSchema,
   background: backgroundSchema,
+  dangerously_bypass_sandbox: bypassSandboxSchema,
 });
 
 export const codexSessionListSchema = z.object({}).strict();
@@ -53,6 +56,7 @@ export const codexSessionForkSchema = z.object({
   working_directory: cwdSchema,
   reasoning_effort: reasoningEffortSchema,
   background: backgroundSchema,
+  dangerously_bypass_sandbox: bypassSandboxSchema,
 });
 
 export const codexSessionAbortSchema = z.object({

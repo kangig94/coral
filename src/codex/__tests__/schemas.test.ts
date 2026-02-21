@@ -55,6 +55,20 @@ describe('codexSessionCreateSchema', () => {
   it('rejects invalid reasoning_effort', () => {
     expect(() => codexSessionCreateSchema.parse({ prompt: 'Hi', reasoning_effort: 'max' })).toThrow(ZodError);
   });
+
+  it('dangerously_bypass_sandbox defaults to false when omitted', () => {
+    const result = codexSessionCreateSchema.parse({ prompt: 'Hi' });
+    expect(result.dangerously_bypass_sandbox).toBe(false);
+  });
+
+  it('dangerously_bypass_sandbox accepts explicit true', () => {
+    const result = codexSessionCreateSchema.parse({ prompt: 'Hi', dangerously_bypass_sandbox: true });
+    expect(result.dangerously_bypass_sandbox).toBe(true);
+  });
+
+  it('dangerously_bypass_sandbox rejects non-boolean', () => {
+    expect(() => codexSessionCreateSchema.parse({ prompt: 'Hi', dangerously_bypass_sandbox: 'yes' })).toThrow(ZodError);
+  });
 });
 
 describe('codexSessionSendSchema', () => {

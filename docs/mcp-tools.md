@@ -25,6 +25,7 @@ Create a Codex session. The sole entry point for all Codex execution. Internally
 | `working_directory` | string | No | Working directory |
 | `reasoning_effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
 | `background` | boolean | No | Run in background (default: `false`). Returns immediately with progress info. |
+| `dangerously_bypass_sandbox` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when Claude Code is in bypass permissions mode (⏵⏵). |
 
 ### Output — Foreground (default)
 
@@ -73,6 +74,7 @@ Send a follow-up prompt to an existing session. Uses `codex exec resume THREAD_I
 | `working_directory` | string | No | Working directory |
 | `reasoning_effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
 | `background` | boolean | No | Run in background (default: `false`) |
+| `dangerously_bypass_sandbox` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when Claude Code is in bypass permissions mode (⏵⏵). |
 
 ### Lookup Logic
 
@@ -146,6 +148,7 @@ Fork an existing session to continue the conversation in a new branch.
 | `working_directory` | string | No | Working directory |
 | `reasoning_effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
 | `background` | boolean | No | Run in background (default: `false`) |
+| `dangerously_bypass_sandbox` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when Claude Code is in bypass permissions mode (⏵⏵). |
 
 ### Output (JSON)
 

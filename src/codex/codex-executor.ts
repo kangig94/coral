@@ -248,7 +248,13 @@ function prependClaudeMd(prompt: string): string {
 }
 
 /** Base flags shared by all exec modes. Web search is always enabled. */
-const BASE_FLAGS = ['--json', '--full-auto', '-c', 'web_search=live'];
+function baseFlags(bypassSandbox: boolean): string[] {
+  return [
+    '--json',
+    bypassSandbox ? '--dangerously-bypass-approvals-and-sandbox' : '--full-auto',
+    '-c', 'web_search=live',
+  ];
+}
 
 /** Build optional CLI flags for reasoning_effort. */
 function extraFlags(reasoningEffort?: string): string[] {
@@ -261,12 +267,13 @@ export async function executeOneShot(
   model?: string,
   cwd?: string,
   reasoningEffort?: string,
+  bypassSandbox = false,
   onEvent?: (line: string) => void,
   signal?: AbortSignal,
 ): Promise<CodexExecResult> {
   const resolvedModel = getModel(model);
   return executeCodex(
-    ['exec', '-m', resolvedModel, ...BASE_FLAGS, ...extraFlags(reasoningEffort)],
+    ['exec', '-m', resolvedModel, ...baseFlags(bypassSandbox), ...extraFlags(reasoningEffort)],
     prependClaudeMd(prompt), resolvedModel, cwd, onEvent, signal,
   );
 }
@@ -280,12 +287,13 @@ export async function executeResume(
   model?: string,
   cwd?: string,
   reasoningEffort?: string,
+  bypassSandbox = false,
   onEvent?: (line: string) => void,
   signal?: AbortSignal,
 ): Promise<CodexExecResult> {
   const resolvedModel = getModel(model);
   return executeCodex(
-    ['exec', 'resume', threadId, '-m', resolvedModel, ...BASE_FLAGS, ...extraFlags(reasoningEffort)],
+    ['exec', 'resume', threadId, '-m', resolvedModel, ...baseFlags(bypassSandbox), ...extraFlags(reasoningEffort)],
     prompt,
     resolvedModel,
     cwd,
@@ -301,11 +309,12 @@ export async function executeFork(
   model?: string,
   cwd?: string,
   reasoningEffort?: string,
+  bypassSandbox = false,
   onEvent?: (line: string) => void,
   signal?: AbortSignal,
 ): Promise<CodexExecResult> {
   const forkPrompt = prompt ?? 'Continue from where we left off.';
-  return executeResume(threadId, forkPrompt, model, cwd, reasoningEffort, onEvent, signal);
+  return executeResume(threadId, forkPrompt, model, cwd, reasoningEffort, bypassSandbox, onEvent, signal);
 }
 
 // Test-only exports
