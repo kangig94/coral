@@ -11,8 +11,8 @@ Set up a project for AI-assisted development. Scans the project, plans appropria
 
 ## Execution
 
-1. **Load protocol**: Read `agents/init-project.md` for the full orchestration protocol
-2. **Execute protocol**: Follow the 4-phase protocol (Scan → Plan → Execute → Report)
+1. **Load protocol**: Read `agents/init-project.md` for the full orchestration protocol. **You** execute it directly — do NOT spawn an init-project agent. The protocol spawns reviewers and ralph as subagents, which requires depth 0.
+2. **Execute protocol**: Follow the 4-phase protocol yourself (Scan → Plan → Execute → Report). Only reviewers and ralph are spawned as subagents.
 3. **Verify output**: Run Output Manifest check below
 4. **Present results**: Show the final report to the user
 

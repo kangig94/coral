@@ -147,3 +147,15 @@ Inherits all React agents plus:
 #### STRONG
 - [ ] OnPush change detection where applicable
 - [ ] Lazy loading for feature modules
+
+---
+
+### Recommended Docs (Frontend)
+
+No standalone domain docs required — frontend architecture is well-served by the universal docs.
+
+**Architecture Sections**: Frontend projects should include these in `docs/ARCHITECTURE.md`:
+- Component hierarchy and organization pattern (atomic, feature-based, etc.)
+- State management architecture (store structure, data flow direction)
+- Routing map (pages, layouts, guards, nested routes)
+- API integration layer (client setup, error handling, caching strategy)

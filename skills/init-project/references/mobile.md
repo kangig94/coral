@@ -109,3 +109,16 @@ Inherits React agents (state-guardian, render-optimizer) plus:
 #### STRONG
 - [ ] StrictMode enabled in debug builds
 - [ ] RecyclerView uses DiffUtil
+
+---
+
+### Recommended Docs (Mobile)
+
+| Doc | Content | Priority | Condition |
+|-----|---------|----------|-----------|
+| `docs/platform-setup.md` | Per-platform build/run instructions, signing config, emulator setup, CI device testing | Strong | Any mobile project |
+
+**Architecture Sections**: Mobile projects should include these in `docs/ARCHITECTURE.md`:
+- Navigation graph (screen flow, deep link routes, tab/stack structure)
+- Native integration points (bridges, plugins, platform channels)
+- Offline/sync strategy (if applicable)
