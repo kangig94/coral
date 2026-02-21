@@ -1,12 +1,12 @@
 ---
 name: debug
-description: "Systematic bug diagnosis via hypothesis testing and root cause analysis."
+description: "Systematic bug diagnosis, planning, and fix execution."
 argument-hint: "[codex:|claude:]<bug description or error message>"
 ---
 
-# Bug Diagnosis
+# Bug Debugging
 
-Systematically diagnose bugs through hypothesis testing and evidence-based reasoning.
+Diagnose bugs, plan fixes, and execute — end-to-end.
 
 ## Argument Routing
 
@@ -21,21 +21,37 @@ Strip the prefix before passing the prompt to the execution path.
 
 ## Claude-native Execution (default)
 
-1. **Load protocol**: Read `agents/debugger.md`. **You** execute it directly - do NOT spawn a debugger agent.
-2. **Gather symptoms**: Error messages, stack traces, failing tests from argument + conversation context
-3. **Execute protocol**: Follow `<Investigation_Protocol>` steps
-4. **Report**: Present diagnosis in `<Output_Format>` structure
-5. **Handoff suggestion**: If fix is clear, suggest `/ralph` to implement
+1. **Diagnose**: Read `agents/debugger.md`. **You** execute it directly - do NOT spawn
+   a debugger agent. Follow `<Investigation_Protocol>` steps with conversation context.
+   Present diagnosis in `<Output_Format>` structure.
+2. **Plan fix**: Read `agents/planner.md`. **You** execute it directly - do NOT spawn
+   a planner agent. Use diagnosis result as task context. Configure reviewers:
+   `coral:architect` and `coral:critic` (full review loop, up to 5 rounds).
+   Only reviewers are spawned as subagents.
+3. **Execute fix**: Read `agents/ralph.md`. **You** execute it directly - do NOT spawn
+   a ralph agent. Implement the plan from step 2.
+4. **Project validation**: If project instructions define workflow rules (e.g., review gates,
+   post-implementation steps), follow them.
 
 ## Codex Delegation
 
-1. **Load protocols**: Read `agents/debugger.md` for diagnosis protocol, and `agents/codex-proxy.md`
-   for the Codex prompt template. Use the analyst role's prompt template (`### Role: analyst` section).
-2. **Gather context**: Symptoms, file paths, error messages
-3. **Call Codex**: Use `codex({ op: "exec", ... })` with debugger protocol as task context.
-   Pass `working_directory` and `reasoning_effort: "xhigh"`.
-4. **Verify**: Read cited file:line references, confirm findings accuracy
-5. **Fix discrepancies**: Drop findings with incorrect references
+1. **Diagnose**: Read `agents/debugger.md` for diagnosis protocol, and `agents/codex-proxy.md`
+   for the Codex prompt template. Use the analyst role's prompt template
+   (`### Role: analyst` section). Call `codex({ op: "exec", ... })` with debugger protocol
+   as task context. Pass `working_directory` and `reasoning_effort: "xhigh"`.
+   Verify cited file:line references. Drop findings with incorrect references.
+2. **Plan fix**: Read `agents/planner.md`. **You** execute it directly - do NOT spawn
+   a planner agent. Use diagnosis result as task context. Configure multi-phase review:
+   - Phase 1 reviewers: `coral:codex-proxy` with `Role: architect` and
+     `coral:codex-proxy` with `Role: critic` (full review loop, up to 5 rounds)
+   - Phase 2 cross-reviewers: `coral:architect` and `coral:critic`
+     (single verification pass + one retry)
+   Only reviewers are spawned as subagents.
+3. **Execute fix**: Read `agents/codex-proxy.md`. Use the ralph role's prompt template
+   (`### Role: ralph` section). Call `codex({ op: "exec", ... })` with the plan as task
+   context. Pass `working_directory` and `reasoning_effort: "high"`.
+   Verify all changes against the plan. Fix discrepancies directly.
+4. **Project validation**: If project instructions define workflow rules, follow them.
 
 ## Sandbox bypass
 

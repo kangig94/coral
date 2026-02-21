@@ -11,6 +11,7 @@ Slash commands provided by the Coral plugin. Each skill is defined in `skills/{n
 | `/coral:coplan` | Collaborative planning with Codex architect/critic reviews, then Claude cross-review |
 | `/coral:ralph` | Persistent execution loop with verification (sonnet) |
 | `/coral:codex-ralph` | Persistent execution via Codex with Claude-controlled verification loop |
+| `/coral:debug` | Systematic bug diagnosis, planning, and fix execution |
 | `/coral:init-project` | Project initialization orchestrator - generates `.claude/` structure, agents, rules, docs |
 | `/coral:discuss` | Moderated multi-agent discussion via Agent Teams |
 | `/coral:statusline` | Install or remove the coral HUD statusline |
