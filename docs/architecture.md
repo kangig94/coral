@@ -9,7 +9,7 @@
 │  ┌──────────────┐  ┌───────────────┐  ┌────────────────────────────────┐  │
 │  │ SessionStart │  │ SubagentStart │  │  Skills /coral:*               │  │
 │  │ Hook         │  │ Hook          │  │  discuss, codex, plan,         │  │
-│  │ (CLAUDE.md   │  │ (codex-*      │  │  ralph, architect, ...         │  │
+│  │ (CLAUDE.md   │  │ (codex-*      │  │  ralph, analyze, ...           │  │
 │  │  injection)  │  │  delegation)  │  └───────────────┬────────────────┘  │
 │  └──────────────┘  └───────┬───────┘                  │                   │
 │                            │                ┌─────────┴─────────┐         │
@@ -204,10 +204,6 @@ coral/
 │           ├── server-handlers.test.ts
 │           └── persona-seed.test.ts
 ├── skills/
-│   ├── architect/
-│   │   └── SKILL.md             # /coral:architect (Claude-native)
-│   ├── critic/
-│   │   └── SKILL.md             # /coral:critic (Claude-native)
 │   ├── analyze/
 │   │   └── SKILL.md             # /coral:analyze (Claude-native)
 │   ├── ralph/

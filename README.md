@@ -134,8 +134,6 @@ The MCP server owns all state transitions. Agents cannot speak out of turn or bi
 
 | Skill | Description | Example |
 |---|---|---|
-| `/coral:architect` | Architecture review (Claude) | `review the architecture of this module` |
-| `/coral:critic` | Plan/code critique (Claude) | `review this plan` |
 | `/coral:analyze` | Deep analysis (Claude) | `investigate the root cause of this error` |
 | `/coral:codex-analyze` | Deep analysis (Codex + Claude synthesis) | `investigate why the session lookup is slow` |
 | `/coral:plan` | Planning with architect/critic review | `add retry logic to the API client` |

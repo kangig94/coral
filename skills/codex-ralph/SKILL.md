@@ -14,7 +14,7 @@ Announce at start: "Using codex-ralph to execute this task via Codex with Claude
 
 ## Execution
 
-1. **Load protocol**: Read `agents/codex-proxy.md` for the prompt template and system instructions. Use the ralph role's prompt template (`### Role: ralph` section).
+1. **Load protocol**: Read `agents/codex-proxy.md` for the prompt template and system instructions. Use the ralph role's prompt template (`### Role: ralph` section). **You** call Codex directly — do NOT spawn a codex-proxy agent.
 2. **Gather context**: Collect task description, acceptance criteria, file paths, constraints from conversation
 
 ## Execution Loop

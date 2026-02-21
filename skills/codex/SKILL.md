@@ -68,7 +68,7 @@ After both return, **synthesize**:
 
 ## 5b. Specialized intent (analyst, ralph)
 
-Read the unified agent protocol (`agents/codex-proxy.md`) for the prompt template. Use `Role: analyst` for investigation/debug intents and `Role: ralph` for persistent execution intents. Call `codex({ op: "exec", ... })` directly, following the protocol's structure for that role. Pass `working_directory` and appropriate `reasoning_effort`.
+Read the unified agent protocol (`agents/codex-proxy.md`) for the prompt template. Use `Role: analyst` for investigation/debug intents and `Role: ralph` for persistent execution intents. **You** call `codex({ op: "exec", ... })` directly — do NOT spawn a codex-proxy agent. Follow the protocol's structure for that role. Pass `working_directory` and appropriate `reasoning_effort`.
 
 ## 5c. General request
 

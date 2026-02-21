@@ -24,8 +24,8 @@ argument-hint: "[prompt]"
 2. Check session continuity (existing thread_id from conversation history)
 3. Analyze intent:
    - **Review** → parallel subagent spawn (`coral:codex-proxy` Role:architect + `coral:codex-proxy` Role:critic), then synthesize
-   - **Investigation/debug** → direct MCP call with analyst protocol (read `agents/codex-proxy.md`, `### Role: analyst` section)
-   - **Persistent execution** → direct MCP call with ralph protocol (read `agents/codex-proxy.md`, `### Role: ralph` section)
+   - **Investigation/debug** → direct MCP call with analyst protocol (read `agents/codex-proxy.md`, `### Role: analyst` section). Do NOT spawn a codex-proxy agent.
+   - **Persistent execution** → direct MCP call with ralph protocol (read `agents/codex-proxy.md`, `### Role: ralph` section). Do NOT spawn a codex-proxy agent.
    - **Everything else** → direct MCP call with verbatim prompt
 4. Gather context (file paths, code snippets, working_directory)
 5. Execute via MCP tools directly or spawn parallel subagents (review only)
@@ -39,56 +39,6 @@ argument-hint: "[prompt]"
 | `session send <name> <prompt>` | `/coral:codex session send review what about JWT?` |
 | `session list` | `/coral:codex session list` |
 | `session fork <name>` | `/coral:codex session fork review` |
-
----
-
-## /coral:architect
-
-Claude-native architecture analysis. Claude directly analyzes code using its native tools.
-
-**File**: `skills/architect/SKILL.md`
-
-### Configuration
-
-```yaml
----
-name: architect
-description: Architecture review via Claude-native analysis
-argument-hint: "[review target or question]"
----
-```
-
-### Behavior
-
-1. Load `agents/architect.md` protocol
-2. Execute Investigation_Protocol steps
-3. Present severity-rated results using Output_Format
-4. Deliver APPROVED / APPROVED WITH CONDITIONS / REJECT verdict
-
----
-
-## /coral:critic
-
-Claude-native plan/code critique. Verifies quality of plans and schema changes.
-
-**File**: `skills/critic/SKILL.md`
-
-### Configuration
-
-```yaml
----
-name: critic
-description: Critical review of code or plans via Claude-native analysis
-argument-hint: "[review target or question]"
----
-```
-
-### Behavior
-
-1. Load `agents/critic.md` protocol
-2. Execute Investigation_Protocol steps (file reference verification, implementation simulation)
-3. Severity-rated findings (CRITICAL/HIGH/MEDIUM/LOW)
-4. OKAY / REJECT verdict
 
 ---
 
@@ -171,7 +121,7 @@ argument-hint: "[investigation target or question]"
 
 ### Behavior
 
-1. Load protocol: read `agents/codex-proxy.md`, use `### Role: analyst` section for prompt template
+1. Load protocol: read `agents/codex-proxy.md`, use `### Role: analyst` section for prompt template. Call Codex directly — do NOT spawn a codex-proxy agent.
 2. Gather context (investigation target, file paths, error messages, what's been tried)
 3. Call Codex directly via `codex({ op: "exec", ... })` for all rounds, with `session` included for follow-ups, and `reasoning_effort: "xhigh"`.
 4. Post-process: verify file:line references for CRITICAL/HIGH findings, filter unrelated findings, restructure by severity, synthesize summary
@@ -196,7 +146,7 @@ argument-hint: "[task description]"
 
 ### Behavior
 
-1. Load protocol: read `agents/codex-proxy.md`, use `### Role: ralph` section for prompt template
+1. Load protocol: read `agents/codex-proxy.md`, use `### Role: ralph` section for prompt template. Call Codex directly — do NOT spawn a codex-proxy agent.
 2. Gather context (task description, file paths, progress, working_directory)
 3. Claude-controlled loop (up to 5 rounds):
    - Call Codex via `codex({ op: "exec", ... })` (first round) or `codex({ op: "exec", session, ... })` (subsequent rounds)

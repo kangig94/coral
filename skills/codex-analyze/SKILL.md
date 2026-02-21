@@ -12,7 +12,7 @@ Announce at start: "Using codex-analyze to investigate via Codex with Claude ver
 
 ## Execution
 
-1. **Load protocol**: Read `agents/codex-proxy.md` for the prompt template and system instructions. Use the analyst role's prompt template (`### Role: analyst` section).
+1. **Load protocol**: Read `agents/codex-proxy.md` for the prompt template and system instructions. Use the analyst role's prompt template (`### Role: analyst` section). **You** call Codex directly — do NOT spawn a codex-proxy agent.
 2. **Gather context**: From the conversation, collect:
    - Investigation target and specific question
    - File paths, error messages, stack traces
