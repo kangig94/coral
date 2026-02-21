@@ -85,3 +85,16 @@
 - [ ] Record count validation between stages
 - [ ] Data freshness monitoring
 - [ ] Backfill procedure documented
+
+---
+
+### Recommended Docs (Data)
+
+| Doc | Content | Priority | Condition |
+|-----|---------|----------|-----------|
+| `docs/data-dictionary.md` | Source systems, table/column definitions, types, business meaning, ownership | Strong | Any data project |
+
+**Architecture Sections**: Data projects should include these in `docs/ARCHITECTURE.md`:
+- Pipeline DAG structure and scheduling
+- Data lineage (source → transform → target)
+- Quality validation rules and SLA definitions

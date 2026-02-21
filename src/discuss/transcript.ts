@@ -1,6 +1,10 @@
 /**
  * Transcript rendering — pure functions operating on structured TranscriptEntry[].
  * Human-readable format with timestamps and soft 80 / hard 100 word-wrap.
+ *
+ * Two rendering paths:
+ * - renderEntries: full audit output for transcript.md (scores, quotas, all data)
+ * - formatFull: agent-facing view (bids filtered to speaker name only — information veil)
  */
 
 import type { AgentState, TranscriptEntry } from './types.js';
@@ -80,7 +84,7 @@ export function renderEntries(
   return entries.map((e) => renderEntry(e, agents)).join('');
 }
 
-function renderEntry(e: TranscriptEntry, agents: Record<string, AgentState>): string {
+export function renderEntry(e: TranscriptEntry, agents: Record<string, AgentState>): string {
   switch (e.type) {
     case 'bids': {
       const rows = Object.entries(e.bids)
@@ -100,13 +104,6 @@ function renderEntry(e: TranscriptEntry, agents: Record<string, AgentState>): st
       const ts = formatTimestamp(e.ts);
       const wrapped = wrapText(e.content);
       return `\n### ${ts} ${e.display_name} (${e.agent})\n${wrapped}\n`;
-    }
-    case 'vote': {
-      const rows = Object.entries(e.votes)
-        .map(([name, v]) => `| ${agents[name]?.display_name ?? name} (${name}) | ${v === 0 ? 'agree' : 'disagree'} |`)
-        .join('\n');
-      const verdict = e.unanimous ? 'Unanimous — ending discussion' : 'Not unanimous — continuing';
-      return `\n#### Vote — Epoch ${e.epoch}\n| Agent | Vote |\n|-------|------|\n${rows}\n> **${verdict}**\n\n---\n`;
     }
     case 'epoch_summary': {
       const ts = formatTimestamp(e.ts);
@@ -131,14 +128,26 @@ export function renderHeader(topic: string): string {
 
 // ─── Transcript read functions (operate on structured entries) ────────────────
 
-/** Return full render of all transcript entries. */
+/**
+ * Agent-facing full transcript: bids entries filtered to speaker name only (information veil).
+ * Agents cannot infer bid scores, quota state, or resolution mechanism from this view.
+ * Full audit data (scores, quotas) is preserved in transcript.md for human review.
+ */
 export function formatFull(entries: TranscriptEntry[], agents: Record<string, AgentState>): string {
-  return renderHeader('') + renderEntries(entries, agents);
+  const agentView = entries.map((e) => {
+    if (e.type === 'bids') {
+      if (!e.winner) return '';  // no_winner rounds: skip (no speaker to announce)
+      const dn = agents[e.winner]?.display_name ?? e.winner;
+      return `\n> **Speaker: ${dn}**\n`;
+    }
+    return renderEntry(e, agents);
+  }).join('');
+  return renderHeader('') + agentView;
 }
 
 /**
  * Last N speech entries in full + earlier as one-line summaries.
- * Non-speech entries (bids, votes, epoch summaries) are excluded.
+ * Non-speech entries (bids, epoch summaries) are excluded.
  */
 export function formatRecent(
   entries: TranscriptEntry[],

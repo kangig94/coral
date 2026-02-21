@@ -67,7 +67,7 @@ Injects the plugin's CLAUDE.md content into Claude's context at the start of eve
 | Field | Value | Description |
 |---|---|---|
 | `SubagentStart` | | Event fired when an agent starts |
-| `matcher` | `"(^|:)codex-"` | Execute hook for agents with `codex-` prefix (bare or namespaced, e.g., `coral:codex-architect`) |
+| `matcher` | `"(^|:)codex-"` | Execute hook for agents with `codex-` prefix (bare or namespaced, e.g., `coral:codex-proxy`) |
 | `type` | `"command"` | Execute a shell command |
 | `command` | `${CLAUDE_PLUGIN_ROOT}/hooks/detect-codex-agent.sh` | Detection script path (`CLAUDE_PLUGIN_ROOT` is auto-replaced with plugin root) |
 | `timeout` | `5` | 5-second timeout (hook is ignored if exceeded) |
@@ -123,7 +123,7 @@ fi
 ```
 1. SubagentStart event fires (matcher: "(^|:)codex-")
 2. Event JSON received via stdin
-   e.g.: {"agent_name": "codex-architect", "task": "..."}
+   e.g.: {"agent_name": "codex-proxy", "task": "..."}
 3. Extract agent_name via sed (POSIX-safe, no external dependencies)
    - "agent_name" field takes priority
    - Falls back to "name" field

@@ -57,12 +57,12 @@ model: opus
     Provide each: plan file path, working directory, relevant context.
 
     **IMPORTANT**: Use EXACTLY the reviewer types specified by the caller. Do NOT substitute
-    codex-* variants (e.g., coral:codex-architect) unless the caller explicitly requested them.
+    codex-* variants (e.g., coral:codex-proxy) unless the caller explicitly requested them.
     Codex variants are for `/coral:coplan` only. Direct MCP tool calls are NEVER a substitute
     for spawning reviewer agents — you must use the Task tool.
 
     **3b. Thread Tracking (Codex reviewers only)**
-    Only applies when the caller specifies codex-* reviewers (e.g., coral:codex-architect).
+    Only applies when the caller specifies codex-* reviewers (e.g., coral:codex-proxy).
     Save each reviewer's `thread_id` separately, keyed by reviewer type (e.g., architect_thread_id, critic_thread_id).
     On Round 2+, include the CORRECT thread_id for each reviewer in its prompt:
       thread_id: {that reviewer's saved thread_id}

@@ -94,3 +94,16 @@ fclose(fp);
 | Priority inversion | High-priority task blocked | Timing analysis, priority trace | Use priority inheritance mutex |
 | Missing volatile | Compiler optimizes out read | Code review, optimization comparison | Mark hardware registers volatile |
 | ISR too long | Missed deadlines | Timing measurement | Defer work to task context |
+
+---
+
+### Recommended Docs (Systems)
+
+| Doc | Content | Priority | Condition |
+|-----|---------|----------|-----------|
+| `docs/build-guide.md` | Toolchain requirements, cross-compilation setup, dependency management, build variants | Strong | CMakeLists.txt or Makefile detected |
+
+**Architecture Sections**: Systems projects should include these in `docs/ARCHITECTURE.md`:
+- Memory layout and allocation strategy
+- Thread/task model and synchronization design
+- Hardware abstraction layer boundaries (if embedded)

@@ -64,10 +64,22 @@ model: opus
     2. README.md: description, setup, architecture notes
     3. Directory structure: top level + key subdirectories → map to architectural layers
     4. Source file extensions: identify primary language(s)
-    5. Import patterns: sample 3-5 source files for dependency directions
+    5. Import/dependency analysis: trace imports across key modules to build the dependency graph.
+       Map which directories depend on which — this becomes the layer diagram in ARCHITECTURE.md.
+       For backend: identify route definitions, middleware chain, DB access layer.
+       For frontend: identify component tree roots, state management entry points, API client layer.
     6. Existing .claude/: check for agents, CLAUDE.md, settings (merge targets)
     7. Existing docs/: check what documentation exists
     8. Build/test config: detect build tool, test framework, linter, formatter
+    9. Documentation assessment:
+       - **Gaps**: identify docs not covered by domain references.
+         Ask: "What would a new team member struggle to understand from code alone?"
+         Look for: complex configuration, cross-cutting workflows, third-party integrations,
+         non-obvious architectural decisions. Note each as a candidate doc with brief rationale.
+       - **Enhancements**: review existing docs (from step 7) for missing sections that domain
+         references or scan results reveal. E.g., an existing ARCHITECTURE.md that lacks the
+         domain's recommended Architecture Sections, or an API doc missing auth requirements.
+         Note each as an enhancement candidate with what to add.
 
     ### 1e. Domain Identification
 
@@ -97,7 +109,7 @@ model: opus
     3. Merge policy: `references/merge-policy.md`
     4. Templates: `templates/CLAUDE.md.template`, `templates/rules/*.md.template`, agent templates
 
-    Extract from each domain reference: required agents, mandatory concerns, validation items, core patterns.
+    Extract from each domain reference: required agents, mandatory concerns, validation items, core patterns, recommended docs.
 
     ## Phase 2: Plan
 
@@ -110,6 +122,21 @@ model: opus
     1. Write initial plan to `.claude/coral/plans/init-{project-name}.md`
        - Structure: Requirements, Acceptance Criteria, Artifact Manifest, Risks, Verification Steps
        - For each artifact: file path, content description, merge rule
+       - Artifact Manifest must include domain-specific docs: evaluate each domain reference's Recommended Docs
+         table against scan results (Strong docs included by default, Conditional docs included only when
+         their detection condition is met). List only the docs that apply to this project.
+       - Also include project-specific docs identified in step 1d.9 (gaps) — these are docs the agent
+         judged necessary based on project complexity, not from domain reference tables.
+       - For existing docs identified as enhancement candidates (step 1d.9), list specific sections
+         to add. Mark merge rule as "enhance" (append sections, don't overwrite).
+       - **Doc content drafts** (existing projects): ralph executes the plan as-is, so the plan must
+         contain the actual content for each doc — not just "generate ARCHITECTURE.md". Include:
+         * ARCHITECTURE.md: layer diagram (from step 1d.5 dependency analysis), key files table,
+           dependency rules, modification policy per directory, domain Architecture Sections
+         * DEV_GUIDE.md: exact build/test/lint commands (from step 1d.8), workflow phases, conventions
+         * Domain docs (api-reference, database-schema, etc.): concrete content derived from scan
+           (e.g., endpoint list from route definitions, table definitions from ORM models)
+         For new projects, mark uncertain sections with "to be updated" per writing-guide.
     2. Run review loop — spawn BOTH reviewers in parallel (single message, two Task calls):
        ```
        Task(subagent_type="coral:architect", prompt="Review plan: {plan_file_path}. Working dir: {project root}. ...")
@@ -171,7 +198,15 @@ model: opus
       4. Agent merge: Skip if same-name file exists.
          Model assignment: tier 0-1 = opus, tier 2-3 = sonnet. Never haiku.
 
-      5. Docs merge: Skip if exists.
+      5. Docs merge: Skip if exists (default), or enhance if merge rule = "enhance".
+         - Universal: `docs/ARCHITECTURE.md`, `docs/DEV_GUIDE.md` (always)
+         - Domain-specific: generate docs listed in the plan's Artifact Manifest
+         - Architecture Sections: include domain-specific sections in ARCHITECTURE.md
+           per the domain reference's Architecture Sections list
+         - CLAUDE.md Key Documentation: add domain-specific doc paths to the
+           Key Documentation section of the generated CLAUDE.md
+         - Doc content comes from the plan — ralph writes what the plan specifies,
+           not from its own source analysis.
 
       6. .gitignore: Append Coral block if not already present:
          # Coral (device-local files)

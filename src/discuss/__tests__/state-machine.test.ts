@@ -1,5 +1,5 @@
 /**
- * Pure state machine tests — no filesystem, no async (except resolveWinner in voting flow).
+ * Pure state machine tests — no filesystem, no async.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -15,6 +15,7 @@ import {
   topicSlug,
   formatDateId,
   DEFAULT_BID_THRESHOLD,
+  DEFAULT_MAX_EPOCHS,
 } from '../state-machine.js';
 import type { DiscussState } from '../types.js';
 
@@ -164,6 +165,17 @@ describe('initSession', () => {
     expect(state.current_bids['alice']).toBeNull();
     expect(state.current_bids['bob']).toBeNull();
   });
+
+  it('should use DEFAULT_MAX_EPOCHS (2) when not specified', () => {
+    const state = initSession(BASE_INPUT, NOW);
+    expect(state.max_epochs).toBe(DEFAULT_MAX_EPOCHS);
+    expect(state.max_epochs).toBe(2);
+  });
+
+  it('should accept custom maxEpochs parameter', () => {
+    const state = initSession(BASE_INPUT, NOW, DEFAULT_BID_THRESHOLD, 3);
+    expect(state.max_epochs).toBe(3);
+  });
 });
 
 // ─── startBidding ─────────────────────────────────────────────────────────────
@@ -215,16 +227,6 @@ describe('applyBid', () => {
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.error).toBe('agent_not_found');
-  });
-
-  it('should reject invalid voting score', () => {
-    const state = makeSession();
-    // Put into voting status
-    const votingState = { ...state, status: 'voting' as const };
-    const res = applyBid(votingState, 'alice', 50, NOW);
-    expect(res.ok).toBe(false);
-    if (res.ok) return;
-    expect(res.error).toBe('voting_score_invalid');
   });
 
   it('should reject bid in setup status', () => {
@@ -393,7 +395,10 @@ describe('resolveWinner — fallback pool', () => {
     expect('resolve_type' in result && result.resolve_type).toBe('fallback');
   });
 
-  it('should block second fallback (vote_required)', () => {
+  it('should return all_blocked when second fallback is impossible (not allExhausted)', () => {
+    // alice: quota=0, fallback_used=true (exhausted), bob: quota=1, bid below threshold
+    // allBelowThreshold=false (alice bids >= threshold), allExhausted=false (bob still has quota)
+    // → no_winner, reason='all_blocked'
     const input = { ...BASE_INPUT, quota_per_epoch: 1 };
     const init0 = initSession(input, NOW);
     init0.session_id = 'test'; init0.session_dir = 'test'; init0.team_name = 'test';
@@ -418,7 +423,7 @@ describe('resolveWinner — fallback pool', () => {
     const sp2 = applySpeech(r2.value[0], 'alice', 'fallback speech', NOW);
     if (!sp2.ok) return;
 
-    // alice.fallback_used=true, bob below threshold → vote_required
+    // alice: quota=0, fallback_used=true; bob: quota=1, bid=20 (below threshold)
     const afterSp2b = withTranscriptRead(sp2.value, 'alice', 'bob');
     const s5 = applyBid(afterSp2b, 'alice', 50, NOW);
     const s6 = applyBid(s5.ok ? s5.value : afterSp2b, 'bob', 20, NOW);
@@ -426,7 +431,9 @@ describe('resolveWinner — fallback pool', () => {
     expect(r3.ok).toBe(true);
     if (!r3.ok) return;
     const [, result] = r3.value;
-    expect('vote_required' in result && result.vote_required).toBe(true);
+    expect('no_winner' in result && result.no_winner).toBe(true);
+    if (!('no_winner' in result)) return;
+    expect(result.reason).toBe('all_blocked');
   });
 
   it('should not decrement quota for fallback speaker', () => {
@@ -527,99 +534,67 @@ describe('applySpeech', () => {
   });
 });
 
-// ─── voting flow ──────────────────────────────────────────────────────────────
+// ─── resolveWinner — auto epoch transition ────────────────────────────────────
 
-describe('voting flow', () => {
-  function reachVoteRequired(): DiscussState {
-    const input = { ...BASE_INPUT, quota_per_epoch: 1 };
-    const init = initSession(input, NOW);
-    init.session_id = 'test'; init.session_dir = 'test'; init.team_name = 'test';
-    const sb = startBidding(init, NOW);
-    if (!sb.ok) throw new Error('unreachable');
-    let state = sb.value;
-
-    const bid = (s: DiscussState, a: number, b: number) => {
-      const s1 = applyBid(s, 'alice', a, NOW);
-      const s2 = applyBid(s1.ok ? s1.value : s, 'bob', b, NOW);
-      return s2.ok ? s2.value : s;
+describe('resolveWinner — auto epoch transition', () => {
+  /** Fabricate state where both agents are fully exhausted but still desire to speak. */
+  function makeExhaustedState(epochNum: number, maxEpochs: number): DiscussState {
+    const state = makeSession();
+    return {
+      ...state,
+      epoch: epochNum,
+      max_epochs: maxEpochs,
+      agents: {
+        alice: { ...state.agents['alice'], quota_remaining: 0, fallback_used: true },
+        bob: { ...state.agents['bob'], quota_remaining: 0, fallback_used: true },
+      },
+      current_bids: { alice: 80, bob: 60 }, // both above threshold
+      pending_bidders: [],
+      last_speech_step: 1, // enforce read after first speech
+      transcript_read_step: { alice: state.step, bob: state.step },
     };
-
-    // alice exhausts quota
-    state = bid(state, 80, 20);
-    const r1 = resolveWinner(state, NOW);
-    if (!r1.ok) throw new Error('r1 failed');
-    const sp1 = applySpeech(r1.value[0], 'alice', 's', NOW);
-    if (!sp1.ok) throw new Error('sp1 failed');
-
-    // alice uses fallback
-    state = bid(withTranscriptRead(sp1.value, 'alice', 'bob'), 80, 20);
-    const r2 = resolveWinner(state, NOW);
-    if (!r2.ok) throw new Error('r2 failed');
-    const sp2 = applySpeech(r2.value[0], 'alice', 's2', NOW);
-    if (!sp2.ok) throw new Error('sp2 failed');
-
-    // vote_required
-    state = bid(withTranscriptRead(sp2.value, 'alice', 'bob'), 80, 20);
-    const r3 = resolveWinner(state, NOW);
-    if (!r3.ok) throw new Error('r3 failed');
-    return r3.value[0]; // status=voting
   }
 
-  it('should transition to voting when both pools empty', () => {
-    const state = reachVoteRequired();
-    expect(state.status).toBe('voting');
-  });
-
-  it('should return unanimous=true and keep status=voting on unanimous vote', () => {
-    const state = reachVoteRequired();
-    const s1 = applyBid(state, 'alice', 0, NOW);
-    const s2 = applyBid(s1.ok ? s1.value : state, 'bob', 0, NOW);
-    const res = resolveWinner(s2.ok ? s2.value : state, NOW);
+  it('should auto-transition to next epoch when allExhausted and epoch < max_epochs', () => {
+    const state = makeExhaustedState(1, 2);
+    const res = resolveWinner(state, NOW);
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     const [newState, result] = res.value;
-    expect('end_vote' in result && result.end_vote).toBe(true);
-    expect('unanimous' in result && result.unanimous).toBe(true);
-    expect(newState.status).toBe('voting'); // stays voting
-  });
-
-  it('should reset quota on non-unanimous vote', () => {
-    const state = reachVoteRequired();
-    const s1 = applyBid(state, 'alice', 1, NOW);
-    const s2 = applyBid(s1.ok ? s1.value : state, 'bob', 0, NOW);
-    const res = resolveWinner(s2.ok ? s2.value : state, NOW);
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    const [newState, result] = res.value;
-    expect('end_vote' in result && result.end_vote).toBe(true);
-    expect('unanimous' in result && result.unanimous).toBe(false);
-    expect(newState.status).toBe('bidding');
+    expect('no_winner' in result && result.no_winner).toBe(true);
+    if (!('no_winner' in result)) return;
+    expect(result.reason).toBe('epoch_transition');
+    expect('new_epoch' in result && result.new_epoch).toBe(true);
+    expect(result.epoch).toBe(2);
     expect(newState.epoch).toBe(2);
+    expect(newState.status).toBe('bidding');
     expect(newState.cold_start).toBe(true);
-    expect(newState.agents['alice'].quota_remaining).toBe(1);
+    expect(newState.agents['alice'].quota_remaining).toBe(3); // quota_per_epoch reset
     expect(newState.agents['alice'].fallback_used).toBe(false);
+    expect(newState.epoch_summary_written).toBeNull(); // reset for new epoch
   });
 
-  it('should reject voting score > 1', () => {
-    const state = reachVoteRequired();
-    const res = applyBid(state, 'alice', 50, NOW);
-    expect(res.ok).toBe(false);
-    if (res.ok) return;
-    expect(res.error).toBe('voting_score_invalid');
-  });
-
-  it('should append vote transcript entry', () => {
-    const state = reachVoteRequired();
-    const s1 = applyBid(state, 'alice', 0, NOW);
-    const s2 = applyBid(s1.ok ? s1.value : state, 'bob', 0, NOW);
-    const res = resolveWinner(s2.ok ? s2.value : state, NOW);
-    expect(res.ok).toBe(true);
+  it('should stamp transcript_read_step on epoch transition (no forced re-read)', () => {
+    const state = makeExhaustedState(1, 2);
+    const res = resolveWinner(state, NOW);
     if (!res.ok) return;
     const [newState] = res.value;
-    const voteEntry = newState.transcript.find((e) => e.type === 'vote');
-    expect(voteEntry).toBeDefined();
-    if (voteEntry?.type !== 'vote') return;
-    expect(voteEntry.unanimous).toBe(true);
+    // readStep stamped to new step — agents can bid without re-reading
+    expect(newState.transcript_read_step['alice']).toBe(newState.step);
+    expect(newState.transcript_read_step['bob']).toBe(newState.step);
+    const bidRes = applyBid(newState, 'alice', 80, NOW);
+    expect(bidRes.ok).toBe(true);
+  });
+
+  it('should return max_epochs_reached when epoch >= max_epochs', () => {
+    const state = makeExhaustedState(2, 2); // already at max
+    const res = resolveWinner(state, NOW);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const [, result] = res.value;
+    expect('no_winner' in result && result.no_winner).toBe(true);
+    if (!('no_winner' in result)) return;
+    expect(result.reason).toBe('max_epochs_reached');
   });
 });
 
@@ -755,30 +730,30 @@ describe('applyBid — transcript read enforcement', () => {
     expect(res.ok).toBe(true);
   });
 
-  it('should allow voting without transcript read (status=voting)', () => {
-    const afterSpeech = makeAfterSpeech();
-    const votingState = { ...afterSpeech, status: 'voting' as const };
-    const res = applyBid(votingState, 'alice', 0, NOW);
-    expect(res.ok).toBe(true);
+  it('should NOT require re-read after auto epoch transition (readStep stamped to new step)', () => {
+    // After epoch transition: step incremented AND readStep stamped to new step.
+    // Agents arrive in epoch 2 with readStep >= step pre-satisfied — no forced re-read.
+    const transitionedState: DiscussState = {
+      ...makeSession(),
+      step: 4, epoch: 2, max_epochs: 2,
+      last_speech_step: 3, // enforcement active
+      transcript_read_step: { alice: 4, bob: 4 }, // stamped by epoch transition
+    };
+    expect(applyBid(transitionedState, 'alice', 80, NOW).ok).toBe(true);
   });
 
-  it('should enforce transcript read at epoch 2 boundary (step incremented by resolveVote)', () => {
-    // Simulate state after non-unanimous vote: resolveVote increments step to 4,
-    // but alice's readStep is still 3 from the previous epoch.
-    const epoch2State: DiscussState = {
+  it('should reject bid when readStep is stale (general rule)', () => {
+    // Stale readStep (not yet stamped or manually reset) still rejects
+    const staleState: DiscussState = {
       ...makeSession(),
-      step: 4, epoch: 2,
-      last_speech_step: 3, // enforcement active (> 0)
-      transcript_read_step: { alice: 3, bob: 3 }, // stale readStep from epoch 1
+      step: 4, epoch: 2, max_epochs: 2,
+      last_speech_step: 3,
+      transcript_read_step: { alice: 3, bob: 3 }, // stale
     };
-    // Bid rejected — readStep(3) < step(4)
-    const rejected = applyBid(epoch2State, 'alice', 80, NOW);
-    expect(rejected.ok).toBe(false);
-    if (rejected.ok) return;
-    expect(rejected.error).toBe('read_transcript_first');
-    // After reading, bid succeeds
-    const readState = withTranscriptRead(epoch2State, 'alice');
-    expect(applyBid(readState, 'alice', 80, NOW).ok).toBe(true);
+    const res = applyBid(staleState, 'alice', 80, NOW);
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toBe('read_transcript_first');
   });
 });
 

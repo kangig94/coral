@@ -103,3 +103,16 @@ cuMemFree(ptr);
 | Destroy before GPU done | Use-after-free crash | Validation layers | Fence/wait before destroy |
 | Wrong memory type | Slow or failed allocation | VMA warnings | Use VMA or check memory properties |
 | Missing dependency | Race between passes | RenderDoc frame analysis | Add subpass dependency or barrier |
+
+---
+
+### Recommended Docs (GPU)
+
+| Doc | Content | Priority | Condition |
+|-----|---------|----------|-----------|
+| `docs/kernel-guide.md` | Kernel inventory, launch configurations, shared memory usage, optimization notes per kernel | Strong | CUDA or compute shader project (not Vulkan/Metal graphics-only) |
+
+**Architecture Sections**: GPU projects should include these in `docs/ARCHITECTURE.md`:
+- Host-device data flow and transfer strategy
+- Memory budget breakdown (global, shared, constant, texture)
+- Multi-GPU topology and communication pattern (if applicable)

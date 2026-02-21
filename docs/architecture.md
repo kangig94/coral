@@ -44,11 +44,11 @@
 User → /coral:codex "question"
      → Skill detects intent (review/investigate/ralph/general)
      → Review intent:
-        → Spawn parallel subagents (coral:codex-architect + coral:codex-critic)
+        → Spawn parallel subagents (coral:codex-proxy Role:architect + coral:codex-proxy Role:critic)
         → SubagentStart Hook fires → delegation instructions injected
         → Agents call codex_session_create → results synthesized
      → Other intents:
-        → Skill reads agent protocol (agents/codex-*.md)
+        → Skill reads agent protocol (agents/codex-proxy.md)
         → Skill calls codex_session_create/send directly (no subagent)
         → Codex response returned to user
 ```
@@ -74,7 +74,7 @@ User → /coral:init-project
 
 ```
 User → /codex skill analyzes intent
-     → Review?   → Parallel subagent spawn (codex-architect + codex-critic)
+     → Review?   → Parallel subagent spawn (codex-proxy Role:architect + codex-proxy Role:critic)
      → Analyze?  → Direct MCP call with analyst protocol (no subagent)
      → Ralph?    → Direct MCP call with ralph protocol (no subagent)
      → General?  → Direct MCP call, verbatim prompt (no subagent)
@@ -92,11 +92,10 @@ User → /coral:discuss "AI ethics in healthcare"
      → Spawns discussant teammates (dc-{agent_name})
      → Discussion Loop:
         → Broadcast "Step N. Call discuss_bid."
-        → discuss_wait(all_bids) → auto-resolves → 5-way branch
+        → discuss_wait(all_bids) → auto-resolves → 4-way branch
           → winner → notify → discuss_wait(speech_delivered) → broadcast transcript
-          → vote_required → voting round
-          → no_winner → synthesis
-          → end_vote → synthesis or epoch transition
+          → no_winner + new_epoch → epoch transition (server auto-reset quotas)
+          → no_winner → synthesis (all_below_threshold / all_blocked / max_epochs_reached)
           → timeout → force end
      → discuss_end → full transcript → synthesis → present to user
      → Shutdown teammates, TeamDelete
@@ -238,10 +237,7 @@ coral/
 │   ├── discuss-lead.md          # Discussion moderator protocol
 │   ├── discussant.md            # Discussion participant protocol
 │   ├── persona-generator.md     # Persona creation agent
-│   ├── codex-architect.md       # Codex architecture analysis delegation
-│   ├── codex-critic.md          # Codex critical review delegation
-│   ├── codex-analyst.md         # Codex analysis delegation
-│   └── codex-ralph.md           # Codex persistent execution delegation
+│   └── codex-proxy.md           # Codex delegation proxy (analyst/architect/critic/ralph roles)
 ├── hooks/
 │   ├── hooks.json               # Hook config (matcher: "(^|:)codex-")
 │   └── detect-codex-agent.sh    # SubagentStart detection script

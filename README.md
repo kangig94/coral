@@ -25,6 +25,54 @@ Displays: `opus 4.6 │ 5m │ 5h:56% (3:12) wk:38% (5.2d) │ ctx:45%`
 
 To remove: `/coral:statusline uninstall`
 
+## Quick Start
+
+After installing, set up your project for AI-assisted development:
+
+```
+/coral:init-project
+```
+
+Coral scans your stack, plans with reviewer verification, and generates:
+
+```
+my-project/
+  src/
+  package.json
++ .claude/
++   CLAUDE.md                  ← project hub: build commands, workflow, critical rules
++   agents/
++     review-orchestrator.md   ← final validation gate
++     frontend-validator.md    ← activates on *.tsx (React projects)
++     ...
++   rules/
++     conventions.md           ← naming, git, style
++     frontend-validation.md   ← hook rules, key props, a11y
++     ...
++ docs/
++   architecture.md            ← module map, dependency graph
+```
+
+Without this, Claude works generically. With this, it validates hooks, catches injection, and follows your conventions.
+
+**How to describe your project:**
+
+```bash
+# existing project — just run it, Coral scans automatically
+/coral:init-project
+
+# tech stack hint — helps when source files are sparse
+/coral:init-project "React + FastAPI"
+
+# full description — best for new or complex projects
+/coral:init-project "multi-tenant SaaS REST API with Go, must be serverless"
+
+# with reference material — Coral reads these before planning
+/coral:init-project "CLI tool like ref/existing-cli, see docs/spec.md"
+```
+
+The more context you give, the more tailored the output. But for most existing projects, a bare `/coral:init-project` is enough.
+
 ## Usage
 
 Consecutive `/coral:codex` calls continue the same session. Say "new" to start fresh.
@@ -34,13 +82,6 @@ Consecutive `/coral:codex` calls continue the same session. Say "new" to start f
 
 # auto-continues session
 /coral:codex what about the token refresh logic?
-```
-
-Generates `.claude/CLAUDE.md`, rules, agents, docs, and settings based on the detected tech stack.
-
-```
-# set up AI-assisted dev for any project
-/coral:init-project "description of the project"
 ```
 
 ### Discuss
@@ -61,7 +102,7 @@ Coral's moderated multi-agent discussion system. Multiple AI agents with distinc
 
 3. **Evidence-backed speeches** — Winners research via web search before speaking. The server enforces that all agents read the latest transcript before bidding — no uninformed participation allowed.
 
-4. **Multi-epoch continuation** — When all speaking quotas are exhausted, agents vote: agree to end (0) or continue (1). A single dissenting vote triggers a new epoch with fresh quotas for everyone. Discussions go as deep as the agents need.
+4. **Multi-epoch continuation** — When all speaking quotas and fallback turns are exhausted, the server automatically transitions to a new epoch with fresh quotas (up to `CORAL_DISCUSS_MAX_EPOCHS`, default: 2). No termination vote — continuation is structural, not negotiated.
 
 5. **Structured synthesis** — When the discussion concludes, the moderator generates a structured summary: key arguments, turning points, points of consensus, and unresolved questions.
 
@@ -74,10 +115,10 @@ discuss-lead (moderator)
   ├── persona-generator ×N (parallel)
   ├── discuss MCP server (state, enforcement, transcript)
   └── dc-{agent} ×N (discussant teammates)
-        └── discuss_wait → bid/speak/vote loop
+        └── discuss_wait → bid/speak loop
 ```
 
-The MCP server owns all state transitions. Agents cannot speak out of turn, bid without reading context, or bypass the voting protocol. Transcripts are saved to `.claude/coral/discuss/` as both structured JSON and readable Markdown.
+The MCP server owns all state transitions. Agents cannot speak out of turn or bid without reading context. Bid scores are sealed — never returned in any API response. Transcripts are saved to `.claude/coral/discuss/` as both structured JSON and readable Markdown.
 
 ### Skills
 
@@ -107,8 +148,10 @@ Coral automatically manages a project-local KB (`.claude/coral/kb/`) to prevent 
 |---|---|---|
 | `CORAL_CODEX_MODEL` | `gpt-5.3-codex` | Default Codex CLI model |
 | `CORAL_DISCUSS_BID_THRESHOLD` | `50` | Minimum bid score (1-100) for floor eligibility in discussions |
+| `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Max epochs before discussion auto-ends (1-10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `30` | Days before completed discuss sessions are auto-pruned |
 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(unset)_ | **Required** for `/coral:discuss`. Set to `1` to enable Agent Teams. |
+| `ENABLE_TOOL_SEARCH` | `auto` | Lazy-load MCP tool definitions instead of injecting all into system prompt. `auto` (≥10%), `auto:5` (≥5%), `true` (always on). |
 
 Set in `.claude/settings.json` (persists across sessions):
 
@@ -117,7 +160,9 @@ Set in `.claude/settings.json` (persists across sessions):
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
     "CORAL_DISCUSS_BID_THRESHOLD": "50",
-    "CORAL_DISCUSS_TTL_DAYS": "30"
+    "CORAL_DISCUSS_MAX_EPOCHS": "2",
+    "CORAL_DISCUSS_TTL_DAYS": "30",
+    "ENABLE_TOOL_SEARCH": "auto:5"
   }
 }
 ```

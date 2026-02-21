@@ -118,3 +118,16 @@ optimizer.step()
 | Prompt injection | LLM executes attacker instructions | Test with adversarial inputs | Separate system/user, validate output |
 | No retry | Failures on transient API errors | Grep for bare API calls without retry | Add tenacity/backoff wrapper |
 | Unbounded tokens | Cost spike, timeout | Monitor token usage per request | Set max_tokens, truncate input |
+
+---
+
+### Recommended Docs (ML/AI)
+
+| Doc | Content | Priority | Condition |
+|-----|---------|----------|-----------|
+| `docs/model-card.md` | Model purpose, architecture, training data, performance metrics, limitations, ethical considerations | Conditional | Training or fine-tuning code detected (not for LLM API consumer projects) |
+
+**Architecture Sections**: ML/AI projects should include these in `docs/ARCHITECTURE.md`:
+- Training pipeline stages (data prep → training → evaluation → deployment)
+- Model versioning and experiment tracking strategy
+- Inference serving architecture (batch vs real-time, hardware requirements)

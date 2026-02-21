@@ -10,11 +10,11 @@ Coral provides two types of agents:
 | User Request | Routing | Reason |
 |---|---|---|
 | "review with architect" | Claude-native (`architect`) | Default |
-| "review with codex architect" | Codex-bound (`codex-architect`) | Explicit "codex" keyword |
+| "review with codex architect" | Codex-bound (`codex-proxy` Role:architect) | Explicit "codex" keyword |
 | "review with critic" | Claude-native (`critic`) | Default |
-| "review with codex critic" | Codex-bound (`codex-critic`) | Explicit "codex" keyword |
+| "review with codex critic" | Codex-bound (`codex-proxy` Role:critic) | Explicit "codex" keyword |
 | "run ralph on this task" | Claude-native (`ralph`) | Default |
-| "codex ralph this task" | Codex-bound (`codex-ralph`) | Explicit "codex" keyword |
+| "codex ralph this task" | Codex-bound (`codex-proxy` Role:ralph) | Explicit "codex" keyword |
 
 ---
 
@@ -143,9 +143,9 @@ model: opus
 ---
 ```
 
-**Role**: Orchestrates multi-agent discussions through structured turn-taking. Manages session setup, team creation, bidding coordination, turn resolution, termination voting, epoch transitions, and synthesis delivery. Never speaks on substance — only process control.
+**Role**: Orchestrates multi-agent discussions through structured turn-taking. Manages session setup, team creation, bidding coordination, turn resolution, epoch transitions (auto-triggered by server), and synthesis delivery. Never speaks on substance — only process control.
 
-**Protocol**: Setup (persona generation → discuss_create → team + teammates) → Discussion Loop (broadcast → discuss_wait(all_bids) → 5-way branch → discuss_wait(speech_delivered) → repeat) → Synthesis (discuss_end → full transcript → present to user → cleanup).
+**Protocol**: Setup (persona generation → discuss_create → team + teammates) → Discussion Loop (broadcast → discuss_wait(all_bids) → 4-way branch → discuss_wait(speech_delivered) → repeat) → Synthesis (discuss_end → full transcript → present to user → cleanup).
 
 > Note: discuss-lead does NOT have `disallowedTools` — it needs Task (spawn agents), SendMessage (broadcast), TeamCreate/TeamDelete, and all discuss MCP tools.
 
@@ -189,71 +189,31 @@ model: opus
 
 Proxy agents that delegate work to Codex CLI. Tool restrictions limit them to coral MCP tools only.
 
-### codex-architect (Architecture Analysis Delegation)
+**Why one file?** All Codex delegation roles share ~60% identical protocol (Proxy_Protocol, Working_Directory, Session_Continuity, Output_Handling, Failure_Modes). A single file maximizes prompt cache hits — when architect + critic are spawned in parallel, their system prompts share an identical prefix, so only the first pays the full cost. New roles should be added here, not as separate agent files.
 
-**File**: `agents/codex-architect.md`
+### codex-proxy (Unified Codex Delegation Proxy)
+
+**File**: `agents/codex-proxy.md`
 
 ```yaml
 ---
-name: codex-architect
-description: "Architecture analysis via Codex delegation. Use when Codex-specific perspective is needed for design review, or when explicitly requested with 'codex architect'. NOT for direct Claude-native analysis (use architect agent instead)."
+name: codex-proxy
+description: "Codex delegation proxy for analyst/architect/critic/ralph roles. Use when Codex-specific perspective is needed for analysis, review, critique, or execution."
 model: sonnet
 tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
 ---
 ```
 
-**Role**: Constructs architecture analysis prompts with a canonical SYSTEM prompt and delegates to Codex.
+**Role**: Single proxy agent with role-based routing. Callers include `Role: analyst|architect|critic|ralph` in their prompt to select the appropriate prompt template and settings. Missing role → explicit error (no inference).
 
----
+| Role | Purpose | reasoning_effort |
+|---|---|---|
+| `analyst` | Root cause analysis, dependency tracing, technical investigation | xhigh |
+| `architect` | Architecture review, design patterns, code structure | xhigh |
+| `critic` | Plan/code critique, severity-rated verdicts (APPROVED/REVISE/REJECT) | xhigh |
+| `ralph` | Single-shot task execution; Claude controls the outer verification loop | high |
 
-### codex-critic (Critical Review Delegation)
-
-**File**: `agents/codex-critic.md`
-
-```yaml
----
-name: codex-critic
-description: "Critical review via Codex delegation. Use when Codex-specific perspective is needed for plan/code critique, or when explicitly requested with 'codex critic'. NOT for direct Claude-native critique (use critic agent instead)."
-model: sonnet
-tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
----
-```
-
-**Role**: Delegates code and plan critique to Codex. Returns severity-rated verdicts (APPROVED/REVISE/REJECT).
-
----
-
-### codex-analyst (Analysis Delegation)
-
-**File**: `agents/codex-analyst.md`
-
-```yaml
----
-name: codex-analyst
-description: "Deep analysis and investigation via Codex delegation. Use when Codex-specific perspective is needed for root cause analysis, dependency tracing, or technical investigation. NOT for direct Claude-native analysis (use analyst agent instead)."
-model: sonnet
-tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
----
-```
-
-**Role**: Delegates technical analysis and investigation to Codex. Returns root cause, evidence trail, and file:line references.
-
----
-
-### codex-ralph (Single-shot Codex Execution for Persistent Tasks)
-
-**File**: `agents/codex-ralph.md`
-
-```yaml
----
-name: codex-ralph
-description: "Single-shot Codex execution for persistent tasks. Claude controls the loop externally. NOT for Claude-native execution (use ralph agent instead)."
-model: sonnet
-tools: mcp__plugin_coral_cx__codex_session_create, mcp__plugin_coral_cx__codex_session_send
----
-```
-
-**Role**: Executes a single round of work via Codex CLI. Claude (caller) controls the outer verification loop — spawning the agent repeatedly with thread_id for session continuity until all criteria pass.
+> **Ralph note**: `codex-proxy` with `Role: ralph` executes one round. The caller (`/coral:codex-ralph` skill) controls the loop — spawning with the saved `thread_id` for session continuity until all criteria pass.
 
 ---
 
@@ -263,7 +223,7 @@ Three layers ensure Codex-bound agents always delegate to Codex CLI:
 
 ### Layer 1: Hook-based Injection (100% guarantee)
 
-The `SubagentStart` hook fires when any agent matching `(^|:)codex-` starts (e.g., `codex-architect`, `coral:codex-ralph`). It injects delegation instructions via `additionalContext`.
+The `SubagentStart` hook fires when any agent matching `(^|:)codex-` starts (e.g., `codex-proxy`, `coral:codex-proxy`). It injects delegation instructions via `additionalContext`.
 
 > Claude-native agents (`architect`, `critic`, `analyst`, `ralph`) lack the `codex-` prefix, so the hook never matches them.
 
@@ -281,9 +241,11 @@ Each agent `.md` file contains a detailed role and protocol embedded in the syst
 
 ## Adding New Agents
 
-### Codex-bound Agent
+### Codex-bound Agent (new role)
 
-Create `agents/codex-<name>.md` — it automatically becomes a Codex delegation agent:
+Add a new role to `agents/codex-proxy.md` under `<Role_Routing>` and `<Prompt_Templates>`. The existing `codex-proxy` agent handles all Codex delegation roles — callers pass `Role: <name>` in their prompt.
+
+If a standalone Codex agent is truly needed (rare), create `agents/codex-<name>.md` — the `codex-` prefix ensures the hook fires automatically:
 
 ```yaml
 ---

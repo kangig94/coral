@@ -14,6 +14,7 @@ function makeState(overrides: Partial<DiscussState> = {}): DiscussState {
     status: 'bidding',
     step: 1,
     epoch: 1,
+    max_epochs: 2,
     quota_per_epoch: 3,
     cold_start: true,
     recent_turns: 5,
@@ -44,15 +45,6 @@ function makeState(overrides: Partial<DiscussState> = {}): DiscussState {
 describe('allBidsIn', () => {
   it('should return true when all bids submitted and status=bidding', () => {
     const state = makeState({ current_bids: { alice: 75, bob: 50 }, pending_bidders: [] });
-    expect(allBidsIn(state)).toBe(true);
-  });
-
-  it('should return true in voting status with all bids', () => {
-    const state = makeState({
-      status: 'voting',
-      current_bids: { alice: 0, bob: 1 },
-      pending_bidders: [],
-    });
     expect(allBidsIn(state)).toBe(true);
   });
 
@@ -144,15 +136,6 @@ describe('actionNeeded', () => {
     const state = makeState({ status: 'speaking', current_speaker: 'alice' });
     expect(actionNeeded('alice')(state)).toBe(true);
     expect(actionNeeded('bob')(state)).toBe(false);
-  });
-
-  it('should return true when agent needs to vote', () => {
-    const state = makeState({
-      status: 'voting',
-      current_bids: { alice: null, bob: null },
-      pending_bidders: ['alice', 'bob'],
-    });
-    expect(actionNeeded('alice')(state)).toBe(true);
   });
 
   it('should return false for unknown agent', () => {

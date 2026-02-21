@@ -83,6 +83,19 @@ For new projects: note "to be updated as architecture develops" where uncertain.
 
 For new projects: note "to be confirmed" for unverified sections.
 
+### Domain-Specific Doc Requirements
+
+Domain references define recommended docs with two priority levels:
+- **Strong**: Generate unless the project is trivially small. Condition is a default-include signal.
+- **Conditional**: Generate only when the specified detection signal is present in the scan results.
+
+Quality rules:
+
+1. **Real content only** — never generate empty boilerplate. If the scan doesn't reveal enough to populate a doc, skip it and note in the report.
+2. **Actual project references** — use real file paths, table names, endpoints from the scan. No placeholders.
+3. **Standard formats** — `model-card.md` follows Google Model Cards format, `api-reference.md` follows OpenAPI-style structure, `data-dictionary.md` uses source/table/column hierarchy.
+4. **Architecture Sections** — domain-specific sections listed in references are appended to `ARCHITECTURE.md`, not created as separate files.
+
 ### General Doc Quality
 
 - Use **tables** for structured information (agent lists, layer rules, checklists)

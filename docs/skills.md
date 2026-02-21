@@ -23,9 +23,9 @@ argument-hint: "[prompt]"
 1. If argument starts with `session` → handle session command directly (create/send/list/fork via MCP tools)
 2. Check session continuity (existing thread_id from conversation history)
 3. Analyze intent:
-   - **Review** → parallel subagent spawn (`coral:codex-architect` + `coral:codex-critic`), then synthesize
-   - **Investigation/debug** → direct MCP call with analyst protocol (read `agents/codex-analyst.md`)
-   - **Persistent execution** → direct MCP call with ralph protocol (read `agents/codex-ralph.md`)
+   - **Review** → parallel subagent spawn (`coral:codex-proxy` Role:architect + `coral:codex-proxy` Role:critic), then synthesize
+   - **Investigation/debug** → direct MCP call with analyst protocol (read `agents/codex-proxy.md`, `### Role: analyst` section)
+   - **Persistent execution** → direct MCP call with ralph protocol (read `agents/codex-proxy.md`, `### Role: ralph` section)
    - **Everything else** → direct MCP call with verbatim prompt
 4. Gather context (file paths, code snippets, working_directory)
 5. Execute via MCP tools directly or spawn parallel subagents (review only)
@@ -171,7 +171,7 @@ argument-hint: "[investigation target or question]"
 
 ### Behavior
 
-1. Load protocol: read `agents/codex-analyst.md` for prompt template
+1. Load protocol: read `agents/codex-proxy.md`, use `### Role: analyst` section for prompt template
 2. Gather context (investigation target, file paths, error messages, what's been tried)
 3. Call Codex directly via `codex_session_create` (or `codex_session_send` for follow-ups) with `reasoning_effort: "xhigh"`
 4. Post-process: verify file:line references for CRITICAL/HIGH findings, filter unrelated findings, restructure by severity, synthesize summary
@@ -196,7 +196,7 @@ argument-hint: "[task description]"
 
 ### Behavior
 
-1. Load protocol: read `agents/codex-ralph.md` for prompt template
+1. Load protocol: read `agents/codex-proxy.md`, use `### Role: ralph` section for prompt template
 2. Gather context (task description, file paths, progress, working_directory)
 3. Claude-controlled loop (up to 5 rounds):
    - Call Codex via `codex_session_create` (first round) or `codex_session_send` (subsequent rounds)
@@ -258,7 +258,7 @@ argument-hint: "[task description]"
 
 1. Load `agents/planner.md` protocol
 2. Configure multi-phase review:
-   - Phase 1 reviewers: `coral:codex-architect` and `coral:codex-critic` (full review loop, up to 5 rounds)
+   - Phase 1 reviewers: `coral:codex-proxy` Role:architect and `coral:codex-proxy` Role:critic (full review loop, up to 5 rounds)
    - Phase 2 cross-reviewers: `coral:architect` and `coral:critic` (single verification pass + one retry)
 3. Execute planner protocol with multi-phase review
 4. Project validation: if project instructions define workflow rules (e.g., review-orchestrator), follow them. If validation fails, revise and re-validate.

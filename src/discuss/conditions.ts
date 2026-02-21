@@ -6,14 +6,13 @@
 import type { DiscussState } from './types.js';
 
 /**
- * All bids submitted AND in a phase that expects bids.
+ * All bids submitted AND in bidding phase.
  *
  * Phase guard rationale: without `status` check, this was trivially true in `speaking`
  * status because pending_bidders from the previous round remains empty until resetBids.
  */
 export const allBidsIn = (s: DiscussState): boolean =>
-  (s.status === 'bidding' || s.status === 'voting') &&
-  s.pending_bidders.length === 0;
+  s.status === 'bidding' && s.pending_bidders.length === 0;
 
 /**
  * Speech was delivered: step advanced past speaking into bidding (monotonic marker).
@@ -38,5 +37,4 @@ export const speechDelivered = (s: DiscussState): boolean =>
 export const actionNeeded = (agent: string) => (s: DiscussState): boolean =>
   s.status === 'ended' ||
   (s.status === 'bidding' && s.current_bids[agent] === null) ||
-  (s.status === 'speaking' && s.current_speaker === agent) ||
-  (s.status === 'voting' && s.current_bids[agent] === null);
+  (s.status === 'speaking' && s.current_speaker === agent);

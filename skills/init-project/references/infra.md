@@ -87,3 +87,17 @@
 - [ ] Dependency caching configured
 - [ ] Pipeline runs in under 10 minutes
 - [ ] Failure notifications configured
+
+---
+
+### Recommended Docs (Infrastructure)
+
+| Doc | Content | Priority | Condition |
+|-----|---------|----------|-----------|
+| `docs/deployment-guide.md` | Environment list, deploy steps, rollback procedure, config management | Strong | Any project with deployment config |
+| `docs/runbook.md` | Incident response procedures, common operations, escalation paths, health check interpretation | Conditional | Production deployment or monitoring config detected |
+
+**Architecture Sections**: Infra projects should include these in `docs/ARCHITECTURE.md`:
+- Environment topology (dev, staging, prod)
+- Service dependency map (what talks to what)
+- Secret management strategy

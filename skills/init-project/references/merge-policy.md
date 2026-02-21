@@ -32,7 +32,8 @@ No auto-migration of monolithic CLAUDE.md. Users with existing monolithic files 
 
 | Condition | Action |
 |-----------|--------|
-| File exists | **Skip**. Notify user: "Skipped docs/{name}.md - already exists." |
+| File exists, merge rule = "skip" (default) | **Skip**. Notify user: "Skipped docs/{name}.md - already exists." |
+| File exists, merge rule = "enhance" | **Append** missing sections identified in the plan. Do not modify existing content. Notify user: "Enhanced docs/{name}.md - added {section names}." |
 | File does not exist | Create with real content |
 
 ### .gitignore
@@ -70,6 +71,6 @@ Running `/coral:init-project` twice in succession produces no additional changes
 - Agents: skipped (already exist)
 - CLAUDE.md: skipped (already exists)
 - Rules files: skipped (already exist)
-- docs/: skipped (already exist)
+- docs/: skipped (already exist), or enhanced sections already present (no duplicate append)
 - .gitignore: Coral block already present (skipped)
 - KB directory: already exists (no-op)

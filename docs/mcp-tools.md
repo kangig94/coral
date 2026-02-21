@@ -202,7 +202,7 @@ Initialize a new discussion session with agent personas.
 
 ## discuss_bid
 
-Submit a speaking desire score. During regular bidding: 0–100 (higher = stronger desire to speak). During voting: 0 = agree to end, 1 = disagree (triggers new epoch).
+Submit a speaking desire score 0–100 (higher = stronger desire to speak).
 
 ### Input Schema
 
@@ -210,7 +210,7 @@ Submit a speaking desire score. During regular bidding: 0–100 (higher = strong
 |---|---|---|---|
 | `session` | string | Yes | Session ID |
 | `agent_name` | string | Yes | Agent name |
-| `score` | integer | Yes | Desire score 0–100 (voting: 0=agree, 1=disagree) |
+| `score` | integer | Yes | Desire score 0–100 |
 
 ### Output (JSON)
 
@@ -242,7 +242,7 @@ Block until a condition is fulfilled or timeout expires. This is the primary coo
 |---|---|---|
 | `all_bids` | All agents have submitted bids. Auto-resolves winner. | discuss-lead |
 | `speech_delivered` | Current speaker has called discuss_speak | discuss-lead |
-| `action_needed` | This agent has an action to perform (bid/speak/vote) | discussant |
+| `action_needed` | This agent has an action to perform (bid/speak) | discussant |
 
 ### Output — `all_bids` (auto-resolve)
 
@@ -250,17 +250,16 @@ Returns one of 4 result shapes:
 
 ```json
 { "fulfilled": true, "winner": "alice", "resolve_type": "normal", "step": 3 }
-{ "fulfilled": true, "vote_required": true, "step": 3, "all_bids": {...} }
-{ "fulfilled": true, "no_winner": true, "step": 3, "reason": "..." }
-{ "fulfilled": true, "end_vote": true, "unanimous": true }
+{ "fulfilled": true, "no_winner": true, "step": 3, "reason": "epoch_transition", "new_epoch": true, "epoch": 2 }
+{ "fulfilled": true, "no_winner": true, "step": 3, "reason": "all_below_threshold" }
 ```
 
 ### Output — `action_needed`
 
 ```json
-{ "fulfilled": true, "action": "bid", "elapsed_ms": 1200 }
-{ "fulfilled": true, "action": "speak", "elapsed_ms": 500 }
-{ "fulfilled": true, "action": "vote", "elapsed_ms": 800 }
+{ "fulfilled": true, "action": "bid", "epoch": 1, "your_speaks": 2 }
+{ "fulfilled": true, "action": "speak", "epoch": 1, "your_speaks": 1 }
+{ "fulfilled": true, "action": "session_ended", "epoch": 2, "your_speaks": 4 }
 ```
 
 ### Output — timeout
@@ -352,7 +351,7 @@ Finalize the discussion. Normal end includes an optional synthesis. Force-end re
 |---|---|---|---|
 | `session` | string | Yes | Session ID |
 | `synthesis` | string | No | Conclusion/synthesis text |
-| `force` | boolean | No | Force-end during active speech or voting (default: false) |
+| `force` | boolean | No | Force-end during active speech (default: false) |
 | `reason` | string | Conditional | Required when `force=true` |
 
 ### Output (JSON)
