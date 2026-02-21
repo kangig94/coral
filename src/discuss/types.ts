@@ -17,17 +17,17 @@ export type TranscriptEntry =
 
 // ─── AgentState ───────────────────────────────────────────────────────────────
 
-export interface AgentState {
+export type AgentState = {
   persona: string;
   display_name: string;       // parsed from persona first line `# Name - Role`
   quota_remaining: number;
   total_speaks: number;
   fallback_used: boolean;
-}
+};
 
 // ─── DiscussState ─────────────────────────────────────────────────────────────
 
-export interface DiscussState {
+export type DiscussState = {
   session_id: string;
   session_dir: string;
   topic: string;
@@ -53,7 +53,7 @@ export interface DiscussState {
   transcript_rendered: number;     // tracks .md append position
   bid_threshold: number;           // minimum bid score to win the floor (default 50)
   transcript_read_step: Record<string, number>; // last step when agent called discuss_transcript (bid enforcement)
-}
+};
 
 // ─── Result<T> for pure functions ─────────────────────────────────────────────
 
@@ -75,32 +75,32 @@ export type ResolveResult =
 
 export type WaitCondition = 'all_bids' | 'speech_delivered' | 'action_needed';
 
-export interface ControversyAxis {
+export type ControversyAxis = {
   axis: string;
   positions: string[];
-}
+};
 
-export interface ToneAssignment {
+export type ToneAssignment = {
   formality: 'formal' | 'conversational';
   evidence: 'data-driven' | 'narrative';
   pace: 'concise' | 'detailed';
-}
+};
 
-export interface PersonaAssignment {
+export type PersonaAssignment = {
   positions: Record<string, string>;
   tone: ToneAssignment;
   shared_position_with?: number;
-}
+};
 
-export interface PersonaSeedInput {
+export type PersonaSeedInput = {
   controversy_axes: ControversyAxis[];
   n: number;
   seed: number | null;
-}
+};
 
-export interface PersonaSeedOutput {
+export type PersonaSeedOutput = {
   seed_used: number;
   sigma_used: number;
   pool_size: number;
   assignments: PersonaAssignment[];
-}
+};

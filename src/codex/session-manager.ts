@@ -9,7 +9,7 @@ function projectHash(dir: string): string {
 }
 
 export class SessionManager {
-  private sessionDir: string;
+  private readonly sessionDir: string;
 
   constructor(workingDirectory: string) {
     this.sessionDir = join(homedir(), '.claude', 'coral', 'sessions', projectHash(workingDirectory));
@@ -62,13 +62,9 @@ export class SessionManager {
   list(): SessionEntry[] {
     try {
       const files = readdirSync(this.sessionDir).filter((f) => f.endsWith('.json') && !f.endsWith('.tmp'));
-      const entries: SessionEntry[] = [];
-      for (const file of files) {
-        const name = file.slice(0, -5); // remove .json
-        const entry = this.readSession(name);
-        if (entry) entries.push(entry);
-      }
-      return entries;
+      return files
+        .map((f) => this.readSession(f.slice(0, -5)))
+        .filter((entry): entry is SessionEntry => entry !== null);
     } catch {
       return [];
     }

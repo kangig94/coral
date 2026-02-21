@@ -85,11 +85,12 @@ function spawnCodex(
   return new Promise((resolve, reject) => {
     let settled = false;
     let abortedBySignal = false;
+    const useShell = process.platform === 'win32';
 
     const child = spawn('codex', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: cwd || undefined,
-      shell: process.platform === 'win32',
+      shell: useShell,
     });
 
     activeChildren.add(child);
@@ -130,16 +131,16 @@ function spawnCodex(
 
     let stdout = '';
     let stderr = '';
-    let lineBuf = '';
+    let lineBuffer = '';
 
     child.stdout.on('data', (data: Buffer) => {
       const chunk = data.toString();
       resetIdle();
       stdout = appendBuffer(stdout, chunk);
       if (onEvent) {
-        lineBuf += chunk;
-        const parts = lineBuf.split('\n');
-        lineBuf = parts.pop()!;
+        lineBuffer += chunk;
+        const parts = lineBuffer.split('\n');
+        lineBuffer = parts.pop()!;
         for (const line of parts) {
           if (line.trim()) onEvent(line);
         }

@@ -24,6 +24,20 @@ function writeStateAtomic(filePath: string, state: DiscussState): void {
   fs.renameSync(tmp, filePath);
 }
 
+function parseLockOwner(filePath: string): { pid: number; startedAt: number } | null {
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    const dashIndex = content.indexOf('-');
+    if (dashIndex < 0) return null;
+    const pid = Number.parseInt(content.slice(0, dashIndex), 10);
+    const startedAt = Number.parseInt(content.slice(dashIndex + 1), 10);
+    if (Number.isNaN(pid) || Number.isNaN(startedAt)) return null;
+    return { pid, startedAt };
+  } catch {
+    return null;
+  }
+}
+
 // ─── Session lock ─────────────────────────────────────────────────────────────
 
 /**
@@ -36,6 +50,7 @@ class SessionLock {
     const pidFile = path.join(lockDir, 'pid');
     const maxRetries = 10;
     const baseDelay = 50;
+    const staleThresholdMs = 30_000;
 
     for (let i = 0; i < maxRetries; i++) {
       try {
@@ -50,21 +65,21 @@ class SessionLock {
       } catch (e: unknown) {
         const err = e as NodeJS.ErrnoException;
         if (err.code === 'EEXIST') {
-          try {
-            const content = fs.readFileSync(pidFile, 'utf8');
-            const dashIdx = content.indexOf('-');
-            const ownerPid = parseInt(content.slice(0, dashIdx), 10);
-            const lockTime = parseInt(content.slice(dashIdx + 1), 10);
-            let isAlive = false;
-            try { process.kill(ownerPid, 0); isAlive = true; } catch { /* process not running */ }
-            // 30s staleness threshold - 150x the lock hold budget (~200ms max)
-            const isStale = !isAlive || (Date.now() - lockTime > 30_000);
-            if (isStale) {
-              try { fs.unlinkSync(pidFile); } catch { /* ignore */ }
-              try { fs.rmdirSync(lockDir); } catch { /* ignore */ }
-              continue;
+          const owner = parseLockOwner(pidFile);
+          const ownerAlive = owner ? (() => {
+            try {
+              process.kill(owner.pid, 0);
+              return true;
+            } catch {
+              return false;
             }
-          } catch { /* pid file unreadable - retry with backoff */ }
+          })() : false;
+          const isStale = !ownerAlive || (owner ? Date.now() - owner.startedAt > staleThresholdMs : true);
+          if (isStale) {
+            try { fs.unlinkSync(pidFile); } catch { /* ignore */ }
+            try { fs.rmdirSync(lockDir); } catch { /* ignore */ }
+            continue;
+          }
           await sleep(baseDelay * Math.pow(2, Math.min(i, 5)) + Math.random() * baseDelay);
           continue;
         }
@@ -79,7 +94,7 @@ class SessionLock {
 
 /** Manages discuss session directories, state persistence, and locking. */
 export class SessionStore {
-  private discussDir: string;
+  private readonly discussDir: string;
   private lock = new SessionLock();
 
   constructor(projectRoot: string) {

@@ -56,20 +56,20 @@ export const tools = [
 /** Extract completion fields from a handler's JSON result for the progress file. */
 export function extractCompletionData(result: McpResult, sessionLabel: string): Record<string, unknown> {
   const data = JSON.parse(result.content[0].text);
-  const out: Record<string, unknown> = {
+  const completion: Record<string, unknown> = {
     response: data.response,
     thread_id: data.thread_id ?? null,
     session_name: sessionLabel,
     model: data.model,
     duration_ms: data.duration_ms,
   };
-  if (data.notice) out.notice = data.notice;
-  if (data.aborted) out.aborted = true;
-  if (data.non_resumable) out.non_resumable = true;
-  if (data.exit_code !== undefined) out.exit_code = data.exit_code;
-  if (Array.isArray(data.errors)) out.errors = data.errors;
-  if (Array.isArray(data.warnings)) out.warnings = data.warnings;
-  return out;
+  if (data.notice) completion.notice = data.notice;
+  if (data.aborted) completion.aborted = true;
+  if (data.non_resumable) completion.non_resumable = true;
+  if (data.exit_code !== undefined) completion.exit_code = data.exit_code;
+  if (Array.isArray(data.errors)) completion.errors = data.errors;
+  if (Array.isArray(data.warnings)) completion.warnings = data.warnings;
+  return completion;
 }
 
 /** Session-not-found error message with recovery hint. */
@@ -92,7 +92,7 @@ export function makeEventCallback(opts: {
       const event = JSON.parse(line) as CodexThreadEvent;
       const message = extractProgressMessage(event);
       if (!message) return;
-      if (opts.progressToken != null && opts.notify) {
+      if (opts.progressToken != null && opts.notify != null) {
         void opts.notify({
           method: 'notifications/progress',
           params: { progressToken: opts.progressToken, progress: ++counter, message: `[Codex] ${message}` },
@@ -140,19 +140,19 @@ export async function runForeground(
   notify: ((n: { method: string; params: Record<string, unknown> }) => Promise<void>) | undefined,
   handler: (cb?: OnEventCallback) => Promise<McpResult>,
 ): Promise<McpResult> {
-  const hasPT = progressToken != null && notify != null;
-  const pFile = hasPT ? createProgressFile(sessionLabel, toolName) : undefined;
-  const cb = hasPT ? makeEventCallback({ progressFile: pFile!, progressToken, notify }) : undefined;
+  const hasProgress = progressToken != null && notify != null;
+  const progressFile = hasProgress ? createProgressFile(sessionLabel, toolName) : undefined;
+  const cb = hasProgress
+    ? makeEventCallback({ progressFile: progressFile!, progressToken, notify })
+    : undefined;
   try {
     return await handler(cb);
   } finally {
-    if (pFile) removeProgressFile(pFile);
+    if (progressFile) removeProgressFile(progressFile);
   }
 }
 
 export async function handleSessionCreate(input: CodexSessionCreateInput, mgr: SessionManager, onEvent?: OnEventCallback): Promise<McpResult> {
-  // input.name is always set by the dispatcher before calling this handler.
-  // The fallback here is defensive - ensures safe direct invocation.
   const sessionName = input.name ?? `session-${Date.now()}`;
   const controller = registerExecution(sessionName);
   try {
@@ -187,8 +187,6 @@ export async function handleSessionCreate(input: CodexSessionCreateInput, mgr: S
 }
 
 export async function handleSessionSend(input: CodexSessionSendInput, mgr: SessionManager, onEvent?: OnEventCallback): Promise<McpResult> {
-  // Note: dispatcher also checks session existence for send before calling here.
-  // This internal guard ensures safe direct invocation of this handler.
   const entry = mgr.get(input.session);
   if (!entry) return sessionNotFoundError(input.session);
 
@@ -227,8 +225,6 @@ export function handleSessionList(mgr: SessionManager): McpResult {
 }
 
 export async function handleSessionFork(input: CodexSessionForkInput, mgr: SessionManager, onEvent?: OnEventCallback): Promise<McpResult> {
-  // Note: dispatcher checks session existence for fork background mode only.
-  // Foreground path delegates this check here - intentional asymmetry to avoid double lookup.
   const entry = mgr.get(input.session);
   if (!entry) return sessionNotFoundError(input.session);
 
@@ -309,6 +305,9 @@ async function handleCodexOp(
       const { op: _, ...forkInput } = input;
       const entry = sessionManager.get(forkInput.session);
       const sessionLabel = forkInput.name ?? entry?.name ?? forkInput.session;
+      if (!entry && !forkInput.background) {
+        return sessionNotFoundError(forkInput.session);
+      }
       if (forkInput.background) {
         if (!entry) return sessionNotFoundError(forkInput.session);
         return launchBackground(sessionLabel, 'codex', (cb) =>
@@ -318,8 +317,7 @@ async function handleCodexOp(
         handleSessionFork(forkInput, sessionManager, cb));
     }
     case 'abort': {
-      const { op: _, ...abortInput } = input;
-      return handleSessionAbort(abortInput, sessionManager);
+      return handleSessionAbort(input, sessionManager);
     }
     default: {
       const _exhaustive: never = input;

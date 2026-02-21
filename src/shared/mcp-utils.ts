@@ -22,10 +22,11 @@ export function jsonResult(data: Record<string, unknown>): McpResult {
  * Codex-specific - dc server should NOT import this.
  */
 export function resultExtras(result: { exitCode: number | null; errors: string[]; warnings: string[]; aborted?: boolean }): Record<string, unknown> {
+  const { exitCode, errors, warnings, aborted } = result;
   const extras: Record<string, unknown> = {};
-  if (result.exitCode !== 0 && result.exitCode !== null) extras.exit_code = result.exitCode;
-  if (result.errors.length > 0) extras.errors = result.errors;
-  if (result.warnings.length > 0) extras.warnings = result.warnings;
-  if (result.aborted) extras.aborted = true;
+  if (exitCode !== 0 && exitCode !== null) extras.exit_code = exitCode;
+  if (errors.length > 0) extras.errors = errors;
+  if (warnings.length > 0) extras.warnings = warnings;
+  if (aborted) extras.aborted = true;
   return extras;
 }

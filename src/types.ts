@@ -3,7 +3,7 @@
  */
 
 /** Result from a single Codex CLI execution */
-export interface CodexExecResult {
+export type CodexExecResult = {
   response: string;
   threadId: string | null;
   model: string;
@@ -13,17 +13,17 @@ export interface CodexExecResult {
   warnings: string[];
   /** true when execution was aborted via AbortSignal */
   aborted: boolean;
-}
+};
 
 /** A named session entry in the registry */
-export interface SessionEntry {
+export type SessionEntry = {
   name: string;
   codexThreadId: string;
   model: string;
   createdAt: string;
   lastUsedAt: string;
   workingDirectory: string;
-}
+};
 
 /**
  * Codex JSONL event types (matches codex-rs/exec/src/exec_events.rs).

@@ -27,7 +27,7 @@ export async function waitForCondition(
   timeoutMs: number,
   intervalMs = 500,
 ): Promise<WaitResult> {
-  const start = Date.now();
+  const startAt = Date.now();
 
   // Immediate first check before entering poll loop
   const initial = await tryReadState(statePath);
@@ -50,15 +50,16 @@ export async function waitForCondition(
       if (state) lastKnownGood = state;
 
       if (state && predicate(state)) {
-        done({ fulfilled: true, elapsed_ms: Date.now() - start, state, error: null });
+        done({ fulfilled: true, elapsed_ms: Date.now() - startAt, state, error: null });
         return;
       }
 
-      if (Date.now() - start >= timeoutMs) {
+      if (Date.now() - startAt >= timeoutMs) {
+        const elapsedMs = Date.now() - startAt;
         if (lastKnownGood) {
-          done({ fulfilled: false, elapsed_ms: Date.now() - start, state: lastKnownGood, error: null });
+          done({ fulfilled: false, elapsed_ms: elapsedMs, state: lastKnownGood, error: null });
         } else {
-          done({ fulfilled: false, elapsed_ms: Date.now() - start, state: null, error: 'state_unavailable' });
+          done({ fulfilled: false, elapsed_ms: elapsedMs, state: null, error: 'state_unavailable' });
         }
         return;
       }

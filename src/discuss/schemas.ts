@@ -8,8 +8,8 @@ import { identPattern } from '../shared/mcp-utils.js';
 /** Session ID: yymmdd-HHmm-xxxx (compact timestamp + 4-char random suffix). */
 export const sessionIdPattern = /^[0-9]{6}-[0-9]{4}-[a-z0-9]{4}$/;
 
-const sessionField = z.string().regex(sessionIdPattern);
 const agentNameField = z.string().regex(identPattern);
+const sessionIdField = z.string().regex(sessionIdPattern);
 
 const createShape = z.object({
   op: z.literal('create'),
@@ -33,14 +33,14 @@ const createShape = z.object({
 
 const bidShape = z.object({
   op: z.literal('bid'),
-  session: sessionField,
+  session: sessionIdField,
   agent_name: agentNameField,
   score: z.number().int().min(0).max(100),
 });
 
 const waitShape = z.object({
   op: z.literal('wait'),
-  session: sessionField,
+  session: sessionIdField,
   condition: z.enum(['all_bids', 'speech_delivered', 'action_needed']),
   timeout_seconds: z.number().min(1),
   agent_name: agentNameField.optional(),
@@ -48,14 +48,14 @@ const waitShape = z.object({
 
 const speakShape = z.object({
   op: z.literal('speak'),
-  session: sessionField,
+  session: sessionIdField,
   agent_name: agentNameField,
   content: z.string().min(1),
 });
 
 const transcriptShape = z.object({
   op: z.literal('transcript'),
-  session: sessionField,
+  session: sessionIdField,
   agent_name: agentNameField.optional(),
   mode: z.enum(['full', 'recent', 'summary']).default('recent'),
   last_n: z.number().int().min(1).max(50).optional(),
@@ -63,12 +63,12 @@ const transcriptShape = z.object({
 
 const stateShape = z.object({
   op: z.literal('state'),
-  session: sessionField,
+  session: sessionIdField,
 });
 
 const endShape = z.object({
   op: z.literal('end'),
-  session: sessionField,
+  session: sessionIdField,
   synthesis: z.string().optional(),
   force: z.boolean().default(false),
   reason: z.string().optional(),
@@ -76,7 +76,7 @@ const endShape = z.object({
 
 const epochSummaryShape = z.object({
   op: z.literal('epoch_summary'),
-  session: sessionField,
+  session: sessionIdField,
   epoch: z.number().int().min(1),
   summary: z.string().min(1),
 });

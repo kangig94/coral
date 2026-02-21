@@ -61,6 +61,7 @@ const STATUS_TO_ACTION: Record<string, string> = {
 };
 
 const WAIT_TIMEOUT_LIMITS: Record<string, number> = { all_bids: 60, speech_delivered: 120, action_needed: 180 };
+const nowIsoString = (): string => new Date().toISOString();
 
 function validateWaitConstraints(input: Extract<DiscussOpInput, { op: 'wait' }>): void {
   const limit = WAIT_TIMEOUT_LIMITS[input.condition] ?? 60;
@@ -150,7 +151,7 @@ async function handleDiscussOp(input: DiscussOpInput, store: SessionStore): Prom
   switch (input.op) {
     case 'create': {
       store.cleanupExpiredSessions();
-      const now = new Date().toISOString();
+      const now = nowIsoString();
       const rawThreshold = parseInt(process.env.CORAL_DISCUSS_BID_THRESHOLD ?? '', 10);
       const bidThreshold = (Number.isFinite(rawThreshold) && rawThreshold >= 1 && rawThreshold <= 100)
         ? rawThreshold : DEFAULT_BID_THRESHOLD;
@@ -187,7 +188,7 @@ async function handleDiscussOp(input: DiscussOpInput, store: SessionStore): Prom
       const result = await mutateSession(
         store,
         sessionDir,
-        (s) => applyBid(s, input.agent_name, input.score, new Date().toISOString()),
+        (s) => applyBid(s, input.agent_name, input.score, nowIsoString()),
         (s) => ({ all_bids_in: s.pending_bidders.length === 0 }),
       );
       return resultToMcp(result);
@@ -211,7 +212,7 @@ async function handleDiscussOp(input: DiscussOpInput, store: SessionStore): Prom
         await store.withLock(sessionDir, async () => {
           const s = store.load(sessionDir);
           if (s.status === 'setup') {
-            const res = startBidding(s, new Date().toISOString());
+            const res = startBidding(s, nowIsoString());
             if (res.ok) store.save(sessionDir, res.value);
           }
         });
@@ -242,7 +243,7 @@ async function handleDiscussOp(input: DiscussOpInput, store: SessionStore): Prom
           if (!allBidsIn(state)) {
             return { stale: true, status: state.status, step: state.step, epoch: state.epoch };
           }
-          const res = resolveWinner(state, new Date().toISOString());
+          const res = resolveWinner(state, nowIsoString());
           if (!res.ok) return { error: res.error, ...res.detail };
           const [newState, resolveData] = res.value;
           store.save(sessionDir, newState);
@@ -280,7 +281,7 @@ async function handleDiscussOp(input: DiscussOpInput, store: SessionStore): Prom
       const result = await mutateSession(
         store,
         sessionDir,
-        (s) => applySpeech(s, input.agent_name, input.content, new Date().toISOString()),
+        (s) => applySpeech(s, input.agent_name, input.content, nowIsoString()),
         (s) => ({ step: s.step, status: s.status }),
       );
       return resultToMcp(result);
@@ -297,7 +298,7 @@ async function handleDiscussOp(input: DiscussOpInput, store: SessionStore): Prom
         ? await store.withLock(sessionDir, async () => {
             const s = store.load(sessionDir);
             if (s.agents[caller] && (s.transcript_read_step[caller] ?? 0) < s.step) {
-              const ts = new Date().toISOString();
+              const ts = nowIsoString();
               const updated = {
                 ...s,
                 transcript_read_step: { ...s.transcript_read_step, [caller]: s.step },
@@ -369,7 +370,7 @@ async function handleDiscussOp(input: DiscussOpInput, store: SessionStore): Prom
       const result = await mutateSession(
         store,
         sessionDir,
-        (s) => applyEnd(s, { force: input.force, reason: input.reason, synthesis: input.synthesis }, new Date().toISOString()),
+        (s) => applyEnd(s, { force: input.force, reason: input.reason, synthesis: input.synthesis }, nowIsoString()),
         () => ({ ok: true, session_id: input.session }),
       );
       return resultToMcp(result);
@@ -382,7 +383,7 @@ async function handleDiscussOp(input: DiscussOpInput, store: SessionStore): Prom
       const result = await mutateSession(
         store,
         sessionDir,
-        (s) => applyEpochSummary(s, input.epoch, input.summary, new Date().toISOString()),
+        (s) => applyEpochSummary(s, input.epoch, input.summary, nowIsoString()),
         () => ({ ok: true }),
       );
       return resultToMcp(result);
