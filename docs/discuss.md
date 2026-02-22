@@ -123,6 +123,25 @@ If both pools are empty (not cold-start) and some bids ≥ bid_threshold:
   - If `epoch >= max_epochs` → **max_epochs_reached** → moderator synthesizes
 - **NOT allExhausted** (some agents still have quota but bid below threshold) → **all_blocked** → moderator synthesizes
 
+### Bid Decay Function
+
+Raw bid scores are adjusted before winner resolution to promote speaking fairness:
+
+```
+effective = raw + (100/N) × (avg_speaks − my_speaks) − (50/N) × just_spoke
+```
+
+| Component | Effect | Purpose |
+|-----------|--------|---------|
+| `(100/N) × (avg − mine)` | Boosts under-speakers, penalizes over-speakers | Prevents speaking imbalance |
+| `(50/N) × just_spoke` | Penalizes the agent who just spoke | Prevents consecutive wins |
+
+**Design rationale**: Empirical analysis of session data showed that unfair outcomes were decided by margins as small as 2 points. The `100/N` coefficient provides ~6x safety margin against LLM bid non-determinism while scaling naturally with participant count.
+
+- **Threshold check**: Uses raw score (agent intent is preserved)
+- **Winner selection**: Uses effective score (fairness-adjusted)
+- **Transcript**: Both raw and effective scores are recorded for audit (`transcript.md` shows both columns)
+
 ## Epoch Transitions
 
 Epoch transitions are **automatic** - no agent vote required.

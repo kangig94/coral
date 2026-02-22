@@ -239,6 +239,51 @@ describe('formatRecent', () => {
   });
 });
 
+// ─── renderEntry bids with effective_bids ─────────────────────────────────────
+
+describe('renderEntry bids with effective_bids', () => {
+  it('should show Raw and Effective columns when effective_bids is present', () => {
+    const entry: TranscriptEntry = {
+      type: 'bids', step: 1, epoch: 1, ts: TS,
+      bids: { alice: 80, bob: 50 },
+      effective_bids: { alice: 85.0, bob: 62.5 },
+      winner: 'alice', resolve_type: 'normal',
+    };
+    const result = renderEntry(entry, agents);
+    expect(result).toContain('Raw');
+    expect(result).toContain('Effective');
+    expect(result).toContain('85');
+    expect(result).toContain('62.5');
+    expect(result).not.toContain('| Agent | Score |');
+  });
+
+  it('should sort rows by effective score descending when effective_bids is present', () => {
+    // alice raw=80 effective=60; bob raw=50 effective=90 -> bob should appear first
+    const entry: TranscriptEntry = {
+      type: 'bids', step: 1, epoch: 1, ts: TS,
+      bids: { alice: 80, bob: 50 },
+      effective_bids: { alice: 60.0, bob: 90.0 },
+      winner: 'alice', resolve_type: 'normal',
+    };
+    const result = renderEntry(entry, agents);
+    const aliceIdx = result.indexOf('Alice');
+    const bobIdx = result.indexOf('Bob');
+    expect(bobIdx).toBeLessThan(aliceIdx); // bob row appears first
+  });
+
+  it('should show legacy single-column table when effective_bids is absent', () => {
+    const entry: TranscriptEntry = {
+      type: 'bids', step: 1, epoch: 1, ts: TS,
+      bids: { alice: 80, bob: 50 },
+      winner: 'alice', resolve_type: 'normal',
+    };
+    const result = renderEntry(entry, agents);
+    expect(result).toContain('Score');
+    expect(result).not.toContain('Raw');
+    expect(result).not.toContain('Effective');
+  });
+});
+
 // ─── formatSummary ────────────────────────────────────────────────────────────
 
 describe('formatSummary', () => {
@@ -264,5 +309,178 @@ describe('formatSummary', () => {
 
   it('should return empty string for no speech entries', () => {
     expect(formatSummary([], agents)).toBe('');
+  });
+});
+
+// ─── adversarial: renderEntry bids ───────────────────────────────────────────
+
+describe('renderEntry bids (adversarial)', () => {
+  it('should show Raw and Effective columns when effective_bids are present', () => {
+    const entry: TranscriptEntry = {
+      type: 'bids',
+      step: 1,
+      epoch: 1,
+      ts: TS,
+      bids: { alice: 60, bob: 50 },
+      effective_bids: { alice: 90, bob: 40 },
+      winner: 'alice',
+      resolve_type: 'normal',
+    };
+    const result = renderEntry(entry, agents);
+    expect(result).toContain('| Agent | Raw | Effective | Quota |');
+    expect(result).not.toContain('| Agent | Score | Quota |');
+  });
+
+  it('should show Score column when effective_bids are absent', () => {
+    const entry: TranscriptEntry = {
+      type: 'bids',
+      step: 1,
+      epoch: 1,
+      ts: TS,
+      bids: { alice: 60, bob: 50 },
+      winner: 'alice',
+      resolve_type: 'normal',
+    };
+    const result = renderEntry(entry, agents);
+    expect(result).toContain('| Agent | Score | Quota |');
+    expect(result).not.toContain('Raw');
+    expect(result).not.toContain('Effective');
+  });
+
+  it('should sort two-column rows by effective score descending', () => {
+    const entry: TranscriptEntry = {
+      type: 'bids',
+      step: 1,
+      epoch: 1,
+      ts: TS,
+      bids: { alice: 60, bob: 80 },
+      effective_bids: { alice: 90, bob: 70 },
+      winner: 'alice',
+      resolve_type: 'normal',
+    };
+    const result = renderEntry(entry, agents);
+    expect(result.indexOf('| Alice (alice) | 60 | 90 | 3 |')).toBeLessThan(
+      result.indexOf('| Bob (bob) | 80 | 70 | 3 |'),
+    );
+  });
+
+  it('should render unknown agent rows with fallback display name and quota', () => {
+    const entry: TranscriptEntry = {
+      type: 'bids',
+      step: 1,
+      epoch: 1,
+      ts: TS,
+      bids: { alice: 70, carol: 50 },
+      effective_bids: { alice: 70, carol: 55 },
+      winner: 'alice',
+      resolve_type: 'normal',
+    };
+    const result = renderEntry(entry, agents);
+    expect(result).toContain('| Alice (alice) | 70 | 70 | 3 |');
+    expect(result).toContain('| carol (carol) | 50 | 55 | ? |');
+  });
+
+  it('should keep large effective values inside table cells', () => {
+    const entry: TranscriptEntry = {
+      type: 'bids',
+      step: 1,
+      epoch: 1,
+      ts: TS,
+      bids: { alice: 10 },
+      effective_bids: { alice: 9999 },
+      winner: 'alice',
+      resolve_type: 'normal',
+    };
+    const result = renderEntry(entry, agents);
+    expect(result).toContain('| Agent | Raw | Effective | Quota |');
+    expect(result).toContain('| Alice (alice) | 10 | 9999 | 3 |');
+  });
+
+  it('should render negative effective values clearly', () => {
+    const entry: TranscriptEntry = {
+      type: 'bids',
+      step: 1,
+      epoch: 1,
+      ts: TS,
+      bids: { alice: 10 },
+      effective_bids: { alice: -100 },
+      winner: 'alice',
+      resolve_type: 'normal',
+    };
+    const result = renderEntry(entry, agents);
+    expect(result).toContain('| Alice (alice) | 10 | -100 | 3 |');
+  });
+});
+
+// ─── adversarial: formatFull ─────────────────────────────────────────────────
+
+describe('formatFull (adversarial)', () => {
+  it('should hide effective scores from agent-facing output', () => {
+    const entry: TranscriptEntry = {
+      type: 'bids',
+      step: 1,
+      epoch: 1,
+      ts: TS,
+      bids: { alice: 80, bob: 50 },
+      effective_bids: { alice: 120, bob: 40 },
+      winner: 'alice',
+      resolve_type: 'normal',
+    };
+    const result = formatFull([entry], agents);
+    expect(result).toContain('Speaker: Alice');
+    expect(result).not.toContain('80');
+    expect(result).not.toContain('50');
+    expect(result).not.toContain('120');
+    expect(result).not.toContain('40');
+  });
+});
+
+// ─── adversarial: renderEntries ──────────────────────────────────────────────
+
+describe('renderEntries (adversarial)', () => {
+  it('should mix legacy and effective bids renderings in order', () => {
+    const legacy: TranscriptEntry = {
+      type: 'bids',
+      step: 1,
+      epoch: 1,
+      ts: TS,
+      bids: { alice: 60 },
+      winner: 'alice',
+      resolve_type: 'normal',
+    };
+    const decayed: TranscriptEntry = {
+      type: 'bids',
+      step: 2,
+      epoch: 1,
+      ts: TS,
+      bids: { alice: 40 },
+      effective_bids: { alice: 90 },
+      winner: 'alice',
+      resolve_type: 'normal',
+    };
+    const result = renderEntries([legacy, decayed], agents);
+    const singleHeader = result.indexOf('| Agent | Score | Quota |');
+    const effectiveHeader = result.indexOf('| Agent | Raw | Effective | Quota |');
+    expect(singleHeader).toBeGreaterThan(-1);
+    expect(effectiveHeader).toBeGreaterThan(-1);
+    expect(singleHeader).toBeLessThan(effectiveHeader);
+  });
+
+  it('should place winner row first when effective sort is enabled', () => {
+    const entry: TranscriptEntry = {
+      type: 'bids',
+      step: 1,
+      epoch: 1,
+      ts: TS,
+      bids: { alice: 70, bob: 90 },
+      effective_bids: { alice: 100, bob: 95 },
+      winner: 'alice',
+      resolve_type: 'normal',
+    };
+    const result = renderEntry(entry, agents);
+    expect(result.indexOf('| Alice (alice) | 70 | 100 | 3 |')).toBeLessThan(
+      result.indexOf('| Bob (bob) | 90 | 95 | 3 |'),
+    );
+    expect(result).toContain('> **Winner: Alice** (normal)');
   });
 });

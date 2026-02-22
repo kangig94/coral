@@ -74,6 +74,44 @@ export function resolveAgentName(
 // ─── Internal helpers ───────────────────────────────────────────────────────
 
 /**
+ * Scan transcript backward to find the most recent speaker.
+ * Preferred over state.last_speech_step because applySpeechTimeout does not update that field.
+ */
+export function findLastSpeaker(transcript: TranscriptEntry[]): string | null {
+  for (let i = transcript.length - 1; i >= 0; i--) {
+    const e = transcript[i];
+    if (e.type === 'speech') return e.agent;
+  }
+  return null;
+}
+
+/**
+ * Apply bid decay: imbalance correction + recency penalty.
+ * effective = raw + (100/N) * (avg_speaks - my_speaks) - (50/N) * just_spoke
+ */
+export function computeEffectiveBids(
+  allBids: Record<string, number>,
+  agents: Record<string, AgentState>,
+  lastSpeaker: string | null,
+): Record<string, number> {
+  const names = Object.keys(allBids);
+  const N = names.length;
+  if (N <= 1) return { ...allBids }; // N=0 or N=1: no decay needed
+  const P_BASE = 100 / N;
+  const P_RECENCY = 50 / N;
+  const avgSpeaks = names.reduce((s, n) => s + agents[n].total_speaks, 0) / N;
+
+  const effective: Record<string, number> = {};
+  for (const name of names) {
+    const raw = allBids[name];
+    const imbalance = P_BASE * (avgSpeaks - agents[name].total_speaks);
+    const recency = name === lastSpeaker ? P_RECENCY : 0;
+    effective[name] = raw + imbalance - recency; // full precision; round only at render
+  }
+  return effective;
+}
+
+/**
  * Compare two bid candidates: highest score first, fewest speaks second,
  * alphabetical tiebreak.
  */
@@ -101,6 +139,7 @@ function makeBidEntry(
   winner: string | null,
   resolveType: 'normal' | 'fallback' | 'cold_start' | 'no_winner',
   now: string,
+  effectiveBids?: Record<string, number>,
 ): TranscriptEntry {
   return {
     type: 'bids',
@@ -108,6 +147,7 @@ function makeBidEntry(
     epoch: state.epoch,
     ts: now,
     bids: allBids,
+    ...(effectiveBids && { effective_bids: effectiveBids }),
     winner,
     resolve_type: resolveType,
   };
@@ -121,10 +161,11 @@ function startSpeaking(
   speakerType: 'quota' | 'fallback' | 'cold_start',
   now: string,
   extraState?: Partial<DiscussState>,
+  effectiveBids?: Record<string, number>,
 ): Result<[DiscussState, ResolveResult]> {
   const transcriptType = speakerType === 'quota' ? 'normal' : speakerType;
   const newState: DiscussState = {
-    ...appendEntry(state, makeBidEntry(state, allBids, winner, transcriptType, now), now),
+    ...appendEntry(state, makeBidEntry(state, allBids, winner, transcriptType, now, effectiveBids), now),
     current_speaker: winner,
     speaker_type: speakerType,
     status: 'speaking',
@@ -143,11 +184,12 @@ function noWinnerResult(
   allBids: Record<string, number>,
   reason: ResolveReason,
   now: string,
+  effectiveBids?: Record<string, number>,
 ): Result<[DiscussState, ResolveResult]> {
   return {
     ok: true,
     value: [
-      appendEntry(state, makeBidEntry(state, allBids, null, 'no_winner', now), now),
+      appendEntry(state, makeBidEntry(state, allBids, null, 'no_winner', now, effectiveBids), now),
       { no_winner: true, reason },
     ],
   };
@@ -329,15 +371,18 @@ export function resolveWinner(
     }
   }
 
+  const lastSpeaker = findLastSpeaker(state.transcript);
+  const effectiveBids = computeEffectiveBids(allBids, state.agents, lastSpeaker);
   const threshold = state.bid_threshold;
-  const cmp = (a: [string, number], b: [string, number]) => compareBidCandidates(state.agents, allBids, a, b);
+  // Sort by effective score; threshold filter uses raw score (agent intent preserved)
+  const cmp = (a: [string, number], b: [string, number]) => compareBidCandidates(state.agents, effectiveBids, a, b);
 
   const primaryPool = Object.entries(allBids)
     .filter(([n, s]) => s >= threshold && state.agents[n].quota_remaining > 0)
     .sort(cmp);
 
   if (primaryPool.length > 0) {
-    return startSpeaking(state, allBids, primaryPool[0][0], 'quota', now);
+    return startSpeaking(state, allBids, primaryPool[0][0], 'quota', now, undefined, effectiveBids);
   }
 
   const fallbackPool = Object.entries(allBids)
@@ -355,24 +400,24 @@ export function resolveWinner(
         ...state.agents,
         [winnerName]: { ...state.agents[winnerName], fallback_used: true },
       },
-    });
+    }, effectiveBids);
   }
 
   const allBelowThreshold = Object.values(allBids).every((s) => s < threshold);
   if (allBelowThreshold) {
     if (!state.cold_start) {
-      return noWinnerResult(state, allBids, 'all_below_threshold', now);
+      return noWinnerResult(state, allBids, 'all_below_threshold', now, effectiveBids);
     }
     const picked = coldStartPick(state);
     if (picked !== null) {
-      return startSpeaking(state, allBids, picked, 'cold_start', now);
+      return startSpeaking(state, allBids, picked, 'cold_start', now, undefined, effectiveBids);
     }
-    return noWinnerResult(state, allBids, 'all_below_threshold', now);
+    return noWinnerResult(state, allBids, 'all_below_threshold', now, effectiveBids);
   }
 
   const allExhausted = activeAgents.every(([, a]) => a.quota_remaining === 0 && a.fallback_used);
   if (!allExhausted) {
-    return noWinnerResult(state, allBids, 'all_blocked', now);
+    return noWinnerResult(state, allBids, 'all_blocked', now, effectiveBids);
   }
 
   if (state.epoch < state.max_epochs) {
@@ -390,7 +435,7 @@ export function resolveWinner(
     }
 
     const nextEpochState = resetBids({
-      ...appendEntry(state, makeBidEntry(state, allBids, null, 'no_winner', now), now),
+      ...appendEntry(state, makeBidEntry(state, allBids, null, 'no_winner', now, effectiveBids), now),
       epoch: state.epoch + 1,
       cold_start: true,
       current_speaker: null,
@@ -406,7 +451,7 @@ export function resolveWinner(
     };
   }
 
-  return noWinnerResult(state, allBids, 'max_epochs_reached', now);
+  return noWinnerResult(state, allBids, 'max_epochs_reached', now, effectiveBids);
 }
 
 /** Record a speech from the current speaker. */

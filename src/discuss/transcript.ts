@@ -97,18 +97,31 @@ export function renderEntries(
 export function renderEntry(e: TranscriptEntry, agents: Record<string, AgentState>): string {
   switch (e.type) {
     case 'bids': {
+      const effectiveBids = e.effective_bids;
       const rows = Object.entries(e.bids)
-        .sort(([, a], [, b]) => b - a)
+        .sort(([nameA, rawA], [nameB, rawB]) =>
+          effectiveBids
+            ? (effectiveBids[nameB] ?? rawB) - (effectiveBids[nameA] ?? rawA)
+            : rawB - rawA,
+        )
         .map(([name, score]) => {
           const dn = agents[name]?.display_name ?? name;
           const q = agents[name]?.quota_remaining;
+          if (effectiveBids) {
+            const eff = effectiveBids[name] ?? score;
+            const effStr = Number.isInteger(eff) ? String(eff) : eff.toFixed(1);
+            return `| ${dn} (${name}) | ${score} | ${effStr} | ${q ?? '?'} |`;
+          }
           return `| ${dn} (${name}) | ${score} | ${q ?? '?'} |`;
         })
         .join('\n');
       const winnerLine = e.winner
         ? `> **Winner: ${agents[e.winner]?.display_name ?? e.winner}** (${e.resolve_type})`
         : `> **No winner** (${e.resolve_type})`;
-      return `\n#### Bids - Step ${e.step}\n| Agent | Score | Quota |\n|-------|-------|-------|\n${rows}\n${winnerLine}\n\n---\n`;
+      const header = effectiveBids
+        ? `| Agent | Raw | Effective | Quota |\n|-------|-----|-----------|-------|`
+        : `| Agent | Score | Quota |\n|-------|-------|-------|`;
+      return `\n#### Bids - Step ${e.step}\n${header}\n${rows}\n${winnerLine}\n\n---\n`;
     }
     case 'speech': {
       const ts = formatTimestamp(e.ts);

@@ -14,7 +14,7 @@ type TranscriptMetadata = {
 // ─── Transcript entries (discriminated union) ────────────────────────────────
 
 export type TranscriptEntry =
-  | ({ type: 'bids'; bids: AgentScoreMap; winner: string | null;
+  | ({ type: 'bids'; bids: AgentScoreMap; effective_bids?: AgentScoreMap; winner: string | null;
     resolve_type: 'normal' | 'fallback' | 'cold_start' | 'no_winner'; } & TranscriptMetadata)
   | ({ type: 'speech'; agent: string; display_name: string; content: string; } & TranscriptMetadata)
   | { type: 'epoch_summary'; epoch: number; ts: string; summary: string; }
