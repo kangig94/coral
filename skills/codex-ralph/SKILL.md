@@ -57,10 +57,13 @@ After the loop exits:
    d. **Red-attacker gate** (if `--red`): Wait for background red-attacker to complete. Read its output for the list of generated test files.
    e. **Test**: Run the test suite after build succeeds. If `--red`, this now includes adversarial tests.
    f. **Red fix loop** (if `--red` and adversarial test failures): Fix failures → re-run test. Cap at **3 iterations** - if still failing, report remaining failures and escalate rather than looping indefinitely.
-   g. **Red merge** (if `--red` and tests pass): Merge adversarial tests into the main test files and delete the `red-` files. This ensures test organization stays module-based, not generation-based.
-      - For each `red-<target>.<ext>` file, identify the corresponding main test file (e.g., `red-state-machine-decay.test.ts` → `state-machine.test.ts`)
-      - Move `describe` blocks from the red file into the main test file (append at end, preserve imports)
-      - Delete the `red-` file
+   g. **Red triage** (if `--red` and tests pass): Review each red test before merging. Red-attacker runs without full context - it may generate tests that target the wrong module, duplicate existing coverage, or test unreachable scenarios.
+      - For each `red-<target>.<ext>` file, read the test and verify:
+        * Tests target code that was actually changed in this task (not unrelated modules)
+        * Test scenarios are reachable (not testing impossible states or mocked-away paths)
+        * No substantial overlap with existing tests in the main test file
+      - **Merge** tests that pass triage: move `describe` blocks into the main test file (append at end, preserve imports), delete the `red-` file
+      - **Discard** tests that fail triage: delete the `red-` file, note the reason briefly
       - Re-run tests to verify merge correctness
       - Record the adversarial test provenance in the commit message, not in file naming
 
