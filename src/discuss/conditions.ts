@@ -1,40 +1,30 @@
 /**
  * Discuss session condition predicates - pure functions, zero I/O.
- * Used by discuss(op: "wait") to detect when to unblock and by auto-resolve to re-check inside lock.
  */
 
 import type { DiscussState } from './types.js';
 
-/**
- * All bids submitted AND in bidding phase.
- *
- * Phase guard rationale: without `status` check, this was trivially true in `speaking`
- * status because pending_bidders from the previous round remains empty until resetBids.
- */
+/** All bids submitted AND in bidding phase. */
 export const allBidsIn = (state: DiscussState): boolean =>
   state.status === 'bidding' && state.pending_bidders.length === 0;
 
-/**
- * Speech was delivered: step advanced past speaking into bidding (monotonic marker).
- *
- * applySpeech sets last_speech_step = step, then increments step, then sets status = 'bidding'.
- * So after speech: last_speech_step = N, step = N+1, status = 'bidding'.
- * Predicate: status is 'bidding' AND last_speech_step === step - 1.
- *
- * Step-relative rationale: `last_speech_step === step` would be immediately false
- * because step was already incremented. The `- 1` accounts for this.
- */
+/** Speech was delivered and step advanced. */
 export const speechDelivered = (state: DiscussState): boolean =>
   state.status === 'bidding' && state.last_speech_step === state.step - 1;
 
-/**
- * Agent has something to do right now - or session ended (wake up to exit loop).
- *
- * current_bids[agent] === null means bid not yet submitted (resetBids sets all to null).
- * `ended` fires the predicate so agents blocked on discuss(op: "wait", condition: "action_needed")
- * unblock immediately instead of burning 180s timeout.
- */
-export const actionNeeded = (agent: string) => (s: DiscussState): boolean =>
+/** Agent's bid has been released (speech/timeout/epoch summary/ban/session end). */
+export const bidReleased = (agent: string, bidStep: number) => (s: DiscussState): boolean =>
+  s.bid_release_step >= bidStep ||
   s.status === 'ended' ||
-  (s.status === 'bidding' && s.current_bids[agent] === null) ||
-  (s.status === 'speaking' && s.current_speaker === agent);
+  s.agents[agent]?.banned === true;
+
+/** Agent won the floor in current step. */
+export const isWinner = (agent: string) => (s: DiscussState): boolean =>
+  s.status === 'speaking' && s.current_speaker === agent;
+
+/** Setup finished. */
+export const setupComplete = (s: DiscussState): boolean => s.status !== 'setup';
+
+/** No active participants remain (all banned or fully exhausted). */
+export const noParticipants = (s: DiscussState): boolean =>
+  Object.values(s.agents).every((a) => a.banned || (a.quota_remaining === 0 && a.fallback_used));

@@ -1,5 +1,5 @@
 /**
- * Zod schemas for MCP tool input validation - discuss/discuss_persona_seed tools.
+ * Zod schemas for MCP tool input validation - discuss/discuss_lead tools.
  */
 
 import { z } from 'zod';
@@ -11,8 +11,36 @@ export const sessionIdPattern = /^[0-9]{6}-[0-9]{4}-[a-z0-9]{4}$/;
 const agentNameField = z.string().regex(identPattern);
 const sessionIdField = z.string().regex(sessionIdPattern);
 
+const bidShape = z.object({
+  op: z.literal('bid'),
+  session: sessionIdField,
+  agent_name: agentNameField,
+  score: z.number().int().min(0).max(100),
+}).strict();
+
+const speakShape = z.object({
+  op: z.literal('speak'),
+  session: sessionIdField,
+  agent_name: agentNameField,
+  content: z.string().min(1),
+}).strict();
+
+export const discussAgentOpSchema = z.discriminatedUnion('op', [bidShape, speakShape]);
+
+const seedShape = z.object({
+  op: z.literal('_1_seed'),
+  controversy_axes: z.array(z.object({
+    axis: z.string().min(1),
+    positions: z.array(z.string().min(1)).min(1).max(10)
+      .refine((positions) => new Set(positions).size === positions.length, 'Positions within an axis must be unique'),
+  })).min(1).max(10)
+    .refine((axes) => new Set(axes.map((a) => a.axis)).size === axes.length, 'Axis names must be unique'),
+  n: z.number().int().min(1).max(8),
+  seed: z.number().int().nullable().default(null),
+}).strict();
+
 const createShape = z.object({
-  op: z.literal('create'),
+  op: z.literal('_2_create'),
   topic: z.string().min(1),
   agents: z
     .array(
@@ -26,91 +54,57 @@ const createShape = z.object({
     .refine(
       (agents) => new Set(agents.map((a) => a.name)).size === agents.length,
       'Agent names must be unique',
-    ),
+  ),
   quota_per_epoch: z.number().int().min(1).max(10).default(3),
   recent_turns: z.number().int().min(1).max(20).default(5),
-});
+}).strict();
 
-const bidShape = z.object({
-  op: z.literal('bid'),
+const stepShape = z.object({
+  op: z.literal('_3_step'),
   session: sessionIdField,
-  agent_name: agentNameField,
-  score: z.number().int().min(0).max(100),
-});
-
-const waitShape = z.object({
-  op: z.literal('wait'),
-  session: sessionIdField,
-  condition: z.enum(['all_bids', 'speech_delivered', 'action_needed']),
-  timeout_seconds: z.number().min(1),
-  agent_name: agentNameField.optional(),
-});
-
-const speakShape = z.object({
-  op: z.literal('speak'),
-  session: sessionIdField,
-  agent_name: agentNameField,
-  content: z.string().min(1),
-});
+  timeout_seconds: z.number().min(1).max(120),
+  speech_force_timeout: z.boolean().default(false),
+}).strict();
 
 const transcriptShape = z.object({
-  op: z.literal('transcript'),
+  op: z.literal('_4_transcript'),
   session: sessionIdField,
-  agent_name: agentNameField.optional(),
   mode: z.enum(['full', 'recent', 'summary']).default('recent'),
   last_n: z.number().int().min(1).max(50).optional(),
-});
+}).strict();
+
+const epochSummaryShape = z.object({
+  op: z.literal('_5_epoch'),
+  session: sessionIdField,
+  epoch: z.number().int().min(1),
+  summary: z.string().min(1),
+}).strict();
 
 const stateShape = z.object({
-  op: z.literal('state'),
+  op: z.literal('_6_state'),
   session: sessionIdField,
-});
+}).strict();
 
 const endShape = z.object({
-  op: z.literal('end'),
+  op: z.literal('_7_end'),
   session: sessionIdField,
   synthesis: z.string().optional(),
   force: z.boolean().default(false),
   reason: z.string().optional(),
-});
+}).strict();
 
-const epochSummaryShape = z.object({
-  op: z.literal('epoch_summary'),
-  session: sessionIdField,
-  epoch: z.number().int().min(1),
-  summary: z.string().min(1),
-});
-
-export const discussOpSchema = z.discriminatedUnion('op', [
+export const discussLeadOpSchema = z.discriminatedUnion('op', [
+  seedShape,
   createShape,
-  bidShape,
-  waitShape,
-  speakShape,
+  stepShape,
   transcriptShape,
+  epochSummaryShape,
   stateShape,
   endShape,
-  epochSummaryShape,
 ]);
 
-export type DiscussOpInput = z.infer<typeof discussOpSchema>;
-export type DiscussCreateInput = Omit<Extract<DiscussOpInput, { op: 'create' }>, 'op'>;
+export type DiscussAgentOpInput = z.infer<typeof discussAgentOpSchema>;
+export type DiscussLeadOpInput = z.infer<typeof discussLeadOpSchema>;
+export type DiscussCreateInput = Omit<Extract<DiscussLeadOpInput, { op: '_2_create' }>, 'op'>;
 
-// discuss_persona_seed - Generate k-DPP diverse persona assignments
-export const discussPersonaSeedSchema = z.object({
-  controversy_axes: z.array(z.object({
-    axis: z.string().min(1),
-    positions: z.array(z.string().min(1)).min(1).max(10)
-      .refine(
-        (positions) => new Set(positions).size === positions.length,
-        'Positions within an axis must be unique',
-      ),
-  })).min(1).max(10)
-    .refine(
-      (axes) => new Set(axes.map((a) => a.axis)).size === axes.length,
-      'Axis names must be unique',
-    ),
-  n: z.number().int().min(1).max(8),
-  seed: z.number().int().nullable().default(null),
-});
-
-export type DiscussPersonaSeedInput = z.infer<typeof discussPersonaSeedSchema>;
+export type DiscussPersonaSeedInput = z.infer<typeof seedShape>;

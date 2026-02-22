@@ -112,7 +112,7 @@ export function renderEntry(e: TranscriptEntry, agents: Record<string, AgentStat
     case 'epoch_summary': {
       const ts = formatTimestamp(e.ts);
       const wrapped = wrapText(e.summary);
-      return `\n## Epoch ${e.epoch}\n\n### ${ts} Epoch Summary (by Teamlead)\n${wrapped}\n`;
+      return `\n## Epoch ${e.epoch}\n\n### ${ts} Epoch Summary (by Moderator)\n${wrapped}\n`;
     }
     case 'session_event': {
       const ts = formatTimestamp(e.ts);

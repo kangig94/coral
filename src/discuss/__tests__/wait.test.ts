@@ -6,11 +6,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { waitForCondition } from '../wait.js';
+import { waitForCondition, INFINITE_POLL } from '../wait.js';
 import type { DiscussState } from '../types.js';
 
 let tmpDir: string;
-const INTERVAL = 30; // fast poll for tests
+const INTERVAL = 30;
 
 beforeEach(() => { tmpDir = mkdtempSync(join(tmpdir(), 'coral-wait-')); });
 afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }); });
@@ -28,7 +28,14 @@ function makeState(overrides: Partial<DiscussState> = {}): DiscussState {
     cold_start: false,
     recent_turns: 5,
     agents: {
-      alice: { persona: '', display_name: 'Alice', quota_remaining: 3, total_speaks: 0, fallback_used: false },
+      alice: {
+        persona: '',
+        display_name: 'Alice',
+        quota_remaining: 3,
+        total_speaks: 0,
+        fallback_used: false,
+        banned: false,
+      },
     },
     current_bids: { alice: null },
     pending_bidders: ['alice'],
@@ -40,10 +47,12 @@ function makeState(overrides: Partial<DiscussState> = {}): DiscussState {
     updated_at: '2026-01-01T00:00:00Z',
     last_activity_at: '2026-01-01T00:00:00Z',
     last_speech_step: 0,
+    hold_count: 0,
+    bid_release_step: 0,
+    end_reason_content: null,
     transcript: [],
     transcript_rendered: 0,
     bid_threshold: 50,
-    transcript_read_step: {},
     ...overrides,
   };
 }
@@ -60,15 +69,31 @@ describe('waitForCondition', () => {
     const result = await waitForCondition(join(tmpDir, 'state.json'), isEnded, 5000, INTERVAL);
     expect(result.fulfilled).toBe(true);
     expect(result.error).toBeNull();
-    expect(result.elapsed_ms).toBeLessThan(INTERVAL); // resolved before first poll
+    expect(result.elapsed_ms).toBeLessThan(INTERVAL);
     expect(result.state!.status).toBe('ended');
+  });
+
+  it('should support infinite polling sentinel', async () => {
+    writeState(makeState({ status: 'bidding' }));
+    const statePath = join(tmpDir, 'state.json');
+
+    const running = waitForCondition(statePath, isEnded, INFINITE_POLL, INTERVAL);
+    const timedOut = await Promise.race([
+      running,
+      new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), 120)),
+    ]);
+    expect(timedOut).toHaveProperty('timedOut', true);
+
+    const writer = setTimeout(() => writeState(makeState({ status: 'ended' })), 150);
+    const released = await running;
+    clearTimeout(writer);
+    expect(released.fulfilled).toBe(true);
+    expect(released.state?.status).toBe('ended');
   });
 
   it('should poll until condition becomes true', async () => {
     writeState(makeState({ status: 'bidding' }));
     const statePath = join(tmpDir, 'state.json');
-
-    // Update state after 2 poll intervals
     setTimeout(() => writeState(makeState({ status: 'ended' })), INTERVAL * 2 + 10);
 
     const result = await waitForCondition(statePath, isEnded, 2000, INTERVAL);
@@ -81,12 +106,11 @@ describe('waitForCondition', () => {
     const result = await waitForCondition(join(tmpDir, 'state.json'), isEnded, 100, INTERVAL);
     expect(result.fulfilled).toBe(false);
     expect(result.error).toBeNull();
-    expect(result.state!.status).toBe('bidding'); // lastKnownGood state
+    expect(result.state!.status).toBe('bidding');
     expect(result.elapsed_ms).toBeGreaterThanOrEqual(100);
   });
 
   it('should return error=state_unavailable when file never exists', async () => {
-    // No state.json written - file does not exist at all
     const result = await waitForCondition(join(tmpDir, 'state.json'), isEnded, 100, INTERVAL);
     expect(result.fulfilled).toBe(false);
     expect(result.error).toBe('state_unavailable');
@@ -96,7 +120,6 @@ describe('waitForCondition', () => {
     writeState(makeState({ status: 'bidding' }));
     const statePath = join(tmpDir, 'state.json');
 
-    // Write corrupt JSON mid-way, then recover
     setTimeout(() => writeFileSync(statePath, '{"partial":'), INTERVAL + 5);
     setTimeout(() => writeState(makeState({ status: 'ended' })), INTERVAL * 3 + 5);
 
@@ -105,16 +128,14 @@ describe('waitForCondition', () => {
     expect(result.state!.status).toBe('ended');
   });
 
-  it('should use lastKnownGood on timeout after transient read errors', async () => {
+  it('should keep lastKnownGood after permanent corrupt read', async () => {
     writeState(makeState({ status: 'bidding' }));
     const statePath = join(tmpDir, 'state.json');
-
-    // Replace with unparseable content - stays corrupt until timeout
     setTimeout(() => writeFileSync(statePath, 'not-json'), INTERVAL + 5);
 
     const result = await waitForCondition(statePath, isEnded, 150, INTERVAL);
     expect(result.fulfilled).toBe(false);
-    expect(result.error).toBeNull(); // lastKnownGood exists from initial read
+    expect(result.error).toBeNull();
     expect(result.state!.status).toBe('bidding');
   });
 });
