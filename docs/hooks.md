@@ -1,19 +1,26 @@
 # Hooks
 
-Hooks provide automatic context injection, agent routing, and error-aware KB reminders.
+Hooks provide automatic context injection, agent routing, error-aware KB reminders, and KB promotion enforcement.
 
 ## Overview
 
-Claude Code's hook system executes shell scripts on specific events. Coral uses four hooks:
+Claude Code's hook system executes shell scripts on specific events. Coral uses hooks at two levels:
 
+**Plugin hooks** (`hooks/hooks.json`):
 1. **SessionStart** - Injects CLAUDE.md behavioral guidelines into every Claude session
 2. **SubagentStart** - Injects delegation instructions into agents with a `codex-` prefix (with or without `coral:` namespace)
 3. **PostToolUseFailure** - On any tool failure, reminds Claude to check `.claude/coral/kb/` before debugging
-4. **TeammateIdle** - Blocks idle when discuss agents have pending actions
+4. **PreCompact** - Before context compaction, reminds about unprocessed memos for KB promotion
+5. **TeammateIdle** - Blocks idle when discuss agents have pending actions
+
+**Skill-level Stop hooks** (in SKILL.md frontmatter):
+- Skills: ralph, codex-ralph, plan, coplan, debug, code-simplify
+- On skill completion, blocks Claude from stopping if unprocessed memos exist in `.claude/coral/memo/`
+- Uses `once: true` to fire only once per session (prevents infinite loops)
 
 ## Hook Configuration
 
-Configuration: `hooks/hooks.json`. Scripts: `hooks/detect-codex-agent.sh`, `hooks/kb-lookup-reminder.sh`, `hooks/discuss-idle-guard.sh`.
+Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/detect-codex-agent.sh`, `hooks/kb-lookup-reminder.sh`, `hooks/kb-promote-reminder.sh`, `hooks/discuss-idle-guard.sh`.
 
 ## SessionStart Hook
 
@@ -33,7 +40,24 @@ On any tool failure, reminds Claude to check `.claude/coral/kb/` before debuggin
 
 **Fail-open**: If KB directory doesn't exist or has no `.md` files — silent exit 0.
 
-> **Note**: Plugin hooks do not trigger `PostToolUseFailure`. To activate, register in `.claude/settings.json` or `.claude/settings.local.json`.
+## PreCompact Hook
+
+Before context compaction, checks for unprocessed memos in `.claude/coral/memo/`. Script: `hooks/kb-promote-reminder.sh`.
+
+**Output**: `systemMessage` shown to the user as a warning. PreCompact has no decision control — cannot inject context into Claude or block compaction.
+
+**Fail-open**: If memo directory doesn't exist or has no files — silent exit 0.
+
+## Skill Stop Hooks (KB Promotion)
+
+Configured in SKILL.md frontmatter on: ralph, codex-ralph, plan, coplan, debug, code-simplify. Script: `hooks/kb-promote-reminder.sh`.
+
+When a skill completes and unprocessed memos exist in `.claude/coral/memo/`:
+- `decision: "block"` prevents Claude from stopping
+- `reason` instructs Claude to review memos for KB promotion (check existing KB entries, discard duplicates, promote new knowledge, delete processed memos)
+- `once: true` ensures the hook fires only once per session
+
+**Fail-open**: If memo directory doesn't exist or has no files — silent exit 0. Claude stops normally.
 
 ## Detection Script
 

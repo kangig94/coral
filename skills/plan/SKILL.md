@@ -2,6 +2,12 @@
 name: plan
 description: Claude-native planning with parallel architect/critic self-review
 argument-hint: "[task description]"
+hooks:
+  Stop:
+    - hooks:
+        - type: command
+          command: "${CLAUDE_PLUGIN_ROOT}/hooks/kb-promote-reminder.sh"
+          once: true
 ---
 
 # Planning
