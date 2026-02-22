@@ -44,6 +44,18 @@ Optional but recommended for review/safety agents:
    - BAD: "When changing important code"
    - GOOD: "Consult mcp-guardian BEFORE modifying GPU memory allocation functions"
 
+### Quality Review Agent Design
+
+Tier 3 quality agents (code-critic, ux-critic, and domain-specific reviewers) must use rubric-anchored scoring:
+
+1. **Multi-dimensional scoring** — decompose quality into 3-5 measurable dimensions, not a single number. Each dimension evaluates a distinct aspect of quality.
+2. **4-tier rubric anchors** per dimension — define what 10, 7, 4, and 1 look like concretely. Anchors make the evaluation philosophy executable and repeatable.
+3. **Floor rule** — any single dimension below 4 triggers NEEDS WORK regardless of composite score. One catastrophic weakness cannot be averaged away by strengths.
+4. **Evidence requirement** — every score must cite file:line evidence. No "looks good" verdicts.
+5. **Composite score** — average of all dimensions (rounded). The composite summarizes; individual dimensions diagnose.
+
+The rubric anchors ARE the philosophy — they encode what the project values into repeatable evaluation criteria. A reviewer without anchored rubric produces inconsistent, personality-dependent results.
+
 ## Rules vs Docs Boundary
 
 Rules contain **principles** (stable, rarely change). Docs contain **facts** (change with code). Rules may REFERENCE docs but must never DUPLICATE doc content.
@@ -84,6 +96,17 @@ For new projects: note "to be updated as architecture develops" where uncertain.
 
 For new projects: note "to be confirmed" for unverified sections.
 
+### CLAUDE.md Requirements
+
+The generated CLAUDE.md is the project hub — every session reads it first. Beyond build commands and workflow steps, it must establish the quality philosophy that governs all subsequent work:
+
+1. **Quality principle** — one line before the Workflow section stating what good code means for this project (e.g., "Good code guides readers naturally — structure reveals intent without requiring explanation.")
+2. **Build commands** — exact, runnable commands
+3. **Workflow phases** — before/during/after with scope gate for non-source changes
+4. **Agent consultation matrix** — reference to `.claude/rules/agents.md`
+
+The quality principle line acts as gravitational center — it pulls all subsequent decisions in the same direction without requiring separate instructions for each case.
+
 ### Domain-Specific Doc Requirements
 
 Domain references define recommended docs with two priority levels:
@@ -102,7 +125,7 @@ Quality rules:
 - Use **tables** for structured information (agent lists, layer rules, checklists)
 - Use **code blocks** for commands and examples
 - Reference **actual file paths** in the project, not generic placeholders
-- Keep sections **concise** - every sentence should add value
+- Keep sections **clear** — structure information to reduce cognitive load, not just save space. Numbered steps over walls of text, tables over prose lists
 - Include **examples** where patterns are non-obvious
 - **Docs describe architecture decisions and navigation - not source contents.** Any content that becomes stale when a function signature or schema field changes belongs in source code, not docs.
 

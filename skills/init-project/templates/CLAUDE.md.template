@@ -16,6 +16,8 @@
 
 Rules in `.claude/rules/` are auto-loaded. Domain-specific rules activate based on file paths being edited via `paths:` frontmatter.
 
+Good code guides readers naturally — structure reveals intent without requiring explanation.
+
 ## Workflow
 
 **Before**: Read `docs/ARCHITECTURE.md` and `docs/DEV_GUIDE.md`. Identify required agent consultations from matrix in `.claude/rules/agents.md`.
