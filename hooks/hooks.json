@@ -36,6 +36,17 @@
         ]
       }
     ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/kb-promote-reminder.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "TeammateIdle": [
       {
         "matcher": "dc-*",

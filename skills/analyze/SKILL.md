@@ -2,6 +2,17 @@
 name: analyze
 description: Deep analysis and investigation via Claude-native analysis
 argument-hint: "[investigation target or question]"
+hooks:
+  PreToolUse:
+    - hooks:
+        - type: command
+          command: "${CLAUDE_PLUGIN_ROOT}/hooks/kb-memo-reminder.sh"
+          once: true
+  Stop:
+    - hooks:
+        - type: command
+          command: "${CLAUDE_PLUGIN_ROOT}/hooks/kb-promote-reminder.sh"
+          once: true
 ---
 
 # Deep Analysis & Investigation

@@ -2,6 +2,17 @@
 name: code-simplify
 description: "Simplifies and refines code for clarity, consistency, and maintainability while preserving all functionality. Focuses on recently modified code unless instructed otherwise."
 argument-hint: "[codex:|claude:]<scope or prompt>"
+hooks:
+  PreToolUse:
+    - hooks:
+        - type: command
+          command: "${CLAUDE_PLUGIN_ROOT}/hooks/kb-memo-reminder.sh"
+          once: true
+  Stop:
+    - hooks:
+        - type: command
+          command: "${CLAUDE_PLUGIN_ROOT}/hooks/kb-promote-reminder.sh"
+          once: true
 ---
 
 # Code Simplification
