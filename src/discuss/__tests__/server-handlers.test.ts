@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionStore } from '../session-store.js';
 import { handleToolCall, tools } from '../server-handlers.js';
-import { startBidding } from '../state-machine.js';
+import { startBidding, DEFAULT_BID_THRESHOLD } from '../state-machine.js';
 import { _setDefaultPollMs } from '../wait.js';
 import type { McpResult } from '../../shared/mcp-utils.js';
 
@@ -110,7 +110,7 @@ describe('discuss creation protocol', () => {
     expect(result.isError).toBe(false);
     expect(data).toHaveProperty('session_id');
     expect(data).toHaveProperty('status', 'setup');
-    expect(data.bid_threshold).toBe(50);
+    expect(data.bid_threshold).toBe(DEFAULT_BID_THRESHOLD);
   });
 
   it('should reject create with bad payload', async () => {

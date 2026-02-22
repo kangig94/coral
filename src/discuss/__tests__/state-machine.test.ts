@@ -309,7 +309,7 @@ describe('speech lifecycle', () => {
     };
 
     const s1 = applyBid(withFallback, 'alice', 80, NOW);
-    const s2 = applyBid(s1.ok ? s1.value : withFallback, 'bob', 40, NOW);
+    const s2 = applyBid(s1.ok ? s1.value : withFallback, 'bob', 20, NOW);
     const r = resolveWinner(s2.ok ? s2.value : withFallback, NOW);
     if (!r.ok) return;
 

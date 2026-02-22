@@ -13,7 +13,7 @@ import type {
   TranscriptEntry,
 } from './types.js';
 
-export const DEFAULT_BID_THRESHOLD = 50;
+export const DEFAULT_BID_THRESHOLD = 30;
 export const DEFAULT_MAX_EPOCHS = 2;
 export const DEFAULT_QUOTA_PER_EPOCH = 3;
 

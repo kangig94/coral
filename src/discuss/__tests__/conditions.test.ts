@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { allBidsIn, bidReleased, isWinner, setupComplete, noParticipants, speechDelivered } from '../conditions.js';
+import { DEFAULT_BID_THRESHOLD } from '../state-machine.js';
 import type { DiscussState } from '../types.js';
 
 function makeState(overrides: Partial<DiscussState> = {}): DiscussState {
@@ -50,7 +51,7 @@ function makeState(overrides: Partial<DiscussState> = {}): DiscussState {
     end_reason_content: null,
     transcript: [],
     transcript_rendered: 0,
-    bid_threshold: 50,
+    bid_threshold: DEFAULT_BID_THRESHOLD,
     ...overrides,
   };
 }

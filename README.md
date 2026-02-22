@@ -138,9 +138,9 @@ The MCP server owns all state transitions. Agents cannot speak out of turn or bi
 | `/coral:codex-analyze` | Deep analysis (Codex + Claude synthesis) | `investigate why the session lookup is slow` |
 | `/coral:plan` | Planning with architect/critic review | `add retry logic to the API client` |
 | `/coral:coplan` | Cross-model planning (Codex reviews) | `redesign the session management system` |
-| `/coral:ralph` | Persistent execution loop (sonnet) | `implement the caching layer` |
-| `/coral:codex-ralph` | Persistent execution via Codex (sonnet) | `implement the caching layer` |
-| `/coral:code-simplifier` | Simplify and refine code for clarity | `simplify the output parser` |
+| `/coral:ralph` | Persistent execution loop (sonnet). `--red` for adversarial tests | `--red implement the caching layer` |
+| `/coral:codex-ralph` | Persistent execution via Codex (sonnet). `--red` for adversarial tests | `--red implement the caching layer` |
+| `/coral:code-simplify` | Simplify and refine code for clarity | `simplify the output parser` |
 | `/coral:debug` | Bug diagnosis, planning, and fix execution | `why does session lookup return null?` |
 | `/coral:init-project` | Project initialization orchestrator | `"React + FastAPI project"` |
 | `/coral:discuss` | Moderated multi-agent discussion | `AI ethics in healthcare` |
@@ -157,7 +157,7 @@ Coral automatically manages a project-local KB (`.claude/coral/kb/`) to prevent 
 | Variable | Default | Description |
 |---|---|---|
 | `CORAL_CODEX_MODEL` | `gpt-5.3-codex` | Default Codex CLI model |
-| `CORAL_DISCUSS_BID_THRESHOLD` | `50` | Minimum bid score (1-100) for floor eligibility in discussions |
+| `CORAL_DISCUSS_BID_THRESHOLD` | `30` | Minimum bid score (1-100) for floor eligibility in discussions |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Max epochs before discussion auto-ends (1-10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `30` | Days before completed discuss sessions are auto-pruned |
 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(unset)_ | **Required** for `/coral:discuss`. Set to `1` to enable Agent Teams. |
@@ -169,7 +169,7 @@ Set in `.claude/settings.json` (persists across sessions):
 {
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
-    "CORAL_DISCUSS_BID_THRESHOLD": "50",
+    "CORAL_DISCUSS_BID_THRESHOLD": "30",
     "CORAL_DISCUSS_MAX_EPOCHS": "2",
     "CORAL_DISCUSS_TTL_DAYS": "30",
     "ENABLE_TOOL_SEARCH": "auto:5"
@@ -214,7 +214,7 @@ tools: mcp__plugin_coral_cx__codex
 
 ### Claude-native Agent
 
-Create `agents/<name>.md` (without `codex-` prefix):
+Create `agents/<name>.md` (without `codex-` prefix). All agents use `<Agent_Prompt>` XML structure:
 
 ```yaml
 ---
@@ -224,6 +224,19 @@ model: opus
 disallowedTools: Write, Edit
 ---
 ```
+
+```xml
+<Agent_Prompt>
+  <Role>...</Role>
+  <Success_Criteria>...</Success_Criteria>
+  <Constraints>...</Constraints>
+  <Investigation_Protocol>...</Investigation_Protocol>
+  <Output_Format>...</Output_Format>
+  <Failure_Modes_To_Avoid>...</Failure_Modes_To_Avoid>
+</Agent_Prompt>
+```
+
+See [Agent Template](.claude/templates/AGENT.md) for required/optional sections by tier.
 
 ## Documentation
 
