@@ -8,6 +8,10 @@ import type { DiscussState } from './types.js';
 /** Infinite polling sentinel for bid holds. */
 export const INFINITE_POLL = 0;
 
+let _defaultPollMs = 500;
+/** Override default poll interval (for tests). */
+export function _setDefaultPollMs(ms: number): void { _defaultPollMs = ms; }
+
 /** Result of waitForCondition. */
 export type WaitResult =
   | { fulfilled: boolean; elapsed_ms: number; state: DiscussState; error: null }
@@ -21,7 +25,7 @@ export async function waitForCondition(
   statePath: string,
   predicate: (s: DiscussState) => boolean,
   timeoutMs: number,
-  intervalMs = 500,
+  intervalMs = _defaultPollMs,
 ): Promise<WaitResult> {
   const startAt = Date.now();
   const infinite = timeoutMs <= 0;

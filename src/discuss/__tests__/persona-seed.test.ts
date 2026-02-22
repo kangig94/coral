@@ -161,26 +161,85 @@ describe('seedPersonas', () => {
     });
   });
 
-  it('returns pool_too_large when cartesian pool exceeds max size', () => {
-    const result = seedPersonas({
-      controversy_axes: [
-        { axis: 'a', positions: ['1', '2', '3', '4'] },
-        { axis: 'b', positions: ['1', '2', '3', '4'] },
-        { axis: 'c', positions: ['1', '2', '3', '4'] },
-        { axis: 'd', positions: ['1', '2', '3', '4', '5'] },
-      ],
-      n: 4,
-      seed: 1,
-    });
+  it('subsamples pool when exceeding MAX_POOL_SIZE', () => {
+    // 7^3 = 343 > 256, n=1 avoids k-DPP (single random pick)
+    const axes = Array.from({ length: 3 }, (_, i) => ({
+      axis: `ax${i}`,
+      positions: Array.from({ length: 7 }, (__, j) => `p${j}`),
+    }));
+    const result = seedPersonas({ controversy_axes: axes, n: 1, seed: 1 });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.subsampled).toBe(true);
+    expect(result.value.original_pool_size).toBe(343);
+    expect(result.value.pool_size).toBe(MAX_POOL_SIZE);
+    expect(result.value.assignments).toHaveLength(1);
+  });
+
+  it('does not subsample at exactly MAX_POOL_SIZE', () => {
+    // 4^4 = 256 = MAX_POOL_SIZE, n=1 avoids k-DPP
+    const axes = Array.from({ length: 4 }, (_, i) => ({
+      axis: `ax${i}`,
+      positions: Array.from({ length: 4 }, (__, j) => `p${j}`),
+    }));
+    const result = seedPersonas({ controversy_axes: axes, n: 1, seed: 1 });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.subsampled).toBeUndefined();
+    expect(result.value.original_pool_size).toBeUndefined();
+    expect(result.value.pool_size).toBe(256);
+  });
+
+  it('subsampled results are reproducible with the same seed', () => {
+    // 7^3 = 343 > 256, n=1 avoids k-DPP
+    const axes = Array.from({ length: 3 }, (_, i) => ({
+      axis: `ax${i}`,
+      positions: Array.from({ length: 7 }, (__, j) => `p${j}`),
+    }));
+    const input = { controversy_axes: axes, n: 1, seed: 99 };
+    const first = seedPersonas(input);
+    const second = seedPersonas(input);
+
+    expect(first).toEqual(second);
+  });
+
+  it('returns pool_too_large for extreme inputs without materializing', () => {
+    // 10^10 = 10 billion — would OOM if materialized
+    const axes = Array.from({ length: 10 }, (_, i) => ({
+      axis: `ax${i}`,
+      positions: Array.from({ length: 10 }, (__, j) => `p${j}`),
+    }));
+    const result = seedPersonas({ controversy_axes: axes, n: 4, seed: 1 });
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBe('pool_too_large');
-    expect(result.detail).toEqual({
-      actual_pool_size: 320,
-      max_pool_size: MAX_POOL_SIZE,
-      hint: 'Reduce axes or positions',
+    expect(result.detail?.actual_pool_size).toBe(10_000_000_000);
+  });
+
+  it('includes persona_seed integer in each assignment', () => {
+    const result = seedPersonas({
+      controversy_axes: [
+        { axis: 'a', positions: ['1', '2', '3'] },
+        { axis: 'b', positions: ['1', '2', '3'] },
+      ],
+      n: 4,
+      seed: 7,
     });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    for (const assignment of result.value.assignments) {
+      expect(typeof assignment.persona_seed).toBe('number');
+      expect(Number.isInteger(assignment.persona_seed)).toBe(true);
+      expect(assignment.persona_seed).toBeGreaterThanOrEqual(0);
+      expect(assignment.persona_seed).toBeLessThan(0x1_0000_0000);
+    }
+    // Seeds should be distinct (extremely unlikely to collide for n=4)
+    const seeds = result.value.assignments.map((a) => a.persona_seed);
+    expect(new Set(seeds).size).toBe(seeds.length);
   });
 
   it('assigns all 8 unique tone combinations for n=8', () => {

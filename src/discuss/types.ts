@@ -124,6 +124,8 @@ export type PersonaSeedOutput = {
   seed_used: number;
   sigma_used: number;
   pool_size: number;
+  subsampled?: boolean;
+  original_pool_size?: number;
   assignments: PersonaAssignment[];
 };
 
@@ -141,5 +143,6 @@ export type ToneAssignment = {
 export type PersonaAssignment = {
   positions: Record<string, string>;
   tone: ToneAssignment;
+  persona_seed: number;
   shared_position_with?: number;
 };

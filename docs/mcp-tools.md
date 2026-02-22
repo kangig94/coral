@@ -270,8 +270,9 @@ Moderator-only MCP tool for control and lifecycle:
 
 1. **Pool generation**: Cartesian product of all axis positions. Each element is a position tuple (one position per axis). Pool size = product of all axis sizes.
 
-2. **Validation**:
-   - `pool_size > 256` → error `pool_too_large` (hint: reduce axes or positions)
+2. **Validation & subsampling**:
+   - Estimated pool size > 100,000 → error `pool_too_large` (guard against materializing huge products)
+   - `pool_size > 256` → **auto-subsample**: shuffle pool with seeded RNG, take first 256 items. Result includes `subsampled: true` and `original_pool_size`.
    - `pool_size = 1` and `n > 1` → error `pool_degenerate` (hint: all axes have single position)
 
 3. **RNG**: mulberry32 PRNG seeded with the provided or auto-generated seed. Deterministic — same seed always produces the same assignments.
@@ -302,15 +303,19 @@ Moderator-only MCP tool for control and lifecycle:
   "value": {
     "seed_used": 3141592653,
     "sigma_used": 1.0,
-    "pool_size": 12,
+    "pool_size": 256,
+    "subsampled": true,
+    "original_pool_size": 3125,
     "assignments": [
       {
         "positions": { "stance": "pro", "priority": "cost" },
-        "tone": { "formality": "formal", "evidence": "data-driven", "pace": "concise" }
+        "tone": { "formality": "formal", "evidence": "data-driven", "pace": "concise" },
+        "persona_seed": 1827364590
       },
       {
         "positions": { "stance": "con", "priority": "quality" },
         "tone": { "formality": "conversational", "evidence": "narrative", "pace": "detailed" },
+        "persona_seed": 3049182736,
         "shared_position_with": 0
       }
     ]
@@ -322,7 +327,7 @@ Moderator-only MCP tool for control and lifecycle:
 
 | Error | Condition | Recovery |
 |---|---|---|
-| `pool_too_large` | Cartesian product > 256 | Reduce positions on largest axis (trim to 2) or merge axes, retry |
+| `pool_too_large` | Estimated pool > 100,000 (OOM guard, not materialized) | Reduce positions on largest axis or merge axes, retry |
 | `pool_degenerate` | Pool = 1, n > 1 | Add a second position to at least one axis, retry |
 
 ### Moderator Setup Workflow
@@ -339,12 +344,13 @@ The moderator (`discuss-lead`) uses `_1_seed` within a 3-phase setup:
 
 **Phase 2 — DPP Seeding** (`_1_seed` MCP call):
 - Call `_1_seed({ controversy_axes, n, seed: null })`
-- Result: `assignments[i].positions` (axis → position map) + `assignments[i].tone` ({ formality, evidence, pace })
-- On `pool_too_large`: reduce positions on largest axis, retry
+- Result: `assignments[i].positions` (axis → position map), `assignments[i].tone` ({ formality, evidence, pace }), `assignments[i].persona_seed` (uint32)
+- Pool > 256 is auto-subsampled (no action needed). Response includes `subsampled: true`, `original_pool_size`.
+- On `pool_too_large` (> 100,000): reduce positions on largest axis, retry
 - On `pool_degenerate`: add a second position to at least one axis, retry
 
 **Phase 3 — Merge & Spawn** (parallel persona generation):
-- For each slot, spawn `persona-generator` with: `role`, `topic`, `team_roles`, `name_culture`, `positions` (from assignments), `tone` (from assignments), `brief` (from Phase 1), `devil_advocate` (if stance imbalance), `shared_position_with` (if reused slot)
+- For each slot, spawn `persona-generator` with: `role`, `topic`, `team_roles`, `name_culture`, `positions` (from assignments), `tone` (from assignments), `brief` (from Phase 1), `persona_seed` (from assignments, as creative variation hint), `devil_advocate` (if stance imbalance), `shared_position_with` (if reused slot)
 - **Stance imbalance check**: if stance axis exists, count pro vs con. If imbalanced, set `devil_advocate: true` for one agent on overrepresented side.
 
 ---

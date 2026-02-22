@@ -372,19 +372,27 @@ export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput>
     ? Math.floor(Math.random() * UINT32_SIZE) >>> 0
     : (input.seed >>> 0);
   const rng = createSeededRng(seedUsed);
-  const pool = cartesianProduct(input.controversy_axes);
   const requestedCount = input.n;
 
-  if (pool.length > MAX_POOL_SIZE) {
+  // Pre-check before materializing: cartesian product grows exponentially
+  const estimatedPoolSize = input.controversy_axes.reduce((acc, a) => acc * a.positions.length, 1);
+  if (estimatedPoolSize > 100_000) {
     return {
       ok: false,
       error: 'pool_too_large',
       detail: {
-        actual_pool_size: pool.length,
-        max_pool_size: MAX_POOL_SIZE,
-        hint: 'Reduce axes or positions',
+        actual_pool_size: estimatedPoolSize,
+        max_pool_size: 100_000,
+        hint: 'Reduce axes or positions — cartesian product is too large to materialize',
       },
     };
+  }
+
+  let pool = cartesianProduct(input.controversy_axes);
+  const originalPoolSize = pool.length;
+
+  if (pool.length > MAX_POOL_SIZE) {
+    pool = shuffleInPlace([...pool], rng).slice(0, MAX_POOL_SIZE);
   }
 
   if (pool.length === 1 && requestedCount > 1) {
@@ -426,6 +434,7 @@ export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput>
     assignments.push({
       positions: buildPositionRecord(input.controversy_axes, pool[selectedPoolIndexes[i]]),
       tone: tones[i],
+      persona_seed: Math.floor(rng() * UINT32_SIZE) >>> 0,
     });
   }
 
@@ -434,6 +443,7 @@ export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput>
     assignments.push({
       positions: buildPositionRecord(input.controversy_axes, pool[selectedPoolIndexes[sourceSlot]]),
       tone: tones[i],
+      persona_seed: Math.floor(rng() * UINT32_SIZE) >>> 0,
       shared_position_with: sourceSlot,
     });
   }
@@ -444,6 +454,10 @@ export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput>
       seed_used: seedUsed,
       sigma_used: sigma,
       pool_size: pool.length,
+      ...(originalPoolSize > MAX_POOL_SIZE && {
+        subsampled: true,
+        original_pool_size: originalPoolSize,
+      }),
       assignments,
     },
   };
