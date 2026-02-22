@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { waitForCondition, INFINITE_POLL } from '../wait.js';
+import { DEFAULT_BID_THRESHOLD } from '../state-machine.js';
 import type { DiscussState } from '../types.js';
 
 let tmpDir: string;
@@ -51,7 +52,7 @@ function makeState(overrides: Partial<DiscussState> = {}): DiscussState {
     end_reason_content: null,
     transcript: [],
     transcript_rendered: 0,
-    bid_threshold: 50,
+    bid_threshold: DEFAULT_BID_THRESHOLD,
     ...overrides,
   };
 }

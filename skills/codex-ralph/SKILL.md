@@ -1,7 +1,7 @@
 ---
 name: codex-ralph
 description: Persistent execution via Codex delegation (sonnet) - best for implementing an existing plan
-argument-hint: "[task description]"
+argument-hint: "[--red] [task description]"
 model: sonnet
 disable-model-invocation: true
 ---
@@ -42,10 +42,18 @@ After the loop exits:
 5. **Report to the user** what was done correctly and what you corrected
 6. **Post-implementation sequence** (strict order, fail-fast by cost):
    **Scope gate**: Steps a-d apply only when source-affecting files are modified (`src/`, `scripts/`, `package.json`, `tsconfig.json`). Non-source changes (`agents/`, `skills/`, `docs/`, `hooks/`, `.claude/`) skip directly to completion.
+
+   **`--red` adversarial testing**: If `--red` is present in the task argument, spawn `coral:red-attacker` via Task tool in **background** (`run_in_background: true`) immediately before step a. Include in the prompt:
+   - `implementer: codex` (Claude generates tests directly — no Codex delegation)
+   - Changed files list or scope description
+   - `plan_context: <plan summary>` (if a plan was used for this task)
+
    a. **Lint**: Run linter if available. Cheapest check first.
    b. **Parallel validation**: Spawn `coral:architect` for architecture review. Additionally, if project instructions define workflow rules (e.g., review-orchestrator), execute them as parallel subagents alongside architect. Both must pass before proceeding to build.
    c. **Build**: Run the project's build command.
-   d. **Test**: Run the test suite after build succeeds.
+   d. **Red-attacker gate** (if `--red`): Wait for background red-attacker to complete. Read its output for the list of generated test files.
+   e. **Test**: Run the test suite after build succeeds. If `--red`, this now includes adversarial tests.
+   f. **Red fix loop** (if `--red` and adversarial test failures): Fix failures → re-run test. Cap at **3 iterations** — if still failing, report remaining failures and escalate rather than looping indefinitely.
 
 ## Sandbox bypass
 

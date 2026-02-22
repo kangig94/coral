@@ -39,7 +39,7 @@ Agents express desire to speak with a score from 0 to 100:
 | 1–(threshold−1) | Interested but below cutline (cold-start or fallback only) |
 | threshold–100 | Eligible to speak normally (higher = stronger desire) |
 
-The default threshold is **50**. Configurable via the `CORAL_DISCUSS_BID_THRESHOLD` environment variable (range: 1–100). The threshold is visible in every `discuss({ op: "create", ... })` and `discuss({ op: "state", ... })` response so all participants know the cutline.
+The default threshold is **30**. Configurable via the `CORAL_DISCUSS_BID_THRESHOLD` environment variable (range: 1–100). The threshold is visible in every `discuss({ op: "create", ... })` and `discuss({ op: "state", ... })` response so all participants know the cutline.
 
 ## Discussion Flow
 
@@ -290,7 +290,7 @@ The `full` mode restriction ensures agents don't front-run the discussion by rea
 
 | Environment Variable | Default | Range | Description |
 |---------------------|---------|-------|-------------|
-| `CORAL_DISCUSS_BID_THRESHOLD` | 50 | 1–100 | Minimum bid score for floor eligibility |
+| `CORAL_DISCUSS_BID_THRESHOLD` | 30 | 1–100 | Minimum bid score for floor eligibility |
 | `CORAL_DISCUSS_MAX_EPOCHS` | 2 | 1–10 | Max epochs before discussion ends automatically |
 
 Set in `.claude/settings.json` under the `env` field:
@@ -309,7 +309,7 @@ Both values are stored per-session at creation time (not re-read from env mid-se
 
 | Concept | Value | Notes |
 |---------|-------|-------|
-| Default bid threshold | 50 | Configurable via `CORAL_DISCUSS_BID_THRESHOLD` (1–100) |
+| Default bid threshold | 30 | Configurable via `CORAL_DISCUSS_BID_THRESHOLD` (1–100) |
 | Default max epochs | 2 | Configurable via `CORAL_DISCUSS_MAX_EPOCHS` (1–10) |
 | Session status on create | `setup` | Transitions to `bidding` when moderator calls `discuss({ op: "wait", condition: "all_bids", ... })` |
 | Default quota | 3 per epoch | Configurable via `CORAL_DISCUSS_QUOTA_PER_EPOCH` (1–10) |

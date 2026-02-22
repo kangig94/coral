@@ -73,5 +73,4 @@ model: opus
     - Removing helpful abstractions: Inlining a well-named helper that improves readability. Instead: only remove abstractions that add complexity without clarity.
     - Harming debuggability: Making code harder to debug or extend. Instead: preserve clear control flow and meaningful intermediate variables.
   </Failure_Modes_To_Avoid>
-
 </Agent_Prompt>

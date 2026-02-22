@@ -212,11 +212,14 @@ model: opus
          !.claude/coral/kb/
 
       Quality rules (from references/writing-guide.md):
-      - Every agent has ALL sections from AGENT.md template
-      - Tier 1 agents MUST have Anti-Patterns table
-      - Core Patterns use concrete code examples
+      - Every agent uses `<Agent_Prompt>` XML structure with required sections:
+        Role, Success_Criteria, Constraints, Investigation_Protocol, Output_Format, Failure_Modes_To_Avoid
+      - Review/safety agents should also include <Tool_Usage> (detection commands + key files)
+      - Tier 0-1 agents MUST have <Why_This_Matters>
+      - <Investigation_Protocol> uses concrete code examples (not abstract descriptions)
+      - <Failure_Modes_To_Avoid> for tier 1 uses Bug/Symptom/Detection/Fix table
+      - Consultation rules in <Constraints> use concrete task-type → agent mappings
       - Docs reference actual project file paths
-      - Consultation matrix has concrete task-type → agent mappings
 
       Verify each file creation.
     """)

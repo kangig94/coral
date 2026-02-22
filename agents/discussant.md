@@ -2,7 +2,7 @@
 name: discussant
 description: "Discussion participant for bid-hold discuss protocol. Reads context, submits bid, speaks when selected."
 model: sonnet
-tools: mcp__plugin_coral_dc__discuss, WebSearch
+tools: Read, Grep, Glob, WebSearch, WebFetch, mcp__plugin_coral_dc__discuss
 ---
 <Agent_Prompt>
   <Role>

@@ -9,13 +9,26 @@ Slash commands provided by the Coral plugin. Each skill is defined in `skills/{n
 | `/coral:codex-analyze` | Deep analysis via Codex delegation with Claude post-processing |
 | `/coral:plan` | Claude-native planning with parallel architect/critic review |
 | `/coral:coplan` | Collaborative planning with Codex architect/critic reviews, then Claude cross-review |
-| `/coral:ralph` | Persistent execution loop with verification (sonnet) |
-| `/coral:codex-ralph` | Persistent execution via Codex with Claude-controlled verification loop |
+| `/coral:ralph` | Persistent execution loop with verification (sonnet). Use `--red` to add adversarial tests after implementation. |
+| `/coral:codex-ralph` | Persistent execution via Codex with Claude-controlled verification loop. Use `--red` to add adversarial tests after implementation. |
 | `/coral:code-simplify` | Simplify and refine code for clarity, consistency, and maintainability |
 | `/coral:debug` | Systematic bug diagnosis, planning, and fix execution |
 | `/coral:init-project` | Project initialization orchestrator - generates `.claude/` structure, agents, rules, docs |
 | `/coral:discuss` | Moderated multi-agent discussion via Agent Teams |
 | `/coral:statusline` | Install or remove the coral HUD statusline |
+
+## --red Flag (Adversarial Testing)
+
+`/coral:ralph --red <task>` and `/coral:codex-ralph --red <task>` add a red-team test generation phase after implementation:
+
+1. `coral:red-attacker` spawns in the **background** immediately before lint
+2. Foreground continues: lint → parallel validation → build
+3. After build: wait for red-attacker to finish, then run the full test suite (including adversarial tests)
+4. If adversarial tests fail: fix loop runs (max 3 iterations), then escalates
+
+**Ensemble diversity**: ralph uses Claude as implementer → red-attacker delegates to Codex. codex-ralph uses Codex as implementer → red-attacker uses Claude directly. Different models have different blind spots — the adversarial tests target what the implementer missed.
+
+**Test file naming**: red-attacker writes to the project's test directory as `red-<target>.<ext>` (e.g., `red-auth.test.ts`, `test_red_session.py`). Tests persist after the run — the user can review and keep them as regression tests.
 
 ## /coral:codex - Session Commands
 

@@ -7,7 +7,7 @@ Environment variables, config files, and the plugin manifest.
 | Variable | Default | Description |
 |---|---|---|
 | `CORAL_CODEX_MODEL` | `gpt-5.3-codex` | Default Codex model |
-| `CORAL_DISCUSS_BID_THRESHOLD` | `50` | Minimum bid score (1–100) for discuss floor eligibility |
+| `CORAL_DISCUSS_BID_THRESHOLD` | `30` | Minimum bid score (1–100) for discuss floor eligibility |
 | `CORAL_DISCUSS_TTL_DAYS` | `30` | Days before completed discuss sessions are auto-pruned |
 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(unset)_ | Required for `/coral:discuss`. Set to `1`. |
 

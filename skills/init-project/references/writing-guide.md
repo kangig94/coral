@@ -6,42 +6,43 @@ Quality patterns for generating agents and documentation.
 
 ### Required Sections (every agent)
 
-Every generated agent MUST include these sections:
+Every generated agent MUST use `<Agent_Prompt>` XML structure with these sections:
 
-1. **Purpose** - 2-3 sentences explaining core responsibility
-2. **When to Invoke** - Table: Situation | Priority (MANDATORY/RECOMMENDED/OPTIONAL)
-3. **Mandatory Consultations** - Table: Before/After | Agent | Reason
-4. **Core Patterns** - Concrete code examples with explanations
-5. **Validation Checklist** - Actionable items to verify
-6. **Detection Commands** - Bash commands to find issues
-7. **Key Files** - Table: File | Concern
-8. **Output Format** - What the agent produces
+1. **`<Role>`** - "You are [role]. Responsible for: X. NOT responsible for: Y." + When to Invoke table (Situation/Priority)
+2. **`<Success_Criteria>`** - Measurable criteria. Use BLOCKING/STRONG/MINOR hierarchy where applicable
+3. **`<Constraints>`** - DO/DON'T table. Include consultation rules as "Consult X BEFORE/AFTER Y" rows
+4. **`<Investigation_Protocol>`** - Numbered review/execution steps with code examples
+5. **`<Output_Format>`** - Structured output template with tables
+6. **`<Failure_Modes_To_Avoid>`** - Common mistakes with "Instead:" corrections
+
+Optional but recommended for review/safety agents:
+- **`<Tool_Usage>`** - Detection bash commands + key files with concerns (required when agent has specific detection commands or file dependencies)
 
 ### Tier-Specific Requirements
 
 | Tier | Additional Sections |
 |------|-------------------|
-| 0 (orchestration) | Invocation order, verdict criteria |
-| 1 (safety) | **Design Philosophy** (why this exists), **Anti-Patterns** table (Bug/Symptom/Detection/Fix) |
-| 2 (domain) | Anti-Patterns recommended but optional |
+| 0 (orchestration) | **`<Why_This_Matters>`** (design philosophy), invocation order in Investigation_Protocol |
+| 1 (safety) | **`<Why_This_Matters>`** (design philosophy), **`<Failure_Modes_To_Avoid>`** with Bug/Symptom/Detection/Fix table |
+| 2 (domain) | `<Failure_Modes_To_Avoid>` with diagnostic table recommended but optional |
 | 3 (quality) | Standard sections sufficient |
 
 ### Quality Rules
 
-1. **Concrete code examples** in Core Patterns - never abstract descriptions.
+1. **Concrete code examples** in `<Investigation_Protocol>` - never abstract descriptions.
    - BAD: "Ensure proper cleanup"
    - GOOD: Show the exact code pattern with `// correct` vs `// wrong` comments
 
-2. **Anti-Patterns table** for safety agents:
+2. **`<Failure_Modes_To_Avoid>` diagnostic table** for safety agents (tier 1):
    | Bug | Symptom | Detection | Fix |
    |-----|---------|-----------|-----|
    | GPU context leak | Segfault on second render | `cuCtxGetCurrent` returns NULL | Pair push/pop in RAII wrapper |
 
-3. **Detection Commands** must be runnable - no pseudo-commands.
+3. **Detection Commands in `<Tool_Usage>`** must be runnable - no pseudo-commands.
 
-4. **Consultation matrix** uses concrete task types, not abstract categories.
+4. **Consultation rules in `<Constraints>`** use concrete task types, not abstract categories.
    - BAD: "When changing important code"
-   - GOOD: "When modifying GPU memory allocation functions"
+   - GOOD: "Consult mcp-guardian BEFORE modifying GPU memory allocation functions"
 
 ## Rules vs Docs Boundary
 
@@ -108,11 +109,11 @@ Quality rules:
 ## Best Practices
 
 ### Agent Design
-- AGENT.md template with REQUIRED/OPTIONAL section markers by tier
+- `<Agent_Prompt>` XML template with tier-based required/optional sections
 - Agents have explicit state machine diagrams for complex domains
 - Validation gate: BLOCKING items prevent completion
 - Agent tiering by model routing (opus for safety, sonnet for domain/quality)
-- Consultation matrix: task-type → agent mapping with Before/After structure
+- Consultation rules in `<Constraints>`: concrete task-type → agent mappings
 
 ### Project Setup
 - Two-layer system: generic capabilities + project-specific knowledge
