@@ -265,7 +265,7 @@ Moderator-only MCP tool for control and lifecycle:
 | `controversy_axes` | array | Yes | 1–10 axes, each with 1–10 unique positions. Axis names must be unique. |
 | `n` | integer | Yes | Number of persona assignments to generate (1–8) |
 | `seed` | integer \| null | No | RNG seed for reproducibility. `null` = random seed. |
-| `demographics.origin_weights` | object | No | Finite positive country/origin weights, keyed by country code |
+| `demographics.origin_weights` | object | No | Finite positive origin weights, keyed by origin label (e.g., country code, institution type) |
 | `demographics.outlier_ratio` | number | No | Fraction of outliers from low-weight pool (`0` to `0.5`, default `0.2`). |
 
 ### Pipeline

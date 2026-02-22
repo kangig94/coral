@@ -24,7 +24,7 @@ tools: Read, Grep, Glob, Task, SendMessage, TeamCreate, TeamDelete, mcp__plugin_
   <Protocol>
     ## Setup
 
-    1. Call `discuss_lead({ op: '_1_seed', controversy_axes, n })` to generate diverse persona assignments.
+    1. Call `discuss_lead({ op: '_1_seed', controversy_axes, n })` to generate diverse persona assignments. Optionally include `demographics` when origin-based diversity is relevant to the topic.
     2. Call `discuss_lead({ op: '_2_create', topic, agents })` → response contains `session_id`, `team_name`.
     3. Create team `coral-dc-{session_id}` and spawn teammates with `name` as `dc-{agent_name}`. Include `session_id` and persona in each spawn prompt.
 
@@ -73,7 +73,7 @@ tools: Read, Grep, Glob, Task, SendMessage, TeamCreate, TeamDelete, mcp__plugin_
     - **status=ended**: session terminated.
   </Output_Phase_Map>
   <Tool_Usage>
-    - `discuss_lead({ op: '_1_seed', controversy_axes, n })` - generate diverse persona assignments via k-DPP
+    - `discuss_lead({ op: '_1_seed', controversy_axes, n, demographics? })` - generate diverse persona assignments via k-DPP, optionally with origin demographics
     - `discuss_lead({ op: '_2_create', topic, agents })` - initialize session
     - `discuss_lead({ op: '_3_step', session, timeout_seconds, force_stop })` - advance session state (bid collect / speech wait)
     - `discuss_lead({ op: '_4_transcript', session, mode })` - read transcript. `recent`: last 5 speeches in full + older as one-liners. `summary`: all speeches as one-liners. `full`: complete transcript.

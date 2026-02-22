@@ -124,6 +124,7 @@ export type StepPhase =
   | { status: 'ended'; phase: 'ended'; reason: EndReason };
 
 export type PersonaSeedInput = {
+  demographics?: DemographicsInput;
   controversy_axes: ControversyAxis[];
   n: number;
   seed: number | null;
@@ -149,9 +150,17 @@ export type ToneAssignment = {
   pace: 'concise' | 'detailed';
 };
 
+/** Weighted origin distribution for persona diversity (e.g., geographic, institutional). */
+export type DemographicsInput = {
+  origin_weights: Record<string, number>;
+  outlier_ratio?: number;
+};
+
 export type PersonaAssignment = {
   positions: Record<string, string>;
   tone: ToneAssignment;
   persona_seed: number;
   shared_position_with?: number;
+  suggested_origin?: string;
+  is_outlier?: boolean;
 };

@@ -30,6 +30,12 @@ const speakShape = z.object({
   content: z.string().min(1),
 }).strict();
 
+const demographicsShape = z.object({
+  origin_weights: z.record(z.string(), z.number().positive().finite())
+    .refine((weights) => Object.keys(weights).length >= 1, 'At least one origin required'),
+  outlier_ratio: z.number().min(0).max(0.5).default(0.2),
+}).strict();
+
 export const discussAgentOpSchema = z.discriminatedUnion('op', [bidShape, speakShape]);
 
 const seedShape = z.object({
@@ -40,6 +46,7 @@ const seedShape = z.object({
       .refine((positions) => hasUniqueItems(positions), 'Positions within an axis must be unique'),
   })).min(1).max(10)
     .refine((axes) => hasUniqueItems(axes.map((axis) => axis.axis)), 'Axis names must be unique'),
+  demographics: demographicsShape.optional(),
   n: z.number().int().min(1).max(8),
   seed: z.number().int().nullable().default(null),
 }).strict();

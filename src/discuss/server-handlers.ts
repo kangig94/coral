@@ -159,6 +159,24 @@ export const tools = [
           maxItems: 10,
         },
         n: { type: 'integer', minimum: 1, maximum: 8, description: 'Seed count (_1_seed)' },
+        demographics: {
+          type: 'object',
+          description: 'Domain-aware demographics for persona origins (_1_seed)',
+          properties: {
+            origin_weights: {
+              type: 'object',
+              description: 'Origin weights, e.g. {"US": 0.3, "DE": 0.2} or {"academic": 0.5, "industry": 0.5}',
+              additionalProperties: { type: 'number', exclusiveMinimum: 0 },
+            },
+            outlier_ratio: {
+              type: 'number',
+              minimum: 0,
+              maximum: 0.5,
+              description: 'Fraction of outlier personas (default: 0.2)',
+            },
+          },
+          required: ['origin_weights'],
+        },
         seed: { type: ['integer', 'null'], description: 'Seed value (_1_seed)' },
         session: { type: 'string', description: 'Session ID' },
         timeout_seconds: { type: 'integer', minimum: 1, maximum: 120, description: '_3_step timeout (seconds)' },

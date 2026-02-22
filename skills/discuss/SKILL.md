@@ -36,11 +36,16 @@ Before any other action, verify the Agent Teams environment:
    - Any specific roles or perspectives to include
 
 2. **Load protocol**: Read `agents/discuss-lead.md` to load the full discussion lead protocol. Execute the protocol directly - do NOT spawn it as a subagent.
-3. **Analyze topic**: Determine team composition (roles, debate mode detection)
+3. **Analyze topic**: Determine team composition (roles, debate mode detection) and assess whether demographic diversity is relevant.
+   - Identify the professional domain and relevant diversity axes for the topic.
+   - **If geographic origin matters** (e.g., global industry practice, policy comparison, cultural perspective): estimate practitioner origin distribution, include 5-10 origins as `origin_weights`, pass `demographics: { origin_weights: { ... }, outlier_ratio: 0.2 }` to `_1_seed`.
+   - **If origin is not the relevant axis** (e.g., generational, academic vs industry, experience level): omit `demographics` from `_1_seed`. Instead, encode the relevant diversity directly as a controversy axis (e.g., `{ axis: "background", positions: ["academic", "industry", "startup"] }`).
 4. **Generate personas**: Spawn `persona-generator` agents in parallel (one per role).
-   Include `persona_seed` from each assignment in the prompt as a creative variation hint
-   (e.g., "Your persona seed is 3847291. Use this as a source of creative variation in
-   name choices, background details, and communication quirks.").
+   Include from each assignment:
+   - `persona_seed` as creative variation input.
+   - If demographics were used: pass `suggested_origin` as origin context (`name_culture` input) and `is_outlier` context in the `brief` field for atypical origins.
+   - If demographics were not used: assign diverse cultural backgrounds freely via `name_culture`.
+   - Leave gender, age, and other details to the persona-generator LLM.
 5. **Initialize**: Call `discuss_lead({ op: "_2_create", ... })` with generated personas → get `session_id`
 6. **Spawn teammates**: Create Agent Team `coral-dc-{session_id}`, spawn `discussant` teammates
 7. **Run discussion**: Execute `discuss_lead(_3_step)` rounds - bid collection → winner resolve → speech escalation loop until termination
