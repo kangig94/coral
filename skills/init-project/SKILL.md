@@ -2,7 +2,6 @@
 name: init-project
 description: Initialize project for AI-assisted development with rules, agents, CLAUDE.md, and docs
 argument-hint: "[existing|new]"
-disable-model-invocation: true
 ---
 
 # Project Initialization
@@ -16,23 +15,25 @@ Set up a project for AI-assisted development. Scans the project, plans appropria
 3. **Verify output**: Run Output Manifest check below
 4. **Present results**: Show the final report to the user
 
-## Output Manifest Verification (after Phase 4)
+## Output Manifest Verification (after Phase 3.5)
 
-After ralph completes, verify these files exist. Missing files indicate protocol failure.
+After ralph completes and Phase 3.5 verification passes, confirm these files exist with correct content. Missing files or failed content checks indicate protocol failure.
 
-| Category | File | Condition |
-|----------|------|-----------|
-| Hub | `.claude/CLAUDE.md` | Must exist (created or pre-existing) |
-| Rules | `.claude/rules/agents.md` | Must exist |
-| Rules | `.claude/rules/design-philosophy.md` | Must exist |
-| Rules | `.claude/rules/validation.md` | Must exist |
-| Rules | `.claude/rules/conventions.md` | Must exist |
-| Rules | `.claude/rules/{domain-specific}.md` | At least 1 per detected domain |
-| Agents | `.claude/agents/review-orchestrator.md` | Must exist |
-| Agents | `.claude/agents/code-critic.md` | Must exist |
-| Template | `.claude/templates/AGENT.md` | Must exist |
-| Agents | `.claude/agents/{domain-specific}.md` | Per plan |
-| KB | `.claude/coral/kb/` | Directory must exist |
-| Git | `.gitignore` contains Coral block | Must contain `# Coral` |
+| Category | File | Condition | Content Check |
+|----------|------|-----------|---------------|
+| Hub | `.claude/CLAUDE.md` | Must exist (created or pre-existing) | Quality principle line present |
+| Rules | `.claude/rules/agents.md` | Must exist | - |
+| Rules | `.claude/rules/design-philosophy.md` | Must exist | - |
+| Rules | `.claude/rules/validation.md` | Must exist | - |
+| Rules | `.claude/rules/conventions.md` | Must exist | - |
+| Rules | `.claude/rules/{domain-specific}.md` | At least 1 per detected domain | `paths:` frontmatter, no `{placeholder}` text |
+| Agents | `.claude/agents/review-orchestrator.md` | Must exist | `<Agent_Prompt>` XML structure |
+| Agents | `.claude/agents/code-critic.md` | Must exist | Rubric anchors (10/7/4/1) |
+| Template | `.claude/templates/AGENT.md` | Must exist | - |
+| Agents | `.claude/agents/{domain-specific}.md` | Per plan | `<Agent_Prompt>` XML structure |
+| Docs | `docs/ARCHITECTURE.md` | If generated | Layer diagram present |
+| Docs | `docs/DEV_GUIDE.md` | If generated | Exact build/test commands |
+| KB | `.claude/coral/kb/` | Directory must exist | - |
+| Git | `.gitignore` contains Coral block | Must contain `# Coral` | - |
 
-If any required file is missing, report it as an error.
+If any required file is missing or fails its content check, report it as an error.

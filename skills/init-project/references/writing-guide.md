@@ -48,13 +48,13 @@ Optional but recommended for review/safety agents:
 
 Tier 3 quality agents (code-critic, ux-critic, and domain-specific reviewers) must use rubric-anchored scoring:
 
-1. **Multi-dimensional scoring** — decompose quality into 3-5 measurable dimensions, not a single number. Each dimension evaluates a distinct aspect of quality.
-2. **4-tier rubric anchors** per dimension — define what 10, 7, 4, and 1 look like concretely. Anchors make the evaluation philosophy executable and repeatable.
-3. **Floor rule** — any single dimension below 4 triggers NEEDS WORK regardless of composite score. One catastrophic weakness cannot be averaged away by strengths.
-4. **Evidence requirement** — every score must cite file:line evidence. No "looks good" verdicts.
-5. **Composite score** — average of all dimensions (rounded). The composite summarizes; individual dimensions diagnose.
+1. **Multi-dimensional scoring** - decompose quality into 3-5 measurable dimensions, not a single number. Each dimension evaluates a distinct aspect of quality.
+2. **4-tier rubric anchors** per dimension - define what 10, 7, 4, and 1 look like concretely. Anchors make the evaluation philosophy executable and repeatable.
+3. **Floor rule** - any single dimension below 4 triggers NEEDS WORK regardless of composite score. One catastrophic weakness cannot be averaged away by strengths.
+4. **Evidence requirement** - every score must cite file:line evidence. No "looks good" verdicts.
+5. **Composite score** - average of all dimensions (rounded). The composite summarizes; individual dimensions diagnose.
 
-The rubric anchors ARE the philosophy — they encode what the project values into repeatable evaluation criteria. A reviewer without anchored rubric produces inconsistent, personality-dependent results.
+The rubric anchors ARE the philosophy - they encode what the project values into repeatable evaluation criteria. A reviewer without anchored rubric produces inconsistent, personality-dependent results.
 
 ## Rules vs Docs Boundary
 
@@ -98,14 +98,14 @@ For new projects: note "to be confirmed" for unverified sections.
 
 ### CLAUDE.md Requirements
 
-The generated CLAUDE.md is the project hub — every session reads it first. Beyond build commands and workflow steps, it must establish the quality philosophy that governs all subsequent work:
+The generated CLAUDE.md is the project hub - every session reads it first. Beyond build commands and workflow steps, it must establish the quality philosophy that governs all subsequent work:
 
-1. **Quality principle** — one line before the Workflow section stating what good code means for this project (e.g., "Good code guides readers naturally — structure reveals intent without requiring explanation.")
-2. **Build commands** — exact, runnable commands
-3. **Workflow phases** — before/during/after with scope gate for non-source changes
-4. **Agent consultation matrix** — reference to `.claude/rules/agents.md`
+1. **Quality principle** - one line before the Workflow section stating what good code means for this project (e.g., "Good code guides readers naturally - structure reveals intent without requiring explanation.")
+2. **Build commands** - exact, runnable commands
+3. **Workflow phases** - before/during/after with scope gate for non-source changes
+4. **Agent consultation matrix** - reference to `.claude/rules/agents.md`
 
-The quality principle line acts as gravitational center — it pulls all subsequent decisions in the same direction without requiring separate instructions for each case.
+The quality principle line acts as gravitational center - it pulls all subsequent decisions in the same direction without requiring separate instructions for each case.
 
 ### Domain-Specific Doc Requirements
 
@@ -125,9 +125,19 @@ Quality rules:
 - Use **tables** for structured information (agent lists, layer rules, checklists)
 - Use **code blocks** for commands and examples
 - Reference **actual file paths** in the project, not generic placeholders
-- Keep sections **clear** — structure information to reduce cognitive load, not just save space. Numbered steps over walls of text, tables over prose lists
+- Keep sections **clear** - structure information to reduce cognitive load, not just save space. Numbered steps over walls of text, tables over prose lists
 - Include **examples** where patterns are non-obvious
 - **Docs describe architecture decisions and navigation - not source contents.** Any content that becomes stale when a function signature or schema field changes belongs in source code, not docs.
+
+### Enhance Mode Rules
+
+When augmenting existing docs (merge rule = "enhance"):
+
+1. **Read first** - always read the full existing file before editing. Never append blind.
+2. **Tone matching** - match the existing document's heading levels, list style (bullets vs numbers), table format, and voice (formal vs conversational).
+3. **Depth calibration** - if existing sections average 8 lines, new sections should be ~8 lines. A 50-line addition to a 30-line doc destroys the reader's mental model.
+4. **Structural preservation** - append new sections at the end or in the natural location. Never reorder existing sections.
+5. **Boundary check** - add only what the plan specifies. An "enhance" instruction for one section is not permission to edit the entire file.
 
 ## Best Practices
 
