@@ -86,7 +86,7 @@ describe('executeOneShot', () => {
       expect.objectContaining({ cwd: '/tmp' }),
     );
     expect(result.response).toBe('Hello');
-    expect(result.threadId).toBe('t-123');
+    expect(result.sessionId).toBe('t-123');
     expect(result.model).toBe('o4-mini');
     expect(result.exitCode).toBe(0);
     expect(result.errors).toEqual([]);
@@ -193,7 +193,7 @@ describe('executeResume', () => {
       expect.any(Object),
     );
     expect(result.response).toBe('Resumed');
-    expect(result.threadId).toBe('thread-abc');
+    expect(result.sessionId).toBe('thread-abc');
     expect(result.errors).toEqual([]);
     expect(result.warnings).toEqual([]);
   });
@@ -255,7 +255,7 @@ describe('executeFork', () => {
       expect.any(Object),
     );
     expect(result.response).toBe('Forked');
-    expect(result.threadId).toBe('t-fork');
+    expect(result.sessionId).toBe('t-fork');
     expect(result.errors).toEqual([]);
     expect(result.warnings).toEqual([]);
   });
@@ -372,7 +372,7 @@ describe('abort signal', () => {
 
     const result = await promise;
     expect(result.aborted).toBe(true);
-    expect(result.threadId).toBe('t-partial');
+    expect(result.sessionId).toBe('t-partial');
   });
 
   it('does not throw on abort with empty stdout', async () => {

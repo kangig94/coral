@@ -39,7 +39,7 @@ export const tools = [
           enum: ['exec', 'list', 'fork', 'abort'],
           description: 'Operation to run',
         },
-        session: { type: 'string', description: 'Session name or thread ID (exec/fork/abort)' },
+        session: { type: 'string', description: 'Session identifier (exec/fork/abort)' },
         prompt: { type: 'string', description: 'Prompt to send (exec required, fork optional)' },
         name: { type: 'string', description: 'Session name (exec/fork optional)' },
         model: { type: 'string', description: 'Codex model to use' },
@@ -58,7 +58,7 @@ export function extractCompletionData(result: McpResult, sessionLabel: string): 
   const data = JSON.parse(result.content[0].text);
   const completion: Record<string, unknown> = {
     response: data.response,
-    thread_id: data.thread_id ?? null,
+    session: data.session ?? null,
     session_name: sessionLabel,
     model: data.model,
     duration_ms: data.duration_ms,
@@ -158,12 +158,12 @@ export async function handleSessionCreate(input: CodexSessionCreateInput, mgr: S
   try {
     const result = await executeOneShot(input.prompt, input.model, input.working_directory, input.reasoning_effort, input.bypass, onEvent, controller.signal);
 
-    if (!result.threadId) {
+    if (!result.sessionId) {
       return jsonResult({
         response: result.response,
         notice: result.aborted
-          ? 'Aborted before thread ID was received. This session cannot be resumed.'
-          : 'No thread ID returned by Codex. Session not registered.',
+          ? 'Aborted before session ID was received. This session cannot be resumed.'
+          : 'No session ID returned by Codex. Session not registered.',
         ...(result.aborted ? { aborted: true, non_resumable: true } : {}),
         model: result.model,
         duration_ms: result.durationMs,
@@ -171,11 +171,11 @@ export async function handleSessionCreate(input: CodexSessionCreateInput, mgr: S
       });
     }
 
-    mgr.register(sessionName, result.threadId, result.model, input.working_directory ?? process.cwd());
+    mgr.register(sessionName, result.sessionId, result.model, input.working_directory ?? process.cwd());
 
     return jsonResult({
       response: result.response,
-      thread_id: result.threadId,
+      session: result.sessionId,
       session_name: sessionName,
       model: result.model,
       duration_ms: result.durationMs,
@@ -192,14 +192,14 @@ export async function handleSessionSend(input: CodexSessionSendInput, mgr: Sessi
 
   const controller = registerExecution(entry.name);
   try {
-    const result = await executeResume(entry.codexThreadId, input.prompt, input.model, input.working_directory ?? entry.workingDirectory, input.reasoning_effort, input.bypass, onEvent, controller.signal);
+    const result = await executeResume(entry.sessionId, input.prompt, input.model, input.working_directory ?? entry.workingDirectory, input.reasoning_effort, input.bypass, onEvent, controller.signal);
     mgr.updateSession(entry.name, input.model ? { model: input.model } : undefined);
 
     return jsonResult({
       response: result.response,
-      // Fall back to the known entry thread ID when abort fires before thread.started re-emits.
+      // Fall back to the known entry session ID when abort fires before session ID re-emits.
       // The session remains resumable regardless; callers should rely on session name for resume.
-      thread_id: result.threadId ?? entry.codexThreadId,
+      session: result.sessionId ?? entry.sessionId,
       session_name: entry.name,
       model: result.model,
       duration_ms: result.durationMs,
@@ -213,7 +213,7 @@ export async function handleSessionSend(input: CodexSessionSendInput, mgr: Sessi
 export function handleSessionList(mgr: SessionManager): McpResult {
   const registered = mgr.list().map((s) => ({
     name: s.name,
-    thread_id: s.codexThreadId,
+    session: s.sessionId,
     model: s.model,
     created_at: s.createdAt,
     last_used_at: s.lastUsedAt,
@@ -232,16 +232,16 @@ export async function handleSessionFork(input: CodexSessionForkInput, mgr: Sessi
   const forkName = input.name ?? entry.name;
   const controller = registerExecution(forkName);
   try {
-    const result = await executeFork(entry.codexThreadId, input.prompt, input.model, cwd, input.reasoning_effort, input.bypass, onEvent, controller.signal);
+    const result = await executeFork(entry.sessionId, input.prompt, input.model, cwd, input.reasoning_effort, input.bypass, onEvent, controller.signal);
 
-    if (input.name && result.threadId) {
-      mgr.register(input.name, result.threadId, result.model, cwd ?? process.cwd());
+    if (input.name && result.sessionId) {
+      mgr.register(input.name, result.sessionId, result.model, cwd ?? process.cwd());
     }
 
     return jsonResult({
       response: result.response,
-      thread_id: result.threadId,
-      forked_from: entry.codexThreadId,
+      session: result.sessionId,
+      forked_from: entry.sessionId,
       ...(input.name ? { session_name: input.name } : {}),
       model: result.model,
       duration_ms: result.durationMs,
@@ -258,7 +258,7 @@ export async function handleSessionAbort(input: CodexSessionAbortInput, mgr: Ses
   const aborted = abortExecution(sessionName);
   if (!aborted) {
     return textResult(
-      `No active execution found for session "${input.session}" in this process. The session may have already completed, still be initializing (thread ID not yet registered), or belong to a different MCP server instance.`,
+      `No active execution found for session "${input.session}" in this process. The session may have already completed, still be initializing, or belong to a different MCP server instance.`,
       true,
     );
   }

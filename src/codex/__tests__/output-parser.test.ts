@@ -2,10 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { parseCodexJsonl } from '../output-parser.js';
 
 describe('parseCodexJsonl', () => {
-  it('extracts thread_id from thread.started event', () => {
+  it('extracts sessionId from thread.started event', () => {
     const output = '{"type":"thread.started","thread_id":"abc-123"}\n';
     const result = parseCodexJsonl(output);
-    expect(result.threadId).toBe('abc-123');
+    expect(result.sessionId).toBe('abc-123');
     expect(result.errors).toEqual([]);
     expect(result.warnings).toEqual([]);
   });
@@ -17,7 +17,7 @@ describe('parseCodexJsonl', () => {
     ].join('\n');
     const result = parseCodexJsonl(output);
     expect(result.response).toBe('Hello world');
-    expect(result.threadId).toBe('t1');
+    expect(result.sessionId).toBe('t1');
     expect(result.errors).toEqual([]);
     expect(result.warnings).toEqual([]);
   });
@@ -39,7 +39,7 @@ describe('parseCodexJsonl', () => {
   it('returns empty response for empty output', () => {
     const result = parseCodexJsonl('');
     expect(result.response).toBe('');
-    expect(result.threadId).toBeNull();
+    expect(result.sessionId).toBeNull();
     expect(result.errors).toEqual([]);
     expect(result.warnings).toEqual([]);
   });
@@ -53,16 +53,16 @@ describe('parseCodexJsonl', () => {
     ].join('\n');
     const result = parseCodexJsonl(output);
     expect(result.response).toBe('OK');
-    expect(result.threadId).toBe('t1');
+    expect(result.sessionId).toBe('t1');
     expect(result.errors).toEqual([]);
     expect(result.warnings).toEqual([]);
   });
 
-  it('returns null threadId when no thread.started event', () => {
+  it('returns null sessionId when no session ID in output', () => {
     const output = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Hi"}}\n';
     const result = parseCodexJsonl(output);
     expect(result.response).toBe('Hi');
-    expect(result.threadId).toBeNull();
+    expect(result.sessionId).toBeNull();
     expect(result.errors).toEqual([]);
     expect(result.warnings).toEqual([]);
   });
@@ -77,7 +77,7 @@ describe('parseCodexJsonl', () => {
     ].join('\n');
     const result = parseCodexJsonl(output);
     expect(result.response).toBe('Part 1\nPart 2');
-    expect(result.threadId).toBe('t1');
+    expect(result.sessionId).toBe('t1');
     expect(result.errors).toEqual([]);
     expect(result.warnings).toEqual([]);
   });
@@ -142,7 +142,7 @@ describe('parseCodexJsonl', () => {
     expect(result.response).toBe('Partial result');
     expect(result.errors).toEqual(['Stream interrupted']);
     expect(result.warnings).toEqual([]);
-    expect(result.threadId).toBe('t1');
+    expect(result.sessionId).toBe('t1');
   });
 
   it('handles mixed error, warning, and turn.failed correctly', () => {

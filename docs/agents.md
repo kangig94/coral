@@ -149,7 +149,7 @@ Proxy agents that delegate work to Codex CLI. Tool restrictions limit them to co
 | `critic` | Plan/code critique, severity-rated verdicts (APPROVED/REVISE/REJECT) | xhigh |
 | `ralph` | Single-shot task execution; Claude controls the outer verification loop | high |
 
-> **Ralph note**: `codex-proxy` with `Role: ralph` executes one round. The caller (`/coral:codex-ralph` skill) controls the loop - spawning with the saved `thread_id` for session continuity until all criteria pass.
+> **Ralph note**: `codex-proxy` with `Role: ralph` executes one round. The caller (`/coral:codex-ralph` skill) controls the loop - spawning with the saved `session` for session continuity until all criteria pass.
 
 ---
 

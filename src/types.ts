@@ -5,7 +5,7 @@
 /** Result from a single Codex CLI execution */
 export type CodexExecResult = {
   response: string;
-  threadId: string | null;
+  sessionId: string | null;
   model: string;
   durationMs: number;
   exitCode: number | null;
@@ -18,7 +18,7 @@ export type CodexExecResult = {
 /** A named session entry in the registry */
 export type SessionEntry = {
   name: string;
-  codexThreadId: string;
+  sessionId: string;
   model: string;
   createdAt: string;
   lastUsedAt: string;

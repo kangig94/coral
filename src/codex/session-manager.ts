@@ -45,9 +45,9 @@ export class SessionManager {
     renameSync(tmpPath, filePath);
   }
 
-  register(name: string, codexThreadId: string, model: string, workingDirectory: string): SessionEntry {
+  register(name: string, sessionId: string, model: string, workingDirectory: string): SessionEntry {
     const now = new Date().toISOString();
-    const entry: SessionEntry = { name, codexThreadId, model, createdAt: now, lastUsedAt: now, workingDirectory };
+    const entry: SessionEntry = { name, sessionId, model, createdAt: now, lastUsedAt: now, workingDirectory };
     this.writeSession(name, entry);
     return entry;
   }
@@ -56,9 +56,9 @@ export class SessionManager {
     // Try direct name lookup first
     const direct = this.readSession(nameOrId);
     if (direct) return direct;
-    // Scan all sessions for threadId match
+    // Scan all sessions for sessionId match
     for (const entry of this.list()) {
-      if (entry.codexThreadId === nameOrId) return entry;
+      if (entry.sessionId === nameOrId) return entry;
     }
     return null;
   }

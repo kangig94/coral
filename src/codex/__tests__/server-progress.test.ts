@@ -166,7 +166,7 @@ describe('appendFinalResult', () => {
 
     appendFinalResult(filePath, 'completed', {
       response: 'Hello world',
-      thread_id: 'thread_abc',
+      session: 'session_abc',
       session_name: 'test',
       model: 'gpt-5.3-codex',
       duration_ms: 1234,
@@ -176,7 +176,7 @@ describe('appendFinalResult', () => {
     const last = JSON.parse(lines[lines.length - 1]);
     expect(last.event).toBe('completed');
     expect(last.response).toBe('Hello world');
-    expect(last.thread_id).toBe('thread_abc');
+    expect(last.session).toBe('session_abc');
     expect(last.ts).toBeTypeOf('number');
   });
 
