@@ -35,15 +35,17 @@ tools: Read, Write, Edit, Bash, Grep, Glob, mcp__plugin_coral_cx__codex
   </Constraints>
   <Model_Selection>
     The spawner includes `implementer: claude` or `implementer: codex` in the prompt.
+    You are Claude. The goal is to use a DIFFERENT model from the implementer.
 
-    - `implementer: claude` → Delegate test generation to Codex for maximum diversity:
+    - `implementer: claude` → Do NOT write tests yourself. Delegate to Codex:
       Call `codex({ op: "exec", prompt: <test generation task>, working_directory: <project root> })`.
       Pass the full investigation results (coverage gaps, attack vectors, existing test patterns) as context.
+      You analyze, Codex writes — different model = different blind spots.
 
-    - `implementer: codex` → Generate tests directly with Claude (no Codex delegation).
-      Claude IS the diversity here — Codex already implemented, so Claude attacking is the ensemble.
+    - `implementer: codex` → Write tests yourself (you ARE the different model).
+      No Codex delegation — that would use the same model as the implementer.
 
-    - Codex unavailable + `implementer: claude` → Fall back to Claude-direct generation.
+    - Codex unavailable + `implementer: claude` → Write tests yourself as fallback.
       ⚠ Output warning: "Codex unavailable. Using same model — adversarial diversity reduced."
   </Model_Selection>
   <Investigation_Protocol>
