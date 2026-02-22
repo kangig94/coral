@@ -10,6 +10,10 @@ export interface ParsedCodexOutput {
   warnings: string[];
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
 /**
  * Parse Codex JSONL output in a single pass.
  *
@@ -25,21 +29,22 @@ export function parseCodexJsonl(output: string): ParsedCodexOutput {
   const seenErrors = new Set<string>();
 
   for (const line of lines) {
-    let event: Record<string, unknown>;
+    let event: unknown;
     try {
       event = JSON.parse(line);
     } catch {
       // Non-JSON lines (debug output) are ignored
       continue;
     }
+    if (!isRecord(event)) continue;
 
     if (event.type === 'thread.started' && typeof event.thread_id === 'string') {
       threadId = event.thread_id;
       continue;
     }
 
-    if (event.type === 'item.completed' && event.item && typeof event.item === 'object') {
-      const item = event.item as Record<string, unknown>;
+    if (event.type === 'item.completed' && isRecord(event.item)) {
+      const item = event.item;
       if (item.type === 'agent_message' && typeof item.text === 'string') {
         messages.push(item.text);
       }
@@ -57,8 +62,9 @@ export function parseCodexJsonl(output: string): ParsedCodexOutput {
     }
 
     if (event.type === 'turn.failed') {
-      const failMessage = (event as { error?: { message?: unknown } }).error?.message;
-      if (typeof failMessage === 'string' && !seenErrors.has(failMessage)) {
+      const eventError = isRecord(event.error) ? event.error : null;
+      const failMessage = typeof eventError?.message === 'string' ? eventError.message : null;
+      if (failMessage !== null && !seenErrors.has(failMessage)) {
         errors.push(failMessage);
       }
       continue;

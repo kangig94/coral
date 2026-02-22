@@ -486,7 +486,7 @@ export function applySpeechTimeout(
     content: timeoutMsg,
   };
 
-    const shouldDecrement = state.speaker_type === 'quota';
+  const shouldDecrement = state.speaker_type === 'quota';
   const updatedAgent = {
     ...speaker,
     quota_remaining: shouldDecrement ? speaker.quota_remaining - 1 : speaker.quota_remaining,

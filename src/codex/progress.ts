@@ -29,8 +29,7 @@ export function extractProgressMessage(event: CodexThreadEvent): string | null {
   if (event.type === 'turn.started') return 'Processing...';
   if (event.type !== 'item.completed') return null;
 
-  // Record cast avoids union narrowing issues with the catch-all CodexThreadItemDetails variant
-  const item = event.item as Record<string, unknown>;
+  const item = event.item;
   switch (item.type) {
     case 'reasoning': {
       return typeof item.text === 'string' ? item.text.slice(0, 120) : null;
@@ -44,8 +43,8 @@ export function extractProgressMessage(event: CodexThreadEvent): string | null {
       return typeof item.command === 'string' ? `Running: ${item.command}` : null;
     }
     case 'file_change': {
-      const changes = item.changes as Array<{ path: string }> | undefined;
-      return `Editing: ${changes?.[0]?.path ?? 'file'}`;
+      const firstChange = Array.isArray(item.changes) ? item.changes[0] : undefined;
+      return `Editing: ${typeof firstChange?.path === 'string' ? firstChange.path : 'file'}`;
     }
     case 'mcp_tool_call':
       return typeof item.tool === 'string' ? `Calling: ${item.tool}` : null;

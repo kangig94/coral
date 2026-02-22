@@ -34,6 +34,12 @@ export function wrapText(text: string, opts?: { soft?: number; hard?: number }):
     }
     const words = paragraph.split(' ');
     let current = '';
+    const flush = () => {
+      if (current) {
+        lines.push(current);
+        current = '';
+      }
+    };
 
     for (const word of words) {
       const candidate = current ? `${current} ${word}` : word;
@@ -41,17 +47,17 @@ export function wrapText(text: string, opts?: { soft?: number; hard?: number }):
         current = candidate;
       } else if (candidate.length <= hard) {
         if (SENTENCE_END.test(current.trimEnd())) {
-          lines.push(current);
+          flush();
           current = word;
         } else {
           current = candidate;
         }
       } else {
-        if (current) lines.push(current);
+        flush();
         current = word;
       }
     }
-    if (current) lines.push(current);
+    flush();
   }
 
   return lines.join('\n');

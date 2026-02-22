@@ -8,8 +8,10 @@ import { identPattern } from '../shared/mcp-utils.js';
 /** Session ID: yymmdd-HHmm-xxxx (compact timestamp + 4-char random suffix). */
 export const sessionIdPattern = /^[0-9]{6}-[0-9]{4}-[a-z0-9]{4}$/;
 
+const nonEmptyString = z.string().min(1);
 const agentNameField = z.string().regex(identPattern);
 const sessionIdField = z.string().regex(sessionIdPattern);
+const axisNameField = nonEmptyString;
 
 const bidShape = z.object({
   op: z.literal('bid'),
@@ -30,8 +32,8 @@ export const discussAgentOpSchema = z.discriminatedUnion('op', [bidShape, speakS
 const seedShape = z.object({
   op: z.literal('_1_seed'),
   controversy_axes: z.array(z.object({
-    axis: z.string().min(1),
-    positions: z.array(z.string().min(1)).min(1).max(10)
+    axis: axisNameField,
+    positions: z.array(nonEmptyString).min(1).max(10)
       .refine((positions) => new Set(positions).size === positions.length, 'Positions within an axis must be unique'),
   })).min(1).max(10)
     .refine((axes) => new Set(axes.map((a) => a.axis)).size === axes.length, 'Axis names must be unique'),
@@ -46,7 +48,7 @@ const createShape = z.object({
     .array(
       z.object({
         name: agentNameField,
-        persona: z.string().min(1),
+        persona: nonEmptyString,
       }),
     )
     .min(2)

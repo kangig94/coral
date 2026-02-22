@@ -32,39 +32,22 @@ export async function waitForCondition(
   }
 
   let lastKnownGood: DiscussState | null = initial;
+  while (true) {
+    if (!infinite && Date.now() - startAt >= timeoutMs) {
+      const elapsedMs = Date.now() - startAt;
+      return lastKnownGood
+        ? { fulfilled: false, elapsed_ms: elapsedMs, state: lastKnownGood, error: null }
+        : { fulfilled: false, elapsed_ms: elapsedMs, state: null, error: 'state_unavailable' };
+    }
 
-  return new Promise((resolve) => {
-    let timer: ReturnType<typeof setTimeout> | null = null;
+    await new Promise((resolve) => { setTimeout(resolve, intervalMs); });
+    const state = await tryReadState(statePath);
+    if (state) lastKnownGood = state;
 
-    const done = (result: WaitResult) => {
-      if (timer) clearTimeout(timer);
-      resolve(result);
-    };
-
-    const check = async () => {
-      const state = await tryReadState(statePath);
-      if (state) lastKnownGood = state;
-
-      if (state && predicate(state)) {
-        done({ fulfilled: true, elapsed_ms: Date.now() - startAt, state, error: null });
-        return;
-      }
-
-      if (!infinite && Date.now() - startAt >= timeoutMs) {
-        const elapsedMs = Date.now() - startAt;
-        if (lastKnownGood) {
-          done({ fulfilled: false, elapsed_ms: elapsedMs, state: lastKnownGood, error: null });
-        } else {
-          done({ fulfilled: false, elapsed_ms: elapsedMs, state: null, error: 'state_unavailable' });
-        }
-        return;
-      }
-
-      timer = setTimeout(check, intervalMs);
-    };
-
-    timer = setTimeout(check, intervalMs);
-  });
+    if (state && predicate(state)) {
+      return { fulfilled: true, elapsed_ms: Date.now() - startAt, state, error: null };
+    }
+  }
 }
 
 /** Safe async read - returns null if file is mid-rename/corrupt. */

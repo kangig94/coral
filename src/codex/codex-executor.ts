@@ -18,10 +18,18 @@ const SIGTERM_GRACE_MS = 5_000; // grace period before escalating to SIGKILL
 const activeChildren = new Set<ChildProcess>();
 
 /** Send SIGTERM, then escalate to SIGKILL after grace period. */
+function safeKill(child: ChildProcess, signal: NodeJS.Signals): void {
+  try {
+    child.kill(signal);
+  } catch {
+    /* already dead */
+  }
+}
+
 function gracefulKill(child: ChildProcess): void {
-  try { child.kill('SIGTERM'); } catch { /* already dead */ }
+  safeKill(child, 'SIGTERM');
   const killTimer = setTimeout(() => {
-    try { child.kill('SIGKILL'); } catch { /* already dead */ }
+    safeKill(child, 'SIGKILL');
   }, SIGTERM_GRACE_MS);
   child.on('close', () => clearTimeout(killTimer));
 }
