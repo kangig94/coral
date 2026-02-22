@@ -13,14 +13,14 @@ Claude Code's hook system executes shell scripts on specific events. Coral uses 
 4. **PreCompact** - Before context compaction, reminds about unprocessed memos for KB promotion
 5. **TeammateIdle** - Blocks idle when discuss agents have pending actions
 
-**Skill-level Stop hooks** (in SKILL.md frontmatter):
-- Skills: ralph, codex-ralph, plan, coplan, debug, code-simplify
-- On skill completion, blocks Claude from stopping if unprocessed memos exist in `.claude/coral/memo/`
-- Uses `once: true` to fire only once per session (prevents infinite loops)
+**Skill-level hooks** (in SKILL.md frontmatter):
+- Skills: ralph, codex-ralph, plan, coplan, debug, code-simplify, analyze, codex-analyze
+- **PreToolUse** (`once: true`): On first tool call, reminds Claude to write memos for non-obvious discoveries
+- **Stop** (`once: true`): On skill completion, blocks Claude from stopping if unprocessed memos exist in `.claude/coral/memo/`
 
 ## Hook Configuration
 
-Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/detect-codex-agent.sh`, `hooks/kb-lookup-reminder.sh`, `hooks/kb-promote-reminder.sh`, `hooks/discuss-idle-guard.sh`.
+Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/detect-codex-agent.sh`, `hooks/kb-lookup-reminder.sh`, `hooks/kb-memo-reminder.sh`, `hooks/kb-promote-reminder.sh`, `hooks/discuss-idle-guard.sh`.
 
 ## SessionStart Hook
 
@@ -48,14 +48,21 @@ Before context compaction, checks for unprocessed memos in `.claude/coral/memo/`
 
 **Fail-open**: If memo directory doesn't exist or has no files — silent exit 0.
 
-## Skill Stop Hooks (KB Promotion)
+## Skill Hooks (KB Memo & Promotion)
 
-Configured in SKILL.md frontmatter on: ralph, codex-ralph, plan, coplan, debug, code-simplify. Script: `hooks/kb-promote-reminder.sh`.
+Configured in SKILL.md frontmatter on: ralph, codex-ralph, plan, coplan, debug, code-simplify, analyze, codex-analyze.
 
-When a skill completes and unprocessed memos exist in `.claude/coral/memo/`:
+### PreToolUse — Memo Reminder
+
+Script: `hooks/kb-memo-reminder.sh`. Fires once (`once: true`) before the first tool call. Injects `additionalContext` reminding Claude to write memos when discovering non-obvious lessons.
+
+### Stop — Promotion Reminder
+
+Script: `hooks/kb-promote-reminder.sh`. Fires once (`once: true`) when Claude finishes responding.
+
+When unprocessed memos exist in `.claude/coral/memo/`:
 - `decision: "block"` prevents Claude from stopping
 - `reason` instructs Claude to review memos for KB promotion (check existing KB entries, discard duplicates, promote new knowledge, delete processed memos)
-- `once: true` ensures the hook fires only once per session
 
 **Fail-open**: If memo directory doesn't exist or has no files — silent exit 0. Claude stops normally.
 

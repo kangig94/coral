@@ -4,6 +4,11 @@ description: Persistent execution loop with verification (sonnet) - best for imp
 argument-hint: "[--red] [task description]"
 model: sonnet
 hooks:
+  PreToolUse:
+    - hooks:
+        - type: command
+          command: "${CLAUDE_PLUGIN_ROOT}/hooks/kb-memo-reminder.sh"
+          once: true
   Stop:
     - hooks:
         - type: command

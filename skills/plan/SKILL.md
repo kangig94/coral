@@ -3,6 +3,11 @@ name: plan
 description: Claude-native planning with parallel architect/critic self-review
 argument-hint: "[task description]"
 hooks:
+  PreToolUse:
+    - hooks:
+        - type: command
+          command: "${CLAUDE_PLUGIN_ROOT}/hooks/kb-memo-reminder.sh"
+          once: true
   Stop:
     - hooks:
         - type: command

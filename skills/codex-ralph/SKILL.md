@@ -5,6 +5,11 @@ argument-hint: "[--red] [task description]"
 model: sonnet
 disable-model-invocation: true
 hooks:
+  PreToolUse:
+    - hooks:
+        - type: command
+          command: "${CLAUDE_PLUGIN_ROOT}/hooks/kb-memo-reminder.sh"
+          once: true
   Stop:
     - hooks:
         - type: command
