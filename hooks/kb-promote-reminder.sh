@@ -43,7 +43,7 @@ if [ -z "$memo_files" ]; then
 fi
 
 if [ "$EVENT" = "Stop" ]; then
-  printf '{"decision":"block","reason":"Unprocessed memos found. Before completing, review .claude/coral/memo/ for KB promotion. Memos: %s. Check existing KB entries in .claude/coral/kb/ first - discard duplicates, update existing entries if a memo refines them, only create new files for genuinely absent knowledge. Delete processed memos after promotion.","systemMessage":"KB promotion reminder: unprocessed memos found in .claude/coral/memo/"}\n' "$memo_files"
+  printf '{"decision":"block","reason":"Unprocessed memos: %s. Review for KB promotion per CLAUDE.md rules, then delete processed memos."}\n' "$memo_files"
 else
   printf '{"systemMessage":"KB promotion reminder: unprocessed memos found in .claude/coral/memo/ - %s"}\n' "$memo_files"
 fi
