@@ -1,17 +1,19 @@
 # Hooks
 
-Two hooks provide automatic context injection and agent routing.
+Hooks provide automatic context injection, agent routing, and error-aware KB reminders.
 
 ## Overview
 
-Claude Code's hook system executes shell scripts on specific events. Coral uses two hooks:
+Claude Code's hook system executes shell scripts on specific events. Coral uses four hooks:
 
 1. **SessionStart** - Injects CLAUDE.md behavioral guidelines into every Claude session
 2. **SubagentStart** - Injects delegation instructions into agents with a `codex-` prefix (with or without `coral:` namespace)
+3. **PostToolUseFailure** - On any tool failure, reminds Claude to check `.claude/coral/kb/` before debugging
+4. **TeammateIdle** - Blocks idle when discuss agents have pending actions
 
 ## Hook Configuration
 
-Configuration: `hooks/hooks.json`. Script: `hooks/detect-codex-agent.sh`.
+Configuration: `hooks/hooks.json`. Scripts: `hooks/detect-codex-agent.sh`, `hooks/kb-lookup-reminder.sh`, `hooks/discuss-idle-guard.sh`.
 
 ## SessionStart Hook
 
@@ -22,6 +24,16 @@ Injects the plugin's CLAUDE.md content into Claude's context at the start of eve
 ## SubagentStart Hook
 
 Matches agents with the `codex-` prefix (bare or namespaced, e.g., `coral:codex-proxy`) and injects delegation instructions. Timeout: 5 seconds (hook is ignored if exceeded).
+
+## PostToolUseFailure Hook
+
+On any tool failure, reminds Claude to check `.claude/coral/kb/` before debugging from scratch. Script: `hooks/kb-lookup-reminder.sh`. Matcher: `*` (all tools).
+
+**Output**: `hookSpecificOutput.additionalContext` with KB file listing. Non-blocking — Claude receives the reminder as additional context.
+
+**Fail-open**: If KB directory doesn't exist or has no `.md` files — silent exit 0.
+
+> **Note**: Plugin hooks do not trigger `PostToolUseFailure`. To activate, register in `.claude/settings.json` or `.claude/settings.local.json`.
 
 ## Detection Script
 
