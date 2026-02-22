@@ -1,27 +1,10 @@
-/**
- * Transcript rendering - pure functions operating on structured TranscriptEntry[].
- * Human-readable format with timestamps and soft 80 / hard 100 word-wrap.
- *
- * Two rendering paths:
- * - renderEntries: full audit output for transcript.md (scores, quotas, all data)
- * - formatFull: agent-facing view (bids filtered to speaker name only - information veil)
- */
-
 import type { AgentState, TranscriptEntry } from './types.js';
 
-/** Soft and hard column limits for word-wrap. */
 const SOFT_LIMIT = 80;
 const HARD_LIMIT = 100;
 
-/** Sentence-ending patterns for grace-zone detection. */
 const SENTENCE_END = /[.!?]$/u;
 
-/**
- * Wrap text to soft 80 / hard 100 column limit.
- * - Target break at 80 chars (word boundary)
- * - Grace zone 80–100: extend to sentence end if available
- * - Hard limit 100: force break at word boundary
- */
 export function wrapText(text: string, opts?: { soft?: number; hard?: number }): string {
   const soft = opts?.soft ?? SOFT_LIMIT;
   const hard = opts?.hard ?? HARD_LIMIT;
@@ -63,14 +46,12 @@ export function wrapText(text: string, opts?: { soft?: number; hard?: number }):
   return lines.join('\n');
 }
 
-/** Format a Date as [HH:mm:ss] (short form for transcript headers). */
 function formatTimestamp(ts: string): string {
   const d = new Date(ts);
   const pad = (n: number) => String(n).padStart(2, '0');
   return `[${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}]`;
 }
 
-/** Generate a one-line summary: first sentence or first ~100 chars at word boundary. */
 export function generateOneLiner(content: string): string {
   const flat = content.replace(/\n/g, ' ').trim();
   const sentenceEnd = flat.search(/[.!?]\s/u);
@@ -84,9 +65,31 @@ function summarizeSpeech(agentName: string, content: string): string {
   return `- ${agentName}: ${generateOneLiner(content)}`;
 }
 
-// ─── Entry rendering ──────────────────────────────────────────────────────────
+function renderBidRows(
+  bids: Record<string, number>,
+  agents: Record<string, AgentState>,
+  effectiveBids?: Record<string, number>,
+): string {
+  const rows = Object.entries(bids)
+    .sort(([lhsName, lhsRaw], [rhsName, rhsRaw]) =>
+      effectiveBids
+        ? (effectiveBids[rhsName] ?? rhsRaw) - (effectiveBids[lhsName] ?? lhsRaw)
+        : rhsRaw - lhsRaw,
+    )
+    .map(([name, score]) => {
+      const displayName = agents[name]?.display_name ?? name;
+      const quota = agents[name]?.quota_remaining ?? '?';
+      if (!effectiveBids) {
+        return `| ${displayName} (${name}) | ${score} | ${quota} |`;
+      }
+      const effective = effectiveBids[name] ?? score;
+      const effectiveText = Number.isInteger(effective) ? String(effective) : effective.toFixed(1);
+      return `| ${displayName} (${name}) | ${score} | ${effectiveText} | ${quota} |`;
+    });
 
-/** Render structured entries to markdown text. Used by SessionStore.save() for incremental append. */
+  return rows.join('\n');
+}
+
 export function renderEntries(
   entries: TranscriptEntry[],
   agents: Record<string, AgentState>,
@@ -98,26 +101,10 @@ export function renderEntry(e: TranscriptEntry, agents: Record<string, AgentStat
   switch (e.type) {
     case 'bids': {
       const effectiveBids = e.effective_bids;
-      const rows = Object.entries(e.bids)
-        .sort(([nameA, rawA], [nameB, rawB]) =>
-          effectiveBids
-            ? (effectiveBids[nameB] ?? rawB) - (effectiveBids[nameA] ?? rawA)
-            : rawB - rawA,
-        )
-        .map(([name, score]) => {
-          const dn = agents[name]?.display_name ?? name;
-          const q = agents[name]?.quota_remaining;
-          if (effectiveBids) {
-            const eff = effectiveBids[name] ?? score;
-            const effStr = Number.isInteger(eff) ? String(eff) : eff.toFixed(1);
-            return `| ${dn} (${name}) | ${score} | ${effStr} | ${q ?? '?'} |`;
-          }
-          return `| ${dn} (${name}) | ${score} | ${q ?? '?'} |`;
-        })
-        .join('\n');
       const winnerLine = e.winner
         ? `> **Winner: ${agents[e.winner]?.display_name ?? e.winner}** (${e.resolve_type})`
         : `> **No winner** (${e.resolve_type})`;
+      const rows = renderBidRows(e.bids, agents, effectiveBids);
       const header = effectiveBids
         ? `| Agent | Raw | Effective | Quota |\n|-------|-----|-----------|-------|`
         : `| Agent | Score | Quota |\n|-------|-------|-------|`;
@@ -144,12 +131,9 @@ export function renderEntry(e: TranscriptEntry, agents: Record<string, AgentStat
   }
 }
 
-/** Render topic header for initial transcript.md. */
 export function renderHeader(topic: string): string {
   return `# ${topic}\n\n## Epoch 1\n`;
 }
-
-// ─── Transcript read functions (operate on structured entries) ────────────────
 
 /**
  * Agent-facing full transcript: bids entries filtered to speaker name only (information veil).
@@ -168,10 +152,6 @@ export function formatFull(entries: TranscriptEntry[], agents: Record<string, Ag
   return renderHeader('') + agentView;
 }
 
-/**
- * Last N speech entries in full + earlier as one-line summaries.
- * Non-speech entries (bids, epoch summaries) are excluded.
- */
 export function formatRecent(
   entries: TranscriptEntry[],
   lastN: number,
@@ -196,7 +176,6 @@ export function formatRecent(
   return parts.join('\n\n');
 }
 
-/** Return all speech entries as one-line summaries. Non-speech entries are omitted. */
 export function formatSummary(
   entries: TranscriptEntry[],
   _agents: Record<string, AgentState>,

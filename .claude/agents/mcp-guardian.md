@@ -44,7 +44,7 @@ disallowedTools: Write, Edit
     - Zod schemas match MCP tool `inputSchema` property declarations
   </Success_Criteria>
   <Constraints>
-    EVERY PROTOCOL VIOLATION IS A BLOCKING FINDING — NO EXCEPTIONS
+    EVERY PROTOCOL VIOLATION IS A BLOCKING FINDING - NO EXCEPTIONS
 
     | DO | DON'T |
     |----|-------|
@@ -57,7 +57,7 @@ disallowedTools: Write, Edit
     | Feed findings to review-orchestrator AFTER | Skip the consolidated review step |
   </Constraints>
   <Investigation_Protocol>
-    1) Verify tool response format — every handler must return exactly:
+    1) Verify tool response format - every handler must return exactly:
        ```typescript
        // CORRECT: MCP-compliant response
        function textResult(text: string, isError = false) {
@@ -71,7 +71,7 @@ disallowedTools: Write, Edit
        return { content: [{ text: "result" }], isError: false };
        ```
 
-    2) Verify schema-first validation — Zod parse before any execution logic:
+    2) Verify schema-first validation - Zod parse before any execution logic:
        ```typescript
        // CORRECT: Zod validation before any execution logic
        case 'codex':
@@ -85,7 +85,7 @@ disallowedTools: Write, Edit
          return await handleSessionCreate(rawArgs as any, sessionManager);
        ```
 
-    3) Verify stdio transport safety — no console.log in src/codex/:
+    3) Verify stdio transport safety - no console.log in src/codex/:
        ```typescript
        // CORRECT: Diagnostics to stderr
        process.stderr.write('Coral MCP Server running on stdio\n');
@@ -94,7 +94,7 @@ disallowedTools: Write, Edit
        console.log('Server started');  // NEVER in MCP server code
        ```
 
-    4) Verify atomic session writes — tmp+rename pattern:
+    4) Verify atomic session writes - tmp+rename pattern:
        ```typescript
        // CORRECT: Write to tmp, then atomic rename
        const tmpPath = filePath + '.tmp';
@@ -105,7 +105,7 @@ disallowedTools: Write, Edit
        writeFileSync(filePath, JSON.stringify(entry, null, 2));
        ```
 
-    5) Verify process lifecycle management — tracked children, shutdown handlers:
+    5) Verify process lifecycle management - tracked children, shutdown handlers:
        ```typescript
        // CORRECT: Track children, clean up on shutdown
        const activeChildren = new Set<ChildProcess>();

@@ -63,6 +63,106 @@ describe('discussLeadOpSchema', () => {
     expect(result.op).toBe('_1_seed');
   });
 
+  it('parses _1_seed with valid demographics payload', () => {
+    const result = discussLeadOpSchema.parse({
+      op: '_1_seed',
+      controversy_axes: [{ axis: 'cost', positions: ['high', 'low'] }],
+      demographics: {
+        origin_weights: { US: 0.5, DE: 0.3, NG: 0.2 },
+        outlier_ratio: 0.2,
+      },
+      n: 3,
+      seed: 12,
+    });
+    if (result.op !== '_1_seed') return;
+    expect(result.demographics).toEqual({
+      origin_weights: { US: 0.5, DE: 0.3, NG: 0.2 },
+      outlier_ratio: 0.2,
+    });
+  });
+
+  it('defaults outlier_ratio when omitted from demographics', () => {
+    const result = discussLeadOpSchema.parse({
+      op: '_1_seed',
+      controversy_axes: [{ axis: 'cost', positions: ['high', 'low'] }],
+      demographics: {
+        origin_weights: { US: 1 },
+      },
+      n: 1,
+      seed: 12,
+    });
+    if (result.op !== '_1_seed') return;
+    expect(result.demographics?.outlier_ratio).toBe(0.2);
+  });
+
+  it('rejects empty origin_weights', () => {
+    expect(() =>
+      discussLeadOpSchema.parse({
+        op: '_1_seed',
+        controversy_axes: [{ axis: 'cost', positions: ['high', 'low'] }],
+        demographics: {
+          origin_weights: {},
+          outlier_ratio: 0.2,
+        },
+        n: 1,
+      } as never),
+    ).toThrow();
+  });
+
+  it('rejects negative origin weights in demographics', () => {
+    expect(() =>
+      discussLeadOpSchema.parse({
+        op: '_1_seed',
+        controversy_axes: [{ axis: 'cost', positions: ['high', 'low'] }],
+        demographics: {
+          origin_weights: { US: -0.5 },
+          outlier_ratio: 0.2,
+        },
+        n: 1,
+      } as never),
+    ).toThrow();
+  });
+
+  it('rejects outlier_ratio above 0.5', () => {
+    expect(() =>
+      discussLeadOpSchema.parse({
+        op: '_1_seed',
+        controversy_axes: [{ axis: 'cost', positions: ['high', 'low'] }],
+        demographics: {
+          origin_weights: { US: 0.5 },
+          outlier_ratio: 0.75,
+        },
+        n: 1,
+      } as never),
+    ).toThrow();
+  });
+
+  it('rejects unknown fields in demographics payload', () => {
+    expect(() =>
+      discussLeadOpSchema.parse({
+        op: '_1_seed',
+        controversy_axes: [{ axis: 'cost', positions: ['high', 'low'] }],
+        demographics: {
+          origin_weights: { US: 0.5 },
+          outlier_ratio: 0.2,
+          unexpected: true,
+        },
+        n: 1,
+      } as never),
+    ).toThrow();
+  });
+
+  it('parses seed op without demographics', () => {
+    const result = discussLeadOpSchema.parse({
+      op: '_1_seed',
+      controversy_axes: [{ axis: 'cost', positions: ['high', 'low'] }],
+      n: 3,
+      seed: null,
+    });
+    if (result.op !== '_1_seed') return;
+    expect(result.demographics).toBeUndefined();
+  });
+
   it('should parse create op', () => {
     const result = discussLeadOpSchema.parse(baseCreate);
     expect(result.op).toBe('_2_create');
@@ -127,6 +227,95 @@ describe('discussLeadOpSchema', () => {
   it('should reject session on _2_create', () => {
     expect(() =>
       discussLeadOpSchema.parse({ op: '_2_create', topic: 'x', agents: baseCreate.agents, session } as never),
+    ).toThrow();
+  });
+});
+
+
+describe('demographicsShape via seedShape: outlier_ratio edge values', () => {
+  const baseAxes = [{ axis: 'cost', positions: ['high', 'low'] }];
+
+  it('outlier_ratio = 0 is valid (minimum boundary)', () => {
+    const result = discussLeadOpSchema.parse({
+      op: '_1_seed',
+      controversy_axes: baseAxes,
+      demographics: { origin_weights: { US: 1 }, outlier_ratio: 0 },
+      n: 2,
+      seed: 1,
+    });
+    if (result.op !== '_1_seed') return;
+    expect(result.demographics?.outlier_ratio).toBe(0);
+  });
+
+  it('outlier_ratio = 0.5 is valid (maximum boundary)', () => {
+    const result = discussLeadOpSchema.parse({
+      op: '_1_seed',
+      controversy_axes: baseAxes,
+      demographics: { origin_weights: { US: 1 }, outlier_ratio: 0.5 },
+      n: 2,
+      seed: 1,
+    });
+    if (result.op !== '_1_seed') return;
+    expect(result.demographics?.outlier_ratio).toBe(0.5);
+  });
+
+  it('outlier_ratio just below 0 (-1e-15) is rejected by schema', () => {
+    expect(() =>
+      discussLeadOpSchema.parse({
+        op: '_1_seed',
+        controversy_axes: baseAxes,
+        demographics: { origin_weights: { US: 1 }, outlier_ratio: -1e-15 },
+        n: 2,
+        seed: 1,
+      } as never),
+    ).toThrow();
+  });
+
+  it('outlier_ratio = -0.001 is rejected by schema', () => {
+    expect(() =>
+      discussLeadOpSchema.parse({
+        op: '_1_seed',
+        controversy_axes: baseAxes,
+        demographics: { origin_weights: { US: 1 }, outlier_ratio: -0.001 },
+        n: 2,
+        seed: 1,
+      } as never),
+    ).toThrow();
+  });
+
+  it('outlier_ratio = 0.500001 is rejected by schema', () => {
+    expect(() =>
+      discussLeadOpSchema.parse({
+        op: '_1_seed',
+        controversy_axes: baseAxes,
+        demographics: { origin_weights: { US: 1 }, outlier_ratio: 0.500001 },
+        n: 2,
+        seed: 1,
+      } as never),
+    ).toThrow();
+  });
+
+  it('origin_weight = 0 is rejected by schema (must be strictly positive)', () => {
+    expect(() =>
+      discussLeadOpSchema.parse({
+        op: '_1_seed',
+        controversy_axes: baseAxes,
+        demographics: { origin_weights: { US: 0 }, outlier_ratio: 0.2 },
+        n: 1,
+        seed: 1,
+      } as never),
+    ).toThrow();
+  });
+
+  it('origin_weight = Number.POSITIVE_INFINITY is rejected by schema (finite required)', () => {
+    expect(() =>
+      discussLeadOpSchema.parse({
+        op: '_1_seed',
+        controversy_axes: baseAxes,
+        demographics: { origin_weights: { US: Infinity } },
+        n: 1,
+        seed: 1,
+      } as never),
     ).toThrow();
   });
 });

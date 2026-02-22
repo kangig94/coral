@@ -54,7 +54,7 @@ import {
 function makeExecResult(overrides: Partial<CodexExecResult> = {}): CodexExecResult {
   return {
     response: 'test response',
-    threadId: 'thread-123',
+    sessionId: 'thread-123',
     model: 'o4-mini',
     durationMs: 500,
     exitCode: 0,
@@ -137,39 +137,39 @@ describe('sessionNotFoundError', () => {
 // ─── B. extractCompletionData ─────────────────────────────────────────────────
 
 describe('extractCompletionData', () => {
-  it('extracts response, thread_id, session_name, model, duration_ms', () => {
-    const result = jsonResult({ response: 'hi', thread_id: 't-1', model: 'o4-mini', duration_ms: 100 });
+  it('extracts response, session, session_name, model, duration_ms', () => {
+    const result = jsonResult({ response: 'hi', session: 't-1', model: 'o4-mini', duration_ms: 100 });
     expect(extractCompletionData(result, 'my-session')).toEqual({
-      response: 'hi', thread_id: 't-1', session_name: 'my-session', model: 'o4-mini', duration_ms: 100,
+      response: 'hi', session: 't-1', session_name: 'my-session', model: 'o4-mini', duration_ms: 100,
     });
   });
 
   it('includes notice field when present', () => {
-    const result = jsonResult({ response: 'hi', thread_id: null, model: 'o4-mini', duration_ms: 10, notice: 'No thread' });
-    expect(extractCompletionData(result, 'test').notice).toBe('No thread');
+    const result = jsonResult({ response: 'hi', session: null, model: 'o4-mini', duration_ms: 10, notice: 'No session' });
+    expect(extractCompletionData(result, 'test').notice).toBe('No session');
   });
 
   it('omits notice field when absent', () => {
-    const result = jsonResult({ response: 'hi', thread_id: 't-1', model: 'o4-mini', duration_ms: 10 });
+    const result = jsonResult({ response: 'hi', session: 't-1', model: 'o4-mini', duration_ms: 10 });
     expect(extractCompletionData(result, 'test')).not.toHaveProperty('notice');
   });
 
   it('forwards aborted and non_resumable when present', () => {
-    const result = jsonResult({ response: '', thread_id: null, model: 'o4-mini', duration_ms: 50, aborted: true, non_resumable: true });
+    const result = jsonResult({ response: '', session: null, model: 'o4-mini', duration_ms: 50, aborted: true, non_resumable: true });
     const data = extractCompletionData(result, 'test');
     expect(data.aborted).toBe(true);
     expect(data.non_resumable).toBe(true);
   });
 
   it('omits aborted and non_resumable when absent', () => {
-    const result = jsonResult({ response: 'hi', thread_id: 't-1', model: 'o4-mini', duration_ms: 10 });
+    const result = jsonResult({ response: 'hi', session: 't-1', model: 'o4-mini', duration_ms: 10 });
     const data = extractCompletionData(result, 'test');
     expect(data).not.toHaveProperty('aborted');
     expect(data).not.toHaveProperty('non_resumable');
   });
 
   it('forwards exit_code, errors, warnings when present', () => {
-    const result = jsonResult({ response: '', thread_id: 't-1', model: 'o4-mini', duration_ms: 10, exit_code: 1, errors: ['e'], warnings: ['w'] });
+    const result = jsonResult({ response: '', session: 't-1', model: 'o4-mini', duration_ms: 10, exit_code: 1, errors: ['e'], warnings: ['w'] });
     const data = extractCompletionData(result, 'test');
     expect(data.exit_code).toBe(1);
     expect(data.errors).toEqual(['e']);
@@ -224,22 +224,22 @@ describe('makeEventCallback', () => {
 // ─── D. handleSessionCreate ───────────────────────────────────────────────────
 
 describe('handleSessionCreate', () => {
-  it('success with threadId → registers session and returns response + session_name', async () => {
+  it('success with sessionId → registers session and returns response + session_name', async () => {
     vi.mocked(executeOneShot).mockResolvedValue(makeExecResult());
     const result = await handleSessionCreate({ prompt: 'hi', name: 'my-session', background: false, bypass: false }, mgr);
     expect(result.isError).toBe(false);
     const data = JSON.parse(result.content[0].text);
     expect(data.response).toBe('test response');
-    expect(data.thread_id).toBe('thread-123');
+    expect(data.session).toBe('thread-123');
     expect(data.session_name).toBe('my-session');
     expect(mgr.get('my-session')).not.toBeNull();
   });
 
-  it('success without threadId → returns notice and does NOT register', async () => {
-    vi.mocked(executeOneShot).mockResolvedValue(makeExecResult({ threadId: null }));
+  it('success without sessionId → returns notice and does NOT register', async () => {
+    vi.mocked(executeOneShot).mockResolvedValue(makeExecResult({ sessionId: null }));
     const result = await handleSessionCreate({ prompt: 'hi', name: 'no-thread', background: false, bypass: false }, mgr);
     const data = JSON.parse(result.content[0].text);
-    expect(data.notice).toContain('No thread ID');
+    expect(data.notice).toContain('No session ID');
     expect(mgr.get('no-thread')).toBeNull();
   });
 
@@ -268,7 +268,7 @@ describe('handleSessionSend', () => {
   });
 
   it('success → returns response and calls updateSession', async () => {
-    vi.mocked(executeResume).mockResolvedValue(makeExecResult({ threadId: 'thread-001' }));
+    vi.mocked(executeResume).mockResolvedValue(makeExecResult({ sessionId: 'thread-001' }));
     const result = await handleSessionSend({ session: 'test-session', prompt: 'follow up', background: false, bypass: false }, mgr);
     expect(result.isError).toBe(false);
     const data = JSON.parse(result.content[0].text);
@@ -282,7 +282,7 @@ describe('handleSessionSend', () => {
     expect(result.content[0].text).toContain('nonexistent');
   });
 
-  it('passes entry codexThreadId and workingDirectory to executeResume', async () => {
+  it('passes entry sessionId and workingDirectory to executeResume', async () => {
     vi.mocked(executeResume).mockResolvedValue(makeExecResult());
     await handleSessionSend({ session: 'test-session', prompt: 'hi', background: false, bypass: false }, mgr);
     expect(executeResume).toHaveBeenCalledWith('thread-001', 'hi', undefined, '/workspace', undefined, false, undefined, undefined);
@@ -312,7 +312,7 @@ describe('handleSessionList', () => {
     expect(data.total).toBe(1);
     expect(data.sessions[0]).toMatchObject({
       name: 'session-1',
-      thread_id: 'thread-1',
+      session: 'thread-1',
       model: 'o4-mini',
       working_directory: '/workspace',
     });
@@ -343,8 +343,8 @@ describe('handleSessionFork', () => {
     mgr.register('base-session', 'thread-base', 'o4-mini', '/workspace');
   });
 
-  it('success with name + threadId → registers new session, includes forked_from', async () => {
-    vi.mocked(executeFork).mockResolvedValue(makeExecResult({ threadId: 'thread-fork' }));
+  it('success with name + sessionId → registers new session, includes forked_from', async () => {
+    vi.mocked(executeFork).mockResolvedValue(makeExecResult({ sessionId: 'thread-fork' }));
     const result = await handleSessionFork({ session: 'base-session', name: 'forked', background: false, bypass: false }, mgr);
     const data = JSON.parse(result.content[0].text);
     expect(data.forked_from).toBe('thread-base');
@@ -353,15 +353,15 @@ describe('handleSessionFork', () => {
   });
 
   it('success without name → does not register, no session_name in response', async () => {
-    vi.mocked(executeFork).mockResolvedValue(makeExecResult({ threadId: 'thread-fork' }));
+    vi.mocked(executeFork).mockResolvedValue(makeExecResult({ sessionId: 'thread-fork' }));
     const result = await handleSessionFork({ session: 'base-session', background: false, bypass: false }, mgr);
     const data = JSON.parse(result.content[0].text);
     expect(data.session_name).toBeUndefined();
     expect(mgr.get('thread-fork')).toBeNull();
   });
 
-  it('success with name but no threadId → does not register', async () => {
-    vi.mocked(executeFork).mockResolvedValue(makeExecResult({ threadId: null }));
+  it('success with name but no sessionId → does not register', async () => {
+    vi.mocked(executeFork).mockResolvedValue(makeExecResult({ sessionId: null }));
     const result = await handleSessionFork({ session: 'base-session', name: 'forked', background: false, bypass: false }, mgr);
     expect(result.isError).toBe(false);
     expect(mgr.get('forked')).toBeNull();

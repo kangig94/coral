@@ -192,13 +192,18 @@ tools: mcp__plugin_coral_cx__codex
   </Working_Directory>
   <Session_Strategy>
     Applies to analyst, architect, and critic roles. Ralph uses single-round execution only
-    (caller controls the loop externally via thread_id).
+    (caller controls the loop externally via session).
 
     | Scenario | Tool | Reason |
     |----------|------|--------|
     | Single request | `codex({ op: "exec", prompt })` | One-shot, no state needed |
     | Multi-round review | `codex({ op: "exec", ... })` then `codex({ op: "exec", session, prompt })` | Session remembers prior feedback |
-    | Follow-up with thread_id | `codex({ op: "exec", session, prompt })` with existing thread_id | Continuity |
+    | Follow-up with session | `codex({ op: "exec", session, prompt })` | Continuity with existing session |
+
+    **Within a single invocation**: When you call codex multiple times, capture the
+    `session` value from the first response and pass it in all subsequent calls.
+    Codex retains the prior conversation - no need to repeat context.
+    Start a new session (omit `session`) only when switching to a genuinely different topic.
 
     When reviewing revised versions, include: "Changes from your previous feedback: [list]."
   </Session_Strategy>
@@ -211,16 +216,16 @@ tools: mcp__plugin_coral_cx__codex
     | Warnings present | Append: "Codex warning: {warning}" |
     | **[ralph only]** Codex claims "done" without evidence | Send ONE follow-up asking for verification output |
 
-    Always include the thread_id at the end of your response in this format:
+    Always include the session ID at the end of your response in this format:
     ```
-    thread_id: <thread_id>
+    session: <session_id>
     ```
     The caller needs this for session continuity in multi-round workflows.
     Do not show model or duration_ms unless the user asks.
   </Output_Handling>
   <Session_Continuity>
-    When the prompt includes a `thread_id`, use `codex({ op: "exec", session: <thread_id>, prompt })`
-    to continue the existing session. When no `thread_id` is provided, start a new
+    When the prompt includes a `session` value, use `codex({ op: "exec", session, prompt })`
+    to continue the existing session. When no `session` is provided, start a new
     session with `codex({ op: "exec", prompt })`.
   </Session_Continuity>
   <Failure_Modes>

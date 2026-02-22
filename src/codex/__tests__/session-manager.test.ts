@@ -48,13 +48,13 @@ describe('SessionManager', () => {
     const entry = mgr.register('my-session', 'thread-abc', 'o4-mini', workDir);
 
     expect(entry.name).toBe('my-session');
-    expect(entry.codexThreadId).toBe('thread-abc');
+    expect(entry.sessionId).toBe('thread-abc');
     expect(existsSync(sessionFilePath(workDir, 'my-session'))).toBe(true);
 
     const fromDisk = readSessionFile(workDir, 'my-session');
     expect(fromDisk).toMatchObject({
       name: 'my-session',
-      codexThreadId: 'thread-abc',
+      sessionId: 'thread-abc',
       model: 'o4-mini',
       workingDirectory: workDir,
     });
@@ -66,10 +66,10 @@ describe('SessionManager', () => {
 
     const found = mgr.get('review');
     expect(found).not.toBeNull();
-    expect(found!.codexThreadId).toBe('thread-1');
+    expect(found!.sessionId).toBe('thread-1');
   });
 
-  it('get finds a session by threadId via directory scan', () => {
+  it('get finds a session by sessionId via directory scan', () => {
     const { mgr, workDir } = setup('project-c');
     mgr.register('alpha', 'thread-alpha', 'o4-mini', workDir);
     mgr.register('beta', 'thread-beta', 'o4-mini', workDir);

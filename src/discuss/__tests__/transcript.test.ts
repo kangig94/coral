@@ -1,6 +1,3 @@
-/**
- * Transcript rendering tests - pure functions operating on TranscriptEntry[].
- */
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -35,7 +32,6 @@ function speechEntry(agent: string, content: string, step = 1): TranscriptEntry 
   };
 }
 
-// ─── wrapText ────────────────────────────────────────────────────────────────
 
 describe('wrapText', () => {
   it('should pass through short text unchanged', () => {
@@ -71,7 +67,6 @@ describe('wrapText', () => {
   });
 });
 
-// ─── generateOneLiner ─────────────────────────────────────────────────────────
 
 describe('generateOneLiner', () => {
   it('should return full text if under 100 chars', () => {
@@ -91,7 +86,6 @@ describe('generateOneLiner', () => {
   });
 });
 
-// ─── renderHeader ─────────────────────────────────────────────────────────────
 
 describe('renderHeader', () => {
   it('should include topic and Epoch 1 header', () => {
@@ -101,7 +95,6 @@ describe('renderHeader', () => {
   });
 });
 
-// ─── renderEntries ────────────────────────────────────────────────────────────
 
 describe('renderEntries', () => {
   it('should return empty string for empty input', () => {
@@ -161,7 +154,6 @@ describe('renderEntries', () => {
   });
 });
 
-// ─── formatFull (information veil) ───────────────────────────────────────────
 
 describe('formatFull', () => {
   it('should show winner name from bids entry but not scores', () => {
@@ -196,7 +188,6 @@ describe('formatFull', () => {
   });
 });
 
-// ─── formatRecent ─────────────────────────────────────────────────────────────
 
 describe('formatRecent', () => {
   it('should show last N speeches in full and earlier as one-line summaries', () => {
@@ -250,7 +241,6 @@ describe('formatRecent', () => {
   });
 });
 
-// ─── renderEntry bids with effective_bids ─────────────────────────────────────
 
 describe('renderEntry bids with effective_bids', () => {
   it('should show Raw and Effective columns when effective_bids is present', () => {
@@ -269,7 +259,6 @@ describe('renderEntry bids with effective_bids', () => {
   });
 
   it('should sort rows by effective score descending when effective_bids is present', () => {
-    // alice raw=80 effective=60; bob raw=50 effective=90 -> bob should appear first
     const entry: TranscriptEntry = {
       type: 'bids', step: 1, epoch: 1, ts: TS,
       bids: { alice: 80, bob: 50 },
@@ -295,7 +284,6 @@ describe('renderEntry bids with effective_bids', () => {
   });
 });
 
-// ─── formatSummary ────────────────────────────────────────────────────────────
 
 describe('formatSummary', () => {
   it('should return one-liner for each speech entry', () => {
@@ -323,7 +311,6 @@ describe('formatSummary', () => {
   });
 });
 
-// ─── adversarial: renderEntry bids ───────────────────────────────────────────
 
 describe('renderEntry bids (adversarial)', () => {
   it('should show Raw and Effective columns when effective_bids are present', () => {
@@ -423,7 +410,6 @@ describe('renderEntry bids (adversarial)', () => {
   });
 });
 
-// ─── adversarial: formatFull ─────────────────────────────────────────────────
 
 describe('formatFull (adversarial)', () => {
   it('should hide effective scores from agent-facing output', () => {
@@ -446,7 +432,6 @@ describe('formatFull (adversarial)', () => {
   });
 });
 
-// ─── adversarial: renderEntries ──────────────────────────────────────────────
 
 describe('renderEntries (adversarial)', () => {
   it('should mix legacy and effective bids renderings in order', () => {

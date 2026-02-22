@@ -42,7 +42,7 @@ Create a new Codex session when `session` is omitted (calls `executeOneShot()`) 
 ```json
 {
   "response": "Codex response text",
-  "thread_id": "codex-thread-uuid",
+  "session": "codex-session-uuid",
   "session_name": "my-review",
   "model": "gpt-5.3-codex",
   "duration_ms": 4100,
@@ -51,7 +51,7 @@ Create a new Codex session when `session` is omitted (calls `executeOneShot()`) 
 }
 ```
 
-If no thread ID is returned, registration is skipped with a `notice` field. `errors`/`warnings`/`exit_code` are conditionally included.
+If no session ID is returned, registration is skipped with a `notice` field. `errors`/`warnings`/`exit_code` are conditionally included.
 
 During foreground execution, `[Codex]` prefixed progress messages are sent via `notifications/progress`.
 
@@ -72,13 +72,13 @@ Progress is written to the JSONL file with a terminal `completed` or `error` eve
 
 ### op: exec
 
-Send a follow-up prompt to an existing session. Uses `codex exec resume THREAD_ID` to continue the conversation.
+Send a follow-up prompt to an existing session. Uses `codex exec resume` to continue the conversation.
 
 ### Input Schema
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `session` | string | No | Session name or Codex thread ID (min 1 char). Omit to start a new session. |
+| `session` | string | No | Session identifier (min 1 char). Omit to start a new session. |
 | `prompt` | string | Yes | Prompt to send (min 1 char). Required for both create and resume cases. |
 | `model` | string | No | Model to use |
 | `working_directory` | string | No | Working directory |
@@ -89,15 +89,15 @@ Send a follow-up prompt to an existing session. Uses `codex exec resume THREAD_I
 ### Lookup Logic
 
 1. `SessionManager.get(session)` - search by name first
-2. If name doesn't match, search by `codexThreadId`
-3. If not in registry, return error (`Session not found`). Raw thread IDs are not accepted - all sessions must be created via `codex({ op: "exec", ... })`.
+2. If name doesn't match, search by `sessionId`
+3. If not in registry, return error (`Session not found`). All sessions must be created via `codex({ op: "exec", ... })`.
 
 ### Output (JSON)
 
 ```json
 {
   "response": "Codex follow-up response",
-  "thread_id": "codex-thread-uuid",
+  "session": "codex-session-uuid",
   "session_name": "my-review",
   "model": "gpt-5.3-codex",
   "duration_ms": 2800
@@ -123,7 +123,7 @@ No parameters (empty object). This envelope is strict.
   "sessions": [
     {
       "name": "my-review",
-      "thread_id": "uuid-1",
+      "session": "uuid-1",
       "model": "gpt-5.3-codex",
       "created_at": "2026-02-18T08:30:00.000Z",
       "last_used_at": "2026-02-18T09:15:00.000Z",
@@ -151,7 +151,7 @@ Fork an existing session to continue the conversation in a new branch.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `session` | string | Yes | Source session name or registered thread ID (must exist in Coral registry) |
+| `session` | string | Yes | Source session identifier (must exist in Coral registry) |
 | `name` | string | No | New session name (registered if specified) |
 | `prompt` | string | No | Additional prompt for the forked session |
 | `model` | string | No | Model to use |
@@ -165,8 +165,8 @@ Fork an existing session to continue the conversation in a new branch.
 ```json
 {
   "response": "Forked session response",
-  "thread_id": "thread-uuid",
-  "forked_from": "original-thread-uuid",
+  "session": "new-session-uuid",
+  "forked_from": "original-session-uuid",
   "session_name": "forked-review",
   "model": "gpt-5.3-codex",
   "duration_ms": 3500
@@ -183,7 +183,7 @@ Abort an active execution.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `session` | string | Yes | Session name or thread ID |
+| `session` | string | Yes | Session identifier |
 
 ### Output (JSON)
 
@@ -227,7 +227,7 @@ Moderator-only MCP tool for control and lifecycle:
 
 | Operation | Input |
 |---|---|
-| `_1_seed` | `controversy_axes`, `n`, optional `seed` (see [Persona Seeding Algorithm](#persona-seeding-algorithm-_1_seed)) |
+| `_1_seed` | `controversy_axes`, `n`, optional `seed`, optional `demographics` (see [Persona Seeding Algorithm](#persona-seeding-algorithm-_1_seed)) |
 | `_2_create` | `topic`, `agents` |
 | `_3_step` | `session`, `timeout_seconds` (1-120), optional `force_stop` |
 | `_4_transcript` | `session`, `mode`, optional `last_n` |
@@ -256,7 +256,7 @@ Moderator-only MCP tool for control and lifecycle:
 
 ## Persona Seeding Algorithm (`_1_seed`)
 
-`_1_seed` generates maximally diverse persona position assignments using **k-DPP (Determinantal Point Process)** sampling. Reference: Kulesza & Taskar (2012), "Determinantal Point Processes for Machine Learning".
+`_1_seed` generates maximally diverse persona position assignments using **k-DPP (Determinantal Point Process)** sampling, then optional demographics-based origin assignment. Reference: Kulesza & Taskar (2012), "Determinantal Point Processes for Machine Learning".
 
 ### Input
 
@@ -265,6 +265,8 @@ Moderator-only MCP tool for control and lifecycle:
 | `controversy_axes` | array | Yes | 1–10 axes, each with 1–10 unique positions. Axis names must be unique. |
 | `n` | integer | Yes | Number of persona assignments to generate (1–8) |
 | `seed` | integer \| null | No | RNG seed for reproducibility. `null` = random seed. |
+| `demographics.origin_weights` | object | No | Finite positive origin weights, keyed by origin label (e.g., country code, institution type) |
+| `demographics.outlier_ratio` | number | No | Fraction of outliers from low-weight pool (`0` to `0.5`, default `0.2`). |
 
 ### Pipeline
 
@@ -291,9 +293,11 @@ Moderator-only MCP tool for control and lifecycle:
 5. **Reuse** (when `n > pool_size`): Extra slots assigned by largest Hamming distance from the selected set, cycling through ranked reuse order. Each reused assignment carries `shared_position_with: <source_slot_index>`.
 
 6. **Tone assignment**: 2×2×2 = 8 combinations of `{formality, evidence, pace}` shuffled via seeded RNG and assigned cyclically:
-   - `formality`: `formal` | `conversational`
-   - `evidence`: `data-driven` | `narrative`
-   - `pace`: `concise` | `detailed`
+  - `formality`: `formal` | `conversational`
+  - `evidence`: `data-driven` | `narrative`
+  - `pace`: `concise` | `detailed`
+
+7. **Demographics layer** (optional, second RNG stage): When `demographics` is provided, assigns `suggested_origin` and `is_outlier` per slot using weighted pools split by `outlier_ratio` (default `0.2`, clamped to `0–0.5`).
 
 ### Output
 
@@ -310,11 +314,15 @@ Moderator-only MCP tool for control and lifecycle:
       {
         "positions": { "stance": "pro", "priority": "cost" },
         "tone": { "formality": "formal", "evidence": "data-driven", "pace": "concise" },
+        "suggested_origin": "DE",
+        "is_outlier": false,
         "persona_seed": 1827364590
       },
       {
         "positions": { "stance": "con", "priority": "quality" },
         "tone": { "formality": "conversational", "evidence": "narrative", "pace": "detailed" },
+        "suggested_origin": "US",
+        "is_outlier": true,
         "persona_seed": 3049182736,
         "shared_position_with": 0
       }
@@ -343,14 +351,14 @@ The moderator (`discuss-lead`) uses `_1_seed` within a 3-phase setup:
 - Generate `n` persona briefs: 1–2 sentence background differentiation per slot
 
 **Phase 2 — DPP Seeding** (`_1_seed` MCP call):
-- Call `_1_seed({ controversy_axes, n, seed: null })`
-- Result: `assignments[i].positions` (axis → position map), `assignments[i].tone` ({ formality, evidence, pace }), `assignments[i].persona_seed` (uint32)
+- Call `_1_seed({ controversy_axes, n, demographics, seed: null })`
+- Result: `assignments[i].positions` (axis → position map), `assignments[i].tone` ({ formality, evidence, pace }), `assignments[i].persona_seed` (uint32), `assignments[i].suggested_origin`, `assignments[i].is_outlier` (if demographics provided)
 - Pool > 256 is auto-subsampled (no action needed). Response includes `subsampled: true`, `original_pool_size`.
 - On `pool_too_large` (> 100,000): reduce positions on largest axis, retry
 - On `pool_degenerate`: add a second position to at least one axis, retry
 
 **Phase 3 — Merge & Spawn** (parallel persona generation):
-- For each slot, spawn `persona-generator` with: `role`, `topic`, `team_roles`, `name_culture`, `positions` (from assignments), `tone` (from assignments), `brief` (from Phase 1), `persona_seed` (from assignments, as creative variation hint), `devil_advocate` (if stance imbalance), `shared_position_with` (if reused slot)
+- For each slot, spawn `persona-generator` with: `role`, `topic`, `team_roles`, `name_culture`, `positions` (from assignments), `tone` (from assignments), `brief` (from Phase 1), `devil_advocate` (if stance imbalance), `shared_position_with` (if reused slot)
 - **Stance imbalance check**: if stance axis exists, count pro vs con. If imbalanced, set `devil_advocate: true` for one agent on overrepresented side.
 
 ---

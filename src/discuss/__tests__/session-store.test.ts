@@ -1,6 +1,3 @@
-/**
- * SessionStore tests - atomic writes, locking, session lifecycle.
- */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
@@ -35,7 +32,6 @@ function createAndSaveSession(topic = 'Test Topic') {
   return { sessionId, fullPath, state };
 }
 
-// ─── SessionStore.createSessionDir ───────────────────────────────────────────
 
 describe('createSessionDir', () => {
   it('should create directory with session ID format', () => {
@@ -50,7 +46,6 @@ describe('createSessionDir', () => {
   });
 });
 
-// ─── SessionStore.resolveDir ──────────────────────────────────────────────────
 
 describe('resolveDir', () => {
   it('should find session dir by session_id prefix', () => {
@@ -65,7 +60,6 @@ describe('resolveDir', () => {
   });
 });
 
-// ─── SessionStore.save / load ─────────────────────────────────────────────────
 
 describe('save and load', () => {
   it('should round-trip state through save/load', () => {
@@ -85,7 +79,6 @@ describe('save and load', () => {
   it('should append new transcript entries to transcript.md on save', () => {
     const { fullPath, state } = createAndSaveSession();
 
-    // Add speech entry and save again
     const updated: DiscussState = {
       ...state,
       transcript: [
@@ -103,7 +96,6 @@ describe('save and load', () => {
   it('should only append NEW entries (transcript_rendered cursor)', () => {
     const { fullPath, state } = createAndSaveSession();
 
-    // First save: 1 entry
     const state1: DiscussState = {
       ...state,
       transcript: [
@@ -112,11 +104,9 @@ describe('save and load', () => {
       ],
     };
     store.save(fullPath, state1);
-    // transcript_rendered should now be 1
     const loaded1 = store.load(fullPath);
     expect(loaded1.transcript_rendered).toBe(1);
 
-    // Second save: adds a second entry
     const state2: DiscussState = {
       ...loaded1,
       transcript: [
@@ -135,9 +125,7 @@ describe('save and load', () => {
   });
 });
 
-// ─── SessionStore.withLock ────────────────────────────────────────────────────
 
-// ─── SessionStore.cleanupExpiredSessions ──────────────────────────────────────
 
 describe('cleanupExpiredSessions', () => {
   function saveSessionWithStatus(topic: string, status: string, lastActivity: Date) {
@@ -146,7 +134,6 @@ describe('cleanupExpiredSessions', () => {
     state.session_id = sessionId;
     state.session_dir = fullPath;
     state.team_name = `coral-dc-${sessionId}`;
-    // Write raw state with custom status/last_activity_at
     const raw = { ...state, status, last_activity_at: lastActivity.toISOString() };
     writeFileSync(join(fullPath, 'state.json'), JSON.stringify(raw, null, 2));
     return { sessionId, fullPath };
@@ -185,13 +172,11 @@ describe('withLock', () => {
     const { fullPath } = createAndSaveSession();
     const results: number[] = [];
 
-    // Two concurrent lock acquisitions - order should be serialized
     await Promise.all([
       store.withLock(fullPath, async () => { results.push(1); await new Promise((r) => setTimeout(r, 20)); results.push(2); }),
       store.withLock(fullPath, async () => { results.push(3); }),
     ]);
 
-    // Serialized: [1, 2, 3] or [3, 1, 2] - never interleaved [1, 3, 2]
     const idx1 = results.indexOf(1);
     const idx2 = results.indexOf(2);
     const idx3 = results.indexOf(3);

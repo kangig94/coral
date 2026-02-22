@@ -36,7 +36,7 @@ disallowedTools: Write, Edit
     - Findings table is complete with severity ratings
   </Success_Criteria>
   <Constraints>
-    BLOCKING FINDINGS FROM ANY TIER 1 AGENT = IMMEDIATE REJECT — NO EXCEPTIONS
+    BLOCKING FINDINGS FROM ANY TIER 1 AGENT = IMMEDIATE REJECT - NO EXCEPTIONS
 
     | DO | DON'T |
     |----|-------|

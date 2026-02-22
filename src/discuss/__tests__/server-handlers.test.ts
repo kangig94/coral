@@ -8,7 +8,6 @@ import { startBidding, DEFAULT_BID_THRESHOLD } from '../state-machine.js';
 import { _setDefaultPollMs } from '../wait.js';
 import type { McpResult } from '../../shared/mcp-utils.js';
 
-/** Test time scale — multiply all durations by this factor. */
 const T = 0.1;
 const sec = (s: number): number => Math.max(1, Math.round(s * T));
 
@@ -225,7 +224,6 @@ describe('discuss_lead tool: _1_seed', () => {
   });
 
   it('should subsample and include subsampled fields when pool > 256', async () => {
-    // 7^3 = 343 > 256, n=1 avoids k-DPP
     const axes = Array.from({ length: 3 }, (_, i) => ({
       axis: `ax${i}`,
       positions: Array.from({ length: 7 }, (__, j) => `p${j}`),
@@ -264,7 +262,6 @@ describe('discuss_lead tool: _3_step (moderation loop)', () => {
 
   it('should mark no_winner and proceed to epoch_transition when all bids above threshold and exhausted', async () => {
     const sid = await createSession();
-    // no bids; _3_step times out to produce a timeout state, then second call force-expels due hold_count
     const first = await handleToolCall('discuss_lead', { op: '_3_step', session: sid, timeout_seconds: sec(5) }, store);
     const firstData = parseResult(first);
     expect(firstData.status).toBe('bidding');

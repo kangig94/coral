@@ -1,6 +1,3 @@
-/**
- * Pure state machine tests - no filesystem, no async.
- */
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -71,7 +68,6 @@ function assertBidsEntry(
   expect(entry?.type).toBe('bids');
 }
 
-// ─── parseDisplayName ────────────────────────────────────────────────────────
 
 describe('parseDisplayName', () => {
   it('should parse em-dash format', () => {
@@ -104,7 +100,6 @@ describe('parseDisplayName', () => {
   });
 });
 
-// ─── topicSlug ───────────────────────────────────────────────────────────────
 
 describe('topicSlug', () => {
   it('should strip filesystem-unsafe characters', () => {
@@ -123,7 +118,6 @@ describe('topicSlug', () => {
   });
 });
 
-// ─── initSession / startBidding ────────────────────────────────────────────
 
 describe('initSession', () => {
   it('should initialize setup state with bidding defaults', () => {
@@ -152,7 +146,6 @@ describe('initSession', () => {
   });
 });
 
-// ─── applyBid / resolveWinner ───────────────────────────────────────────────
 
 describe('applyBid', () => {
   it('should record bid in bidding status', () => {
@@ -265,7 +258,6 @@ describe('resolveWinner', () => {
   });
 });
 
-// ─── speech lifecycle ─────────────────────────────────────────────────────
 
 describe('speech lifecycle', () => {
   function winningState(): DiscussState {
@@ -319,7 +311,6 @@ describe('speech lifecycle', () => {
   });
 });
 
-// ─── applyExpel ────────────────────────────────────────────────────────────
 
 describe('applyExpel', () => {
   it('should not ban in epoch1 step1 respawn case', () => {
@@ -345,7 +336,6 @@ describe('applyExpel', () => {
   });
 });
 
-// ─── epoch summary / end / time fields ────────────────────────────────────
 
 describe('applyEpochSummary', () => {
   it('should set bid_release_step when recording summary', () => {
@@ -410,7 +400,6 @@ describe('applyEnd', () => {
   });
 });
 
-// ─── formatDateId / updated timestamps ────────────────────────────────────
 
 describe('formatDateId', () => {
   it('should produce yymmdd-HHmm format', () => {
@@ -424,7 +413,6 @@ describe('formatDateId', () => {
   });
 });
 
-// ─── helpers for adversarial tests ────────────────────────────────────────
 
 function placeBids(state: DiscussState, bids: Record<string, number>): DiscussState {
   let next = state;
@@ -464,7 +452,6 @@ function makeAgentMap(rows: Array<{ name: string; total_speaks: number; banned?:
   );
 }
 
-// ─── computeEffectiveBids ──────────────────────────────────────────────────
 
 function makeAgents(speaks: Record<string, number>): Record<string, import('../types.js').AgentState> {
   return Object.fromEntries(
@@ -480,12 +467,10 @@ describe('computeEffectiveBids', () => {
     const agents = makeAgents({ a: 0, b: 0, c: 0, d: 0 });
     const bids = { a: 80, b: 60, c: 70, d: 50 };
     const result = computeEffectiveBids(bids, agents, null);
-    // avg=0, my=0, imbalance=0; no recency -> effective = raw
     expect(result).toEqual(bids);
   });
 
   it('should penalize agent with more speaks than average', () => {
-    // avg = (2+0+1+1)/4 = 1; a has 2 speaks -> imbalance = 25 * (1 - 2) = -25
     const agents = makeAgents({ a: 2, b: 0, c: 1, d: 1 });
     const bids = { a: 80, b: 60, c: 60, d: 60 };
     const result = computeEffectiveBids(bids, agents, null);
@@ -493,7 +478,6 @@ describe('computeEffectiveBids', () => {
   });
 
   it('should boost agent with fewer speaks than average', () => {
-    // avg = (0+2+1+1)/4 = 1; a has 0 speaks -> imbalance = 25 * (1 - 0) = +25
     const agents = makeAgents({ a: 0, b: 2, c: 1, d: 1 });
     const bids = { a: 60, b: 80, c: 80, d: 80 };
     const result = computeEffectiveBids(bids, agents, null);
@@ -501,7 +485,6 @@ describe('computeEffectiveBids', () => {
   });
 
   it('should apply recency penalty to last speaker', () => {
-    // N=4, P_RECENCY = 50/4 = 12.5; all equal speaks -> only recency affects 'a'
     const agents = makeAgents({ a: 1, b: 1, c: 1, d: 1 });
     const bids = { a: 80, b: 80, c: 80, d: 80 };
     const result = computeEffectiveBids(bids, agents, 'a');
@@ -510,7 +493,6 @@ describe('computeEffectiveBids', () => {
   });
 
   it('should combine imbalance penalty and recency penalty', () => {
-    // avg = (2+0+1+1)/4 = 1; a has 2 speaks, just spoke -> -25 (imbalance) -12.5 (recency) = 42.5
     const agents = makeAgents({ a: 2, b: 0, c: 1, d: 1 });
     const bids = { a: 80, b: 60, c: 60, d: 60 };
     const result = computeEffectiveBids(bids, agents, 'a');
@@ -518,17 +500,14 @@ describe('computeEffectiveBids', () => {
   });
 
   it('should scale P_BASE and P_RECENCY with N=2', () => {
-    // N=2, P_BASE=50, P_RECENCY=25
     const agents = makeAgents({ a: 2, b: 0 });
     const bids = { a: 80, b: 60 };
-    // avg=1, a: -50*(1) = -50 -> 30; b: +50*(1) = +50 -> 110
     const result = computeEffectiveBids(bids, agents, null);
     expect(result['a']).toBeCloseTo(30);
     expect(result['b']).toBeCloseTo(110);
   });
 
   it('should scale P_BASE and P_RECENCY with N=8', () => {
-    // N=8, P_BASE=12.5, P_RECENCY=6.25; all equal speaks -> no imbalance
     const names = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
     const agents = makeAgents(Object.fromEntries(names.map((n) => [n, 1])));
     const bids = Object.fromEntries(names.map((n) => [n, 50]));
@@ -547,31 +526,24 @@ describe('computeEffectiveBids', () => {
     const agents = makeAgents({ a: 0, b: 0 });
     const bids = { a: 70, b: 70 };
     const result = computeEffectiveBids(bids, agents, null);
-    // no last speaker, no recency penalty; all equal speaks, no imbalance
     expect(result['a']).toBeCloseTo(70);
     expect(result['b']).toBeCloseTo(70);
   });
 });
 
-// ─── resolveWinner with decay ─────────────────────────────────────────────
 
 describe('resolveWinner with decay', () => {
   it('should flip winner when decay gives lower-bidder a higher effective score', () => {
-    // alice bids 32 with 0 speaks; bob bids 35 with 2 speaks; N=2, avg=1
-    // alice effective: 32 + 50*(1-0) = 82; bob effective: 35 + 50*(1-2) = -15
     const state = startSession();
     state.agents.alice.total_speaks = 0;
     state.agents.bob.total_speaks = 2;
     const s1 = unwrapOk(applyBid(state, 'alice', 32, NOW));
     const s2 = unwrapOk(applyBid(s1, 'bob', 35, NOW));
     const [, decision] = unwrapOk(resolveWinner(s2, NOW));
-    // alice should win despite lower raw bid (higher effective score)
     expect('winner' in decision && decision.winner).toBe('alice');
   });
 
   it('should use raw score for threshold filter, not effective score', () => {
-    // bob bids 5 (below threshold=30), alice bids 40; bob has 0 speaks (boost)
-    // bob effective would be high, but raw=5 < threshold -> not in primary pool
     const state = startSession();
     state.agents.alice.total_speaks = 2;
     state.agents.bob.total_speaks = 0;
@@ -579,13 +551,11 @@ describe('resolveWinner with decay', () => {
     const s1 = unwrapOk(applyBid(state, 'alice', 40, NOW));
     const s2 = unwrapOk(applyBid(s1, 'bob', 5, NOW));
     const [, decision] = unwrapOk(resolveWinner(s2, NOW));
-    // alice should win because bob's raw bid is below threshold
     expect('winner' in decision && decision.winner).toBe('alice');
   });
 
   it('should include effective_bids in cold-start transcript entry for audit', () => {
     const state = startSession();
-    // both below threshold -> cold start
     const s1 = unwrapOk(applyBid(state, 'alice', 5, NOW));
     const s2 = unwrapOk(applyBid(s1, 'bob', 10, NOW));
     const [nextState, decision] = unwrapOk(resolveWinner(s2, NOW));
@@ -610,14 +580,12 @@ describe('resolveWinner with decay', () => {
 
     const [nextState, decision] = unwrapOk(resolveWinner(state2, NOW));
     expect('no_winner' in decision && decision.reason).toBe('epoch_transition');
-    // find the bids entry appended before epoch transition
     const bidsEntry = nextState.transcript.find((e) => e.type === 'bids');
     assertBidsEntry(bidsEntry);
     expect(bidsEntry.effective_bids).toBeDefined();
   });
 });
 
-// ─── adversarial: computeEffectiveBids ───────────────────────────────────────
 
 describe('computeEffectiveBids (adversarial)', () => {
   it('should return raw score for single active agent when not last speaker', () => {
@@ -696,7 +664,6 @@ describe('computeEffectiveBids (adversarial)', () => {
   });
 });
 
-// ─── adversarial: findLastSpeaker ────────────────────────────────────────────
 
 describe('findLastSpeaker (adversarial)', () => {
   it('should return null for empty transcript', () => {
@@ -736,7 +703,6 @@ describe('findLastSpeaker (adversarial)', () => {
   });
 });
 
-// ─── adversarial: resolveWinner with decay ───────────────────────────────────
 
 describe('resolveWinner with decay (adversarial)', () => {
   it('should flip winner order when decay changes effective bids', () => {

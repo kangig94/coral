@@ -1,6 +1,3 @@
-/**
- * waitForCondition tests - async file polling with real tmpdir.
- */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';

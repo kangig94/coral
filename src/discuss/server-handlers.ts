@@ -1,7 +1,3 @@
-/**
- * Coral Discuss MCP server handlers.
- */
-
 import { textResult, jsonResult, type McpResult } from '../shared/mcp-utils.js';
 import type {
   EndReason,
@@ -88,18 +84,14 @@ async function loadState(store: SessionStore, sessionDir: string): Promise<Discu
 }
 
 function endContent(reason: Exclude<EndReason, 'already_ended'>): string {
-  switch (reason) {
-    case 'all_below_threshold':
-      return 'All participants bid below the threshold. Ending discussion.';
-    case 'max_epochs_reached':
-      return 'Maximum epochs reached. Ending discussion.';
-    case 'all_blocked':
-      return 'Discussion is structurally deadlocked. Agents who want to speak have no quota, and agents with quota do not want to speak.';
-    case 'no_participants':
-      return 'No eligible agents remaining. Ending discussion.';
-    default:
-      return 'Ending discussion.';
-  }
+  const reasons: Record<Exclude<EndReason, 'already_ended'>, string> = {
+    all_below_threshold: 'All participants bid below the threshold. Ending discussion.',
+    max_epochs_reached: 'Maximum epochs reached. Ending discussion.',
+    all_blocked: 'Discussion is structurally deadlocked. Agents who want to speak have no quota, and agents with quota do not want to speak.',
+    no_participants: 'No eligible agents remaining. Ending discussion.',
+  };
+
+  return reasons[reason];
 }
 
 export const tools = [
@@ -159,6 +151,24 @@ export const tools = [
           maxItems: 10,
         },
         n: { type: 'integer', minimum: 1, maximum: 8, description: 'Seed count (_1_seed)' },
+        demographics: {
+          type: 'object',
+          description: 'Domain-aware demographics for persona origins (_1_seed)',
+          properties: {
+            origin_weights: {
+              type: 'object',
+              description: 'Origin weights, e.g. {"US": 0.3, "DE": 0.2} or {"academic": 0.5, "industry": 0.5}',
+              additionalProperties: { type: 'number', exclusiveMinimum: 0 },
+            },
+            outlier_ratio: {
+              type: 'number',
+              minimum: 0,
+              maximum: 0.5,
+              description: 'Fraction of outlier personas (default: 0.2)',
+            },
+          },
+          required: ['origin_weights'],
+        },
         seed: { type: ['integer', 'null'], description: 'Seed value (_1_seed)' },
         session: { type: 'string', description: 'Session ID' },
         timeout_seconds: { type: 'integer', minimum: 1, maximum: 120, description: '_3_step timeout (seconds)' },

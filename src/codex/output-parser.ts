@@ -5,7 +5,7 @@
 
 export interface ParsedCodexOutput {
   response: string;
-  threadId: string | null;
+  sessionId: string | null;
   errors: string[];
   warnings: string[];
 }
@@ -25,7 +25,7 @@ export function parseCodexJsonl(output: string): ParsedCodexOutput {
   const messages: string[] = [];
   const errors: string[] = [];
   const warnings: string[] = [];
-  let threadId: string | null = null;
+  let sessionId: string | null = null;
   const seenErrors = new Set<string>();
 
   for (const line of lines) {
@@ -39,7 +39,7 @@ export function parseCodexJsonl(output: string): ParsedCodexOutput {
     if (!isRecord(event)) continue;
 
     if (event.type === 'thread.started' && typeof event.thread_id === 'string') {
-      threadId = event.thread_id;
+      sessionId = event.thread_id; // CLI boundary: map Codex thread_id to our sessionId
       continue;
     }
 
@@ -73,7 +73,7 @@ export function parseCodexJsonl(output: string): ParsedCodexOutput {
 
   return {
     response: messages.join('\n'),
-    threadId,
+    sessionId,
     errors,
     warnings,
   };

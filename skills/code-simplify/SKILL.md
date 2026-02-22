@@ -27,7 +27,7 @@ Strip the `--codex` flag before passing the prompt to the execution path.
 3. **Read standards**: Check the project's CLAUDE.md for coding conventions
 4. **Apply simplifications**: Follow the protocol's `<Investigation_Protocol>` steps
 5. **Self-review**: Re-read each change and confirm it is purely structural with zero logic alteration. If a change could affect behavior under any edge case, revert it. If the git diff is not excessively large and appears to be simplification work, use it as a reference for before/after comparison
-6. **Verify**: Run build and tests to confirm no regressions. Note: uncommitted changes beyond simplification are expected — the user may have pending work that was never committed
+6. **Verify**: Run build and tests to confirm no regressions. Note: uncommitted changes beyond simplification are expected - the user may have pending work that was never committed
 7. **Report**: Summarize changes applied and any skipped opportunities
 
 ## Codex Delegation
@@ -35,7 +35,7 @@ Strip the `--codex` flag before passing the prompt to the execution path.
 1. **Load protocols**: Read `agents/code-simplifier.md` for the simplification protocol, and `agents/codex-proxy.md` for the Codex prompt template. Use the ralph role's prompt template (`### Role: ralph` section).
 2. **Gather context**: Collect scope, file paths, and the code-simplifier protocol content
 3. **Call Codex**: Use `codex({ op: "exec", ... })` with the code-simplifier protocol as task context. Pass `working_directory` and `reasoning_effort: "xhigh"`.
-4. **Verify**: Read all changed files, compare against the protocol's `<Success_Criteria>`. Confirm each change is purely structural with zero logic alteration — revert any that could affect behavior under any edge case. If the git diff is not excessively large, use it as a reference for before/after comparison
+4. **Verify**: Read all changed files, compare against the protocol's `<Success_Criteria>`. Confirm each change is purely structural with zero logic alteration - revert any that could affect behavior under any edge case. If the git diff is not excessively large, use it as a reference for before/after comparison
 5. **Fix discrepancies**: If Codex violated the protocol (behavior changes, scope creep), fix directly
 6. **Post-implementation sequence**: Lint → Build → Test
 

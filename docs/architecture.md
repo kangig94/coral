@@ -106,11 +106,11 @@ User → /coral:discuss "AI ethics in healthcare"
 
 ```
 User → codex({ op: "exec", name="review", prompt="analyze auth.ts" })
-     → Codex execution → thread_id acquired (thread.started event)
+     → Codex execution → session ID acquired (thread.started event)
      → SessionManager writes ~/.claude/coral/sessions/<project-hash>/review.json (atomic write)
      → codex({ op: "exec", session="review", prompt="follow-up question" })
-     → SessionManager looks up codexThreadId by name
-     → codex exec resume THREAD_ID executed
+     → SessionManager looks up sessionId by name
+     → codex exec resume SESSION_ID executed
      → lastUsedAt updated
 ```
 

@@ -6,7 +6,7 @@ Detailed description of the TypeScript modules across both MCP servers.
 
 ### src/types.ts - Shared Type Definitions
 
-Defines `CodexExecResult` (execution result: response, thread ID, model, duration, exit code, errors, warnings), `SessionEntry` (per-session persistence: name, thread ID, model, timestamps, working directory), and `CodexThreadEvent` / `CodexThreadItemDetails` (union types for Codex CLI JSONL event stream, based on `codex-rs/exec/src/exec_events.rs`). Referenced by all codex modules. See `src/types.ts`.
+Defines `CodexExecResult` (execution result: response, session ID, model, duration, exit code, errors, warnings), `SessionEntry` (per-session persistence: name, session ID, model, timestamps, working directory), and `CodexThreadEvent` / `CodexThreadItemDetails` (union types for Codex CLI JSONL event stream, based on `codex-rs/exec/src/exec_events.rs`). Referenced by all codex modules. See `src/types.ts`.
 
 ---
 
@@ -19,7 +19,7 @@ Defines a discriminated-union Zod schema for the unified `codex` MCP tool. Runti
 | `identPattern` | Regex for model/session names - prevents flag injection |
 | `sessionNameSchema` | Session name validation |
 | `promptSchema` | Non-empty prompt string |
-| `sessionRefSchema` | Session name or thread ID reference |
+| `sessionRefSchema` | Session name or session ID reference |
 | `cwdSchema` | Optional working directory |
 | `reasoningEffortSchema` | Optional enum: `low`, `medium`, `high`, `xhigh` |
 | `backgroundSchema` | Boolean, default `false` |
@@ -36,11 +36,11 @@ Checks whether Codex CLI is installed. **Checks once per server lifetime** and c
 
 ### src/codex/output-parser.ts - JSONL Output Parsing
 
-Extracts text and thread ID from Codex CLI `--json` mode JSONL output. **Single-pass pure function** - no state, no side effects.
+Extracts text and session ID from Codex CLI `--json` mode JSONL output. **Single-pass pure function** - no state, no side effects.
 
 **Handled event types:**
 
-1. **`thread.started`** - Extract `thread_id`
+1. **`thread.started`** - Extract session ID (mapped from CLI's `thread_id`)
 2. **`item.completed` + `agent_message`** - Extract `text` (multiple joined with `\n`) → `response`
 3. **`item.completed` + `error`** - Collect `message` into `warnings`
 4. **`error`** - Collect `message` into `errors` (deduplicated via Set)

@@ -24,7 +24,7 @@ tools: Read, Grep, Glob, Task, SendMessage, TeamCreate, TeamDelete, mcp__plugin_
   <Protocol>
     ## Setup
 
-    1. Call `discuss_lead({ op: '_1_seed', controversy_axes, n })` to generate diverse persona assignments.
+    1. Call `discuss_lead({ op: '_1_seed', controversy_axes, n })` to generate diverse persona assignments. Optionally include `demographics` when origin-based diversity is relevant to the topic.
     2. Call `discuss_lead({ op: '_2_create', topic, agents })` → response contains `session_id`, `team_name`.
     3. Create team `coral-dc-{session_id}` and spawn teammates with `name` as `dc-{agent_name}`. Include `session_id` and persona in each spawn prompt.
 
@@ -41,7 +41,7 @@ tools: Read, Grep, Glob, Task, SendMessage, TeamCreate, TeamDelete, mcp__plugin_
        - **status=ended, phase=ended**: session already ended. Go to Synthesis below.
 
     4. Speech delivery (3-stage escalation, total 90s):
-       - Stage 1: call `discuss_lead({ op: '_3_step', session, timeout_seconds: 45, force_stop: false })` — silent wait.
+       - Stage 1: call `discuss_lead({ op: '_3_step', session, timeout_seconds: 45, force_stop: false })` - silent wait.
        - Stage 2: if response has **phase=speech_pending**, `SendMessage` the winner "15 seconds remaining.", then call `discuss_lead({ op: '_3_step', session, timeout_seconds: 15, force_stop: false })`.
        - Stage 3: if response has **phase=speech_pending**, `SendMessage` the winner "No wrapping up. Speak immediately.", then call `discuss_lead({ op: '_3_step', session, timeout_seconds: 30, force_stop: true })`.
        - **phase=speech_done**: response contains `speaker` and `content`. Winner spoke. Return to step 1.
@@ -69,16 +69,16 @@ tools: Read, Grep, Glob, Task, SendMessage, TeamCreate, TeamDelete, mcp__plugin_
     `discuss_lead({ op: '_3_step' })` response phases:
     - **status=setup**: waiting for setup completion.
     - **status=bidding**: bid collection, winner resolution, expulsion, epoch transition, or termination.
-    - **status=speaking**: speech delivery — `speech_done`, `speech_pending`, or `speech_timeout`.
+    - **status=speaking**: speech delivery - `speech_done`, `speech_pending`, or `speech_timeout`.
     - **status=ended**: session terminated.
   </Output_Phase_Map>
   <Tool_Usage>
-    - `discuss_lead({ op: '_1_seed', controversy_axes, n })` — generate diverse persona assignments via k-DPP
-    - `discuss_lead({ op: '_2_create', topic, agents })` — initialize session
-    - `discuss_lead({ op: '_3_step', session, timeout_seconds, force_stop })` — advance session state (bid collect / speech wait)
-    - `discuss_lead({ op: '_4_transcript', session, mode })` — read transcript. `recent`: last 5 speeches in full + older as one-liners. `summary`: all speeches as one-liners. `full`: complete transcript.
-    - `discuss_lead({ op: '_5_epoch', session, summary })` — record epoch summary and release held agents
-    - `discuss_lead({ op: '_6_state', session })` — diagnostic only. Use when `_3_step` responses are insufficient
-    - `discuss_lead({ op: '_7_end', session, synthesis })` — end session with synthesis
+    - `discuss_lead({ op: '_1_seed', controversy_axes, n, demographics? })` - generate diverse persona assignments via k-DPP, optionally with origin demographics
+    - `discuss_lead({ op: '_2_create', topic, agents })` - initialize session
+    - `discuss_lead({ op: '_3_step', session, timeout_seconds, force_stop })` - advance session state (bid collect / speech wait)
+    - `discuss_lead({ op: '_4_transcript', session, mode })` - read transcript. `recent`: last 5 speeches in full + older as one-liners. `summary`: all speeches as one-liners. `full`: complete transcript.
+    - `discuss_lead({ op: '_5_epoch', session, summary })` - record epoch summary and release held agents
+    - `discuss_lead({ op: '_6_state', session })` - diagnostic only. Use when `_3_step` responses are insufficient
+    - `discuss_lead({ op: '_7_end', session, synthesis })` - end session with synthesis
   </Tool_Usage>
 </Agent_Prompt>

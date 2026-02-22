@@ -77,6 +77,14 @@ model: opus
          references or scan results reveal. E.g., an existing ARCHITECTURE.md that lacks the
          domain's recommended Architecture Sections, or an API doc missing auth requirements.
          Note each as an enhancement candidate with what to add.
+       - **Shallow sections**: in existing docs, flag sections that lack substance:
+         * ARCHITECTURE.md with file lists but no layer diagram or dependency rules
+         * DEV_GUIDE.md with command names but no exact runnable commands
+         * API docs listing endpoints without conventions or patterns
+         * Any section under 3 lines that covers a non-trivial topic
+         Mark each as an enhancement candidate with what to deepen.
+       - **Stale references**: cross-check doc paths (e.g., `src/old-module.ts`)
+         against actual directory structure. Flag mismatches for correction.
 
     ### 1e. Domain Identification
 
@@ -197,6 +205,12 @@ model: opus
          Model assignment: tier 0-1 = opus, tier 2-3 = sonnet. Never haiku.
 
       5. Docs merge: Skip if exists (default), or enhance if merge rule = "enhance".
+         5.5. Enhance mode (merge rule = "enhance"):
+            - Read the existing file FIRST before any edits.
+            - Match the existing tone and formatting (heading levels, table style, list style).
+            - Only append new sections - never rewrite, reorder, or rephrase existing content.
+            - Calibrate depth to match the surrounding document (if existing sections are 10 lines, new sections should be ~10 lines, not 50).
+            - Boundary check: if the plan says "add auth section to API doc", add ONLY the auth section. Do not expand other sections.
          - Universal: `docs/ARCHITECTURE.md`, `docs/DEV_GUIDE.md` (always)
          - Domain-specific: generate docs listed in the plan's Artifact Manifest
          - Architecture Sections: include domain-specific sections in ARCHITECTURE.md
@@ -226,6 +240,27 @@ model: opus
     ```
 
     Ralph returns: execution report (files created, skipped, errors).
+
+    ## Phase 3.5: Verify Artifacts
+
+    After ralph completes, spot-check generated artifacts against writing-guide standards.
+    Do NOT re-generate - flag issues for the report.
+
+    For each generated file, check category-specific criteria:
+
+    | Category | Check |
+    |----------|-------|
+    | Agents | `<Agent_Prompt>` XML structure present, required sections (Role, Success_Criteria, Constraints, Investigation_Protocol, Output_Format, Failure_Modes_To_Avoid), no `{placeholder}` text |
+    | Rules | `paths:` frontmatter for domain-specific rules, DO/DON'T table present |
+    | Docs | Real project paths (not `src/modules/`), layer diagram in ARCHITECTURE.md, exact commands in DEV_GUIDE.md |
+    | Quality agents (tier 3) | Rubric anchors present (10/7/4/1 scale), floor rule stated, evidence requirement stated |
+    | CLAUDE.md | Quality principle line before Workflow, build commands present, scope gate present |
+
+    **Remediation**: If any generated file fails its check, fix it directly (read → edit).
+    Do not re-spawn ralph for spot fixes.
+
+    **Evidence gate**: Phase 3.5 is complete when all generated files pass their category check
+    or have been remediated.
 
     ## Phase 4: Report
 
@@ -323,5 +358,7 @@ model: opus
     - Did I pass deterministic generation rules to ralph?
     - Did I report all created and skipped files?
     - Did I follow merge policy (never overwrite existing files)?
+    - Did I verify generated artifacts against writing-guide standards (Phase 3.5)?
+    - Did I remediate any files that failed verification?
   </Final_Checklist>
 </Agent_Prompt>

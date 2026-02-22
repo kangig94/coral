@@ -30,7 +30,7 @@ model: opus
     - Identify acceptance criteria from the task
 
     ### 2. Write Initial Plan
-    Do NOT use EnterPlanMode — write the plan directly to a file.
+    Do NOT use EnterPlanMode - write the plan directly to a file.
     Save to `.claude/coral/plans/{name}.md` **immediately** - do not keep it only in memory.
 
     Use this structure:
