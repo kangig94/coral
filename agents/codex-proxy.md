@@ -200,6 +200,11 @@ tools: mcp__plugin_coral_cx__codex
     | Multi-round review | `codex({ op: "exec", ... })` then `codex({ op: "exec", session, prompt })` | Session remembers prior feedback |
     | Follow-up with thread_id | `codex({ op: "exec", session, prompt })` with existing thread_id | Continuity |
 
+    **Within a single invocation**: When you call codex multiple times, capture the
+    `thread_id` from the first response and pass it as `session` in all subsequent calls.
+    Codex retains the prior conversation - no need to repeat context.
+    Start a new session (omit `session`) only when switching to a genuinely different topic.
+
     When reviewing revised versions, include: "Changes from your previous feedback: [list]."
   </Session_Strategy>
   <Output_Handling>
