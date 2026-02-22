@@ -204,275 +204,148 @@ Session IDs follow the format `yymmdd-HHmm-xxxx` (compact timestamp + 4-char ran
 
 ---
 
-## discuss
+## discuss (agent tool)
 
-Unified discussion session tool. Select behavior with the required `op` field.
+Agent-facing MCP tool for participant actions only:
 
-### Input Schema (Envelope)
+| Operation | Input |
+|---|---|
+| `bid` | `session`, `agent_name`, `score` (0-100) |
+| `speak` | `session`, `agent_name`, `content` |
+
+`bid` returns one of:
+
+- `{ action: 'speak' }`
+- `{ action: 'listen'; speaker; content }` (includes epoch summaries with `speaker: null`)
+- `{ action: 'session_ended'; reason; content }`
+
+`speak` records speech and returns the updated status/step on success.
+
+## discuss_lead (moderator tool)
+
+Moderator-only MCP tool for control and lifecycle:
+
+| Operation | Input |
+|---|---|
+| `_1_seed` | `controversy_axes`, `n`, optional `seed` (see [Persona Seeding Algorithm](#persona-seeding-algorithm-_1_seed)) |
+| `_2_create` | `topic`, `agents` |
+| `_3_step` | `session`, `timeout_seconds` (1-120), optional `force_stop` |
+| `_4_transcript` | `session`, `mode`, optional `last_n` |
+| `_5_epoch` | `session`, `summary` |
+| `_6_state` | `session` |
+| `_7_end` | `session`, optional `synthesis`, optional `force`, optional `reason` |
+
+`_3_step` is a mode-specific block:
+
+- setup: moves setup → bidding, returns `{ status: 'setup', phase: 'not_ready' }` if not ready.
+- bidding: runs hold/release cycle and returns one of:
+  - `{ status: 'bidding', phase: 'bidding', pending_bidders, hold_count }`
+  - `{ status: 'bidding', phase: 'resolved', winner }`
+  - `{ status: 'bidding', phase: 'epoch_transition', epoch }`
+- `{ status: 'bidding', phase: 'ended', reason }` (`all_below_threshold`, `max_epochs_reached`, `all_blocked`, `no_participants`)
+- `{ status: 'bidding', phase: 'expelled', agents, hint }`
+- speaking: waits for speech or auto process:
+  - `{ status: 'speaking', phase: 'speech_done', speaker, content }`
+  - `{ status: 'speaking', phase: 'speech_pending', elapsed }`
+  - `{ status: 'speaking', phase: 'speech_timeout', speaker }`
+  - `{ status: 'ended', phase: 'ended', reason }`
+
+`_7_end` finalizes sessions. On already-ended sessions, it records a synthesis if provided and no-ops otherwise.
+
+---
+
+## Persona Seeding Algorithm (`_1_seed`)
+
+`_1_seed` generates maximally diverse persona position assignments using **k-DPP (Determinantal Point Process)** sampling. Reference: Kulesza & Taskar (2012), "Determinantal Point Processes for Machine Learning".
+
+### Input
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `op` | string | Yes | One of: `create`, `bid`, `wait`, `speak`, `transcript`, `state`, `end`, `epoch_summary` |
+| `controversy_axes` | array | Yes | 1–10 axes, each with 1–10 unique positions. Axis names must be unique. |
+| `n` | integer | Yes | Number of persona assignments to generate (1–8) |
+| `seed` | integer \| null | No | RNG seed for reproducibility. `null` = random seed. |
 
-### operation: create
+### Pipeline
 
-Initialize a new discussion session with agent personas.
+1. **Pool generation**: Cartesian product of all axis positions. Each element is a position tuple (one position per axis). Pool size = product of all axis sizes.
 
-#### Input Schema
+2. **Validation**:
+   - `pool_size > 256` → error `pool_too_large` (hint: reduce axes or positions)
+   - `pool_size = 1` and `n > 1` → error `pool_degenerate` (hint: all axes have single position)
 
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `topic` | string | Yes | Discussion topic |
-| `agents` | array | Yes | 2–8 agents, each with `name` (ASCII identifier) and `persona` (text) |
-| `quota_per_epoch` | integer | No | Max speeches per agent per epoch (default: 3, max: 10) |
-| `recent_turns` | integer | No | Recent turns shown in transcript (default: 5, max: 20) |
+3. **RNG**: mulberry32 PRNG seeded with the provided or auto-generated seed. Deterministic — same seed always produces the same assignments.
 
-#### Output (JSON)
+4. **Selection** (uniqueCount = min(n, pool_size)):
+   - `uniqueCount = 0` → empty
+   - `uniqueCount = 1` → uniform random pick
+   - `uniqueCount = pool_size` → take all (no sampling needed)
+   - Otherwise → **k-DPP sampling**:
+     - **σ** = √(axes_count / 2) — Gaussian RBF bandwidth
+     - **Kernel**: L[i][j] = exp(-hamming(i,j)² / 2σ²) — similarity matrix over pool
+     - **Eigendecompose**: Jacobi rotation on the symmetric kernel
+     - **Phase A**: ESP (elementary symmetric polynomial) backward sampling selects k eigenvectors
+     - **Phase B**: Sequential item sampling from selected eigenvector subspace with Gram-Schmidt orthogonalization
+
+5. **Reuse** (when `n > pool_size`): Extra slots assigned by largest Hamming distance from the selected set, cycling through ranked reuse order. Each reused assignment carries `shared_position_with: <source_slot_index>`.
+
+6. **Tone assignment**: 2×2×2 = 8 combinations of `{formality, evidence, pace}` shuffled via seeded RNG and assigned cyclically:
+   - `formality`: `formal` | `conversational`
+   - `evidence`: `data-driven` | `narrative`
+   - `pace`: `concise` | `detailed`
+
+### Output
 
 ```json
 {
-  "session_id": "260221-1430-a1b2",
-  "session_dir": "260221-1430-a1b2-ai-ethics",
-  "team_name": "coral-dc-260221-1430-a1b2",
-  "agents": ["alice", "bob", "charlie"],
-  "topic": "AI ethics in healthcare",
-  "status": "setup"
-}
-```
-
-### op: bid
-
-Submit a speaking desire score 0–100 (higher = stronger desire to speak).
-
-#### Input Schema
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `session` | string | Yes | Session ID |
-| `agent_name` | string | Yes | Agent name |
-| `score` | integer | Yes | Desire score 0–100 |
-
-#### Output (JSON)
-
-```json
-{
-  "accepted": true,
-  "pending_bidders": ["charlie"]
-}
-```
-
-### op: wait
-
-Block until a condition is fulfilled or timeout expires. This is the primary coordination mechanism and replaces manual polling of `discuss({ op: "state", ... })`.
-
-#### Input Schema
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `session` | string | Yes | Session ID |
-| `condition` | string | Yes | `all_bids`, `speech_delivered`, or `action_needed` |
-| `timeout_seconds` | number | Yes | Max wait (limits: all_bids=60, speech_delivered=120, action_needed=180) |
-| `agent_name` | string | Conditional | Required for `action_needed` condition |
-
-#### Conditions
-
-| Condition | Blocks Until | Used By |
-|---|---|---|
-| `all_bids` | All agents have submitted bids. Auto-resolves winner. | discuss-lead |
-| `speech_delivered` | Current speaker has called `discuss({ op: "speak", ... })` | discuss-lead |
-| `action_needed` | This agent has an action to perform (bid/speak) | discussant |
-
-#### Output - `all_bids` (auto-resolve)
-
-Returns one of 4 result shapes:
-
-```json
-{ "fulfilled": true, "winner": "alice", "resolve_type": "normal", "step": 3 }
-{ "fulfilled": true, "no_winner": true, "step": 3, "reason": "epoch_transition", "new_epoch": true, "epoch": 2 }
-{ "fulfilled": true, "no_winner": true, "step": 3, "reason": "all_below_threshold" }
-```
-
-#### Output - `action_needed`
-
-```json
-{ "fulfilled": true, "action": "bid", "epoch": 1, "your_speaks": 2 }
-{ "fulfilled": true, "action": "speak", "epoch": 1, "your_speaks": 1 }
-{ "fulfilled": true, "action": "session_ended", "epoch": 2, "your_speaks": 4 }
-```
-
-#### Output - timeout
-
-```json
-{ "fulfilled": false, "elapsed_ms": 60000 }
-```
-
-### op: speak
-
-Record a speech. Only allowed when the calling agent is the current speaker.
-
-#### Input Schema
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `session` | string | Yes | Session ID |
-| `agent_name` | string | Yes | Speaking agent name (must match current_speaker) |
-| `content` | string | Yes | Speech content |
-
-#### Output (JSON)
-
-```json
-{
-  "recorded": true,
-  "step": 3,
-  "quota_remaining": 2
-}
-```
-
-### op: transcript
-
-Read the discussion transcript. Three modes: `recent` (default, last N entries), `full` (restricted: current speaker or ended session), `summary` (epoch-level overview).
-
-#### Input Schema
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `session` | string | Yes | Session ID |
-| `agent_name` | string | No | Caller agent name (required for `full` mode unless session ended) |
-| `mode` | string | No | `full`, `recent`, or `summary` (default: `recent`) |
-| `last_n` | integer | No | Override `recent_turns` setting (1–50) |
-
-#### Output
-
-Returns formatted markdown transcript text.
-
-### op: state
-
-Query current session state. Bid scores are NOT exposed; they are only visible via `discuss({ op: "wait", condition: "all_bids", ... })` auto-resolve results.
-
-#### Input Schema
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `session` | string | Yes | Session ID |
-
-#### Output (JSON)
-
-```json
-{
-  "session_id": "260221-1430-a1b2",
-  "status": "bidding",
-  "step": 5,
-  "epoch": 1,
-  "current_speaker": null,
-  "agents": {
-    "alice": { "quota_remaining": 2, "total_speaks": 1 },
-    "bob": { "quota_remaining": 3, "total_speaks": 0 }
+  "ok": true,
+  "value": {
+    "seed_used": 3141592653,
+    "sigma_used": 1.0,
+    "pool_size": 12,
+    "assignments": [
+      {
+        "positions": { "stance": "pro", "priority": "cost" },
+        "tone": { "formality": "formal", "evidence": "data-driven", "pace": "concise" }
+      },
+      {
+        "positions": { "stance": "con", "priority": "quality" },
+        "tone": { "formality": "conversational", "evidence": "narrative", "pace": "detailed" },
+        "shared_position_with": 0
+      }
+    ]
   }
 }
 ```
 
-### op: end
-
-Finalize the discussion. Normal end includes an optional synthesis. Force-end requires a reason string (used for timeouts or errors).
-
-#### Input Schema
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `session` | string | Yes | Session ID |
-| `synthesis` | string | No | Conclusion/synthesis text |
-| `force` | boolean | No | Force-end during active speech (default: false) |
-| `reason` | string | Conditional | Required when `force=true` |
-
-#### Output (JSON)
-
-```json
-{
-  "ended": true,
-  "session_id": "260221-1430-a1b2",
-  "final_step": 12,
-  "total_speeches": 8
-}
-```
-
-### op: epoch_summary
-
-Append an epoch summary to the transcript. Teamlead-only. One summary per epoch, must match current epoch number.
-
-#### Input Schema
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `session` | string | Yes | Session ID |
-| `epoch` | integer | Yes | Epoch number (must match current epoch, min: 1) |
-| `summary` | string | Yes | Summary of the completed epoch |
-
-#### Output (JSON)
-
-```json
-{
-  "recorded": true,
-  "epoch": 1
-}
-```
-
----
-
-## discuss_persona_seed
-
-Generate diverse persona position assignments using k-DPP (Determinantal Point Process) sampling on controversy axes. Returns deterministic assignments with seed for reproducibility.
-
-### Algorithm
-
-1. Builds a Gaussian RBF kernel over the Cartesian product of all axis positions: `L[i][j] = exp(-hamming²/(2σ²))`, σ = √(dims/2)
-2. Samples k items exactly from the k-DPP distribution (Kulesza & Taskar 2012, Algorithm 1): ESP backward sampling + Gram-Schmidt sequential sampling
-3. Assigns tone independently via seeded shuffle of 8 TONE_AXES combinations: `{ formality, evidence, pace }`
-4. When n > pool_size (and pool > 1): additional slots reuse existing assignments with `shared_position_with` index
-
-Mathematical guarantee: identical position combinations have selection probability = 0 (determinant property).
-
-### Input Schema
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `controversy_axes` | array | Yes | Axes with positions. Axis names must be unique; positions within each axis must be unique. |
-| `controversy_axes[].axis` | string | Yes | Axis name (e.g., "regulation", "stance") |
-| `controversy_axes[].positions` | string[] | Yes | 1–10 positions for this axis |
-| `n` | integer | Yes | Number of persona assignments (1–8) |
-| `seed` | integer \| null | No | RNG seed for reproducibility. `null` = random (default) |
-
-**Pool size constraint**: The Cartesian product of all axis sizes must not exceed 256. Recommended: keep product ≤ 81 (e.g., 3 axes × 3 positions, or 4 axes × 2-3 positions).
-
-### Output (JSON)
-
-```json
-{
-  "seed_used": 42,
-  "sigma_used": 1.4142135623730951,
-  "pool_size": 8,
-  "assignments": [
-    {
-      "positions": { "stance": "pro", "regulation": "market-driven" },
-      "tone": { "formality": "formal", "evidence": "data-driven", "pace": "concise" }
-    },
-    {
-      "positions": { "stance": "con", "regulation": "market-driven" },
-      "tone": { "formality": "conversational", "evidence": "narrative", "pace": "detailed" },
-      "shared_position_with": 1
-    }
-  ]
-}
-```
-
-`seed_used` can be passed back as `seed` to reproduce identical assignments.
-`shared_position_with` is a 0-based index into `assignments` - present only when n > pool_size.
-
 ### Error Responses
 
-| Error | Cause | `detail` fields |
+| Error | Condition | Recovery |
 |---|---|---|
-| `pool_too_large` | Cartesian product > 256 | `actual_pool_size`, `max_pool_size: 256`, `hint: "Reduce axes or positions"` |
-| `pool_degenerate` | pool_size = 1 and n > 1 | `pool_size: 1`, `requested_n`, `hint: "All axes have single position"` |
+| `pool_too_large` | Cartesian product > 256 | Reduce positions on largest axis (trim to 2) or merge axes, retry |
+| `pool_degenerate` | Pool = 1, n > 1 | Add a second position to at least one axis, retry |
+
+### Moderator Setup Workflow
+
+The moderator (`discuss-lead`) uses `_1_seed` within a 3-phase setup:
+
+**Phase 1 — Controversy Analysis** (LLM inline, before `_1_seed` call):
+- Extract 3–4 controversy axes from the topic, each with 2–3 positions
+- **Pool budget**: keep product of all axis sizes ≤ 81 (e.g., 3×3×3×3 = 81). If product exceeds 81, trim the largest axis to 2 positions or merge axes. This is a recommended guideline — the hard limit is 256.
+- Assign agent names with `dc-` prefix (e.g., `dc-architect`)
+- Assign distinct `name_culture` per agent (e.g., Korean, Nigerian, Brazilian)
+- If debate topic: prepend `{ axis: "stance", positions: ["pro", "con"] }` as the first axis
+- Generate `n` persona briefs: 1–2 sentence background differentiation per slot
+
+**Phase 2 — DPP Seeding** (`_1_seed` MCP call):
+- Call `_1_seed({ controversy_axes, n, seed: null })`
+- Result: `assignments[i].positions` (axis → position map) + `assignments[i].tone` ({ formality, evidence, pace })
+- On `pool_too_large`: reduce positions on largest axis, retry
+- On `pool_degenerate`: add a second position to at least one axis, retry
+
+**Phase 3 — Merge & Spawn** (parallel persona generation):
+- For each slot, spawn `persona-generator` with: `role`, `topic`, `team_roles`, `name_culture`, `positions` (from assignments), `tone` (from assignments), `brief` (from Phase 1), `devil_advocate` (if stance imbalance), `shared_position_with` (if reused slot)
+- **Stance imbalance check**: if stance axis exists, count pro vs con. If imbalanced, set `devil_advocate: true` for one agent on overrepresented side.
 
 ---
 

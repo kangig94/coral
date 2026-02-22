@@ -23,8 +23,7 @@ const cwdSchema = z.string().optional();
 const reasoningEffortSchema = z
   .enum(['low', 'medium', 'high', 'xhigh'])
   .optional();
-const backgroundSchema = z.boolean().default(false);
-const bypassSandboxSchema = z.boolean().default(false);
+const boolDefaultFalse = z.boolean().default(false);
 
 const execShape = z.object({
   op: z.literal('exec'),
@@ -34,8 +33,8 @@ const execShape = z.object({
   model: modelSchema,
   working_directory: cwdSchema,
   reasoning_effort: reasoningEffortSchema,
-  background: backgroundSchema,
-  bypass: bypassSandboxSchema,
+  background: boolDefaultFalse,
+  bypass: boolDefaultFalse,
 });
 
 const listShape = z.object({
@@ -50,8 +49,8 @@ const forkShape = z.object({
   model: modelSchema,
   working_directory: cwdSchema,
   reasoning_effort: reasoningEffortSchema,
-  background: backgroundSchema,
-  bypass: bypassSandboxSchema,
+  background: boolDefaultFalse,
+  bypass: boolDefaultFalse,
 });
 
 const abortShape = z.object({

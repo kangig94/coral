@@ -123,8 +123,12 @@ export class SessionStore {
   /** Resolve session directory from session_id prefix. Returns null if not found. */
   resolveDir(sessionId: string): string | null {
     if (!fs.existsSync(this.discussDir)) return null;
+
+    const exactPath = path.join(this.discussDir, sessionId);
+    if (fs.existsSync(exactPath)) return exactPath;
+
     const entries = fs.readdirSync(this.discussDir);
-    const match = entries.find((e) => e.startsWith(sessionId + '-') || e === sessionId);
+    const match = entries.find((e) => e.startsWith(`${sessionId}-`));
     return match ? path.join(this.discussDir, match) : null;
   }
 

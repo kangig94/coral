@@ -30,7 +30,7 @@ After ralph completes, verify these files exist. Missing files indicate protocol
 | Rules | `.claude/rules/{domain-specific}.md` | At least 1 per detected domain |
 | Agents | `.claude/agents/review-orchestrator.md` | Must exist |
 | Agents | `.claude/agents/code-critic.md` | Must exist |
-| Agents | `.claude/agents/TEMPLATE.md` | Must exist |
+| Template | `.claude/templates/AGENT.md` | Must exist |
 | Agents | `.claude/agents/{domain-specific}.md` | Per plan |
 | KB | `.claude/coral/kb/` | Directory must exist |
 | Git | `.gitignore` contains Coral block | Must contain `# Coral` |

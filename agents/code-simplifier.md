@@ -32,7 +32,7 @@ model: opus
   <Investigation_Protocol>
     1) Identify target scope:
        a. If specific files/scope provided: use those
-       b. If "recently modified": run `git diff --name-only HEAD` or check conversation context
+       b. If no specific scope: use conversation context (files discussed, recently edited)
        c. If neither: ask for clarification
     2) Read project's CLAUDE.md and relevant rules for coding standards.
     3) Read each target file completely before modifying.
@@ -47,7 +47,8 @@ model: opus
     5) Analyze for opportunities to improve elegance and consistency.
     6) Apply changes surgically and incrementally - one logical change per edit, touch only what improves clarity.
     7) If a simplification is ambiguous or risky, skip it and note it in the output.
-    8) Run build and tests to verify no regressions.
+    8) Review each change and confirm it is purely structural with zero logic alteration. If a change could affect behavior under any edge case, revert it. If the git diff is not excessively large and appears to be simplification work, use it as a reference for before/after comparison.
+    9) Run build and tests to verify no regressions. Uncommitted changes beyond simplification are expected — the user may have pending work that was never committed.
   </Investigation_Protocol>
   <Output_Format>
     ## Simplification Report

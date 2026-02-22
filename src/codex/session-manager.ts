@@ -8,6 +8,10 @@ function projectHash(dir: string): string {
   return createHash('sha256').update(resolve(dir)).digest('hex').slice(0, 12);
 }
 
+function isNoEntryError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
 export class SessionManager {
   private readonly sessionDir: string;
 
@@ -24,13 +28,13 @@ export class SessionManager {
     try {
       const data = readFileSync(this.sessionPath(name), 'utf-8');
       return JSON.parse(data) as SessionEntry;
-    } catch (err: unknown) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
-      if (err instanceof SyntaxError) {
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) return null;
+      if (error instanceof SyntaxError) {
         process.stderr.write(`Warning: Corrupt session file ${name}.json, skipping\n`);
         return null;
       }
-      throw err;
+      throw error;
     }
   }
 
@@ -61,7 +65,7 @@ export class SessionManager {
 
   list(): SessionEntry[] {
     try {
-      const files = readdirSync(this.sessionDir).filter((f) => f.endsWith('.json') && !f.endsWith('.tmp'));
+      const files = readdirSync(this.sessionDir).filter((f) => f.endsWith('.json'));
       return files
         .map((f) => this.readSession(f.slice(0, -5)))
         .filter((entry): entry is SessionEntry => entry !== null);

@@ -45,12 +45,13 @@ The default threshold is **50**. Configurable via the `CORAL_DISCUSS_BID_THRESHO
 
 ### 1. Setup
 
-The moderator (discuss-lead) orchestrates the setup:
+The moderator (discuss-lead) orchestrates a 3-phase setup. See [Persona Seeding Algorithm](mcp-tools.md#persona-seeding-algorithm-_1_seed) for full algorithm details.
 
-1. **Topic Analysis**: Determines 3–8 roles needed (e.g., architect, economist, critic) with diversity hints
-2. **Persona Generation**: Spawns coral:persona-generator agents in parallel. Each creates a unique character with name, expertise, perspective, and communication style
-3. **Session Creation**: Calls `discuss({ op: "create", ... })` to initialize the backend state machine
-4. **Team Spawn**: Creates an Agent Team and spawns discussant agents, each loaded with their persona
+1. **Controversy Analysis** (LLM inline): Extract 3–4 controversy axes from the topic (each with 2–3 positions, pool budget ≤ 81). Assign `dc-`-prefixed agent names, distinct `name_culture` per agent, and generate persona briefs. For debate topics, prepend a stance axis.
+2. **DPP Seeding**: Call `discuss_lead({ op: "_1_seed", controversy_axes, n })` → k-DPP sampling returns maximally diverse position + tone assignments. Handle `pool_too_large` / `pool_degenerate` errors by adjusting axes.
+3. **Persona Generation**: Spawn `persona-generator` agents in parallel, each receiving: role, positions (from DPP), tone, brief, and optional `devil_advocate` flag (stance imbalance correction).
+4. **Session Creation**: Call `discuss_lead({ op: "_2_create", topic, agents })` → get `session_id`
+5. **Team Spawn**: Create Agent Team `coral-dc-{session_id}`, spawn `discussant` teammates with persona text
 
 ### 2. Bidding Round
 
@@ -311,9 +312,9 @@ Both values are stored per-session at creation time (not re-read from env mid-se
 | Default bid threshold | 50 | Configurable via `CORAL_DISCUSS_BID_THRESHOLD` (1–100) |
 | Default max epochs | 2 | Configurable via `CORAL_DISCUSS_MAX_EPOCHS` (1–10) |
 | Session status on create | `setup` | Transitions to `bidding` when moderator calls `discuss({ op: "wait", condition: "all_bids", ... })` |
-| Default quota | 3 per epoch | Configurable via `quota_per_epoch` |
+| Default quota | 3 per epoch | Configurable via `CORAL_DISCUSS_QUOTA_PER_EPOCH` (1–10) |
 | Max agents | 8 | Min: 2 |
-| Recent turns | 5 | Configurable via `recent_turns` |
+| Recent turns | 5 | Default for `_4_transcript` recent mode (override with `last_n`) |
 | Cold start | Auto-pick | Server picks fairest agent to break the ice |
 | Fallback | One-time per epoch | Quota-exhausted agents get one emergency turn |
 | Epoch transition | Auto (no vote) | Server triggers when allExhausted + epoch < max_epochs |

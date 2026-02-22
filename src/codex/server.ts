@@ -43,17 +43,12 @@ function shutdown() {
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
-let sessionManager: SessionManager;
+const sessionManager = new SessionManager(process.cwd());
 
-async function main() {
-  sessionManager = new SessionManager(process.cwd());
-
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+const transport = new StdioServerTransport();
+server.connect(transport).then(() => {
   process.stderr.write('Coral MCP Server running on stdio\n');
-}
-
-main().catch((error) => {
+}).catch((error) => {
   process.stderr.write(`Fatal error: ${error}\n`);
   process.exit(1);
 });

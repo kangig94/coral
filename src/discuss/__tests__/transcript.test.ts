@@ -16,8 +16,8 @@ import {
 import type { AgentState, TranscriptEntry } from '../types.js';
 
 const agents: Record<string, AgentState> = {
-  alice: { persona: '', display_name: 'Alice', quota_remaining: 3, total_speaks: 0, fallback_used: false },
-  bob: { persona: '', display_name: 'Bob', quota_remaining: 3, total_speaks: 0, fallback_used: false },
+  alice: { persona: '', display_name: 'Alice', quota_remaining: 3, total_speaks: 0, fallback_used: false, banned: false },
+  bob: { persona: '', display_name: 'Bob', quota_remaining: 3, total_speaks: 0, fallback_used: false, banned: false },
 };
 
 const TS = '2026-01-01T10:00:00Z';

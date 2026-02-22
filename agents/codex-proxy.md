@@ -3,7 +3,6 @@ name: codex-proxy
 model: sonnet
 description: "Codex delegation proxy for analyst/architect/critic/ralph roles. Use when Codex-specific perspective is needed for analysis, review, critique, or execution."
 tools: mcp__plugin_coral_cx__codex
-
 ---
 <Agent_Prompt>
   <Proxy_Protocol>

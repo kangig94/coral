@@ -212,7 +212,7 @@ model: opus
          !.claude/coral/kb/
 
       Quality rules (from references/writing-guide.md):
-      - Every agent has ALL sections from TEMPLATE.md
+      - Every agent has ALL sections from AGENT.md template
       - Tier 1 agents MUST have Anti-Patterns table
       - Core Patterns use concrete code examples
       - Docs reference actual project file paths

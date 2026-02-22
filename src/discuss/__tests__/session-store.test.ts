@@ -26,7 +26,7 @@ afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }); });
 
 function createAndSaveSession(topic = 'Test Topic') {
   const { sessionId, fullPath } = store.createSessionDir(topic);
-  const state = initSession({ topic, agents: AGENTS, quota_per_epoch: 3, recent_turns: 5 }, new Date().toISOString());
+  const state = initSession({ topic, agents: AGENTS }, new Date().toISOString());
   state.session_id = sessionId;
   state.session_dir = fullPath;
   state.team_name = `coral-dc-${sessionId}`;
@@ -142,7 +142,7 @@ describe('save and load', () => {
 describe('cleanupExpiredSessions', () => {
   function saveSessionWithStatus(topic: string, status: string, lastActivity: Date) {
     const { sessionId, fullPath } = store.createSessionDir(topic);
-    const state = initSession({ topic, agents: AGENTS, quota_per_epoch: 3, recent_turns: 5 }, new Date().toISOString());
+    const state = initSession({ topic, agents: AGENTS }, new Date().toISOString());
     state.session_id = sessionId;
     state.session_dir = fullPath;
     state.team_name = `coral-dc-${sessionId}`;

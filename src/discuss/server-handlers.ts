@@ -1,97 +1,114 @@
 /**
- * Coral Discuss MCP Server - tool definitions and dispatch handlers.
- * Uses SessionStore + pure state-machine functions.
+ * Coral Discuss MCP server handlers.
  */
 
 import { textResult, jsonResult, type McpResult } from '../shared/mcp-utils.js';
-import type { DiscussState, Result } from './types.js';
+import type {
+  EndReason,
+  DiscussState,
+} from './types.js';
 import { SessionStore } from './session-store.js';
 import {
-  initSession,
-  startBidding,
   applyBid,
-  resolveWinner,
-  applySpeech,
-  applyEpochSummary,
   applyEnd,
+  applyEpochSummary,
+  applyExpel,
+  applySpeech,
+  applySpeechTimeout,
+  initSession,
   resolveAgentName,
+  resolveWinner,
+  startBidding,
   DEFAULT_BID_THRESHOLD,
   DEFAULT_MAX_EPOCHS,
+  DEFAULT_QUOTA_PER_EPOCH,
 } from './state-machine.js';
-import { allBidsIn, speechDelivered, actionNeeded } from './conditions.js';
-import { waitForCondition } from './wait.js';
+import {
+  allBidsIn,
+  bidReleased,
+  isWinner,
+  noParticipants,
+  setupComplete,
+  speechDelivered,
+} from './conditions.js';
+import { waitForCondition, INFINITE_POLL } from './wait.js';
 import { formatFull, formatRecent, formatSummary } from './transcript.js';
 import { seedPersonas } from './persona-seed.js';
-import { discussOpSchema, discussPersonaSeedSchema, type DiscussOpInput } from './schemas.js';
+import {
+  discussAgentOpSchema,
+  discussLeadOpSchema,
+  type DiscussAgentOpInput,
+  type DiscussLeadOpInput,
+} from './schemas.js';
+import type { Result } from './types.js';
 
-/** Resolve session directory or return a not-found error. */
 function resolveSession(store: SessionStore, sessionId: string): string | McpResult {
   const dir = store.resolveDir(sessionId);
-  return dir ?? jsonResult({ error: 'session_not_found' });
+  return dir ?? textResult('session_not_found', true);
 }
 
-/**
- * Lock-load-apply-save pattern used by most mutating handlers.
- * Applies a state-machine function under lock, saves on success, returns Result.
- */
-async function mutateSession<T>(
-  store: SessionStore,
-  sessionDir: string,
-  apply: (state: DiscussState) => Result<DiscussState>,
-  extract: (state: DiscussState) => T,
-): Promise<Result<T>> {
-  return store.withLock(sessionDir, async () => {
-    const state = store.load(sessionDir);
-    const res = apply(state);
-    if (!res.ok) return res;
-    store.save(sessionDir, res.value);
-    return { ok: true as const, value: extract(res.value) };
-  });
+function nowIsoString(): string {
+  return new Date().toISOString();
 }
 
-/** Convert a Result to an McpResult. */
+function envInt(key: string, min: number, max: number, fallback: number): number {
+  const raw = Number.parseInt(process.env[key] ?? '', 10);
+  return Number.isFinite(raw) && raw >= min && raw <= max ? raw : fallback;
+}
+
 function resultToMcp(result: Result<unknown>): McpResult {
-  if (!result.ok) return jsonResult({ error: result.error, ...result.detail });
+  if (!result.ok) {
+    return jsonResult({ error: result.error, ...result.detail });
+  }
   return jsonResult(result.value as Record<string, unknown>);
 }
 
-/** Map discuss state status to action name for action_needed responses. */
-const STATUS_TO_ACTION: Record<string, string> = {
-  ended: 'session_ended',
-  speaking: 'speak',
-};
-
-const WAIT_TIMEOUT_LIMITS: Record<string, number> = { all_bids: 60, speech_delivered: 120, action_needed: 180 };
-const nowIsoString = (): string => new Date().toISOString();
-
-function validateWaitConstraints(input: Extract<DiscussOpInput, { op: 'wait' }>): void {
-  const limit = WAIT_TIMEOUT_LIMITS[input.condition] ?? 60;
-  if (input.timeout_seconds > limit) throw new Error(`timeout_seconds exceeds ${limit}s limit for ${input.condition}`);
-  if (input.condition === 'action_needed' && !input.agent_name) throw new Error('agent_name required for action_needed condition');
-}
-
-function validateEndConstraints(input: Extract<DiscussOpInput, { op: 'end' }>): void {
-  if (input.force && !input.reason?.trim()) throw new Error('reason is required when force=true');
+function endContent(reason: Exclude<EndReason, 'already_ended'>): string {
+  switch (reason) {
+    case 'all_below_threshold':
+      return 'All participants bid below the threshold. Ending discussion.';
+    case 'max_epochs_reached':
+      return 'Maximum epochs reached. Ending discussion.';
+    case 'all_blocked':
+      return 'Discussion is structurally deadlocked. Agents who want to speak have no quota, and agents with quota do not want to speak.';
+    case 'no_participants':
+      return 'No eligible agents remaining. Ending discussion.';
+    default:
+      return 'Ending discussion.';
+  }
 }
 
 export const tools = [
   {
     name: 'discuss',
-    description: 'Multi-agent discussion session management. Use op field to select operation: create (initialize session), bid (submit speaking desire 0-100), wait (block until condition), speak (record speech), transcript (read transcript), state (query state), end (finalize), epoch_summary (append summary).',
+    description: 'Discussion agent tool. Use op field to select operation: bid (submit score), speak (record speech).',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        op: { type: 'string', enum: ['bid', 'speak'] },
+        session: { type: 'string', description: 'Session ID' },
+        agent_name: { type: 'string', description: 'Agent name' },
+        score: { type: 'number', minimum: 0, maximum: 100 },
+        content: { type: 'string', description: 'Speech content (speak)' },
+      },
+      required: ['op', 'session', 'agent_name'],
+    },
+  },
+  {
+    name: 'discuss_lead',
+    description:
+      'Discussion moderator tool. Ops: _1_seed (persona sampling), _2_create, _3_step (bid collect / speech wait), _4_transcript, _5_epoch, _6_state, _7_end.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         op: {
           type: 'string',
-          enum: ['create', 'bid', 'wait', 'speak', 'transcript', 'state', 'end', 'epoch_summary'],
-          description: 'Operation. create: topic+agents required. bid: session+agent_name+score. wait: session+condition+timeout_seconds. speak: session+agent_name+content. transcript: session required. state: session required. end: session required. epoch_summary: session+epoch+summary.',
+          enum: ['_1_seed', '_2_create', '_3_step', '_4_transcript', '_5_epoch', '_6_state', '_7_end'],
         },
-        session: { type: 'string', description: 'Session ID (required for all ops except create)' },
-        agent_name: { type: 'string', description: 'Agent name' },
-        topic: { type: 'string', description: 'Discussion topic (create)' },
+        topic: { type: 'string', description: 'Discussion topic (_2_create)' },
         agents: {
           type: 'array',
-          description: 'Agent list (create)',
+          description: 'Agent list (_2_create)',
           items: {
             type: 'object',
             properties: {
@@ -103,32 +120,9 @@ export const tools = [
           minItems: 2,
           maxItems: 8,
         },
-        quota_per_epoch: { type: 'integer', description: 'Max speeches per agent per epoch (create, default 3)' },
-        recent_turns: { type: 'integer', description: 'Recent turns in transcript (create, default 5)' },
-        score: { type: 'integer', description: 'Desire score 0-100 (bid)', minimum: 0, maximum: 100 },
-        condition: { type: 'string', enum: ['all_bids', 'speech_delivered', 'action_needed'], description: 'Wait condition' },
-        timeout_seconds: { type: 'number', description: 'Max wait seconds (limits: all_bids=60, speech_delivered=120, action_needed=180)' },
-        content: { type: 'string', description: 'Speech content (speak)' },
-        mode: { type: 'string', enum: ['full', 'recent', 'summary'], description: 'Transcript mode (default: recent)' },
-        last_n: { type: 'integer', description: 'Last N entries (transcript)', minimum: 1, maximum: 50 },
-        synthesis: { type: 'string', description: 'Synthesis text (end)' },
-        force: { type: 'boolean', description: 'Force-end (end)' },
-        reason: { type: 'string', description: 'Force reason (end, required when force=true)' },
-        epoch: { type: 'integer', description: 'Epoch number (epoch_summary)', minimum: 1 },
-        summary: { type: 'string', description: 'Epoch summary text (epoch_summary)' },
-      },
-      required: ['op'],
-    },
-  },
-  {
-    name: 'discuss_persona_seed',
-    description: 'Generate diverse persona position assignments using k-DPP sampling on controversy axes. Returns seed_used for reproducibility.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
         controversy_axes: {
           type: 'array',
-          description: 'Controversy axes with positions. Axis names must be unique. Positions within each axis must be unique.',
+          description: 'Persona seed axes (_1_seed)',
           items: {
             type: 'object',
             properties: {
@@ -140,275 +134,625 @@ export const tools = [
           minItems: 1,
           maxItems: 10,
         },
-        n: { type: 'integer', description: 'Number of persona assignments (1-8)', minimum: 1, maximum: 8 },
-        seed: { type: ['integer', 'null'], description: 'RNG seed for reproducibility. Null = random seed.' },
+        n: { type: 'integer', minimum: 1, maximum: 8, description: 'Seed count (_1_seed)' },
+        seed: { type: ['integer', 'null'], description: 'Seed value (_1_seed)' },
+        session: { type: 'string', description: 'Session ID' },
+        timeout_seconds: { type: 'integer', minimum: 1, maximum: 120, description: '_3_step timeout (seconds)' },
+        force_stop: { type: 'boolean', description: '_3_step timeout escalation flag' },
+        mode: { type: 'string', enum: ['full', 'recent', 'summary'], description: '_4_transcript' },
+        last_n: { type: 'integer', minimum: 1, maximum: 50, description: 'Override recent turns (_4_transcript)' },
+        summary: { type: 'string', description: 'Epoch summary (_5_epoch)' },
+        synthesis: { type: 'string', description: 'Synthesis text (_7_end)' },
+        force: { type: 'boolean', description: 'Force end during speaking (_7_end)' },
+        reason: { type: 'string', description: 'Force reason (_7_end)' },
       },
-      required: ['controversy_axes', 'n'],
+      required: ['op'],
     },
   },
 ];
 
-async function handleDiscussOp(input: DiscussOpInput, store: SessionStore): Promise<McpResult> {
-  switch (input.op) {
-    case 'create': {
-      store.cleanupExpiredSessions();
-      const now = nowIsoString();
-      const rawThreshold = parseInt(process.env.CORAL_DISCUSS_BID_THRESHOLD ?? '', 10);
-      const bidThreshold = (Number.isFinite(rawThreshold) && rawThreshold >= 1 && rawThreshold <= 100)
-        ? rawThreshold : DEFAULT_BID_THRESHOLD;
-      const rawMaxEpochs = parseInt(process.env.CORAL_DISCUSS_MAX_EPOCHS ?? '', 10);
-      const maxEpochs = (Number.isFinite(rawMaxEpochs) && rawMaxEpochs >= 1 && rawMaxEpochs <= 10)
-        ? rawMaxEpochs : DEFAULT_MAX_EPOCHS;
-      const state = initSession(input, now, bidThreshold, maxEpochs);
-      const { sessionId, sessionDir, fullPath } = store.createSessionDir(input.topic);
-      state.session_id = sessionId;
-      state.session_dir = sessionDir;
-      state.team_name = `coral-dc-${sessionId}`;
+async function handleBid(
+  input: Extract<DiscussAgentOpInput, { op: 'bid' }>,
+  store: SessionStore,
+): Promise<McpResult> {
+  const sessionDir = resolveSession(store, input.session);
+  if (typeof sessionDir !== 'string') return sessionDir;
+  const statePath = store.statePath(sessionDir);
 
-      await store.withLock(fullPath, async () => {
-        store.initTranscript(fullPath, input.topic);
-        store.save(fullPath, state);
-      });
+  type BidPre =
+    | { kind: 'banned'; state: DiscussState; resolved: string }
+    | { kind: 'ended'; state: DiscussState; resolved: string }
+    | { kind: 'setup' }
+    | { kind: 'speaking' }
+    | { kind: 'bidding'; resolved: string };
+  type BidRecordResult = Result<{ state: DiscussState; step: number }>;
 
-      return jsonResult({
-        session_id: sessionId,
-        session_dir: sessionDir,
-        team_name: state.team_name,
-        topic: input.topic,
-        status: state.status,
-        bid_threshold: state.bid_threshold,
-        max_epochs: state.max_epochs,
-        agents: input.agents.map((a) => a.name),
-      });
-    }
+  const sessionWait = async () => waitForCondition(statePath, setupComplete, INFINITE_POLL);
 
-    case 'bid': {
-      const sessionDir = resolveSession(store, input.session);
-      if (typeof sessionDir !== 'string') return sessionDir;
-
-      const result = await mutateSession(
-        store,
-        sessionDir,
-        (s) => applyBid(s, input.agent_name, input.score, nowIsoString()),
-        (s) => ({ all_bids_in: s.pending_bidders.length === 0 }),
-      );
-      return resultToMcp(result);
-    }
-
-    case 'wait': {
-      const sessionDir = store.resolveDir(input.session);
-      if (!sessionDir) return textResult('Error: session_not_found', true);
-
-      // Agent membership pre-check for action_needed (avoids burning full timeout on unknown agent)
-      let resolvedAgent = input.agent_name;
-      if (input.condition === 'action_needed') {
-        const preState = store.load(sessionDir);
-        const resolved = resolveAgentName(preState.agents, input.agent_name!);
-        if (!resolved) {
-          return jsonResult({ error: 'agent_not_found', agent_name: input.agent_name });
-        }
-        resolvedAgent = resolved;
-      }
-
-      // Auto-start: transition setup -> bidding BEFORE the poll loop begins.
-      // Without this, allBidsIn predicate never fires (it requires status=bidding).
-      if (input.condition === 'all_bids') {
-        await store.withLock(sessionDir, async () => {
-          const s = store.load(sessionDir);
-          if (s.status === 'setup') {
-            const res = startBidding(s, nowIsoString());
-            if (res.ok) store.save(sessionDir, res.value);
-          }
-        });
-      }
-
-      const predicates: Record<string, (s: DiscussState) => boolean> = {
-        all_bids: allBidsIn,
-        speech_delivered: speechDelivered,
-        action_needed: actionNeeded(resolvedAgent!),
-      };
-      const pred = predicates[input.condition];
-
-      const statePath = store.statePath(sessionDir);
-      const waitResult = await waitForCondition(statePath, pred, input.timeout_seconds * 1000);
-
-      if (waitResult.error) {
-        return textResult(`Error: ${waitResult.error}`, true);
-      }
-
-      // After error check, state is guaranteed non-null (discriminated union narrowing)
-      const waitState = waitResult.state!;
-
-      // Auto-resolve on all_bids fulfillment
-      if (waitResult.fulfilled && input.condition === 'all_bids') {
-        const outcome = await store.withLock(sessionDir, async () => {
-          const state = store.load(sessionDir);
-          // TOCTOU guard: re-check condition inside lock (stale wakeup detection)
-          if (!allBidsIn(state)) {
-            return { stale: true, status: state.status, step: state.step, epoch: state.epoch };
-          }
-          const res = resolveWinner(state, nowIsoString());
-          if (!res.ok) return { error: res.error, ...res.detail };
-          const [newState, resolveData] = res.value;
-          store.save(sessionDir, newState);
-          return resolveData as Record<string, unknown>;
-        });
-        return jsonResult({ fulfilled: true, elapsed_seconds: waitResult.elapsed_ms / 1000, ...outcome });
-      }
-
-      // Action-needed: tell agent what to do next (information veil: your_speaks, not quota_remaining)
-      if (waitResult.fulfilled && input.condition === 'action_needed') {
-        const action = STATUS_TO_ACTION[waitState.status] ?? 'bid';
-        return jsonResult({
-          fulfilled: true,
-          action,
-          elapsed_seconds: waitResult.elapsed_ms / 1000,
-          epoch: waitState.epoch,
-          your_speaks: waitState.agents[resolvedAgent!]?.total_speaks ?? 0,
-        });
-      }
-
-      // Generic return (speech_delivered or timeout)
-      return jsonResult({
-        fulfilled: waitResult.fulfilled,
-        elapsed_seconds: waitResult.elapsed_ms / 1000,
-        status: waitState.status,
-        step: waitState.step,
-        epoch: waitState.epoch,
-      });
-    }
-
-    case 'speak': {
-      const sessionDir = resolveSession(store, input.session);
-      if (typeof sessionDir !== 'string') return sessionDir;
-
-      const result = await mutateSession(
-        store,
-        sessionDir,
-        (s) => applySpeech(s, input.agent_name, input.content, nowIsoString()),
-        (s) => ({ step: s.step, status: s.status }),
-      );
-      return resultToMcp(result);
-    }
-
-    case 'transcript': {
-      const sessionDir = resolveSession(store, input.session);
-      if (typeof sessionDir !== 'string') return sessionDir;
-
-      // When agent_name provided: resolve + track read under lock for bid enforcement.
-      // When absent: lockless read (no tracking needed).
-      const caller = input.agent_name;
-      let resolvedCaller: string | null | undefined; // null=not found, undefined=no caller
-      const state = caller
-        ? await store.withLock(sessionDir, async () => {
-            const s = store.load(sessionDir);
-            resolvedCaller = resolveAgentName(s.agents, caller);
-            if (resolvedCaller && (s.transcript_read_step[resolvedCaller] ?? 0) < s.step) {
-              const ts = nowIsoString();
-              const updated = {
-                ...s,
-                transcript_read_step: { ...s.transcript_read_step, [resolvedCaller]: s.step },
-                updated_at: ts,
-                last_activity_at: ts,
-              };
-              store.save(sessionDir, updated);
-              return updated;
-            }
-            return s;
-          })
-        : store.load(sessionDir);
-
-      // Fail loudly on unknown agent (was silent before — Bug #2 root cause)
-      if (resolvedCaller === null) {
-        return jsonResult({
-          error: 'agent_not_found_in_session',
-          agent_name: caller,
-          available_agents: Object.keys(state.agents),
-          hint: 'Use the agent name from session creation, not the teammate system name.',
-        });
-      }
-
-      // Full-transcript ACL: mode=full requires agent_name=current_speaker OR status=ended
-      if (input.mode === 'full' && state.status !== 'ended') {
-        if (!resolvedCaller) {
-          return jsonResult({ error: 'full_transcript_requires_speaker_or_ended' });
-        }
-        if (resolvedCaller !== state.current_speaker) {
-          return jsonResult({ error: 'full_transcript_speaker_only' });
-        }
-      }
-
-      let text: string;
-      switch (input.mode) {
-        case 'full':
-          text = formatFull(state.transcript, state.agents);
-          break;
-        case 'summary':
-          text = formatSummary(state.transcript, state.agents);
-          break;
-        default:
-          text = formatRecent(state.transcript, input.last_n ?? state.recent_turns, state.agents);
-      }
-      return textResult(text);
-    }
-
-    case 'state': {
-      const sessionDir = resolveSession(store, input.session);
-      if (typeof sessionDir !== 'string') return sessionDir;
-
+  while (true) {
+    const pre = await store.withLock< Result<BidPre> >(sessionDir, async () => {
       const state = store.load(sessionDir);
+      const resolved = resolveAgentName(state.agents, input.agent_name);
+      if (!resolved) {
+        return { ok: false, error: 'agent_not_found', detail: { agent_name: input.agent_name } };
+      }
+      if (state.agents[resolved]?.banned) {
+        return { ok: true, value: { kind: 'banned', resolved, state } };
+      }
+      switch (state.status) {
+        case 'ended':
+          return { ok: true, value: { kind: 'ended', resolved, state } };
+        case 'setup':
+          return { ok: true, value: { kind: 'setup' } };
+        case 'speaking':
+          return { ok: true, value: { kind: 'speaking' } };
+        case 'bidding':
+          return { ok: true, value: { kind: 'bidding', resolved } };
+        default:
+          return { ok: false, error: 'invalid_status', detail: { current: state.status } };
+      }
+    });
+
+    if (!pre.ok) {
+      return resultToMcp(pre);
+    }
+
+    const phase = pre.value.kind;
+    if (phase === 'banned') {
+      return jsonResult({ action: 'session_ended', reason: 'banned' });
+    }
+    if (phase === 'ended') {
       return jsonResult({
-        session_id: state.session_id,
-        topic: state.topic,
-        status: state.status,
-        step: state.step,
-        epoch: state.epoch,
-        current_speaker: state.current_speaker,
-        speaker_type: state.speaker_type,
-        cold_start: state.cold_start,
-        bid_threshold: state.bid_threshold,
-        recent_turns: state.recent_turns,
-        agents: Object.fromEntries(
-          Object.entries(state.agents).map(([n, a]) => [
-            n,
-            { display_name: a.display_name, total_speaks: a.total_speaks },
-          ]),
-        ),
-        pending_bidders: state.pending_bidders,
-        total_agents: Object.keys(state.agents).length,
+        action: 'session_ended',
+        reason: 'already_ended',
+        content: pre.value.state.end_reason_content ?? undefined,
+      });
+    }
+    if (phase === 'setup') {
+      const waited = await sessionWait();
+      if (!waited.fulfilled) return jsonResult({ error: waited.error ?? 'setup_wait_failed' });
+      continue;
+    }
+    if (phase === 'speaking') {
+      const waited = await waitForCondition(statePath, (s) => s.status === 'bidding' || s.status === 'ended', INFINITE_POLL);
+      if (!waited.fulfilled) return jsonResult({ error: waited.error ?? 'speaking_wait_failed' });
+      continue;
+    }
+    if (phase === 'bidding') {
+      const resolved = pre.value.resolved;
+      const bidStepResult = await store.withLock<BidRecordResult>(sessionDir, async () => {
+        const state = store.load(sessionDir);
+        if (state.status !== 'bidding') {
+          return { ok: false, error: 'not_bidding', detail: { current: state.status } };
+        }
+        const result = applyBid(state, resolved, input.score, nowIsoString());
+        if (!result.ok) {
+          return { ok: false, error: result.error, detail: result.detail };
+        }
+        store.save(sessionDir, result.value);
+        return { ok: true, value: { state: result.value, step: result.value.step } };
+      });
+
+      if (!bidStepResult.ok) {
+        if (bidStepResult.error === 'not_bidding') {
+          continue;
+        }
+        return resultToMcp(bidStepResult);
+      }
+
+      const bidStep = bidStepResult.value.step;
+      const released = await waitForCondition(
+        statePath,
+        (s) => isWinner(resolved)(s) || bidReleased(resolved, bidStep)(s),
+        INFINITE_POLL,
+      );
+      if (!released.fulfilled) {
+        return jsonResult({ error: released.error ?? 'bid_wait_failed' });
+      }
+
+      const finalState = await store.withLock(sessionDir, async () => store.load(sessionDir));
+
+      const finalAgentState = finalState.agents[resolved];
+      if (finalAgentState?.banned) {
+        return jsonResult({ action: 'session_ended', reason: 'banned' });
+      }
+
+      if (finalState.status === 'ended') {
+        return jsonResult({ action: 'session_ended', reason: 'already_ended', content: finalState.end_reason_content });
+      }
+
+      if (isWinner(resolved)(finalState)) {
+        return jsonResult({
+          action: 'speak',
+          transcript: formatFull(finalState.transcript, finalState.agents),
+        });
+      }
+
+      const last = finalState.transcript[finalState.transcript.length - 1];
+      if (!last) {
+        return jsonResult({ action: 'session_ended' });
+      }
+
+      if (last.type === 'speech') {
+        return jsonResult({ action: 'listen', speaker: last.agent, content: last.content });
+      }
+      if (last.type === 'epoch_summary') {
+        return jsonResult({ action: 'listen', speaker: 'moderator', content: last.summary });
+      }
+      return jsonResult({ action: 'session_ended' });
+    }
+  }
+}
+
+async function handleSpeak(
+  input: Extract<DiscussAgentOpInput, { op: 'speak' }>,
+  store: SessionStore,
+): Promise<McpResult> {
+  const sessionDir = resolveSession(store, input.session);
+  if (typeof sessionDir !== 'string') return sessionDir;
+
+  const applied = await store.withLock(sessionDir, async () => {
+    const state = store.load(sessionDir);
+    const resolved = resolveAgentName(state.agents, input.agent_name);
+    if (!resolved) {
+      return { ok: false, error: 'agent_not_found', detail: { agent_name: input.agent_name } } as Result<never>;
+    }
+    const result = applySpeech(state, resolved, input.content, nowIsoString());
+    if (!result.ok) return result as Result<never>;
+    store.save(sessionDir, result.value);
+    return {
+      ok: true,
+      value: {
+        status: result.value.status,
+        step: result.value.step,
+      },
+    } as Result<{ status: string; step: number }>;
+  });
+
+  return resultToMcp(applied);
+}
+
+async function handleAgentOp(input: DiscussAgentOpInput, store: SessionStore): Promise<McpResult> {
+  if (input.op === 'bid') return handleBid(input, store);
+  return handleSpeak(input, store);
+}
+
+async function handle1Seed(input: Extract<DiscussLeadOpInput, { op: '_1_seed' }>): Promise<McpResult> {
+  return jsonResult(seedPersonas(input));
+}
+
+async function handle2Create(
+  input: Omit<Extract<DiscussLeadOpInput, { op: '_2_create' }>, 'op'>,
+  store: SessionStore,
+): Promise<McpResult> {
+  store.cleanupExpiredSessions();
+  const now = nowIsoString();
+  const bidThreshold = envInt('CORAL_DISCUSS_BID_THRESHOLD', 1, 100, DEFAULT_BID_THRESHOLD);
+  const maxEpochs = envInt('CORAL_DISCUSS_MAX_EPOCHS', 1, 10, DEFAULT_MAX_EPOCHS);
+  const quotaPerEpoch = envInt('CORAL_DISCUSS_QUOTA_PER_EPOCH', 1, 10, DEFAULT_QUOTA_PER_EPOCH);
+
+  const state = initSession(input, now, bidThreshold, maxEpochs, quotaPerEpoch);
+  const { sessionId, sessionDir, fullPath } = store.createSessionDir(input.topic);
+  state.session_id = sessionId;
+  state.session_dir = sessionDir;
+  state.team_name = `coral-dc-${sessionId}`;
+
+  await store.withLock(fullPath, async () => {
+    store.initTranscript(fullPath, input.topic);
+    store.save(fullPath, state);
+  });
+
+  return jsonResult({
+    session_id: sessionId,
+    session_dir: fullPath,
+    team_name: state.team_name,
+    topic: input.topic,
+    status: state.status,
+    bid_threshold: state.bid_threshold,
+    max_epochs: state.max_epochs,
+    agents: Object.keys(state.agents),
+  });
+}
+
+async function handle3Step(
+  input: Extract<DiscussLeadOpInput, { op: '_3_step' }>,
+  store: SessionStore,
+): Promise<McpResult> {
+  const sessionDir = resolveSession(store, input.session);
+  if (typeof sessionDir !== 'string') return sessionDir;
+  const statePath = store.statePath(sessionDir);
+  const now = nowIsoString();
+
+  type BiddingPre = {
+    kind: 'wait';
+    state: DiscussState;
+  } | {
+    kind: 'ended';
+    reason: EndReason;
+    state: DiscussState;
+  } | {
+    kind: 'expelled';
+    agents: string[];
+    hint: string;
+    state: DiscussState;
+  };
+
+  type ResolvePhase =
+    | { kind: 'resolved'; winner: string }
+    | { kind: 'epoch_transition'; epoch: number }
+    | { kind: 'ended'; reason: EndReason };
+
+  type SpeakingWait =
+    | { kind: 'ended' }
+    | { kind: 'speech_done'; speech: { agent: string; content: string } }
+    | { kind: 'speech_timeout'; speaker: string };
+
+  const preState = await store.withLock<Result<DiscussState>>(sessionDir, async () => {
+    const state = store.load(sessionDir);
+    if (state.status !== 'setup') {
+      return { ok: true, value: state };
+    }
+    const started = startBidding(state, now);
+    if (!started.ok) {
+      return { ok: false, error: 'not_ready', detail: { current: state.status } };
+    }
+    store.save(sessionDir, started.value);
+    return { ok: true, value: started.value };
+  });
+  if (!preState.ok) return resultToMcp(preState);
+
+  let state = preState.value;
+  if (state.status === 'ended') {
+    return jsonResult({ status: 'ended', phase: 'ended', reason: 'already_ended' });
+  }
+
+  if (state.status === 'speaking') {
+    const waitResult = await waitForCondition(
+      statePath,
+      (s) => speechDelivered(s) || s.status === 'ended',
+      input.timeout_seconds * 1000,
+    );
+
+    if (!waitResult.fulfilled) {
+      return jsonResult({
+        status: 'speaking',
+        phase: 'speech_pending',
+        elapsed: waitResult.elapsed_ms / 1000,
       });
     }
 
-    case 'end': {
-      const sessionDir = resolveSession(store, input.session);
-      if (typeof sessionDir !== 'string') return sessionDir;
+    const speechState = await store.withLock<Result<SpeakingWait>>(sessionDir, async () => {
+      const current = store.load(sessionDir);
+      if (current.status === 'ended') {
+        return { ok: true, value: { kind: 'ended' } };
+      }
 
-      const result = await mutateSession(
-        store,
-        sessionDir,
-        (s) => applyEnd(s, { force: input.force, reason: input.reason, synthesis: input.synthesis }, nowIsoString()),
-        () => ({ ok: true, session_id: input.session }),
+      if (current.status === 'bidding') {
+        const speech = current.transcript[current.transcript.length - 1];
+        if (!speech || speech.type !== 'speech') {
+          return { ok: false, error: 'expected_speech_entry' };
+        }
+
+        return {
+          ok: true,
+          value: { kind: 'speech_done', speech: { agent: speech.agent, content: speech.content } },
+        };
+      }
+
+      if (!input.force_stop || current.status !== 'speaking' || !current.current_speaker) {
+        return { ok: false, error: 'speech_not_done', detail: { current: current.status } };
+      }
+
+      const timed = applySpeechTimeout(current, now);
+      if (!timed.ok) return { ok: false, error: timed.error, detail: timed.detail };
+      store.save(sessionDir, timed.value);
+      return { ok: true, value: { kind: 'speech_timeout', speaker: current.current_speaker } };
+    });
+
+    if (!speechState.ok) {
+      return resultToMcp(speechState);
+    }
+
+    if (speechState.value.kind === 'speech_timeout') {
+      return jsonResult({
+        status: 'speaking',
+        phase: 'speech_timeout',
+        speaker: speechState.value.speaker,
+      });
+    }
+
+    if (speechState.value.kind === 'ended') {
+      return jsonResult({ status: 'ended', phase: 'ended', reason: 'already_ended' });
+    }
+
+    return jsonResult({
+      status: 'speaking',
+      phase: 'speech_done',
+      speaker: speechState.value.speech.agent,
+      content: speechState.value.speech.content,
+    });
+  }
+
+  if (state.status === 'bidding') {
+    const beforeResolve = await store.withLock<Result<BiddingPre>>(sessionDir, async () => {
+      const current = store.load(sessionDir);
+      if (current.status !== 'bidding') {
+        if (current.status === 'ended') {
+          return { ok: true, value: { kind: 'ended', reason: 'already_ended' as const, state: current } };
+        }
+        return {
+          ok: false,
+          error: 'invalid_status',
+          detail: { current: current.status },
+        };
+      }
+
+      const next = { ...current, hold_count: current.hold_count + 1 };
+      if (noParticipants(current)) {
+        const endedState = applyEnd(
+          {
+            ...next,
+            end_reason_content: endContent('no_participants'),
+          },
+          {},
+          now,
+        );
+        if (!endedState.ok) return { ok: false, error: endedState.error, detail: endedState.detail };
+        store.save(sessionDir, endedState.value);
+        return { ok: true, value: { kind: 'ended', reason: 'no_participants', state: endedState.value } };
+      }
+
+      if (next.hold_count >= 2 && next.pending_bidders.length > 0) {
+        const expel = applyExpel(next, next.pending_bidders, now);
+        if (!expel.ok) {
+          return { ok: false, error: expel.error, detail: expel.detail };
+        }
+
+        if (noParticipants(expel.value.state)) {
+          const endedState = applyEnd(
+            {
+              ...expel.value.state,
+              end_reason_content: endContent('no_participants'),
+            },
+            {},
+            now,
+          );
+          if (!endedState.ok) return { ok: false, error: endedState.error, detail: endedState.detail };
+          store.save(sessionDir, endedState.value);
+          return { ok: true, value: { kind: 'ended', reason: 'no_participants', state: endedState.value } };
+        }
+
+        store.save(sessionDir, expel.value.state);
+        return {
+          ok: true,
+          value: { kind: 'expelled', state: expel.value.state, agents: next.pending_bidders, hint: expel.value.hint },
+        };
+      }
+
+      store.save(sessionDir, next);
+      return { ok: true, value: { kind: 'wait', state: next } };
+    });
+
+    if (!beforeResolve.ok) return resultToMcp(beforeResolve);
+
+    if (beforeResolve.value.kind === 'ended') {
+      return jsonResult({ status: 'bidding', phase: 'ended', reason: beforeResolve.value.reason });
+    }
+
+    if (beforeResolve.value.kind === 'expelled') {
+      return jsonResult({
+        status: 'bidding',
+        phase: 'expelled',
+        agents: beforeResolve.value.agents,
+        hint: beforeResolve.value.hint,
+      });
+    }
+
+    const waited = await waitForCondition(
+      statePath,
+      (s) => allBidsIn(s) || s.status === 'ended',
+      input.timeout_seconds * 1000,
+    );
+    if (!waited.fulfilled) {
+      state = await store.withLock(sessionDir, async () => store.load(sessionDir));
+      if (state.status === 'ended') {
+        return jsonResult({ status: 'ended', phase: 'ended', reason: 'already_ended' });
+      }
+      return jsonResult({
+        status: 'bidding',
+        phase: 'bidding',
+        pending_bidders: state.pending_bidders,
+        hold_count: state.hold_count,
+      });
+    }
+
+    state = await store.withLock(sessionDir, async () => store.load(sessionDir));
+    if (state.status === 'ended') {
+      return jsonResult({ status: 'ended', phase: 'ended', reason: 'already_ended' });
+    }
+
+    const resolved = await store.withLock<Result<ResolvePhase>>(sessionDir, async () => {
+      const current = store.load(sessionDir);
+      if (current.status === 'ended') {
+        return { ok: true, value: { kind: 'ended', reason: 'already_ended' as const } };
+      }
+      if (current.status !== 'bidding' || !allBidsIn(current)) {
+        return { ok: false, error: 'bids_not_complete', detail: { pending_bidders: current.pending_bidders } };
+      }
+
+      const winnerResult = resolveWinner(current, now);
+      if (!winnerResult.ok) {
+        return { ok: false, error: winnerResult.error, detail: winnerResult.detail };
+      }
+      const [nextState, decision] = winnerResult.value;
+
+      if ('speaker_type' in decision) {
+        store.save(sessionDir, nextState);
+        return { ok: true, value: { kind: 'resolved', winner: decision.winner } };
+      }
+
+      if (decision.reason === 'epoch_transition') {
+        store.save(sessionDir, nextState);
+        return { ok: true, value: { kind: 'epoch_transition', epoch: nextState.epoch } };
+      }
+
+      const endedState = applyEnd(
+        {
+          ...nextState,
+          end_reason_content: endContent(decision.reason),
+        },
+        {},
+        now,
       );
-      return resultToMcp(result);
-    }
+      if (!endedState.ok) return { ok: false, error: endedState.error, detail: endedState.detail };
+      store.save(sessionDir, endedState.value);
 
-    case 'epoch_summary': {
-      const sessionDir = resolveSession(store, input.session);
-      if (typeof sessionDir !== 'string') return sessionDir;
+      return { ok: true, value: { kind: 'ended', reason: decision.reason } };
+    });
 
-      const result = await mutateSession(
-        store,
-        sessionDir,
-        (s) => applyEpochSummary(s, input.epoch, input.summary, nowIsoString()),
-        () => ({ ok: true }),
-      );
-      return resultToMcp(result);
-    }
+    if (!resolved.ok) return resultToMcp(resolved);
 
-    default: {
-      const _exhaustive: never = input;
-      return textResult(`Unhandled op: ${(_exhaustive as DiscussOpInput).op}`, true);
+    if (resolved.value.kind === 'resolved') {
+      return jsonResult({ status: 'bidding', phase: 'resolved', winner: resolved.value.winner });
     }
+    if (resolved.value.kind === 'epoch_transition') {
+      return jsonResult({ status: 'bidding', phase: 'epoch_transition', epoch: resolved.value.epoch });
+    }
+    return jsonResult({ status: 'bidding', phase: 'ended', reason: resolved.value.reason });
+  }
+
+  return jsonResult({ status: 'setup', phase: 'not_ready' });
+}
+async function handle4Transcript(
+  input: Extract<DiscussLeadOpInput, { op: '_4_transcript' }>,
+  store: SessionStore,
+): Promise<McpResult> {
+  const sessionDir = resolveSession(store, input.session);
+  if (typeof sessionDir !== 'string') return sessionDir;
+
+  const state = await store.withLock(sessionDir, async () => store.load(sessionDir));
+  let text: string;
+
+  switch (input.mode) {
+    case 'full':
+      text = formatFull(state.transcript, state.agents);
+      break;
+    case 'summary':
+      text = formatSummary(state.transcript, state.agents);
+      break;
+    default:
+      text = formatRecent(state.transcript, input.last_n ?? 5, state.agents);
+      break;
+  }
+
+  return textResult(text);
+}
+
+async function handle5Epoch(
+  input: Extract<DiscussLeadOpInput, { op: '_5_epoch' }>,
+  store: SessionStore,
+): Promise<McpResult> {
+  const sessionDir = resolveSession(store, input.session);
+  if (typeof sessionDir !== 'string') return sessionDir;
+
+  const applied = await store.withLock<Result<{ recorded: true; epoch: number }>>(sessionDir, async () => {
+    const state = store.load(sessionDir);
+    const result = applyEpochSummary(state, input.summary, nowIsoString());
+    if (!result.ok) return result;
+    store.save(sessionDir, result.value);
+    return { ok: true, value: { recorded: true, epoch: state.epoch } };
+  });
+
+  return resultToMcp(applied);
+}
+
+async function handle6State(
+  input: Extract<DiscussLeadOpInput, { op: '_6_state' }>,
+  store: SessionStore,
+): Promise<McpResult> {
+  const sessionDir = resolveSession(store, input.session);
+  if (typeof sessionDir !== 'string') return sessionDir;
+
+  const state = await store.withLock(sessionDir, async () => store.load(sessionDir));
+
+  return jsonResult({
+    session_id: state.session_id,
+    topic: state.topic,
+    status: state.status,
+    step: state.step,
+    epoch: state.epoch,
+    current_speaker: state.current_speaker,
+    speaker_type: state.speaker_type,
+    cold_start: state.cold_start,
+    bid_threshold: state.bid_threshold,
+    hold_count: state.hold_count,
+    agents: Object.fromEntries(
+      Object.entries(state.agents).map(([name, agent]) => [
+        name,
+        {
+          display_name: agent.display_name,
+          total_speaks: agent.total_speaks,
+          quota_remaining: agent.quota_remaining,
+          fallback_used: agent.fallback_used,
+          banned: agent.banned,
+        },
+      ]),
+    ),
+    pending_bidders: state.pending_bidders,
+    total_agents: Object.keys(state.agents).length,
+  });
+}
+
+async function handle7End(
+  input: Extract<DiscussLeadOpInput, { op: '_7_end' }>,
+  store: SessionStore,
+): Promise<McpResult> {
+  if (input.force && !input.reason?.trim()) {
+    return textResult('reason is required when force=true', true);
+  }
+
+  const sessionDir = resolveSession(store, input.session);
+  if (typeof sessionDir !== 'string') return sessionDir;
+
+  const ended = await store.withLock<Result<{ status: string }>>(sessionDir, async () => {
+    const state = store.load(sessionDir);
+    const result = applyEnd(
+      state,
+      {
+        force: input.force,
+        reason: input.reason,
+        synthesis: input.synthesis,
+      },
+      nowIsoString(),
+    );
+    if (!result.ok) return result;
+    if (result.value !== state) {
+      store.save(sessionDir, result.value);
+    }
+    return { ok: true, value: { status: result.value.status } };
+  });
+
+  return resultToMcp(ended);
+}
+
+async function handleDiscussLeadOp(input: DiscussLeadOpInput, store: SessionStore): Promise<McpResult> {
+  switch (input.op) {
+    case '_1_seed':
+      return handle1Seed(input);
+    case '_2_create':
+      return handle2Create(input, store);
+    case '_3_step':
+      return handle3Step(input, store);
+    case '_4_transcript':
+      return handle4Transcript(input, store);
+    case '_5_epoch':
+      return handle5Epoch(input, store);
+    case '_6_state':
+      return handle6State(input, store);
+    case '_7_end':
+      return handle7End(input, store);
+    default:
+      return jsonResult({ error: 'invalid_op' });
   }
 }
 
@@ -420,31 +764,34 @@ export async function handleToolCall(
   try {
     switch (name) {
       case 'discuss': {
-        const parsed = discussOpSchema.safeParse(rawArgs);
+        const parsed = discussAgentOpSchema.safeParse(rawArgs);
         if (!parsed.success) {
-          const rawOp = (rawArgs as Record<string, unknown>).op;
-          if (rawOp !== undefined && parsed.error.issues.some((i) => i.code === 'invalid_union_discriminator')) {
-            return jsonResult({ error: 'unknown_op', op: rawOp });
+          const maybeOp = (rawArgs as { op?: unknown }).op;
+          if (parsed.error.issues.some((i) => i.code === 'invalid_union_discriminator') && maybeOp !== undefined) {
+            return jsonResult({ error: 'unknown_op', op: maybeOp });
           }
           throw parsed.error;
         }
-        const input = parsed.data;
-        if (input.op === 'wait') validateWaitConstraints(input);
-        if (input.op === 'end') validateEndConstraints(input);
-        return handleDiscussOp(input, store);
+        return handleAgentOp(parsed.data, store);
       }
 
-      case 'discuss_persona_seed': {
-        const input = discussPersonaSeedSchema.parse(rawArgs);
-        return resultToMcp(seedPersonas(input));
+      case 'discuss_lead': {
+        const parsed = discussLeadOpSchema.safeParse(rawArgs);
+        if (!parsed.success) {
+          const maybeOp = (rawArgs as { op?: unknown }).op;
+          if (parsed.error.issues.some((i) => i.code === 'invalid_union_discriminator') && maybeOp !== undefined) {
+            return jsonResult({ error: 'unknown_op', op: maybeOp });
+          }
+          throw parsed.error;
+        }
+        return handleDiscussLeadOp(parsed.data, store);
       }
 
       default:
         return textResult(`Unknown tool: ${name}`, true);
     }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`Tool ${name} error: ${message}\n`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     return textResult(`Error: ${message}`, true);
   }
 }

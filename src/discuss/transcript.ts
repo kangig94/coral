@@ -13,8 +13,8 @@ import type { AgentState, TranscriptEntry } from './types.js';
 const SOFT_LIMIT = 80;
 const HARD_LIMIT = 100;
 
-/** Korean / CJK sentence-ending patterns for grace-zone detection. */
-const SENTENCE_END = /[.!?]$|다\.$|요\.$|까\?$/u;
+/** Sentence-ending patterns for grace-zone detection. */
+const SENTENCE_END = /[.!?]$/u;
 
 /**
  * Wrap text to soft 80 / hard 100 column limit.
@@ -34,6 +34,12 @@ export function wrapText(text: string, opts?: { soft?: number; hard?: number }):
     }
     const words = paragraph.split(' ');
     let current = '';
+    const flush = () => {
+      if (current) {
+        lines.push(current);
+        current = '';
+      }
+    };
 
     for (const word of words) {
       const candidate = current ? `${current} ${word}` : word;
@@ -41,17 +47,17 @@ export function wrapText(text: string, opts?: { soft?: number; hard?: number }):
         current = candidate;
       } else if (candidate.length <= hard) {
         if (SENTENCE_END.test(current.trimEnd())) {
-          lines.push(current);
+          flush();
           current = word;
         } else {
           current = candidate;
         }
       } else {
-        if (current) lines.push(current);
+        flush();
         current = word;
       }
     }
-    if (current) lines.push(current);
+    flush();
   }
 
   return lines.join('\n');
@@ -112,7 +118,7 @@ export function renderEntry(e: TranscriptEntry, agents: Record<string, AgentStat
     case 'epoch_summary': {
       const ts = formatTimestamp(e.ts);
       const wrapped = wrapText(e.summary);
-      return `\n## Epoch ${e.epoch}\n\n### ${ts} Epoch Summary (by Teamlead)\n${wrapped}\n`;
+      return `\n## Epoch ${e.epoch}\n\n### ${ts} Epoch Summary (by Moderator)\n${wrapped}\n`;
     }
     case 'session_event': {
       const ts = formatTimestamp(e.ts);
