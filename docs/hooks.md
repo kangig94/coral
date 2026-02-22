@@ -49,7 +49,7 @@ Before context compaction, checks for unprocessed memos in `.claude/coral/memo/`
 
 Script: `hooks/kb-memo-reminder.sh`. Fires once per session (flag file keyed by `session_id`). Injects `additionalContext` reminding Claude to write memos when discovering non-obvious lessons.
 
-**Once-per-session**: Reads `session_id` from stdin JSON, creates `.claude/coral/tmp/memo-reminded-<session_id>` flag file. Subsequent calls exit 0 silently.
+**Throttled (30 min)**: Reads `session_id` from stdin JSON, creates `.claude/coral/tmp/memo-reminded-<session_id>` flag file. Subsequent calls within 30 minutes exit silently; after 30 minutes, `touch` refreshes the mtime and the reminder fires again.
 
 ## Stop Hook (KB Promotion)
 

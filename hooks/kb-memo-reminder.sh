@@ -1,7 +1,7 @@
 #!/bin/sh
 # kb-memo-reminder.sh - PreToolUse hook for memo writing reminder.
 # Reminds Claude to write memos when discovering non-obvious lessons.
-# Once per session: uses flag file keyed by session_id from stdin JSON.
+# Throttled: once per 30 minutes per session via flag file mtime check.
 #
 # POSIX-portable: no bash-isms, no jq, no grep -P.
 
@@ -16,7 +16,8 @@ fi
 
 FLAG_DIR="${CLAUDE_PROJECT_DIR:-.}/.claude/coral/tmp"
 FLAG="${FLAG_DIR}/memo-reminded-${SESSION_ID}"
-if [ -f "$FLAG" ]; then
+# Skip if reminded within last 30 minutes (flag file mtime check)
+if [ -f "$FLAG" ] && [ -z "$(find "$FLAG" -mmin +30 2>/dev/null)" ]; then
   exit 0
 fi
 
