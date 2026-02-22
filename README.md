@@ -12,10 +12,8 @@ angles - all through slash commands that work in any Claude Code session.
 ```
 /plugin marketplace add https://github.com/kangig94/coral
 /plugin install coral
-```
 
-**Codex CLI** (optional - enables `codex-*` skills and `--codex` flags):
-```bash
+# Codex CLI (optional - enables `codex-*` skills and `--codex` flags):
 npm install -g @openai/codex  # v0.104+
 ```
 
@@ -75,6 +73,19 @@ Look familiar? Browse this repository's `.claude/` folder.
 
 ---
 
+### Get diverse perspectives
+
+```
+/coral:discuss should we use microservices or a monolith?
+```
+
+> **Requires:** `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in `.claude/settings.json`
+
+Multiple AI personas argue from different angles. The most urgent points surface first.
+Structured synthesis at the end. Transcripts saved to `.claude/coral/discuss/`.
+
+---
+
 ### Accelerate my workflow
 
 ```
@@ -98,27 +109,6 @@ For cross-model workflows with Codex:
 ```
 
 Consecutive `/coral:codex` calls continue the same session. Say "new" to start fresh.
-
----
-
-### Get diverse perspectives
-
-```
-/coral:discuss should we use microservices or a monolith?
-/coral:discuss AI ethics in healthcare
-```
-
-> **Requires:** Add to `.claude/settings.json`:
-> ```json
-> { "env": { "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1" } }
-> ```
-
-3–8 AI personas with distinct expertise debate your topic through structured turn-taking.
-Each round, agents bid on how strongly they want to speak - the most urgent arguments
-surface first. Debate mode activates automatically for adversarial topics (pro/con, vs,
-should/should not). Structured synthesis at the end.
-
-Transcripts saved to `.claude/coral/discuss/` as JSON and Markdown.
 
 ## Skills
 
@@ -194,9 +184,8 @@ Optional real-time HUD for Claude Code sessions:
 
 ```
 /coral:statusline install
-```
 
-```
+# after install:
 opus 4.6      │ 5h:39% (1:23) wk:36% (5.2d) │ ctx:58% │ 50m │ coral:analyze
 gpt-5.3-codex │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
 ```
