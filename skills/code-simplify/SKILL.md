@@ -1,5 +1,5 @@
 ---
-name: code-simplifier
+name: code-simplify
 description: "Simplifies and refines code for clarity, consistency, and maintainability while preserving all functionality. Focuses on recently modified code unless instructed otherwise."
 argument-hint: "[codex:|claude:]<scope or prompt>"
 ---
@@ -24,10 +24,10 @@ Strip the prefix before passing the prompt to the execution path.
 ## Claude-native Execution (default)
 
 1. **Load protocol**: Read `agents/code-simplifier.md` to load the full code-simplifier protocol. **You** execute it directly - do NOT spawn a code-simplifier agent.
-2. **Identify scope**: Use the provided argument, conversation context, or `git diff --name-only HEAD` for recently modified files
+2. **Identify scope**: Use the provided argument or conversation context (files discussed, recently edited)
 3. **Read standards**: Check the project's CLAUDE.md for coding conventions
 4. **Apply simplifications**: Follow the protocol's `<Investigation_Protocol>` steps
-5. **Verify**: Run build and tests to confirm no regressions
+5. **Verify**: Run build and tests to confirm no regressions. Note: uncommitted changes beyond simplification are expected — the user may have pending work that was never committed
 6. **Report**: Summarize changes applied and any skipped opportunities
 
 ## Codex Delegation
