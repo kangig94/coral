@@ -56,6 +56,8 @@ model: opus
 
     ### 1d. Scan Project (existing only)
 
+    Read `agents/analyst.md` to load the analyst protocol, then scan with that gap-analysis lens.
+
     Read and analyze in order:
     1. Project metadata: package.json, pyproject.toml, Cargo.toml, etc. → name, description, deps, scripts
     2. README.md: description, setup, architecture notes
