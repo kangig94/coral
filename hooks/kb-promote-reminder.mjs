@@ -34,11 +34,11 @@ try {
   if (event === 'Stop') {
     console.log(JSON.stringify({
       decision: 'block',
-      reason: `Unprocessed memos: ${list}. Review for KB promotion per CLAUDE.md rules, then delete processed memos.`,
+      reason: `Not an error. Review each memo — promote to .claude/coral/kb/ only if useful across sessions. Delete all processed memos regardless of promotion. Memos: ${list}`,
     }));
   } else {
     console.log(JSON.stringify({
-      systemMessage: `KB promotion reminder: unprocessed memos in .claude/coral/memo/ - ${list}`,
+      systemMessage: `KB promotion reminder: promote only if useful across sessions. Memos: ${list}`,
     }));
   }
 } catch {
