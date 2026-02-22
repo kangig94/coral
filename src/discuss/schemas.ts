@@ -1,11 +1,6 @@
-/**
- * Zod schemas for MCP tool input validation - discuss/discuss_lead tools.
- */
-
 import { z } from 'zod';
 import { identPattern } from '../shared/mcp-utils.js';
 
-/** Session ID: yymmdd-HHmm-xxxx (compact timestamp + 4-char random suffix). */
 export const sessionIdPattern = /^[0-9]{6}-[0-9]{4}-[a-z0-9]{4}$/;
 
 const nonEmptyString = z.string().min(1);

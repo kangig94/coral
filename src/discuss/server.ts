@@ -1,5 +1,3 @@
-/** Coral Discuss MCP Server - stdio transport for discussion session management. */
-
 declare const __VERSION__: string;
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';

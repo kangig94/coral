@@ -1,7 +1,3 @@
-/**
- * Coral Discuss MCP server handlers.
- */
-
 import { textResult, jsonResult, type McpResult } from '../shared/mcp-utils.js';
 import type {
   EndReason,
@@ -88,18 +84,14 @@ async function loadState(store: SessionStore, sessionDir: string): Promise<Discu
 }
 
 function endContent(reason: Exclude<EndReason, 'already_ended'>): string {
-  switch (reason) {
-    case 'all_below_threshold':
-      return 'All participants bid below the threshold. Ending discussion.';
-    case 'max_epochs_reached':
-      return 'Maximum epochs reached. Ending discussion.';
-    case 'all_blocked':
-      return 'Discussion is structurally deadlocked. Agents who want to speak have no quota, and agents with quota do not want to speak.';
-    case 'no_participants':
-      return 'No eligible agents remaining. Ending discussion.';
-    default:
-      return 'Ending discussion.';
-  }
+  const reasons: Record<Exclude<EndReason, 'already_ended'>, string> = {
+    all_below_threshold: 'All participants bid below the threshold. Ending discussion.',
+    max_epochs_reached: 'Maximum epochs reached. Ending discussion.',
+    all_blocked: 'Discussion is structurally deadlocked. Agents who want to speak have no quota, and agents with quota do not want to speak.',
+    no_participants: 'No eligible agents remaining. Ending discussion.',
+  };
+
+  return reasons[reason];
 }
 
 export const tools = [

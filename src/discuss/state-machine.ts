@@ -1,8 +1,3 @@
-/**
- * Discuss state machine - pure functions, zero I/O.
- * Every state-modifying function: (state, ...args, now: string) -> Result<T>.
- */
-
 import type {
   AgentState,
   DiscussCreateInput,
@@ -17,22 +12,17 @@ export const DEFAULT_BID_THRESHOLD = 30;
 export const DEFAULT_MAX_EPOCHS = 2;
 export const DEFAULT_QUOTA_PER_EPOCH = 3;
 
-// ─── ID helpers ─────────────────────────────────────────────────────────────
-
-/** Generate a random 4-char suffix for session ID uniqueness. */
 export function randomSuffix(): string {
   const suffix = Math.random().toString(36).slice(2, 6);
   return suffix.padEnd(4, '0');
 }
 
-/** Format a Date as yymmdd-HHmm (compact timestamp for session IDs). */
 export function formatDateId(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   const yy = String(d.getFullYear()).slice(2);
   return `${yy}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
 }
 
-/** Generate topic slug: Unicode letters/digits preserved, hyphens for spaces, ~40 chars. */
 export function topicSlug(topic: string): string {
   const slug = topic
     .toLowerCase()
@@ -46,9 +36,6 @@ export function topicSlug(topic: string): string {
   return cut > 0 ? slug.slice(0, cut) : slug.slice(0, 40);
 }
 
-// ─── Display name ───────────────────────────────────────────────────────────
-
-/** Parse display_name from persona first line `# Name - Role`. */
 export function parseDisplayName(persona: string, agentName: string): string {
   const firstLine = persona.split('\n')[0] ?? '';
   const stripped = firstLine.replace(/^#\s*/, '');
@@ -56,12 +43,6 @@ export function parseDisplayName(persona: string, agentName: string): string {
   return displayName?.trim() || agentName;
 }
 
-// ─── Agent name resolution ─────────────────────────────────────────────────
-
-/**
- * Resolve teammate name -> session agent name.
- * Handles Team suffixes like `architect-1` -> `architect`.
- */
 export function resolveAgentName(
   agents: Record<string, AgentState>,
   name: string,
@@ -71,12 +52,13 @@ export function resolveAgentName(
   return baseName !== name && agents[baseName] ? baseName : null;
 }
 
-// ─── Internal helpers ───────────────────────────────────────────────────────
+function collectSubmittedBids(state: DiscussState): Record<string, number> {
+  const entries = Object.entries(state.current_bids)
+    .filter(([name, value]) => !state.agents[name]?.banned && typeof value === 'number')
+    .map(([name, value]) => [name, value] as [string, number]);
+  return Object.fromEntries(entries);
+}
 
-/**
- * Scan transcript backward to find the most recent speaker.
- * Preferred over state.last_speech_step because applySpeechTimeout does not update that field.
- */
 export function findLastSpeaker(transcript: TranscriptEntry[]): string | null {
   for (let i = transcript.length - 1; i >= 0; i--) {
     const e = transcript[i];
@@ -85,10 +67,6 @@ export function findLastSpeaker(transcript: TranscriptEntry[]): string | null {
   return null;
 }
 
-/**
- * Apply bid decay: imbalance correction + recency penalty.
- * effective = raw + (100/N) * (avg_speaks - my_speaks) - (50/N) * just_spoke
- */
 export function computeEffectiveBids(
   allBids: Record<string, number>,
   agents: Record<string, AgentState>,
@@ -96,7 +74,7 @@ export function computeEffectiveBids(
 ): Record<string, number> {
   const names = Object.keys(allBids);
   const N = names.length;
-  if (N <= 1) return { ...allBids }; // N=0 or N=1: no decay needed
+  if (N <= 1) return { ...allBids };
   const P_BASE = 100 / N;
   const P_RECENCY = 50 / N;
   const avgSpeaks = names.reduce((s, n) => s + agents[n].total_speaks, 0) / N;
@@ -106,15 +84,11 @@ export function computeEffectiveBids(
     const raw = allBids[name];
     const imbalance = P_BASE * (avgSpeaks - agents[name].total_speaks);
     const recency = name === lastSpeaker ? P_RECENCY : 0;
-    effective[name] = raw + imbalance - recency; // full precision; round only at render
+    effective[name] = raw + imbalance - recency;
   }
   return effective;
 }
 
-/**
- * Compare two bid candidates: highest score first, fewest speaks second,
- * alphabetical tiebreak.
- */
 function compareBidCandidates(
   agents: Record<string, AgentState>,
   bids: Record<string, number>,
@@ -132,7 +106,6 @@ function compareBidCandidates(
   return leftName < rightName ? -1 : 1;
 }
 
-/** Build a bids transcript entry. */
 function makeBidEntry(
   state: DiscussState,
   allBids: Record<string, number>,
@@ -153,7 +126,6 @@ function makeBidEntry(
   };
 }
 
-/** Transition state to speaking with a resolved winner. */
 function startSpeaking(
   state: DiscussState,
   allBids: Record<string, number>,
@@ -178,7 +150,6 @@ function startSpeaking(
   };
 }
 
-/** Return a no-winner resolution with a bids transcript entry. */
 function noWinnerResult(
   state: DiscussState,
   allBids: Record<string, number>,
@@ -195,7 +166,6 @@ function noWinnerResult(
   };
 }
 
-/** Append a transcript entry to state. Sets updated_at and last_activity_at. */
 function appendEntry(state: DiscussState, entry: TranscriptEntry, now: string): DiscussState {
   return {
     ...state,
@@ -205,7 +175,6 @@ function appendEntry(state: DiscussState, entry: TranscriptEntry, now: string): 
   };
 }
 
-/** Reset current_bids to null and rebuild pending_bidders from eligible agents. */
 function resetBids(state: DiscussState): DiscussState {
   const current_bids: Record<string, number | null> = {};
   const pending_bidders: string[] = [];
@@ -224,7 +193,6 @@ function resetBids(state: DiscussState): DiscussState {
   };
 }
 
-/** Pick speaker on cold start: fairness first (fewer speaks), desire second. */
 function coldStartPick(state: DiscussState): string | null {
   const eligible = Object.entries(state.agents)
     .filter(([, a]) => !a.banned && a.quota_remaining > 0)
@@ -238,9 +206,6 @@ function coldStartPick(state: DiscussState): string | null {
   return eligible[0]?.[0] ?? null;
 }
 
-/**
- * Create initial session state (session_id/session_dir/team_name filled by caller).
- */
 export function initSession(
   input: DiscussCreateInput,
   now: string,
@@ -290,7 +255,6 @@ export function initSession(
   };
 }
 
-/** Transition setup->bidding. Called by discuss_lead({_3_step}) handler. */
 export function startBidding(state: DiscussState, now: string): Result<DiscussState> {
   if (state.status !== 'setup') {
     return { ok: false, error: 'not_in_setup', detail: { current: state.status } };
@@ -307,7 +271,6 @@ export function startBidding(state: DiscussState, now: string): Result<DiscussSt
   };
 }
 
-/** Submit a bid. Returns updated state or error. */
 export function applyBid(
   state: DiscussState,
   agentName: string,
@@ -341,10 +304,6 @@ export function applyBid(
   };
 }
 
-/**
- * Resolve current bidding round.
- * Cascade: Primary pool -> fallback -> cold start -> no winner/epoch transition.
- */
 export function resolveWinner(
   state: DiscussState,
   now: string,
@@ -362,34 +321,28 @@ export function resolveWinner(
     return { ok: false, error: 'quorum_not_met', detail: { missing } };
   }
 
-  const allBids: Record<string, number> = {};
-  for (const [n, v] of Object.entries(state.current_bids)) {
-    if (!state.agents[n]?.banned && typeof v === 'number') {
-      allBids[n] = v;
-    }
-  }
+  const allBids = collectSubmittedBids(state);
 
   const lastSpeaker = findLastSpeaker(state.transcript);
   const effectiveBids = computeEffectiveBids(allBids, state.agents, lastSpeaker);
   const threshold = state.bid_threshold;
-  // Sort by effective score; threshold filter uses raw score (agent intent preserved)
   const cmp = (a: [string, number], b: [string, number]) => compareBidCandidates(state.agents, effectiveBids, a, b);
 
-  const primaryPool = Object.entries(allBids)
-    .filter(([n, s]) => s >= threshold && state.agents[n].quota_remaining > 0)
-    .sort(cmp);
+  const createBidPool = (qualifier: (name: string, score: number) => boolean): Array<[string, number]> =>
+    Object.entries(allBids)
+      .filter(([name, score]) => qualifier(name, score))
+      .sort(cmp);
 
+  const primaryPool = createBidPool((name, score) => score >= threshold && state.agents[name].quota_remaining > 0);
   if (primaryPool.length > 0) {
     return startSpeaking(state, allBids, primaryPool[0][0], 'quota', now, undefined, effectiveBids);
   }
 
-  const fallbackPool = Object.entries(allBids)
-    .filter(([n, s]) =>
-      s >= threshold &&
-      state.agents[n].quota_remaining === 0 &&
-      !state.agents[n].fallback_used,
-    )
-    .sort(cmp);
+  const fallbackPool = createBidPool((name, score) =>
+    score >= threshold
+    && state.agents[name].quota_remaining === 0
+    && !state.agents[name].fallback_used,
+  );
 
   if (fallbackPool.length > 0) {
     const [winnerName] = fallbackPool[0];
@@ -418,18 +371,14 @@ export function resolveWinner(
   }
 
   if (state.epoch < state.max_epochs) {
-    const agents: Record<string, AgentState> = {};
-    for (const [name, a] of Object.entries(state.agents)) {
-      if (a.banned) {
-        agents[name] = a;
-      } else {
-        agents[name] = {
-          ...a,
-          quota_remaining: state.quota_per_epoch,
-          fallback_used: false,
-        };
-      }
-    }
+    const agents = Object.fromEntries(
+      Object.entries(state.agents).map(([name, agent]) => [
+        name,
+        agent.banned
+          ? agent
+          : { ...agent, quota_remaining: state.quota_per_epoch, fallback_used: false },
+      ]),
+    ) as Record<string, AgentState>;
 
     const nextEpochState = resetBids({
       ...appendEntry(state, makeBidEntry(state, allBids, null, 'no_winner', now, effectiveBids), now),
@@ -451,7 +400,6 @@ export function resolveWinner(
   return noWinnerResult(state, allBids, 'max_epochs_reached', now, effectiveBids);
 }
 
-/** Record a speech from the current speaker. */
 export function applySpeech(
   state: DiscussState,
   agentName: string,
@@ -506,7 +454,6 @@ export function applySpeech(
   return { ok: true, value: newState };
 }
 
-/** Auto timeout handler after speech escalation. */
 export function applySpeechTimeout(
   state: DiscussState,
   now: string,
@@ -551,7 +498,6 @@ export function applySpeechTimeout(
   };
 }
 
-/** Atomically mark a set of non-responsive agents as expelled. */
 export function applyExpel(
   state: DiscussState,
   pendingAgents: string[],
@@ -598,7 +544,6 @@ export function applyExpel(
   return { ok: true, value: { state: nextState, hint } };
 }
 
-/** Append epoch summary to transcript. */
 export function applyEpochSummary(
   state: DiscussState,
   summary: string,
@@ -625,10 +570,6 @@ export function applyEpochSummary(
   };
 }
 
-/**
- * End the discussion session.
- * `setup` status is intentionally allowed without force.
- */
 export function applyEnd(
   state: DiscussState,
   opts: { force?: boolean; reason?: string; synthesis?: string },

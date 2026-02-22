@@ -1,8 +1,3 @@
-/**
- * Shared types for the discuss MCP server.
- * Pure data - zero imports from node: or project modules.
- */
-
 type AgentScoreMap = Record<string, number>;
 type NullableAgentScoreMap = Record<string, number | null>;
 type TranscriptStepMetadata = {
@@ -15,16 +10,17 @@ type TranscriptEpochMetadata = {
   ts: string;
 };
 
-// ─── Transcript entries (discriminated union) ────────────────────────────────
-
 export type TranscriptEntry =
-  | ({ type: 'bids'; bids: AgentScoreMap; effective_bids?: AgentScoreMap; winner: string | null;
-    resolve_type: 'normal' | 'fallback' | 'cold_start' | 'no_winner'; } & TranscriptStepMetadata)
+  | ({
+    type: 'bids';
+    bids: AgentScoreMap;
+    effective_bids?: AgentScoreMap;
+    winner: string | null;
+    resolve_type: 'normal' | 'fallback' | 'cold_start' | 'no_winner';
+  } & TranscriptStepMetadata)
   | ({ type: 'speech'; agent: string; display_name: string; content: string; } & TranscriptStepMetadata)
   | ({ type: 'epoch_summary'; summary: string; } & TranscriptEpochMetadata)
   | ({ type: 'session_event'; event: 'force_end' | 'synthesis'; detail: string; } & TranscriptEpochMetadata);
-
-// ─── AgentState ─────────────────────────────────────────────────────────────
 
 export type AgentState = {
   persona: string;
@@ -34,8 +30,6 @@ export type AgentState = {
   fallback_used: boolean;
   banned: boolean;
 };
-
-// ─── DiscussState ─────────────────────────────────────────────────────────────
 
 export type DiscussState = {
   session_id: string;
@@ -66,13 +60,9 @@ export type DiscussState = {
   bid_threshold: number;
 };
 
-// ─── Result<T> for pure functions ─────────────────────────────────────────────
-
 export type Result<T> =
   | { ok: true; value: T }
   | { ok: false; error: string; detail?: Record<string, unknown> };
-
-// ─── ResolveResult ────────────────────────────────────────────────────────────
 
 export type ResolveReason =
   | 'all_below_threshold'
@@ -87,8 +77,6 @@ export type ResolveReason =
 export type ResolveResult =
   | { winner: string; step?: never; speaker_type: 'quota' | 'fallback' | 'cold_start' }
   | { no_winner: true; reason: ResolveReason };
-
-// ─── Discriminated return payloads used by handlers ────────────────────────
 
 export type BidResult =
   | { action: 'speak' }

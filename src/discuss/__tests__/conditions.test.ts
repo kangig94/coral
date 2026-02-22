@@ -1,6 +1,3 @@
-/**
- * Condition predicate tests - pure functions, no I/O.
- */
 
 import { describe, it, expect } from 'vitest';
 import { allBidsIn, bidReleased, isWinner, setupComplete, noParticipants, speechDelivered } from '../conditions.js';

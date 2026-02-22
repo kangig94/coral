@@ -22,8 +22,6 @@ function drawUInt32(rng: () => number): number {
   return Math.floor(rng() * UINT32_SIZE) >>> 0;
 }
 
-// ── Seeded RNG ────────────────────────────────────────────────────────────────
-// mulberry32 PRNG - deterministic, uniform [0, 1)
 export function createSeededRng(seed: number): () => number {
   let t = seed >>> 0;
   return () => {
@@ -34,8 +32,6 @@ export function createSeededRng(seed: number): () => number {
   };
 }
 
-// ── Cartesian product ─────────────────────────────────────────────────────────
-// Each element: [pos0, pos1, ..., posN] in axis order
 export function cartesianProduct(axes: ControversyAxis[]): string[][] {
   if (axes.length === 0) return [[]];
 
@@ -52,7 +48,6 @@ export function cartesianProduct(axes: ControversyAxis[]): string[][] {
   return product;
 }
 
-// ── Hamming distance ──────────────────────────────────────────────────────────
 export function hammingDistance(a: string[], b: string[]): number {
   const min = Math.min(a.length, b.length);
   let distance = Math.abs(a.length - b.length);
@@ -62,8 +57,6 @@ export function hammingDistance(a: string[], b: string[]): number {
   return distance;
 }
 
-// ── Gaussian RBF kernel ───────────────────────────────────────────────────────
-// L[i][j] = exp(-hamming(i,j)² / (2σ²)), σ = √(dims/2)
 export function buildKernel(pool: string[][], sigma: number): number[][] {
   const size = pool.length;
   const kernel = Array.from({ length: size }, () => Array<number>(size).fill(0));
@@ -92,9 +85,6 @@ function identityMatrix(size: number): number[][] {
   );
 }
 
-// ── Jacobi rotation eigendecomposition ───────────────────────────────────────
-// Returns eigenvalues + eigenvectors (column vectors) of symmetric matrix
-// Verification: sum(eigenvalues) = trace(matrix), V^T * V = I
 export function eigendecompose(matrix: number[][]): { eigenvalues: number[]; eigenvectors: number[][] } {
   const n = matrix.length;
   if (n === 0) return { eigenvalues: [], eigenvectors: [] };
@@ -238,9 +228,6 @@ function weightedSample(weights: number[], rng: () => number): number {
   return -1;
 }
 
-// ── Exact k-DPP sampling ─────────────────────────────────────────────────────
-// Phase A: ESP-based backward sampling to select k eigenvectors
-// Phase B: Sequential sampling from selected eigenvector subspace with Gram-Schmidt
 export function sampleKDpp(
   eigenvalues: number[],
   eigenvectors: number[][],
@@ -316,7 +303,6 @@ export function sampleKDpp(
   return selectedItems;
 }
 
-// ── Tone assignment ───────────────────────────────────────────────────────────
 export const TONE_AXES = {
   formality: ['formal', 'conversational'] as const,
   evidence: ['data-driven', 'narrative'] as const,
@@ -331,7 +317,6 @@ function shuffleInPlace<T>(items: T[], rng: () => number): T[] {
   return items;
 }
 
-// Returns n tone assignments via seeded shuffle (cycles if n > 8)
 export function assignTones(n: number, rng: () => number): ToneAssignment[] {
   const allCombinations: ToneAssignment[] = [];
 
@@ -504,7 +489,6 @@ function rankReuseSlots(selectedPoolIndexes: number[], pool: string[][]): number
   return scores.map((entry) => entry.slotIndex);
 }
 
-// ── Main function ─────────────────────────────────────────────────────────────
 export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput> {
   const seedUsed = input.seed == null
     ? drawUInt32(Math.random)
@@ -512,7 +496,6 @@ export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput>
   const rng = createSeededRng(seedUsed);
   const requestedCount = input.n;
 
-  // Pre-check before materializing: cartesian product grows exponentially
   const estimatedPoolSize = input.controversy_axes.reduce((acc, a) => acc * a.positions.length, 1);
   if (estimatedPoolSize > 100_000) {
     return {
@@ -569,7 +552,6 @@ export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput>
   }
   if (selectedPoolIndexes.length !== uniqueCount) throw new Error('k-DPP sample size mismatch');
 
-  // Reuse: when n > pool_size, pick extras by largest hamming distance from selected set
   const reuseOrder = rankReuseSlots(selectedPoolIndexes, pool);
   const tones = assignTones(requestedCount, rng);
   const origins = input.demographics

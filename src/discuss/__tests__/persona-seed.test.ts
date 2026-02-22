@@ -324,7 +324,6 @@ describe('seedPersonas', () => {
   });
 
   it('subsamples pool when exceeding MAX_POOL_SIZE', () => {
-    // 7^3 = 343 > 256, n=1 avoids k-DPP (single random pick)
     const axes = Array.from({ length: 3 }, (_, i) => ({
       axis: `ax${i}`,
       positions: Array.from({ length: 7 }, (__, j) => `p${j}`),
@@ -339,7 +338,6 @@ describe('seedPersonas', () => {
   });
 
   it('does not subsample at exactly MAX_POOL_SIZE', () => {
-    // 4^4 = 256 = MAX_POOL_SIZE, n=1 avoids k-DPP
     const axes = Array.from({ length: 4 }, (_, i) => ({
       axis: `ax${i}`,
       positions: Array.from({ length: 4 }, (__, j) => `p${j}`),
@@ -353,7 +351,6 @@ describe('seedPersonas', () => {
   });
 
   it('subsampled results are reproducible with the same seed', () => {
-    // 7^3 = 343 > 256, n=1 avoids k-DPP
     const axes = Array.from({ length: 3 }, (_, i) => ({
       axis: `ax${i}`,
       positions: Array.from({ length: 7 }, (__, j) => `p${j}`),
@@ -366,7 +363,6 @@ describe('seedPersonas', () => {
   });
 
   it('returns pool_too_large for extreme inputs without materializing', () => {
-    // 10^10 = 10 billion — would OOM if materialized
     const axes = Array.from({ length: 10 }, (_, i) => ({
       axis: `ax${i}`,
       positions: Array.from({ length: 10 }, (__, j) => `p${j}`),
@@ -396,7 +392,6 @@ describe('seedPersonas', () => {
       expect(assignment.persona_seed).toBeGreaterThanOrEqual(0);
       expect(assignment.persona_seed).toBeLessThan(0x1_0000_0000);
     }
-    // Seeds should be distinct (extremely unlikely to collide for n=4)
     const seeds = value.assignments.map((a) => a.persona_seed);
     expect(new Set(seeds).size).toBe(seeds.length);
   });
@@ -520,7 +515,6 @@ describe('cartesianProduct', () => {
   });
 });
 
-// ── Adversarial tests (red-attacker provenance) ─────────────────────────────
 
 describe('PRNG determinism across demographics presence', () => {
   it('persona_seeds are identical with and without demographics field absent (no demographics branch taken)', () => {

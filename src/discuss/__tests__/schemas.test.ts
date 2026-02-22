@@ -231,7 +231,6 @@ describe('discussLeadOpSchema', () => {
   });
 });
 
-// ── Adversarial tests (red-attacker provenance) ─────────────────────────────
 
 describe('demographicsShape via seedShape: outlier_ratio edge values', () => {
   const baseAxes = [{ axis: 'cost', positions: ['high', 'low'] }];
