@@ -2,17 +2,6 @@
 name: codex-analyze
 description: Deep analysis via Codex delegation with Claude post-processing
 argument-hint: "[investigation target or question]"
-hooks:
-  PreToolUse:
-    - hooks:
-        - type: command
-          command: "${CLAUDE_PLUGIN_ROOT}/hooks/kb-memo-reminder.sh"
-          once: true
-  Stop:
-    - hooks:
-        - type: command
-          command: "${CLAUDE_PLUGIN_ROOT}/hooks/kb-promote-reminder.sh"
-          once: true
 ---
 
 # Deep Analysis via Codex

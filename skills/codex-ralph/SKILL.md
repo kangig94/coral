@@ -4,18 +4,11 @@ description: Persistent execution via Codex delegation (sonnet) - best for imple
 argument-hint: "[--red] [task description]"
 model: sonnet
 disable-model-invocation: true
-hooks:
-  PreToolUse:
-    - hooks:
-        - type: command
-          command: "${CLAUDE_PLUGIN_ROOT}/hooks/kb-memo-reminder.sh"
-          once: true
-  Stop:
-    - hooks:
-        - type: command
-          command: "${CLAUDE_PLUGIN_ROOT}/hooks/kb-promote-reminder.sh"
-          once: true
 ---
+
+```!
+mkdir -p "${CLAUDE_PROJECT_DIR:-.}/.claude/coral/tmp" && touch "${CLAUDE_PROJECT_DIR:-.}/.claude/coral/tmp/kb-active"
+```
 
 # Persistent Execution via Codex
 
