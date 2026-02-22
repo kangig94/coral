@@ -1,7 +1,7 @@
 ---
 name: debug
 description: "Systematic bug diagnosis, planning, and fix execution."
-argument-hint: "[codex:|claude:]<bug description or error message>"
+argument-hint: "[--codex] <bug description or error message>"
 ---
 
 # Bug Debugging
@@ -12,12 +12,11 @@ Diagnose bugs, plan fixes, and execute — end-to-end.
 
 | Argument | Mode |
 |----------|------|
-| `<prompt>` (no prefix) | Claude-native (default) |
-| `claude:<prompt>` | Claude-native |
-| `codex` | Codex delegation (context from conversation) |
-| `codex:<prompt>` | Codex delegation |
+| `<prompt>` | Claude-native (default) |
+| `--codex` | Codex delegation (context from conversation) |
+| `--codex <prompt>` | Codex delegation |
 
-Strip the prefix before passing the prompt to the execution path.
+Strip the `--codex` flag before passing the prompt to the execution path.
 
 ## Claude-native Execution (default)
 
