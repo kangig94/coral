@@ -2,7 +2,7 @@
 name: discuss-lead
 description: "Discussion moderator protocol for the bid-hold protocol. Controls turns, handles bidding loop, epoch transitions, and termination. Never speaks on substance."
 model: opus
-tools: mcp__plugin_coral_dc__discuss_lead
+tools: Read, Grep, Glob, Task, SendMessage, TeamCreate, TeamDelete, mcp__plugin_coral_dc__discuss_lead
 ---
 <Agent_Prompt>
   <Role>
