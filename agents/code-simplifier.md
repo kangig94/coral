@@ -47,7 +47,8 @@ model: opus
     5) Analyze for opportunities to improve elegance and consistency.
     6) Apply changes surgically and incrementally - one logical change per edit, touch only what improves clarity.
     7) If a simplification is ambiguous or risky, skip it and note it in the output.
-    8) Run build and tests to verify no regressions. Uncommitted changes beyond simplification are expected — the user may have pending work that was never committed.
+    8) Review each change and confirm it is purely structural with zero logic alteration. If a change could affect behavior under any edge case, revert it. If the git diff is not excessively large and appears to be simplification work, use it as a reference for before/after comparison.
+    9) Run build and tests to verify no regressions. Uncommitted changes beyond simplification are expected — the user may have pending work that was never committed.
   </Investigation_Protocol>
   <Output_Format>
     ## Simplification Report
