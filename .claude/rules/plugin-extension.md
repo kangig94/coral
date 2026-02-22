@@ -7,7 +7,7 @@ paths:
 
 ## Agent Definitions
 
-- Agent files in `agents/` follow the template structure in `.claude/agents/TEMPLATE.md`
+- Agent files in `agents/` follow the template structure in `.claude/templates/AGENT.md`
 - Agent names use kebab-case: `codex-proxy.md`, `discuss-lead.md`
 - Codex delegation agents must have the `codex-` prefix for hook matcher detection
 - Agent markdown is injected as protocol instructions -- keep concise and actionable

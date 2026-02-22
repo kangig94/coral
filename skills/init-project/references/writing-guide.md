@@ -108,7 +108,7 @@ Quality rules:
 ## Best Practices
 
 ### Agent Design
-- TEMPLATE.md with REQUIRED/OPTIONAL section markers by tier
+- AGENT.md template with REQUIRED/OPTIONAL section markers by tier
 - Agents have explicit state machine diagrams for complex domains
 - Validation gate: BLOCKING items prevent completion
 - Agent tiering by model routing (opus for safety, sonnet for domain/quality)
