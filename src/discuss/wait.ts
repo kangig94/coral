@@ -30,7 +30,7 @@ export async function waitForCondition(
   const startAt = Date.now();
   const infinite = timeoutMs <= 0;
 
-  const initial = await tryReadState(statePath);
+  const initial = await readState(statePath);
   if (initial && predicate(initial)) {
     return { fulfilled: true, elapsed_ms: 0, state: initial, error: null };
   }
@@ -45,7 +45,7 @@ export async function waitForCondition(
     }
 
     await new Promise((resolve) => { setTimeout(resolve, intervalMs); });
-    const state = await tryReadState(statePath);
+    const state = await readState(statePath);
     if (state) lastKnownGood = state;
 
     if (state && predicate(state)) {
@@ -55,7 +55,7 @@ export async function waitForCondition(
 }
 
 /** Safe async read - returns null if file is mid-rename/corrupt. */
-async function tryReadState(p: string): Promise<DiscussState | null> {
+async function readState(p: string): Promise<DiscussState | null> {
   try {
     return JSON.parse(await fs.promises.readFile(p, 'utf8')) as DiscussState;
   } catch {

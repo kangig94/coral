@@ -144,13 +144,13 @@ export function renderHeader(topic: string): string {
  * Full audit data (scores, quotas) is preserved in transcript.md for human review.
  */
 export function formatFull(entries: TranscriptEntry[], agents: Record<string, AgentState>): string {
-  const agentView = entries.map((e) => {
-    if (e.type === 'bids') {
-      if (!e.winner) return '';  // no_winner rounds: skip (no speaker to announce)
-      const dn = agents[e.winner]?.display_name ?? e.winner;
-      return `\n> **Speaker: ${dn}**\n`;
+  const agentView = entries.map((entry) => {
+    if (entry.type === 'bids') {
+      if (!entry.winner) return '';
+      const winnerDisplayName = agents[entry.winner]?.display_name ?? entry.winner;
+      return `\n> **Speaker: ${winnerDisplayName}**\n`;
     }
-    return renderEntry(e, agents);
+    return renderEntry(entry, agents);
   }).join('');
   return renderHeader('') + agentView;
 }

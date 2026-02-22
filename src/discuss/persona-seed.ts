@@ -17,6 +17,10 @@ export const MAX_POOL_SIZE = 256;
 const EPS = 1e-12;
 const UINT32_SIZE = 0x1_0000_0000;
 
+function drawUInt32(rng: () => number): number {
+  return Math.floor(rng() * UINT32_SIZE) >>> 0;
+}
+
 // ── Seeded RNG ────────────────────────────────────────────────────────────────
 // mulberry32 PRNG - deterministic, uniform [0, 1)
 export function createSeededRng(seed: number): () => number {
@@ -369,7 +373,7 @@ function rankReuseSlots(selectedPoolIndexes: number[], pool: string[][]): number
 // ── Main function ─────────────────────────────────────────────────────────────
 export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput> {
   const seedUsed = input.seed == null
-    ? Math.floor(Math.random() * UINT32_SIZE) >>> 0
+    ? drawUInt32(Math.random)
     : (input.seed >>> 0);
   const rng = createSeededRng(seedUsed);
   const requestedCount = input.n;
@@ -434,7 +438,7 @@ export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput>
     assignments.push({
       positions: buildPositionRecord(input.controversy_axes, pool[selectedPoolIndexes[i]]),
       tone: tones[i],
-      persona_seed: Math.floor(rng() * UINT32_SIZE) >>> 0,
+      persona_seed: drawUInt32(rng),
     });
   }
 
@@ -443,7 +447,7 @@ export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput>
     assignments.push({
       positions: buildPositionRecord(input.controversy_axes, pool[selectedPoolIndexes[sourceSlot]]),
       tone: tones[i],
-      persona_seed: Math.floor(rng() * UINT32_SIZE) >>> 0,
+      persona_seed: drawUInt32(rng),
       shared_position_with: sourceSlot,
     });
   }

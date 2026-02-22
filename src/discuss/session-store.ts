@@ -38,6 +38,15 @@ function parseLockOwner(filePath: string): { pid: number; startedAt: number } | 
   }
 }
 
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ─── Session lock ─────────────────────────────────────────────────────────────
 
 /**
@@ -66,15 +75,8 @@ class SessionLock {
         const err = e as NodeJS.ErrnoException;
         if (err.code === 'EEXIST') {
           const owner = parseLockOwner(pidFile);
-          const ownerAlive = owner ? (() => {
-            try {
-              process.kill(owner.pid, 0);
-              return true;
-            } catch {
-              return false;
-            }
-          })() : false;
-          const isStale = !ownerAlive || (owner ? Date.now() - owner.startedAt > staleThresholdMs : true);
+          const isStale = !owner || !isProcessAlive(owner.pid)
+            || (Date.now() - owner.startedAt > staleThresholdMs);
           if (isStale) {
             try { fs.unlinkSync(pidFile); } catch { /* ignore */ }
             try { fs.rmdirSync(lockDir); } catch { /* ignore */ }
