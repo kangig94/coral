@@ -416,16 +416,22 @@ export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput>
   const uniqueCount = Math.min(requestedCount, pool.length);
   let selectedPoolIndexes: number[];
 
-  if (uniqueCount === 0) {
-    selectedPoolIndexes = [];
-  } else if (uniqueCount === 1) {
-    selectedPoolIndexes = [Math.floor(rng() * pool.length)];
-  } else if (uniqueCount === pool.length) {
-    selectedPoolIndexes = Array.from({ length: pool.length }, (_, i) => i);
-  } else {
-    const kernel = buildKernel(pool, sigma);
-    const { eigenvalues, eigenvectors } = eigendecompose(kernel);
-    selectedPoolIndexes = sampleKDpp(eigenvalues, eigenvectors, uniqueCount, rng);
+  switch (uniqueCount) {
+    case 0:
+      selectedPoolIndexes = [];
+      break;
+    case 1:
+      selectedPoolIndexes = [Math.floor(rng() * pool.length)];
+      break;
+    case pool.length:
+      selectedPoolIndexes = Array.from({ length: pool.length }, (_, i) => i);
+      break;
+    default: {
+      const kernel = buildKernel(pool, sigma);
+      const { eigenvalues, eigenvectors } = eigendecompose(kernel);
+      selectedPoolIndexes = sampleKDpp(eigenvalues, eigenvectors, uniqueCount, rng);
+      break;
+    }
   }
   if (selectedPoolIndexes.length !== uniqueCount) throw new Error('k-DPP sample size mismatch');
 

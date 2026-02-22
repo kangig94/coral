@@ -5,8 +5,12 @@
 
 type AgentScoreMap = Record<string, number>;
 type NullableAgentScoreMap = Record<string, number | null>;
-type TranscriptMetadata = {
+type TranscriptStepMetadata = {
   step: number;
+  epoch: number;
+  ts: string;
+};
+type TranscriptEpochMetadata = {
   epoch: number;
   ts: string;
 };
@@ -14,12 +18,11 @@ type TranscriptMetadata = {
 // ─── Transcript entries (discriminated union) ────────────────────────────────
 
 export type TranscriptEntry =
-  | ({ type: 'bids'; bids: AgentScoreMap; winner: string | null;
-    resolve_type: 'normal' | 'fallback' | 'cold_start' | 'no_winner'; } & TranscriptMetadata)
-  | ({ type: 'speech'; agent: string; display_name: string; content: string; } & TranscriptMetadata)
-  | { type: 'epoch_summary'; epoch: number; ts: string; summary: string; }
-  | { type: 'session_event'; epoch: number; ts: string;
-      event: 'force_end' | 'synthesis'; detail: string; };
+  | ({ type: 'bids'; bids: AgentScoreMap; effective_bids?: AgentScoreMap; winner: string | null;
+    resolve_type: 'normal' | 'fallback' | 'cold_start' | 'no_winner'; } & TranscriptStepMetadata)
+  | ({ type: 'speech'; agent: string; display_name: string; content: string; } & TranscriptStepMetadata)
+  | ({ type: 'epoch_summary'; summary: string; } & TranscriptEpochMetadata)
+  | ({ type: 'session_event'; event: 'force_end' | 'synthesis'; detail: string; } & TranscriptEpochMetadata);
 
 // ─── AgentState ─────────────────────────────────────────────────────────────
 

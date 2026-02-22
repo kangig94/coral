@@ -37,8 +37,8 @@ export async function waitForCondition(
 
   let lastKnownGood: DiscussState | null = initial;
   while (true) {
-    if (!infinite && Date.now() - startAt >= timeoutMs) {
-      const elapsedMs = Date.now() - startAt;
+    const elapsedMs = Date.now() - startAt;
+    if (!infinite && elapsedMs >= timeoutMs) {
       return lastKnownGood
         ? { fulfilled: false, elapsed_ms: elapsedMs, state: lastKnownGood, error: null }
         : { fulfilled: false, elapsed_ms: elapsedMs, state: null, error: 'state_unavailable' };
@@ -46,9 +46,9 @@ export async function waitForCondition(
 
     await new Promise((resolve) => { setTimeout(resolve, intervalMs); });
     const state = await readState(statePath);
-    if (state) lastKnownGood = state;
-
-    if (state && predicate(state)) {
+    if (!state) continue;
+    lastKnownGood = state;
+    if (predicate(state)) {
       return { fulfilled: true, elapsed_ms: Date.now() - startAt, state, error: null };
     }
   }

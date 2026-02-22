@@ -3,7 +3,6 @@ name: codex-ralph
 description: Persistent execution via Codex delegation (sonnet) - best for implementing an existing plan
 argument-hint: "[--red] [task description]"
 model: sonnet
-disable-model-invocation: true
 ---
 
 ```!
@@ -58,6 +57,12 @@ After the loop exits:
    d. **Red-attacker gate** (if `--red`): Wait for background red-attacker to complete. Read its output for the list of generated test files.
    e. **Test**: Run the test suite after build succeeds. If `--red`, this now includes adversarial tests.
    f. **Red fix loop** (if `--red` and adversarial test failures): Fix failures → re-run test. Cap at **3 iterations** — if still failing, report remaining failures and escalate rather than looping indefinitely.
+   g. **Red merge** (if `--red` and tests pass): Merge adversarial tests into the main test files and delete the `red-` files. This ensures test organization stays module-based, not generation-based.
+      - For each `red-<target>.<ext>` file, identify the corresponding main test file (e.g., `red-state-machine-decay.test.ts` → `state-machine.test.ts`)
+      - Move `describe` blocks from the red file into the main test file (append at end, preserve imports)
+      - Delete the `red-` file
+      - Re-run tests to verify merge correctness
+      - Record the adversarial test provenance in the commit message, not in file naming
 
 ## Sandbox bypass
 

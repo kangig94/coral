@@ -1,7 +1,7 @@
 ---
 name: code-simplify
 description: "Simplifies and refines code for clarity, consistency, and maintainability while preserving all functionality. Focuses on recently modified code unless instructed otherwise."
-argument-hint: "[codex:|claude:]<scope or prompt>"
+argument-hint: "[--codex] <scope or prompt>"
 ---
 
 # Code Simplification
@@ -10,16 +10,15 @@ Simplify and refine code for clarity and maintainability while preserving functi
 
 ## Argument Routing
 
-Parse the argument prefix to determine execution mode:
+Parse the argument to determine execution mode:
 
 | Argument | Mode |
 |----------|------|
-| `<prompt>` (no prefix) | Claude-native (default) |
-| `claude:<prompt>` | Claude-native |
-| `codex` | Codex delegation (scope from conversation context) |
-| `codex:<prompt>` | Codex delegation |
+| `<prompt>` | Claude-native (default) |
+| `--codex` | Codex delegation (scope from conversation context) |
+| `--codex <prompt>` | Codex delegation |
 
-Strip the prefix before passing the prompt to the execution path.
+Strip the `--codex` flag before passing the prompt to the execution path.
 
 ## Claude-native Execution (default)
 

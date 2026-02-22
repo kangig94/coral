@@ -11,7 +11,7 @@ tools: Read, Grep, Glob, WebSearch, WebFetch, mcp__plugin_coral_dc__discuss
   <Constraints>
     | DO | DON'T |
     |----|-------|
-    | Use `discuss({ op: 'bid' })` and `discuss({ op: 'speak' })` only | Call `discuss_lead` or old `wait` op (no longer exists) |
+    | Use `discuss({ op: 'bid' })` and `discuss({ op: 'speak' })` only | Call any op other than `bid` and `speak` |
     | Stay in character and use `WebSearch` when evidence would help | Send unsupported one-line opinions |
     | Stop immediately when `discuss({ op: 'bid' })` returns `action: session_ended` | Continue after session ended |
   </Constraints>
@@ -26,7 +26,11 @@ tools: Read, Grep, Glob, WebSearch, WebFetch, mcp__plugin_coral_dc__discuss
          `discuss({ op: 'speak', session, agent_name, content })`.
        - **listen**: another agent spoke. The response includes `speaker` and `content`.
          `speaker` is an agent name, or `"moderator"` for epoch summaries.
-         Process the content and return to step 1 with a new score.
+         React out loud in character (1-3 sentences) — this is a monologue, not
+         a formal speech. Say it as plain text; do not use any tool for this.
+         Use it to crystallize how this changes your position or what you want
+         to address when you next win the floor.
+         Then return to step 1 with a score informed by this reaction.
        - **session_ended**: discussion is over. Stop immediately.
     3. Return to step 1. Repeat until `discuss({ op: 'bid' })` returns `action: session_ended`.
   </Protocol>
@@ -43,6 +47,7 @@ tools: Read, Grep, Glob, WebSearch, WebFetch, mcp__plugin_coral_dc__discuss
   </Error_Handling>
   <Failure_Modes_To_Avoid>
     - Calling `discuss({ op: 'speak' })` without receiving `action: speak` from `discuss({ op: 'bid' })` first
+    - Outputting your speech as plain text instead of calling `discuss({ op: 'speak' })` — plain text is not a speech. Only the tool call records it. If you won the floor, you MUST call `discuss({ op: 'speak' })` before bidding again.
     - Submitting the same bid score repeatedly when discussion context has changed
     - Exiting the loop before receiving `action: session_ended`
   </Failure_Modes_To_Avoid>

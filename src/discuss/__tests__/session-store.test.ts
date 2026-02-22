@@ -182,7 +182,7 @@ describe('cleanupExpiredSessions', () => {
 
 describe('withLock', () => {
   it('should serialize concurrent access', async () => {
-    const { fullPath, state } = createAndSaveSession();
+    const { fullPath } = createAndSaveSession();
     const results: number[] = [];
 
     // Two concurrent lock acquisitions - order should be serialized
@@ -197,6 +197,5 @@ describe('withLock', () => {
     const idx3 = results.indexOf(3);
     expect(idx2).toBeGreaterThan(idx1); // 2 always after 1
     expect(Math.abs(idx2 - idx3)).not.toBe(0); // 2 and 3 not adjacent mid-lock
-    void state; // suppress unused warning
   });
 });

@@ -7,6 +7,8 @@
 
 ## Core Principles
 
+**Clarity First**: Good code guides readers naturally — structure reveals intent without requiring explanation. Dense code can be clear; minimal code can be confusing. Optimize for cognitive load, not line count.
+
 {3-5 domain-specific principles, each 1 sentence + supporting bullets}
 
 ## Source Tree Policy

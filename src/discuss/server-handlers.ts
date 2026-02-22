@@ -7,6 +7,7 @@ import type {
   EndReason,
   DiscussState,
 } from './types.js';
+import { z } from 'zod';
 import { SessionStore } from './session-store.js';
 import {
   applyBid,
@@ -41,6 +42,25 @@ import {
   type DiscussLeadOpInput,
 } from './schemas.js';
 import type { Result } from './types.js';
+
+type ToolParseResult<T> = { ok: true; value: T } | { ok: false; value: McpResult };
+
+function parseToolInput<T>(
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+  rawArgs: Record<string, unknown>,
+): ToolParseResult<T> {
+  const parsed = schema.safeParse(rawArgs);
+  if (parsed.success) {
+    return { ok: true, value: parsed.data };
+  }
+
+  const maybeOp = (rawArgs as { op?: unknown }).op;
+  if (parsed.error.issues.some((issue) => issue.code === 'invalid_union_discriminator') && maybeOp !== undefined) {
+    return { ok: false, value: jsonResult({ error: 'unknown_op', op: maybeOp }) };
+  }
+
+  throw parsed.error;
+}
 
 function resolveSession(store: SessionStore, sessionId: string): string | McpResult {
   const dir = store.resolveDir(sessionId);
@@ -773,27 +793,15 @@ export async function handleToolCall(
   try {
     switch (name) {
       case 'discuss': {
-        const parsed = discussAgentOpSchema.safeParse(rawArgs);
-        if (!parsed.success) {
-          const maybeOp = (rawArgs as { op?: unknown }).op;
-          if (parsed.error.issues.some((i) => i.code === 'invalid_union_discriminator') && maybeOp !== undefined) {
-            return jsonResult({ error: 'unknown_op', op: maybeOp });
-          }
-          throw parsed.error;
-        }
-        return handleAgentOp(parsed.data, store);
+        const parsed = parseToolInput(discussAgentOpSchema, rawArgs);
+        if (!parsed.ok) return parsed.value;
+        return handleAgentOp(parsed.value, store);
       }
 
       case 'discuss_lead': {
-        const parsed = discussLeadOpSchema.safeParse(rawArgs);
-        if (!parsed.success) {
-          const maybeOp = (rawArgs as { op?: unknown }).op;
-          if (parsed.error.issues.some((i) => i.code === 'invalid_union_discriminator') && maybeOp !== undefined) {
-            return jsonResult({ error: 'unknown_op', op: maybeOp });
-          }
-          throw parsed.error;
-        }
-        return handleDiscussLeadOp(parsed.data, store);
+        const parsed = parseToolInput(discussLeadOpSchema, rawArgs);
+        if (!parsed.ok) return parsed.value;
+        return handleDiscussLeadOp(parsed.value, store);
       }
 
       default:

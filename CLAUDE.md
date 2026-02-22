@@ -1,6 +1,7 @@
 # Coral Guidelines
 
 Behavioral guidelines to reduce common LLM coding mistakes.
+Good code guides readers naturally — the structure itself reveals intent without requiring explanation.
 Merge with project-specific instructions as needed.
 Tradeoff: These guidelines bias toward caution over speed. For trivial tasks, use judgment.
 
@@ -13,19 +14,25 @@ Don't assume. Don't hide confusion. Surface tradeoffs.
 - If a simpler approach exists, say so. Push back when warranted.
 - If something is unclear, stop. Name what's confusing. Ask.
 
-## 2. Simplicity First
+## 2. Clarity First
 
-Efficient, simple, and elegant. The best solution feels inevitable.
-Minimum code that solves the problem. Nothing speculative.
+The best solution feels inevitable — where no other approach seems possible.
+Good code guides readers naturally. Structure reveals intent without comments as signposts
+or documentation as maps. If you need a comment to explain WHAT the code does,
+the code itself isn't clear enough.
 
 - No features beyond what was asked.
 - No abstractions for single-use code.
 - No "flexibility" or "configurability" that wasn't requested.
 - No error handling for impossible scenarios.
 - If you write 200 lines and it could be 50, rewrite it.
-- Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+- But if you compress 10 clear lines into 3 clever ones, expand it back. Minimize cognitive load, not line count.
+- The primary path reads top-down. Edge cases and error handling don't obscure the main logic.
+- High-level functions read like summaries. Details reveal themselves as you dive deeper.
+- Ask yourself: "Can a reader understand this without any context?" If no, restructure.
 
-Pursue elegance. Efficient, simple code that feels inevitable - where no other solution seems possible - is the highest standard.
+Pursue elegance. Code where the structure itself makes intent obvious — and no simpler
+alternative exists — is the highest standard.
 
 ## 3. Surgical Changes
 
@@ -35,6 +42,7 @@ When editing existing code:
 - Don't "improve" adjacent code, comments, or formatting.
 - Don't refactor things that aren't broken.
 - Match existing style, even if you'd do it differently.
+- Preserve the reader's mental model — don't reorganize working code that readers have already internalized.
 - If you notice unrelated dead code, mention it - don't delete it.
 
 When your changes create orphans:
@@ -69,7 +77,7 @@ If Explanatory/Learning output style is active, also memo any Insights worth pre
 Before debugging from scratch, check `{project}/.claude/coral/kb/` for relevant entries.
 On plan/coplan start, review domain-related kb files.
 
-## Promotion - on task/plan completion, or in common conversation when a memo captures a reusable lesson
+## Promotion - on git commit, on task completion, or when a memo captures a reusable lesson
 Review all memos + MEMORY.md. Check existing kb entries first - discard duplicates,
 update existing entries if the memo refines them, only create new files for genuinely absent knowledge.
 

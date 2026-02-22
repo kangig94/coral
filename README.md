@@ -1,167 +1,164 @@
 # Coral
 
-A Claude Code plugin providing structured agents with Codex CLI bridge and moderated multi-agent discussions.
+Claude Code already knows how to code. Coral teaches it how *you* code.
 
-## Installation
+Your conventions enforced, your workflow structured, your decisions examined from multiple
+angles — all through slash commands that work in any Claude Code session.
 
-```bash
-# Codex CLI
-npm install -g @openai/codex
+## Install
 
-# in Claude Code
+**Requirements:** Node.js 18+
+
+```
 /plugin marketplace add https://github.com/kangig94/coral
 /plugin install coral
 ```
 
-### Statusline (Optional)
-
-Set up the coral HUD statusline for real-time session info:
-
-```
-/coral:statusline install
+**Codex CLI** (optional — enables `codex-*` skills and `--codex` flags):
+```bash
+npm install -g @openai/codex  # v0.104+
 ```
 
-Displays a two-line HUD:
+## Try It Now
+
+No setup. Run this in any Claude Code session, on any existing project:
 
 ```
-opus 4.6      │ 5h:39% (1:23) wk:36% (5.2d) │ ctx:58% │ 50m │ coral:analyze    
-gpt-5.3-codex │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
+/coral:analyze what does this codebase do?
 ```
 
-- **Line 1 (always)**: model, Claude rate limits, context usage, session ID, last active skill
-- **Line 2 (optional)**: Codex model, Codex rate limits, spark limits - shown only when Codex is installed (`~/.codex/auth.json` exists) and opted in during install
+Coral reads your project and returns a structured analysis: architecture, modules, entry
+points, and dependencies. No files written, no configuration required.
 
-If Codex is detected during install, you'll be asked whether to display Codex usage. You can re-run install at any time to update the HUD or toggle the setting.
+## Choose Your Path
 
-To remove: `/coral:statusline uninstall`
-
-## Quick Start
-
-After installing, set up your project for AI-assisted development:
+### Structure my project
 
 ```
 /coral:init-project
 ```
 
-Coral scans your stack, plans with reviewer verification, and generates:
-
-```
-my-project/
-  src/
-  package.json
-+ .claude/
-+   CLAUDE.md                  ← project hub: build commands, workflow, critical rules
-+   agents/
-+     review-orchestrator.md   ← final validation gate
-+     frontend-validator.md    ← activates on *.tsx (React projects)
-+     ...
-+   rules/
-+     conventions.md           ← naming, git, style
-+     frontend-validation.md   ← hook rules, key props, a11y
-+     ...
-+ docs/
-+   architecture.md            ← module map, dependency graph
-```
-
-Without this, Claude works generically. With this, it validates hooks, catches injection, and follows your conventions.
-
-**How to describe your project:**
+Coral scans your stack, plans with reviewer verification, and generates `.claude/` —
+conventions, agents, architecture docs — tailored to your project. Claude follows your
+rules, not generic defaults.
 
 ```bash
-# existing project - just run it, Coral scans automatically
+# existing project — just run it, Coral scans automatically
 /coral:init-project
 
-# tech stack hint - helps when source files are sparse
+# tech stack hint (when source files are sparse)
 /coral:init-project "React + FastAPI"
 
-# full description - best for new or complex projects
+# full description (new or complex projects)
 /coral:init-project "multi-tenant SaaS REST API with Go, must be serverless"
 
-# with reference material - Coral reads these before planning
+# with reference material
 /coral:init-project "CLI tool like ref/existing-cli, see docs/spec.md"
 ```
 
-The more context you give, the more tailored the output. But for most existing projects, a bare `/coral:init-project` is enough.
+Generated structure:
+```
+my-project/
++ .claude/
++   CLAUDE.md                 ← project hub: build commands, workflow, critical rules
++   agents/
++     review-orchestrator.md  ← final validation gate
++     ...                     ← domain agents (React, Go, ML, infra, etc.)
++   rules/
++     conventions.md          ← naming, git, style
++     ...                     ← domain rules, auto-activated by file path
++ docs/
++   architecture.md           ← module map, dependency graph
+```
 
-## Usage
+Without this, Claude works generically. With this, it validates hooks, catches injection,
+and follows your conventions.
+
+---
+
+### Accelerate my workflow
+
+```
+/coral:plan add retry logic to the API client
+/coral:debug why does session lookup return null?
+/coral:ralph implement the caching layer
+```
+
+Structured planning with architect and critic review. Systematic bug diagnosis — root
+cause, plan, fix. Persistent execution that verifies before declaring done.
+
+`--red` flag spawns an adversarial agent to write tests targeting blind spots:
+```
+/coral:ralph --red implement the caching layer
+```
+
+For cross-model workflows with Codex:
+```
+/coral:coplan redesign the session management system
+/coral:codex review auth.ts for security issues
+```
 
 Consecutive `/coral:codex` calls continue the same session. Say "new" to start fresh.
 
-```
-/coral:codex review auth.ts for security issues
+---
 
-# auto-continues session
-/coral:codex what about the token refresh logic?
-```
-
-### Discuss
-
-Coral's moderated multi-agent discussion system. Multiple AI agents with distinct personas debate a topic through structured turn-taking - all coordinated by a dedicated MCP server that enforces fair participation, prevents deadlocks, and ensures clean termination.
+### Get diverse perspectives
 
 ```
+/coral:discuss should we use microservices or a monolith?
 /coral:discuss AI ethics in healthcare
-/coral:discuss pros and cons of microservices vs monolith
-/coral:discuss should AI-generated art be copyrightable
 ```
 
-**How it works:**
+> **Requires:** Add to `.claude/settings.json`:
+> ```json
+> { "env": { "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1" } }
+> ```
 
-1. **Persona generation** - Coral analyzes the topic and spawns 3-8 unique personas in parallel (e.g., bioethicist, patient advocate, AI researcher, hospital administrator). Each has distinct expertise, communication style, and perspective biases.
+3–8 AI personas with distinct expertise debate your topic through structured turn-taking.
+Each round, agents bid on how strongly they want to speak — the most urgent arguments
+surface first. Debate mode activates automatically for adversarial topics (pro/con, vs,
+should/should not). Structured synthesis at the end.
 
-2. **Bidding for the floor** - Each round, agents bid 0-100 on how strongly they want to speak. The highest bidder above the threshold wins. This prevents any single agent from monopolizing and surfaces the most urgent arguments first.
+Transcripts saved to `.claude/coral/discuss/` as JSON and Markdown.
 
-3. **Evidence-backed speeches** - Winners research via web search before speaking. The server enforces that all agents read the latest transcript before bidding - no uninformed participation allowed.
+## Skills
 
-4. **Multi-epoch continuation** - When all speaking quotas and fallback turns are exhausted, the server automatically transitions to a new epoch with fresh quotas (up to `CORAL_DISCUSS_MAX_EPOCHS`, default: 2). No termination vote - continuation is structural, not negotiated.
+| Skill | Description | Codex |
+|-------|-------------|:-----:|
+| `/coral:analyze` | Deep analysis and investigation | Optional |
+| `/coral:plan` | Planning with architect/critic review | — |
+| `/coral:coplan` | Cross-model planning (Codex reviews) | Optional |
+| `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | — |
+| `/coral:codex-ralph` | Persistent execution via Codex. `--red` for adversarial tests | Required |
+| `/coral:code-simplify` | Simplify and refine code for clarity | Optional |
+| `/coral:debug` | Bug diagnosis, planning, and fix execution | Optional |
+| `/coral:init-project` | Project initialization orchestrator | — |
+| `/coral:discuss` | Moderated multi-agent discussion | — |
+| `/coral:statusline` | HUD statusline setup | — |
 
-5. **Structured synthesis** - When the discussion concludes, the moderator generates a structured summary: key arguments, turning points, points of consensus, and unresolved questions.
-
-**Debate mode** - Topics with adversarial framing (pro/con, vs, should/should not) automatically activate debate mode. Agents declare stances, and if the sides are imbalanced (e.g., 5 pro vs 1 con), Coral assigns a devil's advocate from the majority to argue the opposing position.
-
-**Architecture:**
-
-```
-discuss-lead (moderator)
-  ├── persona-generator ×N (parallel)
-  ├── discuss MCP server (state, enforcement, transcript)
-  └── dc-{agent} ×N (discussant teammates)
-        └── `discuss({ op: "wait", ... })` → bid/speak loop
-```
-
-The MCP server owns all state transitions. Agents cannot speak out of turn or bid without reading context. Bid scores are sealed - never returned in any API response. Transcripts are saved to `.claude/coral/discuss/` as both structured JSON and readable Markdown.
-
-### Skills
-
-| Skill | Description | Example |
-|---|---|---|
-| `/coral:analyze` | Deep analysis (Claude) | `investigate the root cause of this error` |
-| `/coral:codex-analyze` | Deep analysis (Codex + Claude synthesis) | `investigate why the session lookup is slow` |
-| `/coral:plan` | Planning with architect/critic review | `add retry logic to the API client` |
-| `/coral:coplan` | Cross-model planning (Codex reviews) | `redesign the session management system` |
-| `/coral:ralph` | Persistent execution loop (sonnet). `--red` for adversarial tests | `--red implement the caching layer` |
-| `/coral:codex-ralph` | Persistent execution via Codex (sonnet). `--red` for adversarial tests | `--red implement the caching layer` |
-| `/coral:code-simplify` | Simplify and refine code for clarity | `simplify the output parser` |
-| `/coral:debug` | Bug diagnosis, planning, and fix execution | `why does session lookup return null?` |
-| `/coral:init-project` | Project initialization orchestrator | `"React + FastAPI project"` |
-| `/coral:discuss` | Moderated multi-agent discussion | `AI ethics in healthcare` |
-| `/coral:statusline` | HUD statusline setup | `install` |
-
+`Optional` = works without Codex by default; pass `--codex` to delegate to Codex CLI.
 Plans are saved to `.claude/coral/plans/`. Ralph skills are best for implementing an existing plan.
 
 ## Knowledge Base
 
-Coral automatically manages a project-local KB (`.claude/coral/kb/`) to prevent repeating mistakes across sessions. Non-obvious discoveries are buffered as memos during work, checked on errors before debugging from scratch, and promoted to permanent entries on task completion. Git-tracked for multi-device sync.
+Coral maintains a project-local knowledge base at `.claude/coral/kb/` — git-tracked, so
+it syncs across devices.
+
+When Claude discovers something non-obvious (a root cause, a gotcha, a pattern worth
+remembering), it writes a memo immediately. On errors, it checks the KB before debugging
+from scratch. On task completion, memos are reviewed and promoted to permanent entries.
+Mistakes aren't repeated across sessions.
 
 ## Configuration
 
 | Variable | Default | Description |
 |---|---|---|
 | `CORAL_CODEX_MODEL` | `gpt-5.3-codex` | Default Codex CLI model |
-| `CORAL_DISCUSS_BID_THRESHOLD` | `30` | Minimum bid score (1-100) for floor eligibility in discussions |
-| `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Max epochs before discussion auto-ends (1-10) |
+| `CORAL_DISCUSS_BID_THRESHOLD` | `30` | Minimum bid score (1–100) for floor eligibility in discussions |
+| `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Max epochs before discussion auto-ends (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `30` | Days before completed discuss sessions are auto-pruned |
-| `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(unset)_ | **Required** for `/coral:discuss`. Set to `1` to enable Agent Teams. |
-| `ENABLE_TOOL_SEARCH` | `auto` | Lazy-load MCP tool definitions instead of injecting all into system prompt. `auto` (≥10%), `auto:5` (≥5%), `true` (always on). |
+| `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(unset)_ | **Required** for `/coral:discuss`. Set to `1`. |
+| `ENABLE_TOOL_SEARCH` | `auto` | Lazy-load MCP tool definitions. `auto` (≥10%), `auto:5` (≥5%), `true` (always on). |
 
 Set in `.claude/settings.json` (persists across sessions):
 
@@ -178,6 +175,37 @@ Set in `.claude/settings.json` (persists across sessions):
 ```
 
 Or via shell: `export CORAL_CODEX_MODEL=gpt-5.3-codex`
+
+## Documentation
+
+- [Architecture](docs/architecture.md) — Architecture and data flow
+- [MCP Tools](docs/mcp-tools.md) — Input/output specs for all MCP tools
+- [Core Modules](docs/core-modules.md) — TypeScript module details
+- [Agents](docs/agents.md) — Agent definitions and routing
+- [Hooks](docs/hooks.md) — SubagentStart hook behavior
+- [Skills](docs/skills.md) — Slash command usage
+- [Build System](docs/build-system.md) — Build pipeline
+- [Configuration](docs/configuration.md) — Environment variables and config files
+
+---
+
+## Statusline
+
+Optional real-time HUD for Claude Code sessions:
+
+```
+/coral:statusline install
+```
+
+```
+opus 4.6      │ 5h:39% (1:23) wk:36% (5.2d) │ ctx:58% │ 50m │ coral:analyze
+gpt-5.3-codex │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
+```
+
+- **Line 1 (always)**: model, Claude rate limits, context usage, session ID, last active skill
+- **Line 2 (optional)**: Codex model and rate limits — shown only when Codex is installed
+
+To remove: `/coral:statusline uninstall`
 
 ## Development
 
@@ -197,61 +225,3 @@ npm test          # Run tests with vitest
 Merge policy:
 - **feature → dev**: rebase (preserve individual commits)
 - **dev → main**: squash (one commit per release, traceable via `(#N)`)
-
-## Adding New Agents
-
-### Codex-bound Agent
-
-Create `agents/codex-<name>.md` - it automatically becomes a Codex delegation agent:
-
-```yaml
----
-name: codex-<name>
-description: <description>
-tools: mcp__plugin_coral_cx__codex
----
-```
-
-### Claude-native Agent
-
-Create `agents/<name>.md` (without `codex-` prefix). All agents use `<Agent_Prompt>` XML structure:
-
-```yaml
----
-name: <name>
-description: "<description>. Use PROACTIVELY when [trigger]. NOT for [exclusion]."
-model: opus
-disallowedTools: Write, Edit
----
-```
-
-```xml
-<Agent_Prompt>
-  <Role>...</Role>
-  <Success_Criteria>...</Success_Criteria>
-  <Constraints>...</Constraints>
-  <Investigation_Protocol>...</Investigation_Protocol>
-  <Output_Format>...</Output_Format>
-  <Failure_Modes_To_Avoid>...</Failure_Modes_To_Avoid>
-</Agent_Prompt>
-```
-
-See [Agent Template](.claude/templates/AGENT.md) for required/optional sections by tier.
-
-## Documentation
-
-Detailed technical documentation is available in the `docs/` directory:
-
-- [Architecture](docs/architecture.md) - Architecture and data flow
-- [MCP Tools](docs/mcp-tools.md) - Input/output specs for all MCP tools (Codex + Discuss)
-- [Core Modules](docs/core-modules.md) - TypeScript module details
-- [Agents](docs/agents.md) - Agent definitions and routing guarantees
-- [Hooks](docs/hooks.md) - SubagentStart hook behavior
-- [Skills](docs/skills.md) - Slash command usage
-- [Build System](docs/build-system.md) - Build pipeline
-- [Configuration](docs/configuration.md) - Environment variables and config files
-
-## Requirements
-
-- Node.js 18+
-- Codex CLI v0.101+ (`npm install -g @openai/codex`)
