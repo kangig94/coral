@@ -25,6 +25,7 @@ import {
   startBidding,
   DEFAULT_BID_THRESHOLD,
   DEFAULT_MAX_EPOCHS,
+  DEFAULT_QUOTA_PER_EPOCH,
 } from './state-machine.js';
 import {
   allBidsIn,
@@ -64,15 +65,15 @@ function resultToMcp(result: Result<unknown>): McpResult {
 function endContent(reason: Exclude<EndReason, 'already_ended'>): string {
   switch (reason) {
     case 'all_below_threshold':
-      return '모든 참여자의 발화 의지가 기준치 미만입니다. 토론을 종료합니다.';
+      return 'All participants bid below the threshold. Ending discussion.';
     case 'max_epochs_reached':
-      return '최대 에폭에 도달했습니다. 토론을 종료합니다.';
+      return 'Maximum epochs reached. Ending discussion.';
     case 'all_blocked':
-      return '토론이 구조적으로 교착되었습니다. 발화를 원하는 참여자에게 할당량이 없고, 할당량이 있는 참여자는 발화를 원하지 않습니다.';
+      return 'Discussion is structurally deadlocked. Agents who want to speak have no quota, and agents with quota do not want to speak.';
     case 'no_participants':
-      return '참여 가능한 에이전트가 없습니다. 토론을 종료합니다.';
+      return 'No eligible agents remaining. Ending discussion.';
     default:
-      return '토론을 종료합니다.';
+      return 'Ending discussion.';
   }
 }
 
@@ -122,8 +123,6 @@ export const tools = [
           minItems: 2,
           maxItems: 8,
         },
-        quota_per_epoch: { type: 'integer', minimum: 1, maximum: 10, description: 'Max speeches per agent per epoch' },
-        recent_turns: { type: 'integer', minimum: 1, maximum: 20, description: 'Recent turns for transcript display' },
         controversy_axes: {
           type: 'array',
           description: 'Persona seed axes (_1_seed)',
@@ -142,10 +141,9 @@ export const tools = [
         seed: { type: ['integer', 'null'], description: 'Seed value (_1_seed)' },
         session: { type: 'string', description: 'Session ID' },
         timeout_seconds: { type: 'integer', minimum: 1, maximum: 120, description: '_3_step timeout (seconds)' },
-        speech_force_timeout: { type: 'boolean', description: '_3_step timeout escalation flag' },
+        force_stop: { type: 'boolean', description: '_3_step timeout escalation flag' },
         mode: { type: 'string', enum: ['full', 'recent', 'summary'], description: '_4_transcript' },
         last_n: { type: 'integer', minimum: 1, maximum: 50, description: 'Override recent turns (_4_transcript)' },
-        epoch: { type: 'integer', minimum: 1, description: 'Epoch number (_5_epoch)' },
         summary: { type: 'string', description: 'Epoch summary (_5_epoch)' },
         synthesis: { type: 'string', description: 'Synthesis text (_7_end)' },
         force: { type: 'boolean', description: 'Force end during speaking (_7_end)' },
@@ -337,8 +335,12 @@ async function handle2Create(
   const maxEpochs = Number.isFinite(rawMaxEpochs) && rawMaxEpochs >= 1 && rawMaxEpochs <= 10
     ? rawMaxEpochs
     : DEFAULT_MAX_EPOCHS;
+  const rawQuota = Number.parseInt(process.env.CORAL_DISCUSS_QUOTA_PER_EPOCH ?? '', 10);
+  const quotaPerEpoch = Number.isFinite(rawQuota) && rawQuota >= 1 && rawQuota <= 10
+    ? rawQuota
+    : DEFAULT_QUOTA_PER_EPOCH;
 
-  const state = initSession(input, now, bidThreshold, maxEpochs);
+  const state = initSession(input, now, bidThreshold, maxEpochs, quotaPerEpoch);
   const { sessionId, sessionDir, fullPath } = store.createSessionDir(input.topic);
   state.session_id = sessionId;
   state.session_dir = sessionDir;
@@ -446,7 +448,7 @@ async function handle3Step(
         };
       }
 
-      if (!input.speech_force_timeout || current.status !== 'speaking' || !current.current_speaker) {
+      if (!input.force_stop || current.status !== 'speaking' || !current.current_speaker) {
         return { ok: false, error: 'speech_not_done', detail: { current: current.status } };
       }
 
@@ -555,15 +557,27 @@ async function handle3Step(
       });
     }
 
-    const waited = await waitForCondition(statePath, allBidsIn, input.timeout_seconds * 1000);
+    const waited = await waitForCondition(
+      statePath,
+      (s) => allBidsIn(s) || s.status === 'ended',
+      input.timeout_seconds * 1000,
+    );
     if (!waited.fulfilled) {
       state = await store.withLock(sessionDir, async () => store.load(sessionDir));
+      if (state.status === 'ended') {
+        return jsonResult({ status: 'ended', phase: 'ended', reason: 'already_ended' });
+      }
       return jsonResult({
         status: 'bidding',
         phase: 'bidding',
         pending_bidders: state.pending_bidders,
         hold_count: state.hold_count,
       });
+    }
+
+    state = await store.withLock(sessionDir, async () => store.load(sessionDir));
+    if (state.status === 'ended') {
+      return jsonResult({ status: 'ended', phase: 'ended', reason: 'already_ended' });
     }
 
     const resolved = await store.withLock<Result<ResolvePhase>>(sessionDir, async () => {
@@ -636,7 +650,7 @@ async function handle4Transcript(
       text = formatSummary(state.transcript, state.agents);
       break;
     default:
-      text = formatRecent(state.transcript, input.last_n ?? state.recent_turns, state.agents);
+      text = formatRecent(state.transcript, input.last_n ?? 5, state.agents);
       break;
   }
 
@@ -652,10 +666,10 @@ async function handle5Epoch(
 
   const applied = await store.withLock<Result<{ recorded: true; epoch: number }>>(sessionDir, async () => {
     const state = store.load(sessionDir);
-    const result = applyEpochSummary(state, input.epoch, input.summary, nowIsoString());
+    const result = applyEpochSummary(state, input.summary, nowIsoString());
     if (!result.ok) return result;
     store.save(sessionDir, result.value);
-    return { ok: true, value: { recorded: true, epoch: input.epoch } };
+    return { ok: true, value: { recorded: true, epoch: state.epoch } };
   });
 
   return resultToMcp(applied);
@@ -680,7 +694,6 @@ async function handle6State(
     speaker_type: state.speaker_type,
     cold_start: state.cold_start,
     bid_threshold: state.bid_threshold,
-    recent_turns: state.recent_turns,
     hold_count: state.hold_count,
     agents: Object.fromEntries(
       Object.entries(state.agents).map(([name, agent]) => [

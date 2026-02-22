@@ -268,7 +268,7 @@ describe('discuss_lead tool: transcript/state/epoch/end', () => {
 
   it('should record epoch summary', async () => {
     const sid = await createSession();
-    const r = await handleToolCall('discuss_lead', { op: '_5_epoch', session: sid, epoch: 1, summary: 'Key points.' }, store);
+    const r = await handleToolCall('discuss_lead', { op: '_5_epoch', session: sid, summary: 'Key points.' }, store);
     const data = JSON.parse(r.content[0].text);
     expect(data).toHaveProperty('recorded', true);
   });

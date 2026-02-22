@@ -227,11 +227,11 @@ Moderator-only MCP tool for control and lifecycle:
 
 | Operation | Input |
 |---|---|
-| `_1_seed` | `controversy_axes`, `n`, optional `seed` |
-| `_2_create` | `topic`, `agents`, optional `quota_per_epoch`, `recent_turns` |
-| `_3_step` | `session`, `timeout_seconds` (1-120), optional `speech_force_timeout` |
+| `_1_seed` | `controversy_axes`, `n`, optional `seed` (see [Persona Seeding Algorithm](#persona-seeding-algorithm-_1_seed)) |
+| `_2_create` | `topic`, `agents` |
+| `_3_step` | `session`, `timeout_seconds` (1-120), optional `force_stop` |
 | `_4_transcript` | `session`, `mode`, optional `last_n` |
-| `_5_epoch` | `session`, `epoch`, `summary` |
+| `_5_epoch` | `session`, `summary` |
 | `_6_state` | `session` |
 | `_7_end` | `session`, optional `synthesis`, optional `force`, optional `reason` |
 
@@ -251,6 +251,101 @@ Moderator-only MCP tool for control and lifecycle:
   - `{ status: 'ended', phase: 'ended', reason }`
 
 `_7_end` finalizes sessions. On already-ended sessions, it records a synthesis if provided and no-ops otherwise.
+
+---
+
+## Persona Seeding Algorithm (`_1_seed`)
+
+`_1_seed` generates maximally diverse persona position assignments using **k-DPP (Determinantal Point Process)** sampling. Reference: Kulesza & Taskar (2012), "Determinantal Point Processes for Machine Learning".
+
+### Input
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `controversy_axes` | array | Yes | 1–10 axes, each with 1–10 unique positions. Axis names must be unique. |
+| `n` | integer | Yes | Number of persona assignments to generate (1–8) |
+| `seed` | integer \| null | No | RNG seed for reproducibility. `null` = random seed. |
+
+### Pipeline
+
+1. **Pool generation**: Cartesian product of all axis positions. Each element is a position tuple (one position per axis). Pool size = product of all axis sizes.
+
+2. **Validation**:
+   - `pool_size > 256` → error `pool_too_large` (hint: reduce axes or positions)
+   - `pool_size = 1` and `n > 1` → error `pool_degenerate` (hint: all axes have single position)
+
+3. **RNG**: mulberry32 PRNG seeded with the provided or auto-generated seed. Deterministic — same seed always produces the same assignments.
+
+4. **Selection** (uniqueCount = min(n, pool_size)):
+   - `uniqueCount = 0` → empty
+   - `uniqueCount = 1` → uniform random pick
+   - `uniqueCount = pool_size` → take all (no sampling needed)
+   - Otherwise → **k-DPP sampling**:
+     - **σ** = √(axes_count / 2) — Gaussian RBF bandwidth
+     - **Kernel**: L[i][j] = exp(-hamming(i,j)² / 2σ²) — similarity matrix over pool
+     - **Eigendecompose**: Jacobi rotation on the symmetric kernel
+     - **Phase A**: ESP (elementary symmetric polynomial) backward sampling selects k eigenvectors
+     - **Phase B**: Sequential item sampling from selected eigenvector subspace with Gram-Schmidt orthogonalization
+
+5. **Reuse** (when `n > pool_size`): Extra slots assigned by largest Hamming distance from the selected set, cycling through ranked reuse order. Each reused assignment carries `shared_position_with: <source_slot_index>`.
+
+6. **Tone assignment**: 2×2×2 = 8 combinations of `{formality, evidence, pace}` shuffled via seeded RNG and assigned cyclically:
+   - `formality`: `formal` | `conversational`
+   - `evidence`: `data-driven` | `narrative`
+   - `pace`: `concise` | `detailed`
+
+### Output
+
+```json
+{
+  "ok": true,
+  "value": {
+    "seed_used": 3141592653,
+    "sigma_used": 1.0,
+    "pool_size": 12,
+    "assignments": [
+      {
+        "positions": { "stance": "pro", "priority": "cost" },
+        "tone": { "formality": "formal", "evidence": "data-driven", "pace": "concise" }
+      },
+      {
+        "positions": { "stance": "con", "priority": "quality" },
+        "tone": { "formality": "conversational", "evidence": "narrative", "pace": "detailed" },
+        "shared_position_with": 0
+      }
+    ]
+  }
+}
+```
+
+### Error Responses
+
+| Error | Condition | Recovery |
+|---|---|---|
+| `pool_too_large` | Cartesian product > 256 | Reduce positions on largest axis (trim to 2) or merge axes, retry |
+| `pool_degenerate` | Pool = 1, n > 1 | Add a second position to at least one axis, retry |
+
+### Moderator Setup Workflow
+
+The moderator (`discuss-lead`) uses `_1_seed` within a 3-phase setup:
+
+**Phase 1 — Controversy Analysis** (LLM inline, before `_1_seed` call):
+- Extract 3–4 controversy axes from the topic, each with 2–3 positions
+- **Pool budget**: keep product of all axis sizes ≤ 81 (e.g., 3×3×3×3 = 81). If product exceeds 81, trim the largest axis to 2 positions or merge axes. This is a recommended guideline — the hard limit is 256.
+- Assign agent names with `dc-` prefix (e.g., `dc-architect`)
+- Assign distinct `name_culture` per agent (e.g., Korean, Nigerian, Brazilian)
+- If debate topic: prepend `{ axis: "stance", positions: ["pro", "con"] }` as the first axis
+- Generate `n` persona briefs: 1–2 sentence background differentiation per slot
+
+**Phase 2 — DPP Seeding** (`_1_seed` MCP call):
+- Call `_1_seed({ controversy_axes, n, seed: null })`
+- Result: `assignments[i].positions` (axis → position map) + `assignments[i].tone` ({ formality, evidence, pace })
+- On `pool_too_large`: reduce positions on largest axis, retry
+- On `pool_degenerate`: add a second position to at least one axis, retry
+
+**Phase 3 — Merge & Spawn** (parallel persona generation):
+- For each slot, spawn `persona-generator` with: `role`, `topic`, `team_roles`, `name_culture`, `positions` (from assignments), `tone` (from assignments), `brief` (from Phase 1), `devil_advocate` (if stance imbalance), `shared_position_with` (if reused slot)
+- **Stance imbalance check**: if stance axis exists, count pro vs con. If imbalanced, set `devil_advocate: true` for one agent on overrepresented side.
 
 ---
 

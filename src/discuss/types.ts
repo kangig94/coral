@@ -38,7 +38,6 @@ export type DiscussState = {
   max_epochs: number;
   quota_per_epoch: number;
   cold_start: boolean;
-  recent_turns: number;
   agents: Record<string, AgentState>;
   current_bids: Record<string, number | null>;
   pending_bidders: string[];
@@ -101,8 +100,6 @@ export type DiscussCreateInput = {
     name: string;
     persona: string;
   }[];
-  quota_per_epoch: number;
-  recent_turns: number;
 };
 
 export type StepPhase =

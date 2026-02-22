@@ -13,8 +13,8 @@ import type { AgentState, TranscriptEntry } from './types.js';
 const SOFT_LIMIT = 80;
 const HARD_LIMIT = 100;
 
-/** Korean / CJK sentence-ending patterns for grace-zone detection. */
-const SENTENCE_END = /[.!?]$|다\.$|요\.$|까\?$/u;
+/** Sentence-ending patterns for grace-zone detection. */
+const SENTENCE_END = /[.!?]$/u;
 
 /**
  * Wrap text to soft 80 / hard 100 column limit.

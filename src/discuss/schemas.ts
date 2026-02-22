@@ -55,15 +55,13 @@ const createShape = z.object({
       (agents) => new Set(agents.map((a) => a.name)).size === agents.length,
       'Agent names must be unique',
   ),
-  quota_per_epoch: z.number().int().min(1).max(10).default(3),
-  recent_turns: z.number().int().min(1).max(20).default(5),
 }).strict();
 
 const stepShape = z.object({
   op: z.literal('_3_step'),
   session: sessionIdField,
   timeout_seconds: z.number().min(1).max(120),
-  speech_force_timeout: z.boolean().default(false),
+  force_stop: z.boolean().default(false),
 }).strict();
 
 const transcriptShape = z.object({
@@ -76,7 +74,6 @@ const transcriptShape = z.object({
 const epochSummaryShape = z.object({
   op: z.literal('_5_epoch'),
   session: sessionIdField,
-  epoch: z.number().int().min(1),
   summary: z.string().min(1),
 }).strict();
 

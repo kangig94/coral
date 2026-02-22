@@ -26,7 +26,6 @@ function makeState(overrides: Partial<DiscussState> = {}): DiscussState {
     max_epochs: 2,
     quota_per_epoch: 3,
     cold_start: false,
-    recent_turns: 5,
     agents: {
       alice: {
         persona: '',

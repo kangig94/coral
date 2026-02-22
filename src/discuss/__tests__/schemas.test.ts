@@ -63,12 +63,9 @@ describe('discussLeadOpSchema', () => {
     expect(result.op).toBe('_1_seed');
   });
 
-  it('should parse create op with defaults', () => {
+  it('should parse create op', () => {
     const result = discussLeadOpSchema.parse(baseCreate);
     expect(result.op).toBe('_2_create');
-    if (result.op !== '_2_create') return;
-    expect(result.quota_per_epoch).toBe(3);
-    expect(result.recent_turns).toBe(5);
   });
 
   it('should reject invalid create payload', () => {
@@ -81,7 +78,7 @@ describe('discussLeadOpSchema', () => {
     const result = discussLeadOpSchema.parse({ op: '_3_step', session, timeout_seconds: 60 });
     expect(result.op).toBe('_3_step');
     if (result.op !== '_3_step') return;
-    expect(result.speech_force_timeout).toBe(false);
+    expect(result.force_stop).toBe(false);
   });
 
   it('should parse transcript op defaults', () => {
@@ -92,7 +89,7 @@ describe('discussLeadOpSchema', () => {
   });
 
   it('should parse epoch op', () => {
-    const result = discussLeadOpSchema.parse({ op: '_5_epoch', session, epoch: 1, summary: 'Key points...' });
+    const result = discussLeadOpSchema.parse({ op: '_5_epoch', session, summary: 'Key points...' });
     expect(result.op).toBe('_5_epoch');
   });
 
@@ -124,8 +121,7 @@ describe('discussLeadOpSchema', () => {
   });
 
   it('should reject invalid epoch payloads', () => {
-    expect(() => discussLeadOpSchema.parse({ op: '_5_epoch', session, epoch: 0, summary: 'x' })).toThrow();
-    expect(() => discussLeadOpSchema.parse({ op: '_5_epoch', session, epoch: 1, summary: '' })).toThrow();
+    expect(() => discussLeadOpSchema.parse({ op: '_5_epoch', session, summary: '' })).toThrow();
   });
 
   it('should reject session on _2_create', () => {

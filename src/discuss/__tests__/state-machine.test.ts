@@ -28,7 +28,7 @@ const TWO_AGENTS = [
   { name: 'bob', persona: '# Bob Critic — Critical Thinker\nCritical mind.' },
 ];
 
-const BASE_INPUT = { topic: 'Test Topic', agents: TWO_AGENTS, quota_per_epoch: 3, recent_turns: 5 };
+const BASE_INPUT = { topic: 'Test Topic', agents: TWO_AGENTS };
 
 function makeSession(): DiscussState {
   const init = initSession(BASE_INPUT, NOW);
@@ -330,7 +330,7 @@ describe('applyExpel', () => {
     expect(expelled.ok).toBe(true);
     if (!expelled.ok) return;
     expect(expelled.value.state.agents.alice.banned).toBe(false);
-    expect(expelled.value.hint).toContain('shutdown 후 respawn하세요.');
+    expect(expelled.value.hint).toContain('Shutdown and respawn');
   });
 
   it('should ban and clear quota after step2 and beyond', () => {
@@ -347,7 +347,7 @@ describe('applyExpel', () => {
     if (!expelled.ok) return;
     expect(expelled.value.state.agents.alice.banned).toBe(true);
     expect(expelled.value.state.agents.alice.quota_remaining).toBe(0);
-    expect(expelled.value.hint).toContain('ban되었습니다');
+    expect(expelled.value.hint).toContain('Banned');
   });
 });
 
@@ -358,7 +358,7 @@ describe('applyEpochSummary', () => {
     const state = startSession();
     const withSpeech = applySpeechTimeout(state, NOW);
     const base = withSpeech.ok ? withSpeech.value : state;
-    const summarized = applyEpochSummary(base, 1, 'Phase one highlights.', NOW);
+    const summarized = applyEpochSummary(base, 'Phase one highlights.', NOW);
     expect(summarized.ok).toBe(true);
     if (!summarized.ok) return;
     expect(summarized.value.epoch_summary_written).toBe(1);
@@ -367,9 +367,9 @@ describe('applyEpochSummary', () => {
 
   it('should reject duplicate summary for same epoch', () => {
     const state = startSession();
-    const r1 = applyEpochSummary(state, 1, 'First', NOW);
+    const r1 = applyEpochSummary(state, 'First', NOW);
     expect(r1.ok).toBe(true);
-    const r2 = r1.ok ? applyEpochSummary(r1.value, 1, 'Duplicate', NOW) : null;
+    const r2 = r1.ok ? applyEpochSummary(r1.value, 'Duplicate', NOW) : null;
     expect(r2?.ok).toBe(false);
     if (!r2 || r2.ok) return;
     expect(r2.error).toBe('epoch_summary_duplicate');

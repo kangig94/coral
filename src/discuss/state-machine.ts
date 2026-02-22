@@ -15,6 +15,7 @@ import type {
 
 export const DEFAULT_BID_THRESHOLD = 50;
 export const DEFAULT_MAX_EPOCHS = 2;
+export const DEFAULT_QUOTA_PER_EPOCH = 3;
 
 // ─── ID helpers ─────────────────────────────────────────────────────────────
 
@@ -202,13 +203,14 @@ export function initSession(
   now: string,
   bidThreshold = DEFAULT_BID_THRESHOLD,
   maxEpochs = DEFAULT_MAX_EPOCHS,
+  quotaPerEpoch = DEFAULT_QUOTA_PER_EPOCH,
 ): DiscussState {
   const agents: Record<string, AgentState> = {};
   for (const a of input.agents) {
     agents[a.name] = {
       persona: a.persona,
       display_name: parseDisplayName(a.persona, a.name),
-      quota_remaining: input.quota_per_epoch,
+      quota_remaining: quotaPerEpoch,
       total_speaks: 0,
       fallback_used: false,
       banned: false,
@@ -223,9 +225,8 @@ export function initSession(
     step: 1,
     epoch: 1,
     max_epochs: maxEpochs,
-    quota_per_epoch: input.quota_per_epoch,
+    quota_per_epoch: quotaPerEpoch,
     cold_start: true,
-    recent_turns: input.recent_turns,
     agents,
     current_bids: Object.fromEntries(agentNames.map((n) => [n, null])),
     pending_bidders: agentNames,
@@ -473,7 +474,7 @@ export function applySpeechTimeout(
   const winner = state.current_speaker;
   const speaker = state.agents[winner];
   const display_name = speaker.display_name;
-  const timeoutMsg = `${display_name} (${winner})가 발화하지 않아서 시간초과가 발생했습니다.`;
+  const timeoutMsg = `${display_name} (${winner}) timed out without delivering a speech.`;
 
   const speechEntry: TranscriptEntry = {
     type: 'speech',
@@ -520,6 +521,7 @@ export function applyExpel(
       nextState = {
         ...nextState,
         pending_bidders: nextState.pending_bidders.filter((n) => n !== agent),
+        current_bids: { ...nextState.current_bids, [agent]: 0 },
       };
       continue;
     }
@@ -539,10 +541,12 @@ export function applyExpel(
     };
   }
 
-  nextState = resetBids(nextState);
+  if (!isRespawn) {
+    nextState = resetBids(nextState);
+  }
   const hint = isRespawn
-    ? `${pendingAgents.join(', ')}를 shutdown 후 respawn하세요.`
-    : `${pendingAgents.join(', ')}가 ban되었습니다. shutdown 시키고 spawn하지 마세요.`;
+    ? `Shutdown and respawn: ${pendingAgents.join(', ')}.`
+    : `Banned: ${pendingAgents.join(', ')}. Shutdown and do not respawn.`;
 
   return { ok: true, value: { state: nextState, hint } };
 }
@@ -550,7 +554,6 @@ export function applyExpel(
 /** Append epoch summary to transcript. */
 export function applyEpochSummary(
   state: DiscussState,
-  epoch: number,
   summary: string,
   now: string,
 ): Result<DiscussState> {
@@ -560,19 +563,16 @@ export function applyEpochSummary(
   if (state.status === 'ended') {
     return { ok: false, error: 'session_ended' };
   }
-  if (epoch !== state.epoch) {
-    return { ok: false, error: 'epoch_mismatch', detail: { expected: state.epoch, provided: epoch } };
-  }
-  if (state.epoch_summary_written === epoch) {
-    return { ok: false, error: 'epoch_summary_duplicate', detail: { epoch } };
+  if (state.epoch_summary_written === state.epoch) {
+    return { ok: false, error: 'epoch_summary_duplicate', detail: { epoch: state.epoch } };
   }
 
-  const entry: TranscriptEntry = { type: 'epoch_summary', epoch, ts: now, summary };
+  const entry: TranscriptEntry = { type: 'epoch_summary', epoch: state.epoch, ts: now, summary };
   return {
     ok: true,
     value: {
       ...appendEntry(state, entry, now),
-      epoch_summary_written: epoch,
+      epoch_summary_written: state.epoch,
       bid_release_step: state.step,
     },
   };
