@@ -9,14 +9,11 @@ Claude Code's hook system executes shell scripts on specific events. Coral uses 
 **Plugin hooks** (`hooks/hooks.json`):
 1. **SessionStart** - Injects CLAUDE.md behavioral guidelines into every Claude session
 2. **SubagentStart** - Injects delegation instructions into agents with a `codex-` prefix (with or without `coral:` namespace)
-3. **PostToolUseFailure** - On any tool failure, reminds Claude to check `.claude/coral/kb/` before debugging
-4. **PreCompact** - Before context compaction, reminds about unprocessed memos for KB promotion
-5. **TeammateIdle** - Blocks idle when discuss agents have pending actions
-
-**Skill-level hooks** (in SKILL.md frontmatter):
-- Skills: ralph, codex-ralph, plan, coplan, debug, code-simplify, analyze, codex-analyze
-- **PreToolUse** (`once: true`): On first tool call, reminds Claude to write memos for non-obvious discoveries
-- **Stop** (`once: true`): On skill completion, blocks Claude from stopping if unprocessed memos exist in `.claude/coral/memo/`
+3. **PreToolUse** - On first tool call per session, reminds Claude to write memos for non-obvious discoveries
+4. **PostToolUseFailure** - On any tool failure, reminds Claude to check `.claude/coral/kb/` before debugging
+5. **Stop** - On response completion, blocks Claude from stopping if unprocessed memos exist in `.claude/coral/memo/`
+6. **PreCompact** - Before context compaction, reminds about unprocessed memos for KB promotion
+7. **TeammateIdle** - Blocks idle when discuss agents have pending actions
 
 ## Hook Configuration
 
@@ -48,23 +45,24 @@ Before context compaction, checks for unprocessed memos in `.claude/coral/memo/`
 
 **Fail-open**: If memo directory doesn't exist or has no files — silent exit 0.
 
-## Skill Hooks (KB Memo & Promotion)
+## PreToolUse Hook (Memo Reminder)
 
-Configured in SKILL.md frontmatter on: ralph, codex-ralph, plan, coplan, debug, code-simplify, analyze, codex-analyze.
+Script: `hooks/kb-memo-reminder.sh`. Fires once per session (flag file keyed by `session_id`). Injects `additionalContext` reminding Claude to write memos when discovering non-obvious lessons.
 
-### PreToolUse — Memo Reminder
+**Once-per-session**: Reads `session_id` from stdin JSON, creates `/tmp/coral-memo-reminded-<session_id>` flag file. Subsequent calls exit 0 silently.
 
-Script: `hooks/kb-memo-reminder.sh`. Fires once (`once: true`) before the first tool call. Injects `additionalContext` reminding Claude to write memos when discovering non-obvious lessons.
+## Stop Hook (KB Promotion)
 
-### Stop — Promotion Reminder
+Script: `hooks/kb-promote-reminder.sh`. Fires on every response completion, but **skill-scoped** via state file.
 
-Script: `hooks/kb-promote-reminder.sh`. Fires once (`once: true`) when Claude finishes responding.
+**State file pattern**: Skills (ralph, codex-ralph) create `.claude/coral/tmp/kb-active` on start via `!` command preprocessing. The Stop hook checks for this file — if absent, exits silently (normal conversation unaffected).
 
-When unprocessed memos exist in `.claude/coral/memo/`:
-- `decision: "block"` prevents Claude from stopping
-- `reason` instructs Claude to review memos for KB promotion (check existing KB entries, discard duplicates, promote new knowledge, delete processed memos)
+When state file exists and unprocessed memos found in `.claude/coral/memo/`:
+1. Delete state file (unconditionally)
+2. `decision: "block"` prevents Claude from stopping
+3. `reason` instructs Claude to review memos for KB promotion
 
-**Fail-open**: If memo directory doesn't exist or has no files — silent exit 0. Claude stops normally.
+**Fail-open**: If state file absent, or memo directory empty — silent exit 0.
 
 ## Detection Script
 

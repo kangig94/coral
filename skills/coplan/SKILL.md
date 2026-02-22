@@ -2,17 +2,6 @@
 name: coplan
 description: Collaborative planning with parallel Codex architect/critic reviews
 argument-hint: "[task description]"
-hooks:
-  PreToolUse:
-    - hooks:
-        - type: command
-          command: "${CLAUDE_PLUGIN_ROOT}/hooks/kb-memo-reminder.sh"
-          once: true
-  Stop:
-    - hooks:
-        - type: command
-          command: "${CLAUDE_PLUGIN_ROOT}/hooks/kb-promote-reminder.sh"
-          once: true
 ---
 
 # Collaborative Planning

@@ -1,13 +1,27 @@
 #!/bin/sh
 # kb-promote-reminder.sh - Stop/PreCompact hook for KB promotion.
-# Reminds Claude to review memos for KB promotion on skill completion
-# or before context compaction.
+# Stop: skill-scoped via .claude/coral-kb-active state file.
+# PreCompact: always checks for unprocessed memos.
 # Fail-open: errors default to exit 0 (no output).
 #
 # POSIX-portable: no bash-isms, no jq, no grep -P.
 
 set -e
 
+INPUT=$(cat)
+EVENT=$(printf '%s' "$INPUT" | sed -n 's/.*"hook_event_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+
+STATE_FILE="${CLAUDE_PROJECT_DIR:-.}/.claude/coral/tmp/kb-active"
+
+# Stop hook: skill-scoped via state file
+if [ "$EVENT" = "Stop" ]; then
+  if [ ! -f "$STATE_FILE" ]; then
+    exit 0
+  fi
+  rm -f "$STATE_FILE"
+fi
+
+# Check for unprocessed memos
 MEMO_DIR="${CLAUDE_PROJECT_DIR:-.}/.claude/coral/memo"
 if [ ! -d "$MEMO_DIR" ]; then
   exit 0
@@ -28,4 +42,8 @@ if [ -z "$memo_files" ]; then
   exit 0
 fi
 
-printf '{"decision":"block","reason":"Unprocessed memos found. Before completing, review .claude/coral/memo/ for KB promotion. Memos: %s. Check existing KB entries in .claude/coral/kb/ first - discard duplicates, update existing entries if a memo refines them, only create new files for genuinely absent knowledge. Delete processed memos after promotion.","systemMessage":"KB promotion reminder: unprocessed memos found in .claude/coral/memo/"}\n' "$memo_files"
+if [ "$EVENT" = "Stop" ]; then
+  printf '{"decision":"block","reason":"Unprocessed memos found. Before completing, review .claude/coral/memo/ for KB promotion. Memos: %s. Check existing KB entries in .claude/coral/kb/ first - discard duplicates, update existing entries if a memo refines them, only create new files for genuinely absent knowledge. Delete processed memos after promotion.","systemMessage":"KB promotion reminder: unprocessed memos found in .claude/coral/memo/"}\n' "$memo_files"
+else
+  printf '{"systemMessage":"KB promotion reminder: unprocessed memos found in .claude/coral/memo/ - %s"}\n' "$memo_files"
+fi

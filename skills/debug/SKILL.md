@@ -2,17 +2,6 @@
 name: debug
 description: "Systematic bug diagnosis, planning, and fix execution."
 argument-hint: "[codex:|claude:]<bug description or error message>"
-hooks:
-  PreToolUse:
-    - hooks:
-        - type: command
-          command: "${CLAUDE_PLUGIN_ROOT}/hooks/kb-memo-reminder.sh"
-          once: true
-  Stop:
-    - hooks:
-        - type: command
-          command: "${CLAUDE_PLUGIN_ROOT}/hooks/kb-promote-reminder.sh"
-          once: true
 ---
 
 # Bug Debugging
