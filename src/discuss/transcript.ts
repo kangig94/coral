@@ -182,16 +182,9 @@ export function formatRecent(
   );
   const recentStart = Math.max(0, speeches.length - lastN);
 
-  const olderSummaries: string[] = [];
-  const recentParts: string[] = [];
-
-  for (let i = 0; i < speeches.length; i++) {
-    if (i >= recentStart) {
-      recentParts.push(renderEntry(speeches[i], agents));
-    } else {
-      olderSummaries.push(summarizeSpeech(speeches[i].display_name, speeches[i].content));
-    }
-  }
+  const olderSummaries = speeches.slice(0, recentStart)
+    .map((speech) => summarizeSpeech(speech.display_name, speech.content));
+  const recentParts = speeches.slice(recentStart).map((speech) => renderEntry(speech, agents));
 
   const parts: string[] = [];
   if (olderSummaries.length > 0) {

@@ -60,6 +60,10 @@ class SessionLock {
     const maxRetries = 10;
     const baseDelay = 50;
     const staleThresholdMs = 30_000;
+    const clearLockFiles = (): void => {
+      try { fs.unlinkSync(pidFile); } catch { /* ignore */ }
+      try { fs.rmdirSync(lockDir); } catch { /* ignore */ }
+    };
 
     for (let i = 0; i < maxRetries; i++) {
       try {
@@ -68,8 +72,7 @@ class SessionLock {
         try {
           return await fn();
         } finally {
-          try { fs.unlinkSync(pidFile); } catch { /* ignore */ }
-          try { fs.rmdirSync(lockDir); } catch { /* ignore */ }
+          clearLockFiles();
         }
       } catch (e: unknown) {
         const err = e as NodeJS.ErrnoException;
@@ -78,8 +81,7 @@ class SessionLock {
           const isStale = !owner || !isProcessAlive(owner.pid)
             || (Date.now() - owner.startedAt > staleThresholdMs);
           if (isStale) {
-            try { fs.unlinkSync(pidFile); } catch { /* ignore */ }
-            try { fs.rmdirSync(lockDir); } catch { /* ignore */ }
+            clearLockFiles();
             continue;
           }
           await sleep(baseDelay * Math.pow(2, Math.min(i, 5)) + Math.random() * baseDelay);

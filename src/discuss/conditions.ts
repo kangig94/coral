@@ -29,6 +29,6 @@ export const setupComplete = (state: DiscussState): boolean => state.status !== 
 
 /** No active participants remain (all banned or fully exhausted). */
 export const noParticipants = (state: DiscussState): boolean =>
-  Object.values(state.agents).every((agent) =>
-    agent.banned || (agent.quota_remaining === 0 && agent.fallback_used),
-  );
+  Object.values(state.agents).every(({ banned, quota_remaining, fallback_used }) => (
+    banned || (quota_remaining === 0 && fallback_used)
+  ));

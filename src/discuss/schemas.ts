@@ -12,7 +12,7 @@ const nonEmptyString = z.string().min(1);
 const agentNameField = z.string().regex(identPattern);
 const sessionIdField = z.string().regex(sessionIdPattern);
 
-function hasUniqueValues<T>(values: readonly T[]): boolean {
+function hasUniqueItems<T>(values: readonly T[]): boolean {
   return new Set(values).size === values.length;
 }
 
@@ -37,9 +37,9 @@ const seedShape = z.object({
   controversy_axes: z.array(z.object({
     axis: nonEmptyString,
     positions: z.array(nonEmptyString).min(1).max(10)
-      .refine((positions) => hasUniqueValues(positions), 'Positions within an axis must be unique'),
+      .refine((positions) => hasUniqueItems(positions), 'Positions within an axis must be unique'),
   })).min(1).max(10)
-    .refine((axes) => hasUniqueValues(axes.map((axis) => axis.axis)), 'Axis names must be unique'),
+    .refine((axes) => hasUniqueItems(axes.map((axis) => axis.axis)), 'Axis names must be unique'),
   n: z.number().int().min(1).max(8),
   seed: z.number().int().nullable().default(null),
 }).strict();
@@ -57,7 +57,7 @@ const createShape = z.object({
     .min(2)
     .max(8)
     .refine(
-      (agents) => hasUniqueValues(agents.map((agent) => agent.name)),
+      (agents) => hasUniqueItems(agents.map((agent) => agent.name)),
       'Agent names must be unique',
   ),
 }).strict();

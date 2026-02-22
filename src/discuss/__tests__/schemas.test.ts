@@ -5,6 +5,9 @@ import {
   sessionIdPattern,
 } from '../schemas.js';
 
+const SESSION_ID = '260221-1430-a3x7';
+const session = SESSION_ID;
+
 describe('sessionIdPattern', () => {
   it('should match valid session IDs (yymmdd-HHmm-xxxx)', () => {
     expect(sessionIdPattern.test('260221-1430-a3x7')).toBe(true);
@@ -20,8 +23,6 @@ describe('sessionIdPattern', () => {
 });
 
 describe('discussAgentOpSchema', () => {
-  const session = '260221-1430-a3x7';
-
   it('should parse bid op', () => {
     const result = discussAgentOpSchema.parse({ op: 'bid', session, agent_name: 'architect', score: 75 });
     expect(result.op).toBe('bid');
@@ -43,7 +44,6 @@ describe('discussAgentOpSchema', () => {
 });
 
 describe('discussLeadOpSchema', () => {
-  const session = '260221-1430-a3x7';
   const baseCreate = {
     op: '_2_create' as const,
     topic: 'Microservices vs Monolith',

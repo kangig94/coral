@@ -27,6 +27,14 @@ const SAMPLE_SEED = {
   n: 4,
   seed: 42,
 };
+type SeedResult = {
+  ok: boolean;
+  value: {
+    assignments: Array<{ persona_seed?: number; [key: string]: unknown }>;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+};
 
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), 'coral-handlers-'));
@@ -44,7 +52,7 @@ async function createSession() {
     { op: '_2_create', topic: 'Test', agents: AGENTS },
     store,
   );
-  const data = JSON.parse(r.content[0].text) as { session_id: string };
+  const data = parseResult(r) as { session_id: string };
   const sid = data.session_id;
 
   const sessionDir = store.resolveDir(sid);
@@ -100,13 +108,13 @@ describe('discuss creation protocol', () => {
   it('should reject create on discuss tool', async () => {
     const result = await handleToolCall('discuss', { op: 'create', topic: 'AI Ethics', agents: AGENTS }, store);
     expect(result.isError).toBe(false);
-    const data = JSON.parse(result.content[0].text);
+    const data = parseResult(result);
     expect(data).toHaveProperty('error', 'unknown_op');
   });
 
   it('should create session and return session fields from discuss_lead', async () => {
     const result = await handleToolCall('discuss_lead', { op: '_2_create', topic: 'AI Ethics', agents: AGENTS }, store);
-    const data = JSON.parse(result.content[0].text);
+    const data = parseResult(result);
     expect(result.isError).toBe(false);
     expect(data).toHaveProperty('session_id');
     expect(data).toHaveProperty('status', 'setup');
@@ -187,7 +195,7 @@ describe('discuss tool: bid / speak', () => {
     await (winner === 'alice' ? aliceBid : bobBid);
 
     const result = await handleToolCall('discuss', { op: 'speak', session: sid, agent_name: loser, content: 'Bad call.' }, store);
-    const data = JSON.parse(result.content[0].text);
+    const data = parseResult(result);
     expect(data).toHaveProperty('error', 'not_your_turn');
 
     const winnerSpeak = await handleToolCall(
@@ -204,7 +212,7 @@ describe('discuss tool: bid / speak', () => {
 describe('discuss_lead tool: _1_seed', () => {
   it('should return seed assignments with deterministic seed', async () => {
     const result = await handleToolCall('discuss_lead', { op: '_1_seed', ...SAMPLE_SEED }, store);
-    const data = JSON.parse(result.content[0].text);
+    const data = parseResult(result) as SeedResult;
     expect(result.isError).toBe(false);
     expect(data).toHaveProperty('ok', true);
     expect(data.value).toHaveProperty('seed_used');
@@ -223,7 +231,7 @@ describe('discuss_lead tool: _1_seed', () => {
       positions: Array.from({ length: 7 }, (__, j) => `p${j}`),
     }));
     const result = await handleToolCall('discuss_lead', { op: '_1_seed', controversy_axes: axes, n: 1, seed: 1 }, store);
-    const data = JSON.parse(result.content[0].text);
+    const data = parseResult(result) as SeedResult;
     expect(result.isError).toBe(false);
     expect(data.ok).toBe(true);
     expect(data.value.subsampled).toBe(true);
@@ -233,7 +241,7 @@ describe('discuss_lead tool: _1_seed', () => {
 
   it('should include persona_seed in every assignment', async () => {
     const result = await handleToolCall('discuss_lead', { op: '_1_seed', ...SAMPLE_SEED }, store);
-    const data = JSON.parse(result.content[0].text);
+    const data = parseResult(result) as SeedResult;
     expect(data.ok).toBe(true);
     for (const assignment of data.value.assignments) {
       expect(typeof assignment.persona_seed).toBe('number');
@@ -248,7 +256,7 @@ describe('discuss_lead tool: _3_step (moderation loop)', () => {
     const { step } = startBidRound(sid, 80, 30);
 
     const result = await step;
-    const data = JSON.parse(result.content[0].text);
+    const data = parseResult(result);
     expect(data.status).toBe('bidding');
     expect(data.phase).toBe('resolved');
     expect(data.winner).toBe('alice');
@@ -258,11 +266,11 @@ describe('discuss_lead tool: _3_step (moderation loop)', () => {
     const sid = await createSession();
     // no bids; _3_step times out to produce a timeout state, then second call force-expels due hold_count
     const first = await handleToolCall('discuss_lead', { op: '_3_step', session: sid, timeout_seconds: sec(5) }, store);
-    const firstData = JSON.parse(first.content[0].text);
+    const firstData = parseResult(first);
     expect(firstData.status).toBe('bidding');
     expect(firstData.phase).toBe('bidding');
     const second = await handleToolCall('discuss_lead', { op: '_3_step', session: sid, timeout_seconds: sec(5) }, store);
-    const secondData = JSON.parse(second.content[0].text);
+    const secondData = parseResult(second);
     expect(secondData.status).toBe('bidding');
     expect(secondData.phase).toBe('expelled');
     expect(Array.isArray(secondData.agents)).toBe(true);
@@ -277,7 +285,7 @@ describe('discuss_lead tool: _3_step (moderation loop)', () => {
     await (winner === 'alice' ? aliceBid : bobBid);
 
     const result = await handleToolCall('discuss_lead', { op: '_3_step', session: sid, timeout_seconds: sec(5) }, store);
-    const data = JSON.parse(result.content[0].text);
+    const data = parseResult(result);
     expect(data.status).toBe('speaking');
     expect(data.phase).toBe('speech_pending');
 
@@ -303,14 +311,14 @@ describe('discuss_lead tool: transcript/state/epoch/end', () => {
   it('should record epoch summary', async () => {
     const sid = await createSession();
     const r = await handleToolCall('discuss_lead', { op: '_5_epoch', session: sid, summary: 'Key points.' }, store);
-    const data = JSON.parse(r.content[0].text);
+    const data = parseResult(r);
     expect(data).toHaveProperty('recorded', true);
   });
 
   it('should expose state via _6_state', async () => {
     const sid = await createSession();
     const r = await handleToolCall('discuss_lead', { op: '_6_state', session: sid }, store);
-    const data = JSON.parse(r.content[0].text);
+    const data = parseResult(r);
     expect(data).toHaveProperty('session_id', sid);
     expect(data).toHaveProperty('status');
     expect(data).toHaveProperty('agents');
@@ -319,7 +327,7 @@ describe('discuss_lead tool: transcript/state/epoch/end', () => {
   it('should end normally', async () => {
     const sid = await createSession();
     const r = await handleToolCall('discuss_lead', { op: '_7_end', session: sid }, store);
-    const data = JSON.parse(r.content[0].text);
+    const data = parseResult(r);
     expect(data).toHaveProperty('status', 'ended');
   });
 

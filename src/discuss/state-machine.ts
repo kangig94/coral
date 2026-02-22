@@ -67,8 +67,8 @@ export function resolveAgentName(
   name: string,
 ): string | null {
   if (agents[name]) return name;
-  const stripped = name.replace(/-\d+$/, '');
-  return stripped !== name && agents[stripped] ? stripped : null;
+  const baseName = name.replace(/-\d+$/, '');
+  return baseName !== name && agents[baseName] ? baseName : null;
 }
 
 // ─── Internal helpers ───────────────────────────────────────────────────────
@@ -301,7 +301,6 @@ export function startBidding(state: DiscussState, now: string): Result<DiscussSt
     value: {
       ...state,
       status: 'bidding',
-      bid_release_step: state.bid_release_step,
       updated_at: now,
       last_activity_at: now,
     },
@@ -330,13 +329,12 @@ export function applyBid(
     };
   }
 
-  const pending_bidders = state.pending_bidders.filter((n) => n !== name);
   return {
     ok: true,
     value: {
       ...state,
       current_bids: { ...state.current_bids, [name]: score },
-      pending_bidders,
+      pending_bidders: state.pending_bidders.filter((n) => n !== name),
       updated_at: now,
       last_activity_at: now,
     },
@@ -405,12 +403,11 @@ export function resolveWinner(
 
   const allBelowThreshold = Object.values(allBids).every((s) => s < threshold);
   if (allBelowThreshold) {
-    if (!state.cold_start) {
-      return noWinnerResult(state, allBids, 'all_below_threshold', now, effectiveBids);
-    }
-    const picked = coldStartPick(state);
-    if (picked !== null) {
-      return startSpeaking(state, allBids, picked, 'cold_start', now, undefined, effectiveBids);
+    if (state.cold_start) {
+      const picked = coldStartPick(state);
+      if (picked !== null) {
+        return startSpeaking(state, allBids, picked, 'cold_start', now, undefined, effectiveBids);
+      }
     }
     return noWinnerResult(state, allBids, 'all_below_threshold', now, effectiveBids);
   }

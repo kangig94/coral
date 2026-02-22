@@ -22,6 +22,19 @@ const agents: Record<string, AgentState> = {
 
 const TS = '2026-01-01T10:00:00Z';
 
+function speechEntry(agent: string, content: string, step = 1): TranscriptEntry {
+  const display_name = agent[0]!.toUpperCase() + agent.slice(1);
+  return {
+    type: 'speech',
+    step,
+    epoch: 1,
+    ts: TS,
+    agent,
+    display_name,
+    content,
+  };
+}
+
 // ─── wrapText ────────────────────────────────────────────────────────────────
 
 describe('wrapText', () => {
@@ -96,9 +109,7 @@ describe('renderEntries', () => {
   });
 
   it('should render speech entry with agent name and content', () => {
-    const entries: TranscriptEntry[] = [
-      { type: 'speech', step: 1, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'My argument.' },
-    ];
+    const entries: TranscriptEntry[] = [speechEntry('alice', 'My argument.')];
     const result = renderEntries(entries, agents);
     expect(result).toContain('Alice');
     expect(result).toContain('My argument.');
@@ -156,7 +167,7 @@ describe('formatFull', () => {
   it('should show winner name from bids entry but not scores', () => {
     const entries: TranscriptEntry[] = [
       { type: 'bids', step: 1, epoch: 1, ts: TS, bids: { alice: 80, bob: 50 }, winner: 'alice', resolve_type: 'normal' },
-      { type: 'speech', step: 1, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'My argument.' },
+      speechEntry('alice', 'My argument.'),
     ];
     const result = formatFull(entries, agents);
     expect(result).toContain('Speaker: Alice');  // winner revealed
@@ -176,7 +187,7 @@ describe('formatFull', () => {
 
   it('should render speech and epoch_summary entries unmodified', () => {
     const entries: TranscriptEntry[] = [
-      { type: 'speech', step: 1, epoch: 1, ts: TS, agent: 'bob', display_name: 'Bob', content: 'Bob speaks.' },
+      speechEntry('bob', 'Bob speaks.'),
       { type: 'epoch_summary', epoch: 1, ts: TS, summary: 'Epoch conclusion.' },
     ];
     const result = formatFull(entries, agents);
@@ -190,9 +201,9 @@ describe('formatFull', () => {
 describe('formatRecent', () => {
   it('should show last N speeches in full and earlier as one-line summaries', () => {
     const entries: TranscriptEntry[] = [
-      { type: 'speech', step: 1, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'Alice first speech.' },
-      { type: 'speech', step: 2, epoch: 1, ts: TS, agent: 'bob', display_name: 'Bob', content: 'Bob response.' },
-      { type: 'speech', step: 3, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'Alice again.' },
+      speechEntry('alice', 'Alice first speech.', 1),
+      speechEntry('bob', 'Bob response.', 2),
+      speechEntry('alice', 'Alice again.', 3),
     ];
     const result = formatRecent(entries, 2, agents);
     expect(result).toContain('Earlier speeches');
@@ -203,7 +214,7 @@ describe('formatRecent', () => {
 
   it('should show all in full when lastN >= speech count', () => {
     const entries: TranscriptEntry[] = [
-      { type: 'speech', step: 1, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'Only speech.' },
+      speechEntry('alice', 'Only speech.'),
     ];
     const result = formatRecent(entries, 5, agents);
     expect(result).toContain('Only speech.');
@@ -212,9 +223,9 @@ describe('formatRecent', () => {
 
   it('should exclude non-speech entries (bids)', () => {
     const entries: TranscriptEntry[] = [
-      { type: 'speech', step: 1, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'Old speech.' },
+      speechEntry('alice', 'Old speech.'),
       { type: 'bids', step: 2, epoch: 1, ts: TS, bids: { alice: 80 }, winner: 'alice', resolve_type: 'normal' },
-      { type: 'speech', step: 2, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'New speech.' },
+      speechEntry('alice', 'New speech.', 2),
     ];
     const result = formatRecent(entries, 1, agents);
     expect(result).not.toContain('Step 2');  // bids excluded
@@ -226,8 +237,8 @@ describe('formatRecent', () => {
 
   it('should show speaker display_name in both summary and recent sections', () => {
     const entries: TranscriptEntry[] = [
-      { type: 'speech', step: 1, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'First.' },
-      { type: 'speech', step: 2, epoch: 1, ts: TS, agent: 'bob', display_name: 'Bob', content: 'Second.' },
+      speechEntry('alice', 'First.', 1),
+      speechEntry('bob', 'Second.', 2),
     ];
     const result = formatRecent(entries, 1, agents);
     expect(result).toContain('- Alice:'); // older speech summary with name prefix
@@ -289,8 +300,8 @@ describe('renderEntry bids with effective_bids', () => {
 describe('formatSummary', () => {
   it('should return one-liner for each speech entry', () => {
     const entries: TranscriptEntry[] = [
-      { type: 'speech', step: 1, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'Alice made a point.' },
-      { type: 'speech', step: 2, epoch: 1, ts: TS, agent: 'bob', display_name: 'Bob', content: 'Bob disagreed.' },
+      speechEntry('alice', 'Alice made a point.'),
+      speechEntry('bob', 'Bob disagreed.', 2),
     ];
     const result = formatSummary(entries, agents);
     expect(result).toContain('- Alice:');
@@ -300,7 +311,7 @@ describe('formatSummary', () => {
   it('should omit non-speech entries', () => {
     const entries: TranscriptEntry[] = [
       { type: 'bids', step: 1, epoch: 1, ts: TS, bids: { alice: 80 }, winner: 'alice', resolve_type: 'normal' },
-      { type: 'speech', step: 1, epoch: 1, ts: TS, agent: 'alice', display_name: 'Alice', content: 'Only this.' },
+      speechEntry('alice', 'Only this.'),
     ];
     const result = formatSummary(entries, agents);
     expect(result).not.toContain('Bids');

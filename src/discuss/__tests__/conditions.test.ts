@@ -128,7 +128,7 @@ describe('setupComplete', () => {
   });
 
   it('returns false during setup', () => {
-    const state = makeState({ status: 'setup' as const });
+    const state = makeState({ status: 'setup' });
     expect(setupComplete(state)).toBe(false);
   });
 });
@@ -140,10 +140,11 @@ describe('noParticipants', () => {
   });
 
   it('returns true when all participants are exhausted/banned', () => {
+    const base = makeState();
     const state = makeState({
       agents: {
-        alice: { ...makeState().agents.alice, quota_remaining: 0, fallback_used: true },
-        bob: { ...makeState().agents.bob, quota_remaining: 0, fallback_used: true },
+        alice: { ...base.agents.alice, quota_remaining: 0, fallback_used: true },
+        bob: { ...base.agents.bob, quota_remaining: 0, fallback_used: true },
       },
     });
     expect(noParticipants(state)).toBe(true);

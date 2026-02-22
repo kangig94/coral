@@ -9,6 +9,14 @@ import {
   MAX_POOL_SIZE,
 } from '../persona-seed.js';
 
+function seedResult<T>(result: { ok: true; value: T } | { ok: false; error: string }): T {
+  expect(result.ok).toBe(true);
+  if (!result.ok) {
+    throw new Error(`seedPersonas failed: ${result.error}`);
+  }
+  return result.value;
+}
+
 describe('seedPersonas', () => {
   it('is reproducible with the same seed', () => {
     const input = {
@@ -90,19 +98,18 @@ describe('seedPersonas', () => {
       seed: 77,
     });
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    const value = seedResult(result);
 
-    expect(result.value.pool_size).toBe(4);
-    expect(result.value.assignments).toHaveLength(6);
-    const firstFour = result.value.assignments.slice(0, 4).map((a) => JSON.stringify(a.positions));
+    expect(value.pool_size).toBe(4);
+    expect(value.assignments).toHaveLength(6);
+    const firstFour = value.assignments.slice(0, 4).map((a) => JSON.stringify(a.positions));
     expect(new Set(firstFour).size).toBe(4);
 
-    for (const extra of result.value.assignments.slice(4)) {
+    for (const extra of value.assignments.slice(4)) {
       expect(typeof extra.shared_position_with).toBe('number');
       expect(extra.shared_position_with).toBeGreaterThanOrEqual(0);
       expect(extra.shared_position_with).toBeLessThan(4);
-      const original = result.value.assignments[extra.shared_position_with!];
+      const original = value.assignments[extra.shared_position_with!];
       expect(extra.positions).toEqual(original.positions);
     }
   });
@@ -117,10 +124,9 @@ describe('seedPersonas', () => {
       seed: 9,
     });
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.assignments).toHaveLength(1);
-    expect(result.value.assignments[0].shared_position_with).toBeUndefined();
+    const value = seedResult(result);
+    expect(value.assignments).toHaveLength(1);
+    expect(value.assignments[0].shared_position_with).toBeUndefined();
   });
 
   it('works with a single axis where Hamming distance is only 0 or 1', () => {
@@ -130,11 +136,10 @@ describe('seedPersonas', () => {
       seed: 2026,
     });
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    const value = seedResult(result);
 
-    const first = [result.value.assignments[0].positions.stance];
-    const second = [result.value.assignments[1].positions.stance];
+    const first = [value.assignments[0].positions.stance];
+    const second = [value.assignments[1].positions.stance];
     const distance = hammingDistance(first, second);
     expect(distance === 0 || distance === 1).toBe(true);
     expect(distance).toBe(1);
@@ -169,12 +174,11 @@ describe('seedPersonas', () => {
     }));
     const result = seedPersonas({ controversy_axes: axes, n: 1, seed: 1 });
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.subsampled).toBe(true);
-    expect(result.value.original_pool_size).toBe(343);
-    expect(result.value.pool_size).toBe(MAX_POOL_SIZE);
-    expect(result.value.assignments).toHaveLength(1);
+    const value = seedResult(result);
+    expect(value.subsampled).toBe(true);
+    expect(value.original_pool_size).toBe(343);
+    expect(value.pool_size).toBe(MAX_POOL_SIZE);
+    expect(value.assignments).toHaveLength(1);
   });
 
   it('does not subsample at exactly MAX_POOL_SIZE', () => {
@@ -185,11 +189,10 @@ describe('seedPersonas', () => {
     }));
     const result = seedPersonas({ controversy_axes: axes, n: 1, seed: 1 });
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.subsampled).toBeUndefined();
-    expect(result.value.original_pool_size).toBeUndefined();
-    expect(result.value.pool_size).toBe(256);
+    const value = seedResult(result);
+    expect(value.subsampled).toBeUndefined();
+    expect(value.original_pool_size).toBeUndefined();
+    expect(value.pool_size).toBe(256);
   });
 
   it('subsampled results are reproducible with the same seed', () => {
@@ -229,16 +232,15 @@ describe('seedPersonas', () => {
       seed: 7,
     });
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    for (const assignment of result.value.assignments) {
+    const value = seedResult(result);
+    for (const assignment of value.assignments) {
       expect(typeof assignment.persona_seed).toBe('number');
       expect(Number.isInteger(assignment.persona_seed)).toBe(true);
       expect(assignment.persona_seed).toBeGreaterThanOrEqual(0);
       expect(assignment.persona_seed).toBeLessThan(0x1_0000_0000);
     }
     // Seeds should be distinct (extremely unlikely to collide for n=4)
-    const seeds = result.value.assignments.map((a) => a.persona_seed);
+    const seeds = value.assignments.map((a) => a.persona_seed);
     expect(new Set(seeds).size).toBe(seeds.length);
   });
 
@@ -261,9 +263,8 @@ describe('seedPersonas', () => {
       seed: 7,
     });
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.sigma_used).toBeCloseTo(Math.sqrt(2), 10);
+    const value = seedResult(result);
+    expect(value.sigma_used).toBeCloseTo(Math.sqrt(2), 10);
   });
 });
 

@@ -57,6 +57,20 @@ function startSession(input = BASE_INPUT): DiscussState {
   return res.value;
 }
 
+function unwrapOk<T>(result: { ok: true; value: T } | { ok: false; error: string }): T {
+  expect(result.ok).toBe(true);
+  if (!result.ok) {
+    throw new Error(`unreachable: ${result.error}`);
+  }
+  return result.value;
+}
+
+function assertBidsEntry(
+  entry: TranscriptEntry | undefined,
+): asserts entry is Extract<TranscriptEntry, { type: 'bids' }> {
+  expect(entry?.type).toBe('bids');
+}
+
 // ─── parseDisplayName ────────────────────────────────────────────────────────
 
 describe('parseDisplayName', () => {
@@ -143,12 +157,10 @@ describe('initSession', () => {
 describe('applyBid', () => {
   it('should record bid in bidding status', () => {
     const state = startSession();
-    const res = applyBid(state, 'alice', 75, NOW);
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.value.pending_bidders).not.toContain('alice');
-    expect(res.value.current_bids['alice']).toBe(75);
-    expect(res.value.pending_bidders).toContain('bob');
+    const res = unwrapOk(applyBid(state, 'alice', 75, NOW));
+    expect(res.pending_bidders).not.toContain('alice');
+    expect(res.current_bids['alice']).toBe(75);
+    expect(res.pending_bidders).toContain('bob');
   });
 
   it('should allow bid in setup (no transcript read gate)', () => {
@@ -167,9 +179,8 @@ describe('applyBid', () => {
 
   it('should reject double bid from same agent', () => {
     const state = startSession();
-    const first = applyBid(state, 'alice', 75, NOW);
-    expect(first.ok).toBe(true);
-    const second = first.ok ? applyBid(first.value, 'alice', 80, NOW) : null;
+    const first = unwrapOk(applyBid(state, 'alice', 75, NOW));
+    const second = applyBid(first, 'alice', 80, NOW);
     expect(second?.ok).toBe(false);
     if (!second || second.ok) return;
     expect(second.error).toBe('already_bid');
@@ -179,12 +190,9 @@ describe('applyBid', () => {
 describe('resolveWinner', () => {
   it('should prefer highest scorer in primary pool', () => {
     const state = startSession();
-    const s1 = applyBid(state, 'alice', 80, NOW);
-    const s2 = applyBid(s1.ok ? s1.value : state, 'bob', 50, NOW);
-    const res = resolveWinner(s2.ok ? s2.value : state, NOW);
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    const [next, decision] = res.value;
+    const s1 = unwrapOk(applyBid(state, 'alice', 80, NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 50, NOW));
+    const [next, decision] = unwrapOk(resolveWinner(s2, NOW));
     expect(('speaker_type' in decision && decision.speaker_type)).toBe('quota');
     if ('winner' in decision) {
       expect(decision.winner).toBe('alice');
@@ -195,12 +203,9 @@ describe('resolveWinner', () => {
 
   it('should auto-pick cold-start winner when all bids below threshold', () => {
     const state = startSession();
-    const s1 = applyBid(state, 'alice', 10, NOW);
-    const s2 = applyBid(s1.ok ? s1.value : state, 'bob', 20, NOW);
-    const res = resolveWinner(s2.ok ? s2.value : state, NOW);
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    const [, decision] = res.value;
+    const s1 = unwrapOk(applyBid(state, 'alice', 10, NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 20, NOW));
+    const [, decision] = unwrapOk(resolveWinner(s2, NOW));
     expect(('speaker_type' in decision && decision.speaker_type)).toBe('cold_start');
     expect('speaker_type' in decision ? decision.winner : null).toBe('bob');
   });
@@ -215,13 +220,11 @@ describe('resolveWinner', () => {
       },
     };
 
-    const s1 = applyBid(state, 'alice', 80, NOW);
-    const s2 = applyBid(s1.ok ? s1.value : state, 'bob', 90, NOW);
-    const resolved = resolveWinner(s2.ok ? s2.value : state, NOW);
-    expect(resolved.ok).toBe(true);
-    if (!resolved.ok) return;
-    if ('speaker_type' in resolved.value[1]) {
-      expect(resolved.value[1].winner).toBe('alice');
+    const s1 = unwrapOk(applyBid(state, 'alice', 80, NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 90, NOW));
+    const [, decision] = unwrapOk(resolveWinner(s2, NOW));
+    if ('speaker_type' in decision) {
+      expect(decision.winner).toBe('alice');
     }
   });
 
@@ -231,12 +234,9 @@ describe('resolveWinner', () => {
     state.agents.alice.fallback_used = true;
     state.agents.bob.total_speaks = 4;
 
-    const s1 = applyBid(state, 'alice', 70, NOW);
-    const s2 = applyBid(s1.ok ? s1.value : state, 'bob', 20, NOW);
-    const resolved = resolveWinner(s2.ok ? s2.value : state, NOW);
-    expect(resolved.ok).toBe(true);
-    if (!resolved.ok) return;
-    const [, decision] = resolved.value;
+    const s1 = unwrapOk(applyBid(state, 'alice', 70, NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 20, NOW));
+    const [, decision] = unwrapOk(resolveWinner(s2, NOW));
     expect(('no_winner' in decision && decision.no_winner)).toBe(true);
     if (!('no_winner' in decision)) return;
     expect(decision.reason).toBe('all_blocked');
@@ -255,10 +255,7 @@ describe('resolveWinner', () => {
       pending_bidders: [],
     };
 
-    const resolved = resolveWinner(state2, NOW);
-    expect(resolved.ok).toBe(true);
-    if (!resolved.ok) return;
-    const [nextState, decision] = resolved.value;
+    const [nextState, decision] = unwrapOk(resolveWinner(state2, NOW));
     expect('no_winner' in decision && decision.no_winner).toBe(true);
     if (!('no_winner' in decision)) return;
     expect(decision.reason).toBe('epoch_transition');
@@ -273,41 +270,34 @@ describe('resolveWinner', () => {
 describe('speech lifecycle', () => {
   function winningState(): DiscussState {
     const state = startSession();
-    const s1 = applyBid(state, 'alice', 80, NOW);
-    const s2 = applyBid(s1.ok ? s1.value : state, 'bob', 40, NOW);
-    const r = resolveWinner(s2.ok ? s2.value : state, NOW);
-    return r.ok ? r.value[0] : state;
+    const s1 = unwrapOk(applyBid(state, 'alice', 80, NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 40, NOW));
+    return unwrapOk(resolveWinner(s2, NOW))[0];
   }
 
   it('should increment step and open release marker on applySpeech', () => {
     const state = winningState();
-    const res = applySpeech(state, 'alice', 'My speech.', NOW);
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.value.status).toBe('bidding');
-    expect(res.value.step).toBe(2);
-    expect(res.value.bid_release_step).toBe(1);
-    expect(res.value.last_speech_step).toBe(1);
+    const value = unwrapOk(applySpeech(state, 'alice', 'My speech.', NOW));
+    expect(value.status).toBe('bidding');
+    expect(value.step).toBe(2);
+    expect(value.bid_release_step).toBe(1);
+    expect(value.last_speech_step).toBe(1);
   });
 
   it('should decrement quota for normal speaker and increment total_speaks', () => {
     const state = winningState();
-    const res = applySpeech(state, 'alice', 'My speech.', NOW);
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.value.agents['alice'].quota_remaining).toBe(2);
-    expect(res.value.agents['alice'].total_speaks).toBe(1);
+    const value = unwrapOk(applySpeech(state, 'alice', 'My speech.', NOW));
+    expect(value.agents['alice'].quota_remaining).toBe(2);
+    expect(value.agents['alice'].total_speaks).toBe(1);
   });
 
   it('should apply speech timeout with force semantics', () => {
     const state = winningState();
-    const timeout = applySpeechTimeout(state, NOW);
-    expect(timeout.ok).toBe(true);
-    if (!timeout.ok) return;
-    expect(timeout.value.status).toBe('bidding');
-    expect(timeout.value.agents.alice.total_speaks).toBe(1);
-    expect(timeout.value.transcript.at(-1)?.type).toBe('speech');
-    expect(timeout.value.bid_release_step).toBe(state.step);
+    const timeout = unwrapOk(applySpeechTimeout(state, NOW));
+    expect(timeout.status).toBe('bidding');
+    expect(timeout.agents.alice.total_speaks).toBe(1);
+    expect(timeout.transcript.at(-1)?.type).toBe('speech');
+    expect(timeout.bid_release_step).toBe(state.step);
   });
 
   it('should not decrement fallback speaker quota on timeout/speech', () => {
@@ -320,16 +310,12 @@ describe('speech lifecycle', () => {
       },
     };
 
-    const s1 = applyBid(withFallback, 'alice', 80, NOW);
-    const s2 = applyBid(s1.ok ? s1.value : withFallback, 'bob', 20, NOW);
-    const r = resolveWinner(s2.ok ? s2.value : withFallback, NOW);
-    if (!r.ok) return;
-
-    const timed = applySpeechTimeout(r.value[0], NOW);
-    expect(timed.ok).toBe(true);
-    if (!timed.ok) return;
-    expect(timed.value.agents['alice'].quota_remaining).toBe(0);
-    expect(timed.value.agents['alice'].total_speaks).toBe(1);
+    const s1 = unwrapOk(applyBid(withFallback, 'alice', 80, NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 20, NOW));
+    const nextState = unwrapOk(resolveWinner(s2, NOW))[0];
+    const timed = unwrapOk(applySpeechTimeout(nextState, NOW));
+    expect(timed.agents['alice'].quota_remaining).toBe(0);
+    expect(timed.agents['alice'].total_speaks).toBe(1);
   });
 });
 
@@ -338,11 +324,9 @@ describe('speech lifecycle', () => {
 describe('applyExpel', () => {
   it('should not ban in epoch1 step1 respawn case', () => {
     const state = startSession();
-    const expelled = applyExpel(state, ['alice'], NOW);
-    expect(expelled.ok).toBe(true);
-    if (!expelled.ok) return;
-    expect(expelled.value.state.agents.alice.banned).toBe(false);
-    expect(expelled.value.hint).toContain('Shutdown and respawn');
+    const expelled = unwrapOk(applyExpel(state, ['alice'], NOW));
+    expect(expelled.state.agents.alice.banned).toBe(false);
+    expect(expelled.hint).toContain('Shutdown and respawn');
   });
 
   it('should ban and clear quota after step2 and beyond', () => {
@@ -354,12 +338,10 @@ describe('applyExpel', () => {
       speaker_type: null,
       hold_count: 0,
     };
-    const expelled = applyExpel(state, ['alice'], NOW);
-    expect(expelled.ok).toBe(true);
-    if (!expelled.ok) return;
-    expect(expelled.value.state.agents.alice.banned).toBe(true);
-    expect(expelled.value.state.agents.alice.quota_remaining).toBe(0);
-    expect(expelled.value.hint).toContain('Banned');
+    const expelled = unwrapOk(applyExpel(state, ['alice'], NOW));
+    expect(expelled.state.agents.alice.banned).toBe(true);
+    expect(expelled.state.agents.alice.quota_remaining).toBe(0);
+    expect(expelled.hint).toContain('Banned');
   });
 });
 
@@ -370,11 +352,9 @@ describe('applyEpochSummary', () => {
     const state = startSession();
     const withSpeech = applySpeechTimeout(state, NOW);
     const base = withSpeech.ok ? withSpeech.value : state;
-    const summarized = applyEpochSummary(base, 'Phase one highlights.', NOW);
-    expect(summarized.ok).toBe(true);
-    if (!summarized.ok) return;
-    expect(summarized.value.epoch_summary_written).toBe(1);
-    expect(summarized.value.bid_release_step).toBe(base.step);
+    const summarized = unwrapOk(applyEpochSummary(base, 'Phase one highlights.', NOW));
+    expect(summarized.epoch_summary_written).toBe(1);
+    expect(summarized.bid_release_step).toBe(base.step);
   });
 
   it('should reject duplicate summary for same epoch', () => {
@@ -391,19 +371,16 @@ describe('applyEpochSummary', () => {
 describe('applyEnd', () => {
   it('should end session and open release marker', () => {
     const state = startSession();
-    const res = applyEnd(state, {}, NOW);
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.value.status).toBe('ended');
-    expect(res.value.bid_release_step).toBe(state.step);
+    const value = unwrapOk(applyEnd(state, {}, NOW));
+    expect(value.status).toBe('ended');
+    expect(value.bid_release_step).toBe(state.step);
   });
 
   it('should require force flag in normal speaking end', () => {
     const state = startSession();
-    const s1 = applyBid(state, 'alice', 80, NOW);
-    const s2 = applyBid(s1.ok ? s1.value : state, 'bob', 20, NOW);
-    const r = resolveWinner(s2.ok ? s2.value : state, NOW);
-    const speaking = r.ok ? r.value[0] : state;
+    const s1 = unwrapOk(applyBid(state, 'alice', 80, NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 20, NOW));
+    const speaking = unwrapOk(resolveWinner(s2, NOW))[0];
     const res = applyEnd(speaking, {}, NOW);
     expect(res.ok).toBe(false);
     if (res.ok) return;
@@ -412,30 +389,20 @@ describe('applyEnd', () => {
 
   it('should be idempotent for already ended sessions', () => {
     const state = startSession();
-    const ended = applyEnd(state, {}, NOW);
-    expect(ended.ok).toBe(true);
-    if (!ended.ok) return;
-    const second = applyEnd(ended.value, {}, NOW);
-    expect(second.ok).toBe(true);
-    if (!second.ok) return;
-    expect(second.value).toEqual(ended.value);
+    const ended = unwrapOk(applyEnd(state, {}, NOW));
+    const second = unwrapOk(applyEnd(ended, {}, NOW));
+    expect(second).toEqual(ended);
   });
 
   it('should append synthesis only once on already-ended session', () => {
     const state = startSession();
-    const ended = applyEnd(state, {}, NOW);
-    expect(ended.ok).toBe(true);
-    if (!ended.ok) return;
+    const ended = unwrapOk(applyEnd(state, {}, NOW));
 
-    const first = applyEnd(ended.value, { synthesis: 'Final conclusion.' }, NOW);
-    expect(first.ok).toBe(true);
-    if (!first.ok) return;
+    const first = unwrapOk(applyEnd(ended, { synthesis: 'Final conclusion.' }, NOW));
 
-    const second = applyEnd(first.value, { synthesis: 'Another conclusion should be ignored.' }, NOW);
-    expect(second.ok).toBe(true);
-    if (!second.ok) return;
+    const second = unwrapOk(applyEnd(first, { synthesis: 'Another conclusion should be ignored.' }, NOW));
 
-    const synthCount = second.value.transcript.filter(
+    const synthCount = second.transcript.filter(
       (e): e is Extract<TranscriptEntry, { type: 'session_event'; event: 'synthesis'; detail: string }> =>
         e.type === 'session_event' && e.event === 'synthesis',
     ).length;
@@ -595,12 +562,9 @@ describe('resolveWinner with decay', () => {
     const state = startSession();
     state.agents.alice.total_speaks = 0;
     state.agents.bob.total_speaks = 2;
-    const s1 = applyBid(state, 'alice', 32, NOW);
-    const s2 = applyBid(s1.ok ? s1.value : state, 'bob', 35, NOW);
-    const res = resolveWinner(s2.ok ? s2.value : state, NOW);
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    const [, decision] = res.value;
+    const s1 = unwrapOk(applyBid(state, 'alice', 32, NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 35, NOW));
+    const [, decision] = unwrapOk(resolveWinner(s2, NOW));
     // alice should win despite lower raw bid (higher effective score)
     expect('winner' in decision && decision.winner).toBe('alice');
   });
@@ -612,12 +576,9 @@ describe('resolveWinner with decay', () => {
     state.agents.alice.total_speaks = 2;
     state.agents.bob.total_speaks = 0;
     state.cold_start = false;
-    const s1 = applyBid(state, 'alice', 40, NOW);
-    const s2 = applyBid(s1.ok ? s1.value : state, 'bob', 5, NOW);
-    const res = resolveWinner(s2.ok ? s2.value : state, NOW);
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    const [, decision] = res.value;
+    const s1 = unwrapOk(applyBid(state, 'alice', 40, NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 5, NOW));
+    const [, decision] = unwrapOk(resolveWinner(s2, NOW));
     // alice should win because bob's raw bid is below threshold
     expect('winner' in decision && decision.winner).toBe('alice');
   });
@@ -625,16 +586,12 @@ describe('resolveWinner with decay', () => {
   it('should include effective_bids in cold-start transcript entry for audit', () => {
     const state = startSession();
     // both below threshold -> cold start
-    const s1 = applyBid(state, 'alice', 5, NOW);
-    const s2 = applyBid(s1.ok ? s1.value : state, 'bob', 10, NOW);
-    const res = resolveWinner(s2.ok ? s2.value : state, NOW);
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    const [nextState, decision] = res.value;
+    const s1 = unwrapOk(applyBid(state, 'alice', 5, NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 10, NOW));
+    const [nextState, decision] = unwrapOk(resolveWinner(s2, NOW));
     expect('speaker_type' in decision && decision.speaker_type).toBe('cold_start');
     const bidsEntry = nextState.transcript.at(-1);
-    expect(bidsEntry?.type).toBe('bids');
-    if (bidsEntry?.type !== 'bids') return;
+    assertBidsEntry(bidsEntry);
     expect(bidsEntry.effective_bids).toBeDefined();
   });
 
@@ -651,15 +608,11 @@ describe('resolveWinner with decay', () => {
       pending_bidders: [],
     };
 
-    const res = resolveWinner(state2, NOW);
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    const [nextState, decision] = res.value;
+    const [nextState, decision] = unwrapOk(resolveWinner(state2, NOW));
     expect('no_winner' in decision && decision.reason).toBe('epoch_transition');
     // find the bids entry appended before epoch transition
     const bidsEntry = nextState.transcript.find((e) => e.type === 'bids');
-    expect(bidsEntry?.type).toBe('bids');
-    if (bidsEntry?.type !== 'bids') return;
+    assertBidsEntry(bidsEntry);
     expect(bidsEntry.effective_bids).toBeDefined();
   });
 });
@@ -797,10 +750,7 @@ describe('resolveWinner with decay (adversarial)', () => {
       },
     };
     const stateWithBids = placeBids(state, { alice: 70, bob: 60 });
-    const resolved = resolveWinner(stateWithBids, NOW);
-    expect(resolved.ok).toBe(true);
-    if (!resolved.ok) return;
-    const [, decision] = resolved.value;
+    const [, decision] = unwrapOk(resolveWinner(stateWithBids, NOW));
     expect(('speaker_type' in decision && decision.speaker_type)).toBe('quota');
     expect('winner' in decision ? decision.winner : null).toBe('bob');
   });
@@ -816,23 +766,18 @@ describe('resolveWinner with decay (adversarial)', () => {
       },
     };
     const stateWithBids = placeBids(state, { alice: 25, bob: 50 });
-    const resolved = resolveWinner(stateWithBids, NOW);
-    expect(resolved.ok).toBe(true);
-    if (!resolved.ok) return;
-    expect(resolved.value[0].status).toBe('speaking');
-    expect('speaker_type' in resolved.value[1] ? resolved.value[1].speaker_type : null).toBe('quota');
-    expect('winner' in resolved.value[1] ? resolved.value[1].winner : null).toBe('bob');
+    const [nextState, decision] = unwrapOk(resolveWinner(stateWithBids, NOW));
+    expect(nextState.status).toBe('speaking');
+    expect('speaker_type' in decision ? decision.speaker_type : null).toBe('quota');
+    expect('winner' in decision ? decision.winner : null).toBe('bob');
   });
 
   it('should include effective_bids on winning bids transcript entries', () => {
     const state = startSession();
     const stateWithBids = placeBids(state, { alice: 80, bob: 50 });
-    const resolved = resolveWinner(stateWithBids, NOW);
-    expect(resolved.ok).toBe(true);
-    if (!resolved.ok) return;
-    const lastEntry = resolved.value[0].transcript.at(-1);
-    expect(lastEntry && lastEntry.type).toBe('bids');
-    if (!lastEntry || lastEntry.type !== 'bids') return;
+    const nextState = unwrapOk(resolveWinner(stateWithBids, NOW))[0];
+    const lastEntry = nextState.transcript.at(-1);
+    assertBidsEntry(lastEntry);
     expect(lastEntry.effective_bids).toEqual({ alice: 80, bob: 50 });
   });
 
@@ -858,13 +803,11 @@ describe('resolveWinner with decay (adversarial)', () => {
       eve: 0,
       frank: 0,
     });
-    const resolved = resolveWinner(stateWithBids, NOW);
-    expect(resolved.ok).toBe(true);
-    if (!resolved.ok) return;
-    expect('speaker_type' in resolved.value[1] ? resolved.value[1].speaker_type : null).toBe('cold_start');
-    expect('winner' in resolved.value[1] ? resolved.value[1].winner : null).toBe('alice');
-    expect(resolved.value[0].current_speaker).toBe('alice');
-    expect(resolved.value[1]).not.toEqual({ no_winner: true, reason: 'all_below_threshold', });
+    const [nextState, decision] = unwrapOk(resolveWinner(stateWithBids, NOW));
+    expect('speaker_type' in decision ? decision.speaker_type : null).toBe('cold_start');
+    expect('winner' in decision ? decision.winner : null).toBe('alice');
+    expect(nextState.current_speaker).toBe('alice');
+    expect(decision).not.toEqual({ no_winner: true, reason: 'all_below_threshold' });
     expect(DEFAULT_BID_THRESHOLD).toBe(30);
   });
 
@@ -881,15 +824,12 @@ describe('resolveWinner with decay (adversarial)', () => {
         bob: { ...state.agents.bob, quota_remaining: 0, fallback_used: true },
       },
     };
-    const resolved = resolveWinner(state, NOW);
-    expect(resolved.ok).toBe(true);
-    if (!resolved.ok) return;
-    expect('no_winner' in resolved.value[1]).toBe(true);
-    if (!('no_winner' in resolved.value[1])) return;
-    expect(resolved.value[1].reason).toBe('epoch_transition');
-    const lastEntry = resolved.value[0].transcript.at(-1);
-    expect(lastEntry && lastEntry.type).toBe('bids');
-    if (!lastEntry || lastEntry.type !== 'bids') return;
+    const [nextState, decision] = unwrapOk(resolveWinner(state, NOW));
+    expect('no_winner' in decision).toBe(true);
+    if (!('no_winner' in decision)) return;
+    expect(decision.reason).toBe('epoch_transition');
+    const lastEntry = nextState.transcript.at(-1);
+    assertBidsEntry(lastEntry);
     expect(lastEntry.effective_bids).toEqual({ alice: 80, bob: 50 });
   });
 
@@ -905,10 +845,8 @@ describe('resolveWinner with decay (adversarial)', () => {
       },
     };
     const stateWithBids = placeBids(stateWithSpeech, { alice: 80, bob: 80 });
-    const resolved = resolveWinner(stateWithBids, NOW);
-    expect(resolved.ok).toBe(true);
-    if (!resolved.ok) return;
-    expect('speaker_type' in resolved.value[1] ? resolved.value[1].speaker_type : null).toBe('quota');
-    expect('winner' in resolved.value[1] ? resolved.value[1].winner : null).toBe('bob');
+    const [, decision] = unwrapOk(resolveWinner(stateWithBids, NOW));
+    expect('speaker_type' in decision ? decision.speaker_type : null).toBe('quota');
+    expect('winner' in decision ? decision.winner : null).toBe('bob');
   });
 });

@@ -32,9 +32,12 @@ process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
 const transport = new StdioServerTransport();
-server.connect(transport).then(() => {
-  process.stderr.write('Coral Discuss MCP Server running on stdio\n');
-}).catch((error: unknown) => {
-  process.stderr.write(`Fatal error: ${error}\n`);
-  process.exit(1);
-});
+(async () => {
+  try {
+    await server.connect(transport);
+    process.stderr.write('Coral Discuss MCP Server running on stdio\n');
+  } catch (error: unknown) {
+    process.stderr.write(`Fatal error: ${error}\n`);
+    process.exit(1);
+  }
+})();
