@@ -84,6 +84,18 @@ Use Claude's native tools (Read, Grep, Glob, LSP) for direct analysis. Read-only
 
 ---
 
+### red-attacker (Adversarial Test Generator)
+
+`agents/red-attacker.md` - sonnet
+
+**Role**: Adversarial test specialist that attacks the implementer's blind spots by generating tests the implementer didn't think to write. Spawned as a background subagent via `/coral:ralph --red` or `/coral:codex-ralph --red`. Uses the opposite model from the implementer for ensemble diversity: when `implementer=claude`, delegates test generation to Codex; when `implementer=codex`, Claude generates directly. Gracefully degrades to Claude-direct with a warning if Codex is unavailable.
+
+**Investigation Protocol**: (1) Read existing tests to identify language/framework/naming patterns. (2) Read changed files and existing coverage; cross-reference `plan_context` to avoid duplicating planned tests. (3) Identify attack vectors (boundary, error path, ordering, type, state, security). (4) Write adversarial tests to the project's test directory with `red-<target>.<ext>` naming. (5) Output a coverage gap report.
+
+> Note: red-attacker does NOT have `disallowedTools` because it needs Write/Edit access to create test files.
+
+---
+
 ## Discuss Agents
 
 Agents for the moderated multi-agent discussion system. These agents coordinate via the `dc` MCP server (`discuss_*` tools) and Agent Teams.
@@ -192,6 +204,56 @@ disallowedTools: Write, Edit
 ---
 ```
 
+```xml
+<Agent_Prompt>
+  <Role>
+    You are [role]. Your mission is [mission].
+    You are responsible for: [responsibilities].
+    You are NOT responsible for: [exclusions with agent names].
+
+    | Situation | Priority |
+    |-----------|----------|
+    | [trigger condition] | MANDATORY / RECOMMENDED / OPTIONAL |
+  </Role>
+  <Success_Criteria>
+    - [Measurable criterion 1]
+    - [Measurable criterion 2]
+  </Success_Criteria>
+  <Constraints>
+    [ONE-LINE IRON LAW IN CAPS]
+
+    | DO | DON'T |
+    |----|-------|
+    | [correct behavior] | [incorrect behavior] |
+  </Constraints>
+  <Investigation_Protocol>
+    1) [Step with sub-steps a, b, c]
+    2) [Step]
+  </Investigation_Protocol>
+  <Tool_Usage>
+    Detection commands:
+    ```bash
+    [bash commands to find issues]
+    ```
+
+    Key files:
+    | File | Concern |
+    |------|---------|
+    | [file] | [what to check] |
+  </Tool_Usage>
+  <Output_Format>
+    ## Review: [scope]
+    ### Findings
+    | # | Severity | File:Line | Finding | Suggestion |
+    |---|----------|-----------|---------|------------|
+    ### Verdict: PASS / NEEDS WORK
+  </Output_Format>
+  <Failure_Modes_To_Avoid>
+    - [Mode]: [What goes wrong]. Instead: [correction].
+  </Failure_Modes_To_Avoid>
+</Agent_Prompt>
+```
+
 ### Claude-native Agent (Execution)
 
 Create `agents/<name>.md` without `disallowedTools` for agents that need to write files:
@@ -202,4 +264,42 @@ name: <name>
 description: "<description>. Use when [trigger]. NOT for [exclusion]."
 model: opus
 ---
+```
+
+```xml
+<Agent_Prompt>
+  <Role>
+    You are [role]. Your mission is [mission].
+    You are responsible for: [responsibilities].
+    You are NOT responsible for: [exclusions with agent names].
+
+    | Situation | Priority |
+    |-----------|----------|
+    | [trigger condition] | MANDATORY / RECOMMENDED / OPTIONAL |
+  </Role>
+  <Success_Criteria>
+    - [Measurable criterion 1]
+    - [Measurable criterion 2]
+  </Success_Criteria>
+  <Constraints>
+    [ONE-LINE IRON LAW IN CAPS]
+
+    | DO | DON'T |
+    |----|-------|
+    | [correct behavior] | [incorrect behavior] |
+  </Constraints>
+  <Investigation_Protocol>
+    1) [Step with sub-steps a, b, c]
+    2) [Step]
+  </Investigation_Protocol>
+  <Output_Format>
+    ## Report Title
+    ### Section
+    | Column | Column |
+    |--------|--------|
+  </Output_Format>
+  <Failure_Modes_To_Avoid>
+    - [Mode]: [What goes wrong]. Instead: [correction].
+  </Failure_Modes_To_Avoid>
+</Agent_Prompt>
 ```
