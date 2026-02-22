@@ -4,11 +4,7 @@
 
 import { textResult, jsonResult, type McpResult } from '../shared/mcp-utils.js';
 import type {
-  BidResult,
   EndReason,
-  ResolveReason,
-  StepPhase,
-  DiscussCreateInput,
   DiscussState,
 } from './types.js';
 import { SessionStore } from './session-store.js';
@@ -44,7 +40,7 @@ import {
   type DiscussAgentOpInput,
   type DiscussLeadOpInput,
 } from './schemas.js';
-import { Result } from './types.js';
+import type { Result } from './types.js';
 
 function resolveSession(store: SessionStore, sessionId: string): string | McpResult {
   const dir = store.resolveDir(sessionId);
@@ -53,6 +49,11 @@ function resolveSession(store: SessionStore, sessionId: string): string | McpRes
 
 function nowIsoString(): string {
   return new Date().toISOString();
+}
+
+function envInt(key: string, min: number, max: number, fallback: number): number {
+  const raw = Number.parseInt(process.env[key] ?? '', 10);
+  return Number.isFinite(raw) && raw >= min && raw <= max ? raw : fallback;
 }
 
 function resultToMcp(result: Result<unknown>): McpResult {
@@ -75,10 +76,6 @@ function endContent(reason: Exclude<EndReason, 'already_ended'>): string {
     default:
       return 'Ending discussion.';
   }
-}
-
-function startSpeakingTimeoutState(input: Extract<DiscussLeadOpInput, { op: '_3_step' }>): number {
-  return input.timeout_seconds * 1000;
 }
 
 export const tools = [
@@ -330,18 +327,9 @@ async function handle2Create(
 ): Promise<McpResult> {
   store.cleanupExpiredSessions();
   const now = nowIsoString();
-  const rawThreshold = Number.parseInt(process.env.CORAL_DISCUSS_BID_THRESHOLD ?? '', 10);
-  const bidThreshold = Number.isFinite(rawThreshold) && rawThreshold >= 1 && rawThreshold <= 100
-    ? rawThreshold
-    : DEFAULT_BID_THRESHOLD;
-  const rawMaxEpochs = Number.parseInt(process.env.CORAL_DISCUSS_MAX_EPOCHS ?? '', 10);
-  const maxEpochs = Number.isFinite(rawMaxEpochs) && rawMaxEpochs >= 1 && rawMaxEpochs <= 10
-    ? rawMaxEpochs
-    : DEFAULT_MAX_EPOCHS;
-  const rawQuota = Number.parseInt(process.env.CORAL_DISCUSS_QUOTA_PER_EPOCH ?? '', 10);
-  const quotaPerEpoch = Number.isFinite(rawQuota) && rawQuota >= 1 && rawQuota <= 10
-    ? rawQuota
-    : DEFAULT_QUOTA_PER_EPOCH;
+  const bidThreshold = envInt('CORAL_DISCUSS_BID_THRESHOLD', 1, 100, DEFAULT_BID_THRESHOLD);
+  const maxEpochs = envInt('CORAL_DISCUSS_MAX_EPOCHS', 1, 10, DEFAULT_MAX_EPOCHS);
+  const quotaPerEpoch = envInt('CORAL_DISCUSS_QUOTA_PER_EPOCH', 1, 10, DEFAULT_QUOTA_PER_EPOCH);
 
   const state = initSession(input, now, bidThreshold, maxEpochs, quotaPerEpoch);
   const { sessionId, sessionDir, fullPath } = store.createSessionDir(input.topic);
@@ -422,7 +410,7 @@ async function handle3Step(
     const waitResult = await waitForCondition(
       statePath,
       (s) => speechDelivered(s) || s.status === 'ended',
-      startSpeakingTimeoutState(input),
+      input.timeout_seconds * 1000,
     );
 
     if (!waitResult.fulfilled) {

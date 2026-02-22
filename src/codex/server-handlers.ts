@@ -304,12 +304,9 @@ async function handleCodexOp(
     case 'fork': {
       const { op: _, ...forkInput } = input;
       const entry = sessionManager.get(forkInput.session);
-      const sessionLabel = forkInput.name ?? entry?.name ?? forkInput.session;
-      if (!entry && !forkInput.background) {
-        return sessionNotFoundError(forkInput.session);
-      }
+      if (!entry) return sessionNotFoundError(forkInput.session);
+      const sessionLabel = forkInput.name ?? entry.name;
       if (forkInput.background) {
-        if (!entry) return sessionNotFoundError(forkInput.session);
         return launchBackground(sessionLabel, 'codex', (cb) =>
           handleSessionFork(forkInput, sessionManager, cb));
       }
