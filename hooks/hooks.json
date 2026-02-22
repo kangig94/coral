@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/detect-codex-agent.sh",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/detect-codex-agent.mjs\"",
             "timeout": 5
           }
         ]
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/kb-lookup-reminder.sh",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/kb-lookup-reminder.mjs\"",
             "timeout": 5
           }
         ]
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/kb-memo-reminder.sh",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/kb-memo-reminder.mjs\"",
             "timeout": 5
           }
         ]
@@ -52,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/kb-promote-reminder.sh",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/kb-promote-reminder.mjs\"",
             "timeout": 5
           }
         ]
@@ -63,7 +63,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/kb-promote-reminder.sh",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/kb-promote-reminder.mjs\"",
             "timeout": 5
           }
         ]
@@ -75,7 +75,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/discuss-idle-guard.sh",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/discuss-idle-guard.mjs\"",
             "timeout": 5
           }
         ]
