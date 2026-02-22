@@ -3,7 +3,7 @@
 Claude Code already knows how to code. Coral teaches it how *you* code.
 
 Your conventions enforced, your workflow structured, your decisions examined from multiple
-angles — all through slash commands that work in any Claude Code session.
+angles - all through slash commands that work in any Claude Code session.
 
 ## Install
 
@@ -14,7 +14,7 @@ angles — all through slash commands that work in any Claude Code session.
 /plugin install coral
 ```
 
-**Codex CLI** (optional — enables `codex-*` skills and `--codex` flags):
+**Codex CLI** (optional - enables `codex-*` skills and `--codex` flags):
 ```bash
 npm install -g @openai/codex  # v0.104+
 ```
@@ -38,12 +38,12 @@ points, and dependencies. No files written, no configuration required.
 /coral:init-project
 ```
 
-Coral scans your stack, plans with reviewer verification, and generates `.claude/` —
-conventions, agents, architecture docs — tailored to your project. Claude follows your
+Coral scans your stack, plans with reviewer verification, and generates `.claude/` -
+conventions, agents, architecture docs - tailored to your project. Claude follows your
 rules, not generic defaults.
 
 ```bash
-# existing project — just run it, Coral scans automatically
+# existing project - just run it, Coral scans automatically
 /coral:init-project
 
 # tech stack hint (when source files are sparse)
@@ -71,8 +71,7 @@ my-project/
 +   architecture.md           ← module map, dependency graph
 ```
 
-Without this, Claude works generically. With this, it validates hooks, catches injection,
-and follows your conventions.
+Look familiar? Browse this repository's `.claude/` folder.
 
 ---
 
@@ -84,7 +83,7 @@ and follows your conventions.
 /coral:ralph implement the caching layer
 ```
 
-Structured planning with architect and critic review. Systematic bug diagnosis — root
+Structured planning with architect and critic review. Systematic bug diagnosis - root
 cause, plan, fix. Persistent execution that verifies before declaring done.
 
 `--red` flag spawns an adversarial agent to write tests targeting blind spots:
@@ -115,7 +114,7 @@ Consecutive `/coral:codex` calls continue the same session. Say "new" to start f
 > ```
 
 3–8 AI personas with distinct expertise debate your topic through structured turn-taking.
-Each round, agents bid on how strongly they want to speak — the most urgent arguments
+Each round, agents bid on how strongly they want to speak - the most urgent arguments
 surface first. Debate mode activates automatically for adversarial topics (pro/con, vs,
 should/should not). Structured synthesis at the end.
 
@@ -126,22 +125,22 @@ Transcripts saved to `.claude/coral/discuss/` as JSON and Markdown.
 | Skill | Description | Codex |
 |-------|-------------|:-----:|
 | `/coral:analyze` | Deep analysis and investigation | Optional |
-| `/coral:plan` | Planning with architect/critic review | — |
+| `/coral:plan` | Planning with architect/critic review | - |
 | `/coral:coplan` | Cross-model planning (Codex reviews) | Optional |
-| `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | — |
+| `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | - |
 | `/coral:codex-ralph` | Persistent execution via Codex. `--red` for adversarial tests | Required |
 | `/coral:code-simplify` | Simplify and refine code for clarity | Optional |
 | `/coral:debug` | Bug diagnosis, planning, and fix execution | Optional |
-| `/coral:init-project` | Project initialization orchestrator | — |
-| `/coral:discuss` | Moderated multi-agent discussion | — |
-| `/coral:statusline` | HUD statusline setup | — |
+| `/coral:init-project` | Project initialization orchestrator | - |
+| `/coral:discuss` | Moderated multi-agent discussion | - |
+| `/coral:statusline` | HUD statusline setup | - |
 
 `Optional` = works without Codex by default; pass `--codex` to delegate to Codex CLI.
 Plans are saved to `.claude/coral/plans/`. Ralph skills are best for implementing an existing plan.
 
 ## Knowledge Base
 
-Coral maintains a project-local knowledge base at `.claude/coral/kb/` — git-tracked, so
+Coral maintains a project-local knowledge base at `.claude/coral/kb/` - git-tracked, so
 it syncs across devices.
 
 When Claude discovers something non-obvious (a root cause, a gotcha, a pattern worth
@@ -178,14 +177,14 @@ Or via shell: `export CORAL_CODEX_MODEL=gpt-5.3-codex`
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) — Architecture and data flow
-- [MCP Tools](docs/mcp-tools.md) — Input/output specs for all MCP tools
-- [Core Modules](docs/core-modules.md) — TypeScript module details
-- [Agents](docs/agents.md) — Agent definitions and routing
-- [Hooks](docs/hooks.md) — SubagentStart hook behavior
-- [Skills](docs/skills.md) — Slash command usage
-- [Build System](docs/build-system.md) — Build pipeline
-- [Configuration](docs/configuration.md) — Environment variables and config files
+- [Architecture](docs/architecture.md) - Architecture and data flow
+- [MCP Tools](docs/mcp-tools.md) - Input/output specs for all MCP tools
+- [Core Modules](docs/core-modules.md) - TypeScript module details
+- [Agents](docs/agents.md) - Agent definitions and routing
+- [Hooks](docs/hooks.md) - SubagentStart hook behavior
+- [Skills](docs/skills.md) - Slash command usage
+- [Build System](docs/build-system.md) - Build pipeline
+- [Configuration](docs/configuration.md) - Environment variables and config files
 
 ---
 
@@ -203,7 +202,7 @@ gpt-5.3-codex │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.
 ```
 
 - **Line 1 (always)**: model, Claude rate limits, context usage, session ID, last active skill
-- **Line 2 (optional)**: Codex model and rate limits — shown only when Codex is installed
+- **Line 2 (optional)**: Codex model and rate limits - shown only when Codex is installed
 
 To remove: `/coral:statusline uninstall`
 
