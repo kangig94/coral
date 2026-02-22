@@ -36,15 +36,17 @@ Before any other action, verify the Agent Teams environment:
    - Any specific roles or perspectives to include
 
 2. **Load protocol**: Read `agents/discuss-lead.md` to load the full discussion lead protocol. Execute the protocol directly - do NOT spawn it as a subagent.
-3. **Analyze topic**: Determine team composition (roles, debate mode detection) and assess whether demographic diversity is relevant.
+3. **Analyze topic**: Determine team composition (roles, debate mode detection) and prepare persona inputs.
    - Identify the professional domain and relevant diversity axes for the topic.
-   - **If geographic origin matters** (e.g., global industry practice, policy comparison, cultural perspective): estimate practitioner origin distribution, include 5-10 origins as `origin_weights`, pass `demographics: { origin_weights: { ... }, outlier_ratio: 0.2 }` to `_1_seed`.
-   - **If origin is not the relevant axis** (e.g., generational, academic vs industry, experience level): omit `demographics` from `_1_seed`. Instead, encode the relevant diversity directly as a controversy axis (e.g., `{ axis: "background", positions: ["academic", "industry", "startup"] }`).
+   - **Demographics**: If geographic origin matters (e.g., global industry practice, policy comparison): estimate practitioner origin distribution, pass `demographics: { origin_weights: { ... }, outlier_ratio: 0.2 }` to `_1_seed`. If origin is not the relevant axis: omit `demographics` and encode diversity directly as a controversy axis.
+   - **Briefs**: Write a 1-2 sentence background differentiation guide per slot (e.g., "20-year veteran with regulatory background", "Early-career startup founder"). These seed each persona's Expertise section.
+   - **Name cultures**: Assign a distinct `name_culture` per agent (no duplicates). Pick from diverse regions (e.g., Korean, Nigerian, Brazilian, German, Indian, Japanese, Egyptian). If demographics provided `suggested_origin`, use that instead.
 4. **Generate personas**: Spawn `persona-generator` agents in parallel (one per role, `model: "sonnet"`).
    Include from each assignment:
-   - `persona_seed` as creative variation input.
-   - If demographics were used: pass `suggested_origin` as origin context (`name_culture` input) and `is_outlier` context in the `brief` field for atypical origins.
-   - If demographics were not used: explicitly assign distinct `name_culture` values across agents (e.g., Korean, Nigerian, Brazilian, German, Indian). Never leave `name_culture` empty - without it, names collapse to the conversation language.
+   - `brief` (from step 3) as Expertise seed.
+   - `name_culture` (from step 3 or `suggested_origin`) - never omit.
+   - `positions` and `tone` from `_1_seed` assignments.
+   - If `is_outlier`: add context in `brief` (e.g., "unusual background for this domain - give a compelling career path").
    - Leave gender, age, and other details to the persona-generator LLM.
 5. **Initialize**: Call `discuss_lead({ op: "_2_create", ... })` with generated personas → get `session_id`
 6. **Spawn teammates**: Create Agent Team `coral-dc-{session_id}`, spawn `discussant` teammates

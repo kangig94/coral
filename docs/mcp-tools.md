@@ -358,7 +358,7 @@ The moderator (`discuss-lead`) uses `_1_seed` within a 3-phase setup:
 - On `pool_degenerate`: add a second position to at least one axis, retry
 
 **Phase 3 — Merge & Spawn** (parallel persona generation):
-- For each slot, spawn `persona-generator` with: `role`, `topic`, `team_roles`, `name_culture`, `positions` (from assignments), `tone` (from assignments), `brief` (from Phase 1), `persona_seed` (from assignments, as creative variation hint), `devil_advocate` (if stance imbalance), `shared_position_with` (if reused slot)
+- For each slot, spawn `persona-generator` with: `role`, `topic`, `team_roles`, `name_culture`, `positions` (from assignments), `tone` (from assignments), `brief` (from Phase 1), `devil_advocate` (if stance imbalance), `shared_position_with` (if reused slot)
 - **Stance imbalance check**: if stance axis exists, count pro vs con. If imbalanced, set `devil_advocate: true` for one agent on overrepresented side.
 
 ---
