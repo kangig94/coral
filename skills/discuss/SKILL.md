@@ -40,11 +40,11 @@ Before any other action, verify the Agent Teams environment:
    - Identify the professional domain and relevant diversity axes for the topic.
    - **If geographic origin matters** (e.g., global industry practice, policy comparison, cultural perspective): estimate practitioner origin distribution, include 5-10 origins as `origin_weights`, pass `demographics: { origin_weights: { ... }, outlier_ratio: 0.2 }` to `_1_seed`.
    - **If origin is not the relevant axis** (e.g., generational, academic vs industry, experience level): omit `demographics` from `_1_seed`. Instead, encode the relevant diversity directly as a controversy axis (e.g., `{ axis: "background", positions: ["academic", "industry", "startup"] }`).
-4. **Generate personas**: Spawn `persona-generator` agents in parallel (one per role).
+4. **Generate personas**: Spawn `persona-generator` agents in parallel (one per role, `model: "sonnet"`).
    Include from each assignment:
    - `persona_seed` as creative variation input.
    - If demographics were used: pass `suggested_origin` as origin context (`name_culture` input) and `is_outlier` context in the `brief` field for atypical origins.
-   - If demographics were not used: assign diverse cultural backgrounds freely via `name_culture`.
+   - If demographics were not used: explicitly assign distinct `name_culture` values across agents (e.g., Korean, Nigerian, Brazilian, German, Indian). Never leave `name_culture` empty - without it, names collapse to the conversation language.
    - Leave gender, age, and other details to the persona-generator LLM.
 5. **Initialize**: Call `discuss_lead({ op: "_2_create", ... })` with generated personas → get `session_id`
 6. **Spawn teammates**: Create Agent Team `coral-dc-{session_id}`, spawn `discussant` teammates

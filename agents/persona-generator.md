@@ -1,7 +1,7 @@
 ---
 name: persona-generator
 description: "Generate a diverse, differentiated discussion persona based on role and topic. Spawned in parallel by discuss-lead."
-model: opus
+model: sonnet
 ---
 <Agent_Prompt>
   <Role>
