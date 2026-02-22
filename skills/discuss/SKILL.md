@@ -54,8 +54,11 @@ Before any other action, verify the Agent Teams environment:
 1. Every agent has spoken at least **twice**
 2. Second-round speeches **reference or build on** earlier positions rather than introducing entirely new topics
 3. At least one agent has explicitly proposed a synthesis or convergence point
+4. The most recent speech does **not** contain an unanswered question directed at other participants
 
-Before calling `_7_end`, always check: is there an agent who hasn't had a second turn yet? If so, continue rounds to give them the opportunity.
+Before calling `_7_end`, always check:
+- Is there an agent who hasn't had a second turn yet? If so, run more `_3_step` rounds instead.
+- Does the last speech pose a question? If so, run more rounds — ending on an unanswered question cuts off dialogue unfairly.
 
 ## Context Enhancement
 
