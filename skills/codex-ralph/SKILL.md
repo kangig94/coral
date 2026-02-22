@@ -3,7 +3,6 @@ name: codex-ralph
 description: Persistent execution via Codex delegation (sonnet) - best for implementing an existing plan
 argument-hint: "[--red] [task description]"
 model: sonnet
-disable-model-invocation: true
 ---
 
 ```!

@@ -5,8 +5,7 @@ Slash commands provided by the Coral plugin. Each skill is defined in `skills/{n
 | Skill | Description |
 |---|---|
 | `/coral:codex` | Single entry point for all Codex interactions - routes to analyst/ralph/review intent, or manages sessions directly |
-| `/coral:analyze` | Deep analysis and investigation via Claude-native tools |
-| `/coral:codex-analyze` | Deep analysis via Codex delegation with Claude post-processing |
+| `/coral:analyze` | Deep analysis and investigation. Pass `--codex` to delegate to Codex CLI |
 | `/coral:plan` | Claude-native planning with parallel architect/critic review |
 | `/coral:coplan` | Collaborative planning with Codex architect/critic reviews, then Claude cross-review |
 | `/coral:ralph` | Persistent execution loop with verification (sonnet). Use `--red` to add adversarial tests after implementation. |

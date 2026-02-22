@@ -125,8 +125,7 @@ Transcripts saved to `.claude/coral/discuss/` as JSON and Markdown.
 
 | Skill | Description | Codex |
 |-------|-------------|:-----:|
-| `/coral:analyze` | Deep analysis and investigation | — |
-| `/coral:codex-analyze` | Deep analysis via Codex + Claude synthesis | Required |
+| `/coral:analyze` | Deep analysis and investigation | Optional |
 | `/coral:plan` | Planning with architect/critic review | — |
 | `/coral:coplan` | Cross-model planning (Codex reviews) | Optional |
 | `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | — |
