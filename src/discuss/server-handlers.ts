@@ -265,7 +265,10 @@ async function handleBid(
       }
 
       if (isWinner(resolved)(finalState)) {
-        return jsonResult({ action: 'speak' });
+        return jsonResult({
+          action: 'speak',
+          transcript: formatFull(finalState.transcript, finalState.agents),
+        });
       }
 
       const last = finalState.transcript[finalState.transcript.length - 1];
@@ -277,7 +280,7 @@ async function handleBid(
         return jsonResult({ action: 'listen', speaker: last.agent, content: last.content });
       }
       if (last.type === 'epoch_summary') {
-        return jsonResult({ action: 'listen', speaker: null, content: last.summary });
+        return jsonResult({ action: 'listen', speaker: 'moderator', content: last.summary });
       }
       return jsonResult({ action: 'session_ended' });
     }

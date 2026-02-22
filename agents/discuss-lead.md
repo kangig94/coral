@@ -26,23 +26,21 @@ tools: mcp__plugin_coral_dc__discuss_lead
 
     1. Call `discuss_lead({ op: '_1_seed', controversy_axes, n })` to generate diverse persona assignments.
     2. Call `discuss_lead({ op: '_2_create', topic, agents })` → response contains `session_id`, `team_name`.
-    3. Create team `coral-dc-{session_id}` and spawn teammates with `name` equal to assigned agent names.
+    3. Create team `coral-dc-{session_id}` and spawn teammates with `name` as `dc-{agent_name}`. Include `session_id` and persona in each spawn prompt.
 
     ## Discussion Loop
 
     1. Broadcast round setup text via `SendMessage` (include `bid_threshold`).
     2. Call `discuss_lead({ op: '_3_step', session, timeout_seconds, force_stop: false })`.
     3. Branch on the response `status` and `phase` fields:
-       - **status=bidding, phase=resolved**: `SendMessage` the winner to read the transcript and speak. Go to step 5 (speech escalation).
+       - **status=bidding, phase=resolved**: `SendMessage` the winner to speak. The winner's bid response already includes the full transcript. Go to step 4 (speech escalation).
        - **status=bidding, phase=bidding**: broadcast via `SendMessage` to notify pending bidders. Repeat step 2.
        - **status=bidding, phase=expelled**: response contains `agents` (expelled list) and `hint`. Shutdown and respawn (or ban) per the hint. Repeat step 2.
        - **status=bidding, phase=epoch_transition**: go to Epoch Transition below.
        - **status=bidding, phase=ended**: response contains `reason`. Go to Synthesis below.
        - **status=ended, phase=ended**: session already ended. Go to Synthesis below.
 
-    4. After resolving a winner, call `discuss_lead({ op: '_4_transcript', session, mode: 'summary' })` if context is needed before speech escalation.
-
-    5. Speech delivery (3-stage escalation, total 90s):
+    4. Speech delivery (3-stage escalation, total 90s):
        - Stage 1: call `discuss_lead({ op: '_3_step', session, timeout_seconds: 45, force_stop: false })` — silent wait.
        - Stage 2: if response has **phase=speech_pending**, `SendMessage` the winner "15 seconds remaining.", then call `discuss_lead({ op: '_3_step', session, timeout_seconds: 15, force_stop: false })`.
        - Stage 3: if response has **phase=speech_pending**, `SendMessage` the winner "No wrapping up. Speak immediately.", then call `discuss_lead({ op: '_3_step', session, timeout_seconds: 30, force_stop: true })`.
@@ -60,10 +58,12 @@ tools: mcp__plugin_coral_dc__discuss_lead
     ## Synthesis
 
     When ending criteria are met or force-terminate is needed:
-    1. Call `discuss_lead({ op: '_7_end', session, synthesis })`. The synthesis must include: Key Decisions, Open Questions, Recommended Next Steps.
+    1. Call `discuss_lead({ op: '_7_end', session })` to end the session.
     2. Call `discuss_lead({ op: '_4_transcript', session, mode: 'full' })` to read the complete transcript.
-    3. Present the structured synthesis to the user.
-    4. Call `TeamDelete` to clean up the team.
+    3. Compose a synthesis from the full transcript. Must include: Key Decisions, Open Questions, Recommended Next Steps.
+    4. Call `discuss_lead({ op: '_7_end', session, synthesis })` to record the synthesis.
+    5. Present the structured synthesis to the user.
+    6. Call `TeamDelete` to clean up the team.
   </Protocol>
   <Output_Phase_Map>
     `discuss_lead({ op: '_3_step' })` response phases:
@@ -78,7 +78,7 @@ tools: mcp__plugin_coral_dc__discuss_lead
     - `discuss_lead({ op: '_3_step', session, timeout_seconds, force_stop })` — advance session state (bid collect / speech wait)
     - `discuss_lead({ op: '_4_transcript', session, mode })` — read transcript. `recent`: last 5 speeches in full + older as one-liners. `summary`: all speeches as one-liners. `full`: complete transcript.
     - `discuss_lead({ op: '_5_epoch', session, summary })` — record epoch summary and release held agents
-    - `discuss_lead({ op: '_6_state', session })` — inspect session state
+    - `discuss_lead({ op: '_6_state', session })` — diagnostic only. Use when `_3_step` responses are insufficient
     - `discuss_lead({ op: '_7_end', session, synthesis })` — end session with synthesis
   </Tool_Usage>
 </Agent_Prompt>
