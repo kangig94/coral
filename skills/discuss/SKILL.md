@@ -35,13 +35,30 @@ Before any other action, verify the Agent Teams environment:
    - Whether it's a debate (pro/con) or open discussion
    - Any specific roles or perspectives to include
 
-2. **Load protocol**: Read `agents/discuss-lead.md` to load the full discussion lead protocol
+2. **Load protocol**: Read `agents/discuss-lead.md` to load the full discussion lead protocol. Execute the protocol directly — do NOT spawn it as a subagent.
 3. **Analyze topic**: Determine team composition (roles, debate mode detection)
-4. **Generate personas**: Spawn `persona-generator` agents in parallel (one per role)
+4. **Generate personas**: Spawn `persona-generator` agents in parallel (one per role).
+   Include `persona_seed` from each assignment in the prompt as a creative variation hint
+   (e.g., "Your persona seed is 3847291. Use this as a source of creative variation in
+   name choices, background details, and communication quirks.").
 5. **Initialize**: Call `discuss_lead({ op: "_2_create", ... })` with generated personas → get `session_id`
 6. **Spawn teammates**: Create Agent Team `coral-dc-{session_id}`, spawn `discussant` teammates
 7. **Run discussion**: Execute `discuss_lead(_3_step)` rounds — bid collection → winner resolve → speech escalation loop until termination
 8. **Synthesize**: Call `discuss_lead({ op: "_7_end", ... })`, read full transcript via `_4_transcript`, present structured summary
+
+## Termination Policy
+
+**Default**: Keep calling `_3_step` rounds until the system returns `phase=ended` (automatic termination via epoch exhaustion).
+
+**Early manual termination** (`_7_end`) is allowed only when ALL conditions are met:
+1. Every agent has spoken at least **twice**
+2. Second-round speeches **reference or build on** earlier positions rather than introducing entirely new topics
+3. At least one agent has explicitly proposed a synthesis or convergence point
+4. The most recent speech does **not** contain an unanswered question directed at other participants
+
+Before calling `_7_end`, always check:
+- Is there an agent who hasn't had a second turn yet? If so, run more `_3_step` rounds instead.
+- Does the last speech pose a question? If so, run more rounds — ending on an unanswered question cuts off dialogue unfairly.
 
 ## Context Enhancement
 

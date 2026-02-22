@@ -8,6 +8,10 @@ import type { DiscussState } from './types.js';
 /** Infinite polling sentinel for bid holds. */
 export const INFINITE_POLL = 0;
 
+let _defaultPollMs = 500;
+/** Override default poll interval (for tests). */
+export function _setDefaultPollMs(ms: number): void { _defaultPollMs = ms; }
+
 /** Result of waitForCondition. */
 export type WaitResult =
   | { fulfilled: boolean; elapsed_ms: number; state: DiscussState; error: null }
@@ -21,12 +25,12 @@ export async function waitForCondition(
   statePath: string,
   predicate: (s: DiscussState) => boolean,
   timeoutMs: number,
-  intervalMs = 500,
+  intervalMs = _defaultPollMs,
 ): Promise<WaitResult> {
   const startAt = Date.now();
   const infinite = timeoutMs <= 0;
 
-  const initial = await tryReadState(statePath);
+  const initial = await readState(statePath);
   if (initial && predicate(initial)) {
     return { fulfilled: true, elapsed_ms: 0, state: initial, error: null };
   }
@@ -41,7 +45,7 @@ export async function waitForCondition(
     }
 
     await new Promise((resolve) => { setTimeout(resolve, intervalMs); });
-    const state = await tryReadState(statePath);
+    const state = await readState(statePath);
     if (state) lastKnownGood = state;
 
     if (state && predicate(state)) {
@@ -51,7 +55,7 @@ export async function waitForCondition(
 }
 
 /** Safe async read - returns null if file is mid-rename/corrupt. */
-async function tryReadState(p: string): Promise<DiscussState | null> {
+async function readState(p: string): Promise<DiscussState | null> {
   try {
     return JSON.parse(await fs.promises.readFile(p, 'utf8')) as DiscussState;
   } catch {

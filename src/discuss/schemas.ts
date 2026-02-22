@@ -11,7 +11,10 @@ export const sessionIdPattern = /^[0-9]{6}-[0-9]{4}-[a-z0-9]{4}$/;
 const nonEmptyString = z.string().min(1);
 const agentNameField = z.string().regex(identPattern);
 const sessionIdField = z.string().regex(sessionIdPattern);
-const axisNameField = nonEmptyString;
+
+function hasUniqueValues<T>(values: readonly T[]): boolean {
+  return new Set(values).size === values.length;
+}
 
 const bidShape = z.object({
   op: z.literal('bid'),
@@ -32,11 +35,11 @@ export const discussAgentOpSchema = z.discriminatedUnion('op', [bidShape, speakS
 const seedShape = z.object({
   op: z.literal('_1_seed'),
   controversy_axes: z.array(z.object({
-    axis: axisNameField,
+    axis: nonEmptyString,
     positions: z.array(nonEmptyString).min(1).max(10)
-      .refine((positions) => new Set(positions).size === positions.length, 'Positions within an axis must be unique'),
+      .refine((positions) => hasUniqueValues(positions), 'Positions within an axis must be unique'),
   })).min(1).max(10)
-    .refine((axes) => new Set(axes.map((a) => a.axis)).size === axes.length, 'Axis names must be unique'),
+    .refine((axes) => hasUniqueValues(axes.map((axis) => axis.axis)), 'Axis names must be unique'),
   n: z.number().int().min(1).max(8),
   seed: z.number().int().nullable().default(null),
 }).strict();
@@ -54,7 +57,7 @@ const createShape = z.object({
     .min(2)
     .max(8)
     .refine(
-      (agents) => new Set(agents.map((a) => a.name)).size === agents.length,
+      (agents) => hasUniqueValues(agents.map((agent) => agent.name)),
       'Agent names must be unique',
   ),
 }).strict();

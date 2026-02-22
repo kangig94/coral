@@ -48,7 +48,7 @@ The default threshold is **50**. Configurable via the `CORAL_DISCUSS_BID_THRESHO
 The moderator (discuss-lead) orchestrates a 3-phase setup. See [Persona Seeding Algorithm](mcp-tools.md#persona-seeding-algorithm-_1_seed) for full algorithm details.
 
 1. **Controversy Analysis** (LLM inline): Extract 3–4 controversy axes from the topic (each with 2–3 positions, pool budget ≤ 81). Assign `dc-`-prefixed agent names, distinct `name_culture` per agent, and generate persona briefs. For debate topics, prepend a stance axis.
-2. **DPP Seeding**: Call `discuss_lead({ op: "_1_seed", controversy_axes, n })` → k-DPP sampling returns maximally diverse position + tone assignments. Handle `pool_too_large` / `pool_degenerate` errors by adjusting axes.
+2. **DPP Seeding**: Call `discuss_lead({ op: "_1_seed", controversy_axes, n })` → k-DPP sampling returns maximally diverse position + tone assignments, each with a `persona_seed` uint32. Pools > 256 are auto-subsampled (graceful degradation). Handle `pool_too_large` (> 100,000) / `pool_degenerate` errors by adjusting axes.
 3. **Persona Generation**: Spawn `persona-generator` agents in parallel, each receiving: role, positions (from DPP), tone, brief, and optional `devil_advocate` flag (stance imbalance correction).
 4. **Session Creation**: Call `discuss_lead({ op: "_2_create", topic, agents })` → get `session_id`
 5. **Team Spawn**: Create Agent Team `coral-dc-{session_id}`, spawn `discussant` teammates with persona text

@@ -3,14 +3,20 @@
  * Pure data - zero imports from node: or project modules.
  */
 
+type AgentScoreMap = Record<string, number>;
+type NullableAgentScoreMap = Record<string, number | null>;
+type TranscriptMetadata = {
+  step: number;
+  epoch: number;
+  ts: string;
+};
+
 // ─── Transcript entries (discriminated union) ────────────────────────────────
 
 export type TranscriptEntry =
-  | { type: 'bids'; step: number; epoch: number; ts: string;
-      bids: Record<string, number>; winner: string | null;
-      resolve_type: 'normal' | 'fallback' | 'cold_start' | 'no_winner'; }
-  | { type: 'speech'; step: number; epoch: number; ts: string;
-      agent: string; display_name: string; content: string; }
+  | ({ type: 'bids'; bids: AgentScoreMap; winner: string | null;
+    resolve_type: 'normal' | 'fallback' | 'cold_start' | 'no_winner'; } & TranscriptMetadata)
+  | ({ type: 'speech'; agent: string; display_name: string; content: string; } & TranscriptMetadata)
   | { type: 'epoch_summary'; epoch: number; ts: string; summary: string; }
   | { type: 'session_event'; epoch: number; ts: string;
       event: 'force_end' | 'synthesis'; detail: string; };
@@ -39,7 +45,7 @@ export type DiscussState = {
   quota_per_epoch: number;
   cold_start: boolean;
   agents: Record<string, AgentState>;
-  current_bids: Record<string, number | null>;
+  current_bids: NullableAgentScoreMap;
   pending_bidders: string[];
   current_speaker: string | null;
   speaker_type: 'quota' | 'fallback' | 'cold_start' | null;
@@ -124,6 +130,8 @@ export type PersonaSeedOutput = {
   seed_used: number;
   sigma_used: number;
   pool_size: number;
+  subsampled?: boolean;
+  original_pool_size?: number;
   assignments: PersonaAssignment[];
 };
 
@@ -141,5 +149,6 @@ export type ToneAssignment = {
 export type PersonaAssignment = {
   positions: Record<string, string>;
   tone: ToneAssignment;
+  persona_seed: number;
   shared_position_with?: number;
 };

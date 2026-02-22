@@ -21,7 +21,8 @@ export const DEFAULT_QUOTA_PER_EPOCH = 3;
 
 /** Generate a random 4-char suffix for session ID uniqueness. */
 export function randomSuffix(): string {
-  return Math.random().toString(36).slice(2, 6).padEnd(4, '0');
+  const suffix = Math.random().toString(36).slice(2, 6);
+  return suffix.padEnd(4, '0');
 }
 
 /** Format a Date as yymmdd-HHmm (compact timestamp for session IDs). */
@@ -51,8 +52,8 @@ export function topicSlug(topic: string): string {
 export function parseDisplayName(persona: string, agentName: string): string {
   const firstLine = persona.split('\n')[0] ?? '';
   const stripped = firstLine.replace(/^#\s*/, '');
-  const match = stripped.match(/^(.+?)\s+[—–-]\s+/);
-  return match?.[1]?.trim() || agentName;
+  const [, displayName] = stripped.match(/^(.+?)\s+[—–-]\s+/) ?? [];
+  return displayName?.trim() || agentName;
 }
 
 // ─── Agent name resolution ─────────────────────────────────────────────────
@@ -359,11 +360,12 @@ export function resolveWinner(
 
   const allBelowThreshold = Object.values(allBids).every((s) => s < threshold);
   if (allBelowThreshold) {
-    if (state.cold_start) {
-      const picked = coldStartPick(state);
-      if (picked !== null) {
-        return startSpeaking(state, allBids, picked, 'cold_start', now);
-      }
+    if (!state.cold_start) {
+      return noWinnerResult(state, allBids, 'all_below_threshold', now);
+    }
+    const picked = coldStartPick(state);
+    if (picked !== null) {
+      return startSpeaking(state, allBids, picked, 'cold_start', now);
     }
     return noWinnerResult(state, allBids, 'all_below_threshold', now);
   }
@@ -517,27 +519,30 @@ export function applyExpel(
   let nextState: DiscussState = { ...state, last_activity_at: now, updated_at: now, hold_count: 0 };
 
   for (const agent of pendingAgents) {
+    const nextPendingBidders = nextState.pending_bidders.filter((name) => name !== agent);
     if (isRespawn) {
       nextState = {
         ...nextState,
-        pending_bidders: nextState.pending_bidders.filter((n) => n !== agent),
+        pending_bidders: nextPendingBidders,
         current_bids: { ...nextState.current_bids, [agent]: 0 },
       };
       continue;
     }
 
-    if (!nextState.agents[agent]) continue;
+    const targetAgent = nextState.agents[agent];
+    if (!targetAgent) continue;
+
     nextState = {
       ...nextState,
       agents: {
         ...nextState.agents,
         [agent]: {
-          ...nextState.agents[agent],
+          ...targetAgent,
           banned: true,
           quota_remaining: 0,
         },
       },
-      pending_bidders: nextState.pending_bidders.filter((n) => n !== agent),
+      pending_bidders: nextPendingBidders,
     };
   }
 

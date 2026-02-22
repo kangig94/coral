@@ -13,18 +13,22 @@ export const speechDelivered = (state: DiscussState): boolean =>
   state.status === 'bidding' && state.last_speech_step === state.step - 1;
 
 /** Agent's bid has been released (speech/timeout/epoch summary/ban/session end). */
-export const bidReleased = (agent: string, bidStep: number) => (s: DiscussState): boolean =>
-  s.bid_release_step >= bidStep ||
-  s.status === 'ended' ||
-  s.agents[agent]?.banned === true;
+export const bidReleased = (agent: string, bidStep: number) =>
+  (state: DiscussState): boolean =>
+    state.bid_release_step >= bidStep ||
+    state.status === 'ended' ||
+    state.agents[agent]?.banned === true;
 
 /** Agent won the floor in current step. */
-export const isWinner = (agent: string) => (s: DiscussState): boolean =>
-  s.status === 'speaking' && s.current_speaker === agent;
+export const isWinner = (agent: string) =>
+  (state: DiscussState): boolean =>
+    state.status === 'speaking' && state.current_speaker === agent;
 
 /** Setup finished. */
-export const setupComplete = (s: DiscussState): boolean => s.status !== 'setup';
+export const setupComplete = (state: DiscussState): boolean => state.status !== 'setup';
 
 /** No active participants remain (all banned or fully exhausted). */
-export const noParticipants = (s: DiscussState): boolean =>
-  Object.values(s.agents).every((a) => a.banned || (a.quota_remaining === 0 && a.fallback_used));
+export const noParticipants = (state: DiscussState): boolean =>
+  Object.values(state.agents).every((agent) =>
+    agent.banned || (agent.quota_remaining === 0 && agent.fallback_used),
+  );

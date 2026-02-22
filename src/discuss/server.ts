@@ -8,8 +8,9 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { SessionStore } from './session-store.js';
 import { tools, handleToolCall } from './server-handlers.js';
 
+const serverVersion = typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0';
 const server = new Server(
-  { name: 'coral-discuss', version: typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0' },
+  { name: 'coral-discuss', version: serverVersion },
   { capabilities: { tools: {} } },
 );
 
@@ -22,10 +23,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   return handleToolCall(name, args ?? {}, store);
 });
 
-function shutdown() {
+const shutdown = (): void => {
   process.stderr.write('Coral Discuss MCP Server shutting down...\n');
   server.close().finally(() => process.exit(0));
-}
+};
 
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);

@@ -5,7 +5,12 @@ import { tmpdir } from 'node:os';
 import { SessionStore } from '../session-store.js';
 import { handleToolCall, tools } from '../server-handlers.js';
 import { startBidding } from '../state-machine.js';
+import { _setDefaultPollMs } from '../wait.js';
 import type { McpResult } from '../../shared/mcp-utils.js';
+
+/** Test time scale — multiply all durations by this factor. */
+const T = 0.1;
+const sec = (s: number): number => Math.max(1, Math.round(s * T));
 
 let tmpDir: string;
 let store: SessionStore;
@@ -26,8 +31,12 @@ const SAMPLE_SEED = {
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), 'coral-handlers-'));
   store = new SessionStore(tmpDir);
+  _setDefaultPollMs(Math.round(500 * T));
 });
-afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }); });
+afterEach(() => {
+  _setDefaultPollMs(500);
+  rmSync(tmpDir, { recursive: true, force: true });
+});
 
 async function createSession() {
   const r = await handleToolCall(
@@ -63,7 +72,7 @@ function startBidRound(sid: string, aliceScore = 80, bobScore = 50) {
     { op: 'bid', session: sid, agent_name: 'bob', score: bobScore },
     store,
   );
-  const step = handleToolCall('discuss_lead', { op: '_3_step', session: sid, timeout_seconds: 5 }, store);
+  const step = handleToolCall('discuss_lead', { op: '_3_step', session: sid, timeout_seconds: sec(5) }, store);
 
   return { aliceBid, bobBid, step };
 }
@@ -206,6 +215,31 @@ describe('discuss_lead tool: _1_seed', () => {
     const result = await handleToolCall('discuss_lead', { op: '_1_seed', controversy_axes: [{ axis: 'a', positions: ['1'] }], n: 0 }, store);
     expect(result.isError).toBe(true);
   });
+
+  it('should subsample and include subsampled fields when pool > 256', async () => {
+    // 7^3 = 343 > 256, n=1 avoids k-DPP
+    const axes = Array.from({ length: 3 }, (_, i) => ({
+      axis: `ax${i}`,
+      positions: Array.from({ length: 7 }, (__, j) => `p${j}`),
+    }));
+    const result = await handleToolCall('discuss_lead', { op: '_1_seed', controversy_axes: axes, n: 1, seed: 1 }, store);
+    const data = JSON.parse(result.content[0].text);
+    expect(result.isError).toBe(false);
+    expect(data.ok).toBe(true);
+    expect(data.value.subsampled).toBe(true);
+    expect(data.value.original_pool_size).toBe(343);
+    expect(data.value.assignments).toHaveLength(1);
+  });
+
+  it('should include persona_seed in every assignment', async () => {
+    const result = await handleToolCall('discuss_lead', { op: '_1_seed', ...SAMPLE_SEED }, store);
+    const data = JSON.parse(result.content[0].text);
+    expect(data.ok).toBe(true);
+    for (const assignment of data.value.assignments) {
+      expect(typeof assignment.persona_seed).toBe('number');
+      expect(Number.isInteger(assignment.persona_seed)).toBe(true);
+    }
+  });
 });
 
 describe('discuss_lead tool: _3_step (moderation loop)', () => {
@@ -223,11 +257,11 @@ describe('discuss_lead tool: _3_step (moderation loop)', () => {
   it('should mark no_winner and proceed to epoch_transition when all bids above threshold and exhausted', async () => {
     const sid = await createSession();
     // no bids; _3_step times out to produce a timeout state, then second call force-expels due hold_count
-    const first = await handleToolCall('discuss_lead', { op: '_3_step', session: sid, timeout_seconds: 1 }, store);
+    const first = await handleToolCall('discuss_lead', { op: '_3_step', session: sid, timeout_seconds: sec(5) }, store);
     const firstData = JSON.parse(first.content[0].text);
     expect(firstData.status).toBe('bidding');
     expect(firstData.phase).toBe('bidding');
-    const second = await handleToolCall('discuss_lead', { op: '_3_step', session: sid, timeout_seconds: 1 }, store);
+    const second = await handleToolCall('discuss_lead', { op: '_3_step', session: sid, timeout_seconds: sec(5) }, store);
     const secondData = JSON.parse(second.content[0].text);
     expect(secondData.status).toBe('bidding');
     expect(secondData.phase).toBe('expelled');
@@ -242,7 +276,7 @@ describe('discuss_lead tool: _3_step (moderation loop)', () => {
     const loser = loserFromStep(resolved, winner);
     await (winner === 'alice' ? aliceBid : bobBid);
 
-    const result = await handleToolCall('discuss_lead', { op: '_3_step', session: sid, timeout_seconds: 1 }, store);
+    const result = await handleToolCall('discuss_lead', { op: '_3_step', session: sid, timeout_seconds: sec(5) }, store);
     const data = JSON.parse(result.content[0].text);
     expect(data.status).toBe('speaking');
     expect(data.phase).toBe('speech_pending');
