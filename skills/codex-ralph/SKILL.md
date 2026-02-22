@@ -47,7 +47,7 @@ After the loop exits:
    **Scope gate**: Steps a-d apply only when source-affecting files are modified (`src/`, `scripts/`, `package.json`, `tsconfig.json`). Non-source changes (`agents/`, `skills/`, `docs/`, `hooks/`, `.claude/`) skip directly to completion.
 
    **`--red` adversarial testing**: If `--red` is present in the task argument, spawn `coral:red-attacker` via Task tool in **background** (`run_in_background: true`) immediately before step a. Include in the prompt:
-   - `implementer: codex` (Claude generates tests directly — no Codex delegation)
+   - `implementer: codex` (Claude generates tests directly - no Codex delegation)
    - Changed files list or scope description
    - `plan_context: <plan summary>` (if a plan was used for this task)
 
@@ -56,7 +56,7 @@ After the loop exits:
    c. **Build**: Run the project's build command.
    d. **Red-attacker gate** (if `--red`): Wait for background red-attacker to complete. Read its output for the list of generated test files.
    e. **Test**: Run the test suite after build succeeds. If `--red`, this now includes adversarial tests.
-   f. **Red fix loop** (if `--red` and adversarial test failures): Fix failures → re-run test. Cap at **3 iterations** — if still failing, report remaining failures and escalate rather than looping indefinitely.
+   f. **Red fix loop** (if `--red` and adversarial test failures): Fix failures → re-run test. Cap at **3 iterations** - if still failing, report remaining failures and escalate rather than looping indefinitely.
    g. **Red merge** (if `--red` and tests pass): Merge adversarial tests into the main test files and delete the `red-` files. This ensures test organization stays module-based, not generation-based.
       - For each `red-<target>.<ext>` file, identify the corresponding main test file (e.g., `red-state-machine-decay.test.ts` → `state-machine.test.ts`)
       - Move `describe` blocks from the red file into the main test file (append at end, preserve imports)

@@ -26,7 +26,7 @@ tools: Read, Grep, Glob, WebSearch, WebFetch, mcp__plugin_coral_dc__discuss
          `discuss({ op: 'speak', session, agent_name, content })`.
        - **listen**: another agent spoke. The response includes `speaker` and `content`.
          `speaker` is an agent name, or `"moderator"` for epoch summaries.
-         React out loud in character (1-3 sentences) — this is a monologue, not
+         React out loud in character (1-3 sentences) - this is a monologue, not
          a formal speech. Say it as plain text; do not use any tool for this.
          Use it to crystallize how this changes your position or what you want
          to address when you next win the floor.
@@ -35,19 +35,19 @@ tools: Read, Grep, Glob, WebSearch, WebFetch, mcp__plugin_coral_dc__discuss
     3. Return to step 1. Repeat until `discuss({ op: 'bid' })` returns `action: session_ended`.
   </Protocol>
   <Tool_Usage>
-    - `discuss({ op: 'bid', session, agent_name, score })` — submit bid
-    - `discuss({ op: 'speak', session, agent_name, content })` — deliver speech
+    - `discuss({ op: 'bid', session, agent_name, score })` - submit bid
+    - `discuss({ op: 'speak', session, agent_name, content })` - deliver speech
   </Tool_Usage>
   <Error_Handling>
     If a response contains an `error` field instead of `action`, retry once after a short pause.
     Common errors:
-    - `already_bid` — you already bid this round. Wait for the next round.
-    - `not_your_turn` — you tried to speak but you're not the winner. Return to bidding.
-    - `session_not_found` — invalid session ID. Stop and report to the team lead.
+    - `already_bid` - you already bid this round. Wait for the next round.
+    - `not_your_turn` - you tried to speak but you're not the winner. Return to bidding.
+    - `session_not_found` - invalid session ID. Stop and report to the team lead.
   </Error_Handling>
   <Failure_Modes_To_Avoid>
     - Calling `discuss({ op: 'speak' })` without receiving `action: speak` from `discuss({ op: 'bid' })` first
-    - Outputting your speech as plain text instead of calling `discuss({ op: 'speak' })` — plain text is not a speech. Only the tool call records it. If you won the floor, you MUST call `discuss({ op: 'speak' })` before bidding again.
+    - Outputting your speech as plain text instead of calling `discuss({ op: 'speak' })` - plain text is not a speech. Only the tool call records it. If you won the floor, you MUST call `discuss({ op: 'speak' })` before bidding again.
     - Submitting the same bid score repeatedly when discussion context has changed
     - Exiting the loop before receiving `action: session_ended`
   </Failure_Modes_To_Avoid>

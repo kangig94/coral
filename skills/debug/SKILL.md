@@ -6,7 +6,7 @@ argument-hint: "[--codex] <bug description or error message>"
 
 # Bug Debugging
 
-Diagnose bugs, plan fixes, and execute — end-to-end.
+Diagnose bugs, plan fixes, and execute - end-to-end.
 
 ## Argument Routing
 
