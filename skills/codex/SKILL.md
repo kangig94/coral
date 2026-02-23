@@ -37,7 +37,7 @@ Check the conversation history for a previous `/codex` call that returned a `thr
 | Intent | Keywords | Execution |
 |--------|----------|-----------|
 | **Review** (architecture + critique) | review, evaluate, check, audit | **Parallel subagent spawn** (step 5a) |
-| Investigation, root cause, debug | debug, investigate, analyze, why, root cause, trace | Direct MCP call with analyst protocol (step 5b) |
+| Investigation, root cause, debug | debug, investigate, analyze, why, root cause, trace | Direct MCP call with scanner protocol (step 5b) |
 | Persistent execution | ralph, persistent, loop, don't stop, keep going, until done | Direct MCP call with ralph protocol (step 5b) |
 | **Everything else** | general questions, search, code tasks | **Direct MCP call, verbatim prompt** (step 5c) |
 
@@ -66,9 +66,9 @@ After both return, **synthesize**:
 2. Order by severity (CRITICAL > HIGH > MEDIUM > LOW)
 3. Present as a unified review with verified file:line references
 
-## 5b. Specialized intent (analyst, ralph)
+## 5b. Specialized intent (scanner, gap-finder, ralph)
 
-Read the unified agent protocol (`agents/codex-proxy.md`) for the prompt template. Use `Role: analyst` for investigation/debug intents and `Role: ralph` for persistent execution intents. **You** call `codex({ op: "exec", ... })` directly - do NOT spawn a codex-proxy agent. Follow the protocol's structure for that role. Pass `working_directory` and appropriate `reasoning_effort`.
+Read the unified agent protocol (`agents/codex-proxy.md`) for the prompt template. Use `Role: scanner` for investigation intents and `Role: gap-finder` for requirements analysis intents. Use `Role: ralph` for persistent execution intents. **You** call `codex({ op: "exec", ... })` directly - do NOT spawn a codex-proxy agent. Follow the protocol's structure for that role. Pass `working_directory` and appropriate `reasoning_effort`.
 
 ## 5c. General request
 

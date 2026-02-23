@@ -105,42 +105,50 @@ The discuss server follows a **Functional Core / Imperative Shell** architecture
 
 ### src/discuss/types.ts - Shared Type Definitions
 
-Defines `DiscussState` (full session state: agents, bids, transcript, step, epoch, speaker), `TranscriptEntry` (discriminated union: `bids` / `speech` / `epoch_summary` / `session_event`), `Result<T>` (ok/error value type - all state-modifying functions return this, errors are values not throws), and `WaitCondition`. Zero imports from `node:` or project modules. See `src/discuss/types.ts`.
+Defines `DiscussState` (full session state: agents, bids, transcript, step, epoch, speaker), `AgentState` (per-agent tracking: quota, fallback_used, total_speaks, etc.), `TranscriptEntry` (discriminated union: `bids` / `speech` / `epoch_summary` / `session_event`), `Result<T>` (ok/error value type - all state-modifying functions return this, errors are values not throws), `EndReason`, and `PersonaAssignment`. Zero imports from `node:` or project modules. See `src/discuss/types.ts`.
 
 ---
 
 ### src/discuss/state-machine.ts - Pure State Transitions
 
-All state-modifying logic. Zero I/O imports - `node:fs` and `node:path` are banned in this file. Every function follows the signature pattern `(state, ...args, now: string) → Result<T>`.
+All state-modifying logic. Zero I/O imports - `node:fs` and `node:path` are banned in this file. Every state-modifying function follows the signature pattern `(state, ...args, now: string) → Result<T>`.
 
-Key functions: `initSession`, `applyBid`, `resolveWinner` (handles winner / fallback / cold_start / epoch_transition / max_epochs_reached / no_winner), `applySpeech` (sets monotonic `last_speech_step`), `applyEpochSummary`, `applyEnd`. See `src/discuss/state-machine.ts`.
+Key functions: `initSession`, `applyBid`, `resolveWinner` (handles winner / fallback / cold_start / epoch_transition / max_epochs_reached / no_winner), `applySpeech` (sets monotonic `last_speech_step`), `applyEpochSummary`, `applyEnd`.
+
+Also exports pure string utilities used by `session-store.ts` for directory naming: `randomSuffix`, `formatDateId`, `topicSlug`. This co-location is deliberate - these are pure utilities with no state machine semantics.
+
+See `src/discuss/state-machine.ts`.
 
 ---
 
 ### src/discuss/conditions.ts - Wait Condition Predicates
 
-Pure boolean predicates used by `discuss({ op: "wait", ... })`:
-- `allBidsIn(state)` - all bids submitted AND status is bidding
+Pure boolean predicates used by `wait.ts` when polling `state.json`:
+- `allBidsIn(state)` - all agents have submitted bids AND status is bidding
 - `speechDelivered(state)` - `last_speech_step === step - 1` (monotonic marker)
-- `actionNeeded(agent)(state)` - agent needs to bid, speak, or session ended
+- `bidReleased(state)` - winner has been resolved (bid hold lifted)
+- `isWinner(agentName)(state)` - this agent is the current winner
+- `setupComplete(state)` - session has transitioned out of setup
+- `noParticipants(state)` - no agents registered
 
-See `src/discuss/conditions.ts`.
+These predicates are called by `waitForCondition` in `wait.ts` at polling intervals. `_3_step` in `server-handlers.ts` uses `waitForCondition` directly for moderator blocking. Discussant agents use `discuss({ op: "bid", ... })` and `discuss({ op: "speak", ... })` which also resolve via internal polling. See `src/discuss/conditions.ts`.
 
 ---
 
 ### src/discuss/wait.ts - Async File Polling
 
-Polls `state.json` at intervals until a predicate is true or timeout expires. Key design: immediate first check, `lastKnownGood` pattern (returns last valid state even on timeout so callers always get a valid state object), transient read failures silently retried. See `src/discuss/wait.ts`.
+Polls `state.json` at intervals until a predicate is true or timeout expires. Key design: immediate first check, `lastKnownGood` pattern (returns last valid state even on timeout so callers always get a valid state object), transient read failures silently retried. Default poll interval: 500ms. `INFINITE_POLL=0` timeout means poll forever (used by agent-facing operations). See `src/discuss/wait.ts`.
 
 ---
 
 ### src/discuss/session-store.ts - I/O Shell
 
-Handles session directory management, atomic writes, cross-process locking, and legacy state migration.
+Handles session directory management, atomic writes, cross-process locking, and transcript rendering.
 
-- **Lock**: POSIX `mkdir`-based (atomic test-and-set). Stale lock detection via PID liveness check + 30s age threshold
+- **Lock**: `mkdir`-based (atomic test-and-set). Stale lock detection via PID liveness check + 30s age threshold
 - **Atomic writes**: `.tmp` + `renameSync`, same pattern as codex session-manager
-- **`normalizeState`**: migrates legacy state.json schema to current - safe to call repeatedly
+- **Directory naming**: `{session_id}-{topic_slug}` - imports `randomSuffix`, `formatDateId`, `topicSlug` from `state-machine.ts` (pure utilities, no circular dependency)
+- **`save()`**: serializes state under lock, then calls `transcript.ts` for incremental markdown append
 
 See `src/discuss/session-store.ts`.
 
@@ -148,21 +156,29 @@ See `src/discuss/session-store.ts`.
 
 ### src/discuss/transcript.ts - Transcript Rendering
 
-Pure functions on `TranscriptEntry[]`. Produces human-readable markdown with soft 80 / hard 100 word-wrap. Supports Korean/CJK sentence-ending patterns for grace-zone detection. Supports three modes: `recent` (last N entries), `full` (full transcript), `summary` (epoch-level overview). See `src/discuss/transcript.ts`.
+Pure functions on `TranscriptEntry[]`. Produces human-readable markdown with soft 80 / hard 100 word-wrap. Supports Korean/CJK sentence-ending patterns for grace-zone detection. Supports three modes: `recent` (last N entries), `full` (full transcript, bids visible), `summary` (epoch-level overview). Bid scores are filtered from agent-facing views. See `src/discuss/transcript.ts`.
 
 ---
 
 ### src/discuss/schemas.ts - Zod Input Validation
 
-Zod schemas for the unified discuss API. `discussOpSchema` is a discriminated union on `op` covering all 8 operations. Cross-field constraints (e.g., `agent_name` required for `action_needed` wait) are enforced in `server-handlers.ts` after Zod validation. See `src/discuss/schemas.ts`.
+Zod schemas for the two discuss MCP tools. `discussAgentOpSchema` is a discriminated union on `op` covering `bid` and `speak`. `discussLeadOpSchema` covers `_1_seed` through `_7_end`. Cross-field constraints are enforced in `server-handlers.ts` after Zod validation. See `src/discuss/schemas.ts`.
+
+---
+
+### src/discuss/persona-seed.ts - k-DPP Persona Sampling
+
+Pure implementation of k-Determinantal Point Process sampling for maximally diverse persona position assignment. Zero I/O. Key exports: `samplePersonaAssignments` (main entry point), `assignTones` (2×2×2 combinatorial assignment), `assignOrigins` (weighted demographics), `createSeededRng` (mulberry32 PRNG). See `src/discuss/persona-seed.ts`.
 
 ---
 
 ### src/discuss/server-handlers.ts - Tool Dispatch
 
-Routes MCP tool calls to state-machine functions via `SessionStore`. All `wait` calls use `waitForCondition` + auto-resolve inside lock.
+Routes MCP tool calls to state-machine functions via `SessionStore`. All blocking operations use `waitForCondition` from `wait.ts`.
 
-Key pattern: `bid` → `applyBid` (pure) → if all bids in: `resolveWinner` (pure) → `store.save`. `wait/all_bids` auto-resolves the winner inside the lock to prevent races between the wait completing and a concurrent bid arriving. See `src/discuss/server-handlers.ts`.
+`_3_step` is the core moderator blocking operation: in bidding status it calls `waitForCondition(allBidsIn)`, then resolves the winner under lock. In speaking status it calls `waitForCondition(speechDelivered)`. All resolution runs inside `withLock` to prevent races between concurrent bid arrivals and wait completions.
+
+`bid` handler: `applyBid` (pure) → if `allBidsIn`: `resolveWinner` (pure) → `store.save`. Winner resolution inside the lock ensures bid count and winner selection are atomic. See `src/discuss/server-handlers.ts`.
 
 ---
 

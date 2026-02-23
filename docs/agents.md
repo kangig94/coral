@@ -46,9 +46,17 @@ Use Claude's native tools (Read, Grep, Glob, LSP) for direct analysis. Read-only
 
 ---
 
-### analyst (Requirements Gap Analysis)
+### scanner (Project Scan & Process Investigation)
 
-`agents/analyst.md` - opus, read-only
+`agents/scanner.md` - opus, read-only
+
+**Role**: Maps project architecture, traces dependencies, and investigates process/system-level root causes. Produces Scan Reports (layer diagram, key modules, patterns, gaps) and Root Cause Reports (process trace, evidence, hypothesis).
+
+---
+
+### gap-finder (Requirements Gap Analysis)
+
+`agents/gap-finder.md` - opus, read-only
 
 **Role**: Identifies requirement gaps, undefined guardrails, and scope risks for new features. Analyzes external constraints, edge cases, and integration risks.
 
@@ -76,11 +84,11 @@ Use Claude's native tools (Read, Grep, Glob, LSP) for direct analysis. Read-only
 
 ### init-project (Project Initialization Orchestrator)
 
-`agents/init-project.md` - opus
+`skills/init-project/SKILL.md` - opus (skill-only, no agent file)
 
-**Role**: Orchestrates project initialization through a 4-phase pipeline: scan (detect stack, identify domains) → plan (spawn planner for verified artifact planning) → execute (spawn ralph for file generation) → report. Keeps deterministic generation rules (merge policy, globs detection, directory creation) and passes them to ralph.
+**Role**: Orchestrates project initialization: analyze → plan → execute → verify → report. For existing projects, spawns an analysis subagent (cumulative pipeline) that produces a reusable analysis document. Keeps deterministic generation rules (merge policy, globs detection, directory creation) and passes them to ralph.
 
-> Note: init-project does NOT have `disallowedTools` because it needs to read files during the scan phase and may write intermediate results.
+> Note: init-project has no agent file — it is a skill-only protocol. It must run at depth 0 (to spawn subagents at depth 1), so it cannot be spawned as a subagent itself.
 
 ---
 
@@ -98,7 +106,7 @@ Use Claude's native tools (Read, Grep, Glob, LSP) for direct analysis. Read-only
 
 ## Discuss Agents
 
-Agents for the moderated multi-agent discussion system. These agents coordinate via the `dc` MCP server (`discuss_*` tools) and Agent Teams.
+Agents for the moderated multi-agent discussion system. These agents coordinate via the `dc` MCP server (`discuss` and `discuss_lead` tools) and Agent Teams.
 
 ### discuss-lead (Discussion Moderator)
 
@@ -106,7 +114,7 @@ Agents for the moderated multi-agent discussion system. These agents coordinate 
 
 **Role**: Orchestrates multi-agent discussions through structured turn-taking. Manages session setup, team creation, bidding coordination, turn resolution, epoch transitions (auto-triggered by server), and synthesis delivery. Never speaks on substance - only process control.
 
-**Protocol**: Setup (persona generation → `discuss({ "op": "create", ... })` → team + teammates) → Discussion Loop (broadcast → discuss({ "op": "wait", condition: "all_bids", ... }) → 4-way branch → discuss({ "op": "wait", condition: "speech_delivered", ... }) → repeat) → Synthesis (`discuss({ "op": "end", ... })` → full transcript → present to user → cleanup).
+**Protocol**: Setup (persona seeding via `discuss_lead({ op: "_1_seed", ... })` → persona generation → `discuss_lead({ op: "_2_create", ... })` → team + teammates) → Discussion Loop (broadcast → `discuss_lead({ op: "_3_step", ... })` blocks until all bids resolved → winner branch → `discuss_lead({ op: "_3_step", ... })` blocks until speech done → repeat) → Synthesis (`discuss_lead({ op: "_7_end", ... })` → full transcript via `discuss_lead({ op: "_4_transcript", ... })` → present to user → cleanup).
 
 > Note: discuss-lead does NOT have `disallowedTools` - it needs Task (spawn agents), SendMessage (broadcast), TeamCreate/TeamDelete, and all discuss MCP tools.
 
@@ -116,7 +124,7 @@ Agents for the moderated multi-agent discussion system. These agents coordinate 
 
 `agents/discussant.md` - sonnet
 
-**Role**: Participates in discussions with a unique persona provided at spawn time. Follows the discuss({ op: "wait", condition: "action_needed", ... }) → act → loop cycle. Uses WebSearch for evidence gathering, reads transcript before speaking, and always notifies teamlead after speeches. Uses sonnet - the discussion protocol is well-defined, opus-level reasoning is unnecessary.
+**Role**: Participates in discussions with a unique persona provided at spawn time. Submits bids via `discuss({ op: "bid", ... })`, reads transcript before speaking, delivers speeches via `discuss({ op: "speak", ... })`, and notifies the team lead after each speech. Uses sonnet - the discussion protocol is well-defined, opus-level reasoning is unnecessary.
 
 ---
 
@@ -140,11 +148,13 @@ Proxy agents that delegate work to Codex CLI. Tool restrictions limit them to co
 
 `agents/codex-proxy.md` - sonnet, Codex tools only
 
-**Role**: Single proxy agent with role-based routing. Callers include `Role: analyst|architect|critic|ralph` in their prompt to select the appropriate prompt template and settings. Missing role → explicit error (no inference).
+**Role**: Single proxy agent with role-based routing. Callers include `Role: scanner|gap-finder|debugger|architect|critic|ralph` in their prompt to select the appropriate prompt template and settings. Missing role → explicit error (no inference).
 
 | Role | Purpose | reasoning_effort |
 |---|---|---|
-| `analyst` | Root cause analysis, dependency tracing, technical investigation | xhigh |
+| `scanner` | Project scanning, process investigation, systemic root cause analysis | xhigh |
+| `gap-finder` | Requirements gap analysis, dependency tracing, technical investigation | xhigh |
+| `debugger` | Bug diagnosis via hypothesis testing, root cause tracing | xhigh |
 | `architect` | Architecture review, design patterns, code structure | xhigh |
 | `critic` | Plan/code critique, severity-rated verdicts (APPROVED/REVISE/REJECT) | xhigh |
 | `ralph` | Single-shot task execution; Claude controls the outer verification loop | high |
@@ -161,7 +171,7 @@ Three layers ensure Codex-bound agents always delegate to Codex CLI:
 
 The `SubagentStart` hook fires when any agent matching `(^|:)codex-` starts (e.g., `codex-proxy`, `coral:codex-proxy`). It injects delegation instructions via `additionalContext`.
 
-> Claude-native agents (`architect`, `critic`, `analyst`, `ralph`) lack the `codex-` prefix, so the hook never matches them.
+> Claude-native agents (`architect`, `critic`, `scanner`, `gap-finder`, `ralph`) lack the `codex-` prefix, so the hook never matches them.
 
 ### Layer 2: Tool Restriction (100% guarantee)
 

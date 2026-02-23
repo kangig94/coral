@@ -70,10 +70,10 @@ model: <opus|sonnet>
 | Section | When to Include | Used By |
 |---------|-----------------|---------|
 | `Why_This_Matters` | Tier 0-1 required. Why this agent exists, what fails without it | review-orchestrator, mcp-guardian, init-project, ralph, debugger |
-| `Tool_Usage` | Agent uses specific tools or delegates to MCP | analyst, architect, critic, ralph, red-attacker |
-| `Examples` | Good/Bad execution pairs clarify protocol | analyst, architect, critic, ralph, init-project |
-| `Final_Checklist` | Pre-completion self-check prevents false done | analyst, architect, critic, ralph, planner |
-| `Execution_Policy` | Effort level, stop conditions, parallelism | analyst, architect, critic, ralph |
+| `Tool_Usage` | Agent uses specific tools or delegates to MCP | scanner, gap-finder, architect, critic, ralph, red-attacker |
+| `Examples` | Good/Bad execution pairs clarify protocol | scanner, gap-finder, architect, critic, ralph, init-project |
+| `Final_Checklist` | Pre-completion self-check prevents false done | scanner, gap-finder, architect, critic, ralph, planner |
+| `Execution_Policy` | Effort level, stop conditions, parallelism | scanner, gap-finder, architect, critic, ralph |
 | `Error_Handling` | Orchestrators with multiple failure scenarios | init-project, planner, discussant |
 | `Model_Selection` | Agent delegates to different models conditionally | red-attacker |
 | `Iteration_Cap` | Long-running loops need explicit bounds | ralph |
@@ -86,6 +86,14 @@ model: <opus|sonnet>
 |-------|----------|-------------|
 | `name` | yes | kebab-case agent name |
 | `description` | yes | One-line with "Use when... NOT for..." |
-| `model` | yes | `opus` (deep reasoning) or `sonnet` (protocol execution) |
-| `disallowedTools` | no | `Write, Edit` for read-only agents (review agents in `.claude/agents/`) |
-| `tools` | no | Restrict to specific MCP tools (codex-proxy) |
+| `model` | yes | `opus` (tier 0-1, deep reasoning) or `sonnet` (tier 2-3, protocol execution) |
+| `disallowedTools` | review agents | `Write, Edit` for read-only agents (all agents in `.claude/agents/`) |
+| `tools` | no | Restrict to specific MCP tools (used by codex-proxy) |
+
+### Model Assignment Rule
+
+- Tier 0 (supervisor): opus
+- Tier 1 (safety-critical): opus
+- Tier 2 (domain experts): sonnet
+- Tier 3 (quality): sonnet
+- Never use haiku for any review or execution agent

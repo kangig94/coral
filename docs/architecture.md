@@ -18,13 +18,11 @@
 │  │  MCP Server "cx"               │  │  MCP Server "dc"                │  │
 │  │  (bridge/coral-codex.cjs)      │  │  (bridge/coral-discuss.cjs)     │  │
 │  │                                │  │                                 │  │
-│  │  Tools: codex                  │  │  Tools: discuss + 8 ops         │  │
-│  │  (exec, list, fork, abort)     │  │  (create/bid/wait/speak/        │  │
-│  │                                │  │   transcript/state/end/         │  │
-│  │                                │  │   epoch_summary), persona_seed  │  │
-│  │  Session: ~/.claude/coral/     │  │                                 │  │
-│  │           sessions/            │  │  Session: {project}/.claude/    │  │
-│  │                                │  │           coral/discuss/        │  │
+│  │  Tool: codex                   │  │  Tools: discuss (2 ops)         │  │
+│  │  (exec, list, fork, abort)     │  │    + discuss_lead (7 ops)       │  │
+│  │                                │  │                                 │  │
+│  │  Session: ~/.claude/coral/     │  │  Session: {project}/.claude/    │  │
+│  │           sessions/            │  │           coral/discuss/        │  │
 │  └───────────────┬────────────────┘  └─────────────────────────────────┘  │
 │                  │                                                        │
 └──────────────────┼────────────────────────────────────────────────────────┘
@@ -50,7 +48,7 @@ User → /coral:codex "question"
      → Agents call codex({ op: "exec", ... }) → results synthesized
      → Other intents:
         → Skill reads agent protocol (agents/codex-proxy.md)
-     → Skill calls codex({ op: "exec" }) directly (no subagent)
+        → Skill calls codex({ op: "exec" }) directly (no subagent)
         → Codex response returned to user
 ```
 
@@ -76,7 +74,7 @@ User → /coral:init-project
 ```
 User → /codex skill analyzes intent
      → Review?   → Parallel subagent spawn (codex-proxy Role:architect + codex-proxy Role:critic)
-     → Analyze?  → Direct MCP call with analyst protocol (no subagent)
+     → Analyze?  → Direct MCP call with scanner protocol (no subagent)
      → Ralph?    → Direct MCP call with ralph protocol (no subagent)
      → General?  → Direct MCP call, verbatim prompt (no subagent)
 ```
@@ -86,29 +84,29 @@ User → /codex skill analyzes intent
 ```
 User → /coral:discuss "AI ethics in healthcare"
      → Skill reads agents/discuss-lead.md (protocol injection)
-     → Moderator analyzes topic → determines 3-8 roles
+     → Moderator: calls discuss_lead({ op: "_1_seed", ... }) → persona assignments
      → Spawns persona-generator agents in parallel (Task tool)
-     → discuss({ "op": "create", topic, agents }) → session_id, session_dir
+     → discuss_lead({ op: "_2_create", topic, agents }) → session_id, session_dir
      → TeamCreate "coral-dc-{session_id}"
      → Spawns discussant teammates (dc-{agent_name})
      → Discussion Loop:
-        → Broadcast "Step N. Call `discuss({ op: "bid", ... })`."
-        → discuss({ op: "wait", condition: "all_bids", ... }) → auto-resolves → 4-way branch
-          → winner → notify → discuss({ op: "wait", condition: "speech_delivered", ... }) → broadcast transcript
-          → no_winner + new_epoch → epoch transition (server auto-reset quotas)
-          → no_winner → synthesis (all_below_threshold / all_blocked / max_epochs_reached)
-          → timeout → force end
-     → `discuss({ op: "end", ... })` → full transcript → synthesis → present to user
-     → Shutdown teammates, TeamDelete
+        → discuss_lead({ op: "_3_step", session, timeout_seconds }) → blocks until all bids in
+          → resolved: winner announced → discuss_lead(_3_step) again → blocks until speech_done
+          → epoch_transition: moderator calls discuss_lead({ op: "_5_epoch", summary })
+          → ended: loop exits
+        → Discuss agents call discuss({ op: "bid", score }) each round
+        → Winner calls discuss({ op: "speak", content })
+     → discuss_lead({ op: "_7_end", synthesis }) → final transcript via _4_transcript
+     → Present synthesis to user, shutdown teammates
 ```
 
 ### 5. Session-based Conversation (Codex)
 
 ```
-User → codex({ op: "exec", name="review", prompt="analyze auth.ts" })
+User → codex({ op: "exec", name: "review", prompt: "analyze auth.ts" })
      → Codex execution → session ID acquired (thread.started event)
      → SessionManager writes ~/.claude/coral/sessions/<project-hash>/review.json (atomic write)
-     → codex({ op: "exec", session="review", prompt="follow-up question" })
+     → codex({ op: "exec", session: "review", prompt: "follow-up question" })
      → SessionManager looks up sessionId by name
      → codex exec resume SESSION_ID executed
      → lastUsedAt updated
@@ -130,13 +128,13 @@ Each file is a single `SessionEntry`. Corrupt files are skipped with a warning; 
 
 ```
 {project}/.claude/coral/discuss/
-└── 260221-1430-a1b2-ai-ethics/
+└── 260221-1430-a1b2-ai-ethics/      # {YYMMDD}-{HHMM}-{rand4}-{topic-slug}
     ├── state.json          # Atomic writes via .tmp + rename
     ├── state.lock/         # Cross-process mkdir lock (transient)
     └── transcript.md       # Incremental append (human-readable)
 ```
 
-Each session directory is created atomically with collision detection. State mutations are serialized via a cross-process `mkdir`-based lock (`state.lock/`). Transcript.md is append-only - `transcript_rendered` cursor tracks which entries have been written to .md.
+Each session directory is created atomically with collision detection. State mutations are serialized via a cross-process `mkdir`-based lock (`state.lock/`). `transcript.md` is append-only — the `transcript_rendered` cursor tracks which entries have been written to the markdown file.
 
 ### 8. Knowledge Base Storage
 
@@ -159,20 +157,43 @@ Each session directory is created atomically with collision detection. State mut
 coral/
 ├── .claude-plugin/              # Plugin + marketplace manifests
 ├── src/
-│   ├── types.ts                 # Shared type definitions
-│   ├── shared/                  # Shared MCP utilities
+│   ├── types.ts                 # Shared Codex type definitions
+│   ├── shared/
+│   │   └── mcp-utils.ts         # Shared MCP response utilities
 │   ├── codex/                   # Codex MCP server (cx)
+│   │   ├── server.ts            # Composition root
+│   │   ├── server-handlers.ts   # Business logic
+│   │   ├── schemas.ts           # Zod validation
+│   │   ├── codex-executor.ts    # Process management
+│   │   ├── output-parser.ts     # JSONL parsing
+│   │   ├── cli-detection.ts     # CLI availability
+│   │   ├── session-manager.ts   # Session persistence
+│   │   └── progress.ts          # Background progress files
 │   └── discuss/                 # Discuss MCP server (dc)
+│       ├── server.ts            # Composition root
+│       ├── server-handlers.ts   # Tool dispatch
+│       ├── schemas.ts           # Zod validation
+│       ├── state-machine.ts     # Pure state transitions
+│       ├── session-store.ts     # I/O: atomic writes, locking
+│       ├── transcript.ts        # Markdown rendering
+│       ├── persona-seed.ts      # k-DPP sampling
+│       ├── conditions.ts        # Pure predicates
+│       ├── wait.ts              # File polling
+│       └── types.ts             # Discuss type definitions
 ├── skills/                      # Slash command SKILL.md files (one dir per skill)
 ├── agents/                      # Agent protocol definitions
 ├── hooks/
 │   ├── hooks.json               # Hook config (matcher, timeout)
-│   └── detect-codex-agent.sh   # SubagentStart detection script
+│   ├── detect-codex-agent.mjs   # SubagentStart delegation hook
+│   ├── kb-lookup-reminder.mjs   # PostToolUseFailure KB hint
+│   ├── kb-memo-reminder.mjs     # PreToolUse memo hint
+│   ├── kb-promote-reminder.mjs  # Stop/PreCompact promotion hint
+│   └── discuss-idle-guard.mjs   # TeammateIdle bid/speak enforcer
 ├── scripts/
-│   └── build-server.mjs        # esbuild bundling
+│   └── build-server.mjs         # esbuild bundling + version sync
 ├── bridge/
-│   ├── coral-codex.cjs         # Codex MCP server bundle (committed)
-│   └── coral-discuss.cjs       # Discuss MCP server bundle (committed)
+│   ├── coral-codex.cjs          # Codex MCP server bundle (committed)
+│   └── coral-discuss.cjs        # Discuss MCP server bundle (committed)
 ├── docs/                        # Documentation
 ├── vitest.config.ts
 ├── package.json
@@ -185,15 +206,15 @@ coral/
 ### Codex Server (`cx`)
 
 ```
-codex/server.ts  (wiring only - SDK setup, transport, signals)
+codex/server.ts  (composition root — wiring only)
   └── codex/server-handlers.ts  (business logic, dispatch, background/foreground)
-        ├── codex/schemas.ts        (zod input validation)
-        ├── codex/codex-executor.ts
-        │     ├── codex/output-parser.ts  (pure functions)
-        │     └── codex/cli-detection.ts  (caching singleton)
-        ├── codex/session-manager.ts      (file I/O, per-session files, atomic writes)
-        ├── codex/progress.ts             (progress file I/O, pure helpers)
-        └── shared/mcp-utils.ts           (textResult, jsonResult)
+        ├── codex/schemas.ts        (Zod input validation)
+        ├── codex/codex-executor.ts (process spawn, timeout, buffer)
+        │     ├── codex/output-parser.ts  (pure JSONL → result)
+        │     └── codex/cli-detection.ts  (cached singleton)
+        ├── codex/session-manager.ts     (atomic file I/O)
+        ├── codex/progress.ts            (progress file I/O)
+        └── shared/mcp-utils.ts          (textResult, jsonResult)
 
 types.ts ← referenced by all codex modules
 ```
@@ -201,24 +222,28 @@ types.ts ← referenced by all codex modules
 ### Discuss Server (`dc`)
 
 ```
-discuss/server.ts  (wiring only - SDK setup, transport, signals)
-  └── discuss/server-handlers.ts  (tool dispatch + `discuss({ op: "wait", ... })` integration)
-        ├── discuss/schemas.ts          (zod input validation)
+discuss/server.ts  (composition root — wiring only)
+  └── discuss/server-handlers.ts  (tool dispatch + step integration)
+        ├── discuss/schemas.ts          (Zod input validation)
         ├── discuss/state-machine.ts    (pure state transitions, zero I/O)
-        ├── discuss/session-store.ts    (I/O shell: atomic writes, cross-process lock)
-        │     └── discuss/transcript.ts (rendering, called via save())
-        ├── discuss/persona-seed.ts      (pure k-DPP sampling, zero I/O)
-        ├── discuss/conditions.ts       (pure predicates for `discuss({ op: "wait", ... })`)
+        ├── discuss/session-store.ts    (atomic writes, cross-process lock)
+        │     ├── discuss/transcript.ts  (rendering, called via save())
+        │     └── discuss/state-machine.ts  (imports randomSuffix, formatDateId, topicSlug)
+        ├── discuss/persona-seed.ts     (pure k-DPP sampling)
+        ├── discuss/conditions.ts       (pure predicates)
         ├── discuss/wait.ts             (async file polling)
         └── shared/mcp-utils.ts         (textResult, jsonResult)
 
 discuss/types.ts ← referenced by all discuss modules
 ```
 
+Note: `session-store.ts` imports utility functions (`randomSuffix`, `formatDateId`, `topicSlug`) from `state-machine.ts` for session directory naming. This is a deliberate co-location choice — these are pure string utilities with no state machine semantics.
+
 ### Key Design: Functional Core / Imperative Shell
 
 The discuss server separates pure logic from I/O:
+
 - **Functional Core** (`state-machine.ts`): all state transitions are pure functions `(state, args) → Result<T>`. Zero `node:fs` imports. Fully testable without filesystem.
-- **Imperative Shell** (`session-store.ts`): handles atomic writes, cross-process locking, state migration, and incremental transcript append.
-- **Condition predicates** (`conditions.ts`): pure boolean functions used by `discuss({ op: "wait", ... })` to detect when to unblock.
+- **Imperative Shell** (`session-store.ts`): handles atomic writes, cross-process locking, and incremental transcript append. All state mutations pass through `withLock`.
+- **Condition predicates** (`conditions.ts`): pure boolean functions used by `wait.ts` to detect when to unblock polling loops.
 - **Wait module** (`wait.ts`): polls `state.json` at intervals until a predicate is true or timeout expires.

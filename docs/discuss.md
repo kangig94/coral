@@ -39,13 +39,13 @@ Agents express desire to speak with a score from 0 to 100:
 | 1–(threshold−1) | Interested but below cutline (cold-start or fallback only) |
 | threshold–100 | Eligible to speak normally (higher = stronger desire) |
 
-The default threshold is **30**. Configurable via the `CORAL_DISCUSS_BID_THRESHOLD` environment variable (range: 1–100). The threshold is visible in every `discuss({ op: "create", ... })` and `discuss({ op: "state", ... })` response so all participants know the cutline.
+The default threshold is **30**. Configurable via the `CORAL_DISCUSS_BID_THRESHOLD` environment variable (range: 1–100). The threshold is stored per-session at creation time and visible in `discuss_lead({ op: "_6_state", ... })` responses so all participants know the cutline.
 
 ## Discussion Flow
 
 ### 1. Setup
 
-The moderator (discuss-lead) orchestrates a 3-phase setup. See [Persona Seeding Algorithm](mcp-tools.md#persona-seeding-algorithm-_1_seed) for full algorithm details.
+The moderator (`discuss-lead`) orchestrates a 3-phase setup. See [Persona Seeding Algorithm](mcp-tools.md#persona-seeding-algorithm-_1_seed) for full algorithm details.
 
 1. **Controversy Analysis** (LLM inline): Extract 3–4 controversy axes from the topic (each with 2–3 positions, pool budget ≤ 81). Assign `dc-`-prefixed agent names, distinct `name_culture` per agent, and generate persona briefs. For debate topics, prepend a stance axis.
 2. **DPP + Demographics Seeding**: Call `discuss_lead({ op: "_1_seed", controversy_axes, demographics, n })` → k-DPP sampling returns maximally diverse position + tone assignments, plus optional `suggested_origin` and `is_outlier` fields, each with a `persona_seed` uint32.
@@ -58,34 +58,36 @@ The moderator (discuss-lead) orchestrates a 3-phase setup. See [Persona Seeding 
 ### 2. Bidding Round
 
 ```
-Moderator broadcasts → "Step N. Call `discuss({ op: "bid", ... })`."
+Moderator broadcasts → "Step N. Call discuss({ op: 'bid', ... })."
    ↓
-Each agent submits a bid score (0–100) via `discuss({ op: "bid", ... })`
+Each agent submits a bid score (0–100) via discuss({ op: "bid", ... })
    ↓
-Moderator calls discuss({ op: "wait", condition: "all_bids", ... }) - blocks until all bids arrive
+Moderator calls discuss_lead({ op: "_3_step", ... }) - blocks until all bids resolved
    ↓
 MCP server auto-resolves the winner (see Resolution Rules below)
 ```
 
+`_3_step` handles all blocking internally — there is no separate wait call for bid collection. The moderator calls `_3_step` once and it returns when the winner is known (or the session ends).
+
 ### 3. Speaking Turn
 
 ```
-Winner is notified → "You have the floor."
+Winner is notified via discuss({ op: "bid", ... }) response → action: 'speak'
    ↓
-Winner reads recent transcript (`discuss({ op: "transcript", ... })`)
+Winner reads recent transcript (discuss_lead({ op: "_4_transcript", mode: "recent" }))
    ↓
 Winner researches evidence (WebSearch)
    ↓
-Winner delivers speech (`discuss({ op: "speak", ... })`)
+Winner delivers speech (discuss({ op: "speak", ... }))
    ↓
-Moderator waits via discuss({ op: "wait", condition: "speech_delivered", ... })
+Moderator calls discuss_lead({ op: "_3_step", ... }) - blocks until speech delivered
    ↓
 All agents read the new speech
    ↓
 Back to bidding round
 ```
 
-Speech timeout: The moderator uses a staged wait - first 90 seconds, then a 30-second warning, then force-end if still no speech.
+Speech timeout: The moderator uses a staged approach — `_3_step` with a 90s timeout first, then a 30-second warning broadcast, then `_3_step` with `force_stop: true` if still no speech.
 
 ### 4. Termination
 
@@ -104,7 +106,7 @@ When all bids are in, the MCP server resolves the winner through a cascade:
 
 ### Step 1: Primary Pool
 
-Agents with **quota remaining** AND **score ≥ bid_threshold** compete. Highest score wins.
+Agents with **quota remaining** AND **score ≥ bid_threshold** compete. Highest effective score wins.
 
 **Tiebreaker**: Fewer total speaks wins (fairness) → alphabetical (deterministic).
 
@@ -155,7 +157,7 @@ When the server detects allExhausted (all agents have used quota AND fallback) w
 3. `cold_start` set to true
 4. Epoch counter incremented
 5. All agents' `transcript_read_step` stamped to the new step (no forced re-read at epoch boundary)
-6. Moderator writes epoch summary (recap of previous epoch's arguments)
+6. Moderator writes epoch summary via `discuss_lead({ op: "_5_epoch", summary })`
 7. New bidding round begins
 
 **Sealed-bid design**: Individual bid scores are never returned in any API response. They are recorded in `state.json` for audit but hidden from all agents - including the moderator. The winner's identity is revealed; scores are not.
@@ -170,12 +172,11 @@ The default mode. Agents represent diverse perspectives on a topic. The moderato
 
 Activated when the topic involves a clear pro/con divide (e.g., "Should we adopt microservices?"):
 
-1. Personas generated **without** initial stance
+1. Personas generated with stance axis included in controversy analysis
 2. Session created and team spawned
-3. **Stance collection**: Agents declare their initial position (pro/con)
-4. **Balance check**: If imbalanced (e.g., 5 pro, 1 con), the moderator reassigns agents as devil's advocates
-5. **Persona reinforcement**: Reassigned agents receive supplementary stance-aligned perspective
-6. Discussion proceeds normally
+3. **Stance imbalance check**: if DPP assignments are imbalanced (e.g., 5 pro, 1 con), moderator sets `devil_advocate: true` for one agent on overrepresented side
+4. **Persona reinforcement**: Devil's advocate agents receive supplementary stance-aligned perspective
+5. Discussion proceeds normally
 
 Target: 50/50 split (±1 for odd numbers).
 
@@ -186,10 +187,10 @@ Bid scores are sealed - they are never returned in any API response:
 | Information | Who Can See |
 |-------------|-------------|
 | Individual bid scores | Nobody via API (audit only in `state.json`) |
-| Winner identity | Everyone (via `discuss({ op: "wait", ... })` → winner field, `formatFull` → "Speaker: Name") |
-| Who hasn't bid yet | Moderator (via `pending_bidders` indirectly) |
-| Total speaks (`your_speaks`) | Agent themselves (via `discuss({ op: "wait", condition: "action_needed", ... })` response) |
-| Bid threshold | Everyone (visible in `discuss({ op: "state", ... })`) |
+| Winner identity | Everyone (via `discuss({ op: "bid", ... })` → action field, `discuss_lead({ op: "_3_step", ... })` → winner field) |
+| Who hasn't bid yet | Moderator (via `pending_bidders` in `_3_step` response) |
+| Total speaks (`your_speaks`) | Agent themselves (via `discuss({ op: "bid", ... })` response) |
+| Bid threshold | Everyone (visible in `discuss_lead({ op: "_6_state", ... })`) |
 
 ## Agent Behavior Protocol
 
@@ -198,21 +199,20 @@ Bid scores are sealed - they are never returned in any API response:
 Each discussant follows a strict loop:
 
 ```
-discuss({ op: "wait", condition: "action_needed", ... }) → action returned → act → repeat
+discuss({ op: "bid", score, ... }) → action returned → act → repeat
 ```
 
-- **bid**: Submit score based on desire to speak
+- **bid**: Submit score based on desire to speak; response indicates action (speak/listen/session_ended)
 - **speak**: Read transcript → research → deliver speech → notify moderator
 
-Agents must call `discuss({ op: "wait", ... })` before every action. Premature tool calls are rejected by the MCP server with guidance to use `discuss({ op: "wait", ... })`.
+Agents must await the `discuss({ op: "bid", ... })` response before acting. The response is the gate — it blocks until the round resolves and returns the agent's required action.
 
 ### Moderator (discuss-lead)
 
 The moderator never speaks on substance - only process control:
 
 - Broadcasts bid instructions
-- Uses `discuss({ op: "wait", condition: "all_bids", ... })` for bid collection (auto-resolves winner)
-- Uses `discuss({ op: "wait", condition: "speech_delivered", ... })` for speech detection
+- Uses `discuss_lead({ op: "_3_step", ... })` for bid collection and speech waiting (auto-resolves winner)
 - Manages epoch transitions and synthesis
 - Never interprets bid scores or picks speakers manually
 
@@ -228,11 +228,11 @@ setup → bidding → speaking → bidding → ... → bidding (epoch auto-trans
                    (force-end)
 ```
 
-The `setup` status is a race-condition gate: `discuss({ op: "create", ... })` returns immediately with `status: 'setup'`. The `discuss({ op: "wait", condition: "all_bids", ... })` caller (moderator) transitions to `bidding` under the cross-process lock before accepting bids - ensuring all agents are spawned before bidding begins.
+The `setup` status is a race-condition gate: `_2_create` returns immediately with `status: 'setup'`. The `_3_step` caller (moderator) transitions to `bidding` under the cross-process lock before accepting bids - ensuring all agents are spawned before bidding begins.
 
 ### Cross-Process Safety
 
-Each discussant agent runs its own MCP server process. All state mutations are serialized via a POSIX `mkdir`-based lock - atomic test-and-set with PID tracking and stale lock recovery.
+Each discussant agent runs in its own MCP server connection. All state mutations are serialized via a `mkdir`-based lock — atomic test-and-set with PID tracking and stale lock recovery (30s threshold + liveness check).
 
 ### Session Storage
 
@@ -240,7 +240,7 @@ Each discussant agent runs its own MCP server process. All state mutations are s
 {project}/.claude/coral/discuss/
 └── 260221-1430-a1b2-microservices-vs-monolithic/
     ├── state.json          # Atomic writes (write .tmp, rename)
-    ├── state.lock/         # Cross-process lock directory
+    ├── state.lock/         # Cross-process lock directory (transient)
     └── transcript.md       # Human-readable log (incremental append)
 ```
 
@@ -250,21 +250,9 @@ Sessions are project-local and human-readable. `transcript.md` can be monitored 
 
 Agents are prevented from acting out of turn through three independent layers:
 
-1. **`discuss({ op: "wait", ... })` gating**: Agents call `discuss({ op: "wait", condition: "action_needed", ... })` before every action. The MCP blocks until it's their turn.
-2. **MCP validation**: `discuss({ op: "bid", ... })` and `discuss({ op: "speak", ... })` reject out-of-turn calls with error messages guiding agents to use `discuss({ op: "wait", ... })`.
-3. **Agent protocol**: The `<Agent_Prompt>` instructions explicitly state "call `discuss({ op: "wait", ... })` as your first action."
-
-### Condition-Based Blocking (`discuss({ op: "wait", ... })`)
-
-The `discuss({ op: "wait", ... })` MCP tool replaces manual polling with server-side blocking:
-
-| Condition | Blocks Until | Used By |
-|-----------|-------------|---------|
-| `all_bids` | All agents have submitted bids (auto-resolves winner) | Moderator |
-| `speech_delivered` | Current speaker has delivered their speech | Moderator |
-| `action_needed` | This specific agent has something to do (bid/speak) | Discussants |
-
-This design keeps the moderator's context window lean - no polling loops, no wasted API calls.
+1. **Bid-response gating**: Discussants submit `discuss({ op: "bid", ... })` and the response tells them what to do. They cannot get ahead of the protocol — there is no action until the server responds.
+2. **MCP validation**: `discuss({ op: "speak", ... })` rejects calls from agents who are not the current winner, with error messages explaining the rejection.
+3. **Agent protocol**: The `<Agent_Prompt>` instructions explicitly state "submit your bid and act on the response."
 
 ## Transcript Format
 
@@ -313,18 +301,20 @@ The `full` mode restriction ensures agents don't front-run the discussion by rea
 |---------------------|---------|-------|-------------|
 | `CORAL_DISCUSS_BID_THRESHOLD` | 30 | 1–100 | Minimum bid score for floor eligibility |
 | `CORAL_DISCUSS_MAX_EPOCHS` | 2 | 1–10 | Max epochs before discussion ends automatically |
+| `CORAL_DISCUSS_QUOTA_PER_EPOCH` | 3 | 1–10 | Speaking turns per agent per epoch |
 
 Set in `.claude/settings.json` under the `env` field:
 ```json
 {
   "env": {
     "CORAL_DISCUSS_BID_THRESHOLD": "70",
-    "CORAL_DISCUSS_MAX_EPOCHS": "3"
+    "CORAL_DISCUSS_MAX_EPOCHS": "3",
+    "CORAL_DISCUSS_QUOTA_PER_EPOCH": "4"
   }
 }
 ```
 
-Both values are stored per-session at creation time (not re-read from env mid-session). `bid_threshold` is surfaced in `discuss({ op: "state", ... })`. `max_epochs` is returned in the `discuss({ op: "create", ... })` response.
+All values are stored per-session at creation time (not re-read from env mid-session). `bid_threshold` is surfaced in `discuss_lead({ op: "_6_state", ... })`. `max_epochs` and `quota_per_epoch` are returned in the `discuss_lead({ op: "_2_create", ... })` response.
 
 ## Quick Reference
 
@@ -332,8 +322,8 @@ Both values are stored per-session at creation time (not re-read from env mid-se
 |---------|-------|-------|
 | Default bid threshold | 30 | Configurable via `CORAL_DISCUSS_BID_THRESHOLD` (1–100) |
 | Default max epochs | 2 | Configurable via `CORAL_DISCUSS_MAX_EPOCHS` (1–10) |
-| Session status on create | `setup` | Transitions to `bidding` when moderator calls `discuss({ op: "wait", condition: "all_bids", ... })` |
-| Default quota | 3 per epoch | Configurable via `CORAL_DISCUSS_QUOTA_PER_EPOCH` (1–10) |
+| Default quota per epoch | 3 | Configurable via `CORAL_DISCUSS_QUOTA_PER_EPOCH` (1–10) |
+| Session status on create | `setup` | Transitions to `bidding` when moderator calls `discuss_lead({ op: "_3_step", ... })` |
 | Max agents | 8 | Min: 2 |
 | Recent turns | 5 | Default for `_4_transcript` recent mode (override with `last_n`) |
 | Cold start | Auto-pick | Server picks fairest agent to break the ice |

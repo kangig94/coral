@@ -4,7 +4,7 @@ Slash commands provided by the Coral plugin. Each skill is defined in `skills/{n
 
 | Skill | Description |
 |---|---|
-| `/coral:codex` | Single entry point for all Codex interactions - routes to analyst/ralph/review intent, or manages sessions directly |
+| `/coral:codex` | Single entry point for all Codex interactions - routes to scanner/gap-finder/ralph/review intent, or manages sessions directly |
 | `/coral:analyze` | Deep analysis and investigation. Pass `--codex` to delegate to Codex CLI |
 | `/coral:plan` | Claude-native planning with parallel architect/critic review |
 | `/coral:coplan` | Collaborative planning with Codex architect/critic reviews, then Claude cross-review |
@@ -41,3 +41,32 @@ Slash commands provided by the Coral plugin. Each skill is defined in `skills/{n
 | `session fork <name>` | `/coral:codex session fork review` |
 
 Consecutive `/coral:codex` calls without `session` automatically continue the previous session. Say "new" to start fresh.
+
+## /coral:discuss - Moderated Discussion
+
+Requires `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` environment variable.
+
+```bash
+/coral:discuss "Should we adopt microservices?"
+/coral:discuss "AI ethics in healthcare" --hints stance:pro,con priority:safety,innovation
+```
+
+The `--hints` flag provides controversy axis hints to the moderator. The moderator still performs its own topic analysis — hints are suggestions, not mandates.
+
+See [docs/discuss.md](./discuss.md) for the full discussion system design.
+
+## /coral:init-project - Project Initialization
+
+Scans the current project and generates the complete `.claude/` structure:
+
+```bash
+/coral:init-project
+```
+
+Phases:
+1. **Scan**: Detect stack (languages, frameworks, test runner, build tool), identify domains
+2. **Plan**: Spawn planner to generate a verified artifact plan
+3. **Execute**: Spawn ralph to generate all files per the plan
+4. **Report**: Summary of generated artifacts
+
+The init-project skill reads `agents/init-project.md` for its full execution protocol.
