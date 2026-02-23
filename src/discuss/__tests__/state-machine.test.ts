@@ -228,6 +228,17 @@ describe('resolveWinner', () => {
     expect('speaker_type' in decision ? decision.winner : null).toBe('bob');
   });
 
+  it('should decrement quota for cold-start speech', () => {
+    const state = startSession();
+    const s1 = unwrapOk(applyBid(state, 'alice', 10, 'alice thinking', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 20, 'bob thinking', NOW));
+    const [resolved] = unwrapOk(resolveWinner(s2, NOW));
+    expect(resolved.speaker_type).toBe('cold_start');
+    const quotaBefore = resolved.agents.bob.quota_remaining;
+    const afterSpeech = unwrapOk(applySpeech(resolved, 'bob', 'my speech', NOW));
+    expect(afterSpeech.agents.bob.quota_remaining).toBe(quotaBefore - 1);
+  });
+
   it('should skip banned agents in quorum and fallback checks', () => {
     let state = startSession();
     state = {
@@ -317,7 +328,43 @@ describe('speech lifecycle', () => {
     expect(timeout.bid_release_step).toBe(state.step);
   });
 
-  it('should not decrement fallback speaker quota on timeout/speech', () => {
+  it('should decrement quota for normal speaker on timeout', () => {
+    const state = winningState();
+    const quotaBefore = state.agents.alice.quota_remaining;
+    const timeout = unwrapOk(applySpeechTimeout(state, NOW));
+    expect(timeout.agents.alice.quota_remaining).toBe(quotaBefore - 1);
+  });
+
+  it('should decrement quota for cold-start speaker on timeout', () => {
+    const state = startSession();
+    const s1 = unwrapOk(applyBid(state, 'alice', 10, 'alice thinking', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 20, 'bob thinking', NOW));
+    const [resolved] = unwrapOk(resolveWinner(s2, NOW));
+    expect(resolved.speaker_type).toBe('cold_start');
+    const quotaBefore = resolved.agents.bob.quota_remaining;
+    const timeout = unwrapOk(applySpeechTimeout(resolved, NOW));
+    expect(timeout.agents.bob.quota_remaining).toBe(quotaBefore - 1);
+  });
+
+  it('should not decrement fallback speaker quota on speech', () => {
+    const state = startSession();
+    const withFallback = {
+      ...state,
+      agents: {
+        ...state.agents,
+        alice: { ...state.agents.alice, quota_remaining: 0, fallback_used: false },
+      },
+    };
+    const s1 = unwrapOk(applyBid(withFallback, 'alice', 80, 'alice thinking', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 20, 'bob thinking', NOW));
+    const [resolved] = unwrapOk(resolveWinner(s2, NOW));
+    expect(resolved.speaker_type).toBe('fallback');
+    const afterSpeech = unwrapOk(applySpeech(resolved, 'alice', 'fallback speech', NOW));
+    expect(afterSpeech.agents.alice.quota_remaining).toBe(0);
+    expect(afterSpeech.agents.alice.total_speaks).toBe(1);
+  });
+
+  it('should not decrement fallback speaker quota on timeout', () => {
     const state = startSession();
     const withFallback = {
       ...state,

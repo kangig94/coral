@@ -440,7 +440,7 @@ export function applySpeech(
     speaker: name,
     content,
     now,
-    decrementQuota: state.speaker_type === 'quota',
+    decrementQuota: state.speaker_type !== 'fallback',
     recordLastSpeechStep: state.step,
   });
   return { ok: true, value: speechState };
@@ -510,7 +510,7 @@ export function applySpeechTimeout(
       speaker: winner,
       content: timeoutMsg,
       now,
-      decrementQuota: state.speaker_type === 'quota',
+      decrementQuota: state.speaker_type !== 'fallback',
     }),
   };
 }
