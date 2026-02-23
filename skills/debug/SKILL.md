@@ -4,6 +4,10 @@ description: "Systematic bug diagnosis, planning, and fix execution."
 argument-hint: "[--codex] <bug description or error message>"
 ---
 
+```!
+mkdir -p "${CLAUDE_PROJECT_DIR:-.}/.claude/coral/tmp" && touch "${CLAUDE_PROJECT_DIR:-.}/.claude/coral/tmp/kb-active"
+```
+
 # Bug Debugging
 
 Diagnose bugs, plan fixes, and execute - end-to-end.

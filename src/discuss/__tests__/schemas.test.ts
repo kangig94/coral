@@ -24,7 +24,7 @@ describe('sessionIdPattern', () => {
 
 describe('discussAgentOpSchema', () => {
   it('should parse bid op', () => {
-    const result = discussAgentOpSchema.parse({ op: 'bid', session, agent_name: 'architect', score: 75 });
+    const result = discussAgentOpSchema.parse({ op: 'bid', session, agent_name: 'architect', score: 75, thought: 'I want to address the scalability concern.' });
     expect(result.op).toBe('bid');
   });
 
@@ -33,9 +33,32 @@ describe('discussAgentOpSchema', () => {
     expect(result.op).toBe('speak');
   });
 
+  it('should reject bid without thought', () => {
+    expect(() => discussAgentOpSchema.parse({ op: 'bid', session, agent_name: 'a', score: 75 })).toThrow();
+  });
+
+  it('should reject bid with empty thought', () => {
+    expect(() => discussAgentOpSchema.parse({ op: 'bid', session, agent_name: 'a', score: 75, thought: '' })).toThrow();
+  });
+
   it('should reject invalid bid scores', () => {
-    expect(() => discussAgentOpSchema.parse({ op: 'bid', session, agent_name: 'a', score: -1 })).toThrow();
-    expect(() => discussAgentOpSchema.parse({ op: 'bid', session, agent_name: 'a', score: 101 })).toThrow();
+    expect(() => discussAgentOpSchema.parse({ op: 'bid', session, agent_name: 'a', score: -1, thought: 'x' })).toThrow();
+    expect(() => discussAgentOpSchema.parse({ op: 'bid', session, agent_name: 'a', score: 101, thought: 'x' })).toThrow();
+  });
+
+  it('should accept whitespace-only thought (min(1) allows spaces)', () => {
+    expect(() => discussAgentOpSchema.parse({ op: 'bid', session, agent_name: 'a', score: 75, thought: ' ' })).not.toThrow();
+    expect(() => discussAgentOpSchema.parse({ op: 'bid', session, agent_name: 'a', score: 75, thought: '\t' })).not.toThrow();
+  });
+
+  it('should reject non-string thought values', () => {
+    expect(() => discussAgentOpSchema.parse({ op: 'bid', session, agent_name: 'a', score: 75, thought: 42 } as never)).toThrow();
+    expect(() => discussAgentOpSchema.parse({ op: 'bid', session, agent_name: 'a', score: 75, thought: null } as never)).toThrow();
+    expect(() => discussAgentOpSchema.parse({ op: 'bid', session, agent_name: 'a', score: 75, thought: true } as never)).toThrow();
+  });
+
+  it('should reject extra fields on bid payload (strict schema)', () => {
+    expect(() => discussAgentOpSchema.parse({ op: 'bid', session, agent_name: 'a', score: 75, thought: 'valid', extra: 'x' } as never)).toThrow();
   });
 
   it('should reject empty speak content', () => {

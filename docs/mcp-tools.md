@@ -185,7 +185,7 @@ Agent-facing MCP tool for participant actions only:
 
 | Operation | Input |
 |---|---|
-| `bid` | `session`, `agent_name`, `score` (0-100) |
+| `bid` | `session`, `agent_name`, `score` (0-100), `thought` (required) |
 | `speak` | `session`, `agent_name`, `content` |
 
 `bid` returns one of:

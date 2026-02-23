@@ -70,19 +70,21 @@ function renderBidRows(
   agents: Record<string, AgentState>,
   effectiveBids?: Record<string, number>,
 ): string {
+  const hasEffectiveBids = effectiveBids !== undefined;
+  const effectiveBidMap = effectiveBids ?? {};
   const rows = Object.entries(bids)
-    .sort(([lhsName, lhsRaw], [rhsName, rhsRaw]) =>
-      effectiveBids
-        ? (effectiveBids[rhsName] ?? rhsRaw) - (effectiveBids[lhsName] ?? lhsRaw)
-        : rhsRaw - lhsRaw,
-    )
+    .sort(([lhsName, lhsRaw], [rhsName, rhsRaw]) => {
+      const lhs = (effectiveBids?.[lhsName] ?? lhsRaw);
+      const rhs = (effectiveBids?.[rhsName] ?? rhsRaw);
+      return rhs - lhs;
+    })
     .map(([name, score]) => {
       const displayName = agents[name]?.display_name ?? name;
       const quota = agents[name]?.quota_remaining ?? '?';
-      if (!effectiveBids) {
+      if (!hasEffectiveBids) {
         return `| ${displayName} (${name}) | ${score} | ${quota} |`;
       }
-      const effective = effectiveBids[name] ?? score;
+      const effective = effectiveBidMap[name] ?? score;
       const effectiveText = Number.isInteger(effective) ? String(effective) : effective.toFixed(1);
       return `| ${displayName} (${name}) | ${score} | ${effectiveText} | ${quota} |`;
     });
@@ -142,12 +144,10 @@ export function renderHeader(topic: string): string {
  */
 export function formatFull(entries: TranscriptEntry[], agents: Record<string, AgentState>): string {
   const agentView = entries.map((entry) => {
-    if (entry.type === 'bids') {
-      if (!entry.winner) return '';
-      const winnerDisplayName = agents[entry.winner]?.display_name ?? entry.winner;
-      return `\n> **Speaker: ${winnerDisplayName}**\n`;
-    }
-    return renderEntry(entry, agents);
+    if (entry.type !== 'bids') return renderEntry(entry, agents);
+    if (!entry.winner) return '';
+    const winnerDisplayName = agents[entry.winner]?.display_name ?? entry.winner;
+    return `\n> **Speaker: ${winnerDisplayName}**\n`;
   }).join('');
   return renderHeader('') + agentView;
 }

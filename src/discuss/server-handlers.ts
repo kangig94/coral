@@ -105,6 +105,7 @@ export const tools = [
         session: { type: 'string', description: 'Session ID' },
         agent_name: { type: 'string', description: 'Agent name' },
         score: { type: 'number', minimum: 0, maximum: 100 },
+        thought: { type: 'string', description: 'Current thinking when bidding — required for bid op (Zod enforced)' },
         content: { type: 'string', description: 'Speech content (speak)' },
       },
       required: ['op', 'session', 'agent_name'],
@@ -192,6 +193,29 @@ async function handleBid(
   const sessionDir = resolveSession(store, input.session);
   if (typeof sessionDir !== 'string') return sessionDir;
   const statePath = store.statePath(sessionDir);
+  const bidFinalResult = (state: DiscussState, resolved: string): McpResult => {
+    const agentState = state.agents[resolved];
+    if (agentState?.banned) {
+      return jsonResult({ action: 'session_ended', reason: 'banned' });
+    }
+    if (state.status === 'ended') {
+      return jsonResult({ action: 'session_ended', reason: 'already_ended', content: state.end_reason_content });
+    }
+    if (isWinner(resolved)(state)) {
+      return jsonResult({ action: 'speak', transcript: formatFull(state.transcript, state.agents) });
+    }
+    const last = state.transcript.at(-1);
+    if (!last) {
+      return jsonResult({ action: 'session_ended' });
+    }
+    if (last.type === 'speech') {
+      return jsonResult({ action: 'listen', speaker: last.agent, content: last.content });
+    }
+    if (last.type === 'epoch_summary') {
+      return jsonResult({ action: 'listen', speaker: 'moderator', content: last.summary });
+    }
+    return jsonResult({ action: 'session_ended' });
+  };
 
   type BidPre =
     | { kind: 'banned'; state: DiscussState; resolved: string }
@@ -199,7 +223,7 @@ async function handleBid(
     | { kind: 'setup' }
     | { kind: 'speaking' }
     | { kind: 'bidding'; resolved: string };
-  type BidRecordResult = Result<{ state: DiscussState; step: number }>;
+  type BidRecordResult = Result<{ step: number }>;
 
   const waitForSetupComplete = async () => waitForCondition(statePath, setupComplete, INFINITE_POLL);
 
@@ -262,12 +286,12 @@ async function handleBid(
           if (state.status !== 'bidding') {
             return { ok: false, error: 'not_bidding', detail: { current: state.status } };
           }
-          const result = applyBid(state, resolved, input.score, nowIsoString());
+          const result = applyBid(state, resolved, input.score, input.thought, nowIsoString());
           if (!result.ok) {
             return { ok: false, error: result.error, detail: result.detail };
           }
           store.save(sessionDir, result.value);
-          return { ok: true, value: { state: result.value, step: result.value.step } };
+          return { ok: true, value: { step: result.value.step } };
         });
 
         if (!bidStepResult.ok) {
@@ -288,35 +312,7 @@ async function handleBid(
         }
 
         const finalState = await loadState(store, sessionDir);
-
-        const finalAgentState = finalState.agents[resolved];
-        if (finalAgentState?.banned) {
-          return jsonResult({ action: 'session_ended', reason: 'banned' });
-        }
-
-        if (finalState.status === 'ended') {
-          return jsonResult({ action: 'session_ended', reason: 'already_ended', content: finalState.end_reason_content });
-        }
-
-        if (isWinner(resolved)(finalState)) {
-          return jsonResult({
-            action: 'speak',
-            transcript: formatFull(finalState.transcript, finalState.agents),
-          });
-        }
-
-        const last = finalState.transcript[finalState.transcript.length - 1];
-        if (!last) {
-          return jsonResult({ action: 'session_ended' });
-        }
-
-        if (last.type === 'speech') {
-          return jsonResult({ action: 'listen', speaker: last.agent, content: last.content });
-        }
-        if (last.type === 'epoch_summary') {
-          return jsonResult({ action: 'listen', speaker: 'moderator', content: last.summary });
-        }
-        return jsonResult({ action: 'session_ended' });
+        return bidFinalResult(finalState, resolved);
       }
     }
   }
@@ -328,15 +324,16 @@ async function handleSpeak(
 ): Promise<McpResult> {
   const sessionDir = resolveSession(store, input.session);
   if (typeof sessionDir !== 'string') return sessionDir;
-
-  const applied = await store.withLock(sessionDir, async () => {
+  const applied = await store.withLock<Result<{ status: string; step: number }>>(sessionDir, async () => {
     const state = store.load(sessionDir);
     const resolved = resolveAgentName(state.agents, input.agent_name);
     if (!resolved) {
-      return { ok: false, error: 'agent_not_found', detail: { agent_name: input.agent_name } } as Result<never>;
+      return { ok: false, error: 'agent_not_found', detail: { agent_name: input.agent_name } };
     }
     const result = applySpeech(state, resolved, input.content, nowIsoString());
-    if (!result.ok) return result as Result<never>;
+    if (!result.ok) {
+      return { ok: false, error: result.error, detail: result.detail };
+    }
     store.save(sessionDir, result.value);
     return {
       ok: true,
@@ -344,7 +341,7 @@ async function handleSpeak(
         status: result.value.status,
         step: result.value.step,
       },
-    } as Result<{ status: string; step: number }>;
+    };
   });
 
   return resultToMcp(applied);

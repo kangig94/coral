@@ -6,6 +6,11 @@ export const sessionIdPattern = /^[0-9]{6}-[0-9]{4}-[a-z0-9]{4}$/;
 const nonEmptyString = z.string().min(1);
 const agentNameField = z.string().regex(identPattern);
 const sessionIdField = z.string().regex(sessionIdPattern);
+const axesShape = z.object({
+  axis: nonEmptyString,
+  positions: z.array(nonEmptyString).min(1).max(10)
+    .refine((positions) => hasUniqueItems(positions), 'Positions within an axis must be unique'),
+});
 
 function hasUniqueItems<T>(values: readonly T[]): boolean {
   return new Set(values).size === values.length;
@@ -16,6 +21,7 @@ const bidShape = z.object({
   session: sessionIdField,
   agent_name: agentNameField,
   score: z.number().int().min(0).max(100),
+  thought: z.string().min(1),
 }).strict();
 
 const speakShape = z.object({
@@ -35,11 +41,7 @@ export const discussAgentOpSchema = z.discriminatedUnion('op', [bidShape, speakS
 
 const seedShape = z.object({
   op: z.literal('_1_seed'),
-  controversy_axes: z.array(z.object({
-    axis: nonEmptyString,
-    positions: z.array(nonEmptyString).min(1).max(10)
-      .refine((positions) => hasUniqueItems(positions), 'Positions within an axis must be unique'),
-  })).min(1).max(10)
+  controversy_axes: z.array(axesShape).min(1).max(10)
     .refine((axes) => hasUniqueItems(axes.map((axis) => axis.axis)), 'Axis names must be unique'),
   demographics: demographicsShape.optional(),
   n: z.number().int().min(1).max(8),

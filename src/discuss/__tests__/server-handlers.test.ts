@@ -71,12 +71,12 @@ function parseResult(result: McpResult): Record<string, unknown> {
 function startBidRound(sid: string, aliceScore = 80, bobScore = 50) {
   const aliceBid = handleToolCall(
     'discuss',
-    { op: 'bid', session: sid, agent_name: 'alice', score: aliceScore },
+    { op: 'bid', session: sid, agent_name: 'alice', score: aliceScore, thought: 'alice thinking' },
     store,
   );
   const bobBid = handleToolCall(
     'discuss',
-    { op: 'bid', session: sid, agent_name: 'bob', score: bobScore },
+    { op: 'bid', session: sid, agent_name: 'bob', score: bobScore, thought: 'bob thinking' },
     store,
   );
   const step = handleToolCall('discuss_lead', { op: '_3_step', session: sid, timeout_seconds: sec(5) }, store);
@@ -155,7 +155,7 @@ describe('discuss tool: bid / speak', () => {
   });
 
   it('should reject bid for unknown session', async () => {
-    const result = await handleToolCall('discuss', { op: 'bid', session: 'bad-session', agent_name: 'alice', score: 75 }, store);
+    const result = await handleToolCall('discuss', { op: 'bid', session: 'bad-session', agent_name: 'alice', score: 75, thought: 'thinking' }, store);
     expect(result.isError).toBe(true);
   });
 

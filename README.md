@@ -32,6 +32,8 @@ points, and dependencies. No files written, no configuration required.
 
 ### Structure my project
 
+https://github.com/user-attachments/assets/881f1a14-9f4f-4d3d-8023-59610eb13ac4
+
 ```
 /coral:init-project
 ```
