@@ -160,7 +160,7 @@ argument-hint: "[existing|new]"
      Task(subagent_type="coral:critic", prompt="Review plan: {plan_file_path}. Working dir: {project root}. ...")
      ```
   4. Synthesize feedback (Adopt/Adapt/Defer/Diverge per planner.md)
-  5. Update plan file, repeat review until no CRITICAL/HIGH (max 5 rounds)
+  5. If CRITICAL/HIGH findings were addressed, update plan file and go back to step 3 for another review round. Max 5 rounds.
 
   **Evidence gate**: Phase 2 is complete ONLY when a plan file exists at `.claude/coral/plans/init-*.md`.
   If no file exists on disk, Phase 2 did not execute correctly.
