@@ -84,11 +84,11 @@ Use Claude's native tools (Read, Grep, Glob, LSP) for direct analysis. Read-only
 
 ### init-project (Project Initialization Orchestrator)
 
-`agents/init-project.md` - opus
+`skills/init-project/SKILL.md` - opus (skill-only, no agent file)
 
-**Role**: Orchestrates project initialization through a 4-phase pipeline: scan (detect stack, identify domains) → plan (spawn planner for verified artifact planning) → execute (spawn ralph for file generation) → report. Keeps deterministic generation rules (merge policy, globs detection, directory creation) and passes them to ralph.
+**Role**: Orchestrates project initialization: analyze → plan → execute → verify → report. For existing projects, spawns an analysis subagent (cumulative pipeline) that produces a reusable analysis document. Keeps deterministic generation rules (merge policy, globs detection, directory creation) and passes them to ralph.
 
-> Note: init-project does NOT have `disallowedTools` because it needs to read files during the scan phase and may write intermediate results.
+> Note: init-project has no agent file — it is a skill-only protocol. It must run at depth 0 (to spawn subagents at depth 1), so it cannot be spawned as a subagent itself.
 
 ---
 

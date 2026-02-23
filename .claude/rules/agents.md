@@ -42,3 +42,19 @@ Examples:
 ```
 
 Provide file paths and specific concerns. Consult agents early (before implementation) for guidance and late (after implementation) for validation.
+
+## Design Principles
+
+### Fresh Context for Verification
+
+When verifying work output, spawn a dedicated subagent instead of self-verifying.
+
+**Why**: The producing agent accumulates context bias through planning, decision-making, and execution — it is predisposed to confirm its own output. A fresh subagent has no prior commitment to the result.
+
+**Pattern**:
+- Producer agent generates output (files, plans, code)
+- Verifier subagent receives only: inputs (requirements, analysis) + outputs (generated files)
+- Verifier has a single goal: do the outputs satisfy the inputs?
+- One goal, clean context, higher accuracy
+
+**Anti-pattern**: Agent generates artifacts → same agent "spot-checks" its own work → confirmation bias → defects pass through.
