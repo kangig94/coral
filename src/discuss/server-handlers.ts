@@ -291,7 +291,7 @@ async function handleBid(
             return { ok: false, error: result.error, detail: result.detail };
           }
           store.save(sessionDir, result.value);
-          return { ok: true, value: { state: result.value, step: result.value.step } };
+          return { ok: true, value: { step: result.value.step } };
         });
 
         if (!bidStepResult.ok) {
