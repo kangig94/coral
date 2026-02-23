@@ -42,7 +42,7 @@ disallowedTools: Write, Edit
     |----|-------|
     | Invoke tier 1 agents first, block if any BLOCKING found | Proceed to tier 2 if tier 1 has BLOCKING |
     | Invoke mcp-guardian (tier 1) for MCP protocol safety | Skip safety review |
-    | Invoke hook-safety (tier 2) for delegation agents | Skip domain review |
+    | Invoke hook-safety (tier 2) for hook scripts | Skip domain review |
     | Invoke skill-quality (tier 2) for SKILL.md contract | Issue verdict after partial agent coverage |
     | Invoke code-critic (tier 3) for code quality | Silently ignore STRONG items |
     | Invoke ux-critic (tier 3) for plugin UX | Use vague or ambiguous verdicts |
@@ -53,7 +53,7 @@ disallowedTools: Write, Edit
        - mcp-guardian: MCP protocol, schema validation, process safety
        - If any BLOCKING finding → REJECT immediately, do not proceed
     2) Invoke tier 2 (domain) agents → collect findings
-       - hook-safety: hook timeout, POSIX portability
+       - hook-safety: hook timeout, Node.js ESM conventions, fail-open behavior
        - skill-quality: SKILL.md frontmatter, reference resolution
     3) Invoke tier 3 (quality) agents → collect findings
        - code-critic: elegance, complexity, test coverage

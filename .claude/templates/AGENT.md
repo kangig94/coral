@@ -86,6 +86,14 @@ model: <opus|sonnet>
 |-------|----------|-------------|
 | `name` | yes | kebab-case agent name |
 | `description` | yes | One-line with "Use when... NOT for..." |
-| `model` | yes | `opus` (deep reasoning) or `sonnet` (protocol execution) |
-| `disallowedTools` | no | `Write, Edit` for read-only agents (review agents in `.claude/agents/`) |
-| `tools` | no | Restrict to specific MCP tools (codex-proxy) |
+| `model` | yes | `opus` (tier 0-1, deep reasoning) or `sonnet` (tier 2-3, protocol execution) |
+| `disallowedTools` | review agents | `Write, Edit` for read-only agents (all agents in `.claude/agents/`) |
+| `tools` | no | Restrict to specific MCP tools (used by codex-proxy) |
+
+### Model Assignment Rule
+
+- Tier 0 (supervisor): opus
+- Tier 1 (safety-critical): opus
+- Tier 2 (domain experts): sonnet
+- Tier 3 (quality): sonnet
+- Never use haiku for any review or execution agent

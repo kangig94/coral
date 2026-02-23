@@ -6,25 +6,32 @@ Environment variables, config files, and the plugin manifest.
 
 | Variable | Default | Description |
 |---|---|---|
-| `CORAL_CODEX_MODEL` | `gpt-5.3-codex` | Default Codex model |
-| `CORAL_DISCUSS_BID_THRESHOLD` | `30` | Minimum bid score (1–100) for discuss floor eligibility |
-| `CORAL_DISCUSS_TTL_DAYS` | `30` | Days before completed discuss sessions are auto-pruned |
+| `CORAL_CODEX_MODEL` | `gpt-5.3-codex` | Default Codex model for new sessions |
+| `CORAL_DISCUSS_BID_THRESHOLD` | `30` | Minimum bid score (1–100) for floor eligibility. Stored per-session at creation time. |
+| `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Maximum epochs before discussion ends automatically (1–10). Stored per-session at creation time. |
+| `CORAL_DISCUSS_QUOTA_PER_EPOCH` | `3` | Speaking turns per agent per epoch (1–10). Stored per-session at creation time. |
+| `CORAL_DISCUSS_TTL_DAYS` | `30` | Days before completed discuss sessions are eligible for pruning |
 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(unset)_ | Required for `/coral:discuss`. Set to `1`. |
 
 ### Usage - Shell
 
 ```bash
 export CORAL_CODEX_MODEL=gpt-5.3-codex
+export CORAL_DISCUSS_BID_THRESHOLD=50
+export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
 ```
 
 ### Usage - .claude/settings.json
 
-Alternatively, set environment variables in `.claude/settings.json` (project-level or global). This persists across sessions without shell exports.
+Set environment variables in `.claude/settings.json` (project-level or global). This persists across sessions without shell exports.
 
 ```json
 {
   "env": {
-    "CORAL_CODEX_MODEL": "gpt-5.3-codex"
+    "CORAL_CODEX_MODEL": "gpt-5.3-codex",
+    "CORAL_DISCUSS_BID_THRESHOLD": "50",
+    "CORAL_DISCUSS_MAX_EPOCHS": "3",
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   }
 }
 ```
@@ -42,29 +49,46 @@ Metadata for Claude Code to recognize the plugin.
 | `description` | Plugin description |
 | `author` | Author info |
 
-Version is managed in `package.json` (single source of truth) and synced to `plugin.json` and `marketplace.json` automatically during build.
+Version is managed in `package.json` (single source of truth) and synced to `plugin.json` and `marketplace.json` automatically during `npm run build`. Never edit the version in `plugin.json` directly.
 
 ### .mcp.json - MCP Server Registration
 
-Registers both MCP servers with Claude Code.
-
-### .claude/coral/sessions/<project-hash>/<session-name>.json - Session Files
-
-Runtime-managed per-session storage files.
-
-**Location**: `~/.claude/coral/sessions/<project-hash>/<session-name>.json`
-**Project hash**: `sha256(resolve(workingDirectory)).slice(0, 12)`
-**Creation**: Auto-created by `SessionManager` (including project hash directory)
-**Updates**: Written to disk immediately on session register, use, or delete (atomic write via `*.tmp` + rename)
+Registers both MCP servers with Claude Code. `cx` runs `bridge/coral-codex.cjs` and `dc` runs `bridge/coral-discuss.cjs` via Node.js stdio transport.
 
 ### hooks/hooks.json - Hook Configuration
 
-Two hooks are configured:
-
-- **SessionStart**: Injects CLAUDE.md content into Claude's context at session start
-- **SubagentStart**: Detects `codex-*` agents (bare or namespaced) and injects delegation instructions
+Configures all 7 hooks: SessionStart (CLAUDE.md injection), SubagentStart (codex agent detection), PostToolUseFailure (KB lookup reminder), PreToolUse (memo reminder), Stop (KB promotion gate), PreCompact (memo promotion reminder), TeammateIdle (discuss idle guard).
 
 See [Hooks documentation](./hooks.md) for details.
+
+### Codex Session Files
+
+**Location**: `~/.claude/coral/sessions/<project-hash>/<session-name>.json`
+
+**Project hash**: `sha256(resolve(workingDirectory)).slice(0, 12)` — isolates sessions per project
+
+**Creation**: Auto-created by `SessionManager` when a new session starts
+
+**Format**: Single `SessionEntry` JSON object per file
+
+**Updates**: Written atomically (`.tmp` + rename) on session create, use, or delete
+
+**Corruption handling**: Invalid JSON files are skipped with a warning; other sessions load normally
+
+### Discuss Session Directories
+
+**Location**: `{project}/.claude/coral/discuss/{session_dir}/`
+
+**Session ID format**: `yymmdd-HHmm-xxxx` (compact timestamp + 4-char random suffix)
+
+**Directory name**: `{session_id}-{topic_slug}` (slug preserves CJK characters, truncated to 40 chars)
+
+**Concurrency**: Cross-process `mkdir`-based lock (`state.lock/`) serializes all state mutations
+
+**Contents**:
+- `state.json` — full discussion state (atomic writes via `.tmp` + rename)
+- `state.lock/` — transient lock directory (created/removed per mutation)
+- `transcript.md` — human-readable incremental append log
 
 ## Dependencies
 
@@ -88,27 +112,24 @@ See [Hooks documentation](./hooks.md) for details.
 
 | Tool | Purpose | Installation |
 |---|---|---|
-| Codex CLI v0.101+ | OpenAI model execution | `npm install -g @openai/codex` |
+| Codex CLI v0.104+ | OpenAI model execution | `npm install -g @openai/codex` |
 | Node.js 18+ | Runtime | nvm, etc. |
-
-### {project}/.claude/coral/discuss/ - Discuss Session Storage
-
-Runtime-managed discuss session directories. Created by the `dc` MCP server.
-
-**Location**: `{project}/.claude/coral/discuss/{session_dir}/`
-**Session ID format**: `yymmdd-HHmm-xxxx` (compact timestamp + 4-char random suffix)
-**Directory name**: `{session_id}-{topic_slug}` (slug preserves CJK characters)
-**Concurrency**: Cross-process `mkdir`-based lock (`state.lock/`) serializes state mutations
 
 ## File Role Summary
 
 ```
 .claude-plugin/plugin.json  -> Claude Code recognizes the plugin
 .mcp.json                   -> Claude Code registers/starts both MCP servers (cx + dc)
-hooks/hooks.json            -> Claude Code configures SessionStart + SubagentStart hooks
-hooks/detect-codex-agent.sh -> Detection script executed by the hook
-.claude/coral/sessions/<project-hash>/*.json -> Runtime Codex session files (auto-created)
-.claude/coral/discuss/<session-dir>/         -> Runtime discuss session dirs (auto-created)
-bridge/coral-codex.cjs     -> Codex MCP server executable (committed)
-bridge/coral-discuss.cjs   -> Discuss MCP server executable (committed)
+hooks/hooks.json            -> Claude Code configures all 7 hooks
+hooks/detect-codex-agent.mjs  -> SubagentStart detection script
+hooks/kb-lookup-reminder.mjs  -> PostToolUseFailure KB hint script
+hooks/kb-memo-reminder.mjs    -> PreToolUse memo reminder script
+hooks/kb-promote-reminder.mjs -> Stop/PreCompact promotion script
+hooks/discuss-idle-guard.mjs  -> TeammateIdle bid/speak enforcer
+
+~/.claude/coral/sessions/<project-hash>/*.json  -> Runtime Codex session files (auto-created)
+{project}/.claude/coral/discuss/<session-dir>/  -> Runtime discuss session dirs (auto-created)
+
+bridge/coral-codex.cjs   -> Codex MCP server bundle (committed)
+bridge/coral-discuss.cjs -> Discuss MCP server bundle (committed)
 ```

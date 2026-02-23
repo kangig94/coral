@@ -1,13 +1,13 @@
 # Coral - Development Instructions
 
-Claude Code plugin providing structured agents with Codex CLI bridge and moderated multi-agent discussions. Exposes two MCP servers: `cx` for Codex CLI tools (`codex_session_*`) and `dc` for discuss tools (`discuss_*`). Includes skills (slash commands), hooks (SubagentStart delegation), and agent definitions for Claude-native, Codex-delegated, and discuss workflows.
+Claude Code plugin providing structured agents with Codex CLI bridge and moderated multi-agent discussions. Exposes two MCP servers: `cx` for Codex CLI tools and `dc` for discuss tools. Includes skills (slash commands), hooks (lifecycle injection), and agent definitions for Claude-native, Codex-delegated, and discuss workflows.
 
 **Critical Requirements**:
 - MCP protocol compliance: all tool responses must use `{ content: [{ type: "text", text }], isError }` format
 - Zod schema validation on every tool input before execution
 - Never use `console.log` in MCP server code (stdio transport conflict)
 - Atomic file writes for session persistence (write to `.tmp`, then rename)
-- Hook scripts must be POSIX-portable (no bash-specific syntax, no `grep -P`)
+- Hook scripts must work as Node.js ESM (`.mjs`), read stdin, fail-open on errors
 - SKILL.md frontmatter must match plugin.json tool/agent declarations
 - **NEVER change version** (package.json) without explicit user request
 
@@ -20,6 +20,7 @@ Claude Code plugin providing structured agents with Codex CLI bridge and moderat
 - `docs/skills.md` - Slash command usage
 - `docs/build-system.md` - Build pipeline (tsc + esbuild)
 - `docs/configuration.md` - Config and environment variables
+- `docs/discuss.md` - Discuss system design
 
 **Build Commands**:
 ```bash
@@ -29,9 +30,11 @@ npm run dev          # tsc --watch
 ```
 
 **Version Upgrade**:
-Update `version` in `package.json` and run `npm run build`. The build script automatically syncs the version to `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`, and injects `__VERSION__` into the bundle. `package.json` is the single source of truth - no other files need manual version updates.
+Update `version` in `package.json` and run `npm run build`. The build script automatically syncs the version to `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`, and injects `__VERSION__` into the bundle. `package.json` is the single source of truth.
 
 Rules in `.claude/rules/` are auto-loaded. Domain-specific rules activate based on file paths being edited via `paths:` frontmatter.
+
+Good code guides readers naturally — structure reveals intent without requiring explanation.
 
 ## Workflow
 

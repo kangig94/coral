@@ -37,8 +37,8 @@ PR procedure (dev → main):
 - **Types/Interfaces**: PascalCase (`SessionEntry`, `CodexExecResult`)
 - **Functions**: camelCase (`parseCodexJsonl`, `detectCodexCli`)
 - **Constants**: UPPER_SNAKE for true constants (`MAX_BUFFER`, `DEFAULT_TIMEOUT`), camelCase for derived values
-- **Zod schemas**: camelCase with `Schema` suffix (`codexSessionCreateSchema`)
-- **MCP tool names**: unified MCP tool name (`codex`) plus required `op` field for command selection
+- **Zod schemas**: camelCase with `Schema` suffix (`codexOpSchema`, `discussLeadOpSchema`)
+- **MCP tool names**: unified MCP tool name (`codex`, `discuss`, `discuss_lead`) plus required `op` field for command selection
 - **Agent files**: kebab-case markdown (`mcp-guardian.md`)
 - **Skill directories**: kebab-case (`codex-ralph/`)
 
@@ -54,10 +54,10 @@ PR procedure (dev → main):
 ## Testing
 
 - Framework: vitest
-- Test files: `src/codex/__tests__/<module>.test.ts`
+- Test files: `src/codex/__tests__/<module>.test.ts` and `src/discuss/__tests__/<module>.test.ts`
 - One test file per source module
 - Test naming: `describe('<module>')` with `it('should <behavior>')`
-- Mock external dependencies (Codex CLI, filesystem) -- never call real Codex in tests
+- Mock external dependencies (Codex CLI, filesystem) — never call real Codex in tests
 
 ## Error Handling
 

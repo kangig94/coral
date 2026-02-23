@@ -5,7 +5,7 @@ Coral exposes two MCP servers, each with its own tool set:
 - **`cx` (Codex)**: 1 tool for Codex CLI session management. Prefix: `mcp__plugin_coral_cx__`
 - **`dc` (Discuss)**: 2 tools for moderated multi-agent discussions. Prefix: `mcp__plugin_coral_dc__`
 
-All tool inputs are validated at runtime with zod schemas (`src/codex/schemas.ts`, `src/discuss/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
+All tool inputs are validated at runtime with Zod schemas (`src/codex/schemas.ts`, `src/discuss/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
 
 ---
 
@@ -21,6 +21,8 @@ Single entry point for all Codex execution. Use the required `op` discriminator.
 |---|---|---|---|
 | `op` | string | Yes | One of: `exec`, `list`, `fork`, `abort` |
 
+---
+
 ### op: exec
 
 Create a new Codex session when `session` is omitted (calls `executeOneShot()`) or resume an existing session when `session` is present (calls `executeResume()`).
@@ -29,6 +31,7 @@ Create a new Codex session when `session` is omitted (calls `executeOneShot()`) 
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
+| `session` | string | No | Session identifier (name or thread ID). Omit to start a new session. |
 | `name` | string | No | Session name (auto-generated as `session-{timestamp}` if omitted) |
 | `prompt` | string | Yes | Prompt to send to Codex (min 1 char) |
 | `model` | string | No | Model to use (default: `gpt-5.3-codex`, configurable via `CORAL_CODEX_MODEL`) |
@@ -68,43 +71,13 @@ During foreground execution, `[Codex]` prefixed progress messages are sent via `
 
 Progress is written to the JSONL file with a terminal `completed` or `error` event on finish.
 
----
-
-### op: exec
-
-Send a follow-up prompt to an existing session. Uses `codex exec resume` to continue the conversation.
-
-### Input Schema
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `session` | string | No | Session identifier (min 1 char). Omit to start a new session. |
-| `prompt` | string | Yes | Prompt to send (min 1 char). Required for both create and resume cases. |
-| `model` | string | No | Model to use |
-| `working_directory` | string | No | Working directory |
-| `reasoning_effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
-| `background` | boolean | No | Run in background (default: `false`) |
-| `bypass` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when the user explicitly requests bypass mode. |
-
-### Lookup Logic
+### Lookup Logic (resume path)
 
 1. `SessionManager.get(session)` - search by name first
-2. If name doesn't match, search by `sessionId`
+2. If name doesn't match, search by `codexThreadId`
 3. If not in registry, return error (`Session not found`). All sessions must be created via `codex({ op: "exec", ... })`.
 
-### Output (JSON)
-
-```json
-{
-  "response": "Codex follow-up response",
-  "session": "codex-session-uuid",
-  "session_name": "my-review",
-  "model": "gpt-5.3-codex",
-  "duration_ms": 2800
-}
-```
-
-`errors`/`warnings`/`exit_code` conditionally included. On success, the `lastUsedAt` timestamp is automatically updated.
+On success, the `lastUsedAt` timestamp is automatically updated.
 
 ---
 
@@ -175,6 +148,8 @@ Fork an existing session to continue the conversation in a new branch.
 
 `errors`/`warnings`/`exit_code` conditionally included. If `name` is not specified, the session exists only in Codex and is not registered in the Coral registry.
 
+---
+
 ### op: abort
 
 Abort an active execution.
@@ -215,11 +190,13 @@ Agent-facing MCP tool for participant actions only:
 
 `bid` returns one of:
 
-- `{ action: 'speak' }`
-- `{ action: 'listen'; speaker; content }` (includes epoch summaries with `speaker: null`)
-- `{ action: 'session_ended'; reason; content }`
+- `{ action: 'speak' }` - you won, deliver your speech
+- `{ action: 'listen'; speaker; content }` - another agent won (includes epoch summaries with `speaker: null`)
+- `{ action: 'session_ended'; reason; content }` - discussion is over
 
 `speak` records speech and returns the updated status/step on success.
+
+---
 
 ## discuss_lead (moderator tool)
 
@@ -235,20 +212,20 @@ Moderator-only MCP tool for control and lifecycle:
 | `_6_state` | `session` |
 | `_7_end` | `session`, optional `synthesis`, optional `force`, optional `reason` |
 
-`_3_step` is a mode-specific block:
+`_3_step` is a mode-specific blocking call:
 
-- setup: moves setup → bidding, returns `{ status: 'setup', phase: 'not_ready' }` if not ready.
-- bidding: runs hold/release cycle and returns one of:
-  - `{ status: 'bidding', phase: 'bidding', pending_bidders, hold_count }`
-  - `{ status: 'bidding', phase: 'resolved', winner }`
-  - `{ status: 'bidding', phase: 'epoch_transition', epoch }`
-- `{ status: 'bidding', phase: 'ended', reason }` (`all_below_threshold`, `max_epochs_reached`, `all_blocked`, `no_participants`)
-- `{ status: 'bidding', phase: 'expelled', agents, hint }`
-- speaking: waits for speech or auto process:
-  - `{ status: 'speaking', phase: 'speech_done', speaker, content }`
-  - `{ status: 'speaking', phase: 'speech_pending', elapsed }`
-  - `{ status: 'speaking', phase: 'speech_timeout', speaker }`
-  - `{ status: 'ended', phase: 'ended', reason }`
+- **setup**: moves setup → bidding under lock; returns `{ status: 'setup', phase: 'not_ready' }` if participants not yet registered.
+- **bidding**: waits for all bids (blocking via `waitForCondition(allBidsIn)`), then resolves winner under lock. Returns one of:
+  - `{ status: 'bidding', phase: 'bidding', pending_bidders, hold_count }` - still collecting bids
+  - `{ status: 'bidding', phase: 'resolved', winner }` - winner selected
+  - `{ status: 'bidding', phase: 'epoch_transition', epoch }` - auto-transitioned to new epoch
+  - `{ status: 'bidding', phase: 'ended', reason }` - discussion ended (`all_below_threshold`, `max_epochs_reached`, `all_blocked`, `no_participants`)
+  - `{ status: 'bidding', phase: 'expelled', agents, hint }` - agents expelled for timeout
+- **speaking**: waits for speech delivery (blocking via `waitForCondition(speechDelivered)`). Returns one of:
+  - `{ status: 'speaking', phase: 'speech_done', speaker, content }` - speech delivered
+  - `{ status: 'speaking', phase: 'speech_pending', elapsed }` - still waiting
+  - `{ status: 'speaking', phase: 'speech_timeout', speaker }` - speaker timed out
+  - `{ status: 'ended', phase: 'ended', reason }` - session ended during wait
 
 `_7_end` finalizes sessions. On already-ended sessions, it records a synthesis if provided and no-ops otherwise.
 
@@ -375,7 +352,7 @@ The coupling is through the **agent protocol layer**, not the MCP servers themse
 |-----------|------|
 | `discuss-lead.md` | Spawns `persona-generator` agents (via Task tool) and `discussant` teammates for discussions |
 | `agents/codex-*.md` | Codex-delegated agents that can be spawned independently or within discuss workflows |
-| `hooks/detect-codex-agent.sh` | SubagentStart hook detects `codex-` prefix in agent names, injects delegation instructions to call `codex({ op: "exec", ... })` |
+| `hooks/detect-codex-agent.mjs` | SubagentStart hook detects `codex-` prefix in agent names, injects delegation instructions to call `codex({ op: "exec", ... })` |
 
 The discuss system itself does **not** spawn codex-prefixed agents. The coupling only exists when a user or external workflow spawns a codex-delegated agent that happens to run within a discuss context.
 
@@ -392,5 +369,5 @@ These namespaces do not overlap. Collision risk is between discuss sessions only
 
 1. **dc never calls cx tools** - the discuss MCP server has no dependency on the codex MCP server
 2. **cx never reads dc state** - Codex sessions have no awareness of discuss sessions
-3. **Hook is the sole bridge** - `detect-codex-agent.sh` is the single point where a codex-delegated workflow and the Codex CLI connect
+3. **Hook is the sole bridge** - `detect-codex-agent.mjs` is the single point where a codex-delegated workflow and the Codex CLI connect
 4. **Modifying either server independently is safe** - as long as the hook contract (agent name prefix matching) is preserved
