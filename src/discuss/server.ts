@@ -21,13 +21,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   return handleToolCall(name, args ?? {}, store);
 });
 
-const shutdown = (): void => {
+const handleShutdown = (): void => {
   process.stderr.write('Coral Discuss MCP Server shutting down...\n');
   server.close().finally(() => process.exit(0));
 };
 
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
+process.on('SIGTERM', handleShutdown);
+process.on('SIGINT', handleShutdown);
 
 const transport = new StdioServerTransport();
 (async () => {

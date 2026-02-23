@@ -4,6 +4,13 @@ import { renderEntries, renderHeader } from './transcript.js';
 import { randomSuffix, formatDateId, topicSlug } from './state-machine.js';
 import type { DiscussState } from './types.js';
 
+function tryRemoveSync(targetPath: string): void {
+  try {
+    fs.rmSync(targetPath, { recursive: true, force: true });
+  } catch {
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -37,6 +44,12 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+function isStaleOwner(owner: { pid: number; startedAt: number } | null, staleThresholdMs: number): boolean {
+  if (!owner) return true;
+  if (!isProcessAlive(owner.pid)) return true;
+  return Date.now() - owner.startedAt > staleThresholdMs;
+}
+
 class SessionLock {
   async acquire<T>(sessionDir: string, fn: () => Promise<T>): Promise<T> {
     const lockDir = path.join(sessionDir, 'state.lock');
@@ -45,14 +58,8 @@ class SessionLock {
     const baseDelay = 50;
     const staleThresholdMs = 30_000;
     const clearLockFiles = (): void => {
-      try {
-        fs.unlinkSync(pidFile);
-      } catch {
-      }
-      try {
-        fs.rmdirSync(lockDir);
-      } catch {
-      }
+      tryRemoveSync(pidFile);
+      tryRemoveSync(lockDir);
     };
 
     for (let i = 0; i < maxRetries; i++) {
@@ -68,8 +75,7 @@ class SessionLock {
         const err = e as NodeJS.ErrnoException;
         if (err.code === 'EEXIST') {
           const owner = parseLockOwner(pidFile);
-          const isStale = !owner || !isProcessAlive(owner.pid)
-            || (Date.now() - owner.startedAt > staleThresholdMs);
+          const isStale = isStaleOwner(owner, staleThresholdMs);
           if (isStale) {
             clearLockFiles();
             continue;
@@ -114,10 +120,11 @@ export class SessionStore {
     if (!fs.existsSync(this.discussDir)) return null;
 
     const exactPath = path.join(this.discussDir, sessionId);
-    if (fs.existsSync(exactPath)) return exactPath;
+    if (fs.existsSync(exactPath)) {
+      return exactPath;
+    }
 
-    const entries = fs.readdirSync(this.discussDir);
-    const match = entries.find((e) => e.startsWith(`${sessionId}-`));
+    const match = fs.readdirSync(this.discussDir).find((entry) => entry.startsWith(`${sessionId}-`));
     return match ? path.join(this.discussDir, match) : null;
   }
 
@@ -150,7 +157,7 @@ export class SessionStore {
   }
 
   cleanupExpiredSessions(): number {
-    const ttlDays = parseInt(process.env.CORAL_DISCUSS_TTL_DAYS ?? '', 10);
+    const ttlDays = Number.parseInt(process.env.CORAL_DISCUSS_TTL_DAYS ?? '', 10);
     const ttl = Number.isFinite(ttlDays) && ttlDays > 0 ? ttlDays : 30;
     const cutoff = Date.now() - ttl * 24 * 60 * 60 * 1000;
     let removed = 0;

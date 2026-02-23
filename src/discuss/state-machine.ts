@@ -53,9 +53,12 @@ export function resolveAgentName(
 }
 
 function collectSubmittedBids(state: DiscussState): Record<string, number> {
-  const entries = Object.entries(state.current_bids)
-    .filter(([name, value]) => !state.agents[name]?.banned && typeof value === 'number')
-    .map(([name, value]) => [name, value] as [string, number]);
+  const entries: Array<[string, number]> = [];
+  for (const [name, value] of Object.entries(state.current_bids)) {
+    if (!state.agents[name]?.banned && typeof value === 'number') {
+      entries.push([name, value]);
+    }
+  }
   return Object.fromEntries(entries);
 }
 
@@ -77,12 +80,12 @@ export function computeEffectiveBids(
   if (N <= 1) return { ...allBids };
   const P_BASE = 100 / N;
   const P_RECENCY = 50 / N;
-  const avgSpeaks = names.reduce((s, n) => s + agents[n].total_speaks, 0) / N;
+  const averageSpeaks = names.reduce((sum, name) => sum + agents[name].total_speaks, 0) / N;
 
   const effective: Record<string, number> = {};
   for (const name of names) {
     const raw = allBids[name];
-    const imbalance = P_BASE * (avgSpeaks - agents[name].total_speaks);
+    const imbalance = P_BASE * (averageSpeaks - agents[name].total_speaks);
     const recency = name === lastSpeaker ? P_RECENCY : 0;
     effective[name] = raw + imbalance - recency;
   }
@@ -432,35 +435,60 @@ export function applySpeech(
     return { ok: false, error: 'not_your_turn', detail: { current_speaker: state.current_speaker } };
   }
 
-  const display_name = state.agents[name].display_name;
+  const speechState = buildSpeechState({
+    state,
+    speaker: name,
+    content,
+    now,
+    decrementQuota: state.speaker_type === 'quota',
+    recordLastSpeechStep: state.step,
+  });
+  return { ok: true, value: speechState };
+}
+
+function buildSpeechState({
+  state,
+  speaker,
+  content,
+  now,
+  decrementQuota,
+  recordLastSpeechStep,
+}: {
+  state: DiscussState;
+  speaker: string;
+  content: string;
+  now: string;
+  decrementQuota: boolean;
+  recordLastSpeechStep?: number;
+}): DiscussState {
+  const speakerState = state.agents[speaker];
+  const display_name = speakerState.display_name;
   const speechEntry: TranscriptEntry = {
     type: 'speech',
     step: state.step,
     epoch: state.epoch,
     ts: now,
-    agent: name,
+    agent: speaker,
     display_name,
     content,
   };
 
-  const updatedAgent = { ...state.agents[name] };
-  if (state.speaker_type === 'quota') {
-    updatedAgent.quota_remaining -= 1;
-  }
-  updatedAgent.total_speaks += 1;
+  const updatedAgent = {
+    ...speakerState,
+    quota_remaining: decrementQuota ? speakerState.quota_remaining - 1 : speakerState.quota_remaining,
+    total_speaks: speakerState.total_speaks + 1,
+  };
 
-  const newState = resetBids({
+  return resetBids({
     ...appendEntry(state, speechEntry, now),
-    agents: { ...state.agents, [name]: updatedAgent },
+    agents: { ...state.agents, [speaker]: updatedAgent },
     current_speaker: null,
     speaker_type: null,
     bid_release_step: state.step,
     step: state.step + 1,
     status: 'bidding',
-    last_speech_step: state.step,
+    ...(recordLastSpeechStep === undefined ? {} : { last_speech_step: recordLastSpeechStep }),
   });
-
-  return { ok: true, value: newState };
 }
 
 export function applySpeechTimeout(
@@ -475,34 +503,14 @@ export function applySpeechTimeout(
   const speaker = state.agents[winner];
   const display_name = speaker.display_name;
   const timeoutMsg = `${display_name} (${winner}) timed out without delivering a speech.`;
-
-  const speechEntry: TranscriptEntry = {
-    type: 'speech',
-    step: state.step,
-    epoch: state.epoch,
-    ts: now,
-    agent: winner,
-    display_name,
-    content: timeoutMsg,
-  };
-
-  const shouldDecrement = state.speaker_type === 'quota';
-  const updatedAgent = {
-    ...speaker,
-    quota_remaining: shouldDecrement ? speaker.quota_remaining - 1 : speaker.quota_remaining,
-    total_speaks: speaker.total_speaks + 1,
-  };
-
   return {
     ok: true,
-    value: resetBids({
-      ...appendEntry(state, speechEntry, now),
-      agents: { ...state.agents, [winner]: updatedAgent },
-      current_speaker: null,
-      speaker_type: null,
-      bid_release_step: state.step,
-      step: state.step + 1,
-      status: 'bidding',
+    value: buildSpeechState({
+      state,
+      speaker: winner,
+      content: timeoutMsg,
+      now,
+      decrementQuota: state.speaker_type === 'quota',
     }),
   };
 }
