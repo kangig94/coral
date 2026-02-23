@@ -27,18 +27,21 @@ try {
   if (!existsSync(memoDir)) process.exit(0);
 
   const memos = readdirSync(memoDir).filter(f => !f.startsWith('.'));
-  if (memos.length === 0) process.exit(0);
-
   const list = memos.join(', ');
+  const sessionKb = 'If you learned anything during this session that would be useful in future sessions, write it directly to .claude/coral/kb/.';
 
   if (event === 'Stop') {
     console.log(JSON.stringify({
       decision: 'block',
-      reason: `Not an error. Review each memo — promote to .claude/coral/kb/ only if useful across sessions. Delete all processed memos regardless of promotion. Memos: ${list}`,
+      reason: memos.length > 0
+        ? `Not an error. Review each memo — promote to .claude/coral/kb/ only if useful across sessions. Delete all processed memos regardless of promotion. Also, ${sessionKb} Memos: ${list}`
+        : `Not an error. No memos to process, but ${sessionKb}`,
     }));
   } else {
     console.log(JSON.stringify({
-      systemMessage: `KB promotion reminder: promote only if useful across sessions. Memos: ${list}`,
+      systemMessage: memos.length > 0
+        ? `KB promotion reminder: promote only if useful across sessions. Also, ${sessionKb} Memos: ${list}`
+        : `KB reminder: ${sessionKb}`,
     }));
   }
 } catch {

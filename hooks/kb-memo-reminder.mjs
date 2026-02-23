@@ -6,10 +6,12 @@
  * Fail-open: any error exits silently.
  */
 
-import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const THROTTLE_MIN = 15;
+const STALE_MS = 24 * 60 * 60_000;
+const FLAG_PREFIX = 'memo-reminded-';
 
 try {
   const input = JSON.parse(await readStdin());
@@ -17,7 +19,7 @@ try {
   if (!sessionId) process.exit(0);
 
   const flagDir = join(process.env.CLAUDE_PROJECT_DIR || '.', '.claude', 'coral', 'tmp');
-  const flag = join(flagDir, `memo-reminded-${sessionId}`);
+  const flag = join(flagDir, `${FLAG_PREFIX}${sessionId}`);
 
   if (existsSync(flag)) {
     const ageMin = (Date.now() - statSync(flag).mtimeMs) / 60_000;
@@ -26,6 +28,16 @@ try {
 
   mkdirSync(flagDir, { recursive: true });
   writeFileSync(flag, '');
+
+  // Clean up stale flag files from expired sessions
+  try {
+    const now = Date.now();
+    for (const f of readdirSync(flagDir)) {
+      if (!f.startsWith(FLAG_PREFIX) || f === `${FLAG_PREFIX}${sessionId}`) continue;
+      const path = join(flagDir, f);
+      if (now - statSync(path).mtimeMs > STALE_MS) unlinkSync(path);
+    }
+  } catch { /* fail-open */ }
 
   console.log(JSON.stringify({
     hookSpecificOutput: {
