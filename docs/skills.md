@@ -4,7 +4,7 @@ Slash commands provided by the Coral plugin. Each skill is defined in `skills/{n
 
 | Skill | Description |
 |---|---|
-| `/coral:codex` | Single entry point for all Codex interactions - routes to analyst/ralph/review intent, or manages sessions directly |
+| `/coral:codex` | Single entry point for all Codex interactions - routes to scanner/gap-finder/ralph/review intent, or manages sessions directly |
 | `/coral:analyze` | Deep analysis and investigation. Pass `--codex` to delegate to Codex CLI |
 | `/coral:plan` | Claude-native planning with parallel architect/critic review |
 | `/coral:coplan` | Collaborative planning with Codex architect/critic reviews, then Claude cross-review |

@@ -74,7 +74,7 @@ User → /coral:init-project
 ```
 User → /codex skill analyzes intent
      → Review?   → Parallel subagent spawn (codex-proxy Role:architect + codex-proxy Role:critic)
-     → Analyze?  → Direct MCP call with analyst protocol (no subagent)
+     → Analyze?  → Direct MCP call with scanner protocol (no subagent)
      → Ralph?    → Direct MCP call with ralph protocol (no subagent)
      → General?  → Direct MCP call, verbatim prompt (no subagent)
 ```

@@ -2,7 +2,7 @@
 
 ## Rule
 
-Codex delegation agents (analyst, architect, critic, ralph) should live in a single `agents/codex-proxy.md` with role-based routing (`Role: analyst|architect|critic|ralph` in the caller's prompt), not as four separate agent files.
+Codex delegation agents (scanner, gap-finder, debugger, architect, critic, ralph) should live in a single `agents/codex-proxy.md` with role-based routing (`Role: scanner|gap-finder|debugger|architect|critic|ralph` in the caller's prompt), not as separate agent files.
 
 ## Why
 

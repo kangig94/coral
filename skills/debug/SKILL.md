@@ -34,10 +34,9 @@ Strip the `--codex` flag before passing the prompt to the execution path.
 
 ## Codex Delegation
 
-1. **Diagnose**: Read `agents/debugger.md` for diagnosis protocol, and `agents/codex-proxy.md`
-   for the Codex prompt template. Use the analyst role's prompt template
-   (`### Role: analyst` section). Call `codex({ op: "exec", ... })` with debugger protocol
-   as task context. Pass `working_directory` and `reasoning_effort: "xhigh"`.
+1. **Diagnose**: Read `agents/codex-proxy.md` for the Codex prompt template. Use the debugger
+   role's prompt template (`### Role: debugger` section). Call `codex({ op: "exec", ... })`
+   with the user's bug description as task context. Pass `working_directory` and `reasoning_effort: "xhigh"`.
    Verify cited file:line references. Drop findings with incorrect references.
 2. **Plan fix**: Read `agents/planner.md`. **You** execute it directly - do NOT spawn
    a planner agent. Use diagnosis result as task context. Configure multi-phase review:

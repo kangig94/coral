@@ -46,9 +46,17 @@ Use Claude's native tools (Read, Grep, Glob, LSP) for direct analysis. Read-only
 
 ---
 
-### analyst (Requirements Gap Analysis)
+### scanner (Project Scan & Process Investigation)
 
-`agents/analyst.md` - opus, read-only
+`agents/scanner.md` - opus, read-only
+
+**Role**: Maps project architecture, traces dependencies, and investigates process/system-level root causes. Produces Scan Reports (layer diagram, key modules, patterns, gaps) and Root Cause Reports (process trace, evidence, hypothesis).
+
+---
+
+### gap-finder (Requirements Gap Analysis)
+
+`agents/gap-finder.md` - opus, read-only
 
 **Role**: Identifies requirement gaps, undefined guardrails, and scope risks for new features. Analyzes external constraints, edge cases, and integration risks.
 
@@ -140,11 +148,13 @@ Proxy agents that delegate work to Codex CLI. Tool restrictions limit them to co
 
 `agents/codex-proxy.md` - sonnet, Codex tools only
 
-**Role**: Single proxy agent with role-based routing. Callers include `Role: analyst|architect|critic|ralph` in their prompt to select the appropriate prompt template and settings. Missing role → explicit error (no inference).
+**Role**: Single proxy agent with role-based routing. Callers include `Role: scanner|gap-finder|debugger|architect|critic|ralph` in their prompt to select the appropriate prompt template and settings. Missing role → explicit error (no inference).
 
 | Role | Purpose | reasoning_effort |
 |---|---|---|
-| `analyst` | Root cause analysis, dependency tracing, technical investigation | xhigh |
+| `scanner` | Project scanning, process investigation, systemic root cause analysis | xhigh |
+| `gap-finder` | Requirements gap analysis, dependency tracing, technical investigation | xhigh |
+| `debugger` | Bug diagnosis via hypothesis testing, root cause tracing | xhigh |
 | `architect` | Architecture review, design patterns, code structure | xhigh |
 | `critic` | Plan/code critique, severity-rated verdicts (APPROVED/REVISE/REJECT) | xhigh |
 | `ralph` | Single-shot task execution; Claude controls the outer verification loop | high |
@@ -161,7 +171,7 @@ Three layers ensure Codex-bound agents always delegate to Codex CLI:
 
 The `SubagentStart` hook fires when any agent matching `(^|:)codex-` starts (e.g., `codex-proxy`, `coral:codex-proxy`). It injects delegation instructions via `additionalContext`.
 
-> Claude-native agents (`architect`, `critic`, `analyst`, `ralph`) lack the `codex-` prefix, so the hook never matches them.
+> Claude-native agents (`architect`, `critic`, `scanner`, `gap-finder`, `ralph`) lack the `codex-` prefix, so the hook never matches them.
 
 ### Layer 2: Tool Restriction (100% guarantee)
 
