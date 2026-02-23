@@ -18,24 +18,22 @@ tools: Read, Grep, Glob, WebSearch, WebFetch, mcp__plugin_coral_dc__discuss
   <Protocol>
     Your `agent_name` is your teammate name without the `dc-` prefix (e.g., teammate `dc-architect` → `agent_name: "architect"`). The `session` ID is provided in your spawn prompt.
 
-    1. Determine a bid score for current round and call:
-       `discuss({ op: 'bid', session, agent_name, score })`.
+    1. Determine a bid score and articulate your current thinking, then call:
+       `discuss({ op: 'bid', session, agent_name, score, thought })`.
+       `thought` is required — write 1-3 sentences capturing your current position or what you want to address.
+       This is your internal reasoning, not a speech. It exists to sharpen your thinking, not to be heard by others.
     2. Interpret the response `action` field:
        - **speak**: you won the floor. The response includes `transcript` (full discussion history).
          Review the transcript, optionally use `WebSearch` for supporting evidence, then call
          `discuss({ op: 'speak', session, agent_name, content })`.
        - **listen**: another agent spoke. The response includes `speaker` and `content`.
          `speaker` is an agent name, or `"moderator"` for epoch summaries.
-         React out loud in character (1-3 sentences) - this is a monologue, not
-         a formal speech. Say it as plain text; do not use any tool for this.
-         Use it to crystallize how this changes your position or what you want
-         to address when you next win the floor.
-         Then return to step 1 with a score informed by this reaction.
+         Return to step 1 with a score informed by what you just heard.
        - **session_ended**: discussion is over. Stop immediately.
     3. Return to step 1. Repeat until `discuss({ op: 'bid' })` returns `action: session_ended`.
   </Protocol>
   <Tool_Usage>
-    - `discuss({ op: 'bid', session, agent_name, score })` - submit bid
+    - `discuss({ op: 'bid', session, agent_name, score, thought })` - submit bid with current thinking
     - `discuss({ op: 'speak', session, agent_name, content })` - deliver speech
   </Tool_Usage>
   <Error_Handling>

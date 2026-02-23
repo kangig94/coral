@@ -16,6 +16,7 @@ const bidShape = z.object({
   session: sessionIdField,
   agent_name: agentNameField,
   score: z.number().int().min(0).max(100),
+  thought: z.string().min(1),
 }).strict();
 
 const speakShape = z.object({

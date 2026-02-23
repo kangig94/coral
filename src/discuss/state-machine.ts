@@ -114,6 +114,9 @@ function makeBidEntry(
   now: string,
   effectiveBids?: Record<string, number>,
 ): TranscriptEntry {
+  const thoughts = Object.keys(state.current_thoughts).length > 0
+    ? { thoughts: { ...state.current_thoughts } }
+    : {};
   return {
     type: 'bids',
     step: state.step,
@@ -121,6 +124,7 @@ function makeBidEntry(
     ts: now,
     bids: allBids,
     ...(effectiveBids && { effective_bids: effectiveBids }),
+    ...thoughts,
     winner,
     resolve_type: resolveType,
   };
@@ -188,6 +192,7 @@ function resetBids(state: DiscussState): DiscussState {
   return {
     ...state,
     current_bids,
+    current_thoughts: {},
     pending_bidders,
     hold_count: 0,
   };
@@ -237,6 +242,7 @@ export function initSession(
     cold_start: true,
     agents,
     current_bids: Object.fromEntries(agentNames.map((n) => [n, null])),
+    current_thoughts: {},
     pending_bidders: agentNames,
     current_speaker: null,
     speaker_type: null,
@@ -275,6 +281,7 @@ export function applyBid(
   state: DiscussState,
   agentName: string,
   score: number,
+  thought: string,
   now: string,
 ): Result<DiscussState> {
   const name = resolveAgentName(state.agents, agentName);
@@ -292,11 +299,13 @@ export function applyBid(
     };
   }
 
+  const current_thoughts = state.current_thoughts ?? {};
   return {
     ok: true,
     value: {
       ...state,
       current_bids: { ...state.current_bids, [name]: score },
+      current_thoughts: { ...current_thoughts, [name]: thought },
       pending_bidders: state.pending_bidders.filter((n) => n !== name),
       updated_at: now,
       last_activity_at: now,
@@ -513,6 +522,7 @@ export function applyExpel(
         ...nextState,
         pending_bidders: nextPendingBidders,
         current_bids: { ...nextState.current_bids, [agent]: 0 },
+        current_thoughts: { ...nextState.current_thoughts, [agent]: '' },
       };
       continue;
     }

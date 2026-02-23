@@ -1,20 +1,24 @@
-# Agent Instruction: Action Directive Over Effect Description
+# Agent Behavior: Enforce via Protocol, Not Prompt
 
 ## Rule
-When writing agent protocols that expect visible text output (not tool calls), phrase the instruction as an explicit action ("Say it as plain text") rather than describing the intended effect ("It stays in your own context only"). Effect-describing phrasing risks the LLM interpreting it as "don't output anything visible," suppressing the output entirely.
+If agent behavior is critical, enforce it through mandatory tool parameters — not prompt instructions. Action directives ("React out loud") are better than effect descriptions ("It stays in your context"), but agents still routinely skip both. Only tool-level enforcement (required fields validated by Zod) guarantees compliance.
 
 ## Why
-LLMs optimize for compliance with stated outcomes. If the instruction says "this stays in your context only," the model may reason that producing no visible output is the safest way to satisfy that constraint. This defeats the purpose of chain-of-thought monologue, self-reflection, or any behavior where visible (but non-tool-call) output is the goal.
+LLMs treat prompt instructions as soft guidance. Even well-phrased action directives get consistently ignored under cognitive load (e.g., mid-discussion bidding). A mandatory tool parameter is protocol-enforced: the operation fails without it, so compliance is structural rather than behavioral.
 
 ## Pattern
 ```markdown
-# RIGHT — action directive
+# BEST — tool parameter enforcement
+discuss({ op: 'bid', session, agent_name, score, thought })
+# ^ thought is Zod-required; bid fails without it
+
+# BETTER — action directive (still unreliable)
 React out loud in character (1-3 sentences). Say it as plain text;
 do not use any tool for this.
 
-# WRONG — effect description
+# WORST — effect description
 React internally. It stays in your own context only.
 # ^ LLM may suppress output entirely
 ```
 
-Applies to any agent definition where the desired behavior is "produce text output that is NOT a tool call."
+Real-world evidence: the "react out loud" pattern in `agents/discussant.md` was consistently ignored by all discussant agents across multiple sessions. Replacing it with a mandatory `thought` field on the bid op achieved 100% compliance immediately.

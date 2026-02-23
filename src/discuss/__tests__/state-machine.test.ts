@@ -150,7 +150,7 @@ describe('initSession', () => {
 describe('applyBid', () => {
   it('should record bid in bidding status', () => {
     const state = startSession();
-    const res = unwrapOk(applyBid(state, 'alice', 75, NOW));
+    const res = unwrapOk(applyBid(state, 'alice', 75, 'alice thinking', NOW));
     expect(res.pending_bidders).not.toContain('alice');
     expect(res.current_bids['alice']).toBe(75);
     expect(res.pending_bidders).toContain('bob');
@@ -158,13 +158,13 @@ describe('applyBid', () => {
 
   it('should allow bid in setup (no transcript read gate)', () => {
     const state = makeSession();
-    const res = applyBid(state, 'alice', 75, NOW);
+    const res = applyBid(state, 'alice', 75, 'alice thinking', NOW);
     expect(res.ok).toBe(true);
   });
 
   it('should return error for unknown agent', () => {
     const state = startSession();
-    const res = applyBid(state, 'nobody', 50, NOW);
+    const res = applyBid(state, 'nobody', 50, 'nobody thinking', NOW);
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.error).toBe('agent_not_found');
@@ -172,19 +172,44 @@ describe('applyBid', () => {
 
   it('should reject double bid from same agent', () => {
     const state = startSession();
-    const first = unwrapOk(applyBid(state, 'alice', 75, NOW));
-    const second = applyBid(first, 'alice', 80, NOW);
+    const first = unwrapOk(applyBid(state, 'alice', 75, 'alice thinking', NOW));
+    const second = applyBid(first, 'alice', 80, 'alice thinking again', NOW);
     expect(second?.ok).toBe(false);
     if (!second || second.ok) return;
     expect(second.error).toBe('already_bid');
+  });
+
+  it('should store thought in current_thoughts', () => {
+    const state = startSession();
+    const res = unwrapOk(applyBid(state, 'alice', 75, 'alice wants to discuss scalability', NOW));
+    expect(res.current_thoughts['alice']).toBe('alice wants to discuss scalability');
+  });
+
+  it('should include thoughts in transcript bids entry after resolveWinner', () => {
+    const state = startSession();
+    const s1 = unwrapOk(applyBid(state, 'alice', 80, 'alice thought here', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 50, 'bob thought here', NOW));
+    const [resolved] = unwrapOk(resolveWinner(s2, NOW));
+    const bidsEntry = resolved.transcript.find((e) => e.type === 'bids');
+    expect(bidsEntry?.type === 'bids' && bidsEntry.thoughts?.['alice']).toBe('alice thought here');
+    expect(bidsEntry?.type === 'bids' && bidsEntry.thoughts?.['bob']).toBe('bob thought here');
+  });
+
+  it('should clear current_thoughts after resetBids (via applySpeech)', () => {
+    const state = startSession();
+    const s1 = unwrapOk(applyBid(state, 'alice', 80, 'alice thought', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 50, 'bob thought', NOW));
+    const [speaking] = unwrapOk(resolveWinner(s2, NOW));
+    const afterSpeech = unwrapOk(applySpeech(speaking, 'alice', 'my speech', NOW));
+    expect(afterSpeech.current_thoughts).toEqual({});
   });
 });
 
 describe('resolveWinner', () => {
   it('should prefer highest scorer in primary pool', () => {
     const state = startSession();
-    const s1 = unwrapOk(applyBid(state, 'alice', 80, NOW));
-    const s2 = unwrapOk(applyBid(s1, 'bob', 50, NOW));
+    const s1 = unwrapOk(applyBid(state, 'alice', 80, 'alice thinking', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 50, 'bob thinking', NOW));
     const [next, decision] = unwrapOk(resolveWinner(s2, NOW));
     expect(('speaker_type' in decision && decision.speaker_type)).toBe('quota');
     if ('winner' in decision) {
@@ -196,8 +221,8 @@ describe('resolveWinner', () => {
 
   it('should auto-pick cold-start winner when all bids below threshold', () => {
     const state = startSession();
-    const s1 = unwrapOk(applyBid(state, 'alice', 10, NOW));
-    const s2 = unwrapOk(applyBid(s1, 'bob', 20, NOW));
+    const s1 = unwrapOk(applyBid(state, 'alice', 10, 'alice thinking', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 20, 'bob thinking', NOW));
     const [, decision] = unwrapOk(resolveWinner(s2, NOW));
     expect(('speaker_type' in decision && decision.speaker_type)).toBe('cold_start');
     expect('speaker_type' in decision ? decision.winner : null).toBe('bob');
@@ -213,8 +238,8 @@ describe('resolveWinner', () => {
       },
     };
 
-    const s1 = unwrapOk(applyBid(state, 'alice', 80, NOW));
-    const s2 = unwrapOk(applyBid(s1, 'bob', 90, NOW));
+    const s1 = unwrapOk(applyBid(state, 'alice', 80, 'alice thinking', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 90, 'bob thinking', NOW));
     const [, decision] = unwrapOk(resolveWinner(s2, NOW));
     if ('speaker_type' in decision) {
       expect(decision.winner).toBe('alice');
@@ -227,8 +252,8 @@ describe('resolveWinner', () => {
     state.agents.alice.fallback_used = true;
     state.agents.bob.total_speaks = 4;
 
-    const s1 = unwrapOk(applyBid(state, 'alice', 70, NOW));
-    const s2 = unwrapOk(applyBid(s1, 'bob', 20, NOW));
+    const s1 = unwrapOk(applyBid(state, 'alice', 70, 'alice thinking', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 20, 'bob thinking', NOW));
     const [, decision] = unwrapOk(resolveWinner(s2, NOW));
     expect(('no_winner' in decision && decision.no_winner)).toBe(true);
     if (!('no_winner' in decision)) return;
@@ -262,8 +287,8 @@ describe('resolveWinner', () => {
 describe('speech lifecycle', () => {
   function winningState(): DiscussState {
     const state = startSession();
-    const s1 = unwrapOk(applyBid(state, 'alice', 80, NOW));
-    const s2 = unwrapOk(applyBid(s1, 'bob', 40, NOW));
+    const s1 = unwrapOk(applyBid(state, 'alice', 80, 'alice thinking', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 40, 'bob thinking', NOW));
     return unwrapOk(resolveWinner(s2, NOW))[0];
   }
 
@@ -302,8 +327,8 @@ describe('speech lifecycle', () => {
       },
     };
 
-    const s1 = unwrapOk(applyBid(withFallback, 'alice', 80, NOW));
-    const s2 = unwrapOk(applyBid(s1, 'bob', 20, NOW));
+    const s1 = unwrapOk(applyBid(withFallback, 'alice', 80, 'alice thinking', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 20, 'bob thinking', NOW));
     const nextState = unwrapOk(resolveWinner(s2, NOW))[0];
     const timed = unwrapOk(applySpeechTimeout(nextState, NOW));
     expect(timed.agents['alice'].quota_remaining).toBe(0);
@@ -368,8 +393,8 @@ describe('applyEnd', () => {
 
   it('should require force flag in normal speaking end', () => {
     const state = startSession();
-    const s1 = unwrapOk(applyBid(state, 'alice', 80, NOW));
-    const s2 = unwrapOk(applyBid(s1, 'bob', 20, NOW));
+    const s1 = unwrapOk(applyBid(state, 'alice', 80, 'alice thinking', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 20, 'bob thinking', NOW));
     const speaking = unwrapOk(resolveWinner(s2, NOW))[0];
     const res = applyEnd(speaking, {}, NOW);
     expect(res.ok).toBe(false);
@@ -414,10 +439,11 @@ describe('formatDateId', () => {
 });
 
 
-function placeBids(state: DiscussState, bids: Record<string, number>): DiscussState {
+function placeBids(state: DiscussState, bids: Record<string, number>, thoughts?: Record<string, string>): DiscussState {
   let next = state;
   for (const [name, score] of Object.entries(bids)) {
-    const updated = applyBid(next, name, score, NOW);
+    const thought = thoughts?.[name] ?? `${name} thinking`;
+    const updated = applyBid(next, name, score, thought, NOW);
     if (!updated.ok) throw new Error(`unreachable: ${updated.error}`);
     next = updated.value;
   }
@@ -537,8 +563,8 @@ describe('resolveWinner with decay', () => {
     const state = startSession();
     state.agents.alice.total_speaks = 0;
     state.agents.bob.total_speaks = 2;
-    const s1 = unwrapOk(applyBid(state, 'alice', 32, NOW));
-    const s2 = unwrapOk(applyBid(s1, 'bob', 35, NOW));
+    const s1 = unwrapOk(applyBid(state, 'alice', 32, 'alice thinking', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 35, 'bob thinking', NOW));
     const [, decision] = unwrapOk(resolveWinner(s2, NOW));
     expect('winner' in decision && decision.winner).toBe('alice');
   });
@@ -548,16 +574,16 @@ describe('resolveWinner with decay', () => {
     state.agents.alice.total_speaks = 2;
     state.agents.bob.total_speaks = 0;
     state.cold_start = false;
-    const s1 = unwrapOk(applyBid(state, 'alice', 40, NOW));
-    const s2 = unwrapOk(applyBid(s1, 'bob', 5, NOW));
+    const s1 = unwrapOk(applyBid(state, 'alice', 40, 'alice thinking', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 5, 'bob thinking', NOW));
     const [, decision] = unwrapOk(resolveWinner(s2, NOW));
     expect('winner' in decision && decision.winner).toBe('alice');
   });
 
   it('should include effective_bids in cold-start transcript entry for audit', () => {
     const state = startSession();
-    const s1 = unwrapOk(applyBid(state, 'alice', 5, NOW));
-    const s2 = unwrapOk(applyBid(s1, 'bob', 10, NOW));
+    const s1 = unwrapOk(applyBid(state, 'alice', 5, 'alice thinking', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 10, 'bob thinking', NOW));
     const [nextState, decision] = unwrapOk(resolveWinner(s2, NOW));
     expect('speaker_type' in decision && decision.speaker_type).toBe('cold_start');
     const bidsEntry = nextState.transcript.at(-1);
@@ -814,5 +840,100 @@ describe('resolveWinner with decay (adversarial)', () => {
     const [, decision] = unwrapOk(resolveWinner(stateWithBids, NOW));
     expect('speaker_type' in decision ? decision.speaker_type : null).toBe('quota');
     expect('winner' in decision ? decision.winner : null).toBe('bob');
+  });
+});
+
+describe('sealed-bid principle', () => {
+  it('should not return current thoughts in resolve result', () => {
+    const state = startSession();
+    const s1 = unwrapOk(applyBid(state, 'alice', 80, 'alice thought', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 40, 'bob thought', NOW));
+    const [, decision] = unwrapOk(resolveWinner(s2, NOW));
+
+    expect(('current_thoughts' in decision)).toBe(false);
+    expect(('thoughts' in decision)).toBe(false);
+  });
+});
+
+describe('thoughts omission behavior', () => {
+  it('should omit thoughts field when current_thoughts is empty', () => {
+    const state = startSession();
+    const noThoughtsState: DiscussState = {
+      ...state,
+      current_bids: { ...state.current_bids, alice: 60, bob: 40 },
+      current_thoughts: {},
+      pending_bidders: [],
+    };
+    const [resolved] = unwrapOk(resolveWinner(noThoughtsState, NOW));
+    const bidsEntry = resolved.transcript.find((entry) => entry.type === 'bids');
+    assertBidsEntry(bidsEntry);
+
+    expect(Object.prototype.hasOwnProperty.call(bidsEntry, 'thoughts')).toBe(false);
+    expect(bidsEntry.thoughts).toBeUndefined();
+  });
+});
+
+describe('thought isolation', () => {
+  it('should isolate each agent thought in current_thoughts and bids transcript', () => {
+    const state = startSession();
+    const s1 = unwrapOk(applyBid(state, 'alice', 85, 'alice thinks about architecture', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 75, 'bob thinks about reliability', NOW));
+
+    expect(s2.current_thoughts).toEqual({
+      alice: 'alice thinks about architecture',
+      bob: 'bob thinks about reliability',
+    });
+
+    const [resolved] = unwrapOk(resolveWinner(s2, NOW));
+    const bidsEntry = resolved.transcript.find((entry) => entry.type === 'bids');
+    assertBidsEntry(bidsEntry);
+    expect(bidsEntry.thoughts).toEqual({
+      alice: 'alice thinks about architecture',
+      bob: 'bob thinks about reliability',
+    });
+  });
+});
+
+describe('alias handling', () => {
+  it('should store alias bid thought under canonical agent key', () => {
+    const state = startSession();
+    const withBid = unwrapOk(applyBid(state, 'alice-1', 88, 'canonicalized alias thought', NOW));
+
+    expect(withBid.current_thoughts['alice']).toBe('canonicalized alias thought');
+    expect(Object.prototype.hasOwnProperty.call(withBid.current_thoughts, 'alice-1')).toBe(false);
+  });
+});
+
+describe('multi-round thought lifecycle', () => {
+  it('should clear thoughts between rounds after speech, then track only new round thoughts', () => {
+    const firstRound = startSession();
+    const firstBidAlice = unwrapOk(applyBid(firstRound, 'alice', 85, 'round one thought', NOW));
+    const firstBidBob = unwrapOk(applyBid(firstBidAlice, 'bob', 75, 'ignore me after round one', NOW));
+    const [speakingState] = unwrapOk(resolveWinner(firstBidBob, NOW));
+    const afterSpeech = unwrapOk(applySpeech(speakingState, 'alice', 'I am speaking', NOW));
+
+    expect(afterSpeech.current_thoughts).toEqual({});
+
+    const secondRound = unwrapOk(applyBid(afterSpeech, 'alice', 90, 'round two thought', NOW));
+    expect(secondRound.current_thoughts).toEqual({ alice: 'round two thought' });
+    expect(secondRound.current_thoughts['bob']).toBeUndefined();
+  });
+});
+
+describe('partial current_thoughts at resolve', () => {
+  it('should include empty-string placeholder thought alongside real thoughts in transcript', () => {
+    const state = startSession();
+    const seeded = {
+      ...state,
+      current_bids: { ...state.current_bids, alice: 92, bob: 84 },
+      current_thoughts: { alice: 'real thought', bob: '' },
+      pending_bidders: [],
+    };
+    const [resolved] = unwrapOk(resolveWinner(seeded, NOW));
+    const bidsEntry = resolved.transcript.find((entry) => entry.type === 'bids');
+    assertBidsEntry(bidsEntry);
+
+    expect(bidsEntry.thoughts).toEqual({ alice: 'real thought', bob: '' });
+    expect(bidsEntry.thoughts?.['bob']).toBe('');
   });
 });

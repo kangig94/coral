@@ -15,6 +15,7 @@ export type TranscriptEntry =
     type: 'bids';
     bids: AgentScoreMap;
     effective_bids?: AgentScoreMap;
+    thoughts?: Record<string, string>;
     winner: string | null;
     resolve_type: 'normal' | 'fallback' | 'cold_start' | 'no_winner';
   } & TranscriptStepMetadata)
@@ -43,6 +44,7 @@ export type DiscussState = {
   cold_start: boolean;
   agents: Record<string, AgentState>;
   current_bids: NullableAgentScoreMap;
+  current_thoughts: Record<string, string>;
   pending_bidders: string[];
   current_speaker: string | null;
   speaker_type: 'quota' | 'fallback' | 'cold_start' | null;

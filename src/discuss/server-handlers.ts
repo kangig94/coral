@@ -105,6 +105,7 @@ export const tools = [
         session: { type: 'string', description: 'Session ID' },
         agent_name: { type: 'string', description: 'Agent name' },
         score: { type: 'number', minimum: 0, maximum: 100 },
+        thought: { type: 'string', description: 'Current thinking when bidding — required for bid op (Zod enforced)' },
         content: { type: 'string', description: 'Speech content (speak)' },
       },
       required: ['op', 'session', 'agent_name'],
@@ -262,7 +263,7 @@ async function handleBid(
           if (state.status !== 'bidding') {
             return { ok: false, error: 'not_bidding', detail: { current: state.status } };
           }
-          const result = applyBid(state, resolved, input.score, nowIsoString());
+          const result = applyBid(state, resolved, input.score, input.thought, nowIsoString());
           if (!result.ok) {
             return { ok: false, error: result.error, detail: result.detail };
           }

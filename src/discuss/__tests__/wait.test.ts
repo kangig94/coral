@@ -35,6 +35,7 @@ function makeState(overrides: Partial<DiscussState> = {}): DiscussState {
       },
     },
     current_bids: { alice: null },
+    current_thoughts: {},
     pending_bidders: ['alice'],
     current_speaker: null,
     speaker_type: null,
