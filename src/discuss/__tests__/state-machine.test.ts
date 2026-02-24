@@ -19,25 +19,26 @@ import {
   DEFAULT_MAX_EPOCHS,
 } from '../state-machine.js';
 import type { AgentState, DiscussState, TranscriptEntry } from '../types.js';
+import { noParticipants } from '../conditions.js';
 
 const NOW = '2026-02-21T10:00:00.000Z';
 
 const TWO_AGENTS = [
-  { name: 'alice', persona: '# Alice Architect — Senior Architect\nExperienced architect.' },
-  { name: 'bob', persona: '# Bob Critic — Critical Thinker\nCritical mind.' },
+  { name: 'alice', persona: '# Alice Architect — Senior Architect\nExperienced architect.', participation: 'required' as const },
+  { name: 'bob', persona: '# Bob Critic — Critical Thinker\nCritical mind.', participation: 'required' as const },
 ];
 
-const BASE_INPUT = { topic: 'Test Topic', agents: TWO_AGENTS };
+const BASE_INPUT = { topic: 'Test Topic', agents: TWO_AGENTS, min_bid_delay_ms: 0 };
 
 const COLD_START_AGENTS = [
-  { name: 'alice', persona: '# Alice Architect — Senior Architect\nExperienced architect.' },
-  { name: 'bob', persona: '# Bob Critic — Critical Thinker\nCritical mind.' },
-  { name: 'carol', persona: '# Carol Observer — Observer\nNotes and prompts.' },
-  { name: 'dave', persona: '# Dave Analyst — Analyst\nData minded.' },
-  { name: 'eve', persona: '# Eve Moderator — Moderator\nSession helper.' },
-  { name: 'frank', persona: '# Frank Synthesizer — Synthesizer\nFinal summarizer.' },
+  { name: 'alice', persona: '# Alice Architect — Senior Architect\nExperienced architect.', participation: 'required' as const },
+  { name: 'bob', persona: '# Bob Critic — Critical Thinker\nCritical mind.', participation: 'required' as const },
+  { name: 'carol', persona: '# Carol Observer — Observer\nNotes and prompts.', participation: 'required' as const },
+  { name: 'dave', persona: '# Dave Analyst — Analyst\nData minded.', participation: 'required' as const },
+  { name: 'eve', persona: '# Eve Moderator — Moderator\nSession helper.', participation: 'required' as const },
+  { name: 'frank', persona: '# Frank Synthesizer — Synthesizer\nFinal summarizer.', participation: 'required' as const },
 ];
-const COLD_START_INPUT = { topic: 'Cold Start Topic', agents: COLD_START_AGENTS };
+const COLD_START_INPUT = { topic: 'Cold Start Topic', agents: COLD_START_AGENTS, min_bid_delay_ms: 0 };
 
 function makeSession(input = BASE_INPUT): DiscussState {
   const init = initSession(input, NOW);
@@ -60,6 +61,19 @@ function unwrapOk<T>(result: { ok: true; value: T } | { ok: false; error: string
     throw new Error(`unreachable: ${result.error}`);
   }
   return result.value;
+}
+
+function makeAgent(overrides: Partial<AgentState> = {}): AgentState {
+  return {
+    persona: '',
+    display_name: 'Test',
+    participation: 'required',
+    quota_remaining: 3,
+    total_speaks: 0,
+    fallback_used: false,
+    banned: false,
+    ...overrides,
+  };
 }
 
 function assertBidsEntry(
@@ -228,6 +242,17 @@ describe('resolveWinner', () => {
     expect('speaker_type' in decision ? decision.winner : null).toBe('bob');
   });
 
+  it('should decrement quota for cold-start speech', () => {
+    const state = startSession();
+    const s1 = unwrapOk(applyBid(state, 'alice', 10, 'alice thinking', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 20, 'bob thinking', NOW));
+    const [resolved] = unwrapOk(resolveWinner(s2, NOW));
+    expect(resolved.speaker_type).toBe('cold_start');
+    const quotaBefore = resolved.agents.bob.quota_remaining;
+    const afterSpeech = unwrapOk(applySpeech(resolved, 'bob', 'my speech', NOW));
+    expect(afterSpeech.agents.bob.quota_remaining).toBe(quotaBefore - 1);
+  });
+
   it('should skip banned agents in quorum and fallback checks', () => {
     let state = startSession();
     state = {
@@ -317,7 +342,43 @@ describe('speech lifecycle', () => {
     expect(timeout.bid_release_step).toBe(state.step);
   });
 
-  it('should not decrement fallback speaker quota on timeout/speech', () => {
+  it('should decrement quota for normal speaker on timeout', () => {
+    const state = winningState();
+    const quotaBefore = state.agents.alice.quota_remaining;
+    const timeout = unwrapOk(applySpeechTimeout(state, NOW));
+    expect(timeout.agents.alice.quota_remaining).toBe(quotaBefore - 1);
+  });
+
+  it('should decrement quota for cold-start speaker on timeout', () => {
+    const state = startSession();
+    const s1 = unwrapOk(applyBid(state, 'alice', 10, 'alice thinking', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 20, 'bob thinking', NOW));
+    const [resolved] = unwrapOk(resolveWinner(s2, NOW));
+    expect(resolved.speaker_type).toBe('cold_start');
+    const quotaBefore = resolved.agents.bob.quota_remaining;
+    const timeout = unwrapOk(applySpeechTimeout(resolved, NOW));
+    expect(timeout.agents.bob.quota_remaining).toBe(quotaBefore - 1);
+  });
+
+  it('should not decrement fallback speaker quota on speech', () => {
+    const state = startSession();
+    const withFallback = {
+      ...state,
+      agents: {
+        ...state.agents,
+        alice: { ...state.agents.alice, quota_remaining: 0, fallback_used: false },
+      },
+    };
+    const s1 = unwrapOk(applyBid(withFallback, 'alice', 80, 'alice thinking', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 20, 'bob thinking', NOW));
+    const [resolved] = unwrapOk(resolveWinner(s2, NOW));
+    expect(resolved.speaker_type).toBe('fallback');
+    const afterSpeech = unwrapOk(applySpeech(resolved, 'alice', 'fallback speech', NOW));
+    expect(afterSpeech.agents.alice.quota_remaining).toBe(0);
+    expect(afterSpeech.agents.alice.total_speaks).toBe(1);
+  });
+
+  it('should not decrement fallback speaker quota on timeout', () => {
     const state = startSession();
     const withFallback = {
       ...state,
@@ -462,13 +523,14 @@ function speechEntry(agent: string): TranscriptEntry {
   };
 }
 
-function makeAgentMap(rows: Array<{ name: string; total_speaks: number; banned?: boolean }>): Record<string, AgentState> {
+function makeAgentMap(rows: Array<{ name: string; total_speaks: number; banned?: boolean; participation?: 'required' | 'observer' }>): Record<string, AgentState> {
   return Object.fromEntries(
-    rows.map(({ name, total_speaks, banned }) => [
+    rows.map(({ name, total_speaks, banned, participation }) => [
       name,
       {
         persona: '',
         display_name: name[0]!.toUpperCase() + name.slice(1),
+        participation: participation ?? 'required',
         quota_remaining: 3,
         total_speaks,
         fallback_used: false,
@@ -483,7 +545,7 @@ function makeAgents(speaks: Record<string, number>): Record<string, import('../t
   return Object.fromEntries(
     Object.entries(speaks).map(([name, total_speaks]) => [
       name,
-      { persona: '', display_name: name, quota_remaining: 3, total_speaks, fallback_used: false, banned: false },
+      { persona: '', display_name: name, participation: 'required' as const, quota_remaining: 3, total_speaks, fallback_used: false, banned: false },
     ]),
   );
 }
@@ -935,5 +997,257 @@ describe('partial current_thoughts at resolve', () => {
 
     expect(bidsEntry.thoughts).toEqual({ alice: 'real thought', bob: '' });
     expect(bidsEntry.thoughts?.['bob']).toBe('');
+  });
+});
+
+describe('observer participation', () => {
+  const MIXED_INPUT = {
+    topic: 'Mixed Topic',
+    agents: [
+      { name: 'alice', persona: '# Alice — Analyst\nRequired.', participation: 'required' as const },
+      { name: 'bob', persona: '# Bob — Critic\nRequired.', participation: 'required' as const },
+      { name: 'user', persona: '# User — Human\nObserver.', participation: 'observer' as const },
+    ],
+    min_bid_delay_ms: 0,
+  };
+
+  it('should exclude observers from pending_bidders in initSession', () => {
+    const state = initSession(MIXED_INPUT, NOW);
+    expect(state.pending_bidders).toEqual(['alice', 'bob']);
+    expect(state.pending_bidders).not.toContain('user');
+  });
+
+  it('should store participation field on each agent', () => {
+    const state = initSession(MIXED_INPUT, NOW);
+    expect(state.agents['alice']?.participation).toBe('required');
+    expect(state.agents['bob']?.participation).toBe('required');
+    expect(state.agents['user']?.participation).toBe('observer');
+  });
+
+  it('should store min_bid_delay_ms from input', () => {
+    const state = initSession({ ...MIXED_INPUT, min_bid_delay_ms: 5000 }, NOW);
+    expect(state.min_bid_delay_ms).toBe(5000);
+  });
+
+  it('should exclude observer from pending_bidders after resetBids (via resolveWinner)', () => {
+    const state = initSession(MIXED_INPUT, NOW);
+    const bidding = unwrapOk(startBidding(state, NOW));
+    // observer bids (optional)
+    const s1 = unwrapOk(applyBid(bidding, 'alice', 80, 'alice thought', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 50, 'bob thought', NOW));
+    // user bids (observer — optional)
+    const s3 = unwrapOk(applyBid(s2, 'user', 70, 'user thought', NOW));
+    // resolve: required agents (alice, bob) have bid
+    const [nextState] = unwrapOk(resolveWinner(s3, NOW));
+    // after speech resets bids, observer still excluded from pending_bidders
+    const afterSpeech = unwrapOk(applySpeech(nextState, nextState.current_speaker!, 'My speech', NOW));
+    expect(afterSpeech.pending_bidders).not.toContain('user');
+    expect(afterSpeech.pending_bidders.sort()).toEqual(['alice', 'bob'].filter(n => !afterSpeech.agents[n]?.banned).sort());
+  });
+
+  it('should allow resolveWinner when required agents bid but observer has not', () => {
+    const state = initSession(MIXED_INPUT, NOW);
+    const bidding = unwrapOk(startBidding(state, NOW));
+    const s1 = unwrapOk(applyBid(bidding, 'alice', 80, 'alice thought', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 50, 'bob thought', NOW));
+    // user (observer) has NOT bid — resolve should still succeed
+    const result = resolveWinner(s2, NOW);
+    expect(result.ok).toBe(true);
+  });
+
+  it('should include observer bid in scoring if submitted', () => {
+    const state = initSession(MIXED_INPUT, NOW);
+    const bidding = unwrapOk(startBidding(state, NOW));
+    const s1 = unwrapOk(applyBid(bidding, 'alice', 40, 'alice thought', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'bob', 35, 'bob thought', NOW));
+    // user bids high — should influence winner selection
+    const s3 = unwrapOk(applyBid(s2, 'user', 90, 'user thought', NOW));
+    const [, decision] = unwrapOk(resolveWinner(s3, NOW));
+    // user bid highest, should win
+    expect('winner' in decision && decision.winner).toBe('user');
+  });
+
+  it('should not pick observer in coldStartPick', () => {
+    const state = initSession({
+      topic: 'Cold Start Mixed',
+      agents: [
+        { name: 'user', persona: '# User — Human\nObserver.', participation: 'observer' as const },
+        { name: 'alice', persona: '# Alice — Agent\nRequired.', participation: 'required' as const },
+      ],
+      min_bid_delay_ms: 0,
+    }, NOW);
+    const bidding = unwrapOk(startBidding(state, NOW));
+    // all bids below threshold triggers cold_start
+    const s1 = unwrapOk(applyBid(bidding, 'alice', 5, 'low', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'user', 5, 'low', NOW));
+    const [, decision] = unwrapOk(resolveWinner(s2, NOW));
+    expect('winner' in decision).toBe(true);
+    if ('winner' in decision) {
+      expect(decision.winner).toBe('alice');
+      expect(decision.speaker_type).toBe('cold_start');
+    }
+  });
+
+  it('should not expel observer via applyExpel', () => {
+    const state = initSession(MIXED_INPUT, NOW);
+    const bidding = unwrapOk(startBidding(state, NOW));
+    // observer is in pendingAgents by mistake (defensive guard test)
+    const result = applyExpel(bidding, ['user'], NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // observer should not be banned
+    expect(result.value.state.agents['user']?.banned).toBe(false);
+  });
+
+  it('noParticipants should be true when only observer survives', () => {
+    const state = initSession(MIXED_INPUT, NOW);
+    const bidding = unwrapOk(startBidding(state, NOW));
+    // exhaust required agents
+    const modified = {
+      ...bidding,
+      agents: {
+        ...bidding.agents,
+        alice: { ...bidding.agents['alice']!, quota_remaining: 0, fallback_used: true },
+        bob: { ...bidding.agents['bob']!, quota_remaining: 0, fallback_used: true },
+      },
+    };
+    expect(noParticipants(modified)).toBe(true);
+  });
+
+  it('allExhausted only counts required agents — observer with quota does not block epoch transition', () => {
+    const state = initSession(MIXED_INPUT, NOW);
+    const bidding = unwrapOk(startBidding(state, NOW));
+    // exhaust only required agents
+    const withExhaustedRequired = {
+      ...bidding,
+      cold_start: false,
+      agents: {
+        ...bidding.agents,
+        alice: { ...bidding.agents['alice']!, quota_remaining: 0, fallback_used: true },
+        bob: { ...bidding.agents['bob']!, quota_remaining: 0, fallback_used: true },
+        // user (observer) still has quota
+      },
+      current_bids: { alice: 80, bob: 70, user: 10 }, // below threshold — observer does not enter primary pool
+      pending_bidders: [],
+    };
+    const [, decision] = unwrapOk(resolveWinner(withExhaustedRequired, NOW));
+    // observer with quota should not block epoch transition
+    expect('no_winner' in decision && decision.reason).toBe('epoch_transition');
+  });
+
+  // --- adversarial tests (red-attacker provenance) ---
+
+  it('noParticipants vacuous truth when all agents are observers', () => {
+    const state = initSession({
+      topic: 'Observer Only',
+      agents: [{ name: 'user', persona: 'User', participation: 'observer' as const }],
+      min_bid_delay_ms: 0,
+    }, NOW);
+    expect(noParticipants(state)).toBe(true);
+  });
+
+  it('noParticipants true when required banned and observer remains active', () => {
+    const bidding = unwrapOk(startBidding(initSession(MIXED_INPUT, NOW), NOW));
+    const state = {
+      ...bidding,
+      agents: {
+        alice: { ...bidding.agents['alice']!, banned: true },
+        bob: { ...bidding.agents['bob']!, banned: true },
+        user: makeAgent({ participation: 'observer' as const }),
+      },
+    };
+    expect(noParticipants(state)).toBe(true);
+  });
+
+  it('noParticipants false when some required agents still active', () => {
+    const bidding = unwrapOk(startBidding(initSession(MIXED_INPUT, NOW), NOW));
+    const state = {
+      ...bidding,
+      agents: {
+        alice: { ...bidding.agents['alice']!, quota_remaining: 0, fallback_used: true },
+        bob: bidding.agents['bob']!,
+        user: bidding.agents['user']!,
+      },
+    };
+    expect(noParticipants(state)).toBe(false);
+  });
+
+  it('resolveWinner quorum_not_met when observer bid but required agents did not', () => {
+    const bidding = unwrapOk(startBidding(initSession(MIXED_INPUT, NOW), NOW));
+    const withOnlyObserverBid = unwrapOk(applyBid(bidding, 'user', 85, 'observer bid', NOW));
+    const result = resolveWinner(withOnlyObserverBid, NOW);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toBe('quorum_not_met');
+  });
+
+  it('resolveWinner epoch_transition when alice fallback unused and user exhausted', () => {
+    const ALICE_USER = {
+      topic: 'Alice + User',
+      agents: [
+        { name: 'alice', persona: '# Alice — Analyst\nRequired.', participation: 'required' as const },
+        { name: 'user', persona: '# User — Human\nObserver.', participation: 'observer' as const },
+      ],
+      min_bid_delay_ms: 0,
+    };
+    const bidding = unwrapOk(startBidding(initSession(ALICE_USER, NOW), NOW));
+    const s1 = unwrapOk(applyBid(bidding, 'alice', 20, 'required bid', NOW));
+    const s2 = unwrapOk(applyBid(s1, 'user', 90, 'observer high', NOW));
+    const depleting = {
+      ...s2,
+      agents: {
+        alice: { ...s2.agents['alice']!, quota_remaining: 0, fallback_used: false },
+        user: { ...s2.agents['user']!, quota_remaining: 0, fallback_used: true },
+      },
+    };
+    const [, decision] = unwrapOk(resolveWinner(depleting, NOW));
+    expect('no_winner' in decision && decision.reason).toBe('epoch_transition');
+  });
+
+  it('applyExpel bans required but not observer when both passed as pending', () => {
+    const bidding = unwrapOk(startBidding(initSession(MIXED_INPUT, NOW), NOW));
+    const result = applyExpel({
+      ...bidding,
+      step: 3,
+      epoch: 2,
+      pending_bidders: ['alice', 'user'],
+    }, ['alice', 'user'], NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.state.agents['alice']?.banned).toBe(true);
+    expect(result.value.state.agents['user']?.banned).toBe(false);
+  });
+
+  it('noParticipants true after required expelled even if observer has quota', () => {
+    const ALICE_USER = {
+      topic: 'Alice + User',
+      agents: [
+        { name: 'alice', persona: '# Alice — Analyst\nRequired.', participation: 'required' as const },
+        { name: 'user', persona: '# User — Human\nObserver.', participation: 'observer' as const },
+      ],
+      min_bid_delay_ms: 0,
+    };
+    const bidding = unwrapOk(startBidding(initSession(ALICE_USER, NOW), NOW));
+    const expelled = unwrapOk(applyExpel({
+      ...bidding, step: 3, epoch: 2, pending_bidders: ['alice', 'user'],
+    }, ['alice', 'user'], NOW));
+    expect(expelled.state.agents['alice']?.banned).toBe(true);
+    expect(noParticipants(expelled.state)).toBe(true);
+    expect(expelled.state.agents['user']?.banned).toBe(false);
+  });
+
+  it('observer stays in current_bids but not pending_bidders across multi-round speech cycle', () => {
+    const init = initSession(MIXED_INPUT, NOW);
+    const started = unwrapOk(startBidding(init, NOW));
+
+    const r1Alice = unwrapOk(applyBid(started, 'alice', 80, 'first round', NOW));
+    const r1Bob = unwrapOk(applyBid(r1Alice, 'bob', 60, 'bob first', NOW));
+    const r1Observer = unwrapOk(applyBid(r1Bob, 'user', 70, 'first observer bid', NOW));
+    const [r1Resolved] = unwrapOk(resolveWinner(r1Observer, NOW));
+    const r1Speech = unwrapOk(applySpeech(r1Resolved, r1Resolved.current_speaker!, 'first response', NOW));
+
+    expect(r1Speech.current_bids['alice']).toBeNull();
+    expect(r1Speech.current_bids['user']).toBeNull();
+    expect(r1Speech.pending_bidders).toEqual(['alice', 'bob']);
+    expect(r1Speech.pending_bidders).not.toContain('user');
   });
 });

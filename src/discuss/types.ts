@@ -26,6 +26,7 @@ export type TranscriptEntry =
 export type AgentState = {
   persona: string;
   display_name: string;
+  participation: 'required' | 'observer';
   quota_remaining: number;
   total_speaks: number;
   fallback_used: boolean;
@@ -60,6 +61,7 @@ export type DiscussState = {
   transcript: TranscriptEntry[];
   transcript_rendered: number;
   bid_threshold: number;
+  min_bid_delay_ms: number;
 };
 
 export type Result<T> =
@@ -98,7 +100,9 @@ export type DiscussCreateInput = {
   agents: {
     name: string;
     persona: string;
+    participation: 'required' | 'observer';
   }[];
+  min_bid_delay_ms: number;
 };
 
 export type StepPhase =

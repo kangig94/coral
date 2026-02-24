@@ -189,7 +189,9 @@ function resetBids(state: DiscussState): DiscussState {
   for (const [name, agent] of Object.entries(state.agents)) {
     if (agent.banned) continue;
     current_bids[name] = null;
-    pending_bidders.push(name);
+    if (agent.participation === 'required') {
+      pending_bidders.push(name);
+    }
   }
 
   return {
@@ -203,7 +205,7 @@ function resetBids(state: DiscussState): DiscussState {
 
 function coldStartPick(state: DiscussState): string | null {
   const eligible = Object.entries(state.agents)
-    .filter(([, a]) => !a.banned && a.quota_remaining > 0)
+    .filter(([, a]) => !a.banned && a.quota_remaining > 0 && a.participation === 'required')
     .sort(([aName, a], [bName, b]) => {
       if (a.total_speaks !== b.total_speaks) return a.total_speaks - b.total_speaks;
       const aScore = state.current_bids[aName] ?? 0;
@@ -226,6 +228,7 @@ export function initSession(
     agents[a.name] = {
       persona: a.persona,
       display_name: parseDisplayName(a.persona, a.name),
+      participation: a.participation,
       quota_remaining: quotaPerEpoch,
       total_speaks: 0,
       fallback_used: false,
@@ -233,6 +236,7 @@ export function initSession(
     };
   }
   const agentNames = input.agents.map((a) => a.name);
+  const requiredNames = input.agents.filter((a) => a.participation === 'required').map((a) => a.name);
   return {
     session_id: '',
     session_dir: '',
@@ -246,7 +250,7 @@ export function initSession(
     agents,
     current_bids: Object.fromEntries(agentNames.map((n) => [n, null])),
     current_thoughts: {},
-    pending_bidders: agentNames,
+    pending_bidders: requiredNames,
     current_speaker: null,
     speaker_type: null,
     epoch_summary_written: null,
@@ -261,6 +265,7 @@ export function initSession(
     transcript: [],
     transcript_rendered: 0,
     bid_threshold: bidThreshold,
+    min_bid_delay_ms: input.min_bid_delay_ms,
   };
 }
 
@@ -324,8 +329,8 @@ export function resolveWinner(
     return { ok: false, error: 'invalid_status', detail: { current: state.status } };
   }
 
-  const activeAgents = Object.entries(state.agents).filter(([, a]) => !a.banned);
-  const missing = activeAgents
+  const requiredAgents = Object.entries(state.agents).filter(([, a]) => !a.banned && a.participation === 'required');
+  const missing = requiredAgents
     .map(([name]) => name)
     .filter((name) => state.current_bids[name] == null);
 
@@ -377,7 +382,7 @@ export function resolveWinner(
     return noWinnerResult(state, allBids, 'all_below_threshold', now, effectiveBids);
   }
 
-  const allExhausted = activeAgents.every(([, a]) => a.quota_remaining === 0 && a.fallback_used);
+  const allExhausted = requiredAgents.every(([, a]) => a.quota_remaining === 0);
   if (!allExhausted) {
     return noWinnerResult(state, allBids, 'all_blocked', now, effectiveBids);
   }
@@ -440,7 +445,7 @@ export function applySpeech(
     speaker: name,
     content,
     now,
-    decrementQuota: state.speaker_type === 'quota',
+    decrementQuota: state.speaker_type !== 'fallback',
     recordLastSpeechStep: state.step,
   });
   return { ok: true, value: speechState };
@@ -510,7 +515,7 @@ export function applySpeechTimeout(
       speaker: winner,
       content: timeoutMsg,
       now,
-      decrementQuota: state.speaker_type === 'quota',
+      decrementQuota: state.speaker_type !== 'fallback',
     }),
   };
 }
@@ -537,6 +542,7 @@ export function applyExpel(
 
     const targetAgent = nextState.agents[agent];
     if (!targetAgent) continue;
+    if (targetAgent.participation === 'observer') continue;
 
     nextState = {
       ...nextState,
@@ -584,6 +590,7 @@ export function applyEpochSummary(
       ...appendEntry(state, entry, now),
       epoch_summary_written: state.epoch,
       bid_release_step: state.step,
+      step: state.step + 1,
     },
   };
 }

@@ -342,3 +342,92 @@ describe('demographicsShape via seedShape: outlier_ratio edge values', () => {
     ).toThrow();
   });
 });
+
+describe('_2_create observer participation schema', () => {
+  const baseAgents = [
+    { name: 'alice', persona: 'Alice the analyst' },
+    { name: 'bob', persona: 'Bob the critic' },
+  ];
+
+  it('should default participation to required when omitted', () => {
+    const result = discussLeadOpSchema.parse({ op: '_2_create', topic: 'Test', agents: baseAgents });
+    if (result.op !== '_2_create') return;
+    expect(result.agents[0]?.participation).toBe('required');
+    expect(result.agents[1]?.participation).toBe('required');
+  });
+
+  it('should accept observer participation', () => {
+    const result = discussLeadOpSchema.parse({
+      op: '_2_create',
+      topic: 'Test',
+      agents: [
+        { name: 'alice', persona: 'Alice', participation: 'required' },
+        { name: 'user', persona: 'User', participation: 'observer' },
+      ],
+    });
+    if (result.op !== '_2_create') return;
+    expect(result.agents[1]?.participation).toBe('observer');
+  });
+
+  it('should reject invalid participation value', () => {
+    expect(() =>
+      discussLeadOpSchema.parse({
+        op: '_2_create',
+        topic: 'Test',
+        agents: [
+          { name: 'alice', persona: 'Alice', participation: 'spectator' },
+          { name: 'bob', persona: 'Bob' },
+        ],
+      } as never),
+    ).toThrow();
+  });
+
+  it('should default min_bid_delay_ms to 0 when omitted', () => {
+    const result = discussLeadOpSchema.parse({ op: '_2_create', topic: 'Test', agents: baseAgents });
+    if (result.op !== '_2_create') return;
+    expect(result.min_bid_delay_ms).toBe(0);
+  });
+
+  it('should accept valid min_bid_delay_ms', () => {
+    const result = discussLeadOpSchema.parse({ op: '_2_create', topic: 'Test', agents: baseAgents, min_bid_delay_ms: 10000 });
+    if (result.op !== '_2_create') return;
+    expect(result.min_bid_delay_ms).toBe(10000);
+  });
+
+  it('should reject min_bid_delay_ms above 30000', () => {
+    expect(() =>
+      discussLeadOpSchema.parse({ op: '_2_create', topic: 'Test', agents: baseAgents, min_bid_delay_ms: 30001 } as never),
+    ).toThrow();
+  });
+
+  it('should reject negative min_bid_delay_ms', () => {
+    expect(() =>
+      discussLeadOpSchema.parse({ op: '_2_create', topic: 'Test', agents: baseAgents, min_bid_delay_ms: -1 } as never),
+    ).toThrow();
+  });
+
+  // adversarial tests (red-attacker provenance)
+  it('should parse _2_create with all observers (schema allows, handler rejects)', () => {
+    const parsed = discussLeadOpSchema.parse({
+      op: '_2_create',
+      topic: 'Observer-Only Session',
+      agents: [
+        { name: 'user', persona: '# User — Human\nObserver', participation: 'observer' },
+        { name: 'spectator', persona: '# Spectator — Observer\nSilent', participation: 'observer' },
+      ],
+    });
+    if (parsed.op !== '_2_create') return;
+    expect(parsed.agents.every((a) => a.participation === 'observer')).toBe(true);
+  });
+
+  it('should accept max boundary min_bid_delay_ms of 30000', () => {
+    const parsed = discussLeadOpSchema.parse({
+      op: '_2_create',
+      topic: 'Boundary Test',
+      agents: baseAgents,
+      min_bid_delay_ms: 30000,
+    });
+    if (parsed.op !== '_2_create') return;
+    expect(parsed.min_bid_delay_ms).toBe(30000);
+  });
+});

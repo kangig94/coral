@@ -21,8 +21,8 @@ try {
   const discussDir = join(process.cwd(), '.claude', 'coral', 'discuss');
   if (!existsSync(discussDir)) process.exit(0);
 
-  // Strip Agent Teams dedup suffix: dc-architect-1 → dc-architect
-  const agentName = teammateName.replace(/-\d+$/, '');
+  // Strip Agent Teams dedup suffix then dc- prefix: dc-architect-1 → architect
+  const agentName = teammateName.replace(/-\d+$/, '').replace(/^dc-/, '');
 
   // Extract session_id from team_name (coral-dc-{session_id})
   if (!teamName.startsWith('coral-dc-')) process.exit(0);

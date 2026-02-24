@@ -23,7 +23,7 @@ A single bidding → speaking cycle. Every time an agent finishes speaking, the 
 
 ### Epoch
 
-A quota cycle. Each epoch gives every agent a fresh quota of speaking turns (default: 3). When all agents exhaust both quota AND fallback turns, the server automatically transitions to a new epoch (up to `max_epochs`, default: 2).
+A quota cycle. Each epoch gives every agent a fresh quota of speaking turns (default: 3). When all agents exhaust their quota, the server automatically transitions to a new epoch (up to `max_epochs`, default: 2). Fallback turns are optional and do not affect epoch transition.
 
 ### Quota
 
@@ -122,7 +122,7 @@ If both pools are empty AND it's a cold start (first round of an epoch): the ser
 
 If both pools are empty (not cold-start) and some bids ≥ bid_threshold:
 
-- **allExhausted** (every agent: `quota_remaining === 0` AND `fallback_used === true`):
+- **allExhausted** (every agent: `quota_remaining === 0`):
   - If `epoch < max_epochs` → **auto epoch transition** (quotas reset, epoch incremented, new bidding round)
   - If `epoch >= max_epochs` → **max_epochs_reached** → moderator synthesizes
 - **NOT allExhausted** (some agents still have quota but bid below threshold) → **all_blocked** → moderator synthesizes
@@ -150,7 +150,7 @@ effective = raw + (100/N) × (avg_speaks − my_speaks) − (50/N) × just_spoke
 
 Epoch transitions are **automatic** - no agent vote required.
 
-When the server detects allExhausted (all agents have used quota AND fallback) with remaining desire (some bids ≥ threshold) AND `epoch < max_epochs`:
+When the server detects allExhausted (all agents have used their quota) with remaining desire (some bids ≥ threshold) AND `epoch < max_epochs`:
 
 1. All quotas restored to `quota_per_epoch`
 2. All `fallback_used` flags cleared
@@ -328,7 +328,7 @@ All values are stored per-session at creation time (not re-read from env mid-ses
 | Recent turns | 5 | Default for `_4_transcript` recent mode (override with `last_n`) |
 | Cold start | Auto-pick | Server picks fairest agent to break the ice |
 | Fallback | One-time per epoch | Quota-exhausted agents get one emergency turn |
-| Epoch transition | Auto (no vote) | Server triggers when allExhausted + epoch < max_epochs |
+| Epoch transition | Auto (no vote) | Server triggers when all quotas exhausted + epoch < max_epochs (fallback status irrelevant) |
 | Bid scores | Sealed (audit only) | Never returned in any API response; winner identity revealed |
 | Team name | `coral-dc-{session_id}` | Deterministic from session ID |
 | Teammate prefix | `dc-{agent_name}` | Hook integration contract |
