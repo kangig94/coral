@@ -133,7 +133,13 @@ export class SessionStore {
   }
 
   load(fullSessionPath: string): DiscussState {
-    return JSON.parse(fs.readFileSync(this.statePath(fullSessionPath), 'utf8')) as DiscussState;
+    const state = JSON.parse(fs.readFileSync(this.statePath(fullSessionPath), 'utf8')) as DiscussState;
+    // normalize pre-observer sessions that lack new fields
+    for (const agent of Object.values(state.agents)) {
+      agent.participation ??= 'required';
+    }
+    state.min_bid_delay_ms ??= 0;
+    return state;
   }
 
   save(fullSessionPath: string, state: DiscussState): void {

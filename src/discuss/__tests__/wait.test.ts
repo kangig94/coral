@@ -28,6 +28,7 @@ function makeState(overrides: Partial<DiscussState> = {}): DiscussState {
       alice: {
         persona: '',
         display_name: 'Alice',
+        participation: 'required' as const,
         quota_remaining: 3,
         total_speaks: 0,
         fallback_used: false,
@@ -51,6 +52,7 @@ function makeState(overrides: Partial<DiscussState> = {}): DiscussState {
     transcript: [],
     transcript_rendered: 0,
     bid_threshold: DEFAULT_BID_THRESHOLD,
+    min_bid_delay_ms: 0,
     ...overrides,
   };
 }

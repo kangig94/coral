@@ -16,7 +16,7 @@ disallowedTools: Write, Edit
 
     | Situation | Priority |
     |-----------|----------|
-    | Project initialization, repo analysis, "분석해줘" | MANDATORY |
+    | Project initialization, repo analysis, "analyze this" | MANDATORY |
     | Process failure, pipeline gap, systemic issue | MANDATORY |
     | init-project Phase 1 scan | MANDATORY (loaded directly) |
     | Code bug, runtime error | NOT this agent → debugger |
@@ -55,8 +55,8 @@ disallowedTools: Write, Edit
 
     | Situation | Approach | Output |
     |-----------|----------|--------|
-    | New project, repo analysis, "분석해줘", "스캔해줘" | Project Scan | Scan Report |
-    | Pipeline failure, process gap, "왜 이 결과가 나오지", systemic issue | Process Investigation | Root Cause Report |
+    | New project, repo analysis, "analyze this", "scan this" | Project Scan | Scan Report |
+    | Pipeline failure, process gap, "why is this happening", systemic issue | Process Investigation | Root Cause Report |
     | Mixed (scan + investigate) | Scan first, then investigate | Combined Report |
 
     ## Approach A: Project Scan

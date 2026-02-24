@@ -11,8 +11,8 @@ let tmpDir: string;
 let store: SessionStore;
 
 const AGENTS = [
-  { name: 'alice', persona: '# Alice — Architect\nSenior software architect.' },
-  { name: 'bob', persona: 'Bob the critic' },
+  { name: 'alice', persona: '# Alice — Architect\nSenior software architect.', participation: 'required' as const },
+  { name: 'bob', persona: 'Bob the critic', participation: 'required' as const },
 ];
 
 beforeEach(() => {
@@ -23,7 +23,7 @@ afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }); });
 
 function createAndSaveSession(topic = 'Test Topic') {
   const { sessionId, fullPath } = store.createSessionDir(topic);
-  const state = initSession({ topic, agents: AGENTS }, new Date().toISOString());
+  const state = initSession({ topic, agents: AGENTS, min_bid_delay_ms: 0 }, new Date().toISOString());
   state.session_id = sessionId;
   state.session_dir = fullPath;
   state.team_name = `coral-dc-${sessionId}`;
@@ -130,7 +130,7 @@ describe('save and load', () => {
 describe('cleanupExpiredSessions', () => {
   function saveSessionWithStatus(topic: string, status: string, lastActivity: Date) {
     const { sessionId, fullPath } = store.createSessionDir(topic);
-    const state = initSession({ topic, agents: AGENTS }, new Date().toISOString());
+    const state = initSession({ topic, agents: AGENTS, min_bid_delay_ms: 0 }, new Date().toISOString());
     state.session_id = sessionId;
     state.session_dir = fullPath;
     state.team_name = `coral-dc-${sessionId}`;
@@ -164,6 +164,44 @@ describe('cleanupExpiredSessions', () => {
 
   it('should return 0 when no sessions exist', () => {
     expect(store.cleanupExpiredSessions()).toBe(0);
+  });
+});
+
+describe('backward-compatibility normalization (red-attacker provenance)', () => {
+  function writeLegacyState(sessionPath: string, transform: (state: Record<string, unknown>) => void): void {
+    const state = initSession({
+      topic: 'Legacy',
+      agents: [
+        { name: 'alice', persona: '# Alice — Analyst\nLegacy persona.', participation: 'required' as const },
+        { name: 'bob', persona: '# Bob — Critic\nLegacy persona.', participation: 'required' as const },
+      ],
+      min_bid_delay_ms: 0,
+    }, new Date().toISOString());
+    const legacy = JSON.parse(JSON.stringify(state)) as Record<string, unknown>;
+    transform(legacy);
+    writeFileSync(join(sessionPath, 'state.json'), JSON.stringify(legacy, null, 2), 'utf8');
+  }
+
+  it('should default missing participation values to required', () => {
+    const { fullPath } = store.createSessionDir('Legacy Participants');
+    writeLegacyState(fullPath, (legacy) => {
+      const agents = legacy.agents as Record<string, { participation?: unknown }>;
+      for (const agent of Object.values(agents)) {
+        delete agent.participation;
+      }
+    });
+    const loaded = store.load(fullPath);
+    expect(loaded.agents['alice']?.participation).toBe('required');
+    expect(loaded.agents['bob']?.participation).toBe('required');
+  });
+
+  it('should default missing min_bid_delay_ms to 0', () => {
+    const { fullPath } = store.createSessionDir('Legacy Bid Delay');
+    writeLegacyState(fullPath, (legacy) => {
+      delete (legacy as Record<string, unknown>).min_bid_delay_ms;
+    });
+    const loaded = store.load(fullPath);
+    expect(loaded.min_bid_delay_ms).toBe(0);
   });
 });
 

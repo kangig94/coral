@@ -131,11 +131,18 @@ export const tools = [
             properties: {
               name: { type: 'string' },
               persona: { type: 'string' },
+              participation: { type: 'string', enum: ['required', 'observer'] },
             },
             required: ['name', 'persona'],
           },
           minItems: 2,
           maxItems: 8,
+        },
+        min_bid_delay_ms: {
+          type: 'number',
+          minimum: 0,
+          maximum: 30000,
+          description: 'Soft observer bid wait ceiling ms after required bids complete (_2_create)',
         },
         controversy_axes: {
           type: 'array',
@@ -360,6 +367,9 @@ async function handle2Create(
   input: Omit<Extract<DiscussLeadOpInput, { op: '_2_create' }>, 'op'>,
   store: SessionStore,
 ): Promise<McpResult> {
+  if (!input.agents.some((a) => a.participation === 'required')) {
+    return jsonResult({ error: 'no_required_agents', message: 'At least one agent must have participation: required' });
+  }
   store.cleanupExpiredSessions();
   const now = nowIsoString();
   const bidThreshold = envInt('CORAL_DISCUSS_BID_THRESHOLD', 1, 100, DEFAULT_BID_THRESHOLD);
@@ -385,6 +395,7 @@ async function handle2Create(
     status: state.status,
     bid_threshold: state.bid_threshold,
     max_epochs: state.max_epochs,
+    min_bid_delay_ms: state.min_bid_delay_ms,
     agents: Object.keys(state.agents),
   });
 }
@@ -607,6 +618,12 @@ async function handle3Step(
       return jsonResult({ status: 'ended', phase: 'ended', reason: 'already_ended' });
     }
 
+    if (state.min_bid_delay_ms > 0) {
+      const allAgentsBid = (s: DiscussState) =>
+        Object.entries(s.agents).every(([name, a]) => a.banned || s.current_bids[name] != null);
+      await waitForCondition(statePath, allAgentsBid, state.min_bid_delay_ms);
+    }
+
     const resolved = await store.withLock<Result<ResolvePhase>>(sessionDir, async () => {
       const current = store.load(sessionDir);
       if (current.status === 'ended') {
@@ -727,6 +744,7 @@ async function handle6State(
         name,
         {
           display_name: agent.display_name,
+          participation: agent.participation,
           total_speaks: agent.total_speaks,
           quota_remaining: agent.quota_remaining,
           fallback_used: agent.fallback_used,
@@ -736,6 +754,7 @@ async function handle6State(
     ),
     pending_bidders: state.pending_bidders,
     total_agents: Object.keys(state.agents).length,
+    min_bid_delay_ms: state.min_bid_delay_ms,
   });
 }
 

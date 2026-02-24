@@ -334,3 +334,20 @@ describe('discuss_lead tool: transcript/state/epoch/end', () => {
     expect(r.isError).toBe(true);
   });
 });
+
+// adversarial test (red-attacker provenance)
+describe('_2_create observer-only guard', () => {
+  it('should reject _2_create with all observers at handler level', async () => {
+    const r = await handleToolCall('discuss_lead', {
+      op: '_2_create',
+      topic: 'Observer-Only',
+      agents: [
+        { name: 'user', persona: '# User — Human\nObserver', participation: 'observer' },
+        { name: 'spectator', persona: '# Spectator — Observer\nSilent', participation: 'observer' },
+      ],
+    }, store);
+    const data = JSON.parse(r.content[0].text) as Record<string, unknown>;
+    expect(r.isError).toBe(false);
+    expect(data.error).toBe('no_required_agents');
+  });
+});

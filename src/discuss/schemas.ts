@@ -56,6 +56,7 @@ const createShape = z.object({
       z.object({
         name: agentNameField,
         persona: nonEmptyString,
+        participation: z.enum(['required', 'observer']).default('required'),
       }),
     )
     .min(2)
@@ -63,7 +64,8 @@ const createShape = z.object({
     .refine(
       (agents) => hasUniqueItems(agents.map((agent) => agent.name)),
       'Agent names must be unique',
-  ),
+    ),
+  min_bid_delay_ms: z.number().int().min(0).max(30000).default(0),
 }).strict();
 
 const stepShape = z.object({
