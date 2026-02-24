@@ -1,7 +1,7 @@
 ---
 name: discuss
 description: Moderated multi-agent discussion via Agent Teams
-argument-hint: "[topic] [--user] [--hints axis1:pos1,pos2 axis2:pos1,pos2]"
+argument-hint: "[--user] [topic] [--hints axis1:pos1,pos2 axis2:pos1,pos2]"
 ---
 
 # Moderated Multi-Agent Discussion
