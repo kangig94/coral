@@ -56,7 +56,7 @@ Before any other action, verify the Agent Teams environment:
    - **discuss-lead** (always): `Task(subagent_type: 'coral:discuss-lead', team_name, name: 'discuss-lead', prompt: "Run discussion for session {session_id}. After each speech, SendMessage the full speech content to team lead. Do NOT handle setup or shutdown — main context handles both.{user_hint}")`
      - If `--user`: `user_hint` = `" Human 'user' is an observer. Do NOT force-stop observer speakers. Remind team lead 'Use /bid to participate' each round."`
      - Otherwise: `user_hint` = `""`
-   - **Discussants** (AI agents only): One per agent with `participation: 'required'`. Skip `participation: 'observer'` agents — they interact via `/bid`, not as spawned teammates.
+   - **Discussants** (AI agents only): One per agent with `participation: 'required'`, using `name: 'dc-{agent_name}'` (e.g., agent `park` → teammate `dc-park`). Skip `participation: 'observer'` agents — they interact via `/bid`, not as spawned teammates.
 
 7. **If `--user`**: Return immediately to the user: "Discussion started! Use `/bid <score>, <thought>` to submit a bid, or `/bid <your speech>` when you win the floor."
 
