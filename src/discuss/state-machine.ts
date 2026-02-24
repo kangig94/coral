@@ -382,7 +382,7 @@ export function resolveWinner(
     return noWinnerResult(state, allBids, 'all_below_threshold', now, effectiveBids);
   }
 
-  const allExhausted = requiredAgents.every(([, a]) => a.quota_remaining === 0 && a.fallback_used);
+  const allExhausted = requiredAgents.every(([, a]) => a.quota_remaining === 0);
   if (!allExhausted) {
     return noWinnerResult(state, allBids, 'all_blocked', now, effectiveBids);
   }
@@ -590,6 +590,7 @@ export function applyEpochSummary(
       ...appendEntry(state, entry, now),
       epoch_summary_written: state.epoch,
       bid_release_step: state.step,
+      step: state.step + 1,
     },
   };
 }

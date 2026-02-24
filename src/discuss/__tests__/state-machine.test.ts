@@ -1180,7 +1180,7 @@ describe('observer participation', () => {
     if (!result.ok) expect(result.error).toBe('quorum_not_met');
   });
 
-  it('resolveWinner all_blocked when alice fallback unused and user exhausted', () => {
+  it('resolveWinner epoch_transition when alice fallback unused and user exhausted', () => {
     const ALICE_USER = {
       topic: 'Alice + User',
       agents: [
@@ -1200,7 +1200,7 @@ describe('observer participation', () => {
       },
     };
     const [, decision] = unwrapOk(resolveWinner(depleting, NOW));
-    expect('no_winner' in decision && decision.reason).toBe('all_blocked');
+    expect('no_winner' in decision && decision.reason).toBe('epoch_transition');
   });
 
   it('applyExpel bans required but not observer when both passed as pending', () => {

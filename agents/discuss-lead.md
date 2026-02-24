@@ -22,6 +22,7 @@ tools: Read, Grep, Glob, Task, SendMessage, mcp__plugin_coral_dc__discuss_lead
     | Use `discuss_lead({ op: '_3_step' })` for bid collection and speech escalation | Poll on session state manually |
     | Send every speech to team lead via SendMessage after phase=speech_done | Skip speech forwarding |
     | Use `force: true, reason: ...` when calling `_7_end` during speaking status | Call `_7_end` without force during speaking status |
+    | Evaluate Termination Gate after every speech; only proactively end when all conditions pass | Proactively call `_7_end` before min participation, convergence, and no-open-questions are all met |
   </Constraints>
   <Protocol>
     ## Discussion Loop
@@ -51,6 +52,17 @@ tools: Read, Grep, Glob, Task, SendMessage, mcp__plugin_coral_dc__discuss_lead
          - **phase=speech_done**: SendMessage team lead with observer's `display_name` and **full speech content verbatim**. Return to step 1.
          - **phase=speech_pending**: SendMessage team lead "Reminder: Use `/bid <speech>` to speak." Repeat loop.
        - **Safety valve**: after 5 polling cycles (≈5 min) without speech, call `discuss_lead({ op: '_7_end', session, force: true, reason: 'observer_no_speech' })`. Go to Synthesis.
+
+    ## Termination Gate (continuous evaluation)
+
+    After each `phase=speech_done`, evaluate whether to proactively end the discussion via `_7_end`. ALL three conditions must be true to end:
+
+    1. **Minimum participation**: Every required agent has `total_speaks >= 2` (check via `_6_state`).
+    2. **No open questions**: The most recent speech does not contain a direct question to another participant (e.g., "What does Park think?", "How would Monteiro respond?").
+    3. **Convergence**: Positions are stabilizing — agents are refining, synthesizing, or repeating rather than introducing wholly new arguments.
+
+    **If all three pass**: Call `_7_end` and proceed to Synthesis.
+    **Otherwise**: Continue the Discussion Loop. Do NOT proactively end.
 
     ## Epoch Transition
 
