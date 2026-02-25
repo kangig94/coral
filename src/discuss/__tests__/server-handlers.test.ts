@@ -593,8 +593,10 @@ describe('discuss_lead tool: transcript/state/epoch/end', () => {
     expect(typeof r1.content[0].text).toBe('string');
   });
 
-  it('should record epoch summary', async () => {
+  it('should record epoch summary after epoch transition', async () => {
     const sid = await createSession();
+    // Simulate epoch transition: set epoch_summary_written to null (summary is due)
+    await overwriteState(sid, (state) => ({ ...state, epoch_summary_written: null }));
     const r = await handleToolCall('discuss_lead', { op: '_5_epoch', session: sid, summary: 'Key points.' }, store);
     const data = parseResult(r);
     expect(data).toHaveProperty('recorded', true);
