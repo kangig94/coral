@@ -183,7 +183,7 @@ async function handleCreate(
   state.session_id = sessionId;
 
   await store.withLock(fullPath, async () => {
-    store.initTranscript(fullPath, input.topic);
+    store.initTranscript(fullPath, input.topic, state.agents);
     store.save(fullPath, state);
   });
 

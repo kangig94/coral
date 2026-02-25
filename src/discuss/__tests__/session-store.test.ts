@@ -26,7 +26,7 @@ function createAndSaveSession(topic = 'Test Topic') {
   const { sessionId, fullPath } = store.createSessionDir(topic);
   const initialState = initSession({ topic, agents: AGENTS, min_bid_delay_ms: 0 }, new Date().toISOString());
   initialState.session_id = sessionId;
-  store.initTranscript(fullPath, topic);
+  store.initTranscript(fullPath, topic, initialState.agents);
   store.save(fullPath, initialState);
   return { sessionId, fullPath, state: initialState };
 }
@@ -334,7 +334,7 @@ describe('renderCursors cursor persistence', () => {
     const legacy = { ...state, transcript: [speechEntry] } as Record<string, unknown>;
     delete legacy['transcript_rendered'];
     writeFileSync(join(fullPath, 'state.json'), JSON.stringify(legacy, null, 2), 'utf8');
-    store.initTranscript(fullPath, 'Legacy Cursor');
+    store.initTranscript(fullPath, 'Legacy Cursor', state.agents);
 
     const loaded = store.load(fullPath);
     const newEntry: DiscussState['transcript'][number] = {
