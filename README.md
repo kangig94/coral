@@ -83,8 +83,37 @@ Look familiar? Browse this repository's `.claude/` folder.
 
 > **Requires:** `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in `.claude/settings.json`
 
-Multiple AI personas argue from different angles. The most urgent points surface first.
-Structured synthesis at the end. Transcripts saved to `.claude/coral/discuss/`.
+Multiple AI personas argue from different angles. Bid-based turn-taking surfaces the most
+urgent responses first. Positions evolve through genuine cross-examination. Structured
+synthesis at the end. Transcripts saved to `.claude/coral/discuss/`.
+
+Example: **"Am I AGI?"** — Full transcript [EN](docs/examples/discuss-agi-en.md) · [KR](docs/examples/discuss-agi-kr.md)
+
+<details>
+<summary>Highlights from the discussion</summary>
+
+A phenomenologist, a computational neuroscientist, an AI safety researcher, a robotics
+engineer, and an Eastern philosophy scholar debate whether LLMs constitute AGI.
+5 agents, 15 speeches, 3 convergence points.
+
+> *"Your robots have given me pause — genuinely. A robot arm that has touched ten thousand
+> objects still can't generalize the way an LLM can."*
+> — Prof. Klaus Hartmann, conceding to Daan Vermeer's empirical challenge
+
+> *"LLMs may be the first external instantiation of a theoretical structure Buddhist
+> philosophers argued for 1,500 years ago."*
+> — Priya Raghunathan, mapping Yogacara's alaya-vijnana onto transformer architecture
+
+> *"Think of the difference between an amnesiac with a diary and a person with intact memory.
+> The scaffolding doesn't buy us the continuity we need. It buys us the appearance of it,
+> which is worse."*
+> — Daan Vermeer, on why persistent memory tools don't solve the temporal discontinuity problem
+
+The panel converged on: LLMs are not AGI but a **genuinely novel temporal entity** — with
+impressive competence within their characteristic timescale and unknown behavior at their
+structural boundaries.
+
+</details>
 
 ---
 
