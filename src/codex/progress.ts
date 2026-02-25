@@ -31,17 +31,14 @@ export function extractProgressMessage(event: CodexThreadEvent): string | null {
 
   const item = event.item;
   switch (item.type) {
-    case 'reasoning': {
+    case 'reasoning':
       return typeof item.text === 'string' ? item.text.slice(0, 120) : null;
-    }
-    case 'web_search': {
+    case 'web_search':
       return typeof item.query === 'string' ? `Searching: ${item.query}` : null;
-    }
     case 'agent_message':
       return 'Generating response...';
-    case 'command_execution': {
+    case 'command_execution':
       return typeof item.command === 'string' ? `Running: ${item.command}` : null;
-    }
     case 'file_change': {
       const firstChange = Array.isArray(item.changes) ? item.changes[0] : undefined;
       return `Editing: ${typeof firstChange?.path === 'string' ? firstChange.path : 'file'}`;
@@ -55,18 +52,21 @@ export function extractProgressMessage(event: CodexThreadEvent): string | null {
 
 /** Extract the progress UUID from a progress file path. */
 export function extractProgressId(filePath: string): string | null {
-  const match = filePath.match(/coral-progress-([0-9a-f-]{36})\.jsonl$/);
-  return match ? match[1] : null;
+  return filePath.match(/coral-progress-([0-9a-f-]{36})\.jsonl$/)?.[1] ?? null;
+}
+
+function appendJsonLine(filePath: string, payload: Record<string, unknown>): void {
+  appendFileSync(filePath, JSON.stringify(payload) + '\n');
 }
 
 /** Append a progress event to the file. */
 export function appendProgressEvent(filePath: string, eventType: string, message: string): void {
-  try { appendFileSync(filePath, JSON.stringify({ ts: Date.now(), event: eventType, message }) + '\n'); }
+  try { appendJsonLine(filePath, { ts: Date.now(), event: eventType, message }); }
   catch { /* file write must not break execution */ }
 }
 
 /** Append a terminal result event (completed or error) to the progress file. */
 export function appendFinalResult(filePath: string, event: 'completed' | 'error', data: Record<string, unknown>): void {
-  try { appendFileSync(filePath, JSON.stringify({ ts: Date.now(), event, ...data }) + '\n'); }
+  try { appendJsonLine(filePath, { ts: Date.now(), event, ...data }); }
   catch { /* must not break execution */ }
 }

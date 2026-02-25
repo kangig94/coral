@@ -21,14 +21,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * so we deduplicate them via a Set.
  */
 export function parseCodexJsonl(output: string): ParsedCodexOutput {
-  const lines = output.split('\n').filter((l) => l.trim() !== '');
   const messages: string[] = [];
   const errors: string[] = [];
   const warnings: string[] = [];
   let sessionId: string | null = null;
   const seenErrors = new Set<string>();
 
-  for (const line of lines) {
+  for (const line of output.split('\n')) {
+    if (!line.trim()) continue;
+
     let event: unknown;
     try {
       event = JSON.parse(line);
@@ -45,11 +46,15 @@ export function parseCodexJsonl(output: string): ParsedCodexOutput {
 
     if (event.type === 'item.completed' && isRecord(event.item)) {
       const item = event.item;
-      if (item.type === 'agent_message' && typeof item.text === 'string') {
-        messages.push(item.text);
-      }
-      if (item.type === 'error' && typeof item.message === 'string') {
-        warnings.push(item.message);
+      switch (item.type) {
+        case 'agent_message':
+          if (typeof item.text === 'string') messages.push(item.text);
+          break;
+        case 'error':
+          if (typeof item.message === 'string') warnings.push(item.message);
+          break;
+        default:
+          break;
       }
       continue;
     }

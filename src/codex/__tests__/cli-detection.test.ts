@@ -8,11 +8,12 @@ vi.mock('node:child_process', () => ({
 import { execFile } from 'node:child_process';
 
 const mockExecFile = vi.mocked(execFile);
+type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
 
 function mockExecFileResult(error: Error | null, stdout: string): void {
   mockExecFile.mockImplementation((_cmd, _args, _opts, callback) => {
-    (callback as Function)(error, stdout, '');
-    return {} as any;
+    (callback as ExecFileCallback)(error, stdout, '');
+    return undefined as never;
   });
 }
 

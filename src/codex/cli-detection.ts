@@ -14,7 +14,7 @@ type CliInfo = {
 let cached: CliInfo | null = null;
 
 export async function detectCodexCli(): Promise<CliInfo> {
-  if (cached) return cached;
+  if (cached !== null) return cached;
   cached = await queryCodexCli();
   return cached;
 }

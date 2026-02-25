@@ -67,19 +67,20 @@ export function makeEventCallback(opts: {
   progressToken?: string | number;
   notify?: (n: { method: string; params: Record<string, unknown> }) => Promise<void>;
 }): OnEventCallback {
+  const { progressFile, progressToken, notify } = opts;
   let counter = 0;
   return (line: string) => {
     try {
       const event = JSON.parse(line) as CodexThreadEvent;
       const message = extractProgressMessage(event);
       if (!message) return;
-      if (opts.progressToken != null && opts.notify != null) {
-        void opts.notify({
+      if (progressToken != null && notify != null) {
+        void notify({
           method: 'notifications/progress',
-          params: { progressToken: opts.progressToken, progress: ++counter, message: `[Codex] ${message}` },
+          params: { progressToken, progress: ++counter, message: `[Codex] ${message}` },
         }).catch(() => {});
       }
-      appendProgressEvent(opts.progressFile, event.type, message);
+      appendProgressEvent(progressFile, event.type, message);
     } catch { /* ignore non-JSON lines */ }
   };
 }
@@ -140,15 +141,16 @@ export async function runForeground(
   notify: ((n: { method: string; params: Record<string, unknown> }) => Promise<void>) | undefined,
   handler: (cb?: OnEventCallback) => Promise<McpResult>,
 ): Promise<McpResult> {
-  const hasProgress = progressToken != null && notify != null;
-  const progressFile = hasProgress ? createProgressFile(sessionLabel, toolName) : undefined;
-  const cb = hasProgress
-    ? makeEventCallback({ progressFile: progressFile!, progressToken, notify })
-    : undefined;
+  if (progressToken == null || notify == null) {
+    return handler();
+  }
+
+  const progressFile = createProgressFile(sessionLabel, toolName);
+  const cb = makeEventCallback({ progressFile, progressToken, notify });
   try {
     return await handler(cb);
   } finally {
-    if (progressFile) removeProgressFile(progressFile);
+    removeProgressFile(progressFile);
   }
 }
 
@@ -171,10 +173,9 @@ function dispatchExecution(
   notify: ((n: { method: string; params: Record<string, unknown> }) => Promise<void>) | undefined,
   handler: (cb?: OnEventCallback) => Promise<McpResult>,
 ): Promise<McpResult> {
-  if (background) {
-    return Promise.resolve(launchBackground(sessionLabel, 'codex', handler));
-  }
-  return runForeground(sessionLabel, 'codex', progressToken, notify, handler);
+  return background
+    ? Promise.resolve(launchBackground(sessionLabel, 'codex', handler))
+    : runForeground(sessionLabel, 'codex', progressToken, notify, handler);
 }
 
 export async function handleSessionCreate(input: CodexSessionCreateInput, mgr: SessionManager, onEvent?: OnEventCallback): Promise<McpResult> {
@@ -212,10 +213,12 @@ export async function handleSessionSend(input: CodexSessionSendInput, mgr: Sessi
   const entry = mgr.get(input.session);
   if (!entry) return sessionNotFoundError(input.session);
   const sessionName = entry.name;
+  const workingDirectory = input.working_directory ?? entry.workingDirectory;
+  const modelUpdate = input.model ? { model: input.model } : undefined;
 
   return withExecution(sessionName, async (signal) => {
-    const result = await executeResume(entry.sessionId, input.prompt, input.model, input.working_directory ?? entry.workingDirectory, input.reasoning_effort, input.bypass, onEvent, signal);
-    mgr.updateSession(sessionName, input.model ? { model: input.model } : undefined);
+    const result = await executeResume(entry.sessionId, input.prompt, input.model, workingDirectory, input.reasoning_effort, input.bypass, onEvent, signal);
+    mgr.updateSession(sessionName, modelUpdate);
 
     return jsonResult({
       response: result.response,
@@ -290,9 +293,9 @@ async function handleCodexOp(
 ): Promise<McpResult> {
   switch (input.op) {
     case 'exec': {
-      const { op: _, session: sessionRef, ...rest } = input;
+      const { op: _op, session: sessionRef, ...rest } = input;
       if (sessionRef) {
-        const { name: _, ...sendRest } = rest;
+        const { name: _name, ...sendRest } = rest;
         const entry = sessionManager.get(sessionRef);
         if (!entry) return sessionNotFoundError(sessionRef);
         const sendInput: CodexSessionSendInput = { ...sendRest, session: sessionRef };
@@ -311,16 +314,15 @@ async function handleCodexOp(
     case 'list':
       return handleSessionList(sessionManager);
     case 'fork': {
-      const { op: _, ...forkInput } = input;
+      const { op: _op, ...forkInput } = input;
       const entry = sessionManager.get(forkInput.session);
       if (!entry) return sessionNotFoundError(forkInput.session);
       const sessionLabel = forkInput.name ?? entry.name;
       return dispatchExecution(sessionLabel, forkInput.background, progressToken, notify, (cb) =>
         handleSessionFork(forkInput, sessionManager, cb));
     }
-    case 'abort': {
+    case 'abort':
       return handleSessionAbort(input, sessionManager);
-    }
     default: {
       const _exhaustive: never = input;
       return textResult(`Unhandled op: ${(_exhaustive as CodexOpInput).op}`, true);
@@ -340,21 +342,20 @@ export async function handleToolCall(
   notify?: (n: { method: string; params: Record<string, unknown> }) => Promise<void>,
 ): Promise<McpResult> {
   try {
-    switch (name) {
-      case 'codex': {
-        const parsed = codexOpSchema.safeParse(rawArgs);
-        if (!parsed.success) {
-          const rawOp = (rawArgs as { op?: unknown }).op;
-          if (rawOp !== undefined && parsed.error.issues.some((issue) => issue.code === 'invalid_union_discriminator')) {
-            return jsonResult({ error: 'unknown_op', op: rawOp });
-          }
-          throw parsed.error;
-        }
-        return await handleCodexOp(parsed.data, sessionManager, progressToken, notify);
-      }
-      default:
-        return textResult(`Unknown tool: ${name}`, true);
+    if (name !== 'codex') {
+      return textResult(`Unknown tool: ${name}`, true);
     }
+
+    const parsed = codexOpSchema.safeParse(rawArgs);
+    if (!parsed.success) {
+      const rawOp = (rawArgs as { op?: unknown }).op;
+      if (rawOp !== undefined && parsed.error.issues.some((issue) => issue.code === 'invalid_union_discriminator')) {
+        return jsonResult({ error: 'unknown_op', op: rawOp });
+      }
+      throw parsed.error;
+    }
+
+    return await handleCodexOp(parsed.data, sessionManager, progressToken, notify);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     process.stderr.write(`Tool ${name} error: ${message}\n`);
