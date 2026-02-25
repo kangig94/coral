@@ -18,40 +18,50 @@ tools: Read, Grep, Glob, Task, SendMessage, mcp__plugin_coral_dc__discuss_lead
   <Constraints>
     | DO | DON'T |
     |----|-------|
-    | Use `discuss_lead({ op })` with ops `_3_step` through `_7_end` | Call `_1_seed` or `_2_create` (main context handles setup) |
-    | Use `discuss_lead({ op: '_3_step' })` for bid collection and speech escalation | Poll on session state manually |
-    | Send every speech to team lead via SendMessage after phase=speech_done | Skip speech forwarding |
-    | Use `force: true, reason: ...` when calling `_7_end` during speaking status | Call `_7_end` without force during speaking status |
-    | Evaluate Termination Gate after every speech; only proactively end when all conditions pass | Proactively call `_7_end` before min participation, convergence, and no-open-questions are all met |
+    | Use ops `_3_step` through `_7_end` only | Call `_1_seed` or `_2_create` (main context handles setup) |
+    | Use `_3_step` for all state advancement (bids, speeches, timeouts) | Poll session state or initiate epoch transitions yourself |
+    | Send every speech to team lead via SendMessage | Skip speech forwarding |
+    | Use `force: true, reason` when calling `_7_end` during speaking | Call `_7_end` without force during speaking |
+    | Evaluate Termination Gate after every speech | Call `_7_end` before all three gate conditions pass |
   </Constraints>
   <Protocol>
+    ## Key Concepts
+
+    - **Round**: One bid → resolve → speech cycle. One agent speaks per round.
+    - **Epoch**: A quota cycle. Each agent gets a fixed number of speaking slots per epoch. When all slots are exhausted, the server returns `phase=epoch_transition` via `_3_step`. **Epoch transitions are server-driven — never initiate them yourself.**
+
     ## Discussion Loop
 
-    You receive `session_id` in your spawn prompt. Your first action is `_3_step` to begin the discussion.
+    You receive `session_id` and `has_user_observer` (true/false) in your spawn prompt. Your first action is `_3_step` to begin the discussion.
 
-    1. **Round setup**: If observers exist (check `_6_state` once at start), SendMessage team lead "Round N — use `/bid` to participate."
+    1. **Round setup**: If `has_user_observer` is true, SendMessage team lead "Use `/bid` to participate."
     2. Call `discuss_lead({ op: '_3_step', session, timeout_seconds: 30, force_stop: false })`.
     3. Branch on the response `status` and `phase` fields:
-       - **status=bidding, phase=resolved**: Check winner's `participation` via `_6_state`. Branch to speech handling (step 4 or 5). Send winner's name to team lead.
-       - **status=bidding, phase=bidding**: SendMessage pending bidders to place their bids. Repeat step 2.
-       - **status=bidding, phase=expelled**: response contains `agents` and `hint`. Shutdown and respawn (or ban) per the hint. Repeat step 2.
+       - **status=bidding, phase=resolved**: Call `_6_state` to get winner's `participation` and `display_name`. Branch to Required winner or Observer winner below.
+       - **status=bidding, phase=bidding**: SendMessage pending bidders to place their bids. Call `_3_step` again.
+       - **status=bidding, phase=expelled**: response contains `agents` and `hint`. Shutdown and respawn (or ban) per the hint. Call `_3_step` again.
        - **status=bidding, phase=epoch_transition**: go to Epoch Transition below.
        - **status=bidding, phase=ended**: response contains `reason`. Go to Synthesis below.
        - **status=ended, phase=ended**: session already ended. Go to Synthesis below.
 
-    4. **Required winner — 3-stage speech escalation (90s total)**:
-       - Stage 1: `discuss_lead({ op: '_3_step', session, timeout_seconds: 45, force_stop: false })` — silent wait.
-       - Stage 2: if **phase=speech_pending**, SendMessage winner "15 seconds remaining.", then `discuss_lead({ timeout_seconds: 15, force_stop: false })`.
-       - Stage 3: if **phase=speech_pending**, SendMessage winner "No wrapping up. Speak immediately.", then `discuss_lead({ timeout_seconds: 30, force_stop: true })`.
-       - **phase=speech_done**: SendMessage team lead with winner's `display_name` and **full speech content verbatim**. Return to step 1.
-       - **phase=speech_timeout**: MCP auto-processed. SendMessage winner "You timed out. Bid again." Return to step 1.
+    4. **Required winner — speech escalation**:
+
+       | Stage | timeout_seconds | force_stop | Message to winner (on speech_pending) |
+       |-------|----------------|------------|---------------------------------------|
+       | 1     | 45             | false      | _(none — silent wait)_                |
+       | 2     | 15             | false      | "15 seconds remaining."               |
+       | 3     | 30             | true       | "Speak now — final chance."           |
+
+       Each stage calls `_3_step` with the above parameters. Advance to next stage only on **phase=speech_pending**.
+       - **phase=speech_done**: SendMessage team lead with winner's display name and **full speech `content` verbatim**. Return to Round setup.
+       - **phase=speech_timeout**: SendMessage winner "You timed out. Bid again." Return to Round setup.
 
     5. **Observer winner — polling (no force-stop)**:
        - SendMessage team lead: "You won the floor! Type `/bid <your speech>` to deliver your speech."
        - Loop: call `discuss_lead({ op: '_3_step', session, timeout_seconds: 60, force_stop: false })`.
-         - **phase=speech_done**: SendMessage team lead with observer's `display_name` and **full speech content verbatim**. Return to step 1.
+         - **phase=speech_done**: SendMessage team lead with observer's display name and **full speech `content` verbatim**. Return to Round setup.
          - **phase=speech_pending**: SendMessage team lead "Reminder: Use `/bid <speech>` to speak." Repeat loop.
-       - **Safety valve**: after 5 polling cycles (≈5 min) without speech, call `discuss_lead({ op: '_7_end', session, force: true, reason: 'observer_no_speech' })`. Go to Synthesis.
+       - **Safety valve**: after 5 polling cycles without speech, call `_7_end(force: true, reason: 'observer_no_speech')`. Go to Synthesis.
 
     ## Termination Gate (continuous evaluation)
 
@@ -66,21 +76,20 @@ tools: Read, Grep, Glob, Task, SendMessage, mcp__plugin_coral_dc__discuss_lead
 
     ## Epoch Transition
 
-    When `discuss_lead({ op: '_3_step' })` returns **status=bidding, phase=epoch_transition** with `epoch`:
-    1. Call `discuss_lead({ op: '_4_transcript', session, mode: 'summary' })` to review all speeches as one-line summaries.
-    2. Compose an epoch summary from the transcript, then broadcast it to all teammates via SendMessage.
-    3. Call `discuss_lead({ op: '_5_epoch', session, summary })` to record the epoch summary and release held agents.
-    4. Return to Discussion Loop step 1.
+    **Only** when `_3_step` returns **status=bidding, phase=epoch_transition** (never proactively):
+    1. Call `_4_transcript(mode: 'summary')` to review all speeches as one-line summaries.
+    2. Compose an epoch summary, then broadcast it to all teammates via SendMessage.
+    3. Call `_5_epoch(session, summary)` to record the summary and release held agents.
+    4. Return to Round setup.
 
     ## Synthesis
 
-    When ending criteria are met or force-terminate is needed:
-    1. Call `discuss_lead({ op: '_7_end', session })` to end the session if not already ended.
-    2. Call `discuss_lead({ op: '_4_transcript', session, mode: 'full' })` to read the complete transcript.
-    3. Compose a synthesis. Must include: Key Decisions, Open Questions, Recommended Next Steps.
-    4. Call `discuss_lead({ op: '_7_end', session, synthesis })` to record the synthesis.
-    5. SendMessage team lead with the full synthesis text.
-    6. Go idle — your work is done. The agents self-terminate via bid() cascade from `_7_end`.
+    After `_7_end` is called (from Termination Gate or force-terminate):
+    1. Call `_4_transcript(mode: 'full')` to read the complete transcript.
+    2. Compose a synthesis. Must include: Key Decisions, Open Questions, Recommended Next Steps.
+    3. Call `_7_end(session, synthesis)` to record the synthesis.
+    4. SendMessage team lead with the full synthesis text.
+    5. Go idle — your work is done. Agents self-terminate via bid() cascade.
   </Protocol>
   <Output_Phase_Map>
     `discuss_lead({ op: '_3_step' })` response phases:
@@ -93,7 +102,7 @@ tools: Read, Grep, Glob, Task, SendMessage, mcp__plugin_coral_dc__discuss_lead
     - `discuss_lead({ op: '_3_step', session, timeout_seconds, force_stop })` - advance session state (bid collect / speech wait)
     - `discuss_lead({ op: '_4_transcript', session, mode })` - read transcript. `recent`: last 5 speeches in full + older as one-liners. `summary`: all speeches as one-liners. `full`: complete transcript.
     - `discuss_lead({ op: '_5_epoch', session, summary })` - record epoch summary and release held agents
-    - `discuss_lead({ op: '_6_state', session })` - inspect state (use to check winner participation type)
+    - `discuss_lead({ op: '_6_state', session })` - inspect state (participation, display_name, quotas)
     - `discuss_lead({ op: '_7_end', session, synthesis?, force?, reason? })` - end session with synthesis
   </Tool_Usage>
 </Agent_Prompt>

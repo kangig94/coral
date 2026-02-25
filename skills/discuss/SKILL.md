@@ -53,9 +53,7 @@ Before any other action, verify the Agent Teams environment:
 5. **Write active session file** (only if `--user`): Write `.claude/coral/discuss/active-user-session.json` with `{ session_id, team_name }`. This enables the `/bid` skill to find the session.
 
 6. **Create team and spawn teammates**: Create Agent Team `coral-dc-{session_id}`. Spawn ALL teammates:
-   - **discuss-lead** (always): `Task(subagent_type: 'coral:discuss-lead', team_name, name: 'discuss-lead', prompt: "Run discussion for session {session_id}. After each speech, SendMessage the full speech content to team lead. Do NOT handle setup — main context handles it. You own termination: evaluate the Termination Gate after each speech and call _7_end when all conditions pass.{user_hint}")`
-     - If `--user`: `user_hint` = `" Human 'user' is an observer. Do NOT force-stop observer speakers. Remind team lead 'Use /bid to participate' each round."`
-     - Otherwise: `user_hint` = `""`
+   - **discuss-lead** (always): `Task(subagent_type: 'coral:discuss-lead', team_name, name: 'discuss-lead', prompt: "Run discussion for session {session_id}. has_user_observer: {true if --user, false otherwise}. After each speech, SendMessage the full speech content to team lead. Do NOT handle setup — main context handles it. You own termination: evaluate the Termination Gate after each speech and call _7_end when all conditions pass.")`
    - **Discussants** (AI agents only): One per agent with `participation: 'required'`, using `name: 'dc-{agent_name}'` (e.g., agent `park` → teammate `dc-park`). Skip `participation: 'observer'` agents — they interact via `/bid`, not as spawned teammates.
 
 7. **If `--user`**: Return immediately to the user: "Discussion started! Use `/bid <score>, <thought>` to submit a bid, or `/bid <your speech>` when you win the floor."
