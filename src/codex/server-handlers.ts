@@ -53,25 +53,6 @@ export const tools = [
   },
 ];
 
-/** Extract completion fields from a handler's JSON result for the progress file. */
-export function extractCompletionData(result: McpResult, sessionLabel: string): Record<string, unknown> {
-  const data = JSON.parse(result.content[0].text);
-  const completion: Record<string, unknown> = {
-    response: data.response,
-    session: data.session ?? null,
-    session_name: sessionLabel,
-    model: data.model,
-    duration_ms: data.duration_ms,
-  };
-  if (data.notice) completion.notice = data.notice;
-  if (data.aborted) completion.aborted = true;
-  if (data.non_resumable) completion.non_resumable = true;
-  if (data.exit_code !== undefined) completion.exit_code = data.exit_code;
-  if (Array.isArray(data.errors)) completion.errors = data.errors;
-  if (Array.isArray(data.warnings)) completion.warnings = data.warnings;
-  return completion;
-}
-
 /** Session-not-found error message with recovery hint. */
 export function sessionNotFoundError(ref: string): McpResult {
   return textResult(
@@ -105,6 +86,25 @@ export function makeEventCallback(opts: {
 
 /** Track active background progress files for shutdown cleanup. */
 export const activeBackgroundFiles = new Set<string>();
+
+/** Extract completion fields from a handler's JSON result for the progress file. */
+export function extractCompletionData(result: McpResult, sessionLabel: string): Record<string, unknown> {
+  const data = JSON.parse(result.content[0].text);
+  const completion: Record<string, unknown> = {
+    response: data.response,
+    session: data.session ?? null,
+    session_name: sessionLabel,
+    model: data.model,
+    duration_ms: data.duration_ms,
+  };
+  if (data.notice) completion.notice = data.notice;
+  if (data.aborted) completion.aborted = true;
+  if (data.non_resumable) completion.non_resumable = true;
+  if (data.exit_code !== undefined) completion.exit_code = data.exit_code;
+  if (Array.isArray(data.errors)) completion.errors = data.errors;
+  if (Array.isArray(data.warnings)) completion.warnings = data.warnings;
+  return completion;
+}
 
 /**
  * Launch a handler in the background with a progress file.
@@ -152,11 +152,35 @@ export async function runForeground(
   }
 }
 
+async function withExecution<T>(
+  name: string,
+  fn: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = registerExecution(name);
+  try {
+    return await fn(controller.signal);
+  } finally {
+    unregisterExecution(name, controller);
+  }
+}
+
+function dispatchExecution(
+  sessionLabel: string,
+  background: boolean,
+  progressToken: string | number | undefined,
+  notify: ((n: { method: string; params: Record<string, unknown> }) => Promise<void>) | undefined,
+  handler: (cb?: OnEventCallback) => Promise<McpResult>,
+): Promise<McpResult> {
+  if (background) {
+    return Promise.resolve(launchBackground(sessionLabel, 'codex', handler));
+  }
+  return runForeground(sessionLabel, 'codex', progressToken, notify, handler);
+}
+
 export async function handleSessionCreate(input: CodexSessionCreateInput, mgr: SessionManager, onEvent?: OnEventCallback): Promise<McpResult> {
   const sessionName = input.name ?? `session-${Date.now()}`;
-  const controller = registerExecution(sessionName);
-  try {
-    const result = await executeOneShot(input.prompt, input.model, input.working_directory, input.reasoning_effort, input.bypass, onEvent, controller.signal);
+  return withExecution(sessionName, async (signal) => {
+    const result = await executeOneShot(input.prompt, input.model, input.working_directory, input.reasoning_effort, input.bypass, onEvent, signal);
 
     if (!result.sessionId) {
       return jsonResult({
@@ -181,33 +205,29 @@ export async function handleSessionCreate(input: CodexSessionCreateInput, mgr: S
       duration_ms: result.durationMs,
       ...resultExtras(result),
     });
-  } finally {
-    unregisterExecution(sessionName, controller);
-  }
+  });
 }
 
 export async function handleSessionSend(input: CodexSessionSendInput, mgr: SessionManager, onEvent?: OnEventCallback): Promise<McpResult> {
   const entry = mgr.get(input.session);
   if (!entry) return sessionNotFoundError(input.session);
+  const sessionName = entry.name;
 
-  const controller = registerExecution(entry.name);
-  try {
-    const result = await executeResume(entry.sessionId, input.prompt, input.model, input.working_directory ?? entry.workingDirectory, input.reasoning_effort, input.bypass, onEvent, controller.signal);
-    mgr.updateSession(entry.name, input.model ? { model: input.model } : undefined);
+  return withExecution(sessionName, async (signal) => {
+    const result = await executeResume(entry.sessionId, input.prompt, input.model, input.working_directory ?? entry.workingDirectory, input.reasoning_effort, input.bypass, onEvent, signal);
+    mgr.updateSession(sessionName, input.model ? { model: input.model } : undefined);
 
     return jsonResult({
       response: result.response,
       // Fall back to the known entry session ID when abort fires before session ID re-emits.
       // The session remains resumable regardless; callers should rely on session name for resume.
       session: result.sessionId ?? entry.sessionId,
-      session_name: entry.name,
+      session_name: sessionName,
       model: result.model,
       duration_ms: result.durationMs,
       ...resultExtras(result),
     });
-  } finally {
-    unregisterExecution(entry.name, controller);
-  }
+  });
 }
 
 export function handleSessionList(mgr: SessionManager): McpResult {
@@ -230,12 +250,11 @@ export async function handleSessionFork(input: CodexSessionForkInput, mgr: Sessi
 
   const cwd = input.working_directory ?? entry.workingDirectory;
   const forkName = input.name ?? entry.name;
-  const controller = registerExecution(forkName);
-  try {
-    const result = await executeFork(entry.sessionId, input.prompt, input.model, cwd, input.reasoning_effort, input.bypass, onEvent, controller.signal);
+  return withExecution(forkName, async (signal) => {
+    const result = await executeFork(entry.sessionId, input.prompt, input.model, cwd, input.reasoning_effort, input.bypass, onEvent, signal);
 
     if (input.name && result.sessionId) {
-      mgr.register(input.name, result.sessionId, result.model, cwd ?? process.cwd());
+      mgr.register(forkName, result.sessionId, result.model, cwd ?? process.cwd());
     }
 
     return jsonResult({
@@ -247,9 +266,7 @@ export async function handleSessionFork(input: CodexSessionForkInput, mgr: Sessi
       duration_ms: result.durationMs,
       ...resultExtras(result),
     });
-  } finally {
-    unregisterExecution(forkName, controller);
-  }
+  });
 }
 
 export async function handleSessionAbort(input: CodexSessionAbortInput, mgr: SessionManager): Promise<McpResult> {
@@ -279,11 +296,7 @@ async function handleCodexOp(
         const entry = sessionManager.get(sessionRef);
         if (!entry) return sessionNotFoundError(sessionRef);
         const sendInput: CodexSessionSendInput = { ...sendRest, session: sessionRef };
-        if (sendInput.background) {
-          return launchBackground(entry.name, 'codex', (cb) =>
-            handleSessionSend(sendInput, sessionManager, cb));
-        }
-        return runForeground(entry.name, 'codex', progressToken, notify, (cb) =>
+        return dispatchExecution(entry.name, sendInput.background, progressToken, notify, (cb) =>
           handleSessionSend(sendInput, sessionManager, cb));
       }
       const { name, ...createRest } = rest;
@@ -292,11 +305,7 @@ async function handleCodexOp(
         ...createRest,
         name: sessionName,
       };
-      if (createRest.background) {
-        return launchBackground(sessionName, 'codex', (cb) =>
-          handleSessionCreate(createInput, sessionManager, cb));
-      }
-      return runForeground(sessionName, 'codex', progressToken, notify, (cb) =>
+      return dispatchExecution(sessionName, createRest.background, progressToken, notify, (cb) =>
         handleSessionCreate(createInput, sessionManager, cb));
     }
     case 'list':
@@ -306,11 +315,7 @@ async function handleCodexOp(
       const entry = sessionManager.get(forkInput.session);
       if (!entry) return sessionNotFoundError(forkInput.session);
       const sessionLabel = forkInput.name ?? entry.name;
-      if (forkInput.background) {
-        return launchBackground(sessionLabel, 'codex', (cb) =>
-          handleSessionFork(forkInput, sessionManager, cb));
-      }
-      return runForeground(sessionLabel, 'codex', progressToken, notify, (cb) =>
+      return dispatchExecution(sessionLabel, forkInput.background, progressToken, notify, (cb) =>
         handleSessionFork(forkInput, sessionManager, cb));
     }
     case 'abort': {
@@ -345,7 +350,7 @@ export async function handleToolCall(
           }
           throw parsed.error;
         }
-        return handleCodexOp(parsed.data, sessionManager, progressToken, notify);
+        return await handleCodexOp(parsed.data, sessionManager, progressToken, notify);
       }
       default:
         return textResult(`Unknown tool: ${name}`, true);

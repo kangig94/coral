@@ -12,6 +12,15 @@ For each red-attacker test, ask:
 2. Does it call only the pure module function directly? → that module's unit test file
 3. Does it use the target file's existing state factory? Adapt helpers (e.g. replace `makeBaseState` with the file's `makeState`) rather than copying the red helper verbatim.
 
+## Triage: Discard Tests Targeting Unchanged Code
+
+Tests targeting functions that were **not changed** in the task should be discarded even if they reveal gaps in existing coverage. The criterion is not "does this test add value?" but "does this test target code that was changed?". Merging tests for unchanged code blurs the scope of the change and adds maintenance burden for coverage that could have been added by a dedicated test task.
+
+Apply this triage before checking for overlap with existing tests:
+- Step 1: List every function/module the red test exercises
+- Step 2: Check if any of those were modified in this task
+- Step 3: If none were modified, discard the block regardless of gap coverage
+
 When adapting state factories, use the existing file's factory as a base and spread-override specific fields — matching the patterns already established in that file (e.g. `const base = makeState(); makeState({ agents: { alice: { ...base.agents.alice, banned: true } } })`).
 
 ## Gotcha: Title-Assertion Mismatch in "Documenting Behavior" Tests
