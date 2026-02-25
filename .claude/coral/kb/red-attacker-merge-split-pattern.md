@@ -13,3 +13,11 @@ For each red-attacker test, ask:
 3. Does it use the target file's existing state factory? Adapt helpers (e.g. replace `makeBaseState` with the file's `makeState`) rather than copying the red helper verbatim.
 
 When adapting state factories, use the existing file's factory as a base and spread-override specific fields — matching the patterns already established in that file (e.g. `const base = makeState(); makeState({ agents: { alice: { ...base.agents.alice, banned: true } } })`).
+
+## Gotcha: Title-Assertion Mismatch in "Documenting Behavior" Tests
+
+When the red-attacker finds surprising behavior (e.g., a predicate returns `true` where naive expectation is `false`), it sometimes names the test with the naive expectation ("returns false at step=1...") but writes the assertion correctly (`expect(result).toBe(true)`). Always read the assertion, not just the title, before merging. Fix the title to accurately describe actual behavior.
+
+## Gotcha: Fragment Tests Overlap with Exact-String Tests
+
+If the target file already has `expect(fn(x)).toBe('exact string')` tests, discard red-attacker tests that use `expect(fn(x)).toContain('fragment')` for the same inputs — strictly weaker coverage. Keep only tests that add genuinely new angles (distinctness across all values, pure-function idempotency, etc.).
