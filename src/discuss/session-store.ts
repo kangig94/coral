@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { textResult, type McpResult } from '../shared/mcp-utils.js';
 import { renderEntries, renderHeader } from './transcript.js';
 import { randomSuffix, formatDateId, topicSlug } from './util/string.js';
-import type { DiscussState } from './types.js';
+import type { AgentState, DiscussState } from './types.js';
 import { writeStateAtomic, SessionLock } from './lock.js';
 
 export class SessionStore {
@@ -80,8 +80,8 @@ export class SessionStore {
     this.renderCursors.set(fullSessionPath, nextCursor);
   }
 
-  initTranscript(fullSessionPath: string, topic: string): void {
-    fs.writeFileSync(path.join(fullSessionPath, 'transcript.md'), renderHeader(topic), 'utf8');
+  initTranscript(fullSessionPath: string, topic: string, agents: Record<string, AgentState>): void {
+    fs.writeFileSync(path.join(fullSessionPath, 'transcript.md'), renderHeader(topic, agents), 'utf8');
   }
 
   async withLock<T>(fullSessionPath: string, fn: () => Promise<T>): Promise<T> {

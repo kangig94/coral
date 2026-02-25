@@ -136,8 +136,24 @@ export function renderEntry(e: TranscriptEntry, agents: Record<string, AgentStat
   }
 }
 
-export function renderHeader(topic: string): string {
-  return `# ${topic}\n\n## Epoch 1\n`;
+function renderPanelists(agents: Record<string, AgentState>): string {
+  const sections: string[] = [];
+  for (const agent of Object.values(agents)) {
+    const downgraded = agent.persona
+      .replace(/^### /gm, '##### ')
+      .replace(/^## /gm, '#### ')
+      .replace(/^# /gm, '### ');
+    sections.push(wrapText(downgraded));
+  }
+  return '## Panelists\n\n' + sections.join('\n\n');
+}
+
+export function renderHeader(topic: string, agents?: Record<string, AgentState>): string {
+  const title = `# ${topic}\n`;
+  if (agents && Object.keys(agents).length > 0) {
+    return title + '\n' + renderPanelists(agents) + '\n\n---\n\n## Epoch 1\n';
+  }
+  return title + '\n## Epoch 1\n';
 }
 
 /**
