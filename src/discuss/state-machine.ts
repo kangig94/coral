@@ -314,9 +314,10 @@ export function resolveWinner(
   const effectiveBids = computeEffectiveBids(allBids, state.agents, lastSpeaker);
   const threshold = state.bid_threshold;
   const cmp = (a: [string, number], b: [string, number]) => compareBidCandidates(state.agents, effectiveBids, a, b);
+  const bidEntries = Object.entries(allBids);
 
   const createBidPool = (qualifier: (name: string, score: number) => boolean): Array<[string, number]> =>
-    Object.entries(allBids)
+    bidEntries
       .filter(([name, score]) => qualifier(name, score))
       .sort(cmp);
 

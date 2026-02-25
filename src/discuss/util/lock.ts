@@ -43,9 +43,7 @@ function isProcessAlive(pid: number): boolean {
 }
 
 function isStaleOwner(owner: { pid: number; startedAt: number } | null, staleThresholdMs: number): boolean {
-  if (!owner) return true;
-  if (!isProcessAlive(owner.pid)) return true;
-  return Date.now() - owner.startedAt > staleThresholdMs;
+  return !owner || !isProcessAlive(owner.pid) || Date.now() - owner.startedAt > staleThresholdMs;
 }
 
 export class SessionLock {

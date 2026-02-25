@@ -130,7 +130,7 @@ export function eigendecompose(matrix: number[][]): { eigenvalues: number[]; eig
 function computeEsp(eigenvalues: number[], k: number): number[][] {
   const n = eigenvalues.length;
   const esp = Array.from({ length: k + 1 }, () => Array<number>(n + 1).fill(0));
-  for (let i = 0; i <= n; i += 1) esp[0][i] = 1;
+  esp[0].fill(1);
 
   for (let l = 1; l <= k; l += 1) {
     for (let i = 1; i <= n; i += 1) {
@@ -202,7 +202,8 @@ export function sampleKDpp(
     }
 
     const denom = esp[remaining][i];
-    const numerator = Math.max(0, eigenvalues[i - 1]) * esp[remaining - 1][i - 1];
+    const eigenvalue = Math.max(0, eigenvalues[i - 1]);
+    const numerator = eigenvalue * esp[remaining - 1][i - 1];
     const probability = denom > EPS ? Math.min(1, Math.max(0, numerator / denom)) : 0;
 
     if (rng() < probability) {

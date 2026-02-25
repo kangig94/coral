@@ -113,24 +113,23 @@ export async function handle3Step(
       return resultToMcp(speechState);
     }
 
-    if (speechState.value.kind === 'speech_timeout') {
-      return jsonResult({
-        status: 'speaking',
-        phase: 'speech_timeout',
-        speaker: speechState.value.speaker,
-      });
+    switch (speechState.value.kind) {
+      case 'speech_timeout':
+        return jsonResult({
+          status: 'speaking',
+          phase: 'speech_timeout',
+          speaker: speechState.value.speaker,
+        });
+      case 'ended':
+        return jsonResult({ status: 'ended', phase: 'ended', reason: 'already_ended' });
+      case 'speech_done':
+        return jsonResult({
+          status: 'speaking',
+          phase: 'speech_done',
+          speaker: speechState.value.speech.agent,
+          content: speechState.value.speech.content,
+        });
     }
-
-    if (speechState.value.kind === 'ended') {
-      return jsonResult({ status: 'ended', phase: 'ended', reason: 'already_ended' });
-    }
-
-    return jsonResult({
-      status: 'speaking',
-      phase: 'speech_done',
-      speaker: speechState.value.speech.agent,
-      content: speechState.value.speech.content,
-    });
   }
 
   if (state.status === 'bidding') {
@@ -195,17 +194,18 @@ export async function handle3Step(
 
     if (!beforeResolve.ok) return resultToMcp(beforeResolve);
 
-    if (beforeResolve.value.kind === 'ended') {
-      return jsonResult({ status: 'bidding', phase: 'ended', reason: beforeResolve.value.reason });
-    }
-
-    if (beforeResolve.value.kind === 'expelled') {
-      return jsonResult({
-        status: 'bidding',
-        phase: 'expelled',
-        agents: beforeResolve.value.agents,
-        hint: beforeResolve.value.hint,
-      });
+    switch (beforeResolve.value.kind) {
+      case 'ended':
+        return jsonResult({ status: 'bidding', phase: 'ended', reason: beforeResolve.value.reason });
+      case 'expelled':
+        return jsonResult({
+          status: 'bidding',
+          phase: 'expelled',
+          agents: beforeResolve.value.agents,
+          hint: beforeResolve.value.hint,
+        });
+      case 'wait':
+        break;
     }
 
     const waited = await waitForCondition(
@@ -278,13 +278,14 @@ export async function handle3Step(
 
     if (!resolved.ok) return resultToMcp(resolved);
 
-    if (resolved.value.kind === 'resolved') {
-      return jsonResult({ status: 'bidding', phase: 'resolved', winner: resolved.value.winner });
+    switch (resolved.value.kind) {
+      case 'resolved':
+        return jsonResult({ status: 'bidding', phase: 'resolved', winner: resolved.value.winner });
+      case 'epoch_transition':
+        return jsonResult({ status: 'bidding', phase: 'epoch_transition', epoch: resolved.value.epoch });
+      case 'ended':
+        return jsonResult({ status: 'bidding', phase: 'ended', reason: resolved.value.reason });
     }
-    if (resolved.value.kind === 'epoch_transition') {
-      return jsonResult({ status: 'bidding', phase: 'epoch_transition', epoch: resolved.value.epoch });
-    }
-    return jsonResult({ status: 'bidding', phase: 'ended', reason: resolved.value.reason });
   }
 
   return jsonResult({ status: 'setup', phase: 'not_ready' });

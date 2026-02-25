@@ -9,6 +9,7 @@ import type { DiscussState } from '../types.js';
 
 let tmpDir: string;
 let store: SessionStore;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 const AGENTS = [
   { name: 'alice', persona: '# Alice — Architect\nSenior software architect.', participation: 'required' as const },
@@ -30,6 +31,10 @@ function createAndSaveSession(topic = 'Test Topic') {
   store.initTranscript(fullPath, topic);
   store.save(fullPath, state);
   return { sessionId, fullPath, state };
+}
+
+function daysAgo(days: number): Date {
+  return new Date(Date.now() - days * DAY_MS);
 }
 
 
@@ -140,7 +145,7 @@ describe('cleanupExpiredSessions', () => {
   }
 
   it('should remove ended sessions older than TTL', () => {
-    const old = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000); // 31 days ago
+    const old = daysAgo(31);
     const { fullPath } = saveSessionWithStatus('Old Topic', 'ended', old);
     const removed = store.cleanupExpiredSessions();
     expect(removed).toBe(1);
@@ -148,7 +153,7 @@ describe('cleanupExpiredSessions', () => {
   });
 
   it('should preserve ended sessions within TTL', () => {
-    const recent = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000); // 5 days ago
+    const recent = daysAgo(5);
     const { fullPath } = saveSessionWithStatus('Recent Topic', 'ended', recent);
     const removed = store.cleanupExpiredSessions();
     expect(removed).toBe(0);
@@ -156,7 +161,7 @@ describe('cleanupExpiredSessions', () => {
   });
 
   it('should never remove active sessions', () => {
-    const old = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
+    const old = daysAgo(31);
     const { fullPath } = saveSessionWithStatus('Active Topic', 'bidding', old);
     store.cleanupExpiredSessions();
     expect(existsSync(fullPath)).toBe(true);

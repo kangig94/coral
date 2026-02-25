@@ -65,6 +65,10 @@ function summarizeSpeech(agentName: string, content: string): string {
   return `- ${agentName}: ${generateOneLiner(content)}`;
 }
 
+function isSpeechEntry(entry: TranscriptEntry): entry is Extract<TranscriptEntry, { type: 'speech' }> {
+  return entry.type === 'speech';
+}
+
 function renderBidRows(
   bids: Record<string, number>,
   agents: Record<string, AgentState>,
@@ -157,9 +161,7 @@ export function formatRecent(
   lastN: number,
   agents: Record<string, AgentState>,
 ): string {
-  const speeches = entries.filter(
-    (e): e is Extract<TranscriptEntry, { type: 'speech' }> => e.type === 'speech',
-  );
+  const speeches = entries.filter(isSpeechEntry);
   const recentStart = Math.max(0, speeches.length - lastN);
 
   const olderSummaries = speeches.slice(0, recentStart)
@@ -181,7 +183,7 @@ export function formatSummary(
   _agents: Record<string, AgentState>,
 ): string {
   return entries
-    .filter((e): e is Extract<TranscriptEntry, { type: 'speech' }> => e.type === 'speech')
+    .filter(isSpeechEntry)
     .map((e) => summarizeSpeech(e.display_name, e.content))
     .join('\n');
 }

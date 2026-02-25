@@ -17,7 +17,7 @@ export async function waitForCondition(
   intervalMs = _defaultPollMs,
 ): Promise<WaitResult> {
   const startAt = Date.now();
-  const hasDeadline = timeoutMs > 0;
+  const deadline = timeoutMs > 0 ? startAt + timeoutMs : Number.POSITIVE_INFINITY;
 
   const initial = await readState(statePath);
   if (initial && predicate(initial)) {
@@ -26,8 +26,9 @@ export async function waitForCondition(
 
   let lastKnownGood: DiscussState | null = initial;
   while (true) {
-    const elapsedMs = Date.now() - startAt;
-    if (hasDeadline && elapsedMs >= timeoutMs) {
+    const now = Date.now();
+    const elapsedMs = now - startAt;
+    if (now >= deadline) {
       if (lastKnownGood) {
         return { fulfilled: false, elapsed_ms: elapsedMs, state: lastKnownGood, error: null };
       }

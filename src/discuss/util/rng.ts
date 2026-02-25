@@ -24,8 +24,7 @@ export function shuffleInPlace<T>(items: T[], rng: () => number): T[] {
 }
 
 export function weightedSample(weights: number[], rng: () => number): number {
-  let total = 0;
-  for (const weight of weights) total += weight;
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
 
   if (total <= EPS) {
     return weights.findIndex((weight) => weight > 0);

@@ -47,10 +47,8 @@ async function handleBid(
     | { kind: 'bidding'; resolved: string };
   type BidRecordResult = Result<{ step: number }>;
 
-  const waitForSetupComplete = async () => waitForCondition(statePath, setupComplete, INFINITE_POLL);
-
   while (true) {
-    const pre = await store.withLock< Result<BidPre> >(sessionDir, async () => {
+    const pre = await store.withLock<Result<BidPre>>(sessionDir, async () => {
       const state = store.load(sessionDir);
       const resolved = resolveAgentName(state.agents, input.agent_name);
       if (!resolved) {
@@ -88,7 +86,7 @@ async function handleBid(
           content: pre.value.state.end_reason_content ?? undefined,
         });
       case 'setup': {
-        const waited = await waitForSetupComplete();
+        const waited = await waitForCondition(statePath, setupComplete, INFINITE_POLL);
         if (!waited.fulfilled) return jsonResult({ error: waited.error ?? 'setup_wait_failed' });
         continue;
       }

@@ -17,8 +17,8 @@ export const isWinner = (agentName: string) =>
 export const setupComplete = (state: DiscussState): boolean => state.status !== 'setup';
 
 export const noParticipants = (state: DiscussState): boolean =>
-  Object.entries(state.agents)
-    .filter(([, a]) => a.participation === 'required')
-    .every(([, { banned, quota_remaining, fallback_used }]) =>
-      banned || (quota_remaining === 0 && fallback_used),
-    );
+  Object.values(state.agents).every((agent) =>
+    agent.participation !== 'required'
+    || agent.banned
+    || (agent.quota_remaining === 0 && agent.fallback_used),
+  );
