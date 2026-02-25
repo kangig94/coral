@@ -1,43 +1,27 @@
-import { textResult, jsonResult, type McpResult } from '../shared/mcp-utils.js';
-import type {
-  EndReason,
-  DiscussState,
-} from './types.js';
+import { textResult, jsonResult, resultToMcp, type McpResult } from '../shared/mcp-utils.js';
 import { z } from 'zod';
 import { SessionStore } from './session-store.js';
 import {
-  applyBid,
   applyEnd,
   applyEpochSummary,
-  applyExpel,
-  applySpeech,
-  applySpeechTimeout,
   initSession,
-  resolveAgentName,
-  resolveWinner,
-  startBidding,
   DEFAULT_BID_THRESHOLD,
   DEFAULT_MAX_EPOCHS,
   DEFAULT_QUOTA_PER_EPOCH,
 } from './state-machine.js';
-import {
-  allBidsIn,
-  bidReleased,
-  isWinner,
-  noParticipants,
-  setupComplete,
-  speechDelivered,
-} from './conditions.js';
-import { waitForCondition, INFINITE_POLL } from './wait.js';
-import { formatFull, formatRecent, formatSummary } from './transcript.js';
+import { formatAgentView, formatRecent, formatSummary } from './transcript.js';
 import { seedPersonas } from './persona-seed.js';
+import { drawUInt32 } from './util/rng.js';
 import {
   discussAgentOpSchema,
   discussLeadOpSchema,
-  type DiscussAgentOpInput,
   type DiscussLeadOpInput,
 } from './schemas.js';
-import type { Result } from './types.js';
+import type { DiscussState, Result } from './types.js';
+import { handleAgentOp } from './handlers/bid.js';
+import { handleStep } from './handlers/step.js';
+
+const nowIsoString = (): string => new Date().toISOString();
 
 type ToolParseResult<T> = { ok: true; value: T } | { ok: false; value: McpResult };
 
@@ -58,40 +42,23 @@ function parseToolInput<T>(
   throw parsed.error;
 }
 
-function resolveSession(store: SessionStore, sessionId: string): string | McpResult {
-  const dir = store.resolveDir(sessionId);
-  return dir ?? textResult('session_not_found', true);
-}
-
-function nowIsoString(): string {
-  return new Date().toISOString();
-}
-
 function envInt(key: string, min: number, max: number, fallback: number): number {
   const raw = Number.parseInt(process.env[key] ?? '', 10);
   return Number.isFinite(raw) && raw >= min && raw <= max ? raw : fallback;
 }
 
-function resultToMcp(result: Result<unknown>): McpResult {
-  if (!result.ok) {
-    return jsonResult({ error: result.error, ...result.detail });
+function formatTranscriptForMode(
+  input: Extract<DiscussLeadOpInput, { op: '_4_transcript' }>,
+  state: DiscussState,
+): string {
+  switch (input.mode) {
+    case 'full':
+      return formatAgentView(state.transcript, state.agents);
+    case 'summary':
+      return formatSummary(state.transcript, state.agents);
+    default:
+      return formatRecent(state.transcript, input.last_n ?? 5, state.agents);
   }
-  return jsonResult(result.value as Record<string, unknown>);
-}
-
-async function loadState(store: SessionStore, sessionDir: string): Promise<DiscussState> {
-  return store.withLock(sessionDir, async () => store.load(sessionDir));
-}
-
-function endContent(reason: Exclude<EndReason, 'already_ended'>): string {
-  const reasons: Record<Exclude<EndReason, 'already_ended'>, string> = {
-    all_below_threshold: 'All participants bid below the threshold. Ending discussion.',
-    max_epochs_reached: 'Maximum epochs reached. Ending discussion.',
-    all_blocked: 'Discussion is structurally deadlocked. Agents who want to speak have no quota, and agents with quota do not want to speak.',
-    no_participants: 'No eligible agents remaining. Ending discussion.',
-  };
-
-  return reasons[reason];
 }
 
 export const tools = [
@@ -193,177 +160,12 @@ export const tools = [
   },
 ];
 
-async function handleBid(
-  input: Extract<DiscussAgentOpInput, { op: 'bid' }>,
-  store: SessionStore,
-): Promise<McpResult> {
-  const sessionDir = resolveSession(store, input.session);
-  if (typeof sessionDir !== 'string') return sessionDir;
-  const statePath = store.statePath(sessionDir);
-  const bidFinalResult = (state: DiscussState, resolved: string): McpResult => {
-    const agentState = state.agents[resolved];
-    if (agentState?.banned) {
-      return jsonResult({ action: 'session_ended', reason: 'banned' });
-    }
-    if (state.status === 'ended') {
-      return jsonResult({ action: 'session_ended', reason: 'already_ended', content: state.end_reason_content });
-    }
-    if (isWinner(resolved)(state)) {
-      return jsonResult({ action: 'speak', transcript: formatFull(state.transcript, state.agents) });
-    }
-    const last = state.transcript.at(-1);
-    if (!last) {
-      return jsonResult({ action: 'session_ended' });
-    }
-    if (last.type === 'speech') {
-      return jsonResult({ action: 'listen', speaker: last.agent, content: last.content });
-    }
-    if (last.type === 'epoch_summary') {
-      return jsonResult({ action: 'listen', speaker: 'moderator', content: last.summary });
-    }
-    return jsonResult({ action: 'session_ended' });
-  };
-
-  type BidPre =
-    | { kind: 'banned'; state: DiscussState; resolved: string }
-    | { kind: 'ended'; state: DiscussState; resolved: string }
-    | { kind: 'setup' }
-    | { kind: 'speaking' }
-    | { kind: 'bidding'; resolved: string };
-  type BidRecordResult = Result<{ step: number }>;
-
-  const waitForSetupComplete = async () => waitForCondition(statePath, setupComplete, INFINITE_POLL);
-
-  while (true) {
-    const pre = await store.withLock< Result<BidPre> >(sessionDir, async () => {
-      const state = store.load(sessionDir);
-      const resolved = resolveAgentName(state.agents, input.agent_name);
-      if (!resolved) {
-        return { ok: false, error: 'agent_not_found', detail: { agent_name: input.agent_name } };
-      }
-      if (state.agents[resolved]?.banned) {
-        return { ok: true, value: { kind: 'banned', resolved, state } };
-      }
-      switch (state.status) {
-        case 'ended':
-          return { ok: true, value: { kind: 'ended', resolved, state } };
-        case 'setup':
-          return { ok: true, value: { kind: 'setup' } };
-        case 'speaking':
-          return { ok: true, value: { kind: 'speaking' } };
-        case 'bidding':
-          return { ok: true, value: { kind: 'bidding', resolved } };
-        default:
-          return { ok: false, error: 'invalid_status', detail: { current: state.status } };
-      }
-    });
-
-    if (!pre.ok) {
-      return resultToMcp(pre);
-    }
-
-    const phase = pre.value.kind;
-    switch (phase) {
-      case 'banned':
-        return jsonResult({ action: 'session_ended', reason: 'banned' });
-      case 'ended':
-        return jsonResult({
-          action: 'session_ended',
-          reason: 'already_ended',
-          content: pre.value.state.end_reason_content ?? undefined,
-        });
-      case 'setup': {
-        const waited = await waitForSetupComplete();
-        if (!waited.fulfilled) return jsonResult({ error: waited.error ?? 'setup_wait_failed' });
-        continue;
-      }
-      case 'speaking': {
-        const waited = await waitForCondition(
-          statePath,
-          (s) => s.status === 'bidding' || s.status === 'ended',
-          INFINITE_POLL,
-        );
-        if (!waited.fulfilled) return jsonResult({ error: waited.error ?? 'speaking_wait_failed' });
-        continue;
-      }
-      case 'bidding': {
-        const resolved = pre.value.resolved;
-        const bidStepResult = await store.withLock<BidRecordResult>(sessionDir, async () => {
-          const state = store.load(sessionDir);
-          if (state.status !== 'bidding') {
-            return { ok: false, error: 'not_bidding', detail: { current: state.status } };
-          }
-          const result = applyBid(state, resolved, input.score, input.thought, nowIsoString());
-          if (!result.ok) {
-            return { ok: false, error: result.error, detail: result.detail };
-          }
-          store.save(sessionDir, result.value);
-          return { ok: true, value: { step: result.value.step } };
-        });
-
-        if (!bidStepResult.ok) {
-          if (bidStepResult.error === 'not_bidding') {
-            continue;
-          }
-          return resultToMcp(bidStepResult);
-        }
-
-        const bidStep = bidStepResult.value.step;
-        const released = await waitForCondition(
-          statePath,
-          (s) => isWinner(resolved)(s) || bidReleased(resolved, bidStep)(s),
-          INFINITE_POLL,
-        );
-        if (!released.fulfilled) {
-          return jsonResult({ error: released.error ?? 'bid_wait_failed' });
-        }
-
-        const finalState = await loadState(store, sessionDir);
-        return bidFinalResult(finalState, resolved);
-      }
-    }
-  }
+async function handleSeed(input: Extract<DiscussLeadOpInput, { op: '_1_seed' }>): Promise<McpResult> {
+  const seed = input.seed ?? drawUInt32(Math.random);
+  return jsonResult(seedPersonas({ ...input, seed }));
 }
 
-async function handleSpeak(
-  input: Extract<DiscussAgentOpInput, { op: 'speak' }>,
-  store: SessionStore,
-): Promise<McpResult> {
-  const sessionDir = resolveSession(store, input.session);
-  if (typeof sessionDir !== 'string') return sessionDir;
-  const applied = await store.withLock<Result<{ status: string; step: number }>>(sessionDir, async () => {
-    const state = store.load(sessionDir);
-    const resolved = resolveAgentName(state.agents, input.agent_name);
-    if (!resolved) {
-      return { ok: false, error: 'agent_not_found', detail: { agent_name: input.agent_name } };
-    }
-    const result = applySpeech(state, resolved, input.content, nowIsoString());
-    if (!result.ok) {
-      return { ok: false, error: result.error, detail: result.detail };
-    }
-    store.save(sessionDir, result.value);
-    return {
-      ok: true,
-      value: {
-        status: result.value.status,
-        step: result.value.step,
-      },
-    };
-  });
-
-  return resultToMcp(applied);
-}
-
-async function handleAgentOp(input: DiscussAgentOpInput, store: SessionStore): Promise<McpResult> {
-  if (input.op === 'bid') return handleBid(input, store);
-  return handleSpeak(input, store);
-}
-
-async function handle1Seed(input: Extract<DiscussLeadOpInput, { op: '_1_seed' }>): Promise<McpResult> {
-  return jsonResult(seedPersonas(input));
-}
-
-async function handle2Create(
+async function handleCreate(
   input: Omit<Extract<DiscussLeadOpInput, { op: '_2_create' }>, 'op'>,
   store: SessionStore,
 ): Promise<McpResult> {
@@ -377,10 +179,8 @@ async function handle2Create(
   const quotaPerEpoch = envInt('CORAL_DISCUSS_QUOTA_PER_EPOCH', 1, 10, DEFAULT_QUOTA_PER_EPOCH);
 
   const state = initSession(input, now, bidThreshold, maxEpochs, quotaPerEpoch);
-  const { sessionId, sessionDir, fullPath } = store.createSessionDir(input.topic);
+  const { sessionId, fullPath } = store.createSessionDir(input.topic);
   state.session_id = sessionId;
-  state.session_dir = sessionDir;
-  state.team_name = `coral-dc-${sessionId}`;
 
   await store.withLock(fullPath, async () => {
     store.initTranscript(fullPath, input.topic);
@@ -390,7 +190,7 @@ async function handle2Create(
   return jsonResult({
     session_id: sessionId,
     session_dir: fullPath,
-    team_name: state.team_name,
+    team_name: `coral-dc-${sessionId}`,
     topic: input.topic,
     status: state.status,
     bid_threshold: state.bid_threshold,
@@ -400,312 +200,22 @@ async function handle2Create(
   });
 }
 
-async function handle3Step(
-  input: Extract<DiscussLeadOpInput, { op: '_3_step' }>,
-  store: SessionStore,
-): Promise<McpResult> {
-  const sessionDir = resolveSession(store, input.session);
-  if (typeof sessionDir !== 'string') return sessionDir;
-  const statePath = store.statePath(sessionDir);
-  const now = nowIsoString();
-  const timeoutMs = input.timeout_seconds * 1000;
-
-  type BiddingPre = {
-    kind: 'wait';
-    state: DiscussState;
-  } | {
-    kind: 'ended';
-    reason: EndReason;
-    state: DiscussState;
-  } | {
-    kind: 'expelled';
-    agents: string[];
-    hint: string;
-    state: DiscussState;
-  };
-
-  type ResolvePhase =
-    | { kind: 'resolved'; winner: string }
-    | { kind: 'epoch_transition'; epoch: number }
-    | { kind: 'ended'; reason: EndReason };
-
-  type SpeakingWait =
-    | { kind: 'ended' }
-    | { kind: 'speech_done'; speech: { agent: string; content: string } }
-    | { kind: 'speech_timeout'; speaker: string };
-
-  const preState = await store.withLock<Result<DiscussState>>(sessionDir, async () => {
-    const state = store.load(sessionDir);
-    if (state.status !== 'setup') {
-      return { ok: true, value: state };
-    }
-    const started = startBidding(state, now);
-    if (!started.ok) {
-      return { ok: false, error: 'not_ready', detail: { current: state.status } };
-    }
-    store.save(sessionDir, started.value);
-    return { ok: true, value: started.value };
-  });
-  if (!preState.ok) return resultToMcp(preState);
-
-  let state = preState.value;
-  if (state.status === 'ended') {
-    return jsonResult({ status: 'ended', phase: 'ended', reason: 'already_ended' });
-  }
-
-  if (state.status === 'speaking') {
-    const waitResult = await waitForCondition(
-      statePath,
-      (s) => speechDelivered(s) || s.status === 'ended',
-      timeoutMs,
-    );
-
-    if (!waitResult.fulfilled) {
-      return jsonResult({
-        status: 'speaking',
-        phase: 'speech_pending',
-        elapsed: waitResult.elapsed_ms / 1000,
-      });
-    }
-
-    const speechState = await store.withLock<Result<SpeakingWait>>(sessionDir, async () => {
-      const current = store.load(sessionDir);
-      if (current.status === 'ended') {
-        return { ok: true, value: { kind: 'ended' } };
-      }
-
-      if (current.status === 'bidding') {
-        const speech = current.transcript[current.transcript.length - 1];
-        if (!speech || speech.type !== 'speech') {
-          return { ok: false, error: 'expected_speech_entry' };
-        }
-
-        return {
-          ok: true,
-          value: { kind: 'speech_done', speech: { agent: speech.agent, content: speech.content } },
-        };
-      }
-
-      if (!input.force_stop || current.status !== 'speaking' || !current.current_speaker) {
-        return { ok: false, error: 'speech_not_done', detail: { current: current.status } };
-      }
-
-      const timed = applySpeechTimeout(current, now);
-      if (!timed.ok) return { ok: false, error: timed.error, detail: timed.detail };
-      store.save(sessionDir, timed.value);
-      return { ok: true, value: { kind: 'speech_timeout', speaker: current.current_speaker } };
-    });
-
-    if (!speechState.ok) {
-      return resultToMcp(speechState);
-    }
-
-    if (speechState.value.kind === 'speech_timeout') {
-      return jsonResult({
-        status: 'speaking',
-        phase: 'speech_timeout',
-        speaker: speechState.value.speaker,
-      });
-    }
-
-    if (speechState.value.kind === 'ended') {
-      return jsonResult({ status: 'ended', phase: 'ended', reason: 'already_ended' });
-    }
-
-    return jsonResult({
-      status: 'speaking',
-      phase: 'speech_done',
-      speaker: speechState.value.speech.agent,
-      content: speechState.value.speech.content,
-    });
-  }
-
-  if (state.status === 'bidding') {
-    const beforeResolve = await store.withLock<Result<BiddingPre>>(sessionDir, async () => {
-      const current = store.load(sessionDir);
-      if (current.status !== 'bidding') {
-        if (current.status === 'ended') {
-          return { ok: true, value: { kind: 'ended', reason: 'already_ended' as const, state: current } };
-        }
-        return {
-          ok: false,
-          error: 'invalid_status',
-          detail: { current: current.status },
-        };
-      }
-
-      const next = { ...current, hold_count: current.hold_count + 1 };
-      if (noParticipants(current)) {
-        const endedState = applyEnd(
-          {
-            ...next,
-            end_reason_content: endContent('no_participants'),
-          },
-          {},
-          now,
-        );
-        if (!endedState.ok) return { ok: false, error: endedState.error, detail: endedState.detail };
-        store.save(sessionDir, endedState.value);
-        return { ok: true, value: { kind: 'ended', reason: 'no_participants', state: endedState.value } };
-      }
-
-      if (next.hold_count >= 2 && next.pending_bidders.length > 0) {
-        const expel = applyExpel(next, next.pending_bidders, now);
-        if (!expel.ok) {
-          return { ok: false, error: expel.error, detail: expel.detail };
-        }
-
-        if (noParticipants(expel.value.state)) {
-          const endedState = applyEnd(
-            {
-              ...expel.value.state,
-              end_reason_content: endContent('no_participants'),
-            },
-            {},
-            now,
-          );
-          if (!endedState.ok) return { ok: false, error: endedState.error, detail: endedState.detail };
-          store.save(sessionDir, endedState.value);
-          return { ok: true, value: { kind: 'ended', reason: 'no_participants', state: endedState.value } };
-        }
-
-        store.save(sessionDir, expel.value.state);
-        return {
-          ok: true,
-          value: { kind: 'expelled', state: expel.value.state, agents: next.pending_bidders, hint: expel.value.hint },
-        };
-      }
-
-      store.save(sessionDir, next);
-      return { ok: true, value: { kind: 'wait', state: next } };
-    });
-
-    if (!beforeResolve.ok) return resultToMcp(beforeResolve);
-
-    if (beforeResolve.value.kind === 'ended') {
-      return jsonResult({ status: 'bidding', phase: 'ended', reason: beforeResolve.value.reason });
-    }
-
-    if (beforeResolve.value.kind === 'expelled') {
-      return jsonResult({
-        status: 'bidding',
-        phase: 'expelled',
-        agents: beforeResolve.value.agents,
-        hint: beforeResolve.value.hint,
-      });
-    }
-
-    const waited = await waitForCondition(
-      statePath,
-      (s) => allBidsIn(s) || s.status === 'ended',
-      timeoutMs,
-    );
-    if (!waited.fulfilled) {
-      state = await loadState(store, sessionDir);
-      if (state.status === 'ended') {
-        return jsonResult({ status: 'ended', phase: 'ended', reason: 'already_ended' });
-      }
-      return jsonResult({
-        status: 'bidding',
-        phase: 'bidding',
-        pending_bidders: state.pending_bidders,
-        hold_count: state.hold_count,
-      });
-    }
-
-    state = await loadState(store, sessionDir);
-    if (state.status === 'ended') {
-      return jsonResult({ status: 'ended', phase: 'ended', reason: 'already_ended' });
-    }
-
-    if (state.min_bid_delay_ms > 0) {
-      const allAgentsBid = (s: DiscussState) =>
-        Object.entries(s.agents).every(([name, a]) => a.banned || s.current_bids[name] != null);
-      await waitForCondition(statePath, allAgentsBid, state.min_bid_delay_ms);
-    }
-
-    const resolved = await store.withLock<Result<ResolvePhase>>(sessionDir, async () => {
-      const current = store.load(sessionDir);
-      if (current.status === 'ended') {
-        return { ok: true, value: { kind: 'ended', reason: 'already_ended' as const } };
-      }
-      if (current.status !== 'bidding' || !allBidsIn(current)) {
-        return { ok: false, error: 'bids_not_complete', detail: { pending_bidders: current.pending_bidders } };
-      }
-
-      const winnerResult = resolveWinner(current, now);
-      if (!winnerResult.ok) {
-        return { ok: false, error: winnerResult.error, detail: winnerResult.detail };
-      }
-      const [nextState, decision] = winnerResult.value;
-
-      if ('speaker_type' in decision) {
-        store.save(sessionDir, nextState);
-        return { ok: true, value: { kind: 'resolved', winner: decision.winner } };
-      }
-
-      if (decision.reason === 'epoch_transition') {
-        store.save(sessionDir, nextState);
-        return { ok: true, value: { kind: 'epoch_transition', epoch: nextState.epoch } };
-      }
-
-      const endedState = applyEnd(
-        {
-          ...nextState,
-          end_reason_content: endContent(decision.reason),
-        },
-        {},
-        now,
-      );
-      if (!endedState.ok) return { ok: false, error: endedState.error, detail: endedState.detail };
-      store.save(sessionDir, endedState.value);
-
-      return { ok: true, value: { kind: 'ended', reason: decision.reason } };
-    });
-
-    if (!resolved.ok) return resultToMcp(resolved);
-
-    if (resolved.value.kind === 'resolved') {
-      return jsonResult({ status: 'bidding', phase: 'resolved', winner: resolved.value.winner });
-    }
-    if (resolved.value.kind === 'epoch_transition') {
-      return jsonResult({ status: 'bidding', phase: 'epoch_transition', epoch: resolved.value.epoch });
-    }
-    return jsonResult({ status: 'bidding', phase: 'ended', reason: resolved.value.reason });
-  }
-
-  return jsonResult({ status: 'setup', phase: 'not_ready' });
-}
-async function handle4Transcript(
+async function handleTranscript(
   input: Extract<DiscussLeadOpInput, { op: '_4_transcript' }>,
   store: SessionStore,
 ): Promise<McpResult> {
-  const sessionDir = resolveSession(store, input.session);
+  const sessionDir = store.resolveOrError(input.session);
   if (typeof sessionDir !== 'string') return sessionDir;
 
-  const state = await loadState(store, sessionDir);
-  let text: string;
-
-  switch (input.mode) {
-    case 'full':
-      text = formatFull(state.transcript, state.agents);
-      break;
-    case 'summary':
-      text = formatSummary(state.transcript, state.agents);
-      break;
-    default:
-      text = formatRecent(state.transcript, input.last_n ?? 5, state.agents);
-      break;
-  }
-
-  return textResult(text);
+  const state = await store.loadLocked(sessionDir);
+  return textResult(formatTranscriptForMode(input, state));
 }
 
-async function handle5Epoch(
+async function handleEpoch(
   input: Extract<DiscussLeadOpInput, { op: '_5_epoch' }>,
   store: SessionStore,
 ): Promise<McpResult> {
-  const sessionDir = resolveSession(store, input.session);
+  const sessionDir = store.resolveOrError(input.session);
   if (typeof sessionDir !== 'string') return sessionDir;
 
   const applied = await store.withLock<Result<{ recorded: true; epoch: number }>>(sessionDir, async () => {
@@ -719,14 +229,14 @@ async function handle5Epoch(
   return resultToMcp(applied);
 }
 
-async function handle6State(
+async function handleState(
   input: Extract<DiscussLeadOpInput, { op: '_6_state' }>,
   store: SessionStore,
 ): Promise<McpResult> {
-  const sessionDir = resolveSession(store, input.session);
+  const sessionDir = store.resolveOrError(input.session);
   if (typeof sessionDir !== 'string') return sessionDir;
 
-  const state = await loadState(store, sessionDir);
+  const state = await store.loadLocked(sessionDir);
 
   return jsonResult({
     session_id: state.session_id,
@@ -758,7 +268,7 @@ async function handle6State(
   });
 }
 
-async function handle7End(
+async function handleEnd(
   input: Extract<DiscussLeadOpInput, { op: '_7_end' }>,
   store: SessionStore,
 ): Promise<McpResult> {
@@ -766,7 +276,7 @@ async function handle7End(
     return textResult('reason is required when force=true', true);
   }
 
-  const sessionDir = resolveSession(store, input.session);
+  const sessionDir = store.resolveOrError(input.session);
   if (typeof sessionDir !== 'string') return sessionDir;
 
   const ended = await store.withLock<Result<{ status: string }>>(sessionDir, async () => {
@@ -793,19 +303,19 @@ async function handle7End(
 async function handleDiscussLeadOp(input: DiscussLeadOpInput, store: SessionStore): Promise<McpResult> {
   switch (input.op) {
     case '_1_seed':
-      return handle1Seed(input);
+      return handleSeed(input);
     case '_2_create':
-      return handle2Create(input, store);
+      return handleCreate(input, store);
     case '_3_step':
-      return handle3Step(input, store);
+      return handleStep(input, store);
     case '_4_transcript':
-      return handle4Transcript(input, store);
+      return handleTranscript(input, store);
     case '_5_epoch':
-      return handle5Epoch(input, store);
+      return handleEpoch(input, store);
     case '_6_state':
-      return handle6State(input, store);
+      return handleState(input, store);
     case '_7_end':
-      return handle7End(input, store);
+      return handleEnd(input, store);
     default:
       return jsonResult({ error: 'invalid_op' });
   }

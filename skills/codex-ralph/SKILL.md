@@ -6,7 +6,7 @@ model: sonnet
 ---
 
 ```!
-mkdir -p "${CLAUDE_PROJECT_DIR:-.}/.claude/coral/tmp" && touch "${CLAUDE_PROJECT_DIR:-.}/.claude/coral/tmp/kb-active"
+mkdir -p "$CLAUDE_PROJECT_DIR/.claude/coral/tmp" && touch "$CLAUDE_PROJECT_DIR/.claude/coral/tmp/kb-active"
 ```
 
 # Persistent Execution via Codex

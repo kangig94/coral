@@ -497,7 +497,7 @@ describe('killAllChildren', () => {
 
     const proc2 = createMockProcess(output, 0);
     const killSpy = vi.fn();
-    (proc2 as any).kill = killSpy;
+    (proc2 as ChildProcess & { kill: ReturnType<typeof vi.fn> }).kill = killSpy;
     mockSpawn.mockReturnValue(proc2);
 
     killAllChildren();

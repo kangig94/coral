@@ -6,6 +6,8 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { SessionStore } from './session-store.js';
 import { tools, handleToolCall } from './server-handlers.js';
 
+const log = (message: string): void => { process.stderr.write(`${message}\n`); };
+
 const serverVersion = typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0';
 const server = new Server(
   { name: 'coral-discuss', version: serverVersion },
@@ -22,7 +24,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 const handleShutdown = (): void => {
-  process.stderr.write('Coral Discuss MCP Server shutting down...\n');
+  log('Coral Discuss MCP Server shutting down...');
   server.close().finally(() => process.exit(0));
 };
 
@@ -33,9 +35,9 @@ const transport = new StdioServerTransport();
 (async () => {
   try {
     await server.connect(transport);
-    process.stderr.write('Coral Discuss MCP Server running on stdio\n');
+    log('Coral Discuss MCP Server running on stdio');
   } catch (error: unknown) {
-    process.stderr.write(`Fatal error: ${error}\n`);
+    log(`Fatal error: ${error}`);
     process.exit(1);
   }
 })();

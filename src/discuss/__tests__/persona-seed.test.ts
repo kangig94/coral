@@ -2,13 +2,10 @@ import { describe, it, expect } from 'vitest';
 import {
   assignOrigins,
   assignTones,
-  cartesianProduct,
-  createSeededRng,
-  eigendecompose,
-  hammingDistance,
   seedPersonas,
-  MAX_POOL_SIZE,
 } from '../persona-seed.js';
+import { createSeededRng } from '../util/rng.js';
+import { cartesianProduct, eigendecompose, hammingDistance, MAX_POOL_SIZE } from '../util/dpp.js';
 
 function seedResult<T>(result: { ok: true; value: T } | { ok: false; error: string }): T {
   expect(result.ok).toBe(true);
@@ -16,6 +13,10 @@ function seedResult<T>(result: { ok: true; value: T } | { ok: false; error: stri
     throw new Error(`seedPersonas failed: ${result.error}`);
   }
   return result.value;
+}
+
+function personaSeeds(assignments: Array<{ persona_seed: number }>): number[] {
+  return assignments.map((assignment) => assignment.persona_seed);
 }
 
 describe('assignOrigins', () => {
@@ -561,7 +562,7 @@ describe('PRNG determinism across demographics presence', () => {
     };
     const a = seedResult(seedPersonas(input));
     const b = seedResult(seedPersonas(input));
-    expect(a.assignments.map((x) => x.persona_seed)).toEqual(b.assignments.map((x) => x.persona_seed));
+    expect(personaSeeds(a.assignments)).toEqual(personaSeeds(b.assignments));
     expect(a.assignments.map((x) => x.suggested_origin)).toEqual(b.assignments.map((x) => x.suggested_origin));
   });
 });
@@ -797,6 +798,68 @@ describe('assignOrigins: clamp — outlierPool larger than requested outlierCoun
     const result = assignOrigins(4, { origin_weights, outlier_ratio: 0.5 }, createSeededRng(601));
     expect(result).toHaveLength(4);
     expect(result.filter((r) => r.is_outlier)).toHaveLength(2);
+  });
+});
+
+describe('seedPersonas with seed=0', () => {
+  const axes = [
+    { axis: 'cost', positions: ['high', 'low'] },
+    { axis: 'risk', positions: ['high', 'low'] },
+  ];
+
+  it('produces a valid result for seed=0 (not treated as null/missing)', () => {
+    const result = seedPersonas({ controversy_axes: axes, n: 2, seed: 0 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.seed_used).toBe(0);
+    expect(result.value.assignments).toHaveLength(2);
+  });
+
+  it('is deterministic across two calls with seed=0', () => {
+    const input = { controversy_axes: axes, n: 2, seed: 0 };
+    const first = seedPersonas(input);
+    const second = seedPersonas(input);
+    expect(first).toEqual(second);
+  });
+
+  it('produces different persona_seeds for seed=0 vs seed=1', () => {
+    const r0 = seedPersonas({ controversy_axes: axes, n: 4, seed: 0 });
+    const r1 = seedPersonas({ controversy_axes: axes, n: 4, seed: 1 });
+    expect(r0.ok).toBe(true);
+    expect(r1.ok).toBe(true);
+    if (!r0.ok || !r1.ok) return;
+    expect(personaSeeds(r0.value.assignments)).not.toEqual(personaSeeds(r1.value.assignments));
+  });
+});
+
+describe('seedPersonas seed coercion', () => {
+  const axes = [
+    { axis: 'a', positions: ['x', 'y'] },
+    { axis: 'b', positions: ['m', 'n'] },
+  ];
+
+  it('coerces negative seed to unsigned 32-bit (>>> 0) and returns valid output', () => {
+    const result = seedPersonas({ controversy_axes: axes, n: 2, seed: -1 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.seed_used).toBe(4294967295);
+    expect(result.value.assignments).toHaveLength(2);
+  });
+
+  it('coerces large seed to unsigned 32-bit and remains deterministic', () => {
+    const oversized = 2 ** 33 + 7;
+    const result1 = seedPersonas({ controversy_axes: axes, n: 2, seed: oversized });
+    const result2 = seedPersonas({ controversy_axes: axes, n: 2, seed: oversized });
+    expect(result1.ok).toBe(true);
+    expect(result2.ok).toBe(true);
+    expect(result1).toEqual(result2);
+  });
+
+  it('seed=0 coerces to 0 and seed_used is 0', () => {
+    const result = seedPersonas({ controversy_axes: axes, n: 1, seed: 0 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.seed_used).toBe(0);
   });
 });
 

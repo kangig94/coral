@@ -1,98 +1,15 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { textResult, type McpResult } from '../shared/mcp-utils.js';
 import { renderEntries, renderHeader } from './transcript.js';
-import { randomSuffix, formatDateId, topicSlug } from './state-machine.js';
+import { randomSuffix, formatDateId, topicSlug } from './util/string.js';
 import type { DiscussState } from './types.js';
-
-function tryRemoveSync(targetPath: string): void {
-  try {
-    fs.rmSync(targetPath, { recursive: true, force: true });
-  } catch {
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function writeStateAtomic(filePath: string, state: DiscussState): void {
-  const tmp = filePath + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf8');
-  fs.renameSync(tmp, filePath);
-}
-
-function parseLockOwner(filePath: string): { pid: number; startedAt: number } | null {
-  try {
-    const content = fs.readFileSync(filePath, 'utf8');
-    const [rawPid, rawStartedAt] = content.split('-', 2);
-    if (!rawPid || !rawStartedAt) return null;
-    const pid = Number.parseInt(rawPid, 10);
-    const startedAt = Number.parseInt(rawStartedAt, 10);
-    if (Number.isNaN(pid) || Number.isNaN(startedAt)) return null;
-    return { pid, startedAt };
-  } catch {
-    return null;
-  }
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function isStaleOwner(owner: { pid: number; startedAt: number } | null, staleThresholdMs: number): boolean {
-  if (!owner) return true;
-  if (!isProcessAlive(owner.pid)) return true;
-  return Date.now() - owner.startedAt > staleThresholdMs;
-}
-
-class SessionLock {
-  async acquire<T>(sessionDir: string, fn: () => Promise<T>): Promise<T> {
-    const lockDir = path.join(sessionDir, 'state.lock');
-    const pidFile = path.join(lockDir, 'pid');
-    const maxRetries = 10;
-    const baseDelay = 50;
-    const staleThresholdMs = 30_000;
-    const clearLockFiles = (): void => {
-      tryRemoveSync(pidFile);
-      tryRemoveSync(lockDir);
-    };
-
-    for (let i = 0; i < maxRetries; i++) {
-      try {
-        fs.mkdirSync(lockDir); // atomic: fails EEXIST if held
-        fs.writeFileSync(pidFile, `${process.pid}-${Date.now()}`);
-        try {
-          return await fn();
-        } finally {
-          clearLockFiles();
-        }
-      } catch (e: unknown) {
-        const err = e as NodeJS.ErrnoException;
-        if (err.code === 'EEXIST') {
-          const owner = parseLockOwner(pidFile);
-          const isStale = isStaleOwner(owner, staleThresholdMs);
-          if (isStale) {
-            clearLockFiles();
-            continue;
-          }
-          await sleep(baseDelay * Math.pow(2, Math.min(i, 5)) + Math.random() * baseDelay);
-          continue;
-        }
-        throw e;
-      }
-    }
-    throw new Error(`Lock timeout for session ${sessionDir}`);
-  }
-}
+import { writeStateAtomic, SessionLock } from './lock.js';
 
 export class SessionStore {
   private readonly discussDir: string;
   private lock = new SessionLock();
+  private renderCursors = new Map<string, number>();
 
   constructor(projectRoot: string) {
     this.discussDir = path.join(projectRoot, '.claude', 'coral', 'discuss');
@@ -120,12 +37,15 @@ export class SessionStore {
     if (!fs.existsSync(this.discussDir)) return null;
 
     const exactPath = path.join(this.discussDir, sessionId);
-    if (fs.existsSync(exactPath)) {
-      return exactPath;
-    }
+    if (fs.existsSync(exactPath)) return exactPath;
 
-    const match = fs.readdirSync(this.discussDir).find((entry) => entry.startsWith(`${sessionId}-`));
-    return match ? path.join(this.discussDir, match) : null;
+    const matchedDir = fs.readdirSync(this.discussDir).find((entry) => entry.startsWith(`${sessionId}-`));
+    if (!matchedDir) return null;
+    return path.join(this.discussDir, matchedDir);
+  }
+
+  resolveOrError(sessionId: string): string | McpResult {
+    return this.resolveDir(sessionId) ?? textResult('session_not_found', true);
   }
 
   statePath(fullSessionPath: string): string {
@@ -133,7 +53,11 @@ export class SessionStore {
   }
 
   load(fullSessionPath: string): DiscussState {
-    const state = JSON.parse(fs.readFileSync(this.statePath(fullSessionPath), 'utf8')) as DiscussState;
+    const raw = JSON.parse(fs.readFileSync(this.statePath(fullSessionPath), 'utf8')) as DiscussState & {
+      transcript_rendered?: number;
+    };
+    this.renderCursors.set(fullSessionPath, raw.transcript_rendered ?? raw.transcript.length);
+    const { transcript_rendered: _transcript_rendered, ...state } = raw;
     // normalize pre-observer sessions that lack new fields
     for (const agent of Object.values(state.agents)) {
       agent.participation ??= 'required';
@@ -143,15 +67,17 @@ export class SessionStore {
   }
 
   save(fullSessionPath: string, state: DiscussState): void {
-    const newEntries = state.transcript.slice(state.transcript_rendered);
-    if (newEntries.length > 0) {
+    const cursor = this.renderCursors.get(fullSessionPath) ?? 0;
+    const newEntries = state.transcript.slice(cursor);
+    const hasNewEntries = newEntries.length > 0;
+    if (hasNewEntries) {
       const md = renderEntries(newEntries, state.agents);
       fs.appendFileSync(path.join(fullSessionPath, 'transcript.md'), md, 'utf8');
     }
-    const toWrite = newEntries.length > 0
-      ? { ...state, transcript_rendered: state.transcript.length }
-      : state;
+    const nextCursor = state.transcript.length;
+    const toWrite = { ...state, transcript_rendered: nextCursor };
     writeStateAtomic(this.statePath(fullSessionPath), toWrite);
+    this.renderCursors.set(fullSessionPath, nextCursor);
   }
 
   initTranscript(fullSessionPath: string, topic: string): void {
@@ -160,6 +86,10 @@ export class SessionStore {
 
   async withLock<T>(fullSessionPath: string, fn: () => Promise<T>): Promise<T> {
     return this.lock.acquire(fullSessionPath, fn);
+  }
+
+  async loadLocked(fullSessionPath: string): Promise<DiscussState> {
+    return this.withLock(fullSessionPath, async () => this.load(fullSessionPath));
   }
 
   cleanupExpiredSessions(): number {
@@ -176,10 +106,10 @@ export class SessionStore {
         const raw = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
         if (raw['status'] !== 'ended') continue;
         const ts = String(raw['last_activity_at'] || '');
-        if (new Date(ts).getTime() < cutoff) {
-          fs.rmSync(fullPath, { recursive: true, force: true });
-          removed++;
-        }
+        if (new Date(ts).getTime() >= cutoff) continue;
+        fs.rmSync(fullPath, { recursive: true, force: true });
+        this.renderCursors.delete(fullPath);
+        removed += 1;
       } catch {
         continue;
       }

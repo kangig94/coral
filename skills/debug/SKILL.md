@@ -5,7 +5,7 @@ argument-hint: "[--codex] <bug description or error message>"
 ---
 
 ```!
-mkdir -p "${CLAUDE_PROJECT_DIR:-.}/.claude/coral/tmp" && touch "${CLAUDE_PROJECT_DIR:-.}/.claude/coral/tmp/kb-active"
+mkdir -p "$CLAUDE_PROJECT_DIR/.claude/coral/tmp" && touch "$CLAUDE_PROJECT_DIR/.claude/coral/tmp/kb-active"
 ```
 
 # Bug Debugging

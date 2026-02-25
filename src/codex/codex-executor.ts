@@ -93,12 +93,11 @@ function spawnCodex(
   return new Promise((resolve, reject) => {
     let settled = false;
     let abortedBySignal = false;
-    const useShell = process.platform === 'win32';
 
     const child = spawn('codex', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: cwd || undefined,
-      shell: useShell,
+      shell: process.platform === 'win32',
     });
 
     activeChildren.add(child);
@@ -133,8 +132,8 @@ function spawnCodex(
         clearTimeout(idleTimer); // prevent idle-timeout rejection racing with abort
         gracefulKill(child);
       };
-      if (signal.aborted) { onAbort(); }
-      else { signal.addEventListener('abort', onAbort, { once: true }); }
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
     }
 
     let stdout = '';
@@ -236,10 +235,9 @@ const pluginRoot: string = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__
 let claudeMdCache: string | undefined;
 
 function getClaudeMd(): string {
-  if (claudeMdCache === undefined) {
-    try { claudeMdCache = readFileSync(join(pluginRoot, 'CLAUDE.md'), 'utf-8'); }
-    catch { claudeMdCache = ''; }
-  }
+  if (claudeMdCache !== undefined) return claudeMdCache;
+  try { claudeMdCache = readFileSync(join(pluginRoot, 'CLAUDE.md'), 'utf-8'); }
+  catch { claudeMdCache = ''; }
   return claudeMdCache;
 }
 

@@ -2,45 +2,27 @@ import type {
   AgentState,
   DiscussCreateInput,
   DiscussState,
+  EndReason,
   ResolveReason,
   ResolveResult,
   Result,
   TranscriptEntry,
 } from './types.js';
+import { parseDisplayName } from './util/string.js';
 
 export const DEFAULT_BID_THRESHOLD = 30;
 export const DEFAULT_MAX_EPOCHS = 2;
 export const DEFAULT_QUOTA_PER_EPOCH = 3;
 
-export function randomSuffix(): string {
-  const suffix = Math.random().toString(36).slice(2, 6);
-  return suffix.padEnd(4, '0');
-}
+const END_REASON_CONTENT: Record<Exclude<EndReason, 'already_ended'>, string> = {
+  all_below_threshold: 'All participants bid below the threshold. Ending discussion.',
+  max_epochs_reached: 'Maximum epochs reached. Ending discussion.',
+  all_blocked: 'Discussion is structurally deadlocked. Agents who want to speak have no quota, and agents with quota do not want to speak.',
+  no_participants: 'No eligible agents remaining. Ending discussion.',
+};
 
-export function formatDateId(d: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const yy = String(d.getFullYear()).slice(2);
-  return `${yy}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
-}
-
-export function topicSlug(topic: string): string {
-  const slug = topic
-    .toLowerCase()
-    .replace(/\s+/g, '-')
-    .replace(/[^\p{L}\p{N}-]/gu, '')
-    .replace(/-{2,}/g, '-')
-    .replace(/^-|-$/g, '');
-  if (!slug) return 'untitled';
-  if (slug.length <= 40) return slug;
-  const cut = slug.lastIndexOf('-', 40);
-  return cut > 0 ? slug.slice(0, cut) : slug.slice(0, 40);
-}
-
-export function parseDisplayName(persona: string, agentName: string): string {
-  const firstLine = persona.split('\n')[0] ?? '';
-  const stripped = firstLine.replace(/^#\s*/, '');
-  const [, displayName] = stripped.match(/^(.+?)\s+[—–-]\s+/) ?? [];
-  return displayName?.trim() || agentName;
+export function endContent(reason: Exclude<EndReason, 'already_ended'>): string {
+  return END_REASON_CONTENT[reason];
 }
 
 export function resolveAgentName(
@@ -76,18 +58,19 @@ export function computeEffectiveBids(
   lastSpeaker: string | null,
 ): Record<string, number> {
   const names = Object.keys(allBids);
-  const N = names.length;
-  if (N <= 1) return { ...allBids };
-  const P_BASE = 100 / N;
-  const P_RECENCY = 50 / N;
-  const averageSpeaks = names.reduce((sum, name) => sum + agents[name].total_speaks, 0) / N;
+  const participantCount = names.length;
+  if (participantCount <= 1) return { ...allBids };
+
+  const imbalanceWeight = 100 / participantCount;
+  const recencyWeight = 50 / participantCount;
+  const averageSpeaks = names.reduce((sum, name) => sum + agents[name].total_speaks, 0) / participantCount;
 
   const effective: Record<string, number> = {};
   for (const name of names) {
-    const raw = allBids[name];
-    const imbalance = P_BASE * (averageSpeaks - agents[name].total_speaks);
-    const recency = name === lastSpeaker ? P_RECENCY : 0;
-    effective[name] = raw + imbalance - recency;
+    const rawBid = allBids[name];
+    const imbalance = imbalanceWeight * (averageSpeaks - agents[name].total_speaks);
+    const recencyPenalty = name === lastSpeaker ? recencyWeight : 0;
+    effective[name] = rawBid + imbalance - recencyPenalty;
   }
   return effective;
 }
@@ -117,7 +100,7 @@ function makeBidEntry(
   now: string,
   effectiveBids?: Record<string, number>,
 ): TranscriptEntry {
-  const thoughts = Object.keys(state.current_thoughts).length > 0
+  const thoughtsEntry = Object.keys(state.current_thoughts).length > 0
     ? { thoughts: { ...state.current_thoughts } }
     : {};
   return {
@@ -127,7 +110,7 @@ function makeBidEntry(
     ts: now,
     bids: allBids,
     ...(effectiveBids && { effective_bids: effectiveBids }),
-    ...thoughts,
+    ...thoughtsEntry,
     winner,
     resolve_type: resolveType,
   };
@@ -176,7 +159,6 @@ function noWinnerResult(
 function appendEntry(state: DiscussState, entry: TranscriptEntry, now: string): DiscussState {
   return {
     ...state,
-    updated_at: now,
     last_activity_at: now,
     transcript: [...state.transcript, entry],
   };
@@ -189,9 +171,8 @@ function resetBids(state: DiscussState): DiscussState {
   for (const [name, agent] of Object.entries(state.agents)) {
     if (agent.banned) continue;
     current_bids[name] = null;
-    if (agent.participation === 'required') {
-      pending_bidders.push(name);
-    }
+    if (agent.participation !== 'required') continue;
+    pending_bidders.push(name);
   }
 
   return {
@@ -224,6 +205,8 @@ export function initSession(
   quotaPerEpoch = DEFAULT_QUOTA_PER_EPOCH,
 ): DiscussState {
   const agents: Record<string, AgentState> = {};
+  const agentNames: string[] = [];
+  const requiredNames: string[] = [];
   for (const a of input.agents) {
     agents[a.name] = {
       persona: a.persona,
@@ -234,12 +217,13 @@ export function initSession(
       fallback_used: false,
       banned: false,
     };
+    agentNames.push(a.name);
+    if (a.participation === 'required') {
+      requiredNames.push(a.name);
+    }
   }
-  const agentNames = input.agents.map((a) => a.name);
-  const requiredNames = input.agents.filter((a) => a.participation === 'required').map((a) => a.name);
   return {
     session_id: '',
-    session_dir: '',
     topic: input.topic,
     status: 'setup',
     step: 1,
@@ -254,16 +238,13 @@ export function initSession(
     current_speaker: null,
     speaker_type: null,
     epoch_summary_written: null,
-    team_name: '',
     created_at: now,
-    updated_at: now,
     last_activity_at: now,
     last_speech_step: 0,
     hold_count: 0,
     bid_release_step: 0,
     end_reason_content: null,
     transcript: [],
-    transcript_rendered: 0,
     bid_threshold: bidThreshold,
     min_bid_delay_ms: input.min_bid_delay_ms,
   };
@@ -279,7 +260,6 @@ export function startBidding(state: DiscussState, now: string): Result<DiscussSt
     value: {
       ...state,
       status: 'bidding',
-      updated_at: now,
       last_activity_at: now,
     },
   };
@@ -315,7 +295,6 @@ export function applyBid(
       current_bids: { ...state.current_bids, [name]: score },
       current_thoughts: { ...current_thoughts, [name]: thought },
       pending_bidders: state.pending_bidders.filter((n) => n !== name),
-      updated_at: now,
       last_activity_at: now,
     },
   };
@@ -344,9 +323,10 @@ export function resolveWinner(
   const effectiveBids = computeEffectiveBids(allBids, state.agents, lastSpeaker);
   const threshold = state.bid_threshold;
   const cmp = (a: [string, number], b: [string, number]) => compareBidCandidates(state.agents, effectiveBids, a, b);
+  const bidEntries = Object.entries(allBids);
 
   const createBidPool = (qualifier: (name: string, score: number) => boolean): Array<[string, number]> =>
-    Object.entries(allBids)
+    bidEntries
       .filter(([name, score]) => qualifier(name, score))
       .sort(cmp);
 
@@ -506,8 +486,8 @@ export function applySpeechTimeout(
 
   const winner = state.current_speaker;
   const speaker = state.agents[winner];
-  const display_name = speaker.display_name;
-  const timeoutMsg = `${display_name} (${winner}) timed out without delivering a speech.`;
+  const displayName = speaker.display_name;
+  const timeoutMsg = `${displayName} (${winner}) timed out without delivering a speech.`;
   return {
     ok: true,
     value: buildSpeechState({
@@ -526,14 +506,14 @@ export function applyExpel(
   now: string,
 ): Result<{ state: DiscussState; hint: string }> {
   const isRespawn = state.epoch === 1 && state.step === 1;
-  let nextState: DiscussState = { ...state, last_activity_at: now, updated_at: now, hold_count: 0 };
+  let nextState: DiscussState = { ...state, last_activity_at: now, hold_count: 0 };
+  const removedPendingBidders = new Set<string>();
 
   for (const agent of pendingAgents) {
-    const nextPendingBidders = nextState.pending_bidders.filter((name) => name !== agent);
     if (isRespawn) {
+      removedPendingBidders.add(agent);
       nextState = {
         ...nextState,
-        pending_bidders: nextPendingBidders,
         current_bids: { ...nextState.current_bids, [agent]: 0 },
         current_thoughts: { ...nextState.current_thoughts, [agent]: '' },
       };
@@ -543,6 +523,7 @@ export function applyExpel(
     const targetAgent = nextState.agents[agent];
     if (!targetAgent) continue;
     if (targetAgent.participation === 'observer') continue;
+    removedPendingBidders.add(agent);
 
     nextState = {
       ...nextState,
@@ -554,7 +535,12 @@ export function applyExpel(
           quota_remaining: 0,
         },
       },
-      pending_bidders: nextPendingBidders,
+    };
+  }
+  if (removedPendingBidders.size > 0) {
+    nextState = {
+      ...nextState,
+      pending_bidders: nextState.pending_bidders.filter((name) => !removedPendingBidders.has(name)),
     };
   }
 
@@ -651,7 +637,6 @@ export function applyEnd(
     current_speaker: null,
     speaker_type: null,
     bid_release_step: state.step,
-    updated_at: now,
     last_activity_at: now,
   };
 

@@ -53,14 +53,9 @@ export class SessionManager {
   }
 
   get(nameOrId: string): SessionEntry | null {
-    // Try direct name lookup first
-    const direct = this.readSession(nameOrId);
-    if (direct) return direct;
-    // Scan all sessions for sessionId match
-    for (const entry of this.list()) {
-      if (entry.sessionId === nameOrId) return entry;
-    }
-    return null;
+    const byName = this.readSession(nameOrId);
+    if (byName) return byName;
+    return this.list().find((entry) => entry.sessionId === nameOrId) ?? null;
   }
 
   list(): SessionEntry[] {
@@ -76,11 +71,11 @@ export class SessionManager {
 
   updateSession(name: string, fields?: { model?: string }): void {
     const entry = this.readSession(name);
-    if (entry) {
-      entry.lastUsedAt = new Date().toISOString();
-      if (fields?.model) entry.model = fields.model;
-      this.writeSession(name, entry);
-    }
+    if (!entry) return;
+
+    entry.lastUsedAt = new Date().toISOString();
+    if (fields?.model) entry.model = fields.model;
+    this.writeSession(name, entry);
   }
 
   remove(name: string): boolean {

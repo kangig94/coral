@@ -1,5 +1,7 @@
 type AgentScoreMap = Record<string, number>;
 type NullableAgentScoreMap = Record<string, number | null>;
+type SpeakerType = 'quota' | 'fallback' | 'cold_start';
+type TranscriptResolveType = 'normal' | 'fallback' | 'cold_start' | 'no_winner';
 type TranscriptStepMetadata = {
   step: number;
   epoch: number;
@@ -17,7 +19,7 @@ export type TranscriptEntry =
     effective_bids?: AgentScoreMap;
     thoughts?: Record<string, string>;
     winner: string | null;
-    resolve_type: 'normal' | 'fallback' | 'cold_start' | 'no_winner';
+    resolve_type: TranscriptResolveType;
   } & TranscriptStepMetadata)
   | ({ type: 'speech'; agent: string; display_name: string; content: string; } & TranscriptStepMetadata)
   | ({ type: 'epoch_summary'; summary: string; } & TranscriptEpochMetadata)
@@ -35,7 +37,6 @@ export type AgentState = {
 
 export type DiscussState = {
   session_id: string;
-  session_dir: string;
   topic: string;
   status: 'setup' | 'bidding' | 'speaking' | 'ended';
   step: number;
@@ -48,18 +49,15 @@ export type DiscussState = {
   current_thoughts: Record<string, string>;
   pending_bidders: string[];
   current_speaker: string | null;
-  speaker_type: 'quota' | 'fallback' | 'cold_start' | null;
+  speaker_type: SpeakerType | null;
   epoch_summary_written: number | null;
-  team_name: string;
   created_at: string;
-  updated_at: string;
   last_activity_at: string;
   last_speech_step: number;
   hold_count: number;
   bid_release_step: number;
   end_reason_content: string | null;
   transcript: TranscriptEntry[];
-  transcript_rendered: number;
   bid_threshold: number;
   min_bid_delay_ms: number;
 };
@@ -79,7 +77,7 @@ export type ResolveReason =
  * The audit trail (all_bids) lives in transcript entries only.
  */
 export type ResolveResult =
-  | { winner: string; step?: never; speaker_type: 'quota' | 'fallback' | 'cold_start' }
+  | { winner: string; step?: never; speaker_type: SpeakerType }
   | { no_winner: true; reason: ResolveReason };
 
 export type BidResult =
@@ -121,7 +119,7 @@ export type PersonaSeedInput = {
   demographics?: DemographicsInput;
   controversy_axes: ControversyAxis[];
   n: number;
-  seed: number | null;
+  seed: number;
 };
 
 export type PersonaSeedOutput = {

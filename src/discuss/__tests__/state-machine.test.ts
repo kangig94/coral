@@ -1,4 +1,3 @@
-
 import { describe, it, expect } from 'vitest';
 import {
   initSession,
@@ -10,16 +9,15 @@ import {
   applyExpel,
   applyEpochSummary,
   applyEnd,
-  parseDisplayName,
-  topicSlug,
-  formatDateId,
+  endContent,
   computeEffectiveBids,
   findLastSpeaker,
   DEFAULT_BID_THRESHOLD,
   DEFAULT_MAX_EPOCHS,
 } from '../state-machine.js';
+import { parseDisplayName, topicSlug, formatDateId } from '../util/string.js';
 import type { AgentState, DiscussState, TranscriptEntry } from '../types.js';
-import { noParticipants } from '../conditions.js';
+import { noEligibleParticipants } from '../wait.js';
 
 const NOW = '2026-02-21T10:00:00.000Z';
 
@@ -43,8 +41,6 @@ const COLD_START_INPUT = { topic: 'Cold Start Topic', agents: COLD_START_AGENTS,
 function makeSession(input = BASE_INPUT): DiscussState {
   const init = initSession(input, NOW);
   init.session_id = '260221-1000-test';
-  init.session_dir = `260221-1000-test-${input.topic.toLowerCase().replace(/\s+/g, '-')}`;
-  init.team_name = 'coral-dc-260221-1000-test';
   return init;
 }
 
@@ -542,11 +538,8 @@ function makeAgentMap(rows: Array<{ name: string; total_speaks: number; banned?:
 
 
 function makeAgents(speaks: Record<string, number>): Record<string, import('../types.js').AgentState> {
-  return Object.fromEntries(
-    Object.entries(speaks).map(([name, total_speaks]) => [
-      name,
-      { persona: '', display_name: name, participation: 'required' as const, quota_remaining: 3, total_speaks, fallback_used: false, banned: false },
-    ]),
+  return makeAgentMap(
+    Object.entries(speaks).map(([name, total_speaks]) => ({ name, total_speaks })),
   );
 }
 
@@ -1099,7 +1092,7 @@ describe('observer participation', () => {
     expect(result.value.state.agents['user']?.banned).toBe(false);
   });
 
-  it('noParticipants should be true when only observer survives', () => {
+  it('noEligibleParticipants should be true when only observer survives', () => {
     const state = initSession(MIXED_INPUT, NOW);
     const bidding = unwrapOk(startBidding(state, NOW));
     // exhaust required agents
@@ -1111,7 +1104,7 @@ describe('observer participation', () => {
         bob: { ...bidding.agents['bob']!, quota_remaining: 0, fallback_used: true },
       },
     };
-    expect(noParticipants(modified)).toBe(true);
+    expect(noEligibleParticipants(modified)).toBe(true);
   });
 
   it('allExhausted only counts required agents — observer with quota does not block epoch transition', () => {
@@ -1137,16 +1130,16 @@ describe('observer participation', () => {
 
   // --- adversarial tests (red-attacker provenance) ---
 
-  it('noParticipants vacuous truth when all agents are observers', () => {
+  it('noEligibleParticipants vacuous truth when all agents are observers', () => {
     const state = initSession({
       topic: 'Observer Only',
       agents: [{ name: 'user', persona: 'User', participation: 'observer' as const }],
       min_bid_delay_ms: 0,
     }, NOW);
-    expect(noParticipants(state)).toBe(true);
+    expect(noEligibleParticipants(state)).toBe(true);
   });
 
-  it('noParticipants true when required banned and observer remains active', () => {
+  it('noEligibleParticipants true when required banned and observer remains active', () => {
     const bidding = unwrapOk(startBidding(initSession(MIXED_INPUT, NOW), NOW));
     const state = {
       ...bidding,
@@ -1156,10 +1149,10 @@ describe('observer participation', () => {
         user: makeAgent({ participation: 'observer' as const }),
       },
     };
-    expect(noParticipants(state)).toBe(true);
+    expect(noEligibleParticipants(state)).toBe(true);
   });
 
-  it('noParticipants false when some required agents still active', () => {
+  it('noEligibleParticipants false when some required agents still active', () => {
     const bidding = unwrapOk(startBidding(initSession(MIXED_INPUT, NOW), NOW));
     const state = {
       ...bidding,
@@ -1169,7 +1162,7 @@ describe('observer participation', () => {
         user: bidding.agents['user']!,
       },
     };
-    expect(noParticipants(state)).toBe(false);
+    expect(noEligibleParticipants(state)).toBe(false);
   });
 
   it('resolveWinner quorum_not_met when observer bid but required agents did not', () => {
@@ -1217,7 +1210,7 @@ describe('observer participation', () => {
     expect(result.value.state.agents['user']?.banned).toBe(false);
   });
 
-  it('noParticipants true after required expelled even if observer has quota', () => {
+  it('noEligibleParticipants true after required expelled even if observer has quota', () => {
     const ALICE_USER = {
       topic: 'Alice + User',
       agents: [
@@ -1231,7 +1224,7 @@ describe('observer participation', () => {
       ...bidding, step: 3, epoch: 2, pending_bidders: ['alice', 'user'],
     }, ['alice', 'user'], NOW));
     expect(expelled.state.agents['alice']?.banned).toBe(true);
-    expect(noParticipants(expelled.state)).toBe(true);
+    expect(noEligibleParticipants(expelled.state)).toBe(true);
     expect(expelled.state.agents['user']?.banned).toBe(false);
   });
 
@@ -1249,5 +1242,67 @@ describe('observer participation', () => {
     expect(r1Speech.current_bids['user']).toBeNull();
     expect(r1Speech.pending_bidders).toEqual(['alice', 'bob']);
     expect(r1Speech.pending_bidders).not.toContain('user');
+  });
+
+  it('endContent returns exact contract string for all_below_threshold', () => {
+    expect(endContent('all_below_threshold')).toBe('All participants bid below the threshold. Ending discussion.');
+  });
+
+  it('endContent returns exact contract string for max_epochs_reached', () => {
+    expect(endContent('max_epochs_reached')).toBe('Maximum epochs reached. Ending discussion.');
+  });
+
+  it('endContent returns exact contract string for all_blocked', () => {
+    expect(endContent('all_blocked')).toBe('Discussion is structurally deadlocked. Agents who want to speak have no quota, and agents with quota do not want to speak.');
+  });
+
+  it('endContent returns exact contract string for no_participants', () => {
+    expect(endContent('no_participants')).toBe('No eligible agents remaining. Ending discussion.');
+  });
+});
+
+// adversarial tests (red-attacker provenance)
+describe('endContent — pure function properties', () => {
+  it('should return distinct strings for all four reasons', () => {
+    const results = new Set(
+      (['all_below_threshold', 'max_epochs_reached', 'all_blocked', 'no_participants'] as const).map(endContent),
+    );
+    expect(results.size).toBe(4);
+  });
+
+  it('should return the same string on repeated calls (pure function, no mutation)', () => {
+    const first = endContent('all_blocked');
+    const second = endContent('all_blocked');
+    expect(first).toBe(second);
+  });
+});
+
+// adversarial tests (red-attacker provenance)
+describe('endContent integration: state machine leaves end_reason_content to caller', () => {
+  function makeBiddingState(): DiscussState {
+    const raw = initSession({ topic: 'End Test', agents: TWO_AGENTS, min_bid_delay_ms: 0 }, NOW);
+    const started = startBidding(raw, NOW);
+    if (!started.ok) throw new Error('startBidding failed');
+    const s0 = started.value;
+    const r1 = applyBid(s0, 'alice', 20, 'low bid', NOW);
+    if (!r1.ok) throw new Error('applyBid alice failed');
+    const r2 = applyBid(r1.value, 'bob', 15, 'low bid', NOW);
+    if (!r2.ok) throw new Error('applyBid bob failed');
+    return r2.value;
+  }
+
+  it('resolveWinner sets end_reason_content to null (endContent is applied by caller, not state machine)', () => {
+    const state = makeBiddingState();
+    const result = resolveWinner(state, NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const [nextState, decision] = result.value;
+    if ('speaker_type' in decision) return; // low bids should produce no-winner path
+    expect(nextState.end_reason_content).toBeNull();
+  });
+
+  it('end_reason_content on DiscussState is null until explicitly set by the caller', () => {
+    const state = initSession({ topic: 'Content Test', agents: TWO_AGENTS, min_bid_delay_ms: 0 }, NOW);
+    expect(state.end_reason_content).toBeNull();
   });
 });

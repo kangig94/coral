@@ -7,7 +7,10 @@ vi.mock('../codex-executor.js', () => ({
   executeOneShot: vi.fn(),
   executeResume: vi.fn(),
   executeFork: vi.fn(),
-  registerExecution: vi.fn(() => ({ signal: undefined })),
+  registerExecution: vi.fn(() => {
+    const controller = { signal: undefined };
+    return controller;
+  }),
   unregisterExecution: vi.fn(),
   abortExecution: vi.fn(),
   isExecutionActive: vi.fn(() => false),
@@ -27,7 +30,15 @@ vi.mock('node:os', () => ({
   homedir: () => tmpDir,
 }));
 
-import { executeOneShot, executeResume, executeFork, abortExecution, isExecutionActive } from '../codex-executor.js';
+import {
+  executeOneShot,
+  executeResume,
+  executeFork,
+  registerExecution,
+  unregisterExecution,
+  abortExecution,
+  isExecutionActive,
+} from '../codex-executor.js';
 import {
   createProgressFile,
   extractProgressId,
@@ -233,6 +244,9 @@ describe('handleSessionCreate', () => {
     expect(data.session).toBe('thread-123');
     expect(data.session_name).toBe('my-session');
     expect(mgr.get('my-session')).not.toBeNull();
+    const controller = vi.mocked(registerExecution).mock.results[0]?.value;
+    expect(controller).toBeDefined();
+    expect(unregisterExecution).toHaveBeenCalledWith('my-session', controller);
   });
 
   it('success without sessionId → returns notice and does NOT register', async () => {
@@ -258,6 +272,14 @@ describe('handleSessionCreate', () => {
     const data = JSON.parse(result.content[0].text);
     expect(data.session_name).toBe('explicit-name');
   });
+
+  it('execute rejection still unregisters the same controller in finally', async () => {
+    vi.mocked(executeOneShot).mockRejectedValue(new Error('boom'));
+    await expect(handleSessionCreate({ prompt: 'hi', name: 'failing-session', background: false, bypass: false }, mgr)).rejects.toThrow('boom');
+    const controller = vi.mocked(registerExecution).mock.results[0]?.value;
+    expect(controller).toBeDefined();
+    expect(unregisterExecution).toHaveBeenCalledWith('failing-session', controller);
+  });
 });
 
 // ─── E. handleSessionSend ─────────────────────────────────────────────────────
@@ -274,6 +296,9 @@ describe('handleSessionSend', () => {
     const data = JSON.parse(result.content[0].text);
     expect(data.response).toBe('test response');
     expect(data.session_name).toBe('test-session');
+    const controller = vi.mocked(registerExecution).mock.results[0]?.value;
+    expect(controller).toBeDefined();
+    expect(unregisterExecution).toHaveBeenCalledWith('test-session', controller);
   });
 
   it('session not found → isError: true (internal handler guard)', async () => {
@@ -350,6 +375,9 @@ describe('handleSessionFork', () => {
     expect(data.forked_from).toBe('thread-base');
     expect(data.session_name).toBe('forked');
     expect(mgr.get('forked')).not.toBeNull();
+    const controller = vi.mocked(registerExecution).mock.results[0]?.value;
+    expect(controller).toBeDefined();
+    expect(unregisterExecution).toHaveBeenCalledWith('forked', controller);
   });
 
   it('success without name → does not register, no session_name in response', async () => {
@@ -570,7 +598,7 @@ describe('handleToolCall', () => {
   });
 });
 
-// ─── I. Background/foreground branching ──────────────────────────────────────
+// ─── J. Background/foreground branching ──────────────────────────────────────
 
 describe('background/foreground branching', () => {
   beforeEach(() => {
@@ -601,6 +629,24 @@ describe('background/foreground branching', () => {
     vi.mocked(executeOneShot).mockResolvedValue(makeExecResult());
     await handleToolCall('codex', { op: 'exec', prompt: 'hello' }, mgr);
     expect(createProgressFile).not.toHaveBeenCalled();
+  });
+
+  it('foreground with progress token forwards notifications via runForeground path', async () => {
+    vi.mocked(extractProgressMessage).mockReturnValueOnce('Processing...');
+    vi.mocked(executeOneShot).mockImplementationOnce(async (_prompt, _model, _workingDir, _effort, _bypass, onEvent) => {
+      onEvent?.(JSON.stringify({ type: 'turn.started' }));
+      return makeExecResult();
+    });
+
+    const notify = vi.fn().mockResolvedValue(undefined);
+    const result = await handleToolCall('codex', { op: 'exec', prompt: 'hello' }, mgr, 'pt-foreground', notify);
+
+    expect(result.isError).toBe(false);
+    expect(createProgressFile).toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith({
+      method: 'notifications/progress',
+      params: { progressToken: 'pt-foreground', progress: 1, message: '[Codex] Processing...' },
+    });
   });
 
   it('background handler resolves → appendFinalResult called with completed', async () => {
@@ -639,5 +685,194 @@ describe('background/foreground branching', () => {
     await new Promise(r => setTimeout(r, 10));
 
     expect(activeBackgroundFiles.has('/tmp/progress.jsonl')).toBe(false);
+  });
+});
+
+// ─── K. finally-clause reliability on rejection ───────────────────────────────
+
+describe('finally-clause fires on executor rejection', () => {
+  it('handleSessionCreate: unregisterExecution called even when executeOneShot rejects', async () => {
+    const ctrl = new AbortController();
+    vi.mocked(registerExecution).mockReturnValue(ctrl);
+    vi.mocked(executeOneShot).mockRejectedValue(new Error('spawn failed'));
+
+    await expect(
+      handleSessionCreate({ prompt: 'hi', name: 'fail-session', background: false, bypass: false }, mgr),
+    ).rejects.toThrow('spawn failed');
+
+    expect(vi.mocked(unregisterExecution)).toHaveBeenCalledWith('fail-session', ctrl);
+  });
+
+  it('handleSessionSend: unregisterExecution called even when executeResume rejects', async () => {
+    mgr.register('send-session', 'thread-001', 'o4-mini', '/workspace');
+    const ctrl = new AbortController();
+    vi.mocked(registerExecution).mockReturnValue(ctrl);
+    vi.mocked(executeResume).mockRejectedValue(new Error('resume failed'));
+
+    await expect(
+      handleSessionSend({ session: 'send-session', prompt: 'hi', background: false, bypass: false }, mgr),
+    ).rejects.toThrow('resume failed');
+
+    expect(vi.mocked(unregisterExecution)).toHaveBeenCalledWith('send-session', ctrl);
+  });
+
+  it('handleSessionFork: unregisterExecution called even when executeFork rejects', async () => {
+    mgr.register('base', 'thread-base', 'o4-mini', '/workspace');
+    const ctrl = new AbortController();
+    vi.mocked(registerExecution).mockReturnValue(ctrl);
+    vi.mocked(executeFork).mockRejectedValue(new Error('fork failed'));
+
+    await expect(
+      handleSessionFork({ session: 'base', background: false, bypass: false }, mgr),
+    ).rejects.toThrow('fork failed');
+
+    expect(vi.mocked(unregisterExecution)).toHaveBeenCalledWith('base', ctrl);
+  });
+
+  it('handleToolCall wraps executor rejection as MCP error (does not propagate to caller)', async () => {
+    vi.mocked(executeOneShot).mockRejectedValue(new Error('Codex CLI not found'));
+
+    const result = await handleToolCall('codex', { op: 'exec', prompt: 'hello' }, mgr);
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Codex CLI not found');
+    expect(vi.mocked(unregisterExecution)).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── L. dispatchExecution notify threading ────────────────────────────────────
+
+describe('dispatchExecution threads progressToken and notify to runForeground', () => {
+  it('exec foreground without progressToken: notify is NOT called', async () => {
+    const notify = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(executeOneShot).mockImplementation(
+      async (_prompt, _model, _cwd, _effort, _bypass, onEvent) => {
+        if (onEvent) onEvent(JSON.stringify({ type: 'turn.started' }));
+        return makeExecResult();
+      },
+    );
+
+    await handleToolCall('codex', { op: 'exec', prompt: 'hello' }, mgr, undefined, notify);
+
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('fork foreground with progressToken + notify: notify is called during execution', async () => {
+    mgr.register('base-for-fork', 'thread-base', 'o4-mini', '/workspace');
+    const notify = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(createProgressFile).mockReturnValue('/tmp/fork-progress.jsonl');
+    vi.mocked(extractProgressMessage).mockReturnValue('Processing...');
+    vi.mocked(executeFork).mockImplementation(
+      async (_sid, _prompt, _model, _cwd, _effort, _bypass, onEvent) => {
+        if (onEvent) onEvent(JSON.stringify({ type: 'turn.started' }));
+        return makeExecResult({ sessionId: 'thread-fork2' });
+      },
+    );
+
+    await handleToolCall('codex', { op: 'fork', session: 'base-for-fork' }, mgr, 'pt-fork', notify);
+
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ method: 'notifications/progress' }),
+    );
+  });
+});
+
+// ─── M. Guard-before-dispatch ordering ───────────────────────────────────────
+
+describe('guard-before-dispatch: registerExecution not called on session-not-found', () => {
+  it('exec(session) with nonexistent session: registerExecution never called', async () => {
+    const result = await handleToolCall(
+      'codex', { op: 'exec', session: 'ghost-session', prompt: 'hi' }, mgr,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(vi.mocked(registerExecution)).not.toHaveBeenCalled();
+    expect(vi.mocked(executeResume)).not.toHaveBeenCalled();
+  });
+
+  it('fork with nonexistent session: registerExecution never called', async () => {
+    const result = await handleToolCall(
+      'codex', { op: 'fork', session: 'ghost-session' }, mgr,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(vi.mocked(registerExecution)).not.toHaveBeenCalled();
+    expect(vi.mocked(executeFork)).not.toHaveBeenCalled();
+  });
+
+  it('exec(session) background with nonexistent session: registerExecution never called', async () => {
+    const result = await handleToolCall(
+      'codex', { op: 'exec', session: 'ghost-bg', prompt: 'hi', background: true }, mgr,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(vi.mocked(registerExecution)).not.toHaveBeenCalled();
+  });
+
+  it('fork background with nonexistent session: registerExecution never called', async () => {
+    const result = await handleToolCall(
+      'codex', { op: 'fork', session: 'ghost-bg', background: true }, mgr,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(vi.mocked(registerExecution)).not.toHaveBeenCalled();
+  });
+});
+
+// ─── N. extractCompletionData edge values ────────────────────────────────────
+
+describe('extractCompletionData edge values', () => {
+  it('session field: undefined → null', () => {
+    const result = jsonResult({ response: 'hi', model: 'o4-mini', duration_ms: 10 });
+    expect(extractCompletionData(result, 'my-session').session).toBeNull();
+  });
+
+  it('session field: numeric 0 (falsy) is preserved via ??', () => {
+    const result = jsonResult({ response: 'hi', session: 0, model: 'o4-mini', duration_ms: 10 });
+    expect(extractCompletionData(result, 'my-session').session).toBe(0);
+  });
+
+  it('exit_code: 0 is included (any defined value is forwarded)', () => {
+    const result = jsonResult({ response: 'hi', session: 't-1', model: 'm', duration_ms: 1, exit_code: 0 });
+    expect(extractCompletionData(result, 'test')).toHaveProperty('exit_code', 0);
+  });
+
+  it('errors and warnings: non-array values are omitted', () => {
+    const result = jsonResult({ response: 'hi', session: 't-1', model: 'm', duration_ms: 1, errors: 'bad', warnings: null });
+    const data = extractCompletionData(result, 'test');
+    expect(data).not.toHaveProperty('errors');
+    expect(data).not.toHaveProperty('warnings');
+  });
+});
+
+// ─── O. registerExecution called exactly once per handler ─────────────────────
+
+describe('registerExecution called exactly once per handler', () => {
+  it('handleSessionCreate: registerExecution called exactly once', async () => {
+    vi.mocked(executeOneShot).mockResolvedValue(makeExecResult());
+
+    await handleSessionCreate({ prompt: 'hi', name: 'once-test', background: false, bypass: false }, mgr);
+
+    expect(vi.mocked(registerExecution)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(registerExecution)).toHaveBeenCalledWith('once-test');
+  });
+
+  it('handleSessionSend: registerExecution called exactly once', async () => {
+    mgr.register('send-once', 'thread-001', 'o4-mini', '/workspace');
+    vi.mocked(executeResume).mockResolvedValue(makeExecResult());
+
+    await handleSessionSend({ session: 'send-once', prompt: 'hi', background: false, bypass: false }, mgr);
+
+    expect(vi.mocked(registerExecution)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(registerExecution)).toHaveBeenCalledWith('send-once');
+  });
+
+  it('handleSessionFork: registerExecution called exactly once', async () => {
+    mgr.register('fork-once-base', 'thread-f', 'o4-mini', '/workspace');
+    vi.mocked(executeFork).mockResolvedValue(makeExecResult());
+
+    await handleSessionFork({ session: 'fork-once-base', background: false, bypass: false }, mgr);
+
+    expect(vi.mocked(registerExecution)).toHaveBeenCalledTimes(1);
   });
 });

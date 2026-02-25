@@ -29,6 +29,8 @@ const speechDelivered = (s: DiscussState) =>
 
 The predicate `last_speech_step === step - 1` is true from the moment `applySpeech` completes until the first `applyBid` of the next round — a stable window of seconds rather than microseconds.
 
+**Initial-state boundary**: At step=1 with `last_speech_step=0` (the default initial state after setup→bidding), `speechDelivered` returns `true` because `1-1 === 0 === last_speech_step`. This is not a bug in practice because `stepSpeaking` is only invoked when `status === 'speaking'`, and `status='speaking'` requires step≥2 (resolveWinner increments step). Never expose `speechDelivered` to a state where `status='bidding'` and `step=1` except through the polling loop after a winner is selected.
+
 ## Extension: Step Increment as Epoch Boundary Enforcement Signal
 
 The same monotonic `step` can serve dual duty as an enforcement watermark. When `transcript_read_step[agent]` tracks the `step` at which an agent last called `discuss({ op: "transcript", ... })`, incrementing `step` at any epoch boundary instantly invalidates all prior reads:

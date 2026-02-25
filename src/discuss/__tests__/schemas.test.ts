@@ -5,8 +5,10 @@ import {
   sessionIdPattern,
 } from '../schemas.js';
 
-const SESSION_ID = '260221-1430-a3x7';
-const session = SESSION_ID;
+const session = '260221-1430-a3x7';
+const expectLeadParseThrows = (payload: unknown): void => {
+  expect(() => discussLeadOpSchema.parse(payload as never)).toThrow();
+};
 
 describe('sessionIdPattern', () => {
   it('should match valid session IDs (yymmdd-HHmm-xxxx)', () => {
@@ -119,60 +121,52 @@ describe('discussLeadOpSchema', () => {
   });
 
   it('rejects empty origin_weights', () => {
-    expect(() =>
-      discussLeadOpSchema.parse({
-        op: '_1_seed',
-        controversy_axes: [{ axis: 'cost', positions: ['high', 'low'] }],
-        demographics: {
-          origin_weights: {},
-          outlier_ratio: 0.2,
-        },
-        n: 1,
-      } as never),
-    ).toThrow();
+    expectLeadParseThrows({
+      op: '_1_seed',
+      controversy_axes: [{ axis: 'cost', positions: ['high', 'low'] }],
+      demographics: {
+        origin_weights: {},
+        outlier_ratio: 0.2,
+      },
+      n: 1,
+    });
   });
 
   it('rejects negative origin weights in demographics', () => {
-    expect(() =>
-      discussLeadOpSchema.parse({
-        op: '_1_seed',
-        controversy_axes: [{ axis: 'cost', positions: ['high', 'low'] }],
-        demographics: {
-          origin_weights: { US: -0.5 },
-          outlier_ratio: 0.2,
-        },
-        n: 1,
-      } as never),
-    ).toThrow();
+    expectLeadParseThrows({
+      op: '_1_seed',
+      controversy_axes: [{ axis: 'cost', positions: ['high', 'low'] }],
+      demographics: {
+        origin_weights: { US: -0.5 },
+        outlier_ratio: 0.2,
+      },
+      n: 1,
+    });
   });
 
   it('rejects outlier_ratio above 0.5', () => {
-    expect(() =>
-      discussLeadOpSchema.parse({
-        op: '_1_seed',
-        controversy_axes: [{ axis: 'cost', positions: ['high', 'low'] }],
-        demographics: {
-          origin_weights: { US: 0.5 },
-          outlier_ratio: 0.75,
-        },
-        n: 1,
-      } as never),
-    ).toThrow();
+    expectLeadParseThrows({
+      op: '_1_seed',
+      controversy_axes: [{ axis: 'cost', positions: ['high', 'low'] }],
+      demographics: {
+        origin_weights: { US: 0.5 },
+        outlier_ratio: 0.75,
+      },
+      n: 1,
+    });
   });
 
   it('rejects unknown fields in demographics payload', () => {
-    expect(() =>
-      discussLeadOpSchema.parse({
-        op: '_1_seed',
-        controversy_axes: [{ axis: 'cost', positions: ['high', 'low'] }],
-        demographics: {
-          origin_weights: { US: 0.5 },
-          outlier_ratio: 0.2,
-          unexpected: true,
-        },
-        n: 1,
-      } as never),
-    ).toThrow();
+    expectLeadParseThrows({
+      op: '_1_seed',
+      controversy_axes: [{ axis: 'cost', positions: ['high', 'low'] }],
+      demographics: {
+        origin_weights: { US: 0.5 },
+        outlier_ratio: 0.2,
+        unexpected: true,
+      },
+      n: 1,
+    });
   });
 
   it('parses seed op without demographics', () => {

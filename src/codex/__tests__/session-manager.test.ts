@@ -65,8 +65,7 @@ describe('SessionManager', () => {
     mgr.register('review', 'thread-1', 'o4-mini', workDir);
 
     const found = mgr.get('review');
-    expect(found).not.toBeNull();
-    expect(found!.sessionId).toBe('thread-1');
+    expect(found?.sessionId).toBe('thread-1');
   });
 
   it('get finds a session by sessionId via directory scan', () => {
@@ -75,8 +74,7 @@ describe('SessionManager', () => {
     mgr.register('beta', 'thread-beta', 'o4-mini', workDir);
 
     const found = mgr.get('thread-beta');
-    expect(found).not.toBeNull();
-    expect(found!.name).toBe('beta');
+    expect(found?.name).toBe('beta');
   });
 
   it('list returns all valid sessions in the project directory', () => {

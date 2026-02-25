@@ -9,10 +9,10 @@ const sessionIdField = z.string().regex(sessionIdPattern);
 const axesShape = z.object({
   axis: nonEmptyString,
   positions: z.array(nonEmptyString).min(1).max(10)
-    .refine((positions) => hasUniqueItems(positions), 'Positions within an axis must be unique'),
+    .refine((positions) => hasUniqueValues(positions), 'Positions within an axis must be unique'),
 });
 
-function hasUniqueItems<T>(values: readonly T[]): boolean {
+function hasUniqueValues<T>(values: readonly T[]): boolean {
   return new Set(values).size === values.length;
 }
 
@@ -42,7 +42,7 @@ export const discussAgentOpSchema = z.discriminatedUnion('op', [bidShape, speakS
 const seedShape = z.object({
   op: z.literal('_1_seed'),
   controversy_axes: z.array(axesShape).min(1).max(10)
-    .refine((axes) => hasUniqueItems(axes.map((axis) => axis.axis)), 'Axis names must be unique'),
+    .refine((axes) => hasUniqueValues(axes.map((axis) => axis.axis)), 'Axis names must be unique'),
   demographics: demographicsShape.optional(),
   n: z.number().int().min(1).max(8),
   seed: z.number().int().nullable().default(null),
@@ -62,7 +62,7 @@ const createShape = z.object({
     .min(2)
     .max(8)
     .refine(
-      (agents) => hasUniqueItems(agents.map((agent) => agent.name)),
+      (agents) => hasUniqueValues(agents.map((agent) => agent.name)),
       'Agent names must be unique',
     ),
   min_bid_delay_ms: z.number().int().min(0).max(30000).default(0),
@@ -113,6 +113,5 @@ export const discussLeadOpSchema = z.discriminatedUnion('op', [
 
 export type DiscussAgentOpInput = z.infer<typeof discussAgentOpSchema>;
 export type DiscussLeadOpInput = z.infer<typeof discussLeadOpSchema>;
-export type DiscussCreateInput = Omit<Extract<DiscussLeadOpInput, { op: '_2_create' }>, 'op'>;
 
 export type DiscussPersonaSeedInput = z.infer<typeof seedShape>;

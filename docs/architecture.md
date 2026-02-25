@@ -172,14 +172,23 @@ coral/
 │   └── discuss/                 # Discuss MCP server (dc)
 │       ├── server.ts            # Composition root
 │       ├── server-handlers.ts   # Tool dispatch
+│       ├── lock.ts              # File locking and atomic writes
+│       ├── handlers/
+│       │   ├── bid.ts           # bid/speak flow
+│       │   ├── step.ts          # _3_step flow
+│       │   └── utils.ts         # Cross-handler shared utilities
 │       ├── schemas.ts           # Zod validation
 │       ├── state-machine.ts     # Pure state transitions
 │       ├── session-store.ts     # I/O: atomic writes, locking
 │       ├── transcript.ts        # Markdown rendering
-│       ├── persona-seed.ts      # k-DPP sampling
+│       ├── persona-seed.ts      # Persona sampling (k-DPP)
 │       ├── conditions.ts        # Pure predicates
 │       ├── wait.ts              # File polling
-│       └── types.ts             # Discuss type definitions
+│       ├── types.ts             # Discuss type definitions
+│       └── util/
+│           ├── string.ts        # String/ID formatting utilities
+│           ├── rng.ts           # Seeded RNG and sampling primitives
+│           └── dpp.ts           # k-DPP linear algebra
 ├── skills/                      # Slash command SKILL.md files (one dir per skill)
 ├── agents/                      # Agent protocol definitions
 ├── hooks/
@@ -221,29 +230,36 @@ types.ts ← referenced by all codex modules
 
 ### Discuss Server (`dc`)
 
-```
-discuss/server.ts  (composition root — wiring only)
-  └── discuss/server-handlers.ts  (tool dispatch + step integration)
-        ├── discuss/schemas.ts          (Zod input validation)
-        ├── discuss/state-machine.ts    (pure state transitions, zero I/O)
-        ├── discuss/session-store.ts    (atomic writes, cross-process lock)
-        │     ├── discuss/transcript.ts  (rendering, called via save())
-        │     └── discuss/state-machine.ts  (imports randomSuffix, formatDateId, topicSlug)
-        ├── discuss/persona-seed.ts     (pure k-DPP sampling)
-        ├── discuss/conditions.ts       (pure predicates)
-        ├── discuss/wait.ts             (async file polling)
-        └── shared/mcp-utils.ts         (textResult, jsonResult)
+Strict layered dependency order (lower layers never import from higher):
 
-discuss/types.ts ← referenced by all discuss modules
 ```
+L0  discuss/types.ts             (type definitions — zero imports)
+L1  discuss/util/string.ts       (string/ID formatting)
+    discuss/util/rng.ts          (seeded RNG, sampling)
+    discuss/util/dpp.ts          (k-DPP linear algebra → imports rng)
+L2  discuss/state-machine.ts     (pure state transitions → imports util/string)
+    discuss/conditions.ts        (pure predicates)
+    discuss/transcript.ts        (markdown rendering)
+    discuss/schemas.ts           (Zod validation)
+    discuss/persona-seed.ts      (k-DPP sampling → imports util/rng, util/dpp)
+L3  discuss/lock.ts              (file locking, atomic writes)
+    discuss/session-store.ts     (I/O shell → imports util/string, lock, transcript)
+    discuss/wait.ts              (file polling)
+L4  discuss/handlers/utils.ts    (cross-handler utilities → imports session-store type-only)
+L5  discuss/handlers/bid.ts      (bid/speak flow)
+    discuss/handlers/step.ts     (_3_step flow)
+L6  discuss/server-handlers.ts   (tool dispatch → imports handlers/bid, handlers/step, handlers/utils)
+L7  discuss/server.ts            (composition root — wiring only)
 
-Note: `session-store.ts` imports utility functions (`randomSuffix`, `formatDateId`, `topicSlug`) from `state-machine.ts` for session directory naming. This is a deliberate co-location choice — these are pure string utilities with no state machine semantics.
+shared/mcp-utils.ts ← referenced by L4–L6
+```
 
 ### Key Design: Functional Core / Imperative Shell
 
 The discuss server separates pure logic from I/O:
 
-- **Functional Core** (`state-machine.ts`): all state transitions are pure functions `(state, args) → Result<T>`. Zero `node:fs` imports. Fully testable without filesystem.
-- **Imperative Shell** (`session-store.ts`): handles atomic writes, cross-process locking, and incremental transcript append. All state mutations pass through `withLock`.
-- **Condition predicates** (`conditions.ts`): pure boolean functions used by `wait.ts` to detect when to unblock polling loops.
-- **Wait module** (`wait.ts`): polls `state.json` at intervals until a predicate is true or timeout expires.
+- **L0–L1**: Zero project imports. `util/` provides pure string, RNG, and DPP primitives.
+- **L2 Functional Core** (`state-machine.ts`, `conditions.ts`, `transcript.ts`, `persona-seed.ts`): pure functions, zero `node:fs`. Fully testable without filesystem.
+- **L3 Imperative Shell** (`lock.ts`, `session-store.ts`, `wait.ts`): all filesystem operations. Atomic writes via `writeStateAtomic` (from `lock.ts`). All state mutations serialized through `withLock`.
+- **L4–L5 Handler layer**: `handlers/utils.ts` provides shared utilities (`resolveSession`, `resultToMcp`, `endContent`). `handlers/bid.ts` and `handlers/step.ts` contain the extracted bid/speak and `_3_step` flows.
+- **L6 Dispatch**: `server-handlers.ts` is a thin router — Zod parsing, `envInt`, and routing to handlers.

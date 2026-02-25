@@ -17,6 +17,15 @@ export function jsonResult(data: Record<string, unknown>): McpResult {
   return textResult(JSON.stringify(data, null, 2));
 }
 
+type ResultLike<T extends Record<string, unknown>> =
+  | { ok: true; value: T }
+  | { ok: false; error: string; detail?: Record<string, unknown> };
+
+export function resultToMcp<T extends Record<string, unknown>>(result: ResultLike<T>): McpResult {
+  if (result.ok) return jsonResult(result.value);
+  return jsonResult({ error: result.error, ...(result.detail ?? {}) });
+}
+
 /**
  * Conditional error/warning/abort fields for Codex result responses.
  * Codex-specific - dc server should NOT import this.
