@@ -21,6 +21,8 @@ import type { DiscussState, Result } from './types.js';
 import { handleAgentOp } from './handlers/bid.js';
 import { handleStep } from './handlers/step.js';
 
+const nowIsoString = (): string => new Date().toISOString();
+
 type ToolParseResult<T> = { ok: true; value: T } | { ok: false; value: McpResult };
 
 function parseToolInput<T>(
@@ -44,8 +46,6 @@ function envInt(key: string, min: number, max: number, fallback: number): number
   const raw = Number.parseInt(process.env[key] ?? '', 10);
   return Number.isFinite(raw) && raw >= min && raw <= max ? raw : fallback;
 }
-
-const nowIsoString = (): string => new Date().toISOString();
 
 function formatTranscriptForMode(
   input: Extract<DiscussLeadOpInput, { op: '_4_transcript' }>,

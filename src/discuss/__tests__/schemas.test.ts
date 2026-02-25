@@ -5,8 +5,7 @@ import {
   sessionIdPattern,
 } from '../schemas.js';
 
-const SESSION_ID = '260221-1430-a3x7';
-const session = SESSION_ID;
+const session = '260221-1430-a3x7';
 const expectLeadParseThrows = (payload: unknown): void => {
   expect(() => discussLeadOpSchema.parse(payload as never)).toThrow();
 };

@@ -205,6 +205,8 @@ export function initSession(
   quotaPerEpoch = DEFAULT_QUOTA_PER_EPOCH,
 ): DiscussState {
   const agents: Record<string, AgentState> = {};
+  const agentNames: string[] = [];
+  const requiredNames: string[] = [];
   for (const a of input.agents) {
     agents[a.name] = {
       persona: a.persona,
@@ -215,9 +217,11 @@ export function initSession(
       fallback_used: false,
       banned: false,
     };
+    agentNames.push(a.name);
+    if (a.participation === 'required') {
+      requiredNames.push(a.name);
+    }
   }
-  const agentNames = input.agents.map((a) => a.name);
-  const requiredNames = input.agents.filter((a) => a.participation === 'required').map((a) => a.name);
   return {
     session_id: '',
     topic: input.topic,
@@ -503,13 +507,13 @@ export function applyExpel(
 ): Result<{ state: DiscussState; hint: string }> {
   const isRespawn = state.epoch === 1 && state.step === 1;
   let nextState: DiscussState = { ...state, last_activity_at: now, hold_count: 0 };
+  const removedPendingBidders = new Set<string>();
 
   for (const agent of pendingAgents) {
-    const nextPendingBidders = nextState.pending_bidders.filter((name) => name !== agent);
     if (isRespawn) {
+      removedPendingBidders.add(agent);
       nextState = {
         ...nextState,
-        pending_bidders: nextPendingBidders,
         current_bids: { ...nextState.current_bids, [agent]: 0 },
         current_thoughts: { ...nextState.current_thoughts, [agent]: '' },
       };
@@ -519,6 +523,7 @@ export function applyExpel(
     const targetAgent = nextState.agents[agent];
     if (!targetAgent) continue;
     if (targetAgent.participation === 'observer') continue;
+    removedPendingBidders.add(agent);
 
     nextState = {
       ...nextState,
@@ -530,7 +535,12 @@ export function applyExpel(
           quota_remaining: 0,
         },
       },
-      pending_bidders: nextPendingBidders,
+    };
+  }
+  if (removedPendingBidders.size > 0) {
+    nextState = {
+      ...nextState,
+      pending_bidders: nextState.pending_bidders.filter((name) => !removedPendingBidders.has(name)),
     };
   }
 

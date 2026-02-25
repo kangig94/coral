@@ -12,6 +12,8 @@ import {
 } from '../state-machine.js';
 import { allBidsIn, speechDelivered, noEligibleParticipants, waitForCondition } from '../wait.js';
 
+const nowIsoString = (): string => new Date().toISOString();
+
 type StepContext = {
   sessionDir: string;
   statePath: string;
@@ -41,8 +43,6 @@ type SpeakingWait =
   | { kind: 'ended' }
   | { kind: 'speech_done'; speech: { agent: string; content: string } }
   | { kind: 'speech_timeout'; speaker: string };
-
-const nowIsoString = (): string => new Date().toISOString();
 
 function endNoParticipants(
   mutatedState: DiscussState,
