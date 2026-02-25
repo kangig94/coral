@@ -1,6 +1,5 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { DiscussState } from './types.js';
 
 function tryRemoveSync(targetPath: string): void {
   try {
@@ -13,7 +12,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function writeStateAtomic(filePath: string, state: DiscussState): void {
+export function writeStateAtomic(filePath: string, state: Record<string, unknown>): void {
   const tmp = filePath + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf8');
   fs.renameSync(tmp, filePath);

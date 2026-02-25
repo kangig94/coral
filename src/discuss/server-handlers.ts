@@ -1,7 +1,6 @@
-import { textResult, jsonResult, type McpResult } from '../shared/mcp-utils.js';
+import { textResult, jsonResult, resultToMcp, type McpResult } from '../shared/mcp-utils.js';
 import { z } from 'zod';
 import { SessionStore } from './session-store.js';
-import { resolveSession, nowIsoString, resultToMcp, loadState } from './handlers/utils.js';
 import {
   applyEnd,
   applyEpochSummary,
@@ -18,7 +17,7 @@ import {
   discussLeadOpSchema,
   type DiscussLeadOpInput,
 } from './schemas.js';
-import type { Result } from './types.js';
+import type { DiscussState, Result } from './types.js';
 import { handleAgentOp } from './handlers/bid.js';
 import { handleStep } from './handlers/step.js';
 
@@ -46,9 +45,11 @@ function envInt(key: string, min: number, max: number, fallback: number): number
   return Number.isFinite(raw) && raw >= min && raw <= max ? raw : fallback;
 }
 
+const nowIsoString = (): string => new Date().toISOString();
+
 function formatTranscriptForMode(
   input: Extract<DiscussLeadOpInput, { op: '_4_transcript' }>,
-  state: Awaited<ReturnType<typeof loadState>>,
+  state: DiscussState,
 ): string {
   switch (input.mode) {
     case 'full':
@@ -178,10 +179,8 @@ async function handleCreate(
   const quotaPerEpoch = envInt('CORAL_DISCUSS_QUOTA_PER_EPOCH', 1, 10, DEFAULT_QUOTA_PER_EPOCH);
 
   const state = initSession(input, now, bidThreshold, maxEpochs, quotaPerEpoch);
-  const { sessionId, sessionDir, fullPath } = store.createSessionDir(input.topic);
+  const { sessionId, fullPath } = store.createSessionDir(input.topic);
   state.session_id = sessionId;
-  state.session_dir = sessionDir;
-  state.team_name = `coral-dc-${sessionId}`;
 
   await store.withLock(fullPath, async () => {
     store.initTranscript(fullPath, input.topic);
@@ -191,7 +190,7 @@ async function handleCreate(
   return jsonResult({
     session_id: sessionId,
     session_dir: fullPath,
-    team_name: state.team_name,
+    team_name: `coral-dc-${sessionId}`,
     topic: input.topic,
     status: state.status,
     bid_threshold: state.bid_threshold,
@@ -205,10 +204,10 @@ async function handleTranscript(
   input: Extract<DiscussLeadOpInput, { op: '_4_transcript' }>,
   store: SessionStore,
 ): Promise<McpResult> {
-  const sessionDir = resolveSession(store, input.session);
+  const sessionDir = store.resolveOrError(input.session);
   if (typeof sessionDir !== 'string') return sessionDir;
 
-  const state = await loadState(store, sessionDir);
+  const state = await store.loadLocked(sessionDir);
   return textResult(formatTranscriptForMode(input, state));
 }
 
@@ -216,7 +215,7 @@ async function handleEpoch(
   input: Extract<DiscussLeadOpInput, { op: '_5_epoch' }>,
   store: SessionStore,
 ): Promise<McpResult> {
-  const sessionDir = resolveSession(store, input.session);
+  const sessionDir = store.resolveOrError(input.session);
   if (typeof sessionDir !== 'string') return sessionDir;
 
   const applied = await store.withLock<Result<{ recorded: true; epoch: number }>>(sessionDir, async () => {
@@ -234,10 +233,10 @@ async function handleState(
   input: Extract<DiscussLeadOpInput, { op: '_6_state' }>,
   store: SessionStore,
 ): Promise<McpResult> {
-  const sessionDir = resolveSession(store, input.session);
+  const sessionDir = store.resolveOrError(input.session);
   if (typeof sessionDir !== 'string') return sessionDir;
 
-  const state = await loadState(store, sessionDir);
+  const state = await store.loadLocked(sessionDir);
 
   return jsonResult({
     session_id: state.session_id,
@@ -277,7 +276,7 @@ async function handleEnd(
     return textResult('reason is required when force=true', true);
   }
 
-  const sessionDir = resolveSession(store, input.session);
+  const sessionDir = store.resolveOrError(input.session);
   if (typeof sessionDir !== 'string') return sessionDir;
 
   const ended = await store.withLock<Result<{ status: string }>>(sessionDir, async () => {

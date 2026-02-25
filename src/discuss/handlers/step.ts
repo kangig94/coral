@@ -1,4 +1,4 @@
-import { jsonResult, type McpResult } from '../../shared/mcp-utils.js';
+import { jsonResult, resultToMcp, type McpResult } from '../../shared/mcp-utils.js';
 import type { EndReason, DiscussState, Result } from '../types.js';
 import type { DiscussLeadOpInput } from '../schemas.js';
 import type { SessionStore } from '../session-store.js';
@@ -8,10 +8,9 @@ import {
   applySpeechTimeout,
   applyExpel,
   applyEnd,
+  endContent,
 } from '../state-machine.js';
-import { allBidsIn, speechDelivered, noEligibleParticipants } from '../conditions.js';
-import { waitForCondition } from '../wait.js';
-import { resolveSession, nowIsoString, resultToMcp, loadState, endContent } from './utils.js';
+import { allBidsIn, speechDelivered, noEligibleParticipants, waitForCondition } from '../wait.js';
 
 type StepContext = {
   sessionDir: string;
@@ -42,6 +41,8 @@ type SpeakingWait =
   | { kind: 'ended' }
   | { kind: 'speech_done'; speech: { agent: string; content: string } }
   | { kind: 'speech_timeout'; speaker: string };
+
+const nowIsoString = (): string => new Date().toISOString();
 
 function endNoParticipants(
   mutatedState: DiscussState,
@@ -191,7 +192,7 @@ async function stepBidding(ctx: StepContext, store: SessionStore): Promise<McpRe
     ctx.timeoutMs,
   );
   if (!waited.fulfilled) {
-    const state = await loadState(store, ctx.sessionDir);
+    const state = await store.loadLocked(ctx.sessionDir);
     if (state.status === 'ended') {
       return jsonResult({ status: 'ended', phase: 'ended', reason: 'already_ended' });
     }
@@ -203,7 +204,7 @@ async function stepBidding(ctx: StepContext, store: SessionStore): Promise<McpRe
     });
   }
 
-  const state = await loadState(store, ctx.sessionDir);
+  const state = await store.loadLocked(ctx.sessionDir);
   if (state.status === 'ended') {
     return jsonResult({ status: 'ended', phase: 'ended', reason: 'already_ended' });
   }
@@ -266,7 +267,7 @@ export async function handleStep(
   input: Extract<DiscussLeadOpInput, { op: '_3_step' }>,
   store: SessionStore,
 ): Promise<McpResult> {
-  const sessionDir = resolveSession(store, input.session);
+  const sessionDir = store.resolveOrError(input.session);
   if (typeof sessionDir !== 'string') return sessionDir;
 
   const ctx: StepContext = {

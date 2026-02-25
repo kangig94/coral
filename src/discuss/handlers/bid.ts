@@ -1,18 +1,18 @@
-import { jsonResult, type McpResult } from '../../shared/mcp-utils.js';
+import { jsonResult, resultToMcp, type McpResult } from '../../shared/mcp-utils.js';
 import type { DiscussState, Result } from '../types.js';
 import type { DiscussAgentOpInput } from '../schemas.js';
 import type { SessionStore } from '../session-store.js';
 import { applyBid, applySpeech, resolveAgentName } from '../state-machine.js';
-import { isWinner, bidReleased, setupComplete } from '../conditions.js';
-import { waitForCondition, INFINITE_POLL } from '../wait.js';
+import { isWinner, bidReleased, setupComplete, waitForCondition, INFINITE_POLL } from '../wait.js';
 import { formatAgentView } from '../transcript.js';
-import { resolveSession, nowIsoString, resultToMcp, loadState } from './utils.js';
+
+const nowIsoString = (): string => new Date().toISOString();
 
 async function handleBid(
   input: Extract<DiscussAgentOpInput, { op: 'bid' }>,
   store: SessionStore,
 ): Promise<McpResult> {
-  const sessionDir = resolveSession(store, input.session);
+  const sessionDir = store.resolveOrError(input.session);
   if (typeof sessionDir !== 'string') return sessionDir;
   const statePath = store.statePath(sessionDir);
   const bidFinalResult = (state: DiscussState, resolved: string): McpResult => {
@@ -133,7 +133,7 @@ async function handleBid(
           return jsonResult({ error: released.error ?? 'bid_wait_failed' });
         }
 
-        const finalState = await loadState(store, sessionDir);
+        const finalState = await store.loadLocked(sessionDir);
         return bidFinalResult(finalState, resolved);
       }
     }
@@ -144,7 +144,7 @@ async function handleSpeak(
   input: Extract<DiscussAgentOpInput, { op: 'speak' }>,
   store: SessionStore,
 ): Promise<McpResult> {
-  const sessionDir = resolveSession(store, input.session);
+  const sessionDir = store.resolveOrError(input.session);
   if (typeof sessionDir !== 'string') return sessionDir;
   const applied = await store.withLock<Result<{ status: string; step: number }>>(sessionDir, async () => {
     const state = store.load(sessionDir);

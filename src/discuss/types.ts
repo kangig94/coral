@@ -37,7 +37,6 @@ export type AgentState = {
 
 export type DiscussState = {
   session_id: string;
-  session_dir: string;
   topic: string;
   status: 'setup' | 'bidding' | 'speaking' | 'ended';
   step: number;
@@ -52,16 +51,13 @@ export type DiscussState = {
   current_speaker: string | null;
   speaker_type: SpeakerType | null;
   epoch_summary_written: number | null;
-  team_name: string;
   created_at: string;
-  updated_at: string;
   last_activity_at: string;
   last_speech_step: number;
   hold_count: number;
   bid_release_step: number;
   end_reason_content: string | null;
   transcript: TranscriptEntry[];
-  transcript_rendered: number;
   bid_threshold: number;
   min_bid_delay_ms: number;
 };

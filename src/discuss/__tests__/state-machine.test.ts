@@ -9,6 +9,7 @@ import {
   applyExpel,
   applyEpochSummary,
   applyEnd,
+  endContent,
   computeEffectiveBids,
   findLastSpeaker,
   DEFAULT_BID_THRESHOLD,
@@ -16,7 +17,7 @@ import {
 } from '../state-machine.js';
 import { parseDisplayName, topicSlug, formatDateId } from '../util/string.js';
 import type { AgentState, DiscussState, TranscriptEntry } from '../types.js';
-import { noEligibleParticipants } from '../conditions.js';
+import { noEligibleParticipants } from '../wait.js';
 
 const NOW = '2026-02-21T10:00:00.000Z';
 
@@ -40,8 +41,6 @@ const COLD_START_INPUT = { topic: 'Cold Start Topic', agents: COLD_START_AGENTS,
 function makeSession(input = BASE_INPUT): DiscussState {
   const init = initSession(input, NOW);
   init.session_id = '260221-1000-test';
-  init.session_dir = `260221-1000-test-${input.topic.toLowerCase().replace(/\s+/g, '-')}`;
-  init.team_name = 'coral-dc-260221-1000-test';
   return init;
 }
 
@@ -1243,5 +1242,67 @@ describe('observer participation', () => {
     expect(r1Speech.current_bids['user']).toBeNull();
     expect(r1Speech.pending_bidders).toEqual(['alice', 'bob']);
     expect(r1Speech.pending_bidders).not.toContain('user');
+  });
+
+  it('endContent returns exact contract string for all_below_threshold', () => {
+    expect(endContent('all_below_threshold')).toBe('All participants bid below the threshold. Ending discussion.');
+  });
+
+  it('endContent returns exact contract string for max_epochs_reached', () => {
+    expect(endContent('max_epochs_reached')).toBe('Maximum epochs reached. Ending discussion.');
+  });
+
+  it('endContent returns exact contract string for all_blocked', () => {
+    expect(endContent('all_blocked')).toBe('Discussion is structurally deadlocked. Agents who want to speak have no quota, and agents with quota do not want to speak.');
+  });
+
+  it('endContent returns exact contract string for no_participants', () => {
+    expect(endContent('no_participants')).toBe('No eligible agents remaining. Ending discussion.');
+  });
+});
+
+// adversarial tests (red-attacker provenance)
+describe('endContent — pure function properties', () => {
+  it('should return distinct strings for all four reasons', () => {
+    const results = new Set(
+      (['all_below_threshold', 'max_epochs_reached', 'all_blocked', 'no_participants'] as const).map(endContent),
+    );
+    expect(results.size).toBe(4);
+  });
+
+  it('should return the same string on repeated calls (pure function, no mutation)', () => {
+    const first = endContent('all_blocked');
+    const second = endContent('all_blocked');
+    expect(first).toBe(second);
+  });
+});
+
+// adversarial tests (red-attacker provenance)
+describe('endContent integration: state machine leaves end_reason_content to caller', () => {
+  function makeBiddingState(): DiscussState {
+    const raw = initSession({ topic: 'End Test', agents: TWO_AGENTS, min_bid_delay_ms: 0 }, NOW);
+    const started = startBidding(raw, NOW);
+    if (!started.ok) throw new Error('startBidding failed');
+    const s0 = started.value;
+    const r1 = applyBid(s0, 'alice', 20, 'low bid', NOW);
+    if (!r1.ok) throw new Error('applyBid alice failed');
+    const r2 = applyBid(r1.value, 'bob', 15, 'low bid', NOW);
+    if (!r2.ok) throw new Error('applyBid bob failed');
+    return r2.value;
+  }
+
+  it('resolveWinner sets end_reason_content to null (endContent is applied by caller, not state machine)', () => {
+    const state = makeBiddingState();
+    const result = resolveWinner(state, NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const [nextState, decision] = result.value;
+    if ('speaker_type' in decision) return; // low bids should produce no-winner path
+    expect(nextState.end_reason_content).toBeNull();
+  });
+
+  it('end_reason_content on DiscussState is null until explicitly set by the caller', () => {
+    const state = initSession({ topic: 'Content Test', agents: TWO_AGENTS, min_bid_delay_ms: 0 }, NOW);
+    expect(state.end_reason_content).toBeNull();
   });
 });

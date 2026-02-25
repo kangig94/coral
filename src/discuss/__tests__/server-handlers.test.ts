@@ -6,8 +6,8 @@ import { SessionStore } from '../session-store.js';
 import { handleToolCall, tools } from '../server-handlers.js';
 import { applyBid, applyEnd, resolveWinner, startBidding, DEFAULT_BID_THRESHOLD } from '../state-machine.js';
 import { _setDefaultPollMs } from '../wait.js';
-import type { McpResult } from '../../shared/mcp-utils.js';
-import type { DiscussState } from '../types.js';
+import { resultToMcp, type McpResult } from '../../shared/mcp-utils.js';
+import type { DiscussState, Result } from '../types.js';
 
 const T = 0.1;
 const sec = (s: number): number => Math.max(1, Math.round(s * T));
@@ -160,11 +160,27 @@ describe('discuss creation protocol', () => {
 
   it('should create session and return session fields from discuss_lead', async () => {
     const result = await handleToolCall('discuss_lead', { op: '_2_create', topic: 'AI Ethics', agents: AGENTS }, store);
-    const data = parseResult(result);
+    const data = parseResult(result) as {
+      session_id: string;
+      session_dir: string;
+      team_name: string;
+      topic: string;
+      status: string;
+      bid_threshold: number;
+      max_epochs: number;
+      min_bid_delay_ms: number;
+      agents: string[];
+    };
     expect(result.isError).toBe(false);
-    expect(data).toHaveProperty('session_id');
-    expect(data).toHaveProperty('status', 'setup');
+    expect(data.session_id).toBeTruthy();
+    expect(data.session_dir).toBe(store.resolveDir(data.session_id));
+    expect(data.team_name).toBe(`coral-dc-${data.session_id}`);
+    expect(data.topic).toBe('AI Ethics');
+    expect(data.status).toBe('setup');
     expect(data.bid_threshold).toBe(DEFAULT_BID_THRESHOLD);
+    expect(data.max_epochs).toBeGreaterThan(0);
+    expect(data.min_bid_delay_ms).toBe(0);
+    expect(data.agents).toEqual(['alice', 'bob']);
   });
 
   it('should reject create with bad payload', async () => {
@@ -807,12 +823,12 @@ describe('stepBidding race: session ended between hold increment and bid wait', 
   });
 });
 
-describe('nowIsoString timestamp freshness', () => {
-  it('ended state has updated_at no earlier than the state before end was applied', async () => {
+describe('timestamp freshness', () => {
+  it('ended state has last_activity_at no earlier than the state before end was applied', async () => {
     const sid = await createSession();
     const sessionDir = requireSessionDir(sid);
     const beforeState = store.load(sessionDir);
-    const beforeTs = new Date(beforeState.updated_at).getTime();
+    const beforeTs = new Date(beforeState.last_activity_at).getTime();
 
     await overwriteState(sid, (state) => ({
       ...state,
@@ -827,6 +843,52 @@ describe('nowIsoString timestamp freshness', () => {
 
     const afterState = store.load(sessionDir);
     expect(afterState.status).toBe('ended');
-    expect(new Date(afterState.updated_at).getTime()).toBeGreaterThanOrEqual(beforeTs);
+    expect(new Date(afterState.last_activity_at).getTime()).toBeGreaterThanOrEqual(beforeTs);
+  });
+});
+
+describe('resultToMcp', () => {
+  it('should return JSON with value fields for ok result', () => {
+    const result: Result<{ status: string }> = { ok: true, value: { status: 'bidding' } };
+    const mcp = resultToMcp(result);
+    expect(mcp.isError).toBe(false);
+    const parsed = parseResult(mcp);
+    expect(parsed.status).toBe('bidding');
+  });
+
+  it('should return JSON with error field for error result', () => {
+    const result: Result<never> = { ok: false, error: 'agent_not_found' };
+    const mcp = resultToMcp(result);
+    expect(mcp.isError).toBe(false);
+    const parsed = parseResult(mcp);
+    expect(parsed.error).toBe('agent_not_found');
+  });
+
+  it('should spread detail fields into the response for error result with detail', () => {
+    const result: Result<never> = {
+      ok: false,
+      error: 'invalid_status',
+      detail: { current: 'speaking', expected: 'bidding' },
+    };
+    const mcp = resultToMcp(result);
+    const parsed = parseResult(mcp);
+    expect(parsed.error).toBe('invalid_status');
+    expect(parsed.current).toBe('speaking');
+    expect(parsed.expected).toBe('bidding');
+  });
+
+  it('should handle error result with no detail field (detail is optional)', () => {
+    const result: Result<never> = { ok: false, error: 'not_bidding' };
+    expect(() => resultToMcp(result)).not.toThrow();
+    const mcp = resultToMcp(result);
+    const parsed = parseResult(mcp);
+    expect(parsed.error).toBe('not_bidding');
+  });
+
+  it('should produce content array with exactly one text entry', () => {
+    const mcp = resultToMcp({ ok: true, value: { x: 1 } });
+    expect(mcp.content).toHaveLength(1);
+    expect(mcp.content[0].type).toBe('text');
+    expect(typeof mcp.content[0].text).toBe('string');
   });
 });

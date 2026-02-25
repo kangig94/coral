@@ -2,6 +2,7 @@ import type {
   AgentState,
   DiscussCreateInput,
   DiscussState,
+  EndReason,
   ResolveReason,
   ResolveResult,
   Result,
@@ -12,6 +13,17 @@ import { parseDisplayName } from './util/string.js';
 export const DEFAULT_BID_THRESHOLD = 30;
 export const DEFAULT_MAX_EPOCHS = 2;
 export const DEFAULT_QUOTA_PER_EPOCH = 3;
+
+const END_REASON_CONTENT: Record<Exclude<EndReason, 'already_ended'>, string> = {
+  all_below_threshold: 'All participants bid below the threshold. Ending discussion.',
+  max_epochs_reached: 'Maximum epochs reached. Ending discussion.',
+  all_blocked: 'Discussion is structurally deadlocked. Agents who want to speak have no quota, and agents with quota do not want to speak.',
+  no_participants: 'No eligible agents remaining. Ending discussion.',
+};
+
+export function endContent(reason: Exclude<EndReason, 'already_ended'>): string {
+  return END_REASON_CONTENT[reason];
+}
 
 export function resolveAgentName(
   agents: Record<string, AgentState>,
@@ -147,7 +159,6 @@ function noWinnerResult(
 function appendEntry(state: DiscussState, entry: TranscriptEntry, now: string): DiscussState {
   return {
     ...state,
-    updated_at: now,
     last_activity_at: now,
     transcript: [...state.transcript, entry],
   };
@@ -209,7 +220,6 @@ export function initSession(
   const requiredNames = input.agents.filter((a) => a.participation === 'required').map((a) => a.name);
   return {
     session_id: '',
-    session_dir: '',
     topic: input.topic,
     status: 'setup',
     step: 1,
@@ -224,16 +234,13 @@ export function initSession(
     current_speaker: null,
     speaker_type: null,
     epoch_summary_written: null,
-    team_name: '',
     created_at: now,
-    updated_at: now,
     last_activity_at: now,
     last_speech_step: 0,
     hold_count: 0,
     bid_release_step: 0,
     end_reason_content: null,
     transcript: [],
-    transcript_rendered: 0,
     bid_threshold: bidThreshold,
     min_bid_delay_ms: input.min_bid_delay_ms,
   };
@@ -249,7 +256,6 @@ export function startBidding(state: DiscussState, now: string): Result<DiscussSt
     value: {
       ...state,
       status: 'bidding',
-      updated_at: now,
       last_activity_at: now,
     },
   };
@@ -285,7 +291,6 @@ export function applyBid(
       current_bids: { ...state.current_bids, [name]: score },
       current_thoughts: { ...current_thoughts, [name]: thought },
       pending_bidders: state.pending_bidders.filter((n) => n !== name),
-      updated_at: now,
       last_activity_at: now,
     },
   };
@@ -497,7 +502,7 @@ export function applyExpel(
   now: string,
 ): Result<{ state: DiscussState; hint: string }> {
   const isRespawn = state.epoch === 1 && state.step === 1;
-  let nextState: DiscussState = { ...state, last_activity_at: now, updated_at: now, hold_count: 0 };
+  let nextState: DiscussState = { ...state, last_activity_at: now, hold_count: 0 };
 
   for (const agent of pendingAgents) {
     const nextPendingBidders = nextState.pending_bidders.filter((name) => name !== agent);
@@ -622,7 +627,6 @@ export function applyEnd(
     current_speaker: null,
     speaker_type: null,
     bid_release_step: state.step,
-    updated_at: now,
     last_activity_at: now,
   };
 
