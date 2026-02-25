@@ -172,9 +172,11 @@ coral/
 │   └── discuss/                 # Discuss MCP server (dc)
 │       ├── server.ts            # Composition root
 │       ├── server-handlers.ts   # Tool dispatch
-│       ├── handle-bid.ts        # bid/speak flow
-│       ├── handle-step.ts       # _3_step flow
-│       ├── handler-utils.ts     # Cross-handler shared utilities
+│       ├── lock.ts              # File locking and atomic writes
+│       ├── handlers/
+│       │   ├── bid.ts           # bid/speak flow
+│       │   ├── step.ts          # _3_step flow
+│       │   └── utils.ts         # Cross-handler shared utilities
 │       ├── schemas.ts           # Zod validation
 │       ├── state-machine.ts     # Pure state transitions
 │       ├── session-store.ts     # I/O: atomic writes, locking
@@ -186,8 +188,7 @@ coral/
 │       └── util/
 │           ├── string.ts        # String/ID formatting utilities
 │           ├── rng.ts           # Seeded RNG and sampling primitives
-│           ├── dpp.ts           # k-DPP linear algebra
-│           └── lock.ts          # File locking and atomic writes
+│           └── dpp.ts           # k-DPP linear algebra
 ├── skills/                      # Slash command SKILL.md files (one dir per skill)
 ├── agents/                      # Agent protocol definitions
 ├── hooks/
@@ -236,18 +237,18 @@ L0  discuss/types.ts             (type definitions — zero imports)
 L1  discuss/util/string.ts       (string/ID formatting)
     discuss/util/rng.ts          (seeded RNG, sampling)
     discuss/util/dpp.ts          (k-DPP linear algebra → imports rng)
-    discuss/util/lock.ts         (file locking, atomic writes)
 L2  discuss/state-machine.ts     (pure state transitions → imports util/string)
     discuss/conditions.ts        (pure predicates)
     discuss/transcript.ts        (markdown rendering)
     discuss/schemas.ts           (Zod validation)
     discuss/persona-seed.ts      (k-DPP sampling → imports util/rng, util/dpp)
-L3  discuss/session-store.ts     (I/O shell → imports util/string, util/lock, transcript)
+L3  discuss/lock.ts              (file locking, atomic writes)
+    discuss/session-store.ts     (I/O shell → imports util/string, lock, transcript)
     discuss/wait.ts              (file polling)
-L4  discuss/handler-utils.ts     (cross-handler utilities → imports session-store type-only)
-L5  discuss/handle-bid.ts        (bid/speak flow)
-    discuss/handle-step.ts       (_3_step flow)
-L6  discuss/server-handlers.ts   (tool dispatch → imports handle-bid, handle-step, handler-utils)
+L4  discuss/handlers/utils.ts    (cross-handler utilities → imports session-store type-only)
+L5  discuss/handlers/bid.ts      (bid/speak flow)
+    discuss/handlers/step.ts     (_3_step flow)
+L6  discuss/server-handlers.ts   (tool dispatch → imports handlers/bid, handlers/step, handlers/utils)
 L7  discuss/server.ts            (composition root — wiring only)
 
 shared/mcp-utils.ts ← referenced by L4–L6
@@ -257,8 +258,8 @@ shared/mcp-utils.ts ← referenced by L4–L6
 
 The discuss server separates pure logic from I/O:
 
-- **L0–L1**: Zero project imports. `util/` provides pure string, RNG, DPP, and lock primitives.
+- **L0–L1**: Zero project imports. `util/` provides pure string, RNG, and DPP primitives.
 - **L2 Functional Core** (`state-machine.ts`, `conditions.ts`, `transcript.ts`, `persona-seed.ts`): pure functions, zero `node:fs`. Fully testable without filesystem.
-- **L3 Imperative Shell** (`session-store.ts`, `wait.ts`): all filesystem operations. Atomic writes via `writeStateAtomic` (from `util/lock.ts`). All state mutations serialized through `withLock`.
-- **L4–L5 Handler layer**: `handler-utils.ts` provides shared utilities (`resolveSession`, `resultToMcp`, `endContent`). `handle-bid.ts` and `handle-step.ts` contain the extracted bid/speak and `_3_step` flows.
+- **L3 Imperative Shell** (`lock.ts`, `session-store.ts`, `wait.ts`): all filesystem operations. Atomic writes via `writeStateAtomic` (from `lock.ts`). All state mutations serialized through `withLock`.
+- **L4–L5 Handler layer**: `handlers/utils.ts` provides shared utilities (`resolveSession`, `resultToMcp`, `endContent`). `handlers/bid.ts` and `handlers/step.ts` contain the extracted bid/speak and `_3_step` flows.
 - **L6 Dispatch**: `server-handlers.ts` is a thin router — Zod parsing, `envInt`, and routing to handlers.

@@ -6,7 +6,7 @@ import {
   renderEntries,
   renderEntry,
   renderHeader,
-  formatFull,
+  formatAgentView,
   formatRecent,
   formatSummary,
 } from '../transcript.js';
@@ -155,13 +155,13 @@ describe('renderEntries', () => {
 });
 
 
-describe('formatFull', () => {
+describe('formatAgentView', () => {
   it('should show winner name from bids entry but not scores', () => {
     const entries: TranscriptEntry[] = [
       { type: 'bids', step: 1, epoch: 1, ts: TS, bids: { alice: 80, bob: 50 }, winner: 'alice', resolve_type: 'normal' },
       speechEntry('alice', 'My argument.'),
     ];
-    const result = formatFull(entries, agents);
+    const result = formatAgentView(entries, agents);
     expect(result).toContain('Speaker: Alice');  // winner revealed
     expect(result).not.toContain('80');           // bid score hidden
     expect(result).not.toContain('50');           // bid score hidden
@@ -172,7 +172,7 @@ describe('formatFull', () => {
     const entries: TranscriptEntry[] = [
       { type: 'bids', step: 1, epoch: 1, ts: TS, bids: { alice: 5, bob: 3 }, winner: null, resolve_type: 'no_winner' },
     ];
-    const result = formatFull(entries, agents);
+    const result = formatAgentView(entries, agents);
     expect(result).not.toContain('Speaker');
     expect(result).not.toContain('5');  // score hidden
   });
@@ -182,7 +182,7 @@ describe('formatFull', () => {
       speechEntry('bob', 'Bob speaks.'),
       { type: 'epoch_summary', epoch: 1, ts: TS, summary: 'Epoch conclusion.' },
     ];
-    const result = formatFull(entries, agents);
+    const result = formatAgentView(entries, agents);
     expect(result).toContain('Bob speaks.');
     expect(result).toContain('Epoch conclusion.');
   });
@@ -411,7 +411,7 @@ describe('renderEntry bids (adversarial)', () => {
 });
 
 
-describe('formatFull (adversarial)', () => {
+describe('formatAgentView (adversarial)', () => {
   it('should hide effective scores from agent-facing output', () => {
     const entry: TranscriptEntry = {
       type: 'bids',
@@ -423,12 +423,100 @@ describe('formatFull (adversarial)', () => {
       winner: 'alice',
       resolve_type: 'normal',
     };
-    const result = formatFull([entry], agents);
+    const result = formatAgentView([entry], agents);
     expect(result).toContain('Speaker: Alice');
     expect(result).not.toContain('80');
     expect(result).not.toContain('50');
     expect(result).not.toContain('120');
     expect(result).not.toContain('40');
+  });
+});
+
+
+// adversarial test (red-attacker provenance)
+describe('formatAgentView edge cases', () => {
+  it('produces the epoch header even for an empty transcript', () => {
+    const result = formatAgentView([], agents);
+    expect(result).toContain('## Epoch 1');
+    expect(result.trim().length).toBeGreaterThan(0);
+  });
+
+  it('passes session_event entries through to output', () => {
+    const entries = [
+      {
+        type: 'session_event' as const,
+        epoch: 1,
+        ts: TS,
+        event: 'synthesis' as const,
+        detail: 'Final synthesis conclusion here.',
+      },
+    ];
+    const result = formatAgentView(entries, agents);
+    expect(result).toContain('Final synthesis conclusion here.');
+  });
+
+  it('passes epoch_summary entries through to output', () => {
+    const entries = [
+      {
+        type: 'epoch_summary' as const,
+        epoch: 1,
+        ts: TS,
+        summary: 'The epoch had key moments.',
+      },
+    ];
+    const result = formatAgentView(entries, agents);
+    expect(result).toContain('The epoch had key moments.');
+  });
+
+  it('omits bid scores for no_winner bids entry', () => {
+    const entries = [
+      {
+        type: 'bids' as const,
+        step: 1,
+        epoch: 1,
+        ts: TS,
+        bids: { alice: 75, bob: 60 },
+        winner: null,
+        resolve_type: 'no_winner' as const,
+      },
+    ];
+    const result = formatAgentView(entries, agents);
+    expect(result).not.toContain('75');
+    expect(result).not.toContain('60');
+    expect(result).not.toContain('Speaker');
+  });
+
+  it('renders winner display name (not agent key) for winning bids entry', () => {
+    const entries = [
+      {
+        type: 'bids' as const,
+        step: 1,
+        epoch: 1,
+        ts: TS,
+        bids: { alice: 80, bob: 50 },
+        winner: 'alice',
+        resolve_type: 'normal' as const,
+      },
+    ];
+    const result = formatAgentView(entries, agents);
+    expect(result).toContain('Speaker: Alice');
+    expect(result).not.toContain('Speaker: alice');
+  });
+
+  it('falls back to agent key as display name for an unknown winner', () => {
+    const entries = [
+      {
+        type: 'bids' as const,
+        step: 1,
+        epoch: 1,
+        ts: TS,
+        bids: { zara: 80 },
+        winner: 'zara',
+        resolve_type: 'normal' as const,
+      },
+    ];
+    const result = formatAgentView(entries, { ...agents });
+    expect(result).toContain('zara');
   });
 });
 

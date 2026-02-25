@@ -17,7 +17,7 @@ import {
 } from '../state-machine.js';
 import { parseDisplayName, topicSlug, formatDateId } from '../util/string.js';
 import type { AgentState, DiscussState, TranscriptEntry } from '../types.js';
-import { noParticipants } from '../conditions.js';
+import { noEligibleParticipants } from '../conditions.js';
 
 const NOW = '2026-02-21T10:00:00.000Z';
 
@@ -1097,7 +1097,7 @@ describe('observer participation', () => {
     expect(result.value.state.agents['user']?.banned).toBe(false);
   });
 
-  it('noParticipants should be true when only observer survives', () => {
+  it('noEligibleParticipants should be true when only observer survives', () => {
     const state = initSession(MIXED_INPUT, NOW);
     const bidding = unwrapOk(startBidding(state, NOW));
     // exhaust required agents
@@ -1109,7 +1109,7 @@ describe('observer participation', () => {
         bob: { ...bidding.agents['bob']!, quota_remaining: 0, fallback_used: true },
       },
     };
-    expect(noParticipants(modified)).toBe(true);
+    expect(noEligibleParticipants(modified)).toBe(true);
   });
 
   it('allExhausted only counts required agents — observer with quota does not block epoch transition', () => {
@@ -1135,16 +1135,16 @@ describe('observer participation', () => {
 
   // --- adversarial tests (red-attacker provenance) ---
 
-  it('noParticipants vacuous truth when all agents are observers', () => {
+  it('noEligibleParticipants vacuous truth when all agents are observers', () => {
     const state = initSession({
       topic: 'Observer Only',
       agents: [{ name: 'user', persona: 'User', participation: 'observer' as const }],
       min_bid_delay_ms: 0,
     }, NOW);
-    expect(noParticipants(state)).toBe(true);
+    expect(noEligibleParticipants(state)).toBe(true);
   });
 
-  it('noParticipants true when required banned and observer remains active', () => {
+  it('noEligibleParticipants true when required banned and observer remains active', () => {
     const bidding = unwrapOk(startBidding(initSession(MIXED_INPUT, NOW), NOW));
     const state = {
       ...bidding,
@@ -1154,10 +1154,10 @@ describe('observer participation', () => {
         user: makeAgent({ participation: 'observer' as const }),
       },
     };
-    expect(noParticipants(state)).toBe(true);
+    expect(noEligibleParticipants(state)).toBe(true);
   });
 
-  it('noParticipants false when some required agents still active', () => {
+  it('noEligibleParticipants false when some required agents still active', () => {
     const bidding = unwrapOk(startBidding(initSession(MIXED_INPUT, NOW), NOW));
     const state = {
       ...bidding,
@@ -1167,7 +1167,7 @@ describe('observer participation', () => {
         user: bidding.agents['user']!,
       },
     };
-    expect(noParticipants(state)).toBe(false);
+    expect(noEligibleParticipants(state)).toBe(false);
   });
 
   it('resolveWinner quorum_not_met when observer bid but required agents did not', () => {
@@ -1215,7 +1215,7 @@ describe('observer participation', () => {
     expect(result.value.state.agents['user']?.banned).toBe(false);
   });
 
-  it('noParticipants true after required expelled even if observer has quota', () => {
+  it('noEligibleParticipants true after required expelled even if observer has quota', () => {
     const ALICE_USER = {
       topic: 'Alice + User',
       agents: [
@@ -1229,7 +1229,7 @@ describe('observer participation', () => {
       ...bidding, step: 3, epoch: 2, pending_bidders: ['alice', 'user'],
     }, ['alice', 'user'], NOW));
     expect(expelled.state.agents['alice']?.banned).toBe(true);
-    expect(noParticipants(expelled.state)).toBe(true);
+    expect(noEligibleParticipants(expelled.state)).toBe(true);
     expect(expelled.state.agents['user']?.banned).toBe(false);
   });
 

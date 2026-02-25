@@ -1,7 +1,7 @@
 
 import { describe, it, expect } from 'vitest';
-import { allBidsIn, bidReleased, isWinner, setupComplete, noParticipants, speechDelivered } from '../conditions.js';
-import { DEFAULT_BID_THRESHOLD } from '../state-machine.js';
+import { allBidsIn, bidReleased, isWinner, setupComplete, noEligibleParticipants, speechDelivered } from '../conditions.js';
+import { applyExpel, DEFAULT_BID_THRESHOLD } from '../state-machine.js';
 import type { DiscussState } from '../types.js';
 
 function makeState(overrides: Partial<DiscussState> = {}): DiscussState {
@@ -134,10 +134,10 @@ describe('setupComplete', () => {
   });
 });
 
-describe('noParticipants', () => {
+describe('noEligibleParticipants', () => {
   it('returns false when one active participant remains', () => {
     const state = makeState();
-    expect(noParticipants(state)).toBe(false);
+    expect(noEligibleParticipants(state)).toBe(false);
   });
 
   it('returns true when all participants are exhausted/banned', () => {
@@ -148,6 +148,105 @@ describe('noParticipants', () => {
         bob: { ...base.agents.bob, quota_remaining: 0, fallback_used: true },
       },
     });
-    expect(noParticipants(state)).toBe(true);
+    expect(noEligibleParticipants(state)).toBe(true);
+  });
+});
+
+// adversarial test (red-attacker provenance)
+describe('noEligibleParticipants edge cases', () => {
+  it('returns false when quota=0 but fallback_used=false (fallback still available)', () => {
+    const base = makeState();
+    const state = makeState({
+      agents: {
+        alice: { ...base.agents.alice, quota_remaining: 0, fallback_used: false },
+        bob: { ...base.agents.bob, quota_remaining: 0, fallback_used: false },
+      },
+    });
+    expect(noEligibleParticipants(state)).toBe(false);
+  });
+
+  it('returns false when any required agent has quota>0 regardless of fallback_used', () => {
+    const base = makeState();
+    const state = makeState({
+      agents: {
+        alice: { ...base.agents.alice, quota_remaining: 1, fallback_used: true },
+        bob: { ...base.agents.bob, quota_remaining: 0, fallback_used: true },
+      },
+    });
+    expect(noEligibleParticipants(state)).toBe(false);
+  });
+
+  it('returns true when every required agent is banned OR (quota=0 AND fallback_used)', () => {
+    const base = makeState();
+    const state = makeState({
+      agents: {
+        alice: { ...base.agents.alice, quota_remaining: 0, fallback_used: true },
+        bob: { ...base.agents.bob, banned: true },
+      },
+    });
+    expect(noEligibleParticipants(state)).toBe(true);
+  });
+
+  it('ignores observer agents — observer with quota does not prevent the condition', () => {
+    const base = makeState();
+    const state = makeState({
+      agents: {
+        alice: { ...base.agents.alice, quota_remaining: 0, fallback_used: true },
+        bob: { ...base.agents.bob, quota_remaining: 0, fallback_used: true },
+        carol: { ...base.agents.alice, participation: 'observer' as const, quota_remaining: 3, fallback_used: false },
+      },
+    });
+    expect(noEligibleParticipants(state)).toBe(true);
+  });
+
+  it('returns false for a single active required agent', () => {
+    const base = makeState();
+    const state = makeState({
+      agents: { alice: { ...base.agents.alice, quota_remaining: 2 } },
+      pending_bidders: ['alice'],
+    });
+    expect(noEligibleParticipants(state)).toBe(false);
+  });
+
+  it('returns true for an empty agents map (vacuously true)', () => {
+    const state = makeState({ agents: {} });
+    expect(noEligibleParticipants(state)).toBe(true);
+  });
+});
+
+// adversarial test (red-attacker provenance)
+describe('applyExpel → noEligibleParticipants integration', () => {
+  it('detects no_participants after expelling the last required non-banned agent', () => {
+    const base = makeState();
+    const state = makeState({
+      step: 2,
+      hold_count: 2,
+      pending_bidders: ['alice'],
+      agents: {
+        alice: { ...base.agents.alice, banned: false, quota_remaining: 1, fallback_used: false },
+        bob: { ...base.agents.bob, banned: true, quota_remaining: 0, fallback_used: true },
+      },
+    });
+    const expelled = applyExpel(state, ['alice'], new Date().toISOString());
+    expect(expelled.ok).toBe(true);
+    if (!expelled.ok) return;
+    expect(noEligibleParticipants(expelled.value.state)).toBe(true);
+  });
+
+  it('does not detect no_participants when a non-banned required agent with quota remains after expel', () => {
+    const base = makeState();
+    const state = makeState({
+      step: 2,
+      hold_count: 2,
+      pending_bidders: ['alice'],
+      agents: {
+        alice: { ...base.agents.alice, banned: false, quota_remaining: 1, fallback_used: false },
+        bob: { ...base.agents.bob, banned: false, quota_remaining: 2, fallback_used: false },
+      },
+    });
+    const expelled = applyExpel(state, ['alice'], new Date().toISOString());
+    expect(expelled.ok).toBe(true);
+    if (!expelled.ok) return;
+    expect(noEligibleParticipants(expelled.value.state)).toBe(false);
   });
 });

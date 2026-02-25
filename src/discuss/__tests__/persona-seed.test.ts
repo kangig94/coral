@@ -797,6 +797,72 @@ describe('assignOrigins: clamp — outlierPool larger than requested outlierCoun
   });
 });
 
+describe('seedPersonas with seed=0', () => {
+  const axes = [
+    { axis: 'cost', positions: ['high', 'low'] },
+    { axis: 'risk', positions: ['high', 'low'] },
+  ];
+
+  it('produces a valid result for seed=0 (not treated as null/missing)', () => {
+    const result = seedPersonas({ controversy_axes: axes, n: 2, seed: 0 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.seed_used).toBe(0);
+    expect(result.value.assignments).toHaveLength(2);
+  });
+
+  it('is deterministic across two calls with seed=0', () => {
+    const input = { controversy_axes: axes, n: 2, seed: 0 };
+    const first = seedPersonas(input);
+    const second = seedPersonas(input);
+    expect(first).toEqual(second);
+  });
+
+  it('produces different persona_seeds for seed=0 vs seed=1', () => {
+    // seed drives PRNG for tones and persona_seed draws, so must differ across seeds
+    const r0 = seedPersonas({ controversy_axes: axes, n: 4, seed: 0 });
+    const r1 = seedPersonas({ controversy_axes: axes, n: 4, seed: 1 });
+    expect(r0.ok).toBe(true);
+    expect(r1.ok).toBe(true);
+    if (!r0.ok || !r1.ok) return;
+    const pseeds0 = r0.value.assignments.map((a) => a.persona_seed);
+    const pseeds1 = r1.value.assignments.map((a) => a.persona_seed);
+    expect(pseeds0).not.toEqual(pseeds1);
+  });
+});
+
+describe('seedPersonas seed coercion', () => {
+  const axes = [
+    { axis: 'a', positions: ['x', 'y'] },
+    { axis: 'b', positions: ['m', 'n'] },
+  ];
+
+  it('coerces negative seed to unsigned 32-bit (>>> 0) and returns valid output', () => {
+    // -1 >>> 0 === 4294967295
+    const result = seedPersonas({ controversy_axes: axes, n: 2, seed: -1 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.seed_used).toBe(4294967295);
+    expect(result.value.assignments).toHaveLength(2);
+  });
+
+  it('coerces large seed to unsigned 32-bit and remains deterministic', () => {
+    const oversized = 2 ** 33 + 7;
+    const result1 = seedPersonas({ controversy_axes: axes, n: 2, seed: oversized });
+    const result2 = seedPersonas({ controversy_axes: axes, n: 2, seed: oversized });
+    expect(result1.ok).toBe(true);
+    expect(result2.ok).toBe(true);
+    expect(result1).toEqual(result2);
+  });
+
+  it('seed=0 coerces to 0 and seed_used is 0', () => {
+    const result = seedPersonas({ controversy_axes: axes, n: 1, seed: 0 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.seed_used).toBe(0);
+  });
+});
+
 describe('seedPersonas: demographics integrated end-to-end (adversarial)', () => {
   it('n=8 with 8 equally-weighted countries produces 8 unique origins via seedPersonas', () => {
     const result = seedPersonas({

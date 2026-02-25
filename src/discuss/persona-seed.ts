@@ -1,5 +1,5 @@
 /**
- * k-DPP based persona seed assignment - pure functions (auto-seed uses Math.random when seed=null), zero I/O.
+ * k-DPP based persona seed assignment - pure functions, zero I/O.
  * Algorithm: Kulesza & Taskar (2012), "Determinantal Point Processes for Machine Learning"
  */
 
@@ -201,9 +201,7 @@ function rankReuseSlots(selectedPoolIndexes: number[], pool: string[][]): number
 }
 
 export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput> {
-  const seedUsed = input.seed == null
-    ? drawUInt32(Math.random)
-    : (input.seed >>> 0);
+  const seedUsed = input.seed >>> 0;
   const rng = createSeededRng(seedUsed);
   const requestedCount = input.n;
 

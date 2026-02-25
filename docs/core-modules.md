@@ -98,11 +98,11 @@ Key design: background vs foreground branching lives here. `handleToolCall` is t
 
 The discuss server follows a **Functional Core / Imperative Shell** architecture with strict layered dependencies:
 - **L0** (`types.ts`) — zero imports; type definitions only
-- **L1** (`util/`) — pure primitives: string formatting, seeded RNG, k-DPP linear algebra, file locking
+- **L1** (`util/`) — pure primitives: string formatting, seeded RNG, k-DPP linear algebra
 - **L2 Functional Core** (`state-machine.ts`, `conditions.ts`, `transcript.ts`, `persona-seed.ts`) — zero I/O, fully testable without filesystem
-- **L3 Imperative Shell** (`session-store.ts`, `wait.ts`) — all filesystem operations
-- **L4** (`handler-utils.ts`) — shared cross-handler utilities
-- **L5** (`handle-bid.ts`, `handle-step.ts`) — extracted flow handlers
+- **L3 Imperative Shell** (`lock.ts`, `session-store.ts`, `wait.ts`) — all filesystem operations
+- **L4** (`handlers/utils.ts`) — shared cross-handler utilities
+- **L5** (`handlers/bid.ts`, `handlers/step.ts`) — extracted flow handlers
 - **L6 Dispatch** (`server-handlers.ts`) — thin tool router (Zod parsing + routing)
 - **L7** (`server.ts`) — composition root (wiring only)
 
@@ -132,9 +132,9 @@ Pure k-Determinantal Point Process implementation. Exports: `MAX_POOL_SIZE` (100
 
 ---
 
-### src/discuss/util/lock.ts - File Locking and Atomic Writes
+### src/discuss/lock.ts - File Locking and Atomic Writes
 
-I/O primitives extracted from `session-store.ts`. Exports: `writeStateAtomic` (write `DiscussState` via `.tmp` + `renameSync`), `SessionLock` (class wrapping `mkdir`-based cross-process lock with PID liveness check and 30s stale-lock threshold). Private helpers: `tryRemoveSync`, `sleep`, `parseLockOwner`, `isProcessAlive`, `isStaleOwner`. See `src/discuss/util/lock.ts`.
+I/O primitives extracted from `session-store.ts`. Exports: `writeStateAtomic` (write `DiscussState` via `.tmp` + `renameSync`), `SessionLock` (class wrapping `mkdir`-based cross-process lock with PID liveness check and 30s stale-lock threshold). Private helpers: `tryRemoveSync`, `sleep`, `parseLockOwner`, `isProcessAlive`, `isStaleOwner`. See `src/discuss/lock.ts`.
 
 ---
 
@@ -156,7 +156,7 @@ Pure boolean predicates used by `wait.ts` when polling `state.json`:
 - `bidReleased(state)` - winner has been resolved (bid hold lifted)
 - `isWinner(agentName)(state)` - this agent is the current winner
 - `setupComplete(state)` - session has transitioned out of setup
-- `noParticipants(state)` - no agents registered
+- `noEligibleParticipants(state)` - no eligible required agents remain
 
 These predicates are called by `waitForCondition` in `wait.ts` at polling intervals. `_3_step` in `server-handlers.ts` uses `waitForCondition` directly for moderator blocking. Discussant agents use `discuss({ op: "bid", ... })` and `discuss({ op: "speak", ... })` which also resolve via internal polling. See `src/discuss/conditions.ts`.
 
@@ -172,8 +172,8 @@ Polls `state.json` at intervals until a predicate is true or timeout expires. Ke
 
 Handles session directory management, atomic writes, cross-process locking, and transcript rendering.
 
-- **Lock**: `SessionLock` (from `util/lock.ts`) — `mkdir`-based atomic test-and-set. Stale lock detection via PID liveness check + 30s age threshold
-- **Atomic writes**: `writeStateAtomic` (from `util/lock.ts`) — `.tmp` + `renameSync`, same pattern as codex session-manager
+- **Lock**: `SessionLock` (from `lock.ts`) — `mkdir`-based atomic test-and-set. Stale lock detection via PID liveness check + 30s age threshold
+- **Atomic writes**: `writeStateAtomic` (from `lock.ts`) — `.tmp` + `renameSync`, same pattern as codex session-manager
 - **Directory naming**: `{session_id}-{topic_slug}` — imports `randomSuffix`, `formatDateId`, `topicSlug` from `util/string.ts`
 - **`save()`**: serializes state under lock, then calls `transcript.ts` for incremental markdown append
 
@@ -199,21 +199,21 @@ Pure implementation of k-Determinantal Point Process sampling for maximally dive
 
 ---
 
-### src/discuss/handler-utils.ts - Cross-Handler Utilities
+### src/discuss/handlers/utils.ts - Cross-Handler Utilities
 
-Shared utilities used by both `handle-bid.ts` and `handle-step.ts` (and indirectly `server-handlers.ts`). Exports: `resolveSession` (session ID → directory path), `nowIsoString`, `resultToMcp` (converts `Result<T>` to `McpResult`), `loadState` (locked state read), `endContent` (human-readable end reason strings). See `src/discuss/handler-utils.ts`.
-
----
-
-### src/discuss/handle-bid.ts - bid/speak Flow
-
-Contains the full `handleBid` and `handleSpeak` implementations, exposed via `handleAgentOp`. `handleBid` is a polling loop: waits for session to reach `bidding` state → applies bid under lock → waits for winner resolution via `bidReleased` predicate. Returns `speak` action to the winner, `listen` action to everyone else. See `src/discuss/handle-bid.ts`.
+Shared utilities used by both `handlers/bid.ts` and `handlers/step.ts` (and indirectly `server-handlers.ts`). Exports: `resolveSession` (session ID → directory path), `nowIsoString`, `resultToMcp` (converts `Result<T>` to `McpResult`), `loadState` (locked state read), `endContent` (human-readable end reason strings). See `src/discuss/handlers/utils.ts`.
 
 ---
 
-### src/discuss/handle-step.ts - _3_step Flow
+### src/discuss/handlers/bid.ts - bid/speak Flow
 
-Implements the `handle3Step` moderator operation (~280 lines). Manages the full bidding→speaking cycle: starts bidding on first call, waits for all bids via `waitForCondition(allBidsIn)`, resolves winner under lock, then in the next call waits for speech delivery via `waitForCondition(speechDelivered)`. Handles expulsion of non-responsive agents after two hold cycles. See `src/discuss/handle-step.ts`.
+Contains the full `handleBid` and `handleSpeak` implementations, exposed via `handleAgentOp`. `handleBid` is a polling loop: waits for session to reach `bidding` state → applies bid under lock → waits for winner resolution via `bidReleased` predicate. Returns `speak` action to the winner, `listen` action to everyone else. See `src/discuss/handlers/bid.ts`.
+
+---
+
+### src/discuss/handlers/step.ts - _3_step Flow
+
+Implements the `handle3Step` moderator operation with phase decomposition (`bootstrapFromSetup`, `stepSpeaking`, `stepBidding`). Manages the full bidding→speaking cycle: starts bidding on first call, waits for all bids via `waitForCondition(allBidsIn)`, resolves winner under lock, then in the next call waits for speech delivery via `waitForCondition(speechDelivered)`. Handles expulsion of non-responsive agents after two hold cycles. See `src/discuss/handlers/step.ts`.
 
 ---
 

@@ -121,7 +121,7 @@ export type PersonaSeedInput = {
   demographics?: DemographicsInput;
   controversy_axes: ControversyAxis[];
   n: number;
-  seed: number | null;
+  seed: number;
 };
 
 export type PersonaSeedOutput = {

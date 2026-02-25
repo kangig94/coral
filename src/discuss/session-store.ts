@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { renderEntries, renderHeader } from './transcript.js';
 import { randomSuffix, formatDateId, topicSlug } from './util/string.js';
 import type { DiscussState } from './types.js';
-import { writeStateAtomic, SessionLock } from './util/lock.js';
+import { writeStateAtomic, SessionLock } from './lock.js';
 
 export class SessionStore {
   private readonly discussDir: string;

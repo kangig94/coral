@@ -1,7 +1,7 @@
 import { textResult, jsonResult, type McpResult } from '../shared/mcp-utils.js';
 import { z } from 'zod';
 import { SessionStore } from './session-store.js';
-import { resolveSession, nowIsoString, resultToMcp, loadState } from './handler-utils.js';
+import { resolveSession, nowIsoString, resultToMcp, loadState } from './handlers/utils.js';
 import {
   applyEnd,
   applyEpochSummary,
@@ -10,16 +10,17 @@ import {
   DEFAULT_MAX_EPOCHS,
   DEFAULT_QUOTA_PER_EPOCH,
 } from './state-machine.js';
-import { formatFull, formatRecent, formatSummary } from './transcript.js';
+import { formatAgentView, formatRecent, formatSummary } from './transcript.js';
 import { seedPersonas } from './persona-seed.js';
+import { drawUInt32 } from './util/rng.js';
 import {
   discussAgentOpSchema,
   discussLeadOpSchema,
   type DiscussLeadOpInput,
 } from './schemas.js';
 import type { Result } from './types.js';
-import { handleAgentOp } from './handle-bid.js';
-import { handle3Step } from './handle-step.js';
+import { handleAgentOp } from './handlers/bid.js';
+import { handle3Step } from './handlers/step.js';
 
 type ToolParseResult<T> = { ok: true; value: T } | { ok: false; value: McpResult };
 
@@ -145,7 +146,8 @@ export const tools = [
 ];
 
 async function handle1Seed(input: Extract<DiscussLeadOpInput, { op: '_1_seed' }>): Promise<McpResult> {
-  return jsonResult(seedPersonas(input));
+  const seed = input.seed ?? drawUInt32(Math.random);
+  return jsonResult(seedPersonas({ ...input, seed }));
 }
 
 async function handle2Create(
@@ -197,7 +199,7 @@ async function handle4Transcript(
 
   switch (input.mode) {
     case 'full':
-      text = formatFull(state.transcript, state.agents);
+      text = formatAgentView(state.transcript, state.agents);
       break;
     case 'summary':
       text = formatSummary(state.transcript, state.agents);

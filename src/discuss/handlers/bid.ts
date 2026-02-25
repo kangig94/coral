@@ -1,12 +1,12 @@
-import { jsonResult, type McpResult } from '../shared/mcp-utils.js';
-import type { DiscussState, Result } from './types.js';
-import type { DiscussAgentOpInput } from './schemas.js';
-import type { SessionStore } from './session-store.js';
-import { applyBid, applySpeech, resolveAgentName } from './state-machine.js';
-import { isWinner, bidReleased, setupComplete } from './conditions.js';
-import { waitForCondition, INFINITE_POLL } from './wait.js';
-import { formatFull } from './transcript.js';
-import { resolveSession, nowIsoString, resultToMcp, loadState } from './handler-utils.js';
+import { jsonResult, type McpResult } from '../../shared/mcp-utils.js';
+import type { DiscussState, Result } from '../types.js';
+import type { DiscussAgentOpInput } from '../schemas.js';
+import type { SessionStore } from '../session-store.js';
+import { applyBid, applySpeech, resolveAgentName } from '../state-machine.js';
+import { isWinner, bidReleased, setupComplete } from '../conditions.js';
+import { waitForCondition, INFINITE_POLL } from '../wait.js';
+import { formatAgentView } from '../transcript.js';
+import { resolveSession, nowIsoString, resultToMcp, loadState } from './utils.js';
 
 async function handleBid(
   input: Extract<DiscussAgentOpInput, { op: 'bid' }>,
@@ -24,7 +24,7 @@ async function handleBid(
       return jsonResult({ action: 'session_ended', reason: 'already_ended', content: state.end_reason_content });
     }
     if (isWinner(resolved)(state)) {
-      return jsonResult({ action: 'speak', transcript: formatFull(state.transcript, state.agents) });
+      return jsonResult({ action: 'speak', transcript: formatAgentView(state.transcript, state.agents) });
     }
     const last = state.transcript.at(-1);
     if (!last) {

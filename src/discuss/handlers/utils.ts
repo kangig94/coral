@@ -1,6 +1,6 @@
-import { textResult, jsonResult, type McpResult } from '../shared/mcp-utils.js';
-import type { EndReason, DiscussState, Result } from './types.js';
-import type { SessionStore } from './session-store.js';
+import { textResult, jsonResult, type McpResult } from '../../shared/mcp-utils.js';
+import type { EndReason, DiscussState, Result } from '../types.js';
+import type { SessionStore } from '../session-store.js';
 
 export function resolveSession(store: SessionStore, sessionId: string): string | McpResult {
   const dir = store.resolveDir(sessionId);

@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { DiscussState } from '../types.js';
+import type { DiscussState } from './types.js';
 
 function tryRemoveSync(targetPath: string): void {
   try {

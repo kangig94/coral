@@ -16,7 +16,7 @@ export const isWinner = (agentName: string) =>
 
 export const setupComplete = (state: DiscussState): boolean => state.status !== 'setup';
 
-export const noParticipants = (state: DiscussState): boolean =>
+export const noEligibleParticipants = (state: DiscussState): boolean =>
   Object.values(state.agents).every((agent) =>
     agent.participation !== 'required'
     || agent.banned

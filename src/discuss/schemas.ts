@@ -113,6 +113,5 @@ export const discussLeadOpSchema = z.discriminatedUnion('op', [
 
 export type DiscussAgentOpInput = z.infer<typeof discussAgentOpSchema>;
 export type DiscussLeadOpInput = z.infer<typeof discussLeadOpSchema>;
-export type DiscussCreateInput = Omit<z.infer<typeof createShape>, 'op'>;
 
 export type DiscussPersonaSeedInput = z.infer<typeof seedShape>;

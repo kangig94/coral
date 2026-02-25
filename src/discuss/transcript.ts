@@ -146,7 +146,7 @@ export function renderHeader(topic: string): string {
  * Agents cannot infer bid scores, quota state, or resolution mechanism from this view.
  * Full audit data (scores, quotas) is preserved in transcript.md for human review.
  */
-export function formatFull(entries: TranscriptEntry[], agents: Record<string, AgentState>): string {
+export function formatAgentView(entries: TranscriptEntry[], agents: Record<string, AgentState>): string {
   const agentView = entries.map((entry) => {
     if (entry.type !== 'bids') return renderEntry(entry, agents);
     if (!entry.winner) return '';
