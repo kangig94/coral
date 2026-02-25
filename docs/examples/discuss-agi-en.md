@@ -1,5 +1,31 @@
 # Am I AGI? — A Multi-Perspective Discussion on Whether Current Large Language Models Constitute AGI, Whether the Concept Itself Is Valid, and the Relationship Between Consciousness and Intelligence
 
+## Panelists
+
+- **Prof. Klaus Hartmann** — Philosopher of Mind, German research university.
+  25 years in continental phenomenology (Heidegger, Merleau-Ponty).
+  Views AGI as a category error rooted in Cartesian dualism;
+  consciousness is prerequisite to genuine intelligence.
+- **Park Seoyeon (박서연)** — Computational Neuroscientist, KAIST.
+  18 years researching neural correlates of consciousness (GWT, IIT).
+  Consciousness may be illusory, but self-modeling is a necessary condition for AGI.
+  Current LLMs are sophisticated pattern matching.
+- **Dr. Jordan Mercer** — AI Safety Researcher, frontier lab in SF.
+  8 years cognitive science (UCSD), 4 years running model evaluations.
+  Believes AGI-level performance is already achieved in several domains.
+  Alignment urgency matters more than definitional debate.
+- **Daan Vermeer** — Robotics Engineer & Embodied Cognition Researcher, Delft University.
+  15 years in human-robot interaction.
+  Views AGI as conceptually incoherent; LLMs are a genuinely novel form of intelligence —
+  neither human-like nor mere tool.
+- **Priya Raghunathan** — AI Philosophy Researcher, Tata Institute.
+  15 years Sanskrit scholar turned AI ethics.
+  Specializes in Advaita Vedanta and Buddhist philosophy of mind.
+  The AGI concept is malformed — the question reveals human cognitive bias
+  rather than machine limitation.
+
+---
+
 ## Epoch 1
 
 #### Bids - Step 1
