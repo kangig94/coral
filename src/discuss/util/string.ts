@@ -24,8 +24,8 @@ export function topicSlug(topic: string): string {
 }
 
 export function parseDisplayName(persona: string, agentName: string): string {
-  const firstLine = persona.split('\n')[0] ?? '';
-  const stripped = firstLine.replace(/^#\s*/, '');
-  const [, displayName] = stripped.match(/^(.+?)\s+[—–-]\s+/) ?? [];
-  return displayName?.trim() || agentName;
+  const headerLine = persona.split('\n', 1)[0] ?? '';
+  const strippedHeader = headerLine.replace(/^#\s*/, '');
+  const match = strippedHeader.match(/^(.+?)\s+[—–-]\s+/);
+  return match?.[1]?.trim() || agentName;
 }

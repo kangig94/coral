@@ -29,24 +29,25 @@ export const TONE_AXES = {
 } as const;
 
 export function assignTones(n: number, rng: () => number): ToneAssignment[] {
-  const allCombinations: ToneAssignment[] = [];
+  const toneCombinations: ToneAssignment[] = [];
 
   for (const formality of TONE_AXES.formality) {
     for (const evidence of TONE_AXES.evidence) {
       for (const pace of TONE_AXES.pace) {
-        allCombinations.push({ formality, evidence, pace });
+        toneCombinations.push({ formality, evidence, pace });
       }
     }
   }
 
-  const shuffled = shuffleInPlace(allCombinations, rng);
+  const shuffled = shuffleInPlace(toneCombinations, rng);
   return Array.from({ length: n }, (_, i) => shuffled[i % shuffled.length]);
 }
 
 function buildPositionRecord(axes: ControversyAxis[], tuple: string[]): Record<string, string> {
   const positions: Record<string, string> = {};
   for (let i = 0; i < axes.length; i += 1) {
-    positions[axes[i].axis] = tuple[i];
+    const axis = axes[i];
+    positions[axis.axis] = tuple[i];
   }
   return positions;
 }
@@ -273,10 +274,9 @@ export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput>
       positions: buildPositionRecord(input.controversy_axes, pool[selectedPoolIndexes[i]]),
       tone: tones[i],
       persona_seed: drawUInt32(rng),
-      ...(origins && {
-        suggested_origin: origins[i].origin,
-        is_outlier: origins[i].is_outlier,
-      }),
+      ...(origins
+        ? { suggested_origin: origins[i].origin, is_outlier: origins[i].is_outlier }
+        : {}),
     });
   }
 
@@ -287,10 +287,9 @@ export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput>
       tone: tones[i],
       persona_seed: drawUInt32(rng),
       shared_position_with: sourceSlot,
-      ...(origins && {
-        suggested_origin: origins[i].origin,
-        is_outlier: origins[i].is_outlier,
-      }),
+      ...(origins
+        ? { suggested_origin: origins[i].origin, is_outlier: origins[i].is_outlier }
+        : {}),
     });
   }
 

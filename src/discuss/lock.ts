@@ -58,7 +58,7 @@ export class SessionLock {
       tryRemoveSync(lockDir);
     };
 
-    for (let i = 0; i < maxRetries; i++) {
+    for (let attempt = 0; attempt < maxRetries; attempt += 1) {
       try {
         fs.mkdirSync(lockDir); // atomic: fails EEXIST if held
         fs.writeFileSync(pidFile, `${process.pid}-${Date.now()}`);
@@ -69,17 +69,18 @@ export class SessionLock {
         }
       } catch (e: unknown) {
         const err = e as NodeJS.ErrnoException;
-        if (err.code === 'EEXIST') {
-          const owner = parseLockOwner(pidFile);
-          const isStale = isStaleOwner(owner, staleThresholdMs);
-          if (isStale) {
-            clearLockFiles();
-            continue;
-          }
-          await sleep(baseDelay * Math.pow(2, Math.min(i, 5)) + Math.random() * baseDelay);
+        if (err.code !== 'EEXIST') {
+          throw e;
+        }
+
+        const owner = parseLockOwner(pidFile);
+        if (isStaleOwner(owner, staleThresholdMs)) {
+          clearLockFiles();
           continue;
         }
-        throw e;
+
+        const backoffDelay = baseDelay * Math.pow(2, Math.min(attempt, 5)) + Math.random() * baseDelay;
+        await sleep(backoffDelay);
       }
     }
     throw new Error(`Lock timeout for session ${sessionDir}`);

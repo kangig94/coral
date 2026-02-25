@@ -136,7 +136,7 @@ function winnerFromStep(step: McpResult): 'alice' | 'bob' {
   return stepData.winner as 'alice' | 'bob';
 }
 
-function loserFromStep(step: McpResult, winner: 'alice' | 'bob'): 'alice' | 'bob' {
+function loserFromWinner(winner: 'alice' | 'bob'): 'alice' | 'bob' {
   return winner === 'alice' ? 'bob' : 'alice';
 }
 
@@ -184,7 +184,7 @@ describe('discuss tool: bid / speak', () => {
     expect(stepData.winner).toBe('alice');
 
     const winner = stepData.winner === 'alice' ? 'alice' : 'bob';
-    const loser = loserFromStep(stepResult, winner);
+    const loser = loserFromWinner(winner);
     const winnerBid = await (winner === 'alice' ? aliceBid : bobBid);
     const winnerSpeak = await handleToolCall(
       'discuss',
@@ -215,7 +215,7 @@ describe('discuss tool: bid / speak', () => {
     expect(stepData.phase).toBe('resolved');
 
     const winner = winnerFromStep(stepResult);
-    const loser = loserFromStep(stepResult, winner);
+    const loser = loserFromWinner(winner);
     const winnerBid = await (winner === 'alice' ? aliceBid : bobBid);
     expect(parseResult(winnerBid)).toHaveProperty('action', 'speak');
 
@@ -237,7 +237,7 @@ describe('discuss tool: bid / speak', () => {
     const { aliceBid, bobBid, step } = startBidRound(sid, 80, 50);
     const stepResult = await step;
     const winner = winnerFromStep(stepResult);
-    const loser = loserFromStep(stepResult, winner);
+    const loser = loserFromWinner(winner);
     await (winner === 'alice' ? aliceBid : bobBid);
 
     const result = await handleToolCall('discuss', { op: 'speak', session: sid, agent_name: loser, content: 'Bad call.' }, store);
@@ -339,7 +339,7 @@ describe('discuss_lead tool: _3_step (moderation loop)', () => {
     const { aliceBid, bobBid, step } = startBidRound(sid, 80, 20);
     const resolved = await step;
     const winner = winnerFromStep(resolved);
-    const loser = loserFromStep(resolved, winner);
+    const loser = loserFromWinner(winner);
     await (winner === 'alice' ? aliceBid : bobBid);
 
     const result = await handleToolCall('discuss_lead', { op: '_3_step', session: sid, timeout_seconds: sec(5) }, store);

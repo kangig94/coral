@@ -7,8 +7,11 @@ export const speechDelivered = (state: DiscussState): boolean =>
   state.status === 'bidding' && state.last_speech_step === state.step - 1;
 
 export const bidReleased = (agentName: string, bidStep: number) =>
-  ({ bid_release_step, status, agents }: DiscussState): boolean =>
-    bid_release_step >= bidStep || status === 'ended' || agents[agentName]?.banned === true;
+  (state: DiscussState): boolean => {
+    if (state.status === 'ended') return true;
+    if (state.agents[agentName]?.banned === true) return true;
+    return state.bid_release_step >= bidStep;
+  };
 
 export const isWinner = (agentName: string) =>
   ({ status, current_speaker }: DiscussState): boolean =>

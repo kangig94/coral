@@ -15,6 +15,10 @@ function seedResult<T>(result: { ok: true; value: T } | { ok: false; error: stri
   return result.value;
 }
 
+function personaSeeds(assignments: Array<{ persona_seed: number }>): number[] {
+  return assignments.map((assignment) => assignment.persona_seed);
+}
+
 describe('assignOrigins', () => {
   const baseDemographics = {
     origin_weights: {
@@ -558,7 +562,7 @@ describe('PRNG determinism across demographics presence', () => {
     };
     const a = seedResult(seedPersonas(input));
     const b = seedResult(seedPersonas(input));
-    expect(a.assignments.map((x) => x.persona_seed)).toEqual(b.assignments.map((x) => x.persona_seed));
+    expect(personaSeeds(a.assignments)).toEqual(personaSeeds(b.assignments));
     expect(a.assignments.map((x) => x.suggested_origin)).toEqual(b.assignments.map((x) => x.suggested_origin));
   });
 });
@@ -819,15 +823,12 @@ describe('seedPersonas with seed=0', () => {
   });
 
   it('produces different persona_seeds for seed=0 vs seed=1', () => {
-    // seed drives PRNG for tones and persona_seed draws, so must differ across seeds
     const r0 = seedPersonas({ controversy_axes: axes, n: 4, seed: 0 });
     const r1 = seedPersonas({ controversy_axes: axes, n: 4, seed: 1 });
     expect(r0.ok).toBe(true);
     expect(r1.ok).toBe(true);
     if (!r0.ok || !r1.ok) return;
-    const pseeds0 = r0.value.assignments.map((a) => a.persona_seed);
-    const pseeds1 = r1.value.assignments.map((a) => a.persona_seed);
-    expect(pseeds0).not.toEqual(pseeds1);
+    expect(personaSeeds(r0.value.assignments)).not.toEqual(personaSeeds(r1.value.assignments));
   });
 });
 
@@ -838,7 +839,6 @@ describe('seedPersonas seed coercion', () => {
   ];
 
   it('coerces negative seed to unsigned 32-bit (>>> 0) and returns valid output', () => {
-    // -1 >>> 0 === 4294967295
     const result = seedPersonas({ controversy_axes: axes, n: 2, seed: -1 });
     expect(result.ok).toBe(true);
     if (!result.ok) return;

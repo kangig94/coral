@@ -1,18 +1,7 @@
-/**
- * Red-attacker adversarial tests for the FP refactoring.
- * Targets: util/string, util/rng, util/dpp, lock
- *
- * Coverage added: edge cases in the extracted util modules that existing tests
- * never exercised in isolation — boundary values, all-zero weights, mismatched
- * array lengths, sigma=0 kernel, k-DPP degenerate inputs, lock timeout.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-
-// ─── util/string ──────────────────────────────────────────────────────────────
 
 import {
   randomSuffix,
@@ -175,7 +164,6 @@ describe('parseDisplayName', () => {
   });
 });
 
-// ─── util/rng ─────────────────────────────────────────────────────────────────
 
 import {
   UINT32_SIZE,
@@ -354,7 +342,6 @@ describe('weightedSample', () => {
   });
 });
 
-// ─── util/dpp ─────────────────────────────────────────────────────────────────
 
 import {
   MAX_POOL_SIZE,
@@ -570,7 +557,6 @@ describe('sampleKDpp', () => {
   });
 });
 
-// ─── lock ─────────────────────────────────────────────────────────────────────
 
 import { writeStateAtomic, SessionLock } from '../lock.js';
 import { initSession } from '../state-machine.js';

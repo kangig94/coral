@@ -4,6 +4,7 @@ const SOFT_LIMIT = 80;
 const HARD_LIMIT = 100;
 
 const SENTENCE_END = /[.!?]$/u;
+const pad2 = (value: number): string => String(value).padStart(2, '0');
 
 export function wrapText(text: string, opts?: { soft?: number; hard?: number }): string {
   const soft = opts?.soft ?? SOFT_LIMIT;
@@ -48,8 +49,7 @@ export function wrapText(text: string, opts?: { soft?: number; hard?: number }):
 
 function formatTimestamp(ts: string): string {
   const d = new Date(ts);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `[${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}]`;
+  return `[${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}]`;
 }
 
 export function generateOneLiner(content: string): string {
@@ -74,12 +74,11 @@ function renderBidRows(
   agents: Record<string, AgentState>,
   effectiveBids?: Record<string, number>,
 ): string {
-  const hasEffectiveBids = effectiveBids !== undefined;
-  const effectiveBidMap = effectiveBids ?? {};
+  const hasEffectiveBids = effectiveBids != null;
   const rows = Object.entries(bids)
     .sort(([lhsName, lhsRaw], [rhsName, rhsRaw]) => {
-      const lhs = (effectiveBids?.[lhsName] ?? lhsRaw);
-      const rhs = (effectiveBids?.[rhsName] ?? rhsRaw);
+      const lhs = effectiveBids?.[lhsName] ?? lhsRaw;
+      const rhs = effectiveBids?.[rhsName] ?? rhsRaw;
       return rhs - lhs;
     })
     .map(([name, score]) => {
@@ -88,7 +87,7 @@ function renderBidRows(
       if (!hasEffectiveBids) {
         return `| ${displayName} (${name}) | ${score} | ${quota} |`;
       }
-      const effective = effectiveBidMap[name] ?? score;
+      const effective = effectiveBids?.[name] ?? score;
       const effectiveText = Number.isInteger(effective) ? String(effective) : effective.toFixed(1);
       return `| ${displayName} (${name}) | ${score} | ${effectiveText} | ${quota} |`;
     });
@@ -147,12 +146,16 @@ export function renderHeader(topic: string): string {
  * Full audit data (scores, quotas) is preserved in transcript.md for human review.
  */
 export function formatAgentView(entries: TranscriptEntry[], agents: Record<string, AgentState>): string {
-  const agentView = entries.map((entry) => {
-    if (entry.type !== 'bids') return renderEntry(entry, agents);
-    if (!entry.winner) return '';
+  let agentView = '';
+  for (const entry of entries) {
+    if (entry.type !== 'bids') {
+      agentView += renderEntry(entry, agents);
+      continue;
+    }
+    if (!entry.winner) continue;
     const winnerDisplayName = agents[entry.winner]?.display_name ?? entry.winner;
-    return `\n> **Speaker: ${winnerDisplayName}**\n`;
-  }).join('');
+    agentView += `\n> **Speaker: ${winnerDisplayName}**\n`;
+  }
   return renderHeader('') + agentView;
 }
 
@@ -162,6 +165,8 @@ export function formatRecent(
   agents: Record<string, AgentState>,
 ): string {
   const speeches = entries.filter(isSpeechEntry);
+  if (speeches.length === 0) return '';
+
   const recentStart = Math.max(0, speeches.length - lastN);
 
   const olderSummaries = speeches.slice(0, recentStart)

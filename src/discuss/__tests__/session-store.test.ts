@@ -1,4 +1,3 @@
-
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -24,13 +23,13 @@ afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }); });
 
 function createAndSaveSession(topic = 'Test Topic') {
   const { sessionId, fullPath } = store.createSessionDir(topic);
-  const state = initSession({ topic, agents: AGENTS, min_bid_delay_ms: 0 }, new Date().toISOString());
-  state.session_id = sessionId;
-  state.session_dir = fullPath;
-  state.team_name = `coral-dc-${sessionId}`;
+  const initialState = initSession({ topic, agents: AGENTS, min_bid_delay_ms: 0 }, new Date().toISOString());
+  initialState.session_id = sessionId;
+  initialState.session_dir = fullPath;
+  initialState.team_name = `coral-dc-${sessionId}`;
   store.initTranscript(fullPath, topic);
-  store.save(fullPath, state);
-  return { sessionId, fullPath, state };
+  store.save(fullPath, initialState);
+  return { sessionId, fullPath, state: initialState };
 }
 
 function daysAgo(days: number): Date {

@@ -1,5 +1,7 @@
 type AgentScoreMap = Record<string, number>;
 type NullableAgentScoreMap = Record<string, number | null>;
+type SpeakerType = 'quota' | 'fallback' | 'cold_start';
+type TranscriptResolveType = 'normal' | 'fallback' | 'cold_start' | 'no_winner';
 type TranscriptStepMetadata = {
   step: number;
   epoch: number;
@@ -17,7 +19,7 @@ export type TranscriptEntry =
     effective_bids?: AgentScoreMap;
     thoughts?: Record<string, string>;
     winner: string | null;
-    resolve_type: 'normal' | 'fallback' | 'cold_start' | 'no_winner';
+    resolve_type: TranscriptResolveType;
   } & TranscriptStepMetadata)
   | ({ type: 'speech'; agent: string; display_name: string; content: string; } & TranscriptStepMetadata)
   | ({ type: 'epoch_summary'; summary: string; } & TranscriptEpochMetadata)
@@ -48,7 +50,7 @@ export type DiscussState = {
   current_thoughts: Record<string, string>;
   pending_bidders: string[];
   current_speaker: string | null;
-  speaker_type: 'quota' | 'fallback' | 'cold_start' | null;
+  speaker_type: SpeakerType | null;
   epoch_summary_written: number | null;
   team_name: string;
   created_at: string;
@@ -79,7 +81,7 @@ export type ResolveReason =
  * The audit trail (all_bids) lives in transcript entries only.
  */
 export type ResolveResult =
-  | { winner: string; step?: never; speaker_type: 'quota' | 'fallback' | 'cold_start' }
+  | { winner: string; step?: never; speaker_type: SpeakerType }
   | { no_winner: true; reason: ResolveReason };
 
 export type BidResult =

@@ -98,13 +98,13 @@ async function stepSpeaking(
     }
 
     if (current.status === 'bidding') {
-      const speech = current.transcript[current.transcript.length - 1];
-      if (!speech || speech.type !== 'speech') {
+      const lastEntry = current.transcript[current.transcript.length - 1];
+      if (!lastEntry || lastEntry.type !== 'speech') {
         return { ok: false, error: 'expected_speech_entry' };
       }
       return {
         ok: true,
-        value: { kind: 'speech_done', speech: { agent: speech.agent, content: speech.content } },
+        value: { kind: 'speech_done', speech: { agent: lastEntry.agent, content: lastEntry.content } },
       };
     }
 
@@ -208,9 +208,10 @@ async function stepBidding(ctx: StepContext, store: SessionStore): Promise<McpRe
     return jsonResult({ status: 'ended', phase: 'ended', reason: 'already_ended' });
   }
 
+  const allAgentsBid = (s: DiscussState): boolean =>
+    Object.entries(s.agents).every(([name, agent]) => agent.banned || s.current_bids[name] != null);
+
   if (state.min_bid_delay_ms > 0) {
-    const allAgentsBid = (s: DiscussState) =>
-      Object.entries(s.agents).every(([name, agent]) => agent.banned || s.current_bids[name] != null);
     await waitForCondition(ctx.statePath, allAgentsBid, state.min_bid_delay_ms);
   }
 

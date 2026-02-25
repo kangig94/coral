@@ -6,9 +6,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { SessionStore } from './session-store.js';
 import { tools, handleToolCall } from './server-handlers.js';
 
-const log = (message: string): void => {
-  process.stderr.write(`${message}\n`);
-};
+const log = (message: string): void => { process.stderr.write(`${message}\n`); };
 
 const serverVersion = typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0';
 const server = new Server(

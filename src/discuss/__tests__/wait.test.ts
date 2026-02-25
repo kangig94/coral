@@ -1,4 +1,3 @@
-
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -57,12 +56,12 @@ function makeState(overrides: Partial<DiscussState> = {}): DiscussState {
   };
 }
 
-function writeState(state: DiscussState): void {
-  writeFileSync(statePath(), JSON.stringify(state));
+function getStatePath(): string {
+  return join(tmpDir, 'state.json');
 }
 
-function statePath(): string {
-  return join(tmpDir, 'state.json');
+function writeState(state: DiscussState): void {
+  writeFileSync(getStatePath(), JSON.stringify(state));
 }
 
 const isEnded = (s: DiscussState) => s.status === 'ended';
@@ -70,7 +69,7 @@ const isEnded = (s: DiscussState) => s.status === 'ended';
 describe('waitForCondition', () => {
   it('should return immediately when condition already true on first check', async () => {
     writeState(makeState({ status: 'ended' }));
-    const result = await waitForCondition(statePath(), isEnded, 5000, INTERVAL);
+    const result = await waitForCondition(getStatePath(), isEnded, 5000, INTERVAL);
     expect(result.fulfilled).toBe(true);
     expect(result.error).toBeNull();
     expect(result.elapsed_ms).toBeLessThan(INTERVAL);
@@ -79,7 +78,7 @@ describe('waitForCondition', () => {
 
   it('should support infinite polling sentinel', async () => {
     writeState(makeState({ status: 'bidding' }));
-    const running = waitForCondition(statePath(), isEnded, INFINITE_POLL, INTERVAL);
+    const running = waitForCondition(getStatePath(), isEnded, INFINITE_POLL, INTERVAL);
     const timedOut = await Promise.race([
       running,
       new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), 120)),
@@ -97,14 +96,14 @@ describe('waitForCondition', () => {
     writeState(makeState({ status: 'bidding' }));
     setTimeout(() => writeState(makeState({ status: 'ended' })), INTERVAL * 2 + 10);
 
-    const result = await waitForCondition(statePath(), isEnded, 2000, INTERVAL);
+    const result = await waitForCondition(getStatePath(), isEnded, 2000, INTERVAL);
     expect(result.fulfilled).toBe(true);
     expect(result.state!.status).toBe('ended');
   });
 
   it('should return fulfilled=false with lastKnownGood on timeout', async () => {
     writeState(makeState({ status: 'bidding' }));
-    const result = await waitForCondition(statePath(), isEnded, 100, INTERVAL);
+    const result = await waitForCondition(getStatePath(), isEnded, 100, INTERVAL);
     expect(result.fulfilled).toBe(false);
     expect(result.error).toBeNull();
     expect(result.state!.status).toBe('bidding');
@@ -112,14 +111,14 @@ describe('waitForCondition', () => {
   });
 
   it('should return error=state_unavailable when file never exists', async () => {
-    const result = await waitForCondition(statePath(), isEnded, 100, INTERVAL);
+    const result = await waitForCondition(getStatePath(), isEnded, 100, INTERVAL);
     expect(result.fulfilled).toBe(false);
     expect(result.error).toBe('state_unavailable');
   });
 
   it('should survive transient corrupt reads and recover on valid state', async () => {
     writeState(makeState({ status: 'bidding' }));
-    const path = statePath();
+    const path = getStatePath();
 
     setTimeout(() => writeFileSync(path, '{"partial":'), INTERVAL + 5);
     setTimeout(() => writeState(makeState({ status: 'ended' })), INTERVAL * 3 + 5);
@@ -131,7 +130,7 @@ describe('waitForCondition', () => {
 
   it('should keep lastKnownGood after permanent corrupt read', async () => {
     writeState(makeState({ status: 'bidding' }));
-    const path = statePath();
+    const path = getStatePath();
     setTimeout(() => writeFileSync(path, 'not-json'), INTERVAL + 5);
 
     const result = await waitForCondition(path, isEnded, 150, INTERVAL);

@@ -1,4 +1,3 @@
-
 import { describe, it, expect } from 'vitest';
 import {
   wrapText,
@@ -20,14 +19,14 @@ const agents: Record<string, AgentState> = {
 const TS = '2026-01-01T10:00:00Z';
 
 function speechEntry(agent: string, content: string, step = 1): TranscriptEntry {
-  const display_name = agent[0]!.toUpperCase() + agent.slice(1);
+  const displayName = agent[0]!.toUpperCase() + agent.slice(1);
   return {
     type: 'speech',
     step,
     epoch: 1,
     ts: TS,
     agent,
-    display_name,
+    display_name: displayName,
     content,
   };
 }

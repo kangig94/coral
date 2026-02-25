@@ -26,17 +26,19 @@ async function handleBid(
     if (isWinner(resolved)(state)) {
       return jsonResult({ action: 'speak', transcript: formatAgentView(state.transcript, state.agents) });
     }
-    const last = state.transcript.at(-1);
-    if (!last) {
+    const lastEntry = state.transcript.at(-1);
+    if (!lastEntry) {
       return jsonResult({ action: 'session_ended' });
     }
-    if (last.type === 'speech') {
-      return jsonResult({ action: 'listen', speaker: last.agent, content: last.content });
+
+    switch (lastEntry.type) {
+      case 'speech':
+        return jsonResult({ action: 'listen', speaker: lastEntry.agent, content: lastEntry.content });
+      case 'epoch_summary':
+        return jsonResult({ action: 'listen', speaker: 'moderator', content: lastEntry.summary });
+      default:
+        return jsonResult({ action: 'session_ended' });
     }
-    if (last.type === 'epoch_summary') {
-      return jsonResult({ action: 'listen', speaker: 'moderator', content: last.summary });
-    }
-    return jsonResult({ action: 'session_ended' });
   };
 
   type BidPre =
@@ -45,7 +47,7 @@ async function handleBid(
     | { kind: 'setup' }
     | { kind: 'speaking' }
     | { kind: 'bidding'; resolved: string };
-  type BidRecordResult = Result<{ step: number }>;
+  type RecordedBid = Result<{ step: number }>;
 
   while (true) {
     const pre = await store.withLock<Result<BidPre>>(sessionDir, async () => {
@@ -101,7 +103,7 @@ async function handleBid(
       }
       case 'bidding': {
         const resolved = pre.value.resolved;
-        const bidStepResult = await store.withLock<BidRecordResult>(sessionDir, async () => {
+        const bidStepResult = await store.withLock<RecordedBid>(sessionDir, async () => {
           const state = store.load(sessionDir);
           if (state.status !== 'bidding') {
             return { ok: false, error: 'not_bidding', detail: { current: state.status } };

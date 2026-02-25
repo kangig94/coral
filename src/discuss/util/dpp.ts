@@ -145,9 +145,9 @@ function getColumn(matrix: number[][], col: number): number[] {
 }
 
 function dot(a: number[], b: number[]): number {
-  let acc = 0;
-  for (let i = 0; i < a.length; i += 1) acc += a[i] * b[i];
-  return acc;
+  let sum = 0;
+  for (let i = 0; i < a.length; i += 1) sum += a[i] * b[i];
+  return sum;
 }
 
 function normSquared(vec: number[]): number {
@@ -192,11 +192,11 @@ export function sampleKDpp(
   const effectiveK = Math.min(k, n);
   const esp = computeEsp(eigenvalues, effectiveK);
 
-  const selectedEigenvectors: number[] = [];
+  const selectedEigenvectorIndexes: number[] = [];
   let remaining = effectiveK;
   for (let i = n; i >= 1 && remaining > 0; i -= 1) {
     if (i === remaining) {
-      selectedEigenvectors.push(i - 1);
+      selectedEigenvectorIndexes.push(i - 1);
       remaining -= 1;
       continue;
     }
@@ -207,13 +207,13 @@ export function sampleKDpp(
     const probability = denom > EPS ? Math.min(1, Math.max(0, numerator / denom)) : 0;
 
     if (rng() < probability) {
-      selectedEigenvectors.push(i - 1);
+      selectedEigenvectorIndexes.push(i - 1);
       remaining -= 1;
     }
   }
   if (remaining !== 0) throw new Error('k-DPP eigenvector selection failed');
 
-  let basis = selectedEigenvectors.map((col) => getColumn(eigenvectors, col));
+  let basis = selectedEigenvectorIndexes.map((col) => getColumn(eigenvectors, col));
   const selectedItems: number[] = [];
   const selectedItemSet = new Set<number>();
 

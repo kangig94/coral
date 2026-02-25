@@ -46,6 +46,20 @@ function envInt(key: string, min: number, max: number, fallback: number): number
   return Number.isFinite(raw) && raw >= min && raw <= max ? raw : fallback;
 }
 
+function formatTranscriptForMode(
+  input: Extract<DiscussLeadOpInput, { op: '_4_transcript' }>,
+  state: Awaited<ReturnType<typeof loadState>>,
+): string {
+  switch (input.mode) {
+    case 'full':
+      return formatAgentView(state.transcript, state.agents);
+    case 'summary':
+      return formatSummary(state.transcript, state.agents);
+    default:
+      return formatRecent(state.transcript, input.last_n ?? 5, state.agents);
+  }
+}
+
 export const tools = [
   {
     name: 'discuss',
@@ -195,21 +209,7 @@ async function handle4Transcript(
   if (typeof sessionDir !== 'string') return sessionDir;
 
   const state = await loadState(store, sessionDir);
-  let text: string;
-
-  switch (input.mode) {
-    case 'full':
-      text = formatAgentView(state.transcript, state.agents);
-      break;
-    case 'summary':
-      text = formatSummary(state.transcript, state.agents);
-      break;
-    default:
-      text = formatRecent(state.transcript, input.last_n ?? 5, state.agents);
-      break;
-  }
-
-  return textResult(text);
+  return textResult(formatTranscriptForMode(input, state));
 }
 
 async function handle5Epoch(

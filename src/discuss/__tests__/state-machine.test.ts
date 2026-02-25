@@ -1,4 +1,3 @@
-
 import { describe, it, expect } from 'vitest';
 import {
   initSession,
@@ -540,11 +539,8 @@ function makeAgentMap(rows: Array<{ name: string; total_speaks: number; banned?:
 
 
 function makeAgents(speaks: Record<string, number>): Record<string, import('../types.js').AgentState> {
-  return Object.fromEntries(
-    Object.entries(speaks).map(([name, total_speaks]) => [
-      name,
-      { persona: '', display_name: name, participation: 'required' as const, quota_remaining: 3, total_speaks, fallback_used: false, banned: false },
-    ]),
+  return makeAgentMap(
+    Object.entries(speaks).map(([name, total_speaks]) => ({ name, total_speaks })),
   );
 }
 

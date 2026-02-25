@@ -46,18 +46,19 @@ export function computeEffectiveBids(
   lastSpeaker: string | null,
 ): Record<string, number> {
   const names = Object.keys(allBids);
-  const N = names.length;
-  if (N <= 1) return { ...allBids };
-  const P_BASE = 100 / N;
-  const P_RECENCY = 50 / N;
-  const averageSpeaks = names.reduce((sum, name) => sum + agents[name].total_speaks, 0) / N;
+  const participantCount = names.length;
+  if (participantCount <= 1) return { ...allBids };
+
+  const imbalanceWeight = 100 / participantCount;
+  const recencyWeight = 50 / participantCount;
+  const averageSpeaks = names.reduce((sum, name) => sum + agents[name].total_speaks, 0) / participantCount;
 
   const effective: Record<string, number> = {};
   for (const name of names) {
-    const raw = allBids[name];
-    const imbalance = P_BASE * (averageSpeaks - agents[name].total_speaks);
-    const recency = name === lastSpeaker ? P_RECENCY : 0;
-    effective[name] = raw + imbalance - recency;
+    const rawBid = allBids[name];
+    const imbalance = imbalanceWeight * (averageSpeaks - agents[name].total_speaks);
+    const recencyPenalty = name === lastSpeaker ? recencyWeight : 0;
+    effective[name] = rawBid + imbalance - recencyPenalty;
   }
   return effective;
 }
@@ -87,7 +88,7 @@ function makeBidEntry(
   now: string,
   effectiveBids?: Record<string, number>,
 ): TranscriptEntry {
-  const thoughts = Object.keys(state.current_thoughts).length > 0
+  const thoughtsEntry = Object.keys(state.current_thoughts).length > 0
     ? { thoughts: { ...state.current_thoughts } }
     : {};
   return {
@@ -97,7 +98,7 @@ function makeBidEntry(
     ts: now,
     bids: allBids,
     ...(effectiveBids && { effective_bids: effectiveBids }),
-    ...thoughts,
+    ...thoughtsEntry,
     winner,
     resolve_type: resolveType,
   };
@@ -159,9 +160,8 @@ function resetBids(state: DiscussState): DiscussState {
   for (const [name, agent] of Object.entries(state.agents)) {
     if (agent.banned) continue;
     current_bids[name] = null;
-    if (agent.participation === 'required') {
-      pending_bidders.push(name);
-    }
+    if (agent.participation !== 'required') continue;
+    pending_bidders.push(name);
   }
 
   return {
@@ -477,8 +477,8 @@ export function applySpeechTimeout(
 
   const winner = state.current_speaker;
   const speaker = state.agents[winner];
-  const display_name = speaker.display_name;
-  const timeoutMsg = `${display_name} (${winner}) timed out without delivering a speech.`;
+  const displayName = speaker.display_name;
+  const timeoutMsg = `${displayName} (${winner}) timed out without delivering a speech.`;
   return {
     ok: true,
     value: buildSpeechState({

@@ -1,13 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import { resultToMcp, endContent, nowIsoString, resolveSession } from '../handlers/utils.js';
 import type { Result } from '../types.js';
+import type { McpResult } from '../../shared/mcp-utils.js';
+
+function parseJson(result: McpResult): Record<string, unknown> {
+  return JSON.parse(result.content[0].text) as Record<string, unknown>;
+}
 
 describe('resultToMcp', () => {
   it('should return JSON with value fields for ok result', () => {
     const result: Result<{ status: string }> = { ok: true, value: { status: 'bidding' } };
     const mcp = resultToMcp(result);
     expect(mcp.isError).toBe(false);
-    const parsed = JSON.parse(mcp.content[0].text) as Record<string, unknown>;
+    const parsed = parseJson(mcp);
     expect(parsed.status).toBe('bidding');
   });
 
@@ -15,7 +20,7 @@ describe('resultToMcp', () => {
     const result: Result<never> = { ok: false, error: 'agent_not_found' };
     const mcp = resultToMcp(result);
     expect(mcp.isError).toBe(false);
-    const parsed = JSON.parse(mcp.content[0].text) as Record<string, unknown>;
+    const parsed = parseJson(mcp);
     expect(parsed.error).toBe('agent_not_found');
   });
 
@@ -26,7 +31,7 @@ describe('resultToMcp', () => {
       detail: { current: 'speaking', expected: 'bidding' },
     };
     const mcp = resultToMcp(result);
-    const parsed = JSON.parse(mcp.content[0].text) as Record<string, unknown>;
+    const parsed = parseJson(mcp);
     expect(parsed.error).toBe('invalid_status');
     expect(parsed.current).toBe('speaking');
     expect(parsed.expected).toBe('bidding');
@@ -36,7 +41,7 @@ describe('resultToMcp', () => {
     const result: Result<never> = { ok: false, error: 'not_bidding' };
     expect(() => resultToMcp(result)).not.toThrow();
     const mcp = resultToMcp(result);
-    const parsed = JSON.parse(mcp.content[0].text) as Record<string, unknown>;
+    const parsed = parseJson(mcp);
     expect(parsed.error).toBe('not_bidding');
   });
 

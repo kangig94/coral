@@ -2,6 +2,13 @@ import { textResult, jsonResult, type McpResult } from '../../shared/mcp-utils.j
 import type { EndReason, DiscussState, Result } from '../types.js';
 import type { SessionStore } from '../session-store.js';
 
+const END_REASON_CONTENT: Record<Exclude<EndReason, 'already_ended'>, string> = {
+  all_below_threshold: 'All participants bid below the threshold. Ending discussion.',
+  max_epochs_reached: 'Maximum epochs reached. Ending discussion.',
+  all_blocked: 'Discussion is structurally deadlocked. Agents who want to speak have no quota, and agents with quota do not want to speak.',
+  no_participants: 'No eligible agents remaining. Ending discussion.',
+};
+
 export function resolveSession(store: SessionStore, sessionId: string): string | McpResult {
   const dir = store.resolveDir(sessionId);
   return dir ?? textResult('session_not_found', true);
@@ -12,10 +19,8 @@ export function nowIsoString(): string {
 }
 
 export function resultToMcp(result: Result<unknown>): McpResult {
-  if (!result.ok) {
-    return jsonResult({ error: result.error, ...result.detail });
-  }
-  return jsonResult(result.value as Record<string, unknown>);
+  if (result.ok) return jsonResult(result.value as Record<string, unknown>);
+  return jsonResult({ error: result.error, ...(result.detail ?? {}) });
 }
 
 export async function loadState(store: SessionStore, sessionDir: string): Promise<DiscussState> {
@@ -23,12 +28,5 @@ export async function loadState(store: SessionStore, sessionDir: string): Promis
 }
 
 export function endContent(reason: Exclude<EndReason, 'already_ended'>): string {
-  const reasons: Record<Exclude<EndReason, 'already_ended'>, string> = {
-    all_below_threshold: 'All participants bid below the threshold. Ending discussion.',
-    max_epochs_reached: 'Maximum epochs reached. Ending discussion.',
-    all_blocked: 'Discussion is structurally deadlocked. Agents who want to speak have no quota, and agents with quota do not want to speak.',
-    no_participants: 'No eligible agents remaining. Ending discussion.',
-  };
-
-  return reasons[reason];
+  return END_REASON_CONTENT[reason];
 }

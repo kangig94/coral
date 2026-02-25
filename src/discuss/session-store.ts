@@ -35,12 +35,11 @@ export class SessionStore {
     if (!fs.existsSync(this.discussDir)) return null;
 
     const exactPath = path.join(this.discussDir, sessionId);
-    if (fs.existsSync(exactPath)) {
-      return exactPath;
-    }
+    if (fs.existsSync(exactPath)) return exactPath;
 
-    const match = fs.readdirSync(this.discussDir).find((entry) => entry.startsWith(`${sessionId}-`));
-    return match ? path.join(this.discussDir, match) : null;
+    const matchedDir = fs.readdirSync(this.discussDir).find((entry) => entry.startsWith(`${sessionId}-`));
+    if (!matchedDir) return null;
+    return path.join(this.discussDir, matchedDir);
   }
 
   statePath(fullSessionPath: string): string {
@@ -59,11 +58,12 @@ export class SessionStore {
 
   save(fullSessionPath: string, state: DiscussState): void {
     const newEntries = state.transcript.slice(state.transcript_rendered);
-    if (newEntries.length > 0) {
+    const hasNewEntries = newEntries.length > 0;
+    if (hasNewEntries) {
       const md = renderEntries(newEntries, state.agents);
       fs.appendFileSync(path.join(fullSessionPath, 'transcript.md'), md, 'utf8');
     }
-    const toWrite = newEntries.length > 0
+    const toWrite = hasNewEntries
       ? { ...state, transcript_rendered: state.transcript.length }
       : state;
     writeStateAtomic(this.statePath(fullSessionPath), toWrite);
@@ -91,10 +91,9 @@ export class SessionStore {
         const raw = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
         if (raw['status'] !== 'ended') continue;
         const ts = String(raw['last_activity_at'] || '');
-        if (new Date(ts).getTime() < cutoff) {
-          fs.rmSync(fullPath, { recursive: true, force: true });
-          removed++;
-        }
+        if (new Date(ts).getTime() >= cutoff) continue;
+        fs.rmSync(fullPath, { recursive: true, force: true });
+        removed += 1;
       } catch {
         continue;
       }
