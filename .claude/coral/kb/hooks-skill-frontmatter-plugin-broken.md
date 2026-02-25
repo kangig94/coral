@@ -21,12 +21,12 @@ hooks:
 "Stop": [{ "hooks": [{ "type": "command", "command": "...", "timeout": 5 }] }]
 
 # Script checks state file to scope to specific skills:
-STATE_FILE="${CLAUDE_PROJECT_DIR:-.}/.claude/coral/tmp/kb-active"
+STATE_FILE="$CLAUDE_PROJECT_DIR/.claude/coral/tmp/kb-active"
 [ ! -f "$STATE_FILE" ] && exit 0
 
 # SKILL.md creates state file via ! command:
 ```!
-touch "${CLAUDE_PROJECT_DIR:-.}/.claude/coral/tmp/kb-active"
+touch "$CLAUDE_PROJECT_DIR/.claude/coral/tmp/kb-active"
 ```
 ```
 
