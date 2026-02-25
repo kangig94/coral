@@ -10,14 +10,12 @@ import {
   applyExpel,
   applyEpochSummary,
   applyEnd,
-  parseDisplayName,
-  topicSlug,
-  formatDateId,
   computeEffectiveBids,
   findLastSpeaker,
   DEFAULT_BID_THRESHOLD,
   DEFAULT_MAX_EPOCHS,
 } from '../state-machine.js';
+import { parseDisplayName, topicSlug, formatDateId } from '../util/string.js';
 import type { AgentState, DiscussState, TranscriptEntry } from '../types.js';
 import { noParticipants } from '../conditions.js';
 

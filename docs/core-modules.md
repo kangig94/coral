@@ -96,10 +96,15 @@ Key design: background vs foreground branching lives here. `handleToolCall` is t
 
 ## Discuss Server Modules (`src/discuss/`)
 
-The discuss server follows a **Functional Core / Imperative Shell** architecture:
-- **Pure functions** (`state-machine.ts`, `conditions.ts`, `transcript.ts`) - zero I/O imports, fully testable without filesystem
-- **I/O shell** (`session-store.ts`, `wait.ts`) - filesystem operations
-- **Wiring** (`server.ts`, `server-handlers.ts`) - connects tools to logic
+The discuss server follows a **Functional Core / Imperative Shell** architecture with strict layered dependencies:
+- **L0** (`types.ts`) — zero imports; type definitions only
+- **L1** (`util/`) — pure primitives: string formatting, seeded RNG, k-DPP linear algebra, file locking
+- **L2 Functional Core** (`state-machine.ts`, `conditions.ts`, `transcript.ts`, `persona-seed.ts`) — zero I/O, fully testable without filesystem
+- **L3 Imperative Shell** (`session-store.ts`, `wait.ts`) — all filesystem operations
+- **L4** (`handler-utils.ts`) — shared cross-handler utilities
+- **L5** (`handle-bid.ts`, `handle-step.ts`) — extracted flow handlers
+- **L6 Dispatch** (`server-handlers.ts`) — thin tool router (Zod parsing + routing)
+- **L7** (`server.ts`) — composition root (wiring only)
 
 ---
 
@@ -109,15 +114,37 @@ Defines `DiscussState` (full session state: agents, bids, transcript, step, epoc
 
 ---
 
+### src/discuss/util/string.ts - String/ID Formatting Utilities
+
+Pure string utilities with zero project imports. Exports: `randomSuffix` (4-char hex suffix for session IDs), `formatDateId` (compact `YYMMDD-HHMM` date string), `topicSlug` (topic → max-40-char URL-safe slug), `parseDisplayName` (strips numeric suffix for display). Used by `state-machine.ts` and `session-store.ts`. See `src/discuss/util/string.ts`.
+
+---
+
+### src/discuss/util/rng.ts - Seeded RNG and Sampling Primitives
+
+Pure RNG utilities with zero project imports. Exports: `UINT32_SIZE` (2³²), `drawUInt32` (single Mulberry32 step), `createSeededRng` (returns `() => number` in [0,1)), `shuffleInPlace` (Fisher-Yates in-place shuffle), `weightedSample` (weighted random index selection). Used by `persona-seed.ts` and `util/dpp.ts`. See `src/discuss/util/rng.ts`.
+
+---
+
+### src/discuss/util/dpp.ts - k-DPP Linear Algebra
+
+Pure k-Determinantal Point Process implementation. Exports: `MAX_POOL_SIZE` (100), `cartesianProduct`, `hammingDistance`, `buildKernel` (similarity matrix from ControversyAxis positions), `eigendecompose` (power-iteration QR), `sampleKDpp` (elementary symmetric polynomial sampling). Private helpers: matrix ops (`identityMatrix`, `dot`, `normSquared`, `getColumn`), ESP computation, Gram-Schmidt orthonormalization. Imports `weightedSample` from `./rng.ts`. See `src/discuss/util/dpp.ts`.
+
+---
+
+### src/discuss/util/lock.ts - File Locking and Atomic Writes
+
+I/O primitives extracted from `session-store.ts`. Exports: `writeStateAtomic` (write `DiscussState` via `.tmp` + `renameSync`), `SessionLock` (class wrapping `mkdir`-based cross-process lock with PID liveness check and 30s stale-lock threshold). Private helpers: `tryRemoveSync`, `sleep`, `parseLockOwner`, `isProcessAlive`, `isStaleOwner`. See `src/discuss/util/lock.ts`.
+
+---
+
 ### src/discuss/state-machine.ts - Pure State Transitions
 
-All state-modifying logic. Zero I/O imports - `node:fs` and `node:path` are banned in this file. Every state-modifying function follows the signature pattern `(state, ...args, now: string) → Result<T>`.
+All state-modifying logic. Zero I/O imports — `node:fs` and `node:path` are banned in this file. Every state-modifying function follows the signature pattern `(state, ...args, now: string) → Result<T>`.
 
-Key functions: `initSession`, `applyBid`, `resolveWinner` (handles winner / fallback / cold_start / epoch_transition / max_epochs_reached / no_winner), `applySpeech` (sets monotonic `last_speech_step`), `applyEpochSummary`, `applyEnd`.
+Key functions: `initSession`, `applyBid`, `resolveWinner` (handles winner / fallback / cold_start / epoch_transition / max_epochs_reached / no_winner), `applySpeech` (sets monotonic `last_speech_step`), `applyEpochSummary`, `applyEnd`, `resolveAgentName` (strips numeric suffix for agent alias resolution).
 
-Also exports pure string utilities used by `session-store.ts` for directory naming: `randomSuffix`, `formatDateId`, `topicSlug`. This co-location is deliberate - these are pure utilities with no state machine semantics.
-
-See `src/discuss/state-machine.ts`.
+Imports `parseDisplayName` from `util/string.ts`. See `src/discuss/state-machine.ts`.
 
 ---
 
@@ -145,9 +172,9 @@ Polls `state.json` at intervals until a predicate is true or timeout expires. Ke
 
 Handles session directory management, atomic writes, cross-process locking, and transcript rendering.
 
-- **Lock**: `mkdir`-based (atomic test-and-set). Stale lock detection via PID liveness check + 30s age threshold
-- **Atomic writes**: `.tmp` + `renameSync`, same pattern as codex session-manager
-- **Directory naming**: `{session_id}-{topic_slug}` - imports `randomSuffix`, `formatDateId`, `topicSlug` from `state-machine.ts` (pure utilities, no circular dependency)
+- **Lock**: `SessionLock` (from `util/lock.ts`) — `mkdir`-based atomic test-and-set. Stale lock detection via PID liveness check + 30s age threshold
+- **Atomic writes**: `writeStateAtomic` (from `util/lock.ts`) — `.tmp` + `renameSync`, same pattern as codex session-manager
+- **Directory naming**: `{session_id}-{topic_slug}` — imports `randomSuffix`, `formatDateId`, `topicSlug` from `util/string.ts`
 - **`save()`**: serializes state under lock, then calls `transcript.ts` for incremental markdown append
 
 See `src/discuss/session-store.ts`.
@@ -168,17 +195,31 @@ Zod schemas for the two discuss MCP tools. `discussAgentOpSchema` is a discrimin
 
 ### src/discuss/persona-seed.ts - k-DPP Persona Sampling
 
-Pure implementation of k-Determinantal Point Process sampling for maximally diverse persona position assignment. Zero I/O. Key exports: `samplePersonaAssignments` (main entry point), `assignTones` (2×2×2 combinatorial assignment), `assignOrigins` (weighted demographics), `createSeededRng` (mulberry32 PRNG). See `src/discuss/persona-seed.ts`.
+Pure implementation of k-Determinantal Point Process sampling for maximally diverse persona position assignment. Zero I/O. Key exports: `seedPersonas` (main entry point), `assignTones` (2×2×2 combinatorial assignment), `assignOrigins` (weighted demographics). RNG and DPP primitives are delegated to `util/rng.ts` and `util/dpp.ts`. See `src/discuss/persona-seed.ts`.
+
+---
+
+### src/discuss/handler-utils.ts - Cross-Handler Utilities
+
+Shared utilities used by both `handle-bid.ts` and `handle-step.ts` (and indirectly `server-handlers.ts`). Exports: `resolveSession` (session ID → directory path), `nowIsoString`, `resultToMcp` (converts `Result<T>` to `McpResult`), `loadState` (locked state read), `endContent` (human-readable end reason strings). See `src/discuss/handler-utils.ts`.
+
+---
+
+### src/discuss/handle-bid.ts - bid/speak Flow
+
+Contains the full `handleBid` and `handleSpeak` implementations, exposed via `handleAgentOp`. `handleBid` is a polling loop: waits for session to reach `bidding` state → applies bid under lock → waits for winner resolution via `bidReleased` predicate. Returns `speak` action to the winner, `listen` action to everyone else. See `src/discuss/handle-bid.ts`.
+
+---
+
+### src/discuss/handle-step.ts - _3_step Flow
+
+Implements the `handle3Step` moderator operation (~280 lines). Manages the full bidding→speaking cycle: starts bidding on first call, waits for all bids via `waitForCondition(allBidsIn)`, resolves winner under lock, then in the next call waits for speech delivery via `waitForCondition(speechDelivered)`. Handles expulsion of non-responsive agents after two hold cycles. See `src/discuss/handle-step.ts`.
 
 ---
 
 ### src/discuss/server-handlers.ts - Tool Dispatch
 
-Routes MCP tool calls to state-machine functions via `SessionStore`. All blocking operations use `waitForCondition` from `wait.ts`.
-
-`_3_step` is the core moderator blocking operation: in bidding status it calls `waitForCondition(allBidsIn)`, then resolves the winner under lock. In speaking status it calls `waitForCondition(speechDelivered)`. All resolution runs inside `withLock` to prevent races between concurrent bid arrivals and wait completions.
-
-`bid` handler: `applyBid` (pure) → if `allBidsIn`: `resolveWinner` (pure) → `store.save`. Winner resolution inside the lock ensures bid count and winner selection are atomic. See `src/discuss/server-handlers.ts`.
+Thin router: Zod parsing (`parseToolInput`), environment config (`envInt`), and routing to `handleAgentOp` / `handle3Step` / inline op handlers. Per-op handlers `handle2Create` through `handle7End` live here for ops that don't warrant their own file. See `src/discuss/server-handlers.ts`.
 
 ---
 

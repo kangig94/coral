@@ -2,13 +2,10 @@ import { describe, it, expect } from 'vitest';
 import {
   assignOrigins,
   assignTones,
-  cartesianProduct,
-  createSeededRng,
-  eigendecompose,
-  hammingDistance,
   seedPersonas,
-  MAX_POOL_SIZE,
 } from '../persona-seed.js';
+import { createSeededRng } from '../util/rng.js';
+import { cartesianProduct, eigendecompose, hammingDistance, MAX_POOL_SIZE } from '../util/dpp.js';
 
 function seedResult<T>(result: { ok: true; value: T } | { ok: false; error: string }): T {
   expect(result.ok).toBe(true);
