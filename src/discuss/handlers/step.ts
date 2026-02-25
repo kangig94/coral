@@ -262,7 +262,7 @@ async function stepBidding(ctx: StepContext, store: SessionStore): Promise<McpRe
   }
 }
 
-export async function handle3Step(
+export async function handleStep(
   input: Extract<DiscussLeadOpInput, { op: '_3_step' }>,
   store: SessionStore,
 ): Promise<McpResult> {

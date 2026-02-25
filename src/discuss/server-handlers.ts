@@ -20,7 +20,7 @@ import {
 } from './schemas.js';
 import type { Result } from './types.js';
 import { handleAgentOp } from './handlers/bid.js';
-import { handle3Step } from './handlers/step.js';
+import { handleStep } from './handlers/step.js';
 
 type ToolParseResult<T> = { ok: true; value: T } | { ok: false; value: McpResult };
 
@@ -159,12 +159,12 @@ export const tools = [
   },
 ];
 
-async function handle1Seed(input: Extract<DiscussLeadOpInput, { op: '_1_seed' }>): Promise<McpResult> {
+async function handleSeed(input: Extract<DiscussLeadOpInput, { op: '_1_seed' }>): Promise<McpResult> {
   const seed = input.seed ?? drawUInt32(Math.random);
   return jsonResult(seedPersonas({ ...input, seed }));
 }
 
-async function handle2Create(
+async function handleCreate(
   input: Omit<Extract<DiscussLeadOpInput, { op: '_2_create' }>, 'op'>,
   store: SessionStore,
 ): Promise<McpResult> {
@@ -201,7 +201,7 @@ async function handle2Create(
   });
 }
 
-async function handle4Transcript(
+async function handleTranscript(
   input: Extract<DiscussLeadOpInput, { op: '_4_transcript' }>,
   store: SessionStore,
 ): Promise<McpResult> {
@@ -212,7 +212,7 @@ async function handle4Transcript(
   return textResult(formatTranscriptForMode(input, state));
 }
 
-async function handle5Epoch(
+async function handleEpoch(
   input: Extract<DiscussLeadOpInput, { op: '_5_epoch' }>,
   store: SessionStore,
 ): Promise<McpResult> {
@@ -230,7 +230,7 @@ async function handle5Epoch(
   return resultToMcp(applied);
 }
 
-async function handle6State(
+async function handleState(
   input: Extract<DiscussLeadOpInput, { op: '_6_state' }>,
   store: SessionStore,
 ): Promise<McpResult> {
@@ -269,7 +269,7 @@ async function handle6State(
   });
 }
 
-async function handle7End(
+async function handleEnd(
   input: Extract<DiscussLeadOpInput, { op: '_7_end' }>,
   store: SessionStore,
 ): Promise<McpResult> {
@@ -304,19 +304,19 @@ async function handle7End(
 async function handleDiscussLeadOp(input: DiscussLeadOpInput, store: SessionStore): Promise<McpResult> {
   switch (input.op) {
     case '_1_seed':
-      return handle1Seed(input);
+      return handleSeed(input);
     case '_2_create':
-      return handle2Create(input, store);
+      return handleCreate(input, store);
     case '_3_step':
-      return handle3Step(input, store);
+      return handleStep(input, store);
     case '_4_transcript':
-      return handle4Transcript(input, store);
+      return handleTranscript(input, store);
     case '_5_epoch':
-      return handle5Epoch(input, store);
+      return handleEpoch(input, store);
     case '_6_state':
-      return handle6State(input, store);
+      return handleState(input, store);
     case '_7_end':
-      return handle7End(input, store);
+      return handleEnd(input, store);
     default:
       return jsonResult({ error: 'invalid_op' });
   }

@@ -677,7 +677,7 @@ describe('stepBidding endNoParticipants state correctness', () => {
   });
 });
 
-describe('handle1Seed null seed fallback', () => {
+describe('handleSeed null seed fallback', () => {
   const axes = [
     { axis: 'cost', positions: ['high', 'low'] },
     { axis: 'risk', positions: ['high', 'low'] },
