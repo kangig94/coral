@@ -420,23 +420,46 @@ describe('applyExpel', () => {
 
 
 describe('applyEpochSummary', () => {
-  it('should set bid_release_step when recording summary', () => {
+  it('should set bid_release_step when recording summary after epoch transition', () => {
     const state = startSession();
     const withSpeech = applySpeechTimeout(state, NOW);
     const base = withSpeech.ok ? withSpeech.value : state;
-    const summarized = unwrapOk(applyEpochSummary(base, 'Phase one highlights.', NOW));
+    // Simulate epoch transition (epoch_summary_written: null means summary is due)
+    const transitioned: DiscussState = { ...base, epoch_summary_written: null };
+    const summarized = unwrapOk(applyEpochSummary(transitioned, 'Phase one highlights.', NOW));
     expect(summarized.epoch_summary_written).toBe(1);
-    expect(summarized.bid_release_step).toBe(base.step);
+    expect(summarized.bid_release_step).toBe(transitioned.step);
   });
 
-  it('should reject duplicate summary for same epoch', () => {
+  it('should reject when no epoch transition has occurred', () => {
     const state = startSession();
-    const r1 = applyEpochSummary(state, 'First', NOW);
+    const r = applyEpochSummary(state, 'Too early', NOW);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toBe('epoch_summary_not_due');
+    expect(r.detail).toHaveProperty('hint');
+  });
+
+  it('should reject duplicate summary after epoch transition', () => {
+    const state = startSession();
+    // Simulate epoch transition by setting epoch_summary_written to null
+    const transitioned: DiscussState = { ...state, epoch: 2, epoch_summary_written: null };
+    const r1 = applyEpochSummary(transitioned, 'First', NOW);
     expect(r1.ok).toBe(true);
     const r2 = r1.ok ? applyEpochSummary(r1.value, 'Duplicate', NOW) : null;
     expect(r2?.ok).toBe(false);
     if (!r2 || r2.ok) return;
-    expect(r2.error).toBe('epoch_summary_duplicate');
+    expect(r2.error).toBe('epoch_summary_not_due');
+  });
+
+  it('should succeed after epoch transition', () => {
+    const state = startSession();
+    // epoch_summary_written: null signals an epoch transition requiring summary
+    const transitioned: DiscussState = { ...state, epoch: 2, epoch_summary_written: null };
+    const r = applyEpochSummary(transitioned, 'Epoch 1 recap.', NOW);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.epoch_summary_written).toBe(2);
   });
 });
 

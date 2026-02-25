@@ -237,7 +237,7 @@ export function initSession(
     pending_bidders: requiredNames,
     current_speaker: null,
     speaker_type: null,
-    epoch_summary_written: null,
+    epoch_summary_written: 0,
     created_at: now,
     last_activity_at: now,
     last_speech_step: 0,
@@ -565,8 +565,15 @@ export function applyEpochSummary(
   if (state.status === 'ended') {
     return { ok: false, error: 'session_ended' };
   }
-  if (state.epoch_summary_written === state.epoch) {
-    return { ok: false, error: 'epoch_summary_duplicate', detail: { epoch: state.epoch } };
+  if (state.epoch_summary_written !== null) {
+    return {
+      ok: false,
+      error: 'epoch_summary_not_due',
+      detail: {
+        epoch: state.epoch,
+        hint: 'No epoch transition has occurred. Continue the discussion loop with _3_step.',
+      },
+    };
   }
 
   const entry: TranscriptEntry = { type: 'epoch_summary', epoch: state.epoch, ts: now, summary };
