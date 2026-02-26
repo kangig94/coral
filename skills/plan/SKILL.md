@@ -1,28 +1,38 @@
 ---
 name: plan
-description: Claude-native planning with parallel architect/critic self-review
-argument-hint: "[task description]"
+description: "Planning with parallel architect/critic review. Pass --codex for cross-model Codex reviews."
+argument-hint: "[--codex] [task description]"
 ---
 
 # Planning
 
 Execute a multi-round planning session with architect/critic review.
 
+## Argument Routing
+
+| Argument | Mode |
+|----------|------|
+| `<prompt>` | Claude-native (default) |
+| `--codex` | Codex delegation (context from conversation) |
+| `--codex <prompt>` | Codex delegation |
+
+Strip the `--codex` flag before passing the prompt to the execution path.
+
 ## Execution
 
-1. **Load protocol**: Read `agents/planner.md` to load the full planner protocol. **You** execute it directly - do NOT spawn a planner agent.
-2. **Configure reviewers**: Use `coral:architect` and `coral:critic` as reviewers (full review loop, up to 5 rounds). Only reviewers are spawned as subagents.
-3. **Execute protocol**: Follow the planner protocol steps yourself (gather context, write plan, review loop until no CRITICAL/HIGH, completion)
-4. **Project validation**: If project instructions define workflow rules (e.g., review gates, post-implementation steps), follow them. If validation fails, revise the plan to address the issues and re-validate until it passes.
-5. **Present plan**: Show the final plan to the user
+1. **Load protocol**: Read `PROTOCOL.md` (in this skill directory) and follow it.
+2. **Execute protocol**: Follow the protocol steps (gather context, write plan, review loop, completion). Pass `--codex` flag if present.
+3. **Project validation**: If project instructions define workflow rules (e.g., review gates, post-implementation steps), follow them. If validation fails, revise the plan to address the issues and re-validate until it passes.
+4. **Present plan**: Show the final plan to the user
 
 ## Context Enhancement
 
 From the current conversation, identify and include:
 - Task description and acceptance criteria
 - File paths and code sections relevant to the plan
+- Working directory for reviewer agents
 - Constraints or preferences stated by the user
 
 ## Error Policy
 
-If `agents/planner.md` cannot be read, report the error to the user.
+If `PROTOCOL.md` cannot be read, report the error to the user.

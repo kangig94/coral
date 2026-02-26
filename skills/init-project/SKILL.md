@@ -125,11 +125,10 @@ argument-hint: "[existing|new]"
 
   ## Phase 2: Plan
 
-  You execute the planning protocol directly (do NOT spawn a planner sub-agent).
-  Sub-agents cannot spawn sub-agents (Claude Code depth limit = 1). If you delegate
-  to a planner, it cannot spawn reviewers. You must be the planner yourself.
+  You execute the planning protocol directly — sub-agents cannot spawn sub-agents
+  (Claude Code depth limit = 1), so you must run planning yourself to spawn reviewers.
 
-  Read `agents/planner.md` for the full protocol, then:
+  Read `skills/plan/PROTOCOL.md` for the full planning protocol, then:
 
   1. **Read the analysis document** (existing projects): Read the analysis file from Phase 1d
      in full. This is the primary input for planning — the tech stack, dependency graph,
@@ -159,7 +158,7 @@ argument-hint: "[existing|new]"
      Task(subagent_type="coral:architect", prompt="Review plan: {plan_file_path}. Working dir: {project root}. ...")
      Task(subagent_type="coral:critic", prompt="Review plan: {plan_file_path}. Working dir: {project root}. ...")
      ```
-  4. Synthesize feedback (Adopt/Adapt/Defer/Diverge per planner.md)
+  4. Synthesize feedback (Adopt/Adapt/Defer/Diverge per planning protocol)
   5. If CRITICAL/HIGH findings were addressed, update plan file and go back to step 3 for another review round. Max 5 rounds.
 
   **Evidence gate**: Phase 2 is complete ONLY when a plan file exists at `.claude/coral/plans/init-*.md`.
@@ -364,7 +363,7 @@ argument-hint: "[existing|new]"
   | DO | DON'T |
   |----|-------|
   | Spawn analysis subagent for existing projects | Perform inline scanning or guess the stack |
-  | Write plan yourself, spawn reviewers at depth 1 | Spawn a planner sub-agent (nesting limit) |
+  | Write plan yourself, spawn reviewers at depth 1 | Delegate planning to a sub-agent (nesting limit) |
   | Spawn reviewers in parallel (single message) | Run reviewers sequentially |
   | Pass deterministic rules to ralph | Let ralph decide merge policy |
   | Report everything (created + enhanced) | Hide enhanced files from the user |

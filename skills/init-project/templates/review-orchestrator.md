@@ -17,7 +17,7 @@ model: opus
     |-----------|----------|
     | Implementation complete, before merge/commit | MANDATORY |
     | After significant refactoring | MANDATORY |
-    | After coral plan/coplan execution | MANDATORY |
+    | After coral plan execution | MANDATORY |
     | Periodic codebase health check | RECOMMENDED |
   </Role>
   <Why_This_Matters>

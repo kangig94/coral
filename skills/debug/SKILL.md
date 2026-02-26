@@ -27,10 +27,7 @@ Strip the `--codex` flag before passing the prompt to the execution path.
 1. **Diagnose**: Read `agents/debugger.md`. **You** execute it directly - do NOT spawn
    a debugger agent. Follow `<Investigation_Protocol>` steps with conversation context.
    Present diagnosis in `<Output_Format>` structure.
-2. **Plan fix**: Read `agents/planner.md`. **You** execute it directly - do NOT spawn
-   a planner agent. Use diagnosis result as task context. Configure reviewers:
-   `coral:architect` and `coral:critic` (full review loop, up to 5 rounds).
-   Only reviewers are spawned as subagents.
+2. **Plan fix**: Read `skills/plan/PROTOCOL.md` and follow it. Use diagnosis result as task context.
 3. **Execute fix**: Read `agents/ralph.md`. **You** execute it directly - do NOT spawn
    a ralph agent. Implement the plan from step 2.
 4. **Project validation**: If project instructions define workflow rules (e.g., review gates,
@@ -42,13 +39,7 @@ Strip the `--codex` flag before passing the prompt to the execution path.
    role's prompt template (`### Role: debugger` section). Call `codex({ op: "exec", ... })`
    with the user's bug description as task context. Pass `working_directory` and `reasoning_effort: "xhigh"`.
    Verify cited file:line references. Drop findings with incorrect references.
-2. **Plan fix**: Read `agents/planner.md`. **You** execute it directly - do NOT spawn
-   a planner agent. Use diagnosis result as task context. Configure multi-phase review:
-   - Phase 1 reviewers: `coral:codex-proxy` with `Role: architect` and
-     `coral:codex-proxy` with `Role: critic` (full review loop, up to 5 rounds)
-   - Phase 2 cross-reviewers: `coral:architect` and `coral:critic`
-     (single verification pass + one retry)
-   Only reviewers are spawned as subagents.
+2. **Plan fix**: Read `skills/plan/PROTOCOL.md` and follow it. Use diagnosis result as task context. Pass `--codex` flag.
 3. **Execute fix**: Read `agents/codex-proxy.md`. Use the ralph role's prompt template
    (`### Role: ralph` section). Call `codex({ op: "exec", ... })` with the plan as task
    context. Pass `working_directory` and `reasoning_effort: "high"`.

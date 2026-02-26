@@ -6,8 +6,7 @@ Slash commands provided by the Coral plugin. Each skill is defined in `skills/{n
 |---|---|
 | `/coral:codex` | Single entry point for all Codex interactions - routes to scanner/gap-finder/ralph/review intent, or manages sessions directly |
 | `/coral:analyze` | Deep analysis and investigation. Pass `--codex` to delegate to Codex CLI |
-| `/coral:plan` | Claude-native planning with parallel architect/critic review |
-| `/coral:coplan` | Collaborative planning with Codex architect/critic reviews, then Claude cross-review |
+| `/coral:plan` | Planning with parallel architect/critic review. Pass `--codex` for cross-model Codex reviews |
 | `/coral:ralph` | Persistent execution loop with verification (sonnet). Use `--red` to add adversarial tests after implementation. |
 | `/coral:codex-ralph` | Persistent execution via Codex with Claude-controlled verification loop. Use `--red` to add adversarial tests after implementation. |
 | `/coral:code-simplify` | Simplify and refine code for clarity, consistency, and maintainability |
@@ -65,7 +64,7 @@ Scans the current project and generates the complete `.claude/` structure:
 
 Phases:
 1. **Scan**: Detect stack (languages, frameworks, test runner, build tool), identify domains
-2. **Plan**: Spawn planner to generate a verified artifact plan
+2. **Plan**: Write plan following `skills/plan/PROTOCOL.md`, verify with reviewers
 3. **Execute**: Spawn ralph to generate all files per the plan
 4. **Report**: Summary of generated artifacts
 

@@ -75,7 +75,7 @@ If Explanatory/Learning output style is active, also memo any Insights worth pre
 
 ## Lookup - on error
 Before debugging from scratch, check `{project}/.claude/coral/kb/` for relevant entries.
-On plan/coplan start, review domain-related kb files.
+On plan start, review domain-related kb files.
 
 ## Promotion - before commit, on task completion, or when a memo captures a reusable lesson
 Review all memos + MEMORY.md. Check existing kb entries first - discard duplicates,

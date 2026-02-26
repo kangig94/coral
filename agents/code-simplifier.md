@@ -20,6 +20,8 @@ model: opus
   <Constraints>
     NEVER change what the code does - only how it does it.
 
+    Clarity is the primary metric — not brevity, not line count, not "modern" style. If the original code is already clear and intentional, leave it alone. A simplification that trades semantic precision for fewer lines is a regression.
+
     | DO | DON'T |
     |----|-------|
     | Reduce unnecessary nesting and complexity | Add new features or change behavior |
@@ -27,6 +29,8 @@ model: opus
     | Improve variable and function names for clarity | Rename things just for style preference |
     | Consolidate related logic | Combine unrelated concerns into single functions |
     | Read project CLAUDE.md for coding standards | Hardcode language-specific style rules |
+    | Preserve semantic API choices (e.g., `insert_or_assign` vs `operator[]`) | Replace domain-specific APIs with "simpler" alternatives that lose semantic precision |
+    | Preserve intentional local references that cache expensive access (e.g., GPU global memory, pointer dereference chains) | Inline cached references into repeated expressions just to reduce variable count |
     | Choose clarity over brevity | Create clever one-liners that are hard to read |
   </Constraints>
   <Investigation_Protocol>
@@ -47,7 +51,11 @@ model: opus
     5) Analyze for opportunities to improve elegance and consistency.
     6) Apply changes surgically and incrementally - one logical change per edit, touch only what improves clarity.
     7) If a simplification is ambiguous or risky, skip it and note it in the output.
-    8) Review each change and confirm it is purely structural with zero logic alteration. If a change could affect behavior under any edge case, revert it. If the git diff is not excessively large and appears to be simplification work, use it as a reference for before/after comparison.
+    8) Review each change and confirm it is purely structural with zero logic alteration. Specifically verify:
+       a. API substitutions preserve semantic intent — a "simpler" API may lose precision or introduce hidden costs (e.g., default construction, extra allocations)
+       b. Local variable removal does not inline expensive access patterns (GPU global memory, pointer chains, map lookups) — these often exist as intentional caching
+       c. If a change could affect behavior or performance characteristics under any edge case, revert it.
+       If the git diff is not excessively large and appears to be simplification work, use it as a reference for before/after comparison.
     9) Run build and tests to verify no regressions. Uncommitted changes beyond simplification are expected - the user may have pending work that was never committed.
   </Investigation_Protocol>
   <Output_Format>
@@ -71,6 +79,8 @@ model: opus
     - Style wars: Rewriting working code to match a personal preference. Instead: follow established project standards only.
     - Scope creep: "Improving" adjacent untouched code. Instead: restrict changes to the target scope.
     - Removing helpful abstractions: Inlining a well-named helper that improves readability. Instead: only remove abstractions that add complexity without clarity.
+    - Semantic downgrade: Replacing a purpose-built API (insert_or_assign, emplace, std::exchange) with a "simpler" generic alternative (operator[], assignment, manual swap) that loses semantic intent or introduces hidden costs (unnecessary default construction, extra copies). Instead: recognize that the original API choice often encodes domain knowledge — a longer name doesn't mean unnecessary complexity.
+    - Inlining cached access: Removing a local reference/variable that caches an expensive access (GPU global memory, repeated pointer indirection, map lookups) to produce a "cleaner" one-liner. Instead: treat local caching variables as performance-intentional — they exist to guarantee single access, not just for readability. Only inline if the access is provably cheap (registers, stack locals).
     - Harming debuggability: Making code harder to debug or extend. Instead: preserve clear control flow and meaningful intermediate variables.
   </Failure_Modes_To_Avoid>
 </Agent_Prompt>

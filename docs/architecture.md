@@ -56,16 +56,23 @@ User → /coral:codex "question"
 
 ```
 User → /coral:plan "task description"
-     → Skill reads agents/planner.md (protocol injection)
-     → Claude executes planner protocol in main context
-     → Planner spawns Task(coral:architect) + Task(coral:critic) in parallel
+     → Skill reads skills/plan/PROTOCOL.md
+     → Claude executes planning protocol in main context
+     → Phase 2 (Claude): Task(coral:architect) + Task(coral:critic) in parallel
+     → Review loop until converged → plan file written
+
+User → /coral:plan --codex "task description"
+     → Skill reads skills/plan/PROTOCOL.md
+     → Claude executes planning protocol in main context
+     → Phase 1 (Codex): Task(coral:codex-proxy Role:architect) + Task(coral:codex-proxy Role:critic)
+     → Phase 2 (Claude): Task(coral:architect) + Task(coral:critic)
      → Review loop until converged → plan file written
 
 User → /coral:init-project
      → Skill reads agents/init-project.md (protocol injection)
      → Claude executes init-project protocol in main context
-     → Phase 1: Scan project → Phase 2: spawn Task(coral:planner)
-     → Planner returns verified plan → Phase 3: spawn Task(coral:ralph)
+     → Phase 1: Scan project → Phase 2: Write plan + spawn reviewers
+     → Plan verified → Phase 3: spawn Task(coral:ralph)
      → Ralph generates artifacts → Phase 4: Report
 ```
 
