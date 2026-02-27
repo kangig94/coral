@@ -23,6 +23,12 @@ Apply this triage before checking for overlap with existing tests:
 
 When adapting state factories, use the existing file's factory as a base and spread-override specific fields — matching the patterns already established in that file (e.g. `const base = makeState(); makeState({ agents: { alice: { ...base.agents.alice, banned: true } } })`).
 
+## Gotcha: Red Tmp Imports Use Wrong Relative Depth
+
+Red-attacker writes files to `.claude/coral/tmp/red/` and generates relative imports that are 4 levels up from the project root (e.g., `'../../../../src/codex/cli-detection.js'`). When copying to `src/codex/__tests__/`, update these to one level up (`'../cli-detection.js'`). Failing to do so causes module-not-found at test time without a clear error message pointing to the import.
+
+Also valid: create a separate `*-red.test.ts` file when the red suite is large and coherent enough to stand alone, rather than appending to an existing test file. Use this when the red tests form their own logical adversarial grouping (edge cases, boundary values, race conditions) distinct from the happy-path structure of the source test file.
+
 ## Gotcha: Title-Assertion Mismatch in "Documenting Behavior" Tests
 
 When the red-attacker finds surprising behavior (e.g., a predicate returns `true` where naive expectation is `false`), it sometimes names the test with the naive expectation ("returns false at step=1...") but writes the assertion correctly (`expect(result).toBe(true)`). Always read the assertion, not just the title, before merging. Fix the title to accurately describe actual behavior.
