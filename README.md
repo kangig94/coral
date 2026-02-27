@@ -147,8 +147,7 @@ Consecutive `/coral:codex` calls continue the same session. Say "new" to start f
 |-------|-------------|:-----:|
 | `/coral:analyze` | Deep analysis and investigation | Optional |
 | `/coral:plan` | Planning with architect/critic review | Optional |
-| `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | - |
-| `/coral:codex-ralph` | Persistent execution via Codex. `--red` for adversarial tests | Required |
+| `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | Optional |
 | `/coral:code-simplify` | Simplify and refine code for clarity | Optional |
 | `/coral:debug` | Bug diagnosis, planning, and fix execution | Optional |
 | `/coral:init-project` | Project initialization orchestrator | - |

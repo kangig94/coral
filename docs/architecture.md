@@ -72,7 +72,7 @@ User → /coral:init-project
      → Skill reads agents/init-project.md (protocol injection)
      → Claude executes init-project protocol in main context
      → Phase 1: Scan project → Phase 2: Write plan + spawn reviewers
-     → Plan verified → Phase 3: spawn Task(coral:ralph)
+     → Plan verified → Phase 3: spawn general-purpose with ralph protocol
      → Ralph generates artifacts → Phase 4: Report
 ```
 

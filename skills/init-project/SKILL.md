@@ -168,7 +168,9 @@ argument-hint: "[existing|new]"
   If no files were created, Phase 3 did not execute correctly.
 
   ```
-  Task(subagent_type="coral:ralph", prompt="""
+  Task(subagent_type="general-purpose", prompt="""
+    Read skills/ralph/PROTOCOL.md and follow the ralph execution protocol.
+
     Task: Generate all artifacts per the plan.
     Plan file: {plan_file_path from Phase 2}
     Working directory: {project root}

@@ -39,7 +39,7 @@ Strip the `--codex` flag before passing the prompt to the execution path.
    - Plan should include: what to change, why, and how to verify the fix
 
 3. **Execute fix**:
-   - **Default**: Read `agents/ralph.md`. **You** execute it directly — implement the plan
+   - **Default**: Read `skills/ralph/PROTOCOL.md`. **You** execute it directly — implement the plan
      from step 2.
    - **`--codex`**: Read `agents/codex-proxy.md`, use `### Role: ralph` prompt template.
      Call `codex({ op: "exec", ... })` with the plan as task context.

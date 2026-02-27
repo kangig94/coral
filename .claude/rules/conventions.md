@@ -40,7 +40,7 @@ PR procedure (dev → main):
 - **Zod schemas**: camelCase with `Schema` suffix (`codexOpSchema`, `discussLeadOpSchema`)
 - **MCP tool names**: unified MCP tool name (`codex`, `discuss`, `discuss_lead`) plus required `op` field for command selection
 - **Agent files**: kebab-case markdown (`mcp-guardian.md`)
-- **Skill directories**: kebab-case (`codex-ralph/`)
+- **Skill directories**: kebab-case (`code-simplify/`)
 
 ## TypeScript Style
 

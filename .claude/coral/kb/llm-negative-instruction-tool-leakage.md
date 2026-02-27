@@ -18,4 +18,4 @@ are NEVER a substitute for spawning reviewer agents.
 # ^ LLM has no reason to consider alternatives
 ```
 
-Corollary: if other skills in the same codebase DO instruct direct tool calls (e.g., `/codex-ralph` says "call Codex directly"), those instructions can bleed into the LLM's prior even when a different skill is active. Minimize cross-contamination by keeping protocol instructions self-contained and avoiding references to other skills' patterns.
+Corollary: if other skills in the same codebase DO instruct direct tool calls (e.g., `/ralph --codex` says "call Codex directly"), those instructions can bleed into the LLM's prior even when a different skill is active. Minimize cross-contamination by keeping protocol instructions self-contained and avoiding references to other skills' patterns.
