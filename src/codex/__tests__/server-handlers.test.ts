@@ -16,6 +16,10 @@ vi.mock('../codex-executor.js', () => ({
   isExecutionActive: vi.fn(() => false),
 }));
 
+vi.mock('../cli-detection.js', () => ({
+  detectCodexCli: vi.fn(),
+}));
+
 vi.mock('../progress.js', () => ({
   createProgressFile: vi.fn(),
   removeProgressFile: vi.fn(),
@@ -39,6 +43,7 @@ import {
   abortExecution,
   isExecutionActive,
 } from '../codex-executor.js';
+import { detectCodexCli } from '../cli-detection.js';
 import {
   createProgressFile,
   extractProgressId,
@@ -83,6 +88,7 @@ beforeEach(() => {
   mkdirSync(join(tmpDir, 'workspace'), { recursive: true });
   mgr = new SessionManager(join(tmpDir, 'workspace'));
   activeBackgroundFiles.clear();
+  vi.mocked(detectCodexCli).mockResolvedValue({ available: true, version: 'codex 1.0.0', authState: 'authenticated' });
 });
 
 afterEach(() => {
@@ -310,13 +316,13 @@ describe('handleSessionSend', () => {
   it('passes entry sessionId and workingDirectory to executeResume', async () => {
     vi.mocked(executeResume).mockResolvedValue(makeExecResult());
     await handleSessionSend({ session: 'test-session', prompt: 'hi', background: false, bypass: false }, mgr);
-    expect(executeResume).toHaveBeenCalledWith('thread-001', 'hi', undefined, '/workspace', undefined, false, undefined, undefined);
+    expect(executeResume).toHaveBeenCalledWith('thread-001', 'hi', undefined, '/workspace', undefined, false, undefined, undefined, undefined);
   });
 
   it('threads bypass=true to executeResume', async () => {
     vi.mocked(executeResume).mockResolvedValue(makeExecResult());
     await handleSessionSend({ session: 'test-session', prompt: 'hi', background: false, bypass: true }, mgr);
-    expect(executeResume).toHaveBeenCalledWith('thread-001', 'hi', undefined, '/workspace', undefined, true, undefined, undefined);
+    expect(executeResume).toHaveBeenCalledWith('thread-001', 'hi', undefined, '/workspace', undefined, true, undefined, undefined, undefined);
   });
 });
 
@@ -404,7 +410,7 @@ describe('handleSessionFork', () => {
   it('uses entry workingDirectory when input omits it', async () => {
     vi.mocked(executeFork).mockResolvedValue(makeExecResult());
     await handleSessionFork({ session: 'base-session', background: false, bypass: false }, mgr);
-    expect(executeFork).toHaveBeenCalledWith('thread-base', undefined, undefined, '/workspace', undefined, false, undefined, undefined);
+    expect(executeFork).toHaveBeenCalledWith('thread-base', undefined, undefined, '/workspace', undefined, false, undefined, undefined, undefined);
   });
 
   it('foreground with non-existent session → isError via handler (not dispatcher)', async () => {
@@ -569,7 +575,17 @@ describe('handleToolCall', () => {
     vi.mocked(executeResume).mockResolvedValue(makeExecResult());
     const result = await handleToolCall('codex', { op: 'exec', session: 'session-1', prompt: 'follow-up' }, mgr);
     expect(result.isError).toBe(false);
-    expect(executeResume).toHaveBeenCalledWith('thread-1', 'follow-up', undefined, '/workspace', undefined, false, undefined, undefined);
+    expect(executeResume).toHaveBeenCalledWith(
+      'thread-1',
+      'follow-up',
+      undefined,
+      '/workspace',
+      undefined,
+      false,
+      undefined,
+      undefined,
+      expect.objectContaining({ available: true, authState: 'authenticated' }),
+    );
     expect(executeOneShot).not.toHaveBeenCalled();
   });
 
@@ -584,21 +600,126 @@ describe('handleToolCall', () => {
   });
 
   it('unknown op "create" returns unknown_op', async () => {
-    const legacyCreate = { ['op']: 'create', prompt: 'hello' } as const;
-    const result = await handleToolCall('codex', legacyCreate as any, mgr);
+    const legacyCreate: Record<string, unknown> = { op: 'create', prompt: 'hello' };
+    const result = await handleToolCall('codex', legacyCreate, mgr);
     expect(result.isError).toBe(false);
     expect(JSON.parse(result.content[0].text)).toEqual({ error: 'unknown_op', ['op']: 'create' });
   });
 
   it('unknown op "send" returns unknown_op', async () => {
-    const legacySend = { ['op']: 'send', session: 'session-1', prompt: 'hello' } as const;
-    const result = await handleToolCall('codex', legacySend as any, mgr);
+    const legacySend: Record<string, unknown> = { op: 'send', session: 'session-1', prompt: 'hello' };
+    const result = await handleToolCall('codex', legacySend, mgr);
     expect(result.isError).toBe(false);
     expect(JSON.parse(result.content[0].text)).toEqual({ error: 'unknown_op', ['op']: 'send' });
   });
 });
 
-// ─── J. Background/foreground branching ──────────────────────────────────────
+// ─── J. Auth preflight guard ─────────────────────────────────────────────────
+
+describe('auth preflight guard', () => {
+  const unauthenticatedCli = {
+    available: true as const,
+    version: 'codex 1.0.0',
+    authState: 'unauthenticated' as const,
+    authError: 'Codex CLI is not authenticated. Run "codex login" or set the OPENAI_API_KEY environment variable.',
+  };
+
+  it('exec foreground unauthenticated → immediate isError', async () => {
+    vi.mocked(detectCodexCli).mockResolvedValue(unauthenticatedCli);
+
+    const result = await handleToolCall('codex', { op: 'exec', prompt: 'hello' }, mgr);
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('codex login');
+    expect(executeOneShot).not.toHaveBeenCalled();
+  });
+
+  it('exec background unauthenticated → immediate isError (not launched)', async () => {
+    vi.mocked(detectCodexCli).mockResolvedValue(unauthenticatedCli);
+
+    const result = await handleToolCall('codex', { op: 'exec', prompt: 'hello', background: true }, mgr);
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).not.toContain('launched');
+    expect(createProgressFile).not.toHaveBeenCalled();
+    expect(executeOneShot).not.toHaveBeenCalled();
+  });
+
+  it('exec foreground unknown auth → proceeds (fail-open)', async () => {
+    vi.mocked(detectCodexCli).mockResolvedValue({ available: true, version: 'codex 1.0.0', authState: 'unknown' });
+    vi.mocked(executeOneShot).mockResolvedValue(makeExecResult());
+
+    const result = await handleToolCall('codex', { op: 'exec', prompt: 'hello' }, mgr);
+
+    expect(result.isError).toBe(false);
+    expect(executeOneShot).toHaveBeenCalledTimes(1);
+    const preChecked = vi.mocked(executeOneShot).mock.calls[0]?.[7];
+    expect(preChecked).toEqual(expect.objectContaining({ available: true, authState: 'unknown' }));
+  });
+
+  it('fork unauthenticated → immediate isError', async () => {
+    mgr.register('base-session', 'thread-base', 'o4-mini', '/workspace');
+    vi.mocked(detectCodexCli).mockResolvedValue(unauthenticatedCli);
+
+    const result = await handleToolCall('codex', { op: 'fork', session: 'base-session' }, mgr);
+
+    expect(result.isError).toBe(true);
+    expect(executeFork).not.toHaveBeenCalled();
+  });
+
+  it('exec(session) missing session takes precedence over auth errors', async () => {
+    vi.mocked(detectCodexCli).mockResolvedValue(unauthenticatedCli);
+
+    const result = await handleToolCall('codex', { op: 'exec', session: 'missing', prompt: 'hello' }, mgr);
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Session not found: "missing"');
+    expect(detectCodexCli).not.toHaveBeenCalled();
+  });
+
+  it('fork missing session takes precedence over auth errors', async () => {
+    vi.mocked(detectCodexCli).mockResolvedValue(unauthenticatedCli);
+
+    const result = await handleToolCall('codex', { op: 'fork', session: 'missing' }, mgr);
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Session not found: "missing"');
+    expect(detectCodexCli).not.toHaveBeenCalled();
+  });
+
+  it('list is not gated by auth checks', async () => {
+    vi.mocked(detectCodexCli).mockResolvedValue(unauthenticatedCli);
+
+    const result = await handleToolCall('codex', { op: 'list' }, mgr);
+
+    expect(result.isError).toBe(false);
+    expect(detectCodexCli).not.toHaveBeenCalled();
+  });
+
+  it('abort is not gated by auth checks', async () => {
+    vi.mocked(detectCodexCli).mockResolvedValue(unauthenticatedCli);
+    vi.mocked(abortExecution).mockReturnValue(true);
+
+    const result = await handleToolCall('codex', { op: 'abort', session: 'any-session' }, mgr);
+
+    expect(result.isError).toBe(false);
+    expect(detectCodexCli).not.toHaveBeenCalled();
+  });
+
+  it('exec with unknown auth probes once across preflight + executor path', async () => {
+    vi.mocked(detectCodexCli).mockResolvedValue({ available: true, version: 'codex 1.0.0', authState: 'unknown' });
+    vi.mocked(executeOneShot).mockResolvedValue(makeExecResult());
+
+    const result = await handleToolCall('codex', { op: 'exec', prompt: 'hello' }, mgr);
+
+    expect(result.isError).toBe(false);
+    expect(detectCodexCli).toHaveBeenCalledTimes(1);
+    const preChecked = vi.mocked(executeOneShot).mock.calls[0]?.[7];
+    expect(preChecked).toEqual(expect.objectContaining({ available: true, authState: 'unknown' }));
+  });
+});
+
+// ─── K. Background/foreground branching ──────────────────────────────────────
 
 describe('background/foreground branching', () => {
   beforeEach(() => {
@@ -677,7 +798,7 @@ describe('background/foreground branching', () => {
     let resolveExec!: (v: CodexExecResult) => void;
     vi.mocked(executeOneShot).mockReturnValue(new Promise(r => { resolveExec = r; }));
 
-    handleToolCall('codex', { op: 'exec', prompt: 'hello', background: true }, mgr);
+    await handleToolCall('codex', { op: 'exec', prompt: 'hello', background: true }, mgr);
 
     expect(activeBackgroundFiles.has('/tmp/progress.jsonl')).toBe(true);
 
@@ -688,7 +809,7 @@ describe('background/foreground branching', () => {
   });
 });
 
-// ─── K. finally-clause reliability on rejection ───────────────────────────────
+// ─── L. finally-clause reliability on rejection ───────────────────────────────
 
 describe('finally-clause fires on executor rejection', () => {
   it('handleSessionCreate: unregisterExecution called even when executeOneShot rejects', async () => {
@@ -740,7 +861,7 @@ describe('finally-clause fires on executor rejection', () => {
   });
 });
 
-// ─── L. dispatchExecution notify threading ────────────────────────────────────
+// ─── M. dispatchExecution notify threading ────────────────────────────────────
 
 describe('dispatchExecution threads progressToken and notify to runForeground', () => {
   it('exec foreground without progressToken: notify is NOT called', async () => {
@@ -777,7 +898,7 @@ describe('dispatchExecution threads progressToken and notify to runForeground', 
   });
 });
 
-// ─── M. Guard-before-dispatch ordering ───────────────────────────────────────
+// ─── N. Guard-before-dispatch ordering ───────────────────────────────────────
 
 describe('guard-before-dispatch: registerExecution not called on session-not-found', () => {
   it('exec(session) with nonexistent session: registerExecution never called', async () => {
@@ -819,7 +940,7 @@ describe('guard-before-dispatch: registerExecution not called on session-not-fou
   });
 });
 
-// ─── N. extractCompletionData edge values ────────────────────────────────────
+// ─── O. extractCompletionData edge values ────────────────────────────────────
 
 describe('extractCompletionData edge values', () => {
   it('session field: undefined → null', () => {
@@ -845,7 +966,7 @@ describe('extractCompletionData edge values', () => {
   });
 });
 
-// ─── O. registerExecution called exactly once per handler ─────────────────────
+// ─── P. registerExecution called exactly once per handler ─────────────────────
 
 describe('registerExecution called exactly once per handler', () => {
   it('handleSessionCreate: registerExecution called exactly once', async () => {

@@ -24,10 +24,12 @@ hooks:
 STATE_FILE=".claude/coral/tmp/kb-active"
 [ ! -f "$STATE_FILE" ] && exit 0
 
-# SKILL.md creates state file via ! command:
-```!
-mkdir -p .claude/coral/tmp && touch .claude/coral/tmp/kb-active
-```
+# SKILL.md creates state file via inline Bash instruction in prose:
+# Before starting, run Bash(`mkdir -p .claude/coral/tmp && touch .claude/coral/tmp/kb-active`).
+#
+# NOTE: Do NOT use ```! blocks for this — they bypass PermissionRequest hooks entirely.
+# Claude Code checks the raw markdown block against sensitive-path rules before hooks fire,
+# causing "sensitive file" errors on .claude/ paths with no hook-based workaround.
 ```
 
 Verified against claude-code v2.1.50: all official plugins (hookify, ralph-wiggum, security-guidance) register hooks exclusively in hooks.json. Zero plugins use SKILL.md frontmatter hooks.

@@ -5,6 +5,7 @@
  */
 
 import { executeOneShot, executeResume, executeFork, registerExecution, unregisterExecution, abortExecution, isExecutionActive } from './codex-executor.js';
+import { detectCodexCli, type CliInfo } from './cli-detection.js';
 import { SessionManager } from './session-manager.js';
 import {
   codexOpSchema,
@@ -107,6 +108,18 @@ export function extractCompletionData(result: McpResult, sessionLabel: string): 
   return completion;
 }
 
+async function preflightCliCheck(): Promise<
+  | { pass: true; cli: CliInfo & { available: true } }
+  | { pass: false; result: McpResult }
+> {
+  const cli = await detectCodexCli();
+  if (!cli.available) return { pass: false, result: textResult(`Error: ${cli.error}`, true) };
+  if (cli.authState === 'unauthenticated') {
+    return { pass: false, result: textResult(`Error: ${cli.authError}`, true) };
+  }
+  return { pass: true, cli };
+}
+
 /**
  * Launch a handler in the background with a progress file.
  * Writes final result/error events and returns immediately with a "launched" response.
@@ -121,11 +134,20 @@ export function launchBackground(
   const cb = makeEventCallback({ progressFile: pFile });
   activeBackgroundFiles.add(pFile);
 
-  handler(cb).then((result) => {
-    appendFinalResult(pFile, 'completed', extractCompletionData(result, sessionLabel));
-  }).catch((err) => {
-    try { appendFinalResult(pFile, 'error', { error: err instanceof Error ? err.message : String(err) }); } catch {}
-  }).finally(() => { activeBackgroundFiles.delete(pFile); });
+  handler(cb)
+    .then((result) => {
+      appendFinalResult(pFile, 'completed', extractCompletionData(result, sessionLabel));
+    })
+    .catch((err) => {
+      try {
+        appendFinalResult(pFile, 'error', { error: err instanceof Error ? err.message : String(err) });
+      } catch {
+        // progress-file append errors are non-fatal to the caller
+      }
+    })
+    .finally(() => {
+      activeBackgroundFiles.delete(pFile);
+    });
 
   return jsonResult({ progress_id: progressId, progress_file: pFile, session_name: sessionLabel, status: 'launched' });
 }
@@ -173,15 +195,31 @@ function dispatchExecution(
   notify: ((n: { method: string; params: Record<string, unknown> }) => Promise<void>) | undefined,
   handler: (cb?: OnEventCallback) => Promise<McpResult>,
 ): Promise<McpResult> {
-  return background
-    ? Promise.resolve(launchBackground(sessionLabel, 'codex', handler))
-    : runForeground(sessionLabel, 'codex', progressToken, notify, handler);
+  if (background) {
+    return Promise.resolve(launchBackground(sessionLabel, 'codex', handler));
+  }
+
+  return runForeground(sessionLabel, 'codex', progressToken, notify, handler);
 }
 
-export async function handleSessionCreate(input: CodexSessionCreateInput, mgr: SessionManager, onEvent?: OnEventCallback): Promise<McpResult> {
+export async function handleSessionCreate(
+  input: CodexSessionCreateInput,
+  mgr: SessionManager,
+  onEvent?: OnEventCallback,
+  preChecked?: CliInfo & { available: true },
+): Promise<McpResult> {
   const sessionName = input.name ?? `session-${Date.now()}`;
   return withExecution(sessionName, async (signal) => {
-    const result = await executeOneShot(input.prompt, input.model, input.working_directory, input.reasoning_effort, input.bypass, onEvent, signal);
+    const result = await executeOneShot(
+      input.prompt,
+      input.model,
+      input.working_directory,
+      input.reasoning_effort,
+      input.bypass,
+      onEvent,
+      signal,
+      preChecked,
+    );
 
     if (!result.sessionId) {
       return jsonResult({
@@ -209,7 +247,12 @@ export async function handleSessionCreate(input: CodexSessionCreateInput, mgr: S
   });
 }
 
-export async function handleSessionSend(input: CodexSessionSendInput, mgr: SessionManager, onEvent?: OnEventCallback): Promise<McpResult> {
+export async function handleSessionSend(
+  input: CodexSessionSendInput,
+  mgr: SessionManager,
+  onEvent?: OnEventCallback,
+  preChecked?: CliInfo & { available: true },
+): Promise<McpResult> {
   const entry = mgr.get(input.session);
   if (!entry) return sessionNotFoundError(input.session);
   const sessionName = entry.name;
@@ -217,7 +260,17 @@ export async function handleSessionSend(input: CodexSessionSendInput, mgr: Sessi
   const modelUpdate = input.model ? { model: input.model } : undefined;
 
   return withExecution(sessionName, async (signal) => {
-    const result = await executeResume(entry.sessionId, input.prompt, input.model, workingDirectory, input.reasoning_effort, input.bypass, onEvent, signal);
+    const result = await executeResume(
+      entry.sessionId,
+      input.prompt,
+      input.model,
+      workingDirectory,
+      input.reasoning_effort,
+      input.bypass,
+      onEvent,
+      signal,
+      preChecked,
+    );
     mgr.updateSession(sessionName, modelUpdate);
 
     return jsonResult({
@@ -247,14 +300,29 @@ export function handleSessionList(mgr: SessionManager): McpResult {
   return jsonResult({ sessions: registered, total: registered.length });
 }
 
-export async function handleSessionFork(input: CodexSessionForkInput, mgr: SessionManager, onEvent?: OnEventCallback): Promise<McpResult> {
+export async function handleSessionFork(
+  input: CodexSessionForkInput,
+  mgr: SessionManager,
+  onEvent?: OnEventCallback,
+  preChecked?: CliInfo & { available: true },
+): Promise<McpResult> {
   const entry = mgr.get(input.session);
   if (!entry) return sessionNotFoundError(input.session);
 
   const cwd = input.working_directory ?? entry.workingDirectory;
   const forkName = input.name ?? entry.name;
   return withExecution(forkName, async (signal) => {
-    const result = await executeFork(entry.sessionId, input.prompt, input.model, cwd, input.reasoning_effort, input.bypass, onEvent, signal);
+    const result = await executeFork(
+      entry.sessionId,
+      input.prompt,
+      input.model,
+      cwd,
+      input.reasoning_effort,
+      input.bypass,
+      onEvent,
+      signal,
+      preChecked,
+    );
 
     if (input.name && result.sessionId) {
       mgr.register(forkName, result.sessionId, result.model, cwd ?? process.cwd());
@@ -298,10 +366,14 @@ async function handleCodexOp(
         const { name: _name, ...sendRest } = rest;
         const entry = sessionManager.get(sessionRef);
         if (!entry) return sessionNotFoundError(sessionRef);
+        const preflight = await preflightCliCheck();
+        if (!preflight.pass) return preflight.result;
         const sendInput: CodexSessionSendInput = { ...sendRest, session: sessionRef };
         return dispatchExecution(entry.name, sendInput.background, progressToken, notify, (cb) =>
-          handleSessionSend(sendInput, sessionManager, cb));
+          handleSessionSend(sendInput, sessionManager, cb, preflight.cli));
       }
+      const preflight = await preflightCliCheck();
+      if (!preflight.pass) return preflight.result;
       const { name, ...createRest } = rest;
       const sessionName = name ?? `session-${Date.now()}`;
       const createInput: CodexSessionCreateInput & { name: string } = {
@@ -309,7 +381,7 @@ async function handleCodexOp(
         name: sessionName,
       };
       return dispatchExecution(sessionName, createRest.background, progressToken, notify, (cb) =>
-        handleSessionCreate(createInput, sessionManager, cb));
+        handleSessionCreate(createInput, sessionManager, cb, preflight.cli));
     }
     case 'list':
       return handleSessionList(sessionManager);
@@ -317,9 +389,11 @@ async function handleCodexOp(
       const { op: _op, ...forkInput } = input;
       const entry = sessionManager.get(forkInput.session);
       if (!entry) return sessionNotFoundError(forkInput.session);
+      const preflight = await preflightCliCheck();
+      if (!preflight.pass) return preflight.result;
       const sessionLabel = forkInput.name ?? entry.name;
       return dispatchExecution(sessionLabel, forkInput.background, progressToken, notify, (cb) =>
-        handleSessionFork(forkInput, sessionManager, cb));
+        handleSessionFork(forkInput, sessionManager, cb, preflight.cli));
     }
     case 'abort':
       return handleSessionAbort(input, sessionManager);

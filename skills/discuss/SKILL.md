@@ -53,14 +53,37 @@ Before any other action, verify the Agent Teams environment:
 5. **Write active session file** (only if `--user`): Write `.claude/coral/discuss/active-user-session.json` with `{ session_id, team_name }`. This enables the `/bid` skill to find the session.
 
 6. **Create team and spawn teammates**: Create Agent Team `coral-dc-{session_id}`. Spawn ALL teammates:
-   - **discuss-lead** (always): `Task(subagent_type: 'coral:discuss-lead', team_name, name: 'discuss-lead', prompt: "Run discussion for session {session_id}. has_user_observer: {true if --user, false otherwise}. After each speech, SendMessage the full speech content to team lead. Do NOT handle setup — main context handles it. You own termination: evaluate the Termination Gate after each speech and call _7_end when all conditions pass.")`
+   - **discuss-lead** (always): `Task(subagent_type: 'coral:discuss-lead', team_name, name: 'discuss-lead', prompt: "Run discussion for session {session_id}. has_user_observer: {true if --user, false otherwise}. After each speech, SendMessage the full speech content to team lead.")`
    - **Discussants** (AI agents only): One per agent with `participation: 'required'`, using `name: 'dc-{agent_name}'` (e.g., agent `park` → teammate `dc-park`). Skip `participation: 'observer'` agents — they interact via `/bid`, not as spawned teammates.
 
 7. **If `--user`**: Return immediately to the user: "Discussion started! Use `/bid <score>, <thought>` to submit a bid, or `/bid <your speech>` when you win the floor."
 
-8. **Receive speeches**: Main context receives round-by-round speech messages from discuss-lead via SendMessage. Display each speech as it arrives.
+8. **Receive speeches and evaluate convergence**: Main context receives round-by-round speech messages from discuss-lead via SendMessage. Display each speech as it arrives. After each complete round, apply a two-layer convergence assessment:
 
-9. **On discussion end**: discuss-lead owns termination — it evaluates the Termination Gate and calls `_7_end(synthesis)` when conditions pass. Main context does NOT call `_7_end` directly. Agents self-terminate via bid() cascade → discuss-lead sends synthesis to main context. Present the synthesis to the user. If `--user`, delete `.claude/coral/discuss/active-user-session.json`.
+   **Layer 1 — Procedural conditions** (necessary but not sufficient for termination):
+   - Have all participants spoken at least once?
+   - Have major rebuttals been addressed (not necessarily resolved)?
+   - Has the user signaled they want to end?
+
+   **Layer 2 — Content-level convergence** (distinguish three states):
+
+   | State | Indicators | Action |
+   |-------|-----------|--------|
+   | **Active divergence** | New frameworks introduced, fundamentally new questions raised, positions shifting significantly | Continue — discussion is still opening up |
+   | **Productive refinement** | New distinctions within existing positions, cross-pollination between frameworks, meta-level questions emerging, participants revising their own positions | **Continue** — refinement produces genuine insight |
+   | **True repetition** | Same arguments restated without new evidence or distinctions, no participant revises their position, cross-engagement decreases | Convergence reached — proceed to step 9 |
+
+   **Refinement ≠ repetition.** A participant deepening their position with a new distinction (e.g., "saturation ≠ exhaustion") or a new meta-question (e.g., "who validates the validator?") is productive refinement, not convergence. Only terminate when refinement itself stops producing new distinctions.
+
+   **Default to continuing** — if uncertain whether the current state is refinement or repetition, let the discussion run. Premature termination is worse than an extra round.
+
+9. **On discussion end**: Main context owns termination. When convergence is reached:
+   1. Call `discuss_lead({ op: '_4_transcript', session, mode: 'full' })` to read the full transcript.
+   2. Compose a synthesis. Must include: Key Agreements, Key Splits, Recommended Resolution.
+   3. Call `discuss_lead({ op: '_7_end', session, synthesis })` to end the session and record the synthesis.
+   4. discuss-lead's next `_3_step` returns `phase=ended` → it goes idle.
+   5. Present the synthesis to the user.
+   6. If `--user`, delete `.claude/coral/discuss/active-user-session.json`.
 
 ## Context Enhancement
 

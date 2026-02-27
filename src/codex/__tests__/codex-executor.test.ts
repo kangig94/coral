@@ -23,7 +23,7 @@ beforeEach(() => {
 });
 
 function mockCliAvailable(): void {
-  mockDetect.mockResolvedValue({ available: true, version: '1.0.0' });
+  mockDetect.mockResolvedValue({ available: true, version: '1.0.0', authState: 'authenticated' as const });
 }
 
 function jsonl(...lines: string[]): string {
@@ -99,6 +99,18 @@ describe('executeOneShot', () => {
     await expect(executeOneShot('test')).rejects.toThrow('Codex CLI not found.');
   });
 
+  it('throws when CLI is unauthenticated', async () => {
+    mockDetect.mockResolvedValue({
+      available: true,
+      version: '1.0.0',
+      authState: 'unauthenticated',
+      authError: 'Codex CLI is not authenticated. Run "codex login" or set the OPENAI_API_KEY environment variable.',
+    });
+
+    await expect(executeOneShot('test')).rejects.toThrow('Codex CLI is not authenticated');
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
+
   it('throws on non-zero exit with no stdout', async () => {
     mockCliAvailable();
     mockSpawn.mockReturnValue(createMockProcess('', 1));
@@ -171,6 +183,24 @@ describe('executeOneShot', () => {
       ['exec', '-m', 'o4-mini', '--json', '--full-auto', '-c', 'web_search=live'],
       expect.objectContaining({ cwd: '/tmp' }),
     );
+  });
+
+  it('skips detectCodexCli when preChecked is provided', async () => {
+    const output = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
+    mockSpawn.mockReturnValue(createMockProcess(output, 0));
+
+    await executeOneShot(
+      'test',
+      'o4-mini',
+      '/tmp',
+      undefined,
+      false,
+      undefined,
+      undefined,
+      { available: true, version: '1.0.0', authState: 'authenticated' },
+    );
+
+    expect(mockDetect).not.toHaveBeenCalled();
   });
 });
 
