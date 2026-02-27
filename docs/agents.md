@@ -26,7 +26,7 @@ Use Claude's native tools (Read, Grep, Glob, LSP) for direct analysis. Read-only
 
 `agents/architect.md` - opus, read-only
 
-**Role**: Architecture analysis and debugging advisor. Reviews code structure, design patterns, dependency graphs, and provides actionable guidance.
+**Role**: Architecture analysis and debugging advisor. Reviews code structure, design patterns, dependency graphs, and provides actionable guidance. Also participates as a structural reviewer in the `/plan` protocol — focusing on architectural failure modes, wrong decomposition, and integration conflicts.
 
 ---
 
@@ -76,7 +76,7 @@ Use Claude's native tools (Read, Grep, Glob, LSP) for direct analysis. Read-only
 
 `skills/plan/PROTOCOL.md` - opus (protocol-only, no agent file)
 
-**Role**: Synthesizer that writes and verifies plans through multi-round review. Spawns parallel reviewer agents (architect+critic), synthesizes feedback using Adopt/Adapt/Defer/Diverge classification, and iterates until no CRITICAL/HIGH findings remain. With `--codex`, runs Codex review (Phase 1) before Claude review (Phase 2). Never implements - planning only.
+**Role**: Synthesizer that writes and verifies plans through multi-round review. Spawns parallel reviewer agents (architect+critic), synthesizes feedback using Adopt/Adapt/Defer/Diverge classification, and iterates until no CRITICAL/HIGH findings remain. Reviewers follow HOW-REVIEW.md methodology (adversarial mandate, FRAME/STRUCTURE/DETAIL classification, counterexample checklist); Synthesizer applies HOW-SYNTHESIZE.md for feedback synthesis and HOW-COMPLETE.md for exit evaluation. With `--codex`, runs Codex review (Phase 1) before Claude review (Phase 2). Never implements - planning only.
 
 ---
 
