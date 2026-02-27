@@ -58,6 +58,7 @@
     **4a. Parallel Review**
     Spawn both reviewers simultaneously using the Task tool in a SINGLE message.
     Provide each: plan file path, working directory, relevant context.
+    Before spawning: read `HOW-REVIEW.md` (in this skill directory). Pass its full content as "specific review criteria" in each reviewer's Task prompt.
 
     **4b. Session Tracking**
     When a reviewer returns a session identifier (`session: <id>`), save it keyed by reviewer role.
@@ -66,6 +67,7 @@
       How previous feedback was handled: [summary of Adopt/Adapt/Defer/Diverge]
 
     **4c. Synthesize Feedback**
+    Read `HOW-SYNTHESIZE.md` (in this skill directory) and apply its enhanced classification framework.
     | Classification | Meaning | Action |
     |---|---|---|
     | Adopt | Sound, incorporate as-is | Apply to plan |
@@ -86,11 +88,13 @@
       ### Reviewer B: [VERDICT]
       - [Key finding] `file:line`
       ### Synthesis: Adopt/Adapt/Defer/Diverge items
+      ### Counterexample Coverage: [types explored / not yet]
 
     **4f. Exit Condition**
+    Read `HOW-COMPLETE.md` (in this skill directory) and apply its additional completion criteria alongside the rules below.
     Evaluate based on what reviewers RETURNED this round (not your post-edit assessment):
     - **Continue**: Either reviewer returned CRITICAL or HIGH → edit plan (4d), go to 4a. If you edited the plan this round, you MUST re-verify.
-    - **Pass**: Both reviewers returned NO CRITICAL or HIGH → proceed to Phase 2.
+    - **Pass**: Both reviewers returned NO CRITICAL or HIGH, AND HOW-COMPLETE criteria are satisfied → proceed to Phase 2.
     - **Max rounds (5)**: `AskUserQuestion` — continue, finalize, or abort.
 
     NEVER exit the loop on a round where you edited the plan.
@@ -100,6 +104,7 @@
     Reviewers: `coral:architect` + `coral:critic`
 
     Repeat (max 5 rounds):
+    For all review steps below, also read and apply the HOW methodology files as described in Phase 1 (HOW-REVIEW.md at 4a, HOW-SYNTHESIZE.md at 4c, HOW-COMPLETE.md at 4f).
     - **4a. Parallel Review**: Spawn `coral:architect` + `coral:critic` (NOT codex-proxy) simultaneously in a single message. Provide each: plan file path, working directory, relevant context.
     - **4c. Synthesize Feedback**: Same classification (Adopt/Adapt/Defer/Diverge).
     - **4d. Update Plan File**: Edit with Adopt/Adapt changes.
