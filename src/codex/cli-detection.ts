@@ -60,20 +60,25 @@ async function runProbe(): Promise<CliInfo> {
   if (!cachedCli.available) return cachedCli;
 
   const auth = await queryAuthState();
+  const version = cachedCli.version;
+
   if (auth.authState === 'authenticated') {
     confirmedAuth = true;
-    cachedCli = { available: true, version: cachedCli.version, authState: 'authenticated' };
+    cachedCli = { available: true, version, authState: 'authenticated' };
     return cachedCli;
   }
 
-  cachedCli = auth.authState === 'unauthenticated'
-    ? {
-        available: true,
-        version: cachedCli.version,
-        authState: 'unauthenticated',
-        authError: auth.authError,
-      }
-    : { available: true, version: cachedCli.version, authState: 'unknown' };
+  if (auth.authState === 'unauthenticated') {
+    cachedCli = {
+      available: true,
+      version,
+      authState: 'unauthenticated',
+      authError: auth.authError,
+    };
+    return cachedCli;
+  }
+
+  cachedCli = { available: true, version, authState: 'unknown' };
 
   return cachedCli;
 }

@@ -238,8 +238,13 @@ let claudeMdCache: string | undefined;
 
 function getClaudeMd(): string {
   if (claudeMdCache !== undefined) return claudeMdCache;
-  try { claudeMdCache = readFileSync(join(pluginRoot, 'CLAUDE.md'), 'utf-8'); }
-  catch { claudeMdCache = ''; }
+
+  try {
+    claudeMdCache = readFileSync(join(pluginRoot, 'CLAUDE.md'), 'utf-8');
+  } catch {
+    claudeMdCache = '';
+  }
+
   return claudeMdCache;
 }
 

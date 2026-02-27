@@ -134,11 +134,20 @@ export function launchBackground(
   const cb = makeEventCallback({ progressFile: pFile });
   activeBackgroundFiles.add(pFile);
 
-  handler(cb).then((result) => {
-    appendFinalResult(pFile, 'completed', extractCompletionData(result, sessionLabel));
-  }).catch((err) => {
-    try { appendFinalResult(pFile, 'error', { error: err instanceof Error ? err.message : String(err) }); } catch {}
-  }).finally(() => { activeBackgroundFiles.delete(pFile); });
+  handler(cb)
+    .then((result) => {
+      appendFinalResult(pFile, 'completed', extractCompletionData(result, sessionLabel));
+    })
+    .catch((err) => {
+      try {
+        appendFinalResult(pFile, 'error', { error: err instanceof Error ? err.message : String(err) });
+      } catch {
+        // progress-file append errors are non-fatal to the caller
+      }
+    })
+    .finally(() => {
+      activeBackgroundFiles.delete(pFile);
+    });
 
   return jsonResult({ progress_id: progressId, progress_file: pFile, session_name: sessionLabel, status: 'launched' });
 }
@@ -186,9 +195,11 @@ function dispatchExecution(
   notify: ((n: { method: string; params: Record<string, unknown> }) => Promise<void>) | undefined,
   handler: (cb?: OnEventCallback) => Promise<McpResult>,
 ): Promise<McpResult> {
-  return background
-    ? Promise.resolve(launchBackground(sessionLabel, 'codex', handler))
-    : runForeground(sessionLabel, 'codex', progressToken, notify, handler);
+  if (background) {
+    return Promise.resolve(launchBackground(sessionLabel, 'codex', handler));
+  }
+
+  return runForeground(sessionLabel, 'codex', progressToken, notify, handler);
 }
 
 export async function handleSessionCreate(

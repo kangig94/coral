@@ -21,7 +21,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import type { CodexExecResult } from '../../../types.js';
+import type { CodexExecResult } from '../../types.js';
 
 vi.mock('../codex-executor.js', () => ({
   executeOneShot: vi.fn(),

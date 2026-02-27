@@ -600,15 +600,15 @@ describe('handleToolCall', () => {
   });
 
   it('unknown op "create" returns unknown_op', async () => {
-    const legacyCreate = { ['op']: 'create', prompt: 'hello' } as const;
-    const result = await handleToolCall('codex', legacyCreate as any, mgr);
+    const legacyCreate: Record<string, unknown> = { op: 'create', prompt: 'hello' };
+    const result = await handleToolCall('codex', legacyCreate, mgr);
     expect(result.isError).toBe(false);
     expect(JSON.parse(result.content[0].text)).toEqual({ error: 'unknown_op', ['op']: 'create' });
   });
 
   it('unknown op "send" returns unknown_op', async () => {
-    const legacySend = { ['op']: 'send', session: 'session-1', prompt: 'hello' } as const;
-    const result = await handleToolCall('codex', legacySend as any, mgr);
+    const legacySend: Record<string, unknown> = { op: 'send', session: 'session-1', prompt: 'hello' };
+    const result = await handleToolCall('codex', legacySend, mgr);
     expect(result.isError).toBe(false);
     expect(JSON.parse(result.content[0].text)).toEqual({ error: 'unknown_op', ['op']: 'send' });
   });
