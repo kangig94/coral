@@ -16,8 +16,11 @@ try {
   const toolName = (input.tool_name || '').replace(/^proxy_/, '');
   if (toolName !== 'Bash') process.exit(0);
 
-  const command = input.tool_input?.command;
-  if (!command || typeof command !== 'string') process.exit(0);
+  const rawCommand = input.tool_input?.command;
+  if (!rawCommand || typeof rawCommand !== 'string') process.exit(0);
+
+  // Strip leading "! " from SKILL.md ```! auto-execute blocks
+  const command = rawCommand.replace(/^! /, '');
 
   // Check each part of chained commands (&&)
   const parts = command.split('&&').map(p => p.trim());
