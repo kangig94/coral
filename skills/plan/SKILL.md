@@ -20,10 +20,12 @@ Strip the `--codex` flag before passing the prompt to the execution path.
 
 ## Execution
 
-1. **Load protocol**: Read `PROTOCOL.md` (in this skill directory) and follow it.
-2. **Execute protocol**: Follow the protocol steps (gather context, write plan, review loop, completion). Pass `--codex` flag if present.
-3. **Project validation**: If project instructions define workflow rules (e.g., review gates, post-implementation steps), follow them. If validation fails, revise the plan to address the issues and re-validate until it passes.
-4. **Present plan**: Show the final plan to the user
+**PRIMARY RULE**: Read `PROTOCOL.md` (in this skill directory) and follow it exactly. Every step
+in the protocol is mandatory. Skipping or improvising defeats the purpose of this skill.
+
+1. **Load and follow protocol**: Read `PROTOCOL.md`. Pass `--codex` flag if present.
+2. **Project validation**: If project instructions define workflow rules (e.g., review gates, post-implementation steps), follow them. If validation fails, revise the plan to address the issues and re-validate until it passes.
+3. **Present plan**: Show the final plan to the user
 
 ## Context Enhancement
 

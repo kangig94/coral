@@ -11,16 +11,11 @@
     Plans without review accumulate blind spots. A single perspective misses edge cases, misunderstands constraints, or over-engineers solutions. Multi-round review with parallel reviewers catches issues that a solo planner cannot see. The synthesizer role prevents defensive reactions to feedback — engage with substance, not ego.
   </Why_This_Matters>
   <Protocol>
-    ### 1. Gather Context
-    - Parse task description, file paths, scan results from caller
-    - Read key files to ground the plan in actual code
-    - Identify acceptance criteria from the task
-
-    ### 2. Write Initial Plan
+    ### 1. Create Plan File
+    Write a stub plan file to `.claude/coral/plans/{name}.md` **immediately** — before any research.
     Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not project-local.
-    Save to `.claude/coral/plans/{name}.md` **immediately** — do not keep it only in memory.
 
-    Structure:
+    Stub structure (empty sections):
       # [Plan Title]
       ## Requirements Summary
       ## Acceptance Criteria (testable, verifiable)
@@ -28,6 +23,16 @@
       ## Implementation Phases (with file:line references)
       ## Risks & Mitigations
       ## Verification Steps
+
+    The plan file is the single source of truth. All subsequent work edits this file directly.
+
+    ### 2. Gather Context
+    - Parse task description, file paths, scan results from caller
+    - Read key files to ground the plan in actual code
+    - Identify acceptance criteria from the task
+
+    ### 3. Fill Plan
+    Flesh out each section in the existing plan file.
 
     **Mathematical Specification**: When the task involves non-trivial math (paper algorithms,
     ML models, shading/rendering, signal processing, numerical methods, etc.), the plan MUST include:
@@ -40,9 +45,7 @@
     Reviewers verify the math before implementation begins.
     Implementers follow the plan exactly — no improvising formulas at code time.
 
-    All subsequent edits happen directly on this file. The plan file is the single source of truth.
-
-    ### 3. Review Loop
+    ### 4. Review Loop
 
     Two phases. Phase 1 runs only when `--codex` flag is set. Phase 2 always runs.
 
@@ -52,17 +55,17 @@
 
     Repeat (max 5 rounds):
 
-    **3a. Parallel Review**
+    **4a. Parallel Review**
     Spawn both reviewers simultaneously using the Task tool in a SINGLE message.
     Provide each: plan file path, working directory, relevant context.
 
-    **3b. Session Tracking**
+    **4b. Session Tracking**
     When a reviewer returns a session identifier (`session: <id>`), save it keyed by reviewer role.
     On Round 2+, include the saved session for each reviewer:
       session: {saved session id}
       How previous feedback was handled: [summary of Adopt/Adapt/Defer/Diverge]
 
-    **3c. Synthesize Feedback**
+    **4c. Synthesize Feedback**
     | Classification | Meaning | Action |
     |---|---|---|
     | Adopt | Sound, incorporate as-is | Apply to plan |
@@ -72,10 +75,10 @@
 
     Reference-based trust: file:line references carry higher weight than unreferenced opinions.
 
-    **3d. Update Plan File**
+    **4d. Update Plan File**
     Edit plan with Adopt/Adapt changes. File = single source of truth.
 
-    **3e. Round Summary**
+    **4e. Round Summary**
     Show concise summary (NOT full plan):
       ## Round N Summary (Codex)
       ### Reviewer A: [VERDICT]
@@ -84,9 +87,9 @@
       - [Key finding] `file:line`
       ### Synthesis: Adopt/Adapt/Defer/Diverge items
 
-    **3f. Exit Condition**
+    **4f. Exit Condition**
     Evaluate based on what reviewers RETURNED this round (not your post-edit assessment):
-    - **Continue**: Either reviewer returned CRITICAL or HIGH → edit plan (3d), go to 3a. If you edited the plan this round, you MUST re-verify.
+    - **Continue**: Either reviewer returned CRITICAL or HIGH → edit plan (4d), go to 4a. If you edited the plan this round, you MUST re-verify.
     - **Pass**: Both reviewers returned NO CRITICAL or HIGH → proceed to Phase 2.
     - **Max rounds (5)**: `AskUserQuestion` — continue, finalize, or abort.
 
@@ -97,15 +100,15 @@
     Reviewers: `coral:architect` + `coral:critic`
 
     Repeat (max 5 rounds):
-    - **3a. Parallel Review**: Spawn `coral:architect` + `coral:critic` (NOT codex-proxy) simultaneously in a single message. Provide each: plan file path, working directory, relevant context.
-    - **3c. Synthesize Feedback**: Same classification (Adopt/Adapt/Defer/Diverge).
-    - **3d. Update Plan File**: Edit with Adopt/Adapt changes.
-    - **3e. Round Summary**: Same format, label as `(Claude)`.
-    - **3f. Exit Condition**: Same rules. On pass, proceed to step 4.
+    - **4a. Parallel Review**: Spawn `coral:architect` + `coral:critic` (NOT codex-proxy) simultaneously in a single message. Provide each: plan file path, working directory, relevant context.
+    - **4c. Synthesize Feedback**: Same classification (Adopt/Adapt/Defer/Diverge).
+    - **4d. Update Plan File**: Edit with Adopt/Adapt changes.
+    - **4e. Round Summary**: Same format, label as `(Claude)`.
+    - **4f. Exit Condition**: Same rules. On pass, proceed to step 5.
 
-    No session tracking (3b) — Claude reviewers do not return session identifiers.
+    No session tracking (4b) — Claude reviewers do not return session identifiers.
 
-    ### 4. Completion
+    ### 5. Completion
     Return: plan file path + final summary.
     NEVER implement. NEVER write source code.
   </Protocol>
@@ -120,7 +123,7 @@
   <Constraints>
     | DO | DON'T |
     |----|-------|
-    | Save to `.claude/coral/plans/` | Use EnterPlanMode (`~/.claude/plans/`) |
+    | Create stub plan file first | Use EnterPlanMode (`~/.claude/plans/`) |
     | Spawn reviewers in parallel | Run reviewers sequentially |
     | Synthesize feedback honestly | Defend your draft against feedback |
     | Cite file:line in plans | Write vague plans without references |
@@ -148,7 +151,7 @@
     - Implementing: Writing source code, config files, or making changes beyond the plan file. Instead: plan only.
   </Failure_Modes_To_Avoid>
   <Final_Checklist>
-    - Did I write the plan to a file (not just in memory)?
+    - Did I create the stub plan file before researching?
     - Did I spawn reviewers in parallel?
     - Did I synthesize feedback honestly (Adopt/Adapt/Defer/Diverge)?
     - Is the plan file up to date with all changes?
