@@ -42,11 +42,49 @@
        (src/, scripts/, package.json, tsconfig.json). Non-source changes (agents/, skills/,
        docs/, hooks/, .claude/) skip to step e.
        a. Lint: run linter if available. Cheapest check first.
-       b. Validation: architect review. Must pass before build.
+       b. Validation: spawn `coral:architect` for architecture review. If project
+          instructions define additional workflow rules (e.g., review-orchestrator),
+          spawn them as parallel subagents alongside architect. All must pass before build.
        c. Build: run project build command.
        d. Test: run test suite after build passes.
        e. Only declare done when all applicable checks pass.
   </Protocol>
+  <Red_Attacker>
+    Activated by `--red` flag. Defines adversarial testing gates that extend the
+    post-implementation sequence (step 6) between test (d) and done (e).
+
+    Spawn `coral:red-attacker` immediately before step 6a (lint), in background
+    (`run_in_background: true`).
+    Cross-model diversity: use the opposite `--codex` flag from the main execution:
+    - ralph=Claude (no --codex) → spawn red-attacker WITH --codex
+    - ralph=Codex (--codex) → spawn red-attacker WITHOUT --codex
+
+    Prompt must include:
+    - Changed files list or scope description
+    - Plan file path (if a plan was used) — let the subagent read and judge context
+
+    Isolation: red-attacker must write generated tests to a staging path (e.g.,
+    `.claude/coral/tmp/red/`) — NOT directly into the test directory. This prevents
+    the test runner from picking them up during step 6d.
+
+    Post-implementation integration (after step 6d passes):
+    d1. Red gate: wait for background red-attacker to complete. Move generated test
+        files from the staging path into the test directory.
+    d2. Re-run test suite (now includes adversarial tests).
+    d3. Red fix loop (if adversarial tests fail): fix failures → re-run tests.
+        Cap at 3 iterations. If still failing, report and escalate.
+    d4. Red triage (when tests pass): review each red test before merging.
+        Red-attacker runs without full context — it may generate tests that target
+        the wrong module, duplicate coverage, or test unreachable scenarios.
+        - For each `red-<target>.<ext>` file, verify:
+          * Tests target code actually changed in this task
+          * Test scenarios are reachable (not impossible states)
+          * No substantial overlap with existing tests
+        - Merge: move passing `describe` blocks into the main test file, delete `red-` file
+        - Discard: delete `red-` file, note reason briefly
+        - Re-run tests to verify merge correctness
+        - Record adversarial test provenance in the commit message, not in file naming
+  </Red_Attacker>
   <Iteration_Cap>
     After 10 significant steps without full completion:
     PAUSE. Confirm direction with the user before continuing.
@@ -71,6 +109,8 @@
     | Validation | Architect | APPROVED |
     | Build | `npm run build` | exit 0 |
     | Test | `npm test` | 42 passed, 0 failed |
+    | Red Gate | red-attacker | 3 tests staged (if `--red`) |
+    | Red Triage | review + merge | 2 merged, 1 discarded (if `--red`) |
 
     ### Remaining Issues
     (none if complete)
