@@ -174,84 +174,20 @@ argument-hint: "[existing|new]"
     Task: Generate all artifacts per the plan.
     Plan file: {plan_file_path from Phase 2}
     Working directory: {project root}
-    Templates directory: {skill_base_dir}/templates/
-    References directory: {skill_base_dir}/references/
+    Templates: {skill_base_dir}/templates/
+    References: {skill_base_dir}/references/
     Note: {skill_base_dir} is the absolute plugin path provided by the skill loading system.
-    Do NOT use relative paths - ralph runs in the target project directory, not the plugin directory.
+    Do NOT use relative paths — ralph runs in the target project directory, not the plugin directory.
 
     Analysis file: {analysis_file_path from Phase 1d} (if existing project; omit for new projects)
-    Ralph should read this file for project-specific details (architecture, dependency graph,
-    existing docs) when generating artifacts. Doc content still comes from the plan — the
-    analysis file provides factual grounding, not content drafts.
+    The analysis file provides factual grounding (architecture, dependency graph, existing docs),
+    not content drafts.
 
-    Deterministic generation rules (follow exactly):
+    You MUST read these reference files before generating any artifacts:
+    - {skill_base_dir}/references/merge-policy.md — per-artifact merge rules (skip/create/enhance)
+    - {skill_base_dir}/references/writing-guide.md — artifact quality standards
 
-    1. Directory creation order:
-       .claude/agents/, .claude/rules/, .claude/rules/{domain}/, .claude/coral/kb/, docs/
-
-    2. CLAUDE.md generation:
-       - Missing: create following templates/CLAUDE.md.template structure exactly.
-       - Existing: enhance — add missing sections (build commands, key docs, workflow) without rewriting existing content.
-       - CLAUDE.md is the HUB: project description, critical requirements, key docs, build commands, and post-implementation workflow.
-       - Post-implementation workflow (lint → review → build → test) MUST be in CLAUDE.md - rules/ files lose enforcement during context compression.
-       - Do NOT put validation checklists, agent tables, or consultation matrices in CLAUDE.md - those belong in rules/ files.
-       - Rules in .claude/rules/ are auto-loaded by Claude Code. Domain-specific rules use `paths:` frontmatter for conditional activation.
-
-    3. Rules file merge:
-       - Missing: create new rule file.
-       - Existing: enhance — add missing validation items, preserve existing content.
-       - Universal rules: no frontmatter
-       - Domain validation rules: use `paths:` YAML list frontmatter
-       - Path detection:
-         | Domain | paths: |
-         |--------|--------|
-         | Frontend (React/Vue) | "src/**/*.{ts,tsx,js,jsx}" |
-         | Backend (Python) | "**/*.py" |
-         | Backend (Go) | "{cmd,internal,pkg}/**/*.go" |
-         | GPU (CUDA) | "**/*.{cu,cuh}" |
-         | Systems (C/C++) | "**/*.{c,cpp,h,hpp}" |
-         | Infra | "{Dockerfile,docker-compose.yml,.github/**/*,terraform/**/*}" |
-         Fallback: "**/*" if detection fails.
-
-    4. Agent merge:
-       - Missing: create new agent file.
-       - Existing: enhance — add missing sections, preserve existing protocol and structure.
-       Model assignment: tier 0-1 = opus, tier 2-3 = sonnet. Never haiku.
-
-    5. Docs merge: Never skip docs.
-       - Missing docs: create with full content from the plan.
-       - Existing docs: enhance (append new sections, preserve existing content).
-       When enhancing existing docs:
-          - Read the existing file FIRST before any edits.
-          - Match the existing tone and formatting (heading levels, table style, list style).
-          - Only append new sections — never rewrite, reorder, or rephrase existing content.
-          - Calibrate depth to match the surrounding document (if existing sections are 10 lines, new sections should be ~10 lines, not 50).
-          - Boundary check: if the plan says "add auth section to API doc", add ONLY the auth section. Do not expand other sections.
-       - Universal: `docs/ARCHITECTURE.md`, `docs/DEV_GUIDE.md` (always)
-       - Domain-specific: generate docs listed in the plan's Artifact Manifest
-       - Architecture Sections: include domain-specific sections in ARCHITECTURE.md
-         per the domain reference's Architecture Sections list
-       - CLAUDE.md Key Documentation: add domain-specific doc paths to the
-         Key Documentation section of the generated CLAUDE.md
-       - Doc content comes from the plan - ralph writes what the plan specifies,
-         not from its own source analysis.
-
-    6. .gitignore: Append Coral block if not already present:
-       # Coral (device-local files)
-       .claude/coral/*
-       !.claude/coral/kb/
-
-    Quality rules (from references/writing-guide.md):
-    - Every agent uses `<Agent_Prompt>` XML structure with required sections:
-      Role, Success_Criteria, Constraints, Investigation_Protocol, Output_Format, Failure_Modes_To_Avoid
-    - Review/safety agents should also include <Tool_Usage> (detection commands + key files)
-    - Tier 0-1 agents MUST have <Why_This_Matters>
-    - <Investigation_Protocol> uses concrete code examples (not abstract descriptions)
-    - <Failure_Modes_To_Avoid> for tier 1 uses Bug/Symptom/Detection/Fix table
-    - Consultation rules in <Constraints> use concrete task-type → agent mappings
-    - Docs reference actual project file paths
-
-    Verify each file creation.
+    Doc content comes from the plan — ralph writes what the plan specifies, not from its own analysis.
   """)
   ```
 
@@ -259,50 +195,25 @@ argument-hint: "[existing|new]"
 
   ## Phase 3.5: Verify Artifacts
 
-  Spawn architect and critic in parallel to verify generated artifacts.
-  Each receives the same three inputs but checks from a different angle.
+  Spawn `coral:architect` and `coral:critic` in parallel to verify generated artifacts.
+  Provide each with: plan file path, list of generated/enhanced files from ralph's report.
+  Each outputs a findings table with severity (CRITICAL/HIGH/MEDIUM/LOW) and file:line references.
 
-  ```
-  Task(subagent_type="coral:architect", prompt="""
-    Verify init-project artifacts — structural correctness and content fidelity.
-    Inputs:
-    1. Analysis document: {analysis_file_path from Phase 1d}
-    2. Plan file: {plan_file_path from Phase 2}
-    3. Generated/enhanced files: {list of files from ralph's report}
+  **Architect** — structural correctness and content fidelity:
+  - Read `{skill_base_dir}/references/writing-guide.md` for structural standards
+  - Read analysis document for content fidelity check (analysis ↔ generated output)
+  - Agents: `<Agent_Prompt>` XML with required sections, no `{placeholder}` text, protocols reference real project patterns
+  - Rules: `paths:` frontmatter for domain-specific, validation items trace to analysis findings
+  - Docs: layer diagram in ARCHITECTURE.md, exact commands in DEV_GUIDE.md, paths and architecture match analysis
+  - CLAUDE.md: build commands match analysis, key docs list matches generated files
+  - Enhanced files: existing content NOT modified, new sections appended only
 
-    For each generated file, verify:
-
-    | Category | Structural Check | Content Fidelity Check (analysis ↔ output) |
-    |----------|-----------------|---------------------------------------------|
-    | Agents | `<Agent_Prompt>` XML, required sections, no `{placeholder}` text | Protocol references real project patterns from analysis |
-    | Rules | `paths:` frontmatter for domain-specific, DO/DON'T table | Validation items trace back to analysis findings |
-    | Docs | Layer diagram in ARCHITECTURE.md, exact commands in DEV_GUIDE.md | Paths, commands, and architecture match analysis document — no generic placeholders |
-    | Quality agents (tier 3) | Rubric anchors (10/7/4/1), floor rule, evidence requirement | Review criteria align with project's actual tech stack |
-    | CLAUDE.md | Quality principle line, build commands, scope gate | Build commands match analysis, key docs list matches generated files |
-
-    For enhanced files, additionally verify:
-    - Existing content was NOT modified
-    - New sections are appended, not interleaved
-
-    Output: findings table with severity (CRITICAL/HIGH/MEDIUM/LOW) and file:line references.
-  """)
-
-  Task(subagent_type="coral:critic", prompt="""
-    Verify init-project artifacts — plan adherence and completeness.
-    Inputs:
-    1. Plan file: {plan_file_path from Phase 2}
-    2. Generated/enhanced files: {list of files from ralph's report}
-
-    Check plan ↔ output alignment:
-    - Every artifact in the plan's Artifact Manifest was generated or enhanced
-    - No extra files were created that the plan didn't specify
-    - Merge rules were followed (missing → created, existing → enhanced, never overwritten)
-    - Doc content drafts in the plan match what ralph actually wrote
-    - Enhancement boundaries respected (only planned sections added, nothing else changed)
-
-    Output: findings table with severity (CRITICAL/HIGH/MEDIUM/LOW) and file:line references.
-  """)
-  ```
+  **Critic** — plan adherence and completeness:
+  - Every artifact in the plan's Artifact Manifest was generated or enhanced
+  - No extra files beyond what the plan specified
+  - Merge rules followed (missing → created, existing → enhanced, never overwritten)
+  - Doc content matches what the plan drafted
+  - Enhancement boundaries respected (only planned sections added)
 
   **Remediation**: Synthesize both reports. For CRITICAL/HIGH findings, fix directly (read → edit).
   Do not re-spawn ralph for spot fixes.
