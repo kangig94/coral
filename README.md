@@ -1,5 +1,7 @@
 # Coral
 
+[한국어](README.ko.md)
+
 Claude Code already knows how to code. Coral teaches it how *you* code.
 
 Your conventions enforced, your workflow structured, your decisions examined from multiple
