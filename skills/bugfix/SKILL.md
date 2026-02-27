@@ -31,9 +31,12 @@ Strip the `--codex` flag before passing the prompt to the execution path.
      Pass `working_directory` and `reasoning_effort: "xhigh"`.
      Verify cited file:line references. Drop findings with incorrect references.
 
-2. **Plan fix**: Read `skills/plan/PROTOCOL.md` and follow it. Pass `--codex` flag if present.
+2. **Plan fix**: Read `skills/plan/PROTOCOL.md`.
+   **You** execute it directly — follow the protocol steps with diagnosis context.
+   Pass `--codex` flag if present (the plan protocol handles Codex delegation internally).
    - Plan name: `fix-{short-bug-description}`
-   - Task context: diagnosis result from step 1 (root cause, affected files, reproduction steps)
+   - Task context: diagnosis result from step 1
+     (root cause, affected files, reproduction steps)
    - Plan should include: what to change, why, and how to verify the fix
 
 3. **Execute fix**:
