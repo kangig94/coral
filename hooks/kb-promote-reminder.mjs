@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 /**
- * Stop/PreCompact hook — enforces KB promotion for unprocessed memos.
+ * Stop/SessionStart(compact) hook — enforces KB promotion for unprocessed memos.
  * Stop: skill-scoped via .claude/coral/tmp/kb-active state file.
- * PreCompact: always checks for unprocessed memos.
+ * SessionStart(compact): always checks for unprocessed memos after compaction.
  * Fail-open: any error exits silently.
  */
 
@@ -39,9 +39,12 @@ try {
     }));
   } else {
     console.log(JSON.stringify({
-      systemMessage: memos.length > 0
-        ? `KB promotion reminder: promote only if useful across sessions. Also, ${sessionKb} Memos: ${list}`
-        : `KB reminder: ${sessionKb}`,
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext: memos.length > 0
+          ? `KB promotion reminder: promote only if useful across sessions. Also, ${sessionKb} Memos: ${list}`
+          : `KB reminder: ${sessionKb}`,
+      },
     }));
   }
 } catch {
