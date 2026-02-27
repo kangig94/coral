@@ -4,6 +4,8 @@ description: Moderated multi-agent discussion via Agent Teams
 argument-hint: "[--user] [topic] [--hints axis1:pos1,pos2 axis2:pos1,pos2]"
 ---
 
+> **CORAL_AGENTS**: `~/.claude/plugins/cache/coral/**/agents/` — locate via Glob
+
 # Moderated Multi-Agent Discussion
 
 Start a structured discussion with AI agents.
@@ -151,4 +153,4 @@ From the user's request, identify:
 
 ## Error Policy
 
-If `agents/discuss-lead.md` cannot be read, report the error to the user.
+If `CORAL_AGENTS/discuss-lead.md` cannot be read, report the error to the user.

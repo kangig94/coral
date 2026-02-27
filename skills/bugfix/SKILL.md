@@ -4,6 +4,9 @@ description: "Systematic bug diagnosis, planning, and fix execution."
 argument-hint: "[--codex] <bug description or error message>"
 ---
 
+> **CORAL_AGENTS**: `~/.claude/plugins/cache/coral/**/agents/` — locate via Glob
+> **CORAL_SKILLS**: `~/.claude/plugins/cache/coral/**/skills/` — locate via Glob
+
 # Bug Debugging
 
 Before starting, run Bash(`mkdir -p .claude/coral/tmp && touch .claude/coral/tmp/kb-active`).
@@ -23,15 +26,15 @@ Strip the `--codex` flag before passing the prompt to the execution path.
 ## Execution
 
 1. **Diagnose**:
-   - **Default**: Read `agents/debugger.md`. **You** execute it directly — follow
+   - **Default**: Read `CORAL_AGENTS/debugger.md`. **You** execute it directly — follow
      `<Investigation_Protocol>` steps with conversation context.
      Present diagnosis in `<Output_Format>` structure.
-   - **`--codex`**: Read `agents/codex-proxy.md`, use `### Role: debugger` prompt template.
+   - **`--codex`**: Read `CORAL_AGENTS/codex-proxy.md`, use `### Role: debugger` prompt template.
      Call `codex({ op: "exec", ... })` with the bug description as task context.
      Pass `working_directory` and `reasoning_effort: "xhigh"`.
      Verify cited file:line references. Drop findings with incorrect references.
 
-2. **Plan fix**: Read `skills/plan/PROTOCOL.md`.
+2. **Plan fix**: Read `CORAL_SKILLS/plan/PROTOCOL.md`.
    **You** execute it directly — follow the protocol steps with diagnosis context.
    Pass `--codex` flag if present (the plan protocol handles Codex delegation internally).
    - Plan name: `fix-{short-bug-description}`
@@ -40,9 +43,9 @@ Strip the `--codex` flag before passing the prompt to the execution path.
    - Plan should include: what to change, why, and how to verify the fix
 
 3. **Execute fix**:
-   - **Default**: Read `skills/ralph/PROTOCOL.md`. **You** execute it directly — implement the plan
+   - **Default**: Read `CORAL_SKILLS/ralph/PROTOCOL.md`. **You** execute it directly — implement the plan
      from step 2.
-   - **`--codex`**: Read `agents/codex-proxy.md`, use `### Role: ralph` prompt template.
+   - **`--codex`**: Read `CORAL_AGENTS/codex-proxy.md`, use `### Role: ralph` prompt template.
      Call `codex({ op: "exec", ... })` with the plan as task context.
      Pass `working_directory` and `reasoning_effort: "high"`.
      Verify all changes against the plan. Fix discrepancies directly.
@@ -56,4 +59,4 @@ Pass `bypass: true` only when the user explicitly requests bypass mode. Otherwis
 
 ## Error Policy
 
-If `agents/debugger.md` cannot be read, report the error to the user.
+If `CORAL_AGENTS/debugger.md` cannot be read, report the error to the user.

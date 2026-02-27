@@ -5,6 +5,8 @@ argument-hint: "[--red] [--codex] [task description]"
 model: sonnet
 ---
 
+> **CORAL_AGENTS**: `~/.claude/plugins/cache/coral/**/agents/` — locate via Glob
+
 # Persistent Execution with Verification
 
 Before starting, run Bash(`mkdir -p .claude/coral/tmp && touch .claude/coral/tmp/kb-active`).
@@ -24,7 +26,7 @@ Strip `--codex` and `--red` flags before passing the prompt to the execution pat
 
 ## Execution
 
-1. **Load protocol**: Read `PROTOCOL.md` (in this skill directory). If `--codex`, also read `agents/codex-proxy.md` for the prompt template (`### Role: ralph` section). **You** call Codex directly — do NOT spawn a codex-proxy agent.
+1. **Load protocol**: Read `PROTOCOL.md` (in this skill directory). If `--codex`, also read `CORAL_AGENTS/codex-proxy.md` for the prompt template (`### Role: ralph` section). **You** call Codex directly — do NOT spawn a codex-proxy agent.
 
 2. **Execute task**:
    - **Default**: Follow the protocol's `<Protocol>` steps.
@@ -58,4 +60,4 @@ From the current conversation, identify and include:
 
 ## Error Policy
 
-If `PROTOCOL.md` (default) or `agents/codex-proxy.md` (`--codex`) cannot be read, report the error to the user. Do not fall back to inline execution - the agent protocol is a required dependency.
+If `PROTOCOL.md` (default) or `CORAL_AGENTS/codex-proxy.md` (`--codex`) cannot be read, report the error to the user. Do not fall back to inline execution - the agent protocol is a required dependency.

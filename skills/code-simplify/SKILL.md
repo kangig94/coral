@@ -4,6 +4,8 @@ description: "Simplifies and refines code for clarity, consistency, and maintain
 argument-hint: "[--codex] <scope or prompt>"
 ---
 
+> **CORAL_AGENTS**: `~/.claude/plugins/cache/coral/**/agents/` — locate via Glob
+
 # Code Simplification
 
 Simplify and refine code for clarity and maintainability while preserving functionality.
@@ -63,7 +65,7 @@ Strip the `--codex` flag before passing the prompt to the execution path.
     4) Execute (based on strategy from step 3):
        Single pass:
        - Default: run `<Execution>` directly on the target files.
-       - `--codex`: read `agents/codex-proxy.md` (`### Role: ralph` section).
+       - `--codex`: read `CORAL_AGENTS/codex-proxy.md` (`### Role: ralph` section).
          Call `codex({ op: "exec", ... })` with `<Execution>`, `<Constraints>`,
          target file paths, and coding standards as context.
          Pass `working_directory`, `reasoning_effort: "xhigh"`.
