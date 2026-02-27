@@ -54,31 +54,48 @@ Strip the `--codex` flag before passing the prompt to the execution path.
        b. If no specific scope: default to recently modified code, then conversation context
        c. If neither: ask for clarification
     2) Read project's CLAUDE.md and relevant rules for coding standards.
-    3) Execute simplification:
-       - Default: read each target file completely. For each file, identify
-         simplification opportunities:
-         a. Unnecessary nesting (flatten with early returns, guard clauses)
-         b. Redundant code (duplicated logic, unused imports/variables)
-         c. Unclear naming (vague variables, misleading function names)
-         d. Over-abstraction (single-use helpers, premature generalization)
-         e. Unnecessary complexity (nested ternaries, dense one-liners)
-         f. Unnecessary comments that describe obvious code
-         g. Dead code (unreachable branches, commented-out code)
-         Apply surgically — one logical change per edit, touch only what improves clarity.
+    3) Decide execution strategy:
+       - If the user specifies a splitting rule (e.g., "by subdir", "by module"), follow it.
+       - Otherwise, assess the scope. If it spans enough independent units that parallel
+         processing would be beneficial, split into groups (by subdirectory, module boundary,
+         or logical grouping — whichever fits the codebase).
+       - If the scope is small or tightly coupled, proceed as a single pass.
+    4) Execute (based on strategy from step 3):
+       Single pass:
+       - Default: run `<Execution>` directly on the target files.
        - `--codex`: read `agents/codex-proxy.md` (`### Role: ralph` section).
-         Call `codex({ op: "exec", ... })` with the full `<Code_Simplifier>` protocol,
-         target file paths, and coding standards as context. Codex reads, analyzes,
-         and applies in a single round. Pass `working_directory`, `reasoning_effort: "xhigh"`.
+         Call `codex({ op: "exec", ... })` with `<Execution>`, `<Constraints>`,
+         target file paths, and coding standards as context.
+         Pass `working_directory`, `reasoning_effort: "xhigh"`.
          Pass `bypass: true` only when the user explicitly requests bypass mode.
-    4) Review each change: confirm purely structural with zero logic alteration.
+       Parallel split:
+       - Default: spawn each group as a parallel Task (`subagent_type: "general-purpose"`).
+         Pass `<Execution>`, `<Constraints>`, the file group, and project coding standards.
+       - `--codex`: spawn each group as a parallel Task (`subagent_type: "coral:codex-proxy"`).
+         Pass `<Execution>`, `<Constraints>`, the file group, and project coding standards.
+         MCP tools cannot execute in parallel within a single agent.
+    5) Review each change: confirm purely structural with zero logic alteration.
        Use git diff as a before/after reference when the diff is manageable.
        a. API substitutions preserve semantic intent
        b. Local variable removal does not inline expensive access patterns
        c. If a change could affect behavior or performance, revert it
-    5) Run build and tests to verify no regressions.
+    6) Run build and tests to verify no regressions. When parallel Tasks were used,
+       run only after ALL tasks complete — not per-task.
        If tests fail, the simplification broke behavior — revert the offending change
        and re-run. Do not attempt to "fix" the test to match the new code.
   </Protocol>
+  <Execution>
+    Simplify code for clarity while preserving exact behavior.
+    Read each target file completely. For each file, identify simplification opportunities:
+    a. Unnecessary nesting (flatten with early returns, guard clauses)
+    b. Redundant code (duplicated logic, unused imports/variables)
+    c. Unclear naming (vague variables, misleading function names)
+    d. Over-abstraction (single-use helpers, premature generalization)
+    e. Unnecessary complexity (nested ternaries, dense one-liners)
+    f. Unnecessary comments that describe obvious code
+    g. Dead code (unreachable branches, commented-out code)
+    Apply surgically — one logical change per edit, touch only what improves clarity.
+  </Execution>
   <Output_Format>
     ## Simplification Report
 
