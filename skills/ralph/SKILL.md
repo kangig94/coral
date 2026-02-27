@@ -32,7 +32,7 @@ Strip the `--codex` flag before passing the prompt to the execution path.
 2. **Execute task**:
    - **Default**: Apply the Iron Law: NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE. Follow the protocol's `<Investigation_Protocol>` steps (loops until all acceptance criteria pass). Before any completion claim: IDENTIFY what command proves the claim → RUN the command → READ the output → VERIFY → ONLY THEN claim.
    - **`--codex`**: Execution loop:
-     a. **Call Codex**: Use `codex({ op: "exec", ... })` (first round) or `codex({ op: "exec", session: <thread_id>, ... })` with saved thread_id (subsequent rounds). Follow the protocol's prompt template. Pass `working_directory` and `reasoning_effort: "high"`.
+     a. **Call Codex**: Use `codex({ op: "exec", ... })` (first round) or `codex({ op: "exec", session: <thread_id>, ... })` with saved thread_id (subsequent rounds). Follow the protocol's prompt template. Pass `working_directory` and `reasoning_effort: "xhigh"`.
      b. **Save thread_id** from the response for session continuity
      c. **Verify** the changes yourself: read changed files, compare against acceptance criteria. Use LSP/type-check only. NEVER run build or test during the execution loop.
      d. **Loop decision**: All criteria pass → exit loop, go to Post-Completion Review. Not complete → go to step a with thread_id + updated progress context. Max 5 rounds → ask user whether to continue or finalize.
@@ -48,8 +48,11 @@ Strip the `--codex` flag before passing the prompt to the execution path.
 4. **Post-implementation sequence** (strict order, fail-fast by cost):
    **Scope gate**: Steps a-d apply only when source-affecting files are modified (`src/`, `scripts/`, `package.json`, `tsconfig.json`). Non-source changes (`agents/`, `skills/`, `docs/`, `hooks/`, `.claude/`) skip directly to completion.
 
-   **`--red` adversarial testing**: If `--red` is present in the task argument, spawn `coral:red-attacker` via Task tool in **background** (`run_in_background: true`) immediately before step a. Include in the prompt:
-   - `implementer: claude` (default) or `implementer: codex` (`--codex`)
+   **`--red` adversarial testing**: If `--red` is present in the task argument, spawn `coral:red-attacker` via Task tool in **background** (`run_in_background: true`) immediately before step a. Pass the **opposite** `--codex` flag to red-attacker for cross-model diversity:
+   - `--red` (ralph=Claude) → spawn red-attacker **with** `--codex` (Codex writes tests)
+   - `--red --codex` (ralph=Codex) → spawn red-attacker **without** `--codex` (Claude writes tests)
+
+   Include in the prompt:
    - Changed files list or scope description
    - `plan_context: <plan summary>` (if a plan was used for this task)
 

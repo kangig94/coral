@@ -94,7 +94,7 @@ Use Claude's native tools (Read, Grep, Glob, LSP) for direct analysis. Read-only
 
 `agents/red-attacker.md` - sonnet
 
-**Role**: Adversarial test specialist that attacks the implementer's blind spots by generating tests the implementer didn't think to write. Spawned as a background subagent via `/coral:ralph --red`. Uses the opposite model from the implementer for ensemble diversity: when `implementer=claude`, delegates test generation to Codex; when `implementer=codex` (`--codex`), Claude generates directly. Gracefully degrades to Claude-direct with a warning if Codex is unavailable.
+**Role**: Adversarial test specialist that attacks the implementer's blind spots by generating tests the implementer didn't think to write. Spawned as a background subagent via `/coral:ralph --red`. Pass `--codex` to delegate the entire pipeline (analysis → coverage → attack vectors → test generation) to Codex via multi-round session; default is Claude-direct. Gracefully degrades to Claude-direct with a warning if Codex is unavailable. Ralph automatically passes the opposite `--codex` flag for cross-model diversity.
 
 **Investigation Protocol**: (1) Read existing tests to identify language/framework/naming patterns. (2) Read changed files and existing coverage; cross-reference `plan_context` to avoid duplicating planned tests. (3) Identify attack vectors (boundary, error path, ordering, type, state, security). (4) Write adversarial tests to the project's test directory with `red-<target>.<ext>` naming. (5) Output a coverage gap report.
 
@@ -155,7 +155,7 @@ Proxy agents that delegate work to Codex CLI. Tool restrictions limit them to co
 | `debugger` | Bug diagnosis via hypothesis testing, root cause tracing | xhigh |
 | `architect` | Architecture review, design patterns, code structure | xhigh |
 | `critic` | Plan/code critique, severity-rated verdicts (APPROVED/REVISE/REJECT) | xhigh |
-| `ralph` | Single-shot task execution; Claude controls the outer verification loop | high |
+| `ralph` | Single-shot task execution; Claude controls the outer verification loop | xhigh |
 
 > **Ralph note**: `codex-proxy` with `Role: ralph` executes one round. The caller (`/coral:ralph --codex`) controls the loop - spawning with the saved `session` for session continuity until all criteria pass.
 

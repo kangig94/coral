@@ -23,9 +23,9 @@ Slash commands provided by the Coral plugin. Each skill is defined in `skills/{n
 3. After build: wait for red-attacker to finish, then run the full test suite (including adversarial tests)
 4. If adversarial tests fail: fix loop runs (max 3 iterations), then escalates
 
-**Ensemble diversity**: ralph uses Claude as implementer → red-attacker delegates to Codex. `--codex` uses Codex as implementer → red-attacker uses Claude directly. Different models have different blind spots — the adversarial tests target what the implementer missed.
+**Ensemble diversity**: ralph automatically passes the opposite `--codex` flag to red-attacker. `/coral:ralph --red` (Claude implements) → red-attacker gets `--codex` (Codex tests). `/coral:ralph --red --codex` (Codex implements) → red-attacker runs without `--codex` (Claude tests). Different models have different blind spots.
 
-**Test file naming**: red-attacker writes to the project's test directory as `red-<target>.<ext>` (e.g., `red-auth.test.ts`, `test_red_session.py`). Tests persist after the run — the user can review and keep them as regression tests.
+**Test file lifecycle**: red-attacker writes to the project's test directory as `red-<target>.<ext>` (e.g., `red-auth.test.ts`, `test_red_session.py`). After tests pass, ralph triages each red test — passing tests are merged into the main test file and the `red-` file is deleted; failing triage tests are discarded. Adversarial test provenance is recorded in the commit message, not in file naming.
 
 ## /coral:codex - Session Commands
 
