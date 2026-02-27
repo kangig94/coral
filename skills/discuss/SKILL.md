@@ -84,6 +84,12 @@ Before any other action, verify the Agent Teams environment:
      using `name: 'dc-{agent_name}'` (e.g., agent `park` → teammate `dc-park`).
      Skip `participation: 'observer'` agents —
      they interact via `/bid`, not as spawned teammates.
+     Each discussant prompt must include:
+     - Discussion topic and relevant context
+       (background information, constraints, or framing
+       that the main context gathered during topic analysis in step 2)
+     - Their full persona (generated in step 3)
+     - Session ID
 
 7. **If `--user`**: Return immediately to the user:
    "Discussion started! Use `/bid <score>, <thought>` to submit a bid,
