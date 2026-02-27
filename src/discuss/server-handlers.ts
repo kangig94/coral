@@ -62,6 +62,27 @@ function formatTranscriptForMode(
   }
 }
 
+async function applyStatusChange(
+  sessionId: string,
+  store: SessionStore,
+  apply: (state: DiscussState) => Result<DiscussState>,
+): Promise<McpResult> {
+  const sessionDir = store.resolveOrError(sessionId);
+  if (typeof sessionDir !== 'string') return sessionDir;
+
+  const updated = await store.withLock<Result<{ status: string }>>(sessionDir, async () => {
+    const state = store.load(sessionDir);
+    const result = apply(state);
+    if (!result.ok) return result;
+    if (result.value !== state) {
+      store.save(sessionDir, result.value);
+    }
+    return { ok: true, value: { status: result.value.status } };
+  });
+
+  return resultToMcp(updated);
+}
+
 export const tools = [
   {
     name: 'discuss',
@@ -277,47 +298,23 @@ async function handleEnd(
     return textResult('reason is required when force=true', true);
   }
 
-  const sessionDir = store.resolveOrError(input.session);
-  if (typeof sessionDir !== 'string') return sessionDir;
-
-  const ended = await store.withLock<Result<{ status: string }>>(sessionDir, async () => {
-    const state = store.load(sessionDir);
-    const result = applyEnd(
+  return applyStatusChange(input.session, store, (state) =>
+    applyEnd(
       state,
       {
         force: input.force,
         reason: input.reason,
       },
       nowIsoString(),
-    );
-    if (!result.ok) return result;
-    if (result.value !== state) {
-      store.save(sessionDir, result.value);
-    }
-    return { ok: true, value: { status: result.value.status } };
-  });
-
-  return resultToMcp(ended);
+    ),
+  );
 }
 
 async function handleSynthesize(
   input: Extract<DiscussLeadOpInput, { op: '_8_synthesize' }>,
   store: SessionStore,
 ): Promise<McpResult> {
-  const sessionDir = store.resolveOrError(input.session);
-  if (typeof sessionDir !== 'string') return sessionDir;
-
-  const synthesized = await store.withLock<Result<{ status: string }>>(sessionDir, async () => {
-    const state = store.load(sessionDir);
-    const result = applySynthesis(state, input.synthesis, nowIsoString());
-    if (!result.ok) return result;
-    if (result.value !== state) {
-      store.save(sessionDir, result.value);
-    }
-    return { ok: true, value: { status: result.value.status } };
-  });
-
-  return resultToMcp(synthesized);
+  return applyStatusChange(input.session, store, (state) => applySynthesis(state, input.synthesis, nowIsoString()));
 }
 
 async function handleDiscussLeadOp(input: DiscussLeadOpInput, store: SessionStore): Promise<McpResult> {

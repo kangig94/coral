@@ -489,21 +489,13 @@ describe('applyEnd', () => {
     const ended = unwrapOk(applyEnd(state, {}, NOW));
     const second = unwrapOk(applyEnd(ended, {}, NOW));
     expect(second).toEqual(ended);
-    const synthCount = second.transcript.filter(
-      (e): e is SynthesisTranscriptEvent =>
-        e.type === 'session_event' && e.event === 'synthesis',
-    ).length;
-    expect(synthCount).toBe(0);
+    expect(synthesisEntries(second)).toHaveLength(0);
   });
 
   it('should end active sessions without writing synthesis', () => {
     const state = startSession();
     const ended = unwrapOk(applyEnd(state, {}, NOW));
-    const synthCount = ended.transcript.filter(
-      (e): e is SynthesisTranscriptEvent =>
-        e.type === 'session_event' && e.event === 'synthesis',
-    ).length;
-    expect(synthCount).toBe(0);
+    expect(synthesisEntries(ended)).toHaveLength(0);
   });
 });
 
@@ -520,12 +512,9 @@ describe('applySynthesis', () => {
     const state = startSession();
     const ended = unwrapOk(applyEnd(state, {}, NOW));
     const withSynthesis = unwrapOk(applySynthesis(ended, 'Final synthesis.', NOW));
-    const synthesisEvents = withSynthesis.transcript.filter(
-      (e): e is SynthesisTranscriptEvent =>
-        e.type === 'session_event' && e.event === 'synthesis',
-    );
-    expect(synthesisEvents).toHaveLength(1);
-    expect(synthesisEvents[0].detail).toBe('Final synthesis.');
+    const entries = synthesisEntries(withSynthesis);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].detail).toBe('Final synthesis.');
   });
 
   it('should be idempotent on duplicate synthesis calls', () => {
@@ -542,11 +531,7 @@ describe('termination/synthesis separation regression', () => {
     const state = startSession();
     const ended = unwrapOk(applyEnd(state, {}, NOW));
     const withSynthesis = unwrapOk(applySynthesis(ended, 'Final synthesis.', NOW));
-    const synthesisEvents = withSynthesis.transcript.filter(
-      (e): e is SynthesisTranscriptEvent =>
-        e.type === 'session_event' && e.event === 'synthesis',
-    );
-    expect(synthesisEvents).toHaveLength(1);
+    expect(synthesisEntries(withSynthesis)).toHaveLength(1);
   });
 
   it('should keep synthesis first-write-wins across multiple callers', () => {
@@ -554,12 +539,9 @@ describe('termination/synthesis separation regression', () => {
     const ended = unwrapOk(applyEnd(state, {}, NOW));
     const first = unwrapOk(applySynthesis(ended, 'Discuss-lead synthesis.', NOW));
     const second = unwrapOk(applySynthesis(first, 'Main-context synthesis.', NOW));
-    const synthesisEvents = second.transcript.filter(
-      (e): e is SynthesisTranscriptEvent =>
-        e.type === 'session_event' && e.event === 'synthesis',
-    );
-    expect(synthesisEvents).toHaveLength(1);
-    expect(synthesisEvents[0].detail).toBe('Discuss-lead synthesis.');
+    const entries = synthesisEntries(second);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].detail).toBe('Discuss-lead synthesis.');
   });
 });
 
@@ -1391,9 +1373,7 @@ describe('endContent integration: state machine leaves end_reason_content to cal
 const LATER = '2026-02-21T11:00:00.000Z';
 
 function makeEndedState(): DiscussState {
-  const res = applyEnd(startSession(), {}, NOW);
-  if (!res.ok) throw new Error('applyEnd failed');
-  return res.value;
+  return unwrapOk(applyEnd(startSession(), {}, NOW));
 }
 
 function makeSpeakingState(): DiscussState {

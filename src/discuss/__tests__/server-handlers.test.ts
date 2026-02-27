@@ -11,7 +11,9 @@ import type { DiscussState, Result } from '../types.js';
 
 const T = 0.1;
 const sec = (s: number): number => Math.max(1, Math.round(s * T));
-type SynthesisTranscriptEvent = Extract<DiscussState['transcript'][number], { type: 'session_event' }> & { event: 'synthesis' };
+type SynthesisTranscriptEvent = Extract<DiscussState['transcript'][number], { type: 'session_event' }> & {
+  event: 'synthesis';
+};
 
 let tmpDir: string;
 let store: SessionStore;
@@ -101,6 +103,14 @@ function synthesisEvents(state: DiscussState): SynthesisTranscriptEvent[] {
     (entry): entry is SynthesisTranscriptEvent =>
       entry.type === 'session_event' && entry.event === 'synthesis',
   );
+}
+
+function expectSingleSynthesis(state: DiscussState, expectedDetail?: string): void {
+  const events = synthesisEvents(state);
+  expect(events).toHaveLength(1);
+  if (expectedDetail !== undefined) {
+    expect(events[0].detail).toBe(expectedDetail);
+  }
 }
 
 async function overwriteState(sid: string, mutate: (state: DiscussState) => DiscussState): Promise<void> {
@@ -662,10 +672,7 @@ describe('discuss_lead tool: transcript/state/epoch/end', () => {
     await handleToolCall('discuss_lead', { op: '_7_end', session: sid }, store);
     const result = await handleToolCall('discuss_lead', { op: '_8_synthesize', session: sid, synthesis: 'Final synthesis.' }, store);
     expect(parseResult(result)).toHaveProperty('status', 'ended');
-    const updated = store.load(requireSessionDir(sid));
-    const synth = synthesisEvents(updated);
-    expect(synth).toHaveLength(1);
-    expect(synth[0].detail).toBe('Final synthesis.');
+    expectSingleSynthesis(store.load(requireSessionDir(sid)), 'Final synthesis.');
   });
 
   it('should reject _8_synthesize when session is not ended', async () => {
@@ -680,10 +687,7 @@ describe('discuss_lead tool: transcript/state/epoch/end', () => {
     await handleToolCall('discuss_lead', { op: '_7_end', session: sid }, store);
     await handleToolCall('discuss_lead', { op: '_8_synthesize', session: sid, synthesis: 'First synthesis.' }, store);
     await handleToolCall('discuss_lead', { op: '_8_synthesize', session: sid, synthesis: 'Second synthesis.' }, store);
-    const updated = store.load(requireSessionDir(sid));
-    const synth = synthesisEvents(updated);
-    expect(synth).toHaveLength(1);
-    expect(synth[0].detail).toBe('First synthesis.');
+    expectSingleSynthesis(store.load(requireSessionDir(sid)), 'First synthesis.');
   });
 });
 
@@ -695,10 +699,7 @@ describe('handleSynthesize integration', () => {
     await handleToolCall('discuss_lead', { op: '_8_synthesize', session: sid, synthesis: 'Caller A synthesis.' }, store);
     await handleToolCall('discuss_lead', { op: '_8_synthesize', session: sid, synthesis: 'Caller B synthesis.' }, store);
 
-    const persisted = store.load(requireSessionDir(sid));
-    const synth = synthesisEvents(persisted);
-    expect(synth).toHaveLength(1);
-    expect(synth[0].detail).toBe('Caller A synthesis.');
+    expectSingleSynthesis(store.load(requireSessionDir(sid)), 'Caller A synthesis.');
   });
 });
 
@@ -1026,7 +1027,7 @@ describe('handler: concurrent _8_synthesize calls (race condition)', () => {
     expect(r2.isError).toBe(false);
     const sessionDir = store.resolveDir(sid);
     if (!sessionDir) throw new Error('missing session');
-    expect(synthesisEvents(store.load(sessionDir))).toHaveLength(1);
+    expectSingleSynthesis(store.load(sessionDir));
   });
 
   it('should not corrupt the synthesis text across concurrent callers', async () => {
@@ -1051,7 +1052,7 @@ describe('handler: concurrent _8_synthesize calls (race condition)', () => {
     ]);
     const sessionDir = store.resolveDir(sid);
     if (!sessionDir) throw new Error('missing session');
-    expect(synthesisEvents(store.load(sessionDir))).toHaveLength(1);
+    expectSingleSynthesis(store.load(sessionDir));
   });
 });
 

@@ -448,23 +448,25 @@ describe('_2_create observer participation schema', () => {
   });
 });
 
+const SYNTHESIS_SESSION = '260221-1000-a3x7';
+
 // adversarial tests (red-attacker provenance)
 describe('schema: _8_synthesize whitespace-only synthesis', () => {
   it('should accept whitespace-only synthesis string (min(1) does not trim)', () => {
     expect(() =>
-      discussLeadOpSchema.parse({ op: '_8_synthesize', session: '260221-1000-a3x7', synthesis: '   ' }),
+      discussLeadOpSchema.parse({ op: '_8_synthesize', session: SYNTHESIS_SESSION, synthesis: '   ' }),
     ).not.toThrow();
   });
 
   it('should accept tab-only synthesis string', () => {
     expect(() =>
-      discussLeadOpSchema.parse({ op: '_8_synthesize', session: '260221-1000-a3x7', synthesis: '\t' }),
+      discussLeadOpSchema.parse({ op: '_8_synthesize', session: SYNTHESIS_SESSION, synthesis: '\t' }),
     ).not.toThrow();
   });
 
   it('should accept newline-only synthesis string', () => {
     expect(() =>
-      discussLeadOpSchema.parse({ op: '_8_synthesize', session: '260221-1000-a3x7', synthesis: '\n' }),
+      discussLeadOpSchema.parse({ op: '_8_synthesize', session: SYNTHESIS_SESSION, synthesis: '\n' }),
     ).not.toThrow();
   });
 });
@@ -475,7 +477,7 @@ describe('schema: _8_synthesize strict field rejection', () => {
     expect(() =>
       discussLeadOpSchema.parse({
         op: '_8_synthesize',
-        session: '260221-1000-a3x7',
+        session: SYNTHESIS_SESSION,
         synthesis: 'Valid synthesis.',
         force: true,
       } as never),
@@ -486,7 +488,7 @@ describe('schema: _8_synthesize strict field rejection', () => {
     expect(() =>
       discussLeadOpSchema.parse({
         op: '_8_synthesize',
-        session: '260221-1000-a3x7',
+        session: SYNTHESIS_SESSION,
         synthesis: 'Valid synthesis.',
         reason: 'leaked_reason',
       } as never),
