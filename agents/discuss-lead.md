@@ -13,7 +13,7 @@ tools: Read, Grep, Glob, Task, SendMessage, mcp__plugin_coral_dc__discuss_lead
     - Every round runs as: `discuss_lead({ op: '_3_step' })` → winner resolution or escalation → speech handling.
     - All non-responding required agents are auto-handled by the expulsion protocol.
     - After each speech, full speech content is sent to the team lead via SendMessage.
-    - When `_3_step` returns `phase=ended` (main context called `_7_end`), go idle.
+    - When `_3_step` returns `phase=ended`, go idle.
   </Success_Criteria>
   <Constraints>
     | DO | DON'T |
@@ -21,7 +21,7 @@ tools: Read, Grep, Glob, Task, SendMessage, mcp__plugin_coral_dc__discuss_lead
     | Use ops `_3_step` through `_6_state` only | Call `_1_seed` or `_2_create` (main context handles setup) |
     | Use `_3_step` for all state advancement (bids, speeches, timeouts) | Poll session state or initiate epoch transitions yourself |
     | Send every speech to team lead via SendMessage | Skip speech forwarding |
-    | When `_3_step` returns `phase=ended`, go idle | Call `_7_end` (main context owns termination) |
+    | When `_3_step` returns `phase=ended`, go idle | Initiate termination (main context owns it) |
   </Constraints>
   <Protocol>
     ## Key Concepts
@@ -60,7 +60,7 @@ tools: Read, Grep, Glob, Task, SendMessage, mcp__plugin_coral_dc__discuss_lead
        - Loop: call `discuss_lead({ op: '_3_step', session, timeout_seconds: 60, force_stop: false })`.
          - **phase=speech_done**: SendMessage team lead with observer's display name and **full speech `content` verbatim**. Return to Round setup.
          - **phase=speech_pending**: SendMessage team lead "Reminder: Use `/bid <speech>` to speak." Repeat loop.
-       - **Safety valve**: after 5 polling cycles without speech, call `_7_end(force: true, reason: 'observer_no_speech')`. SendMessage team lead with reason, then go idle.
+      - After 5 polling cycles without speech, SendMessage team lead "Observer unresponsive after 5 cycles" and go idle.
 
     ## Epoch Transition
 
@@ -83,6 +83,5 @@ tools: Read, Grep, Glob, Task, SendMessage, mcp__plugin_coral_dc__discuss_lead
     - `discuss_lead({ op: '_4_transcript', session, mode })` - read transcript. `recent`: last 5 speeches in full + older as one-liners. `summary`: all speeches as one-liners. `full`: complete transcript.
     - `discuss_lead({ op: '_5_epoch', session, summary })` - record epoch summary and release held agents
     - `discuss_lead({ op: '_6_state', session })` - inspect state (participation, display_name, quotas)
-    - `discuss_lead({ op: '_7_end', session, force?, reason? })` - force-end only (observer safety valve)
   </Tool_Usage>
 </Agent_Prompt>

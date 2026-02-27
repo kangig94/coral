@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { SessionStore } from './session-store.js';
 import {
   applyEnd,
+  applySynthesis,
   applyEpochSummary,
   initSession,
   DEFAULT_BID_THRESHOLD,
@@ -81,7 +82,7 @@ export const tools = [
   {
     name: 'discuss_lead',
     description:
-      'Discussion moderator tool. Ops: _1_seed (persona sampling), _2_create, _3_step (bid collect / speech wait), _4_transcript, _5_epoch, _6_state, _7_end.',
+      'Discussion moderator tool. Ops: _1_seed (persona sampling), _2_create, _3_step (bid collect / speech wait), _4_transcript, _5_epoch, _6_state, _7_end, _8_synthesize.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -151,7 +152,7 @@ export const tools = [
         mode: { type: 'string', enum: ['full', 'recent', 'summary'], description: '_4_transcript' },
         last_n: { type: 'integer', minimum: 1, maximum: 50, description: 'Override recent turns (_4_transcript)' },
         summary: { type: 'string', description: 'Epoch summary (_5_epoch)' },
-        synthesis: { type: 'string', description: 'Synthesis text (_7_end)' },
+        synthesis: { type: 'string', description: 'Synthesis text (_8_synthesize)' },
         force: { type: 'boolean', description: 'Force end during speaking (_7_end)' },
         reason: { type: 'string', description: 'Force reason (_7_end)' },
       },
@@ -286,7 +287,6 @@ async function handleEnd(
       {
         force: input.force,
         reason: input.reason,
-        synthesis: input.synthesis,
       },
       nowIsoString(),
     );
@@ -298,6 +298,26 @@ async function handleEnd(
   });
 
   return resultToMcp(ended);
+}
+
+async function handleSynthesize(
+  input: Extract<DiscussLeadOpInput, { op: '_8_synthesize' }>,
+  store: SessionStore,
+): Promise<McpResult> {
+  const sessionDir = store.resolveOrError(input.session);
+  if (typeof sessionDir !== 'string') return sessionDir;
+
+  const synthesized = await store.withLock<Result<{ status: string }>>(sessionDir, async () => {
+    const state = store.load(sessionDir);
+    const result = applySynthesis(state, input.synthesis, nowIsoString());
+    if (!result.ok) return result;
+    if (result.value !== state) {
+      store.save(sessionDir, result.value);
+    }
+    return { ok: true, value: { status: result.value.status } };
+  });
+
+  return resultToMcp(synthesized);
 }
 
 async function handleDiscussLeadOp(input: DiscussLeadOpInput, store: SessionStore): Promise<McpResult> {
@@ -316,6 +336,8 @@ async function handleDiscussLeadOp(input: DiscussLeadOpInput, store: SessionStor
       return handleState(input, store);
     case '_7_end':
       return handleEnd(input, store);
+    case '_8_synthesize':
+      return handleSynthesize(input, store);
     default:
       return jsonResult({ error: 'invalid_op' });
   }

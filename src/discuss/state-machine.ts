@@ -590,28 +590,14 @@ export function applyEpochSummary(
 
 export function applyEnd(
   state: DiscussState,
-  opts: { force?: boolean; reason?: string; synthesis?: string },
+  opts: { force?: boolean; reason?: string },
   now: string,
 ): Result<DiscussState> {
   if (state.status === 'ended') {
-    if (!opts.synthesis) return { ok: true, value: state };
-
-    const hasSynthesis = state.transcript.some(
-      (e) => e.type === 'session_event' && e.event === 'synthesis',
-    );
-    if (hasSynthesis) return { ok: true, value: state };
-
-    const entry: TranscriptEntry = {
-      type: 'session_event',
-      epoch: state.epoch,
-      ts: now,
-      event: 'synthesis',
-      detail: opts.synthesis,
-    };
-    return { ok: true, value: appendEntry(state, entry, now) };
+    return { ok: true, value: state };
   }
 
-  const { force = false, reason, synthesis } = opts;
+  const { force = false, reason } = opts;
   const entries: TranscriptEntry[] = [];
 
   if (state.status === 'speaking' && !force) {
@@ -625,16 +611,6 @@ export function applyEnd(
       ts: now,
       event: 'force_end',
       detail: `Force-ended during speech by ${state.current_speaker}. Reason: ${reason}`,
-    });
-  }
-
-  if (synthesis) {
-    entries.push({
-      type: 'session_event',
-      epoch: state.epoch,
-      ts: now,
-      event: 'synthesis',
-      detail: synthesis,
     });
   }
 
@@ -652,4 +628,31 @@ export function applyEnd(
   }
 
   return { ok: true, value: nextState };
+}
+
+export function applySynthesis(
+  state: DiscussState,
+  synthesis: string,
+  now: string,
+): Result<DiscussState> {
+  if (state.status !== 'ended') {
+    return { ok: false, error: 'not_ended' };
+  }
+
+  const hasSynthesis = state.transcript.some(
+    (e) => e.type === 'session_event' && e.event === 'synthesis',
+  );
+  if (hasSynthesis) {
+    return { ok: true, value: state };
+  }
+
+  const entry: TranscriptEntry = {
+    type: 'session_event',
+    epoch: state.epoch,
+    ts: now,
+    event: 'synthesis',
+    detail: synthesis,
+  };
+
+  return { ok: true, value: appendEntry(state, entry, now) };
 }

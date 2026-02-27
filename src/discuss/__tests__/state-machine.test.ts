@@ -9,6 +9,7 @@ import {
   applyExpel,
   applyEpochSummary,
   applyEnd,
+  applySynthesis,
   endContent,
   computeEffectiveBids,
   findLastSpeaker,
@@ -20,6 +21,7 @@ import type { AgentState, DiscussState, TranscriptEntry } from '../types.js';
 import { noEligibleParticipants } from '../wait.js';
 
 const NOW = '2026-02-21T10:00:00.000Z';
+type SynthesisTranscriptEvent = Extract<TranscriptEntry, { type: 'session_event' }> & { event: 'synthesis' };
 
 const TWO_AGENTS = [
   { name: 'alice', persona: '# Alice Architect — Senior Architect\nExperienced architect.', participation: 'required' as const },
@@ -487,21 +489,77 @@ describe('applyEnd', () => {
     const ended = unwrapOk(applyEnd(state, {}, NOW));
     const second = unwrapOk(applyEnd(ended, {}, NOW));
     expect(second).toEqual(ended);
-  });
-
-  it('should append synthesis only once on already-ended session', () => {
-    const state = startSession();
-    const ended = unwrapOk(applyEnd(state, {}, NOW));
-
-    const first = unwrapOk(applyEnd(ended, { synthesis: 'Final conclusion.' }, NOW));
-
-    const second = unwrapOk(applyEnd(first, { synthesis: 'Another conclusion should be ignored.' }, NOW));
-
     const synthCount = second.transcript.filter(
-      (e): e is Extract<TranscriptEntry, { type: 'session_event'; event: 'synthesis'; detail: string }> =>
+      (e): e is SynthesisTranscriptEvent =>
         e.type === 'session_event' && e.event === 'synthesis',
     ).length;
-    expect(synthCount).toBe(1);
+    expect(synthCount).toBe(0);
+  });
+
+  it('should end active sessions without writing synthesis', () => {
+    const state = startSession();
+    const ended = unwrapOk(applyEnd(state, {}, NOW));
+    const synthCount = ended.transcript.filter(
+      (e): e is SynthesisTranscriptEvent =>
+        e.type === 'session_event' && e.event === 'synthesis',
+    ).length;
+    expect(synthCount).toBe(0);
+  });
+});
+
+describe('applySynthesis', () => {
+  it('should reject synthesis when session is not ended', () => {
+    const state = startSession();
+    const result = applySynthesis(state, 'Final synthesis.', NOW);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('not_ended');
+  });
+
+  it('should append synthesis on ended session', () => {
+    const state = startSession();
+    const ended = unwrapOk(applyEnd(state, {}, NOW));
+    const withSynthesis = unwrapOk(applySynthesis(ended, 'Final synthesis.', NOW));
+    const synthesisEvents = withSynthesis.transcript.filter(
+      (e): e is SynthesisTranscriptEvent =>
+        e.type === 'session_event' && e.event === 'synthesis',
+    );
+    expect(synthesisEvents).toHaveLength(1);
+    expect(synthesisEvents[0].detail).toBe('Final synthesis.');
+  });
+
+  it('should be idempotent on duplicate synthesis calls', () => {
+    const state = startSession();
+    const ended = unwrapOk(applyEnd(state, {}, NOW));
+    const first = unwrapOk(applySynthesis(ended, 'First synthesis.', NOW));
+    const second = unwrapOk(applySynthesis(first, 'Second synthesis should be ignored.', NOW));
+    expect(second).toEqual(first);
+  });
+});
+
+describe('termination/synthesis separation regression', () => {
+  it('should enforce two-step flow with exactly one synthesis entry', () => {
+    const state = startSession();
+    const ended = unwrapOk(applyEnd(state, {}, NOW));
+    const withSynthesis = unwrapOk(applySynthesis(ended, 'Final synthesis.', NOW));
+    const synthesisEvents = withSynthesis.transcript.filter(
+      (e): e is SynthesisTranscriptEvent =>
+        e.type === 'session_event' && e.event === 'synthesis',
+    );
+    expect(synthesisEvents).toHaveLength(1);
+  });
+
+  it('should keep synthesis first-write-wins across multiple callers', () => {
+    const state = startSession();
+    const ended = unwrapOk(applyEnd(state, {}, NOW));
+    const first = unwrapOk(applySynthesis(ended, 'Discuss-lead synthesis.', NOW));
+    const second = unwrapOk(applySynthesis(first, 'Main-context synthesis.', NOW));
+    const synthesisEvents = second.transcript.filter(
+      (e): e is SynthesisTranscriptEvent =>
+        e.type === 'session_event' && e.event === 'synthesis',
+    );
+    expect(synthesisEvents).toHaveLength(1);
+    expect(synthesisEvents[0].detail).toBe('Discuss-lead synthesis.');
   });
 });
 
@@ -1327,5 +1385,133 @@ describe('endContent integration: state machine leaves end_reason_content to cal
   it('end_reason_content on DiscussState is null until explicitly set by the caller', () => {
     const state = initSession({ topic: 'Content Test', agents: TWO_AGENTS, min_bid_delay_ms: 0 }, NOW);
     expect(state.end_reason_content).toBeNull();
+  });
+});
+
+const LATER = '2026-02-21T11:00:00.000Z';
+
+function makeEndedState(): DiscussState {
+  const res = applyEnd(startSession(), {}, NOW);
+  if (!res.ok) throw new Error('applyEnd failed');
+  return res.value;
+}
+
+function makeSpeakingState(): DiscussState {
+  return { ...startSession(), status: 'speaking' as const, current_speaker: 'alice', speaker_type: 'quota' as const };
+}
+
+function synthesisEntries(state: DiscussState): SynthesisTranscriptEvent[] {
+  return state.transcript.filter(
+    (e): e is SynthesisTranscriptEvent => e.type === 'session_event' && e.event === 'synthesis',
+  );
+}
+
+// adversarial tests (red-attacker provenance)
+describe('applySynthesis: non-ended status variants', () => {
+  it('should return not_ended error when session is in setup status', () => {
+    const state = makeSession();
+    expect(state.status).toBe('setup');
+    const result = applySynthesis(state, 'Premature synthesis.', NOW);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('not_ended');
+  });
+
+  it('should return not_ended error when session is in speaking status', () => {
+    const state = makeSpeakingState();
+    expect(state.status).toBe('speaking');
+    const result = applySynthesis(state, 'Mid-speech synthesis.', NOW);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('not_ended');
+  });
+});
+
+// adversarial tests (red-attacker provenance)
+describe('applySynthesis: idempotent reference identity', () => {
+  it('should return the exact same state object reference on second call', () => {
+    const ended = makeEndedState();
+    const first = applySynthesis(ended, 'First synthesis.', NOW);
+    if (!first.ok) throw new Error('first applySynthesis failed');
+    const second = applySynthesis(first.value, 'Second synthesis — must be ignored.', LATER);
+    if (!second.ok) throw new Error('second applySynthesis failed');
+    expect(second.value).toBe(first.value);
+  });
+});
+
+// adversarial tests (red-attacker provenance)
+describe('applySynthesis: transcript mutation boundaries', () => {
+  it('should grow transcript by exactly one entry after synthesis', () => {
+    const ended = makeEndedState();
+    const priorLength = ended.transcript.length;
+    const result = applySynthesis(ended, 'Synthesis text.', NOW);
+    if (!result.ok) throw new Error('applySynthesis failed');
+    expect(result.value.transcript).toHaveLength(priorLength + 1);
+  });
+
+  it('should preserve all prior transcript entries unchanged after synthesis', () => {
+    const ended = makeEndedState();
+    const priorEntries = [...ended.transcript];
+    const result = applySynthesis(ended, 'Synthesis text.', NOW);
+    if (!result.ok) throw new Error('applySynthesis failed');
+    for (let i = 0; i < priorEntries.length; i++) {
+      expect(result.value.transcript[i]).toEqual(priorEntries[i]);
+    }
+  });
+
+  it('should not mutate the input state (pure function)', () => {
+    const ended = makeEndedState();
+    const originalLength = ended.transcript.length;
+    applySynthesis(ended, 'Synthesis text.', NOW);
+    expect(ended.transcript).toHaveLength(originalLength);
+  });
+});
+
+// adversarial tests (red-attacker provenance)
+describe('applySynthesis: synthesis transcript entry structure', () => {
+  it('should produce a session_event entry with event=synthesis', () => {
+    const ended = makeEndedState();
+    const result = applySynthesis(ended, 'My synthesis.', NOW);
+    if (!result.ok) throw new Error('applySynthesis failed');
+    const last = result.value.transcript[result.value.transcript.length - 1];
+    expect(last?.type).toBe('session_event');
+    if (last?.type !== 'session_event') return;
+    expect(last.event).toBe('synthesis');
+  });
+
+  it('should store the synthesis text verbatim in detail field', () => {
+    const ended = makeEndedState();
+    const synthesisText = 'Exact synthesis content — verbatim.';
+    const result = applySynthesis(ended, synthesisText, NOW);
+    if (!result.ok) throw new Error('applySynthesis failed');
+    expect(synthesisEntries(result.value)[0]?.detail).toBe(synthesisText);
+  });
+
+  it('should record the ts field exactly as the now parameter', () => {
+    const ended = makeEndedState();
+    const result = applySynthesis(ended, 'Synthesis.', LATER);
+    if (!result.ok) throw new Error('applySynthesis failed');
+    expect(synthesisEntries(result.value)[0]?.ts).toBe(LATER);
+  });
+
+  it('should record the epoch field from state at time of synthesis call', () => {
+    const ended = makeEndedState();
+    expect(ended.epoch).toBe(1);
+    const result = applySynthesis(ended, 'Synthesis.', NOW);
+    if (!result.ok) throw new Error('applySynthesis failed');
+    expect(synthesisEntries(result.value)[0]?.epoch).toBe(1);
+  });
+});
+
+// adversarial tests (red-attacker provenance)
+describe('applySynthesis: epoch correctness in multi-epoch session', () => {
+  it('should record epoch 2 in synthesis entry when session ended during epoch 2', () => {
+    const epoch2State: DiscussState = { ...startSession(), epoch: 2 };
+    const ended = applyEnd(epoch2State, {}, NOW);
+    if (!ended.ok) throw new Error('applyEnd failed');
+    expect(ended.value.epoch).toBe(2);
+    const result = applySynthesis(ended.value, 'Epoch-2 synthesis.', NOW);
+    if (!result.ok) throw new Error('applySynthesis failed');
+    expect(synthesisEntries(result.value)[0]?.epoch).toBe(2);
   });
 });

@@ -189,7 +189,7 @@ Pure functions on `TranscriptEntry[]`. Produces human-readable markdown with sof
 
 ### src/discuss/schemas.ts - Zod Input Validation
 
-Zod schemas for the two discuss MCP tools. `discussAgentOpSchema` is a discriminated union on `op` covering `bid` and `speak`. `discussLeadOpSchema` covers `_1_seed` through `_7_end`. Cross-field constraints are enforced in `server-handlers.ts` after Zod validation. See `src/discuss/schemas.ts`.
+Zod schemas for the two discuss MCP tools. `discussAgentOpSchema` is a discriminated union on `op` covering `bid` and `speak`. `discussLeadOpSchema` covers `_1_seed` through `_8_synthesize`. Cross-field constraints are enforced in `server-handlers.ts` after Zod validation. See `src/discuss/schemas.ts`.
 
 ---
 
@@ -219,7 +219,7 @@ Implements the `handle3Step` moderator operation with phase decomposition (`boot
 
 ### src/discuss/server-handlers.ts - Tool Dispatch
 
-Thin router: Zod parsing (`parseToolInput`), environment config (`envInt`), and routing to `handleAgentOp` / `handle3Step` / inline op handlers. Per-op handlers `handle2Create` through `handle7End` live here for ops that don't warrant their own file. See `src/discuss/server-handlers.ts`.
+Thin router: Zod parsing (`parseToolInput`), environment config (`envInt`), and routing to `handleAgentOp` / `handle3Step` / inline op handlers. Per-op handlers `handle2Create` through `handle8Synthesize` live here for ops that don't warrant their own file. See `src/discuss/server-handlers.ts`.
 
 ---
 

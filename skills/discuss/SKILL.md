@@ -80,10 +80,11 @@ Before any other action, verify the Agent Teams environment:
 9. **On discussion end**: Main context owns termination. When convergence is reached:
    1. Call `discuss_lead({ op: '_4_transcript', session, mode: 'full' })` to read the full transcript.
    2. Compose a synthesis. Must include: Key Agreements, Key Splits, Recommended Resolution.
-   3. Call `discuss_lead({ op: '_7_end', session, synthesis })` to end the session and record the synthesis.
-   4. discuss-lead's next `_3_step` returns `phase=ended` → it goes idle.
-   5. Present the synthesis to the user.
-   6. If `--user`, delete `.claude/coral/discuss/active-user-session.json`.
+   3. Call `discuss_lead({ op: '_7_end', session })` to end the session.
+   4. Call `discuss_lead({ op: '_8_synthesize', session, synthesis })` to record the synthesis.
+   5. discuss-lead's next `_3_step` returns `phase=ended` → it goes idle.
+   6. Present the synthesis to the user.
+   7. If `--user`, delete `.claude/coral/discuss/active-user-session.json`.
 
 ## Context Enhancement
 

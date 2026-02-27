@@ -222,6 +222,29 @@ describe('discussLeadOpSchema', () => {
     expect(result.force).toBe(true);
   });
 
+  it('should reject _7_end with legacy synthesis field', () => {
+    expect(() =>
+      discussLeadOpSchema.parse({ op: '_7_end', session, synthesis: 'legacy' } as never),
+    ).toThrow();
+  });
+
+  it('should parse _8_synthesize op', () => {
+    const result = discussLeadOpSchema.parse({ op: '_8_synthesize', session, synthesis: 'Final synthesis.' });
+    expect(result.op).toBe('_8_synthesize');
+  });
+
+  it('should reject _8_synthesize without synthesis', () => {
+    expect(() =>
+      discussLeadOpSchema.parse({ op: '_8_synthesize', session } as never),
+    ).toThrow();
+  });
+
+  it('should reject _8_synthesize with empty synthesis', () => {
+    expect(() =>
+      discussLeadOpSchema.parse({ op: '_8_synthesize', session, synthesis: '' } as never),
+    ).toThrow();
+  });
+
   it('should parse create with quorum constraints', () => {
     expect(() => discussLeadOpSchema.parse({ ...baseCreate, agents: [baseCreate.agents[0]] })).toThrow();
     expect(() =>
@@ -400,7 +423,6 @@ describe('_2_create observer participation schema', () => {
     ).toThrow();
   });
 
-  // adversarial tests (red-attacker provenance)
   it('should parse _2_create with all observers (schema allows, handler rejects)', () => {
     const parsed = discussLeadOpSchema.parse({
       op: '_2_create',
@@ -423,5 +445,51 @@ describe('_2_create observer participation schema', () => {
     });
     if (parsed.op !== '_2_create') return;
     expect(parsed.min_bid_delay_ms).toBe(30000);
+  });
+});
+
+// adversarial tests (red-attacker provenance)
+describe('schema: _8_synthesize whitespace-only synthesis', () => {
+  it('should accept whitespace-only synthesis string (min(1) does not trim)', () => {
+    expect(() =>
+      discussLeadOpSchema.parse({ op: '_8_synthesize', session: '260221-1000-a3x7', synthesis: '   ' }),
+    ).not.toThrow();
+  });
+
+  it('should accept tab-only synthesis string', () => {
+    expect(() =>
+      discussLeadOpSchema.parse({ op: '_8_synthesize', session: '260221-1000-a3x7', synthesis: '\t' }),
+    ).not.toThrow();
+  });
+
+  it('should accept newline-only synthesis string', () => {
+    expect(() =>
+      discussLeadOpSchema.parse({ op: '_8_synthesize', session: '260221-1000-a3x7', synthesis: '\n' }),
+    ).not.toThrow();
+  });
+});
+
+// adversarial tests (red-attacker provenance)
+describe('schema: _8_synthesize strict field rejection', () => {
+  it('should reject _8_synthesize with extra unknown field (strict schema)', () => {
+    expect(() =>
+      discussLeadOpSchema.parse({
+        op: '_8_synthesize',
+        session: '260221-1000-a3x7',
+        synthesis: 'Valid synthesis.',
+        force: true,
+      } as never),
+    ).toThrow();
+  });
+
+  it('should reject _8_synthesize with _7_end fields leaked in', () => {
+    expect(() =>
+      discussLeadOpSchema.parse({
+        op: '_8_synthesize',
+        session: '260221-1000-a3x7',
+        synthesis: 'Valid synthesis.',
+        reason: 'leaked_reason',
+      } as never),
+    ).toThrow();
   });
 });

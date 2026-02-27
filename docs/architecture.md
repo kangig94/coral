@@ -103,7 +103,8 @@ User → /coral:discuss "AI ethics in healthcare"
           → ended: loop exits
         → Discuss agents call discuss({ op: "bid", score }) each round
         → Winner calls discuss({ op: "speak", content })
-     → discuss_lead({ op: "_7_end", synthesis }) → final transcript via _4_transcript
+     → final transcript via discuss_lead({ op: "_4_transcript", mode: "full" })
+     → discuss_lead({ op: "_7_end", session }) → discuss_lead({ op: "_8_synthesize", session, synthesis })
      → Present synthesis to user, shutdown teammates
 ```
 
