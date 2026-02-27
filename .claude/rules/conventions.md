@@ -72,3 +72,10 @@ PR procedure (dev → main):
 - Single blank line between top-level declarations
 - JSDoc on exported functions and complex internal functions
 - Comments explain WHY, not WHAT
+
+## Localized Documentation
+
+- `README.md` changes must be reflected in all `README.*.md` translations (e.g., `README.ko.md`)
+- Keep structure and section order identical across versions
+- Code blocks, URLs, and command examples stay in English — translate only prose
+- Write natural prose in the target language, not literal translations — avoid "translationese"
