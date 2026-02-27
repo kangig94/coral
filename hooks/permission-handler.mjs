@@ -7,8 +7,8 @@
  */
 
 const ALLOWED_PATTERNS = [
-  /^mkdir -p .+\.claude\/coral\/tmp/,
-  /^touch .+\.claude\/coral\/tmp\//,
+  /^mkdir -p \.claude\/coral\/tmp$/,
+  /^touch \.claude\/coral\/tmp\//,
 ];
 
 try {
