@@ -119,7 +119,7 @@ my-project/
 
 ```
 /coral:plan add retry logic to the API client
-/coral:debug why does session lookup return null?
+/coral:bugfix why does session lookup return null?
 /coral:ralph implement the caching layer
 ```
 
@@ -146,7 +146,7 @@ Codex를 활용한 교차 모델 워크플로우:
 | `/coral:analyze` | 심층 분석 및 조사 | 선택 |
 | `/coral:plan` | 아키텍트/크리틱 리뷰 포함 계획 | 선택 |
 | `/coral:ralph` | 검증 포함 영속적 실행. `--red`로 적대적 테스트 | 선택 |
-| `/coral:debug` | 버그 진단, 계획, 수정 실행 | 선택 |
+| `/coral:bugfix` | 버그 진단, 계획, 수정 실행 | 선택 |
 | `/coral:code-simplify` | 코드 명확성 향상 및 정리 | 선택 |
 | `/coral:codex` | Codex CLI 직접 실행 (세션 유지) | 필수 |
 | `/coral:init-project` | 프로젝트 초기화 오케스트레이터 | - |

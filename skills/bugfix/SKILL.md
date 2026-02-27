@@ -1,5 +1,5 @@
 ---
-name: debug
+name: bugfix
 description: "Systematic bug diagnosis, planning, and fix execution."
 argument-hint: "[--codex] <bug description or error message>"
 ---

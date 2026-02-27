@@ -68,7 +68,7 @@ Use Claude's native tools (Read, Grep, Glob, LSP) for direct analysis. Read-only
 
 **Role**: Persistent task executor that loops until work is fully complete with verified evidence. Enforces the Iron Law: no completion claims without fresh verification evidence. Includes a verification gate (IDENTIFY → RUN → READ → VERIFY → CLAIM), iteration cap, and circuit breaker.
 
-> Note: ralph has no agent file. Skills (`/coral:ralph`, `/coral:debug`) and callers (`init-project`) read PROTOCOL.md directly.
+> Note: ralph has no agent file. Skills (`/coral:ralph`, `/coral:bugfix`) and callers (`init-project`) read PROTOCOL.md directly.
 
 ---
 
