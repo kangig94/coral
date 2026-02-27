@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { CodexExecResult } from '../types.js';
 import { parseCodexJsonl } from './output-parser.js';
-import { detectCodexCli } from './cli-detection.js';
+import { detectCodexCli, type CliInfo } from './cli-detection.js';
 
 const IDLE_TIMEOUT = 10 * 60 * 1000; // 10 minutes of inactivity
 const DEFAULT_MODEL = process.env.CORAL_CODEX_MODEL ?? 'gpt-5.3-codex';
@@ -204,9 +204,11 @@ async function executeCodex(
   cwd?: string,
   onEvent?: (line: string) => void,
   signal?: AbortSignal,
+  preChecked?: CliInfo & { available: true },
 ): Promise<CodexExecResult> {
-  const cli = await detectCodexCli();
-  if (!cli.available) throw new Error(cli.error!);
+  const cli = preChecked ?? await detectCodexCli();
+  if (!cli.available) throw new Error(cli.error);
+  if (cli.authState === 'unauthenticated') throw new Error(cli.authError);
 
   const start = Date.now();
   const { stdout, stderr, code, aborted } = await spawnCodex(args, prompt, cwd, onEvent, signal);
@@ -269,11 +271,12 @@ export async function executeOneShot(
   bypassSandbox = false,
   onEvent?: (line: string) => void,
   signal?: AbortSignal,
+  preChecked?: CliInfo & { available: true },
 ): Promise<CodexExecResult> {
   const resolvedModel = getModel(model);
   return executeCodex(
     ['exec', '-m', resolvedModel, ...baseFlags(bypassSandbox), ...extraFlags(reasoningEffort)],
-    prependClaudeMd(prompt), resolvedModel, cwd, onEvent, signal,
+    prependClaudeMd(prompt), resolvedModel, cwd, onEvent, signal, preChecked,
   );
 }
 
@@ -287,6 +290,7 @@ export async function executeResume(
   bypassSandbox = false,
   onEvent?: (line: string) => void,
   signal?: AbortSignal,
+  preChecked?: CliInfo & { available: true },
 ): Promise<CodexExecResult> {
   const resolvedModel = getModel(model);
   return executeCodex(
@@ -296,6 +300,7 @@ export async function executeResume(
     cwd,
     onEvent,
     signal,
+    preChecked,
   );
 }
 
@@ -309,9 +314,10 @@ export async function executeFork(
   bypassSandbox = false,
   onEvent?: (line: string) => void,
   signal?: AbortSignal,
+  preChecked?: CliInfo & { available: true },
 ): Promise<CodexExecResult> {
   const forkPrompt = prompt ?? 'Continue from where we left off.';
-  return executeResume(sessionId, forkPrompt, model, cwd, reasoningEffort, bypassSandbox, onEvent, signal);
+  return executeResume(sessionId, forkPrompt, model, cwd, reasoningEffort, bypassSandbox, onEvent, signal, preChecked);
 }
 
 // Test-only exports

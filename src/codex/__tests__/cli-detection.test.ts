@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { detectCodexCli, resetCliCache } from '../cli-detection.js';
 
 vi.mock('node:child_process', () => ({
@@ -8,51 +8,212 @@ vi.mock('node:child_process', () => ({
 import { execFile } from 'node:child_process';
 
 const mockExecFile = vi.mocked(execFile);
+
 type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
 
-function mockExecFileResult(error: Error | null, stdout: string): void {
-  mockExecFile.mockImplementation((_cmd, _args, _opts, callback) => {
-    (callback as ExecFileCallback)(error, stdout, '');
+let originalApiKey: string | undefined;
+
+function mockExecByArgs(responders: Record<string, (cb: ExecFileCallback) => void>): void {
+  mockExecFile.mockImplementation((_cmd, args, _opts, callback) => {
+    const key = Array.isArray(args) ? args.join(' ') : '';
+    const responder = responders[key];
+    if (!responder) throw new Error(`Unexpected codex args: ${key}`);
+    responder(callback as ExecFileCallback);
     return undefined as never;
   });
 }
 
 describe('detectCodexCli', () => {
   beforeEach(() => {
+    originalApiKey = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
     resetCliCache();
     mockExecFile.mockReset();
   });
 
-  it('returns available when codex is installed', async () => {
-    mockExecFileResult(null, 'codex 1.2.3\n');
-
-    const result = await detectCodexCli();
-    expect(result.available).toBe(true);
-    expect(result.version).toBe('codex 1.2.3');
+  afterEach(() => {
+    if (originalApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalApiKey;
   });
 
-  it('returns unavailable when codex is not found', async () => {
-    mockExecFileResult(new Error('ENOENT'), '');
+  it('returns authenticated when OPENAI_API_KEY is set', async () => {
+    process.env.OPENAI_API_KEY = 'sk-test';
+    mockExecByArgs({
+      '--version': (cb) => cb(null, 'codex 1.2.3\n', ''),
+    });
 
     const result = await detectCodexCli();
-    expect(result.available).toBe(false);
-    expect(result.error).toContain('not found');
-  });
 
-  it('caches the result (execFile called only once)', async () => {
-    mockExecFileResult(null, 'codex 1.0.0\n');
-
-    await detectCodexCli();
-    await detectCodexCli();
+    expect(result).toEqual({ available: true, version: 'codex 1.2.3', authState: 'authenticated' });
     expect(mockExecFile).toHaveBeenCalledTimes(1);
   });
 
-  it('re-detects after resetCliCache', async () => {
-    mockExecFileResult(null, 'codex 2.0.0\n');
+  it('returns authenticated when whoami exits 0', async () => {
+    mockExecByArgs({
+      '--version': (cb) => cb(null, 'codex 1.2.3\n', ''),
+      'whoami': (cb) => cb(null, 'user@example.com\n', ''),
+    });
+
+    const result = await detectCodexCli();
+
+    expect(result).toEqual({ available: true, version: 'codex 1.2.3', authState: 'authenticated' });
+  });
+
+  it('returns unauthenticated when stderr matches auth pattern', async () => {
+    mockExecByArgs({
+      '--version': (cb) => cb(null, 'codex 1.2.3\n', ''),
+      'whoami': (cb) => cb(new Error('exit 1'), '', 'Not logged in'),
+    });
+
+    const result = await detectCodexCli();
+
+    expect(result.available).toBe(true);
+    if (!result.available) throw new Error('expected available result');
+    expect(result.authState).toBe('unauthenticated');
+    if (result.authState !== 'unauthenticated') throw new Error('expected unauthenticated');
+    expect(result.authError).toContain('codex login');
+  });
+
+  it('returns unauthenticated when stdout alone matches auth pattern', async () => {
+    mockExecByArgs({
+      '--version': (cb) => cb(null, 'codex 1.2.3\n', ''),
+      'whoami': (cb) => cb(new Error('exit 1'), 'Missing API key', ''),
+    });
+
+    const result = await detectCodexCli();
+
+    expect(result.available).toBe(true);
+    if (!result.available) throw new Error('expected available result');
+    expect(result.authState).toBe('unauthenticated');
+  });
+
+  it('returns unknown when whoami fails without auth-pattern output', async () => {
+    mockExecByArgs({
+      '--version': (cb) => cb(null, 'codex 1.2.3\n', ''),
+      'whoami': (cb) => cb(new Error('exit 1'), '', 'unsupported command'),
+    });
+
+    const result = await detectCodexCli();
+
+    expect(result).toEqual({ available: true, version: 'codex 1.2.3', authState: 'unknown' });
+  });
+
+  it('returns unknown when whoami times out', async () => {
+    const timeoutError = Object.assign(new Error('ETIMEDOUT'), { killed: true });
+    mockExecByArgs({
+      '--version': (cb) => cb(null, 'codex 1.2.3\n', ''),
+      'whoami': (cb) => cb(timeoutError, '', ''),
+    });
+
+    const result = await detectCodexCli();
+
+    expect(result).toEqual({ available: true, version: 'codex 1.2.3', authState: 'unknown' });
+  });
+
+  it('returns unavailable when codex --version fails and skips auth probe', async () => {
+    mockExecByArgs({
+      '--version': (cb) => cb(new Error('ENOENT'), '', ''),
+    });
+
+    const result = await detectCodexCli();
+
+    expect(result.available).toBe(false);
+    if (result.available) throw new Error('expected unavailable result');
+    expect(result.error).toContain('not found');
+    expect(mockExecFile).toHaveBeenCalledTimes(1);
+    expect(mockExecFile.mock.calls[0]?.[1]).toEqual(['--version']);
+  });
+
+  it('caches positive auth permanently', async () => {
+    mockExecByArgs({
+      '--version': (cb) => cb(null, 'codex 1.0.0\n', ''),
+      'whoami': (cb) => cb(null, 'user@example.com\n', ''),
+    });
 
     await detectCodexCli();
-    resetCliCache();
     await detectCodexCli();
+
     expect(mockExecFile).toHaveBeenCalledTimes(2);
+    expect(mockExecFile.mock.calls.map((call) => (call[1] as string[]).join(' '))).toEqual(['--version', 'whoami']);
+  });
+
+  it('re-checks unauthenticated state on each call', async () => {
+    let whoamiCalls = 0;
+    mockExecByArgs({
+      '--version': (cb) => cb(null, 'codex 1.0.0\n', ''),
+      'whoami': (cb) => {
+        whoamiCalls += 1;
+        cb(new Error('exit 1'), '', 'authentication required');
+      },
+    });
+
+    const first = await detectCodexCli();
+    const second = await detectCodexCli();
+
+    expect(first.available && first.authState).toBe('unauthenticated');
+    expect(second.available && second.authState).toBe('unauthenticated');
+    expect(whoamiCalls).toBe(2);
+    expect(mockExecFile).toHaveBeenCalledTimes(3);
+  });
+
+  it('re-checks unknown auth state on each call', async () => {
+    let whoamiCalls = 0;
+    mockExecByArgs({
+      '--version': (cb) => cb(null, 'codex 1.0.0\n', ''),
+      'whoami': (cb) => {
+        whoamiCalls += 1;
+        cb(new Error('exit 1'), '', 'network unstable');
+      },
+    });
+
+    const first = await detectCodexCli();
+    const second = await detectCodexCli();
+
+    expect(first).toEqual({ available: true, version: 'codex 1.0.0', authState: 'unknown' });
+    expect(second).toEqual({ available: true, version: 'codex 1.0.0', authState: 'unknown' });
+    expect(whoamiCalls).toBe(2);
+    expect(mockExecFile).toHaveBeenCalledTimes(3);
+  });
+
+  it('deduplicates concurrent probes via a single in-flight promise', async () => {
+    let versionCalls = 0;
+    let whoamiCalls = 0;
+    mockExecByArgs({
+      '--version': (cb) => {
+        versionCalls += 1;
+        setTimeout(() => cb(null, 'codex 1.0.0\n', ''), 5);
+      },
+      'whoami': (cb) => {
+        whoamiCalls += 1;
+        setTimeout(() => cb(new Error('exit 1'), '', 'no api key'), 5);
+      },
+    });
+
+    const [a, b] = await Promise.all([detectCodexCli(), detectCodexCli()]);
+
+    expect(a.available && a.authState).toBe('unauthenticated');
+    expect(b.available && b.authState).toBe('unauthenticated');
+    expect(versionCalls).toBe(1);
+    expect(whoamiCalls).toBe(1);
+  });
+
+  it('resetCliCache clears confirmed auth and allows later unauthenticated detection', async () => {
+    process.env.OPENAI_API_KEY = 'sk-test';
+    mockExecByArgs({
+      '--version': (cb) => cb(null, 'codex 1.0.0\n', ''),
+      'whoami': (cb) => cb(new Error('exit 1'), '', 'not logged in'),
+    });
+
+    const first = await detectCodexCli();
+    expect(first).toEqual({ available: true, version: 'codex 1.0.0', authState: 'authenticated' });
+
+    resetCliCache();
+    delete process.env.OPENAI_API_KEY;
+
+    const second = await detectCodexCli();
+    expect(second.available).toBe(true);
+    if (!second.available) throw new Error('expected available result');
+    expect(second.authState).toBe('unauthenticated');
+    expect(mockExecFile).toHaveBeenCalledTimes(3);
   });
 });
