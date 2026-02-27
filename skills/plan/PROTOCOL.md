@@ -58,7 +58,7 @@
     **4a. Parallel Review**
     Spawn both reviewers simultaneously using the Task tool in a SINGLE message.
     Provide each: plan file path, working directory, relevant context.
-    Before spawning: read `HOW-REVIEW.md` (in this skill directory). Pass its full content as "specific review criteria" in each reviewer's Task prompt.
+    Instruct each reviewer to read `HOW-REVIEW.md` (in this skill directory) and apply it as review methodology.
 
     **4b. Session Tracking**
     When a reviewer returns a session identifier (`session: <id>`), save it keyed by reviewer role.
@@ -104,7 +104,7 @@
     Reviewers: `coral:architect` + `coral:critic`
 
     Repeat (max 5 rounds):
-    For all review steps below, also read and apply the HOW methodology files as described in Phase 1 (HOW-REVIEW.md at 4a, HOW-SYNTHESIZE.md at 4c, HOW-COMPLETE.md at 4f).
+    Apply the same HOW methodology as Phase 1: instruct reviewers to read HOW-REVIEW.md at 4a, read HOW-SYNTHESIZE.md yourself at 4c, read HOW-COMPLETE.md yourself at 4f.
     - **4a. Parallel Review**: Spawn `coral:architect` + `coral:critic` (NOT codex-proxy) simultaneously in a single message. Provide each: plan file path, working directory, relevant context.
     - **4c. Synthesize Feedback**: Same classification (Adopt/Adapt/Defer/Diverge).
     - **4d. Update Plan File**: Edit with Adopt/Adapt changes.
