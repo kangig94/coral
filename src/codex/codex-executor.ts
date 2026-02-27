@@ -259,6 +259,10 @@ function baseFlags(bypassSandbox: boolean): string[] {
     '--json',
     bypassSandbox ? '--dangerously-bypass-approvals-and-sandbox' : '--full-auto',
     '-c', 'web_search=live',
+    ...bypassSandbox ? [] : [
+      '-c', 'sandbox_mode=workspace-write',
+      '-c', 'sandbox_workspace_write.network_access=true',
+    ],
   ];
 }
 
