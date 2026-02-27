@@ -61,7 +61,7 @@ disallowedTools: Write, Edit
     2) Verify name-directory match:
        ```
        # CORRECT: skills/discuss/SKILL.md has name: discuss
-       # CORRECT: skills/codex-ralph/SKILL.md has name: codex-ralph
+       # CORRECT: skills/code-simplify/SKILL.md has name: code-simplify
 
        # WRONG: skills/plan/SKILL.md has name: planner
        ```

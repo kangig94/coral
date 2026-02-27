@@ -13,8 +13,8 @@ Coral provides two types of agents:
 | "review with codex architect" | Codex-bound (`codex-proxy` Role:architect) | Explicit "codex" keyword |
 | "review with critic" | Claude-native (`critic`) | Default |
 | "review with codex critic" | Codex-bound (`codex-proxy` Role:critic) | Explicit "codex" keyword |
-| "run ralph on this task" | Claude-native (`ralph`) | Default |
-| "codex ralph this task" | Codex-bound (`codex-proxy` Role:ralph) | Explicit "codex" keyword |
+| "run ralph on this task" | Skill (`/coral:ralph`) | Default — ralph is a skill/protocol, not an agent |
+| "codex ralph this task" | Skill (`/coral:ralph --codex`) | Delegates to Codex via `codex-proxy` Role:ralph |
 
 ---
 
@@ -64,21 +64,19 @@ Use Claude's native tools (Read, Grep, Glob, LSP) for direct analysis. Read-only
 
 ### ralph (Persistent Execution Loop)
 
-`agents/ralph.md` - sonnet
+`skills/ralph/PROTOCOL.md` - sonnet (protocol-only, no agent file)
 
-**Role**: Persistent task executor that loops until work is fully complete with verified evidence. Enforces the Iron Law: no completion claims without fresh verification evidence. Includes a verification gate (IDENTIFY → RUN → READ → VERIFY → CLAIM), iteration cap, and circuit breaker. Uses sonnet - ralph executes plans that have already been reviewed by architect/critic, so opus-level reasoning is unnecessary.
+**Role**: Persistent task executor that loops until work is fully complete with verified evidence. Enforces the Iron Law: no completion claims without fresh verification evidence. Includes a verification gate (IDENTIFY → RUN → READ → VERIFY → CLAIM), iteration cap, and circuit breaker.
 
-> Note: ralph does NOT have `disallowedTools` because it needs Write/Edit access to execute tasks.
+> Note: ralph has no agent file. Skills (`/coral:ralph`, `/coral:debug`) and callers (`init-project`) read PROTOCOL.md directly.
 
 ---
 
 ### planner (Multi-Round Planning)
 
-`agents/planner.md` - opus
+`skills/plan/PROTOCOL.md` - opus (protocol-only, no agent file)
 
-**Role**: Synthesizer that writes and verifies plans through multi-round review. Spawns parallel reviewer agents (architect+critic or codex variants), synthesizes feedback using Adopt/Adapt/Defer/Diverge classification, and iterates until no CRITICAL/HIGH findings remain. Supports multi-phase review (e.g., Codex loop then Claude cross-review). Never implements - planning only.
-
-> Note: planner does NOT have `disallowedTools` because it needs Write/Edit to create and update plan files.
+**Role**: Synthesizer that writes and verifies plans through multi-round review. Spawns parallel reviewer agents (architect+critic), synthesizes feedback using Adopt/Adapt/Defer/Diverge classification, and iterates until no CRITICAL/HIGH findings remain. With `--codex`, runs Codex review (Phase 1) before Claude review (Phase 2). Never implements - planning only.
 
 ---
 
@@ -96,7 +94,7 @@ Use Claude's native tools (Read, Grep, Glob, LSP) for direct analysis. Read-only
 
 `agents/red-attacker.md` - sonnet
 
-**Role**: Adversarial test specialist that attacks the implementer's blind spots by generating tests the implementer didn't think to write. Spawned as a background subagent via `/coral:ralph --red` or `/coral:codex-ralph --red`. Uses the opposite model from the implementer for ensemble diversity: when `implementer=claude`, delegates test generation to Codex; when `implementer=codex`, Claude generates directly. Gracefully degrades to Claude-direct with a warning if Codex is unavailable.
+**Role**: Adversarial test specialist that attacks the implementer's blind spots by generating tests the implementer didn't think to write. Spawned as a background subagent via `/coral:ralph --red`. Pass `--codex` to delegate the entire pipeline (analysis → coverage → attack vectors → test generation) to Codex via multi-round session; default is Claude-direct. Gracefully degrades to Claude-direct with a warning if Codex is unavailable. Ralph automatically passes the opposite `--codex` flag for cross-model diversity.
 
 **Investigation Protocol**: (1) Read existing tests to identify language/framework/naming patterns. (2) Read changed files and existing coverage; cross-reference `plan_context` to avoid duplicating planned tests. (3) Identify attack vectors (boundary, error path, ordering, type, state, security). (4) Write adversarial tests to the project's test directory with `red-<target>.<ext>` naming. (5) Output a coverage gap report.
 
@@ -157,9 +155,9 @@ Proxy agents that delegate work to Codex CLI. Tool restrictions limit them to co
 | `debugger` | Bug diagnosis via hypothesis testing, root cause tracing | xhigh |
 | `architect` | Architecture review, design patterns, code structure | xhigh |
 | `critic` | Plan/code critique, severity-rated verdicts (APPROVED/REVISE/REJECT) | xhigh |
-| `ralph` | Single-shot task execution; Claude controls the outer verification loop | high |
+| `ralph` | Single-shot task execution; Claude controls the outer verification loop | xhigh |
 
-> **Ralph note**: `codex-proxy` with `Role: ralph` executes one round. The caller (`/coral:codex-ralph` skill) controls the loop - spawning with the saved `session` for session continuity until all criteria pass.
+> **Ralph note**: `codex-proxy` with `Role: ralph` executes one round. The caller (`/coral:ralph --codex`) controls the loop - spawning with the saved `session` for session continuity until all criteria pass.
 
 ---
 
@@ -171,13 +169,13 @@ Three layers ensure Codex-bound agents always delegate to Codex CLI:
 
 The `SubagentStart` hook fires when any agent matching `(^|:)codex-` starts (e.g., `codex-proxy`, `coral:codex-proxy`). It injects delegation instructions via `additionalContext`.
 
-> Claude-native agents (`architect`, `critic`, `scanner`, `gap-finder`, `ralph`) lack the `codex-` prefix, so the hook never matches them.
+> Claude-native agents (`architect`, `critic`, `scanner`, `gap-finder`) lack the `codex-` prefix, so the hook never matches them.
 
 ### Layer 2: Tool Restriction (100% guarantee)
 
 The `tools` field in Codex-bound agent definitions restricts them to coral MCP tools only.
 
-> Claude-native agents have no `tools` restriction - they can use all read tools (`disallowedTools` only blocks writing). Ralph has no restrictions at all.
+> Claude-native agents have no `tools` restriction - they can use all read tools (`disallowedTools` only blocks writing).
 
 ### Layer 3: System Prompt (99%+ guarantee)
 

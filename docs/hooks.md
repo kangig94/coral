@@ -72,7 +72,7 @@ Script: `hooks/permission-handler.mjs`. Matcher: `Bash`. Auto-approves Coral's i
 - `mkdir -p .../.claude/coral/tmp` — creates the state file directory
 - `touch .../.claude/coral/tmp/...` — creates/refreshes state files (e.g., `kb-active`)
 
-**Why**: Skills (ralph, codex-ralph) use ```` ```! ```` blocks that execute `mkdir -p && touch` on load to set up state files. Without this hook, non-bypass users would be prompted for permission on every skill invocation — but the ```` ```! ```` auto-execution context has no interactive approval mechanism.
+**Why**: Skills (ralph, debug) use ```` ```! ```` blocks that execute `mkdir -p && touch` on load to set up state files. Without this hook, non-bypass users would be prompted for permission on every skill invocation — but the ```` ```! ```` auto-execution context has no interactive approval mechanism.
 
 **Security scope**: Only matches commands targeting `.claude/coral/tmp`. Chained commands (`&&`) are split and each part is checked independently. Commands not matching any pattern fall through to normal permission flow.
 
@@ -104,7 +104,7 @@ Script: `hooks/kb-memo-reminder.mjs`. Fires once per session (flag file keyed by
 
 Script: `hooks/kb-promote-reminder.mjs`. Fires on every response completion, but **skill-scoped** via state file.
 
-**State file pattern**: Skills (ralph, codex-ralph) create `.claude/coral/tmp/kb-active` on start. The Stop hook checks for this file — if absent, exits silently (normal conversation unaffected).
+**State file pattern**: Skills (ralph, debug) create `.claude/coral/tmp/kb-active` on start. The Stop hook checks for this file — if absent, exits silently (normal conversation unaffected).
 
 When state file exists and unprocessed memos found in `.claude/coral/memo/`:
 1. Delete state file (unconditionally)

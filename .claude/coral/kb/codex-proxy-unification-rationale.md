@@ -24,7 +24,7 @@ Callers include:
 agents/codex-architect.md
 agents/codex-critic.md
 agents/codex-analyst.md
-agents/codex-ralph.md
+agents/codex-proxy.md Role:ralph
 ```
 
 **Role-routing guarantee**: Callers always supply `Role: <name>` explicitly. Missing role → explicit error (no inference). This eliminates the fragile "infer from context" pattern that could silently default to the wrong behavior.

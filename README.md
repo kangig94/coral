@@ -135,7 +135,7 @@ cause, plan, fix. Persistent execution that verifies before declaring done.
 
 For cross-model workflows with Codex:
 ```
-/coral:coplan redesign the session management system
+/coral:plan --codex redesign the session management system
 /coral:codex review auth.ts for security issues
 ```
 
@@ -146,10 +146,8 @@ Consecutive `/coral:codex` calls continue the same session. Say "new" to start f
 | Skill | Description | Codex |
 |-------|-------------|:-----:|
 | `/coral:analyze` | Deep analysis and investigation | Optional |
-| `/coral:plan` | Planning with architect/critic review | - |
-| `/coral:coplan` | Cross-model planning (Codex reviews) | Optional |
-| `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | - |
-| `/coral:codex-ralph` | Persistent execution via Codex. `--red` for adversarial tests | Required |
+| `/coral:plan` | Planning with architect/critic review | Optional |
+| `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | Optional |
 | `/coral:code-simplify` | Simplify and refine code for clarity | Optional |
 | `/coral:debug` | Bug diagnosis, planning, and fix execution | Optional |
 | `/coral:init-project` | Project initialization orchestrator | - |
