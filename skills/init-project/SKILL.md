@@ -8,10 +8,10 @@ argument-hint: "[existing|new]"
 
 <Role>
   You are the Init-Project orchestrator. Execute this protocol directly at depth 0.
-  The analysis subagent, reviewers, and ralph are spawned as subagents at depth 1 (sequential, not nested).
+  The analysis subagent and reviewers are spawned as subagents at depth 1.
 
-  You are responsible for: project analysis, domain identification, writing the plan, running the review loop, orchestrating ralph, and final reporting.
-  You are NOT responsible for: generating artifact files (ralph does that) or reviewing the plan (architect/critic do that).
+  You are responsible for: project analysis, domain identification, writing the plan, running the review loop, generating artifacts (following ralph protocol directly), and final reporting.
+  You are NOT responsible for: reviewing the plan (architect/critic do that).
 </Role>
 <Why_This_Matters>
   A project setup that doesn't match the actual tech stack wastes time. Generating wrong agents, missing validation rules, or creating boilerplate docs that don't reference real code is worse than no setup. The analyze→plan→execute→verify pipeline ensures artifacts are tailored and verified before creation.
@@ -144,7 +144,7 @@ argument-hint: "[existing|new]"
          judged necessary based on project complexity, not from domain reference tables.
        * For existing docs identified in the analysis document's Documentation Assessment section, list specific sections
          to add. Existing docs are always enhanced (append sections, don't overwrite).
-       * **Doc content drafts** (existing projects): ralph executes the plan as-is, so the plan must
+       * **Doc content drafts** (existing projects): Phase 3 executes the plan as-is, so the plan must
          contain the actual content for each doc - not just "generate ARCHITECTURE.md". Include:
          - ARCHITECTURE.md: layer diagram (from the analysis document's Scan Report — dependency graph section), dependency rules,
            modification policy per directory, domain Architecture Sections. List only critical and
@@ -163,40 +163,25 @@ argument-hint: "[existing|new]"
   If plan file does not exist, STOP and report: "Phase 2 did not produce a plan file. Cannot proceed to Phase 3."
   Do NOT attempt to write a plan or execute without one.
 
-  Spawn ralph to generate all artifacts per the plan.
-  **Evidence gate**: Phase 3 is complete ONLY when ralph's execution report lists created files.
+  Read `skills/ralph/PROTOCOL.md` and follow the ralph execution protocol directly.
+  Same pattern as Phase 2 — you execute at depth 0, spawning subagents at depth 1 as needed.
+
+  You MUST read these reference files before generating any artifacts:
+  - `{skill_base_dir}/references/merge-policy.md` — per-artifact merge rules (skip/create/enhance)
+  - `{skill_base_dir}/references/writing-guide.md` — artifact quality standards
+
+  Use `{skill_base_dir}/templates/` and `{skill_base_dir}/references/` for template and reference lookups.
+  `{skill_base_dir}` is the absolute plugin path — do NOT use relative paths.
+  The analysis file (from Phase 1d) provides factual grounding, not content drafts.
+  Doc content comes from the plan — write what the plan specifies, not from your own analysis.
+
+  **Evidence gate**: Phase 3 is complete ONLY when generated files exist on disk.
   If no files were created, Phase 3 did not execute correctly.
-
-  ```
-  Task(subagent_type="general-purpose", prompt="""
-    Read skills/ralph/PROTOCOL.md and follow the ralph execution protocol.
-
-    Task: Generate all artifacts per the plan.
-    Plan file: {plan_file_path from Phase 2}
-    Working directory: {project root}
-    Templates: {skill_base_dir}/templates/
-    References: {skill_base_dir}/references/
-    Note: {skill_base_dir} is the absolute plugin path provided by the skill loading system.
-    Do NOT use relative paths — ralph runs in the target project directory, not the plugin directory.
-
-    Analysis file: {analysis_file_path from Phase 1d} (if existing project; omit for new projects)
-    The analysis file provides factual grounding (architecture, dependency graph, existing docs),
-    not content drafts.
-
-    You MUST read these reference files before generating any artifacts:
-    - {skill_base_dir}/references/merge-policy.md — per-artifact merge rules (skip/create/enhance)
-    - {skill_base_dir}/references/writing-guide.md — artifact quality standards
-
-    Doc content comes from the plan — ralph writes what the plan specifies, not from its own analysis.
-  """)
-  ```
-
-  Ralph returns: execution report (files created, files enhanced, errors).
 
   ## Phase 3.5: Verify Artifacts
 
   Spawn `coral:architect` and `coral:critic` in parallel to verify generated artifacts.
-  Provide each with: plan file path, list of generated/enhanced files from ralph's report.
+  Provide each with: plan file path, list of generated/enhanced files from Phase 3.
   Each outputs a findings table with severity (CRITICAL/HIGH/MEDIUM/LOW) and file:line references.
 
   **Architect** — structural correctness and content fidelity:
@@ -216,7 +201,7 @@ argument-hint: "[existing|new]"
   - Enhancement boundaries respected (only planned sections added)
 
   **Remediation**: Synthesize both reports. For CRITICAL/HIGH findings, fix directly (read → edit).
-  Do not re-spawn ralph for spot fixes.
+  Fix spot issues directly (read → edit).
 
   **Evidence gate**: Phase 3.5 is complete when neither reviewer has unresolved CRITICAL/HIGH findings.
 
@@ -243,7 +228,7 @@ argument-hint: "[existing|new]"
   ```
 </Protocol>
 <Output_Manifest>
-  After ralph completes and Phase 3.5 verification passes, confirm these files exist with correct content. Missing files or failed content checks indicate protocol failure.
+  After Phase 3 completes and Phase 3.5 verification passes, confirm these files exist with correct content. Missing files or failed content checks indicate protocol failure.
 
   | Category | File | Condition | Content Check |
   |----------|------|-----------|---------------|
@@ -271,7 +256,7 @@ argument-hint: "[existing|new]"
   | Spawn analysis subagent for existing projects | Perform inline scanning or guess the stack |
   | Write plan yourself, spawn reviewers at depth 1 | Delegate planning to a sub-agent (nesting limit) |
   | Spawn reviewers in parallel (single message) | Run reviewers sequentially |
-  | Pass deterministic rules to ralph | Let ralph decide merge policy |
+  | Read merge-policy.md and writing-guide.md before generating | Decide merge policy ad-hoc |
   | Report everything (created + enhanced) | Hide enhanced files from the user |
   | Follow merge policy exactly | Overwrite existing user files |
 </Constraints>
@@ -280,7 +265,7 @@ argument-hint: "[existing|new]"
   |----------|--------|
   | Analysis subagent fails or returns insufficient output | Read the analysis file anyway — extract what's available. For missing data, fall back to direct file reading (metadata, README, directory structure). Note gaps in Phase 4 report |
   | Reviewer spawn fails | Proceed with other reviewer's feedback; if both fail, do single self-review |
-  | Ralph sub-agent fails | Report error with partial results |
+  | Phase 3 generation fails partway | Report error with partial results |
   | Domain reference file not found | Proceed with available references, note the missing domain |
   | Template file not found | Report error for that artifact, continue with others |
   | File already exists | Enhance existing file (append missing sections, preserve existing content). Include in report as enhanced |
@@ -295,8 +280,8 @@ argument-hint: "[existing|new]"
   Spawning architect + critic in parallel for review...
   Round 1: architect APPROVED WITH CONDITIONS, critic REVISE. Synthesizing...
   Round 2: both APPROVED. Plan finalized.
-  Spawning ralph with plan file + deterministic generation rules...
-  Ralph returned: 12 files created, 2 enhanced (existing files).
+  Following ralph protocol directly: reading merge-policy.md + writing-guide.md...
+  Phase 3 complete: 12 files created, 2 enhanced (existing files).
   </Good>
   <Bad>
   "Good. The .claude/ directory is mostly clean... Let me create the directory structure
@@ -304,7 +289,7 @@ argument-hint: "[existing|new]"
   - WRONG: Used mkdir + Write directly. Skipped plan and review entirely.
     Evidence: No plan file in .claude/coral/plans/. No reviewer Task calls in output.
     Result: 4 standard rules files missing, no review.
-    Fix: Must write plan (Phase 2), run reviewer loop, then spawn ralph (Phase 3).
+    Fix: Must write plan (Phase 2), run reviewer loop, then follow ralph protocol (Phase 3).
   </Bad>
 </Examples>
 <Final_Checklist>
@@ -314,7 +299,7 @@ argument-hint: "[existing|new]"
   - Did I write the plan to a file (not just in memory)?
   - Did I spawn reviewers in parallel and synthesize their feedback?
   - Did the plan get reviewed (architect+critic, no CRITICAL/HIGH)?
-  - Did I pass deterministic generation rules to ralph?
+  - Did I read merge-policy.md and writing-guide.md before generating?
   - Did I report all created and enhanced files?
   - Did I follow merge policy (never overwrite existing files)?
   - Did I verify generated artifacts against writing-guide standards (Phase 3.5)?
