@@ -58,12 +58,24 @@ Before any other action, verify the Agent Teams environment:
 
 7. **If `--user`**: Return immediately to the user: "Discussion started! Use `/bid <score>, <thought>` to submit a bid, or `/bid <your speech>` when you win the floor."
 
-8. **Receive speeches and evaluate convergence**: Main context receives round-by-round speech messages from discuss-lead via SendMessage. Display each speech as it arrives. After each speech, evaluate whether the discussion should continue:
+8. **Receive speeches and evaluate convergence**: Main context receives round-by-round speech messages from discuss-lead via SendMessage. Display each speech as it arrives. After each complete round, apply a two-layer convergence assessment:
+
+   **Layer 1 — Procedural conditions** (necessary but not sufficient for termination):
    - Have all participants spoken at least once?
-   - Are new arguments still being introduced, or are positions stabilizing into refinement/repetition?
-   - Are there important rebuttals that remain unanswered?
-   - Does the user want the discussion to continue?
-   - **Default to continuing** — if uncertain, let the discussion run. Premature termination is worse than an extra round.
+   - Have major rebuttals been addressed (not necessarily resolved)?
+   - Has the user signaled they want to end?
+
+   **Layer 2 — Content-level convergence** (distinguish three states):
+
+   | State | Indicators | Action |
+   |-------|-----------|--------|
+   | **Active divergence** | New frameworks introduced, fundamentally new questions raised, positions shifting significantly | Continue — discussion is still opening up |
+   | **Productive refinement** | New distinctions within existing positions, cross-pollination between frameworks, meta-level questions emerging, participants revising their own positions | **Continue** — refinement produces genuine insight |
+   | **True repetition** | Same arguments restated without new evidence or distinctions, no participant revises their position, cross-engagement decreases | Convergence reached — proceed to step 9 |
+
+   **Refinement ≠ repetition.** A participant deepening their position with a new distinction (e.g., "saturation ≠ exhaustion") or a new meta-question (e.g., "who validates the validator?") is productive refinement, not convergence. Only terminate when refinement itself stops producing new distinctions.
+
+   **Default to continuing** — if uncertain whether the current state is refinement or repetition, let the discussion run. Premature termination is worse than an extra round.
 
 9. **On discussion end**: Main context owns termination. When convergence is reached:
    1. Call `discuss_lead({ op: '_4_transcript', session, mode: 'full' })` to read the full transcript.
