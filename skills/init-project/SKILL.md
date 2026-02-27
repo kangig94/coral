@@ -128,38 +128,31 @@ argument-hint: "[existing|new]"
   You execute the planning protocol directly — sub-agents cannot spawn sub-agents
   (Claude Code depth limit = 1), so you must run planning yourself to spawn reviewers.
 
-  Read `skills/plan/PROTOCOL.md` for the full planning protocol, then:
-
-  1. **Read the analysis document** (existing projects): Read the analysis file from Phase 1d
+  1. **Read analysis document** (existing projects): Read the analysis file from Phase 1d
      in full. This is the primary input for planning — the tech stack, dependency graph,
      build/test config, existing docs state, and documentation gaps all come from this document.
      Do NOT write the plan from memory of Phase 1 — read the file.
-  2. Write initial plan to `.claude/coral/plans/init-{project-name}.md`
-     - Structure: Requirements, Acceptance Criteria, Artifact Manifest, Risks, Verification Steps
-     - For each artifact: file path, content description, merge rule
-     - Artifact Manifest must include domain-specific docs: evaluate each domain reference's Recommended Docs
-       table against analysis findings (Strong docs included by default, Conditional docs included only when
-       their detection condition is met). List only the docs that apply to this project.
-     - Also include project-specific docs identified in the analysis document's Documentation Assessment section — these are docs the agent
-       judged necessary based on project complexity, not from domain reference tables.
-     - For existing docs identified in the analysis document's Documentation Assessment section, list specific sections
-       to add. Existing docs are always enhanced (append sections, don't overwrite).
-     - **Doc content drafts** (existing projects): ralph executes the plan as-is, so the plan must
-       contain the actual content for each doc - not just "generate ARCHITECTURE.md". Include:
-       * ARCHITECTURE.md: layer diagram (from the analysis document's Scan Report — dependency graph section), dependency rules,
-         modification policy per directory, domain Architecture Sections. List only critical and
-         non-obvious files (5-15 entries, not exhaustive).
-       * DEV_GUIDE.md: exact build/test/lint commands (from the analysis document's Scan Report — build/test config section), workflow phases, conventions
-       * Domain docs (api-reference, database-schema, etc.): architecture-level content - design
-         conventions, patterns, and principles. Not endpoint catalogs or table definitions.
-       For new projects, mark uncertain sections with "to be updated" per writing-guide.
-  3. Run review loop - spawn BOTH reviewers in parallel (single message, two Task calls):
-     ```
-     Task(subagent_type="coral:architect", prompt="Review plan: {plan_file_path}. Working dir: {project root}. ...")
-     Task(subagent_type="coral:critic", prompt="Review plan: {plan_file_path}. Working dir: {project root}. ...")
-     ```
-  4. Synthesize feedback (Adopt/Adapt/Defer/Diverge per planning protocol)
-  5. If CRITICAL/HIGH findings were addressed, update plan file and go back to step 3 for another review round. Max 5 rounds.
+  2. **Follow planning protocol**: Read `skills/plan/PROTOCOL.md` and follow it.
+     - Plan name: `init-{project-name}`
+     - Plan content requirements:
+       * Structure: Requirements, Acceptance Criteria, Artifact Manifest, Risks, Verification Steps
+       * For each artifact: file path, content description, merge rule
+       * Artifact Manifest must include domain-specific docs: evaluate each domain reference's Recommended Docs
+         table against analysis findings (Strong docs included by default, Conditional docs included only when
+         their detection condition is met). List only the docs that apply to this project.
+       * Also include project-specific docs identified in the analysis document's Documentation Assessment section — these are docs the agent
+         judged necessary based on project complexity, not from domain reference tables.
+       * For existing docs identified in the analysis document's Documentation Assessment section, list specific sections
+         to add. Existing docs are always enhanced (append sections, don't overwrite).
+       * **Doc content drafts** (existing projects): ralph executes the plan as-is, so the plan must
+         contain the actual content for each doc - not just "generate ARCHITECTURE.md". Include:
+         - ARCHITECTURE.md: layer diagram (from the analysis document's Scan Report — dependency graph section), dependency rules,
+           modification policy per directory, domain Architecture Sections. List only critical and
+           non-obvious files (5-15 entries, not exhaustive).
+         - DEV_GUIDE.md: exact build/test/lint commands (from the analysis document's Scan Report — build/test config section), workflow phases, conventions
+         - Domain docs (api-reference, database-schema, etc.): architecture-level content - design
+           conventions, patterns, and principles. Not endpoint catalogs or table definitions.
+       * For new projects, mark uncertain sections with "to be updated" per writing-guide.
 
   **Evidence gate**: Phase 2 is complete ONLY when a plan file exists at `.claude/coral/plans/init-*.md`.
   If no file exists on disk, Phase 2 did not execute correctly.
