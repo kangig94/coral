@@ -8,6 +8,12 @@ argument-hint: "<score>, <thought> | <speech content>"
 
 Submit a bid or speech as the `user` observer in a running `--user` discuss session.
 
+## Pre-flight Check
+
+If the conversation context shows no active `--user` discuss session,
+respond: "No active --user discuss session. Start one with `/discuss --user <topic>`."
+Then STOP — do not proceed.
+
 ## Parse Rule
 
 Split args on the **first comma**:
@@ -21,12 +27,6 @@ Split args on the **first comma**:
 - `/bid I think we should use a microservices approach` → speak("I think we should use a microservices approach")
 - `/bid 80` → bid mode detected, but thought empty → error
 - `/bid I think 80 is right` → speak("I think 80 is right")
-
-## Session Discovery
-
-Read `.claude/coral/discuss/active-user-session.json`:
-- Contains `{ session_id, team_name }`
-- If file missing → error: "No active --user discuss session. Start one with `/discuss --user <topic>`"
 
 ## Bid Mode Flow
 
@@ -44,6 +44,5 @@ Read `.claude/coral/discuss/active-user-session.json`:
 
 ## Error Policy
 
-- No active session → explain how to start one
-- Session ended mid-bid → "Discussion ended." Clean up `active-user-session.json`
+- Session ended mid-bid → "Discussion ended." Clean up `active-user-session.json`.
 - speak() error → "Speech timed out or already recorded. Wait for discuss-lead guidance."
