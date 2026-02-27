@@ -204,8 +204,10 @@ coral/
 │   ├── detect-codex-agent.mjs   # SubagentStart delegation hook
 │   ├── kb-lookup-reminder.mjs   # PostToolUseFailure KB hint
 │   ├── kb-memo-reminder.mjs     # PreToolUse memo hint
-│   ├── kb-promote-reminder.mjs  # Stop/PreCompact promotion hint
-│   └── discuss-idle-guard.mjs   # TeammateIdle bid/speak enforcer
+│   ├── kb-promote-reminder.mjs  # Stop/Compact promotion hint
+│   ├── plan-guard.mjs           # Compact plan-mode recovery
+│   ├── plan-state-tracker.mjs   # UserPromptSubmit/Stop plan tracking
+│   └── discuss-idle-guard.mjs   # TeammateIdle bid/speak/vote enforcer
 ├── scripts/
 │   └── build-server.mjs         # esbuild bundling + version sync
 ├── bridge/

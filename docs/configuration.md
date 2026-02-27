@@ -57,7 +57,7 @@ Registers both MCP servers with Claude Code. `cx` runs `bridge/coral-codex.cjs` 
 
 ### hooks/hooks.json - Hook Configuration
 
-Configures all 7 hooks: SessionStart (CLAUDE.md injection), SubagentStart (codex agent detection), PostToolUseFailure (KB lookup reminder), PreToolUse (memo reminder), Stop (KB promotion gate), PreCompact (memo promotion reminder), TeammateIdle (discuss idle guard).
+Configures all 8 hooks: SessionStart (CLAUDE.md injection), SessionStart/compact (plan-mode recovery + KB promotion reminder), SubagentStart (codex agent detection), UserPromptSubmit (plan state tracking), PreToolUse (memo reminder), PostToolUseFailure (KB lookup reminder), Stop (KB promotion gate + plan state cleanup), TeammateIdle (discuss idle guard).
 
 See [Hooks documentation](./hooks.md) for details.
 
@@ -124,8 +124,10 @@ hooks/hooks.json            -> Claude Code configures all 7 hooks
 hooks/detect-codex-agent.mjs  -> SubagentStart detection script
 hooks/kb-lookup-reminder.mjs  -> PostToolUseFailure KB hint script
 hooks/kb-memo-reminder.mjs    -> PreToolUse memo reminder script
-hooks/kb-promote-reminder.mjs -> Stop/PreCompact promotion script
-hooks/discuss-idle-guard.mjs  -> TeammateIdle bid/speak enforcer
+hooks/kb-promote-reminder.mjs -> Stop/Compact promotion script
+hooks/plan-guard.mjs          -> Compact plan-mode recovery script
+hooks/plan-state-tracker.mjs  -> UserPromptSubmit/Stop plan tracking script
+hooks/discuss-idle-guard.mjs  -> TeammateIdle bid/speak/vote enforcer
 
 ~/.claude/coral/sessions/<project-hash>/*.json  -> Runtime Codex session files (auto-created)
 {project}/.claude/coral/discuss/<session-dir>/  -> Runtime discuss session dirs (auto-created)
