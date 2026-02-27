@@ -4,8 +4,8 @@
 
 Claude Code already knows how to code. Coral teaches it how *you* code.
 
-Your conventions enforced, your workflow structured, your decisions examined from multiple
-angles - all through slash commands that work in any Claude Code session.
+Your conventions enforced, your workflow structured, your decisions examined from
+multiple angles - all through slash commands that work in any Claude Code session.
 
 ## Install
 
@@ -27,8 +27,8 @@ No setup. Run this in any Claude Code session, on any existing project:
 /coral:analyze what does this codebase do?
 ```
 
-Coral reads your project and returns a structured analysis: architecture, modules, entry
-points, and dependencies. No files written, no configuration required.
+Coral reads your project and returns a structured analysis:
+architecture, modules, entry points, and dependencies. No files written, no configuration required.
 
 ## Choose Your Path
 
@@ -41,8 +41,8 @@ https://github.com/user-attachments/assets/881f1a14-9f4f-4d3d-8023-59610eb13ac4
 ```
 
 Coral scans your stack, plans with reviewer verification, and generates `.claude/` -
-conventions, agents, architecture docs - tailored to your project. Claude follows your
-rules, not generic defaults.
+conventions, agents, architecture docs - tailored to your project.
+Claude follows your rules, not generic defaults.
 
 ```bash
 # existing project - just run it, Coral scans automatically
@@ -85,17 +85,18 @@ Look familiar? Browse this repository's `.claude/` folder.
 
 > **Requires:** `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in `.claude/settings.json`
 
-Multiple AI personas argue from different angles. Bid-based turn-taking surfaces the most
-urgent responses first. Positions evolve through genuine cross-examination. Structured
-synthesis at the end. Transcripts saved to `.claude/coral/discuss/`.
+Multiple AI personas argue from different angles.
+Bid-based turn-taking surfaces the most urgent responses first.
+Positions evolve through genuine cross-examination.
+Structured synthesis at the end. Transcripts saved to `.claude/coral/discuss/`.
 
 Example: **"Am I AGI?"** — Full transcript [EN](docs/examples/discuss-agi-en.md) · [KR](docs/examples/discuss-agi-kr.md)
 
 <details>
 <summary>Highlights from the discussion</summary>
 
-A phenomenologist, a computational neuroscientist, an AI safety researcher, a robotics
-engineer, and an Eastern philosophy scholar debate whether LLMs constitute AGI.
+A phenomenologist, a computational neuroscientist, an AI safety researcher,
+a robotics engineer, and an Eastern philosophy scholar debate whether LLMs constitute AGI.
 5 agents, 15 speeches, 3 convergence points.
 
 > *"Your robots have given me pause — genuinely. A robot arm that has touched ten thousand
@@ -111,9 +112,9 @@ engineer, and an Eastern philosophy scholar debate whether LLMs constitute AGI.
 > which is worse."*
 > — Daan Vermeer, on why persistent memory tools don't solve the temporal discontinuity problem
 
-The panel converged on: LLMs are not AGI but a **genuinely novel temporal entity** — with
-impressive competence within their characteristic timescale and unknown behavior at their
-structural boundaries.
+The panel converged on: LLMs are not AGI but a **genuinely novel temporal entity** —
+with impressive competence within their characteristic timescale
+and unknown behavior at their structural boundaries.
 
 </details>
 
@@ -127,8 +128,8 @@ structural boundaries.
 /coral:ralph implement the caching layer
 ```
 
-Structured planning with architect and critic review. Systematic bug diagnosis - root
-cause, plan, fix. Persistent execution that verifies before declaring done.
+Structured planning with architect and critic review.
+Systematic bug diagnosis - root cause, plan, fix. Persistent execution that verifies before declaring done.
 
 `--red` flag spawns an adversarial agent to write tests targeting blind spots:
 ```
@@ -163,12 +164,12 @@ Plans are saved to `.claude/coral/plans/`. Ralph is best for implementing an exi
 
 ## Knowledge Base
 
-Coral maintains a project-local knowledge base at `.claude/coral/kb/` - git-tracked, so
-it syncs across devices.
+Coral maintains a project-local knowledge base at `.claude/coral/kb/` -
+git-tracked, so it syncs across devices.
 
-When Claude discovers something non-obvious (a root cause, a gotcha, a pattern worth
-remembering), it writes a memo immediately. On errors, it checks the KB before debugging
-from scratch. On task completion, memos are reviewed and promoted to permanent entries.
+When Claude discovers something non-obvious (a root cause, a gotcha, a pattern worth remembering),
+it writes a memo immediately. On errors, it checks the KB before debugging from scratch.
+On task completion, memos are reviewed and promoted to permanent entries.
 Mistakes aren't repeated across sessions.
 
 ## Configuration
