@@ -11,6 +11,9 @@ import type { DiscussState, Result } from '../types.js';
 
 const T = 0.1;
 const sec = (s: number): number => Math.max(1, Math.round(s * T));
+type SynthesisTranscriptEvent = Extract<DiscussState['transcript'][number], { type: 'session_event' }> & {
+  event: 'synthesis';
+};
 
 let tmpDir: string;
 let store: SessionStore;
@@ -95,6 +98,21 @@ function requireSessionDir(sid: string): string {
   return sessionDir;
 }
 
+function synthesisEvents(state: DiscussState): SynthesisTranscriptEvent[] {
+  return state.transcript.filter(
+    (entry): entry is SynthesisTranscriptEvent =>
+      entry.type === 'session_event' && entry.event === 'synthesis',
+  );
+}
+
+function expectSingleSynthesis(state: DiscussState, expectedDetail?: string): void {
+  const events = synthesisEvents(state);
+  expect(events).toHaveLength(1);
+  if (expectedDetail !== undefined) {
+    expect(events[0].detail).toBe(expectedDetail);
+  }
+}
+
 async function overwriteState(sid: string, mutate: (state: DiscussState) => DiscussState): Promise<void> {
   const sessionDir = requireSessionDir(sid);
   await store.withLock(sessionDir, async () => {
@@ -141,12 +159,35 @@ function loserFromWinner(winner: 'alice' | 'bob'): 'alice' | 'bob' {
 }
 
 describe('tools', () => {
+  const getDiscussLeadInputSchema = (): { properties: Record<string, { enum?: string[]; description?: string }> } => {
+    const discussLeadTool = tools.find((tool) => tool.name === 'discuss_lead');
+    if (!discussLeadTool) throw new Error('missing discuss_lead tool');
+    return discussLeadTool.inputSchema as unknown as {
+      properties: Record<string, { enum?: string[]; description?: string }>;
+    };
+  };
+
   it('should expose exactly two tools', () => {
     expect(tools).toHaveLength(2);
   });
 
   it('should expose discuss and discuss_lead', () => {
     expect(tools.map((tool) => tool.name).sort()).toEqual(['discuss', 'discuss_lead']);
+  });
+
+  it('should list _8_synthesize in discuss_lead tool description', () => {
+    const discussLeadTool = tools.find((tool) => tool.name === 'discuss_lead');
+    expect(discussLeadTool?.description).toContain('_8_synthesize');
+  });
+
+  it('should intentionally omit _8_synthesize from discuss_lead inputSchema enum', () => {
+    const inputSchema = getDiscussLeadInputSchema();
+    expect(inputSchema.properties.op?.enum).not.toContain('_8_synthesize');
+  });
+
+  it('should document synthesis property as _8_synthesize payload', () => {
+    const inputSchema = getDiscussLeadInputSchema();
+    expect(inputSchema.properties.synthesis?.description).toContain('_8_synthesize');
   });
 });
 
@@ -616,12 +657,49 @@ describe('discuss_lead tool: transcript/state/epoch/end', () => {
     const r = await handleToolCall('discuss_lead', { op: '_7_end', session: sid }, store);
     const data = parseResult(r);
     expect(data).toHaveProperty('status', 'ended');
+    const endedState = store.load(requireSessionDir(sid));
+    expect(synthesisEvents(endedState)).toHaveLength(0);
   });
 
   it('should require reason when force=true', async () => {
     const sid = await createSession();
     const r = await handleToolCall('discuss_lead', { op: '_7_end', session: sid, force: true }, store);
     expect(r.isError).toBe(true);
+  });
+
+  it('should record synthesis through _8_synthesize after end', async () => {
+    const sid = await createSession();
+    await handleToolCall('discuss_lead', { op: '_7_end', session: sid }, store);
+    const result = await handleToolCall('discuss_lead', { op: '_8_synthesize', session: sid, synthesis: 'Final synthesis.' }, store);
+    expect(parseResult(result)).toHaveProperty('status', 'ended');
+    expectSingleSynthesis(store.load(requireSessionDir(sid)), 'Final synthesis.');
+  });
+
+  it('should reject _8_synthesize when session is not ended', async () => {
+    const sid = await createSession();
+    const result = await handleToolCall('discuss_lead', { op: '_8_synthesize', session: sid, synthesis: 'Too early.' }, store);
+    const data = parseResult(result);
+    expect(data.error).toBe('not_ended');
+  });
+
+  it('should keep first synthesis on duplicate _8_synthesize calls', async () => {
+    const sid = await createSession();
+    await handleToolCall('discuss_lead', { op: '_7_end', session: sid }, store);
+    await handleToolCall('discuss_lead', { op: '_8_synthesize', session: sid, synthesis: 'First synthesis.' }, store);
+    await handleToolCall('discuss_lead', { op: '_8_synthesize', session: sid, synthesis: 'Second synthesis.' }, store);
+    expectSingleSynthesis(store.load(requireSessionDir(sid)), 'First synthesis.');
+  });
+});
+
+describe('handleSynthesize integration', () => {
+  it('persists first-write-wins when _8_synthesize is called twice via handleToolCall', async () => {
+    const sid = await createSession();
+    await handleToolCall('discuss_lead', { op: '_7_end', session: sid }, store);
+
+    await handleToolCall('discuss_lead', { op: '_8_synthesize', session: sid, synthesis: 'Caller A synthesis.' }, store);
+    await handleToolCall('discuss_lead', { op: '_8_synthesize', session: sid, synthesis: 'Caller B synthesis.' }, store);
+
+    expectSingleSynthesis(store.load(requireSessionDir(sid)), 'Caller A synthesis.');
   });
 });
 
@@ -892,5 +970,122 @@ describe('resultToMcp', () => {
     expect(mcp.content).toHaveLength(1);
     expect(mcp.content[0].type).toBe('text');
     expect(typeof mcp.content[0].text).toBe('string');
+  });
+});
+
+async function createEndedSession(): Promise<string> {
+  const r = await handleToolCall('discuss_lead', { op: '_2_create', topic: 'Red Test', agents: AGENTS }, store);
+  const sid = (parseResult(r) as { session_id: string }).session_id;
+  await handleToolCall('discuss_lead', { op: '_7_end', session: sid }, store);
+  return sid;
+}
+
+// adversarial tests (red-attacker provenance)
+describe('handler: _7_end with synthesis field defense-in-depth', () => {
+  it('should return MCP error when _7_end carries synthesis field', async () => {
+    const sid = await createEndedSession();
+    const result = await handleToolCall(
+      'discuss_lead',
+      { op: '_7_end', session: sid, synthesis: 'sneaky synthesis' } as never,
+      store,
+    );
+    expect(result.isError).toBe(true);
+  });
+
+  it('should not write synthesis to transcript when _7_end carries synthesis field', async () => {
+    const r = await handleToolCall('discuss_lead', { op: '_2_create', topic: 'Defense Test', agents: AGENTS }, store);
+    const sid = (parseResult(r) as { session_id: string }).session_id;
+    await handleToolCall('discuss_lead', { op: '_7_end', session: sid, synthesis: 'injected synthesis' } as never, store);
+    const sessionDir = store.resolveDir(sid);
+    if (sessionDir) {
+      expect(synthesisEvents(store.load(sessionDir))).toHaveLength(0);
+    }
+  });
+});
+
+// adversarial tests (red-attacker provenance)
+describe('handler: _8_synthesize on unknown session', () => {
+  it('should return MCP error when session ID does not exist', async () => {
+    const result = await handleToolCall(
+      'discuss_lead',
+      { op: '_8_synthesize', session: '260101-0000-xxxx', synthesis: 'Orphan synthesis.' },
+      store,
+    );
+    expect(result.isError).toBe(true);
+  });
+});
+
+// adversarial tests (red-attacker provenance)
+describe('handler: concurrent _8_synthesize calls (race condition)', () => {
+  it('should persist exactly one synthesis entry when two callers race via Promise.all', async () => {
+    const sid = await createEndedSession();
+    const [r1, r2] = await Promise.all([
+      handleToolCall('discuss_lead', { op: '_8_synthesize', session: sid, synthesis: 'Caller A synthesis.' }, store),
+      handleToolCall('discuss_lead', { op: '_8_synthesize', session: sid, synthesis: 'Caller B synthesis.' }, store),
+    ]);
+    expect(r1.isError).toBe(false);
+    expect(r2.isError).toBe(false);
+    const sessionDir = store.resolveDir(sid);
+    if (!sessionDir) throw new Error('missing session');
+    expectSingleSynthesis(store.load(sessionDir));
+  });
+
+  it('should not corrupt the synthesis text across concurrent callers', async () => {
+    const sid = await createEndedSession();
+    await Promise.all([
+      handleToolCall('discuss_lead', { op: '_8_synthesize', session: sid, synthesis: 'Alpha synthesis.' }, store),
+      handleToolCall('discuss_lead', { op: '_8_synthesize', session: sid, synthesis: 'Beta synthesis.' }, store),
+    ]);
+    const sessionDir = store.resolveDir(sid);
+    if (!sessionDir) throw new Error('missing session');
+    const synth = synthesisEvents(store.load(sessionDir));
+    const validTexts = new Set(['Alpha synthesis.', 'Beta synthesis.']);
+    expect(validTexts.has(synth[0]?.detail ?? '')).toBe(true);
+  });
+
+  it('should persist exactly one synthesis entry with three concurrent callers', async () => {
+    const sid = await createEndedSession();
+    await Promise.all([
+      handleToolCall('discuss_lead', { op: '_8_synthesize', session: sid, synthesis: 'Caller 1.' }, store),
+      handleToolCall('discuss_lead', { op: '_8_synthesize', session: sid, synthesis: 'Caller 2.' }, store),
+      handleToolCall('discuss_lead', { op: '_8_synthesize', session: sid, synthesis: 'Caller 3.' }, store),
+    ]);
+    const sessionDir = store.resolveDir(sid);
+    if (!sessionDir) throw new Error('missing session');
+    expectSingleSynthesis(store.load(sessionDir));
+  });
+});
+
+// adversarial tests (red-attacker provenance)
+describe('handler: _8_synthesize response shape', () => {
+  it('should return { status: "ended" } on first successful synthesis call', async () => {
+    const sid = await createEndedSession();
+    const result = await handleToolCall(
+      'discuss_lead',
+      { op: '_8_synthesize', session: sid, synthesis: 'Shape test synthesis.' },
+      store,
+    );
+    expect(result.isError).toBe(false);
+    expect(parseResult(result).status).toBe('ended');
+  });
+
+  it('should return { status: "ended" } on idempotent second synthesis call', async () => {
+    const sid = await createEndedSession();
+    await handleToolCall('discuss_lead', { op: '_8_synthesize', session: sid, synthesis: 'First synthesis.' }, store);
+    const second = await handleToolCall('discuss_lead', { op: '_8_synthesize', session: sid, synthesis: 'Second synthesis.' }, store);
+    expect(second.isError).toBe(false);
+    expect(parseResult(second).status).toBe('ended');
+  });
+
+  it('should produce content array with exactly one text entry', async () => {
+    const sid = await createEndedSession();
+    const result = await handleToolCall(
+      'discuss_lead',
+      { op: '_8_synthesize', session: sid, synthesis: 'Content shape test.' },
+      store,
+    );
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].type).toBe('text');
+    expect(typeof result.content[0].text).toBe('string');
   });
 });

@@ -12,7 +12,7 @@ User: /coral:discuss "Should companies adopt microservices?"
   3. Discussion session created → Agent Team spawned
   4. Agents bid for speaking turns (0–100 score)
   5. Winner speaks → others read → next round
-  6. Discussion ends → moderator synthesizes results
+  6. Discussion ends → main context synthesizes results
 ```
 
 ## Core Concepts
@@ -99,6 +99,8 @@ The discussion ends through one of these paths:
 | All blocked (quota+fallback exhausted for some, others below threshold) | Server returns no_winner - moderator synthesizes |
 | Max epochs reached (all exhausted, epoch >= max_epochs) | Server returns no_winner + max_epochs_reached - moderator synthesizes |
 | Timeout | Agent doesn't bid or speak in time → force-end |
+
+Main-context finalization flow is explicit: `discuss_lead({ op: "_4_transcript", mode: "full" })` → `discuss_lead({ op: "_7_end", session })` → `discuss_lead({ op: "_8_synthesize", session, synthesis })`.
 
 ## Resolution Rules
 
@@ -213,7 +215,7 @@ The moderator never speaks on substance - only process control:
 
 - Broadcasts bid instructions
 - Uses `discuss_lead({ op: "_3_step", ... })` for bid collection and speech waiting (auto-resolves winner)
-- Manages epoch transitions and synthesis
+- Manages epoch transitions and termination signaling
 - Never interprets bid scores or picks speakers manually
 
 ## Technical Architecture

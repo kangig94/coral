@@ -124,7 +124,7 @@ and unknown behavior at their structural boundaries.
 
 ```
 /coral:plan add retry logic to the API client
-/coral:debug why does session lookup return null?
+/coral:bugfix why does session lookup return null?
 /coral:ralph implement the caching layer
 ```
 
@@ -151,7 +151,7 @@ Consecutive `/coral:codex` calls continue the same session. Say "new" to start f
 | `/coral:analyze` | Deep analysis and investigation | Optional |
 | `/coral:plan` | Planning with architect/critic review | Optional |
 | `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | Optional |
-| `/coral:debug` | Bug diagnosis, planning, and fix execution | Optional |
+| `/coral:bugfix` | Bug diagnosis, planning, and fix execution | Optional |
 | `/coral:code-simplify` | Simplify and refine code for clarity | Optional |
 | `/coral:codex` | Direct Codex CLI execution (session-persistent) | Required |
 | `/coral:init-project` | Project initialization orchestrator | - |

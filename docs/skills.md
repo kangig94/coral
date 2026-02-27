@@ -9,7 +9,7 @@ Slash commands provided by the Coral plugin. Each skill is defined in `skills/{n
 | `/coral:plan` | Planning with parallel architect/critic review. Pass `--codex` for cross-model Codex reviews |
 | `/coral:ralph` | Persistent execution loop with verification (sonnet). Pass `--codex` to delegate to Codex CLI. Use `--red` to add adversarial tests after implementation. |
 | `/coral:code-simplify` | Simplify and refine code for clarity, consistency, and maintainability |
-| `/coral:debug` | Systematic bug diagnosis, planning, and fix execution |
+| `/coral:bugfix` | Systematic bug diagnosis, planning, and fix execution |
 | `/coral:init-project` | Project initialization orchestrator - generates `.claude/` structure, agents, rules, docs |
 | `/coral:discuss` | Moderated multi-agent discussion via Agent Teams |
 | `/coral:statusline` | Install or remove the coral HUD statusline |

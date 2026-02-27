@@ -590,55 +590,19 @@ export function applyEpochSummary(
 
 export function applyEnd(
   state: DiscussState,
-  opts: { force?: boolean; reason?: string; synthesis?: string },
+  opts: { force?: boolean; reason?: string },
   now: string,
 ): Result<DiscussState> {
   if (state.status === 'ended') {
-    if (!opts.synthesis) return { ok: true, value: state };
-
-    const hasSynthesis = state.transcript.some(
-      (e) => e.type === 'session_event' && e.event === 'synthesis',
-    );
-    if (hasSynthesis) return { ok: true, value: state };
-
-    const entry: TranscriptEntry = {
-      type: 'session_event',
-      epoch: state.epoch,
-      ts: now,
-      event: 'synthesis',
-      detail: opts.synthesis,
-    };
-    return { ok: true, value: appendEntry(state, entry, now) };
+    return { ok: true, value: state };
   }
 
-  const { force = false, reason, synthesis } = opts;
-  const entries: TranscriptEntry[] = [];
-
+  const { force = false, reason } = opts;
   if (state.status === 'speaking' && !force) {
     return { ok: false, error: 'requires_force', detail: { hint: 'set force=true with reason to end during active speech' } };
   }
 
-  if (state.status === 'speaking') {
-    entries.push({
-      type: 'session_event',
-      epoch: state.epoch,
-      ts: now,
-      event: 'force_end',
-      detail: `Force-ended during speech by ${state.current_speaker}. Reason: ${reason}`,
-    });
-  }
-
-  if (synthesis) {
-    entries.push({
-      type: 'session_event',
-      epoch: state.epoch,
-      ts: now,
-      event: 'synthesis',
-      detail: synthesis,
-    });
-  }
-
-  let nextState: DiscussState = {
+  const endedState: DiscussState = {
     ...state,
     status: 'ended',
     current_speaker: null,
@@ -647,9 +611,44 @@ export function applyEnd(
     last_activity_at: now,
   };
 
-  for (const entry of entries) {
-    nextState = appendEntry(nextState, entry, now);
+  if (state.status !== 'speaking') {
+    return { ok: true, value: endedState };
   }
 
-  return { ok: true, value: nextState };
+  const forceEndEntry: TranscriptEntry = {
+    type: 'session_event',
+    epoch: state.epoch,
+    ts: now,
+    event: 'force_end',
+    detail: `Force-ended during speech by ${state.current_speaker}. Reason: ${reason}`,
+  };
+
+  return { ok: true, value: appendEntry(endedState, forceEndEntry, now) };
+}
+
+export function applySynthesis(
+  state: DiscussState,
+  synthesis: string,
+  now: string,
+): Result<DiscussState> {
+  if (state.status !== 'ended') {
+    return { ok: false, error: 'not_ended' };
+  }
+
+  const alreadyHasSynthesis = state.transcript.some(
+    (e) => e.type === 'session_event' && e.event === 'synthesis',
+  );
+  if (alreadyHasSynthesis) {
+    return { ok: true, value: state };
+  }
+
+  const synthesisEntry: TranscriptEntry = {
+    type: 'session_event',
+    epoch: state.epoch,
+    ts: now,
+    event: 'synthesis',
+    detail: synthesis,
+  };
+
+  return { ok: true, value: appendEntry(state, synthesisEntry, now) };
 }

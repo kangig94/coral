@@ -68,7 +68,7 @@ Use Claude's native tools (Read, Grep, Glob, LSP) for direct analysis. Read-only
 
 **Role**: Persistent task executor that loops until work is fully complete with verified evidence. Enforces the Iron Law: no completion claims without fresh verification evidence. Includes a verification gate (IDENTIFY → RUN → READ → VERIFY → CLAIM), iteration cap, and circuit breaker.
 
-> Note: ralph has no agent file. Skills (`/coral:ralph`, `/coral:debug`) and callers (`init-project`) read PROTOCOL.md directly.
+> Note: ralph has no agent file. Skills (`/coral:ralph`, `/coral:bugfix`) and callers (`init-project`) read PROTOCOL.md directly.
 
 ---
 
@@ -110,9 +110,9 @@ Agents for the moderated multi-agent discussion system. These agents coordinate 
 
 `agents/discuss-lead.md` - opus
 
-**Role**: Orchestrates multi-agent discussions through structured turn-taking. Manages session setup, team creation, bidding coordination, turn resolution, epoch transitions (auto-triggered by server), and synthesis delivery. Never speaks on substance - only process control.
+**Role**: Orchestrates multi-agent discussions through structured turn-taking. Manages session setup, team creation, bidding coordination, turn resolution, epoch transitions (auto-triggered by server), and termination handoff. Never speaks on substance - only process control.
 
-**Protocol**: Setup (persona seeding via `discuss_lead({ op: "_1_seed", ... })` → persona generation → `discuss_lead({ op: "_2_create", ... })` → team + teammates) → Discussion Loop (broadcast → `discuss_lead({ op: "_3_step", ... })` blocks until all bids resolved → winner branch → `discuss_lead({ op: "_3_step", ... })` blocks until speech done → repeat) → Synthesis (`discuss_lead({ op: "_7_end", ... })` → full transcript via `discuss_lead({ op: "_4_transcript", ... })` → present to user → cleanup).
+**Protocol**: Setup (persona seeding via `discuss_lead({ op: "_1_seed", ... })` → persona generation → `discuss_lead({ op: "_2_create", ... })` → team + teammates) → Discussion Loop (broadcast → `discuss_lead({ op: "_3_step", ... })` blocks until all bids resolved → winner branch → `discuss_lead({ op: "_3_step", ... })` blocks until speech done → repeat) → Finalization (full transcript via `discuss_lead({ op: "_4_transcript", ... })` → `discuss_lead({ op: "_7_end", ... })` → `discuss_lead({ op: "_8_synthesize", ... })` → present to user → cleanup).
 
 > Note: discuss-lead does NOT have `disallowedTools` - it needs Task (spawn agents), SendMessage (broadcast), TeamCreate/TeamDelete, and all discuss MCP tools.
 

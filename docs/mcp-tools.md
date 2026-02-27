@@ -210,7 +210,8 @@ Moderator-only MCP tool for control and lifecycle:
 | `_4_transcript` | `session`, `mode`, optional `last_n` |
 | `_5_epoch` | `session`, `summary` |
 | `_6_state` | `session` |
-| `_7_end` | `session`, optional `synthesis`, optional `force`, optional `reason` |
+| `_7_end` | `session`, optional `force`, optional `reason` |
+| `_8_synthesize` | `session`, `synthesis` |
 
 `_3_step` is a mode-specific blocking call:
 
@@ -227,7 +228,7 @@ Moderator-only MCP tool for control and lifecycle:
   - `{ status: 'speaking', phase: 'speech_timeout', speaker }` - speaker timed out
   - `{ status: 'ended', phase: 'ended', reason }` - session ended during wait
 
-`_7_end` finalizes sessions. On already-ended sessions, it records a synthesis if provided and no-ops otherwise.
+`_7_end` finalizes sessions and is idempotent for already-ended sessions. `_8_synthesize` records synthesis text for ended sessions only (`not_ended` otherwise) and no-ops on duplicate synthesis writes.
 
 ---
 

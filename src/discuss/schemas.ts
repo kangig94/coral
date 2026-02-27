@@ -96,9 +96,14 @@ const stateShape = z.object({
 const endShape = z.object({
   op: z.literal('_7_end'),
   session: sessionIdField,
-  synthesis: z.string().optional(),
   force: z.boolean().default(false),
   reason: z.string().optional(),
+}).strict();
+
+const synthesizeShape = z.object({
+  op: z.literal('_8_synthesize'),
+  session: sessionIdField,
+  synthesis: z.string().min(1),
 }).strict();
 
 export const discussLeadOpSchema = z.discriminatedUnion('op', [
@@ -109,6 +114,7 @@ export const discussLeadOpSchema = z.discriminatedUnion('op', [
   epochSummaryShape,
   stateShape,
   endShape,
+  synthesizeShape,
 ]);
 
 export type DiscussAgentOpInput = z.infer<typeof discussAgentOpSchema>;
