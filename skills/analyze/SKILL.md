@@ -30,8 +30,9 @@ argument-hint: "[--codex] [investigation target or question]"
   Strip the `--codex` flag before passing the prompt to the execution path.
 </Argument_Routing>
 <Protocol>
-  Cumulative pipeline — evaluate each step against the user's request AND prior findings.
-  Run applicable steps in order; skip steps that aren't needed. At least one step in Phase 2 must run.
+  Cumulative pipeline — evaluate and execute each step against the user's request AND prior findings.
+  Steps run STRICTLY in order, one at a time. Wait for each step's result before evaluating
+  the next. Skip steps that aren't needed. At least one step in Phase 2 must run.
 
   ## Phase 1 — Create Analysis File
 
@@ -58,7 +59,12 @@ argument-hint: "[--codex] [investigation target or question]"
   determined scope — don't follow the protocol's broad instructions beyond it. Agent protocols
   are READ-ONLY — **you** (the skill executor) append to the file after each step.
 
-  **Codex delegation (`--codex`)**: Spawn `coral:codex-proxy` via Task tool for each step.
+  **Codex delegation (`--codex`)**: Steps MUST execute ONE AT A TIME, sequentially.
+  For each step, spawn `coral:codex-proxy` via Task tool, WAIT for its result, process
+  the output (post-processing below), append to the analysis file, THEN evaluate the next
+  step. Do NOT launch multiple codex-proxy agents in parallel — each step's output informs
+  the next step's scope and "Needed when" evaluation.
+
   Include `Role: <role_name>` (scanner, gap-finder, or debugger) in the prompt, along with
   the determined scope (target files/modules), `working_directory`, and the analysis file
   content so far as context.
@@ -66,7 +72,7 @@ argument-hint: "[--codex] [investigation target or question]"
   **Session continuity**: Capture the `session: <id>` from the first codex-proxy response.
   Pass `session: <id>` in the prompt to subsequent codex-proxy spawns — codex-proxy will
   forward it to `codex({ op: "exec", session, ... })`, maintaining Codex CLI conversation
-  history across steps. This lets gap-finder build on scanner findings within Codex's context.
+  history across steps.
 
   Post-processing (apply after each Codex call before appending):
   - **Verify references**: For CRITICAL/HIGH findings, Read the cited file:line to confirm accuracy. Drop findings with incorrect references.
