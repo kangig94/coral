@@ -87,7 +87,7 @@ my-project/
 할 말이 있는 쪽이 먼저 발언하는 입찰 시스템. 상호 검증을 거치며 입장이 정제됩니다.
 최종 종합으로 마무리. 트랜스크립트는 `.claude/coral/discuss/`에 저장.
 
-예시: **"Am I AGI?"** — 전체 트랜스크립트 [EN](docs/examples/discuss-agi-en.md) · [KR](docs/examples/discuss-agi-kr.md)
+예시: **"Am I AGI?"** — 전체 트랜스크립트 [EN](docs/examples/discuss-agi-en.md) · [KO](docs/examples/discuss-agi-ko.md)
 
 <details>
 <summary>토론 하이라이트</summary>

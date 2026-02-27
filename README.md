@@ -90,7 +90,7 @@ Bid-based turn-taking surfaces the most urgent responses first.
 Positions evolve through genuine cross-examination.
 Structured synthesis at the end. Transcripts saved to `.claude/coral/discuss/`.
 
-Example: **"Am I AGI?"** — Full transcript [EN](docs/examples/discuss-agi-en.md) · [KR](docs/examples/discuss-agi-kr.md)
+Example: **"Am I AGI?"** — Full transcript [EN](docs/examples/discuss-agi-en.md) · [KO](docs/examples/discuss-agi-ko.md)
 
 <details>
 <summary>Highlights from the discussion</summary>
