@@ -5,11 +5,9 @@ argument-hint: "[--red] [--codex] [task description]"
 model: sonnet
 ---
 
-```!
-mkdir -p .claude/coral/tmp && touch .claude/coral/tmp/kb-active
-```
-
 # Persistent Execution with Verification
+
+Before starting, run Bash(`mkdir -p .claude/coral/tmp && touch .claude/coral/tmp/kb-active`).
 
 Announce at start: "Using ralph to execute this task with verification loop."
 

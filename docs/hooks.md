@@ -9,8 +9,7 @@ Claude Code's hook system executes scripts on specific events. Coral uses hooks 
 **Plugin hooks** (`hooks/hooks.json`):
 1. **SessionStart** - Injects CLAUDE.md behavioral guidelines into every Claude session
 2. **SubagentStart** - Injects delegation instructions into agents with a `codex-` prefix (with or without `coral:` namespace)
-3. **PermissionRequest** - Auto-approves Coral's internal Bash commands (`.claude/coral/tmp` directory operations)
-4. **PreToolUse** - On first tool call per session, reminds Claude to write memos for non-obvious discoveries
+3. **PreToolUse** - On first tool call per session, reminds Claude to write memos for non-obvious discoveries
 5. **PostToolUseFailure** - On any tool failure, reminds Claude to check `.claude/coral/kb/` before debugging
 6. **Stop** - On response completion, blocks Claude from stopping if unprocessed memos exist in `.claude/coral/memo/`
 7. **PreCompact** - Before context compaction, reminds about unprocessed memos for KB promotion
@@ -18,7 +17,7 @@ Claude Code's hook system executes scripts on specific events. Coral uses hooks 
 
 ## Hook Configuration
 
-Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/detect-codex-agent.mjs`, `hooks/permission-handler.mjs`, `hooks/kb-lookup-reminder.mjs`, `hooks/kb-memo-reminder.mjs`, `hooks/kb-promote-reminder.mjs`, `hooks/discuss-idle-guard.mjs`.
+Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/detect-codex-agent.mjs`, `hooks/kb-lookup-reminder.mjs`, `hooks/kb-memo-reminder.mjs`, `hooks/kb-promote-reminder.mjs`, `hooks/discuss-idle-guard.mjs`.
 
 All hook scripts are **Node.js ESM** (`.mjs`). They read input JSON from stdin, write output JSON to stdout, and **fail-open** via `try/catch { process.exit(0) }` - a crash or timeout never blocks the user.
 
@@ -63,20 +62,6 @@ Call the MCP tool immediately with the full task.
 ```
 
 This message is appended to the agent's system prompt, forcing the agent to call the Codex MCP tool.
-
-## PermissionRequest Hook
-
-Script: `hooks/permission-handler.mjs`. Matcher: `Bash`. Auto-approves Coral's internal Bash commands without requiring user confirmation.
-
-**Approved patterns** (`.claude/coral/tmp` directory operations only):
-- `mkdir -p .../.claude/coral/tmp` — creates the state file directory
-- `touch .../.claude/coral/tmp/...` — creates/refreshes state files (e.g., `kb-active`)
-
-**Why**: Skills (ralph, debug) use ```` ```! ```` blocks that execute `mkdir -p && touch` on load to set up state files. Without this hook, non-bypass users would be prompted for permission on every skill invocation — but the ```` ```! ```` auto-execution context has no interactive approval mechanism.
-
-**Security scope**: Only matches commands targeting `.claude/coral/tmp`. Chained commands (`&&`) are split and each part is checked independently. Commands not matching any pattern fall through to normal permission flow.
-
-**Fail-open**: Any parse error or unexpected input → silent exit 0 (normal permission flow continues).
 
 ## PostToolUseFailure Hook
 
