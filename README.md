@@ -148,14 +148,16 @@ Consecutive `/coral:codex` calls continue the same session. Say "new" to start f
 | `/coral:analyze` | Deep analysis and investigation | Optional |
 | `/coral:plan` | Planning with architect/critic review | Optional |
 | `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | Optional |
-| `/coral:code-simplify` | Simplify and refine code for clarity | Optional |
 | `/coral:debug` | Bug diagnosis, planning, and fix execution | Optional |
+| `/coral:code-simplify` | Simplify and refine code for clarity | Optional |
+| `/coral:codex` | Direct Codex CLI execution (session-persistent) | Required |
 | `/coral:init-project` | Project initialization orchestrator | - |
 | `/coral:discuss` | Moderated multi-agent discussion | - |
+| `/coral:bid` | Submit bid/speech in active `--user` discuss session | - |
 | `/coral:statusline` | HUD statusline setup | - |
 
 `Optional` = works without Codex by default; pass `--codex` to delegate to Codex CLI.
-Plans are saved to `.claude/coral/plans/`. Ralph skills are best for implementing an existing plan.
+Plans are saved to `.claude/coral/plans/`. Ralph is best for implementing an existing plan.
 
 ## Knowledge Base
 
@@ -200,8 +202,9 @@ Or via shell: `export CORAL_CODEX_MODEL=gpt-5.3-codex`
 - [MCP Tools](docs/mcp-tools.md) - Input/output specs for all MCP tools
 - [Core Modules](docs/core-modules.md) - TypeScript module details
 - [Agents](docs/agents.md) - Agent definitions and routing
-- [Hooks](docs/hooks.md) - SubagentStart hook behavior
+- [Hooks](docs/hooks.md) - Hook system and lifecycle events
 - [Skills](docs/skills.md) - Slash command usage
+- [Discuss](docs/discuss.md) - Discuss system design
 - [Build System](docs/build-system.md) - Build pipeline
 - [Configuration](docs/configuration.md) - Environment variables and config files
 
