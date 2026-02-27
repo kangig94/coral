@@ -63,4 +63,4 @@ Returns both codex and spark limits in a single call:
 POST https://auth.openai.com/oauth/token
 body: grant_type=refresh_token&client_id=app_EMoamEEZ73f0CkXaXp7hrann&refresh_token=...&scope=openid profile email
 ```
-Returns `{ access_token }`. Never write the refreshed token back to `~/.codex/auth.json` — Codex CLI manages its own credentials. Cache the refreshed token in your own cache file instead.
+Returns `{ access_token, refresh_token }`. If `refresh_token` is present in the response (rotating refresh token), write both tokens back to `~/.codex/auth.json` atomically (write `.tmp` then rename). This prevents Codex CLI's refresh_token from being invalidated when the HUD consumes it. Cache the access_token in your own cache file for subsequent requests.

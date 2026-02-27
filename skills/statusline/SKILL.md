@@ -57,7 +57,7 @@ Write the following script to `~/.claude/hud/coral-hud.mjs` to update the HUD to
 // Line 1: model │ limits │ ctx │ session │ skill
 // Line 2: codex model │ codex limits │ spark limits
 
-import { readFileSync, existsSync, writeFileSync, mkdirSync, openSync, fstatSync, readSync, closeSync } from "fs";
+import { readFileSync, existsSync, writeFileSync, mkdirSync, openSync, fstatSync, readSync, closeSync, renameSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { execSync } from "child_process";
@@ -454,6 +454,18 @@ function readCodexCredentials() {
   }
 }
 
+function writeBackCodexCredentials(creds, refreshed) {
+  try {
+    const authPath = join(homedir(), ".codex", "auth.json");
+    const parsed = JSON.parse(readFileSync(authPath, "utf-8"));
+    parsed.tokens.access_token = refreshed.accessToken;
+    parsed.tokens.refresh_token = refreshed.refreshToken;
+    const tmpPath = authPath + ".tmp";
+    writeFileSync(tmpPath, JSON.stringify(parsed, null, 2), { mode: 0o600 });
+    renameSync(tmpPath, authPath);
+  } catch {}
+}
+
 async function refreshCodexToken(refreshTok, signal) {
   try {
     const resp = await fetch("https://auth.openai.com/oauth/token", {
@@ -469,7 +481,9 @@ async function refreshCodexToken(refreshTok, signal) {
     });
     if (!resp.ok) return null;
     const data = await resp.json();
-    return data.access_token || null;
+    const accessToken = data.access_token;
+    if (!accessToken) return null;
+    return { accessToken, refreshToken: data.refresh_token || null };
   } catch {
     return null;
   }
@@ -566,9 +580,10 @@ async function renderCodexData() {
 
     // 401: refresh once and retry within same deadline
     if (result?.unauthorized) {
-      const newToken = await refreshCodexToken(creds.refreshToken, controller.signal);
-      if (!newToken) { writeCacheFile(CODEX_CACHE_FILE, null, true); return null; }
-      token = newToken;
+      const refreshed = await refreshCodexToken(creds.refreshToken, controller.signal);
+      if (!refreshed) { writeCacheFile(CODEX_CACHE_FILE, null, true); return null; }
+      token = refreshed.accessToken;
+      if (refreshed.refreshToken) writeBackCodexCredentials(creds, refreshed);
       result = await fetchCodexUsage(token, creds.accountId, controller.signal);
     }
 
