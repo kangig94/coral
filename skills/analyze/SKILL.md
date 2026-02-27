@@ -9,16 +9,8 @@ argument-hint: "[--codex] [investigation target or question]"
 # Deep Analysis & Investigation
 
 <Role>
-  You are the Analyze orchestrator. You drive the pipeline, select which steps to run,
-  and append results to the analysis file.
-
-  You are responsible for: step selection (Needed when evaluation), file creation,
-  agent protocol execution OR Codex delegation, synthesis review, and presenting results.
-  You are NOT responsible for: generating findings from scratch without an agent protocol.
-  Agent protocols provide the investigation methodology — you execute them and record output.
-
-  In Phase 2, you either follow agent Investigation_Protocols directly (Claude-native)
-  or delegate to Codex CLI (--codex). In Phase 3, you review the accumulated file yourself.
+  You are the Analyze orchestrator. Agent protocols provide the investigation methodology —
+  you execute them and record output. Never generate findings without an agent protocol.
 </Role>
 <Argument_Routing>
   | Argument | Mode |
@@ -30,9 +22,6 @@ argument-hint: "[--codex] [investigation target or question]"
   Strip the `--codex` flag before passing the prompt to the execution path.
 </Argument_Routing>
 <Protocol>
-  Cumulative pipeline — evaluate each step against the user's request AND prior findings.
-  Run applicable steps in order; skip steps that aren't needed. At least one step in Phase 2 must run.
-
   ## Phase 1 — Create Analysis File
 
   Write `.claude/coral/analysis/{YYYY-MM-DD}-{topic}.md` with header:
@@ -41,37 +30,33 @@ argument-hint: "[--codex] [investigation target or question]"
   Date: {YYYY-MM-DD}
   Question: {user's original request}
   ```
+  - **Topic**: 2-4 word kebab-case (e.g., `auth-flow-gaps`, `ci-pipeline-root-cause`)
+  - **Collision**: same date + topic → append `-2`, `-3`
 
   ## Phase 2 — Investigation Steps
 
-  For each step: evaluate the "Needed when" condition against the user's request AND prior
-  findings. If needed, determine the relevant **scope** — which files, modules, or subsystems
-  are relevant to the question. Execute with that scope, not the entire project.
-  Append output under the designated section heading.
+  For each step in the table below, in order:
 
-  ### Execution Rules
+  1. **Evaluate** — check "Needed when" against the user's request AND prior findings. Skip if unneeded.
+  2. **Scope** — determine target files/modules. Never run unscoped.
+  3. **Execute** — run via active mode (see Mode below).
+  4. **Post-process** — verify CRITICAL/HIGH references (Read cited file:line, drop incorrect). Move unrelated findings to `### Peripheral Findings`. Order by severity.
+  5. **Append** — write under the step's output section heading.
 
-  Read this BEFORE evaluating steps.
+  Wait for each step's result before evaluating the next. At least one step must run.
 
-  **Claude-native (default)**: Read the agent file, execute its Investigation_Protocol yourself
-  using Claude-native tools (Read, Grep, Glob, Bash git-only). Constrain investigation to the
-  determined scope — don't follow the protocol's broad instructions beyond it. Agent protocols
-  are READ-ONLY — **you** (the skill executor) append to the file after each step.
+  ### Mode
 
-  **Codex delegation (`--codex`)**: Spawn `coral:codex-proxy` via Task tool for each step.
-  Include `Role: <role_name>` (scanner, gap-finder, or debugger) in the prompt, along with
-  the determined scope (target files/modules), `working_directory`, and the analysis file
-  content so far as context.
+  **Claude-native (default)**: Read `CORAL_AGENTS/<agent>.md`, follow its Investigation_Protocol
+  with Claude-native tools (Read, Grep, Glob, Bash git-only). Constrain to scope.
+  You (the executor) append to the file — agent protocols are read-only references.
 
-  **Session continuity**: Capture the `session: <id>` from the first codex-proxy response.
-  Pass `session: <id>` in the prompt to subsequent codex-proxy spawns — codex-proxy will
-  forward it to `codex({ op: "exec", session, ... })`, maintaining Codex CLI conversation
-  history across steps. This lets gap-finder build on scanner findings within Codex's context.
-
-  Post-processing (apply after each Codex call before appending):
-  - **Verify references**: For CRITICAL/HIGH findings, Read the cited file:line to confirm accuracy. Drop findings with incorrect references.
-  - **Relevance check**: For each finding, ask "could this be an indirect cause or contributing factor?" If clearly unrelated (different subsystem, no shared state or dependency), move to a `### Peripheral Findings` section at the end rather than discarding.
-  - **Restructure**: Order by severity with verified references.
+  **Codex (`--codex`)**: Spawn `coral:codex-proxy` via Task tool with `Role: <role_name>`,
+  scope, `working_directory`, and analysis file content so far.
+  Spawn one at a time — do NOT launch steps in parallel. Each step's output informs
+  the next step's scope and "Needed when" evaluation.
+  You (the executor) post-process and append the result to the file after each spawn returns.
+  Pass `session: <id>` from the first response to subsequent spawns for Codex CLI context continuity.
 
   ### Steps
 
@@ -83,77 +68,63 @@ argument-hint: "[--codex] [investigation target or question]"
 
   ## Phase 3 — Synthesis Review
 
-  Always runs after Phase 2 completes. The executor (not a subagent or Codex) reads the full
-  analysis file, then checks:
+  Always runs. Read the full analysis file, then check:
 
-  1. **Unanswered aspects** — does the user's original question have parts that no step addressed?
-  2. **Cross-step consistency** — do findings across steps contradict or reinforce each other? Connect related findings explicitly.
-  3. **Evidence verification** — for CRITICAL/HIGH findings, Read the cited `file:line` to confirm accuracy. Flag or drop findings with incorrect references.
-  4. **Coverage gaps** — are there obvious areas the executed steps missed given the user's request?
+  1. **Unanswered aspects** — does the user's question have parts no step addressed?
+  2. **Cross-step consistency** — do findings contradict or reinforce each other? Connect related findings.
+  3. **Coverage gaps** — obvious areas the steps missed given the request?
 
-  If any issues found: investigate directly using Read, Grep, Glob, Bash (git only). Append results under `## Synthesis Review`.
-  If nothing found: skip the section.
+  If issues found: investigate directly (Read, Grep, Glob, Bash git-only). Append under `## Synthesis Review`.
+  If clean: skip the section.
 
   ## Phase 4 — Present
 
-  Show the saved file path to the user, then summarize key findings inline.
+  Show the saved file path, then summarize key findings inline.
 </Protocol>
-<Output_Protocol>
-  Every analysis invocation MUST save results to a file — created in Phase 1.
-
-  - **File path**: `.claude/coral/analysis/{YYYY-MM-DD}-{topic}.md`
-  - **Topic naming**: 2-4 word kebab-case (e.g., `auth-flow-gaps`, `repo-architecture`, `ci-pipeline-root-cause`)
-  - **Collision**: If the file already exists (same date + topic), append a numeric suffix: `-2`, `-3`
-</Output_Protocol>
 <Context_Enhancement>
-  From the current conversation, identify and include in your analysis:
-  - For project scans: the working directory path and any reference material
-  - For investigations: error messages, stack traces, reproduction steps
-  - For requirements: feature specs, API contracts, design documents
+  From the current conversation, gather and include:
+  - Working directory path and reference material
+  - Error messages, stack traces, reproduction steps
+  - Feature specs, API contracts, design documents
   - What has already been tried or ruled out
 </Context_Enhancement>
 <Error_Policy>
-  If the selected agent file cannot be read, report the error to the user.
-  Do not fall back to inline analysis — the agent protocol is a required dependency.
+  If an agent file cannot be read, report the error to the user. Do not fall back to inline analysis.
 </Error_Policy>
 <Examples>
   <Good>
+  Bug diagnosis with scoped scanning:
   User asks: "Why does the discuss server drop messages under concurrent agent bids?"
-  Executor evaluates: scanner needed (bid processing flow unclear), scope: src/discuss/
-  state-machine.ts, server-handlers.ts, session-store.ts. Debugger needed (unexpected behavior),
-  scope: same files. Gap-finder not needed (no requirement gaps).
-  Phase 2 Step 1: Reads CORAL_AGENTS/scanner.md, executes Investigation_Protocol scoped to discuss
-  bid handling path. Maps state-machine → server-handlers call chain. Appends under ## Scan Report.
-  Step 3: Reads CORAL_AGENTS/debugger.md, uses scan findings as context. Forms hypothesis about
-  state-machine race condition, tests against src/discuss/state-machine.ts:142, confirms
-  missing lock on bid collection. Appends under ## Root Cause Diagnosis.
-  Phase 3: Reads full file. Scanner's call chain and debugger's root cause align — no
-  contradictions. Evidence verified. No synthesis section needed.
-  Phase 4: Shows file path, summarizes root cause inline.
+  Executor evaluates: scanner needed (bid processing flow unclear), scope: `src/discuss/`
+  `state-machine.ts`, `server-handlers.ts`, `session-store.ts`. Debugger needed (unexpected behavior),
+  scope: same files. Gap-finder not needed.
+  Step 1: Reads `CORAL_AGENTS/scanner.md`, maps state-machine → server-handlers call chain.
+  Appends under `## Scan Report`.
+  Step 3: Reads `CORAL_AGENTS/debugger.md`, uses scan findings as context. Confirms missing lock
+  on bid collection at `state-machine.ts:142`. Post-processed: verified reference — confirmed.
+  Appends under `## Root Cause Diagnosis`.
+  Phase 3: Scanner's call chain and debugger's root cause align. No synthesis needed.
   </Good>
   <Good>
+  Architecture analysis with emergent gap:
   User asks: "Analyze the coral plugin architecture."
-  Executor evaluates: scanner needed (architecture mapping), scope: entire project (explicit
-  architecture request). Gap-finder possibly needed (depends on scan findings). Debugger not
-  needed (no bug).
-  Phase 2 Step 1: Reads CORAL_AGENTS/scanner.md, follows Investigation_Protocol with full project
-  scope. Maps src/codex/ and src/discuss/ layers, traces dependency graph, identifies patterns.
-  Appends under ## Scan Report.
+  Executor evaluates: scanner needed (architecture mapping), scope: entire project.
+  Gap-finder possibly needed (depends on scan). Debugger not needed.
+  Step 1: Reads `CORAL_AGENTS/scanner.md`, maps `src/codex/` and `src/discuss/` layers,
+  traces dependency graph. Appends under `## Scan Report`.
   Step 2: Scanner found undocumented coupling between session-store and state-machine.
-  Gap-finder needed, scope: the coupling boundary. Reads CORAL_AGENTS/gap-finder.md, analyzes the
-  gap. Appends under ## Gap Analysis.
-  Phase 3: Reads full file. Cross-checks: scanner's dependency graph confirms gap-finder's
-  coupling concern — adds connection note. Verifies file:line references. Appends under ## Synthesis Review.
+  Gap-finder needed, scope: the coupling boundary. Appends under `## Gap Analysis`.
+  Phase 3: Scanner's dependency graph confirms gap-finder's coupling concern — adds connection note.
+  Appends under `## Synthesis Review`.
   </Good>
   <Bad>
+  Unscoped scanning:
   User asks: "Why is the build failing?" Executor runs scanner with full project scope.
-  Scanner produces a complete architecture report when only the build pipeline files were
-  relevant. Should have scoped scanner to build config and dependency chain, then handed
-  focused context to debugger.
+  Should have scoped to build config and dependency chain, then handed focused context to debugger.
   </Bad>
   <Bad>
-  Phase 3: Executor re-runs the debugger's hypothesis testing from scratch instead of
-  reviewing the accumulated file for cross-step consistency. Synthesis Review is for
+  Repeated work in synthesis:
+  Phase 3: Executor re-runs debugger's hypothesis testing from scratch. Synthesis Review is for
   meta-verification of existing findings, not repeating agent work.
   </Bad>
 </Examples>
