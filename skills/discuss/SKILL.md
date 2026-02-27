@@ -53,14 +53,25 @@ Before any other action, verify the Agent Teams environment:
 5. **Write active session file** (only if `--user`): Write `.claude/coral/discuss/active-user-session.json` with `{ session_id, team_name }`. This enables the `/bid` skill to find the session.
 
 6. **Create team and spawn teammates**: Create Agent Team `coral-dc-{session_id}`. Spawn ALL teammates:
-   - **discuss-lead** (always): `Task(subagent_type: 'coral:discuss-lead', team_name, name: 'discuss-lead', prompt: "Run discussion for session {session_id}. has_user_observer: {true if --user, false otherwise}. After each speech, SendMessage the full speech content to team lead. Do NOT handle setup — main context handles it. You own termination: evaluate the Termination Gate after each speech and call _7_end when all conditions pass.")`
+   - **discuss-lead** (always): `Task(subagent_type: 'coral:discuss-lead', team_name, name: 'discuss-lead', prompt: "Run discussion for session {session_id}. has_user_observer: {true if --user, false otherwise}. After each speech, SendMessage the full speech content to team lead.")`
    - **Discussants** (AI agents only): One per agent with `participation: 'required'`, using `name: 'dc-{agent_name}'` (e.g., agent `park` → teammate `dc-park`). Skip `participation: 'observer'` agents — they interact via `/bid`, not as spawned teammates.
 
 7. **If `--user`**: Return immediately to the user: "Discussion started! Use `/bid <score>, <thought>` to submit a bid, or `/bid <your speech>` when you win the floor."
 
-8. **Receive speeches**: Main context receives round-by-round speech messages from discuss-lead via SendMessage. Display each speech as it arrives.
+8. **Receive speeches and evaluate convergence**: Main context receives round-by-round speech messages from discuss-lead via SendMessage. Display each speech as it arrives. After each speech, evaluate whether the discussion should continue:
+   - Have all participants spoken at least once?
+   - Are new arguments still being introduced, or are positions stabilizing into refinement/repetition?
+   - Are there important rebuttals that remain unanswered?
+   - Does the user want the discussion to continue?
+   - **Default to continuing** — if uncertain, let the discussion run. Premature termination is worse than an extra round.
 
-9. **On discussion end**: discuss-lead owns termination — it evaluates the Termination Gate and calls `_7_end(synthesis)` when conditions pass. Main context does NOT call `_7_end` directly. Agents self-terminate via bid() cascade → discuss-lead sends synthesis to main context. Present the synthesis to the user. If `--user`, delete `.claude/coral/discuss/active-user-session.json`.
+9. **On discussion end**: Main context owns termination. When convergence is reached:
+   1. Call `discuss_lead({ op: '_4_transcript', session, mode: 'full' })` to read the full transcript.
+   2. Compose a synthesis. Must include: Key Agreements, Key Splits, Recommended Resolution.
+   3. Call `discuss_lead({ op: '_7_end', session, synthesis })` to end the session and record the synthesis.
+   4. discuss-lead's next `_3_step` returns `phase=ended` → it goes idle.
+   5. Present the synthesis to the user.
+   6. If `--user`, delete `.claude/coral/discuss/active-user-session.json`.
 
 ## Context Enhancement
 
