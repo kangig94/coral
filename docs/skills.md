@@ -12,6 +12,7 @@ Slash commands provided by the Coral plugin. Each skill is defined in `skills/{n
 | `/coral:bugfix` | Systematic bug diagnosis, planning, and fix execution |
 | `/coral:init-project` | Project initialization orchestrator - generates `.claude/` structure, agents, rules, docs |
 | `/coral:discuss` | Moderated multi-agent discussion via Agent Teams |
+| `/coral:bid` | Submit a bid or speech in an active `--user` discuss session |
 | `/coral:statusline` | Install or remove the coral HUD statusline |
 
 ## --red Flag (Adversarial Testing)
@@ -52,6 +53,17 @@ Requires `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` environment variable.
 The `--hints` flag provides controversy axis hints to the moderator. The moderator still performs its own topic analysis — hints are suggestions, not mandates.
 
 See [docs/discuss.md](./discuss.md) for the full discussion system design.
+
+## /coral:bid - Bid or Speak in Discussion
+
+Requires an active `--user` discuss session (started via `/coral:discuss --user <topic>`).
+
+```bash
+/coral:bid 50, I want to address the scalability concern   # bid with score + thought
+/coral:bid I think we should use a microservices approach   # deliver a speech
+```
+
+The first comma separates score from thought. If the left side is an integer 0-100, it's a bid; otherwise the entire string is treated as speech content.
 
 ## /coral:init-project - Project Initialization
 

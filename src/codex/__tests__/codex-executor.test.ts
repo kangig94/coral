@@ -82,7 +82,7 @@ describe('executeOneShot', () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
-      ['exec', '-m', 'o4-mini', '--json', '--full-auto', '-c', 'web_search=live'],
+      ['exec', '-m', 'o4-mini', '--json', '--full-auto', '-c', 'web_search=live', '-c', 'sandbox_mode=workspace-write', '-c', 'sandbox_workspace_write.network_access=true'],
       expect.objectContaining({ cwd: '/tmp' }),
     );
     expect(result.response).toBe('Hello');
@@ -141,7 +141,7 @@ describe('executeOneShot', () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
-      ['exec', '-m', 'o4-mini', '--json', '--full-auto', '-c', 'web_search=live', '-c', 'model_reasoning_effort=xhigh'],
+      ['exec', '-m', 'o4-mini', '--json', '--full-auto', '-c', 'web_search=live', '-c', 'sandbox_mode=workspace-write', '-c', 'sandbox_workspace_write.network_access=true', '-c', 'model_reasoning_effort=xhigh'],
       expect.objectContaining({ cwd: '/tmp' }),
     );
   });
@@ -180,7 +180,7 @@ describe('executeOneShot', () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
-      ['exec', '-m', 'o4-mini', '--json', '--full-auto', '-c', 'web_search=live'],
+      ['exec', '-m', 'o4-mini', '--json', '--full-auto', '-c', 'web_search=live', '-c', 'sandbox_mode=workspace-write', '-c', 'sandbox_workspace_write.network_access=true'],
       expect.objectContaining({ cwd: '/tmp' }),
     );
   });
@@ -219,7 +219,7 @@ describe('executeResume', () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
-      ['exec', 'resume', 'thread-abc', '-m', 'gpt-4.1', '--json', '--full-auto', '-c', 'web_search=live'],
+      ['exec', 'resume', 'thread-abc', '-m', 'gpt-4.1', '--json', '--full-auto', '-c', 'web_search=live', '-c', 'sandbox_mode=workspace-write', '-c', 'sandbox_workspace_write.network_access=true'],
       expect.any(Object),
     );
     expect(result.response).toBe('Resumed');

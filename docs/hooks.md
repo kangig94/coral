@@ -1,23 +1,24 @@
 # Hooks
 
-Hooks provide automatic context injection, agent routing, error-aware KB reminders, and KB promotion enforcement.
+Hooks provide automatic context injection, agent routing, plan-mode persistence, error-aware KB reminders, and KB promotion enforcement.
 
 ## Overview
 
 Claude Code's hook system executes scripts on specific events. Coral uses hooks at two levels:
 
 **Plugin hooks** (`hooks/hooks.json`):
-1. **SessionStart** - Injects CLAUDE.md behavioral guidelines into every Claude session
-2. **SubagentStart** - Injects delegation instructions into agents with a `codex-` prefix (with or without `coral:` namespace)
-3. **PreToolUse** - On first tool call per session, reminds Claude to write memos for non-obvious discoveries
-5. **PostToolUseFailure** - On any tool failure, reminds Claude to check `.claude/coral/kb/` before debugging
-6. **Stop** - On response completion, blocks Claude from stopping if unprocessed memos exist in `.claude/coral/memo/`
-7. **PreCompact** - Before context compaction, reminds about unprocessed memos for KB promotion
-8. **TeammateIdle** - Blocks idle when discuss agents have pending actions (bid/speak)
+1. **SessionStart** (`*`) - Injects CLAUDE.md behavioral guidelines into every Claude session
+2. **SessionStart** (`compact`) - After context compaction, restores plan-mode state and reminds about KB promotion
+3. **SubagentStart** (`(^|:)codex-`) - Injects delegation instructions into agents with a `codex-` prefix
+4. **UserPromptSubmit** - Tracks plan-mode activation when `/plan` or `/coral:plan` is invoked
+5. **PreToolUse** - Periodically reminds Claude to write memos for non-obvious discoveries
+6. **PostToolUseFailure** (`*`) - On any tool failure, reminds Claude to check `.claude/coral/kb/` before debugging
+7. **Stop** - Enforces KB promotion for unprocessed memos; cleans up plan-mode state
+8. **TeammateIdle** (`dc-*`) - Blocks idle when discuss agents have pending actions (bid/speak/vote)
 
 ## Hook Configuration
 
-Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/detect-codex-agent.mjs`, `hooks/kb-lookup-reminder.mjs`, `hooks/kb-memo-reminder.mjs`, `hooks/kb-promote-reminder.mjs`, `hooks/discuss-idle-guard.mjs`.
+Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/detect-codex-agent.mjs`, `hooks/kb-lookup-reminder.mjs`, `hooks/kb-memo-reminder.mjs`, `hooks/kb-promote-reminder.mjs`, `hooks/plan-guard.mjs`, `hooks/plan-state-tracker.mjs`, `hooks/discuss-idle-guard.mjs`.
 
 All hook scripts are **Node.js ESM** (`.mjs`). They read input JSON from stdin, write output JSON to stdout, and **fail-open** via `try/catch { process.exit(0) }` - a crash or timeout never blocks the user.
 
@@ -28,6 +29,16 @@ Injects the plugin's CLAUDE.md content into Claude's context at the start of eve
 Implementation: inline `cat` command reading `CLAUDE.md` from the plugin root directory. No script file needed.
 
 > **Note**: Codex sessions receive CLAUDE.md through a separate mechanism - the MCP server prepends it to the prompt in `executeOneShot()`. See [Core Modules](./core-modules.md) for details.
+
+## SessionStart (Compact) Hook
+
+Fires after context compaction (matcher: `compact`). Runs two scripts:
+
+**Script 1: `hooks/plan-guard.mjs`** — Reads `session_id` from stdin. Checks for `.claude/coral/tmp/plan-active-{sessionId}` flag file. If present, injects `hookSpecificOutput` with `additionalContext` containing plan-mode recovery instructions (re-read SKILL.md and PROTOCOL.md, recover plan file, resume without starting over). If absent, exits silently.
+
+**Script 2: `hooks/kb-promote-reminder.mjs`** — Checks for unprocessed memos in `.claude/coral/memo/`. Injects `hookSpecificOutput` with `additionalContext` reminding about KB promotion.
+
+**Purpose**: After compaction the model loses prior context. This hook restores critical state — plan-mode awareness and KB promotion reminders — so work continues seamlessly.
 
 ## SubagentStart Hook
 
@@ -63,6 +74,22 @@ Call the MCP tool immediately with the full task.
 
 This message is appended to the agent's system prompt, forcing the agent to call the Codex MCP tool.
 
+## UserPromptSubmit Hook (Plan State Tracker)
+
+Script: `hooks/plan-state-tracker.mjs`. Fires on every user prompt submission.
+
+Reads `hook_event_name` and `session_id` from stdin JSON. If the user prompt matches `/plan` or `/coral:plan` (case-insensitive), creates `.claude/coral/tmp/plan-active-{sessionId}` flag file to signal that a planning session is active.
+
+Also cleans up stale flag files older than 24 hours from other sessions.
+
+**Purpose**: Works with plan-guard.mjs (SessionStart compact) and the Stop hook to maintain plan-mode state across context compaction. The flag persists even if the context window is compacted, allowing plan-guard to restore plan-mode awareness.
+
+## PreToolUse Hook (Memo Reminder)
+
+Script: `hooks/kb-memo-reminder.mjs`. Injects `additionalContext` reminding Claude to write memos when discovering non-obvious lessons.
+
+**Throttled (15 min)**: Reads `session_id` from stdin JSON, creates `.claude/coral/tmp/memo-reminded-<session_id>` flag file. Subsequent calls within 15 minutes exit silently; after 15 minutes, the flag refreshes and the reminder fires again. Also cleans up stale flags older than 24 hours.
+
 ## PostToolUseFailure Hook
 
 On any tool failure, reminds Claude to check `.claude/coral/kb/` before debugging from scratch. Script: `hooks/kb-lookup-reminder.mjs`. Matcher: `*` (all tools).
@@ -71,32 +98,20 @@ On any tool failure, reminds Claude to check `.claude/coral/kb/` before debuggin
 
 **Fail-open**: If KB directory doesn't exist or has no `.md` files — silent exit 0.
 
-## PreCompact Hook
+## Stop Hook
 
-Before context compaction, checks for unprocessed memos in `.claude/coral/memo/`. Script: `hooks/kb-promote-reminder.mjs`.
+Runs two scripts on every response completion:
 
-**Output**: `systemMessage` shown to the user as a warning. PreCompact has no decision control — cannot inject context into Claude or block compaction.
+**Script 1: `hooks/kb-promote-reminder.mjs`** — Skill-scoped via state file.
 
-**Fail-open**: If memo directory doesn't exist or has no files — silent exit 0.
+**State file pattern**: Skills (ralph, bugfix) create `.claude/coral/tmp/kb-active` on start. The Stop hook checks for this file — if absent, exits silently (normal conversation unaffected).
 
-## PreToolUse Hook (Memo Reminder)
-
-Script: `hooks/kb-memo-reminder.mjs`. Fires once per session (flag file keyed by `session_id`). Injects `additionalContext` reminding Claude to write memos when discovering non-obvious lessons.
-
-**Throttled (15 min)**: Reads `session_id` from stdin JSON, creates `.claude/coral/tmp/memo-reminded-<session_id>` flag file. Subsequent calls within 15 minutes exit silently; after 15 minutes, `touch` refreshes the mtime and the reminder fires again.
-
-## Stop Hook (KB Promotion)
-
-Script: `hooks/kb-promote-reminder.mjs`. Fires on every response completion, but **skill-scoped** via state file.
-
-**State file pattern**: Skills (ralph, debug) create `.claude/coral/tmp/kb-active` on start. The Stop hook checks for this file — if absent, exits silently (normal conversation unaffected).
-
-When state file exists and unprocessed memos found in `.claude/coral/memo/`:
+When state file exists:
 1. Delete state file (unconditionally)
 2. `decision: "block"` prevents Claude from stopping
-3. `reason` instructs Claude to review memos for KB promotion
+3. `reason` instructs Claude to review memos for KB promotion (even if no memos exist, the block fires to ensure the KB review step runs)
 
-**Fail-open**: If state file absent, or memo directory empty — silent exit 0.
+**Script 2: `hooks/plan-state-tracker.mjs`** — Cleans up the plan-active flag. If `.claude/coral/tmp/plan-active-{sessionId}` exists, deletes it (planning turn has ended).
 
 ## TeammateIdle Hook (Discuss Idle Guard)
 
@@ -105,9 +120,10 @@ Script: `hooks/discuss-idle-guard.mjs`. Fires when a teammate goes idle (matcher
 Reads the discuss session's `state.json` and checks whether the idle agent has a pending action:
 - Has a pending bid to submit → block idle (exit 2)
 - Is the current speaker with no speech delivered → block idle (exit 2)
+- Has a pending vote to cast → block idle (exit 2)
 - No pending action → allow idle (exit 0)
 
-**Purpose**: Prevents discuss agents from going idle mid-protocol. If a discussant agent becomes idle before submitting a bid or delivering a speech, the hook blocks the idle and the agent receives a reminder to complete its action.
+**Purpose**: Prevents discuss agents from going idle mid-protocol. If a discussant agent becomes idle before submitting a bid, delivering a speech, or casting a vote, the hook blocks the idle and the agent receives a reminder to complete its action.
 
 **Fail-open**: Any read error or missing session file → silent exit 0 (allow idle).
 
@@ -139,7 +155,7 @@ Key requirements:
 
 ## Notes
 
-- If the 5-second timeout is exceeded, the hook is ignored and the agent runs normally
+- If the timeout is exceeded, the hook is ignored and the agent runs normally
 - Invalid JSON output from the hook is ignored
 - Agents without the `codex-` prefix (bare or namespaced) are filtered out at the matcher stage
 - Hook scripts must be readable by the Claude Code process (no execute permission required for `.mjs` scripts — Node.js is called directly)

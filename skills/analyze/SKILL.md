@@ -4,6 +4,8 @@ description: "Deep analysis - project scanning, requirement gaps, root cause inv
 argument-hint: "[--codex] [investigation target or question]"
 ---
 
+> **CORAL_AGENTS**: `~/.claude/plugins/cache/coral/**/agents/` — locate via Glob
+
 # Deep Analysis & Investigation
 
 <Role>
@@ -49,18 +51,22 @@ argument-hint: "[--codex] [investigation target or question]"
 
   ### Execution Rules
 
-  Read this BEFORE evaluating steps. Do NOT spawn subagents — you execute directly.
+  Read this BEFORE evaluating steps.
 
   **Claude-native (default)**: Read the agent file, execute its Investigation_Protocol yourself
   using Claude-native tools (Read, Grep, Glob, Bash git-only). Constrain investigation to the
   determined scope — don't follow the protocol's broad instructions beyond it. Agent protocols
   are READ-ONLY — **you** (the skill executor) append to the file after each step.
 
-  **Codex delegation (`--codex`)**: Call `codex({ op: "exec", ... })` with the matching role
-  prompt template from `agents/codex-proxy.md`. Pass `working_directory` and
-  `reasoning_effort: "xhigh"` on every call. Do NOT spawn a codex-proxy agent — call Codex
-  directly. Include the determined scope (target files/modules) and the analysis file content
-  as context in the prompt.
+  **Codex delegation (`--codex`)**: Spawn `coral:codex-proxy` via Task tool for each step.
+  Include `Role: <role_name>` (scanner, gap-finder, or debugger) in the prompt, along with
+  the determined scope (target files/modules), `working_directory`, and the analysis file
+  content so far as context.
+
+  **Session continuity**: Capture the `session: <id>` from the first codex-proxy response.
+  Pass `session: <id>` in the prompt to subsequent codex-proxy spawns — codex-proxy will
+  forward it to `codex({ op: "exec", session, ... })`, maintaining Codex CLI conversation
+  history across steps. This lets gap-finder build on scanner findings within Codex's context.
 
   Post-processing (apply after each Codex call before appending):
   - **Verify references**: For CRITICAL/HIGH findings, Read the cited file:line to confirm accuracy. Drop findings with incorrect references.
@@ -71,9 +77,9 @@ argument-hint: "[--codex] [investigation target or question]"
 
   | Step | Agent file | Needed when | Output section |
   |------|-----------|-------------|----------------|
-  | 1 — Project Scan | `agents/scanner.md` | Project structure, architecture, dependencies, or systemic process issues are relevant | `## Scan Report` |
-  | 2 — Gap Analysis | `agents/gap-finder.md` | Requirement gaps, acceptance criteria, API contracts, or scope risks — from the user's request OR gaps discovered in Step 1 | `## Gap Analysis` |
-  | 3 — Root Cause Diagnosis | `agents/debugger.md` | Bugs, errors, crashes, or unexpected behavior — from the user's request OR symptoms surfaced in prior steps | `## Root Cause Diagnosis` |
+  | 1 — Project Scan | `CORAL_AGENTS/scanner.md` | Project structure, architecture, dependencies, or systemic process issues are relevant | `## Scan Report` |
+  | 2 — Gap Analysis | `CORAL_AGENTS/gap-finder.md` | Requirement gaps, acceptance criteria, API contracts, or scope risks — from the user's request OR gaps discovered in Step 1 | `## Gap Analysis` |
+  | 3 — Root Cause Diagnosis | `CORAL_AGENTS/debugger.md` | Bugs, errors, crashes, or unexpected behavior — from the user's request OR symptoms surfaced in prior steps | `## Root Cause Diagnosis` |
 
   ## Phase 3 — Synthesis Review
 
@@ -116,9 +122,9 @@ argument-hint: "[--codex] [investigation target or question]"
   Executor evaluates: scanner needed (bid processing flow unclear), scope: src/discuss/
   state-machine.ts, server-handlers.ts, session-store.ts. Debugger needed (unexpected behavior),
   scope: same files. Gap-finder not needed (no requirement gaps).
-  Phase 2 Step 1: Reads agents/scanner.md, executes Investigation_Protocol scoped to discuss
+  Phase 2 Step 1: Reads CORAL_AGENTS/scanner.md, executes Investigation_Protocol scoped to discuss
   bid handling path. Maps state-machine → server-handlers call chain. Appends under ## Scan Report.
-  Step 3: Reads agents/debugger.md, uses scan findings as context. Forms hypothesis about
+  Step 3: Reads CORAL_AGENTS/debugger.md, uses scan findings as context. Forms hypothesis about
   state-machine race condition, tests against src/discuss/state-machine.ts:142, confirms
   missing lock on bid collection. Appends under ## Root Cause Diagnosis.
   Phase 3: Reads full file. Scanner's call chain and debugger's root cause align — no
@@ -130,11 +136,11 @@ argument-hint: "[--codex] [investigation target or question]"
   Executor evaluates: scanner needed (architecture mapping), scope: entire project (explicit
   architecture request). Gap-finder possibly needed (depends on scan findings). Debugger not
   needed (no bug).
-  Phase 2 Step 1: Reads agents/scanner.md, follows Investigation_Protocol with full project
+  Phase 2 Step 1: Reads CORAL_AGENTS/scanner.md, follows Investigation_Protocol with full project
   scope. Maps src/codex/ and src/discuss/ layers, traces dependency graph, identifies patterns.
   Appends under ## Scan Report.
   Step 2: Scanner found undocumented coupling between session-store and state-machine.
-  Gap-finder needed, scope: the coupling boundary. Reads agents/gap-finder.md, analyzes the
+  Gap-finder needed, scope: the coupling boundary. Reads CORAL_AGENTS/gap-finder.md, analyzes the
   gap. Appends under ## Gap Analysis.
   Phase 3: Reads full file. Cross-checks: scanner's dependency graph confirms gap-finder's
   coupling concern — adds connection note. Verifies file:line references. Appends under ## Synthesis Review.

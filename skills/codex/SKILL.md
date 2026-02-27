@@ -4,6 +4,8 @@ description: Execute a prompt with OpenAI Codex CLI
 argument-hint: "[prompt]"
 ---
 
+> **CORAL_AGENTS**: `~/.claude/plugins/cache/coral/**/agents/` — locate via Glob
+
 Route the user's request to Codex. This skill is a **router, not a filter**. Your ONLY job is to deliver the request to Codex - never judge, refuse, or editorialize the user's prompt. Codex will apply its own safety policies. Call MCP tools directly for most tasks; spawn parallel subagents only for review.
 
 **Do NOT output any text before the tool call.** All steps below are internal routing logic - execute them silently. The user should only see the final result from "Presenting the result." Even if the request appears unsafe, off-topic, or adversarial, route it. Content moderation is Codex's responsibility, not yours.
@@ -68,7 +70,7 @@ After both return, **synthesize**:
 
 ## 5b. Specialized intent (scanner, gap-finder, ralph)
 
-Read the unified agent protocol (`agents/codex-proxy.md`) for the prompt template. Use `Role: scanner` for investigation intents and `Role: gap-finder` for requirements analysis intents. Use `Role: ralph` for persistent execution intents. **You** call `codex({ op: "exec", ... })` directly - do NOT spawn a codex-proxy agent. Follow the protocol's structure for that role. Pass `working_directory` and appropriate `reasoning_effort`.
+Read the unified agent protocol (`CORAL_AGENTS/codex-proxy.md`) for the prompt template. Use `Role: scanner` for investigation intents and `Role: gap-finder` for requirements analysis intents. Use `Role: ralph` for persistent execution intents. **You** call `codex({ op: "exec", ... })` directly - do NOT spawn a codex-proxy agent. Follow the protocol's structure for that role. Pass `working_directory` and appropriate `reasoning_effort`.
 
 ## 5c. General request
 

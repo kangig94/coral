@@ -19,6 +19,27 @@ paths:
 - Skill names in frontmatter must match the directory name
 - Skills that spawn subagents must declare `subagent_type` in their protocol
 
+## Cross-Reference Convention
+
+When agent or skill files reference other coral plugin files, use path aliases to distinguish
+plugin files from project files. Two patterns exist — never mix them:
+
+| Pattern | Usage | Example |
+|---------|-------|---------|
+| `CORAL_AGENTS/xxx.md` | **Read** the file (Read/Glob tool) | `CORAL_AGENTS/scanner.md` |
+| `CORAL_SKILLS/xxx/` | **Read** the file (Read/Glob tool) | `CORAL_SKILLS/plan/PROTOCOL.md` |
+| `coral:xxx` | **Spawn** subagent (Task tool) | `coral:codex-proxy` |
+
+- Every file using `CORAL_AGENTS` or `CORAL_SKILLS` must define them at the top (after frontmatter):
+  ```
+  > **CORAL_AGENTS**: `~/.claude/plugins/cache/coral/**/agents/` — locate via Glob
+  > **CORAL_SKILLS**: `~/.claude/plugins/cache/coral/**/skills/` — locate via Glob
+  ```
+- Never use bare `agents/xxx.md` or `skills/xxx/` — these resolve relative to the user's
+  project directory, which breaks when the plugin is used outside its own repo.
+- `coral:xxx` references are for Task tool's `subagent_type` only — the framework resolves them.
+  Do not use `coral:xxx` when the intent is to read a file.
+
 ## Hook Safety
 
 - Hook scripts are Node.js ESM modules (`.mjs`) — no shell scripts

@@ -4,6 +4,8 @@ description: Initialize project for AI-assisted development with rules, agents, 
 argument-hint: "[existing|new]"
 ---
 
+> **CORAL_SKILLS**: `~/.claude/plugins/cache/coral/**/skills/` — locate via Glob
+
 # Project Initialization
 
 <Role>
@@ -60,7 +62,7 @@ argument-hint: "[existing|new]"
   single analysis document.
 
       Task(subagent_type="general-purpose", prompt="""
-        Follow the analysis protocol from skills/analyze/SKILL.md (Claude-native Execution).
+        Follow the analysis protocol from CORAL_SKILLS/analyze/SKILL.md (Claude-native Execution).
         Run Step 1 (scanner) — always needed for project understanding.
         Skip Step 2 (gap-finder) and Step 3 (debugger) — requirement gaps are
         handled during Phase 2 plan review, and there are no bugs to diagnose.
@@ -115,7 +117,7 @@ argument-hint: "[existing|new]"
 
   ### 1f. Load References
 
-  Read from this plugin's skill directory (`skills/init-project/`):
+  Read from this plugin's skill directory (`CORAL_SKILLS/init-project/`):
   1. Domain references: `references/{domain}.md` for each detected domain
   2. Writing guide: `references/writing-guide.md`
   3. Merge policy: `references/merge-policy.md`
@@ -132,7 +134,7 @@ argument-hint: "[existing|new]"
      in full. This is the primary input for planning — the tech stack, dependency graph,
      build/test config, existing docs state, and documentation gaps all come from this document.
      Do NOT write the plan from memory of Phase 1 — read the file.
-  2. **Follow planning protocol**: Read `skills/plan/PROTOCOL.md` and follow it.
+  2. **Follow planning protocol**: Read `CORAL_SKILLS/plan/PROTOCOL.md` and follow it.
      - Plan name: `init-{project-name}`
      - Plan content requirements:
        * Structure: Requirements, Acceptance Criteria, Artifact Manifest, Risks, Verification Steps
@@ -163,7 +165,7 @@ argument-hint: "[existing|new]"
   If plan file does not exist, STOP and report: "Phase 2 did not produce a plan file. Cannot proceed to Phase 3."
   Do NOT attempt to write a plan or execute without one.
 
-  Read `skills/ralph/PROTOCOL.md` and follow the ralph execution protocol directly.
+  Read `CORAL_SKILLS/ralph/PROTOCOL.md` and follow the ralph execution protocol directly.
   Same pattern as Phase 2 — you execute at depth 0, spawning subagents at depth 1 as needed.
 
   You MUST read these reference files before generating any artifacts:
