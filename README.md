@@ -42,6 +42,9 @@ https://github.com/user-attachments/assets/881f1a14-9f4f-4d3d-8023-59610eb13ac4
 
 Coral scans your stack, plans with reviewer verification, and generates `.claude/` -
 conventions, agents, architecture docs - tailored to your project.
+
+Generated agents aren't boilerplate — they encode evaluation philosophies
+with rubric-anchored scoring across multiple dimensions, calibrated to your project's audience.
 Claude follows your rules, not generic defaults.
 
 ```bash
@@ -73,7 +76,7 @@ my-project/
 +   architecture.md           ← module map, dependency graph
 ```
 
-Look familiar? Browse this repository's `.claude/` folder.
+Look familiar? Browse this repository's [`.claude/`](.claude/) folder.
 
 ---
 

@@ -6,7 +6,7 @@ When showcasing connected multi-skill pipelines (e.g., preplan → plan → ralp
 ## Why
 Connected workflows suffer from the "best-designed = least-discoverable" paradox: tools with smooth internal transitions (preplan auto-proposing plan, plan saving files for ralph) are invisible if users never trigger the first step. But leading with a multi-step pipeline increases perceived complexity and violates progressive disclosure — users think the pipeline IS the product. The ux-critic dimensions of Discoverability and Progressive Disclosure directly conflict here; layered presentation resolves both.
 
-Note on naming clarity: "ralph" is established vocabulary in the Claude Code plugin community (derived from a well-known predecessor plugin). Domain-specific naming is NOT "jargon without context" when the target audience shares that vocabulary. Evaluate naming against the actual user base, not a hypothetical general audience.
+Note on naming clarity: "ralph" is established vocabulary in the Claude Code plugin community (derived from a well-known predecessor plugin). Domain-specific naming is NOT "jargon without context" when the target audience shares that vocabulary. Evaluate naming against the actual user base, not a hypothetical general audience. The ux-critic Investigation Protocol now includes an audience calibration preamble to enforce this.
 
 ## Pattern
 Right — layered disclosure:
