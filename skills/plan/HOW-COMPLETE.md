@@ -54,7 +54,7 @@ A round with only DETAIL findings and no FRAME/STRUCTURE findings indicates prog
 ## Combined Exit Rule
 
 A round passes when ALL of the following are true:
-1. Both reviewers returned no CRITICAL or HIGH findings *(existing rule)*
+1. Both reviewers returned no CRITICAL or HIGH findings *(existing rule — MEDIUM/LOW findings may be fixed inline without re-verification)*
 2. No FRAME-level findings in this round *(Frame Stability)*
 3. All major counterexample types have been explored across rounds *(Coverage)*
 4. Refutation effort appears genuine *(Effort Assessment)*

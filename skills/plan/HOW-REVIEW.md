@@ -29,6 +29,22 @@ Severity: CRITICAL / HIGH / MEDIUM / LOW
 
 A finding can be FRAME-level but LOW severity (e.g., wrong scope but trivial to fix). A finding can be DETAIL-level but CRITICAL (e.g., a specific step that will cause data loss). Always report both dimensions.
 
+### Severity Calibration
+
+Reserve HIGH for findings where **the fix changes the plan's logic or structure**. Mechanical errors that have an obvious, unambiguous correction belong at MEDIUM:
+
+| Finding | Severity | Rationale |
+|---------|----------|-----------|
+| Wrong algorithm chosen for the problem | HIGH+ | Changes the plan's approach |
+| Missing phase or dependency between steps | HIGH | Structural change required |
+| Code snippet references nonexistent API | HIGH | Plan logic may be wrong |
+| Missing `#include` / import in snippet | MEDIUM | Mechanical — one obvious fix |
+| `const` qualifier prevents mutation | MEDIUM | Mechanical — remove const |
+| Typo in function name (correct name is clear) | MEDIUM | Mechanical — rename |
+| Forward declaration missing | MEDIUM | Mechanical — add declaration |
+
+The distinction: **HIGH means the reviewer must re-examine the fix** because it could introduce new issues. **MEDIUM means the fix is deterministic** — there is exactly one correct correction and no judgment is required.
+
 ## Mandatory Frame Question
 
 Every review MUST explicitly answer:

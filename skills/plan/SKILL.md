@@ -116,11 +116,10 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     **4f. Exit Condition**
     Read `HOW-COMPLETE.md` (in this skill directory) and apply its additional completion criteria alongside the rules below.
     Evaluate based on what reviewers RETURNED this round (not your post-edit assessment):
-    - **Continue**: Either reviewer returned CRITICAL or HIGH → edit plan (4d), go to 4a. If you edited the plan this round, you MUST re-verify.
-    - **Pass**: Both reviewers returned NO CRITICAL or HIGH, AND HOW-COMPLETE criteria are satisfied → proceed to Phase 2.
+    - **Continue**: Either reviewer returned CRITICAL or HIGH → edit plan (4d), go to 4a. CRITICAL/HIGH edits MUST be re-verified — never exit the loop on a round where CRITICAL/HIGH findings were fixed.
+    - **Fix and pass**: Both reviewers returned NO CRITICAL or HIGH, but MEDIUM/LOW findings exist → fix them (4d), then exit. MEDIUM/LOW fixes do not require re-verification.
+    - **Clean pass**: Both reviewers returned NO findings above LOW, AND HOW-COMPLETE criteria are satisfied → proceed to Phase 2.
     - **Max rounds (5)**: `AskUserQuestion` — continue, finalize, or abort.
-
-    NEVER exit the loop on a round where you edited the plan.
 
     #### Phase 2 — Claude Review (always)
 
