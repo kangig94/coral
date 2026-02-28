@@ -5,7 +5,6 @@ argument-hint: "[--codex] <bug description or error message>"
 ---
 
 > **CORAL_AGENTS**: `~/.claude/plugins/cache/coral/**/agents/` — locate via Glob
-> **CORAL_SKILLS**: `~/.claude/plugins/cache/coral/**/skills/` — locate via Glob
 
 # Bug Debugging
 
@@ -39,8 +38,7 @@ Strip the `--codex` flag before passing the prompt to the execution path.
    Plan should include: what to change, why, and how to verify the fix.
 
 3. **Execute fix**:
-   - **Default**: Read `CORAL_SKILLS/ralph/PROTOCOL.md`. **You** execute it directly — implement the plan
-     from step 2.
+   - **Default**: Invoke `Skill({ skill: "coral:ralph", args: "implement the plan from step 2" })`.
    - **`--codex`**: Read `CORAL_AGENTS/codex-proxy.md`, use `### Role: ralph` prompt template.
      Call `codex({ op: "exec", ... })` with the plan as task context.
      Pass `working_directory` and `reasoning_effort: "high"`.

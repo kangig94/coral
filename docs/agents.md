@@ -64,11 +64,11 @@ Use Claude's native tools (Read, Grep, Glob, LSP) for direct analysis. Read-only
 
 ### ralph (Persistent Execution Loop)
 
-`skills/ralph/PROTOCOL.md` - sonnet (protocol-only, no agent file)
+`skills/ralph/SKILL.md` - sonnet (skill-only, no agent file)
 
 **Role**: Persistent task executor that loops until work is fully complete with verified evidence. Enforces the Iron Law: no completion claims without fresh verification evidence. Includes a verification gate (IDENTIFY → RUN → READ → VERIFY → CLAIM), iteration cap, and circuit breaker.
 
-> Note: ralph has no agent file. Skills (`/coral:ralph`, `/coral:bugfix`) and callers (`init-project`) read PROTOCOL.md directly.
+> Note: ralph has no agent file. The protocol is embedded in `skills/ralph/SKILL.md`. Callers invoke via `Skill("coral:ralph")` — the default execution path naturally follows `<Ralph_Protocol>`.
 
 ---
 

@@ -165,7 +165,7 @@ argument-hint: "[existing|new]"
   If plan file does not exist, STOP and report: "Phase 2 did not produce a plan file. Cannot proceed to Phase 3."
   Do NOT attempt to write a plan or execute without one.
 
-  Read `CORAL_SKILLS/ralph/PROTOCOL.md` and follow the ralph execution protocol directly.
+  Invoke `Skill({ skill: "coral:ralph", args: "execute the plan from Phase 2" })`.
   Same pattern as Phase 2 — you execute at depth 0, spawning subagents at depth 1 as needed.
 
   You MUST read these reference files before generating any artifacts:
