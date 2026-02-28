@@ -26,7 +26,7 @@ try {
       additionalContext: [
         'PLAN MODE ACTIVE — DO NOT IMPLEMENT.',
         'Context compaction just occurred while you were executing the /coral:plan skill.',
-        'Re-read skills/plan/SKILL.md and skills/plan/PROTOCOL.md to recover your role and protocol.',
+        'Re-read skills/plan/SKILL.md to recover your role and protocol.',
         'Re-read your plan file in .claude/coral/plans/ to recover your progress.',
         'Resume from where you left off. Do NOT start over.',
       ].join('\n'),

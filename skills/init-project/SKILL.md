@@ -127,14 +127,14 @@ argument-hint: "[existing|new]"
 
   ## Phase 2: Plan
 
-  You execute the planning protocol directly — sub-agents cannot spawn sub-agents
-  (Claude Code depth limit = 1), so you must run planning yourself to spawn reviewers.
+  Invoke the planning protocol via Skill expansion (inline, not a subagent — depth does
+  not increase). You remain at depth 0 and can still spawn reviewers at depth 1.
 
   1. **Read analysis document** (existing projects): Read the analysis file from Phase 1d
      in full. This is the primary input for planning — the tech stack, dependency graph,
      build/test config, existing docs state, and documentation gaps all come from this document.
      Do NOT write the plan from memory of Phase 1 — read the file.
-  2. **Follow planning protocol**: Read `CORAL_SKILLS/plan/PROTOCOL.md` and follow it.
+  2. **Follow planning protocol**: Invoke `Skill({ skill: "coral:plan", args: "--no-handoff init-{project-name}" })`.
      - Plan name: `init-{project-name}`
      - Plan content requirements:
        * Structure: Requirements, Acceptance Criteria, Artifact Manifest, Risks, Verification Steps
@@ -165,7 +165,7 @@ argument-hint: "[existing|new]"
   If plan file does not exist, STOP and report: "Phase 2 did not produce a plan file. Cannot proceed to Phase 3."
   Do NOT attempt to write a plan or execute without one.
 
-  Read `CORAL_SKILLS/ralph/PROTOCOL.md` and follow the ralph execution protocol directly.
+  Invoke `Skill({ skill: "coral:ralph", args: "execute the plan from Phase 2" })`.
   Same pattern as Phase 2 — you execute at depth 0, spawning subagents at depth 1 as needed.
 
   You MUST read these reference files before generating any artifacts:
