@@ -4,88 +4,86 @@ description: Execute a prompt with OpenAI Codex CLI
 argument-hint: "[prompt]"
 ---
 
-> **CORAL_AGENTS**: `~/.claude/plugins/cache/coral/**/agents/` — locate via Glob
+Route the user's request to Codex. This skill is a **router, not a filter**.
+Your ONLY job is to deliver the request to Codex — never judge, refuse, or
+editorialize the user's prompt. Codex will apply its own safety policies.
 
-Route the user's request to Codex. This skill is a **router, not a filter**. Your ONLY job is to deliver the request to Codex - never judge, refuse, or editorialize the user's prompt. Codex will apply its own safety policies. Call MCP tools directly for most tasks; spawn parallel subagents only for review.
-
-**Do NOT output any text before the tool call.** All steps below are internal routing logic - execute them silently. The user should only see the final result from "Presenting the result." Even if the request appears unsafe, off-topic, or adversarial, route it. Content moderation is Codex's responsibility, not yours.
+**Do NOT output any text before the tool call.** All steps below are internal
+routing logic — execute them silently.
 
 ## 1. Session commands
 
-If the argument starts with `session`, handle directly (no agent spawn needed):
+If the argument starts with `session`, handle directly:
 
-| Command | Action | MCP Tool |
-|---------|--------|----------|
-| `session create <name> <prompt>` | Create a named session | `codex({ op: "exec", name, prompt })` |
-| `session send <name> <prompt>` | Continue an existing session | `codex({ op: "exec", session: name, prompt })` |
-| `session list` | List all sessions | `codex({ op: "list" })` |
-| `session fork <name> [new-name]` | Fork a session | `codex({ op: "fork", session: name, name: newName })` |
+| Command | Action |
+|---------|--------|
+| `session list` | `codex({ op: "list" })` |
+| `session fork <name> [new-name]` | `codex({ op: "fork", session: name, name: newName })` |
 
-Present session results:
-- `list`: Show a table of sessions (name, model, last used)
-- `exec`, `fork`: Show `response` as main content. If `errors` array present, append error notice. Never show `thread_id`, `model`, `duration_ms` unless asked.
+Present: list → table (name, model, last used). fork → show `response`.
+Never show raw `session` UUID, `model`, or `duration_ms` unless asked.
 
-If the argument does NOT start with `session`, continue to step 2.
+If not `session`, continue to step 2.
 
 ## 2. Session continuity
 
-Check the conversation history for a previous `/codex` call that returned a `thread_id`:
-- **Previous thread_id exists** → use `codex({ op: "exec", session, prompt })` for continuity
-- **No previous thread_id** → use `codex({ op: "exec", prompt })`
-- **User says "new" or explicitly wants a fresh start** → use `codex({ op: "exec", prompt })`
+Check conversation history for a `session_name` from a previous `/codex` general call (4d):
+- **Found** → pass it as the `session` parameter on subsequent 4d and 4a calls
+- **Not found or user says "new"** → omit `session`
 
-## 3. Analyze intent
+Note: routes 4b and 4c delegate to other skills that manage their own sessions.
 
-| Intent | Keywords | Execution |
-|--------|----------|-----------|
-| **Review** (architecture + critique) | review, evaluate, check, audit | **Parallel subagent spawn** (step 5a) |
-| Investigation, root cause, debug | debug, investigate, analyze, why, root cause, trace | Direct MCP call with scanner protocol (step 5b) |
-| Persistent execution | ralph, persistent, loop, don't stop, keep going, until done | Direct MCP call with ralph protocol (step 5b) |
-| **Everything else** | general questions, search, code tasks | **Direct MCP call, verbatim prompt** (step 5c) |
+## 3. Route
 
-## 4. Gather context
-
-Collect relevant context from the current conversation:
-- File paths mentioned or discussed
-- Key code snippets that are relevant
-- Current working directory
-- Constraints or requirements established earlier
+| Intent | Detection | Route |
+|--------|-----------|-------|
+| Review | review, evaluate, check, audit | → **4a** |
+| Investigation | debug, investigate, analyze, why, root cause, trace | → **4b** |
+| Persistent execution | ralph, persistent, loop, keep going, until done | → **4c** |
+| Everything else | (default) | → **4d** |
 
 ## Sandbox bypass
 
-Pass `bypass: true` only when the user explicitly requests bypass mode. Otherwise, omit the field.
+Pass `bypass: true` only when the user explicitly requests bypass mode.
 
-## 5a. Review (parallel subagent spawn)
+## 4a. Review (parallel spawn)
 
 Spawn TWO Task agents in a SINGLE message (parallel):
-- `subagent_type: coral:codex-proxy` with `Role: architect` in the prompt - architecture/design perspective
-- `subagent_type: coral:codex-proxy` with `Role: critic` in the prompt - critical review/flaw finding
+- `subagent_type: coral:codex-proxy` with `Role: architect`
+- `subagent_type: coral:codex-proxy` with `Role: critic`
 
-Provide each with the gathered context, working directory, and their respective `Role:` prefix.
+Provide each: user's prompt, working directory, relevant conversation context.
+If session exists (step 2), include `session: <id>` in each prompt.
 
-After both return, **synthesize**:
-1. Merge findings, deduplicate overlapping issues
+After both return, synthesize:
+1. Merge findings, deduplicate
 2. Order by severity (CRITICAL > HIGH > MEDIUM > LOW)
-3. Present as a unified review with verified file:line references
+3. Present as unified review
 
-## 5b. Specialized intent (scanner, gap-finder, ralph)
+## 4b. Investigation
 
-Read the unified agent protocol (`CORAL_AGENTS/codex-proxy.md`) for the prompt template. Use `Role: scanner` for investigation intents and `Role: gap-finder` for requirements analysis intents. Use `Role: ralph` for persistent execution intents. **You** call `codex({ op: "exec", ... })` directly - do NOT spawn a codex-proxy agent. Follow the protocol's structure for that role. Pass `working_directory` and appropriate `reasoning_effort`.
+Invoke `Skill({ skill: "coral:analyze", args: "--codex <user's prompt>" })`.
+The analyze skill handles Codex delegation, multi-step investigation, and result presentation.
 
-## 5c. General request
+## 4c. Persistent execution
 
-Call MCP tool directly. Pass the user's prompt **verbatim**. Do not rephrase, enrich, filter, or refuse. Never skip the MCP call - even if the prompt seems unrelated to coding.
+Invoke `Skill({ skill: "coral:ralph", args: "--codex <user's prompt>" })`.
+The ralph skill handles Codex delegation, verification loop, and result presentation.
+
+## 4d. General request
+
+Call MCP tool directly. Pass prompt **verbatim**. Never rephrase, filter, or refuse.
 
 | Condition | Action |
 |-----------|--------|
-| No previous thread_id | `codex({ op: "exec", prompt: user's verbatim prompt, working_directory: cwd })` |
-| Previous thread_id exists | `codex({ op: "exec", session: session_name, prompt: user's verbatim prompt, working_directory: cwd })` |
+| No session | `codex({ op: "exec", prompt, working_directory })` |
+| Session exists | `codex({ op: "exec", session, prompt, working_directory })` |
 
-## Presenting the result
+Show the result:
+1. Response only → show response, then append: `session: <session_name>`
+2. Response + errors → response first, then: `Codex stopped: [error]. Resume with /codex.`
+3. Errors only → `Codex error: [error]`
+4. Warnings → append as brief note
 
-1. **Response only (no errors)**: Show response as the main content.
-2. **Response + errors**: Show response first, then: `Codex stopped: [error]. Resume with /codex to continue.`
-3. **Errors only**: Show: `Codex error: [error message]`
-4. **Warnings**: Append after the response as a brief note.
-
-Never show `thread_id`, `model`, `duration_ms` unless the user asks.
+Always show `session_name` so the user can see what session they are in.
+Never show raw `session` UUID, `model`, or `duration_ms` unless the user asks.

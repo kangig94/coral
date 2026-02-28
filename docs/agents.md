@@ -138,15 +138,15 @@ Agents for the moderated multi-agent discussion system. These agents coordinate 
 
 ## Codex-bound Agents (Delegation Agents)
 
-Proxy agents that delegate work to Codex CLI. Tool restrictions limit them to coral MCP tools only.
+Proxy agents that delegate work to Codex CLI. Tool restrictions limit them to Read, Glob, and coral MCP tools.
 
-**Why one file?** All Codex delegation roles share ~60% identical protocol (Proxy_Protocol, Working_Directory, Session_Continuity, Output_Handling, Failure_Modes). A single file maximizes prompt cache hits - when architect + critic are spawned in parallel, their system prompts share an identical prefix, so only the first pays the full cost. New roles should be added here, not as separate agent files.
+**Why one file?** All Codex delegation roles share identical infrastructure (Proxy_Protocol, Working_Directory, Session_Continuity, Output_Handling, Failure_Modes). A single file maximizes prompt cache hits - when architect + critic are spawned in parallel, their system prompts share an identical prefix, so only the first pays the full cost. New roles should be added here, not as separate agent files.
 
 ### codex-proxy (Unified Codex Delegation Proxy)
 
-`agents/codex-proxy.md` - sonnet, Codex tools only
+`agents/codex-proxy.md` - sonnet, Read + Glob + Codex tools
 
-**Role**: Single proxy agent with role-based routing. Callers include `Role: scanner|gap-finder|debugger|architect|critic|ralph` in their prompt to select the appropriate prompt template and settings. Missing role → explicit error (no inference).
+**Role**: Thin proxy with role-based routing. Callers include `Role: scanner|gap-finder|debugger|architect|critic|ralph` in their prompt. The proxy reads the corresponding Claude-native agent file (`agents/<role>.md`), extracts the `<Agent_Prompt>` methodology, and passes it to Codex CLI as the system prompt. Missing role → explicit error (no inference).
 
 | Role | Purpose | reasoning_effort |
 |---|---|---|
@@ -155,9 +155,8 @@ Proxy agents that delegate work to Codex CLI. Tool restrictions limit them to co
 | `debugger` | Bug diagnosis via hypothesis testing, root cause tracing | xhigh |
 | `architect` | Architecture review, design patterns, code structure | xhigh |
 | `critic` | Plan/code critique, severity-rated verdicts (APPROVED/REVISE/REJECT) | xhigh |
-| `ralph` | Single-shot task execution; Claude controls the outer verification loop | xhigh |
 
-> **Ralph note**: `codex-proxy` with `Role: ralph` executes one round. The caller (`/coral:ralph --codex`) controls the loop - spawning with the saved `session` for session continuity until all criteria pass.
+> **Ralph note**: Ralph is not a codex-proxy role. Persistent execution via Codex is handled by `/coral:ralph --codex`, which manages its own Codex delegation, verification loop, and session continuity.
 
 ---
 
@@ -173,7 +172,7 @@ The `SubagentStart` hook fires when any agent matching `(^|:)codex-` starts (e.g
 
 ### Layer 2: Tool Restriction (100% guarantee)
 
-The `tools` field in Codex-bound agent definitions restricts them to coral MCP tools only.
+The `tools` field in Codex-bound agent definitions restricts them to Read, Glob, and coral MCP tools only. Read/Glob are used to load the Claude-native agent protocol file before passing it to Codex.
 
 > Claude-native agents have no `tools` restriction - they can use all read tools (`disallowedTools` only blocks writing).
 
@@ -187,7 +186,7 @@ Each agent `.md` file contains a detailed role and protocol embedded in the syst
 
 ### Codex-bound Agent (new role)
 
-Add a new role to `agents/codex-proxy.md` under `<Role_Routing>` and `<Prompt_Templates>`. The existing `codex-proxy` agent handles all Codex delegation roles - callers pass `Role: <name>` in their prompt.
+Add a new role to `agents/codex-proxy.md` under `<Role_Routing>` with a reference to its agent file. The proxy reads the agent file at runtime — no prompt templates to maintain. Create the Claude-native agent file first (`agents/<name>.md`), then add a row to the routing table.
 
 If a standalone Codex agent is truly needed (rare), create `agents/codex-<name>.md` - the `codex-` prefix ensures the hook fires automatically:
 

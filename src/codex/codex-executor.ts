@@ -257,6 +257,7 @@ function prependClaudeMd(prompt: string): string {
 function baseFlags(bypassSandbox: boolean): string[] {
   return [
     '--json',
+    '--skip-git-repo-check',
     bypassSandbox ? '--dangerously-bypass-approvals-and-sandbox' : '--full-auto',
     '-c', 'web_search=live',
     ...bypassSandbox ? [] : [
