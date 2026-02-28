@@ -21,8 +21,7 @@ import {
 import type { DiscussState, Result } from './types.js';
 import { handleAgentOp } from './handlers/bid.js';
 import { handleStep } from './handlers/step.js';
-
-const nowIsoString = (): string => new Date().toISOString();
+import { nowIsoString } from './util/time.js';
 
 type ToolParseResult<T> = { ok: true; value: T } | { ok: false; value: McpResult };
 

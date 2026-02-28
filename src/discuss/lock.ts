@@ -1,15 +1,12 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { sleep } from './util/time.js';
 
 function tryRemoveSync(targetPath: string): void {
   try {
     fs.rmSync(targetPath, { recursive: true, force: true });
   } catch {
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function writeStateAtomic(filePath: string, state: Record<string, unknown>): void {

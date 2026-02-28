@@ -34,14 +34,18 @@ export class SessionStore {
   }
 
   resolveDir(sessionId: string): string | null {
-    if (!fs.existsSync(this.discussDir)) return null;
-
     const exactPath = path.join(this.discussDir, sessionId);
-    if (fs.existsSync(exactPath)) return exactPath;
+    try {
+      fs.statSync(exactPath);
+      return exactPath;
+    } catch { /* not an exact match — try prefix */ }
 
-    const matchedDir = fs.readdirSync(this.discussDir).find((entry) => entry.startsWith(`${sessionId}-`));
-    if (!matchedDir) return null;
-    return path.join(this.discussDir, matchedDir);
+    try {
+      const match = fs.readdirSync(this.discussDir).find((e) => e.startsWith(`${sessionId}-`));
+      return match ? path.join(this.discussDir, match) : null;
+    } catch {
+      return null;
+    }
   }
 
   resolveOrError(sessionId: string): string | McpResult {
@@ -98,8 +102,13 @@ export class SessionStore {
     const cutoff = Date.now() - ttl * 24 * 60 * 60 * 1000;
     let removed = 0;
 
-    if (!fs.existsSync(this.discussDir)) return 0;
-    for (const entry of fs.readdirSync(this.discussDir)) {
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(this.discussDir);
+    } catch {
+      return 0;
+    }
+    for (const entry of entries) {
       const fullPath = path.join(this.discussDir, entry);
       const statePath = path.join(fullPath, 'state.json');
       try {
