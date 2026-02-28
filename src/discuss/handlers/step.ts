@@ -11,8 +11,7 @@ import {
   endContent,
 } from '../state-machine.js';
 import { allBidsIn, speechDelivered, noEligibleParticipants, waitForCondition } from '../wait.js';
-
-const nowIsoString = (): string => new Date().toISOString();
+import { nowIsoString } from '../util/time.js';
 
 type StepContext = {
   sessionDir: string;
@@ -192,8 +191,8 @@ async function stepBidding(ctx: StepContext, store: SessionStore): Promise<McpRe
     ctx.timeoutMs,
   );
   if (!waited.fulfilled) {
-    const state = await store.loadLocked(ctx.sessionDir);
-    if (state.status === 'ended') {
+    const state = waited.state;
+    if (!state || state.status === 'ended') {
       return jsonResult({ status: 'ended', phase: 'ended', reason: 'already_ended' });
     }
     return jsonResult({
@@ -204,16 +203,15 @@ async function stepBidding(ctx: StepContext, store: SessionStore): Promise<McpRe
     });
   }
 
-  const state = await store.loadLocked(ctx.sessionDir);
-  if (state.status === 'ended') {
+  if (!waited.state || waited.state.status === 'ended') {
     return jsonResult({ status: 'ended', phase: 'ended', reason: 'already_ended' });
   }
 
   const allAgentsBid = (s: DiscussState): boolean =>
     Object.entries(s.agents).every(([name, agent]) => agent.banned || s.current_bids[name] != null);
 
-  if (state.min_bid_delay_ms > 0) {
-    await waitForCondition(ctx.statePath, allAgentsBid, state.min_bid_delay_ms);
+  if (waited.state.min_bid_delay_ms > 0) {
+    await waitForCondition(ctx.statePath, allAgentsBid, waited.state.min_bid_delay_ms);
   }
 
   const resolved = await store.withLock<Result<ResolvePhase>>(ctx.sessionDir, async () => {

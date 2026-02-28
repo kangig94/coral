@@ -1,32 +1,31 @@
-# Codex Proxy Unification — Why One File Instead of Four
+# Codex Proxy — Reference, Don't Duplicate
 
 ## Rule
 
-Codex delegation agents (scanner, gap-finder, debugger, architect, critic, ralph) should live in a single `agents/codex-proxy.md` with role-based routing (`Role: scanner|gap-finder|debugger|architect|critic|ralph` in the caller's prompt), not as separate agent files.
+`agents/codex-proxy.md` is a thin proxy that reads Claude-native agent files (`agents/<role>.md`) at runtime and passes their `<Agent_Prompt>` content to Codex CLI. It does NOT maintain its own prompt templates — the original agent definitions are the single source of truth. Ralph is the sole exception (inline template, no agent file).
 
 ## Why
 
-**Prompt caching**: Anthropic's prompt caching works on system prompt prefix matching. When two subagents are spawned in parallel (e.g., `coral:codex-proxy Role:architect` + `coral:codex-proxy Role:critic` for review), they share identical system prompts up to the role-selection point. The Claude Code base (~25k tokens) is always cached; agent `.md` content is injected on top. With four separate files, each spawned agent had a unique system prompt — no cross-agent cache reuse. With one unified file, both agents share the same system prompt prefix, maximizing cache hit probability.
+**Single source of truth**: Earlier codex-proxy embedded simplified prompt templates (~15 lines each) that captured only 10-15% of the original agent methodology (Investigation_Protocol, Output_Format, Success_Criteria were all lost). When agent definitions improved, the codex-proxy templates drifted. Reading the originals at runtime eliminates this class of bugs entirely.
 
-**DRY maintenance**: The four original agents shared 60-70% duplicate content (Proxy_Protocol, Working_Directory requirements, Session_Continuity, Failure_Modes patterns). Any behavioral fix (e.g., updating the Output_Handling table) had to be applied to all four files separately, with drift risk over time.
+**Richer Codex prompts**: Codex now receives the full methodology (investigation protocols, output formats, failure modes, examples) instead of bare-bones `[SYSTEM]` stubs. Claude-specific sections (Tool_Usage, disallowedTools) are harmlessly ignored by Codex.
+
+**Prompt caching**: Still works — parallel spawns (architect + critic) share the same `codex-proxy.md` system prompt prefix. The agent file content differs per role, but that's in the user message (Codex prompt), not the system prompt.
 
 ## Pattern
 
 ```
-# CORRECT: Single proxy with role routing (cache-friendly)
-agents/codex-proxy.md          # all 4 roles in one file
+# CORRECT: Proxy reads agent files at runtime
+agents/codex-proxy.md          # thin proxy — routing + infrastructure only
+  tools: Read, Glob, mcp__plugin_coral_cx__codex
+  Role: architect → Glob + Read agents/architect.md → pass to Codex
+  Role: critic    → Glob + Read agents/critic.md    → pass to Codex
 
-Callers include:
-  Role: architect               # in their Task prompt
-  Role: critic                  # in their Task prompt
-
-# WRONG: Separate files per role (no cross-agent cache sharing)
-agents/codex-architect.md
-agents/codex-critic.md
-agents/codex-analyst.md
-agents/codex-proxy.md Role:ralph
+# WRONG: Proxy embeds duplicated templates
+agents/codex-proxy.md          # 300+ lines with simplified copies of each role
+  Role: architect → use internal 29-line template (drifts from 112-line original)
 ```
 
-**Role-routing guarantee**: Callers always supply `Role: <name>` explicitly. Missing role → explicit error (no inference). This eliminates the fragile "infer from context" pattern that could silently default to the wrong behavior.
+**Role-routing guarantee**: Callers always supply `Role: <name>` explicitly. Missing role → explicit error (no inference).
 
-**Hook compatibility**: The `(^|:)codex-` regex in `hooks/hooks.json` matches `codex-proxy` without any change. All delegation guarantees (hook injection, tool restriction, system prompt protocol) apply to `codex-proxy` identically to the four predecessor agents.
+**Hook compatibility**: The `(^|:)codex-` regex in `hooks/hooks.json` matches `codex-proxy` without any change.

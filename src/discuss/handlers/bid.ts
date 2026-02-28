@@ -5,8 +5,7 @@ import type { SessionStore } from '../session-store.js';
 import { applyBid, applySpeech, resolveAgentName } from '../state-machine.js';
 import { isWinner, bidReleased, setupComplete, waitForCondition, INFINITE_POLL } from '../wait.js';
 import { formatAgentView } from '../transcript.js';
-
-const nowIsoString = (): string => new Date().toISOString();
+import { nowIsoString } from '../util/time.js';
 
 async function handleBid(
   input: Extract<DiscussAgentOpInput, { op: 'bid' }>,
@@ -129,12 +128,11 @@ async function handleBid(
           (s) => isWinner(resolved)(s) || bidReleased(resolved, bidStep)(s),
           INFINITE_POLL,
         );
-        if (!released.fulfilled) {
+        if (!released.fulfilled || !released.state) {
           return jsonResult({ error: released.error ?? 'bid_wait_failed' });
         }
 
-        const finalState = await store.loadLocked(sessionDir);
-        return bidFinalResult(finalState, resolved);
+        return bidFinalResult(released.state, resolved);
       }
     }
   }

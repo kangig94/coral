@@ -65,6 +65,19 @@ Before any other action, verify the Agent Teams environment:
    - `positions` and `tone` from `_1_seed` assignments.
    - If `is_outlier`: add context in `brief`
      (e.g., "unusual background for this domain - give a compelling career path").
+   - If `shared_position_with` is present (number — source slot index from `_1_seed`):
+     convert to descriptive string using the role assigned in step 2
+     (e.g., assignment index 0 with step-2 role "tech-lead" → "Agent #1, tech-lead")
+     and pass to persona-generator.
+   - **devil_advocate post-processing**: After collecting all assignments,
+     count agents per position on each controversy axis.
+     For each axis, identify the position with strictly more agents than any other
+     single position on that axis (strict majority).
+     Mark `shared_position_with` (duplicate) slots on that majority position
+     as `devil_advocate: true`.
+     Rationale: duplicates are the echo chamber risk — original unique slots already
+     have distinct DPP-selected positions.
+     Skip when no position has a strict majority (e.g., 2v2, or 2/2/1 three-way).
 
 4. **Initialize**: Build the agents list.
    If `--user` flag was passed, add the following to the agents list:

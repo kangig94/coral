@@ -1,11 +1,11 @@
 import * as fs from 'node:fs';
 import type { DiscussState } from './types.js';
+import { sleep } from './util/time.js';
 
 export const INFINITE_POLL = 0;
 
 let _defaultPollMs = 500;
 export function _setDefaultPollMs(ms: number): void { _defaultPollMs = ms; }
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 export type WaitResult =
   | { fulfilled: boolean; elapsed_ms: number; state: DiscussState; error: null }
