@@ -1,6 +1,6 @@
 ---
 paths:
-  - "{agents,skills,hooks}/**/*"
+  - "{agents,skills,hooks,methods}/**/*"
 ---
 
 # Plugin Extension Rules
@@ -22,21 +22,23 @@ paths:
 ## Cross-Reference Convention
 
 When agent or skill files reference other coral plugin files, use path aliases to distinguish
-plugin files from project files. Two patterns exist — never mix them:
+plugin files from project files. Three read patterns and one spawn pattern exist — never mix them:
 
 | Pattern | Usage | Example |
 |---------|-------|---------|
 | `CORAL_AGENTS/xxx.md` | **Read** the file (Read/Glob tool) | `CORAL_AGENTS/scanner.md` |
-| `CORAL_SKILLS/xxx/` | **Read** the file (Read/Glob tool) | `CORAL_SKILLS/plan/HOW-REVIEW.md` |
+| `CORAL_SKILLS/xxx/` | **Read** the file (Read/Glob tool) | `CORAL_SKILLS/plan/SKILL.md` |
+| `CORAL_METHODS/xxx.md` | **Read** the file (Read/Glob tool) | `CORAL_METHODS/HOW-REVIEW.md` |
 | `coral:xxx` | **Spawn** subagent (Task tool) | `coral:codex-proxy` |
 
-- Every file using `CORAL_AGENTS` or `CORAL_SKILLS` must define them at the top (after frontmatter):
+- Every file using these aliases must define them at the top (after frontmatter):
   ```
   > **CORAL_AGENTS**: `~/.claude/plugins/cache/coral/**/agents/` — locate via Glob
   > **CORAL_SKILLS**: `~/.claude/plugins/cache/coral/**/skills/` — locate via Glob
+  > **CORAL_METHODS**: `~/.claude/plugins/cache/coral/**/methods/` — locate via Glob
   ```
-- Never use bare `agents/xxx.md` or `skills/xxx/` — these resolve relative to the user's
-  project directory, which breaks when the plugin is used outside its own repo.
+- Never use bare `agents/xxx.md`, `skills/xxx/`, or `methods/xxx.md` — these resolve relative
+  to the user's project directory, which breaks when the plugin is used outside its own repo.
 - `coral:xxx` references are for Task tool's `subagent_type` only — the framework resolves them.
   Do not use `coral:xxx` when the intent is to read a file.
 

@@ -2,6 +2,16 @@
 
 Slash commands provided by the Coral plugin. Each skill is defined in `skills/{name}/SKILL.md` - refer to those files for the full execution protocol.
 
+## Methods
+
+Cross-cutting methodology files live in `methods/`. Skills reference them via the `CORAL_METHODS` path alias.
+
+| Method | Used by | Purpose |
+|--------|---------|---------|
+| `HOW-REVIEW.md` | plan | Adversarial review with FRAME/STRUCTURE/DETAIL classification |
+| `HOW-SYNTHESIZE.md` | plan | Multi-reviewer feedback synthesis (Adopt/Adapt/Defer/Diverge) |
+| `HOW-COMPLETE.md` | plan | Completion criteria (frame stability, counterexample coverage) |
+
 | Skill | Description |
 |---|---|
 | `/coral:codex` | Single entry point for all Codex interactions - routes to scanner/gap-finder/ralph/review intent, or manages sessions directly |
