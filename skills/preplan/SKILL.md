@@ -109,6 +109,7 @@ Structured problem-definition conversation with the user before planning begins.
 
     - Finalize `.claude/coral/plans/pre-{topic}.md`
     - Invoke `Skill({ skill: "coral:plan", args: "{topic} [--codex]" })`
+      - Do NOT pass `--no-handoff` — preplan has no post-plan step, so plan owns the implementation handoff
       - The agreement file and conversation context are available to the plan protocol
   </Protocol>
 
