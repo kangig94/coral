@@ -15,8 +15,9 @@ Execute a multi-round planning session with architect/critic review.
 | `<prompt>` | Claude-native (default) |
 | `--codex` | Codex delegation (context from conversation) |
 | `--codex <prompt>` | Codex delegation |
+| `--no-handoff` | Internal: skip implementation prompt at step 5 (caller controls next step) |
 
-Strip the `--codex` flag before passing the prompt to the execution path.
+Strip `--codex` and `--no-handoff` flags before passing the prompt to the execution path.
 
 <Planning_Protocol>
   <Role>
@@ -136,8 +137,7 @@ Strip the `--codex` flag before passing the prompt to the execution path.
     No session tracking (4b) — Claude reviewers do not return session identifiers.
 
     ### 5. Completion
-    Return: plan file path + final summary.
-    This protocol ends here. Do not proceed to implementation.
+    Return: plan file path + final summary (see `<Output_Format>`).
   </Protocol>
   <Error_Handling>
     | Scenario | Action |
@@ -170,12 +170,32 @@ Strip the `--codex` flag before passing the prompt to the execution path.
 
     ### Plan Overview
     [2-3 sentence summary of the plan]
+
+    ### Implementation Handoff
+
+    **If `--no-handoff`**: stop after showing the summary above. The caller controls the next step.
+
+    **Otherwise**: ask the user using `AskUserQuestion`. Adapt options based on `--codex`:
+
+    Without `--codex`:
+    1. `coral:ralph` (Recommended)
+    2. `coral:ralph --red`
+    3. `coral:ralph --codex`
+    4. Skip implementation
+
+    With `--codex`:
+    1. `coral:ralph --codex` (Recommended)
+    2. `coral:ralph --red --codex`
+    3. `coral:ralph` (without Codex)
+    4. Skip implementation
+
+    If chosen, invoke `Skill({ skill: "coral:ralph", args: "<plan summary + context>" })` with the selected flags.
   </Output_Format>
   <Failure_Modes_To_Avoid>
     - Defending the draft: "My approach is better because..." Instead: engage with the substance of the feedback.
     - Skipping review: "The plan is straightforward, no review needed." Instead: always run at least one review round.
     - Over-iterating: Running 5 rounds when Round 2 had no issues. Instead: exit when exit condition is met.
-    - Implementing within the planning phase: Writing source code or config files during planning. Instead: plan only — implementation belongs to the caller.
+    - Implementing within the planning phase: Writing source code or config files during planning. Instead: plan only — offer handoff to coral:ralph at step 5.
   </Failure_Modes_To_Avoid>
   <Final_Checklist>
     - Did I create the stub plan file before researching?

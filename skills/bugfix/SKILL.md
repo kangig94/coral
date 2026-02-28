@@ -34,7 +34,7 @@ Strip the `--codex` flag before passing the prompt to the execution path.
      Pass `working_directory` and `reasoning_effort: "xhigh"`.
      Verify cited file:line references. Drop findings with incorrect references.
 
-2. **Plan fix**: Invoke `Skill({ skill: "coral:plan", args: "fix-{short-bug-description} [--codex]" })`.
+2. **Plan fix**: Invoke `Skill({ skill: "coral:plan", args: "--no-handoff fix-{short-bug-description} [--codex]" })`.
    The plan protocol gathers context from the conversation (diagnosis from step 1).
    Plan should include: what to change, why, and how to verify the fix.
 
