@@ -13,10 +13,14 @@ Manage the coral HUD statusline for Claude Code.
 
 ### install
 
-1. Write the HUD script below to `~/.claude/hud/coral-hud.mjs` (create `~/.claude/hud/` directory if needed)
-2. Read `~/.claude/settings.json` (create if absent)
-3. If `statusLine` already exists and is NOT coral's, **ask the user** before overwriting
-4. Set `statusLine` to:
+1. Check if `~/.claude/hud/coral-hud.mjs` already exists:
+   - If exists and content matches the script below: inform user "HUD is already up to date", skip to step 6
+   - If exists with different content: inform user "Updating HUD script to latest version", proceed
+   - If not exists: proceed
+2. Write the HUD script below to `~/.claude/hud/coral-hud.mjs` (create `~/.claude/hud/` directory if needed)
+3. Read `~/.claude/settings.json` (create if absent)
+4. If `statusLine` already exists and is NOT coral's, **ask the user** before overwriting
+5. Set `statusLine` to:
    ```json
    {
      "statusLine": {
@@ -26,12 +30,12 @@ Manage the coral HUD statusline for Claude Code.
    }
    ```
    Replace `~` with the actual home directory path.
-5. Check if `~/.codex/auth.json` exists:
+6. Check if `~/.codex/auth.json` exists:
    - If yes, ask the user: "Codex login detected. Display Codex usage in statusline?"
      - **yes** → create `~/.claude/hud/.coral-codex-enabled` (empty file)
      - **no** → delete `~/.claude/hud/.coral-codex-enabled` and `~/.claude/hud/.coral-codex-usage-cache.json` if they exist
    - If no `auth.json`, skip silently (do not create or delete any Codex files)
-6. Confirm installation to the user
+7. Confirm installation to the user
 
 ### uninstall
 
@@ -61,8 +65,6 @@ import { readFileSync, existsSync, writeFileSync, mkdirSync, openSync, fstatSync
 import { join } from "path";
 import { homedir } from "os";
 import { execSync } from "child_process";
-import https from "https";
-
 const SEP = " \u2502 ";
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
@@ -180,7 +182,7 @@ function parseLastSkill(lines) {
 function parseRunningAgents(lines) {
   const agentMap = new Map();
   for (const line of lines) {
-    if (!line.trim()) continue;
+    if (!line.includes('"tool_use"') && !line.includes('"tool_result"')) continue;
     try {
       const entry = JSON.parse(line);
       const content = entry?.message?.content;
@@ -243,10 +245,10 @@ function readCacheFile(path) {
   }
 }
 
-function writeCacheFile(path, data, error = false, extra = null) {
+function writeCacheFile(path, data, error = false) {
   try {
-    if (!existsSync(CACHE_DIR)) mkdirSync(CACHE_DIR, { recursive: true });
-    const payload = { ts: Date.now(), data, error, ...extra };
+    mkdirSync(CACHE_DIR, { recursive: true });
+    const payload = { ts: Date.now(), data, error };
     writeFileSync(path, JSON.stringify(payload), { mode: 0o600 });
   } catch {}
 }
@@ -272,7 +274,6 @@ function readRawCredentials() {
   // File fallback
   try {
     const credPath = join(homedir(), ".claude", ".credentials.json");
-    if (!existsSync(credPath)) return null;
     const parsed = JSON.parse(readFileSync(credPath, "utf-8"));
     return parsed.claudeAiOauth || parsed;
   } catch {
@@ -280,98 +281,62 @@ function readRawCredentials() {
   }
 }
 
-function refreshToken(refreshTok) {
-  return new Promise((resolve) => {
-    const body = new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: refreshTok,
-      client_id: OAUTH_CLIENT_ID,
-    }).toString();
-    const req = https.request(
-      {
-        hostname: "platform.claude.com",
-        path: "/v1/oauth/token",
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "Content-Length": Buffer.byteLength(body),
-        },
-        timeout: API_TIMEOUT_MS,
-      },
-      (res) => {
-        let data = "";
-        res.on("data", (c) => (data += c));
-        res.on("end", () => {
-          if (res.statusCode === 200) {
-            try {
-              const p = JSON.parse(data);
-              if (p.access_token) {
-                // Write back to credentials file
-                try {
-                  const credPath = join(homedir(), ".claude", ".credentials.json");
-                  if (existsSync(credPath)) {
-                    const file = JSON.parse(readFileSync(credPath, "utf-8"));
-                    const target = file.claudeAiOauth || file;
-                    target.accessToken = p.access_token;
-                    if (p.refresh_token) target.refreshToken = p.refresh_token;
-                    if (p.expires_in) target.expiresAt = Date.now() + p.expires_in * 1000;
-                    writeFileSync(credPath, JSON.stringify(file, null, 2), { mode: 0o600 });
-                  }
-                } catch {}
-                resolve(p.access_token);
-                return;
-              }
-            } catch {}
-          }
-          resolve(null);
-        });
-      }
-    );
-    req.on("error", () => resolve(null));
-    req.on("timeout", () => { req.destroy(); resolve(null); });
-    req.end(body);
-  });
+async function refreshToken(refreshTok, signal) {
+  try {
+    const resp = await fetch("https://platform.claude.com/v1/oauth/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refreshTok,
+        client_id: OAUTH_CLIENT_ID,
+      }),
+      signal,
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    if (!data.access_token) return null;
+    try {
+      const credPath = join(homedir(), ".claude", ".credentials.json");
+      const file = JSON.parse(readFileSync(credPath, "utf-8"));
+      const target = file.claudeAiOauth || file;
+      target.accessToken = data.access_token;
+      if (data.refresh_token) target.refreshToken = data.refresh_token;
+      if (data.expires_in) target.expiresAt = Date.now() + data.expires_in * 1000;
+      const tmpPath = credPath + ".tmp";
+      writeFileSync(tmpPath, JSON.stringify(file, null, 2), { mode: 0o600 });
+      renameSync(tmpPath, credPath);
+    } catch {}
+    return data.access_token;
+  } catch {
+    return null;
+  }
 }
 
-async function getCredentials() {
+async function getCredentials(signal) {
   const creds = readRawCredentials();
   if (!creds?.accessToken) return null;
   if (creds.expiresAt && creds.expiresAt <= Date.now()) {
-    return creds.refreshToken ? refreshToken(creds.refreshToken) : null;
+    return creds.refreshToken ? refreshToken(creds.refreshToken, signal) : null;
   }
   return creds.accessToken;
 }
 
-function fetchUsage(accessToken) {
-  return new Promise((resolve) => {
-    const req = https.request(
-      {
-        hostname: "api.anthropic.com",
-        path: "/api/oauth/usage",
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "anthropic-beta": "oauth-2025-04-20",
-          "Content-Type": "application/json",
-        },
-        timeout: API_TIMEOUT_MS,
+async function fetchUsage(accessToken, signal) {
+  try {
+    const resp = await fetch("https://api.anthropic.com/api/oauth/usage", {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "anthropic-beta": "oauth-2025-04-20",
+        "Content-Type": "application/json",
       },
-      (res) => {
-        let data = "";
-        res.on("data", (c) => (data += c));
-        res.on("end", () => {
-          if (res.statusCode === 200) {
-            try { resolve(JSON.parse(data)); } catch { resolve(null); }
-          } else {
-            resolve(null);
-          }
-        });
-      }
-    );
-    req.on("error", () => resolve(null));
-    req.on("timeout", () => { req.destroy(); resolve(null); });
-    req.end();
-  });
+      signal,
+    });
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch {
+    return null;
+  }
 }
 
 function clampPct(val) {
@@ -420,23 +385,29 @@ async function renderLimits() {
   const cached = readCacheFile(CACHE_FILE);
   if (cached) return formatLimits(cached);
 
-  const token = await getCredentials();
-  if (!token) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  try {
+    const token = await getCredentials(controller.signal);
+    if (!token) return null;
 
-  const resp = await fetchUsage(token);
-  if (!resp) {
-    writeCacheFile(CACHE_FILE, null, true);
-    return null;
+    const resp = await fetchUsage(token, controller.signal);
+    if (!resp) {
+      writeCacheFile(CACHE_FILE, null, true);
+      return null;
+    }
+
+    const data = {
+      fiveHour: resp.five_hour?.utilization,
+      weekly: resp.seven_day?.utilization,
+      fiveHourResetsAt: resp.five_hour?.resets_at || null,
+      weeklyResetsAt: resp.seven_day?.resets_at || null,
+    };
+    writeCacheFile(CACHE_FILE, data);
+    return formatLimits(data);
+  } finally {
+    clearTimeout(timer);
   }
-
-  const data = {
-    fiveHour: resp.five_hour?.utilization,
-    weekly: resp.seven_day?.utilization,
-    fiveHourResetsAt: resp.five_hour?.resets_at || null,
-    weeklyResetsAt: resp.seven_day?.resets_at || null,
-  };
-  writeCacheFile(CACHE_FILE, data);
-  return formatLimits(data);
 }
 
 // --- Codex rate limits ---
@@ -444,7 +415,6 @@ async function renderLimits() {
 function readCodexCredentials() {
   try {
     const authPath = join(homedir(), ".codex", "auth.json");
-    if (!existsSync(authPath)) return null;
     const parsed = JSON.parse(readFileSync(authPath, "utf-8"));
     const { access_token, refresh_token, account_id } = parsed.tokens || {};
     if (!account_id) return null;
@@ -546,23 +516,11 @@ async function fetchCodexUsage(accessToken, accountId, signal) {
   }
 }
 
-function readRawCache(path) {
-  try { return JSON.parse(readFileSync(path, "utf-8")); } catch { return null; }
-}
-
 async function renderCodexData() {
   if (!existsSync(CODEX_FLAG_FILE)) return null;
 
-  const rawCache = readRawCache(CODEX_CACHE_FILE);
-
-  // Return cached data if fresh
-  if (rawCache?.ts) {
-    const age = Date.now() - rawCache.ts;
-    if (rawCache.error && age <= CACHE_FAIL_TTL_MS) return null;
-    if (!rawCache.error && age <= CACHE_TTL_MS && rawCache.data) {
-      return rawCache.data;
-    }
-  }
+  const cached = readCacheFile(CODEX_CACHE_FILE);
+  if (cached) return cached;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
@@ -571,11 +529,7 @@ async function renderCodexData() {
     const creds = readCodexCredentials();
     if (!creds) return null;
 
-    // Prefer cached token if not expired (independent of data TTL)
-    let token = rawCache?.cachedToken?.expiresAt > Date.now()
-      ? rawCache.cachedToken.accessToken
-      : creds.accessToken;
-
+    let token = creds.accessToken;
     let result = await fetchCodexUsage(token, creds.accountId, controller.signal);
 
     // 401: refresh once and retry within same deadline
@@ -588,9 +542,7 @@ async function renderCodexData() {
     }
 
     if (result && !result.unauthorized) {
-      writeCacheFile(CODEX_CACHE_FILE, result, false, {
-        cachedToken: { accessToken: token, expiresAt: Date.now() + 600_000 },
-      });
+      writeCacheFile(CODEX_CACHE_FILE, result);
       return result;
     }
 
