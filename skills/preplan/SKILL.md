@@ -108,9 +108,8 @@ Structured problem-definition conversation with the user before planning begins.
     ### 5. Handoff to Plan
 
     - Finalize `.claude/coral/plans/pre-{topic}.md`
-    - Invoke via Skill tool:
-      - `Skill({ skill: "coral:plan", args: "<agreement file path> [--codex]" })`
-      - The agreement file is the primary input; conversation context supplements it
+    - Invoke `Skill({ skill: "coral:plan", args: "{topic} [--codex]" })`
+      - The agreement file and conversation context are available to the plan protocol
   </Protocol>
 
   <Constraints>

@@ -74,7 +74,7 @@ Use Claude's native tools (Read, Grep, Glob, LSP) for direct analysis. Read-only
 
 ### planner (Multi-Round Planning)
 
-`skills/plan/PROTOCOL.md` - opus (protocol-only, no agent file)
+`skills/plan/SKILL.md` - opus (skill-only, no agent file)
 
 **Role**: Synthesizer that writes and verifies plans through multi-round review. Spawns parallel reviewer agents (architect+critic), synthesizes feedback using Adopt/Adapt/Defer/Diverge classification, and iterates until no CRITICAL/HIGH findings remain. Reviewers follow HOW-REVIEW.md methodology (adversarial mandate, FRAME/STRUCTURE/DETAIL classification, counterexample checklist); Synthesizer applies HOW-SYNTHESIZE.md for feedback synthesis and HOW-COMPLETE.md for exit evaluation. With `--codex`, runs Codex review (Phase 1) before Claude review (Phase 2). Never implements - planning only.
 

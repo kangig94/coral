@@ -56,13 +56,13 @@ User → /coral:codex "question"
 
 ```
 User → /coral:plan "task description"
-     → Skill reads skills/plan/PROTOCOL.md
+     → Skill contains embedded planning protocol
      → Claude executes planning protocol in main context
      → Phase 2 (Claude): Task(coral:architect) + Task(coral:critic) in parallel
      → Review loop until converged → plan file written
 
 User → /coral:plan --codex "task description"
-     → Skill reads skills/plan/PROTOCOL.md
+     → Skill contains embedded planning protocol
      → Claude executes planning protocol in main context
      → Phase 1 (Codex): Task(coral:codex-proxy Role:architect) + Task(coral:codex-proxy Role:critic)
      → Phase 2 (Claude): Task(coral:architect) + Task(coral:critic)

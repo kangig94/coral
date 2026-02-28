@@ -27,7 +27,7 @@ plugin files from project files. Two patterns exist — never mix them:
 | Pattern | Usage | Example |
 |---------|-------|---------|
 | `CORAL_AGENTS/xxx.md` | **Read** the file (Read/Glob tool) | `CORAL_AGENTS/scanner.md` |
-| `CORAL_SKILLS/xxx/` | **Read** the file (Read/Glob tool) | `CORAL_SKILLS/plan/PROTOCOL.md` |
+| `CORAL_SKILLS/xxx/` | **Read** the file (Read/Glob tool) | `CORAL_SKILLS/plan/HOW-REVIEW.md` |
 | `coral:xxx` | **Spawn** subagent (Task tool) | `coral:codex-proxy` |
 
 - Every file using `CORAL_AGENTS` or `CORAL_SKILLS` must define them at the top (after frontmatter):

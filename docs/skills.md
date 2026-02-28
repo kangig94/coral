@@ -76,7 +76,7 @@ Scans the current project and generates the complete `.claude/` structure:
 
 Phases:
 1. **Scan**: Detect stack (languages, frameworks, test runner, build tool), identify domains
-2. **Plan**: Write plan following `skills/plan/PROTOCOL.md`, verify with reviewers
+2. **Plan**: Write plan following embedded protocol in `skills/plan/SKILL.md`, verify with reviewers
 3. **Execute**: Spawn ralph to generate all files per the plan
 4. **Report**: Summary of generated artifacts
 

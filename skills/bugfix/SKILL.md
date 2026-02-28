@@ -34,13 +34,9 @@ Strip the `--codex` flag before passing the prompt to the execution path.
      Pass `working_directory` and `reasoning_effort: "xhigh"`.
      Verify cited file:line references. Drop findings with incorrect references.
 
-2. **Plan fix**: Read `CORAL_SKILLS/plan/PROTOCOL.md`.
-   **You** execute it directly — follow the protocol steps with diagnosis context.
-   Pass `--codex` flag if present (the plan protocol handles Codex delegation internally).
-   - Plan name: `fix-{short-bug-description}`
-   - Task context: diagnosis result from step 1
-     (root cause, affected files, reproduction steps)
-   - Plan should include: what to change, why, and how to verify the fix
+2. **Plan fix**: Invoke `Skill({ skill: "coral:plan", args: "fix-{short-bug-description} [--codex]" })`.
+   The plan protocol gathers context from the conversation (diagnosis from step 1).
+   Plan should include: what to change, why, and how to verify the fix.
 
 3. **Execute fix**:
    - **Default**: Read `CORAL_SKILLS/ralph/PROTOCOL.md`. **You** execute it directly — implement the plan

@@ -34,7 +34,7 @@ Implementation: inline `cat` command reading `CLAUDE.md` from the plugin root di
 
 Fires after context compaction (matcher: `compact`). Runs two scripts:
 
-**Script 1: `hooks/plan-guard.mjs`** — Reads `session_id` from stdin. Checks for `.claude/coral/tmp/plan-active-{sessionId}` flag file. If present, injects `hookSpecificOutput` with `additionalContext` containing plan-mode recovery instructions (re-read SKILL.md and PROTOCOL.md, recover plan file, resume without starting over). If absent, exits silently.
+**Script 1: `hooks/plan-guard.mjs`** — Reads `session_id` from stdin. Checks for `.claude/coral/tmp/plan-active-{sessionId}` flag file. If present, injects `hookSpecificOutput` with `additionalContext` containing plan-mode recovery instructions (re-read SKILL.md, recover plan file, resume without starting over). If absent, exits silently.
 
 **Script 2: `hooks/kb-promote-reminder.mjs`** — Checks for unprocessed memos in `.claude/coral/memo/`. Injects `hookSpecificOutput` with `additionalContext` reminding about KB promotion.
 
