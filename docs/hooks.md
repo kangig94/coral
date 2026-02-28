@@ -12,13 +12,14 @@ Claude Code's hook system executes scripts on specific events. Coral uses hooks 
 3. **SubagentStart** (`(^|:)codex-`) - Injects delegation instructions into agents with a `codex-` prefix
 4. **UserPromptSubmit** - Tracks plan-mode activation when `/plan` or `/coral:plan` is invoked
 5. **PreToolUse** - Periodically reminds Claude to write memos for non-obvious discoveries
-6. **PostToolUseFailure** (`*`) - On any tool failure, reminds Claude to check `.claude/coral/kb/` before debugging
-7. **Stop** - Enforces KB promotion for unprocessed memos; cleans up plan-mode state
-8. **TeammateIdle** (`dc-*`) - Blocks idle when discuss agents have pending actions (bid/speak/vote)
+6. **PostToolUseFailure** (`*`) - On any non-zero tool exit, reminds Claude to check `.claude/coral/kb/` before debugging
+7. **PostToolUse** (`Bash`) - Detects silent failures in command output when exit codes are masked and injects the same KB lookup reminder context
+8. **Stop** - Enforces KB promotion for unprocessed memos; cleans up plan-mode state
+9. **TeammateIdle** (`dc-*`) - Blocks idle when discuss agents have pending actions (bid/speak/vote)
 
 ## Hook Configuration
 
-Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/detect-codex-agent.mjs`, `hooks/kb-lookup-reminder.mjs`, `hooks/kb-memo-reminder.mjs`, `hooks/kb-promote-reminder.mjs`, `hooks/plan-guard.mjs`, `hooks/plan-state-tracker.mjs`, `hooks/discuss-idle-guard.mjs`.
+Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/detect-codex-agent.mjs`, `hooks/kb-lookup-reminder.mjs`, `hooks/silent-failure-detector.mjs`, `hooks/kb-memo-reminder.mjs`, `hooks/kb-promote-reminder.mjs`, `hooks/plan-guard.mjs`, `hooks/plan-state-tracker.mjs`, `hooks/discuss-idle-guard.mjs`.
 
 All hook scripts are **Node.js ESM** (`.mjs`). They read input JSON from stdin, write output JSON to stdout, and **fail-open** via `try/catch { process.exit(0) }` - a crash or timeout never blocks the user.
 
@@ -97,6 +98,16 @@ On any tool failure, reminds Claude to check `.claude/coral/kb/` before debuggin
 **Output**: `hookSpecificOutput.additionalContext` with KB file listing. Non-blocking — Claude receives the reminder as additional context.
 
 **Fail-open**: If KB directory doesn't exist or has no `.md` files — silent exit 0.
+
+## PostToolUse Hook (Silent Failure Detector)
+
+On successful Bash tool executions (`PostToolUse` only fires when exit code is 0), detects failure signals in command output that indicate masked failures and injects the same KB lookup reminder flow. Script: `hooks/silent-failure-detector.mjs`. Matcher: `Bash`.
+
+**Two-stage filter**: First checks if the command contains an exit-code-masking construct (`| tee`, `|| true`, `|| :`). If no masking construct is present, the hook exits immediately — no output inspection needed, since unmasked failures trigger `PostToolUseFailure` directly. Only masked commands proceed to the second stage: regex matching against stdout/stderr for failure patterns (`Failed to build`, `BUILD FAILED`, `Traceback (most recent call last)`, `npm ERR!`, `^error[E...]`).
+
+**Relationship to PostToolUseFailure**: `PostToolUseFailure` covers non-zero exits. `PostToolUse` covers silent failures with zero exits. The two hooks are complementary and do not overlap on the same tool execution.
+
+**Fail-open**: Any parse/read error, no pattern match, or empty KB directory — silent exit 0.
 
 ## Stop Hook
 

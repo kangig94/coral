@@ -126,6 +126,14 @@ my-project/
 아키텍트와 크리틱 리뷰를 포함한 구조화된 계획.
 체계적 버그 진단 — 근본 원인, 계획, 수정. 완료 전까지 반복 검증하며 실행.
 
+복잡한 작업에는 문제 정의부터 시작:
+```
+/coral:preplan  race condition in the session manager
+```
+Preplan이 사용자와 이해를 맞춘 뒤 plan으로 넘깁니다.
+Plan이 리뷰를 거쳐 솔루션을 설계하고, ralph가 구현과 검증을 수행합니다.
+각 스킬은 독립적으로도 동작합니다 — 파이프라인은 정밀함이 필요할 때 사용하세요.
+
 `--red` 플래그로 놓친 부분을 찾아내는 적대적 테스트 에이전트 생성:
 ```
 /coral:ralph --red implement the caching layer
@@ -144,6 +152,7 @@ Codex를 활용한 교차 모델 워크플로우:
 | 스킬 | 설명 | Codex |
 |------|------|:-----:|
 | `/coral:analyze` | 심층 분석 및 조사 | 선택 |
+| `/coral:preplan` | 계획 전 문제 정의 | - |
 | `/coral:plan` | 아키텍트/크리틱 리뷰 포함 계획 | 선택 |
 | `/coral:ralph` | 검증 포함 영속적 실행. `--red`로 적대적 테스트 | 선택 |
 | `/coral:bugfix` | 버그 진단, 계획, 수정 실행 | 선택 |

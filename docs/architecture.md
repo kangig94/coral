@@ -203,6 +203,7 @@ coral/
 │   ├── hooks.json               # Hook config (matcher, timeout)
 │   ├── detect-codex-agent.mjs   # SubagentStart delegation hook
 │   ├── kb-lookup-reminder.mjs   # PostToolUseFailure KB hint
+│   ├── silent-failure-detector.mjs # PostToolUse silent-failure detector
 │   ├── kb-memo-reminder.mjs     # PreToolUse memo hint
 │   ├── kb-promote-reminder.mjs  # Stop/Compact promotion hint
 │   ├── plan-guard.mjs           # Compact plan-mode recovery
