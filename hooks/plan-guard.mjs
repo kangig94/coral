@@ -26,9 +26,10 @@ try {
       additionalContext: [
         'PLAN MODE ACTIVE — DO NOT IMPLEMENT.',
         'Context compaction just occurred while you were executing the /coral:plan skill.',
-        'Re-read skills/plan/SKILL.md to recover your role and protocol.',
+        'Re-read skills/plan/SKILL.md to recover your role and protocol. You MUST follow the Planning_Protocol exactly.',
         'Re-read your plan file in .claude/coral/plans/ to recover your progress.',
-        'Resume from where you left off. Do NOT start over.',
+        'Determine your position: which step (1-5)? If in step 4, which phase (1=Codex, 2=Claude) and round? Check the last "Round N Summary" heading in the plan file.',
+        'Resume from that exact position. Do NOT start over or repeat completed rounds.',
       ].join('\n'),
     },
   }));
