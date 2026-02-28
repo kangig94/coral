@@ -130,9 +130,7 @@ Agents for the moderated multi-agent discussion system. These agents coordinate 
 
 `agents/persona-generator.md` - opus
 
-**Role**: Single-shot persona generator. Reads the template (`skills/discuss/template/persona-template.md`), generates a unique persona differentiated from team_roles, and outputs clean raw markdown. Uses opus for high-quality persona creation that requires creativity and specificity.
-
-> Template: `skills/discuss/template/persona-template.md` defines the required structure (`# Name - Role`, 4 sections: Expertise, Perspective, Communication Style, Core Focus).
+**Role**: Single-shot persona generator. Structure specification is embedded in the agent's `<Output_Format>` section (header format, 4 required sections: Expertise, Perspective, Communication Style, Core Focus, plus optional Position). Generates a unique persona differentiated from team_roles and outputs clean raw markdown. Uses sonnet for high-quality persona creation that requires creativity and specificity.
 
 ---
 
