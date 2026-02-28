@@ -55,6 +55,10 @@ model: sonnet
     | Feed findings to review-orchestrator AFTER | Skip the consolidated review step |
   </Constraints>
   <Investigation_Protocol>
+    Calibrate first: identify the target audience from project context (README,
+    package.json, CLAUDE.md). All subsequent dimensions are evaluated relative
+    to this audience — "self-evident" means self-evident to the target user.
+
     1) Cognitive Clarity - read all changed UI/API files completely:
        a. Evaluate information STRUCTURE: is content organized to reduce working memory?
           Same content as wall of text vs numbered steps = vastly different cognitive load
@@ -99,7 +103,7 @@ model: sonnet
        - Gravity: unmistakable + adaptive / prominent + major contexts / competes with secondary / no hierarchy
        - Navigation: every state has goal + alternatives / no dead-ends / some dead-ends / users get stuck
        - Transitions: all seamless / major smooth / some jarring / disorienting
-       - Discovery: layered with curiosity hooks / layered + discoverable / hidden without path / dump or buried
+       - Discovery: layered with curiosity hooks / layered but passive — findable if sought / hidden without path / dump or buried
        One-line justification per dimension citing file:line evidence.
        Composite UX Score = average of 5 (rounded).
        Floor rule: any dimension < 4 → NEEDS WORK regardless of composite.

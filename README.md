@@ -42,6 +42,9 @@ https://github.com/user-attachments/assets/881f1a14-9f4f-4d3d-8023-59610eb13ac4
 
 Coral scans your stack, plans with reviewer verification, and generates `.claude/` -
 conventions, agents, architecture docs - tailored to your project.
+
+Generated agents aren't boilerplate — they encode evaluation philosophies
+with rubric-anchored scoring across multiple dimensions, calibrated to your project's audience.
 Claude follows your rules, not generic defaults.
 
 ```bash
@@ -73,7 +76,7 @@ my-project/
 +   architecture.md           ← module map, dependency graph
 ```
 
-Look familiar? Browse this repository's `.claude/` folder.
+Look familiar? Browse this repository's [`.claude/`](.claude/) folder.
 
 ---
 
@@ -131,6 +134,14 @@ and unknown behavior at their structural boundaries.
 Structured planning with architect and critic review.
 Systematic bug diagnosis - root cause, plan, fix. Persistent execution that verifies before declaring done.
 
+For complex tasks, start with problem definition:
+```
+/coral:preplan race condition in the session manager
+```
+Preplan aligns understanding with you, then hands off to plan.
+Plan designs the solution with review, then ralph implements and verifies.
+Each skill works on its own — the pipeline is for when precision matters.
+
 `--red` flag spawns an adversarial agent to write tests targeting blind spots:
 ```
 /coral:ralph --red implement the caching layer
@@ -149,6 +160,7 @@ Consecutive `/coral:codex` calls continue the same session. Say "new" to start f
 | Skill | Description | Codex |
 |-------|-------------|:-----:|
 | `/coral:analyze` | Deep analysis and investigation | Optional |
+| `/coral:preplan` | Problem definition before planning | - |
 | `/coral:plan` | Planning with architect/critic review | Optional |
 | `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | Optional |
 | `/coral:bugfix` | Bug diagnosis, planning, and fix execution | Optional |

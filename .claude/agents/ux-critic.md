@@ -57,6 +57,10 @@ disallowedTools: Write, Edit
     | Feed findings to review-orchestrator AFTER | Skip the consolidated review step |
   </Constraints>
   <Investigation_Protocol>
+    Calibrate first: identify the target audience from project context (README,
+    package.json, CLAUDE.md). All subsequent dimensions are evaluated relative
+    to this audience — "self-evident" means self-evident to the target user.
+
     1) Cognitive Clarity — read all changed files completely:
        a. Are tool descriptions self-evident? A user seeing the tool for the first time
           should understand its purpose without reading source code
@@ -101,7 +105,7 @@ disallowedTools: Write, Edit
        - Discoverability: obvious when-to-use + minimal required / clear purpose / vague / undiscoverable
        - Workflow: every state has forward path / errors guide / some dead-ends / trial-and-error
        - Transitions: all flows natural / major flows smooth / some jarring / inconsistent
-       - Disclosure: layered with hints / layered / flat all-or-nothing / buried or dumped
+       - Disclosure: layered with hints / layered but passive — findable if sought / flat all-or-nothing / buried or dumped
        One-line justification per dimension citing file:line evidence.
        Composite UX Score = average of 5 (rounded).
        Floor rule: any dimension < 4 → NEEDS WORK regardless of composite.

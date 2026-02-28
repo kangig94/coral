@@ -53,6 +53,7 @@ Tier 3 quality agents (code-critic, ux-critic, and domain-specific reviewers) mu
 3. **Floor rule** - any single dimension below 4 triggers NEEDS WORK regardless of composite score. One catastrophic weakness cannot be averaged away by strengths.
 4. **Evidence requirement** - every score must cite file:line evidence. No "looks good" verdicts.
 5. **Composite score** - average of all dimensions (rounded). The composite summarizes; individual dimensions diagnose.
+6. **Audience calibration** - include a preamble step to identify the target audience from project context. Rubric anchors are relative to the audience — "self-evident" for a developer tool differs from "self-evident" for a consumer app.
 
 The rubric anchors ARE the philosophy - they encode what the project values into repeatable evaluation criteria. A reviewer without anchored rubric produces inconsistent, personality-dependent results.
 

@@ -33,16 +33,13 @@ Strip the `--codex` flag before passing the prompt to the execution path.
      Pass `working_directory` and `reasoning_effort: "xhigh"`.
      Verify cited file:line references. Drop findings with incorrect references.
 
-2. **Plan fix**: Invoke `Skill({ skill: "coral:plan", args: "--no-handoff fix-{short-bug-description} [--codex]" })`.
+2. **Plan fix**: Invoke `Skill({ skill: "coral:plan", args: "--no-handoff fix-{short-bug-description}" })`.
+   If `--codex` was passed, append `--codex` to the plan args.
    The plan protocol gathers context from the conversation (diagnosis from step 1).
    Plan should include: what to change, why, and how to verify the fix.
 
-3. **Execute fix**:
-   - **Default**: Invoke `Skill({ skill: "coral:ralph", args: "implement the plan from step 2" })`.
-   - **`--codex`**: Read `CORAL_AGENTS/codex-proxy.md`, use `### Role: ralph` prompt template.
-     Call `codex({ op: "exec", ... })` with the plan as task context.
-     Pass `working_directory` and `reasoning_effort: "high"`.
-     Verify all changes against the plan. Fix discrepancies directly.
+3. **Execute fix**: Invoke `Skill({ skill: "coral:ralph", args: "implement the plan from step 2" })`.
+   If `--codex` was passed, append `--codex` to the ralph args.
 
 4. **Project validation**: If project instructions define workflow rules (e.g., review gates,
    post-implementation steps), follow them.
