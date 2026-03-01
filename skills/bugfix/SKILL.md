@@ -4,7 +4,7 @@ description: "Systematic bug diagnosis, planning, and fix execution."
 argument-hint: "[--codex] <bug description or error message>"
 ---
 
-> **CORAL_AGENTS**: `~/.claude/plugins/cache/coral/**/agents/` — locate via Glob
+> **CORAL_AGENTS**: `Glob(pattern: "**/agents/", path: "~/.claude/plugins/cache/coral/")`
 
 # Bug Debugging
 

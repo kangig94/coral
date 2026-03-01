@@ -4,7 +4,7 @@ description: "Deep analysis - project scanning, requirement gaps, root cause inv
 argument-hint: "[--codex] [investigation target or question]"
 ---
 
-> **CORAL_AGENTS**: `~/.claude/plugins/cache/coral/**/agents/` — locate via Glob
+> **CORAL_AGENTS**: `Glob(pattern: "**/agents/", path: "~/.claude/plugins/cache/coral/")`
 
 # Deep Analysis & Investigation
 

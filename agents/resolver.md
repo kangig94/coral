@@ -4,7 +4,7 @@ description: "Feedback synthesizer and contradiction resolver. Synthesizes revie
 model: opus
 ---
 
-> **CORAL_METHODS**: `~/.claude/plugins/cache/coral/**/methods/` — locate via Glob
+> **CORAL_METHODS**: `Glob(pattern: "**/methods/", path: "~/.claude/plugins/cache/coral/")`
 
 <Agent_Prompt>
   <Role>

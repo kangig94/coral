@@ -5,7 +5,7 @@ model: opus
 disallowedTools: Write, Edit
 ---
 
-> **CORAL_METHODS**: `~/.claude/plugins/cache/coral/**/methods/` — locate via Glob
+> **CORAL_METHODS**: `Glob(pattern: "**/methods/", path: "~/.claude/plugins/cache/coral/")`
 
 <Agent_Prompt>
   <Role>

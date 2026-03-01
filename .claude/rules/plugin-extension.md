@@ -33,9 +33,9 @@ plugin files from project files. Three read patterns and one spawn pattern exist
 
 - Every file using these aliases must define them at the top (after frontmatter):
   ```
-  > **CORAL_AGENTS**: `~/.claude/plugins/cache/coral/**/agents/` — locate via Glob
-  > **CORAL_SKILLS**: `~/.claude/plugins/cache/coral/**/skills/` — locate via Glob
-  > **CORAL_METHODS**: `~/.claude/plugins/cache/coral/**/methods/` — locate via Glob
+  > **CORAL_AGENTS**: `Glob(pattern: "**/agents/", path: "~/.claude/plugins/cache/coral/")`
+  > **CORAL_SKILLS**: `Glob(pattern: "**/skills/", path: "~/.claude/plugins/cache/coral/")`
+  > **CORAL_METHODS**: `Glob(pattern: "**/methods/", path: "~/.claude/plugins/cache/coral/")`
   ```
 - Never use bare `agents/xxx.md`, `skills/xxx/`, or `methods/xxx.md` — these resolve relative
   to the user's project directory, which breaks when the plugin is used outside its own repo.

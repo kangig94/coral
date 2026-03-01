@@ -5,7 +5,7 @@ argument-hint: "[--red] [--codex] [task description]"
 model: sonnet
 ---
 
-> **CORAL_AGENTS**: `~/.claude/plugins/cache/coral/**/agents/` — locate via Glob
+> **CORAL_AGENTS**: `Glob(pattern: "**/agents/", path: "~/.claude/plugins/cache/coral/")`
 
 # Persistent Execution with Verification
 

@@ -4,7 +4,7 @@ description: "Structured problem-definition conversation before planning. Aligns
 argument-hint: "<issue or topic>"
 ---
 
-> **CORAL_METHODS**: `~/.claude/plugins/cache/coral/**/methods/` — locate via Glob
+> **CORAL_METHODS**: `Glob(pattern: "**/methods/", path: "~/.claude/plugins/cache/coral/")`
 
 # Pre-plan
 
