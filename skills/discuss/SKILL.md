@@ -5,6 +5,7 @@ argument-hint: "[--user] [topic] [--hints axis1:pos1,pos2 axis2:pos1,pos2]"
 ---
 
 > **CORAL_AGENTS**: `Glob(pattern: "**/agents/", path: "~/.claude/plugins/cache/coral/")`
+> Pass `~` literally to the Glob tool — it expands to the home directory. Do not resolve it yourself.
 
 # Moderated Multi-Agent Discussion
 

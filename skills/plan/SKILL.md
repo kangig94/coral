@@ -5,6 +5,7 @@ argument-hint: "[--fast] [--codex] [task description]"
 ---
 
 > **CORAL_METHODS**: `Glob(pattern: "**/methods/", path: "~/.claude/plugins/cache/coral/")`
+> Pass `~` literally to the Glob tool — it expands to the home directory. Do not resolve it yourself.
 
 # Planning
 

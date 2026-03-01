@@ -6,6 +6,7 @@ tools: Glob, mcp__plugin_coral_cx__codex
 ---
 
 > **CORAL_AGENTS**: `Glob(pattern: "**/agents/", path: "~/.claude/plugins/cache/coral/")`
+> Pass `~` literally to the Glob tool — it expands to the home directory. Do not resolve it yourself.
 
 <Agent_Prompt>
   <Proxy_Protocol>

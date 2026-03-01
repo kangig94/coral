@@ -5,6 +5,7 @@ argument-hint: "[--codex] <scope or prompt>"
 ---
 
 > **CORAL_AGENTS**: `Glob(pattern: "**/agents/", path: "~/.claude/plugins/cache/coral/")`
+> Pass `~` literally to the Glob tool — it expands to the home directory. Do not resolve it yourself.
 
 # Code Simplification
 

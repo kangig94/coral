@@ -5,6 +5,7 @@ argument-hint: "[existing|new]"
 ---
 
 > **CORAL_SKILLS**: `Glob(pattern: "**/skills/", path: "~/.claude/plugins/cache/coral/")`
+> Pass `~` literally to the Glob tool — it expands to the home directory. Do not resolve it yourself.
 
 # Project Initialization
 
