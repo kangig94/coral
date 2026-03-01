@@ -128,11 +128,13 @@ and unknown behavior at their structural boundaries.
 
 ```
 /coral:plan add retry logic to the API client
+/coral:plan --fast add retry logic to the API client
 /coral:bugfix why does session lookup return null?
 /coral:ralph implement the caching layer
 ```
 
 Multi-round planning with architect/critic review backed by structured reasoning methodologies.
+`--fast` skips the resolver agent and synthesizes feedback directly — faster iteration, same review quality.
 Systematic bug diagnosis - root cause, plan, fix. Persistent execution that verifies before declaring done.
 
 For complex tasks, start with problem definition:
@@ -163,7 +165,7 @@ Consecutive `/coral:codex` calls continue the same session. Say "new" to start f
 |-------|-------------|:-----:|
 | `/coral:analyze` | Deep analysis and investigation | Optional |
 | `/coral:preplan` | Problem definition before planning | - |
-| `/coral:plan` | Multi-round planning with structured review and conflict resolution | Optional |
+| `/coral:plan` | Multi-round planning with structured review and conflict resolution. `--fast` skips resolver | Optional |
 | `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | Optional |
 | `/coral:bugfix` | Bug diagnosis, planning, and fix execution | Optional |
 | `/coral:code-simplify` | Simplify and refine code for clarity | Optional |
@@ -192,22 +194,17 @@ Mistakes aren't repeated across sessions.
 | Variable | Default | Description |
 |---|---|---|
 | `CORAL_CODEX_MODEL` | `gpt-5.3-codex` | Default Codex CLI model |
-| `CORAL_DISCUSS_BID_THRESHOLD` | `30` | Minimum bid score (1–100) for floor eligibility in discussions |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Max epochs before discussion auto-ends (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `30` | Days before completed discuss sessions are auto-pruned |
 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(unset)_ | **Required** for `/coral:discuss`. Set to `1`. |
-| `ENABLE_TOOL_SEARCH` | `auto` | Lazy-load MCP tool definitions when context usage exceeds threshold. `auto` (≥10% of context), `auto:5` (≥5%), `true` (always on). |
-
 Set in `.claude/settings.json` (persists across sessions):
 
 ```json
 {
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
-    "CORAL_DISCUSS_BID_THRESHOLD": "30",
     "CORAL_DISCUSS_MAX_EPOCHS": "2",
-    "CORAL_DISCUSS_TTL_DAYS": "30",
-    "ENABLE_TOOL_SEARCH": "auto:5"
+    "CORAL_DISCUSS_TTL_DAYS": "30"
   }
 }
 ```
