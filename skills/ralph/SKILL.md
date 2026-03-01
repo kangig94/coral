@@ -187,12 +187,25 @@ Strip `--codex` and `--red` flags before passing the prompt to the execution pat
 
 ## Execution
 
-1. **Load codex template** (`--codex` only): Read `CORAL_AGENTS/codex-proxy.md` for the prompt template (`### Role: ralph` section). **You** call Codex directly — do NOT spawn a codex-proxy agent.
+1. **Construct Codex prompt** (`--codex` only): Build the prompt directly from `<Ralph_Protocol>` above — do NOT use codex-proxy (no `ralph` role exists there). Extract `<Role>`, `<Constraints>`, and `<Success_Criteria>` as system instructions. Structure:
+
+   ```
+   [SYSTEM]
+   {<Role> + <Constraints> + <Success_Criteria> from <Ralph_Protocol>}
+   [/SYSTEM]
+
+   [CONTEXT]
+   Working directory: {cwd}
+   {file paths, code sections, constraints from conversation}
+
+   [TASK]
+   {task description and acceptance criteria}
+   ```
 
 2. **Execute task**:
    - **Default**: Follow `<Protocol>` steps above.
    - **`--codex`**: Execution loop:
-     a. **Call Codex**: Use `codex({ op: "exec", ... })` (first round) or `codex({ op: "exec", session: <thread_id>, ... })` with saved thread_id (subsequent rounds). Follow the protocol's prompt template. Pass `working_directory` and `reasoning_effort: "xhigh"`.
+     a. **Call Codex**: Use `codex({ op: "exec", ... })` (first round) or `codex({ op: "exec", session: <thread_id>, ... })` with saved thread_id (subsequent rounds). Use the prompt structure from step 1. Pass `working_directory` and `reasoning_effort: "xhigh"`.
      b. **Save thread_id** from the response for session continuity
      c. **Verify** the changes yourself: read changed files, compare against acceptance criteria. Use LSP/type-check only. NEVER run build or test during the execution loop.
      d. **Loop decision**: All criteria pass → exit loop, go to Post-Completion Review. Not complete → go to step a with thread_id + updated progress context. Max 5 rounds → ask user whether to continue or finalize.
