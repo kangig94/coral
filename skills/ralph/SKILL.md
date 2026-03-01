@@ -54,6 +54,7 @@ Strip `--codex` and `--red` flags before passing the prompt to the execution pat
     1) Review task requirements and any existing progress.
     2) Break work into concrete steps with acceptance criteria.
     3) Execute steps, delegating to specialist agents where appropriate.
+       `--codex`: follow `<Codex_Mode>` (end of `<Ralph_Protocol>`) for execution and verification, then continue with step 5.
        NEVER run build or test during implementation. Use LSP/type-check for mid-step validation only.
        Build and test run exclusively in the post-implementation sequence.
     4) Verification Gate:
@@ -183,55 +184,50 @@ Strip `--codex` and `--red` flags before passing the prompt to the execution pat
     - Did post-implementation pass in order: lint → validation → build → test?
     - Can I cite exact command outputs for every claim?
   </Final_Checklist>
+  <Codex_Mode>
+    Self-contained execution path when `--codex` is active. Replaces `<Protocol>`
+    steps 3–4. You handle verification and post-implementation; Codex handles implementation.
+
+    Prompt — construct directly from `<Role>`, `<Constraints>`, `<Success_Criteria>`:
+    ```
+    [SYSTEM]
+    {<Role> + <Constraints> + <Success_Criteria>}
+    [/SYSTEM]
+
+    [CONTEXT]
+    Working directory: {cwd}
+    {file paths, code sections, constraints from conversation}
+
+    [TASK]
+    {task description and acceptance criteria}
+    ```
+
+    Context to extract from the current conversation:
+    - Task description and acceptance criteria
+    - File paths and code sections relevant to the work
+    - Current progress and any prior verification results
+    - Constraints or preferences stated by the user
+
+    Execution loop:
+    1) Call Codex: `codex({ op: "exec", ... })` first round,
+       `codex({ op: "exec", session: <thread_id>, ... })` subsequent rounds.
+       Pass `working_directory` and `reasoning_effort: "xhigh"`.
+    2) Save thread_id from the response for session continuity.
+    3) Verify changes yourself: read changed files, compare against acceptance criteria.
+       LSP/type-check only — NEVER run build or test during the loop.
+    4) Loop decision: all criteria pass → exit to Post-Completion Review.
+       Not complete → step 1 with updated context. Max 5 rounds → ask user.
+
+    Post-Completion Review:
+    Tests passing does not mean the work is correct. Codex may produce code that
+    passes tests but diverges from the plan — especially untestable content
+    (docs, prompts, config).
+    a. Read every changed file that Codex modified across all rounds
+    b. Compare against the plan/requirements — does each file match what was specified?
+    c. Flag untestable content — documentation, markdown, config: verify these match the plan
+    d. Fix discrepancies yourself — do not send back to Codex; fix them directly
+    e. Report to the user what was done correctly and what you corrected
+
+    Sandbox: pass `bypass: true` only when the user explicitly requests it.
+  </Codex_Mode>
 </Ralph_Protocol>
-
-## Execution
-
-1. **Construct Codex prompt** (`--codex` only): Build the prompt directly from `<Ralph_Protocol>` above — do NOT use codex-proxy (no `ralph` role exists there). Extract `<Role>`, `<Constraints>`, and `<Success_Criteria>` as system instructions. Structure:
-
-   ```
-   [SYSTEM]
-   {<Role> + <Constraints> + <Success_Criteria> from <Ralph_Protocol>}
-   [/SYSTEM]
-
-   [CONTEXT]
-   Working directory: {cwd}
-   {file paths, code sections, constraints from conversation}
-
-   [TASK]
-   {task description and acceptance criteria}
-   ```
-
-2. **Execute task**:
-   - **Default**: Follow `<Protocol>` steps above.
-   - **`--codex`**: Execution loop:
-     a. **Call Codex**: Use `codex({ op: "exec", ... })` (first round) or `codex({ op: "exec", session: <thread_id>, ... })` with saved thread_id (subsequent rounds). Use the prompt structure from step 1. Pass `working_directory` and `reasoning_effort: "xhigh"`.
-     b. **Save thread_id** from the response for session continuity
-     c. **Verify** the changes yourself: read changed files, compare against acceptance criteria. Use LSP/type-check only. NEVER run build or test during the execution loop.
-     d. **Loop decision**: All criteria pass → exit loop, go to Post-Completion Review. Not complete → go to step a with thread_id + updated progress context. Max 5 rounds → ask user whether to continue or finalize.
-
-3. **Post-Completion Review** (`--codex` only):
-   **Tests passing does not mean the work is correct.** Codex may produce code that passes tests but diverges from the plan - especially for untestable content (docs, prompts, config).
-   a. **Read every changed file** that Codex modified across all rounds
-   b. **Compare against the plan/requirements** - does each file match what was specified?
-   c. **Flag untestable content** - documentation, markdown, config: verify these match the plan
-   d. **Fix discrepancies yourself** - do not send back to Codex; fix them directly
-   e. **Report to the user** what was done correctly and what you corrected
-
-4. **Post-implementation**: Follow `<Protocol>` step 6 above. If `--red`, additionally follow `<Red_Attacker>` above.
-
-## Sandbox bypass
-
-Pass `bypass: true` only when the user explicitly requests bypass mode. Otherwise, omit the field.
-
-## Context Enhancement
-
-From the current conversation, identify and include:
-- Task description and acceptance criteria
-- File paths and code sections relevant to the work
-- Current progress and any prior verification results
-- Constraints or preferences stated by the user
-
-## Error Policy
-
-If `CORAL_AGENTS/codex-proxy.md` (`--codex`) cannot be read, report the error to the user. Do not fall back to inline execution.
