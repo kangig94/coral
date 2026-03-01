@@ -61,30 +61,30 @@ argument-hint: "[existing|new]"
   The subagent follows the analyze protocol (scanner → gap-finder), producing a
   single analysis document.
 
-      Task(subagent_type="general-purpose", prompt="""
-        Follow the analysis protocol from CORAL_SKILLS/analyze/SKILL.md (Claude-native Execution).
-        Run Step 1 (scanner) — always needed for project understanding.
-        Skip Step 2 (gap-finder) and Step 3 (debugger) — requirement gaps are
-        handled during Phase 2 plan review, and there are no bugs to diagnose.
+    Agent("general-purpose", prompt="""
+      Follow the analysis protocol from CORAL_SKILLS/analyze/SKILL.md (Claude-native Execution).
+      Run Step 1 (scanner) — always needed for project understanding.
+      Skip Step 2 (gap-finder) and Step 3 (debugger) — requirement gaps are
+      handled during Phase 2 plan review, and there are no bugs to diagnose.
 
-        Target: {working_directory}
-        Context: {extracted context from 1b, reference material from 1c}
-        Topic: init-{project-name}
+      Target: {working_directory}
+      Context: {extracted context from 1b, reference material from 1c}
+      Topic: init-{project-name}
 
-        After the scanner protocol completes, also assess documentation quality:
-        - Gaps: docs not covered by domain references or scan results.
-          Ask: "What would a new team member struggle to understand from code alone?"
-        - Enhancements: existing docs with missing sections that scan results reveal.
-        - Shallow sections: ARCHITECTURE.md with file lists but no layer diagram,
-          DEV_GUIDE.md with command names but no exact runnable commands,
-          any section under 3 lines that covers a non-trivial topic.
-        - Stale references: cross-check doc paths against actual directory structure.
+      After the scanner protocol completes, also assess documentation quality:
+      - Gaps: docs not covered by domain references or scan results.
+        Ask: "What would a new team member struggle to understand from code alone?"
+      - Enhancements: existing docs with missing sections that scan results reveal.
+      - Shallow sections: ARCHITECTURE.md with file lists but no layer diagram,
+        DEV_GUIDE.md with command names but no exact runnable commands,
+        any section under 3 lines that covers a non-trivial topic.
+      - Stale references: cross-check doc paths against actual directory structure.
 
-        Append documentation assessment findings under ## Documentation Assessment
-        in the analysis file, after the Scan Report section.
+      Append documentation assessment findings under ## Documentation Assessment
+      in the analysis file, after the Scan Report section.
 
-        Save to: .claude/coral/analysis/{date}-init-{project-name}.md
-      """)
+      Save to: .claude/coral/analysis/{date}-init-{project-name}.md
+    """)
 
   Wait for the analysis document. Read it to extract:
   - Tech stack and primary languages
@@ -182,7 +182,7 @@ argument-hint: "[existing|new]"
 
   ## Phase 3.5: Verify Artifacts
 
-  Spawn `coral:architect` and `coral:critic` in parallel to verify generated artifacts.
+  `Agent("coral:architect")` and `Agent("coral:critic")` in parallel to verify generated artifacts.
   Provide each with: plan file path, list of generated/enhanced files from Phase 3.
   Each outputs a findings table with severity (CRITICAL/HIGH/MEDIUM/LOW) and file:line references.
 
@@ -243,6 +243,8 @@ argument-hint: "[existing|new]"
   | Rules | `.claude/rules/{domain-specific}.md` | At least 1 per detected domain | `paths:` frontmatter, no `{placeholder}` text |
   | Agents | `.claude/agents/review-orchestrator.md` | Must exist | `<Agent_Prompt>` XML structure |
   | Agents | `.claude/agents/code-critic.md` | Must exist | Rubric anchors (10/7/4/1) |
+  | Agents | `.claude/agents/doc-critic.md` | Must exist | Rubric anchors (10/7/4/1) |
+  | Agents | `.claude/agents/test-critic.md` | Must exist | Rubric anchors (10/7/4/1) |
   | Template | `.claude/templates/AGENT.md` | Must exist | - |
   | Agents | `.claude/agents/{domain-specific}.md` | Per plan | `<Agent_Prompt>` XML structure |
   | Docs | `docs/ARCHITECTURE.md` | If generated | Layer diagram present |

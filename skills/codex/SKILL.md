@@ -48,9 +48,9 @@ Pass `bypass: true` only when the user explicitly requests bypass mode.
 
 ## 4a. Review (parallel spawn)
 
-Spawn TWO Task agents in a SINGLE message (parallel):
-- `subagent_type: coral:codex-proxy` with `Role: architect`
-- `subagent_type: coral:codex-proxy` with `Role: critic`
+Spawn TWO agents in a SINGLE message (parallel):
+- `Agent("coral:codex-proxy", role: architect)`
+- `Agent("coral:codex-proxy", role: critic)`
 
 Provide each: user's prompt, working directory, relevant conversation context.
 If session exists (step 2), include `session: <id>` in each prompt.

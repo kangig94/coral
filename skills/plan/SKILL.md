@@ -4,6 +4,8 @@ description: "Planning with parallel architect/critic review. Pass --codex for c
 argument-hint: "[--codex] [task description]"
 ---
 
+> **CORAL_METHODS**: `~/.claude/plugins/cache/coral/**/methods/` — locate via Glob
+
 # Planning
 
 Execute a multi-round planning session with architect/critic review.
@@ -21,15 +23,15 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
 
 <Planning_Protocol>
   <Role>
-    You are the **Synthesizer**. Your mission is to write and verify plans through multi-round review.
-    Synthesize multiple viewpoints into the strongest possible plan — not defend your draft.
+    You are the **Orchestrator**. Your mission is to write plans and manage the review loop.
+    Spawn reviewers for adversarial feedback, spawn the resolver for synthesis — do not synthesize directly.
     Treat reviewer feedback as collaborative input. Engage with substance, not verdict.
-    You are responsible for: gathering context, writing plans, spawning reviewers, synthesizing feedback, and iterating until approval.
+    You are responsible for: gathering context, writing plans, spawning reviewers, spawning resolver for feedback synthesis, and iterating until approval.
     You are NOT responsible for: implementing the plan (ralph), gathering requirements (gap-finder), or architectural deep-dives (architect).
     Within this protocol: do not implement or write source code. Do not use EnterPlanMode. Planning only.
   </Role>
   <Why_This_Matters>
-    Plans without review accumulate blind spots. A single perspective misses edge cases, misunderstands constraints, or over-engineers solutions. Multi-round review with parallel reviewers catches issues that a solo planner cannot see. The synthesizer role prevents defensive reactions to feedback — engage with substance, not ego.
+    Plans without review accumulate blind spots. A single perspective misses edge cases, misunderstands constraints, or over-engineers solutions. Multi-round review with parallel reviewers catches issues that a solo planner cannot see. The orchestrator spawns a dedicated resolver for synthesis, preventing defensive reactions — engage with substance, not ego.
   </Why_This_Matters>
   <Protocol>
     ### 1. Create Plan File
@@ -53,6 +55,10 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     - Identify acceptance criteria from the task
     - Extract working directory for reviewer agents
     - Note any constraints or preferences stated by the user
+    - **Bug enrichment**: If the task involves deep bug diagnosis (root cause unclear, multiple
+      possible causes), `Agent("coral:debugger")` in the background (`run_in_background: true`).
+      Continue with step 3 without waiting. When the debugger result arrives, incorporate its
+      hypothesis log and root cause findings into the plan.
 
     ### 3. Fill Plan
     Flesh out each section in the existing plan file.
@@ -74,36 +80,26 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
 
     #### Phase 1 — Codex Review (only with `--codex`)
 
-    Reviewers: `coral:codex-proxy` with `Role: architect` + `coral:codex-proxy` with `Role: critic`
+    Reviewers: `Agent("coral:codex-proxy", role: architect)` + `Agent("coral:codex-proxy", role: critic)`
 
     Repeat (max 5 rounds):
 
     **4a. Parallel Review**
-    Spawn both reviewers simultaneously using the Task tool in a SINGLE message.
+    Spawn both reviewers simultaneously in a SINGLE message.
     Provide each: plan file path, working directory, relevant context.
-    Include `HOW-REVIEW.md` path (in this skill directory) in each reviewer's prompt. Do NOT read it yourself. Tell each reviewer: "Before starting, you MUST read HOW-REVIEW.md and follow its methodology."
+    Each round is a fresh Codex call (no session continuity) — reviewers evaluate the
+    current plan without prior-round bias.
 
-    **4b. Session Tracking**
-    When a reviewer returns a session identifier (`session: <id>`), save it keyed by reviewer role.
-    On Round 2+, include the saved session for each reviewer:
-      session: {saved session id}
-      How previous feedback was handled: [summary of Adopt/Adapt/Defer/Diverge]
+    **4b. Synthesize Feedback**
+    `Agent("coral:codex-proxy", role: resolver)`.
+    Pass the plan file path, both reviewers' outputs, and working directory.
 
-    **4c. Synthesize Feedback**
-    Read `HOW-SYNTHESIZE.md` (in this skill directory) and apply its enhanced classification framework.
-    | Classification | Meaning | Action |
-    |---|---|---|
-    | Adopt | Sound, incorporate as-is | Apply to plan |
-    | Adapt | Valid insight, different solution | Incorporate with own approach |
-    | Defer | Needs more context | Note, revisit next round |
-    | Diverge | Doesn't apply | Explain why |
+    **4c. Update Plan File**
+    Apply the resolver's recommended changes (Adopt/Adapt items) to the plan file.
+    The resolver provides structured output — you apply it. File = single source of truth.
+    Record any Deferred items for next round. Log Diverged items with resolver's rationale.
 
-    Reference-based trust: file:line references carry higher weight than unreferenced opinions.
-
-    **4d. Update Plan File**
-    Edit plan with Adopt/Adapt changes. File = single source of truth.
-
-    **4e. Round Summary**
+    **4d. Round Summary**
     Show concise summary (NOT full plan):
       ## Round N Summary (Codex)
       ### Reviewer A: [VERDICT]
@@ -113,11 +109,11 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
       ### Synthesis: Adopt/Adapt/Defer/Diverge items
       ### Counterexample Coverage: [types explored / not yet]
 
-    **4f. Exit Condition**
-    Read `HOW-COMPLETE.md` (in this skill directory) and apply its additional completion criteria alongside the rules below.
+    **4e. Exit Condition**
+    **MANDATORY**: You MUST read `CORAL_METHODS/HOW-COMPLETE.md` and apply its additional completion criteria alongside the rules below. Never evaluate exit conditions without it.
     Evaluate based on what reviewers RETURNED this round (not your post-edit assessment):
-    - **Continue**: Either reviewer returned CRITICAL or HIGH → edit plan (4d), go to 4a. CRITICAL/HIGH edits MUST be re-verified — never exit the loop on a round where CRITICAL/HIGH findings were fixed.
-    - **Fix and pass**: Both reviewers returned NO CRITICAL or HIGH, but MEDIUM/LOW findings exist → fix them (4d), then exit. MEDIUM/LOW fixes do not require re-verification.
+    - **Continue**: Either reviewer returned CRITICAL or HIGH → edit plan (4c), go to 4a. CRITICAL/HIGH edits MUST be re-verified — never exit the loop on a round where CRITICAL/HIGH findings were fixed.
+    - **Fix and pass**: Both reviewers returned NO CRITICAL or HIGH, but MEDIUM/LOW findings exist → fix them (4c), then exit. MEDIUM/LOW fixes do not require re-verification.
     - **Clean pass**: Both reviewers returned NO findings above LOW, AND HOW-COMPLETE criteria are satisfied → proceed to Phase 2.
     - **Max rounds (5)**: `AskUserQuestion` — continue, finalize, or abort.
 
@@ -126,14 +122,12 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     Reviewers: `coral:architect` + `coral:critic`
 
     Repeat (max 5 rounds):
-    Apply the same HOW methodology as Phase 1: pass HOW-REVIEW.md path to reviewers (do NOT read it yourself) at 4a, read HOW-SYNTHESIZE.md yourself at 4c, read HOW-COMPLETE.md yourself at 4f.
-    - **4a. Parallel Review**: Spawn `coral:architect` + `coral:critic` (NOT codex-proxy) simultaneously in a single message. Provide each: plan file path, working directory, relevant context.
-    - **4c. Synthesize Feedback**: Same classification (Adopt/Adapt/Defer/Diverge).
-    - **4d. Update Plan File**: Edit with Adopt/Adapt changes.
-    - **4e. Round Summary**: Same format, label as `(Claude)`.
-    - **4f. Exit Condition**: Same rules. On pass, proceed to step 5.
-
-    No session tracking (4b) — Claude reviewers do not return session identifiers.
+    Apply the same methodology as Phase 1: `Agent("coral:resolver")` at 4b, read `CORAL_METHODS/HOW-COMPLETE.md` yourself at 4e.
+    - **4a. Parallel Review**: `Agent("coral:architect")` + `Agent("coral:critic")` simultaneously in a single message. Provide each: plan file path, working directory, relevant context.
+    - **4b. Synthesize Feedback**: `Agent("coral:resolver")` directly (not via codex-proxy).
+    - **4c. Update Plan File**: Edit with Adopt/Adapt changes.
+    - **4d. Round Summary**: Same format, label as `(Claude)`.
+    - **4e. Exit Condition**: Same rules. On pass, proceed to step 5.
 
     ### 5. Completion
     Return: plan file path + final summary (see `<Output_Format>`).
@@ -143,15 +137,17 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     |----------|--------|
     | One reviewer fails (timeout or creation error) | Proceed with other reviewer's feedback |
     | Both reviewers fail | Report error, ask whether to retry |
+    | Resolver fails (timeout, creation error, or malformed output) | Retry once. If still fails, AskUserQuestion: "Resolver unavailable — retry, skip this round's synthesis, or abort?" Do NOT synthesize directly. |
 
     Agent creation failures and timeouts use the SAME fallback — proceed without that reviewer.
+    Malformed resolver output: if the response lacks Classification Table or Recommended Changes sections, treat as failure (retry/escalate path above). Skip path: mark round as inconclusive, skip 4c/4d/4e, go directly to 4a (next round). Skip still increments round count.
   </Error_Handling>
   <Constraints>
     | DO | DON'T |
     |----|-------|
     | Create stub plan file first | Use EnterPlanMode (`~/.claude/plans/`) |
     | Spawn reviewers in parallel | Run reviewers sequentially |
-    | Synthesize feedback honestly | Defend your draft against feedback |
+    | Delegate synthesis to resolver | Synthesize feedback directly |
     | Cite file:line in plans | Write vague plans without references |
     | Exit when no CRITICAL/HIGH | Continue reviewing past convergence |
     | Return plan file path | Implement within this protocol |
@@ -191,7 +187,7 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     If chosen, invoke `Skill({ skill: "coral:ralph", args: "<plan summary + context>" })` with the selected flags.
   </Output_Format>
   <Failure_Modes_To_Avoid>
-    - Defending the draft: "My approach is better because..." Instead: engage with the substance of the feedback.
+    - Synthesizing directly instead of spawning resolver: "I'll classify the feedback myself this round." Instead: always spawn the resolver at 4c — the plan skill must never synthesize.
     - Skipping review: "The plan is straightforward, no review needed." Instead: always run at least one review round.
     - Over-iterating: Running 5 rounds when Round 2 had no issues. Instead: exit when exit condition is met.
     - Implementing within the planning phase: Writing source code or config files during planning. Instead: plan only — offer handoff to coral:ralph at step 5.
@@ -199,7 +195,7 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
   <Final_Checklist>
     - Did I create the stub plan file before researching?
     - Did I spawn reviewers in parallel?
-    - Did I synthesize feedback honestly (Adopt/Adapt/Defer/Diverge)?
+    - Did I spawn the resolver for synthesis (not synthesize directly)?
     - Is the plan file up to date with all changes?
     - Did the review loop converge (no CRITICAL/HIGH)?
     - Did I return the plan file path?

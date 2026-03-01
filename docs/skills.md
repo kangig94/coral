@@ -2,6 +2,21 @@
 
 Slash commands provided by the Coral plugin. Each skill is defined in `skills/{name}/SKILL.md` - refer to those files for the full execution protocol.
 
+## Methods
+
+Cross-cutting methodology files live in `methods/`. Agents and skills reference them via the `CORAL_METHODS` path alias. See [docs/methodology.md](./methodology.md) for the full connection architecture.
+
+| Method | Consumers | Purpose |
+|--------|-----------|---------|
+| `HOW-REVIEW.md` | architect, critic | Adversarial review with counterexample checklist + reasoning failure taxonomy |
+| `HOW-SYNTHESIZE.md` | resolver, plan | Multi-reviewer feedback synthesis (Adopt/Adapt/Defer/Diverge) |
+| `HOW-RESOLVE.md` | resolver | Constraint Collision resolution via TRIZ inventive principles |
+| `HOW-COMPLETE.md` | plan | Review loop exit evaluation (frame stability, counterexample coverage) |
+| `HOW-FALSIFY.md` | debugger, scanner | Competing hypothesis elimination via Vitanda (pure destruction) |
+| `HOW-CONFIDENCE.md` | debugger | GRADE-based evidence confidence grading (4 tiers, 2-phase algorithm) |
+| `HOW-PROVENANCE.md` | architect, critic, debugger, scanner, gap-finder | Evidence source chain (claim → source → identifier → verification) |
+| `HOW-ELICIT.md` | gap-finder, preplan | Multi-lens gap detection (HAZOP deviation + Pre-mortem + ABP assumptions) |
+
 | Skill | Description |
 |---|---|
 | `/coral:codex` | Single entry point for all Codex interactions - routes to scanner/gap-finder/ralph/review intent, or manages sessions directly |

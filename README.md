@@ -92,6 +92,7 @@ Multiple AI personas argue from different angles.
 Bid-based turn-taking surfaces the most urgent responses first.
 Positions evolve through genuine cross-examination.
 Structured synthesis at the end. Transcripts saved to `.claude/coral/discuss/`.
+Add `--user` to join as a participant: `/coral:discuss --user "topic"`, then `/coral:bid` to submit your turns.
 
 Example: **"Am I AGI?"** — Full transcript [EN](docs/examples/discuss-agi-en.md) · [KO](docs/examples/discuss-agi-ko.md)
 
@@ -131,7 +132,7 @@ and unknown behavior at their structural boundaries.
 /coral:ralph implement the caching layer
 ```
 
-Structured planning with architect and critic review.
+Multi-round planning with architect/critic review backed by structured reasoning methodologies.
 Systematic bug diagnosis - root cause, plan, fix. Persistent execution that verifies before declaring done.
 
 For complex tasks, start with problem definition:
@@ -153,6 +154,7 @@ For cross-model workflows with Codex:
 /coral:codex review auth.ts for security issues
 ```
 
+`--codex` delegates a single phase within a skill to Codex; `/coral:codex` is for direct multi-turn Codex sessions.
 Consecutive `/coral:codex` calls continue the same session. Say "new" to start fresh.
 
 ## Skills
@@ -161,7 +163,7 @@ Consecutive `/coral:codex` calls continue the same session. Say "new" to start f
 |-------|-------------|:-----:|
 | `/coral:analyze` | Deep analysis and investigation | Optional |
 | `/coral:preplan` | Problem definition before planning | - |
-| `/coral:plan` | Planning with architect/critic review | Optional |
+| `/coral:plan` | Multi-round planning with structured review and conflict resolution | Optional |
 | `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | Optional |
 | `/coral:bugfix` | Bug diagnosis, planning, and fix execution | Optional |
 | `/coral:code-simplify` | Simplify and refine code for clarity | Optional |
@@ -173,6 +175,7 @@ Consecutive `/coral:codex` calls continue the same session. Say "new" to start f
 
 `Optional` = works without Codex by default; pass `--codex` to delegate to Codex CLI.
 Plans are saved to `.claude/coral/plans/`. Ralph is best for implementing an existing plan.
+`/coral:bid` is a companion to `/coral:discuss --user` — it is not usable independently.
 
 ## Knowledge Base
 
@@ -193,7 +196,7 @@ Mistakes aren't repeated across sessions.
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Max epochs before discussion auto-ends (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `30` | Days before completed discuss sessions are auto-pruned |
 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(unset)_ | **Required** for `/coral:discuss`. Set to `1`. |
-| `ENABLE_TOOL_SEARCH` | `auto` | Lazy-load MCP tool definitions. `auto` (≥10%), `auto:5` (≥5%), `true` (always on). |
+| `ENABLE_TOOL_SEARCH` | `auto` | Lazy-load MCP tool definitions when context usage exceeds threshold. `auto` (≥10% of context), `auto:5` (≥5%), `true` (always on). |
 
 Set in `.claude/settings.json` (persists across sessions):
 
@@ -219,6 +222,7 @@ Or via shell: `export CORAL_CODEX_MODEL=gpt-5.3-codex`
 - [Agents](docs/agents.md) - Agent definitions and routing
 - [Hooks](docs/hooks.md) - Hook system and lifecycle events
 - [Skills](docs/skills.md) - Slash command usage
+- [Methodology](docs/methodology.md) - Reasoning methodologies (HOW files)
 - [Discuss](docs/discuss.md) - Discuss system design
 - [Build System](docs/build-system.md) - Build pipeline
 - [Configuration](docs/configuration.md) - Environment variables and config files

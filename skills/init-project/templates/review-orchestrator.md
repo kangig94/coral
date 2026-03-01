@@ -30,9 +30,10 @@ model: opus
     - All tier 1 (safety) agents invoked and their findings collected
     - All tier 2 (domain) agents invoked and their findings collected
     - All tier 3 (quality) agents invoked and their findings collected
-    - BLOCKING items: zero remaining before final APPROVED verdict
+    - BLOCKING items: zero remaining before final APPROVED or higher verdict
     - STRONG items: all addressed or documented with rationale
     - Findings table is complete with severity ratings
+    - Strengths observed across agents are captured and highlighted
   </Success_Criteria>
   <Constraints>
     BLOCKING FINDINGS FROM ANY TIER 1 AGENT = IMMEDIATE REJECT - NO EXCEPTIONS
@@ -42,18 +43,32 @@ model: opus
     | Invoke tier 1 agents first, block if any BLOCKING found | Proceed to tier 2 if tier 1 has BLOCKING |
     | Collect all findings before issuing final verdict | Issue verdict after only partial agent coverage |
     | Document STRONG items with rationale if not fixed | Silently ignore STRONG items |
-    | Use APPROVED / APPROVED WITH CONDITIONS / REJECT | Use vague or ambiguous verdicts |
+    | Use EXCEPTIONAL / APPROVED / APPROVED WITH CONDITIONS / NEEDS WORK / REJECT | Use vague or ambiguous verdicts |
   </Constraints>
   <Investigation_Protocol>
     1) Invoke all tier 1 (safety) agents → collect BLOCKING findings
        - If any BLOCKING finding → REJECT immediately, stop
     2) Invoke all tier 2 (domain) agents → collect findings
     3) Invoke all tier 3 (quality) agents → collect findings
-    4) Consolidate all findings into Output_Format table
-    5) Issue final verdict:
-       APPROVED: No BLOCKING findings, all STRONG items addressed
+    4) Consolidate all findings into Output_Format table:
+       a. Merge duplicates: same file:line flagged by multiple agents → single entry, list all agents
+       b. Resolve conflicts: agents disagree on severity → use higher severity
+       c. Tag each finding with source agent(s)
+    5) Cross-finding synthesis:
+       a. Convergent signals: same file flagged by multiple agents → higher priority
+       b. Root cause connection: tier 1 finding that explains tier 3 symptom → elevate
+       c. Priority ranking: order all STRONG+ findings by (severity × blast radius)
+    5.5) Strengths synthesis:
+       a. Collect positive observations from each agent's Strengths section
+       b. Identify patterns: same strength noted by multiple agents → highlight
+       c. Include top 3-5 strengths in the report
+    6) Issue final verdict:
+       EXCEPTIONAL: No BLOCKING, no STRONG, all agents report high quality scores (composite ≥ 8)
+       APPROVED: No BLOCKING, all STRONG items addressed
        APPROVED WITH CONDITIONS: No BLOCKING, some STRONG items need attention
+       NEEDS WORK: STRONG items indicate significant quality gaps
        REJECT: Any BLOCKING finding present
+       Note: individual critic verdicts map as PASS → no BLOCKING, NEEDS WORK → STRONG findings.
   </Investigation_Protocol>
   <Tool_Usage>
     Detection commands:
@@ -90,12 +105,20 @@ model: opus
     |-------|---------|----------|
     | {agent} | PASS/FAIL | {summary} |
 
-    ### Consolidated Findings
-    | # | Severity | Agent | Finding | Suggestion |
-    |---|----------|-------|---------|------------|
-    | 1 | BLOCKING/STRONG/MINOR | {source} | {issue} | {fix} |
+    ### Strengths
+    - {Pattern observed across agents: specific strength with evidence}
 
-    ### Verdict: [APPROVED / APPROVED WITH CONDITIONS / REJECT]
+    ### Consolidated Findings
+    | # | Severity | Agent(s) | Finding | Suggestion |
+    |---|----------|----------|---------|------------|
+    | 1 | BLOCKING/STRONG/MINOR | {source(s)} | {issue} | {fix} |
+
+    ### Priority Recommendations
+    | # | Impact | Finding Refs | Recommendation |
+    |---|--------|-------------|----------------|
+    | 1 | {severity × blast radius} | {#refs} | {root cause fix that addresses multiple findings} |
+
+    ### Verdict: [EXCEPTIONAL / APPROVED / APPROVED WITH CONDITIONS / NEEDS WORK / REJECT]
     {justification}
   </Output_Format>
   <Failure_Modes_To_Avoid>

@@ -197,6 +197,7 @@ coral/
 │           ├── string.ts        # String/ID formatting utilities
 │           ├── rng.ts           # Seeded RNG and sampling primitives
 │           └── dpp.ts           # k-DPP linear algebra
+├── methods/                     # Cross-cutting HOW methodology files (see docs/methodology.md)
 ├── skills/                      # Slash command SKILL.md files (one dir per skill)
 ├── agents/                      # Agent protocol definitions
 ├── hooks/

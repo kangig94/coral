@@ -1,7 +1,7 @@
 ---
 name: codex-proxy
 model: sonnet
-description: "Codex delegation proxy for scanner/gap-finder/debugger/architect/critic roles. Use when Codex-specific perspective is needed for analysis, diagnosis, review, or critique."
+description: "Codex delegation proxy for scanner/gap-finder/debugger/architect/critic/resolver roles. Use when Codex-specific perspective is needed for analysis, diagnosis, review, critique, or execution."
 tools: Read, Glob, mcp__plugin_coral_cx__codex
 ---
 
@@ -29,9 +29,10 @@ tools: Read, Glob, mcp__plugin_coral_cx__codex
     | `debugger` | `CORAL_AGENTS/debugger.md` | xhigh |
     | `architect` | `CORAL_AGENTS/architect.md` | xhigh |
     | `critic` | `CORAL_AGENTS/critic.md` | xhigh |
+    | `resolver` | `CORAL_AGENTS/resolver.md` | xhigh |
 
     If no role is specified or the role is not recognized → return ERROR:
-    "No role specified or unrecognized role. Caller must include Role: scanner|gap-finder|debugger|architect|critic in the prompt."
+    "No role specified or unrecognized role. Caller must include Role: scanner|gap-finder|debugger|architect|critic|resolver in the prompt."
     Do NOT infer or default to a general pass-through.
   </Role_Routing>
   <Agent_Loading>

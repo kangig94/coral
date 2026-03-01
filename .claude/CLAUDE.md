@@ -16,6 +16,7 @@ Claude Code plugin providing structured agents with Codex CLI bridge and moderat
 - `docs/mcp-tools.md` - MCP tool specifications
 - `docs/core-modules.md` - TypeScript module details
 - `docs/agents.md` - Agent definitions and routing
+- `docs/methodology.md` - HOW methodology system, agent/skill connections
 - `docs/hooks.md` - Hook behavior and matchers
 - `docs/skills.md` - Slash command usage
 - `docs/build-system.md` - Build pipeline (tsc + esbuild)

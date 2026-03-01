@@ -40,7 +40,16 @@ argument-hint: "[--codex] [investigation target or question]"
   1. **Evaluate** — check "Needed when" against the user's request AND prior findings. Skip if unneeded.
   2. **Scope** — determine target files/modules. Never run unscoped.
   3. **Execute** — run via active mode (see Mode below).
-  4. **Post-process** — verify CRITICAL/HIGH references (Read cited file:line, drop incorrect). Move unrelated findings to `### Peripheral Findings`. Order by severity.
+  4. **Post-process** — apply finding quality gates:
+     a. Verify CRITICAL/HIGH references (Read cited file:line, drop incorrect)
+     b. **Inclusion gate**: finding must be (i) within declared scope AND (ii) answerable by code evidence
+     c. **Exclusion gate**: drop (i) speculative findings without file:line. (ii) For findings about unchanged code when the question is about a specific change: downgrade severity and move to `### Peripheral Findings` with context note — do NOT hard-drop, as the change may activate a latent defect in stable code
+     d. **Provenance gate**: tag each surviving finding
+        with evidence type (code trace / test behavior / git history / structural inference / assumption).
+        Findings with assumption-only provenance are downgraded one severity level.
+     e. Move unrelated findings to `### Peripheral Findings`. Order by severity.
+     f. **Record finding flow**: "N initial → M after gates → K verified"
+        Include provenance distribution when tagged: "[code: X, inference: Y, assumption: Z]"
   5. **Append** — write under the step's output section heading.
 
   Wait for each step's result before evaluating the next. At least one step must run.
@@ -51,12 +60,23 @@ argument-hint: "[--codex] [investigation target or question]"
   with Claude-native tools (Read, Grep, Glob, Bash git-only). Constrain to scope.
   You (the executor) append to the file — agent protocols are read-only references.
 
-  **Codex (`--codex`)**: Spawn `coral:codex-proxy` via Task tool with `Role: <role_name>`,
+  **Codex (`--codex`)**: `Agent("coral:codex-proxy", role: <role_name>)`,
   scope, `working_directory`, and analysis file content so far.
   Spawn one at a time — do NOT launch steps in parallel. Each step's output informs
   the next step's scope and "Needed when" evaluation.
   You (the executor) post-process and append the result to the file after each spawn returns.
   Pass `session: <id>` from the first response to subsequent spawns for Codex CLI context continuity.
+
+  ### Scoping Framework
+
+  Before evaluating each step, decompose the user's question into investigation facets:
+  - **What** is being investigated? (component, behavior, pattern)
+  - **Where** in the codebase? (directories, files, modules)
+  - **Why** is this question being asked? (bug, architecture, requirements)
+  - **Boundary**: what is explicitly OUT of scope?
+
+  Each step's scope inherits from this decomposition. If a step discovers new facets,
+  note them for subsequent step evaluation.
 
   ### Steps
 
@@ -68,14 +88,30 @@ argument-hint: "[--codex] [investigation target or question]"
 
   ## Phase 3 — Synthesis Review
 
-  Always runs. Read the full analysis file, then check:
+  Always runs. Read the full analysis file, then:
 
-  1. **Unanswered aspects** — does the user's question have parts no step addressed?
-  2. **Cross-step consistency** — do findings contradict or reinforce each other? Connect related findings.
-  3. **Coverage gaps** — obvious areas the steps missed given the request?
+  1. **Finding flow summary** — report counts: initial → filtered → verified per step.
+     This is the PRISMA-analog: how many findings survived each gate?
 
-  If issues found: investigate directly (Read, Grep, Glob, Bash git-only). Append under `## Synthesis Review`.
-  If clean: skip the section.
+  2. **Thematic grouping** (when ≥2 steps ran) — do NOT restate findings step-by-step.
+     Instead, identify 2-4 themes that emerge ACROSS steps:
+     - Architecture themes (structural patterns found by scanner, validated by gap-finder)
+     - Risk themes (gaps found by gap-finder, confirmed by debugger symptoms)
+     - Quality themes (code quality patterns, documentation gaps)
+     Group related findings under themes. Note which step(s) contributed each finding.
+
+     **Single-step fallback** (when only 1 step ran): skip thematic grouping.
+     Proceed directly to unanswered aspects and finding flow summary.
+     The finding flow summary for single-step is a simple echo of Phase 2's per-step counts —
+     do not re-analyze or add redundant validation. Its purpose is consistent output structure.
+
+  3. **Unanswered aspects** — does the user's question have parts no step addressed?
+
+  4. **Cross-step consistency** (when ≥2 steps ran) — do findings contradict or reinforce each other?
+
+  If issues found: investigate directly (Read, Grep, Glob, Bash git-only).
+  Append under `## Synthesis Review` with theme headings.
+  If clean: append only the finding flow summary.
 
   ## Phase 4 — Present
 
