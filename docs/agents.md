@@ -86,14 +86,14 @@ Use Claude's native tools (Read, Grep, Glob, LSP) for direct analysis. Read-only
 
 ### resolver (Feedback Synthesizer & Contradiction Resolver)
 
-`agents/resolver.md` - opus, read-only
+`agents/resolver.md` - opus
 
 **Role**: Vada-frame synthesizer that classifies reviewer findings using Adopt/Adapt/Defer/Diverge
 with FRAME/STRUCTURE/DETAIL levels. Detects Vyabhicharita (contradictory feedback)
 and resolves Constraint Collisions via HOW-RESOLVE's TRIZ protocol. Spawned by plan skill
-at step 4c — returns structured synthesis output for plan skill to apply.
+at step 4b — applies Adopt/Adapt changes directly to the plan file and returns structured
+synthesis output for the plan skill's round summary and exit evaluation.
 Follows HOW-SYNTHESIZE.md (always) and HOW-RESOLVE.md (on Constraint Collision).
-Read-only agent: does not modify plan files directly.
 
 ---
 
@@ -153,15 +153,15 @@ Agents for the moderated multi-agent discussion system. These agents coordinate 
 
 ## Codex-bound Agents (Delegation Agents)
 
-Proxy agents that delegate work to Codex CLI. Tool restrictions limit them to Read, Glob, and coral MCP tools.
+Proxy agents that delegate work to Codex CLI. Tool restrictions limit them to Glob and coral MCP tools (no Read — prevents proxy from analyzing content that Codex should handle).
 
 **Why one file?** All Codex delegation roles share identical infrastructure (Proxy_Protocol, Working_Directory, Session_Continuity, Output_Handling, Failure_Modes). A single file maximizes prompt cache hits - when architect + critic are spawned in parallel, their system prompts share an identical prefix, so only the first pays the full cost. New roles should be added here, not as separate agent files.
 
 ### codex-proxy (Unified Codex Delegation Proxy)
 
-`agents/codex-proxy.md` - sonnet, Read + Glob + Codex tools
+`agents/codex-proxy.md` - sonnet, Glob + Codex tools
 
-**Role**: Thin proxy with role-based routing. Callers include `Role: scanner|gap-finder|debugger|architect|critic|resolver` in their prompt. The proxy reads the corresponding Claude-native agent file (`agents/<role>.md`), extracts the `<Agent_Prompt>` methodology, and passes it to Codex CLI as the system prompt. Missing role → explicit error (no inference).
+**Role**: Thin proxy with role-based routing. Callers include `Role: scanner|gap-finder|debugger|architect|critic|resolver` in their prompt. The proxy locates the corresponding agent file path via Glob, then passes the path and caller's prompt verbatim to Codex CLI. Codex reads the agent file itself and follows the protocol. Missing role → explicit error (no inference).
 
 | Role | Purpose | reasoning_effort |
 |---|---|---|
@@ -188,7 +188,7 @@ The `SubagentStart` hook fires when any agent matching `(^|:)codex-` starts (e.g
 
 ### Layer 2: Tool Restriction (100% guarantee)
 
-The `tools` field in Codex-bound agent definitions restricts them to Read, Glob, and coral MCP tools only. Read/Glob are used to load the Claude-native agent protocol file before passing it to Codex.
+The `tools` field in Codex-bound agent definitions restricts them to Glob and coral MCP tools only (no Read). Glob locates the agent file path; Codex reads the file itself. This prevents the proxy from reading and analyzing content that Codex should handle.
 
 > Claude-native agents have no `tools` restriction - they can use all read tools (`disallowedTools` only blocks writing).
 
@@ -202,7 +202,7 @@ Each agent `.md` file contains a detailed role and protocol embedded in the syst
 
 ### Codex-bound Agent (new role)
 
-Add a new role to `agents/codex-proxy.md` under `<Role_Routing>` with a reference to its agent file. The proxy reads the agent file at runtime — no prompt templates to maintain. Create the Claude-native agent file first (`agents/<name>.md`), then add a row to the routing table.
+Add a new role to `agents/codex-proxy.md` under `<Role_Routing>` with a reference to its agent file. The proxy locates the agent file path via Glob and passes it to Codex, which reads and follows it at runtime — no prompt templates to maintain. Create the Claude-native agent file first (`agents/<name>.md`), then add a row to the routing table.
 
 If a standalone Codex agent is truly needed (rare), create `agents/codex-<name>.md` - the `codex-` prefix ensures the hook fires automatically:
 

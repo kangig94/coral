@@ -220,14 +220,13 @@ Skills orchestrate agents and read HOW files directly for protocol-level decisio
 │  │  └────────┬─────────┘    └────────┬─────────┘                │    │
 │  │           │                       │                          │    │
 │  │  ┌────────▼─────────┐    ┌────────▼─────────┐                │    │
-│  │  │ 4c: codex-proxy  │    │ 4c: resolver     │                │    │
-│  │  │  Role: resolver  │    │                  │                │    │
+│  │  │ 4b: codex-proxy  │    │ 4b: resolver     │                │    │
+│  │  │  Role: resolver  │    │  (edits plan)    │                │    │
 │  │  └────────┬─────────┘    └────────┬─────────┘                │    │
 │  │           │                       │                          │    │
 │  │  ┌────────▼─────────────────────────────────┐                │    │
-│  │  │ 4f: plan skill reads directly:           │                │    │
+│  │  │ 4e: plan skill reads directly:           │                │    │
 │  │  │   ██ HOW-COMPLETE (exit evaluation)      │                │    │
-│  │  │   ██ HOW-SYNTHESIZE (feedback classify)  │                │    │
 │  │  └──────────────────────────────────────────┘                │    │
 │  │                                                              │    │
 │  │  Step 5: Handoff → coral:ralph                               │    │
@@ -255,8 +254,7 @@ Skills orchestrate agents and read HOW files directly for protocol-level decisio
 
 | HOW File | Skill | Strength | Trigger |
 |----------|-------|----------|---------|
-| HOW-COMPLETE | plan | MANDATORY | Step 4f exit evaluation |
-| HOW-SYNTHESIZE | plan | MANDATORY | Step 4c feedback classification |
+| HOW-COMPLETE | plan | MANDATORY | Step 4e exit evaluation |
 | (none) | analyze | — | Provenance gate executes inline without reading HOW files |
 | (none) | preplan | — | References HOW-REVIEW conceptually (prose mention only) |
 | HOW-ELICIT | preplan | RECOMMENDED | When filling Assumptions (#4) |
@@ -290,7 +288,7 @@ How the layers connect in a typical planning workflow:
                 │
                 ▼
           ┌──────────┐
-          │ plan 4f  │
+          │ plan 4e  │
           │██COMPLETE│   iterate or exit
           └────┬─────┘
                │ approved
