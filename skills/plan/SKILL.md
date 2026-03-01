@@ -123,7 +123,7 @@ Strip `--codex`, `--fast`, and `--no-handoff` flags before passing the prompt to
     - **Continue**: Either reviewer returned CRITICAL or HIGH → fixes already applied at 4b (by resolver, or by you in `--fast`), go to 4a for re-verification. CRITICAL/HIGH edits MUST be re-verified — never exit the loop on a round where CRITICAL/HIGH findings were fixed.
     - **Fix and pass**: Both reviewers returned NO CRITICAL or HIGH, but MEDIUM/LOW findings exist → fixes already applied at 4b, exit. MEDIUM/LOW fixes do not require re-verification.
     - **Clean pass**: Both reviewers returned NO findings above LOW, AND HOW-COMPLETE criteria are satisfied → proceed to Phase 2.
-    - **Max rounds (5)**: `AskUserQuestion` — continue, finalize, or abort.
+    - **Max rounds (5)**: Proceed to Phase 2 with current plan state.
 
     #### Phase 2 — Claude Review (always)
 
@@ -135,7 +135,7 @@ Strip `--codex`, `--fast`, and `--no-handoff` flags before passing the prompt to
     - **4b. Synthesize Feedback**: `--fast` → synthesize and edit directly, skip 4c. Otherwise → `Agent("coral:resolver")`, fresh spawn each round.
     - **4c. Review Synthesis Report** (skip in `--fast`): Resolver has applied changes; read the updated plan file, then read its report, record Deferred/Diverged items.
     - **4d. Round Summary**: Same format, label as `(Claude)`.
-    - **4e. Exit Condition**: Same rules. On pass, proceed to step 5.
+    - **4e. Exit Condition**: Same rules as Phase 1. On pass, proceed to step 5. On max rounds (5), `AskUserQuestion` — continue, finalize, or abort.
 
     ### 5. Completion
     Return: plan file path + final summary (see `<Output_Format>`).
