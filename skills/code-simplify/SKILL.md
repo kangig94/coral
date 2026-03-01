@@ -4,7 +4,7 @@ description: "Simplifies and refines code for clarity, consistency, and maintain
 argument-hint: "[--codex] <scope or prompt>"
 ---
 
-> **CORAL_AGENTS**: `~/.claude/plugins/cache/coral/**/agents/` — locate via Glob
+> **CORAL_AGENTS**: `Glob(pattern: "**/agents/", path: "~/.claude/plugins/cache/coral/")`
 
 # Code Simplification
 

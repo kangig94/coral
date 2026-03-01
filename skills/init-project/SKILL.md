@@ -4,7 +4,7 @@ description: Initialize project for AI-assisted development with rules, agents, 
 argument-hint: "[existing|new]"
 ---
 
-> **CORAL_SKILLS**: `~/.claude/plugins/cache/coral/**/skills/` — locate via Glob
+> **CORAL_SKILLS**: `Glob(pattern: "**/skills/", path: "~/.claude/plugins/cache/coral/")`
 
 # Project Initialization
 

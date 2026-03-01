@@ -4,7 +4,7 @@ description: Moderated multi-agent discussion via Agent Teams
 argument-hint: "[--user] [topic] [--hints axis1:pos1,pos2 axis2:pos1,pos2]"
 ---
 
-> **CORAL_AGENTS**: `~/.claude/plugins/cache/coral/**/agents/` — locate via Glob
+> **CORAL_AGENTS**: `Glob(pattern: "**/agents/", path: "~/.claude/plugins/cache/coral/")`
 
 # Moderated Multi-Agent Discussion
 

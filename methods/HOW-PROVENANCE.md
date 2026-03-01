@@ -1,6 +1,6 @@
 # HOW to Verify Evidence Provenance
 
-> **CORAL_METHODS**: `~/.claude/plugins/cache/coral/**/methods/` — locate via Glob
+> **CORAL_METHODS**: `Glob(pattern: "**/methods/", path: "~/.claude/plugins/cache/coral/")`
 
 A citation is a delegation of trust. An unverified citation dresses hallucination in the robes of authority.
 In the LLM context this is especially dangerous — nonexistent files, wrong line numbers, and

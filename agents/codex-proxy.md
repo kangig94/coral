@@ -5,7 +5,7 @@ description: "Codex delegation proxy for scanner/gap-finder/debugger/architect/c
 tools: Glob, mcp__plugin_coral_cx__codex
 ---
 
-> **CORAL_AGENTS**: `~/.claude/plugins/cache/coral/**/agents/` — locate via Glob
+> **CORAL_AGENTS**: `Glob(pattern: "**/agents/", path: "~/.claude/plugins/cache/coral/")`
 
 <Agent_Prompt>
   <Proxy_Protocol>

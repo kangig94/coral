@@ -1,6 +1,6 @@
 # HOW to Grade Evidence Confidence
 
-> **CORAL_METHODS**: `~/.claude/plugins/cache/coral/**/methods/` — locate via Glob
+> **CORAL_METHODS**: `Glob(pattern: "**/methods/", path: "~/.claude/plugins/cache/coral/")`
 
 A conclusion without calibrated confidence is bluster; excessive uncertainty is paralysis.
 From GRADE (Grading of Recommendations Assessment, Development, and Evaluation):
