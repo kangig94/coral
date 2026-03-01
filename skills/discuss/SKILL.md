@@ -93,7 +93,7 @@ Before any other action, verify the Agent Teams environment:
 6. **Create team and spawn teammates**:
    Create Agent Team `coral-dc-{session_id}`. Spawn ALL teammates:
    - **discuss-lead** (always):
-     `Task(subagent_type: 'coral:discuss-lead', team_name, name: 'discuss-lead', prompt: "Run discussion for session {session_id}. has_user_observer: {true if --user, false otherwise}. After each speech, SendMessage the full speech content to team lead.")`
+     `Agent("coral:discuss-lead", team_name, name: 'discuss-lead', prompt: "Run discussion for session {session_id}. has_user_observer: {true if --user, false otherwise}. After each speech, SendMessage the full speech content to team lead.")`
    - **Discussants** (AI agents only):
      One per agent with `participation: 'required'`,
      using `name: 'dc-{agent_name}'` (e.g., agent `park` → teammate `dc-park`).

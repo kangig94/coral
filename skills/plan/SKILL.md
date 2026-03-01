@@ -56,7 +56,7 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     - Extract working directory for reviewer agents
     - Note any constraints or preferences stated by the user
     - **Bug enrichment**: If the task involves deep bug diagnosis (root cause unclear, multiple
-      possible causes), spawn `coral:debugger` in the background (`run_in_background: true`).
+      possible causes), `Agent("coral:debugger")` in the background (`run_in_background: true`).
       Continue with step 3 without waiting. When the debugger result arrives, incorporate its
       hypothesis log and root cause findings into the plan.
 
@@ -80,12 +80,12 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
 
     #### Phase 1 — Codex Review (only with `--codex`)
 
-    Reviewers: `coral:codex-proxy` with `Role: architect` + `coral:codex-proxy` with `Role: critic`
+    Reviewers: `Agent("coral:codex-proxy", role: architect)` + `Agent("coral:codex-proxy", role: critic)`
 
     Repeat (max 5 rounds):
 
     **4a. Parallel Review**
-    Spawn both reviewers simultaneously using the Task tool in a SINGLE message.
+    Spawn both reviewers simultaneously in a SINGLE message.
     Provide each: plan file path, working directory, relevant context.
 
     **4b. Session Tracking**
@@ -99,15 +99,8 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     (plan file + prior round's synthesis output), not via session ID.
 
     **4c. Synthesize Feedback**
-    In Phase 1, spawn `coral:codex-proxy` with `Role: resolver`. In Phase 2, spawn `coral:resolver` directly.
-    Provide to the resolver:
-    - Plan file path
-    - Both reviewers' outputs (full text)
-    - Working directory
-    - Round number, and session ID from prior resolver spawn (Phase 1 Round 2+) or prior synthesis context as text summary (Phase 2 Round 2+)
-
-    The resolver reads HOW-SYNTHESIZE and HOW-RESOLVE independently — do NOT read them yourself.
-    Do NOT synthesize feedback directly — the resolver exists to prevent author bias.
+    `Agent("coral:codex-proxy", role: resolver)`.
+    Pass the plan file path, both reviewers' outputs, and working directory.
 
     **4d. Update Plan File**
     Apply the resolver's recommended changes (Adopt/Adapt items) to the plan file.
@@ -137,9 +130,9 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     Reviewers: `coral:architect` + `coral:critic`
 
     Repeat (max 5 rounds):
-    Apply the same methodology as Phase 1: spawn `coral:resolver` at 4c (do NOT synthesize directly), read `CORAL_METHODS/HOW-COMPLETE.md` yourself at 4f. Never skip these.
-    - **4a. Parallel Review**: Spawn `coral:architect` + `coral:critic` (NOT codex-proxy) simultaneously in a single message. Provide each: plan file path, working directory, relevant context.
-    - **4c. Synthesize Feedback**: Spawn `coral:resolver` (same delegation as Phase 1, but direct instead of via codex-proxy).
+    Apply the same methodology as Phase 1: `Agent("coral:resolver")` at 4c, read `CORAL_METHODS/HOW-COMPLETE.md` yourself at 4f.
+    - **4a. Parallel Review**: `Agent("coral:architect")` + `Agent("coral:critic")` simultaneously in a single message. Provide each: plan file path, working directory, relevant context.
+    - **4c. Synthesize Feedback**: `Agent("coral:resolver")` directly (not via codex-proxy).
     - **4d. Update Plan File**: Edit with Adopt/Adapt changes.
     - **4e. Round Summary**: Same format, label as `(Claude)`.
     - **4f. Exit Condition**: Same rules. On pass, proceed to step 5.

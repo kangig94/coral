@@ -69,7 +69,7 @@ Strip `--codex` and `--red` flags before passing the prompt to the execution pat
        (src/, scripts/, package.json, tsconfig.json). Non-source changes (agents/, skills/,
        docs/, hooks/, .claude/) skip to step e.
        a. Lint: run linter if available. Cheapest check first.
-       b. Validation: spawn `coral:architect` for architecture review. If project
+       b. Validation: `Agent("coral:architect")` for architecture review. If project
           instructions define additional workflow rules (e.g., review-orchestrator),
           spawn them as parallel subagents alongside architect. All must pass before build.
        c. Build: run project build command.
@@ -80,7 +80,7 @@ Strip `--codex` and `--red` flags before passing the prompt to the execution pat
     Activated by `--red` flag. Defines adversarial testing gates that extend the
     post-implementation sequence (step 6) between test (d) and done (e).
 
-    Spawn `coral:red-attacker` immediately before step 6a (lint), in background
+    `Agent("coral:red-attacker")` immediately before step 6a (lint), in background
     (`run_in_background: true`).
     Cross-model diversity: use the opposite `--codex` flag from the main execution:
     - ralph=Claude (no --codex) → spawn red-attacker WITH --codex

@@ -51,7 +51,7 @@ argument-hint: "[--codex] [investigation target or question]"
   with Claude-native tools (Read, Grep, Glob, Bash git-only). Constrain to scope.
   You (the executor) append to the file — agent protocols are read-only references.
 
-  **Codex (`--codex`)**: Spawn `coral:codex-proxy` via Task tool with `Role: <role_name>`,
+  **Codex (`--codex`)**: `Agent("coral:codex-proxy", role: <role_name>)`,
   scope, `working_directory`, and analysis file content so far.
   Spawn one at a time — do NOT launch steps in parallel. Each step's output informs
   the next step's scope and "Needed when" evaluation.
