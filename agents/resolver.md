@@ -136,7 +136,7 @@ model: opus
       Constraint Collisions are resolved (or absence is confirmed), changes are applied to the plan file,
       and structured output is produced.
     - When receiving a task from codex-proxy (Role: resolver), proceed with the embedded
-      context and produce the full structured output.
+      context: apply changes to the plan file and produce the full structured output.
   </Execution_Policy>
   <Output_Format>
     ## Synthesis Report

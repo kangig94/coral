@@ -96,7 +96,8 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
 
     **4c. Review Synthesis Report**
     The resolver has already applied Adopt/Adapt changes directly to the plan file.
-    Read the resolver's synthesis report. Record any Deferred items for the next round.
+    Read the updated plan file to understand what changed. Then read the resolver's synthesis report.
+    Record any Deferred items for the next round.
     Log Diverged items with the resolver's rationale. Do NOT edit the plan file yourself.
 
     **4d. Round Summary**
@@ -112,8 +113,8 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     **4e. Exit Condition**
     **MANDATORY**: You MUST read `CORAL_METHODS/HOW-COMPLETE.md` and apply its additional completion criteria alongside the rules below. Never evaluate exit conditions without it.
     Evaluate based on what reviewers RETURNED this round (not your post-edit assessment):
-    - **Continue**: Either reviewer returned CRITICAL or HIGH → resolver applies fixes (4b), go to 4a. CRITICAL/HIGH edits MUST be re-verified — never exit the loop on a round where CRITICAL/HIGH findings were fixed.
-    - **Fix and pass**: Both reviewers returned NO CRITICAL or HIGH, but MEDIUM/LOW findings exist → resolver fixes them (4b), then exit. MEDIUM/LOW fixes do not require re-verification.
+    - **Continue**: Either reviewer returned CRITICAL or HIGH → resolver has already applied fixes at 4b, go to 4a for re-verification. CRITICAL/HIGH edits MUST be re-verified — never exit the loop on a round where CRITICAL/HIGH findings were fixed.
+    - **Fix and pass**: Both reviewers returned NO CRITICAL or HIGH, but MEDIUM/LOW findings exist → resolver has already fixed them at 4b, exit. MEDIUM/LOW fixes do not require re-verification.
     - **Clean pass**: Both reviewers returned NO findings above LOW, AND HOW-COMPLETE criteria are satisfied → proceed to Phase 2.
     - **Max rounds (5)**: `AskUserQuestion` — continue, finalize, or abort.
 
@@ -125,7 +126,7 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     Apply the same methodology as Phase 1: `Agent("coral:resolver")` at 4b, read `CORAL_METHODS/HOW-COMPLETE.md` yourself at 4e.
     - **4a. Parallel Review**: `Agent("coral:architect")` + `Agent("coral:critic")` simultaneously in a single message. Provide each: plan file path, working directory, relevant context.
     - **4b. Synthesize Feedback**: `Agent("coral:resolver")` directly (not via codex-proxy).
-    - **4c. Review Synthesis Report**: Resolver has applied changes; read its report, record Deferred/Diverged items.
+    - **4c. Review Synthesis Report**: Resolver has applied changes; read the updated plan file, then read its report, record Deferred/Diverged items.
     - **4d. Round Summary**: Same format, label as `(Claude)`.
     - **4e. Exit Condition**: Same rules. On pass, proceed to step 5.
 
