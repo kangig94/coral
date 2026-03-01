@@ -1,6 +1,7 @@
 # HOW to Grade Evidence Confidence
 
 > **CORAL_METHODS**: `Glob(pattern: "**/methods/", path: "~/.claude/plugins/cache/coral/")`
+> Pass `~` literally to the Glob tool — it expands to the home directory. Do not resolve it yourself.
 
 A conclusion without calibrated confidence is bluster; excessive uncertainty is paralysis.
 From GRADE (Grading of Recommendations Assessment, Development, and Evaluation):

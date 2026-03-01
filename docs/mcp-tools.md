@@ -19,65 +19,88 @@ Single entry point for all Codex execution. Use the required `op` discriminator.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `op` | string | Yes | One of: `exec`, `list`, `fork`, `abort` |
+| `op` | string | Yes | One of: `exec`, `wait`, `list`, `fork`, `abort` |
 
 ---
 
 ### op: exec
 
-Create a new Codex session when `session` is omitted (calls `executeOneShot()`) or resume an existing session when `session` is present (calls `executeResume()`).
+Start a new Codex session (omit `session`) or resume an existing one (pass `session`). Returns immediately — execution runs in background.
 
 ### Input Schema
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `session` | string | No | Session identifier (name or thread ID). Omit to start a new session. |
-| `name` | string | No | Session name (auto-generated as `session-{timestamp}` if omitted) |
+| `session` | string | No | Codex thread UUID (from `status.json` after wait). Omit to start a new session. |
+| `name` | string | No | Session display name (auto-generated as `session-{timestamp}` if omitted) |
 | `prompt` | string | Yes | Prompt to send to Codex (min 1 char) |
 | `model` | string | No | Model to use (default: `gpt-5.3-codex`, configurable via `CORAL_CODEX_MODEL`) |
 | `working_directory` | string | No | Working directory |
 | `reasoning_effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
-| `background` | boolean | No | Run in background (default: `false`). Returns immediately with progress info. |
 | `bypass` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when the user explicitly requests bypass mode. |
 
-### Output - Foreground (default)
+### Output
+
+Returns immediately. Codex runs in background.
 
 ```json
 {
-  "response": "Codex response text",
-  "session": "codex-session-uuid",
+  "job_id": "uuid",
+  "job_dir": "/tmp/coral-jobs/uuid",
   "session_name": "my-review",
-  "model": "gpt-5.3-codex",
-  "duration_ms": 4100,
-  "errors": [],
-  "warnings": []
+  "status": "running"
 }
 ```
 
-If no session ID is returned, registration is skipped with a `notice` field. `errors`/`warnings`/`exit_code` are conditionally included.
+`job_dir` is the filesystem path to the job directory. Use `wait` to poll for completion, then `Read` files from `job_dir`.
 
-During foreground execution, `[Codex]` prefixed progress messages are sent via `notifications/progress`.
+---
 
-### Output - Background (`background: true`)
+### op: wait
+
+Poll for job completion. Blocks until one of the requested jobs finishes or `timeout_seconds` elapses.
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `job_ids` | string[] | Yes | Array of job UUIDs to wait on. Min 1 element. |
+| `timeout_seconds` | integer | No | Max wait time in seconds (1–600, default: 300) |
+| `cursors` | object | No | `{ [job_id: UUID]: byteOffset }` — Resume progress tailing from a previous wait call. Pass the `cursors` field from the prior response. |
+
+### Output — Completed or Error
 
 ```json
 {
-  "progress_id": "uuid",
-  "progress_file": "/tmp/coral-progress-uuid.jsonl",
+  "status": "completed",
+  "completed_job_id": "uuid",
+  "job_dir": "/tmp/coral-jobs/uuid",
   "session_name": "my-review",
-  "status": "launched"
+  "cursors": { "uuid": 1234 }
 }
 ```
 
-Progress is written to the JSONL file with a terminal `completed` or `error` event on finish.
+- `status`: `"completed"` or `"error"`
+- `Read(job_dir + "/result.md")` → response text (completed jobs only)
+- `Read(job_dir + "/status.json")` → `{ session }` (Codex thread UUID for continuity) or `{ error }` (error message)
 
-### Lookup Logic (resume path)
+### Output — Timeout
 
-1. `SessionManager.get(session)` - search by name first
-2. If name doesn't match, search by `codexThreadId`
-3. If not in registry, return error (`Session not found`). All sessions must be created via `codex({ op: "exec", ... })`.
+```json
+{
+  "status": "timeout",
+  "running_jobs": ["uuid1"],
+  "cursors": { "uuid1": 1024 }
+}
+```
 
-On success, the `lastUsedAt` timestamp is automatically updated.
+Pass `cursors` to the next `wait` call to resume progress tailing without re-reading seen output.
+
+### Wait Semantics
+
+- **Any-semantics**: Returns on the FIRST job completion. For wait-all, loop: call `wait` with the remaining `running_jobs` and the returned `cursors`.
+- **Progress**: `[Codex]` prefixed messages sent via `notifications/progress` during the wait.
+- **Immediate return**: If a job finished before `wait` is called, returns `completed` immediately.
 
 ---
 
@@ -108,7 +131,7 @@ No parameters (empty object). This envelope is strict.
 }
 ```
 
-`status` is `"running"` while a prompt is being executed, `"completed"` otherwise.
+`status` is `"running"` for jobs in the `activeJobs` map (still executing), `"completed"` otherwise.
 
 Only shows sessions registered in the Coral registry.
 
@@ -116,7 +139,7 @@ Only shows sessions registered in the Coral registry.
 
 ### op: fork
 
-Fork an existing session to continue the conversation in a new branch.
+Fork an existing session to continue the conversation in a new branch. Returns immediately like `exec`.
 
 > **Note**: `codex fork` is a TUI-only command and cannot run headlessly. Internally uses `codex exec resume` for resume-based forking.
 
@@ -125,40 +148,42 @@ Fork an existing session to continue the conversation in a new branch.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `session` | string | Yes | Source session identifier (must exist in Coral registry) |
-| `name` | string | No | New session name (registered if specified) |
+| `name` | string | No | New session display name |
 | `prompt` | string | No | Additional prompt for the forked session |
 | `model` | string | No | Model to use |
 | `working_directory` | string | No | Working directory |
 | `reasoning_effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
-| `background` | boolean | No | Run in background (default: `false`) |
 | `bypass` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when the user explicitly requests bypass mode. |
 
-### Output (JSON)
+### Output
+
+Returns immediately. Same format as `exec`:
 
 ```json
 {
-  "response": "Forked session response",
-  "session": "new-session-uuid",
-  "forked_from": "original-session-uuid",
+  "job_id": "uuid",
+  "job_dir": "/tmp/coral-jobs/uuid",
   "session_name": "forked-review",
-  "model": "gpt-5.3-codex",
-  "duration_ms": 3500
+  "status": "running"
 }
 ```
 
-`errors`/`warnings`/`exit_code` conditionally included. If `name` is not specified, the session exists only in Codex and is not registered in the Coral registry.
+Use `wait(job_id)` then `Read(job_dir + "/result.md")` to get the fork response.
 
 ---
 
 ### op: abort
 
-Abort an active execution.
+Abort an active job or execution by job ID or session name.
 
 ### Input Schema
 
+Exactly one of `job_id` or `session` must be provided.
+
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `session` | string | Yes | Session identifier |
+| `job_id` | string (UUID) | No | Job UUID from a previous `exec`/`fork` response. Direct process lookup via `activeJobs` map. |
+| `session` | string | No | Session display name or thread ID. Scans `activeJobs` for matching entries — may abort multiple if session name was reused. |
 
 ### Output (JSON)
 
@@ -168,6 +193,35 @@ Abort an active execution.
   "status": "abort_requested"
 }
 ```
+
+For `session`-based abort, `matched_job_ids` is included when multiple jobs match. Abort is best-effort — jobs that haven't registered their `session` yet (fresh start) may not match by session name.
+
+---
+
+## Usage Pattern
+
+```
+exec → { job_id, job_dir }
+wait([job_id]) → { status, ... }
+if status == "completed":
+  Read(job_dir + "/result.md") → response text
+  Read(job_dir + "/status.json") → { session } for continuity on next exec
+if status == "error":
+  Read(job_dir + "/status.json") → { error } for diagnostics
+if status == "timeout":
+  re-wait with returned cursors, or abort(job_id)
+```
+
+## Session Continuity
+
+`session_name` (from exec response) is the human-readable display label. `session` (from `status.json` after wait) is the Codex thread UUID needed for session continuity.
+
+| Field | Source | Purpose |
+|-------|--------|---------|
+| `session_name` | exec/fork response | Display label shown to user |
+| `session` | `status.json` after wait | Pass to next `exec` for continuity |
+
+Do NOT pass `session_name` as the `session` parameter on subsequent exec calls.
 
 ---
 

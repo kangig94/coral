@@ -39,4 +39,85 @@ describe('codexOpSchema', () => {
   it('rejects missing op', () => {
     expect(() => codexOpSchema.parse({})).toThrow(ZodError);
   });
+
+  it('accepts wait with job_ids array', () => {
+    const result = codexOpSchema.parse({
+      op: 'wait',
+      job_ids: ['12345678-1234-1234-1234-123456789abc'],
+    });
+    expect(result).toMatchObject({
+      op: 'wait',
+      job_ids: ['12345678-1234-1234-1234-123456789abc'],
+    });
+  });
+
+  it('wait rejects empty job_ids array', () => {
+    expect(() => codexOpSchema.parse({ op: 'wait', job_ids: [] })).toThrow(ZodError);
+  });
+
+  it('wait rejects non-UUID job_ids', () => {
+    expect(() => codexOpSchema.parse({ op: 'wait', job_ids: ['not-a-uuid'] })).toThrow(ZodError);
+  });
+
+  it('wait accepts optional timeout_seconds', () => {
+    const a = codexOpSchema.parse({
+      op: 'wait',
+      job_ids: ['12345678-1234-1234-1234-123456789abc'],
+      timeout_seconds: 1,
+    });
+    const b = codexOpSchema.parse({
+      op: 'wait',
+      job_ids: ['12345678-1234-1234-1234-123456789abc'],
+      timeout_seconds: 600,
+    });
+
+    expect(a).toMatchObject({ op: 'wait', timeout_seconds: 1 });
+    expect(b).toMatchObject({ op: 'wait', timeout_seconds: 600 });
+  });
+
+  it('wait rejects timeout_seconds out of range', () => {
+    expect(() => codexOpSchema.parse({
+      op: 'wait',
+      job_ids: ['12345678-1234-1234-1234-123456789abc'],
+      timeout_seconds: 0,
+    })).toThrow(ZodError);
+
+    expect(() => codexOpSchema.parse({
+      op: 'wait',
+      job_ids: ['12345678-1234-1234-1234-123456789abc'],
+      timeout_seconds: 601,
+    })).toThrow(ZodError);
+  });
+
+  it('wait accepts optional cursors object', () => {
+    const result = codexOpSchema.parse({
+      op: 'wait',
+      job_ids: ['12345678-1234-1234-1234-123456789abc'],
+      cursors: {
+        '12345678-1234-1234-1234-123456789abc': 0,
+      },
+    });
+
+    expect(result).toMatchObject({
+      op: 'wait',
+      cursors: {
+        '12345678-1234-1234-1234-123456789abc': 0,
+      },
+    });
+  });
+
+  it('accepts abort with session only', () => {
+    const result = codexOpSchema.parse({ op: 'abort', session: 'session-a' });
+    expect(result).toMatchObject({ op: 'abort', session: 'session-a' });
+  });
+
+  it('accepts abort with job_id only', () => {
+    const result = codexOpSchema.parse({ op: 'abort', job_id: '12345678-1234-1234-1234-123456789abc' });
+    expect(result).toMatchObject({ op: 'abort', job_id: '12345678-1234-1234-1234-123456789abc' });
+  });
+
+  it('accepts abort with neither session nor job_id (handler enforces one-of)', () => {
+    const result = codexOpSchema.parse({ op: 'abort' });
+    expect(result).toMatchObject({ op: 'abort' });
+  });
 });

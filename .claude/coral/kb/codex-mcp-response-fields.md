@@ -1,31 +1,28 @@
-# Codex MCP Exec Response: No `thread_id`, Use `session_name`
+# Codex MCP Exec: Instant Return + File-Based Result Retrieval
 
 ## Rule
-The codex MCP `exec` response never includes a `thread_id` field. What IS returned is `session` (the internal UUID) and `session_name` (the human-readable name). Skills tracking session continuity must look for `session_name`, not `thread_id`. `session_name` is safe to show the user; the raw `session` UUID should stay hidden.
+The codex MCP `exec` response returns immediately with `{ job_id, job_dir, session_name, status: "running" }`. It never blocks and never includes the Codex response text inline. Callers must: (1) call `wait(job_ids)` to poll completion, (2) `Read(job_dir + "/result.md")` for the response text, (3) `Read(job_dir + "/status.json")` for the `session` field (Codex thread UUID) when session continuity is needed. `session_name` in the exec response is a display label only — do NOT pass it as the `session` parameter.
 
 ## Why
-Codex CLI emits `thread_id` in its JSONL output, but `output-parser.ts:43` explicitly maps it to `sessionId` at the parser boundary: `sessionId = event.thread_id`. The MCP layer then surfaces `sessionId` as the `session` field (UUID) and pairs it with `session_name`. Any skill instruction that says "never show `thread_id`" or "look for thread_id in conversation history" is referencing a field that is never present in the MCP response — session continuity was silently broken.
+Without this pattern, callers block expecting `{ response, session }` inline but receive `{ job_id, job_dir }` instead — resulting in missing response text and broken session continuity. The `session` UUID lives in `status.json` only after the job completes, so callers that try to capture `session` from the exec response get `undefined`.
 
 ## Pattern
 ```
-// MCP exec response shape (server-handlers.ts:239-246):
+// MCP exec response shape (server-handlers.ts, launchJob):
 {
-  response: string,        // Codex output — show this
-  session: string,         // UUID — hide from user
-  session_name: string,    // human name — show this, track for continuity
-  model: string,           // hide unless asked
-  duration_ms: number,     // hide unless asked
+  job_id: "uuid",           // UUID — pass to wait()
+  job_dir: "/tmp/coral-jobs/uuid",  // directory path
+  session_name: "my-review",        // display label — show to user, NOT a continuity key
+  status: "running"
 }
 
-// Skill session continuity — correct:
-// Check for session_name from a prior exec call, pass it as `session` param
-codex({ op: "exec", session: session_name, prompt, working_directory })
+// After wait({ job_ids: [job_id] }) returns status == "completed":
+Read(job_dir + "/result.md")   → response text (show this)
+Read(job_dir + "/status.json") → { session: "codex-thread-uuid", session_name, status, ... }
+// Use session UUID for next exec call:
+codex({ op: "exec", session: "codex-thread-uuid", prompt, working_directory })
 
-// Skill presentation — correct:
-// Show response, then append: `session: <session_name>`
+// Skill presentation:
+// Show response from result.md, then append: `session: <session_name>`
 // Never show raw session UUID, model, duration_ms
-
-// Skill presentation — WRONG (old pattern):
-// "Never show thread_id" — field doesn't exist
-// "Look for thread_id in conversation history" — never present
 ```

@@ -45,9 +45,11 @@ tools: Read, Write, Edit, Bash, Grep, Glob, mcp__plugin_coral_cx__codex
     - **Default**: Execute all Investigation_Protocol steps yourself.
 
     - **`--codex`**: Delegate the entire pipeline to Codex as a multi-round session:
-      1. Call `codex({ op: "exec", prompt: <step>, working_directory: <project root> })` → save `session` from response
-      2. Each subsequent step: `codex({ op: "exec", session: <saved>, prompt: <step>, ... })`
-      3. Between rounds: read Codex output, verify progress, compose the next prompt
+      1. Call `codex({ op: "exec", prompt: <step>, working_directory: <project root> })` → `{ job_id, job_dir }`
+         `codex({ op: "wait", job_ids: [job_id] })` → Read(`job_dir + "/result.md"`) for output
+         Extract `session` from `job_dir + "/status.json"` for continuity
+      2. Each subsequent step: `codex({ op: "exec", session: <saved>, prompt: <step>, ... })` → same wait → Read pattern
+      3. Between rounds: read result.md output, verify progress, compose the next prompt
       4. Claude orchestrates — Codex investigates and writes
 
     - **`--codex` + Codex unavailable**: Execute the pipeline yourself as fallback.

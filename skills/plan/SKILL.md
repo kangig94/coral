@@ -5,6 +5,7 @@ argument-hint: "[--fast] [--codex] [task description]"
 ---
 
 > **CORAL_METHODS**: `Glob(pattern: "**/methods/", path: "~/.claude/plugins/cache/coral/")`
+> Pass `~` literally to the Glob tool — it expands to the home directory. Do not resolve it yourself.
 
 # Planning
 
@@ -107,8 +108,8 @@ Strip `--codex`, `--fast`, and `--no-handoff` flags before passing the prompt to
     Record any Deferred items for the next round.
     Log Diverged items with the resolver's rationale. Do NOT edit the plan file yourself.
 
-    **4d. Round Summary**
-    Show concise summary (NOT full plan):
+    **4d. Round Summary** (AFTER 4b/4c — never before synthesis is complete)
+    Summarize the synthesis result, not just the reviews. Show what was resolved:
 
       ## Round N (Codex)
 
@@ -121,6 +122,7 @@ Strip `--codex`, `--fast`, and `--no-handoff` flags before passing the prompt to
       |-------|-------|-------|---------|
       | item  | item  | —     | —       |
 
+      **Changes Applied**: [what was edited in the plan file]
       **Counterexample Coverage**: [types explored / not yet]
 
     **4e. Exit Condition**
@@ -140,7 +142,7 @@ Strip `--codex`, `--fast`, and `--no-handoff` flags before passing the prompt to
     - **4a. Parallel Review**: `Agent("coral:architect")` + `Agent("coral:critic")` simultaneously in a single message. Provide each: plan file path, working directory, relevant context.
     - **4b. Synthesize Feedback**: `--fast` → synthesize and edit directly, skip 4c. Otherwise → `Agent("coral:resolver")`, fresh spawn each round.
     - **4c. Review Synthesis Report** (skip in `--fast`): Resolver has applied changes; read the updated plan file, then read its report, record Deferred/Diverged items.
-    - **4d. Round Summary**: Same format, label as `(Claude)`.
+    - **4d. Round Summary**: Same format, label as `(Claude)`. AFTER 4b/4c — never before synthesis is complete.
     - **4e. Exit Condition**: Same rules as Phase 1. On pass, proceed to step 5. On max rounds (5), `AskUserQuestion` — continue, finalize, or abort.
 
     ### 5. Completion

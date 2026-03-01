@@ -27,6 +27,8 @@ When adapting state factories, use the existing file's factory as a base and spr
 
 Red-attacker writes files to `.claude/coral/tmp/red/` and generates relative imports that are 4 levels up from the project root (e.g., `'../../../../src/codex/cli-detection.js'`). When copying to `src/codex/__tests__/`, update these to one level up (`'../cli-detection.js'`). Failing to do so causes module-not-found at test time without a clear error message pointing to the import.
 
+**Alternative**: Write the staging file with imports relative to the final destination (`'../cli-detection.js'`) from the start. This makes the staging file a direct specification of the module's public API surface — static imports that fail at TypeScript compile time if the export doesn't exist yet. Add a header comment `// staging — move to src/codex/__tests__/ after refactoring`. No path fixup needed on move.
+
 Also valid: create a separate `*-red.test.ts` file when the red suite is large and coherent enough to stand alone, rather than appending to an existing test file. Use this when the red tests form their own logical adversarial grouping (edge cases, boundary values, race conditions) distinct from the happy-path structure of the source test file.
 
 ## Gotcha: Title-Assertion Mismatch in "Documenting Behavior" Tests

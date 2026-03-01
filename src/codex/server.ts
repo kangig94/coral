@@ -7,8 +7,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { killAllChildren } from './codex-executor.js';
 import { SessionManager } from './session-manager.js';
-import { appendFinalResult } from './progress.js';
-import { tools, handleToolCall, activeBackgroundFiles } from './server-handlers.js';
+import { writeJobError } from './progress.js';
+import { tools, handleToolCall, activeJobs, tryClaimTerminalWrite, shutdownSignal } from './server-handlers.js';
 
 const server = new Server(
   {
@@ -32,11 +32,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 
 function shutdown() {
   process.stderr.write('Coral MCP Server shutting down...\n');
-  for (const pFile of activeBackgroundFiles) {
-    appendFinalResult(pFile, 'error', { error: 'Server shutting down' });
+
+  // 1. Signal all wait handlers to exit their poll loops immediately
+  shutdownSignal.abort();
+
+  // 2. Claim terminal write for all active jobs and mark as error
+  for (const [jobId, entry] of activeJobs) {
+    if (tryClaimTerminalWrite(jobId, 'error')) {
+      writeJobError(entry.jobDir, 'Server shutting down');
+      entry.terminalState = 'error';
+    }
+    entry.controller.abort();
   }
-  activeBackgroundFiles.clear();
+  activeJobs.clear();
+
+  // 3. Kill all OS-level child processes
   killAllChildren();
+
   server.close().finally(() => process.exit(0));
 }
 
