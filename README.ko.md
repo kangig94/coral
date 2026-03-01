@@ -192,8 +192,6 @@ Claude가 놓치기 쉬운 것을 발견하면 (근본 원인, 주의사항, 기
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | 토론 자동 종료 전 최대 에포크 (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `30` | 완료된 토론 세션 자동 정리 기한 (일) |
 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(미설정)_ | `/coral:discuss` **필수**. `1`로 설정. |
-| `ENABLE_TOOL_SEARCH` | `auto` | 컨텍스트 사용량 기준 MCP 도구 정의 지연 로드. `auto` (컨텍스트 ≥10%), `auto:5` (≥5%), `true` (항상). |
-
 `.claude/settings.json`에 설정 (세션 간 유지):
 
 ```json
@@ -202,8 +200,7 @@ Claude가 놓치기 쉬운 것을 발견하면 (근본 원인, 주의사항, 기
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
     "CORAL_DISCUSS_BID_THRESHOLD": "30",
     "CORAL_DISCUSS_MAX_EPOCHS": "2",
-    "CORAL_DISCUSS_TTL_DAYS": "30",
-    "ENABLE_TOOL_SEARCH": "auto:5"
+    "CORAL_DISCUSS_TTL_DAYS": "30"
   }
 }
 ```

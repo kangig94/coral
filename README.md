@@ -198,8 +198,6 @@ Mistakes aren't repeated across sessions.
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Max epochs before discussion auto-ends (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `30` | Days before completed discuss sessions are auto-pruned |
 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(unset)_ | **Required** for `/coral:discuss`. Set to `1`. |
-| `ENABLE_TOOL_SEARCH` | `auto` | Lazy-load MCP tool definitions when context usage exceeds threshold. `auto` (≥10% of context), `auto:5` (≥5%), `true` (always on). |
-
 Set in `.claude/settings.json` (persists across sessions):
 
 ```json
@@ -208,8 +206,7 @@ Set in `.claude/settings.json` (persists across sessions):
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
     "CORAL_DISCUSS_BID_THRESHOLD": "30",
     "CORAL_DISCUSS_MAX_EPOCHS": "2",
-    "CORAL_DISCUSS_TTL_DAYS": "30",
-    "ENABLE_TOOL_SEARCH": "auto:5"
+    "CORAL_DISCUSS_TTL_DAYS": "30"
   }
 }
 ```
