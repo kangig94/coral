@@ -14,7 +14,8 @@ Cross-cutting methodology files live in `methods/`. Agents and skills reference 
 | `HOW-COMPLETE.md` | plan | Review loop exit evaluation (frame stability, counterexample coverage) |
 | `HOW-FALSIFY.md` | debugger, scanner | Competing hypothesis elimination via Vitanda (pure destruction) |
 | `HOW-CONFIDENCE.md` | debugger | GRADE-based evidence confidence grading (4 tiers, 2-phase algorithm) |
-| `HOW-PROVENANCE.md` | architect, critic, debugger, scanner | Evidence source chain (claim → source → identifier → verification) |
+| `HOW-PROVENANCE.md` | architect, critic, debugger, scanner, gap-finder | Evidence source chain (claim → source → identifier → verification) |
+| `HOW-ELICIT.md` | gap-finder, preplan | Multi-lens gap detection (HAZOP deviation + Pre-mortem + ABP assumptions) |
 
 | Skill | Description |
 |---|---|

@@ -4,7 +4,7 @@ Cross-cutting methodology files that define HOW agents perform specific reasonin
 
 ## Methodology Layer
 
-Seven HOW files in `methods/`, connected by two cross-references:
+Eight HOW files in `methods/`, connected by two cross-references:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -33,6 +33,12 @@ Seven HOW files in `methods/`, connected by two cross-references:
 │  │  chain)      │     │  grading)     │     │            │  │
 │  └──────────────┘     └───────────────┘     └────────────┘  │
 │                                                             │
+│  ┌──────────────┐                                           │
+│  │ HOW-ELICIT   │                                           │
+│  │ (multi-lens  │                                           │
+│  │  gap detect.)│                                           │
+│  └──────────────┘                                           │
+│                                                             │
 │  ── = cross-reference (read-only dependency)                │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -48,6 +54,7 @@ Seven HOW files in `methods/`, connected by two cross-references:
 | `HOW-FALSIFY.md` | Competing hypothesis elimination via Vitanda (pure destruction) | Vitanda (debate to destroy, not establish) | Yes |
 | `HOW-CONFIDENCE.md` | GRADE-based evidence confidence grading (4 tiers, 2-phase algorithm) | GRADE clinical framework | No: starting point determined by evidence type from HOW-PROVENANCE |
 | `HOW-PROVENANCE.md` | Evidence source chain (claim → source → identifier → verification) | — | Yes |
+| `HOW-ELICIT.md` | Multi-lens gap detection (Boundary + Deviation + Assumption + Inversion + Completeness) | HAZOP (ICI) + Pre-mortem (Klein) + ABP (RAND) + Gawande checklist + FMEA | Yes |
 
 ### Cross-References
 
@@ -56,7 +63,7 @@ Seven HOW files in `methods/`, connected by two cross-references:
 | HOW-CONFIDENCE L21 | HOW-PROVENANCE | Starting point (HIGH/MODERATE/LOW/VERY LOW) is determined by evidence type |
 | HOW-COMPLETE L21 | HOW-REVIEW | Exit evaluation references counterexample type checklist |
 
-HOW-FALSIFY, HOW-SYNTHESIZE, and HOW-RESOLVE are standalone — no external dependencies.
+HOW-FALSIFY, HOW-SYNTHESIZE, HOW-RESOLVE, and HOW-ELICIT are standalone — no external dependencies.
 
 ## Agent Layer
 
@@ -101,6 +108,13 @@ Each agent owns one primary HOW methodology (MANDATORY, read unconditionally or 
 │  │ ░░ HOW-PROVENANCE (when producing findings)│           │
 │  └────────────────────────────────────────────┘           │
 │                                                           │
+│  ┌────────────────────────────────────────────┐           │
+│  │             gap-finder                     │           │
+│  │                                            │           │
+│  │ ██ HOW-ELICIT  (before any gap analysis)   │           │
+│  │ ░░ HOW-PROVENANCE (when producing findings)│           │
+│  └────────────────────────────────────────────┘           │
+│                                                           │
 │  ██ = MANDATORY    ░░ = RECOMMENDED    ▓▓ = inline logic  │
 └───────────────────────────────────────────────────────────┘
 ```
@@ -121,6 +135,8 @@ Each agent owns one primary HOW methodology (MANDATORY, read unconditionally or 
 | HOW-PROVENANCE | scanner | RECOMMENDED | When producing findings |
 | HOW-SYNTHESIZE | resolver | MANDATORY | Step 0 (unconditional) |
 | HOW-RESOLVE | resolver | MANDATORY | Step 3 (on Constraint Collision) |
+| HOW-ELICIT | gap-finder | MANDATORY | Before any gap analysis |
+| HOW-PROVENANCE | gap-finder | RECOMMENDED | When producing findings |
 
 ### Agent Inline Logic
 
@@ -181,6 +197,7 @@ Each agent owns one primary HOW methodology. An agent may own one additional con
 | debugger | HOW-FALSIFY | HOW-CONFIDENCE | 2+ competing hypotheses |
 | scanner | HOW-FALSIFY | — | Process Investigation + 2+ hypotheses |
 | resolver | HOW-SYNTHESIZE | HOW-RESOLVE | Constraint Collision detected |
+| gap-finder | HOW-ELICIT | — | — |
 
 HOW files do not route to other HOW files — the caller selects the appropriate agent, and the agent knows which methodology to apply. This prevents mid-protocol methodology switching.
 
@@ -242,6 +259,7 @@ Skills orchestrate agents and read HOW files directly for protocol-level decisio
 | HOW-SYNTHESIZE | plan | MANDATORY | Step 4c feedback classification |
 | (none) | analyze | — | Provenance gate executes inline without reading HOW files |
 | (none) | preplan | — | References HOW-REVIEW conceptually (prose mention only) |
+| HOW-ELICIT | preplan | RECOMMENDED | When filling Assumptions (#4) |
 
 ## End-to-End Workflow
 

@@ -4,6 +4,8 @@ description: "Structured problem-definition conversation before planning. Aligns
 argument-hint: "<issue or topic>"
 ---
 
+> **CORAL_METHODS**: `~/.claude/plugins/cache/coral/**/methods/` — locate via Glob
+
 # Pre-plan
 
 Structured problem-definition conversation with the user before planning begins.
@@ -65,6 +67,10 @@ Structured problem-definition conversation with the user before planning begins.
     - Fill all 7 items — maximize autonomous coverage, mark uncertain items with "unconfirmed"
     - Create agreement file: `.claude/coral/plans/pre-{topic}.md`
     - Create tasks for the 7 items to track progress
+
+    **RECOMMENDED**: When filling Assumptions (#4), consider applying
+    `CORAL_METHODS/HOW-ELICIT.md` Lens 3 (Assumption Surfacing) to identify
+    load-bearing assumptions.
 
     ### 2. Present Draft
 
