@@ -76,7 +76,20 @@ Use Claude's native tools (Read, Grep, Glob, LSP) for direct analysis. Read-only
 
 `skills/plan/SKILL.md` - opus (skill-only, no agent file)
 
-**Role**: Synthesizer that writes and verifies plans through multi-round review. Spawns parallel reviewer agents (architect+critic), synthesizes feedback using Adopt/Adapt/Defer/Diverge classification, and iterates until no CRITICAL/HIGH findings remain. Reviewers follow HOW-REVIEW.md methodology (adversarial mandate, FRAME/STRUCTURE/DETAIL classification, counterexample checklist); Synthesizer applies HOW-SYNTHESIZE.md for feedback synthesis and HOW-COMPLETE.md for exit evaluation. With `--codex`, runs Codex review (Phase 1) before Claude review (Phase 2). Never implements - planning only.
+**Role**: Orchestrator that writes plans and manages the review loop. Spawns parallel reviewer agents (architect+critic), spawns coral:resolver for feedback synthesis (HOW-SYNTHESIZE + HOW-RESOLVE); applies HOW-COMPLETE.md for exit evaluation. With `--codex`, runs Codex review (Phase 1) before Claude review (Phase 2). Never synthesizes directly, never implements — planning only.
+
+---
+
+### resolver (Feedback Synthesizer & Contradiction Resolver)
+
+`agents/resolver.md` - opus, read-only
+
+**Role**: Vada-frame synthesizer that classifies reviewer findings using Adopt/Adapt/Defer/Diverge
+with FRAME/STRUCTURE/DETAIL levels. Detects Vyabhicharita (contradictory feedback)
+and resolves Constraint Collisions via HOW-RESOLVE's TRIZ protocol. Spawned by plan skill
+at step 4c — returns structured synthesis output for plan skill to apply.
+Follows HOW-SYNTHESIZE.md (always) and HOW-RESOLVE.md (on Constraint Collision).
+Read-only agent: does not modify plan files directly.
 
 ---
 
@@ -144,7 +157,7 @@ Proxy agents that delegate work to Codex CLI. Tool restrictions limit them to Re
 
 `agents/codex-proxy.md` - sonnet, Read + Glob + Codex tools
 
-**Role**: Thin proxy with role-based routing. Callers include `Role: scanner|gap-finder|debugger|architect|critic|ralph` in their prompt. The proxy reads the corresponding Claude-native agent file (`agents/<role>.md`), extracts the `<Agent_Prompt>` methodology, and passes it to Codex CLI as the system prompt. Missing role → explicit error (no inference).
+**Role**: Thin proxy with role-based routing. Callers include `Role: scanner|gap-finder|debugger|architect|critic|resolver` in their prompt. The proxy reads the corresponding Claude-native agent file (`agents/<role>.md`), extracts the `<Agent_Prompt>` methodology, and passes it to Codex CLI as the system prompt. Missing role → explicit error (no inference).
 
 | Role | Purpose | reasoning_effort |
 |---|---|---|
@@ -153,6 +166,7 @@ Proxy agents that delegate work to Codex CLI. Tool restrictions limit them to Re
 | `debugger` | Bug diagnosis via hypothesis testing, root cause tracing | xhigh |
 | `architect` | Architecture review, design patterns, code structure | xhigh |
 | `critic` | Plan/code critique, severity-rated verdicts (APPROVED/REVISE/REJECT) | xhigh |
+| `resolver` | Feedback synthesis, Vyabhicharita detection, Constraint Collision resolution | xhigh |
 
 > **Ralph note**: Ralph is not a codex-proxy role. Persistent execution via Codex is handled by `/coral:ralph --codex`, which manages its own Codex delegation, verification loop, and session continuity.
 

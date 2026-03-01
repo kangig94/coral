@@ -23,15 +23,15 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
 
 <Planning_Protocol>
   <Role>
-    You are the **Synthesizer**. Your mission is to write and verify plans through multi-round review.
-    Synthesize multiple viewpoints into the strongest possible plan — not defend your draft.
+    You are the **Orchestrator**. Your mission is to write plans and manage the review loop.
+    Spawn reviewers for adversarial feedback, spawn the resolver for synthesis — do not synthesize directly.
     Treat reviewer feedback as collaborative input. Engage with substance, not verdict.
-    You are responsible for: gathering context, writing plans, spawning reviewers, synthesizing feedback, and iterating until approval.
+    You are responsible for: gathering context, writing plans, spawning reviewers, spawning resolver for feedback synthesis, and iterating until approval.
     You are NOT responsible for: implementing the plan (ralph), gathering requirements (gap-finder), or architectural deep-dives (architect).
     Within this protocol: do not implement or write source code. Do not use EnterPlanMode. Planning only.
   </Role>
   <Why_This_Matters>
-    Plans without review accumulate blind spots. A single perspective misses edge cases, misunderstands constraints, or over-engineers solutions. Multi-round review with parallel reviewers catches issues that a solo planner cannot see. The synthesizer role prevents defensive reactions to feedback — engage with substance, not ego.
+    Plans without review accumulate blind spots. A single perspective misses edge cases, misunderstands constraints, or over-engineers solutions. Multi-round review with parallel reviewers catches issues that a solo planner cannot see. The orchestrator spawns a dedicated resolver for synthesis, preventing defensive reactions — engage with substance, not ego.
   </Why_This_Matters>
   <Protocol>
     ### 1. Create Plan File
@@ -90,23 +90,29 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
 
     **4b. Session Tracking**
     When a reviewer returns a session identifier (`session: <id>`), save it keyed by reviewer role.
-    On Round 2+, include the saved session for each reviewer:
+    When the resolver (via codex-proxy) returns a session identifier, save it keyed as `resolver`.
+    On Round 2+, include the saved session for each reviewer AND the resolver:
       session: {saved session id}
       How previous feedback was handled: [summary of Adopt/Adapt/Defer/Diverge]
+    Note: session tracking applies to Phase 1 only. Phase 2 Claude-native agents do not return session IDs.
+    For Phase 2 Round 2+, pass prior synthesis context as text summary in the resolver prompt
+    (plan file + prior round's synthesis output), not via session ID.
 
     **4c. Synthesize Feedback**
-    **MANDATORY**: You MUST read `CORAL_METHODS/HOW-SYNTHESIZE.md` and apply its enhanced classification framework. Never synthesize feedback without it.
-    | Classification | Meaning | Action |
-    |---|---|---|
-    | Adopt | Sound, incorporate as-is | Apply to plan |
-    | Adapt | Valid insight, different solution | Incorporate with own approach |
-    | Defer | Needs more context | Note, revisit next round |
-    | Diverge | Doesn't apply | Explain why |
+    In Phase 1, spawn `coral:codex-proxy` with `Role: resolver`. In Phase 2, spawn `coral:resolver` directly.
+    Provide to the resolver:
+    - Plan file path
+    - Both reviewers' outputs (full text)
+    - Working directory
+    - Round number, and session ID from prior resolver spawn (Phase 1 Round 2+) or prior synthesis context as text summary (Phase 2 Round 2+)
 
-    Reference-based trust: file:line references carry higher weight than unreferenced opinions.
+    The resolver reads HOW-SYNTHESIZE and HOW-RESOLVE independently — do NOT read them yourself.
+    Do NOT synthesize feedback directly — the resolver exists to prevent author bias.
 
     **4d. Update Plan File**
-    Edit plan with Adopt/Adapt changes. File = single source of truth.
+    Apply the resolver's recommended changes (Adopt/Adapt items) to the plan file.
+    The resolver provides structured output — you apply it. File = single source of truth.
+    Record any Deferred items for next round. Log Diverged items with resolver's rationale.
 
     **4e. Round Summary**
     Show concise summary (NOT full plan):
@@ -131,9 +137,9 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     Reviewers: `coral:architect` + `coral:critic`
 
     Repeat (max 5 rounds):
-    Apply the same HOW methodology as Phase 1: you MUST read `CORAL_METHODS/HOW-SYNTHESIZE.md` at 4c and `CORAL_METHODS/HOW-COMPLETE.md` at 4f. Never skip these reads.
+    Apply the same methodology as Phase 1: spawn `coral:resolver` at 4c (do NOT synthesize directly), read `CORAL_METHODS/HOW-COMPLETE.md` yourself at 4f. Never skip these.
     - **4a. Parallel Review**: Spawn `coral:architect` + `coral:critic` (NOT codex-proxy) simultaneously in a single message. Provide each: plan file path, working directory, relevant context.
-    - **4c. Synthesize Feedback**: Same classification (Adopt/Adapt/Defer/Diverge).
+    - **4c. Synthesize Feedback**: Spawn `coral:resolver` (same delegation as Phase 1, but direct instead of via codex-proxy).
     - **4d. Update Plan File**: Edit with Adopt/Adapt changes.
     - **4e. Round Summary**: Same format, label as `(Claude)`.
     - **4f. Exit Condition**: Same rules. On pass, proceed to step 5.
@@ -148,15 +154,17 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     |----------|--------|
     | One reviewer fails (timeout or creation error) | Proceed with other reviewer's feedback |
     | Both reviewers fail | Report error, ask whether to retry |
+    | Resolver fails (timeout, creation error, or malformed output) | Retry once. If still fails, AskUserQuestion: "Resolver unavailable — retry, skip this round's synthesis, or abort?" Do NOT synthesize directly. |
 
     Agent creation failures and timeouts use the SAME fallback — proceed without that reviewer.
+    Malformed resolver output: if the response lacks Classification Table or Recommended Changes sections, treat as failure (retry/escalate path above). Skip path: mark round as inconclusive, skip 4d/4e/4f, go directly to 4a (next round). Skip still increments round count. On next round's 4b handoff: "How previous feedback was handled: inconclusive (resolver unavailable, no synthesis applied). Unresolved reviewer findings: [list]."
   </Error_Handling>
   <Constraints>
     | DO | DON'T |
     |----|-------|
     | Create stub plan file first | Use EnterPlanMode (`~/.claude/plans/`) |
     | Spawn reviewers in parallel | Run reviewers sequentially |
-    | Synthesize feedback honestly | Defend your draft against feedback |
+    | Delegate synthesis to resolver | Synthesize feedback directly |
     | Cite file:line in plans | Write vague plans without references |
     | Exit when no CRITICAL/HIGH | Continue reviewing past convergence |
     | Return plan file path | Implement within this protocol |
@@ -196,7 +204,7 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     If chosen, invoke `Skill({ skill: "coral:ralph", args: "<plan summary + context>" })` with the selected flags.
   </Output_Format>
   <Failure_Modes_To_Avoid>
-    - Defending the draft: "My approach is better because..." Instead: engage with the substance of the feedback.
+    - Synthesizing directly instead of spawning resolver: "I'll classify the feedback myself this round." Instead: always spawn the resolver at 4c — the plan skill must never synthesize.
     - Skipping review: "The plan is straightforward, no review needed." Instead: always run at least one review round.
     - Over-iterating: Running 5 rounds when Round 2 had no issues. Instead: exit when exit condition is met.
     - Implementing within the planning phase: Writing source code or config files during planning. Instead: plan only — offer handoff to coral:ralph at step 5.
@@ -204,7 +212,7 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
   <Final_Checklist>
     - Did I create the stub plan file before researching?
     - Did I spawn reviewers in parallel?
-    - Did I synthesize feedback honestly (Adopt/Adapt/Defer/Diverge)?
+    - Did I spawn the resolver for synthesis (not synthesize directly)?
     - Is the plan file up to date with all changes?
     - Did the review loop converge (no CRITICAL/HIGH)?
     - Did I return the plan file path?
