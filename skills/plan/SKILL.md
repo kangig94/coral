@@ -87,27 +87,19 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     **4a. Parallel Review**
     Spawn both reviewers simultaneously in a SINGLE message.
     Provide each: plan file path, working directory, relevant context.
+    Each round is a fresh Codex call (no session continuity) — reviewers evaluate the
+    current plan without prior-round bias.
 
-    **4b. Session Tracking**
-    When a reviewer returns a session identifier (`session: <id>`), save it keyed by reviewer role.
-    When the resolver (via codex-proxy) returns a session identifier, save it keyed as `resolver`.
-    On Round 2+, include the saved session for each reviewer AND the resolver:
-      session: {saved session id}
-      How previous feedback was handled: [summary of Adopt/Adapt/Defer/Diverge]
-    Note: session tracking applies to Phase 1 only. Phase 2 Claude-native agents do not return session IDs.
-    For Phase 2 Round 2+, pass prior synthesis context as text summary in the resolver prompt
-    (plan file + prior round's synthesis output), not via session ID.
-
-    **4c. Synthesize Feedback**
+    **4b. Synthesize Feedback**
     `Agent("coral:codex-proxy", role: resolver)`.
     Pass the plan file path, both reviewers' outputs, and working directory.
 
-    **4d. Update Plan File**
+    **4c. Update Plan File**
     Apply the resolver's recommended changes (Adopt/Adapt items) to the plan file.
     The resolver provides structured output — you apply it. File = single source of truth.
     Record any Deferred items for next round. Log Diverged items with resolver's rationale.
 
-    **4e. Round Summary**
+    **4d. Round Summary**
     Show concise summary (NOT full plan):
       ## Round N Summary (Codex)
       ### Reviewer A: [VERDICT]
@@ -117,11 +109,11 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
       ### Synthesis: Adopt/Adapt/Defer/Diverge items
       ### Counterexample Coverage: [types explored / not yet]
 
-    **4f. Exit Condition**
+    **4e. Exit Condition**
     **MANDATORY**: You MUST read `CORAL_METHODS/HOW-COMPLETE.md` and apply its additional completion criteria alongside the rules below. Never evaluate exit conditions without it.
     Evaluate based on what reviewers RETURNED this round (not your post-edit assessment):
-    - **Continue**: Either reviewer returned CRITICAL or HIGH → edit plan (4d), go to 4a. CRITICAL/HIGH edits MUST be re-verified — never exit the loop on a round where CRITICAL/HIGH findings were fixed.
-    - **Fix and pass**: Both reviewers returned NO CRITICAL or HIGH, but MEDIUM/LOW findings exist → fix them (4d), then exit. MEDIUM/LOW fixes do not require re-verification.
+    - **Continue**: Either reviewer returned CRITICAL or HIGH → edit plan (4c), go to 4a. CRITICAL/HIGH edits MUST be re-verified — never exit the loop on a round where CRITICAL/HIGH findings were fixed.
+    - **Fix and pass**: Both reviewers returned NO CRITICAL or HIGH, but MEDIUM/LOW findings exist → fix them (4c), then exit. MEDIUM/LOW fixes do not require re-verification.
     - **Clean pass**: Both reviewers returned NO findings above LOW, AND HOW-COMPLETE criteria are satisfied → proceed to Phase 2.
     - **Max rounds (5)**: `AskUserQuestion` — continue, finalize, or abort.
 
@@ -130,14 +122,12 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     Reviewers: `coral:architect` + `coral:critic`
 
     Repeat (max 5 rounds):
-    Apply the same methodology as Phase 1: `Agent("coral:resolver")` at 4c, read `CORAL_METHODS/HOW-COMPLETE.md` yourself at 4f.
+    Apply the same methodology as Phase 1: `Agent("coral:resolver")` at 4b, read `CORAL_METHODS/HOW-COMPLETE.md` yourself at 4e.
     - **4a. Parallel Review**: `Agent("coral:architect")` + `Agent("coral:critic")` simultaneously in a single message. Provide each: plan file path, working directory, relevant context.
-    - **4c. Synthesize Feedback**: `Agent("coral:resolver")` directly (not via codex-proxy).
-    - **4d. Update Plan File**: Edit with Adopt/Adapt changes.
-    - **4e. Round Summary**: Same format, label as `(Claude)`.
-    - **4f. Exit Condition**: Same rules. On pass, proceed to step 5.
-
-    No session tracking (4b) — Claude reviewers do not return session identifiers.
+    - **4b. Synthesize Feedback**: `Agent("coral:resolver")` directly (not via codex-proxy).
+    - **4c. Update Plan File**: Edit with Adopt/Adapt changes.
+    - **4d. Round Summary**: Same format, label as `(Claude)`.
+    - **4e. Exit Condition**: Same rules. On pass, proceed to step 5.
 
     ### 5. Completion
     Return: plan file path + final summary (see `<Output_Format>`).
@@ -150,7 +140,7 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     | Resolver fails (timeout, creation error, or malformed output) | Retry once. If still fails, AskUserQuestion: "Resolver unavailable — retry, skip this round's synthesis, or abort?" Do NOT synthesize directly. |
 
     Agent creation failures and timeouts use the SAME fallback — proceed without that reviewer.
-    Malformed resolver output: if the response lacks Classification Table or Recommended Changes sections, treat as failure (retry/escalate path above). Skip path: mark round as inconclusive, skip 4d/4e/4f, go directly to 4a (next round). Skip still increments round count. On next round's 4b handoff: "How previous feedback was handled: inconclusive (resolver unavailable, no synthesis applied). Unresolved reviewer findings: [list]."
+    Malformed resolver output: if the response lacks Classification Table or Recommended Changes sections, treat as failure (retry/escalate path above). Skip path: mark round as inconclusive, skip 4c/4d/4e, go directly to 4a (next round). Skip still increments round count.
   </Error_Handling>
   <Constraints>
     | DO | DON'T |
