@@ -123,11 +123,13 @@ my-project/
 
 ```
 /coral:plan add retry logic to the API client
+/coral:plan --fast add retry logic to the API client
 /coral:bugfix why does session lookup return null?
 /coral:ralph implement the caching layer
 ```
 
 구조화된 추론 방법론에 기반한 아키텍트/크리틱 다중 라운드 리뷰를 포함한 계획 수립.
+`--fast`는 resolver 에이전트를 건너뛰고 직접 피드백을 종합합니다 — 리뷰 품질은 유지하면서 더 빠르게 반복.
 체계적 버그 진단 — 근본 원인, 계획, 수정. 완료 전까지 반복 검증하며 실행.
 
 복잡한 작업에는 문제 정의부터 시작:
@@ -158,7 +160,7 @@ Codex를 활용한 교차 모델 워크플로우:
 |------|------|:-----:|
 | `/coral:analyze` | 심층 분석 및 조사 | 선택 |
 | `/coral:preplan` | 계획 전 문제 정의 | - |
-| `/coral:plan` | 구조화된 다중 라운드 리뷰 및 충돌 해결 포함 계획 | 선택 |
+| `/coral:plan` | 구조화된 다중 라운드 리뷰 및 충돌 해결 포함 계획. `--fast`로 resolver 생략 | 선택 |
 | `/coral:ralph` | 검증 포함 영속적 실행. `--red`로 적대적 테스트 | 선택 |
 | `/coral:bugfix` | 버그 진단, 계획, 수정 실행 | 선택 |
 | `/coral:code-simplify` | 코드 명확성 향상 및 정리 | 선택 |

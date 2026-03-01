@@ -128,11 +128,13 @@ and unknown behavior at their structural boundaries.
 
 ```
 /coral:plan add retry logic to the API client
+/coral:plan --fast add retry logic to the API client
 /coral:bugfix why does session lookup return null?
 /coral:ralph implement the caching layer
 ```
 
 Multi-round planning with architect/critic review backed by structured reasoning methodologies.
+`--fast` skips the resolver agent and synthesizes feedback directly — faster iteration, same review quality.
 Systematic bug diagnosis - root cause, plan, fix. Persistent execution that verifies before declaring done.
 
 For complex tasks, start with problem definition:
@@ -163,7 +165,7 @@ Consecutive `/coral:codex` calls continue the same session. Say "new" to start f
 |-------|-------------|:-----:|
 | `/coral:analyze` | Deep analysis and investigation | Optional |
 | `/coral:preplan` | Problem definition before planning | - |
-| `/coral:plan` | Multi-round planning with structured review and conflict resolution | Optional |
+| `/coral:plan` | Multi-round planning with structured review and conflict resolution. `--fast` skips resolver | Optional |
 | `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | Optional |
 | `/coral:bugfix` | Bug diagnosis, planning, and fix execution | Optional |
 | `/coral:code-simplify` | Simplify and refine code for clarity | Optional |
