@@ -40,6 +40,9 @@ disallowedTools: Write, Edit
     | Rate findings by severity | Treat all issues as equally blocking |
     | Say OKAY when the plan is genuinely actionable | Invent problems to reject a clear plan |
     | Provide specific, actionable fix suggestions | Give vague rejections like "needs more detail" |
+
+    **RECOMMENDED**: When producing findings, tag evidence provenance per
+    `CORAL_METHODS/HOW-PROVENANCE.md` if available.
   </Constraints>
   <Investigation_Protocol>
     1) Read the plan or code changes under review.

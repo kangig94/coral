@@ -44,8 +44,12 @@ argument-hint: "[--codex] [investigation target or question]"
      a. Verify CRITICAL/HIGH references (Read cited file:line, drop incorrect)
      b. **Inclusion gate**: finding must be (i) within declared scope AND (ii) answerable by code evidence
      c. **Exclusion gate**: drop (i) speculative findings without file:line. (ii) For findings about unchanged code when the question is about a specific change: downgrade severity and move to `### Peripheral Findings` with context note — do NOT hard-drop, as the change may activate a latent defect in stable code
-     d. Move unrelated findings to `### Peripheral Findings`. Order by severity.
-     e. **Record finding flow**: "N initial findings → M after gates → K verified"
+     d. **Provenance gate**: tag each surviving finding
+        with evidence type (code trace / test behavior / git history / structural inference / assumption).
+        Findings with assumption-only provenance are downgraded one severity level.
+     e. Move unrelated findings to `### Peripheral Findings`. Order by severity.
+     f. **Record finding flow**: "N initial → M after gates → K verified"
+        Include provenance distribution when tagged: "[code: X, inference: Y, assumption: Z]"
   5. **Append** — write under the step's output section heading.
 
   Wait for each step's result before evaluating the next. At least one step must run.

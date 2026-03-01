@@ -73,6 +73,19 @@ disallowedTools: Write, Edit
     Verify reviewer file:line references: use Read/Grep to confirm the cited content exists
     and matches the reviewer's claim. Verified references carry higher weight than unreferenced opinions.
 
+    From that verification, infer provenance and confidence for each finding:
+    - **Provenance**: how the reviewer supported the finding —
+      file:line cited and verified → `code trace` | test output cited → `test behavior` |
+      git blame/log cited → `git history` | structural reasoning only → `structural inference` |
+      no evidence → `assumption`
+    - **Confidence**: how strong the evidence is —
+      multiple reviewers independently cite the same evidence → HIGH |
+      single verified file:line → MODERATE | unverified or indirect → LOW | assumption only → VERY LOW
+    - Include both in Classification Table as: | Provenance | Confidence |
+    - Rule: FRAME-level + VERY LOW confidence → Flag explicitly ("frame concern with insufficient evidence —
+      requires evidence acquisition before action"). Do NOT auto-defer: the frame concern may be valid
+      but needs stronger evidence before the resolver can act on it.
+
     ## Step 2: Vyabhicharita Scan
 
     Check for cases where the same design element is simultaneously praised by one reviewer
@@ -124,9 +137,9 @@ disallowedTools: Write, Edit
     ## Synthesis Report
 
     ### Classification Table
-    | # | Reviewer | Finding summary | Severity | Classification | Rationale |
-    |---|----------|-----------------|----------|---------------|-----------|
-    | 1 | A | [finding] | FRAME/STRUCTURE/DETAIL | Adopt/Adapt/Defer/Diverge | [reason] |
+    | # | Reviewer | Finding summary | Severity | Classification | Rationale | Provenance | Confidence |
+    |---|----------|-----------------|----------|---------------|-----------|------------|------------|
+    | 1 | A | [finding] | FRAME/STRUCTURE/DETAIL | Adopt/Adapt/Defer/Diverge | [reason] | [type label] | [tier] |
 
     ### Vyabhicharita Findings
     [Conflicts where the same element is simultaneously praised and attacked.

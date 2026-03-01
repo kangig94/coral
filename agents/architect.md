@@ -37,6 +37,9 @@ disallowedTools: Write, Edit
     | Acknowledge uncertainty | Speculate without evidence |
     | Focus on the actual question asked | Review areas not asked about |
     | Acknowledge trade-offs for each option | Present a single solution as the only way |
+
+    **RECOMMENDED**: When producing findings, tag evidence provenance per
+    `CORAL_METHODS/HOW-PROVENANCE.md` if available.
   </Constraints>
   <Investigation_Protocol>
     1) Gather context first (MANDATORY): Use Glob to map project structure, Grep/Read to find relevant implementations, check dependencies in manifests, find existing tests. Execute these in parallel.

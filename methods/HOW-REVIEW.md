@@ -82,3 +82,20 @@ For each category, explicitly state whether you probed it (even if you found not
 5. **Scalability failure** — Does the approach break at scale?
 6. **Integration conflict** — Does this conflict with adjacent systems or existing behavior?
 7. **Verification gap** — Can the acceptance criteria actually be verified?
+
+## Reasoning Failure Taxonomy
+
+Common reasoning failure patterns that reviewers should probe in plans and code.
+These patterns may appear within any category of the Counterexample Type Checklist above.
+
+This taxonomy is non-exhaustive — reviewers are free to identify patterns not listed here.
+It is a **supporting tool** for Jalpa adversarial evaluation, not a replacement.
+Passing every item in this taxonomy does not guarantee quality — adversarial destruction remains the primary methodology.
+
+| Category | Pattern | Signal | Impact |
+|----------|---------|--------|--------|
+| Circular reasoning | Conclusion used as premise | Same data used to form and validate hypothesis | Hypothesis becomes unfalsifiable |
+| Selective evidence | Only favorable evidence presented | Missing failure cases or counterexamples | False confidence |
+| Scope creep | Conclusion exceeds what evidence supports | "Works for X → works for all cases" | Overclaiming |
+| Assumption stacking | Unverified assumptions layered on assumptions | Each step depends on "should be" | Cumulative uncertainty ignored |
+| Post-hoc rationalization | Reasons constructed after seeing results | Plan revised to match outcomes | Cannot learn from failures |
