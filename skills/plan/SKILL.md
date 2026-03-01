@@ -93,6 +93,8 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     **4b. Synthesize Feedback**
     `Agent("coral:codex-proxy", role: resolver)`.
     Pass the plan file path, both reviewers' outputs, and working directory.
+    Each round spawns a fresh resolver — no session continuity. The resolver edits the plan
+    file directly, so session memory would create author bias toward its own prior edits.
 
     **4c. Review Synthesis Report**
     The resolver has already applied Adopt/Adapt changes directly to the plan file.
@@ -125,7 +127,7 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     Repeat (max 5 rounds):
     Apply the same methodology as Phase 1: `Agent("coral:resolver")` at 4b, read `CORAL_METHODS/HOW-COMPLETE.md` yourself at 4e.
     - **4a. Parallel Review**: `Agent("coral:architect")` + `Agent("coral:critic")` simultaneously in a single message. Provide each: plan file path, working directory, relevant context.
-    - **4b. Synthesize Feedback**: `Agent("coral:resolver")` directly (not via codex-proxy).
+    - **4b. Synthesize Feedback**: `Agent("coral:resolver")` directly (not via codex-proxy). Fresh spawn each round — no session continuity.
     - **4c. Review Synthesis Report**: Resolver has applied changes; read the updated plan file, then read its report, record Deferred/Diverged items.
     - **4d. Round Summary**: Same format, label as `(Claude)`.
     - **4e. Exit Condition**: Same rules. On pass, proceed to step 5.
