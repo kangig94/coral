@@ -109,13 +109,19 @@ Strip `--codex`, `--fast`, and `--no-handoff` flags before passing the prompt to
 
     **4d. Round Summary**
     Show concise summary (NOT full plan):
-      ## Round N Summary (Codex)
-      ### Reviewer A: [VERDICT]
-      - [Key finding] `file:line`
-      ### Reviewer B: [VERDICT]
-      - [Key finding] `file:line`
-      ### Synthesis: Adopt/Adapt/Defer/Diverge items
-      ### Counterexample Coverage: [types explored / not yet]
+
+      ## Round N (Codex)
+
+      | Reviewer  | Verdict        | Key Findings              |
+      |-----------|----------------|---------------------------|
+      | Architect | [VERDICT]      | `file:line` — finding     |
+      | Critic    | [VERDICT]      | `file:line` — finding     |
+
+      | Adopt | Adapt | Defer | Diverge |
+      |-------|-------|-------|---------|
+      | item  | item  | —     | —       |
+
+      **Counterexample Coverage**: [types explored / not yet]
 
     **4e. Exit Condition**
     **MANDATORY**: You MUST read `CORAL_METHODS/HOW-COMPLETE.md` and apply its additional completion criteria alongside the rules below. Never evaluate exit conditions without it.
