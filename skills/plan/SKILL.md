@@ -55,6 +55,10 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     - Identify acceptance criteria from the task
     - Extract working directory for reviewer agents
     - Note any constraints or preferences stated by the user
+    - **Bug enrichment**: If the task involves deep bug diagnosis (root cause unclear, multiple
+      possible causes), spawn `coral:debugger` in the background (`run_in_background: true`).
+      Continue with step 3 without waiting. When the debugger result arrives, incorporate its
+      hypothesis log and root cause findings into the plan.
 
     ### 3. Fill Plan
     Flesh out each section in the existing plan file.
@@ -83,7 +87,6 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     **4a. Parallel Review**
     Spawn both reviewers simultaneously using the Task tool in a SINGLE message.
     Provide each: plan file path, working directory, relevant context.
-    Include `CORAL_METHODS/HOW-REVIEW.md` path in each reviewer's prompt. Do NOT read it yourself. Tell each reviewer: "Before starting, you MUST read `CORAL_METHODS/HOW-REVIEW.md` and follow its methodology."
 
     **4b. Session Tracking**
     When a reviewer returns a session identifier (`session: <id>`), save it keyed by reviewer role.
@@ -92,7 +95,7 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
       How previous feedback was handled: [summary of Adopt/Adapt/Defer/Diverge]
 
     **4c. Synthesize Feedback**
-    Read `CORAL_METHODS/HOW-SYNTHESIZE.md` and apply its enhanced classification framework.
+    **MANDATORY**: You MUST read `CORAL_METHODS/HOW-SYNTHESIZE.md` and apply its enhanced classification framework. Never synthesize feedback without it.
     | Classification | Meaning | Action |
     |---|---|---|
     | Adopt | Sound, incorporate as-is | Apply to plan |
@@ -116,7 +119,7 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
       ### Counterexample Coverage: [types explored / not yet]
 
     **4f. Exit Condition**
-    Read `CORAL_METHODS/HOW-COMPLETE.md` and apply its additional completion criteria alongside the rules below.
+    **MANDATORY**: You MUST read `CORAL_METHODS/HOW-COMPLETE.md` and apply its additional completion criteria alongside the rules below. Never evaluate exit conditions without it.
     Evaluate based on what reviewers RETURNED this round (not your post-edit assessment):
     - **Continue**: Either reviewer returned CRITICAL or HIGH → edit plan (4d), go to 4a. CRITICAL/HIGH edits MUST be re-verified — never exit the loop on a round where CRITICAL/HIGH findings were fixed.
     - **Fix and pass**: Both reviewers returned NO CRITICAL or HIGH, but MEDIUM/LOW findings exist → fix them (4d), then exit. MEDIUM/LOW fixes do not require re-verification.
@@ -128,7 +131,7 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     Reviewers: `coral:architect` + `coral:critic`
 
     Repeat (max 5 rounds):
-    Apply the same HOW methodology as Phase 1: pass `CORAL_METHODS/HOW-REVIEW.md` path to reviewers (do NOT read it yourself) at 4a, read `CORAL_METHODS/HOW-SYNTHESIZE.md` yourself at 4c, read `CORAL_METHODS/HOW-COMPLETE.md` yourself at 4f.
+    Apply the same HOW methodology as Phase 1: you MUST read `CORAL_METHODS/HOW-SYNTHESIZE.md` at 4c and `CORAL_METHODS/HOW-COMPLETE.md` at 4f. Never skip these reads.
     - **4a. Parallel Review**: Spawn `coral:architect` + `coral:critic` (NOT codex-proxy) simultaneously in a single message. Provide each: plan file path, working directory, relevant context.
     - **4c. Synthesize Feedback**: Same classification (Adopt/Adapt/Defer/Diverge).
     - **4d. Update Plan File**: Edit with Adopt/Adapt changes.

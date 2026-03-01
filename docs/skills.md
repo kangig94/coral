@@ -8,9 +8,10 @@ Cross-cutting methodology files live in `methods/`. Skills reference them via th
 
 | Method | Used by | Purpose |
 |--------|---------|---------|
-| `HOW-REVIEW.md` | plan | Adversarial review with FRAME/STRUCTURE/DETAIL classification |
+| `HOW-REVIEW.md` | architect, critic | Adversarial review with FRAME/STRUCTURE/DETAIL classification |
 | `HOW-SYNTHESIZE.md` | plan | Multi-reviewer feedback synthesis (Adopt/Adapt/Defer/Diverge) |
 | `HOW-COMPLETE.md` | plan | Completion criteria (frame stability, counterexample coverage) |
+| `HOW-FALSIFY.md` | debugger | Competing hypothesis elimination via Vitanda (pure destruction) |
 
 | Skill | Description |
 |---|---|
