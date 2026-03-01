@@ -5,6 +5,10 @@ Coral provides two types of agents:
 - **Claude-native agents**: Claude Code performs analysis directly using its native tools. Default routing target.
 - **Codex-bound agents**: Proxy agents that delegate work to Codex CLI. Used only on explicit request.
 
+## Methodology Connections
+
+Agents reference cross-cutting HOW methodology files from `methods/`. Each agent owns one primary methodology (MANDATORY) and optionally one conditional methodology. See [docs/methodology.md](./methodology.md) for the full connection architecture, ownership patterns, and design principles.
+
 ## Routing Rules
 
 | User Request | Routing | Reason |

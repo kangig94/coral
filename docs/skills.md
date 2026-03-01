@@ -4,14 +4,17 @@ Slash commands provided by the Coral plugin. Each skill is defined in `skills/{n
 
 ## Methods
 
-Cross-cutting methodology files live in `methods/`. Skills reference them via the `CORAL_METHODS` path alias.
+Cross-cutting methodology files live in `methods/`. Agents and skills reference them via the `CORAL_METHODS` path alias. See [docs/methodology.md](./methodology.md) for the full connection architecture.
 
-| Method | Used by | Purpose |
-|--------|---------|---------|
-| `HOW-REVIEW.md` | architect, critic | Adversarial review with FRAME/STRUCTURE/DETAIL classification |
-| `HOW-SYNTHESIZE.md` | plan | Multi-reviewer feedback synthesis (Adopt/Adapt/Defer/Diverge) |
-| `HOW-COMPLETE.md` | plan | Completion criteria (frame stability, counterexample coverage) |
-| `HOW-FALSIFY.md` | debugger | Competing hypothesis elimination via Vitanda (pure destruction) |
+| Method | Consumers | Purpose |
+|--------|-----------|---------|
+| `HOW-REVIEW.md` | architect, critic | Adversarial review with counterexample checklist + reasoning failure taxonomy |
+| `HOW-SYNTHESIZE.md` | resolver, plan | Multi-reviewer feedback synthesis (Adopt/Adapt/Defer/Diverge) |
+| `HOW-RESOLVE.md` | resolver | Constraint Collision resolution via TRIZ inventive principles |
+| `HOW-COMPLETE.md` | plan | Review loop exit evaluation (frame stability, counterexample coverage) |
+| `HOW-FALSIFY.md` | debugger, scanner | Competing hypothesis elimination via Vitanda (pure destruction) |
+| `HOW-CONFIDENCE.md` | debugger | GRADE-based evidence confidence grading (4 tiers, 2-phase algorithm) |
+| `HOW-PROVENANCE.md` | architect, critic, debugger, scanner | Evidence source chain (claim → source → identifier → verification) |
 
 | Skill | Description |
 |---|---|
