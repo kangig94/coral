@@ -9,9 +9,6 @@ Awesome-claude-code 153개 repo 전수 분석: 15 raw diamond candidates → 17 
 ## Pattern
 Right source: scientific method (hypothesis-generation, critical-thinking, peer-review) → HOW-FALSIFY
 Right source: Nyaya logic (Jalpa, Vitanda, Vada) → HOW-REVIEW, HOW-FALSIFY, HOW-SYNTHESIZE
-Right source: TRIZ engineering patents → HOW-RESOLVE (pending)
+Right source: TRIZ (Altshuller's inventive solution analysis) → HOW-RESOLVE (complete: `methods/HOW-RESOLVE.md`)
 
 Wrong source: awesome-claude-code repos, LLM plugin registries, Claude Code plugin ecosystem
-
-## Next Target
-HOW-RESOLVE (TRIZ-based contradiction resolution): `ref/claude-scientific-skills/scientific-skills/scientific-brainstorming/references/brainstorming_methods.md` has the TRIZ principles. TRIZ addresses systematic resolution of contradictions (two requirements that trade off), applicable to plan/preplan decision-making.

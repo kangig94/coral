@@ -1,18 +1,25 @@
 # HOW to Evaluate Completion
 
-Apply this alongside the existing exit condition (step 4f). The existing severity check ("both reviewers no CRITICAL/HIGH") remains necessary. These are additional necessary conditions — both must also be satisfied for a round to pass.
+Apply this alongside the existing exit condition (step 4f).
+The existing severity check ("both reviewers no CRITICAL/HIGH") remains necessary.
+These are additional necessary conditions — both must also be satisfied for a round to pass.
 
 ## Frame Stability Condition
 
 A round cannot pass if any FRAME-level finding appeared in it — regardless of severity.
 
-A FRAME-level LOW finding still blocks exit. Example: "The plan implements feature X when the user actually requested feature Y, but the fix is a one-line scope statement change." This is FRAME (wrong problem) but LOW (trivial to fix). It still blocks — because solving the wrong problem at any cost is still the wrong problem.
+A FRAME-level LOW finding still blocks exit.
+Example: "The plan implements feature X when the user actually requested feature Y,
+but the fix is a one-line scope statement change."
+This is FRAME (wrong problem) but LOW (trivial to fix). It still blocks —
+because solving the wrong problem at any cost is still the wrong problem.
 
 Frame stability is achieved when the most recent round produced no FRAME-level findings from either reviewer.
 
 ## Counterexample Type Coverage
 
-Track which counterexample types from HOW-REVIEW's checklist have been explicitly probed across all rounds. This tracking lives in the round summary (step 4e) under `### Counterexample Coverage`.
+Track which counterexample types from HOW-REVIEW's checklist have been explicitly probed across all rounds.
+This tracking lives in the round summary (step 4e) under `### Counterexample Coverage`.
 
 Format:
 ```
@@ -26,13 +33,15 @@ Format:
 - Verification gap: explored (Round 2, MEDIUM — addressed)
 ```
 
-"Explored" means the reviewer explicitly probed that category. Finding nothing is valid — but the probe must have happened. Absence of a finding does not mean absence of a probe.
+"Explored" means the reviewer explicitly probed that category. Finding nothing is valid —
+but the probe must have happened. Absence of a finding does not mean absence of a probe.
 
 Completion requires all major types explored, not just absence of new findings.
 
 ## Refutation Effort Assessment
 
-Before declaring pass, assess: "Did reviewers genuinely attempt adversarial attack, or did they rubber-stamp?"
+Before declaring pass, assess:
+"Did reviewers genuinely attempt adversarial attack, or did they rubber-stamp?"
 
 Indicators of insufficient effort:
 - Review is very short (< 5 findings across both reviewers)
@@ -40,7 +49,11 @@ Indicators of insufficient effort:
 - No FRAME-level assessment (not even "FRAME: not applicable because...")
 - Findings are only MEDIUM/LOW in the first round
 
-If effort appears insufficient, treat the round as inconclusive and re-run — even if the severity check would otherwise pass.
+If effort appears insufficient, treat the round as inconclusive and re-run —
+even if the severity check would otherwise pass.
+When re-running, add to the reviewer prompt: "Previous review was insufficient —
+explicitly probe FRAME alignment, provide file:line references,
+and attempt at least one adversarial counterexample." This prevents repeated rubber-stamping.
 
 ## Progressive Focus
 
@@ -49,12 +62,15 @@ Rounds should converge through levels, not jump around:
 - **Middle rounds**: resolve STRUCTURE issues (right approach?)
 - **Late rounds**: resolve DETAIL issues (right execution?)
 
-A round with only DETAIL findings and no FRAME/STRUCTURE findings indicates progressive convergence — this is a positive signal. A round that introduces new FRAME findings in a late round is a regression — treat it as high priority.
+A round with only DETAIL findings and no FRAME/STRUCTURE findings indicates progressive convergence —
+this is a positive signal.
+A round that introduces new FRAME findings in a late round is a regression — treat it as high priority.
 
 ## Combined Exit Rule
 
 A round passes when ALL of the following are true:
-1. Both reviewers returned no CRITICAL or HIGH findings *(existing rule — MEDIUM/LOW findings may be fixed inline without re-verification)*
+1. Both reviewers returned no CRITICAL or HIGH findings
+   *(existing rule — MEDIUM/LOW findings may be fixed inline without re-verification)*
 2. No FRAME-level findings in this round *(Frame Stability)*
 3. All major counterexample types have been explored across rounds *(Coverage)*
 4. Refutation effort appears genuine *(Effort Assessment)*

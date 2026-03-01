@@ -1,12 +1,18 @@
 # HOW to Falsify Competing Hypotheses
 
-Apply this when several explanations compete and you need elimination, not compromise. In **Vitanda**, you hold no position of your own: your only job is destruction. Following **Popper**, hypotheses are never verified, only exposed to refutation. Following **Platt**, power comes from crucial tests that remove alternatives. A survivor is adopted only because it resisted attack better than the rest, not because it was proven true.
+Apply this when several explanations compete and you need elimination, not compromise.
+In **Vitanda**, you hold no position of your own: your only job is destruction.
+Following **Popper**, hypotheses are never verified, only exposed to refutation.
+Following **Platt**, power comes from crucial tests that remove alternatives.
+A survivor is adopted only because it resisted attack better than the rest, not because it was proven true.
 
 ## Destruction Mandate
 
-Jalpa attacks from a role and angle; Vitanda attacks without allegiance. You do not defend, prefer, or protect any hypothesis.
+Jalpa attacks from a role and angle; Vitanda attacks without allegiance.
+You do not defend, prefer, or protect any hypothesis.
 
-You do not prefer any hypothesis over another. You apply equal force to each candidate until it breaks or survives.
+You do not prefer any hypothesis over another. Equal force means equal rigor, not equal time —
+stop early on decisive falsification, but never skip steelman or soften attack vectors for any hypothesis.
 
 Use this when multiple competing explanations exist.
 
@@ -16,8 +22,10 @@ Use this when multiple competing explanations exist.
 
 Start with 3-5 hypotheses. If you have fewer than 3, generate more using:
 - Assumption inversion: flip key assumptions and test whether the flipped view still fits observations.
-- "What else?": for each observation, ask what other mechanism could also produce it, to avoid affirming the consequent.
-- Morphological decomposition: split the problem into dimensions and combine alternative choices across dimensions.
+- "What else?": for each observation, ask what other mechanism could also produce it,
+  to avoid affirming the consequent.
+- Morphological decomposition: split the problem into dimensions
+  and combine alternative choices across dimensions.
 
 Apply an Escape Clause Gate to each hypothesis:
 - What exact observation would disprove this hypothesis?
@@ -26,12 +34,19 @@ Apply an Escape Clause Gate to each hypothesis:
 
 If a hypothesis fails the gate, mark it **REJECTED (unfalsifiable)** and keep it in the record.
 
-Dead-end branch: if fewer than 2 hypotheses survive the gate, regenerate with this instruction: "Previous options were unfalsifiable. Generate alternatives with concrete, testable predictions." If a second pass still leaves fewer than 2, escalate for reframing.
+Dead-end branch: if fewer than 2 hypotheses survive the gate, regenerate with this instruction:
+"Previous options were unfalsifiable. Generate alternatives with concrete, testable predictions."
+If a second pass still leaves fewer than 2, escalate for reframing.
 
 ### Step 2: Identify Distinguishing Predictions
 
-For each surviving pair, state a divergence: "If H1 is true, expect X; if H2 is true, expect Y instead."
+For each surviving pair, state a divergence:
+"If H1 is true, expect X; if H2 is true, expect Y instead."
 Ask: "What should appear if H1 is true that should not appear if H2 is true?"
+
+Translate mechanisms into predictions. A mechanism is not a prediction —
+"X causes Y through pathway Z" is a mechanism; "removing Z eliminates Y" is a prediction.
+If you cannot state what changes when the mechanism is absent, the hypothesis is not yet testable.
 
 Use two prediction classes:
 - Immediate: can be checked from evidence already available now.
@@ -39,11 +54,14 @@ Use two prediction classes:
 
 Prioritize opposite-claim predictions because they eliminate fastest.
 
-If hypotheses cannot be distinguished by available or near-term predictions, group them as a currently indistinguishable set. Evaluate each member separately, and only propagate a result when the falsification targets an assumption explicitly shared by all members.
+If hypotheses cannot be distinguished by available or near-term predictions,
+group them as a currently indistinguishable set. Evaluate each member separately,
+and only propagate a result when the falsification targets an assumption explicitly shared by all members.
 
 ### Step 3: Vitanda Attack
 
-Evaluate each hypothesis in turn. If one vector delivers decisive falsification, stop attacking that hypothesis and move to the next.
+Evaluate each hypothesis in turn.
+If one vector delivers decisive falsification, stop attacking that hypothesis and move to the next.
 
 For indistinguishable sets: shared-assumption falsifications propagate; formulation-specific failures do not.
 
@@ -56,7 +74,7 @@ State the strongest version first: what is its best evidence, and what is its mo
 | Vector | Targets | Question |
 |--------|---------|----------|
 | Evidence quality | Strength and directness of support | Is evidence direct or circumstantial? Observation or inference? |
-| Bias exposure | Distortions in collection and interpretation | Could confirmation, selection, survivorship, or measurement bias explain the evidence? |
+| Bias exposure | Distortions in collection and interpretation | Could confirmation, selection, survivorship, or measurement bias explain the evidence? If bias is plausible: what evidence remains after correcting for it? If none remains, the hypothesis rests on biased support. |
 | Proportionality | Claim size versus support | Does the hypothesis claim more than evidence supports? |
 | Mechanism removal | Necessity of proposed cause | If we remove the hypothesized mechanism, does observation persist? |
 | Convergence breaking | Independence of support lines | Do independent evidence lines truly converge or share methodology? |
@@ -72,11 +90,17 @@ State the strongest version first: what is its best evidence, and what is its mo
 
 List every hypothesis with its verdict, including REJECTED items, so accounting is complete.
 
-If one hypothesis survives while all others are FALSIFIED or REJECTED, adopt it with high confidence. If alternatives are only WEAKENED, adopt provisionally.
+If one hypothesis survives while all others are FALSIFIED or REJECTED, adopt it with high confidence.
+If alternatives are only WEAKENED, adopt provisionally.
 
-If multiple hypotheses survive, ask: "Do survivors differ on Step 2 distinguishing predictions?" If yes, mark those predictions as the next investigation target. If no, record them as functionally equivalent for now.
+If multiple hypotheses survive, ask: "Do survivors differ on Step 2 distinguishing predictions?"
+If yes, mark those predictions as the next investigation target.
+If no, prefer the survivor requiring fewer assumptions or mechanisms (parsimony).
+If equally parsimonious, record them as functionally equivalent for now.
 
-If none survives, the space was wrong. Return to Step 1 with: "Shared assumption X failed; generate alternatives that do not share this assumption."
+If none survives, the space was wrong.
+Return to Step 1 with: "Shared assumption X failed;
+generate alternatives that do not share this assumption."
 
 For WEAKENED hypotheses, define specific evidence to monitor so they can be resolved later.
 
@@ -88,3 +112,5 @@ For WEAKENED hypotheses, define specific evidence to monitor so they can be reso
 - Skipping steelman: attacking weak versions instead of strongest versions.
 - Affirming the consequent: treating matching predictions as confirmation.
 - Hypothesis attachment: developing preference during the process.
+- Circular evidence: using the same data to form a hypothesis and then to confirm it.
+  Evidence that inspired the hypothesis cannot also serve as its test.
