@@ -86,14 +86,14 @@ Use Claude's native tools (Read, Grep, Glob, LSP) for direct analysis. Read-only
 
 ### resolver (Feedback Synthesizer & Contradiction Resolver)
 
-`agents/resolver.md` - opus, read-only
+`agents/resolver.md` - opus
 
 **Role**: Vada-frame synthesizer that classifies reviewer findings using Adopt/Adapt/Defer/Diverge
 with FRAME/STRUCTURE/DETAIL levels. Detects Vyabhicharita (contradictory feedback)
 and resolves Constraint Collisions via HOW-RESOLVE's TRIZ protocol. Spawned by plan skill
-at step 4c — returns structured synthesis output for plan skill to apply.
+at step 4b — applies Adopt/Adapt changes directly to the plan file and returns structured
+synthesis output for the plan skill's round summary and exit evaluation.
 Follows HOW-SYNTHESIZE.md (always) and HOW-RESOLVE.md (on Constraint Collision).
-Read-only agent: does not modify plan files directly.
 
 ---
 

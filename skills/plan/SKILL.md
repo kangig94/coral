@@ -94,10 +94,10 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     `Agent("coral:codex-proxy", role: resolver)`.
     Pass the plan file path, both reviewers' outputs, and working directory.
 
-    **4c. Update Plan File**
-    Apply the resolver's recommended changes (Adopt/Adapt items) to the plan file.
-    The resolver provides structured output — you apply it. File = single source of truth.
-    Record any Deferred items for next round. Log Diverged items with resolver's rationale.
+    **4c. Review Synthesis Report**
+    The resolver has already applied Adopt/Adapt changes directly to the plan file.
+    Read the resolver's synthesis report. Record any Deferred items for the next round.
+    Log Diverged items with the resolver's rationale. Do NOT edit the plan file yourself.
 
     **4d. Round Summary**
     Show concise summary (NOT full plan):
@@ -112,8 +112,8 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     **4e. Exit Condition**
     **MANDATORY**: You MUST read `CORAL_METHODS/HOW-COMPLETE.md` and apply its additional completion criteria alongside the rules below. Never evaluate exit conditions without it.
     Evaluate based on what reviewers RETURNED this round (not your post-edit assessment):
-    - **Continue**: Either reviewer returned CRITICAL or HIGH → edit plan (4c), go to 4a. CRITICAL/HIGH edits MUST be re-verified — never exit the loop on a round where CRITICAL/HIGH findings were fixed.
-    - **Fix and pass**: Both reviewers returned NO CRITICAL or HIGH, but MEDIUM/LOW findings exist → fix them (4c), then exit. MEDIUM/LOW fixes do not require re-verification.
+    - **Continue**: Either reviewer returned CRITICAL or HIGH → resolver applies fixes (4b), go to 4a. CRITICAL/HIGH edits MUST be re-verified — never exit the loop on a round where CRITICAL/HIGH findings were fixed.
+    - **Fix and pass**: Both reviewers returned NO CRITICAL or HIGH, but MEDIUM/LOW findings exist → resolver fixes them (4b), then exit. MEDIUM/LOW fixes do not require re-verification.
     - **Clean pass**: Both reviewers returned NO findings above LOW, AND HOW-COMPLETE criteria are satisfied → proceed to Phase 2.
     - **Max rounds (5)**: `AskUserQuestion` — continue, finalize, or abort.
 
@@ -125,7 +125,7 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     Apply the same methodology as Phase 1: `Agent("coral:resolver")` at 4b, read `CORAL_METHODS/HOW-COMPLETE.md` yourself at 4e.
     - **4a. Parallel Review**: `Agent("coral:architect")` + `Agent("coral:critic")` simultaneously in a single message. Provide each: plan file path, working directory, relevant context.
     - **4b. Synthesize Feedback**: `Agent("coral:resolver")` directly (not via codex-proxy).
-    - **4c. Update Plan File**: Edit with Adopt/Adapt changes.
+    - **4c. Review Synthesis Report**: Resolver has applied changes; read its report, record Deferred/Diverged items.
     - **4d. Round Summary**: Same format, label as `(Claude)`.
     - **4e. Exit Condition**: Same rules. On pass, proceed to step 5.
 
@@ -140,7 +140,7 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     | Resolver fails (timeout, creation error, or malformed output) | Retry once. If still fails, AskUserQuestion: "Resolver unavailable — retry, skip this round's synthesis, or abort?" Do NOT synthesize directly. |
 
     Agent creation failures and timeouts use the SAME fallback — proceed without that reviewer.
-    Malformed resolver output: if the response lacks Classification Table or Recommended Changes sections, treat as failure (retry/escalate path above). Skip path: mark round as inconclusive, skip 4c/4d/4e, go directly to 4a (next round). Skip still increments round count.
+    Malformed resolver output: if the response lacks Classification Table or Applied Changes sections, treat as failure (retry/escalate path above). Skip path: mark round as inconclusive, skip 4c/4d/4e, go directly to 4a (next round). Skip still increments round count.
   </Error_Handling>
   <Constraints>
     | DO | DON'T |
@@ -148,6 +148,7 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     | Create stub plan file first | Use EnterPlanMode (`~/.claude/plans/`) |
     | Spawn reviewers in parallel | Run reviewers sequentially |
     | Delegate synthesis to resolver | Synthesize feedback directly |
+    | Let resolver edit plan file during review | Edit plan file yourself during review loop (Step 4) |
     | Cite file:line in plans | Write vague plans without references |
     | Exit when no CRITICAL/HIGH | Continue reviewing past convergence |
     | Return plan file path | Implement within this protocol |
@@ -187,7 +188,7 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     If chosen, invoke `Skill({ skill: "coral:ralph", args: "<plan summary + context>" })` with the selected flags.
   </Output_Format>
   <Failure_Modes_To_Avoid>
-    - Synthesizing directly instead of spawning resolver: "I'll classify the feedback myself this round." Instead: always spawn the resolver at 4c — the plan skill must never synthesize.
+    - Synthesizing directly instead of spawning resolver: "I'll classify the feedback myself this round." Instead: always spawn the resolver at 4b — the plan skill must never synthesize or edit the plan file during review.
     - Skipping review: "The plan is straightforward, no review needed." Instead: always run at least one review round.
     - Over-iterating: Running 5 rounds when Round 2 had no issues. Instead: exit when exit condition is met.
     - Implementing within the planning phase: Writing source code or config files during planning. Instead: plan only — offer handoff to coral:ralph at step 5.
@@ -196,7 +197,7 @@ Strip `--codex` and `--no-handoff` flags before passing the prompt to the execut
     - Did I create the stub plan file before researching?
     - Did I spawn reviewers in parallel?
     - Did I spawn the resolver for synthesis (not synthesize directly)?
-    - Is the plan file up to date with all changes?
+    - Did the resolver apply changes to the plan file (not me during review)?
     - Did the review loop converge (no CRITICAL/HIGH)?
     - Did I return the plan file path?
     - Did I avoid implementing within this protocol?
