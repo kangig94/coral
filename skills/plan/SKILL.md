@@ -93,8 +93,8 @@ Strip `--codex`, `--fast`, and `--no-handoff` flags before passing the prompt to
 
     **4b. Synthesize Feedback**
 
-    **If `--fast`**: Synthesize directly — classify each finding as Adopt/Adapt/Defer/Diverge,
-    edit the plan file yourself with Adopt/Adapt changes, then go to 4d (skip 4c).
+    **If `--fast`**: Synthesize directly — classify each finding as Adopt (take as-is) / Adapt (take insight, own solution) / Defer (next round) / Diverge (reject with rationale).
+    Reviewers can be wrong — verify against actual code. When reviewers contradict each other, neither is right; find the hidden assumption. Edit the plan file yourself, then go to 4d (skip 4c).
 
     **Otherwise**: `Agent("coral:codex-proxy", role: resolver)`.
     Pass the plan file path, both reviewers' outputs, and working directory.
