@@ -120,7 +120,7 @@ See [Hooks documentation](./hooks.md) for details.
 ```
 .claude-plugin/plugin.json  -> Claude Code recognizes the plugin
 .mcp.json                   -> Claude Code registers/starts both MCP servers (cx + dc)
-hooks/hooks.json            -> Claude Code configures all 8 hooks
+hooks/hooks.json            -> Claude Code configures all 9 hooks
 hooks/detect-codex-agent.mjs  -> SubagentStart detection script
 hooks/kb-lookup-reminder.mjs  -> PostToolUseFailure KB hint script
 hooks/silent-failure-detector.mjs -> PostToolUse silent-failure KB hint script

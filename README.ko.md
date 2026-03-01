@@ -89,6 +89,7 @@ my-project/
 다양한 AI 페르소나가 각자의 관점에서 논쟁합니다.
 할 말이 있는 쪽이 먼저 발언하는 입찰 시스템. 상호 검증을 거치며 입장이 정제됩니다.
 최종 종합으로 마무리. 트랜스크립트는 `.claude/coral/discuss/`에 저장.
+`--user`를 추가하면 직접 참여 가능: `/coral:discuss --user "topic"`, 이후 `/coral:bid`로 발언.
 
 예시: **"Am I AGI?"** — 전체 트랜스크립트 [EN](docs/examples/discuss-agi-en.md) · [KO](docs/examples/discuss-agi-ko.md)
 
@@ -126,12 +127,12 @@ my-project/
 /coral:ralph implement the caching layer
 ```
 
-아키텍트와 크리틱 리뷰를 포함한 구조화된 계획.
+구조화된 추론 방법론에 기반한 아키텍트/크리틱 다중 라운드 리뷰를 포함한 계획 수립.
 체계적 버그 진단 — 근본 원인, 계획, 수정. 완료 전까지 반복 검증하며 실행.
 
 복잡한 작업에는 문제 정의부터 시작:
 ```
-/coral:preplan  race condition in the session manager
+/coral:preplan race condition in the session manager
 ```
 Preplan이 사용자와 이해를 맞춘 뒤 plan으로 넘깁니다.
 Plan이 리뷰를 거쳐 솔루션을 설계하고, ralph가 구현과 검증을 수행합니다.
@@ -148,6 +149,7 @@ Codex를 활용한 교차 모델 워크플로우:
 /coral:codex review auth.ts for security issues
 ```
 
+`--codex`는 스킬 내 특정 단계만 Codex에 위임; `/coral:codex`는 Codex와의 직접 다중 턴 세션용.
 연속적인 `/coral:codex` 호출은 같은 세션을 유지합니다. "new"로 새 세션 시작.
 
 ## 스킬
@@ -156,7 +158,7 @@ Codex를 활용한 교차 모델 워크플로우:
 |------|------|:-----:|
 | `/coral:analyze` | 심층 분석 및 조사 | 선택 |
 | `/coral:preplan` | 계획 전 문제 정의 | - |
-| `/coral:plan` | 아키텍트/크리틱 리뷰 포함 계획 | 선택 |
+| `/coral:plan` | 구조화된 다중 라운드 리뷰 및 충돌 해결 포함 계획 | 선택 |
 | `/coral:ralph` | 검증 포함 영속적 실행. `--red`로 적대적 테스트 | 선택 |
 | `/coral:bugfix` | 버그 진단, 계획, 수정 실행 | 선택 |
 | `/coral:code-simplify` | 코드 명확성 향상 및 정리 | 선택 |
@@ -168,6 +170,7 @@ Codex를 활용한 교차 모델 워크플로우:
 
 `선택` = Codex 없이 기본 동작; `--codex`를 전달하면 Codex CLI에 위임.
 계획은 `.claude/coral/plans/`에 저장. Ralph는 기존 계획의 구현에 최적.
+`/coral:bid`는 `/coral:discuss --user` 세션 전용 — 독립적으로 사용할 수 없습니다.
 
 ## 지식 베이스
 
@@ -187,7 +190,7 @@ Claude가 놓치기 쉬운 것을 발견하면 (근본 원인, 주의사항, 기
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | 토론 자동 종료 전 최대 에포크 (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `30` | 완료된 토론 세션 자동 정리 기한 (일) |
 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(미설정)_ | `/coral:discuss` **필수**. `1`로 설정. |
-| `ENABLE_TOOL_SEARCH` | `auto` | MCP 도구 정의 지연 로드. `auto` (>=10%), `auto:5` (>=5%), `true` (항상). |
+| `ENABLE_TOOL_SEARCH` | `auto` | 컨텍스트 사용량 기준 MCP 도구 정의 지연 로드. `auto` (컨텍스트 ≥10%), `auto:5` (≥5%), `true` (항상). |
 
 `.claude/settings.json`에 설정 (세션 간 유지):
 
@@ -213,6 +216,7 @@ Claude가 놓치기 쉬운 것을 발견하면 (근본 원인, 주의사항, 기
 - [Agents](docs/agents.md) - 에이전트 정의 및 라우팅
 - [Hooks](docs/hooks.md) - 훅 시스템 및 라이프사이클 이벤트
 - [Skills](docs/skills.md) - 슬래시 커맨드 사용법
+- [Methodology](docs/methodology.md) - 구조화된 추론 방법론 (HOW 파일)
 - [Discuss](docs/discuss.md) - 토론 시스템 설계
 - [Build System](docs/build-system.md) - 빌드 파이프라인
 - [Configuration](docs/configuration.md) - 환경 변수 및 설정 파일
