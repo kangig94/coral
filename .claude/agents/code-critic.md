@@ -118,7 +118,7 @@ disallowedTools: Write, Edit
     Key files:
     | File | Concern |
     |------|---------|
-    | `src/codex/server-handlers.ts` | Handler patterns, background/foreground logic |
+    | `src/codex/server-handlers.ts` | Handler patterns, job dispatch and wait logic |
     | `src/codex/schemas.ts` | Zod schema conventions |
     | `src/codex/codex-executor.ts` | Process management patterns |
     | `src/codex/session-manager.ts` | File I/O patterns |

@@ -3,25 +3,107 @@
  * Pure helpers - no server dependencies.
  */
 
-import { appendFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
 import type { CodexThreadEvent } from '../types.js';
 
-/** Create a progress file with metadata header. Returns the file path. */
-export function createProgressFile(session: string, tool: string): string {
-  const id = randomUUID();
-  const filePath = join(tmpdir(), `coral-progress-${id}.jsonl`);
+export type JobStatus = {
+  status: 'running' | 'completed' | 'error';
+  session?: string;
+  session_name?: string;
+  model?: string;
+  duration_ms?: number;
+  error?: string;
+  startedAt?: number;
+};
+
+export const JOBS_DIR = join(tmpdir(), 'coral-jobs');
+
+const STATUS_FILE = 'status.json';
+const STATUS_TMP_FILE = 'status.json.tmp';
+const PROGRESS_FILE = 'progress.jsonl';
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function readStatusFile(jobDir: string): JobStatus | null {
   try {
-    writeFileSync(filePath, JSON.stringify({ progressId: id, session, tool, startedAt: Date.now() }) + '\n');
-  } catch { /* non-fatal */ }
-  return filePath;
+    return JSON.parse(readFileSync(join(jobDir, STATUS_FILE), 'utf-8')) as JobStatus;
+  } catch {
+    return null;
+  }
 }
 
-/** Remove a progress file. Swallows errors (file may not exist). */
-export function removeProgressFile(filePath: string): void {
-  try { unlinkSync(filePath); } catch {}
+function writeStatusFile(jobDir: string, status: Record<string, unknown>): void {
+  const tmpPath = join(jobDir, STATUS_TMP_FILE);
+  const finalPath = join(jobDir, STATUS_FILE);
+  writeFileSync(tmpPath, JSON.stringify(status));
+  renameSync(tmpPath, finalPath);
+}
+
+function isTerminal(status: JobStatus): boolean {
+  return status.status === 'completed' || status.status === 'error';
+}
+
+export function createJobDir(sessionLabel: string): { jobId: string; jobDir: string } {
+  const jobId = randomUUID();
+  const jobDir = join(JOBS_DIR, jobId);
+  mkdirSync(jobDir, { recursive: true });
+  writeStatusFile(jobDir, {
+    status: 'running',
+    session_name: sessionLabel,
+    startedAt: Date.now(),
+  });
+  writeFileSync(join(jobDir, PROGRESS_FILE), '');
+  return { jobId, jobDir };
+}
+
+export function writeJobResult(jobDir: string, responseText: string, metadata: Record<string, unknown>): void {
+  const currentStatus = readStatusFile(jobDir);
+  if (currentStatus && isTerminal(currentStatus)) {
+    return;
+  }
+
+  const resultTmpPath = join(jobDir, 'result.md.tmp');
+  const resultPath = join(jobDir, 'result.md');
+  writeFileSync(resultTmpPath, responseText);
+  renameSync(resultTmpPath, resultPath);
+
+  writeStatusFile(jobDir, {
+    status: 'completed',
+    ...metadata,
+  });
+}
+
+export function writeJobError(jobDir: string, error: string): void {
+  const currentStatus = readStatusFile(jobDir);
+  if (currentStatus && isTerminal(currentStatus)) {
+    return;
+  }
+
+  writeStatusFile(jobDir, {
+    status: 'error',
+    error,
+    ...(currentStatus?.session_name ? { session_name: currentStatus.session_name } : {}),
+    ...(currentStatus?.session ? { session: currentStatus.session } : {}),
+  });
+}
+
+export function readJobStatus(jobDir: string): JobStatus {
+  try {
+    const parsed = JSON.parse(readFileSync(join(jobDir, STATUS_FILE), 'utf-8')) as JobStatus;
+    if (parsed.status === 'running' || parsed.status === 'completed' || parsed.status === 'error') {
+      return parsed;
+    }
+  } catch {}
+  return { status: 'running' };
+}
+
+export function resolveJobDir(jobId: string): string {
+  if (!UUID_REGEX.test(jobId)) {
+    throw new Error('Invalid job ID format');
+  }
+  return join(JOBS_DIR, jobId);
 }
 
 /** Extract a human-readable progress message from a Codex JSONL event. */
@@ -50,23 +132,8 @@ export function extractProgressMessage(event: CodexThreadEvent): string | null {
   }
 }
 
-/** Extract the progress UUID from a progress file path. */
-export function extractProgressId(filePath: string): string | null {
-  return filePath.match(/coral-progress-([0-9a-f-]{36})\.jsonl$/)?.[1] ?? null;
-}
-
-function appendJsonLine(filePath: string, payload: Record<string, unknown>): void {
-  appendFileSync(filePath, JSON.stringify(payload) + '\n');
-}
-
 /** Append a progress event to the file. */
 export function appendProgressEvent(filePath: string, eventType: string, message: string): void {
-  try { appendJsonLine(filePath, { ts: Date.now(), event: eventType, message }); }
+  try { appendFileSync(filePath, JSON.stringify({ ts: Date.now(), event: eventType, message }) + '\n'); }
   catch { /* file write must not break execution */ }
-}
-
-/** Append a terminal result event (completed or error) to the progress file. */
-export function appendFinalResult(filePath: string, event: 'completed' | 'error', data: Record<string, unknown>): void {
-  try { appendJsonLine(filePath, { ts: Date.now(), event, ...data }); }
-  catch { /* must not break execution */ }
 }

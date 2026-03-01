@@ -34,42 +34,6 @@ function gracefulKill(child: ChildProcess): void {
   child.on('close', () => clearTimeout(killTimer));
 }
 
-// ─── Active Execution Registry ────────────────────────────────────────────────
-
-const activeExecutions = new Map<string, AbortController>();
-
-/** Register a session as actively executing. Returns the AbortController for signal threading. */
-export function registerExecution(sessionName: string): AbortController {
-  const existing = activeExecutions.get(sessionName);
-  if (existing) existing.abort(); // abort stale execution; AbortController.abort() is idempotent
-  const controller = new AbortController();
-  activeExecutions.set(sessionName, controller);
-  return controller;
-}
-
-/**
- * Identity-safe unregister: only removes the entry if the registered controller matches.
- * Prevents a stale finally block from removing a newer run's controller.
- */
-export function unregisterExecution(sessionName: string, controller: AbortController): void {
-  if (activeExecutions.get(sessionName) === controller) {
-    activeExecutions.delete(sessionName);
-  }
-}
-
-/** Abort a running execution by session name. Returns true if an active execution was found. */
-export function abortExecution(sessionName: string): boolean {
-  const controller = activeExecutions.get(sessionName);
-  if (!controller) return false;
-  controller.abort();
-  return true;
-}
-
-/** Check if a session is currently executing. */
-export function isExecutionActive(sessionName: string): boolean {
-  return activeExecutions.has(sessionName);
-}
-
 function getModel(model?: string): string {
   return model?.trim() || DEFAULT_MODEL;
 }
@@ -182,12 +146,6 @@ function spawnCodex(
 
 /** Kill all tracked child processes (SIGTERM, then SIGKILL after SIGTERM_GRACE_MS). */
 export function killAllChildren(): void {
-  // Abort all registered executions first (signals AbortController listeners)
-  for (const [, controller] of activeExecutions) {
-    controller.abort();
-  }
-  activeExecutions.clear();
-
   for (const child of activeChildren) {
     gracefulKill(child);
   }

@@ -22,7 +22,6 @@ Defines a discriminated-union Zod schema for the unified `codex` MCP tool. Runti
 | `sessionRefSchema` | Session name or session ID reference |
 | `cwdSchema` | Optional working directory |
 | `reasoningEffortSchema` | Optional enum: `low`, `medium`, `high`, `xhigh` |
-| `backgroundSchema` | Boolean, default `false` |
 
 See `src/codex/schemas.ts`.
 
@@ -68,9 +67,15 @@ See `src/codex/codex-executor.ts`.
 
 ---
 
-### src/codex/progress.ts - Progress File Utilities
+### src/codex/progress.ts - Job Directory Utilities
 
-Pure helper functions for Codex execution visibility. No server dependencies. Creates JSONL progress files in `$TMPDIR`, extracts human-readable messages from `CodexThreadEvent` objects (e.g., `Running: <command>`, `Editing: <path>`), and appends progress/result events. See `src/codex/progress.ts`.
+Pure helper functions for job-directory management. No server dependencies.
+
+**Key exports**: `createJobDir(sessionLabel)` → `{ jobId, jobDir }` (creates UUID-named directory with `status.json` and empty `progress.jsonl`); `writeJobResult(jobDir, text, meta)` (writes `result.md`, updates `status.json` to `completed` — idempotent); `writeJobError(jobDir, message)` (updates `status.json` to `error` — idempotent); `readJobStatus(jobDir)` → status object; `resolveJobDir(jobId)` → path (throws on non-UUID input).
+
+**Progress events**: `extractProgressMessage(event)` → human-readable string for `CodexThreadEvent` objects (e.g., `Running: <command>`, `Editing: <path>`); `appendProgressEvent(filePath, eventType, message)` appends a JSONL line.
+
+Job directories are stored under `$TMPDIR/coral-jobs/`. See `src/codex/progress.ts`.
 
 ---
 
@@ -90,7 +95,9 @@ See `src/codex/session-manager.ts`.
 
 All MCP tool business logic, extracted from `server.ts` to enable independent testing. `server.ts` is the composition root (wiring only); this module contains all handlers and the dispatch switch.
 
-Key design: background vs foreground branching lives here. `handleToolCall` is the entry point - Zod validation at the top, then dispatch by `op`. Auto-generated session names (`session-{timestamp}`) are assigned here before calling handlers. See `src/codex/server-handlers.ts`.
+Key design: all execution is asynchronous. `launchJob(sessionLabel, handler, mgr)` starts execution in the background and returns `{ job_id, job_dir, session_name, status: "running" }` immediately. `handleWait` polls `activeJobs` with FD-based progress tailing and an abort-aware sleep loop. `handleToolCall` is the entry point — Zod validation at the top, then dispatch by `op`. Auto-generated session names (`session-{timestamp}`) are assigned here before calling handlers.
+
+Exported state: `activeJobs: Map<string, JobEntry>` (single registry), `shutdownSignal: AbortController` (cooperative poll-loop cleanup on server shutdown), `tryClaimTerminalWrite(jobId, state)` (in-memory CAS to prevent double terminal writes). See `src/codex/server-handlers.ts`.
 
 ---
 

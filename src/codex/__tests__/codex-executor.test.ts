@@ -12,7 +12,7 @@ vi.mock('node:child_process', () => ({
 
 import { detectCodexCli } from '../cli-detection.js';
 import { spawn } from 'node:child_process';
-import { executeOneShot, executeResume, executeFork, killAllChildren, registerExecution, unregisterExecution, abortExecution, _test } from '../codex-executor.js';
+import { executeOneShot, executeResume, executeFork, killAllChildren, _test } from '../codex-executor.js';
 
 const mockDetect = vi.mocked(detectCodexCli);
 const mockSpawn = vi.mocked(spawn);
@@ -460,59 +460,6 @@ describe('abort signal', () => {
 
       await expect(promise).resolves.toMatchObject({ aborted: true });
     });
-  });
-});
-
-describe('execution registry', () => {
-  afterEach(() => {
-    // Clean up any registered executions to avoid cross-test leakage
-    abortExecution('reg-session');
-    abortExecution('session-x');
-  });
-
-  it('registers and returns an AbortController', () => {
-    const controller = registerExecution('reg-session');
-    expect(controller).toBeInstanceOf(AbortController);
-    expect(controller.signal.aborted).toBe(false);
-    unregisterExecution('reg-session', controller);
-  });
-
-  it('abortExecution returns true and aborts the signal', () => {
-    const controller = registerExecution('reg-session');
-    const result = abortExecution('reg-session');
-    expect(result).toBe(true);
-    expect(controller.signal.aborted).toBe(true);
-    unregisterExecution('reg-session', controller);
-  });
-
-  it('abortExecution returns false for unknown session', () => {
-    expect(abortExecution('does-not-exist')).toBe(false);
-  });
-
-  it('aborts stale execution when re-registering the same name', () => {
-    const controllerA = registerExecution('reg-session');
-    const controllerB = registerExecution('reg-session'); // should abort A
-    expect(controllerA.signal.aborted).toBe(true);
-    expect(controllerB.signal.aborted).toBe(false);
-    unregisterExecution('reg-session', controllerB);
-  });
-
-  it('identity-safe: stale finally does not remove newer controller', () => {
-    const controllerA = registerExecution('session-x');
-    const controllerB = registerExecution('session-x'); // replaces A
-
-    // Simulate A's finally block running after B took over
-    unregisterExecution('session-x', controllerA); // must be a no-op
-
-    // B is still registered and abortable
-    expect(abortExecution('session-x')).toBe(true);
-    unregisterExecution('session-x', controllerB);
-  });
-
-  it('unregisterExecution removes entry when controller matches', () => {
-    const controller = registerExecution('reg-session');
-    unregisterExecution('reg-session', controller);
-    expect(abortExecution('reg-session')).toBe(false);
   });
 });
 

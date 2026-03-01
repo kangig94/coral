@@ -71,6 +71,7 @@ Strip the `--codex` flag before passing the prompt to the execution path.
          target file paths, and coding standards as context.
          Pass `working_directory`, `reasoning_effort: "xhigh"`.
          Pass `bypass: true` only when the user explicitly requests bypass mode.
+         Then: `codex({ op: "wait", job_ids: [job_id] })` → Read(`job_dir + "/result.md"`) for output.
        Parallel split:
        - Default: spawn each group as a parallel Task (`subagent_type: "general-purpose"`).
          Pass `<Execution>`, `<Constraints>`, the file group, and project coding standards.

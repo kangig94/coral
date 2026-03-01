@@ -18,16 +18,17 @@ If the argument starts with `session`, handle directly:
 | Command | Action |
 |---------|--------|
 | `session list` | `codex({ op: "list" })` |
-| `session fork <name> [new-name]` | `codex({ op: "fork", session: name, name: newName })` |
+| `session fork <name> [new-name]` | `codex({ op: "fork", session: name, name: newName })` → wait(job_id) → Read(job_dir/result.md) |
 
-Present: list → table (name, model, last used). fork → show `response`.
+Present: list → table (name, model, last used). fork → show response from result.md.
 Never show raw `session` UUID, `model`, or `duration_ms` unless asked.
 
 If not `session`, continue to step 2.
 
 ## 2. Session continuity
 
-Check conversation history for a `session_name` from a previous `/codex` general call (4d):
+Check conversation history for a `session` (Codex thread ID) from a previous `/codex` general call (4d).
+The `session` field is read from `job_dir/status.json` after wait completes — NOT `session_name` from exec.
 - **Found** → pass it as the `session` parameter on subsequent 4d and 4a calls
 - **Not found or user says "new"** → omit `session`
 
@@ -76,14 +77,20 @@ Call MCP tool directly. Pass prompt **verbatim**. Never rephrase, filter, or ref
 
 | Condition | Action |
 |-----------|--------|
-| No session | `codex({ op: "exec", prompt, working_directory })` |
-| Session exists | `codex({ op: "exec", session, prompt, working_directory })` |
+| No session | `codex({ op: "exec", prompt, working_directory })` → `{ job_id, job_dir, session_name }` |
+| Session exists | `codex({ op: "exec", session, prompt, working_directory })` → `{ job_id, job_dir, session_name }` |
+
+After exec, poll and read the result:
+1. `codex({ op: "wait", job_ids: [job_id] })` → check `status`
+2. Completed: `Read(job_dir + "/result.md")` for response; `Read(job_dir + "/status.json")` for `session` (continuity)
+3. Error: `Read(job_dir + "/status.json")` for `error` field
+4. Timeout: re-wait, or abort with `codex({ op: "abort", job_id })`
 
 Show the result:
-1. Response only → show response, then append: `session: <session_name>`
-2. Response + errors → response first, then: `Codex stopped: [error]. Resume with /codex.`
-3. Errors only → `Codex error: [error]`
-4. Warnings → append as brief note
+1. Completed → show response from result.md, then append: `session: <session_name>`
+2. Error → `Codex error: {error from status.json}`. Resume with /codex.
+3. Timeout → report timeout, suggest narrowing scope
 
-Always show `session_name` so the user can see what session they are in.
+Always show `session_name` (from exec response) so the user can see what session they are in.
+For session continuity, store the `session` field from `status.json` — NOT `session_name`.
 Never show raw `session` UUID, `model`, or `duration_ms` unless the user asks.

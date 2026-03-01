@@ -91,7 +91,7 @@ disallowedTools: Write, Edit
        a. Can common operations be one-liners while advanced options are discoverable?
           Level 1: `codex({ op: "exec", prompt: "review auth.ts" })`
           Level 2: `codex({ op: "exec", prompt: "...", model: "...", name: "..." })`
-          Level 3: `codex({ op: "exec", ..., reasoning_effort: "xhigh", background: true })`
+          Level 3: `codex({ op: "exec", ..., reasoning_effort: "xhigh" })` + `codex({ op: "wait", job_ids: [...] })`
        b. Do descriptions hint at advanced capabilities without overwhelming?
        c. Flag: all parameters equally prominent, advanced features undiscoverable,
           simple operations requiring expert-level knowledge

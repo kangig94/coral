@@ -32,6 +32,7 @@ Strip the `--codex` flag before passing the prompt to the execution path.
    - **`--codex`**: Read `CORAL_AGENTS/codex-proxy.md`, use `### Role: debugger` prompt template.
      Call `codex({ op: "exec", ... })` with the bug description as task context.
      Pass `working_directory` and `reasoning_effort: "xhigh"`.
+     Then: `codex({ op: "wait", job_ids: [job_id] })` → Read(`job_dir + "/result.md"`) for findings.
      Verify cited file:line references. Drop findings with incorrect references.
 
 2. **Plan fix**: Invoke `Skill({ skill: "coral:plan", args: "--no-handoff fix-{short-bug-description}" })`.

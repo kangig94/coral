@@ -8,13 +8,17 @@ MCP tool calls are serialized within an agent's context. Attempting to call the 
 
 ## Pattern
 ```
-# WRONG: Single agent calling codex MCP tool in a loop (sequential)
-for group in file_groups:
-    codex({ op: "exec", prompt: group })  # waits for each to finish
+# exec returns instantly (job_id), but wait() is still a blocking MCP call.
+# A single agent calling wait on multiple jobs blocks sequentially per call.
 
-# RIGHT: Spawn parallel subagents, each with its own MCP call
+# Sequential (within one agent — each wait blocks until done):
 for group in file_groups:
-    Task(subagent_type: "coral:codex-proxy", prompt: group)  # truly parallel
+    result = codex({ op: "exec", prompt: group })  # instant return
+    codex({ op: "wait", job_ids: [result.job_id] })  # blocks here
+
+# Truly parallel (each subagent handles its own exec+wait):
+for group in file_groups:
+    Task(subagent_type: "coral:codex-proxy", prompt: group)
 ```
 
 For non-Codex parallel work (Claude-native), use `subagent_type: "general-purpose"` — these also get independent MCP access.

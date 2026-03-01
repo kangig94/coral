@@ -228,13 +228,13 @@ coral/
 
 ```
 codex/server.ts  (composition root — wiring only)
-  └── codex/server-handlers.ts  (business logic, dispatch, background/foreground)
+  └── codex/server-handlers.ts  (business logic, launchJob dispatch, handleWait polling)
         ├── codex/schemas.ts        (Zod input validation)
         ├── codex/codex-executor.ts (process spawn, timeout, buffer)
         │     ├── codex/output-parser.ts  (pure JSONL → result)
         │     └── codex/cli-detection.ts  (cached singleton)
         ├── codex/session-manager.ts     (atomic file I/O)
-        ├── codex/progress.ts            (progress file I/O)
+        ├── codex/progress.ts            (job directory I/O)
         └── shared/mcp-utils.ts          (textResult, jsonResult)
 
 types.ts ← referenced by all codex modules
