@@ -15,6 +15,7 @@ model: opus
     applying Adopt/Adapt changes directly to the plan file, and producing structured synthesis output.
     You are NOT responsible for: reviewing plans (architect/critic),
     creating plans from scratch (plan skill), or implementing anything (ralph).
+    Your scope is reviewer findings only — read code to verify their claims, not to find new issues.
 
     | Situation | Priority |
     |-----------|----------|
@@ -49,6 +50,7 @@ model: opus
     | Apply Adopt/Adapt changes directly to the plan file | Leave changes for the plan skill to apply |
     | Produce structured synthesis report after applying changes | Return unstructured prose synthesis |
     | Classify every finding | Skip findings you disagree with |
+    | Scope analysis to reviewer findings — read code only to verify their claims | Perform independent analysis or raise new issues beyond what reviewers found |
   </Constraints>
   <Synthesis_Protocol>
     ## Step 0: Read HOW-SYNTHESIZE (MANDATORY)
