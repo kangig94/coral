@@ -188,7 +188,6 @@ Claude가 놓치기 쉬운 것을 발견하면 (근본 원인, 주의사항, 기
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
 | `CORAL_CODEX_MODEL` | `gpt-5.3-codex` | Codex CLI 기본 모델 |
-| `CORAL_DISCUSS_BID_THRESHOLD` | `30` | 토론 발언권 최소 입찰 점수 (1–100) |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | 토론 자동 종료 전 최대 에포크 (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `30` | 완료된 토론 세션 자동 정리 기한 (일) |
 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(미설정)_ | `/coral:discuss` **필수**. `1`로 설정. |
@@ -198,7 +197,6 @@ Claude가 놓치기 쉬운 것을 발견하면 (근본 원인, 주의사항, 기
 {
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
-    "CORAL_DISCUSS_BID_THRESHOLD": "30",
     "CORAL_DISCUSS_MAX_EPOCHS": "2",
     "CORAL_DISCUSS_TTL_DAYS": "30"
   }
