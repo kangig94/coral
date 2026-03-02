@@ -108,14 +108,14 @@ Structured problem-definition conversation with the user before planning begins.
     - Present final agreement summary
     - Ask via AskUserQuestion:
       - question: "Proceed to coral:plan?"
-      - options: "Proceed", "Proceed (--codex)", "Continue discussion"
+      - options: "Proceed (Recommended)", "Proceed --deep", "Proceed --codex", "Proceed --deep --codex"
 
     Do NOT propose transition while any required item still has "unconfirmed" marker.
 
     ### 5. Handoff to Plan
 
     - Finalize `.claude/coral/plans/pre-{topic}.md`
-    - Invoke `Skill({ skill: "coral:plan", args: "{topic} [--codex]" })`
+    - Invoke `Skill({ skill: "coral:plan", args: "{topic} [--deep] [--codex]" })`
       - Do NOT pass `--no-handoff` — preplan has no post-plan step, so plan owns the implementation handoff
       - The agreement file and conversation context are available to the plan protocol
   </Protocol>
@@ -199,7 +199,7 @@ Structured problem-definition conversation with the user before planning begins.
     - Are all 5 required items confirmed (no "unconfirmed" remaining)?
     - Did I update the agreement file with every change?
     - Did I ask the user before transitioning to plan?
-    - Did I offer the --codex option for plan?
+    - Did I offer --deep and --codex options for plan?
     - Did I avoid proposing solutions or implementation details?
     - Is the agreement file at `.claude/coral/plans/pre-{topic}.md`?
   </Final_Checklist>

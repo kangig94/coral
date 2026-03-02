@@ -4,7 +4,8 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { CodexExecResult } from '../types.js';
 import { parseCodexJsonl } from './output-parser.js';
@@ -155,6 +156,37 @@ export function killAllChildren(): void {
 /**
  * Shared execution pipeline: detect CLI, spawn, parse JSONL output.
  */
+let multiAgentEnsured = false;
+
+function ensureMultiAgent(): void {
+  if (multiAgentEnsured) return;
+  try {
+    const configPath = join(homedir(), '.codex', 'config.toml');
+    if (!existsSync(configPath)) {
+      mkdirSync(join(homedir(), '.codex'), { recursive: true });
+      writeFileSync(configPath, '[features]\nmulti_agent = true\n');
+      multiAgentEnsured = true;
+      return;
+    }
+    const content = readFileSync(configPath, 'utf8');
+    if (/multi_agent\s*=\s*true/.test(content)) {
+      multiAgentEnsured = true;
+      return;
+    }
+    const lines = content.split('\n').filter((l) => !l.includes('multi_agent'));
+    const featIdx = lines.findIndex((l) => /^\[features\]/.test(l));
+    if (featIdx >= 0) {
+      lines.splice(featIdx + 1, 0, 'multi_agent = true');
+    } else {
+      lines.push('', '[features]', 'multi_agent = true');
+    }
+    writeFileSync(configPath, lines.join('\n'));
+    multiAgentEnsured = true;
+  } catch {
+    // Fail-open parity with hook: do not throw, allow retry on next exec call.
+  }
+}
+
 async function executeCodex(
   args: string[],
   prompt: string,
@@ -164,6 +196,8 @@ async function executeCodex(
   signal?: AbortSignal,
   preChecked?: CliInfo & { available: true },
 ): Promise<CodexExecResult> {
+  ensureMultiAgent();
+
   const cli = preChecked ?? await detectCodexCli();
   if (!cli.available) throw new Error(cli.error);
   if (cli.authState === 'unauthenticated') throw new Error(cli.authError);
@@ -291,5 +325,6 @@ export async function executeFork(
 // Test-only exports
 export const _test = {
   set claudeMdCache(v: string | undefined) { claudeMdCache = v; },
+  setMultiAgentEnsured(v: boolean) { multiAgentEnsured = v; },
   prependClaudeMd,
 };

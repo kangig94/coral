@@ -66,19 +66,19 @@ disallowedTools: Write, Edit
        # WRONG: skills/plan/SKILL.md has name: planner
        ```
 
-    3) Resolve agent references — every `subagent_type: coral:<name>` must exist:
+       3) Resolve agent references — every `subagent_type: coral:<name>` must exist:
        ```markdown
        <!-- CORRECT: References existing agent file -->
-       Spawn Task with subagent_type: coral:codex-proxy
-       <!-- Verified: agents/codex-proxy.md exists -->
+       Spawn Task with subagent_type: coral:scanner
+       <!-- Verified: agents/scanner.md exists -->
 
        <!-- CORRECT: Also valid as quoted string -->
        subagent_type: "coral:architect"
        <!-- Verified: agents/architect.md exists -->
 
        <!-- WRONG: References non-existent agent -->
-       subagent_type: coral:codex-reviewer
-       <!-- No agents/codex-reviewer.md exists -->
+       subagent_type: coral:reviewer
+       <!-- No agents/reviewer.md exists -->
        ```
 
     4) Verify protocol clarity — numbered steps with clear outcomes:

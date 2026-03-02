@@ -88,7 +88,7 @@ model: <opus|sonnet>
 | `description` | yes | One-line with "Use when... NOT for..." |
 | `model` | yes | `opus` (tier 0-1, deep reasoning) or `sonnet` (tier 2-3, protocol execution) |
 | `disallowedTools` | review agents | `Write, Edit` for read-only agents (all agents in `.claude/agents/`) |
-| `tools` | no | Restrict to specific MCP tools (used by codex-proxy) |
+| `tools` | no | Restrict to specific MCP tools for specialized agent execution |
 
 ### Model Assignment Rule
 

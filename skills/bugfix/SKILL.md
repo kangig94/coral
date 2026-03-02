@@ -29,10 +29,10 @@ Strip the `--codex` flag before passing the prompt to the execution path.
    - **Default**: Read `CORAL_AGENTS/debugger.md`. **You** execute it directly — follow
      `<Investigation_Protocol>` steps with conversation context.
      Present diagnosis in `<Output_Format>` structure.
-   - **`--codex`**: Read `CORAL_AGENTS/codex-proxy.md`, use `### Role: debugger` prompt template.
-     Call `codex({ op: "exec", ... })` with the bug description as task context.
-     Pass `working_directory` and `reasoning_effort: "xhigh"`.
-     Then: `codex({ op: "wait", job_ids: [job_id] })` → Read(`job_dir + "/result.md"`) for findings.
+   - **`--codex`**: Call `codex({ op: "coral:debugger", prompt, working_directory, reasoning_effort: "xhigh" })`.
+     Wait in a timeout/cursor loop until completion (`codex({ op: "wait", job_ids: [job_id], timeout_seconds, cursors })`).
+     On completion, read `job_dir/result.md` for findings.
+     On error, read `job_dir/status.json` and stop with the Codex error.
      Verify cited file:line references. Drop findings with incorrect references.
 
 2. **Plan fix**: Invoke `Skill({ skill: "coral:plan", args: "--no-handoff fix-{short-bug-description}" })`.

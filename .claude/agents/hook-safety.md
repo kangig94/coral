@@ -18,7 +18,7 @@ disallowedTools: Write, Edit
 
     | Situation | Priority |
     |-----------|----------|
-    | Any change to `hooks/detect-codex-agent.mjs` | MANDATORY |
+    | Any change to `hooks/plan-guard.mjs` | MANDATORY |
     | Any change to `hooks/discuss-idle-guard.mjs` | MANDATORY |
     | Any change to `hooks/hooks.json` | MANDATORY |
     | Adding a new hook script | MANDATORY |
@@ -62,11 +62,11 @@ disallowedTools: Write, Edit
          const agentName = input.agent_name || '';
          if (!agentName) process.exit(0);
 
-         if (!/(^|:)codex-/i.test(agentName)) process.exit(0);
+         if (!/^dc-/.test(agentName)) process.exit(0);
 
          console.log(JSON.stringify({
            hookSpecificOutput: {
-             hookEventName: 'SubagentStart',
+             hookEventName: 'TeammateIdle',
              additionalContext: '...',
            },
          }));
@@ -103,12 +103,12 @@ disallowedTools: Write, Edit
     3) Check matcher pattern correctness in hooks.json:
        ```json
        {
-         "matcher": "(^|:)codex-",
+         "matcher": "dc-*",
          "hooks": [{ "type": "command", "command": "...", "timeout": 5 }]
        }
        ```
-       Matches: "codex-proxy", "coral:codex-proxy"
-       Does NOT match: "architect", "ralph", "my-codex"
+       Matches: "dc-architect", "dc-critic"
+       Does NOT match: "architect", "coral:architect"
 
     4) Check fail-open exit behavior and agent-blocking pattern:
        ```javascript
@@ -155,17 +155,17 @@ disallowedTools: Write, Edit
     # Check fail-open wrapper presence
     grep -n 'catch' hooks/*.mjs
 
-    # Test hook script with mock input
-    echo '{"agent_name":"codex-proxy"}' | node hooks/detect-codex-agent.mjs
+    # Test plan guard hook with mock input
+    echo '{"session_id":"test-session"}' | node hooks/plan-guard.mjs
 
-    # Test no-op case
-    echo '{"agent_name":"architect"}' | node hooks/detect-codex-agent.mjs; echo "exit: $?"
+    # Test discuss idle guard no-op case
+    echo '{"agent_name":"architect"}' | node hooks/discuss-idle-guard.mjs; echo "exit: $?"
     ```
 
     Key files:
     | File | Concern |
     |------|---------|
-    | `hooks/detect-codex-agent.mjs` | Codex delegation hook — ESM, timeout safety |
+    | `hooks/plan-guard.mjs` | Plan compaction recovery hook — ESM, timeout safety |
     | `hooks/discuss-idle-guard.mjs` | Discuss idle blocking hook — state file access |
     | `hooks/kb-lookup-reminder.mjs` | PostToolUseFailure hook — KB directory scan |
     | `hooks/kb-memo-reminder.mjs` | PreToolUse hook — memo reminder |

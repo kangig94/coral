@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ChildProcess } from 'node:child_process';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { EventEmitter, Readable, Writable } from 'node:stream';
 
 vi.mock('../cli-detection.js', () => ({
@@ -479,5 +481,76 @@ describe('killAllChildren', () => {
 
     killAllChildren();
     expect(killSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('ensureMultiAgent', () => {
+  const originalHome = process.env.HOME;
+  const homesToClean = new Set<string>();
+
+  beforeEach(() => {
+    _test.setMultiAgentEnsured(false);
+  });
+
+  afterEach(() => {
+    _test.setMultiAgentEnsured(false);
+    process.env.HOME = originalHome;
+    for (const home of homesToClean) {
+      rmSync(home, { recursive: true, force: true });
+    }
+    homesToClean.clear();
+  });
+
+  it('writes multi_agent = true when config is missing', async () => {
+    const home = mkdtempSync(join('/tmp', 'coral-executor-home-'));
+    homesToClean.add(home);
+    process.env.HOME = home;
+
+    mockCliAvailable();
+    mockSpawn.mockReturnValue(createMockProcess('{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n', 0));
+
+    await executeOneShot('test');
+
+    const configPath = join(home, '.codex', 'config.toml');
+    expect(existsSync(configPath)).toBe(true);
+    expect(readFileSync(configPath, 'utf8')).toBe('[features]\nmulti_agent = true\n');
+  });
+
+  it("repeated calls don't rewrite after first success", async () => {
+    const home = mkdtempSync(join('/tmp', 'coral-executor-home-'));
+    homesToClean.add(home);
+    process.env.HOME = home;
+
+    mockCliAvailable();
+    const okOutput = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
+    mockSpawn.mockReturnValue(createMockProcess(okOutput, 0));
+    await executeOneShot('first');
+
+    const configPath = join(home, '.codex', 'config.toml');
+    const firstMtime = statSync(configPath).mtimeMs;
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    mockSpawn.mockReturnValue(createMockProcess(okOutput, 0));
+    await executeOneShot('second');
+
+    const secondMtime = statSync(configPath).mtimeMs;
+    expect(secondMtime).toBe(firstMtime);
+  });
+
+  it('existing config with multi_agent = true remains unchanged', async () => {
+    const home = mkdtempSync(join('/tmp', 'coral-executor-home-'));
+    homesToClean.add(home);
+    process.env.HOME = home;
+    mkdirSync(join(home, '.codex'), { recursive: true });
+    const configPath = join(home, '.codex', 'config.toml');
+    const existing = '[features]\nmulti_agent = true\nother_flag = true\n';
+    writeFileSync(configPath, existing);
+
+    mockCliAvailable();
+    mockSpawn.mockReturnValue(createMockProcess('{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n', 0));
+
+    await executeOneShot('test');
+
+    expect(readFileSync(configPath, 'utf8')).toBe(existing);
   });
 });

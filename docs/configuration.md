@@ -57,7 +57,7 @@ Registers both MCP servers with Claude Code. `cx` runs `bridge/coral-codex.cjs` 
 
 ### hooks/hooks.json - Hook Configuration
 
-Configures all 9 hooks: SessionStart (CLAUDE.md injection), SessionStart/compact (plan-mode recovery + KB promotion reminder), SubagentStart (codex agent detection), UserPromptSubmit (plan state tracking), PreToolUse (memo reminder), PostToolUse (silent failure detector), PostToolUseFailure (KB lookup reminder), Stop (KB promotion gate + plan state cleanup), TeammateIdle (discuss idle guard).
+Configures all 8 hooks: SessionStart (CLAUDE.md injection), SessionStart/compact (plan-mode recovery + KB promotion reminder), UserPromptSubmit (plan state tracking), PreToolUse (memo reminder), PostToolUse (silent failure detector), PostToolUseFailure (KB lookup reminder), Stop (KB promotion gate + plan state cleanup), TeammateIdle (discuss idle guard).
 
 See [Hooks documentation](./hooks.md) for details.
 
@@ -120,8 +120,7 @@ See [Hooks documentation](./hooks.md) for details.
 ```
 .claude-plugin/plugin.json  -> Claude Code recognizes the plugin
 .mcp.json                   -> Claude Code registers/starts both MCP servers (cx + dc)
-hooks/hooks.json            -> Claude Code configures all 9 hooks
-hooks/detect-codex-agent.mjs  -> SubagentStart detection script
+hooks/hooks.json            -> Claude Code configures all 8 hooks
 hooks/kb-lookup-reminder.mjs  -> PostToolUseFailure KB hint script
 hooks/silent-failure-detector.mjs -> PostToolUse silent-failure KB hint script
 hooks/kb-memo-reminder.mjs    -> PreToolUse memo reminder script

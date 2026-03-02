@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { ZodError } from 'zod';
-import { codexOpSchema } from '../schemas.js';
+import { codexOpSchema, coralAgentSchema } from '../schemas.js';
 
 describe('codexOpSchema', () => {
   it('accepts exec without session', () => {
@@ -119,5 +119,33 @@ describe('codexOpSchema', () => {
   it('accepts abort with neither session nor job_id (handler enforces one-of)', () => {
     const result = codexOpSchema.parse({ op: 'abort' });
     expect(result).toMatchObject({ op: 'abort' });
+  });
+});
+
+describe('coralAgentSchema', () => {
+  it('accepts coral:scanner with prompt', () => {
+    const result = coralAgentSchema.parse({ op: 'coral:scanner', prompt: 'analyze this' });
+    expect(result).toMatchObject({ op: 'coral:scanner', prompt: 'analyze this' });
+  });
+
+  it('accepts coral:architect with session (resume)', () => {
+    const result = coralAgentSchema.parse({ op: 'coral:architect', session: 'session-a', prompt: 'continue' });
+    expect(result).toMatchObject({ op: 'coral:architect', session: 'session-a', prompt: 'continue' });
+  });
+
+  it('rejects coral: with empty agent name', () => {
+    expect(() => coralAgentSchema.parse({ op: 'coral:', prompt: 'x' })).toThrow(ZodError);
+  });
+
+  it('rejects non-coral prefix', () => {
+    expect(() => coralAgentSchema.parse({ op: 'exec-scanner', prompt: 'x' })).toThrow(ZodError);
+  });
+
+  it('rejects coral:../x path traversal', () => {
+    expect(() => coralAgentSchema.parse({ op: 'coral:../x', prompt: 'x' })).toThrow(ZodError);
+  });
+
+  it('rejects coral:scanner/extra slash in name', () => {
+    expect(() => coralAgentSchema.parse({ op: 'coral:scanner/extra', prompt: 'x' })).toThrow(ZodError);
   });
 });

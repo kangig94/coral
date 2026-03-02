@@ -1,24 +1,34 @@
-# MCP Tools Cannot Execute in Parallel Within a Single Agent
+# Codex Parallelism with Background Exec
 
 ## Rule
-Claude Code prevents a single agent from executing multiple MCP tool calls simultaneously. To parallelize MCP-dependent work (e.g., multiple Codex calls), spawn separate subagents — each makes its own independent MCP call.
+When using the Codex MCP tool, a single agent can dispatch many jobs in parallel by issuing multiple `codex({ op: "exec" | "coral:<agent>" })` calls, collecting `job_id`s, then using a cursor-aware `wait` loop until the pending set is empty. Subagents are optional, not required for Codex parallelism.
 
 ## Why
-MCP tool calls are serialized within an agent's context. Attempting to call the same MCP tool in parallel from one agent results in sequential execution, negating the performance benefit. This is a Claude Code platform constraint, not an MCP protocol limitation.
+`exec` now returns immediately with `{ job_id, job_dir, status: "running" }`. The bottleneck is not job start but completion tracking. `wait` has any-semantics (returns one completed job or timeout), so callers must loop and update `pendingJobIds` + `cursors` to consume all completions without replaying progress.
 
 ## Pattern
 ```
-# exec returns instantly (job_id), but wait() is still a blocking MCP call.
-# A single agent calling wait on multiple jobs blocks sequentially per call.
-
-# Sequential (within one agent — each wait blocks until done):
+# Dispatch N jobs quickly from one agent
+pending = set()
 for group in file_groups:
-    result = codex({ op: "exec", prompt: group })  # instant return
-    codex({ op: "wait", job_ids: [result.job_id] })  # blocks here
+    job = codex({ op: "exec", prompt: group, working_directory })
+    pending.add(job.job_id)
 
-# Truly parallel (each subagent handles its own exec+wait):
-for group in file_groups:
-    Task(subagent_type: "coral:codex-proxy", prompt: group)
+cursors = {}
+while pending:
+    w = codex({ op: "wait", job_ids: list(pending), timeout_seconds: 30, cursors })
+    if w.status == "timeout":
+        cursors = w.cursors
+        continue
+    if w.status == "completed":
+        Read(w.job_dir + "/result.md")
+        pending.remove(w.completed_job_id)
+        cursors = w.cursors
+        continue
+    if w.status == "error":
+        Read(w.job_dir + "/status.json")  # extract error
+        pending.remove(w.completed_job_id)
+        cursors = w.cursors
 ```
 
-For non-Codex parallel work (Claude-native), use `subagent_type: "general-purpose"` — these also get independent MCP access.
+Use subagents when work itself must branch across independent reasoning contexts, not as a workaround for Codex MCP parallel dispatch.
