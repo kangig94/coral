@@ -378,17 +378,31 @@ describe('discuss_lead tool: _3_step (moderation loop)', () => {
     expect(data.winner).toBe('alice');
   });
 
-  it('should mark no_winner and proceed to epoch_transition when all bids above threshold and exhausted', async () => {
+  it('should skip expulsion during first round (epoch 1, step 1) regardless of hold_count', async () => {
     const sid = await createSession();
-    const first = await handleToolCall('discuss_lead', { op: '_3_step', session: sid, timeout_seconds: sec(5) }, store);
-    const firstData = parseResult(first);
-    expect(firstData.status).toBe('bidding');
-    expect(firstData.phase).toBe('bidding');
-    const second = await handleToolCall('discuss_lead', { op: '_3_step', session: sid, timeout_seconds: sec(5) }, store);
-    const secondData = parseResult(second);
-    expect(secondData.status).toBe('bidding');
-    expect(secondData.phase).toBe('expelled');
-    expect(Array.isArray(secondData.agents)).toBe(true);
+    for (let i = 0; i < 4; i++) {
+      const result = await handleToolCall('discuss_lead', { op: '_3_step', session: sid, timeout_seconds: sec(5) }, store);
+      const data = parseResult(result);
+      expect(data.status).toBe('bidding');
+      expect(data.phase).toBe('bidding');
+      expect(data.pending_bidders).toEqual(expect.arrayContaining(['alice', 'bob']));
+    }
+  });
+
+  it('should expel pending bidders after hold_count >= 2 in later rounds (step > 1)', async () => {
+    const sid = await createSession();
+    await overwriteState(sid, (state) => ({
+      ...state,
+      step: 2,
+      hold_count: 1,
+      pending_bidders: ['bob'],
+      current_bids: { ...state.current_bids, alice: 50 },
+    }));
+    const result = await handleToolCall('discuss_lead', { op: '_3_step', session: sid, timeout_seconds: sec(5) }, store);
+    const data = parseResult(result);
+    expect(data.status).toBe('bidding');
+    expect(data.phase).toBe('expelled');
+    expect(Array.isArray(data.agents)).toBe(true);
   });
 
   it('should wait for speech or timeout with speech_pending phase', async () => {
