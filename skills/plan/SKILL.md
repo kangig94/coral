@@ -1,7 +1,7 @@
 ---
 name: plan
-description: "Planning with parallel architect/critic review. Pass --codex for cross-model Codex reviews, --fast to skip resolver."
-argument-hint: "[--fast] [--codex] [task description]"
+description: "Planning with parallel architect/critic review. Pass --deep for methodology-driven synthesis, --codex for cross-model reviews."
+argument-hint: "[--deep] [--codex] [task description]"
 ---
 
 > **CORAL_METHODS**: `Glob(pattern: "**/methods/", path: "~/.claude/plugins/cache/coral/")`
@@ -18,17 +18,18 @@ Execute a multi-round planning session with architect/critic review.
 | `<prompt>` | Claude-native (default) |
 | `--codex` | Codex delegation (context from conversation) |
 | `--codex <prompt>` | Codex delegation |
-| `--fast` | Skip resolver — plan skill synthesizes and edits directly (faster, less rigorous) |
+| `--deep` | Methodology-driven: spawn resolver (HOW-SYNTHESIZE), read HOW-COMPLETE, pass `--deep` to reviewers |
 | `--no-handoff` | Internal: skip implementation prompt at step 5 (caller controls next step) |
 
-Strip `--codex`, `--fast`, and `--no-handoff` flags before passing the prompt to the execution path.
+Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to the execution path.
 
 <Planning_Protocol>
   <Role>
     You are the **Orchestrator**. Your mission is to write plans and manage the review loop.
-    Spawn reviewers for adversarial feedback, spawn the resolver for synthesis — do not synthesize directly (unless `--fast`).
+    Spawn reviewers for adversarial feedback. Synthesize feedback directly (or spawn resolver in `--deep`).
     Treat reviewer feedback as collaborative input. Engage with substance, not verdict.
-    You are responsible for: gathering context, writing plans, spawning reviewers, spawning resolver for feedback synthesis (or synthesizing directly in `--fast` mode), and iterating until approval.
+    You are responsible for: gathering context, writing plans, spawning reviewers,
+    synthesizing feedback (or delegating to resolver in `--deep`), and iterating until approval.
     You are NOT responsible for: implementing the plan (ralph), gathering requirements (gap-finder), or architectural deep-dives (architect).
     Within this protocol: do not implement or write source code. Do not use EnterPlanMode. Planning only.
   </Role>
@@ -82,27 +83,33 @@ Strip `--codex`, `--fast`, and `--no-handoff` flags before passing the prompt to
 
     #### Phase 1 — Codex Review (only with `--codex`)
 
-    Reviewers: `Agent("coral:codex-proxy", role: architect)` + `Agent("coral:codex-proxy", role: critic)`
+    Reviewers: `mcp__plugin_coral_cx__codex({ op: "coral:architect", ... })` + `mcp__plugin_coral_cx__codex({ op: "coral:critic", ... })`
 
     Repeat (max 5 rounds):
 
     **4a. Parallel Review**
-    Spawn both reviewers simultaneously in a SINGLE message.
-    Provide each: plan file path, working directory, relevant context.
+    Dispatch both reviewer calls in parallel via `mcp__plugin_coral_cx__codex`.
+    Provide each: plan file path, working directory, relevant context. In `--deep`, include `--deep` in each reviewer's prompt.
     Each round is a fresh Codex call (no session continuity) — reviewers evaluate the
     current plan without prior-round bias.
 
+    Use a cursor-aware wait loop until both reviewer jobs finish:
+    1. Call `codex({ op: "wait", job_ids: pendingJobIds, timeout_seconds, cursors })`.
+    2. If `status: "timeout"`, update `cursors` from the response and continue waiting.
+    3. If `status: "completed"`, read `job_dir/result.md` and remove that job from `pendingJobIds`.
+    4. If `status: "error"`, read `job_dir/status.json`, record the failure, remove that job, continue.
+
     **4b. Synthesize Feedback**
 
-    **If `--fast`**: Synthesize directly — classify each finding as Adopt (take as-is) / Adapt (take insight, own solution) / Defer (next round) / Diverge (reject with rationale).
+    Synthesize directly — classify each finding as Adopt (take as-is) / Adapt (take insight, own solution) / Defer (next round) / Diverge (reject with rationale).
     Reviewers can be wrong — verify against actual code. When reviewers contradict each other, neither is right; find the hidden assumption. Edit the plan file yourself, then go to 4d (skip 4c).
 
-    **Otherwise**: `Agent("coral:codex-proxy", role: resolver)`.
+    **If `--deep`**: Instead of synthesizing directly, `mcp__plugin_coral_cx__codex({ op: "coral:resolver", ... })`.
     Pass the plan file path, both reviewers' outputs, and working directory.
     Each round spawns a fresh resolver — no session continuity. The resolver edits the plan
     file directly, so session memory would create author bias toward its own prior edits.
 
-    **4c. Review Synthesis Report** (skip in `--fast` mode)
+    **4c. Review Synthesis Report** (`--deep` only)
     The resolver has already applied Adopt/Adapt changes directly to the plan file.
     Read the updated plan file to understand what changed. Then read the resolver's synthesis report.
     Record any Deferred items for the next round.
@@ -126,11 +133,11 @@ Strip `--codex`, `--fast`, and `--no-handoff` flags before passing the prompt to
       **Counterexample Coverage**: [types explored / not yet]
 
     **4e. Exit Condition**
-    **MANDATORY**: You MUST read `CORAL_METHODS/HOW-COMPLETE.md` and apply its additional completion criteria alongside the rules below. Never evaluate exit conditions without it.
+    **If `--deep`**: Read `CORAL_METHODS/HOW-COMPLETE.md` and apply its additional completion criteria alongside the rules below.
     Evaluate based on what reviewers RETURNED this round (not your post-edit assessment):
-    - **Continue**: Either reviewer returned CRITICAL or HIGH → fixes already applied at 4b (by resolver, or by you in `--fast`), go to 4a for re-verification. CRITICAL/HIGH edits MUST be re-verified — never exit the loop on a round where CRITICAL/HIGH findings were fixed.
+    - **Continue**: Either reviewer returned CRITICAL or HIGH → fixes already applied at 4b (by resolver in `--deep`, or by you), go to 4a for re-verification. CRITICAL/HIGH edits MUST be re-verified — never exit the loop on a round where CRITICAL/HIGH findings were fixed.
     - **Fix and pass**: Both reviewers returned NO CRITICAL or HIGH, but MEDIUM/LOW findings exist → fixes already applied at 4b, exit. MEDIUM/LOW fixes do not require re-verification.
-    - **Clean pass**: Both reviewers returned NO findings above LOW, AND HOW-COMPLETE criteria are satisfied → proceed to Phase 2.
+    - **Clean pass**: Both reviewers returned NO findings above LOW (and HOW-COMPLETE criteria satisfied, if `--deep`) → proceed to Phase 2.
     - **Max rounds (5)**: Proceed to Phase 2 with current plan state.
 
     #### Phase 2 — Claude Review (always)
@@ -138,10 +145,10 @@ Strip `--codex`, `--fast`, and `--no-handoff` flags before passing the prompt to
     Reviewers: `coral:architect` + `coral:critic`
 
     Repeat (max 5 rounds):
-    Apply the same methodology as Phase 1: `Agent("coral:resolver")` at 4b, read `CORAL_METHODS/HOW-COMPLETE.md` yourself at 4e.
-    - **4a. Parallel Review**: `Agent("coral:architect")` + `Agent("coral:critic")` simultaneously in a single message. Provide each: plan file path, working directory, relevant context.
-    - **4b. Synthesize Feedback**: `--fast` → synthesize and edit directly, skip 4c. Otherwise → `Agent("coral:resolver")`, fresh spawn each round.
-    - **4c. Review Synthesis Report** (skip in `--fast`): Resolver has applied changes; read the updated plan file, then read its report, record Deferred/Diverged items.
+    Apply the same methodology as Phase 1. In `--deep`: `Agent("coral:resolver")` at 4b, read `CORAL_METHODS/HOW-COMPLETE.md` yourself at 4e.
+    - **4a. Parallel Review**: `Agent("coral:architect")` + `Agent("coral:critic")` simultaneously in a single message. Provide each: plan file path, working directory, relevant context. In `--deep`, include `--deep` in each reviewer's prompt.
+    - **4b. Synthesize Feedback**: Synthesize and edit directly, skip 4c. In `--deep` → `Agent("coral:resolver")`, fresh spawn each round.
+    - **4c. Review Synthesis Report** (`--deep` only): Resolver has applied changes; read the updated plan file, then read its report, record Deferred/Diverged items.
     - **4d. Round Summary**: Same format, label as `(Claude)`. AFTER 4b/4c — never before synthesis is complete.
     - **4e. Exit Condition**: Same rules as Phase 1. On pass, proceed to step 5. On max rounds (5), `AskUserQuestion` — continue, finalize, or abort.
 
@@ -153,7 +160,7 @@ Strip `--codex`, `--fast`, and `--no-handoff` flags before passing the prompt to
     |----------|--------|
     | One reviewer fails (timeout or creation error) | Proceed with other reviewer's feedback |
     | Both reviewers fail | Report error, ask whether to retry |
-    | Resolver fails (timeout, creation error, or malformed output) | Retry once. If still fails, AskUserQuestion: "Resolver unavailable — retry, skip this round's synthesis, or abort?" Do NOT synthesize directly. (N/A in `--fast` mode — no resolver.) |
+    | Resolver fails (timeout, creation error, or malformed output) | `--deep` only. Retry once. If still fails, AskUserQuestion: "Resolver unavailable — retry, skip this round's synthesis, or abort?" Do NOT synthesize directly. |
 
     Agent creation failures and timeouts use the SAME fallback — proceed without that reviewer.
     Malformed resolver output: if the response lacks Classification Table or Applied Changes sections, treat as failure (retry/escalate path above). Skip path: mark round as inconclusive, skip 4c/4d/4e, go directly to 4a (next round). Skip still increments round count.
@@ -163,8 +170,8 @@ Strip `--codex`, `--fast`, and `--no-handoff` flags before passing the prompt to
     |----|-------|
     | Create stub plan file first | Use EnterPlanMode (`~/.claude/plans/`) |
     | Spawn reviewers in parallel | Run reviewers sequentially |
-    | Delegate synthesis to resolver (unless `--fast`) | Synthesize feedback directly (unless `--fast`) |
-    | Let resolver edit plan file during review | Edit plan file yourself during review loop (unless `--fast`) |
+    | Synthesize feedback directly | Spawn resolver without `--deep` |
+    | Edit plan file yourself during review | Let resolver edit without `--deep` |
     | Cite file:line in plans | Write vague plans without references |
     | Exit when no CRITICAL/HIGH | Continue reviewing past convergence |
     | Return plan file path | Implement within this protocol |
@@ -204,7 +211,7 @@ Strip `--codex`, `--fast`, and `--no-handoff` flags before passing the prompt to
     If chosen, invoke `Skill({ skill: "coral:ralph", args: "<plan summary + context>" })` with the selected flags.
   </Output_Format>
   <Failure_Modes_To_Avoid>
-    - Synthesizing directly instead of spawning resolver (without `--fast`): "I'll classify the feedback myself this round." Instead: always spawn the resolver at 4b unless `--fast` is set.
+    - Spawning resolver without `--deep`: "I'll use the resolver for more rigorous synthesis." Instead: synthesize directly unless `--deep` is set.
     - Skipping review: "The plan is straightforward, no review needed." Instead: always run at least one review round.
     - Over-iterating: Running 5 rounds when Round 2 had no issues. Instead: exit when exit condition is met.
     - Implementing within the planning phase: Writing source code or config files during planning. Instead: plan only — offer handoff to coral:ralph at step 5.
@@ -212,8 +219,8 @@ Strip `--codex`, `--fast`, and `--no-handoff` flags before passing the prompt to
   <Final_Checklist>
     - Did I create the stub plan file before researching?
     - Did I spawn reviewers in parallel?
-    - Did I spawn the resolver for synthesis (unless `--fast`)?
-    - Did the resolver apply changes to the plan file (unless `--fast`, where I edit directly)?
+    - Did I synthesize directly (or spawn resolver if `--deep`)?
+    - Did I edit the plan file myself (or let resolver edit if `--deep`)?
     - Did the review loop converge (no CRITICAL/HIGH)?
     - Did I return the plan file path?
     - Did I avoid implementing within this protocol?
