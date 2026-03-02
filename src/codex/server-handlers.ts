@@ -625,7 +625,12 @@ async function handleCoralAgent(
 
   if (input.session) {
     const entry = mgr.get(input.session);
-    if (!entry) return sessionNotFoundError(input.session);
+    if (!entry) {
+      return textResult(
+        `Session not found: "${input.session}". To start a fresh session, omit the session parameter: codex({ op: "${input.op}", prompt: "..." })`,
+        true,
+      );
+    }
 
     const preflight = await preflightCliCheck();
     if (!preflight.pass) return preflight.result;
