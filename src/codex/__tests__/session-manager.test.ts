@@ -192,6 +192,89 @@ describe('SessionManager', () => {
     });
   });
 
+  it('legacy migration: empty string name migrates deterministically', () => {
+    const workDir = join(tmpDir, 'empty-name');
+    mkdirSync(workDir, { recursive: true });
+    const dir = sessionsDir(tmpDir, workDir);
+    mkdirSync(dir, { recursive: true });
+
+    writeFileSync(join(dir, '_empty.json'), JSON.stringify({
+      name: '',
+      sessionId: 'thread-empty-name',
+      model: 'o4-mini',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      lastUsedAt: '2024-01-02T00:00:00.000Z',
+      workingDirectory: '/some/dir',
+    }), 'utf-8');
+
+    const mgr = new SessionManager(workDir);
+    const migratedId = uuidV5(LEGACY_SESSION_NAMESPACE, '');
+
+    const found = mgr.get(migratedId);
+    if (found !== null) {
+      expect(found.id).toBe(migratedId);
+      expect(found.threadId).toBe('thread-empty-name');
+    }
+  });
+
+  it('legacy migration: name with spaces migrates deterministically', () => {
+    const workDir = join(tmpDir, 'space-name');
+    mkdirSync(workDir, { recursive: true });
+    const dir = sessionsDir(tmpDir, workDir);
+    mkdirSync(dir, { recursive: true });
+
+    const legacyName = 'my session name';
+    writeFileSync(join(dir, `${legacyName}.json`), JSON.stringify({
+      name: legacyName,
+      sessionId: 'thread-space-001',
+      model: 'o4-mini',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      lastUsedAt: '2024-01-02T00:00:00.000Z',
+      workingDirectory: '/space/dir',
+    }), 'utf-8');
+
+    const mgr = new SessionManager(workDir);
+    const migratedId = uuidV5(LEGACY_SESSION_NAMESPACE, legacyName);
+
+    const found = mgr.get(migratedId);
+    expect(found).not.toBeNull();
+    expect(found?.id).toBe(migratedId);
+    expect(found?.name).toBe(legacyName);
+    expect(found?.threadId).toBe('thread-space-001');
+    expect(existsSync(join(dir, `${legacyName}.json`))).toBe(false);
+  });
+
+  it('legacy migration: name with dots migrates correctly', () => {
+    const workDir = join(tmpDir, 'dot-name');
+    mkdirSync(workDir, { recursive: true });
+    const dir = sessionsDir(tmpDir, workDir);
+    mkdirSync(dir, { recursive: true });
+
+    const legacyName = 'session.v1.test';
+    writeFileSync(join(dir, `${legacyName}.json`), JSON.stringify({
+      name: legacyName,
+      sessionId: 'thread-dots-001',
+      model: 'o4-mini',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      lastUsedAt: '2024-01-02T00:00:00.000Z',
+      workingDirectory: '/dot/dir',
+    }), 'utf-8');
+
+    const mgr = new SessionManager(workDir);
+    const migratedId = uuidV5(LEGACY_SESSION_NAMESPACE, legacyName);
+
+    const found = mgr.get(migratedId);
+    expect(found).not.toBeNull();
+    expect(found?.id).toBe(migratedId);
+    expect(found?.threadId).toBe('thread-dots-001');
+  });
+
+  it('get() with empty string id returns null without throwing', () => {
+    const { mgr } = setup('empty-get');
+    expect(() => mgr.get('')).not.toThrow();
+    expect(mgr.get('')).toBeNull();
+  });
+
   it('legacy migration is idempotent when target UUID file already exists', () => {
     const workDir = join(tmpDir, 'project-j');
     mkdirSync(workDir, { recursive: true });

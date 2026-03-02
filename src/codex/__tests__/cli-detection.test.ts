@@ -197,6 +197,88 @@ describe('detectCodexCli', () => {
     expect(whoamiCalls).toBe(1);
   });
 
+  it('whitespace-only OPENAI_API_KEY falls through to whoami probe', async () => {
+    process.env.OPENAI_API_KEY = '   ';
+    mockExecByArgs({
+      '--version': (cb) => cb(null, 'codex 1.0.0\n', ''),
+      'whoami': (cb) => cb(new Error('exit 1'), '', 'not logged in'),
+    });
+
+    const result = await detectCodexCli();
+
+    expect(result.available).toBe(true);
+    if (!result.available) throw new Error('expected available');
+    expect(result.authState).toBe('unauthenticated');
+  });
+
+  it('empty string OPENAI_API_KEY falls through to whoami probe', async () => {
+    process.env.OPENAI_API_KEY = '';
+    mockExecByArgs({
+      '--version': (cb) => cb(null, 'codex 1.0.0\n', ''),
+      'whoami': (cb) => cb(null, 'user@example.com', ''),
+    });
+
+    const result = await detectCodexCli();
+
+    expect(result.available).toBe(true);
+    if (!result.available) throw new Error('expected available');
+    expect(result.authState).toBe('authenticated');
+  });
+
+  it('AUTH_ERROR_PATTERN is case-insensitive', async () => {
+    mockExecByArgs({
+      '--version': (cb) => cb(null, 'codex 1.0.0\n', ''),
+      'whoami': (cb) => cb(new Error('exit 1'), '', 'UNAUTHORIZED'),
+    });
+
+    const result = await detectCodexCli();
+
+    expect(result.available).toBe(true);
+    if (!result.available) throw new Error('expected available');
+    expect(result.authState).toBe('unauthenticated');
+  });
+
+  it('auth phrase matched mid-sentence triggers unauthenticated', async () => {
+    mockExecByArgs({
+      '--version': (cb) => cb(null, 'codex 1.0.0\n', ''),
+      'whoami': (cb) => cb(new Error('exit 1'), '', 'Request failed: user is not logged in to the platform'),
+    });
+
+    const result = await detectCodexCli();
+
+    expect(result.available).toBe(true);
+    if (!result.available) throw new Error('expected available');
+    expect(result.authState).toBe('unauthenticated');
+  });
+
+  it('resetCliCache then fresh call re-probes from scratch', async () => {
+    let versionCallCount = 0;
+    mockExecByArgs({
+      '--version': (cb) => { versionCallCount += 1; cb(null, 'codex 1.0.0\n', ''); },
+      'whoami': (cb) => cb(null, 'user@example.com', ''),
+    });
+
+    await detectCodexCli();
+    resetCliCache();
+    await detectCodexCli();
+
+    expect(versionCallCount).toBe(2);
+  });
+
+  it('unknown-result batch allows re-probe in subsequent batch', async () => {
+    let whoamiCalls = 0;
+    mockExecByArgs({
+      '--version': (cb) => cb(null, 'codex 1.0.0\n', ''),
+      'whoami': (cb) => { whoamiCalls += 1; cb(new Error('exit 1'), '', 'network error'); },
+    });
+
+    await Promise.all([detectCodexCli(), detectCodexCli()]);
+    expect(whoamiCalls).toBe(1);
+
+    await Promise.all([detectCodexCli(), detectCodexCli()]);
+    expect(whoamiCalls).toBe(2);
+  });
+
   it('resetCliCache clears confirmed auth and allows later unauthenticated detection', async () => {
     process.env.OPENAI_API_KEY = 'sk-test';
     mockExecByArgs({
