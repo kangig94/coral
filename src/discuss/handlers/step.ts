@@ -153,7 +153,8 @@ async function stepBidding(ctx: StepContext, store: SessionStore): Promise<McpRe
       return endNoParticipants(next, ctx.sessionDir, nowIsoString(), store);
     }
 
-    if (next.hold_count >= 2 && next.pending_bidders.length > 0) {
+    const isFirstRound = next.epoch === 1 && next.step === 1;
+    if (!isFirstRound && next.hold_count >= 2 && next.pending_bidders.length > 0) {
       const expel = applyExpel(next, next.pending_bidders, nowIsoString());
       if (!expel.ok) return { ok: false, error: expel.error, detail: expel.detail };
       if (noEligibleParticipants(expel.value.state)) {
