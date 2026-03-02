@@ -2,7 +2,7 @@
 
 /**
  * TeammateIdle hook — blocks idle when a discuss agent has a pending action.
- * Checks session state for pending bids, speeches, or votes.
+ * Checks session state for pending bids or speeches.
  * Fail-open: any error exits silently (allow idle).
  */
 
@@ -29,7 +29,7 @@ try {
   const sessionId = teamName.slice('coral-dc-'.length);
 
   // Resolve session directory
-  const sessionDir = readdirSync(discussDir).find(d => d.startsWith(`${sessionId}_`) || d.startsWith(`${sessionId}-`));
+  const sessionDir = readdirSync(discussDir).find(d => d.startsWith(`${sessionId}-`));
   if (!sessionDir) process.exit(0);
 
   const statePath = join(discussDir, sessionDir, 'state.json');
@@ -47,12 +47,6 @@ try {
   // Speaking: agent has the floor
   if (status === 'speaking' && current_speaker === agentName) {
     process.stderr.write('Call `discuss` with op: "speak" to deliver your speech.\n');
-    process.exit(2);
-  }
-
-  // Voting: agent hasn't voted yet
-  if (status === 'voting' && pending_bidders.includes(agentName)) {
-    process.stderr.write('Termination vote: call `discuss` with op: "bid" - 0=agree to end, 1=disagree.\n');
     process.exit(2);
   }
 

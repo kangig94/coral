@@ -91,7 +91,6 @@
     ],
     "TeammateIdle": [
       {
-        "matcher": "dc-*",
         "hooks": [
           {
             "type": "command",
