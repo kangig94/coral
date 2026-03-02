@@ -67,70 +67,71 @@ HOW-FALSIFY, HOW-SYNTHESIZE, HOW-RESOLVE, and HOW-ELICIT are standalone — no e
 
 ## Agent Layer
 
-Each agent owns one primary HOW methodology (MANDATORY, read unconditionally or on core trigger). Some have additional conditional or recommended connections.
+Each agent owns one primary HOW methodology. Some read it unconditionally (MANDATORY), others only when `--deep` is passed (CONDITIONAL). Some have additional recommended connections.
 
 ```
-┌───────────────────────────────────────────────────────────┐
-│                         AGENT LAYER                       │
-│                                                           │
-│  ┌──────────────────┐  ┌──────────────────┐               │
-│  │   architect      │  │    critic        │               │
-│  │                  │  │                  │               │
-│  │ ██ HOW-REVIEW    │  │ ██ HOW-REVIEW    │               │
-│  │ ░░ HOW-PROVENANCE│  │ ░░ HOW-PROVENANCE│               │
-│  └──────────────────┘  └──────────────────┘               │
-│                                                           │
-│  ┌──────────────────────────────────────────┐             │
-│  │             resolver                     │             │
-│  │                                          │             │
-│  │ ██ HOW-SYNTHESIZE (Step 0, unconditional)│             │
-│  │ ██ HOW-RESOLVE    (Step 3, on Constraint │             │
-│  │                    Collision)            │             │
-│  │ ▓▓ inline inference:                     │             │
-│  │    provenance (reviewer evidence → type) │             │
-│  │    confidence (reviewer agreement → tier)│             │
-│  └──────────────────────────────────────────┘             │
-│                                                           │
-│  ┌───────────────────────────────────┐                    │
-│  │             debugger              │                    │
-│  │                                   │                    │
-│  │ ██ HOW-FALSIFY    (2+ hypotheses) │                    │
-│  │ ██ HOW-CONFIDENCE (2+ hypotheses) │                    │
-│  │ ░░ HOW-PROVENANCE (on conclusion) │                    │
-│  │ ░░ HOW-CONFIDENCE (on conclusion) │                    │
-│  └───────────────────────────────────┘                    │
-│                                                           │
-│  ┌────────────────────────────────────────────┐           │
-│  │             scanner                        │           │
-│  │                                            │           │
-│  │ ██ HOW-FALSIFY (Process Investigation,     │           │
-│  │                  2+ hypotheses)            │           │
-│  │ ░░ HOW-PROVENANCE (when producing findings)│           │
-│  └────────────────────────────────────────────┘           │
-│                                                           │
-│  ┌────────────────────────────────────────────┐           │
-│  │             gap-finder                     │           │
-│  │                                            │           │
-│  │ ██ HOW-ELICIT  (before any gap analysis)   │           │
-│  │ ░░ HOW-PROVENANCE (when producing findings)│           │
-│  └────────────────────────────────────────────┘           │
-│                                                           │
-│  ██ = MANDATORY    ░░ = RECOMMENDED    ▓▓ = inline logic  │
-└───────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│                         AGENT LAYER              │
+│                                                  │
+│  ┌──────────────────┐  ┌──────────────────┐      │
+│  │   architect      │  │    critic        │      │
+│  │                  │  │                  │      │
+│  │ ▒▒ HOW-REVIEW    │  │ ▒▒ HOW-REVIEW    │      │
+│  │ ▒▒ HOW-PROVENANCE│  │ ▒▒ HOW-PROVENANCE│      │
+│  └──────────────────┘  └──────────────────┘      │
+│                                                  │
+│  ┌──────────────────────────────────────────┐    │
+│  │             resolver                     │    │
+│  │                                          │    │
+│  │ ██ HOW-SYNTHESIZE (Step 0, unconditional)│    │
+│  │ ██ HOW-RESOLVE    (Step 3, on Constraint │    │
+│  │                    Collision)            │    │
+│  │ ▓▓ inline inference:                     │    │
+│  │    provenance (reviewer evidence → type) │    │
+│  │    confidence (reviewer agreement → tier)│    │
+│  └──────────────────────────────────────────┘    │
+│                                                  │
+│  ┌───────────────────────────────────┐           │
+│  │             debugger              │           │
+│  │                                   │           │
+│  │ ██ HOW-FALSIFY    (2+ hypotheses) │           │
+│  │ ██ HOW-CONFIDENCE (2+ hypotheses) │           │
+│  │ ░░ HOW-PROVENANCE (on conclusion) │           │
+│  │ ░░ HOW-CONFIDENCE (on conclusion) │           │
+│  └───────────────────────────────────┘           │
+│                                                  │
+│  ┌────────────────────────────────────────────┐  │
+│  │             scanner                        │  │
+│  │                                            │  │
+│  │ ██ HOW-FALSIFY (Process Investigation,     │  │
+│  │                  2+ hypotheses)            │  │
+│  │ ░░ HOW-PROVENANCE (when producing findings)│  │
+│  └────────────────────────────────────────────┘  │
+│                                                  │
+│  ┌────────────────────────────────────────────┐  │
+│  │             gap-finder                     │  │
+│  │                                            │  │
+│  │ ██ HOW-ELICIT  (before any gap analysis)   │  │
+│  │ ░░ HOW-PROVENANCE (when producing findings)│  │
+│  └────────────────────────────────────────────┘  │
+│                                                  │
+│    ██ = MANDATORY    ▒▒ = --deep ONLY            │
+│    ░░ = RECOMMENDED  ▓▓ = inline                 │
+└──────────────────────────────────────────────────┘
 ```
 
 ### Method → Agent Connections
 
 | HOW File | Agent | Strength | Trigger Condition |
 |----------|-------|----------|-------------------|
-| HOW-REVIEW | architect | MANDATORY | Before any review |
-| HOW-REVIEW | critic | MANDATORY | Before any review |
+| HOW-REVIEW | architect | `--deep` ONLY | When `--deep` is in prompt |
+| HOW-REVIEW | critic | `--deep` ONLY | When `--deep` is in prompt |
 | HOW-FALSIFY | debugger | MANDATORY | 2+ competing hypotheses |
 | HOW-CONFIDENCE | debugger | MANDATORY | 2+ competing hypotheses |
 | HOW-CONFIDENCE | debugger | RECOMMENDED | When concluding root cause analysis |
 | HOW-PROVENANCE | debugger | RECOMMENDED | When concluding root cause analysis |
-| HOW-PROVENANCE | architect | RECOMMENDED | When producing findings |
-| HOW-PROVENANCE | critic | RECOMMENDED | When producing findings |
+| HOW-PROVENANCE | architect | `--deep` ONLY | When `--deep` is in prompt |
+| HOW-PROVENANCE | critic | `--deep` ONLY | When `--deep` is in prompt |
 | HOW-FALSIFY | scanner | MANDATORY | Process Investigation + 2+ competing hypotheses |
 | HOW-PROVENANCE | scanner | RECOMMENDED | When producing findings |
 | HOW-SYNTHESIZE | resolver | MANDATORY | Step 0 (unconditional) |
@@ -153,35 +154,35 @@ Some agents apply methodology concepts without reading HOW files — context-spe
 The debugger has a unique dual-path structure ensuring confidence method coverage for both complex and simple diagnoses:
 
 ```
-                    debugger diagnosis start
-                          │
-                          ▼
-                   2+ hypotheses?
-                   ┌──────┴──────┐
-                   │ YES         │ NO
-                   ▼             ▼
-            ┌────────────┐  ┌────────────┐
-            │ MANDATORY  │  │ single     │
-            │ path       │  │ hypothesis │
-            │            │  │ diagnosis  │
-            │ MUST read: │  │            │
-            │ HOW-FALSIFY│  │ (MANDATORY │
-            │ HOW-       │  │  does not  │
-            │ CONFIDENCE │  │  trigger)  │
-            └──────┬─────┘  └──────┬─────┘
-                   │               │
-                   ▼               ▼
-            ┌────────────────────────────┐
-            │  on conclusion:            │
-            │                            │
-            │  RECOMMENDED:              │
-            │  HOW-PROVENANCE (tagging)  │
-            │  HOW-CONFIDENCE (grading)  │
-            └────────────────────────────┘
-                        │
-                        ▼
-              Output: Confidence: HIGH/
-              MODERATE/LOW/VERY LOW
+        debugger diagnosis start
+              │
+              ▼
+       2+ hypotheses?
+       ┌──────┴──────┐
+       │ YES         │ NO
+       ▼             ▼
+┌────────────┐  ┌────────────┐
+│ MANDATORY  │  │ single     │
+│ path       │  │ hypothesis │
+│            │  │ diagnosis  │
+│ MUST read: │  │            │
+│ HOW-FALSIFY│  │ (MANDATORY │
+│ HOW-       │  │  does not  │
+│ CONFIDENCE │  │  trigger)  │
+└──────┬─────┘  └──────┬─────┘
+       │               │
+       ▼               ▼
+┌────────────────────────────┐
+│  on conclusion:            │
+│                            │
+│  RECOMMENDED:              │
+│  HOW-PROVENANCE (tagging)  │
+│  HOW-CONFIDENCE (grading)  │
+└────────────────────────────┘
+            │
+            ▼
+  Output: Confidence: HIGH/
+  MODERATE/LOW/VERY LOW
 ```
 
 MANDATORY forces reading for complex multi-hypothesis diagnoses. RECOMMENDED provides a lighter pointer for single-hypothesis cases, ensuring the debugger always has access to the confidence grading methodology.
@@ -192,8 +193,8 @@ Each agent owns one primary HOW methodology. An agent may own one additional con
 
 | Agent | Primary HOW | Conditional HOW | Trigger |
 |-------|-------------|-----------------|---------|
-| architect | HOW-REVIEW | — | — |
-| critic | HOW-REVIEW | — | — |
+| architect | HOW-REVIEW (`--deep`) | — | — |
+| critic | HOW-REVIEW (`--deep`) | — | — |
 | debugger | HOW-FALSIFY | HOW-CONFIDENCE | 2+ competing hypotheses |
 | scanner | HOW-FALSIFY | — | Process Investigation + 2+ hypotheses |
 | resolver | HOW-SYNTHESIZE | HOW-RESOLVE | Constraint Collision detected |
@@ -206,55 +207,55 @@ HOW files do not route to other HOW files — the caller selects the appropriate
 Skills orchestrate agents and read HOW files directly for protocol-level decisions.
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                          SKILL LAYER                                 │
-│                                                                      │
-│  ┌──────────────────────────────────────────────────────────────┐    │
-│  │                    plan skill                                │    │
-│  │                                                              │    │
-│  │  Phase 1 (--codex)        Phase 2 (always)                   │    │
-│  │  ┌──────────────────┐    ┌──────────────────┐                │    │
-│  │  │ 4a: codex-proxy  │    │ 4a: architect    │                │    │
-│  │  │  Role: architect │    │     critic       │  ──parallel──  │    │
-│  │  │  Role: critic    │    │                  │                │    │
-│  │  └────────┬─────────┘    └────────┬─────────┘                │    │
-│  │           │                       │                          │    │
-│  │  ┌────────▼─────────┐    ┌────────▼─────────┐                │    │
-│  │  │ 4b: codex-proxy  │    │ 4b: resolver     │                │    │
-│  │  │  Role: resolver  │    │  (edits plan)    │                │    │
-│  │  └────────┬─────────┘    └────────┬─────────┘                │    │
-│  │           │                       │                          │    │
-│  │  ┌────────▼─────────────────────────────────┐                │    │
-│  │  │ 4e: plan skill reads directly:           │                │    │
-│  │  │   ██ HOW-COMPLETE (exit evaluation)      │                │    │
-│  │  └──────────────────────────────────────────┘                │    │
-│  │                                                              │    │
-│  │  Step 5: Handoff → coral:ralph                               │    │
-│  └──────────────────────────────────────────────────────────────┘    │
-│                                                                      │
-│  ┌──────────────────────────────────────────────────────────────┐    │
-│  │                   analyze skill                              │    │
-│  │                                                              │    │
-│  │  Step 1: scanner.md protocol ─────── → ## Scan Report        │    │
-│  │  Step 2: gap-finder.md protocol ──── → ## Gap Analysis       │    │
-│  │  Step 3: debugger.md protocol ────── → ## Root Cause         │    │
-│  │                                                              │    │
-│  │  Phase 3: Post-process gates (skill executes directly):      │    │
-│  │    a. CRITICAL/HIGH reference verification                   │    │
-│  │    b. Inclusion gate                                         │    │
-│  │    c. Exclusion gate                                         │    │
-│  │    d. Provenance gate — tag evidence type + downgrade        │    │
-│  │    e. Move to Peripheral Findings                            │    │
-│  │    f. Record finding flow with provenance distribution       │    │
-│  └──────────────────────────────────────────────────────────────┘    │
-└──────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│                          SKILL LAYER                               │
+│                                                                    │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │                    plan skill                                │  │
+│  │                                                              │  │
+│  │  Phase 1 (--codex)        Phase 2 (always)                   │  │
+│  │  ┌──────────────────┐    ┌──────────────────┐                │  │
+│  │  │ 4a: codex(op:    │    │ 4a: architect    │                │  │
+│  │  │ "coral:architect")│   │     critic       │  ──parallel──  │  │
+│  │  │ + coral:critic   │    │                  │                │  │
+│  │  └────────┬─────────┘    └────────┬─────────┘                │  │
+│  │           │                       │                          │  │
+│  │  ┌────────▼─────────┐    ┌────────▼─────────┐                │  │
+│  │  │ 4b: codex(op:    │    │ 4b: resolver     │  --deep only   │  │
+│  │  │ "coral:resolver")│    │  (edits plan)    │                │  │
+│  │  └────────┬─────────┘    └────────┬─────────┘                │  │
+│  │           │                       │                          │  │
+│  │  ┌────────▼─────────────────────────────────┐                │  │
+│  │  │ 4e: plan skill reads directly:           │  --deep only   │  │
+│  │  │   ▒▒ HOW-COMPLETE (exit evaluation)      │                │  │
+│  │  └──────────────────────────────────────────┘                │  │
+│  │                                                              │  │
+│  │  Step 5: Handoff → coral:ralph                               │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                    │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │                   analyze skill                              │  │
+│  │                                                              │  │
+│  │  Step 1: scanner.md protocol ─────── → ## Scan Report        │  │
+│  │  Step 2: gap-finder.md protocol ──── → ## Gap Analysis       │  │
+│  │  Step 3: debugger.md protocol ────── → ## Root Cause         │  │
+│  │                                                              │  │
+│  │  Phase 3: Post-process gates (skill executes directly):      │  │
+│  │    a. CRITICAL/HIGH reference verification                   │  │
+│  │    b. Inclusion gate                                         │  │
+│  │    c. Exclusion gate                                         │  │
+│  │    d. Provenance gate — tag evidence type + downgrade        │  │
+│  │    e. Move to Peripheral Findings                            │  │
+│  │    f. Record finding flow with provenance distribution       │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Method → Skill Connections
 
 | HOW File | Skill | Strength | Trigger |
 |----------|-------|----------|---------|
-| HOW-COMPLETE | plan | MANDATORY | Step 4e exit evaluation |
+| HOW-COMPLETE | plan | `--deep` ONLY | Step 4e exit evaluation (when `--deep`) |
 | (none) | analyze | — | Provenance gate executes inline without reading HOW files |
 | (none) | preplan | — | References HOW-REVIEW conceptually (prose mention only) |
 | HOW-ELICIT | preplan | RECOMMENDED | When filling Assumptions (#4) |
@@ -264,51 +265,49 @@ Skills orchestrate agents and read HOW files directly for protocol-level decisio
 How the layers connect in a typical planning workflow:
 
 ```
-  User request
-      │
-      ▼
-  ┌──────────┐     ┌──────────┐
-  │ preplan  │───▶│  plan    │
-  │ (problem │     │ (design) │
-  │  define) │     └────┬─────┘
-  └──────────┘          │
-        ┌───────────────┼───────────────┐
-        │               │               │
-        ▼               ▼               ▼
-  ┌──────────┐   ┌──────────┐   ┌──────────┐
-  │architect │   │ critic   │   │ resolver │
-  │          │   │          │   │          │
-  │██REVIEW  │   │██REVIEW  │   │██SYNTH.  │
-  │░░PROVEN. │   │░░PROVEN. │   │██RESOLVE │
-  └──────────┘   └──────────┘   │▓▓inline  │
-        │               │       └────┬─────┘
-        └───────┬───────┘            │
-                │   feedback synth.  │
-                ◀───────────────────┘
-                │
-                ▼
-          ┌──────────┐
-          │ plan 4e  │
-          │██COMPLETE│   iterate or exit
-          └────┬─────┘
-               │ approved
-               ▼
-          ┌──────────┐
-          │  ralph   │
-          │ (execute)│
-          └──────────┘
-
-  Independent workflow:
-
-  ┌──────────┐
-  │ analyze  │
-  │          │
-  │ scanner ─┤
-  │ gap-find.┤
-  │ debugger ┤── ██FALSIFY + ██CONFIDENCE (2+ hypotheses)
-  │          │   ░░PROVENANCE + ░░CONFIDENCE (conclusion)
-  │ provenance gate (Phase 3)
-  └──────────┘
+User request
+    │
+    ▼
+┌──────────┐     ┌──────────┐
+│ preplan  │───▶│  plan    │
+│ (problem │     │ (design) │
+│  define) │     └────┬─────┘
+└──────────┘          │
+      ┌───────────────┼───────────────┐
+      │               │               │
+      ▼               ▼               ▼
+┌──────────┐   ┌──────────┐   ┌──────────┐
+│architect │   │ critic   │   │ resolver │
+│          │   │          │   │ (--deep) │
+│▒▒REVIEW  │   │▒▒REVIEW  │   │██SYNTH.  │
+│▒▒PROVEN. │   │▒▒PROVEN. │   │██RESOLVE │
+└──────────┘   └──────────┘   │▓▓inline  │
+      │               │       └────┬─────┘
+      └───────┬───────┘            │
+              │   feedback synth.  │
+              ◀───────────────────┘
+              │
+              ▼
+        ┌──────────┐
+        │ plan 4e  │
+        │▒▒COMPLETE│   iterate or exit (--deep)
+        └────┬─────┘
+             │ approved
+             ▼
+        ┌──────────┐
+        │  ralph   │
+        │ (execute)│
+        └──────────┘
+Independent workflow:
+┌──────────┐
+│ analyze  │
+│          │
+│ scanner ─┤
+│ gap-find.┤
+│ debugger ┤── ██FALSIFY + ██CONFIDENCE (2+ hypotheses)
+│          │   ░░PROVENANCE + ░░CONFIDENCE (conclusion)
+│ provenance gate (Phase 3)
+└──────────┘
 ```
 
 ## Design Principles
@@ -323,8 +322,9 @@ Exception: resolver's inline inference rules are context-specific application (m
 
 Connection strength matches importance to the agent's core mission:
 
-- **MANDATORY**: Essential for the agent's primary function. Without it, the agent cannot perform its mission correctly. Example: architect cannot review without HOW-REVIEW's adversarial methodology.
-- **RECOMMENDED**: Improves output quality but is not required for basic function. Example: architect can produce findings without provenance tags, but tagged findings are more trustworthy.
+- **MANDATORY**: Essential for the agent's primary function. Without it, the agent cannot perform its mission correctly. Example: debugger cannot eliminate hypotheses without HOW-FALSIFY.
+- **`--deep` ONLY**: Read only when `--deep` flag is passed in the prompt. Enables deeper methodology-driven analysis at the cost of additional context. Example: architect reads HOW-REVIEW only in `--deep` mode; otherwise uses built-in protocol.
+- **RECOMMENDED**: Improves output quality but is not required for basic function. Example: debugger can produce findings without provenance tags, but tagged findings are more trustworthy.
 - **Conditional MANDATORY**: Same as MANDATORY, but only triggers under specific conditions. Example: debugger reads HOW-FALSIFY and HOW-CONFIDENCE only when 2+ competing hypotheses exist — simple single-hypothesis diagnoses do not pay the context cost.
 
 ### 3. No HOW-to-HOW Routing

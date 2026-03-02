@@ -22,7 +22,7 @@ Cross-cutting methodology files live in `methods/`. Agents and skills reference 
 | `/coral:codex` | Single entry point for all Codex interactions - routes to scanner/gap-finder/ralph/review intent, or manages sessions directly |
 | `/coral:analyze` | Deep analysis and investigation. Pass `--codex` to delegate to Codex CLI |
 | `/coral:preplan` | Structured problem-definition conversation before planning. Aligns understanding with the user before triggering coral:plan |
-| `/coral:plan` | Planning with parallel architect/critic review. Pass `--codex` for cross-model Codex reviews |
+| `/coral:plan` | Planning with parallel architect/critic review. Pass `--deep` for methodology-driven synthesis, `--codex` for cross-model Codex reviews |
 | `/coral:ralph` | Persistent execution loop with verification (sonnet). Pass `--codex` to delegate to Codex CLI. Use `--red` to add adversarial tests after implementation. |
 | `/coral:code-simplify` | Simplify and refine code for clarity, consistency, and maintainability |
 | `/coral:bugfix` | Systematic bug diagnosis, planning, and fix execution |
@@ -40,7 +40,7 @@ Cross-cutting methodology files live in `methods/`. Agents and skills reference 
 3. After build: wait for red-attacker to finish, then run the full test suite (including adversarial tests)
 4. If adversarial tests fail: fix loop runs (max 3 iterations), then escalates
 
-**Ensemble diversity**: ralph automatically passes the opposite `--codex` flag to red-attacker. `/coral:ralph --red` (Claude implements) → red-attacker gets `--codex` (Codex tests). `/coral:ralph --red --codex` (Codex implements) → red-attacker runs without `--codex` (Claude tests). Different models have different blind spots.
+**Ensemble diversity**: ralph automatically uses the opposite model for red-attacker. `/coral:ralph --red` (Claude implements) → red-attacker runs via `codex({ op: "coral:red-attacker" })` (Codex tests). `/coral:ralph --red --codex` (Codex implements) → red-attacker runs via `Agent("coral:red-attacker")` (Claude tests). Different models have different blind spots.
 
 **Test file lifecycle**: red-attacker writes to the project's test directory as `red-<target>.<ext>` (e.g., `red-auth.test.ts`, `test_red_session.py`). After tests pass, ralph triages each red test — passing tests are merged into the main test file and the `red-` file is deleted; failing triage tests are discarded. Adversarial test provenance is recorded in the commit message, not in file naming.
 
