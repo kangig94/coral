@@ -196,8 +196,9 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     - Final verdict: [APPROVED / APPROVED WITH CONDITIONS]
     - Key changes from review: [brief list]
 
-    ### Plan Overview
-    [2-3 sentence summary of the plan]
+    ### Final Plan
+    Read the plan file and display its full content to the user
+    (render the complete `.claude/coral/plans/{name}.md` — not a summary or excerpt).
 
     ### Implementation Handoff
 
