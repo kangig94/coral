@@ -22,12 +22,11 @@ import {
 } from './schemas.js';
 import type { CodexThreadEvent } from '../types.js';
 import {
-  createJobDir,
-  writeJobResult,
-  writeJobError,
-  readJobStatus,
-  resolveJobDir,
-  JOBS_DIR,
+  createSessionDir,
+  writeSessionResult,
+  writeSessionError,
+  readSessionStatus,
+  resolveSessionDir,
   extractProgressMessage,
   appendProgressEvent,
   formatElapsed,
@@ -53,17 +52,16 @@ export const tools = [
           type: 'string',
           description: 'Operation to run: exec/list/fork/wait/abort, or coral:<agent> for agent delegation (e.g., coral:scanner, coral:architect)',
         },
-        session: { type: 'string', description: 'Session identifier (exec/fork/abort)' },
+        session: { type: 'string', description: 'Session UUID for resume (exec/fork/abort)' },
         prompt: { type: 'string', description: 'Prompt to send (exec required, fork optional)' },
         name: { type: 'string', description: 'Session name (exec/fork optional)' },
         model: { type: 'string', description: 'Codex model to use' },
         working_directory: { type: 'string', description: 'Working directory for Codex execution' },
         reasoning_effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh'], description: 'Model reasoning effort level' },
         bypass: { type: 'boolean', description: 'Bypass Codex sandbox and approval checks. Only set when the user explicitly requests bypass mode.', default: false },
-        job_ids: { type: 'array', items: { type: 'string' }, description: 'Job IDs to monitor (UUID, from exec/fork response)' },
+        sessions: { type: 'array', items: { type: 'string' }, description: 'Session UUIDs to monitor (from exec/fork response)' },
         timeout_seconds: { type: 'number', description: 'Max wait time in seconds (1-1200, default 600)' },
         cursors: { type: 'object', description: 'Byte offsets from prior wait call to avoid progress replay' },
-        job_id: { type: 'string', description: 'Job ID (UUID) for abort. Preferred over session for deterministic abort.' },
       },
       required: ['op'],
     },
@@ -73,7 +71,7 @@ export const tools = [
 /** Session-not-found error message with recovery hint. */
 export function sessionNotFoundError(ref: string): McpResult {
   return textResult(
-    `Session not found: "${ref}". Use codex({ op: "exec" }) to start a new session, or codex({ op: "list" }) to see registered sessions.`,
+    `Session not found: "${ref}". To resume, use a coral session UUID. Use codex({ op: "list" }) to see registered sessions, or codex({ op: "exec" }) to start a new session.`,
     true,
   );
 }
@@ -92,18 +90,18 @@ export function makeEventCallback(progressFile: string): OnEventCallback {
 }
 
 type JobEntry = {
-  jobDir: string;
+  sessionDir: string;
   controller: AbortController;
   sessionName: string;
-  session?: string;
+  threadId?: string;
   terminalState: 'running' | 'terminalizing' | 'completed' | 'error';
 };
 
 export const activeJobs = new Map<string, JobEntry>();
 
 /** Atomically transition a job from 'running' to 'terminalizing'. Returns true if claim succeeded. */
-export function tryClaimTerminalWrite(jobId: string, _finalStatus: 'completed' | 'error'): boolean {
-  const entry = activeJobs.get(jobId);
+export function tryClaimTerminalWrite(id: string, _finalStatus: 'completed' | 'error'): boolean {
+  const entry = activeJobs.get(id);
   if (!entry || entry.terminalState !== 'running') return false;
   entry.terminalState = 'terminalizing';
   return true;
@@ -116,9 +114,16 @@ export function extractCompletionData(
   sessionLabel: string,
 ): { responseText: string; metadata: Record<string, unknown> } {
   const data = JSON.parse(result.content[0].text);
+  let threadId: string | null = null;
+  if (typeof data.thread_id === 'string') {
+    threadId = data.thread_id;
+  } else if (typeof data.session === 'string') {
+    process.stderr.write(`Warning: Completion payload uses legacy 'session' field; update producer to emit 'thread_id'\n`);
+    threadId = data.session;
+  }
   const metadata: Record<string, unknown> = {
     session_name: sessionLabel,
-    session: data.session ?? null,
+    thread_id: threadId,
     model: data.model,
     duration_ms: data.duration_ms,
   };
@@ -135,49 +140,46 @@ export function launchJob(
   sessionLabel: string,
   handler: (signal: AbortSignal, onEvent: OnEventCallback) => Promise<McpResult>,
   mgr: SessionManager,
-  registerOnComplete: boolean = true,
 ): McpResult {
-  const { jobId, jobDir } = createJobDir(sessionLabel);
+  const { id, dir } = createSessionDir(sessionLabel);
   const controller = new AbortController();
   const entry: JobEntry = {
-    jobDir,
+    sessionDir: dir,
     controller,
     sessionName: sessionLabel,
     terminalState: 'running',
   };
-  activeJobs.set(jobId, entry);
+  activeJobs.set(id, entry);
 
-  const progressFile = join(jobDir, 'progress.jsonl');
+  const progressFile = join(dir, 'progress.jsonl');
   const onEvent = makeEventCallback(progressFile);
 
   handler(controller.signal, onEvent)
     .then((result) => {
-      if (!tryClaimTerminalWrite(jobId, 'completed')) return;
+      if (!tryClaimTerminalWrite(id, 'completed')) return;
 
       const { responseText, metadata } = extractCompletionData(result, sessionLabel);
-      writeJobResult(jobDir, responseText, metadata);
+      writeSessionResult(dir, responseText, metadata);
 
-      const sessionId = typeof metadata.session === 'string' ? metadata.session : undefined;
-      if (sessionId) {
-        entry.session = sessionId;
-        if (registerOnComplete) {
-          const model = typeof metadata.model === 'string' ? metadata.model : 'unknown';
-          mgr.register(sessionLabel, sessionId, model, process.cwd());
-        }
+      const threadId = typeof metadata.thread_id === 'string' ? metadata.thread_id : undefined;
+      if (threadId) {
+        entry.threadId = threadId;
+        const model = typeof metadata.model === 'string' ? metadata.model : 'unknown';
+        mgr.register(id, sessionLabel, threadId, model, process.cwd());
       }
 
       entry.terminalState = 'completed';
     })
     .catch((err) => {
-      if (!tryClaimTerminalWrite(jobId, 'error')) return;
-      writeJobError(jobDir, err instanceof Error ? err.message : String(err));
+      if (!tryClaimTerminalWrite(id, 'error')) return;
+      writeSessionError(dir, err instanceof Error ? err.message : String(err));
       entry.terminalState = 'error';
     })
     .finally(() => {
-      activeJobs.delete(jobId);
+      activeJobs.delete(id);
     });
 
-  return jsonResult({ job_id: jobId, job_dir: jobDir, session_name: sessionLabel, status: 'running' });
+  return jsonResult({ session: id, session_dir: dir, session_name: sessionLabel, status: 'running' });
 }
 
 async function preflightCliCheck(): Promise<
@@ -226,7 +228,7 @@ export async function handleSessionCreate(
 
   return jsonResult({
     response: result.response,
-    session: result.sessionId,
+    thread_id: result.sessionId,
     session_name: sessionName,
     model: result.model,
     duration_ms: result.durationMs,
@@ -240,6 +242,7 @@ export async function handleSessionSend(
   signal: AbortSignal,
   onEvent?: OnEventCallback,
   preChecked?: CliInfo & { available: true },
+  sourceSessionId?: string,
 ): Promise<McpResult> {
   const entry = mgr.get(input.session);
   if (!entry) return sessionNotFoundError(input.session);
@@ -248,7 +251,7 @@ export async function handleSessionSend(
   const modelUpdate = input.model ? { model: input.model } : undefined;
 
   const result = await executeResume(
-    entry.sessionId,
+    entry.threadId,
     input.prompt,
     input.model,
     workingDirectory,
@@ -259,13 +262,12 @@ export async function handleSessionSend(
     preChecked,
   );
 
-  mgr.updateSession(sessionName, modelUpdate);
+  mgr.updateSession(sourceSessionId ?? input.session, modelUpdate);
 
   return jsonResult({
     response: result.response,
-    // Fall back to the known entry session ID when abort fires before session ID re-emits.
-    // The session remains resumable regardless; callers should rely on session name for resume.
-    session: result.sessionId ?? entry.sessionId,
+    // Fall back to the known entry thread ID when abort fires before session ID re-emits.
+    thread_id: result.sessionId ?? entry.threadId,
     session_name: sessionName,
     model: result.model,
     duration_ms: result.durationMs,
@@ -274,20 +276,20 @@ export async function handleSessionSend(
 }
 
 export function handleSessionList(mgr: SessionManager): McpResult {
-  const runningSessionNames = new Set(
-    [...activeJobs.values()]
-      .filter((j) => j.terminalState === 'running')
-      .map((j) => j.sessionName),
+  const runningIds = new Set(
+    [...activeJobs.entries()]
+      .filter(([, j]) => j.terminalState === 'running')
+      .map(([id]) => id),
   );
 
   const registered = mgr.list().map((s) => ({
     name: s.name,
-    session: s.sessionId,
+    session: s.id,
     model: s.model,
     created_at: s.createdAt,
     last_used_at: s.lastUsedAt,
     working_directory: s.workingDirectory,
-    status: runningSessionNames.has(s.name) ? 'running' : 'completed',
+    status: runningIds.has(s.id) ? 'running' : 'completed',
   }));
 
   return jsonResult({ sessions: registered, total: registered.length });
@@ -305,7 +307,7 @@ export async function handleSessionFork(
 
   const cwd = input.working_directory ?? entry.workingDirectory;
   const result = await executeFork(
-    entry.sessionId,
+    entry.threadId,
     input.prompt,
     input.model,
     cwd,
@@ -318,8 +320,8 @@ export async function handleSessionFork(
 
   return jsonResult({
     response: result.response,
-    session: result.sessionId,
-    forked_from: entry.sessionId,
+    thread_id: result.sessionId,
+    forked_from: input.session,
     ...(input.name ? { session_name: input.name } : {}),
     model: result.model,
     duration_ms: result.durationMs,
@@ -328,43 +330,16 @@ export async function handleSessionFork(
 }
 
 export async function handleSessionAbort(input: CodexSessionAbortInput, _mgr: SessionManager): Promise<McpResult> {
-  if (input.job_id && input.session) {
-    return textResult('Error: Provide exactly one of job_id or session, not both.', true);
-  }
-
-  if (!input.job_id && !input.session) {
-    return textResult('Error: Provide exactly one of job_id or session.', true);
-  }
-
-  if (input.job_id) {
-    const entry = activeJobs.get(input.job_id);
-    if (!entry) {
-      return textResult(
-        `No active job found for job_id "${input.job_id}". The job may have already completed or the ID is invalid.`,
-        true,
-      );
-    }
-
-    entry.controller.abort();
-    return jsonResult({ job_id: input.job_id, session_name: entry.sessionName, status: 'abort_requested' });
-  }
-
-  const matched: string[] = [];
-  for (const [jobId, entry] of activeJobs) {
-    if (entry.session === input.session) {
-      entry.controller.abort();
-      matched.push(jobId);
-    }
-  }
-
-  if (matched.length === 0) {
+  const entry = activeJobs.get(input.session);
+  if (!entry) {
     return textResult(
-      `No active execution found for session "${input.session}". The session may have completed, not yet emitted a session ID, or belong to a different process.`,
+      `No active execution found for session "${input.session}". The session may have already completed or the ID is invalid.`,
       true,
     );
   }
 
-  return jsonResult({ session: input.session, matched_job_ids: matched, status: 'abort_requested' });
+  entry.controller.abort();
+  return jsonResult({ session: input.session, session_name: entry.sessionName, status: 'abort_requested' });
 }
 
 export async function handleWait(
@@ -372,21 +347,20 @@ export async function handleWait(
   notify?: (n: { method: string; params: Record<string, unknown> }) => Promise<void>,
   progressToken?: string | number,
 ): Promise<McpResult> {
-  const { job_ids, timeout_seconds = 600, cursors: inputCursors } = input;
+  const { sessions, timeout_seconds = 600, cursors: inputCursors } = input;
 
-  const jobDirs: Record<string, string> = {};
-  for (const id of job_ids) {
-    resolveJobDir(id);
-    const dir = join(JOBS_DIR, id);
+  const sessionDirs: Record<string, string> = {};
+  for (const id of sessions) {
+    const dir = resolveSessionDir(id);
     if (!existsSync(dir)) {
-      return textResult(`Unknown job_id: "${id}". No job directory found.`, true);
+      return textResult(`Unknown session: "${id}". No session directory found.`, true);
     }
-    jobDirs[id] = dir;
+    sessionDirs[id] = dir;
   }
 
-  const fds = new Map<string, number | null>(job_ids.map((id) => [id, null]));
+  const fds = new Map<string, number | null>(sessions.map((id) => [id, null]));
   const cursors = new Map<string, number>(
-    job_ids.map((id) => [id, inputCursors?.[id] ?? 0]),
+    sessions.map((id) => [id, inputCursors?.[id] ?? 0]),
   );
 
   let notifCounter = 0;
@@ -394,10 +368,10 @@ export async function handleWait(
   const timeoutMs = timeout_seconds * 1000;
 
   const timeoutResponse = (): McpResult => {
-    const running = job_ids.filter((id) => readJobStatus(jobDirs[id]!).status === 'running');
+    const running = sessions.filter((id) => readSessionStatus(sessionDirs[id]!).status === 'running');
     const cursorRecord: Record<string, number> = {};
     for (const [id, offset] of cursors) cursorRecord[id] = offset;
-    return jsonResult({ status: 'timeout', running_jobs: running, cursors: cursorRecord });
+    return jsonResult({ status: 'timeout', running_sessions: running, cursors: cursorRecord });
   };
 
   try {
@@ -413,8 +387,8 @@ export async function handleWait(
       let completedId: string | null = null;
       let completedStatus: 'completed' | 'error' | null = null;
 
-      for (const id of job_ids) {
-        const dir = jobDirs[id]!;
+      for (const id of sessions) {
+        const dir = sessionDirs[id]!;
         const progressFile = join(dir, 'progress.jsonl');
 
         let fd = fds.get(id) ?? null;
@@ -455,9 +429,9 @@ export async function handleWait(
               const lines = text.split('\n').filter((line) => line.trim());
 
               if (lines.length > 0 && progressToken != null && notify != null) {
-                const jobInfo = readJobStatus(dir);
-                const name = jobInfo.session_name ?? id;
-                const elapsed = formatElapsed(jobInfo.startedAt);
+                const sessionInfo = readSessionStatus(dir);
+                const name = sessionInfo.session_name ?? id;
+                const elapsed = formatElapsed(sessionInfo.startedAt);
                 const tag = elapsed ? `${elapsed}: ${name}` : name;
 
                 for (const line of lines) {
@@ -484,16 +458,16 @@ export async function handleWait(
           }
         }
 
-        const jobStatus = readJobStatus(dir);
-        if ((jobStatus.status === 'completed' || jobStatus.status === 'error') && completedId === null) {
+        const sessionStatus = readSessionStatus(dir);
+        if ((sessionStatus.status === 'completed' || sessionStatus.status === 'error') && completedId === null) {
           completedId = id;
-          completedStatus = jobStatus.status;
+          completedStatus = sessionStatus.status;
         }
       }
 
       if (completedId !== null && completedStatus !== null) {
-        const dir = jobDirs[completedId]!;
-        const statusData = readJobStatus(dir);
+        const dir = sessionDirs[completedId]!;
+        const statusData = readSessionStatus(dir);
         const cursorRecord: Record<string, number> = {};
         for (const [id, offset] of cursors) {
           if (id !== completedId) cursorRecord[id] = offset;
@@ -501,8 +475,8 @@ export async function handleWait(
 
         return jsonResult({
           status: completedStatus,
-          completed_job_id: completedId,
-          job_dir: dir,
+          completed_session: completedId,
+          session_dir: dir,
           session_name: statusData.session_name ?? completedId,
           cursors: cursorRecord,
         });
@@ -554,7 +528,7 @@ async function handleCodexOp(
         const sendInput: CodexSessionSendInput = { ...sendRest, session: sessionRef };
         return launchJob(
           entry.name,
-          (signal, onEvent) => handleSessionSend(sendInput, sessionManager, signal, onEvent, preflight.cli),
+          (signal, onEvent) => handleSessionSend(sendInput, sessionManager, signal, onEvent, preflight.cli, sessionRef),
           sessionManager,
         );
       }
@@ -585,7 +559,6 @@ async function handleCodexOp(
         sessionLabel,
         (signal, onEvent) => handleSessionFork(forkInput, sessionManager, signal, onEvent, preflight.cli),
         sessionManager,
-        !!forkInput.name,
       );
     }
     case 'wait':
@@ -626,10 +599,7 @@ async function handleCoralAgent(
   if (input.session) {
     const entry = mgr.get(input.session);
     if (!entry) {
-      return textResult(
-        `Session not found: "${input.session}". To start a fresh session, omit the session parameter: codex({ op: "${input.op}", prompt: "..." })`,
-        true,
-      );
+      return sessionNotFoundError(input.session);
     }
 
     const preflight = await preflightCliCheck();
@@ -645,7 +615,7 @@ async function handleCoralAgent(
     };
     return launchJob(
       entry.name,
-      (signal, onEvent) => handleSessionSend(sendInput, mgr, signal, onEvent, preflight.cli),
+      (signal, onEvent) => handleSessionSend(sendInput, mgr, signal, onEvent, preflight.cli, input.session),
       mgr,
     );
   }

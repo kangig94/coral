@@ -11,7 +11,7 @@ import type { CodexThreadEvent } from '../types.js';
 
 export type JobStatus = {
   status: 'running' | 'completed' | 'error';
-  session?: string;
+  thread_id?: string;
   session_name?: string;
   model?: string;
   duration_ms?: number;
@@ -19,7 +19,7 @@ export type JobStatus = {
   startedAt?: number;
 };
 
-export const JOBS_DIR = join(tmpdir(), 'coral-jobs');
+export const SESSIONS_DIR = join(tmpdir(), 'coral-sessions');
 
 const STATUS_FILE = 'status.json';
 const STATUS_TMP_FILE = 'status.json.tmp';
@@ -45,53 +45,53 @@ function isTerminal(status: JobStatus): boolean {
   return status.status === 'completed' || status.status === 'error';
 }
 
-export function createJobDir(sessionLabel: string): { jobId: string; jobDir: string } {
-  const jobId = randomUUID();
-  const jobDir = join(JOBS_DIR, jobId);
-  mkdirSync(jobDir, { recursive: true });
-  writeStatusFile(jobDir, {
+export function createSessionDir(sessionLabel: string): { id: string; dir: string } {
+  const id = randomUUID();
+  const dir = join(SESSIONS_DIR, id);
+  mkdirSync(dir, { recursive: true });
+  writeStatusFile(dir, {
     status: 'running',
     session_name: sessionLabel,
     startedAt: Date.now(),
   });
-  writeFileSync(join(jobDir, PROGRESS_FILE), '');
-  return { jobId, jobDir };
+  writeFileSync(join(dir, PROGRESS_FILE), '');
+  return { id, dir };
 }
 
-export function writeJobResult(jobDir: string, responseText: string, metadata: Record<string, unknown>): void {
-  const currentStatus = readStatusFile(jobDir);
+export function writeSessionResult(sessionDir: string, responseText: string, metadata: Record<string, unknown>): void {
+  const currentStatus = readStatusFile(sessionDir);
   if (currentStatus && isTerminal(currentStatus)) {
     return;
   }
 
-  const resultTmpPath = join(jobDir, 'result.md.tmp');
-  const resultPath = join(jobDir, 'result.md');
+  const resultTmpPath = join(sessionDir, 'result.md.tmp');
+  const resultPath = join(sessionDir, 'result.md');
   writeFileSync(resultTmpPath, responseText);
   renameSync(resultTmpPath, resultPath);
 
-  writeStatusFile(jobDir, {
+  writeStatusFile(sessionDir, {
     status: 'completed',
     ...metadata,
   });
 }
 
-export function writeJobError(jobDir: string, error: string): void {
-  const currentStatus = readStatusFile(jobDir);
+export function writeSessionError(sessionDir: string, error: string): void {
+  const currentStatus = readStatusFile(sessionDir);
   if (currentStatus && isTerminal(currentStatus)) {
     return;
   }
 
-  writeStatusFile(jobDir, {
+  writeStatusFile(sessionDir, {
     status: 'error',
     error,
     ...(currentStatus?.session_name ? { session_name: currentStatus.session_name } : {}),
-    ...(currentStatus?.session ? { session: currentStatus.session } : {}),
+    ...(currentStatus?.thread_id ? { thread_id: currentStatus.thread_id } : {}),
   });
 }
 
-export function readJobStatus(jobDir: string): JobStatus {
+export function readSessionStatus(sessionDir: string): JobStatus {
   try {
-    const parsed = JSON.parse(readFileSync(join(jobDir, STATUS_FILE), 'utf-8')) as JobStatus;
+    const parsed = JSON.parse(readFileSync(join(sessionDir, STATUS_FILE), 'utf-8')) as JobStatus;
     if (parsed.status === 'running' || parsed.status === 'completed' || parsed.status === 'error') {
       return parsed;
     }
@@ -99,11 +99,11 @@ export function readJobStatus(jobDir: string): JobStatus {
   return { status: 'running' };
 }
 
-export function resolveJobDir(jobId: string): string {
-  if (!UUID_REGEX.test(jobId)) {
-    throw new Error('Invalid job ID format');
+export function resolveSessionDir(id: string): string {
+  if (!UUID_REGEX.test(id)) {
+    throw new Error('Invalid session ID format');
   }
-  return join(JOBS_DIR, jobId);
+  return join(SESSIONS_DIR, id);
 }
 
 /** Extract a human-readable progress message from a Codex JSONL event. */

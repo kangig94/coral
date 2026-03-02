@@ -66,10 +66,11 @@ argument-hint: "[--codex] [investigation target or question]"
   Run one step at a time — do NOT launch steps in parallel. Each step's output informs
   the next step's scope and "Needed when" evaluation.
   After each exec:
-  1. Wait using `codex({ op: "wait", job_ids: [job_id], timeout_seconds, cursors })` in a loop.
-  2. On `status: "completed"`, read `job_dir/result.md` and `job_dir/status.json`.
-  3. If wait returns `status: "error"` or `status.json` has no `session`, abort the chain and report the error.
-  4. Extract `session` from `status.json` and pass it to the next `codex({ op: "coral:<role_name>", session, ... })` call.
+  1. Capture `session` and `session_dir` from the exec response (`{ session, session_dir, session_name, status }`).
+  2. Wait using `codex({ op: "wait", sessions: [session], timeout_seconds, cursors })` in a loop.
+  3. On `status: "completed"`, read `session_dir/result.md`.
+  4. If wait returns `status: "error"`, read `session_dir/status.json`, abort the chain, and report the error.
+  5. Pass the same `session` UUID to the next `codex({ op: "coral:<role_name>", session, ... })` call.
   You (the executor) post-process and append the result to the file after each step completes.
 
   ### Scoping Framework

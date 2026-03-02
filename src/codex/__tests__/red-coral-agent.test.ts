@@ -86,15 +86,15 @@ vi.mock('../cli-detection.js', () => ({
 }));
 
 vi.mock('../progress.js', () => ({
-  createJobDir: vi.fn(() => ({
-    jobId: 'red-test-uuid-0000-0000-0000-test-uuid-00',
-    jobDir: '/tmp/coral-jobs/red-test',
+  createSessionDir: vi.fn(() => ({
+    id: '11111111-2222-4333-8444-555555555555',
+    dir: '/tmp/coral-sessions/11111111-2222-4333-8444-555555555555',
   })),
-  writeJobResult: vi.fn(),
-  writeJobError: vi.fn(),
-  readJobStatus: vi.fn(() => ({ status: 'running' })),
-  resolveJobDir: vi.fn((id: string) => `/tmp/coral-jobs/${id}`),
-  JOBS_DIR: '/tmp/coral-jobs',
+  writeSessionResult: vi.fn(),
+  writeSessionError: vi.fn(),
+  readSessionStatus: vi.fn(() => ({ status: 'running' })),
+  resolveSessionDir: vi.fn((id: string) => `/tmp/coral-sessions/${id}`),
+  SESSIONS_DIR: '/tmp/coral-sessions',
   extractProgressMessage: vi.fn(),
   appendProgressEvent: vi.fn(),
   formatElapsed: vi.fn(() => ''),
@@ -304,7 +304,8 @@ describe('handleCoralAgent: session lookup ordering before CLI preflight', () =>
 
   it('session found + CLI unauthenticated → auth error fires after session lookup', async () => {
     // When session IS found, preflight runs next and auth error is returned.
-    mgr.register('test-session', 'thread-auth-test', 'o4-mini', '/workspace');
+    const sessionId = '12345678-1234-4234-8234-123456789abc';
+    mgr.register(sessionId, 'test-session', 'thread-auth-test', 'o4-mini', '/workspace');
     vi.mocked(detectCodexCli).mockResolvedValue({
       available: true,
       version: 'codex 1.0.0',
@@ -314,7 +315,7 @@ describe('handleCoralAgent: session lookup ordering before CLI preflight', () =>
 
     const result = await handleToolCall(
       'codex',
-      { op: 'coral:scanner', session: 'test-session', prompt: 'hi' },
+      { op: 'coral:scanner', session: sessionId, prompt: 'hi' },
       mgr,
     );
 
@@ -387,11 +388,12 @@ describe('handleCoralAgent: session name and prompt construction', () => {
 
 describe('coral:* with session field resumes existing session (AC7)', () => {
   it('coral:scanner with session= dispatches via executeResume not executeOneShot', async () => {
-    mgr.register('existing-session', 'thread-resume-001', 'o4-mini', '/workspace');
+    const sessionId = '11111111-1111-4111-8111-111111111111';
+    mgr.register(sessionId, 'existing-session', 'thread-resume-001', 'o4-mini', '/workspace');
 
     const result = await handleToolCall(
       'codex',
-      { op: 'coral:scanner', session: 'existing-session', prompt: 'follow up' },
+      { op: 'coral:scanner', session: sessionId, prompt: 'follow up' },
       mgr,
     );
     expect(result.isError).toBe(false);
@@ -403,12 +405,13 @@ describe('coral:* with session field resumes existing session (AC7)', () => {
   });
 
   it('coral:scanner session resume: augmented prompt is sent to executeResume', async () => {
-    mgr.register('resume-session', 'thread-resume-002', 'o4-mini', '/workspace');
+    const sessionId = '22222222-2222-4222-8222-222222222222';
+    mgr.register(sessionId, 'resume-session', 'thread-resume-002', 'o4-mini', '/workspace');
     const agentContent = readFileSync(join(tmpDir, 'agents', 'scanner.md'), 'utf-8');
 
     await handleToolCall(
       'codex',
-      { op: 'coral:scanner', session: 'resume-session', prompt: 'analyze again' },
+      { op: 'coral:scanner', session: sessionId, prompt: 'analyze again' },
       mgr,
     );
 
@@ -421,11 +424,12 @@ describe('coral:* with session field resumes existing session (AC7)', () => {
   });
 
   it('coral:scanner session resume: working_directory falls back to session entry cwd', async () => {
-    mgr.register('cwd-session', 'thread-cwd-001', 'o4-mini', '/project/root');
+    const sessionId = '33333333-3333-4333-8333-333333333333';
+    mgr.register(sessionId, 'cwd-session', 'thread-cwd-001', 'o4-mini', '/project/root');
 
     await handleToolCall(
       'codex',
-      { op: 'coral:scanner', session: 'cwd-session', prompt: 'scan' },
+      { op: 'coral:scanner', session: sessionId, prompt: 'scan' },
       mgr,
     );
 

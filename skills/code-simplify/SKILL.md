@@ -71,17 +71,17 @@ Strip the `--codex` flag before passing the prompt to the execution path.
          Pass `working_directory`, `reasoning_effort: "xhigh"`.
          Pass `bypass: true` only when the user explicitly requests bypass mode.
          Then wait in a timeout/cursor loop:
-         `codex({ op: "wait", job_ids: [job_id], timeout_seconds, cursors })`
-         until terminal status, then Read(`job_dir + "/result.md"`) for output.
+         `codex({ op: "wait", sessions: [session], timeout_seconds, cursors })`
+         until terminal status, then Read(`session_dir + "/result.md"`) for output.
        Parallel split:
        - Default: spawn each group as a parallel Task (`subagent_type: "general-purpose"`).
          Pass `<Execution>`, `<Constraints>`, the file group, and project coding standards.
        - `--codex`: dispatch one `codex({ op: "exec", ... })` call per file group
-         (include group-specific scope/context), collect all `job_id`s, then wait for all jobs:
-         1. Call `codex({ op: "wait", job_ids: pendingJobIds, timeout_seconds, cursors })`
+         (include group-specific scope/context), collect all `session`s, then wait for all sessions:
+         1. Call `codex({ op: "wait", sessions: pendingSessions, timeout_seconds, cursors })`
          2. If `status: "timeout"`, update `cursors` and continue
-         3. If `status: "completed"`, read `job_dir/result.md`, remove completed job
-         4. If `status: "error"`, read `job_dir/status.json`, remove failed job, continue
+         3. If `status: "completed"`, read `session_dir/result.md`, remove completed session
+         4. If `status: "error"`, read `session_dir/status.json`, remove failed session, continue
     5) Review each change: confirm purely structural with zero logic alteration.
        Use git diff as a before/after reference when the diff is manageable.
        a. API substitutions preserve semantic intent

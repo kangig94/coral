@@ -112,11 +112,11 @@ User → /coral:discuss "AI ethics in healthcare"
 
 ```
 User → codex({ op: "exec", name: "review", prompt: "analyze auth.ts" })
-     → Codex execution → session ID acquired (thread.started event)
-     → SessionManager writes ~/.claude/coral/sessions/<project-hash>/review.json (atomic write)
-     → codex({ op: "exec", session: "review", prompt: "follow-up question" })
-     → SessionManager looks up sessionId by name
-     → codex exec resume SESSION_ID executed
+     → launch returns coral session UUID + session_dir immediately
+     → completion stores internal thread_id in SessionManager under <uuid>.json (atomic write)
+     → codex({ op: "exec", session: "<uuid>", prompt: "follow-up question" })
+     → SessionManager looks up by UUID
+     → codex exec resume THREAD_ID executed
      → lastUsedAt updated
 ```
 
@@ -125,9 +125,9 @@ User → codex({ op: "exec", name: "review", prompt: "analyze auth.ts" })
 ```
 ~/.claude/coral/sessions/
 └── <project-hash>/                  # sha256(resolve(workingDirectory)).slice(0, 12)
-    ├── review.json
-    ├── auth-audit.json
-    └── perf-pass.json
+    ├── 8f6b4c2e-6dd6-53d5-b149-f72f0f6f7d2f.json
+    ├── 1e8c7f32-0d1b-4a73-8d2f-6a6ed6fca12a.json
+    └── ...
 ```
 
 Each file is a single `SessionEntry`. Corrupt files are skipped with a warning; valid files continue loading.
@@ -233,7 +233,7 @@ codex/server.ts  (composition root — wiring only)
         │     ├── codex/output-parser.ts  (pure JSONL → result)
         │     └── codex/cli-detection.ts  (cached singleton)
         ├── codex/session-manager.ts     (atomic file I/O)
-        ├── codex/progress.ts            (job directory I/O)
+        ├── codex/progress.ts            (session directory I/O)
         └── shared/mcp-utils.ts          (textResult, jsonResult)
 
 types.ts ← referenced by all codex modules
