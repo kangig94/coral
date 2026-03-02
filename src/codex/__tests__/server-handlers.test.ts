@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { CodexExecResult } from '../../types.js';
 
@@ -14,17 +14,19 @@ vi.mock('../cli-detection.js', () => ({
 }));
 
 vi.mock('../progress.js', () => ({
-  createJobDir: vi.fn(() => ({
-    jobId: 'test-uuid-1234-1234-1234-test-uuid-12',
-    jobDir: '/tmp/coral-jobs/test-uuid-1234',
+  createSessionDir: vi.fn(() => ({
+    id: '12345678-1234-4234-8234-123456789abc',
+    dir: '/tmp/coral-sessions/12345678-1234-4234-8234-123456789abc',
   })),
-  writeJobResult: vi.fn(),
-  writeJobError: vi.fn(),
-  readJobStatus: vi.fn(() => ({ status: 'running' })),
-  resolveJobDir: vi.fn((id: string) => `/tmp/coral-jobs/${id}`),
-  JOBS_DIR: '/tmp/coral-jobs',
+  writeSessionResult: vi.fn(),
+  writeSessionError: vi.fn(),
+  readSessionStatus: vi.fn(() => ({ status: 'running' })),
+  resolveSessionDir: vi.fn((id: string) => `/tmp/coral-sessions/${id}`),
+  SESSIONS_DIR: '/tmp/coral-sessions',
+  PROGRESS_FILE: 'progress.jsonl',
   extractProgressMessage: vi.fn(),
   appendProgressEvent: vi.fn(),
+  formatElapsed: vi.fn(() => ''),
 }));
 
 import {
@@ -34,29 +36,22 @@ import {
 } from '../codex-executor.js';
 import { detectCodexCli } from '../cli-detection.js';
 import {
-  createJobDir,
-  writeJobResult,
-  writeJobError,
-  readJobStatus,
-  resolveJobDir,
-  extractProgressMessage,
-  appendProgressEvent,
-  JOBS_DIR,
+  createSessionDir,
+  writeSessionError,
+  readSessionStatus,
+  resolveSessionDir,
+  SESSIONS_DIR,
 } from '../progress.js';
 import { SessionManager } from '../session-manager.js';
-import { textResult, jsonResult, resultExtras } from '../../shared/mcp-utils.js';
+import { jsonResult, type McpResult } from '../../shared/mcp-utils.js';
 import {
   extractCompletionData,
-  sessionNotFoundError,
-  makeEventCallback,
   launchJob,
-  tryClaimTerminalWrite,
-  activeJobs,
-  shutdownSignal,
+  activeSessions,
   handleSessionCreate,
   handleSessionSend,
-  handleSessionList,
   handleSessionFork,
+  handleSessionList,
   handleSessionAbort,
   handleWait,
   handleToolCall,
@@ -90,14 +85,22 @@ beforeEach(() => {
   writeFileSync(join(tmpDir, 'agents', 'scanner.md'), '# Scanner Agent\n');
   handlerTest.setPluginRoot(tmpDir);
   mgr = new SessionManager(join(tmpDir, 'workspace'));
-  activeJobs.clear();
+
+  activeSessions.clear();
+  vi.mocked(createSessionDir).mockReturnValue({
+    id: '12345678-1234-4234-8234-123456789abc',
+    dir: '/tmp/coral-sessions/12345678-1234-4234-8234-123456789abc',
+  });
   vi.mocked(detectCodexCli).mockResolvedValue({ available: true, version: 'codex 1.0.0', authState: 'authenticated' });
-  vi.mocked(readJobStatus).mockReturnValue({ status: 'running' });
-  vi.mocked(resolveJobDir).mockImplementation((id: string) => join(JOBS_DIR as string, id));
+  vi.mocked(readSessionStatus).mockReturnValue({ status: 'running' });
+  vi.mocked(resolveSessionDir).mockImplementation((id: string) => join(SESSIONS_DIR as string, id));
+  vi.mocked(executeOneShot).mockResolvedValue(makeExecResult());
+  vi.mocked(executeResume).mockResolvedValue(makeExecResult());
+  vi.mocked(executeFork).mockResolvedValue(makeExecResult({ sessionId: 'thread-fork-1' }));
 });
 
 afterEach(() => {
-  activeJobs.clear();
+  activeSessions.clear();
   vi.clearAllMocks();
   for (const dir of dirsToClean) {
     rmSync(dir, { recursive: true, force: true });
@@ -107,870 +110,601 @@ afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-// ─── A. Pure utility functions ────────────────────────────────────────────────
-
-describe('textResult', () => {
-  it('wraps in MCP content format with isError false by default', () => {
-    expect(textResult('hello')).toEqual({ content: [{ type: 'text', text: 'hello' }], isError: false });
-  });
-
-  it('sets isError true when specified', () => {
-    expect(textResult('err', true).isError).toBe(true);
-  });
-});
-
-describe('jsonResult', () => {
-  it('stringifies data with 2-space indent', () => {
-    const result = jsonResult({ foo: 'bar' });
-    expect(result.content[0].text).toBe(JSON.stringify({ foo: 'bar' }, null, 2));
-    expect(result.isError).toBe(false);
-  });
-});
-
-describe('resultExtras', () => {
-  it('returns empty object when exitCode=0, no errors, no warnings', () => {
-    expect(resultExtras({ exitCode: 0, errors: [], warnings: [] })).toEqual({});
-  });
-
-  it('includes exit_code, errors, warnings when non-zero / present', () => {
-    expect(resultExtras({ exitCode: 1, errors: ['e'], warnings: ['w'] })).toEqual({
-      exit_code: 1,
-      errors: ['e'],
-      warnings: ['w'],
-    });
-  });
-
-  it('omits exit_code when exitCode is null', () => {
-    expect(resultExtras({ exitCode: null, errors: [], warnings: [] })).toEqual({});
-  });
-
-  it('includes aborted: true when aborted is true', () => {
-    expect(resultExtras({ exitCode: null, errors: [], warnings: [], aborted: true })).toEqual({ aborted: true });
-  });
-
-  it('omits aborted when false or undefined', () => {
-    expect(resultExtras({ exitCode: 0, errors: [], warnings: [], aborted: false })).toEqual({});
-    expect(resultExtras({ exitCode: 0, errors: [], warnings: [] })).toEqual({});
-  });
-});
-
-describe('sessionNotFoundError', () => {
-  it('returns isError: true with session ref and recovery hint', () => {
-    const result = sessionNotFoundError('my-session');
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('my-session');
-    expect(result.content[0].text).toContain('codex');
-  });
-});
-
-// ─── B. extractCompletionData ─────────────────────────────────────────────────
-
 describe('extractCompletionData', () => {
-  it('splits response text and metadata', () => {
-    const result = jsonResult({ response: 'hi', session: 't-1', model: 'o4-mini', duration_ms: 100 });
-    const { responseText, metadata } = extractCompletionData(result, 'my-session');
+  it('uses thread_id as canonical metadata field', () => {
+    const result = jsonResult({ response: 'hi', thread_id: 'thread-1', model: 'o4-mini', duration_ms: 10 });
+    const { responseText, metadata } = extractCompletionData(result, 's1');
     expect(responseText).toBe('hi');
-    expect(metadata).toMatchObject({
-      session: 't-1',
-      session_name: 'my-session',
-      model: 'o4-mini',
-      duration_ms: 100,
-    });
+    expect(metadata).toMatchObject({ thread_id: 'thread-1', session_name: 's1' });
   });
 
-  it('includes notice field when present', () => {
-    const result = jsonResult({ response: 'hi', session: null, model: 'o4-mini', duration_ms: 10, notice: 'No session' });
-    const { metadata } = extractCompletionData(result, 'test');
-    expect(metadata.notice).toBe('No session');
-  });
-
-  it('forwards aborted and non_resumable when present', () => {
-    const result = jsonResult({ response: '', session: null, model: 'o4-mini', duration_ms: 50, aborted: true, non_resumable: true });
-    const { metadata } = extractCompletionData(result, 'test');
-    expect(metadata.aborted).toBe(true);
-    expect(metadata.non_resumable).toBe(true);
-  });
-
-  it('forwards exit_code, errors, warnings when present', () => {
-    const result = jsonResult({ response: '', session: 't-1', model: 'o4-mini', duration_ms: 10, exit_code: 1, errors: ['e'], warnings: ['w'] });
-    const { metadata } = extractCompletionData(result, 'test');
-    expect(metadata.exit_code).toBe(1);
-    expect(metadata.errors).toEqual(['e']);
-    expect(metadata.warnings).toEqual(['w']);
-  });
-
-  it('uses empty responseText when response is missing', () => {
-    const result = jsonResult({ session: 't-1', model: 'o4-mini', duration_ms: 10 });
-    const { responseText } = extractCompletionData(result, 'test');
-    expect(responseText).toBe('');
+  it('falls back to legacy session field and warns', () => {
+    const warn = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    const result = jsonResult({ response: 'hi', session: 'thread-old', model: 'o4-mini', duration_ms: 10 });
+    const { metadata } = extractCompletionData(result, 's1');
+    expect(metadata.thread_id).toBe('thread-old');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("legacy 'session' field"));
   });
 });
 
-// ─── C. makeEventCallback ─────────────────────────────────────────────────────
-
-describe('makeEventCallback', () => {
-  beforeEach(() => {
-    vi.mocked(extractProgressMessage).mockReturnValue('Processing...');
+describe('session handlers', () => {
+  it('handleSessionCreate emits thread_id in completion payload', async () => {
+    const result = await handleSessionCreate({ prompt: 'hi', name: 'my-session', bypass: false }, mgr, new AbortController().signal);
+    const data = JSON.parse(result.content[0].text);
+    expect(data.thread_id).toBe('thread-123');
+    expect(data.session).toBeUndefined();
   });
 
-  it('writes to progress file for valid JSON events with a message', () => {
-    const cb = makeEventCallback('/tmp/test.jsonl');
-    cb(JSON.stringify({ type: 'turn.started' }));
-    expect(appendProgressEvent).toHaveBeenCalledWith('/tmp/test.jsonl', 'turn.started', 'Processing...');
-  });
+  it('handleSessionSend resumes using stored threadId and updates by UUID', async () => {
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    mgr.register(sessionId, 'test-session', 'thread-001', 'o4-mini', '/workspace');
 
-  it('silently ignores non-JSON lines', () => {
-    const cb = makeEventCallback('/tmp/test.jsonl');
-    expect(() => cb('not json at all')).not.toThrow();
-    expect(appendProgressEvent).not.toHaveBeenCalled();
-  });
-
-  it('does not append when extractProgressMessage returns null', () => {
-    vi.mocked(extractProgressMessage).mockReturnValueOnce(null);
-    const cb = makeEventCallback('/tmp/test.jsonl');
-    cb(JSON.stringify({ type: 'item.updated' }));
-    expect(appendProgressEvent).not.toHaveBeenCalled();
-  });
-});
-
-// ─── D. handleSessionCreate ───────────────────────────────────────────────────
-
-describe('handleSessionCreate', () => {
-  it('success with sessionId → returns response + session_name', async () => {
-    vi.mocked(executeOneShot).mockResolvedValue(makeExecResult());
-
-    const signal = new AbortController().signal;
-    const result = await handleSessionCreate({ prompt: 'hi', name: 'my-session', bypass: false }, mgr, signal);
+    const result = await handleSessionSend(
+      { session: sessionId, prompt: 'follow up', bypass: false },
+      mgr,
+      new AbortController().signal,
+    );
 
     expect(result.isError).toBe(false);
-    const data = JSON.parse(result.content[0].text);
-    expect(data.response).toBe('test response');
-    expect(data.session).toBe('thread-123');
-    expect(data.session_name).toBe('my-session');
-  });
-
-  it('success without sessionId → returns notice', async () => {
-    vi.mocked(executeOneShot).mockResolvedValue(makeExecResult({ sessionId: null }));
-
-    const signal = new AbortController().signal;
-    const result = await handleSessionCreate({ prompt: 'hi', name: 'no-thread', bypass: false }, mgr, signal);
-
-    const data = JSON.parse(result.content[0].text);
-    expect(data.notice).toContain('No session ID');
-  });
-
-  it('includes errors and warnings in response via resultExtras', async () => {
-    vi.mocked(executeOneShot).mockResolvedValue(makeExecResult({ exitCode: 1, errors: ['err'], warnings: ['warn'] }));
-
-    const signal = new AbortController().signal;
-    const result = await handleSessionCreate({ prompt: 'hi', name: 'test', bypass: false }, mgr, signal);
-
-    const data = JSON.parse(result.content[0].text);
-    expect(data.exit_code).toBe(1);
-    expect(data.errors).toEqual(['err']);
-    expect(data.warnings).toEqual(['warn']);
-  });
-
-  it('uses the provided name (dispatcher owns generation)', async () => {
-    vi.mocked(executeOneShot).mockResolvedValue(makeExecResult());
-
-    const signal = new AbortController().signal;
-    const result = await handleSessionCreate({ prompt: 'hi', name: 'explicit-name', bypass: false }, mgr, signal);
-
-    const data = JSON.parse(result.content[0].text);
-    expect(data.session_name).toBe('explicit-name');
-  });
-
-  it('rejects when executeOneShot throws', async () => {
-    vi.mocked(executeOneShot).mockRejectedValue(new Error('boom'));
-
-    const signal = new AbortController().signal;
-    await expect(handleSessionCreate({ prompt: 'hi', name: 'failing-session', bypass: false }, mgr, signal)).rejects.toThrow('boom');
-  });
-});
-
-// ─── E. handleSessionSend ─────────────────────────────────────────────────────
-
-describe('handleSessionSend', () => {
-  beforeEach(() => {
-    mgr.register('test-session', 'thread-001', 'o4-mini', '/workspace');
-  });
-
-  it('success → returns response and session_name', async () => {
-    vi.mocked(executeResume).mockResolvedValue(makeExecResult({ sessionId: 'thread-001' }));
-
-    const signal = new AbortController().signal;
-    const result = await handleSessionSend({ session: 'test-session', prompt: 'follow up', bypass: false }, mgr, signal);
-
-    expect(result.isError).toBe(false);
-    const data = JSON.parse(result.content[0].text);
-    expect(data.response).toBe('test response');
-    expect(data.session_name).toBe('test-session');
-  });
-
-  it('session not found → isError: true (internal handler guard)', async () => {
-    const signal = new AbortController().signal;
-    const result = await handleSessionSend({ session: 'nonexistent', prompt: 'hi', bypass: false }, mgr, signal);
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('nonexistent');
-  });
-
-  it('passes entry sessionId and workingDirectory to executeResume', async () => {
-    vi.mocked(executeResume).mockResolvedValue(makeExecResult());
-
-    const signal = new AbortController().signal;
-    await handleSessionSend({ session: 'test-session', prompt: 'hi', bypass: false }, mgr, signal);
-
     expect(executeResume).toHaveBeenCalledWith(
       'thread-001',
-      'hi',
+      'follow up',
       undefined,
       '/workspace',
       undefined,
       false,
       undefined,
-      signal,
+      expect.anything(),
       undefined,
     );
   });
 
-  it('threads bypass=true to executeResume', async () => {
-    vi.mocked(executeResume).mockResolvedValue(makeExecResult());
+  it('forked_from uses source coral UUID (not thread_id)', async () => {
+    const sourceSessionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    mgr.register(sourceSessionId, 'base-session', 'thread-base', 'o4-mini', '/workspace');
 
-    const signal = new AbortController().signal;
-    await handleSessionSend({ session: 'test-session', prompt: 'hi', bypass: true }, mgr, signal);
-
-    expect(executeResume).toHaveBeenCalledWith(
-      'thread-001',
-      'hi',
-      undefined,
-      '/workspace',
-      undefined,
-      true,
-      undefined,
-      signal,
-      undefined,
+    const result = await handleSessionFork(
+      { session: sourceSessionId, name: 'forked', bypass: false },
+      mgr,
+      new AbortController().signal,
     );
-  });
-});
-
-// ─── F. handleSessionList ─────────────────────────────────────────────────────
-
-describe('handleSessionList', () => {
-  it('empty → { sessions: [], total: 0 }', () => {
-    const result = handleSessionList(mgr);
     const data = JSON.parse(result.content[0].text);
-    expect(data.sessions).toEqual([]);
-    expect(data.total).toBe(0);
+    expect(data.forked_from).toBe(sourceSessionId);
+    expect(data.thread_id).toBe('thread-fork-1');
   });
 
-  it('returns status=running for sessions with active jobs', () => {
-    mgr.register('active-session', 'thread-1', 'o4-mini', '/workspace');
-    activeJobs.set('job-abc', {
-      jobDir: '/tmp/x',
-      controller: new AbortController(),
-      sessionName: 'active-session',
-      terminalState: 'running',
-    } as never);
-
-    const result = handleSessionList(mgr);
-    const data = JSON.parse(result.content[0].text);
-    expect(data.sessions[0].status).toBe('running');
-
-    activeJobs.clear();
-  });
-
-  it('returns status=completed for sessions without active jobs', () => {
-    mgr.register('idle-session', 'thread-1', 'o4-mini', '/workspace');
-
-    const result = handleSessionList(mgr);
-    const data = JSON.parse(result.content[0].text);
-    expect(data.sessions[0].status).toBe('completed');
-  });
-});
-
-// ─── G. handleSessionFork ─────────────────────────────────────────────────────
-
-describe('handleSessionFork', () => {
-  beforeEach(() => {
-    mgr.register('base-session', 'thread-base', 'o4-mini', '/workspace');
-  });
-
-  it('success with name includes forked_from + session_name', async () => {
-    vi.mocked(executeFork).mockResolvedValue(makeExecResult({ sessionId: 'thread-fork' }));
-
-    const signal = new AbortController().signal;
-    const result = await handleSessionFork({ session: 'base-session', name: 'forked', bypass: false }, mgr, signal);
-
-    const data = JSON.parse(result.content[0].text);
-    expect(data.forked_from).toBe('thread-base');
-    expect(data.session_name).toBe('forked');
-  });
-
-  it('success without name returns no session_name', async () => {
-    vi.mocked(executeFork).mockResolvedValue(makeExecResult({ sessionId: 'thread-fork' }));
-
-    const signal = new AbortController().signal;
-    const result = await handleSessionFork({ session: 'base-session', bypass: false }, mgr, signal);
-
-    const data = JSON.parse(result.content[0].text);
-    expect(data.session_name).toBeUndefined();
-  });
-
-  it('session not found → isError: true (internal handler guard)', async () => {
-    const signal = new AbortController().signal;
-    const result = await handleSessionFork({ session: 'nonexistent', bypass: false }, mgr, signal);
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('nonexistent');
-  });
-
-  it('uses entry workingDirectory when input omits it', async () => {
-    vi.mocked(executeFork).mockResolvedValue(makeExecResult());
-
-    const signal = new AbortController().signal;
-    await handleSessionFork({ session: 'base-session', bypass: false }, mgr, signal);
-
-    expect(executeFork).toHaveBeenCalledWith(
-      'thread-base',
-      undefined,
-      undefined,
-      '/workspace',
-      undefined,
-      false,
-      undefined,
-      signal,
-      undefined,
-    );
-  });
-});
-
-// ─── H. handleSessionAbort ────────────────────────────────────────────────────
-
-describe('handleSessionAbort', () => {
-  it('job_id provided → aborts the matching job and returns abort_requested', async () => {
+  it('handleSessionAbort aborts by single UUID session', async () => {
+    const sessionId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
     const controller = new AbortController();
-    activeJobs.set('job-abc-123', {
-      jobDir: '/tmp/x',
+    activeSessions.set(sessionId, {
+      sessionDir: '/tmp/x',
       controller,
-      sessionName: 'my-session',
+      sessionName: 'abort-me',
       terminalState: 'running',
     } as never);
 
-    const result = await handleSessionAbort({ job_id: 'job-abc-123' }, mgr);
-
-    expect(result.isError).toBe(false);
+    const result = await handleSessionAbort({ session: sessionId }, mgr);
     const data = JSON.parse(result.content[0].text);
+    expect(result.isError).toBe(false);
     expect(data.status).toBe('abort_requested');
-    expect(data.job_id).toBe('job-abc-123');
+    expect(data.session).toBe(sessionId);
     expect(controller.signal.aborted).toBe(true);
-
-    activeJobs.clear();
+    expect(data.thread_id).toBeUndefined();
+    expect(data.job_id).toBeUndefined();
   });
 
-  it('session provided → aborts all matching jobs by session field', async () => {
-    const c1 = new AbortController();
-    const c2 = new AbortController();
+  it('handleWait uses sessions/completed_session/running_sessions/session_dir fields', async () => {
+    const sessionId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const dir = join(SESSIONS_DIR as string, sessionId);
+    mkdirSync(dir, { recursive: true });
+    dirsToClean.add(dir);
+    vi.mocked(readSessionStatus).mockReturnValue({ status: 'completed', session_name: 'wait-session' });
 
-    activeJobs.set('job-1', {
-      jobDir: '/tmp/x',
-      controller: c1,
-      sessionName: 'n',
-      session: 'thread-999',
-      terminalState: 'running',
-    } as never);
-
-    activeJobs.set('job-2', {
-      jobDir: '/tmp/y',
-      controller: c2,
-      sessionName: 'n',
-      session: 'thread-999',
-      terminalState: 'running',
-    } as never);
-
-    const result = await handleSessionAbort({ session: 'thread-999' }, mgr);
-
-    expect(result.isError).toBe(false);
+    const result = await handleWait({ op: 'wait', sessions: [sessionId] });
     const data = JSON.parse(result.content[0].text);
-    expect(data.matched_job_ids).toHaveLength(2);
-    expect(c1.signal.aborted).toBe(true);
-    expect(c2.signal.aborted).toBe(true);
-
-    activeJobs.clear();
-  });
-
-  it('both job_id and session → isError', async () => {
-    const result = await handleSessionAbort({ job_id: 'abc', session: 'xyz' }, mgr);
-    expect(result.isError).toBe(true);
-  });
-
-  it('neither job_id nor session → isError', async () => {
-    const result = await handleSessionAbort({}, mgr);
-    expect(result.isError).toBe(true);
-  });
-
-  it('job_id not in activeJobs → isError', async () => {
-    const result = await handleSessionAbort({ job_id: 'nonexistent-job' }, mgr);
-    expect(result.isError).toBe(true);
-  });
-
-  it('session with no matching jobs → isError', async () => {
-    const result = await handleSessionAbort({ session: 'no-such-thread' }, mgr);
-    expect(result.isError).toBe(true);
+    expect(data.status).toBe('completed');
+    expect(data.completed_session).toBe(sessionId);
+    expect(data.session_dir).toBe(dir);
+    expect(data.completed_job_id).toBeUndefined();
+    expect(data.job_dir).toBeUndefined();
   });
 });
 
-// ─── I. handleToolCall dispatch + validation ──────────────────────────────────
+describe('tool routing and UUID semantics', () => {
+  it('exec resume with UUID succeeds', async () => {
+    const sessionId = '11111111-1111-4111-8111-111111111111';
+    mgr.register(sessionId, 'session-1', 'thread-1', 'o4-mini', '/workspace');
 
-describe('handleToolCall', () => {
-  beforeEach(() => {
-    vi.mocked(executeOneShot).mockResolvedValue(makeExecResult());
-    vi.mocked(executeResume).mockResolvedValue(makeExecResult());
-    vi.mocked(executeFork).mockResolvedValue(makeExecResult());
-  });
-
-  it('registers exactly one codex tool', () => {
-    expect(tools).toHaveLength(1);
-    expect(tools[0].name).toBe('codex');
-  });
-
-  it('exec returns job_id and status:running immediately', async () => {
-    vi.mocked(executeOneShot).mockResolvedValue(makeExecResult());
-
-    const result = await handleToolCall('codex', { op: 'exec', prompt: 'hello' }, mgr);
-
-    expect(result.isError).toBe(false);
-    const data = JSON.parse(result.content[0].text);
-    expect(data.job_id).toBeDefined();
-    expect(data.status).toBe('running');
-    expect(data.session_name).toBeDefined();
-    expect(data.job_dir).toBeDefined();
-  });
-
-  it('routes codex exec(session) to handleSessionSend', async () => {
-    mgr.register('session-1', 'thread-1', 'o4-mini', '/workspace');
-
-    const result = await handleToolCall('codex', { op: 'exec', session: 'session-1', prompt: 'hi' }, mgr);
-
+    const result = await handleToolCall('codex', { op: 'exec', session: sessionId, prompt: 'hi' }, mgr);
     expect(result.isError).toBe(false);
     expect(executeResume).toHaveBeenCalled();
   });
 
-  it('routes codex list to handleSessionList', async () => {
-    const result = await handleToolCall('codex', { op: 'list' }, mgr);
+  it('exec resume with non-UUID name fails as session-not-found (not schema error)', async () => {
+    const result = await handleToolCall('codex', { op: 'exec', session: 'named-session', prompt: 'hi' }, mgr);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Session not found: "named-session"');
+  });
 
-    expect(result.isError).toBe(false);
+  it('fork with non-UUID session fails as session-not-found', async () => {
+    const result = await handleToolCall('codex', { op: 'fork', session: 'named-session' }, mgr);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Session not found: "named-session"');
+  });
+
+  it('coral:scanner with non-UUID session fails as session-not-found', async () => {
+    const result = await handleToolCall('codex', { op: 'coral:scanner', session: 'named-session', prompt: 'scan' }, mgr);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Session not found: "named-session"');
+  });
+
+  it('MCP tool response never exposes thread_id field', async () => {
+    const result = await handleToolCall('codex', { op: 'exec', prompt: 'hello' }, mgr);
     const data = JSON.parse(result.content[0].text);
-    expect(data).toHaveProperty('sessions');
+    expect(data.thread_id).toBeUndefined();
+    expect(data.session).toBeDefined();
+    expect(data.session_dir).toBeDefined();
   });
 
-  it('routes codex fork to handleSessionFork', async () => {
-    mgr.register('session-1', 'thread-1', 'o4-mini', '/workspace');
+  it('unnamed fork registers and is resumable', async () => {
+    const sourceSession = '22222222-2222-4222-8222-222222222222';
+    mgr.register(sourceSession, 'base', 'thread-base', 'o4-mini', '/workspace');
 
-    const result = await handleToolCall('codex', { op: 'fork', session: 'session-1' }, mgr);
+    const forkResult = await handleToolCall('codex', { op: 'fork', session: sourceSession }, mgr);
+    const forkData = JSON.parse(forkResult.content[0].text) as { session: string };
+    await new Promise((resolve) => setTimeout(resolve, 20));
 
-    expect(result.isError).toBe(false);
-    expect(executeFork).toHaveBeenCalled();
+    const forkedEntry = mgr.get(forkData.session);
+    expect(forkedEntry).not.toBeNull();
+    expect(forkedEntry?.threadId).toBe('thread-fork-1');
+
+    vi.mocked(executeResume).mockClear();
+    const resumeResult = await handleToolCall('codex', { op: 'exec', session: forkData.session, prompt: 'continue' }, mgr);
+    expect(resumeResult.isError).toBe(false);
+    expect(executeResume).toHaveBeenCalledWith(
+      'thread-fork-1',
+      'continue',
+      undefined,
+      expect.any(String),
+      undefined,
+      false,
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
   });
 
-  it('routes codex wait to handleWait', async () => {
-    const jobId = '12345678-1234-1234-1234-123456789abc';
-    const dir = join(JOBS_DIR as string, jobId);
-    mkdirSync(dir, { recursive: true });
-    dirsToClean.add(dir);
+  it('early abort works immediately after launch', async () => {
+    const pending = new Promise<McpResult>(() => {});
+    const launchResult = launchJob('early-abort', () => pending, mgr);
+    const launchData = JSON.parse(launchResult.content[0].text) as { session: string };
 
-    vi.mocked(readJobStatus).mockReturnValue({ status: 'completed', session_name: 'wait-session' });
-
-    const result = await handleToolCall('codex', { op: 'wait', job_ids: [jobId] }, mgr);
-
-    expect(result.isError).toBe(false);
-    const data = JSON.parse(result.content[0].text);
-    expect(data.status).toBe('completed');
-    expect(data.completed_job_id).toBe(jobId);
+    const abortResult = await handleSessionAbort({ session: launchData.session }, mgr);
+    const abortData = JSON.parse(abortResult.content[0].text);
+    expect(abortResult.isError).toBe(false);
+    expect(abortData.status).toBe('abort_requested');
   });
 
-  it('routes codex abort to handleSessionAbort', async () => {
-    const jobId = '12345678-1234-1234-1234-123456789abc';
-    const controller = new AbortController();
-    activeJobs.set(jobId, {
-      jobDir: '/tmp/x',
-      controller,
-      sessionName: 'session-to-abort',
+  it('list with duplicate names marks running by UUID key', () => {
+    const runningId = '33333333-3333-4333-8333-333333333333';
+    const completedId = '44444444-4444-4444-8444-444444444444';
+    mgr.register(runningId, 'same-name', 'thread-running', 'o4-mini', '/workspace');
+    mgr.register(completedId, 'same-name', 'thread-completed', 'o4-mini', '/workspace');
+    activeSessions.set(runningId, {
+      sessionDir: '/tmp/running',
+      controller: new AbortController(),
+      sessionName: 'same-name',
       terminalState: 'running',
     } as never);
 
-    const result = await handleToolCall('codex', { op: 'abort', job_id: jobId }, mgr);
+    const listResult = handleSessionList(mgr);
+    const data = JSON.parse(listResult.content[0].text) as { sessions: Array<{ session: string; status: string }> };
+    const running = data.sessions.find((s) => s.session === runningId);
+    const completed = data.sessions.find((s) => s.session === completedId);
 
+    expect(running?.status).toBe('running');
+    expect(completed?.status).toBe('completed');
+  });
+
+  it('launchJob writes errors through writeSessionError', async () => {
+    launchJob(
+      'failing-session',
+      () => Promise.reject(new Error('boom')),
+      mgr,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(writeSessionError).toHaveBeenCalled();
+  });
+});
+
+// ── Merged from red-session-naming: API response field contracts ──────────────
+
+describe('API response: thread_id leakage and field presence', () => {
+  it('list response does not expose thread_id (internal field)', () => {
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    mgr.register(sessionId, 'my-session', 'thread-internal-001', 'o4-mini', '/workspace');
+
+    const result = handleSessionList(mgr);
+    const data = JSON.parse(result.content[0].text) as { sessions: Array<Record<string, unknown>> };
+    expect(data.sessions).toHaveLength(1);
+
+    const entry = data.sessions[0];
+    expect(entry).not.toHaveProperty('thread_id');
+    expect(entry).not.toHaveProperty('threadId');
+    expect(entry).toHaveProperty('session', sessionId);
+  });
+
+  it('wait timeout response uses running_sessions (not running_jobs)', async () => {
+    const sessionId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    vi.mocked(readSessionStatus).mockReturnValue({ status: 'running' });
+
+    const { createSessionDir: realCreate } =
+      await vi.importActual<typeof import('../progress.js')>('../progress.js');
+    const { dir } = realCreate(`timeout-test-${sessionId}`);
+
+    try {
+      vi.mocked(resolveSessionDir).mockImplementation((id) =>
+        id === sessionId ? dir : `/tmp/coral-sessions/${id}`,
+      );
+
+      const result = await handleWait({ op: 'wait', sessions: [sessionId], timeout_seconds: 1 });
+      const data = JSON.parse(result.content[0].text);
+
+      expect(data.status).toBe('timeout');
+      expect(data.running_sessions).toBeDefined();
+      expect(Array.isArray(data.running_sessions)).toBe(true);
+      expect(data.running_jobs).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 3000);
+});
+
+// ── Merged from red-session-naming: handleWait behavioral gaps ────────────────
+
+describe('handleWait: behavioral gaps', () => {
+  it('wait for non-existent session dir returns error', async () => {
+    const sessionId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    vi.mocked(resolveSessionDir).mockReturnValue('/tmp/coral-sessions/does-not-exist-dir');
+
+    const result = await handleWait({ op: 'wait', sessions: [sessionId] });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain(sessionId);
+  });
+
+  it('cursor for completed_session is excluded from returned cursors', async () => {
+    const sessionId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const { createSessionDir: realCreate, writeSessionResult: realWrite, readSessionStatus: realRead } =
+      await vi.importActual<typeof import('../progress.js')>('../progress.js');
+    const { dir } = realCreate('cursor-test');
+
+    try {
+      realWrite(dir, 'done', { session_name: 'cursor-test' });
+      vi.mocked(resolveSessionDir).mockImplementation((id) =>
+        id === sessionId ? dir : `/tmp/coral-sessions/${id}`,
+      );
+      vi.mocked(readSessionStatus).mockImplementation((d) =>
+        d === dir ? realRead(d) : { status: 'running' },
+      );
+
+      const result = await handleWait({
+        op: 'wait',
+        sessions: [sessionId],
+        cursors: { [sessionId]: 0 },
+      });
+      const data = JSON.parse(result.content[0].text);
+
+      expect(data.status).toBe('completed');
+      expect(data.completed_session).toBe(sessionId);
+      expect(data.cursors?.[sessionId]).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('cursor for non-completed session preserved when another completes', async () => {
+    const completedId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    const runningId = '11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const { createSessionDir: realCreate, writeSessionResult: realWrite } =
+      await vi.importActual<typeof import('../progress.js')>('../progress.js');
+    const { dir: completedDir } = realCreate('two-session-completed');
+    const { dir: runningDir } = realCreate('two-session-running');
+
+    try {
+      realWrite(completedDir, 'done', { session_name: 'completed-sess' });
+      vi.mocked(resolveSessionDir).mockImplementation((id) => {
+        if (id === completedId) return completedDir;
+        if (id === runningId) return runningDir;
+        return `/tmp/coral-sessions/${id}`;
+      });
+      vi.mocked(readSessionStatus).mockImplementation((d) =>
+        d === completedDir ? { status: 'completed' } : { status: 'running' },
+      );
+
+      const result = await handleWait({
+        op: 'wait',
+        sessions: [completedId, runningId],
+        cursors: { [completedId]: 0, [runningId]: 42 },
+      });
+      const data = JSON.parse(result.content[0].text);
+
+      expect(data.completed_session).toBe(completedId);
+      expect(data.cursors?.[runningId]).toBe(42);
+      expect(data.cursors?.[completedId]).toBeUndefined();
+    } finally {
+      rmSync(completedDir, { recursive: true, force: true });
+      rmSync(runningDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── Merged from red-session-naming: activeSessions lifecycle ──────────────────
+
+describe('activeSessions lifecycle', () => {
+  it('entry is removed after successful completion', async () => {
+    vi.mocked(createSessionDir).mockReturnValue({
+      id: 'lifecycle-ok-11111111-1111-4111-8111-111111111111',
+      dir: '/tmp/coral-sessions/lifecycle-ok',
+    });
+
+    let resolveHandler!: (r: McpResult) => void;
+    const pending = new Promise<McpResult>((resolve) => { resolveHandler = resolve; });
+
+    launchJob('cleanup-test', () => pending, mgr);
+    const jobId = 'lifecycle-ok-11111111-1111-4111-8111-111111111111';
+    expect(activeSessions.has(jobId)).toBe(true);
+
+    resolveHandler(jsonResult({ response: 'done', thread_id: 'thread-lifecycle', model: 'o4-mini', duration_ms: 10 }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(activeSessions.has(jobId)).toBe(false);
+  });
+
+  it('entry is removed after error', async () => {
+    vi.mocked(createSessionDir).mockReturnValue({
+      id: 'lifecycle-err-22222222-2222-4222-8222-222222222222',
+      dir: '/tmp/coral-sessions/lifecycle-err',
+    });
+
+    let rejectHandler!: (e: Error) => void;
+    const failing = new Promise<McpResult>((_, reject) => { rejectHandler = reject; });
+
+    launchJob('error-cleanup-test', () => failing, mgr);
+    const jobId = 'lifecycle-err-22222222-2222-4222-8222-222222222222';
+    expect(activeSessions.has(jobId)).toBe(true);
+
+    rejectHandler(new Error('boom'));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(activeSessions.has(jobId)).toBe(false);
+  });
+
+  it('abort on terminalizing entry does not throw (controller.abort is idempotent)', async () => {
+    const sessionId = '33333333-cccc-4ccc-8ccc-cccccccccccc';
+    const controller = new AbortController();
+    activeSessions.set(sessionId, {
+      sessionDir: '/tmp/test',
+      controller,
+      sessionName: 'terminalizing-job',
+      terminalState: 'terminalizing',
+    } as never);
+
+    const result = await handleSessionAbort({ session: sessionId }, mgr);
     expect(result.isError).toBe(false);
     const data = JSON.parse(result.content[0].text);
     expect(data.status).toBe('abort_requested');
-    expect(controller.signal.aborted).toBe(true);
-  });
-
-  it('routes coral:scanner to agent resolution and prepends agent prompt', async () => {
-    const result = await handleToolCall('codex', { op: 'coral:scanner', prompt: 'inspect this' }, mgr);
-    expect(result.isError).toBe(false);
-
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
-    expect(executeOneShot).toHaveBeenCalledTimes(1);
-    const prompt = vi.mocked(executeOneShot).mock.calls[0]?.[0];
-    expect(prompt).toContain('# Scanner Agent');
-    expect(prompt).toContain('\n\n---\n\ninspect this');
-  });
-
-  it('coral:nonexistent returns agent file not found error', async () => {
-    const result = await handleToolCall('codex', { op: 'coral:nonexistent', prompt: 'test' }, mgr);
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('Agent file not found: agents/nonexistent.md');
-  });
-
-  it('coral:scanner without prompt returns Zod error, not unknown_op', async () => {
-    const result = await handleToolCall('codex', { op: 'coral:scanner' }, mgr);
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).not.toContain('unknown_op');
-  });
-
-  it('tool schema op has no enum to allow coral:* values', () => {
-    const opSchema = tools[0].inputSchema.properties.op as { enum?: unknown[] };
-    expect(opSchema.enum).toBeUndefined();
-  });
-
-  it('unknown tool name → isError: true with "Unknown tool:" message', async () => {
-    const result = await handleToolCall('nonexistent_tool', {}, mgr);
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('Unknown tool: nonexistent_tool');
-  });
-
-  it('Zod: exec without prompt → isError: true', async () => {
-    const result = await handleToolCall('codex', { op: 'exec' }, mgr);
-    expect(result.isError).toBe(true);
-  });
-
-  it('Zod: exec with session but without prompt → isError: true', async () => {
-    const result = await handleToolCall('codex', { op: 'exec', session: 'session-1' }, mgr);
-    expect(result.isError).toBe(true);
-  });
-
-  it('Zod: list with unknown props → isError: true (strict rejects)', async () => {
-    const result = await handleToolCall('codex', { op: 'list', unknown: true }, mgr);
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('Unrecognized key');
-  });
-
-  it('Zod: fork without session → isError: true', async () => {
-    const result = await handleToolCall('codex', { op: 'fork', prompt: 'hi' }, mgr);
-    expect(result.isError).toBe(true);
-  });
-
-  it('abort without identifiers → isError from handler one-of guard', async () => {
-    const result = await handleToolCall('codex', { op: 'abort' }, mgr);
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('Provide exactly one of job_id or session');
-  });
-
-  it('unknown op returns structured error', async () => {
-    const result = await handleToolCall('codex', { op: 'invalid_op' }, mgr);
-    expect(result.isError).toBe(false);
-    expect(JSON.parse(result.content[0].text)).toEqual({ error: 'unknown_op', op: 'invalid_op' });
-  });
-
-  it('missing op falls through to generic Zod error, not unknown_op', async () => {
-    const result = await handleToolCall('codex', {}, mgr);
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).not.toContain('unknown_op');
-  });
-
-  it('exec(session) with non-existent session → early isError from dispatcher guard', async () => {
-    const result = await handleToolCall('codex', { op: 'exec', session: 'nonexistent', prompt: 'hi' }, mgr);
-
-    expect(result.isError).toBe(true);
-    expect(executeResume).not.toHaveBeenCalled();
-    expect(result.content[0].text).toContain('Session not found: "nonexistent"');
-  });
-
-  it('unknown op "create" returns unknown_op', async () => {
-    const legacyCreate: Record<string, unknown> = { op: 'create', prompt: 'hello' };
-    const result = await handleToolCall('codex', legacyCreate, mgr);
-
-    expect(result.isError).toBe(false);
-    expect(JSON.parse(result.content[0].text)).toEqual({ error: 'unknown_op', op: 'create' });
-  });
-
-  it('unknown op "send" returns unknown_op', async () => {
-    const legacySend: Record<string, unknown> = { op: 'send', session: 'session-1', prompt: 'hello' };
-    const result = await handleToolCall('codex', legacySend, mgr);
-
-    expect(result.isError).toBe(false);
-    expect(JSON.parse(result.content[0].text)).toEqual({ error: 'unknown_op', op: 'send' });
+    expect(() => controller.abort()).not.toThrow();
   });
 });
 
-// ─── J. Auth preflight guard ─────────────────────────────────────────────────
+// ── Merged from red-session-naming: extractCompletionData edge cases ──────────
 
-describe('auth preflight guard', () => {
-  const unauthenticatedCli = {
-    available: true as const,
-    version: 'codex 1.0.0',
-    authState: 'unauthenticated' as const,
-    authError: 'Codex CLI is not authenticated. Run "codex login" or set the OPENAI_API_KEY environment variable.',
-  };
+describe('extractCompletionData: null thread_id path', () => {
+  it('neither thread_id nor session in payload — metadata.thread_id is null', () => {
+    const result = jsonResult({ response: 'hi', model: 'o4-mini', duration_ms: 10 });
+    const { responseText, metadata } = extractCompletionData(result, 'test-session');
+    expect(responseText).toBe('hi');
+    expect(metadata.thread_id).toBeNull();
+  });
 
-  it('exec unauthenticated → immediate isError', async () => {
-    vi.mocked(detectCodexCli).mockResolvedValue(unauthenticatedCli);
+  it('when completion has no thread_id, session is NOT registered in mgr', async () => {
+    const newId = 'no-thread-44444444-4444-4444-8444-444444444444';
+    vi.mocked(createSessionDir).mockReturnValue({
+      id: newId,
+      dir: '/tmp/coral-sessions/no-thread',
+    });
 
-    const result = await handleToolCall('codex', { op: 'exec', prompt: 'hello' }, mgr);
+    launchJob(
+      'no-thread-session',
+      () => Promise.resolve(jsonResult({ response: 'done', model: 'o4-mini', duration_ms: 5 })),
+      mgr,
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(mgr.get(newId)).toBeNull();
+  });
+});
+
+// ── Merged from red-coral-agent: resolveAgentPrompt ───────────────────────────
+
+describe('resolveAgentPrompt: file content and return type', () => {
+  it('returns file contents as-is including YAML frontmatter', async () => {
+    const frontmatterContent = '---\ntitle: Test Agent\nmodel: o4-mini\n---\n\n# Test Agent\nYou are a test agent.\n';
+    writeFileSync(join(tmpDir, 'agents', 'frontmatter-agent.md'), frontmatterContent);
+
+    const result = await handleToolCall('codex', { op: 'coral:frontmatter-agent', prompt: 'go' }, mgr);
+    expect(result.isError).toBe(false);
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const calledPrompt = vi.mocked(executeOneShot).mock.calls[0]?.[0];
+    expect(calledPrompt).toContain('---\ntitle: Test Agent\nmodel: o4-mini\n---');
+    expect(calledPrompt).toContain('\n\n---\n\ngo');
+  });
+
+  it('missing agent returns isError without Error: prefix doubling', async () => {
+    const result = await handleToolCall('codex', { op: 'coral:does-not-exist-xyz', prompt: 'test' }, mgr);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Agent file not found: agents/does-not-exist-xyz.md');
+    expect(result.content[0].text).not.toMatch(/^Error: Error:/);
+  });
+});
+
+// ── Merged from red-coral-agent: session lookup ordering ──────────────────────
+
+describe('handleCoralAgent: session lookup ordering', () => {
+  it('session not in mgr returns error before CLI preflight', async () => {
+    vi.mocked(detectCodexCli).mockResolvedValue({ available: false, error: 'CLI not installed' });
+
+    const result = await handleToolCall(
+      'codex',
+      { op: 'coral:scanner', session: 'nonexistent-session', prompt: 'hi' },
+      mgr,
+    );
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('codex login');
+    expect(result.content[0].text).toContain('nonexistent-session');
+    expect(detectCodexCli).not.toHaveBeenCalled();
+  });
+
+  it('session found + CLI unauthenticated returns auth error', async () => {
+    const sessionId = '12345678-1234-4234-8234-123456789abc';
+    mgr.register(sessionId, 'test-session', 'thread-auth-test', 'o4-mini', '/workspace');
+    vi.mocked(detectCodexCli).mockResolvedValue({
+      available: true,
+      version: 'codex 1.0.0',
+      authState: 'unauthenticated',
+      authError: 'Run codex login',
+    });
+
+    const result = await handleToolCall(
+      'codex',
+      { op: 'coral:scanner', session: sessionId, prompt: 'hi' },
+      mgr,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Run codex login');
+  });
+});
+
+// ── Merged from red-coral-agent: session name and prompt construction ─────────
+
+describe('handleCoralAgent: session name and prompt construction', () => {
+  it('explicit name field overrides generated agentName-timestamp label', async () => {
+    const result = await handleToolCall(
+      'codex',
+      { op: 'coral:scanner', prompt: 'scan this', name: 'my-custom-session' },
+      mgr,
+    );
+    expect(result.isError).toBe(false);
+    const data = JSON.parse(result.content[0].text);
+    expect(data.session_name).toBe('my-custom-session');
+  });
+
+  it('without explicit name, session_name follows agentName-timestamp pattern', async () => {
+    const before = Date.now();
+    const result = await handleToolCall('codex', { op: 'coral:scanner', prompt: 'scan this' }, mgr);
+    const after = Date.now();
+
+    expect(result.isError).toBe(false);
+    const data = JSON.parse(result.content[0].text);
+    expect(data.session_name).toMatch(/^scanner-\d+$/);
+    const ts = parseInt(data.session_name.replace('scanner-', ''), 10);
+    expect(ts).toBeGreaterThanOrEqual(before);
+    expect(ts).toBeLessThanOrEqual(after);
+  });
+
+  it('agent file body containing --- does not confuse the separator', async () => {
+    writeFileSync(join(tmpDir, 'agents', 'has-separator.md'), '# Agent\n---\nSection after divider\n');
+
+    await handleToolCall('codex', { op: 'coral:has-separator', prompt: 'user prompt' }, mgr);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const calledPrompt = vi.mocked(executeOneShot).mock.calls[0]?.[0];
+    expect(calledPrompt).toContain('# Agent\n---\nSection after divider\n\n\n---\n\nuser prompt');
+  });
+});
+
+// ── Merged from red-coral-agent: coral:* session resume (AC7) ─────────────────
+
+describe('coral:* with session field resumes existing session', () => {
+  it('dispatches via executeResume not executeOneShot', async () => {
+    const sessionId = '11111111-1111-4111-8111-111111111111';
+    mgr.register(sessionId, 'existing-session', 'thread-resume-001', 'o4-mini', '/workspace');
+
+    const result = await handleToolCall(
+      'codex',
+      { op: 'coral:scanner', session: sessionId, prompt: 'follow up' },
+      mgr,
+    );
+    expect(result.isError).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(executeResume).toHaveBeenCalledTimes(1);
     expect(executeOneShot).not.toHaveBeenCalled();
   });
 
-  it('exec unknown auth → proceeds (fail-open)', async () => {
-    vi.mocked(detectCodexCli).mockResolvedValue({ available: true, version: 'codex 1.0.0', authState: 'unknown' });
-    vi.mocked(executeOneShot).mockResolvedValue(makeExecResult());
+  it('augmented prompt is sent to executeResume with agent content prepended', async () => {
+    const sessionId = '22222222-2222-4222-8222-222222222222';
+    mgr.register(sessionId, 'resume-session', 'thread-resume-002', 'o4-mini', '/workspace');
+    const agentContent = readFileSync(join(tmpDir, 'agents', 'scanner.md'), 'utf-8');
 
-    const result = await handleToolCall('codex', { op: 'exec', prompt: 'hello' }, mgr);
+    await handleToolCall('codex', { op: 'coral:scanner', session: sessionId, prompt: 'analyze again' }, mgr);
+    await new Promise((resolve) => setTimeout(resolve, 30));
 
-    expect(result.isError).toBe(false);
-    expect(executeOneShot).toHaveBeenCalledTimes(1);
-    const preChecked = vi.mocked(executeOneShot).mock.calls[0]?.[7];
-    expect(preChecked).toEqual(expect.objectContaining({ available: true, authState: 'unknown' }));
+    const calledPrompt = vi.mocked(executeResume).mock.calls[0]?.[1];
+    expect(calledPrompt).toContain(agentContent);
+    expect(calledPrompt).toContain('\n\n---\n\nanalyze again');
   });
 
-  it('fork unauthenticated → immediate isError', async () => {
-    mgr.register('base-session', 'thread-base', 'o4-mini', '/workspace');
-    vi.mocked(detectCodexCli).mockResolvedValue(unauthenticatedCli);
+  it('working_directory falls back to session entry cwd', async () => {
+    const sessionId = '33333333-3333-4333-8333-333333333333';
+    mgr.register(sessionId, 'cwd-session', 'thread-cwd-001', 'o4-mini', '/project/root');
 
-    const result = await handleToolCall('codex', { op: 'fork', session: 'base-session' }, mgr);
+    await handleToolCall('codex', { op: 'coral:scanner', session: sessionId, prompt: 'scan' }, mgr);
+    await new Promise((resolve) => setTimeout(resolve, 30));
 
-    expect(result.isError).toBe(true);
-    expect(executeFork).not.toHaveBeenCalled();
-  });
-
-  it('exec(session) missing session takes precedence over auth errors', async () => {
-    vi.mocked(detectCodexCli).mockResolvedValue(unauthenticatedCli);
-
-    const result = await handleToolCall('codex', { op: 'exec', session: 'missing', prompt: 'hello' }, mgr);
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('Session not found: "missing"');
-    expect(detectCodexCli).not.toHaveBeenCalled();
-  });
-
-  it('fork missing session takes precedence over auth errors', async () => {
-    vi.mocked(detectCodexCli).mockResolvedValue(unauthenticatedCli);
-
-    const result = await handleToolCall('codex', { op: 'fork', session: 'missing' }, mgr);
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('Session not found: "missing"');
-    expect(detectCodexCli).not.toHaveBeenCalled();
-  });
-
-  it('list is not gated by auth checks', async () => {
-    vi.mocked(detectCodexCli).mockResolvedValue(unauthenticatedCli);
-
-    const result = await handleToolCall('codex', { op: 'list' }, mgr);
-
-    expect(result.isError).toBe(false);
-    expect(detectCodexCli).not.toHaveBeenCalled();
-  });
-
-  it('abort is not gated by auth checks', async () => {
-    vi.mocked(detectCodexCli).mockResolvedValue(unauthenticatedCli);
-
-    const result = await handleToolCall('codex', { op: 'abort', session: 'any-session' }, mgr);
-
-    expect(result.isError).toBe(true);
-    expect(detectCodexCli).not.toHaveBeenCalled();
-  });
-
-  it('exec with unknown auth probes once across preflight + executor path', async () => {
-    vi.mocked(detectCodexCli).mockResolvedValue({ available: true, version: 'codex 1.0.0', authState: 'unknown' });
-    vi.mocked(executeOneShot).mockResolvedValue(makeExecResult());
-
-    const result = await handleToolCall('codex', { op: 'exec', prompt: 'hello' }, mgr);
-
-    expect(result.isError).toBe(false);
-    expect(detectCodexCli).toHaveBeenCalledTimes(1);
-    const preChecked = vi.mocked(executeOneShot).mock.calls[0]?.[7];
-    expect(preChecked).toEqual(expect.objectContaining({ available: true, authState: 'unknown' }));
+    const calledCwd = vi.mocked(executeResume).mock.calls[0]?.[3];
+    expect(calledCwd).toBe('/project/root');
   });
 });
 
-// ─── O. extractCompletionData edge values ────────────────────────────────────
+// ── Merged from red-coral-agent: tool schema and Zod validation ───────────────
 
-describe('extractCompletionData edge values', () => {
-  it('session field: undefined → metadata.session is null', () => {
-    const result = jsonResult({ response: 'hi', model: 'o4-mini', duration_ms: 10 });
-    expect(extractCompletionData(result, 'my-session').metadata.session).toBeNull();
+describe('coral:* tool schema and Zod validation routing', () => {
+  it('op description provides a concrete coral: example', () => {
+    const opProp = tools[0].inputSchema.properties.op as { description?: string };
+    expect(opProp.description).toMatch(/coral:[a-z]/);
   });
 
-  it('session field: numeric 0 (falsy) is preserved via ??', () => {
-    const result = jsonResult({ response: 'hi', session: 0, model: 'o4-mini', duration_ms: 10 });
-    expect(extractCompletionData(result, 'my-session').metadata.session).toBe(0);
+  it('empty prompt string fails Zod validation (not agent file lookup)', async () => {
+    const result = await handleToolCall('codex', { op: 'coral:scanner', prompt: '' }, mgr);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).not.toContain('Agent file not found');
   });
 
-  it('exit_code: 0 is included (any defined value is forwarded)', () => {
-    const result = jsonResult({ response: 'hi', session: 't-1', model: 'm', duration_ms: 1, exit_code: 0 });
-    expect(extractCompletionData(result, 'test').metadata).toHaveProperty('exit_code', 0);
-  });
-
-  it('errors and warnings: non-array values are omitted', () => {
-    const result = jsonResult({ response: 'hi', session: 't-1', model: 'm', duration_ms: 1, errors: 'bad', warnings: null });
-    const metadata = extractCompletionData(result, 'test').metadata;
-    expect(metadata).not.toHaveProperty('errors');
-    expect(metadata).not.toHaveProperty('warnings');
-  });
-});
-
-// ─── Q. launchJob ─────────────────────────────────────────────────────────────
-
-describe('launchJob', () => {
-  beforeEach(() => {
-    vi.mocked(createJobDir).mockReturnValue({
-      jobId: 'test-job-id',
-      jobDir: '/tmp/coral-jobs/test-job-id',
-    });
-  });
-
-  it('returns job_id, job_dir, session_name, status:running immediately', () => {
-    const handler = vi.fn().mockReturnValue(new Promise(() => {}));
-
-    const result = launchJob('my-session', handler, mgr);
-
-    expect(result.isError).toBe(false);
-    const data = JSON.parse(result.content[0].text);
-    expect(data.job_id).toBe('test-job-id');
-    expect(data.job_dir).toBe('/tmp/coral-jobs/test-job-id');
-    expect(data.session_name).toBe('my-session');
-    expect(data.status).toBe('running');
-
-    activeJobs.clear();
-  });
-
-  it('adds entry to activeJobs', () => {
-    const handler = vi.fn().mockReturnValue(new Promise(() => {}));
-
-    launchJob('my-session', handler, mgr);
-
-    expect(activeJobs.size).toBe(1);
-    activeJobs.clear();
-  });
-
-  it('registers session in mgr when handler resolves with sessionId', async () => {
-    vi.mocked(executeOneShot).mockResolvedValue(makeExecResult());
-
-    launchJob(
-      'reg-session',
-      (sig, onEvent) => handleSessionCreate({ prompt: 'hi', name: 'reg-session', bypass: false }, mgr, sig, onEvent),
-      mgr,
-      true,
-    );
-
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
-    expect(mgr.get('reg-session')).not.toBeNull();
-    activeJobs.clear();
-  });
-
-  it('calls writeJobError when handler rejects', async () => {
-    vi.mocked(executeOneShot).mockRejectedValue(new Error('codex error'));
-
-    launchJob(
-      'fail-session',
-      (sig, onEvent) => handleSessionCreate({ prompt: 'hi', name: 'fail-session', bypass: false }, mgr, sig, onEvent),
+  it('invalid reasoning_effort value fails Zod validation', async () => {
+    const result = await handleToolCall(
+      'codex',
+      { op: 'coral:scanner', prompt: 'go', reasoning_effort: 'ultra-high' } as unknown as Record<string, unknown>,
       mgr,
     );
-
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
-    expect(writeJobError).toHaveBeenCalled();
-    activeJobs.clear();
-  });
-});
-
-// ─── R. tryClaimTerminalWrite ────────────────────────────────────────────────
-
-describe('tryClaimTerminalWrite', () => {
-  beforeEach(() => {
-    vi.mocked(createJobDir).mockReturnValue({ jobId: 'claim-job', jobDir: '/tmp/x' });
-  });
-
-  it('returns true on first call for running job', () => {
-    const handler = vi.fn().mockReturnValue(new Promise(() => {}));
-
-    launchJob('session', handler, mgr);
-
-    expect(tryClaimTerminalWrite('claim-job', 'completed')).toBe(true);
-    activeJobs.clear();
-  });
-
-  it('returns false on second call (already terminalizing)', () => {
-    const handler = vi.fn().mockReturnValue(new Promise(() => {}));
-
-    launchJob('session', handler, mgr);
-
-    tryClaimTerminalWrite('claim-job', 'completed');
-    expect(tryClaimTerminalWrite('claim-job', 'error')).toBe(false);
-
-    activeJobs.clear();
-  });
-
-  it('returns false for unknown job_id', () => {
-    expect(tryClaimTerminalWrite('nonexistent', 'completed')).toBe(false);
-  });
-});
-
-// ─── S. handleWait ────────────────────────────────────────────────────────────
-
-describe('handleWait', () => {
-  let testJobId: string;
-  let testJobDir: string;
-
-  beforeEach(() => {
-    testJobId = '12345678-1234-1234-1234-123456789abc';
-    testJobDir = join(JOBS_DIR as string, testJobId);
-    mkdirSync(testJobDir, { recursive: true });
-    dirsToClean.add(testJobDir);
-    vi.mocked(resolveJobDir).mockImplementation((id: string) => join(JOBS_DIR as string, id));
-  });
-
-  it('returns error for unknown job_id (no directory)', async () => {
-    const unknownJobId = '12345678-1234-1234-1234-123456789abd';
-    const unknownDir = join(JOBS_DIR as string, unknownJobId);
-    rmSync(unknownDir, { recursive: true, force: true });
-
-    const result = await handleWait({ op: 'wait', job_ids: [unknownJobId] });
-
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('Unknown job_id');
+    expect(result.content[0].text).not.toContain('Agent file not found');
   });
 
-  it('returns immediately when job is already completed', async () => {
-    vi.mocked(readJobStatus).mockReturnValue({ status: 'completed', session_name: 'test-session' });
+  it('missing prompt returns Zod error, never unknown_op', async () => {
+    const result = await handleToolCall('codex', { op: 'coral:scanner' }, mgr);
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).not.toContain('unknown_op');
+  });
 
-    const result = await handleWait({ op: 'wait', job_ids: [testJobId] });
-
-    expect(result.isError).toBe(false);
-    const data = JSON.parse(result.content[0].text);
-    expect(data.status).toBe('completed');
-    expect(data.completed_job_id).toBe(testJobId);
-    expect(data.session_name).toBe('test-session');
-  }, 5000);
-
-  it('returns timeout when jobs are still running', async () => {
-    vi.mocked(readJobStatus).mockReturnValue({ status: 'running' });
-
-    const result = await handleWait({ op: 'wait', job_ids: [testJobId], timeout_seconds: 1 });
-
-    expect(result.isError).toBe(false);
-    const data = JSON.parse(result.content[0].text);
-    expect(data.status).toBe('timeout');
-    expect(data.running_jobs).toContain(testJobId);
-    expect(shutdownSignal.signal.aborted).toBe(false);
-  }, 5000);
+  it('non-existent agent returns file-not-found error (not path-traversal)', async () => {
+    const result = await handleToolCall('codex', { op: 'coral:ghost-agent', prompt: 'test' }, mgr);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Agent file not found: agents/ghost-agent.md');
+    expect(result.content[0].text).not.toContain('Invalid agent name');
+  });
 });

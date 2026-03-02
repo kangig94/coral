@@ -9,9 +9,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CodexThreadEvent } from '../types.js';
 
-export type JobStatus = {
+export type SessionStatus = {
   status: 'running' | 'completed' | 'error';
-  session?: string;
+  thread_id?: string;
   session_name?: string;
   model?: string;
   duration_ms?: number;
@@ -19,91 +19,84 @@ export type JobStatus = {
   startedAt?: number;
 };
 
-export const JOBS_DIR = join(tmpdir(), 'coral-jobs');
+export const SESSIONS_DIR = join(tmpdir(), 'coral-sessions');
 
 const STATUS_FILE = 'status.json';
 const STATUS_TMP_FILE = 'status.json.tmp';
-const PROGRESS_FILE = 'progress.jsonl';
+export const PROGRESS_FILE = 'progress.jsonl';
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function readStatusFile(jobDir: string): JobStatus | null {
+function readStatusFile(sessionDir: string): SessionStatus | null {
   try {
-    return JSON.parse(readFileSync(join(jobDir, STATUS_FILE), 'utf-8')) as JobStatus;
+    const parsed = JSON.parse(readFileSync(join(sessionDir, STATUS_FILE), 'utf-8')) as SessionStatus;
+    if (parsed.status === 'running' || parsed.status === 'completed' || parsed.status === 'error') {
+      return parsed;
+    }
+    return null;
   } catch {
     return null;
   }
 }
 
-function writeStatusFile(jobDir: string, status: Record<string, unknown>): void {
-  const tmpPath = join(jobDir, STATUS_TMP_FILE);
-  const finalPath = join(jobDir, STATUS_FILE);
+function writeStatusFile(sessionDir: string, status: Record<string, unknown>): void {
+  const tmpPath = join(sessionDir, STATUS_TMP_FILE);
+  const finalPath = join(sessionDir, STATUS_FILE);
   writeFileSync(tmpPath, JSON.stringify(status));
   renameSync(tmpPath, finalPath);
 }
 
-function isTerminal(status: JobStatus): boolean {
+function isTerminal(status: SessionStatus): boolean {
   return status.status === 'completed' || status.status === 'error';
 }
 
-export function createJobDir(sessionLabel: string): { jobId: string; jobDir: string } {
-  const jobId = randomUUID();
-  const jobDir = join(JOBS_DIR, jobId);
-  mkdirSync(jobDir, { recursive: true });
-  writeStatusFile(jobDir, {
+export function createSessionDir(sessionLabel: string): { id: string; dir: string } {
+  const id = randomUUID();
+  const dir = join(SESSIONS_DIR, id);
+  mkdirSync(dir, { recursive: true });
+  writeStatusFile(dir, {
     status: 'running',
     session_name: sessionLabel,
     startedAt: Date.now(),
   });
-  writeFileSync(join(jobDir, PROGRESS_FILE), '');
-  return { jobId, jobDir };
+  writeFileSync(join(dir, PROGRESS_FILE), '');
+  return { id, dir };
 }
 
-export function writeJobResult(jobDir: string, responseText: string, metadata: Record<string, unknown>): void {
-  const currentStatus = readStatusFile(jobDir);
+export function writeSessionResult(sessionDir: string, responseText: string, metadata: Record<string, unknown>): void {
+  const currentStatus = readStatusFile(sessionDir);
   if (currentStatus && isTerminal(currentStatus)) {
     return;
   }
 
-  const resultTmpPath = join(jobDir, 'result.md.tmp');
-  const resultPath = join(jobDir, 'result.md');
+  const resultTmpPath = join(sessionDir, 'result.md.tmp');
+  const resultPath = join(sessionDir, 'result.md');
   writeFileSync(resultTmpPath, responseText);
   renameSync(resultTmpPath, resultPath);
 
-  writeStatusFile(jobDir, {
+  writeStatusFile(sessionDir, {
     status: 'completed',
     ...metadata,
   });
 }
 
-export function writeJobError(jobDir: string, error: string): void {
-  const currentStatus = readStatusFile(jobDir);
+export function writeSessionError(sessionDir: string, error: string): void {
+  const currentStatus = readStatusFile(sessionDir);
   if (currentStatus && isTerminal(currentStatus)) {
     return;
   }
 
-  writeStatusFile(jobDir, {
-    status: 'error',
-    error,
-    ...(currentStatus?.session_name ? { session_name: currentStatus.session_name } : {}),
-    ...(currentStatus?.session ? { session: currentStatus.session } : {}),
-  });
+  writeStatusFile(sessionDir, { ...currentStatus, status: 'error', error });
 }
 
-export function readJobStatus(jobDir: string): JobStatus {
-  try {
-    const parsed = JSON.parse(readFileSync(join(jobDir, STATUS_FILE), 'utf-8')) as JobStatus;
-    if (parsed.status === 'running' || parsed.status === 'completed' || parsed.status === 'error') {
-      return parsed;
-    }
-  } catch {}
-  return { status: 'running' };
+export function readSessionStatus(sessionDir: string): SessionStatus {
+  return readStatusFile(sessionDir) ?? { status: 'running' };
 }
 
-export function resolveJobDir(jobId: string): string {
-  if (!UUID_REGEX.test(jobId)) {
-    throw new Error('Invalid job ID format');
+export function resolveSessionDir(id: string): string {
+  if (!UUID_REGEX.test(id)) {
+    throw new Error('Invalid session ID format');
   }
-  return join(JOBS_DIR, jobId);
+  return join(SESSIONS_DIR, id);
 }
 
 /** Extract a human-readable progress message from a Codex JSONL event. */
@@ -130,6 +123,19 @@ export function extractProgressMessage(event: CodexThreadEvent): string | null {
     default:
       return null;
   }
+}
+
+/** Format elapsed seconds since job start as a compact duration string. */
+export function formatElapsed(startedAt: number | undefined): string {
+  if (startedAt == null) return '';
+  const total = Math.floor((Date.now() - startedAt) / 1000);
+  if (total < 0) return '0s';
+  if (total < 60) return `${total}s`;
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  if (m < 60) return `${m}m ${s}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m ${s}s`;
 }
 
 /** Append a progress event to the file. */

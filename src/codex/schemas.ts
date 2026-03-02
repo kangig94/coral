@@ -53,15 +53,14 @@ const forkShape = z.object({
 
 const waitShape = z.object({
   op: z.literal('wait'),
-  job_ids: z.array(z.string().uuid()).min(1, 'At least one job_id required'),
-  timeout_seconds: z.number().min(1).max(600).optional(),
+  sessions: z.array(z.string().uuid()).min(1, 'At least one session required'),
+  timeout_seconds: z.number().min(1).max(1200).optional(),
   cursors: z.record(z.string().uuid(), z.number().int().min(0)).optional(),
 });
 
 const abortShape = z.object({
   op: z.literal('abort'),
-  session: z.string().optional(),
-  job_id: z.string().uuid().optional(),
+  session: z.string().uuid('Session must be a valid UUID'),
 });
 
 export const codexOpSchema = z.discriminatedUnion('op', [
@@ -77,7 +76,7 @@ export type CodexSessionCreateInput = Omit<Extract<CodexOpInput, { op: 'exec' }>
 export type CodexSessionSendInput = Omit<Extract<CodexOpInput, { op: 'exec' }>, 'op' | 'name'> & { session: string };
 export type CodexSessionForkInput = Omit<Extract<CodexOpInput, { op: 'fork' }>, 'op'>;
 export type CodexWaitInput = z.infer<typeof waitShape>;
-export type CodexSessionAbortInput = Omit<Extract<CodexOpInput, { op: 'abort' }>, 'op'>;
+export type CodexSessionAbortInput = Omit<z.infer<typeof abortShape>, 'op'>;
 
 // Stricter than identPattern: agent names are kebab-case only.
 const coralOpSchema = z

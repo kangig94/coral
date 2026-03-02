@@ -88,26 +88,34 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     Repeat (max 5 rounds):
 
     **4a. Parallel Review**
-    Dispatch both reviewer calls in parallel via `mcp__plugin_coral_cx__codex`.
+    Dispatch both reviewers in parallel:
+    ```
+    codex({ op: "coral:architect", prompt: "...", name: "architect-r{N}", working_directory })
+    codex({ op: "coral:critic",    prompt: "...", name: "critic-r{N}",    working_directory })
+    ```
+    **CRITICAL**: Use `op: "coral:<role>"`, NOT `op: "exec"`. Never pass `session` — each round is a fresh call (no session continuity), so reviewers evaluate the current plan without prior-round bias. Use unique `name` per round (e.g., `architect-r1`, `architect-r2`) to avoid conflicts.
     Provide each: plan file path, working directory, relevant context. In `--deep`, include `--deep` in each reviewer's prompt.
-    Each round is a fresh Codex call (no session continuity) — reviewers evaluate the
-    current plan without prior-round bias.
 
     Use a cursor-aware wait loop until both reviewer jobs finish:
-    1. Call `codex({ op: "wait", job_ids: pendingJobIds, timeout_seconds, cursors })`.
+    1. Call `codex({ op: "wait", sessions: pendingSessions, timeout_seconds, cursors })`.
     2. If `status: "timeout"`, update `cursors` from the response and continue waiting.
-    3. If `status: "completed"`, read `job_dir/result.md` and remove that job from `pendingJobIds`.
-    4. If `status: "error"`, read `job_dir/status.json`, record the failure, remove that job, continue.
+    3. If `status: "completed"`, record `session_dir` path and remove that session from `pendingSessions`.
+       **Do NOT read `result.md` yet** — pass paths to the resolver to save context.
+    4. If `status: "error"`, read `session_dir/status.json`, record the failure, remove that session, continue.
 
     **4b. Synthesize Feedback**
 
-    Synthesize directly — classify each finding as Adopt (take as-is) / Adapt (take insight, own solution) / Defer (next round) / Diverge (reject with rationale).
-    Reviewers can be wrong — verify against actual code. When reviewers contradict each other, neither is right; find the hidden assumption. Edit the plan file yourself, then go to 4d (skip 4c).
+    **If `--deep`**:
+    ```
+    codex({ op: "coral:resolver", prompt: "...", name: "resolver-r{N}", working_directory })
+    ```
+    Pass the plan file path, both reviewers' `session_dir` paths (resolver reads `result.md` itself), and working directory.
+    No `session` — each round spawns a fresh resolver (session memory would create author bias toward its own prior edits).
+    Skip to 4c.
 
-    **If `--deep`**: Instead of synthesizing directly, `mcp__plugin_coral_cx__codex({ op: "coral:resolver", ... })`.
-    Pass the plan file path, both reviewers' outputs, and working directory.
-    Each round spawns a fresh resolver — no session continuity. The resolver edits the plan
-    file directly, so session memory would create author bias toward its own prior edits.
+    **Otherwise** (no `--deep`): Read both reviewers' `session_dir/result.md` now.
+    Synthesize directly — classify each finding as Adopt / Adapt / Defer / Diverge.
+    Reviewers can be wrong — verify against actual code. When reviewers contradict each other, neither is right; find the hidden assumption. Edit the plan file yourself, then go to 4d (skip 4c).
 
     **4c. Review Synthesis Report** (`--deep` only)
     The resolver has already applied Adopt/Adapt changes directly to the plan file.
@@ -145,9 +153,10 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     Reviewers: `coral:architect` + `coral:critic`
 
     Repeat (max 5 rounds):
-    Apply the same methodology as Phase 1. In `--deep`: `Agent("coral:resolver")` at 4b, read `CORAL_METHODS/HOW-COMPLETE.md` yourself at 4e.
+    Same review loop structure as Phase 1, but reviewers are Claude-native agents (output returns in conversation, no session_dir files).
+    In `--deep`: read `CORAL_METHODS/HOW-COMPLETE.md` yourself at 4e.
     - **4a. Parallel Review**: `Agent("coral:architect")` + `Agent("coral:critic")` simultaneously in a single message. Provide each: plan file path, working directory, relevant context. In `--deep`, include `--deep` in each reviewer's prompt.
-    - **4b. Synthesize Feedback**: Synthesize and edit directly, skip 4c. In `--deep` → `Agent("coral:resolver")`, fresh spawn each round.
+    - **4b. Synthesize Feedback**: Synthesize and edit directly, skip 4c. In `--deep` → `Agent("coral:resolver")`, fresh spawn each round. Pass both reviewers' output text directly (no file paths — Claude agents return output in conversation, not to disk).
     - **4c. Review Synthesis Report** (`--deep` only): Resolver has applied changes; read the updated plan file, then read its report, record Deferred/Diverged items.
     - **4d. Round Summary**: Same format, label as `(Claude)`. AFTER 4b/4c — never before synthesis is complete.
     - **4e. Exit Condition**: Same rules as Phase 1. On pass, proceed to step 5. On max rounds (5), `AskUserQuestion` — continue, finalize, or abort.

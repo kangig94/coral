@@ -303,6 +303,39 @@ describe('executeFork', () => {
   });
 });
 
+describe('preChecked auth guard for executeResume', () => {
+  const agentOk = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
+
+  it('unauthenticated throws verbatim authError before spawn', async () => {
+    const customError = 'Custom auth error for resume test';
+    await expect(
+      executeResume(
+        'thread-abc', 'continue', undefined, undefined, undefined, false,
+        undefined, undefined, {
+          available: true as const, version: '1.0.0',
+          authState: 'unauthenticated' as const, authError: customError,
+        },
+      ),
+    ).rejects.toThrow(customError);
+
+    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(mockDetect).not.toHaveBeenCalled();
+  });
+
+  it('unknown auth state spawns process (fail-open)', async () => {
+    mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
+
+    const result = await executeResume(
+      'thread-abc', 'continue', 'o4-mini', undefined, undefined, false,
+      undefined, undefined, { available: true as const, version: '1.0.0', authState: 'unknown' as const },
+    );
+
+    expect(mockSpawn).toHaveBeenCalled();
+    expect(mockDetect).not.toHaveBeenCalled();
+    expect(result.response).toBe('OK');
+  });
+});
+
 describe('idle timeout', () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });

@@ -17,8 +17,9 @@ export type CodexExecResult = {
 
 /** A named session entry in the registry */
 export type SessionEntry = {
+  id: string;
   name: string;
-  sessionId: string;
+  threadId: string;
   model: string;
   createdAt: string;
   lastUsedAt: string;

@@ -6,7 +6,7 @@ Detailed description of the TypeScript modules across both MCP servers.
 
 ### src/types.ts - Shared Type Definitions
 
-Defines `CodexExecResult` (execution result: response, session ID, model, duration, exit code, errors, warnings), `SessionEntry` (per-session persistence: name, session ID, model, timestamps, working directory), and `CodexThreadEvent` / `CodexThreadItemDetails` (union types for Codex CLI JSONL event stream, based on `codex-rs/exec/src/exec_events.rs`). Referenced by all codex modules. See `src/types.ts`.
+Defines `CodexExecResult` (execution result: response, session ID, model, duration, exit code, errors, warnings), `SessionEntry` (per-session persistence: coral UUID `id`, display `name`, internal `threadId`, model, timestamps, working directory), and `CodexThreadEvent` / `CodexThreadItemDetails` (union types for Codex CLI JSONL event stream, based on `codex-rs/exec/src/exec_events.rs`). Referenced by all codex modules. See `src/types.ts`.
 
 ---
 
@@ -19,7 +19,7 @@ Defines a discriminated-union Zod schema for the unified `codex` MCP tool. Runti
 | `identPattern` | Regex for model/session names - prevents flag injection |
 | `sessionNameSchema` | Session name validation |
 | `promptSchema` | Non-empty prompt string |
-| `sessionRefSchema` | Session name or session ID reference |
+| `sessionRefSchema` | Opaque session reference string (exec/fork/coral) |
 | `cwdSchema` | Optional working directory |
 | `reasoningEffortSchema` | Optional enum: `low`, `medium`, `high`, `xhigh` |
 
@@ -67,15 +67,15 @@ See `src/codex/codex-executor.ts`.
 
 ---
 
-### src/codex/progress.ts - Job Directory Utilities
+### src/codex/progress.ts - Session Directory Utilities
 
-Pure helper functions for job-directory management. No server dependencies.
+Pure helper functions for session-run directory management. No server dependencies.
 
-**Key exports**: `createJobDir(sessionLabel)` → `{ jobId, jobDir }` (creates UUID-named directory with `status.json` and empty `progress.jsonl`); `writeJobResult(jobDir, text, meta)` (writes `result.md`, updates `status.json` to `completed` — idempotent); `writeJobError(jobDir, message)` (updates `status.json` to `error` — idempotent); `readJobStatus(jobDir)` → status object; `resolveJobDir(jobId)` → path (throws on non-UUID input).
+**Key exports**: `createSessionDir(sessionLabel)` → `{ id, dir }` (creates UUID-named directory with `status.json` and empty `progress.jsonl`); `writeSessionResult(dir, text, meta)` (writes `result.md`, updates `status.json` to `completed` — idempotent); `writeSessionError(dir, message)` (updates `status.json` to `error` — idempotent); `readSessionStatus(dir)` → status object; `resolveSessionDir(id)` → path (throws on non-UUID input).
 
 **Progress events**: `extractProgressMessage(event)` → human-readable string for `CodexThreadEvent` objects (e.g., `Running: <command>`, `Editing: <path>`); `appendProgressEvent(filePath, eventType, message)` appends a JSONL line.
 
-Job directories are stored under `$TMPDIR/coral-jobs/`. See `src/codex/progress.ts`.
+Session directories are stored under `$TMPDIR/coral-sessions/`. See `src/codex/progress.ts`.
 
 ---
 
@@ -85,7 +85,8 @@ Per-session file persistence. Each session is stored as an individual JSON file 
 
 - **Atomic writes**: written to `.tmp` then `renameSync` - prevents corruption on crash
 - **Project hash**: `sha256(resolve(workingDirectory)).slice(0, 12)` - isolates sessions per project
-- **Lookup**: by name first, then by `codexThreadId` scan
+- **Lookup**: direct by coral UUID (filename stem)
+- **Migration**: deterministic UUID v5 migration from legacy v1 session files
 
 See `src/codex/session-manager.ts`.
 
@@ -95,9 +96,9 @@ See `src/codex/session-manager.ts`.
 
 All MCP tool business logic, extracted from `server.ts` to enable independent testing. `server.ts` is the composition root (wiring only); this module contains all handlers and the dispatch switch.
 
-Key design: all execution is asynchronous. `launchJob(sessionLabel, handler, mgr)` starts execution in the background and returns `{ job_id, job_dir, session_name, status: "running" }` immediately. `handleWait` polls `activeJobs` with FD-based progress tailing and an abort-aware sleep loop. `handleToolCall` is the entry point — Zod validation at the top, then dispatch by `op`. Auto-generated session names (`session-{timestamp}`) are assigned here before calling handlers.
+Key design: all execution is asynchronous. `launchJob(sessionLabel, handler, mgr)` starts execution in the background and returns `{ session, session_dir, session_name, status: "running" }` immediately. `handleWait` polls `activeJobs` with FD-based progress tailing and an abort-aware sleep loop. `handleToolCall` is the entry point — Zod validation at the top, then dispatch by `op`. Auto-generated session names (`session-{timestamp}`) are assigned here before calling handlers.
 
-Exported state: `activeJobs: Map<string, JobEntry>` (single registry), `shutdownSignal: AbortController` (cooperative poll-loop cleanup on server shutdown), `tryClaimTerminalWrite(jobId, state)` (in-memory CAS to prevent double terminal writes). See `src/codex/server-handlers.ts`.
+Exported state: `activeJobs: Map<string, JobEntry>` (single registry keyed by session UUID), `shutdownSignal: AbortController` (cooperative poll-loop cleanup on server shutdown), `tryClaimTerminalWrite(id, state)` (in-memory CAS to prevent double terminal writes). See `src/codex/server-handlers.ts`.
 
 ---
 

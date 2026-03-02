@@ -282,9 +282,9 @@ export async function executeOneShot(
   );
 }
 
-/** Resume an existing session: codex exec resume SESSION_ID --json --full-auto */
+/** Resume an existing session: codex exec resume THREAD_ID --json --full-auto */
 export async function executeResume(
-  sessionId: string,
+  threadId: string,
   prompt: string,
   model?: string,
   cwd?: string,
@@ -296,7 +296,7 @@ export async function executeResume(
 ): Promise<CodexExecResult> {
   const resolvedModel = getModel(model);
   return executeCodex(
-    ['exec', 'resume', sessionId, '-m', resolvedModel, ...baseFlags(bypassSandbox), ...extraFlags(reasoningEffort)],
+    ['exec', 'resume', threadId, '-m', resolvedModel, ...baseFlags(bypassSandbox), ...extraFlags(reasoningEffort)],
     prompt,
     resolvedModel,
     cwd,
@@ -308,7 +308,7 @@ export async function executeResume(
 
 /** Fork a session by resuming with a new prompt (codex fork is TUI-only). */
 export async function executeFork(
-  sessionId: string,
+  threadId: string,
   prompt?: string,
   model?: string,
   cwd?: string,
@@ -319,7 +319,7 @@ export async function executeFork(
   preChecked?: CliInfo & { available: true },
 ): Promise<CodexExecResult> {
   const forkPrompt = prompt ?? 'Continue from where we left off.';
-  return executeResume(sessionId, forkPrompt, model, cwd, reasoningEffort, bypassSandbox, onEvent, signal, preChecked);
+  return executeResume(threadId, forkPrompt, model, cwd, reasoningEffort, bypassSandbox, onEvent, signal, preChecked);
 }
 
 // Test-only exports

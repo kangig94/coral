@@ -3,31 +3,6 @@ import { ZodError } from 'zod';
 import { codexOpSchema, coralAgentSchema } from '../schemas.js';
 
 describe('codexOpSchema', () => {
-  it('accepts exec without session', () => {
-    const result = codexOpSchema.parse({ op: 'exec', prompt: 'Hello', name: 'session-a' });
-    expect(result).toMatchObject({ op: 'exec', prompt: 'Hello', name: 'session-a' });
-  });
-
-  it('accepts exec with session', () => {
-    const result = codexOpSchema.parse({ op: 'exec', session: 'session-a', prompt: 'Continue' });
-    expect(result).toMatchObject({ op: 'exec', session: 'session-a', prompt: 'Continue' });
-  });
-
-  it('accepts list', () => {
-    const result = codexOpSchema.parse({ op: 'list' });
-    expect(result).toEqual({ op: 'list' });
-  });
-
-  it('accepts fork', () => {
-    const result = codexOpSchema.parse({ op: 'fork', session: 'session-a', prompt: 'Fork this' });
-    expect(result).toMatchObject({ op: 'fork', session: 'session-a', prompt: 'Fork this' });
-  });
-
-  it('accepts abort', () => {
-    const result = codexOpSchema.parse({ op: 'abort', session: 'session-a' });
-    expect(result).toMatchObject({ op: 'abort', session: 'session-a' });
-  });
-
   it('list rejects unknown properties', () => {
     expect(() => codexOpSchema.parse({ op: 'list', extra: true })).toThrow(ZodError);
   });
@@ -40,97 +15,76 @@ describe('codexOpSchema', () => {
     expect(() => codexOpSchema.parse({})).toThrow(ZodError);
   });
 
-  it('accepts wait with job_ids array', () => {
-    const result = codexOpSchema.parse({
-      op: 'wait',
-      job_ids: ['12345678-1234-1234-1234-123456789abc'],
-    });
-    expect(result).toMatchObject({
-      op: 'wait',
-      job_ids: ['12345678-1234-1234-1234-123456789abc'],
-    });
+  it('wait rejects empty sessions array', () => {
+    expect(() => codexOpSchema.parse({ op: 'wait', sessions: [] })).toThrow(ZodError);
   });
 
-  it('wait rejects empty job_ids array', () => {
-    expect(() => codexOpSchema.parse({ op: 'wait', job_ids: [] })).toThrow(ZodError);
-  });
-
-  it('wait rejects non-UUID job_ids', () => {
-    expect(() => codexOpSchema.parse({ op: 'wait', job_ids: ['not-a-uuid'] })).toThrow(ZodError);
-  });
-
-  it('wait accepts optional timeout_seconds', () => {
-    const a = codexOpSchema.parse({
-      op: 'wait',
-      job_ids: ['12345678-1234-1234-1234-123456789abc'],
-      timeout_seconds: 1,
-    });
-    const b = codexOpSchema.parse({
-      op: 'wait',
-      job_ids: ['12345678-1234-1234-1234-123456789abc'],
-      timeout_seconds: 600,
-    });
-
-    expect(a).toMatchObject({ op: 'wait', timeout_seconds: 1 });
-    expect(b).toMatchObject({ op: 'wait', timeout_seconds: 600 });
+  it('wait rejects non-UUID sessions', () => {
+    expect(() => codexOpSchema.parse({ op: 'wait', sessions: ['not-a-uuid'] })).toThrow(ZodError);
   });
 
   it('wait rejects timeout_seconds out of range', () => {
     expect(() => codexOpSchema.parse({
       op: 'wait',
-      job_ids: ['12345678-1234-1234-1234-123456789abc'],
+      sessions: ['12345678-1234-1234-1234-123456789abc'],
       timeout_seconds: 0,
     })).toThrow(ZodError);
 
     expect(() => codexOpSchema.parse({
       op: 'wait',
-      job_ids: ['12345678-1234-1234-1234-123456789abc'],
-      timeout_seconds: 601,
+      sessions: ['12345678-1234-1234-1234-123456789abc'],
+      timeout_seconds: 1201,
     })).toThrow(ZodError);
   });
 
-  it('wait accepts optional cursors object', () => {
-    const result = codexOpSchema.parse({
+  it('wait rejects cursors with non-UUID key', () => {
+    const result = codexOpSchema.safeParse({
       op: 'wait',
-      job_ids: ['12345678-1234-1234-1234-123456789abc'],
-      cursors: {
-        '12345678-1234-1234-1234-123456789abc': 0,
-      },
+      sessions: ['12345678-1234-1234-1234-123456789abc'],
+      cursors: { 'not-a-uuid': 0 },
     });
-
-    expect(result).toMatchObject({
-      op: 'wait',
-      cursors: {
-        '12345678-1234-1234-1234-123456789abc': 0,
-      },
-    });
+    expect(result.success).toBe(false);
+    expect(result.error).toBeInstanceOf(ZodError);
   });
 
-  it('accepts abort with session only', () => {
-    const result = codexOpSchema.parse({ op: 'abort', session: 'session-a' });
-    expect(result).toMatchObject({ op: 'abort', session: 'session-a' });
+  it('abort rejects non-UUID session', () => {
+    expect(() => codexOpSchema.parse({ op: 'abort', session: 'session-a' })).toThrow(ZodError);
   });
 
-  it('accepts abort with job_id only', () => {
-    const result = codexOpSchema.parse({ op: 'abort', job_id: '12345678-1234-1234-1234-123456789abc' });
-    expect(result).toMatchObject({ op: 'abort', job_id: '12345678-1234-1234-1234-123456789abc' });
+  it('abort requires session', () => {
+    expect(() => codexOpSchema.parse({ op: 'abort' })).toThrow(ZodError);
   });
 
-  it('accepts abort with neither session nor job_id (handler enforces one-of)', () => {
-    const result = codexOpSchema.parse({ op: 'abort' });
-    expect(result).toMatchObject({ op: 'abort' });
+  it('wait rejects job_ids (old field name)', () => {
+    const result = codexOpSchema.safeParse({ op: 'wait', job_ids: ['12345678-1234-1234-1234-123456789abc'] });
+    expect(result.success).toBe(false);
+  });
+
+  it('abort rejects job_id (old field name)', () => {
+    const result = codexOpSchema.safeParse({ op: 'abort', job_id: '12345678-1234-1234-1234-123456789abc' });
+    expect(result.success).toBe(false);
   });
 });
 
 describe('coralAgentSchema', () => {
-  it('accepts coral:scanner with prompt', () => {
-    const result = coralAgentSchema.parse({ op: 'coral:scanner', prompt: 'analyze this' });
-    expect(result).toMatchObject({ op: 'coral:scanner', prompt: 'analyze this' });
+  it('accepts all optional fields alongside required op and prompt', () => {
+    const result = coralAgentSchema.parse({
+      op: 'coral:scanner',
+      prompt: 'analyze',
+      model: 'o4-mini',
+      working_directory: '/tmp',
+      reasoning_effort: 'high',
+      bypass: true,
+    });
+    expect(result).toMatchObject({
+      op: 'coral:scanner',
+      prompt: 'analyze',
+      model: 'o4-mini',
+    });
   });
 
-  it('accepts coral:architect with session (resume)', () => {
-    const result = coralAgentSchema.parse({ op: 'coral:architect', session: 'session-a', prompt: 'continue' });
-    expect(result).toMatchObject({ op: 'coral:architect', session: 'session-a', prompt: 'continue' });
+  it('accepts single-char agent name coral:a', () => {
+    expect(() => coralAgentSchema.parse({ op: 'coral:a', prompt: 'go' })).not.toThrow();
   });
 
   it('rejects coral: with empty agent name', () => {
@@ -147,5 +101,21 @@ describe('coralAgentSchema', () => {
 
   it('rejects coral:scanner/extra slash in name', () => {
     expect(() => coralAgentSchema.parse({ op: 'coral:scanner/extra', prompt: 'x' })).toThrow(ZodError);
+  });
+
+  it('rejects uppercase letter coral:Scanner', () => {
+    expect(() => coralAgentSchema.parse({ op: 'coral:Scanner', prompt: 'go' })).toThrow(ZodError);
+  });
+
+  it('rejects underscore coral:scanner_two', () => {
+    expect(() => coralAgentSchema.parse({ op: 'coral:scanner_two', prompt: 'go' })).toThrow(ZodError);
+  });
+
+  it('rejects hyphen-start coral:-scanner', () => {
+    expect(() => coralAgentSchema.parse({ op: 'coral:-scanner', prompt: 'go' })).toThrow(ZodError);
+  });
+
+  it('rejects double-colon coral::scanner', () => {
+    expect(() => coralAgentSchema.parse({ op: 'coral::scanner', prompt: 'go' })).toThrow(ZodError);
   });
 });

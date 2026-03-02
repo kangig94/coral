@@ -4,14 +4,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CodexThreadEvent } from '../../types.js';
 import {
-  createJobDir,
-  writeJobResult,
-  writeJobError,
-  readJobStatus,
-  resolveJobDir,
+  createSessionDir,
+  writeSessionResult,
+  writeSessionError,
+  readSessionStatus,
+  resolveSessionDir,
   extractProgressMessage,
   appendProgressEvent,
-  JOBS_DIR,
+  formatElapsed,
+  SESSIONS_DIR,
 } from '../progress.js';
 
 const dirsToClean: string[] = [];
@@ -99,11 +100,41 @@ describe('extractProgressMessage', () => {
   });
 });
 
+describe('formatElapsed', () => {
+  it('returns empty string for undefined startedAt', () => {
+    expect(formatElapsed(undefined)).toBe('');
+  });
+
+  it('formats seconds only when under 60s', () => {
+    const now = Date.now();
+    expect(formatElapsed(now)).toBe('0s');
+    expect(formatElapsed(now - 30_000)).toBe('30s');
+    expect(formatElapsed(now - 59_000)).toBe('59s');
+  });
+
+  it('formats minutes and seconds from 60s to 59m 59s', () => {
+    const now = Date.now();
+    expect(formatElapsed(now - 60_000)).toBe('1m 0s');
+    expect(formatElapsed(now - 90_000)).toBe('1m 30s');
+    expect(formatElapsed(now - 3_599_000)).toBe('59m 59s');
+  });
+
+  it('formats hours, minutes, seconds from 60m onward', () => {
+    const now = Date.now();
+    expect(formatElapsed(now - 3_600_000)).toBe('1h 0m 0s');
+    expect(formatElapsed(now - 5_430_000)).toBe('1h 30m 30s');
+  });
+
+  it('handles future startedAt gracefully', () => {
+    expect(formatElapsed(Date.now() + 10_000)).toBe('0s');
+  });
+});
+
 describe('appendProgressEvent', () => {
   it('appends JSONL lines to progress file', () => {
-    const { jobDir } = createJobDir('test');
-    dirsToClean.push(jobDir);
-    const filePath = join(jobDir, 'progress.jsonl');
+    const { dir } = createSessionDir('test');
+    dirsToClean.push(dir);
+    const filePath = join(dir, 'progress.jsonl');
 
     appendProgressEvent(filePath, 'turn.started', 'Processing...');
     appendProgressEvent(filePath, 'item.completed', 'Searching: weather');
@@ -126,108 +157,108 @@ describe('appendProgressEvent', () => {
   });
 });
 
-describe('createJobDir', () => {
-  it('creates job directory with status.json and progress.jsonl', () => {
-    const { jobId, jobDir } = createJobDir('test-session');
-    dirsToClean.push(jobDir);
+describe('createSessionDir', () => {
+  it('creates session directory with status.json and progress.jsonl', () => {
+    const { id, dir } = createSessionDir('test-session');
+    dirsToClean.push(dir);
 
-    expect(existsSync(jobDir)).toBe(true);
-    expect(jobId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    expect(existsSync(dir)).toBe(true);
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 
-    const status = JSON.parse(readFileSync(join(jobDir, 'status.json'), 'utf-8'));
+    const status = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf-8'));
     expect(status.status).toBe('running');
     expect(status.session_name).toBe('test-session');
     expect(status.startedAt).toBeTypeOf('number');
-    expect(existsSync(join(jobDir, 'progress.jsonl'))).toBe(true);
+    expect(existsSync(join(dir, 'progress.jsonl'))).toBe(true);
   });
 
-  it('creates unique job IDs for concurrent calls', () => {
-    const { jobId: id1, jobDir: dir1 } = createJobDir('session');
-    const { jobId: id2, jobDir: dir2 } = createJobDir('session');
+  it('creates unique session IDs for concurrent calls', () => {
+    const { id: id1, dir: dir1 } = createSessionDir('session');
+    const { id: id2, dir: dir2 } = createSessionDir('session');
     dirsToClean.push(dir1, dir2);
 
     expect(id1).not.toBe(id2);
   });
 
-  it('jobDir is under JOBS_DIR', () => {
-    const { jobDir } = createJobDir('s');
-    dirsToClean.push(jobDir);
+  it('session dir is under SESSIONS_DIR', () => {
+    const { dir } = createSessionDir('s');
+    dirsToClean.push(dir);
 
-    expect(jobDir.startsWith(JOBS_DIR)).toBe(true);
+    expect(dir.startsWith(SESSIONS_DIR)).toBe(true);
   });
 });
 
-describe('writeJobResult', () => {
+describe('writeSessionResult', () => {
   it('writes result.md and sets status.json to completed', () => {
-    const { jobDir } = createJobDir('test');
-    dirsToClean.push(jobDir);
+    const { dir } = createSessionDir('test');
+    dirsToClean.push(dir);
 
-    writeJobResult(jobDir, 'Hello world', {
-      session: 'thread-1',
+    writeSessionResult(dir, 'Hello world', {
+      thread_id: 'thread-1',
       model: 'o4-mini',
       session_name: 'test',
       duration_ms: 100,
     });
 
-    const resultText = readFileSync(join(jobDir, 'result.md'), 'utf-8');
+    const resultText = readFileSync(join(dir, 'result.md'), 'utf-8');
     expect(resultText).toBe('Hello world');
 
-    const status = JSON.parse(readFileSync(join(jobDir, 'status.json'), 'utf-8'));
+    const status = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf-8'));
     expect(status.status).toBe('completed');
-    expect(status.session).toBe('thread-1');
+    expect(status.thread_id).toBe('thread-1');
   });
 
   it('is idempotent when already completed', () => {
-    const { jobDir } = createJobDir('test');
-    dirsToClean.push(jobDir);
+    const { dir } = createSessionDir('test');
+    dirsToClean.push(dir);
 
-    writeJobResult(jobDir, 'first', { session_name: 'test' });
-    writeJobResult(jobDir, 'second', { session_name: 'test' });
+    writeSessionResult(dir, 'first', { session_name: 'test' });
+    writeSessionResult(dir, 'second', { session_name: 'test' });
 
-    expect(readFileSync(join(jobDir, 'result.md'), 'utf-8')).toBe('first');
+    expect(readFileSync(join(dir, 'result.md'), 'utf-8')).toBe('first');
   });
 });
 
-describe('writeJobError', () => {
+describe('writeSessionError', () => {
   it('sets status.json to error with message', () => {
-    const { jobDir } = createJobDir('test');
-    dirsToClean.push(jobDir);
+    const { dir } = createSessionDir('test');
+    dirsToClean.push(dir);
 
-    writeJobError(jobDir, 'Codex timed out');
+    writeSessionError(dir, 'Codex timed out');
 
-    const status = JSON.parse(readFileSync(join(jobDir, 'status.json'), 'utf-8'));
+    const status = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf-8'));
     expect(status.status).toBe('error');
     expect(status.error).toBe('Codex timed out');
     expect(status.session_name).toBe('test');
   });
 
   it('does not write result.md', () => {
-    const { jobDir } = createJobDir('test');
-    dirsToClean.push(jobDir);
+    const { dir } = createSessionDir('test');
+    dirsToClean.push(dir);
 
-    writeJobError(jobDir, 'error');
+    writeSessionError(dir, 'error');
 
-    expect(existsSync(join(jobDir, 'result.md'))).toBe(false);
+    expect(existsSync(join(dir, 'result.md'))).toBe(false);
   });
 
   it('is idempotent when already errored', () => {
-    const { jobDir } = createJobDir('test');
-    dirsToClean.push(jobDir);
+    const { dir } = createSessionDir('test');
+    dirsToClean.push(dir);
 
-    writeJobError(jobDir, 'first error');
-    writeJobError(jobDir, 'second error');
+    writeSessionError(dir, 'first error');
+    writeSessionError(dir, 'second error');
 
-    const status = JSON.parse(readFileSync(join(jobDir, 'status.json'), 'utf-8'));
+    const status = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf-8'));
     expect(status.error).toBe('first error');
   });
 });
 
-describe('readJobStatus', () => {
-  it('returns running status from a fresh job dir', () => {
-    const { jobDir } = createJobDir('test');
-    dirsToClean.push(jobDir);
+describe('readSessionStatus', () => {
+  it('returns running status from a fresh session dir', () => {
+    const { dir } = createSessionDir('test');
+    dirsToClean.push(dir);
 
-    expect(readJobStatus(jobDir).status).toBe('running');
+    expect(readSessionStatus(dir).status).toBe('running');
   });
 
   it('returns running when status.json is missing', () => {
@@ -235,32 +266,32 @@ describe('readJobStatus', () => {
     mkdirSync(dir, { recursive: true });
     dirsToClean.push(dir);
 
-    expect(readJobStatus(dir).status).toBe('running');
+    expect(readSessionStatus(dir).status).toBe('running');
   });
 
-  it('returns completed after writeJobResult', () => {
-    const { jobDir } = createJobDir('test');
-    dirsToClean.push(jobDir);
+  it('returns completed after writeSessionResult', () => {
+    const { dir } = createSessionDir('test');
+    dirsToClean.push(dir);
 
-    writeJobResult(jobDir, 'done', { session_name: 'test' });
-    expect(readJobStatus(jobDir).status).toBe('completed');
+    writeSessionResult(dir, 'done', { session_name: 'test' });
+    expect(readSessionStatus(dir).status).toBe('completed');
   });
 });
 
-describe('resolveJobDir', () => {
-  it('returns path under JOBS_DIR for valid UUID', () => {
+describe('resolveSessionDir', () => {
+  it('returns path under SESSIONS_DIR for valid UUID', () => {
     const uuid = '12345678-1234-1234-1234-123456789abc';
-    const dir = resolveJobDir(uuid);
+    const dir = resolveSessionDir(uuid);
 
     expect(dir).toContain(uuid);
-    expect(dir.startsWith(JOBS_DIR)).toBe(true);
+    expect(dir.startsWith(SESSIONS_DIR)).toBe(true);
   });
 
   it('throws for invalid UUID format', () => {
-    expect(() => resolveJobDir('not-a-uuid')).toThrow('Invalid job ID format');
+    expect(() => resolveSessionDir('not-a-uuid')).toThrow('Invalid session ID format');
   });
 
   it('throws for empty string', () => {
-    expect(() => resolveJobDir('')).toThrow();
+    expect(() => resolveSessionDir('')).toThrow();
   });
 });

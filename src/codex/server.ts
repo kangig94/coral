@@ -7,8 +7,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { killAllChildren } from './codex-executor.js';
 import { SessionManager } from './session-manager.js';
-import { writeJobError } from './progress.js';
-import { tools, handleToolCall, activeJobs, tryClaimTerminalWrite, shutdownSignal } from './server-handlers.js';
+import { writeSessionError } from './progress.js';
+import { tools, handleToolCall, activeSessions, tryClaimTerminalWrite, shutdownSignal } from './server-handlers.js';
 
 const server = new Server(
   {
@@ -36,15 +36,15 @@ function shutdown() {
   // 1. Signal all wait handlers to exit their poll loops immediately
   shutdownSignal.abort();
 
-  // 2. Claim terminal write for all active jobs and mark as error
-  for (const [jobId, entry] of activeJobs) {
-    if (tryClaimTerminalWrite(jobId, 'error')) {
-      writeJobError(entry.jobDir, 'Server shutting down');
+  // 2. Claim terminal write for all active sessions and mark as error
+  for (const [sessionId, entry] of activeSessions) {
+    if (tryClaimTerminalWrite(sessionId)) {
+      writeSessionError(entry.sessionDir, 'Server shutting down');
       entry.terminalState = 'error';
     }
     entry.controller.abort();
   }
-  activeJobs.clear();
+  activeSessions.clear();
 
   // 3. Kill all OS-level child processes
   killAllChildren();
