@@ -88,10 +88,13 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     Repeat (max 5 rounds):
 
     **4a. Parallel Review**
-    Dispatch both reviewer calls in parallel via `mcp__plugin_coral_cx__codex`.
+    Dispatch both reviewers in parallel:
+    ```
+    codex({ op: "coral:architect", prompt: "...", name: "architect-r{N}", working_directory })
+    codex({ op: "coral:critic",    prompt: "...", name: "critic-r{N}",    working_directory })
+    ```
+    **CRITICAL**: Use `op: "coral:<role>"`, NOT `op: "exec"`. Never pass `session` — each round is a fresh call (no session continuity), so reviewers evaluate the current plan without prior-round bias. Use unique `name` per round (e.g., `architect-r1`, `architect-r2`) to avoid conflicts.
     Provide each: plan file path, working directory, relevant context. In `--deep`, include `--deep` in each reviewer's prompt.
-    Each round is a fresh Codex call (no session continuity) — reviewers evaluate the
-    current plan without prior-round bias.
 
     Use a cursor-aware wait loop until both reviewer jobs finish:
     1. Call `codex({ op: "wait", job_ids: pendingJobIds, timeout_seconds, cursors })`.
@@ -102,10 +105,12 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
     **4b. Synthesize Feedback**
 
-    **If `--deep`**: `mcp__plugin_coral_cx__codex({ op: "coral:resolver", ... })`.
+    **If `--deep`**:
+    ```
+    codex({ op: "coral:resolver", prompt: "...", name: "resolver-r{N}", working_directory })
+    ```
     Pass the plan file path, both reviewers' `job_dir` paths (resolver reads `result.md` itself), and working directory.
-    Each round spawns a fresh resolver — no session continuity. The resolver edits the plan
-    file directly, so session memory would create author bias toward its own prior edits.
+    No `session` — each round spawns a fresh resolver (session memory would create author bias toward its own prior edits).
     Skip to 4c.
 
     **Otherwise** (no `--deep`): Read both reviewers' `job_dir/result.md` now.
