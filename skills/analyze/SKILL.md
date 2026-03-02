@@ -61,12 +61,16 @@ argument-hint: "[--codex] [investigation target or question]"
   with Claude-native tools (Read, Grep, Glob, Bash git-only). Constrain to scope.
   You (the executor) append to the file — agent protocols are read-only references.
 
-  **Codex (`--codex`)**: `Agent("coral:codex-proxy", role: <role_name>)`,
-  scope, `working_directory`, and analysis file content so far.
-  Spawn one at a time — do NOT launch steps in parallel. Each step's output informs
+  **Codex (`--codex`)**: call `codex({ op: "coral:<role_name>", ... })` with scope,
+  `working_directory`, and analysis file content so far.
+  Run one step at a time — do NOT launch steps in parallel. Each step's output informs
   the next step's scope and "Needed when" evaluation.
-  You (the executor) post-process and append the result to the file after each spawn returns.
-  Pass `session: <id>` from the first response to subsequent spawns for Codex CLI context continuity.
+  After each exec:
+  1. Wait using `codex({ op: "wait", job_ids: [job_id], timeout_seconds, cursors })` in a loop.
+  2. On `status: "completed"`, read `job_dir/result.md` and `job_dir/status.json`.
+  3. If wait returns `status: "error"` or `status.json` has no `session`, abort the chain and report the error.
+  4. Extract `session` from `status.json` and pass it to the next `codex({ op: "coral:<role_name>", session, ... })` call.
+  You (the executor) post-process and append the result to the file after each step completes.
 
   ### Scoping Framework
 

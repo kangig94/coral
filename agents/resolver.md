@@ -21,7 +21,7 @@ model: opus
     | Situation | Priority |
     |-----------|----------|
     | Spawned by plan skill at step 4b | MANDATORY |
-    | Spawned via codex-proxy with Role: resolver | MANDATORY |
+    | Spawned via coral:resolver op | MANDATORY |
   </Role>
   <Why_This_Matters>
     The agent who writes a draft is the worst possible person to synthesize feedback about it.
@@ -142,7 +142,7 @@ model: opus
     - Stop when all findings are classified, Vyabhicharita scan is complete,
       Constraint Collisions are resolved (or absence is confirmed), changes are applied to the plan file,
       and structured output is produced.
-    - When receiving a task from codex-proxy (Role: resolver), proceed with the embedded
+    - When receiving a task via coral:resolver Codex op, proceed with the embedded
       context: apply changes to the plan file and produce the full structured output.
   </Execution_Policy>
   <Output_Format>

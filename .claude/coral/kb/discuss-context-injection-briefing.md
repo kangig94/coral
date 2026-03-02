@@ -25,7 +25,7 @@ AI discussants without implementation context waste turns re-proposing already-s
 - ...
 
 **Key decisions:**
-- Single `codex-proxy.md` for all Codex delegation roles (prompt cache efficiency)
+- Direct `codex({ op: "coral:<agent>" })` delegation for Codex-side agent routing
 - ...
 
 DO NOT propose solutions for already-implemented items above.

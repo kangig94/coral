@@ -4,14 +4,16 @@
  * server.ts is the composition root (wiring only).
  */
 
-import { closeSync, existsSync, openSync, readSync } from 'node:fs';
-import { join } from 'node:path';
+import { closeSync, existsSync, openSync, readFileSync, readSync } from 'node:fs';
+import { join, resolve, sep } from 'node:path';
 import { executeOneShot, executeResume, executeFork } from './codex-executor.js';
 import { detectCodexCli, type CliInfo } from './cli-detection.js';
 import { SessionManager } from './session-manager.js';
 import {
   codexOpSchema,
+  coralAgentSchema,
   type CodexOpInput,
+  type CoralAgentInput,
   type CodexSessionCreateInput,
   type CodexSessionSendInput,
   type CodexSessionForkInput,
@@ -33,17 +35,22 @@ import { type McpResult, textResult, jsonResult, resultExtras } from '../shared/
 
 export type OnEventCallback = (line: string) => void;
 
+declare const __PLUGIN_ROOT__: string;
+// `let` instead of `const` to allow test override via _test.setPluginRoot
+let pluginRoot: string = typeof __PLUGIN_ROOT__ === 'string'
+  ? __PLUGIN_ROOT__
+  : join(__dirname, '..');
+
 export const tools = [
   {
     name: 'codex',
-    description: 'Execute a prompt with OpenAI Codex CLI. Use op field to select exec/list/fork/wait/abort.',
+    description: 'Execute a prompt with OpenAI Codex CLI. Use op field to select exec/list/fork/wait/abort. For agent delegation, use op: "coral:<agent-name>" (e.g., coral:scanner, coral:architect).',
     inputSchema: {
       type: 'object' as const,
       properties: {
         op: {
           type: 'string',
-          enum: ['exec', 'list', 'fork', 'wait', 'abort'],
-          description: 'Operation to run',
+          description: 'Operation to run: exec/list/fork/wait/abort, or coral:<agent> for agent delegation (e.g., coral:scanner, coral:architect)',
         },
         session: { type: 'string', description: 'Session identifier (exec/fork/abort)' },
         prompt: { type: 'string', description: 'Prompt to send (exec required, fork optional)' },
@@ -586,6 +593,71 @@ async function handleCodexOp(
   }
 }
 
+function resolveAgentPrompt(agentName: string): string | McpResult {
+  // Compute agentsDir at call time so _test.setPluginRoot overrides take effect.
+  const agentsDir = join(pluginRoot, 'agents');
+  const agentPath = resolve(agentsDir, `${agentName}.md`);
+  if (!agentPath.startsWith(`${agentsDir}${sep}`)) {
+    return textResult(`Error: Invalid agent name: ${agentName}`, true);
+  }
+  try {
+    return readFileSync(agentPath, 'utf-8');
+  } catch {
+    return textResult(`Error: Agent file not found: agents/${agentName}.md`, true);
+  }
+}
+
+async function handleCoralAgent(
+  input: CoralAgentInput,
+  mgr: SessionManager,
+): Promise<McpResult> {
+  const agentName = input.op.slice(6); // op already validated by coralAgentSchema
+  const agentContent = resolveAgentPrompt(agentName);
+  if (typeof agentContent !== 'string') return agentContent; // McpResult error
+
+  const augmentedPrompt = `${agentContent}\n\n---\n\n${input.prompt}`;
+
+  if (input.session) {
+    const entry = mgr.get(input.session);
+    if (!entry) return sessionNotFoundError(input.session);
+
+    const preflight = await preflightCliCheck();
+    if (!preflight.pass) return preflight.result;
+
+    const sendInput: CodexSessionSendInput = {
+      prompt: augmentedPrompt,
+      session: input.session,
+      model: input.model,
+      working_directory: input.working_directory ?? entry.workingDirectory,
+      reasoning_effort: input.reasoning_effort,
+      bypass: input.bypass,
+    };
+    return launchJob(
+      entry.name,
+      (signal, onEvent) => handleSessionSend(sendInput, mgr, signal, onEvent, preflight.cli),
+      mgr,
+    );
+  }
+
+  const preflight = await preflightCliCheck();
+  if (!preflight.pass) return preflight.result;
+
+  const sessionName = input.name ?? `${agentName}-${Date.now()}`;
+  const createInput: CodexSessionCreateInput & { name: string } = {
+    prompt: augmentedPrompt,
+    name: sessionName,
+    model: input.model,
+    working_directory: input.working_directory,
+    reasoning_effort: input.reasoning_effort,
+    bypass: input.bypass,
+  };
+  return launchJob(
+    sessionName,
+    (signal, onEvent) => handleSessionCreate(createInput, mgr, signal, onEvent, preflight.cli),
+    mgr,
+  );
+}
+
 /**
  * MCP tool call dispatcher. Routes tool calls to handlers.
  * Catches Zod validation errors and returns them as MCP error responses.
@@ -602,9 +674,15 @@ export async function handleToolCall(
       return textResult(`Unknown tool: ${name}`, true);
     }
 
+    const rawOp = (rawArgs as { op?: unknown }).op;
+    if (typeof rawOp === 'string' && rawOp.startsWith('coral:')) {
+      const parsed = coralAgentSchema.safeParse(rawArgs);
+      if (!parsed.success) throw parsed.error;
+      return handleCoralAgent(parsed.data, sessionManager);
+    }
+
     const parsed = codexOpSchema.safeParse(rawArgs);
     if (!parsed.success) {
-      const rawOp = (rawArgs as { op?: unknown }).op;
       if (rawOp !== undefined && parsed.error.issues.some((issue) => issue.code === 'invalid_union_discriminator')) {
         return jsonResult({ error: 'unknown_op', op: rawOp });
       }
@@ -618,3 +696,8 @@ export async function handleToolCall(
     return textResult(`Error: ${message}`, true);
   }
 }
+
+// Test-only exports
+export const _test = {
+  setPluginRoot(p: string) { pluginRoot = p; },
+};

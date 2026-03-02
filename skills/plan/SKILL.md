@@ -194,18 +194,10 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
     **If `--no-handoff`**: stop after showing the summary above. The caller controls the next step.
 
-    **Otherwise**: ask the user using `AskUserQuestion`. Adapt options based on `--codex`:
-
-    Without `--codex`:
+    **Otherwise**: ask the user using `AskUserQuestion`:
     1. `coral:ralph` (Recommended)
     2. `coral:ralph --red`
     3. `coral:ralph --codex`
-    4. Skip implementation
-
-    With `--codex`:
-    1. `coral:ralph --codex` (Recommended)
-    2. `coral:ralph --red --codex`
-    3. `coral:ralph` (without Codex)
     4. Skip implementation
 
     If chosen, invoke `Skill({ skill: "coral:ralph", args: "<plan summary + context>" })` with the selected flags.

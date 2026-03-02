@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { CodexExecResult } from '../../types.js';
 
@@ -61,6 +61,7 @@ import {
   handleWait,
   handleToolCall,
   tools,
+  _test as handlerTest,
 } from '../server-handlers.js';
 
 function makeExecResult(overrides: Partial<CodexExecResult> = {}): CodexExecResult {
@@ -80,10 +81,14 @@ function makeExecResult(overrides: Partial<CodexExecResult> = {}): CodexExecResu
 let tmpDir = '';
 let mgr: SessionManager;
 const dirsToClean = new Set<string>();
+const defaultPluginRoot = process.cwd();
 
 beforeEach(() => {
   tmpDir = mkdtempSync(join('/tmp', 'coral-handlers-test-'));
   mkdirSync(join(tmpDir, 'workspace'), { recursive: true });
+  mkdirSync(join(tmpDir, 'agents'), { recursive: true });
+  writeFileSync(join(tmpDir, 'agents', 'scanner.md'), '# Scanner Agent\n');
+  handlerTest.setPluginRoot(tmpDir);
   mgr = new SessionManager(join(tmpDir, 'workspace'));
   activeJobs.clear();
   vi.mocked(detectCodexCli).mockResolvedValue({ available: true, version: 'codex 1.0.0', authState: 'authenticated' });
@@ -98,6 +103,7 @@ afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
   }
   dirsToClean.clear();
+  handlerTest.setPluginRoot(defaultPluginRoot);
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -600,6 +606,35 @@ describe('handleToolCall', () => {
     const data = JSON.parse(result.content[0].text);
     expect(data.status).toBe('abort_requested');
     expect(controller.signal.aborted).toBe(true);
+  });
+
+  it('routes coral:scanner to agent resolution and prepends agent prompt', async () => {
+    const result = await handleToolCall('codex', { op: 'coral:scanner', prompt: 'inspect this' }, mgr);
+    expect(result.isError).toBe(false);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(executeOneShot).toHaveBeenCalledTimes(1);
+    const prompt = vi.mocked(executeOneShot).mock.calls[0]?.[0];
+    expect(prompt).toContain('# Scanner Agent');
+    expect(prompt).toContain('\n\n---\n\ninspect this');
+  });
+
+  it('coral:nonexistent returns agent file not found error', async () => {
+    const result = await handleToolCall('codex', { op: 'coral:nonexistent', prompt: 'test' }, mgr);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Agent file not found: agents/nonexistent.md');
+  });
+
+  it('coral:scanner without prompt returns Zod error, not unknown_op', async () => {
+    const result = await handleToolCall('codex', { op: 'coral:scanner' }, mgr);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).not.toContain('unknown_op');
+  });
+
+  it('tool schema op has no enum to allow coral:* values', () => {
+    const opSchema = tools[0].inputSchema.properties.op as { enum?: unknown[] };
+    expect(opSchema.enum).toBeUndefined();
   });
 
   it('unknown tool name → isError: true with "Unknown tool:" message', async () => {

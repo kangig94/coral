@@ -8,8 +8,7 @@ paths:
 ## Agent Definitions
 
 - Agent files in `agents/` use `<Agent_Prompt>` XML structure (see `.claude/templates/AGENT.md`)
-- Agent names use kebab-case: `codex-proxy.md`, `discuss-lead.md`
-- Codex delegation agents must have the `codex-` prefix for hook matcher detection
+- Agent names use kebab-case: `architect.md`, `discuss-lead.md`
 - Agent markdown is injected as protocol instructions — keep concise and actionable
 
 ## SKILL.md Requirements
@@ -29,7 +28,7 @@ plugin files from project files. Three read patterns and one spawn pattern exist
 | `CORAL_AGENTS/xxx.md` | **Read** the file (Read/Glob tool) | `CORAL_AGENTS/scanner.md` |
 | `CORAL_SKILLS/xxx/` | **Read** the file (Read/Glob tool) | `CORAL_SKILLS/plan/SKILL.md` |
 | `CORAL_METHODS/xxx.md` | **Read** the file (Read/Glob tool) | `CORAL_METHODS/HOW-REVIEW.md` |
-| `coral:xxx` | **Spawn** subagent (Task tool) | `coral:codex-proxy` |
+| `coral:xxx` | **Spawn** subagent (Task tool) | `coral:scanner` |
 
 - Every file using these aliases must define them at the top (after frontmatter):
   ```
@@ -47,7 +46,6 @@ plugin files from project files. Three read patterns and one spawn pattern exist
 
 - Hook scripts are Node.js ESM modules (`.mjs`) — no shell scripts
 - `hooks.json` timeout values are in seconds (not milliseconds)
-- Hook matchers use regex patterns: `"(^|:)codex-"` matches both `codex-*` and `coral:codex-*`
 - Hook scripts must:
   - Read input from stdin (JSON event payload) using an async `readStdin()` helper
   - Exit 0 on no-op (condition does not match)
@@ -65,13 +63,13 @@ plugin files from project files. Three read patterns and one spawn pattern exist
 ## Codex Delegation Pattern
 
 ```
-SubagentStart hook fires
-  -> detect-codex-agent.mjs reads event JSON from stdin
-  -> extracts agent_name field
-  -> if agent_name matches /(^|:)codex-/i:
-       ensures ~/.codex/config.toml has multi_agent = true
-       writes hookSpecificOutput to stdout with delegation instructions
-  -> if no match: process.exit(0) (no-op)
+Caller invokes codex MCP:
+  -> codex({ op: "coral:<agent>", prompt, ... })
+  -> server validates op with coralAgentSchema
+  -> server reads agents/<agent>.md
+  -> server prepends agent content to prompt
+  -> launchJob(handleSessionCreate/handleSessionSend)
+  -> wait loop reads result.md/status.json
 ```
 
-The delegation instruction tells the agent to call `codex({ op: "exec", ... })` MCP tool immediately rather than generating its own response.
+`ensureMultiAgent()` runs in `codex-executor.ts` before Codex spawn. No SubagentStart hook is involved in Codex delegation.

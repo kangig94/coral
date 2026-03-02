@@ -9,17 +9,16 @@ Claude Code's hook system executes scripts on specific events. Coral uses hooks 
 **Plugin hooks** (`hooks/hooks.json`):
 1. **SessionStart** (`*`) - Injects CLAUDE.md behavioral guidelines into every Claude session
 2. **SessionStart** (`compact`) - After context compaction, restores plan-mode state and reminds about KB promotion
-3. **SubagentStart** (`(^|:)codex-`) - Injects delegation instructions into agents with a `codex-` prefix
-4. **UserPromptSubmit** - Tracks plan-mode activation when `/plan` or `/coral:plan` is invoked
-5. **PreToolUse** - Periodically reminds Claude to write memos for non-obvious discoveries
-6. **PostToolUseFailure** (`*`) - On any non-zero tool exit, reminds Claude to check `.claude/coral/kb/` before debugging
-7. **PostToolUse** (`Bash`) - Detects silent failures in command output when exit codes are masked and injects the same KB lookup reminder context
-8. **Stop** - Enforces KB promotion for unprocessed memos; cleans up plan-mode state
-9. **TeammateIdle** (`dc-*`) - Blocks idle when discuss agents have pending actions (bid/speak/vote)
+3. **UserPromptSubmit** - Tracks plan-mode activation when `/plan` or `/coral:plan` is invoked
+4. **PreToolUse** - Periodically reminds Claude to write memos for non-obvious discoveries
+5. **PostToolUseFailure** (`*`) - On any non-zero tool exit, reminds Claude to check `.claude/coral/kb/` before debugging
+6. **PostToolUse** (`Bash`) - Detects silent failures in command output when exit codes are masked and injects the same KB lookup reminder context
+7. **Stop** - Enforces KB promotion for unprocessed memos; cleans up plan-mode state
+8. **TeammateIdle** (`dc-*`) - Blocks idle when discuss agents have pending actions (bid/speak/vote)
 
 ## Hook Configuration
 
-Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/detect-codex-agent.mjs`, `hooks/kb-lookup-reminder.mjs`, `hooks/silent-failure-detector.mjs`, `hooks/kb-memo-reminder.mjs`, `hooks/kb-promote-reminder.mjs`, `hooks/plan-guard.mjs`, `hooks/plan-state-tracker.mjs`, `hooks/discuss-idle-guard.mjs`.
+Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/kb-lookup-reminder.mjs`, `hooks/silent-failure-detector.mjs`, `hooks/kb-memo-reminder.mjs`, `hooks/kb-promote-reminder.mjs`, `hooks/plan-guard.mjs`, `hooks/plan-state-tracker.mjs`, `hooks/discuss-idle-guard.mjs`.
 
 All hook scripts are **Node.js ESM** (`.mjs`). They read input JSON from stdin, write output JSON to stdout, and **fail-open** via `try/catch { process.exit(0) }` - a crash or timeout never blocks the user.
 
@@ -41,39 +40,11 @@ Fires after context compaction (matcher: `compact`). Runs two scripts:
 
 **Purpose**: After compaction the model loses prior context. This hook restores critical state — plan-mode awareness and KB promotion reminders — so work continues seamlessly.
 
-## SubagentStart Hook
+## Removed SubagentStart Hook
 
-Matches agents with the `codex-` prefix (bare or namespaced, e.g., `coral:codex-proxy`) and injects delegation instructions. Timeout: 5 seconds (hook is ignored if exceeded).
-
-Script: `hooks/detect-codex-agent.mjs`. Reads the SubagentStart event JSON from stdin, extracts `agent_name`, and outputs delegation instructions as `hookSpecificOutput` JSON.
-
-### Execution Flow
-
-```
-1. SubagentStart event fires (matcher: "(^|:)codex-")
-2. Event JSON received via stdin
-   e.g.: {"agent_name": "codex-proxy", "task": "..."}
-3. Extract agent_name from JSON (standard JSON.parse)
-   - "agent_name" field takes priority
-   - Falls back to "name" field
-   - Exit 0 if neither found
-4. Check for "codex-" prefix (case-insensitive, supports `coral:codex-*` namespace)
-5a. Match found → ensure Codex multi_agent config, output hookSpecificOutput JSON
-    → Claude Code injects additionalContext into the agent
-5b. No match → exit 0 (no output, terminate silently)
-    → Hook ignored, agent runs normally
-```
-
-### Injected Context
-
-```
-Codex delegation context: You are a Codex delegation agent. You MUST use
-the codex MCP tool (`codex({ op: "exec", ... })`) to forward ALL work to
-Codex CLI. Do NOT generate your own response in place of calling Codex.
-Call the MCP tool immediately with the full task.
-```
-
-This message is appended to the agent's system prompt, forcing the agent to call the Codex MCP tool.
+The prior `SubagentStart` codex delegation hook has been removed. Codex delegation now uses
+direct MCP tool dispatch (`codex({ op: "coral:<agent>", ... })`) and executor-side
+`ensureMultiAgent()` configuration.
 
 ## UserPromptSubmit Hook (Plan State Tracker)
 
@@ -168,5 +139,4 @@ Key requirements:
 
 - If the timeout is exceeded, the hook is ignored and the agent runs normally
 - Invalid JSON output from the hook is ignored
-- Agents without the `codex-` prefix (bare or namespaced) are filtered out at the matcher stage
 - Hook scripts must be readable by the Claude Code process (no execute permission required for `.mjs` scripts — Node.js is called directly)

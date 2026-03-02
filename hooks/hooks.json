@@ -27,18 +27,6 @@
         ]
       }
     ],
-    "SubagentStart": [
-      {
-        "matcher": "(^|:)codex-",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/detect-codex-agent.mjs\"",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
     "PostToolUseFailure": [
       {
         "matcher": "*",

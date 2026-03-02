@@ -1,9 +1,9 @@
 # Agents
 
-Coral provides two types of agents:
+Coral provides Claude-native agents and direct Codex delegation ops:
 
 - **Claude-native agents**: Claude Code performs analysis directly using its native tools. Default routing target.
-- **Codex-bound agents**: Proxy agents that delegate work to Codex CLI. Used only on explicit request.
+- **Codex delegation ops**: `codex({ op: "coral:<agent>" })` loads `agents/<agent>.md`, prepends it to the prompt, and executes through Codex CLI.
 
 ## Methodology Connections
 
@@ -14,11 +14,11 @@ Agents reference cross-cutting HOW methodology files from `methods/`. Each agent
 | User Request | Routing | Reason |
 |---|---|---|
 | "review with architect" | Claude-native (`architect`) | Default |
-| "review with codex architect" | Codex-bound (`codex-proxy` Role:architect) | Explicit "codex" keyword |
+| "review with codex architect" | `codex({ op: "coral:architect", ... })` | Explicit "codex" keyword |
 | "review with critic" | Claude-native (`critic`) | Default |
-| "review with codex critic" | Codex-bound (`codex-proxy` Role:critic) | Explicit "codex" keyword |
+| "review with codex critic" | `codex({ op: "coral:critic", ... })` | Explicit "codex" keyword |
 | "run ralph on this task" | Skill (`/coral:ralph`) | Default — ralph is a skill/protocol, not an agent |
-| "codex ralph this task" | Skill (`/coral:ralph --codex`) | Delegates to Codex via `codex-proxy` Role:ralph |
+| "codex ralph this task" | Skill (`/coral:ralph --codex`) | Delegates to Codex directly via `codex` MCP calls |
 
 ---
 
@@ -151,68 +151,28 @@ Agents for the moderated multi-agent discussion system. These agents coordinate 
 
 ---
 
-## Codex-bound Agents (Delegation Agents)
+## Codex Delegation (`coral:*`)
 
-Proxy agents that delegate work to Codex CLI. Tool restrictions limit them to Glob and coral MCP tools (no Read — prevents proxy from analyzing content that Codex should handle).
+Codex delegation is handled directly by the `codex` MCP tool:
 
-**Why one file?** All Codex delegation roles share identical infrastructure (Proxy_Protocol, Working_Directory, Session_Continuity, Output_Handling, Failure_Modes). A single file maximizes prompt cache hits - when architect + critic are spawned in parallel, their system prompts share an identical prefix, so only the first pays the full cost. New roles should be added here, not as separate agent files.
+- `codex({ op: "coral:architect", prompt, ... })`
+- `codex({ op: "coral:critic", prompt, ... })`
+- `codex({ op: "coral:scanner", prompt, ... })`
 
-### codex-proxy (Unified Codex Delegation Proxy)
-
-`agents/codex-proxy.md` - sonnet, Glob + Codex tools
-
-**Role**: Thin proxy with role-based routing. Callers include `Role: scanner|gap-finder|debugger|architect|critic|resolver` in their prompt. The proxy locates the corresponding agent file path via Glob, then passes the path and caller's prompt verbatim to Codex CLI. Codex reads the agent file itself and follows the protocol. Missing role → explicit error (no inference).
-
-| Role | Purpose | reasoning_effort |
-|---|---|---|
-| `scanner` | Project scanning, process investigation, systemic root cause analysis | xhigh |
-| `gap-finder` | Requirements gap analysis, dependency tracing, technical investigation | xhigh |
-| `debugger` | Bug diagnosis via hypothesis testing, root cause tracing | xhigh |
-| `architect` | Architecture review, design patterns, code structure | xhigh |
-| `critic` | Plan/code critique, severity-rated verdicts (APPROVED/REVISE/REJECT) | xhigh |
-| `resolver` | Feedback synthesis, Vyabhicharita detection, Constraint Collision resolution | xhigh |
-
-> **Ralph note**: Ralph is not a codex-proxy role. Persistent execution via Codex is handled by `/coral:ralph --codex`, which manages its own Codex delegation, verification loop, and session continuity.
-
----
-
-## Routing Guarantee (Triple Layer)
-
-Three layers ensure Codex-bound agents always delegate to Codex CLI:
-
-### Layer 1: Hook-based Injection (100% guarantee)
-
-The `SubagentStart` hook fires when any agent matching `(^|:)codex-` starts (e.g., `codex-proxy`, `coral:codex-proxy`). It injects delegation instructions via `additionalContext`.
-
-> Claude-native agents (`architect`, `critic`, `scanner`, `gap-finder`) lack the `codex-` prefix, so the hook never matches them.
-
-### Layer 2: Tool Restriction (100% guarantee)
-
-The `tools` field in Codex-bound agent definitions restricts them to Glob and coral MCP tools only (no Read). Glob locates the agent file path; Codex reads the file itself. This prevents the proxy from reading and analyzing content that Codex should handle.
-
-> Claude-native agents have no `tools` restriction - they can use all read tools (`disallowedTools` only blocks writing).
-
-### Layer 3: System Prompt (99%+ guarantee)
-
-Each agent `.md` file contains a detailed role and protocol embedded in the system prompt.
+Behavior:
+- The server resolves `agents/<agent>.md` from the `op` suffix.
+- Agent file content is prepended to the prompt as-is.
+- The call runs through the same async job pipeline as `op: exec`.
+- Unknown agent names return `Agent file not found: agents/<agent>.md`.
 
 ---
 
 ## Adding New Agents
 
-### Codex-bound Agent (new role)
+### Codex-delegated Agent Role
 
-Add a new role to `agents/codex-proxy.md` under `<Role_Routing>` with a reference to its agent file. The proxy locates the agent file path via Glob and passes it to Codex, which reads and follows it at runtime — no prompt templates to maintain. Create the Claude-native agent file first (`agents/<name>.md`), then add a row to the routing table.
-
-If a standalone Codex agent is truly needed (rare), create `agents/codex-<name>.md` - the `codex-` prefix ensures the hook fires automatically:
-
-```yaml
----
-name: codex-<name>
-description: <description>
-tools: mcp__plugin_coral_cx__codex
----
-```
+Create `agents/<name>.md` and call it via `codex({ op: "coral:<name>", ... })`.
+No proxy role table, `codex-` prefix, or hook matcher registration is required.
 
 ### Claude-native Agent (Read-only)
 

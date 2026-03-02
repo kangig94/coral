@@ -19,7 +19,34 @@ Single entry point for all Codex execution. Use the required `op` discriminator.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `op` | string | Yes | One of: `exec`, `wait`, `list`, `fork`, `abort` |
+| `op` | string | Yes | `exec`, `wait`, `list`, `fork`, `abort`, or `coral:<agent-name>` |
+
+---
+
+### op: coral:*
+
+Delegate a Codex call through an agent file in `agents/`. The server reads
+`agents/<agent-name>.md`, prepends it to the prompt as plain text, then dispatches through
+the same background job pipeline as `op: exec`.
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `op` | string | Yes | Must match `coral:[a-z0-9][a-z0-9-]*` |
+| `session` | string | No | Existing session label/ID to resume |
+| `name` | string | No | New session display name (when starting fresh) |
+| `prompt` | string | Yes | User prompt appended after agent content |
+| `model` | string | No | Model to use |
+| `working_directory` | string | No | Working directory |
+| `reasoning_effort` | string | No | `low`, `medium`, `high`, `xhigh` |
+| `bypass` | boolean | No | Bypass sandbox/approvals only on explicit user request |
+
+### Behavior Notes
+
+- Unknown agent files return an MCP error: `Agent file not found: agents/<agent>.md`
+- Agent content is prepended as-is (no frontmatter parsing/stripping)
+- Path traversal is blocked by op validation before filesystem reads
 
 ---
 
@@ -406,10 +433,9 @@ The coupling is through the **agent protocol layer**, not the MCP servers themse
 | Component | Role |
 |-----------|------|
 | `discuss-lead.md` | Spawns `persona-generator` agents (via Task tool) and `discussant` teammates for discussions |
-| `agents/codex-*.md` | Codex-delegated agents that can be spawned independently or within discuss workflows |
-| `hooks/detect-codex-agent.mjs` | SubagentStart hook detects `codex-` prefix in agent names, injects delegation instructions to call `codex({ op: "exec", ... })` |
+| `codex({ op: "coral:<agent>" })` | Direct Codex agent delegation path that reads `agents/<agent>.md` and prepends it to prompts |
 
-The discuss system itself does **not** spawn codex-prefixed agents. The coupling only exists when a user or external workflow spawns a codex-delegated agent that happens to run within a discuss context.
+The discuss system itself does **not** call Codex tools unless a skill/workflow explicitly asks for it.
 
 ## Session Naming Convention
 
@@ -424,5 +450,5 @@ These namespaces do not overlap. Collision risk is between discuss sessions only
 
 1. **dc never calls cx tools** - the discuss MCP server has no dependency on the codex MCP server
 2. **cx never reads dc state** - Codex sessions have no awareness of discuss sessions
-3. **Hook is the sole bridge** - `detect-codex-agent.mjs` is the single point where a codex-delegated workflow and the Codex CLI connect
-4. **Modifying either server independently is safe** - as long as the hook contract (agent name prefix matching) is preserved
+3. **Agent delegation is explicit** - Codex delegation uses `codex({ op: "coral:<agent>" })`; no hook bridge is involved
+4. **Modifying either server independently is safe** - as long as tool input/output contracts are preserved

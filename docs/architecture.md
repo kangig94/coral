@@ -7,10 +7,10 @@
 │  Claude Code                                                              │
 │                                                                           │
 │  ┌──────────────┐  ┌───────────────┐  ┌────────────────────────────────┐  │
-│  │ SessionStart │  │ SubagentStart │  │  Skills /coral:*               │  │
-│  │ Hook         │  │ Hook          │  │  discuss, codex, plan,         │  │
-│  │ (CLAUDE.md   │  │ (codex-*      │  │  ralph, analyze, ...           │  │
-│  │  injection)  │  │  delegation)  │  └───────────────┬────────────────┘  │
+│  │ SessionStart │  │ Hook Events   │  │  Skills /coral:*               │  │
+│  │ Hook         │  │ (plan/kb/idle │  │  discuss, codex, plan,         │  │
+│  │ (CLAUDE.md   │  │  management)  │  │  ralph, analyze, ...           │  │
+│  │  injection)  │  │               │  └───────────────┬────────────────┘  │
 │  └──────────────┘  └───────┬───────┘                  │                   │
 │                            │                ┌─────────┴─────────┐         │
 │                            ▼                ▼                   ▼         │
@@ -19,7 +19,8 @@
 │  │  (bridge/coral-codex.cjs)      │  │  (bridge/coral-discuss.cjs)     │  │
 │  │                                │  │                                 │  │
 │  │  Tool: codex                   │  │  Tools: discuss (2 ops)         │  │
-│  │  (exec, list, fork, abort)     │  │    + discuss_lead (7 ops)       │  │
+│  │  (exec/list/fork/wait/abort    │  │    + discuss_lead (7 ops)       │  │
+│  │   + coral:<agent>)             │  │                                 │  │
 │  │                                │  │                                 │  │
 │  │  Session: ~/.claude/coral/     │  │  Session: {project}/.claude/    │  │
 │  │           sessions/            │  │           coral/discuss/        │  │
@@ -43,12 +44,11 @@
 User → /coral:codex "question"
      → Skill detects intent (review/investigate/ralph/general)
      → Review intent:
-        → Spawn parallel subagents (coral:codex-proxy Role:architect + coral:codex-proxy Role:critic)
-        → SubagentStart Hook fires → delegation instructions injected
-     → Agents call codex({ op: "exec", ... }) → results synthesized
+        → Parallel codex calls: codex({ op: "coral:architect", ... }) + codex({ op: "coral:critic", ... })
+        → wait loop with timeout+cursors until both complete
+     → Results synthesized
      → Other intents:
-        → Skill reads agent protocol (agents/codex-proxy.md)
-        → Skill calls codex({ op: "exec" }) directly (no subagent)
+        → Skill calls codex({ op: "coral:<agent>" }) or codex({ op: "exec" }) directly
         → Codex response returned to user
 ```
 
@@ -64,7 +64,7 @@ User → /coral:plan "task description"
 User → /coral:plan --codex "task description"
      → Skill contains embedded planning protocol
      → Claude executes planning protocol in main context
-     → Phase 1 (Codex): Task(coral:codex-proxy Role:architect) + Task(coral:codex-proxy Role:critic)
+     → Phase 1 (Codex): codex({ op: "coral:architect" }) + codex({ op: "coral:critic" })
      → Phase 2 (Claude): Task(coral:architect) + Task(coral:critic)
      → Review loop until converged → plan file written
 
@@ -80,7 +80,7 @@ User → /coral:init-project
 
 ```
 User → /codex skill analyzes intent
-     → Review?   → Parallel subagent spawn (codex-proxy Role:architect + codex-proxy Role:critic)
+     → Review?   → Parallel codex calls (op: "coral:architect" + op: "coral:critic")
      → Analyze?  → Direct MCP call with scanner protocol (no subagent)
      → Ralph?    → Direct MCP call with ralph protocol (no subagent)
      → General?  → Direct MCP call, verbatim prompt (no subagent)
@@ -202,7 +202,6 @@ coral/
 ├── agents/                      # Agent protocol definitions
 ├── hooks/
 │   ├── hooks.json               # Hook config (matcher, timeout)
-│   ├── detect-codex-agent.mjs   # SubagentStart delegation hook
 │   ├── kb-lookup-reminder.mjs   # PostToolUseFailure KB hint
 │   ├── silent-failure-detector.mjs # PostToolUse silent-failure detector
 │   ├── kb-memo-reminder.mjs     # PreToolUse memo hint

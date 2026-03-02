@@ -78,3 +78,24 @@ export type CodexSessionSendInput = Omit<Extract<CodexOpInput, { op: 'exec' }>, 
 export type CodexSessionForkInput = Omit<Extract<CodexOpInput, { op: 'fork' }>, 'op'>;
 export type CodexWaitInput = z.infer<typeof waitShape>;
 export type CodexSessionAbortInput = Omit<Extract<CodexOpInput, { op: 'abort' }>, 'op'>;
+
+// Stricter than identPattern: agent names are kebab-case only.
+const coralOpSchema = z
+  .string()
+  .regex(
+    /^coral:[a-z0-9][a-z0-9-]*$/,
+    'Op must be coral:<agent-name> (lowercase letters, digits, hyphens)',
+  );
+
+export const coralAgentSchema = z.object({
+  op: coralOpSchema,
+  prompt: promptSchema,
+  session: sessionRefSchema.optional(),
+  name: sessionNameSchema.optional(),
+  model: modelSchema,
+  working_directory: cwdSchema,
+  reasoning_effort: reasoningEffortSchema,
+  bypass: boolDefaultFalse,
+});
+
+export type CoralAgentInput = z.infer<typeof coralAgentSchema>;

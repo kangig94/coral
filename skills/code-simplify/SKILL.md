@@ -66,18 +66,22 @@ Strip the `--codex` flag before passing the prompt to the execution path.
     4) Execute (based on strategy from step 3):
        Single pass:
        - Default: run `<Execution>` directly on the target files.
-       - `--codex`: read `CORAL_AGENTS/codex-proxy.md` (`### Role: ralph` section).
-         Call `codex({ op: "exec", ... })` with `<Execution>`, `<Constraints>`,
+       - `--codex`: call `codex({ op: "exec", ... })` with `<Execution>`, `<Constraints>`,
          target file paths, and coding standards as context.
          Pass `working_directory`, `reasoning_effort: "xhigh"`.
          Pass `bypass: true` only when the user explicitly requests bypass mode.
-         Then: `codex({ op: "wait", job_ids: [job_id] })` → Read(`job_dir + "/result.md"`) for output.
+         Then wait in a timeout/cursor loop:
+         `codex({ op: "wait", job_ids: [job_id], timeout_seconds, cursors })`
+         until terminal status, then Read(`job_dir + "/result.md"`) for output.
        Parallel split:
        - Default: spawn each group as a parallel Task (`subagent_type: "general-purpose"`).
          Pass `<Execution>`, `<Constraints>`, the file group, and project coding standards.
-       - `--codex`: spawn each group as a parallel Task (`subagent_type: "coral:codex-proxy"`).
-         Pass `<Execution>`, `<Constraints>`, the file group, and project coding standards.
-         MCP tools cannot execute in parallel within a single agent.
+       - `--codex`: dispatch one `codex({ op: "exec", ... })` call per file group
+         (include group-specific scope/context), collect all `job_id`s, then wait for all jobs:
+         1. Call `codex({ op: "wait", job_ids: pendingJobIds, timeout_seconds, cursors })`
+         2. If `status: "timeout"`, update `cursors` and continue
+         3. If `status: "completed"`, read `job_dir/result.md`, remove completed job
+         4. If `status: "error"`, read `job_dir/status.json`, remove failed job, continue
     5) Review each change: confirm purely structural with zero logic alteration.
        Use git diff as a before/after reference when the diff is manageable.
        a. API substitutions preserve semantic intent

@@ -47,14 +47,18 @@ Note: routes 4b and 4c delegate to other skills that manage their own sessions.
 
 Pass `bypass: true` only when the user explicitly requests bypass mode.
 
-## 4a. Review (parallel spawn)
+## 4a. Review (parallel Codex ops)
 
-Spawn TWO agents in a SINGLE message (parallel):
-- `Agent("coral:codex-proxy", role: architect)`
-- `Agent("coral:codex-proxy", role: critic)`
+Dispatch TWO Codex jobs in parallel:
+- `codex({ op: "coral:architect", prompt, session, working_directory, reasoning_effort: "xhigh" })`
+- `codex({ op: "coral:critic", prompt, session, working_directory, reasoning_effort: "xhigh" })`
 
-Provide each: user's prompt, working directory, relevant conversation context.
-If session exists (step 2), include `session: <id>` in each prompt.
+Use `session` only when available from step 2. Omit it for fresh review sessions.
+Then wait with timeout handling and cursors until both jobs finish:
+1. `codex({ op: "wait", job_ids: pendingJobIds, timeout_seconds, cursors })`
+2. If `status: "timeout"`, keep waiting with returned `cursors`
+3. If `status: "completed"`, read `job_dir/result.md` and remove that job from `pendingJobIds`
+4. If `status: "error"`, read `job_dir/status.json`, record the failure, remove that job, continue
 
 After both return, synthesize:
 1. Merge findings, deduplicate
