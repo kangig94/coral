@@ -52,7 +52,7 @@ import {
   SESSIONS_DIR,
 } from '../progress.js';
 import { codexOpSchema } from '../schemas.js';
-import { handleToolCall, activeJobs } from '../server-handlers.js';
+import { handleToolCall, activeSessions } from '../server-handlers.js';
 import { SessionManager } from '../session-manager.js';
 
 describe('codex session API red checks', () => {
@@ -61,11 +61,11 @@ describe('codex session API red checks', () => {
 
   beforeEach(() => {
     mgr = new SessionManager(process.cwd());
-    activeJobs.clear();
+    activeSessions.clear();
   });
 
   afterEach(() => {
-    activeJobs.clear();
+    activeSessions.clear();
     for (const dir of dirsToClean) {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -128,7 +128,7 @@ describe('codex session API red checks', () => {
   it('abort uses session field (no job_id path)', async () => {
     const id = randomUUID();
     const controller = new AbortController();
-    activeJobs.set(id, {
+    activeSessions.set(id, {
       sessionDir: '/tmp/red',
       controller,
       sessionName: 'red',

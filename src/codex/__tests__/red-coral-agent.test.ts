@@ -95,6 +95,7 @@ vi.mock('../progress.js', () => ({
   readSessionStatus: vi.fn(() => ({ status: 'running' })),
   resolveSessionDir: vi.fn((id: string) => `/tmp/coral-sessions/${id}`),
   SESSIONS_DIR: '/tmp/coral-sessions',
+  PROGRESS_FILE: 'progress.jsonl',
   extractProgressMessage: vi.fn(),
   appendProgressEvent: vi.fn(),
   formatElapsed: vi.fn(() => ''),
@@ -104,7 +105,7 @@ import { executeOneShot, executeResume, _test as executorTest } from '../codex-e
 import { detectCodexCli } from '../cli-detection.js';
 import {
   handleToolCall,
-  activeJobs,
+  activeSessions,
   tools,
   _test as handlerTest,
 } from '../server-handlers.js';
@@ -136,7 +137,7 @@ beforeEach(() => {
   writeFileSync(join(tmpDir, 'agents', 'scanner.md'), '# Scanner\nDo analysis.\n');
   handlerTest.setPluginRoot(tmpDir);
   mgr = new SessionManager(join(tmpDir, 'workspace'));
-  activeJobs.clear();
+  activeSessions.clear();
   vi.mocked(detectCodexCli).mockResolvedValue({
     available: true,
     version: 'codex 1.0.0',
@@ -147,7 +148,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  activeJobs.clear();
+  activeSessions.clear();
   vi.clearAllMocks();
   handlerTest.setPluginRoot(defaultPluginRoot);
   rmSync(tmpDir, { recursive: true, force: true });

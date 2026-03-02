@@ -23,6 +23,7 @@ vi.mock('../progress.js', () => ({
   readSessionStatus: vi.fn(() => ({ status: 'running' })),
   resolveSessionDir: vi.fn((id: string) => `/tmp/coral-sessions/${id}`),
   SESSIONS_DIR: '/tmp/coral-sessions',
+  PROGRESS_FILE: 'progress.jsonl',
   extractProgressMessage: vi.fn(),
   appendProgressEvent: vi.fn(),
   formatElapsed: vi.fn(() => ''),
@@ -46,7 +47,7 @@ import { jsonResult, type McpResult } from '../../shared/mcp-utils.js';
 import {
   extractCompletionData,
   launchJob,
-  activeJobs,
+  activeSessions,
   handleSessionCreate,
   handleSessionSend,
   handleSessionFork,
@@ -84,7 +85,7 @@ beforeEach(() => {
   handlerTest.setPluginRoot(tmpDir);
   mgr = new SessionManager(join(tmpDir, 'workspace'));
 
-  activeJobs.clear();
+  activeSessions.clear();
   vi.mocked(createSessionDir).mockReturnValue({
     id: '12345678-1234-4234-8234-123456789abc',
     dir: '/tmp/coral-sessions/12345678-1234-4234-8234-123456789abc',
@@ -98,7 +99,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  activeJobs.clear();
+  activeSessions.clear();
   vi.clearAllMocks();
   for (const dir of dirsToClean) {
     rmSync(dir, { recursive: true, force: true });
@@ -174,7 +175,7 @@ describe('session handlers', () => {
   it('handleSessionAbort aborts by single UUID session', async () => {
     const sessionId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
     const controller = new AbortController();
-    activeJobs.set(sessionId, {
+    activeSessions.set(sessionId, {
       sessionDir: '/tmp/x',
       controller,
       sessionName: 'abort-me',
@@ -286,7 +287,7 @@ describe('tool routing and UUID semantics', () => {
     const completedId = '44444444-4444-4444-8444-444444444444';
     mgr.register(runningId, 'same-name', 'thread-running', 'o4-mini', '/workspace');
     mgr.register(completedId, 'same-name', 'thread-completed', 'o4-mini', '/workspace');
-    activeJobs.set(runningId, {
+    activeSessions.set(runningId, {
       sessionDir: '/tmp/running',
       controller: new AbortController(),
       sessionName: 'same-name',

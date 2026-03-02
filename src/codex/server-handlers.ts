@@ -30,6 +30,8 @@ import {
   extractProgressMessage,
   appendProgressEvent,
   formatElapsed,
+  PROGRESS_FILE,
+  type SessionStatus,
 } from './progress.js';
 import { type McpResult, textResult, jsonResult, resultExtras } from '../shared/mcp-utils.js';
 
@@ -89,7 +91,7 @@ export function makeEventCallback(progressFile: string): OnEventCallback {
   };
 }
 
-type JobEntry = {
+type ActiveSession = {
   sessionDir: string;
   controller: AbortController;
   sessionName: string;
@@ -97,11 +99,11 @@ type JobEntry = {
   terminalState: 'running' | 'terminalizing' | 'completed' | 'error';
 };
 
-export const activeJobs = new Map<string, JobEntry>();
+export const activeSessions = new Map<string, ActiveSession>();
 
-/** Atomically transition a job from 'running' to 'terminalizing'. Returns true if claim succeeded. */
-export function tryClaimTerminalWrite(id: string, _finalStatus: 'completed' | 'error'): boolean {
-  const entry = activeJobs.get(id);
+/** Atomically transition a session from 'running' to 'terminalizing'. Returns true if claim succeeded. */
+export function tryClaimTerminalWrite(id: string): boolean {
+  const entry = activeSessions.get(id);
   if (!entry || entry.terminalState !== 'running') return false;
   entry.terminalState = 'terminalizing';
   return true;
@@ -143,20 +145,20 @@ export function launchJob(
 ): McpResult {
   const { id, dir } = createSessionDir(sessionLabel);
   const controller = new AbortController();
-  const entry: JobEntry = {
+  const entry: ActiveSession = {
     sessionDir: dir,
     controller,
     sessionName: sessionLabel,
     terminalState: 'running',
   };
-  activeJobs.set(id, entry);
+  activeSessions.set(id, entry);
 
-  const progressFile = join(dir, 'progress.jsonl');
+  const progressFile = join(dir, PROGRESS_FILE);
   const onEvent = makeEventCallback(progressFile);
 
   handler(controller.signal, onEvent)
     .then((result) => {
-      if (!tryClaimTerminalWrite(id, 'completed')) return;
+      if (!tryClaimTerminalWrite(id)) return;
 
       const { responseText, metadata } = extractCompletionData(result, sessionLabel);
       writeSessionResult(dir, responseText, metadata);
@@ -171,12 +173,12 @@ export function launchJob(
       entry.terminalState = 'completed';
     })
     .catch((err) => {
-      if (!tryClaimTerminalWrite(id, 'error')) return;
+      if (!tryClaimTerminalWrite(id)) return;
       writeSessionError(dir, err instanceof Error ? err.message : String(err));
       entry.terminalState = 'error';
     })
     .finally(() => {
-      activeJobs.delete(id);
+      activeSessions.delete(id);
     });
 
   return jsonResult({ session: id, session_dir: dir, session_name: sessionLabel, status: 'running' });
@@ -276,12 +278,6 @@ export async function handleSessionSend(
 }
 
 export function handleSessionList(mgr: SessionManager): McpResult {
-  const runningIds = new Set(
-    [...activeJobs.entries()]
-      .filter(([, j]) => j.terminalState === 'running')
-      .map(([id]) => id),
-  );
-
   const registered = mgr.list().map((s) => ({
     name: s.name,
     session: s.id,
@@ -289,7 +285,7 @@ export function handleSessionList(mgr: SessionManager): McpResult {
     created_at: s.createdAt,
     last_used_at: s.lastUsedAt,
     working_directory: s.workingDirectory,
-    status: runningIds.has(s.id) ? 'running' : 'completed',
+    status: activeSessions.get(s.id)?.terminalState === 'running' ? 'running' : 'completed',
   }));
 
   return jsonResult({ sessions: registered, total: registered.length });
@@ -330,7 +326,7 @@ export async function handleSessionFork(
 }
 
 export async function handleSessionAbort(input: CodexSessionAbortInput, _mgr: SessionManager): Promise<McpResult> {
-  const entry = activeJobs.get(input.session);
+  const entry = activeSessions.get(input.session);
   if (!entry) {
     return textResult(
       `No active execution found for session "${input.session}". The session may have already completed or the ID is invalid.`,
@@ -363,6 +359,13 @@ export async function handleWait(
     sessions.map((id) => [id, inputCursors?.[id] ?? 0]),
   );
 
+  // Cache stable session metadata (session_name, startedAt) to avoid re-reading status.json per tick
+  const sessionMeta = new Map<string, { name: string; startedAt: number | undefined }>();
+  for (const id of sessions) {
+    const info = readSessionStatus(sessionDirs[id]!);
+    sessionMeta.set(id, { name: info.session_name ?? id, startedAt: info.startedAt });
+  }
+
   let notifCounter = 0;
   const startMs = Date.now();
   const timeoutMs = timeout_seconds * 1000;
@@ -385,11 +388,11 @@ export async function handleWait(
       }
 
       let completedId: string | null = null;
-      let completedStatus: 'completed' | 'error' | null = null;
+      let completedStatus: SessionStatus | null = null;
 
       for (const id of sessions) {
         const dir = sessionDirs[id]!;
-        const progressFile = join(dir, 'progress.jsonl');
+        const progressFile = join(dir, PROGRESS_FILE);
 
         let fd = fds.get(id) ?? null;
         if (fd === null) {
@@ -429,10 +432,9 @@ export async function handleWait(
               const lines = text.split('\n').filter((line) => line.trim());
 
               if (lines.length > 0 && progressToken != null && notify != null) {
-                const sessionInfo = readSessionStatus(dir);
-                const name = sessionInfo.session_name ?? id;
-                const elapsed = formatElapsed(sessionInfo.startedAt);
-                const tag = elapsed ? `${elapsed}: ${name}` : name;
+                const meta = sessionMeta.get(id)!;
+                const elapsed = formatElapsed(meta.startedAt);
+                const tag = elapsed ? `${elapsed}: ${meta.name}` : meta.name;
 
                 for (const line of lines) {
                   try {
@@ -461,23 +463,22 @@ export async function handleWait(
         const sessionStatus = readSessionStatus(dir);
         if ((sessionStatus.status === 'completed' || sessionStatus.status === 'error') && completedId === null) {
           completedId = id;
-          completedStatus = sessionStatus.status;
+          completedStatus = sessionStatus;
         }
       }
 
       if (completedId !== null && completedStatus !== null) {
         const dir = sessionDirs[completedId]!;
-        const statusData = readSessionStatus(dir);
         const cursorRecord: Record<string, number> = {};
         for (const [id, offset] of cursors) {
           if (id !== completedId) cursorRecord[id] = offset;
         }
 
         return jsonResult({
-          status: completedStatus,
+          status: completedStatus.status,
           completed_session: completedId,
           session_dir: dir,
-          session_name: statusData.session_name ?? completedId,
+          session_name: completedStatus.session_name ?? completedId,
           cursors: cursorRecord,
         });
       }

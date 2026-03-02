@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CodexThreadEvent } from '../types.js';
 
-export type JobStatus = {
+export type SessionStatus = {
   status: 'running' | 'completed' | 'error';
   thread_id?: string;
   session_name?: string;
@@ -23,25 +23,29 @@ export const SESSIONS_DIR = join(tmpdir(), 'coral-sessions');
 
 const STATUS_FILE = 'status.json';
 const STATUS_TMP_FILE = 'status.json.tmp';
-const PROGRESS_FILE = 'progress.jsonl';
+export const PROGRESS_FILE = 'progress.jsonl';
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function readStatusFile(jobDir: string): JobStatus | null {
+function readStatusFile(sessionDir: string): SessionStatus | null {
   try {
-    return JSON.parse(readFileSync(join(jobDir, STATUS_FILE), 'utf-8')) as JobStatus;
+    const parsed = JSON.parse(readFileSync(join(sessionDir, STATUS_FILE), 'utf-8')) as SessionStatus;
+    if (parsed.status === 'running' || parsed.status === 'completed' || parsed.status === 'error') {
+      return parsed;
+    }
+    return null;
   } catch {
     return null;
   }
 }
 
-function writeStatusFile(jobDir: string, status: Record<string, unknown>): void {
-  const tmpPath = join(jobDir, STATUS_TMP_FILE);
-  const finalPath = join(jobDir, STATUS_FILE);
+function writeStatusFile(sessionDir: string, status: Record<string, unknown>): void {
+  const tmpPath = join(sessionDir, STATUS_TMP_FILE);
+  const finalPath = join(sessionDir, STATUS_FILE);
   writeFileSync(tmpPath, JSON.stringify(status));
   renameSync(tmpPath, finalPath);
 }
 
-function isTerminal(status: JobStatus): boolean {
+function isTerminal(status: SessionStatus): boolean {
   return status.status === 'completed' || status.status === 'error';
 }
 
@@ -81,22 +85,11 @@ export function writeSessionError(sessionDir: string, error: string): void {
     return;
   }
 
-  writeStatusFile(sessionDir, {
-    status: 'error',
-    error,
-    ...(currentStatus?.session_name ? { session_name: currentStatus.session_name } : {}),
-    ...(currentStatus?.thread_id ? { thread_id: currentStatus.thread_id } : {}),
-  });
+  writeStatusFile(sessionDir, { ...currentStatus, status: 'error', error });
 }
 
-export function readSessionStatus(sessionDir: string): JobStatus {
-  try {
-    const parsed = JSON.parse(readFileSync(join(sessionDir, STATUS_FILE), 'utf-8')) as JobStatus;
-    if (parsed.status === 'running' || parsed.status === 'completed' || parsed.status === 'error') {
-      return parsed;
-    }
-  } catch {}
-  return { status: 'running' };
+export function readSessionStatus(sessionDir: string): SessionStatus {
+  return readStatusFile(sessionDir) ?? { status: 'running' };
 }
 
 export function resolveSessionDir(id: string): string {

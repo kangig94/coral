@@ -30,8 +30,8 @@
  *  16. get() with empty string id returns null (no path-traversal attempt)
  *
  * ACTIVE JOBS LIFECYCLE
- *  17. launchJob: activeJobs entry is removed after successful completion (finally block)
- *  18. launchJob: activeJobs entry is removed after error (finally block)
+ *  17. launchJob: activeSessions entry is removed after successful completion (finally block)
+ *  18. launchJob: activeSessions entry is removed after error (finally block)
  *  19. abort on terminalizing entry still returns abort_requested (controller.abort() is idempotent)
  *
  * EXTRACT COMPLETION DATA — null thread_id path
@@ -65,6 +65,7 @@ vi.mock('../progress.js', () => ({
   readSessionStatus: vi.fn(() => ({ status: 'running' })),
   resolveSessionDir: vi.fn((id: string) => `/tmp/coral-sessions/${id}`),
   SESSIONS_DIR: '/tmp/coral-sessions',
+  PROGRESS_FILE: 'progress.jsonl',
   extractProgressMessage: vi.fn(),
   appendProgressEvent: vi.fn(),
   formatElapsed: vi.fn(() => ''),
@@ -78,7 +79,7 @@ import {
   handleSessionList,
   extractCompletionData,
   launchJob,
-  activeJobs,
+  activeSessions,
   _test as handlerTest,
 } from '../server-handlers.js';
 import { SessionManager } from '../session-manager.js';
@@ -147,7 +148,7 @@ beforeEach(() => {
   mkdirSync(join(tmpDir, 'agents'), { recursive: true });
   writeFileSync(join(tmpDir, 'agents', 'scanner.md'), '# Scanner\n');
   handlerTest.setPluginRoot(tmpDir);
-  activeJobs.clear();
+  activeSessions.clear();
 
   vi.mocked(detectCodexCli).mockResolvedValue({
     available: true,
@@ -164,7 +165,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  activeJobs.clear();
+  activeSessions.clear();
   vi.clearAllMocks();
   handlerTest.setPluginRoot(defaultPluginRoot);
   rmSync(tmpDir, { recursive: true, force: true });
@@ -263,7 +264,7 @@ describe('API response: renamed fields and no old field names', () => {
     const mgr = new SessionManager(join(tmpDir, 'workspace'));
     const sessionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
     const controller = new AbortController();
-    activeJobs.set(sessionId, {
+    activeSessions.set(sessionId, {
       sessionDir: '/tmp/test',
       controller,
       sessionName: 'abort-target',
@@ -557,10 +558,10 @@ describe('SessionManager: legacy migration edge-case names', () => {
   });
 });
 
-// ── 17-19: activeJobs lifecycle ───────────────────────────────────────────────
+// ── 17-19: activeSessions lifecycle ───────────────────────────────────────────────
 
-describe('activeJobs lifecycle: cleanup after completion and error', () => {
-  it('activeJobs entry is removed after successful job completion', async () => {
+describe('activeSessions lifecycle: cleanup after completion and error', () => {
+  it('activeSessions entry is removed after successful job completion', async () => {
     vi.mocked(createSessionDir).mockReturnValue({
       id: 'lifecycle-ok-11111111-1111-4111-8111-111111111111',
       dir: '/tmp/coral-sessions/lifecycle-ok',
@@ -574,17 +575,17 @@ describe('activeJobs lifecycle: cleanup after completion and error', () => {
 
     launchJob('cleanup-test', () => pending, mgr);
     const jobId = 'lifecycle-ok-11111111-1111-4111-8111-111111111111';
-    expect(activeJobs.has(jobId)).toBe(true);
+    expect(activeSessions.has(jobId)).toBe(true);
 
     // Resolve with a proper completion result
     resolveHandler(jsonResult({ response: 'done', thread_id: 'thread-lifecycle', model: 'o4-mini', duration_ms: 10 }));
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     // After completion, the entry must be cleaned up
-    expect(activeJobs.has(jobId)).toBe(false);
+    expect(activeSessions.has(jobId)).toBe(false);
   });
 
-  it('activeJobs entry is removed after job error', async () => {
+  it('activeSessions entry is removed after job error', async () => {
     vi.mocked(createSessionDir).mockReturnValue({
       id: 'lifecycle-err-22222222-2222-4222-8222-222222222222',
       dir: '/tmp/coral-sessions/lifecycle-err',
@@ -598,12 +599,12 @@ describe('activeJobs lifecycle: cleanup after completion and error', () => {
 
     launchJob('error-cleanup-test', () => failing, mgr);
     const jobId = 'lifecycle-err-22222222-2222-4222-8222-222222222222';
-    expect(activeJobs.has(jobId)).toBe(true);
+    expect(activeSessions.has(jobId)).toBe(true);
 
     rejectHandler(new Error('boom'));
     await new Promise((resolve) => setTimeout(resolve, 30));
 
-    expect(activeJobs.has(jobId)).toBe(false);
+    expect(activeSessions.has(jobId)).toBe(false);
   });
 
   it('abort on terminalizing entry does not throw (controller.abort() is idempotent)', async () => {
@@ -612,7 +613,7 @@ describe('activeJobs lifecycle: cleanup after completion and error', () => {
     const controller = new AbortController();
 
     // Simulate a job that has been claimed for terminal write (terminalizing state)
-    activeJobs.set(sessionId, {
+    activeSessions.set(sessionId, {
       sessionDir: '/tmp/test',
       controller,
       sessionName: 'terminalizing-job',
@@ -621,7 +622,7 @@ describe('activeJobs lifecycle: cleanup after completion and error', () => {
 
     // Abort must not throw even when already terminalizing
     const result = await handleSessionAbort({ session: sessionId }, mgr);
-    // The session IS in activeJobs so it will be found and abort_requested returned
+    // The session IS in activeSessions so it will be found and abort_requested returned
     expect(result.isError).toBe(false);
     const data = JSON.parse(result.content[0].text);
     expect(data.status).toBe('abort_requested');
