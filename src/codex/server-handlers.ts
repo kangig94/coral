@@ -30,6 +30,7 @@ import {
   JOBS_DIR,
   extractProgressMessage,
   appendProgressEvent,
+  formatElapsed,
 } from './progress.js';
 import { type McpResult, textResult, jsonResult, resultExtras } from '../shared/mcp-utils.js';
 
@@ -60,7 +61,7 @@ export const tools = [
         reasoning_effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh'], description: 'Model reasoning effort level' },
         bypass: { type: 'boolean', description: 'Bypass Codex sandbox and approval checks. Only set when the user explicitly requests bypass mode.', default: false },
         job_ids: { type: 'array', items: { type: 'string' }, description: 'Job IDs to monitor (UUID, from exec/fork response)' },
-        timeout_seconds: { type: 'number', description: 'Max wait time in seconds (1-600, default 300)' },
+        timeout_seconds: { type: 'number', description: 'Max wait time in seconds (1-1200, default 600)' },
         cursors: { type: 'object', description: 'Byte offsets from prior wait call to avoid progress replay' },
         job_id: { type: 'string', description: 'Job ID (UUID) for abort. Preferred over session for deterministic abort.' },
       },
@@ -371,7 +372,7 @@ export async function handleWait(
   notify?: (n: { method: string; params: Record<string, unknown> }) => Promise<void>,
   progressToken?: string | number,
 ): Promise<McpResult> {
-  const { job_ids, timeout_seconds = 300, cursors: inputCursors } = input;
+  const { job_ids, timeout_seconds = 600, cursors: inputCursors } = input;
 
   const jobDirs: Record<string, string> = {};
   for (const id of job_ids) {
@@ -453,23 +454,28 @@ export async function handleWait(
               const text = completeBytes.toString('utf-8');
               const lines = text.split('\n').filter((line) => line.trim());
 
-              for (const line of lines) {
-                try {
-                  const parsed = JSON.parse(line) as { event?: string; message?: string };
-                  if (typeof parsed.message === 'string' && parsed.message && progressToken != null && notify != null) {
-                    const statusForName = readJobStatus(dir);
-                    const prefix = statusForName.session_name ?? id;
-                    void notify({
-                      method: 'notifications/progress',
-                      params: {
-                        progressToken,
-                        progress: ++notifCounter,
-                        message: `[${prefix}] ${parsed.message}`,
-                      },
-                    }).catch(() => {});
+              if (lines.length > 0 && progressToken != null && notify != null) {
+                const jobInfo = readJobStatus(dir);
+                const name = jobInfo.session_name ?? id;
+                const elapsed = formatElapsed(jobInfo.startedAt);
+                const tag = elapsed ? `${elapsed}: ${name}` : name;
+
+                for (const line of lines) {
+                  try {
+                    const parsed = JSON.parse(line) as { event?: string; message?: string };
+                    if (typeof parsed.message === 'string' && parsed.message) {
+                      void notify({
+                        method: 'notifications/progress',
+                        params: {
+                          progressToken,
+                          progress: ++notifCounter,
+                          message: `[${tag}] ${parsed.message}`,
+                        },
+                      }).catch(() => {});
+                    }
+                  } catch {
+                    // malformed progress line should not fail wait
                   }
-                } catch {
-                  // malformed progress line should not fail wait
                 }
               }
 

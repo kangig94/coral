@@ -97,6 +97,7 @@ vi.mock('../progress.js', () => ({
   JOBS_DIR: '/tmp/coral-jobs',
   extractProgressMessage: vi.fn(),
   appendProgressEvent: vi.fn(),
+  formatElapsed: vi.fn(() => ''),
 }));
 
 import { executeOneShot, executeResume, _test as executorTest } from '../codex-executor.js';

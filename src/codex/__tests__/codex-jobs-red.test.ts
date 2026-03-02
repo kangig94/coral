@@ -349,16 +349,16 @@ describe('waitShape: Zod schema UUID and bounds validation', () => {
     expect(codexOpSchema.safeParse({ op: 'wait', job_ids: [randomUUID()], timeout_seconds: 0 }).success).toBe(false);
   });
 
-  it('rejects wait with timeout_seconds of 601 (above max(600))', () => {
-    expect(codexOpSchema.safeParse({ op: 'wait', job_ids: [randomUUID()], timeout_seconds: 601 }).success).toBe(false);
+  it('rejects wait with timeout_seconds of 1201 (above max(1200))', () => {
+    expect(codexOpSchema.safeParse({ op: 'wait', job_ids: [randomUUID()], timeout_seconds: 1201 }).success).toBe(false);
   });
 
   it('accepts wait with timeout_seconds at lower boundary (1)', () => {
     expect(codexOpSchema.safeParse({ op: 'wait', job_ids: [randomUUID()], timeout_seconds: 1 }).success).toBe(true);
   });
 
-  it('accepts wait with timeout_seconds at upper boundary (600)', () => {
-    expect(codexOpSchema.safeParse({ op: 'wait', job_ids: [randomUUID()], timeout_seconds: 600 }).success).toBe(true);
+  it('accepts wait with timeout_seconds at upper boundary (1200)', () => {
+    expect(codexOpSchema.safeParse({ op: 'wait', job_ids: [randomUUID()], timeout_seconds: 1200 }).success).toBe(true);
   });
 
   it('rejects wait with non-UUID key in cursors record', () => {

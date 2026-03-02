@@ -132,6 +132,19 @@ export function extractProgressMessage(event: CodexThreadEvent): string | null {
   }
 }
 
+/** Format elapsed seconds since job start as a compact duration string. */
+export function formatElapsed(startedAt: number | undefined): string {
+  if (startedAt == null) return '';
+  const total = Math.floor((Date.now() - startedAt) / 1000);
+  if (total < 0) return '0s';
+  if (total < 60) return `${total}s`;
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  if (m < 60) return `${m}m ${s}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m ${s}s`;
+}
+
 /** Append a progress event to the file. */
 export function appendProgressEvent(filePath: string, eventType: string, message: string): void {
   try { appendFileSync(filePath, JSON.stringify({ ts: Date.now(), event: eventType, message }) + '\n'); }

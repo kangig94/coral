@@ -54,7 +54,7 @@ const forkShape = z.object({
 const waitShape = z.object({
   op: z.literal('wait'),
   job_ids: z.array(z.string().uuid()).min(1, 'At least one job_id required'),
-  timeout_seconds: z.number().min(1).max(600).optional(),
+  timeout_seconds: z.number().min(1).max(1200).optional(),
   cursors: z.record(z.string().uuid(), z.number().int().min(0)).optional(),
 });
 

@@ -11,6 +11,7 @@ import {
   resolveJobDir,
   extractProgressMessage,
   appendProgressEvent,
+  formatElapsed,
   JOBS_DIR,
 } from '../progress.js';
 
@@ -96,6 +97,36 @@ describe('extractProgressMessage', () => {
       item: { id: '1', type: 'reasoning', text: 'thinking' },
     };
     expect(extractProgressMessage(event)).toBeNull();
+  });
+});
+
+describe('formatElapsed', () => {
+  it('returns empty string for undefined startedAt', () => {
+    expect(formatElapsed(undefined)).toBe('');
+  });
+
+  it('formats seconds only when under 60s', () => {
+    const now = Date.now();
+    expect(formatElapsed(now)).toBe('0s');
+    expect(formatElapsed(now - 30_000)).toBe('30s');
+    expect(formatElapsed(now - 59_000)).toBe('59s');
+  });
+
+  it('formats minutes and seconds from 60s to 59m 59s', () => {
+    const now = Date.now();
+    expect(formatElapsed(now - 60_000)).toBe('1m 0s');
+    expect(formatElapsed(now - 90_000)).toBe('1m 30s');
+    expect(formatElapsed(now - 3_599_000)).toBe('59m 59s');
+  });
+
+  it('formats hours, minutes, seconds from 60m onward', () => {
+    const now = Date.now();
+    expect(formatElapsed(now - 3_600_000)).toBe('1h 0m 0s');
+    expect(formatElapsed(now - 5_430_000)).toBe('1h 30m 30s');
+  });
+
+  it('handles future startedAt gracefully', () => {
+    expect(formatElapsed(Date.now() + 10_000)).toBe('0s');
   });
 });
 

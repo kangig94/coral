@@ -85,7 +85,7 @@ describe('codexOpSchema', () => {
     expect(() => codexOpSchema.parse({
       op: 'wait',
       job_ids: ['12345678-1234-1234-1234-123456789abc'],
-      timeout_seconds: 601,
+      timeout_seconds: 1201,
     })).toThrow(ZodError);
   });
 
