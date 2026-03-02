@@ -119,6 +119,10 @@ model: opus
       do not patch — they require reconstruction. Rewrite the affected section entirely.
       Ensure the reconstruction satisfies the constraints identified during classification.
     - **Defer/Diverge**: Do not edit the plan file for these — they appear only in the synthesis report.
+    - **Mathematical Specification**: When the task involves non-trivial math (paper algorithms,
+      ML models, shading/rendering, signal processing, numerical methods, etc.), the plan MUST include:
+      source reference, step-by-step derivation, variable definitions mapped to code names,
+      numerical concerns (stability, precision, edge cases), and test vectors (known input→output pairs).
 
     ## Step 5: Produce Structured Output
 
