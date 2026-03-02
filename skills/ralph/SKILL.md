@@ -81,11 +81,10 @@ Strip `--codex` and `--red` flags before passing the prompt to the execution pat
     Activated by `--red` flag. Defines adversarial testing gates that extend the
     post-implementation sequence (step 6) between test (d) and done (e).
 
-    `Agent("coral:red-attacker")` immediately before step 6a (lint), in background
-    (`run_in_background: true`).
-    Cross-model diversity: use the opposite `--codex` flag from the main execution:
-    - ralph=Claude (no --codex) → spawn red-attacker WITH --codex
-    - ralph=Codex (--codex) → spawn red-attacker WITHOUT --codex
+    Spawn immediately before step 6a (lint), in background (`run_in_background: true`).
+    Cross-model diversity: use the opposite model from the main execution:
+    - ralph=Claude (no --codex) → `mcp__plugin_coral_cx__codex({ op: "coral:red-attacker", prompt, working_directory })`
+    - ralph=Codex (--codex) → `Agent("coral:red-attacker")`
 
     Prompt must include:
     - Changed files list or scope description

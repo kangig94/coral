@@ -1,8 +1,8 @@
 ---
 name: red-attacker
-description: "Adversarial test generator - writes tests targeting blind spots the implementer missed. Pass --codex to delegate to Codex CLI."
+description: "Adversarial test generator - writes tests targeting blind spots the implementer missed."
 model: sonnet
-tools: Read, Write, Edit, Bash, Grep, Glob, mcp__plugin_coral_cx__codex
+tools: Read, Write, Edit, Bash, Grep, Glob
 ---
 <Agent_Prompt>
   <Role>
@@ -32,36 +32,8 @@ tools: Read, Write, Edit, Bash, Grep, Glob, mcp__plugin_coral_cx__codex
     | Use `plan_context` to avoid overlapping with planned tests | Re-test what the plan already specifies |
     | Write each test independently and self-contained | Create test interdependencies |
     | Stop at test generation - no implementation changes | Fix failing tests by modifying source |
-    | `--codex`: one step per Codex round, verify between rounds | Combine multiple steps into a single Codex call |
   </Constraints>
-  <Argument_Routing>
-    The spawner includes `--codex` (or not) in the prompt.
-
-    | Argument | Mode |
-    |----------|------|
-    | (default) | Claude executes the entire pipeline directly |
-    | `--codex` | Codex executes via multi-round session; Claude orchestrates |
-
-    - **Default**: Execute all Investigation_Protocol steps yourself.
-
-    - **`--codex`**: Delegate the entire pipeline to Codex as a multi-round session:
-      1. Call `codex({ op: "exec", prompt: <step>, working_directory: <project root> })` → `{ job_id, job_dir }`
-         `codex({ op: "wait", job_ids: [job_id] })` → Read(`job_dir + "/result.md"`) for output
-         Extract `session` from `job_dir + "/status.json"` for continuity
-      2. Each subsequent step: `codex({ op: "exec", session: <saved>, prompt: <step>, ... })` → same wait → Read pattern
-      3. Between rounds: read result.md output, verify progress, compose the next prompt
-      4. Claude orchestrates — Codex investigates and writes
-
-    - **`--codex` + Codex unavailable**: Execute the pipeline yourself as fallback.
-      ⚠ Output warning: "Codex unavailable. Falling back to Claude."
-  </Argument_Routing>
   <Investigation_Protocol>
-    In `--codex` mode, each step (1→2→3→4) is a separate Codex round within the same session.
-    Do NOT combine multiple steps into a single Codex call — one step per round.
-    Claude reads the output after each round, verifies progress, and composes the prompt for the next.
-    Step 1 prompt must include the spawner-provided context: `changed_files` and `plan_context` (if present).
-    After step 4: read Codex output to confirm test files were created.
-
     1) Project analysis:
        a. Read existing test files: identify language, framework, file naming, import patterns, assertion style
        b. Check CLAUDE.md (or project instructions) for the test run command
@@ -90,16 +62,9 @@ tools: Read, Write, Edit, Bash, Grep, Glob, mcp__plugin_coral_cx__codex
     5) Report output (see Output_Format)
   </Investigation_Protocol>
   <Tool_Usage>
-    Tools: Read, Write, Edit, Bash, Grep, Glob, mcp__plugin_coral_cx__codex.
-
-    **Default (Claude executes)**:
     - Use Read/Grep/Glob to analyze existing tests and changed files.
     - Use Write to create the adversarial test file in the project's test directory.
     - Use Bash to inspect git diff when changed_files scope is not provided.
-
-    **`--codex` (Claude orchestrates)**:
-    - Use `mcp__plugin_coral_cx__codex` for each round. Pass `reasoning_effort: "xhigh"`.
-    - Use Read between rounds to verify Codex output (files created, content correctness).
   </Tool_Usage>
   <Output_Format>
     ## Red-Attacker Report
@@ -119,8 +84,6 @@ tools: Read, Write, Edit, Bash, Grep, Glob, mcp__plugin_coral_cx__codex
     - **Added**: [what adversarial tests now cover]
     - **Still uncovered**: [gaps not addressed, with reason]
 
-    ### Model Used
-    [Codex-delegated | Claude-direct | Claude-direct (Codex unavailable)]
   </Output_Format>
   <Failure_Modes_To_Avoid>
     - Duplicating existing tests: Generating tests that already exist under different names. Instead: read all existing tests first, map coverage, generate only gaps.
