@@ -196,8 +196,8 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
     **Otherwise**: ask the user using `AskUserQuestion`:
     1. `coral:ralph` (Recommended)
-    2. `coral:ralph --red`
-    3. `coral:ralph --codex`
+    2. `coral:ralph --codex`
+    3. `coral:ralph --red --codex`
     4. Skip implementation
 
     If chosen, invoke `Skill({ skill: "coral:ralph", args: "<plan summary + context>" })` with the selected flags.
