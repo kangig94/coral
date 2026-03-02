@@ -37,14 +37,16 @@ describe('codexOpSchema', () => {
     })).toThrow(ZodError);
   });
 
-  it('wait rejects cursors with non-UUID key', () => {
-    const result = codexOpSchema.safeParse({
+  it('wait ignores legacy cursors field', () => {
+    const result = codexOpSchema.parse({
       op: 'wait',
       sessions: ['12345678-1234-1234-1234-123456789abc'],
-      cursors: { 'not-a-uuid': 0 },
+      cursors: { '12345678-1234-1234-1234-123456789abc': 0 },
     });
-    expect(result.success).toBe(false);
-    expect(result.error).toBeInstanceOf(ZodError);
+    expect(result).toEqual({
+      op: 'wait',
+      sessions: ['12345678-1234-1234-1234-123456789abc'],
+    });
   });
 
   it('abort rejects non-UUID session', () => {

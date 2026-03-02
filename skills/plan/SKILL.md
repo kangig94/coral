@@ -96,9 +96,9 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     **CRITICAL**: Use `op: "coral:<role>"`, NOT `op: "exec"`. Never pass `session` — each round is a fresh call (no session continuity), so reviewers evaluate the current plan without prior-round bias. Use unique `name` per round (e.g., `architect-r1`, `architect-r2`) to avoid conflicts.
     Provide each: plan file path, working directory, relevant context. In `--deep`, include `--deep` in each reviewer's prompt.
 
-    Use a cursor-aware wait loop until both reviewer jobs finish:
-    1. Call `codex({ op: "wait", sessions: pendingSessions, timeout_seconds, cursors })`.
-    2. If `status: "timeout"`, update `cursors` from the response and continue waiting.
+    Use a wait loop until both reviewer jobs finish:
+    1. Call `codex({ op: "wait", sessions: pendingSessions, timeout_seconds })`.
+    2. If `status: "timeout"`, continue waiting.
     3. If `status: "completed"`, record `session_dir` path and remove that session from `pendingSessions`.
        **Do NOT read `result.md` yet** — pass paths to the resolver to save context.
     4. If `status: "error"`, read `session_dir/status.json`, record the failure, remove that session, continue.

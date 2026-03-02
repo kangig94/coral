@@ -55,7 +55,6 @@ const waitShape = z.object({
   op: z.literal('wait'),
   sessions: z.array(z.string().uuid()).min(1, 'At least one session required'),
   timeout_seconds: z.number().min(1).max(1200).optional(),
-  cursors: z.record(z.string().uuid(), z.number().int().min(0)).optional(),
 });
 
 const abortShape = z.object({

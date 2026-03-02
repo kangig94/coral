@@ -54,9 +54,9 @@ Dispatch TWO Codex jobs in parallel:
 - `codex({ op: "coral:critic", prompt, session, working_directory, reasoning_effort: "xhigh" })`
 
 Use `session` only when available from step 2. Omit it for fresh review sessions.
-Then wait with timeout handling and cursors until both jobs finish:
-1. `codex({ op: "wait", sessions: pendingSessions, timeout_seconds, cursors })`
-2. If `status: "timeout"`, keep waiting with returned `cursors`
+Then wait with timeout handling until both jobs finish:
+1. `codex({ op: "wait", sessions: pendingSessions, timeout_seconds })`
+2. If `status: "timeout"`, keep waiting
 3. If `status: "completed"`, read `session_dir/result.md` and remove that session from `pendingSessions`
 4. If `status: "error"`, read `session_dir/status.json`, record the failure, remove that session, continue
 

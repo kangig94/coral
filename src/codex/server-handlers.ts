@@ -4,7 +4,7 @@
  * server.ts is the composition root (wiring only).
  */
 
-import { closeSync, existsSync, openSync, readFileSync, readSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { executeOneShot, executeResume, executeFork } from './codex-executor.js';
 import { detectCodexCli, type CliInfo } from './cli-detection.js';
@@ -63,7 +63,6 @@ export const tools = [
         bypass: { type: 'boolean', description: 'Bypass Codex sandbox and approval checks. Only set when the user explicitly requests bypass mode.', default: false },
         sessions: { type: 'array', items: { type: 'string' }, description: 'Session UUIDs to monitor (from exec/fork response)' },
         timeout_seconds: { type: 'number', description: 'Max wait time in seconds (1-1200, default 600)' },
-        cursors: { type: 'object', description: 'Byte offsets from prior wait call to avoid progress replay' },
       },
       required: ['op'],
     },
@@ -343,7 +342,7 @@ export async function handleWait(
   notify?: (n: { method: string; params: Record<string, unknown> }) => Promise<void>,
   progressToken?: string | number,
 ): Promise<McpResult> {
-  const { sessions, timeout_seconds = 600, cursors: inputCursors } = input;
+  const { sessions, timeout_seconds = 600 } = input;
 
   const sessionDirs: Record<string, string> = {};
   for (const id of sessions) {
@@ -354,10 +353,7 @@ export async function handleWait(
     sessionDirs[id] = dir;
   }
 
-  const fds = new Map<string, number | null>(sessions.map((id) => [id, null]));
-  const cursors = new Map<string, number>(
-    sessions.map((id) => [id, inputCursors?.[id] ?? 0]),
-  );
+  const lastSent = new Map<string, string>();
 
   // Cache stable session metadata (session_name, startedAt) to avoid re-reading status.json per tick
   const sessionMeta = new Map<string, { name: string; startedAt: number | undefined }>();
@@ -372,140 +368,97 @@ export async function handleWait(
 
   const timeoutResponse = (): McpResult => {
     const running = sessions.filter((id) => readSessionStatus(sessionDirs[id]!).status === 'running');
-    const cursorRecord: Record<string, number> = {};
-    for (const [id, offset] of cursors) cursorRecord[id] = offset;
-    return jsonResult({ status: 'timeout', running_sessions: running, cursors: cursorRecord });
+    return jsonResult({ status: 'timeout', running_sessions: running });
   };
 
-  try {
-    while (true) {
-      if (shutdownSignal.signal.aborted) {
-        return timeoutResponse();
+  while (true) {
+    if (shutdownSignal.signal.aborted) {
+      return timeoutResponse();
+    }
+
+    if (Date.now() - startMs >= timeoutMs) {
+      return timeoutResponse();
+    }
+
+    let completedId: string | null = null;
+    let completedStatus: SessionStatus | null = null;
+
+    for (const id of sessions) {
+      const dir = sessionDirs[id]!;
+      const progressFile = join(dir, PROGRESS_FILE);
+
+      let progressData: string | null = null;
+      try {
+        progressData = readFileSync(progressFile, 'utf-8');
+      } catch {
+        // progress.jsonl may not exist yet
       }
 
-      if (Date.now() - startMs >= timeoutMs) {
-        return timeoutResponse();
-      }
+      if (progressData && progressToken != null && notify != null) {
+        const lastNewline = progressData.lastIndexOf('\n');
+        if (lastNewline >= 0) {
+          const completeData = progressData.substring(0, lastNewline);
+          const lastLine = completeData
+            .split('\n')
+            .filter((line) => line.trim())
+            .at(-1);
 
-      let completedId: string | null = null;
-      let completedStatus: SessionStatus | null = null;
-
-      for (const id of sessions) {
-        const dir = sessionDirs[id]!;
-        const progressFile = join(dir, PROGRESS_FILE);
-
-        let fd = fds.get(id) ?? null;
-        if (fd === null) {
-          try {
-            fd = openSync(progressFile, 'r');
-            fds.set(id, fd);
-          } catch {
-            // progress.jsonl may not exist yet
-          }
-        }
-
-        if (fd !== null) {
-          const offset = cursors.get(id) ?? 0;
-          const chunkSize = 4096;
-          const buf = Buffer.allocUnsafe(chunkSize);
-
-          let bytesRead = 0;
-          try {
-            bytesRead = readSync(fd, buf, 0, chunkSize, offset);
-          } catch {
-            // fd read errors are ignored for this poll tick
-          }
-
-          if (bytesRead > 0) {
-            const chunk = buf.subarray(0, bytesRead);
-            let lastNewline = -1;
-            for (let i = bytesRead - 1; i >= 0; i--) {
-              if (chunk[i] === 0x0a) {
-                lastNewline = i;
-                break;
-              }
-            }
-
-            if (lastNewline >= 0) {
-              const completeBytes = chunk.subarray(0, lastNewline + 1);
-              const text = completeBytes.toString('utf-8');
-              const lines = text.split('\n').filter((line) => line.trim());
-
-              if (lines.length > 0 && progressToken != null && notify != null) {
-                const meta = sessionMeta.get(id)!;
-                const elapsed = formatElapsed(meta.startedAt);
-                const tag = elapsed ? `${elapsed}: ${meta.name}` : meta.name;
-
-                for (const line of lines) {
-                  try {
-                    const parsed = JSON.parse(line) as { event?: string; message?: string };
-                    if (typeof parsed.message === 'string' && parsed.message) {
-                      void notify({
-                        method: 'notifications/progress',
-                        params: {
-                          progressToken,
-                          progress: ++notifCounter,
-                          message: `[${tag}] ${parsed.message}`,
-                        },
-                      }).catch(() => {});
-                    }
-                  } catch {
-                    // malformed progress line should not fail wait
-                  }
+          if (lastLine) {
+            try {
+              const parsed = JSON.parse(lastLine) as { message?: unknown };
+              if (typeof parsed.message === 'string' && parsed.message) {
+                const previousMessage = lastSent.get(id);
+                if (previousMessage !== parsed.message) {
+                  const meta = sessionMeta.get(id)!;
+                  const elapsed = formatElapsed(meta.startedAt);
+                  const tag = elapsed ? `${elapsed}: ${meta.name}` : meta.name;
+                  lastSent.set(id, parsed.message);
+                  void notify({
+                    method: 'notifications/progress',
+                    params: {
+                      progressToken,
+                      progress: ++notifCounter,
+                      message: `[${tag}] ${parsed.message}`,
+                    },
+                  }).catch(() => {});
                 }
               }
-
-              cursors.set(id, offset + lastNewline + 1);
+            } catch {
+              // malformed progress line should not fail wait
             }
           }
         }
-
-        const sessionStatus = readSessionStatus(dir);
-        if ((sessionStatus.status === 'completed' || sessionStatus.status === 'error') && completedId === null) {
-          completedId = id;
-          completedStatus = sessionStatus;
-        }
       }
 
-      if (completedId !== null && completedStatus !== null) {
-        const dir = sessionDirs[completedId]!;
-        const cursorRecord: Record<string, number> = {};
-        for (const [id, offset] of cursors) {
-          if (id !== completedId) cursorRecord[id] = offset;
-        }
-
-        return jsonResult({
-          status: completedStatus.status,
-          completed_session: completedId,
-          session_dir: dir,
-          session_name: completedStatus.session_name ?? completedId,
-          cursors: cursorRecord,
-        });
+      const sessionStatus = readSessionStatus(dir);
+      if ((sessionStatus.status === 'completed' || sessionStatus.status === 'error') && completedId === null) {
+        completedId = id;
+        completedStatus = sessionStatus;
       }
+    }
 
-      await new Promise<void>((resolve) => {
-        const onAbort = () => {
-          clearTimeout(timer);
-          shutdownSignal.signal.removeEventListener('abort', onAbort);
-          resolve();
-        };
-        const timer = setTimeout(() => {
-          shutdownSignal.signal.removeEventListener('abort', onAbort);
-          resolve();
-        }, 500);
-        shutdownSignal.signal.addEventListener('abort', onAbort);
+    if (completedId !== null && completedStatus !== null) {
+      const dir = sessionDirs[completedId]!;
+      return jsonResult({
+        status: completedStatus.status,
+        completed_session: completedId,
+        session_dir: dir,
+        session_name: completedStatus.session_name ?? completedId,
       });
     }
-  } finally {
-    for (const [, fd] of fds) {
-      if (fd !== null) {
-        try {
-          closeSync(fd);
-        } catch {
-          // ignore close errors
-        }
-      }
-    }
+
+    await new Promise<void>((resolve) => {
+      const onAbort = () => {
+        clearTimeout(timer);
+        shutdownSignal.signal.removeEventListener('abort', onAbort);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        shutdownSignal.signal.removeEventListener('abort', onAbort);
+        resolve();
+      }, 500);
+      shutdownSignal.signal.addEventListener('abort', onAbort);
+    });
   }
 }
 

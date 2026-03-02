@@ -45,7 +45,7 @@ User → /coral:codex "question"
      → Skill detects intent (review/investigate/ralph/general)
      → Review intent:
         → Parallel codex calls: codex({ op: "coral:architect", ... }) + codex({ op: "coral:critic", ... })
-        → wait loop with timeout+cursors until both complete
+        → wait loop with timeout until both complete
      → Results synthesized
      → Other intents:
         → Skill calls codex({ op: "coral:<agent>" }) or codex({ op: "exec" }) directly

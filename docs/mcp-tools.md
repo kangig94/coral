@@ -93,7 +93,6 @@ Poll for completion. Blocks until one of the requested sessions finishes or `tim
 |---|---|---|---|
 | `sessions` | string[] | Yes | Array of session UUIDs to wait on. Min 1 element. |
 | `timeout_seconds` | integer | No | Max wait time in seconds (1–600, default: 300) |
-| `cursors` | object | No | `{ [session: UUID]: byteOffset }` — Resume progress tailing from a previous wait call. Pass the `cursors` field from the prior response. |
 
 ### Output — Completed or Error
 
@@ -102,8 +101,7 @@ Poll for completion. Blocks until one of the requested sessions finishes or `tim
   "status": "completed",
   "completed_session": "uuid",
   "session_dir": "/tmp/coral-sessions/uuid",
-  "session_name": "my-review",
-  "cursors": { "uuid": 1234 }
+  "session_name": "my-review"
 }
 ```
 
@@ -116,16 +114,13 @@ Poll for completion. Blocks until one of the requested sessions finishes or `tim
 ```json
 {
   "status": "timeout",
-  "running_sessions": ["uuid1"],
-  "cursors": { "uuid1": 1024 }
+  "running_sessions": ["uuid1"]
 }
 ```
 
-Pass `cursors` to the next `wait` call to resume progress tailing without re-reading seen output.
-
 ### Wait Semantics
 
-- **Any-semantics**: Returns on the FIRST session completion. For wait-all, loop: call `wait` with the remaining `running_sessions` and the returned `cursors`.
+- **Any-semantics**: Returns on the FIRST session completion. For wait-all, loop: call `wait` with the remaining sessions.
 - **Progress**: `[Codex]` prefixed messages sent via `notifications/progress` during the wait.
 - **Immediate return**: If a session finished before `wait` is called, returns `completed` immediately.
 
@@ -233,7 +228,7 @@ if status == "completed":
 if status == "error":
   Read(session_dir + "/status.json") → { error } for diagnostics
 if status == "timeout":
-  re-wait with returned cursors, or abort(session)
+  re-wait, or abort(session)
 ```
 
 ## Session Continuity

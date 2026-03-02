@@ -354,6 +354,7 @@ describe('API response: thread_id leakage and field presence', () => {
       expect(data.running_sessions).toBeDefined();
       expect(Array.isArray(data.running_sessions)).toBe(true);
       expect(data.running_jobs).toBeUndefined();
+      expect(data.cursors).toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -372,7 +373,7 @@ describe('handleWait: behavioral gaps', () => {
     expect(result.content[0].text).toContain(sessionId);
   });
 
-  it('cursor for completed_session is excluded from returned cursors', async () => {
+  it('completed response does not include cursors field', async () => {
     const sessionId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
     const { createSessionDir: realCreate, writeSessionResult: realWrite, readSessionStatus: realRead } =
       await vi.importActual<typeof import('../progress.js')>('../progress.js');
@@ -390,52 +391,97 @@ describe('handleWait: behavioral gaps', () => {
       const result = await handleWait({
         op: 'wait',
         sessions: [sessionId],
-        cursors: { [sessionId]: 0 },
       });
       const data = JSON.parse(result.content[0].text);
 
       expect(data.status).toBe('completed');
       expect(data.completed_session).toBe(sessionId);
-      expect(data.cursors?.[sessionId]).toBeUndefined();
+      expect(data.cursors).toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('cursor for non-completed session preserved when another completes', async () => {
-    const completedId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
-    const runningId = '11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-    const { createSessionDir: realCreate, writeSessionResult: realWrite } =
+  it('progress notification dedup skips repeated messages', async () => {
+    const sessionId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    const { createSessionDir: realCreate } =
       await vi.importActual<typeof import('../progress.js')>('../progress.js');
-    const { dir: completedDir } = realCreate('two-session-completed');
-    const { dir: runningDir } = realCreate('two-session-running');
+    const { dir } = realCreate('wait-dedup');
+    const progressFile = join(dir, 'progress.jsonl');
+    const line = JSON.stringify({ event: 'thread.message.delta', message: 'same message' });
 
     try {
-      realWrite(completedDir, 'done', { session_name: 'completed-sess' });
-      vi.mocked(resolveSessionDir).mockImplementation((id) => {
-        if (id === completedId) return completedDir;
-        if (id === runningId) return runningDir;
-        return `/tmp/coral-sessions/${id}`;
-      });
-      vi.mocked(readSessionStatus).mockImplementation((d) =>
-        d === completedDir ? { status: 'completed' } : { status: 'running' },
+      writeFileSync(progressFile, `${line}\n${line}\n`);
+      vi.mocked(resolveSessionDir).mockImplementation((id) =>
+        id === sessionId ? dir : `/tmp/coral-sessions/${id}`,
       );
+      let statusReads = 0;
+      vi.mocked(readSessionStatus).mockImplementation((d) => {
+        if (d !== dir) return { status: 'running' };
+        statusReads += 1;
+        if (statusReads <= 2) return { status: 'running', session_name: 'dedup-session' };
+        return { status: 'completed', session_name: 'dedup-session' };
+      });
+      const notify = vi.fn(async () => {});
 
       const result = await handleWait({
         op: 'wait',
-        sessions: [completedId, runningId],
-        cursors: { [completedId]: 0, [runningId]: 42 },
-      });
+        sessions: [sessionId],
+        timeout_seconds: 3,
+      }, notify, 'progress-token');
       const data = JSON.parse(result.content[0].text);
 
-      expect(data.completed_session).toBe(completedId);
-      expect(data.cursors?.[runningId]).toBe(42);
-      expect(data.cursors?.[completedId]).toBeUndefined();
+      expect(data.completed_session).toBe(sessionId);
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({
+        method: 'notifications/progress',
+        params: expect.objectContaining({
+          message: '[dedup-session] same message',
+        }),
+      }));
     } finally {
-      rmSync(completedDir, { recursive: true, force: true });
-      rmSync(runningDir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 5000);
+
+  it('progress notification ignores trailing partial JSONL line', async () => {
+    const sessionId = '11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const { createSessionDir: realCreate } =
+      await vi.importActual<typeof import('../progress.js')>('../progress.js');
+    const { dir } = realCreate('wait-partial-line');
+    const progressFile = join(dir, 'progress.jsonl');
+    const completeLine = JSON.stringify({ event: 'thread.message.delta', message: 'complete message' });
+    const partialLine = JSON.stringify({ event: 'thread.message.delta', message: 'partial message' });
+
+    try {
+      writeFileSync(progressFile, `${completeLine}\n${partialLine}`);
+      vi.mocked(resolveSessionDir).mockImplementation((id) =>
+        id === sessionId ? dir : `/tmp/coral-sessions/${id}`,
+      );
+      let statusReads = 0;
+      vi.mocked(readSessionStatus).mockImplementation((d) => {
+        if (d !== dir) return { status: 'running' };
+        statusReads += 1;
+        if (statusReads <= 2) return { status: 'running', session_name: 'partial-session' };
+        return { status: 'completed', session_name: 'partial-session' };
+      });
+      const notify = vi.fn(async () => {});
+
+      const result = await handleWait({
+        op: 'wait',
+        sessions: [sessionId],
+        timeout_seconds: 3,
+      }, notify, 'progress-token');
+      const data = JSON.parse(result.content[0].text);
+
+      expect(data.completed_session).toBe(sessionId);
+      expect(notify).toHaveBeenCalledTimes(1);
+      const [firstArg] = notify.mock.calls[0] as unknown as [{ params?: { message?: string } }];
+      expect(firstArg.params?.message).toBe('[partial-session] complete message');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 5000);
 });
 
 // ── Merged from red-session-naming: activeSessions lifecycle ──────────────────
