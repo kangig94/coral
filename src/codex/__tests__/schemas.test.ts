@@ -15,38 +15,12 @@ describe('codexOpSchema', () => {
     expect(() => codexOpSchema.parse({})).toThrow(ZodError);
   });
 
-  it('wait rejects empty sessions array', () => {
-    expect(() => codexOpSchema.parse({ op: 'wait', sessions: [] })).toThrow(ZodError);
-  });
-
-  it('wait rejects non-UUID sessions', () => {
-    expect(() => codexOpSchema.parse({ op: 'wait', sessions: ['not-a-uuid'] })).toThrow(ZodError);
-  });
-
-  it('wait rejects timeout_seconds out of range', () => {
+  it('rejects wait discriminator', () => {
     expect(() => codexOpSchema.parse({
       op: 'wait',
       sessions: ['12345678-1234-1234-1234-123456789abc'],
-      timeout_seconds: 0,
+      timeout_seconds: 10,
     })).toThrow(ZodError);
-
-    expect(() => codexOpSchema.parse({
-      op: 'wait',
-      sessions: ['12345678-1234-1234-1234-123456789abc'],
-      timeout_seconds: 1201,
-    })).toThrow(ZodError);
-  });
-
-  it('wait ignores legacy cursors field', () => {
-    const result = codexOpSchema.parse({
-      op: 'wait',
-      sessions: ['12345678-1234-1234-1234-123456789abc'],
-      cursors: { '12345678-1234-1234-1234-123456789abc': 0 },
-    });
-    expect(result).toEqual({
-      op: 'wait',
-      sessions: ['12345678-1234-1234-1234-123456789abc'],
-    });
   });
 
   it('abort rejects non-UUID session', () => {
@@ -57,7 +31,7 @@ describe('codexOpSchema', () => {
     expect(() => codexOpSchema.parse({ op: 'abort' })).toThrow(ZodError);
   });
 
-  it('wait rejects job_ids (old field name)', () => {
+  it('rejects legacy wait payloads because wait op is unsupported', () => {
     const result = codexOpSchema.safeParse({ op: 'wait', job_ids: ['12345678-1234-1234-1234-123456789abc'] });
     expect(result.success).toBe(false);
   });

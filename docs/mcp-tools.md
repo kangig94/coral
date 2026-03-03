@@ -2,7 +2,7 @@
 
 Coral exposes two MCP servers, each with its own tool set:
 
-- **`ax` (Agent Execution)**: 2 tools (`codex`, `claude`) for Codex/Claude CLI session management. Prefix: `mcp__plugin_coral_ax__`
+- **`ax` (Agent Execution)**: 3 tools (`codex`, `claude`, `wait`) for Codex/Claude CLI session management. Prefix: `mcp__plugin_coral_ax__`
 - **`dc` (Discuss)**: 2 tools for moderated multi-agent discussions. Prefix: `mcp__plugin_coral_dc__`
 
 All tool inputs are validated at runtime with Zod schemas (`src/codex/schemas.ts`, `src/claude/schemas.ts`, `src/discuss/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
@@ -19,7 +19,7 @@ Single entry point for all Codex execution. Use the required `op` discriminator.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `op` | string | Yes | `exec`, `wait`, `list`, `fork`, `abort`, or `coral:<agent-name>` |
+| `op` | string | Yes | `exec`, `list`, `fork`, `abort`, or `coral:<agent-name>` |
 
 ---
 
@@ -79,50 +79,7 @@ Returns immediately. Codex runs in background.
 }
 ```
 
-`session_dir` is the filesystem path to the session run directory. Use `wait` to poll for completion, then `Read` files from `session_dir`.
-
----
-
-### op: wait
-
-Poll for completion. Blocks until one of the requested sessions finishes or `timeout_seconds` elapses.
-
-### Input Schema
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `sessions` | string[] | Yes | Array of session UUIDs to wait on. Min 1 element. |
-| `timeout_seconds` | integer | No | Max wait time in seconds (1–600, default: 300) |
-
-### Output — Completed or Error
-
-```json
-{
-  "status": "completed",
-  "completed_session": "uuid",
-  "session_dir": "/tmp/coral-sessions/uuid",
-  "session_name": "my-review"
-}
-```
-
-- `status`: `"completed"` or `"error"`
-- `Read(session_dir + "/result.md")` → response text (completed runs only)
-- `Read(session_dir + "/status.json")` → terminal metadata (`error`, timing, model, etc.)
-
-### Output — Timeout
-
-```json
-{
-  "status": "timeout",
-  "running_sessions": ["uuid1"]
-}
-```
-
-### Wait Semantics
-
-- **Any-semantics**: Returns on the FIRST session completion. For wait-all, loop: call `wait` with the remaining sessions.
-- **Progress**: `[Codex]` prefixed messages sent via `notifications/progress` during the wait.
-- **Immediate return**: If a session finished before `wait` is called, returns `completed` immediately.
+`session_dir` is the filesystem path to the session run directory. Use the top-level AX `wait` tool to poll for completion, then `Read` files from `session_dir`.
 
 ---
 
@@ -254,26 +211,24 @@ Single entry point for Claude CLI execution. Use the required `op` discriminator
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `op` | string | Yes | `exec`, `wait`, `list`, `abort`, or `coral:<agent-name>` |
+| `op` | string | Yes | `exec`, `list`, `abort`, or `coral:<agent-name>` |
 
 ### Official Input Schema
 
 ```json
 {
   "name": "claude",
-  "description": "Execute a prompt with Claude CLI. Use op field to select exec/list/wait/abort. For agent delegation, use op: \"coral:<agent-name>\" (e.g., coral:architect, coral:critic). Skills (coral:<skill>) are not supported — use the codex tool for skill delegation.",
+  "description": "Execute a prompt with Claude CLI. Use op field to select exec/list/abort. For agent delegation, use op: \"coral:<agent-name>\" (e.g., coral:architect, coral:critic). Skills (coral:<skill>) are not supported — use the codex tool for skill delegation.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "op": { "type": "string", "description": "Operation: exec/list/wait/abort, or coral:<agent-name> for agent delegation (skills not supported)" },
+      "op": { "type": "string", "description": "Operation: exec/list/abort, or coral:<agent-name> for agent delegation (skills not supported)" },
       "prompt": { "type": "string", "description": "Prompt to send (exec required)" },
       "session": { "type": "string", "description": "Session ID for resume (exec with existing session)" },
       "name": { "type": "string", "description": "Session name (exec optional)" },
       "model": { "type": "string", "description": "Claude model to use (e.g., sonnet, opus, haiku)" },
       "working_directory": { "type": "string", "description": "Working directory for execution" },
-      "system_prompt": { "type": "string", "description": "Custom system prompt (replaces default)" },
-      "sessions": { "type": "array", "items": { "type": "string" }, "description": "Session UUIDs to monitor (wait op)" },
-      "timeout_seconds": { "type": "number", "description": "Max wait time in seconds (1-1200, default 600)" }
+      "system_prompt": { "type": "string", "description": "Custom system prompt (replaces default)" }
     },
     "required": ["op"]
   }
@@ -305,9 +260,9 @@ Execution details:
 - `coral:<agent>`: loads `agents/<agent>.md`, strips YAML frontmatter + `> **CORAL_...` directive lines, and injects into `--system-prompt`
 - `coral:<skill>`: returns `isError` (skills require Claude Code tool environment and are only supported through the `codex` tool)
 
-### op: wait / list / abort
+### op: list / abort
 
-Same session lifecycle contract as Codex (`wait` any-semantics, `list` registered sessions, `abort` active session). Provider scoping prevents Claude operations from targeting Codex sessions and vice versa.
+Same lifecycle contract as Codex for provider-local operations: `list` returns registered Claude sessions, and `abort` targets active Claude sessions.
 
 ### Missing `session_id` Behavior
 
@@ -315,6 +270,47 @@ If CLI JSON output does not include `session_id`, the run is marked non-resumabl
 - response still returns normally
 - metadata includes `non_resumable: true`
 - no persisted provider session mapping is created
+
+---
+
+# Wait Tool (`ax`)
+
+## wait
+
+Provider-agnostic wait for background sessions from any AX adapter. Wait returns when the first requested session completes, errors, or timeout elapses.
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `sessions` | string[] (UUID) | Yes | Session UUIDs to monitor (min 1). |
+| `timeout_seconds` | integer | No | Max wait time in seconds (1-1200, default 600). |
+
+### Output — Completed or Error
+
+```json
+{
+  "status": "completed",
+  "completed_session": "uuid",
+  "session_dir": "/tmp/coral-sessions/uuid",
+  "session_name": "my-review"
+}
+```
+
+### Output — Timeout
+
+```json
+{
+  "status": "timeout",
+  "running_sessions": ["uuid1"]
+}
+```
+
+### Wait Semantics
+
+- **Any-semantics**: returns on the first completion in `sessions`.
+- **Cross-provider**: accepts mixed Codex/Claude session UUIDs in one call.
+- **Progress notifications**: incremental updates are emitted through `notifications/progress`.
 
 ---
 

@@ -56,22 +56,18 @@ import { detectCodexCli } from '../cli-detection.js';
 import {
   createSessionDir,
   writeSessionError,
-  readSessionStatus,
-  resolveSessionDir,
-  SESSIONS_DIR,
 } from '../../runner/progress.js';
 import { SessionManager } from '../../runner/session-manager.js';
+import { activeSessions } from '../../runner/job-manager.js';
 import { jsonResult, type McpResult } from '../../shared/mcp-utils.js';
 import {
   extractCompletionData,
   launchJob,
-  activeSessions,
   handleSessionCreate,
   handleSessionSend,
   handleSessionFork,
   handleSessionList,
   handleSessionAbort,
-  handleWait,
   handleToolCall,
   tools,
 } from '../server-handlers.js';
@@ -110,8 +106,6 @@ beforeEach(() => {
     dir: '/tmp/coral-sessions/12345678-1234-4234-8234-123456789abc',
   });
   vi.mocked(detectCodexCli).mockResolvedValue({ available: true, version: 'codex 1.0.0', authState: 'authenticated' });
-  vi.mocked(readSessionStatus).mockReturnValue({ status: 'running' });
-  vi.mocked(resolveSessionDir).mockImplementation((id: string) => join(SESSIONS_DIR as string, id));
   vi.mocked(executeOneShot).mockResolvedValue(makeExecResult());
   vi.mocked(executeResume).mockResolvedValue(makeExecResult());
   vi.mocked(executeFork).mockResolvedValue(makeExecResult({ sessionId: 'thread-fork-1' }));
@@ -213,21 +207,6 @@ describe('session handlers', () => {
     expect(data.job_id).toBeUndefined();
   });
 
-  it('handleWait uses sessions/completed_session/running_sessions/session_dir fields', async () => {
-    const sessionId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
-    const dir = join(SESSIONS_DIR as string, sessionId);
-    mkdirSync(dir, { recursive: true });
-    dirsToClean.add(dir);
-    vi.mocked(readSessionStatus).mockReturnValue({ status: 'completed', session_name: 'wait-session' });
-
-    const result = await handleWait({ op: 'wait', sessions: [sessionId] });
-    const data = JSON.parse(result.content[0].text);
-    expect(data.status).toBe('completed');
-    expect(data.completed_session).toBe(sessionId);
-    expect(data.session_dir).toBe(dir);
-    expect(data.completed_job_id).toBeUndefined();
-    expect(data.job_dir).toBeUndefined();
-  });
 });
 
 describe('tool routing and UUID semantics', () => {
@@ -354,154 +333,6 @@ describe('API response: thread_id leakage and field presence', () => {
     expect(entry).toHaveProperty('session', sessionId);
   });
 
-  it('wait timeout response uses running_sessions (not running_jobs)', async () => {
-    const sessionId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
-    vi.mocked(readSessionStatus).mockReturnValue({ status: 'running' });
-
-    const { createSessionDir: realCreate } =
-      await vi.importActual<typeof import('../../runner/progress.js')>('../../runner/progress.js');
-    const { dir } = realCreate(`timeout-test-${sessionId}`);
-
-    try {
-      vi.mocked(resolveSessionDir).mockImplementation((id) =>
-        id === sessionId ? dir : `/tmp/coral-sessions/${id}`,
-      );
-
-      const result = await handleWait({ op: 'wait', sessions: [sessionId], timeout_seconds: 1 });
-      const data = JSON.parse(result.content[0].text);
-
-      expect(data.status).toBe('timeout');
-      expect(data.running_sessions).toBeDefined();
-      expect(Array.isArray(data.running_sessions)).toBe(true);
-      expect(data.running_jobs).toBeUndefined();
-      expect(data.cursors).toBeUndefined();
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }, 3000);
-});
-
-// ── Merged from red-session-naming: handleWait behavioral gaps ────────────────
-
-describe('handleWait: behavioral gaps', () => {
-  it('wait for non-existent session dir returns error', async () => {
-    const sessionId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
-    vi.mocked(resolveSessionDir).mockReturnValue('/tmp/coral-sessions/does-not-exist-dir');
-
-    const result = await handleWait({ op: 'wait', sessions: [sessionId] });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain(sessionId);
-  });
-
-  it('completed response does not include cursors field', async () => {
-    const sessionId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
-    const { createSessionDir: realCreate, writeSessionResult: realWrite, readSessionStatus: realRead } =
-      await vi.importActual<typeof import('../../runner/progress.js')>('../../runner/progress.js');
-    const { dir } = realCreate('cursor-test');
-
-    try {
-      realWrite(dir, 'done', { session_name: 'cursor-test' });
-      vi.mocked(resolveSessionDir).mockImplementation((id) =>
-        id === sessionId ? dir : `/tmp/coral-sessions/${id}`,
-      );
-      vi.mocked(readSessionStatus).mockImplementation((d) =>
-        d === dir ? realRead(d) : { status: 'running' },
-      );
-
-      const result = await handleWait({
-        op: 'wait',
-        sessions: [sessionId],
-      });
-      const data = JSON.parse(result.content[0].text);
-
-      expect(data.status).toBe('completed');
-      expect(data.completed_session).toBe(sessionId);
-      expect(data.cursors).toBeUndefined();
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it('progress notification dedup skips repeated messages', async () => {
-    const sessionId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
-    const { createSessionDir: realCreate } =
-      await vi.importActual<typeof import('../../runner/progress.js')>('../../runner/progress.js');
-    const { dir } = realCreate('wait-dedup');
-    const progressFile = join(dir, 'progress.jsonl');
-    const line = JSON.stringify({ event: 'thread.message.delta', message: 'same message' });
-
-    try {
-      writeFileSync(progressFile, `${line}\n${line}\n`);
-      vi.mocked(resolveSessionDir).mockImplementation((id) =>
-        id === sessionId ? dir : `/tmp/coral-sessions/${id}`,
-      );
-      let statusReads = 0;
-      vi.mocked(readSessionStatus).mockImplementation((d) => {
-        if (d !== dir) return { status: 'running' };
-        statusReads += 1;
-        if (statusReads <= 2) return { status: 'running', session_name: 'dedup-session' };
-        return { status: 'completed', session_name: 'dedup-session' };
-      });
-      const notify = vi.fn(async () => {});
-
-      const result = await handleWait({
-        op: 'wait',
-        sessions: [sessionId],
-        timeout_seconds: 3,
-      }, notify, 'progress-token');
-      const data = JSON.parse(result.content[0].text);
-
-      expect(data.completed_session).toBe(sessionId);
-      expect(notify).toHaveBeenCalledTimes(1);
-      expect(notify).toHaveBeenCalledWith(expect.objectContaining({
-        method: 'notifications/progress',
-        params: expect.objectContaining({
-          message: '[dedup-session] same message',
-        }),
-      }));
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }, 5000);
-
-  it('progress notification ignores trailing partial JSONL line', async () => {
-    const sessionId = '11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-    const { createSessionDir: realCreate } =
-      await vi.importActual<typeof import('../../runner/progress.js')>('../../runner/progress.js');
-    const { dir } = realCreate('wait-partial-line');
-    const progressFile = join(dir, 'progress.jsonl');
-    const completeLine = JSON.stringify({ event: 'thread.message.delta', message: 'complete message' });
-    const partialLine = JSON.stringify({ event: 'thread.message.delta', message: 'partial message' });
-
-    try {
-      writeFileSync(progressFile, `${completeLine}\n${partialLine}`);
-      vi.mocked(resolveSessionDir).mockImplementation((id) =>
-        id === sessionId ? dir : `/tmp/coral-sessions/${id}`,
-      );
-      let statusReads = 0;
-      vi.mocked(readSessionStatus).mockImplementation((d) => {
-        if (d !== dir) return { status: 'running' };
-        statusReads += 1;
-        if (statusReads <= 2) return { status: 'running', session_name: 'partial-session' };
-        return { status: 'completed', session_name: 'partial-session' };
-      });
-      const notify = vi.fn(async () => {});
-
-      const result = await handleWait({
-        op: 'wait',
-        sessions: [sessionId],
-        timeout_seconds: 3,
-      }, notify, 'progress-token');
-      const data = JSON.parse(result.content[0].text);
-
-      expect(data.completed_session).toBe(sessionId);
-      expect(notify).toHaveBeenCalledTimes(1);
-      const [firstArg] = notify.mock.calls[0] as unknown as [{ params?: { message?: string } }];
-      expect(firstArg.params?.message).toBe('[partial-session] complete message');
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }, 5000);
 });
 
 // ── Merged from red-session-naming: activeSessions lifecycle ──────────────────

@@ -18,11 +18,12 @@
 │  │  MCP Server "ax"               │  │  MCP Server "dc"                │  │
 │  │  (bridge/coral-ax.cjs)      │  │  (bridge/coral-discuss.cjs)     │  │
 │  │                                │  │                                 │  │
-│  │  Tools: codex + claude         │  │  Tools: discuss (2 ops)         │  │
-│  │  codex: exec/list/fork/wait/   │  │    + discuss_lead (7 ops)       │  │
-│  │   abort + coral:<name>         │  │                                 │  │
-│  │  claude: exec/list/wait/abort  │  │                                 │  │
+│  │  Tools: codex + claude + wait  │  │  Tools: discuss (2 ops)         │  │
+│  │  codex: exec/list/fork/abort   │  │    + discuss_lead (7 ops)       │  │
+│  │   + coral:<name>               │  │                                 │  │
+│  │  claude: exec/list/abort       │  │                                 │  │
 │  │   + coral:<agent>              │  │                                 │  │
+│  │  wait: provider-agnostic       │  │                                 │  │
 │  │                                │  │                                 │  │
 │  │  Session: ~/.claude/coral/     │  │  Session: {project}/.claude/    │  │
 │  │           sessions/            │  │           coral/discuss/        │  │
@@ -47,7 +48,7 @@ User → /coral:codex "question"
      → Skill detects intent (review/investigate/ralph/general)
      → Review intent:
         → Parallel codex calls: codex({ op: "coral:architect", ... }) + codex({ op: "coral:critic", ... })
-        → wait loop with timeout until both complete
+        → wait tool loop with timeout until both complete
      → Results synthesized
      → Other intents:
         → Skill calls codex({ op: "coral:<agent>" }) or codex({ op: "exec" }) directly
@@ -172,16 +173,15 @@ coral/
 │   │   └── mcp-utils.ts         # Shared MCP response utilities
 │   ├── ax/                      # Unified MCP server (tool router)
 │   │   ├── server.ts            # Composition root
-│   │   └── server-handlers.ts   # codex + claude tool routing
+│   │   └── server-handlers.ts   # codex + claude + wait tool routing
 │   ├── runner/                  # Shared runner infrastructure
 │   │   ├── types.ts             # SessionProvider, SessionEntry, CompletionMetadata
 │   │   ├── engine.ts            # spawnCli, child caps, kill lifecycle
 │   │   ├── session-manager.ts   # Provider-scoped persisted session registry
 │   │   ├── progress.ts          # Session dir + status/progress I/O
-│   │   ├── job-manager.ts       # launchJob, activeSessions, wait polling
+│   │   ├── job-manager.ts       # launchJob, activeSessions, provider-agnostic wait polling
 │   │   └── coral-resolver.ts    # agents/ + skills/ resolver + metadata stripping
 │   ├── codex/                   # Codex adapter (thin over runner)
-│   │   ├── server.ts            # Legacy codex-only composition root
 │   │   ├── server-handlers.ts   # Codex tool handlers
 │   │   ├── schemas.ts           # Codex Zod validation
 │   │   ├── codex-executor.ts    # Codex CLI adapter over runner/engine
@@ -244,7 +244,7 @@ coral/
 
 ```
 ax/server.ts                    (composition root)
-  └── ax/server-handlers.ts     (tool router: codex + claude)
+  └── ax/server-handlers.ts     (tool router: codex + claude + wait)
       ├── codex/server-handlers.ts       (codex adapter)
       │   ├── codex/schemas.ts
       │   ├── codex/codex-executor.ts

@@ -33,7 +33,7 @@ function parseLaunch(resultText: string): { session: string; session_dir: string
 }
 
 describe('ax scalability and isolation', () => {
-  it('handles mixed-provider 20-session load with provider-isolated wait', async () => {
+  it('handles mixed-provider 20-session load with unified wait', async () => {
     const mgr = { register: vi.fn() } as unknown as SessionManager;
 
     const codexSessions: string[] = [];
@@ -74,15 +74,17 @@ describe('ax scalability and isolation', () => {
       else claudeSessions.push(launchData.session);
     }
 
-    const codexWait = await handleWait('codex', { sessions: codexSessions, timeout_seconds: 5 });
-    const claudeWait = await handleWait('claude', { sessions: claudeSessions, timeout_seconds: 5 });
+    const codexWait = await handleWait({ sessions: codexSessions, timeout_seconds: 5 });
+    const claudeWait = await handleWait({ sessions: claudeSessions, timeout_seconds: 5 });
 
     expect(codexWait.isError).toBe(false);
     expect(claudeWait.isError).toBe(false);
 
-    const crossWait = await handleWait('codex', { sessions: [claudeSessions[0]], timeout_seconds: 1 });
-    expect(crossWait.isError).toBe(true);
-    expect(crossWait.content[0].text).toContain('does not belong to provider "codex"');
+    const crossWait = await handleWait({ sessions: [claudeSessions[0]], timeout_seconds: 5 });
+    const crossData = JSON.parse(crossWait.content[0].text) as { status: string; completed_session: string };
+    expect(crossWait.isError).toBe(false);
+    expect(crossData.status).toBe('completed');
+    expect(crossData.completed_session).toBe(claudeSessions[0]);
   }, 15_000);
 
   it('enforces engine launch caps with structured busy error under overflow', async () => {
@@ -118,7 +120,6 @@ describe('ax scalability and isolation', () => {
     const notifications: string[] = [];
 
     const waitPromise = handleWait(
-      'codex',
       { sessions: [id], timeout_seconds: 3 },
       async (n) => {
         notifications.push(String(n.params.message));

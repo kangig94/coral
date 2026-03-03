@@ -135,15 +135,15 @@ describe('ax server-handlers', () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('exposes both codex and claude tool definitions', () => {
-    expect(tools.map((tool) => tool.name).sort()).toEqual(['claude', 'codex']);
+  it('exposes codex, claude, and wait tool definitions', () => {
+    expect(tools.map((tool) => tool.name).sort()).toEqual(['claude', 'codex', 'wait']);
   });
 
   it('exposes claude bypass field in tool schema with boolean default false', () => {
     const claudeTool = tools.find((tool) => tool.name === 'claude');
     expect(claudeTool).toBeDefined();
 
-    const bypassSchema = claudeTool?.inputSchema.properties.bypass as {
+    const bypassSchema = (claudeTool?.inputSchema.properties as Record<string, unknown>).bypass as {
       type?: string;
       default?: boolean;
     };
@@ -166,6 +166,29 @@ describe('ax server-handlers', () => {
     expect(result.isError).toBe(false);
     expect(data.sessions).toEqual([]);
     expect(data.total).toBe(0);
+  });
+
+  it('wait tool validates input via Zod', async () => {
+    const emptyResult = await handleToolCall('wait', { sessions: [] }, mgr);
+    expect(emptyResult.isError).toBe(true);
+    expect(emptyResult.content[0].text).toContain('At least one session required');
+
+    const badUuidResult = await handleToolCall('wait', { sessions: ['not-a-uuid'] }, mgr);
+    expect(badUuidResult.isError).toBe(true);
+    expect(badUuidResult.content[0].text).toContain('Invalid uuid');
+  });
+
+  it('wait tool is recognized and routed correctly', async () => {
+    const { id, dir } = createSessionDir('wait-route', 'codex');
+    sessionDirs.add(dir);
+    writeSessionResult(dir, 'done', { session_name: 'wait-route' });
+
+    const result = await handleToolCall('wait', { sessions: [id] }, mgr);
+    const data = JSON.parse(result.content[0].text) as { status: string; completed_session: string };
+
+    expect(result.isError).toBe(false);
+    expect(data.status).toBe('completed');
+    expect(data.completed_session).toBe(id);
   });
 
   it('coral:<name> resolves agent and prepends content for codex tool', async () => {
@@ -338,7 +361,7 @@ describe('ax server-handlers', () => {
     expect(claudeResult.isError).toBe(true);
   });
 
-  it('keeps abort/list/wait isolated by provider', async () => {
+  it('keeps abort/list isolated by provider', async () => {
     const codexSession = createSessionDir('codex-running', 'codex');
     const claudeSession = createSessionDir('claude-running', 'claude');
     sessionDirs.add(codexSession.dir);
@@ -368,14 +391,6 @@ describe('ax server-handlers', () => {
 
     const abortCross = await handleToolCall('claude', { op: 'abort', session: codexSession.id }, mgr);
     expect(abortCross.isError).toBe(true);
-
-    const waitCross = await handleToolCall(
-      'claude',
-      { op: 'wait', sessions: [codexSession.id], timeout_seconds: 1 },
-      mgr,
-    );
-    expect(waitCross.isError).toBe(true);
-    expect(waitCross.content[0].text).toContain('does not belong to provider "claude"');
   });
 
   it('returns isError for unknown tool names', async () => {
@@ -384,53 +399,27 @@ describe('ax server-handlers', () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('Unknown tool: unknown-tool');
   });
-});
+ 
+  it('wait tool accepts cross-provider sessions', async () => {
+    const codexSession = createSessionDir('wait-cross-codex', 'codex');
+    const claudeSession = createSessionDir('wait-cross-claude', 'claude');
+    sessionDirs.add(codexSession.dir);
+    sessionDirs.add(claudeSession.dir);
+    writeSessionResult(codexSession.dir, 'done', { session_name: 'wait-cross-codex' });
 
-describe('ax provider isolation — handleWait mismatch via status file provider', () => {
-  beforeEach(() => {
-    tmpDir = mkdtempSync(join('/tmp', 'coral-ax-isolation-'));
-    mkdirSync(join(tmpDir, 'workspace'), { recursive: true });
-    mkdirSync(join(tmpDir, 'agents'), { recursive: true });
-    mkdirSync(join(tmpDir, 'skills', 'plan'), { recursive: true });
-    resolverTest.setPluginRoot(tmpDir);
-    mgr = new SessionManager(join(tmpDir, 'workspace'));
-    activeSessions.clear();
-    sessionDirs.clear();
-  });
+    const result = await handleToolCall(
+      'wait',
+      { sessions: [codexSession.id, claudeSession.id], timeout_seconds: 2 },
+      mgr,
+    );
+    const data = JSON.parse(result.content[0].text) as {
+      status: string;
+      completed_session: string;
+    };
 
-  afterEach(() => {
-    resolverTest.setPluginRoot(defaultPluginRoot);
-    activeSessions.clear();
-    for (const d of sessionDirs) rmSync(d, { recursive: true, force: true });
-    sessionDirs.clear();
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it('wait with claude provider rejects a session whose status.json says provider=codex', async () => {
-    const { id, dir } = createSessionDir('codex-only', 'codex');
-    sessionDirs.add(dir);
-
-    const result = await handleToolCall('claude', { op: 'wait', sessions: [id], timeout_seconds: 1 }, mgr);
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('does not belong to provider "claude"');
-  });
-
-  it('wait with mismatched provider still rejects even when session is in activeSessions', async () => {
-    const { id, dir } = createSessionDir('active-codex', 'codex');
-    sessionDirs.add(dir);
-    activeSessions.set(id, {
-      provider: 'codex',
-      sessionDir: dir,
-      controller: new AbortController(),
-      sessionName: 'active-codex',
-      terminalState: 'running',
-    });
-
-    const result = await handleToolCall('claude', { op: 'wait', sessions: [id], timeout_seconds: 1 }, mgr);
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('does not belong to provider "claude"');
+    expect(result.isError).toBe(false);
+    expect(data.status).toBe('completed');
+    expect(data.completed_session).toBe(codexSession.id);
   });
 });
 
@@ -636,52 +625,6 @@ describe('ax claude exec with missing session_id — non_resumable path', () => 
     const status = JSON.parse(readFileSync(join(launchData.session_dir, 'status.json'), 'utf-8'));
     expect(status.status).toBe('completed');
     expect(status.non_resumable).toBeUndefined();
-  });
-});
-
-describe('ax provider isolation — wait with multiple sessions where one mismatches', () => {
-  beforeEach(() => {
-    activeSessions.clear();
-    sessionDirs.clear();
-  });
-
-  afterEach(() => {
-    activeSessions.clear();
-    for (const d of sessionDirs) rmSync(d, { recursive: true, force: true });
-    sessionDirs.clear();
-  });
-
-  it('returns error immediately when first session in list mismatches provider', async () => {
-    const mismatch = createSessionDir('codex-owned', 'codex');
-    const owned = createSessionDir('claude-owned', 'claude');
-    sessionDirs.add(mismatch.dir);
-    sessionDirs.add(owned.dir);
-
-    const result = await handleToolCall('claude', {
-      op: 'wait',
-      sessions: [mismatch.id, owned.id],
-      timeout_seconds: 1,
-    }, new SessionManager(process.cwd()));
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('does not belong to provider "claude"');
-  });
-
-  it('wait for two sessions both owned by claude succeeds', async () => {
-    const s1 = createSessionDir('claude-s1', 'claude');
-    const s2 = createSessionDir('claude-s2', 'claude');
-    sessionDirs.add(s1.dir);
-    sessionDirs.add(s2.dir);
-
-    setTimeout(() => writeSessionResult(s1.dir, 'done', { session_name: 'claude-s1' }), 30);
-
-    const result = await handleToolCall('claude', {
-      op: 'wait',
-      sessions: [s1.id, s2.id],
-      timeout_seconds: 2,
-    }, new SessionManager(process.cwd()));
-
-    expect(result.isError).toBe(false);
   });
 });
 

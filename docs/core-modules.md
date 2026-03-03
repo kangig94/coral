@@ -6,7 +6,7 @@ Detailed description of the TypeScript modules across both MCP servers.
 
 ### src/ax/server.ts - AX Composition Root
 
-Creates one MCP stdio server exposing two tools (`codex`, `claude`). Wires request handlers, shared `SessionManager`, shutdown behavior, and child-process cleanup through `runner/engine.ts`. See `src/ax/server.ts`.
+Creates one MCP stdio server exposing three tools (`codex`, `claude`, `wait`). Wires request handlers, shared `SessionManager`, shutdown behavior, and child-process cleanup through `runner/engine.ts`. See `src/ax/server.ts`.
 
 ---
 
@@ -15,6 +15,7 @@ Creates one MCP stdio server exposing two tools (`codex`, `claude`). Wires reque
 Routes by tool name:
 - `codex` requests to the Codex adapter
 - `claude` requests to the Claude adapter
+- `wait` requests to the provider-agnostic runner wait handler
 - `coral:<name>` delegation rules:
   - Codex supports both agent and skill content (prompt prepend)
   - Claude supports agents only; skills return an explicit error
@@ -75,7 +76,7 @@ Provides adapter-agnostic execution lifecycle:
 - `launchJob(...)` with hook contract (`makeOnEvent`, `extractCompletion`)
 - `activeSessions` (ephemeral provider-scoped running map)
 - `tryClaimTerminalWrite(...)` CAS for terminal state writes
-- `handleWait(provider, ...)` cursor-based progress polling
+- `handleWait(input, ...)` provider-agnostic cursor-based progress polling
 - `shutdownSignal` for cooperative shutdown
 
 See `src/runner/job-manager.ts`.
@@ -107,7 +108,7 @@ Codex-specific execution wrapper over `runner/engine.ts`:
 
 ### src/codex/server-handlers.ts
 
-Codex MCP behavior (`exec/list/fork/wait/abort/coral:*`) using runner primitives for background job execution and waiting.
+Codex MCP behavior (`exec/list/fork/abort/coral:*`) using runner primitives for background job execution.
 
 ### src/codex/schemas.ts / cli-detection.ts / output-parser.ts / progress.ts / session-manager.ts
 
@@ -120,7 +121,7 @@ Input validation, CLI/auth probing, JSONL parsing, and small compatibility wrapp
 ### src/claude/schemas.ts
 
 Zod schemas for `claude` tool operations:
-- `exec`, `list`, `wait`, `abort`
+- `exec`, `list`, `abort`
 - `coral:<name>` routing input for AX handlers
 
 ### src/claude/cli-detection.ts

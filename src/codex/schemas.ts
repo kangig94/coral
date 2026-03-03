@@ -51,12 +51,6 @@ const forkShape = z.object({
   bypass: boolDefaultFalse,
 });
 
-const waitShape = z.object({
-  op: z.literal('wait'),
-  sessions: z.array(z.string().uuid()).min(1, 'At least one session required'),
-  timeout_seconds: z.number().min(1).max(1200).optional(),
-});
-
 const abortShape = z.object({
   op: z.literal('abort'),
   session: z.string().uuid('Session must be a valid UUID'),
@@ -66,7 +60,6 @@ export const codexOpSchema = z.discriminatedUnion('op', [
   execShape,
   listShape,
   forkShape,
-  waitShape,
   abortShape,
 ]);
 
@@ -74,7 +67,6 @@ export type CodexOpInput = z.infer<typeof codexOpSchema>;
 export type CodexSessionCreateInput = Omit<Extract<CodexOpInput, { op: 'exec' }>, 'op' | 'session'>;
 export type CodexSessionSendInput = Omit<Extract<CodexOpInput, { op: 'exec' }>, 'op' | 'name'> & { session: string };
 export type CodexSessionForkInput = Omit<Extract<CodexOpInput, { op: 'fork' }>, 'op'>;
-export type CodexWaitInput = z.infer<typeof waitShape>;
 export type CodexSessionAbortInput = Omit<z.infer<typeof abortShape>, 'op'>;
 
 // Stricter than identPattern: agent names are kebab-case only.

@@ -16,7 +16,6 @@ import {
   type CodexSessionSendInput,
   type CodexSessionForkInput,
   type CodexSessionAbortInput,
-  type CodexWaitInput,
 } from './schemas.js';
 import type { CodexThreadEvent } from '../types.js';
 import {
@@ -25,28 +24,23 @@ import {
 } from './progress.js';
 import {
   activeSessions,
-  tryClaimTerminalWrite,
-  shutdownSignal,
   launchJob as launchRunnerJob,
-  handleWait as handleRunnerWait,
   type OnEventCallback,
 } from '../runner/job-manager.js';
 import type { CompletionMetadata } from '../runner/types.js';
 import { resolveCoralContent } from '../runner/coral-resolver.js';
 import { type McpResult, textResult, jsonResult, resultExtras } from '../shared/mcp-utils.js';
 
-export { activeSessions, tryClaimTerminalWrite, shutdownSignal };
-
 export const tools = [
   {
     name: 'codex',
-    description: 'Execute a prompt with OpenAI Codex CLI. Use op field to select exec/list/fork/wait/abort. For agent delegation, use op: "coral:<agent-name>" (e.g., coral:scanner, coral:architect).',
+    description: 'Execute a prompt with OpenAI Codex CLI. Use op field to select exec/list/fork/abort. For agent delegation, use op: "coral:<agent-name>" (e.g., coral:scanner, coral:architect).',
     inputSchema: {
       type: 'object' as const,
       properties: {
         op: {
           type: 'string',
-          description: 'Operation to run: exec/list/fork/wait/abort, or coral:<agent> for agent delegation (e.g., coral:scanner, coral:architect)',
+          description: 'Operation to run: exec/list/fork/abort, or coral:<agent> for agent delegation (e.g., coral:scanner, coral:architect)',
         },
         session: { type: 'string', description: 'Session UUID for resume (exec/fork/abort)' },
         prompt: { type: 'string', description: 'Prompt to send (exec required, fork optional)' },
@@ -55,8 +49,6 @@ export const tools = [
         working_directory: { type: 'string', description: 'Working directory for Codex execution' },
         reasoning_effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh'], description: 'Model reasoning effort level' },
         bypass: { type: 'boolean', description: 'Bypass Codex sandbox and approval checks. Only set when the user explicitly requests bypass mode.', default: false },
-        sessions: { type: 'array', items: { type: 'string' }, description: 'Session UUIDs to monitor (from exec/fork response)' },
-        timeout_seconds: { type: 'number', description: 'Max wait time in seconds (1-1200, default 600)' },
       },
       required: ['op'],
     },
@@ -289,14 +281,6 @@ export async function handleSessionAbort(input: CodexSessionAbortInput, _mgr: Se
   return jsonResult({ session: input.session, session_name: entry.sessionName, status: 'abort_requested' });
 }
 
-export async function handleWait(
-  input: CodexWaitInput,
-  notify?: (n: { method: string; params: Record<string, unknown> }) => Promise<void>,
-  progressToken?: string | number,
-): Promise<McpResult> {
-  return handleRunnerWait('codex', input, notify, progressToken);
-}
-
 async function handleCodexOp(
   input: CodexOpInput,
   sessionManager: SessionManager,
@@ -353,8 +337,6 @@ async function handleCodexOp(
         forkInput.working_directory ?? entry.workingDirectory,
       );
     }
-    case 'wait':
-      return handleWait(input, notify, progressToken);
     case 'abort':
       return handleSessionAbort(input, sessionManager);
     default: {

@@ -71,10 +71,6 @@ function isNoEntryError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
-function normalizeProvider(status: SessionStatus): SessionProvider {
-  return status.provider === 'claude' ? 'claude' : 'codex';
-}
-
 function readNewProgressLines(progressFile: string, cursor: ProgressCursor): string[] {
   let fd: number;
   try {
@@ -167,7 +163,6 @@ export function launchJob<T>(options: LaunchJobOptions<T>): McpResult {
 }
 
 export async function handleWait(
-  provider: SessionProvider,
   input: WaitInput,
   notify?: (n: { method: string; params: Record<string, unknown> }) => Promise<void>,
   progressToken?: string | number,
@@ -190,12 +185,7 @@ export async function handleWait(
       return textResult(`Unknown session: "${id}". No session directory found.`, true);
     }
 
-    const active = activeSessions.get(id);
     const status = readSessionStatus(dir);
-    const owner = active?.provider ?? normalizeProvider(status);
-    if (owner !== provider) {
-      return textResult(`Session "${id}" does not belong to provider "${provider}".`, true);
-    }
 
     sessionDirs.set(id, dir);
     sessionMeta.set(id, { name: status.session_name ?? id, startedAt: status.startedAt });

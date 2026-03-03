@@ -55,7 +55,7 @@ Dispatch TWO Codex jobs in parallel:
 
 Use `session` only when available from step 2. Omit it for fresh review sessions.
 Then wait with timeout handling until both jobs finish:
-1. `codex({ op: "wait", sessions: pendingSessions, timeout_seconds })`
+1. `wait({ sessions: pendingSessions, timeout_seconds })`
 2. If `status: "timeout"`, keep waiting
 3. If `status: "completed"`, read `session_dir/result.md` and remove that session from `pendingSessions`
 4. If `status: "error"`, read `session_dir/status.json`, record the failure, remove that session, continue
@@ -85,7 +85,7 @@ Call MCP tool directly. Pass prompt **verbatim**. Never rephrase, filter, or ref
 | Session exists | `codex({ op: "exec", session, prompt, working_directory })` → `{ session, session_dir, session_name }` |
 
 After exec, poll and read the result:
-1. `codex({ op: "wait", sessions: [session] })` → check `status`
+1. `wait({ sessions: [session] })` → check `status`
 2. Completed: `Read(session_dir + "/result.md")` for response. Keep using the same `session` UUID from the exec/fork response for continuity.
 3. Error: `Read(session_dir + "/status.json")` for `error` field
 4. Timeout: re-wait, or abort with `codex({ op: "abort", session })`

@@ -97,7 +97,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     Provide each: plan file path, working directory, relevant context. In `--deep`, include `--deep` in each reviewer's prompt.
 
     Use a wait loop until both reviewer jobs finish:
-    1. Call `codex({ op: "wait", sessions: pendingSessions, timeout_seconds })`.
+    1. Call `wait({ sessions: pendingSessions, timeout_seconds })`.
     2. If `status: "timeout"`, continue waiting.
     3. If `status: "completed"`, record `session_dir` path and remove that session from `pendingSessions`.
        **Do NOT read `result.md` yet** — pass paths to the resolver to save context.

@@ -55,7 +55,7 @@ Version is managed in `package.json` (single source of truth) and synced to `plu
 
 ### .mcp.json - MCP Server Registration
 
-Registers both MCP servers with Claude Code. `ax` runs `bridge/coral-ax.cjs` (tools: `codex`, `claude`) and `dc` runs `bridge/coral-discuss.cjs` via Node.js stdio transport.
+Registers both MCP servers with Claude Code. `ax` runs `bridge/coral-ax.cjs` (tools: `codex`, `claude`, `wait`) and `dc` runs `bridge/coral-discuss.cjs` via Node.js stdio transport.
 
 ### hooks/hooks.json - Hook Configuration
 
@@ -134,6 +134,6 @@ hooks/discuss-idle-guard.mjs  -> TeammateIdle bid/speak/vote enforcer
 ~/.claude/coral/sessions/<project-hash>/*.json  -> Runtime AX session files (Codex + Claude, auto-created)
 {project}/.claude/coral/discuss/<session-dir>/  -> Runtime discuss session dirs (auto-created)
 
-bridge/coral-ax.cjs   -> Unified AX MCP server bundle (codex + claude, committed)
+bridge/coral-ax.cjs   -> Unified AX MCP server bundle (codex + claude + wait, committed)
 bridge/coral-discuss.cjs -> Discuss MCP server bundle (committed)
 ```

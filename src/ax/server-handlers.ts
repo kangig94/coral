@@ -1,5 +1,6 @@
 import { executeClaudeOneShot, executeClaudeResume, ClaudeExecParseError } from '../claude/claude-executor.js';
 import { detectClaudeCli, type ClaudeCliInfo } from '../claude/cli-detection.js';
+import { z } from 'zod';
 import {
   claudeOpSchema,
   coralClaudeSchema,
@@ -8,7 +9,6 @@ import {
   type ClaudeSessionCreateInput,
   type ClaudeSessionSendInput,
   type ClaudeSessionAbortInput,
-  type ClaudeWaitInput,
 } from '../claude/schemas.js';
 import { handleToolCall as handleCodexToolCall, tools as codexTools } from '../codex/server-handlers.js';
 import { coralAgentSchema as codexCoralSchema, type CoralAgentInput as CodexCoralInput } from '../codex/schemas.js';
@@ -29,11 +29,11 @@ const CORAL_OP_PREFIX = 'coral:';
 
 const claudeTool = {
   name: 'claude',
-  description: 'Execute a prompt with Claude CLI. Use op field to select exec/list/wait/abort. For agent delegation, use op: "coral:<agent-name>" (e.g., coral:architect, coral:critic).',
+  description: 'Execute a prompt with Claude CLI. Use op field to select exec/list/abort. For agent delegation, use op: "coral:<agent-name>" (e.g., coral:architect, coral:critic).',
   inputSchema: {
     type: 'object' as const,
     properties: {
-      op: { type: 'string', description: 'Operation: exec/list/wait/abort, or coral:<agent-name> for agent delegation' },
+      op: { type: 'string', description: 'Operation: exec/list/abort, or coral:<agent-name> for agent delegation' },
       prompt: { type: 'string', description: 'Prompt to send (exec required)' },
       session: { type: 'string', description: 'Session ID for resume (exec with existing session)' },
       name: { type: 'string', description: 'Session name (exec optional)' },
@@ -41,14 +41,30 @@ const claudeTool = {
       working_directory: { type: 'string', description: 'Working directory for execution' },
       system_prompt: { type: 'string', description: 'Additional system prompt (appended to default)' },
       bypass: { type: 'boolean', description: 'Bypass Claude permission checks. Only set when the user explicitly requests bypass mode.', default: false },
-      sessions: { type: 'array', items: { type: 'string' }, description: 'Session UUIDs to monitor (wait op)' },
-      timeout_seconds: { type: 'number', description: 'Max wait time in seconds (1-1200, default 600)' },
     },
     required: ['op'],
   },
 };
 
-export const tools = [codexTools[0], claudeTool];
+const waitToolSchema = z.object({
+  sessions: z.array(z.string().uuid()).min(1, 'At least one session required'),
+  timeout_seconds: z.number().min(1).max(1200).optional(),
+});
+
+const waitTool = {
+  name: 'wait',
+  description: 'Wait for session completion. Monitors one or more sessions (from any provider) and returns when the first completes.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      sessions: { type: 'array', items: { type: 'string' }, description: 'Session UUIDs to monitor (from exec/fork response)' },
+      timeout_seconds: { type: 'number', description: 'Max wait time in seconds (1-1200, default 600)' },
+    },
+    required: ['sessions'],
+  },
+};
+
+export const tools = [codexTools[0], claudeTool, waitTool];
 
 function claudeSessionNotFoundError(ref: string): McpResult {
   return textResult(
@@ -271,6 +287,16 @@ async function handleClaudeSessionAbort(input: ClaudeSessionAbortInput): Promise
   return jsonResult({ session: input.session, session_name: entry.sessionName, status: 'abort_requested' });
 }
 
+async function handleWaitTool(
+  rawArgs: Record<string, unknown>,
+  progressToken?: string | number,
+  notify?: NotifyFn,
+): Promise<McpResult> {
+  const parsed = waitToolSchema.safeParse(rawArgs);
+  if (!parsed.success) throw parsed.error;
+  return handleRunnerWait(parsed.data, notify, progressToken);
+}
+
 export async function handleClaudeCoralAgent(
   input: ClaudeCoralInput,
   sessionManager: SessionManager,
@@ -371,8 +397,6 @@ export async function handleClaudeOp(
     }
     case 'list':
       return handleClaudeSessionList(sessionManager);
-    case 'wait':
-      return handleRunnerWait('claude', input as ClaudeWaitInput, notify, progressToken);
     case 'abort':
       return handleClaudeSessionAbort(input as ClaudeSessionAbortInput);
     default: {
@@ -432,6 +456,9 @@ export async function handleToolCall(
     }
     if (name === 'claude') {
       return await handleClaudeOp(rawArgs, sessionManager, progressToken, notify);
+    }
+    if (name === 'wait') {
+      return await handleWaitTool(rawArgs, progressToken, notify);
     }
     return textResult(`Unknown tool: ${name}`, true);
   } catch (err) {

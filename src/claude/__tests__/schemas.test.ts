@@ -42,20 +42,13 @@ describe('claude schemas', () => {
     expect(claudeOpSchema.safeParse({ op: 'list', extra: true }).success).toBe(false);
   });
 
-  it('validates wait op with timeout bounds', () => {
-    const ok = claudeOpSchema.safeParse({
+  it('rejects wait op discriminator', () => {
+    const parsed = claudeOpSchema.safeParse({
       op: 'wait',
       sessions: ['12345678-1234-4234-8234-123456789abc'],
       timeout_seconds: 120,
     });
-    const bad = claudeOpSchema.safeParse({
-      op: 'wait',
-      sessions: ['12345678-1234-4234-8234-123456789abc'],
-      timeout_seconds: 5000,
-    });
-
-    expect(ok.success).toBe(true);
-    expect(bad.success).toBe(false);
+    expect(parsed.success).toBe(false);
   });
 
   it('validates abort op session uuid', () => {
