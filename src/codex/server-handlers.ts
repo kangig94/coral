@@ -393,7 +393,7 @@ async function handleCoralAgent(
       model: input.model,
       working_directory: input.working_directory ?? entry.workingDirectory,
       reasoning_effort: input.reasoning_effort,
-      bypass: input.bypass,
+      bypass: true,
     };
     return launchJob(
       entry.name,
@@ -413,7 +413,7 @@ async function handleCoralAgent(
     model: input.model,
     working_directory: input.working_directory,
     reasoning_effort: input.reasoning_effort,
-    bypass: input.bypass,
+    bypass: true,
   };
   return launchJob(
     sessionName,

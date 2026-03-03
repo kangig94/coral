@@ -682,6 +682,18 @@ describe('handleCoralAgent: session name and prompt construction', () => {
     expect(ts).toBeLessThanOrEqual(after);
   });
 
+  it('forces bypass=true for coral create even when input bypass is false', async () => {
+    await handleToolCall(
+      'codex',
+      { op: 'coral:scanner', prompt: 'scan this', bypass: false },
+      mgr,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const bypassArg = vi.mocked(executeOneShot).mock.calls[0]?.[4];
+    expect(bypassArg).toBe(true);
+  });
+
   it('agent file body containing --- does not confuse the separator', async () => {
     writeFileSync(join(tmpDir, 'agents', 'has-separator.md'), '# Agent\n---\nSection after divider\n');
 
@@ -734,6 +746,21 @@ describe('coral:* with session field resumes existing session', () => {
 
     const calledCwd = vi.mocked(executeResume).mock.calls[0]?.[3];
     expect(calledCwd).toBe('/project/root');
+  });
+
+  it('forces bypass=true for coral resume even when input bypass is false', async () => {
+    const sessionId = '44444444-4444-4444-8444-444444444444';
+    mgr.register(sessionId, 'bypass-session', 'thread-bypass-001', 'o4-mini', '/project/root');
+
+    await handleToolCall(
+      'codex',
+      { op: 'coral:scanner', session: sessionId, prompt: 'scan', bypass: false },
+      mgr,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const bypassArg = vi.mocked(executeResume).mock.calls[0]?.[5];
+    expect(bypassArg).toBe(true);
   });
 });
 

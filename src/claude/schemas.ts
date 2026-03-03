@@ -15,6 +15,7 @@ const promptSchema = z.string().min(1, 'Prompt is required');
 const sessionRefSchema = z.string().min(1, 'Session reference is required');
 const cwdSchema = z.string().optional();
 const systemPromptSchema = z.string().optional();
+const boolDefaultFalse = z.boolean().default(false);
 
 const execShape = z.object({
   op: z.literal('exec'),
@@ -24,6 +25,7 @@ const execShape = z.object({
   model: modelSchema,
   working_directory: cwdSchema,
   system_prompt: systemPromptSchema,
+  bypass: boolDefaultFalse,
 });
 
 const listShape = z.object({
@@ -69,6 +71,7 @@ export const coralClaudeSchema = z.object({
   model: modelSchema,
   working_directory: cwdSchema,
   system_prompt: systemPromptSchema,
+  bypass: boolDefaultFalse,
 });
 
 export type ClaudeCoralInput = z.infer<typeof coralClaudeSchema>;

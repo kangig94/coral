@@ -16,6 +16,27 @@ describe('claude schemas', () => {
     expect(parsed.success).toBe(true);
   });
 
+  it('defaults exec bypass to false when omitted', () => {
+    const parsed = claudeOpSchema.parse({
+      op: 'exec',
+      prompt: 'hello',
+    });
+
+    expect(parsed.op).toBe('exec');
+    if (parsed.op === 'exec') expect(parsed.bypass).toBe(false);
+  });
+
+  it('preserves explicit exec bypass true', () => {
+    const parsed = claudeOpSchema.parse({
+      op: 'exec',
+      prompt: 'hello',
+      bypass: true,
+    });
+
+    expect(parsed.op).toBe('exec');
+    if (parsed.op === 'exec') expect(parsed.bypass).toBe(true);
+  });
+
   it('validates list op with strict shape', () => {
     expect(claudeOpSchema.safeParse({ op: 'list' }).success).toBe(true);
     expect(claudeOpSchema.safeParse({ op: 'list', extra: true }).success).toBe(false);
@@ -58,5 +79,24 @@ describe('claude schemas', () => {
 
     expect(ok.success).toBe(true);
     expect(bad.success).toBe(false);
+  });
+
+  it('defaults coral bypass to false when omitted', () => {
+    const parsed = coralClaudeSchema.parse({
+      op: 'coral:architect',
+      prompt: 'Do it',
+    });
+
+    expect(parsed.bypass).toBe(false);
+  });
+
+  it('preserves explicit coral bypass true', () => {
+    const parsed = coralClaudeSchema.parse({
+      op: 'coral:architect',
+      prompt: 'Do it',
+      bypass: true,
+    });
+
+    expect(parsed.bypass).toBe(true);
   });
 });

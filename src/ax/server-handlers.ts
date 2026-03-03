@@ -40,6 +40,7 @@ const claudeTool = {
       model: { type: 'string', description: 'Claude model to use (e.g., sonnet, opus, haiku)' },
       working_directory: { type: 'string', description: 'Working directory for execution' },
       system_prompt: { type: 'string', description: 'Additional system prompt (appended to default)' },
+      bypass: { type: 'boolean', description: 'Bypass Claude permission checks. Only set when the user explicitly requests bypass mode.', default: false },
       sessions: { type: 'array', items: { type: 'string' }, description: 'Session UUIDs to monitor (wait op)' },
       timeout_seconds: { type: 'number', description: 'Max wait time in seconds (1-1200, default 600)' },
     },
@@ -139,6 +140,7 @@ async function handleClaudeSessionCreate(
       model: input.model,
       workingDirectory: input.working_directory,
       systemPrompt: input.system_prompt,
+      bypassPermissions: input.bypass,
       signal,
     });
   } catch (error: unknown) {
@@ -200,6 +202,7 @@ async function handleClaudeSessionSend(
       model: input.model,
       workingDirectory,
       systemPrompt: input.system_prompt,
+      bypassPermissions: input.bypass,
       signal,
     });
   } catch (error: unknown) {
@@ -288,6 +291,7 @@ export async function handleClaudeCoralAgent(
       model: input.model,
       working_directory: input.working_directory ?? entry.workingDirectory,
       system_prompt: systemPrompt,
+      bypass: true,
     };
     return launchClaudeJob(
       entry.name,
@@ -304,6 +308,7 @@ export async function handleClaudeCoralAgent(
     model: input.model,
     working_directory: input.working_directory,
     system_prompt: systemPrompt,
+    bypass: true,
   };
 
   return launchClaudeJob(
@@ -406,7 +411,7 @@ async function handleCodexOpWithCoralResolution(
       model: codexCoralInput.model,
       working_directory: codexCoralInput.working_directory,
       reasoning_effort: codexCoralInput.reasoning_effort,
-      bypass: codexCoralInput.bypass,
+      bypass: true,
     },
     sessionManager,
     progressToken,

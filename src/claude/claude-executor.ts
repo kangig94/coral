@@ -6,6 +6,7 @@ export type ClaudeExecOptions = {
   workingDirectory?: string;
   systemPrompt?: string;
   sessionId?: string;
+  bypassPermissions?: boolean;
   signal?: AbortSignal;
 };
 
@@ -23,7 +24,8 @@ export async function executeClaudeOneShot(
   prompt: string,
   options: ClaudeExecOptions = {},
 ): Promise<ClaudeExecResult> {
-  const args = ['-p', '--output-format', 'json', '--dangerously-skip-permissions'];
+  const args = ['-p', '--output-format', 'json'];
+  if (options.bypassPermissions) args.push('--dangerously-skip-permissions');
   if (options.systemPrompt) args.push('--append-system-prompt', options.systemPrompt);
   if (options.model) args.push('--model', options.model);
   if (options.sessionId) args.push('--session-id', options.sessionId);
@@ -35,7 +37,8 @@ export async function executeClaudeResume(
   prompt: string,
   options: Omit<ClaudeExecOptions, 'sessionId'> = {},
 ): Promise<ClaudeExecResult> {
-  const args = ['-p', '--output-format', 'json', '--dangerously-skip-permissions', '--resume', sessionId];
+  const args = ['-p', '--output-format', 'json', '--resume', sessionId];
+  if (options.bypassPermissions) args.push('--dangerously-skip-permissions');
   if (options.systemPrompt) args.push('--append-system-prompt', options.systemPrompt);
   if (options.model) args.push('--model', options.model);
   return executeClaude(args, prompt, options);

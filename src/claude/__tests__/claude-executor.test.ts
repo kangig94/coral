@@ -46,7 +46,6 @@ describe('claude-executor', () => {
         '-p',
         '--output-format',
         'json',
-        '--dangerously-skip-permissions',
         '--append-system-prompt',
         'You are precise',
         '--model',
@@ -89,7 +88,6 @@ describe('claude-executor', () => {
         '-p',
         '--output-format',
         'json',
-        '--dangerously-skip-permissions',
         '--resume',
         'sess-1',
         '--append-system-prompt',
@@ -104,6 +102,48 @@ describe('claude-executor', () => {
 
     expect(result.response).toBe('done');
     expect(result.sessionId).toBe('sess-2');
+  });
+
+  it('includes --dangerously-skip-permissions for one-shot when bypassPermissions is true', async () => {
+    mockSpawnCli.mockResolvedValue({
+      stdout: JSON.stringify({ type: 'result', result: 'ok', session_id: 'sess-5' }),
+      stderr: '',
+      code: 0,
+      aborted: false,
+    });
+
+    await executeClaudeOneShot('Bypass one-shot', { bypassPermissions: true });
+
+    expect(mockSpawnCli).toHaveBeenCalledWith(expect.objectContaining({
+      args: [
+        '-p',
+        '--output-format',
+        'json',
+        '--dangerously-skip-permissions',
+      ],
+    }));
+  });
+
+  it('includes --dangerously-skip-permissions for resume when bypassPermissions is true', async () => {
+    mockSpawnCli.mockResolvedValue({
+      stdout: JSON.stringify({ type: 'result', result: 'ok', session_id: 'sess-6' }),
+      stderr: '',
+      code: 0,
+      aborted: false,
+    });
+
+    await executeClaudeResume('sess-6', 'Bypass resume', { bypassPermissions: true });
+
+    expect(mockSpawnCli).toHaveBeenCalledWith(expect.objectContaining({
+      args: [
+        '-p',
+        '--output-format',
+        'json',
+        '--resume',
+        'sess-6',
+        '--dangerously-skip-permissions',
+      ],
+    }));
   });
 
   it('parses nested content-array text output', async () => {
