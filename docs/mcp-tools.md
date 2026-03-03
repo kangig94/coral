@@ -2,14 +2,14 @@
 
 Coral exposes two MCP servers, each with its own tool set:
 
-- **`cx` (Codex)**: 1 tool for Codex CLI session management. Prefix: `mcp__plugin_coral_cx__`
+- **`ax` (Agent Execution)**: 2 tools (`codex`, `claude`) for Codex/Claude CLI session management. Prefix: `mcp__plugin_coral_ax__`
 - **`dc` (Discuss)**: 2 tools for moderated multi-agent discussions. Prefix: `mcp__plugin_coral_dc__`
 
-All tool inputs are validated at runtime with Zod schemas (`src/codex/schemas.ts`, `src/discuss/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
+All tool inputs are validated at runtime with Zod schemas (`src/codex/schemas.ts`, `src/claude/schemas.ts`, `src/discuss/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
 
 ---
 
-# Codex Tools (`cx`)
+# Codex Tools (`ax`)
 
 ## codex
 
@@ -153,7 +153,7 @@ No parameters (empty object). This envelope is strict.
 }
 ```
 
-`status` is `"running"` for sessions in the `activeJobs` map (still executing), `"completed"` otherwise.
+`status` is `"running"` for sessions currently in the active session map, `"completed"` otherwise.
 
 Only shows sessions registered in the Coral registry.
 
@@ -241,6 +241,80 @@ if status == "timeout":
 | `session` | exec/fork response | Pass to next `exec` for continuity |
 
 Do NOT pass `session_name` as the `session` parameter on subsequent exec calls.
+
+---
+
+# Claude Tools (`ax`)
+
+## claude
+
+Single entry point for Claude CLI execution. Use the required `op` discriminator.
+
+### Input Envelope
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `op` | string | Yes | `exec`, `wait`, `list`, `abort`, or `coral:<agent-name>` |
+
+### Official Input Schema
+
+```json
+{
+  "name": "claude",
+  "description": "Execute a prompt with Claude CLI. Use op field to select exec/list/wait/abort. For agent delegation, use op: \"coral:<agent-name>\" (e.g., coral:architect, coral:critic). Skills (coral:<skill>) are not supported — use the codex tool for skill delegation.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "op": { "type": "string", "description": "Operation: exec/list/wait/abort, or coral:<agent-name> for agent delegation (skills not supported)" },
+      "prompt": { "type": "string", "description": "Prompt to send (exec required)" },
+      "session": { "type": "string", "description": "Session ID for resume (exec with existing session)" },
+      "name": { "type": "string", "description": "Session name (exec optional)" },
+      "model": { "type": "string", "description": "Claude model to use (e.g., sonnet, opus, haiku)" },
+      "working_directory": { "type": "string", "description": "Working directory for execution" },
+      "system_prompt": { "type": "string", "description": "Custom system prompt (replaces default)" },
+      "sessions": { "type": "array", "items": { "type": "string" }, "description": "Session UUIDs to monitor (wait op)" },
+      "timeout_seconds": { "type": "number", "description": "Max wait time in seconds (1-1200, default 600)" }
+    },
+    "required": ["op"]
+  }
+}
+```
+
+### op: exec
+
+Starts a new Claude CLI run (or resumes when `session` is provided). Returns immediately with a Coral session UUID:
+
+```json
+{
+  "session": "uuid",
+  "session_dir": "/tmp/coral-sessions/uuid",
+  "session_name": "my-session",
+  "status": "running"
+}
+```
+
+Execution details:
+- Uses `claude -p --output-format json`
+- Prompt is sent via stdin (not argv)
+- Optional flags: `--model`, `--system-prompt`
+- Resume mode uses `--resume <session-id>`
+- `--no-session-persistence` is not used
+
+### op: coral:*
+
+- `coral:<agent>`: loads `agents/<agent>.md`, strips YAML frontmatter + `> **CORAL_...` directive lines, and injects into `--system-prompt`
+- `coral:<skill>`: returns `isError` (skills require Claude Code tool environment and are only supported through the `codex` tool)
+
+### op: wait / list / abort
+
+Same session lifecycle contract as Codex (`wait` any-semantics, `list` registered sessions, `abort` active session). Provider scoping prevents Claude operations from targeting Codex sessions and vice versa.
+
+### Missing `session_id` Behavior
+
+If CLI JSON output does not include `session_id`, the run is marked non-resumable:
+- response still returns normally
+- metadata includes `non_resumable: true`
+- no persisted provider session mapping is created
 
 ---
 
@@ -414,9 +488,9 @@ The moderator (`discuss-lead`) uses `_1_seed` within a 3-phase setup:
 
 ---
 
-# cx ↔ dc Integration
+# ax ↔ dc Integration
 
-The `cx` (Codex) and `dc` (Discuss) MCP servers do **not** communicate directly at runtime. They are independent processes with no shared state or IPC.
+The `ax` (Codex) and `dc` (Discuss) MCP servers do **not** communicate directly at runtime. They are independent processes with no shared state or IPC.
 
 ## Coupling Points
 
@@ -434,13 +508,13 @@ The discuss system itself does **not** call Codex tools unless a skill/workflow 
 - Discuss session IDs: `yymmdd-HHmm-xxxx` (managed by dc)
 - Discuss session dirs: `{session_id}-{topic_slug}` (managed by dc)
 - Discuss teams: `coral-dc-{session_id}` (managed by Claude Code Agent Teams)
-- Codex sessions: `session-{timestamp}` or user-provided name (managed by cx)
+- Codex sessions: `session-{timestamp}` or user-provided name (managed by ax)
 
 These namespaces do not overlap. Collision risk is between discuss sessions only (mitigated by 4-char random suffix per timestamp-minute).
 
 ## Contract
 
-1. **dc never calls cx tools** - the discuss MCP server has no dependency on the codex MCP server
-2. **cx never reads dc state** - Codex sessions have no awareness of discuss sessions
+1. **dc never calls ax tools** - the discuss MCP server has no dependency on the codex MCP server
+2. **ax never reads dc state** - Codex sessions have no awareness of discuss sessions
 3. **Agent delegation is explicit** - Codex delegation uses `codex({ op: "coral:<agent>" })`; no hook bridge is involved
 4. **Modifying either server independently is safe** - as long as tool input/output contracts are preserved

@@ -1,7 +1,7 @@
 {
   "name": "coral",
   "version": "0.4.2",
-  "description": "Claude Code plugin - structured agents with Codex CLI bridge",
+  "description": "Claude Code plugin - structured agents with Codex and Claude CLI bridges",
   "author": {
     "name": "kangig94"
   },
@@ -13,6 +13,7 @@
     "plugin",
     "agents",
     "codex",
+    "claude",
     "bridge"
   ],
   "skills": "./skills/",

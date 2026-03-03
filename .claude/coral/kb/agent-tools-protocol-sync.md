@@ -10,7 +10,7 @@ If the protocol says "Read(session_dir + '/result.md')" but `Read` is not in the
 ```yaml
 # Before (protocol says only Glob + codex):
 ---
-tools: Glob, mcp__plugin_coral_cx__codex
+tools: Glob, mcp__plugin_coral_ax__codex
 ---
 <Agent_Prompt>
   ... exec → show response directly from MCP response ...
@@ -18,7 +18,7 @@ tools: Glob, mcp__plugin_coral_cx__codex
 
 # After (protocol now requires reading result files):
 ---
-tools: Read, Glob, mcp__plugin_coral_cx__codex   ← add Read here
+tools: Read, Glob, mcp__plugin_coral_ax__codex   ← add Read here
 ---
 <Agent_Prompt>
   ... exec → wait → Read(session_dir/result.md) → show response ...

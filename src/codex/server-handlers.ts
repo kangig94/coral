@@ -4,11 +4,9 @@
  * server.ts is the composition root (wiring only).
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
 import { executeOneShot, executeResume, executeFork } from './codex-executor.js';
 import { detectCodexCli, type CliInfo } from './cli-detection.js';
-import { SessionManager } from './session-manager.js';
+import { SessionManager } from '../runner/session-manager.js';
 import {
   codexOpSchema,
   coralAgentSchema,
@@ -22,26 +20,22 @@ import {
 } from './schemas.js';
 import type { CodexThreadEvent } from '../types.js';
 import {
-  createSessionDir,
-  writeSessionResult,
-  writeSessionError,
-  readSessionStatus,
-  resolveSessionDir,
   extractProgressMessage,
   appendProgressEvent,
-  formatElapsed,
-  PROGRESS_FILE,
-  type SessionStatus,
 } from './progress.js';
+import {
+  activeSessions,
+  tryClaimTerminalWrite,
+  shutdownSignal,
+  launchJob as launchRunnerJob,
+  handleWait as handleRunnerWait,
+  type OnEventCallback,
+} from '../runner/job-manager.js';
+import type { CompletionMetadata } from '../runner/types.js';
+import { resolveCoralContent } from '../runner/coral-resolver.js';
 import { type McpResult, textResult, jsonResult, resultExtras } from '../shared/mcp-utils.js';
 
-export type OnEventCallback = (line: string) => void;
-
-declare const __PLUGIN_ROOT__: string;
-// `let` instead of `const` to allow test override via _test.setPluginRoot
-let pluginRoot: string = typeof __PLUGIN_ROOT__ === 'string'
-  ? __PLUGIN_ROOT__
-  : join(__dirname, '..');
+export { activeSessions, tryClaimTerminalWrite, shutdownSignal };
 
 export const tools = [
   {
@@ -90,30 +84,10 @@ export function makeEventCallback(progressFile: string): OnEventCallback {
   };
 }
 
-type ActiveSession = {
-  sessionDir: string;
-  controller: AbortController;
-  sessionName: string;
-  threadId?: string;
-  terminalState: 'running' | 'terminalizing' | 'completed' | 'error';
-};
-
-export const activeSessions = new Map<string, ActiveSession>();
-
-/** Atomically transition a session from 'running' to 'terminalizing'. Returns true if claim succeeded. */
-export function tryClaimTerminalWrite(id: string): boolean {
-  const entry = activeSessions.get(id);
-  if (!entry || entry.terminalState !== 'running') return false;
-  entry.terminalState = 'terminalizing';
-  return true;
-}
-
-export const shutdownSignal = new AbortController();
-
 export function extractCompletionData(
   result: McpResult,
-  sessionLabel: string,
-): { responseText: string; metadata: Record<string, unknown> } {
+  _sessionLabel?: string,
+): { responseText: string; metadata: CompletionMetadata; sessionId?: string } {
   const data = JSON.parse(result.content[0].text);
   let threadId: string | null = null;
   if (typeof data.thread_id === 'string') {
@@ -122,8 +96,7 @@ export function extractCompletionData(
     process.stderr.write(`Warning: Completion payload uses legacy 'session' field; update producer to emit 'thread_id'\n`);
     threadId = data.session;
   }
-  const metadata: Record<string, unknown> = {
-    session_name: sessionLabel,
+  const metadata: CompletionMetadata = {
     thread_id: threadId,
     model: data.model,
     duration_ms: data.duration_ms,
@@ -134,53 +107,28 @@ export function extractCompletionData(
   if (data.exit_code !== undefined) metadata.exit_code = data.exit_code;
   if (Array.isArray(data.errors)) metadata.errors = data.errors;
   if (Array.isArray(data.warnings)) metadata.warnings = data.warnings;
-  return { responseText: data.response ?? '', metadata };
+  return {
+    responseText: data.response ?? '',
+    metadata,
+    sessionId: typeof threadId === 'string' ? threadId : undefined,
+  };
 }
 
 export function launchJob(
   sessionLabel: string,
   handler: (signal: AbortSignal, onEvent: OnEventCallback) => Promise<McpResult>,
   mgr: SessionManager,
+  workingDirectory: string = process.cwd(),
 ): McpResult {
-  const { id, dir } = createSessionDir(sessionLabel);
-  const controller = new AbortController();
-  const entry: ActiveSession = {
-    sessionDir: dir,
-    controller,
-    sessionName: sessionLabel,
-    terminalState: 'running',
-  };
-  activeSessions.set(id, entry);
-
-  const progressFile = join(dir, PROGRESS_FILE);
-  const onEvent = makeEventCallback(progressFile);
-
-  handler(controller.signal, onEvent)
-    .then((result) => {
-      if (!tryClaimTerminalWrite(id)) return;
-
-      const { responseText, metadata } = extractCompletionData(result, sessionLabel);
-      writeSessionResult(dir, responseText, metadata);
-
-      const threadId = typeof metadata.thread_id === 'string' ? metadata.thread_id : undefined;
-      if (threadId) {
-        entry.threadId = threadId;
-        const model = typeof metadata.model === 'string' ? metadata.model : 'unknown';
-        mgr.register(id, sessionLabel, threadId, model, process.cwd());
-      }
-
-      entry.terminalState = 'completed';
-    })
-    .catch((err) => {
-      if (!tryClaimTerminalWrite(id)) return;
-      writeSessionError(dir, err instanceof Error ? err.message : String(err));
-      entry.terminalState = 'error';
-    })
-    .finally(() => {
-      activeSessions.delete(id);
-    });
-
-  return jsonResult({ session: id, session_dir: dir, session_name: sessionLabel, status: 'running' });
+  return launchRunnerJob({
+    provider: 'codex',
+    sessionLabel,
+    workingDirectory,
+    handler,
+    mgr,
+    makeOnEvent: ({ progressFile }) => makeEventCallback(progressFile),
+    extractCompletion: (result) => extractCompletionData(result),
+  });
 }
 
 async function preflightCliCheck(): Promise<
@@ -245,7 +193,7 @@ export async function handleSessionSend(
   preChecked?: CliInfo & { available: true },
   sourceSessionId?: string,
 ): Promise<McpResult> {
-  const entry = mgr.get(input.session);
+  const entry = mgr.get('codex', input.session);
   if (!entry) return sessionNotFoundError(input.session);
   const sessionName = entry.name;
   const workingDirectory = input.working_directory ?? entry.workingDirectory;
@@ -263,7 +211,7 @@ export async function handleSessionSend(
     preChecked,
   );
 
-  mgr.updateSession(sourceSessionId ?? input.session, modelUpdate);
+  mgr.updateSession('codex', sourceSessionId ?? input.session, modelUpdate);
 
   return jsonResult({
     response: result.response,
@@ -277,15 +225,19 @@ export async function handleSessionSend(
 }
 
 export function handleSessionList(mgr: SessionManager): McpResult {
-  const registered = mgr.list().map((s) => ({
-    name: s.name,
-    session: s.id,
-    model: s.model,
-    created_at: s.createdAt,
-    last_used_at: s.lastUsedAt,
-    working_directory: s.workingDirectory,
-    status: activeSessions.get(s.id)?.terminalState === 'running' ? 'running' : 'completed',
-  }));
+  const registered = mgr.list('codex').map((s) => {
+    const active = activeSessions.get(s.id);
+    const owner = active?.provider ?? 'codex';
+    return {
+      name: s.name,
+      session: s.id,
+      model: s.model,
+      created_at: s.createdAt,
+      last_used_at: s.lastUsedAt,
+      working_directory: s.workingDirectory,
+      status: owner === 'codex' && active?.terminalState === 'running' ? 'running' : 'completed',
+    };
+  });
 
   return jsonResult({ sessions: registered, total: registered.length });
 }
@@ -297,7 +249,7 @@ export async function handleSessionFork(
   onEvent?: OnEventCallback,
   preChecked?: CliInfo & { available: true },
 ): Promise<McpResult> {
-  const entry = mgr.get(input.session);
+  const entry = mgr.get('codex', input.session);
   if (!entry) return sessionNotFoundError(input.session);
 
   const cwd = input.working_directory ?? entry.workingDirectory;
@@ -326,7 +278,7 @@ export async function handleSessionFork(
 
 export async function handleSessionAbort(input: CodexSessionAbortInput, _mgr: SessionManager): Promise<McpResult> {
   const entry = activeSessions.get(input.session);
-  if (!entry) {
+  if (!entry || (entry.provider ?? 'codex') !== 'codex') {
     return textResult(
       `No active execution found for session "${input.session}". The session may have already completed or the ID is invalid.`,
       true,
@@ -342,124 +294,7 @@ export async function handleWait(
   notify?: (n: { method: string; params: Record<string, unknown> }) => Promise<void>,
   progressToken?: string | number,
 ): Promise<McpResult> {
-  const { sessions, timeout_seconds = 600 } = input;
-
-  const sessionDirs: Record<string, string> = {};
-  for (const id of sessions) {
-    const dir = resolveSessionDir(id);
-    if (!existsSync(dir)) {
-      return textResult(`Unknown session: "${id}". No session directory found.`, true);
-    }
-    sessionDirs[id] = dir;
-  }
-
-  const lastSent = new Map<string, string>();
-
-  // Cache stable session metadata (session_name, startedAt) to avoid re-reading status.json per tick
-  const sessionMeta = new Map<string, { name: string; startedAt: number | undefined }>();
-  for (const id of sessions) {
-    const info = readSessionStatus(sessionDirs[id]!);
-    sessionMeta.set(id, { name: info.session_name ?? id, startedAt: info.startedAt });
-  }
-
-  let notifCounter = 0;
-  const startMs = Date.now();
-  const timeoutMs = timeout_seconds * 1000;
-
-  const timeoutResponse = (): McpResult => {
-    const running = sessions.filter((id) => readSessionStatus(sessionDirs[id]!).status === 'running');
-    return jsonResult({ status: 'timeout', running_sessions: running });
-  };
-
-  while (true) {
-    if (shutdownSignal.signal.aborted) {
-      return timeoutResponse();
-    }
-
-    if (Date.now() - startMs >= timeoutMs) {
-      return timeoutResponse();
-    }
-
-    let completedId: string | null = null;
-    let completedStatus: SessionStatus | null = null;
-
-    for (const id of sessions) {
-      const dir = sessionDirs[id]!;
-      const progressFile = join(dir, PROGRESS_FILE);
-
-      let progressData: string | null = null;
-      try {
-        progressData = readFileSync(progressFile, 'utf-8');
-      } catch {
-        // progress.jsonl may not exist yet
-      }
-
-      if (progressData && progressToken != null && notify != null) {
-        const lastNewline = progressData.lastIndexOf('\n');
-        if (lastNewline >= 0) {
-          const completeData = progressData.substring(0, lastNewline);
-          const lastLine = completeData
-            .split('\n')
-            .filter((line) => line.trim())
-            .at(-1);
-
-          if (lastLine) {
-            try {
-              const parsed = JSON.parse(lastLine) as { message?: unknown };
-              if (typeof parsed.message === 'string' && parsed.message) {
-                const previousMessage = lastSent.get(id);
-                if (previousMessage !== parsed.message) {
-                  const meta = sessionMeta.get(id)!;
-                  const elapsed = formatElapsed(meta.startedAt);
-                  const tag = elapsed ? `${elapsed}: ${meta.name}` : meta.name;
-                  lastSent.set(id, parsed.message);
-                  void notify({
-                    method: 'notifications/progress',
-                    params: {
-                      progressToken,
-                      progress: ++notifCounter,
-                      message: `[${tag}] ${parsed.message}`,
-                    },
-                  }).catch(() => {});
-                }
-              }
-            } catch {
-              // malformed progress line should not fail wait
-            }
-          }
-        }
-      }
-
-      const sessionStatus = readSessionStatus(dir);
-      if ((sessionStatus.status === 'completed' || sessionStatus.status === 'error') && completedId === null) {
-        completedId = id;
-        completedStatus = sessionStatus;
-      }
-    }
-
-    if (completedId !== null && completedStatus !== null) {
-      const dir = sessionDirs[completedId]!;
-      return jsonResult({
-        status: completedStatus.status,
-        completed_session: completedId,
-        session_dir: dir,
-        session_name: completedStatus.session_name ?? completedId,
-      });
-    }
-
-    await new Promise<void>((resolve) => {
-      const onAbort = () => {
-        clearTimeout(timer);
-        shutdownSignal.signal.removeEventListener('abort', onAbort);
-        resolve();
-      };
-      const timer = setTimeout(() => {
-        shutdownSignal.signal.removeEventListener('abort', onAbort);
-        resolve();
-      }, 500);
-      shutdownSignal.signal.addEventListener('abort', onAbort);
-    });
-  }
+  return handleRunnerWait('codex', input, notify, progressToken);
 }
 
 async function handleCodexOp(
@@ -473,7 +308,7 @@ async function handleCodexOp(
       const { op: _op, session: sessionRef, ...rest } = input;
       if (sessionRef) {
         const { name: _name, ...sendRest } = rest;
-        const entry = sessionManager.get(sessionRef);
+        const entry = sessionManager.get('codex', sessionRef);
         if (!entry) return sessionNotFoundError(sessionRef);
 
         const preflight = await preflightCliCheck();
@@ -484,6 +319,7 @@ async function handleCodexOp(
           entry.name,
           (signal, onEvent) => handleSessionSend(sendInput, sessionManager, signal, onEvent, preflight.cli, sessionRef),
           sessionManager,
+          sendInput.working_directory ?? entry.workingDirectory,
         );
       }
 
@@ -496,13 +332,14 @@ async function handleCodexOp(
         sessionName,
         (signal, onEvent) => handleSessionCreate(createInput, sessionManager, signal, onEvent, preflight.cli),
         sessionManager,
+        createInput.working_directory ?? process.cwd(),
       );
     }
     case 'list':
       return handleSessionList(sessionManager);
     case 'fork': {
       const { op: _op, ...forkInput } = input;
-      const entry = sessionManager.get(forkInput.session);
+      const entry = sessionManager.get('codex', forkInput.session);
       if (!entry) return sessionNotFoundError(forkInput.session);
 
       const preflight = await preflightCliCheck();
@@ -513,6 +350,7 @@ async function handleCodexOp(
         sessionLabel,
         (signal, onEvent) => handleSessionFork(forkInput, sessionManager, signal, onEvent, preflight.cli),
         sessionManager,
+        forkInput.working_directory ?? entry.workingDirectory,
       );
     }
     case 'wait':
@@ -526,32 +364,22 @@ async function handleCodexOp(
   }
 }
 
-function resolveAgentPrompt(agentName: string): string | McpResult {
-  // Compute agentsDir at call time so _test.setPluginRoot overrides take effect.
-  const agentsDir = join(pluginRoot, 'agents');
-  const agentPath = resolve(agentsDir, `${agentName}.md`);
-  if (!agentPath.startsWith(`${agentsDir}${sep}`)) {
-    return textResult(`Error: Invalid agent name: ${agentName}`, true);
-  }
-  try {
-    return readFileSync(agentPath, 'utf-8');
-  } catch {
-    return textResult(`Error: Agent file not found: agents/${agentName}.md`, true);
-  }
-}
-
 async function handleCoralAgent(
   input: CoralAgentInput,
   mgr: SessionManager,
 ): Promise<McpResult> {
-  const agentName = input.op.slice(6); // op already validated by coralAgentSchema
-  const agentContent = resolveAgentPrompt(agentName);
-  if (typeof agentContent !== 'string') return agentContent; // McpResult error
+  const coralName = input.op.slice(6); // op already validated by coralAgentSchema
+  let resolved;
+  try {
+    resolved = resolveCoralContent(coralName);
+  } catch (err) {
+    return textResult(`Error: ${err instanceof Error ? err.message : String(err)}`, true);
+  }
 
-  const augmentedPrompt = `${agentContent}\n\n---\n\n${input.prompt}`;
+  const augmentedPrompt = `${resolved.content}\n\n---\n\n${input.prompt}`;
 
   if (input.session) {
-    const entry = mgr.get(input.session);
+    const entry = mgr.get('codex', input.session);
     if (!entry) {
       return sessionNotFoundError(input.session);
     }
@@ -571,13 +399,14 @@ async function handleCoralAgent(
       entry.name,
       (signal, onEvent) => handleSessionSend(sendInput, mgr, signal, onEvent, preflight.cli, input.session),
       mgr,
+      sendInput.working_directory ?? entry.workingDirectory,
     );
   }
 
   const preflight = await preflightCliCheck();
   if (!preflight.pass) return preflight.result;
 
-  const sessionName = input.name ?? `${agentName}-${Date.now()}`;
+  const sessionName = input.name ?? `${coralName}-${Date.now()}`;
   const createInput: CodexSessionCreateInput & { name: string } = {
     prompt: augmentedPrompt,
     name: sessionName,
@@ -590,6 +419,7 @@ async function handleCoralAgent(
     sessionName,
     (signal, onEvent) => handleSessionCreate(createInput, mgr, signal, onEvent, preflight.cli),
     mgr,
+    createInput.working_directory ?? process.cwd(),
   );
 }
 
@@ -631,8 +461,3 @@ export async function handleToolCall(
     return textResult(`Error: ${message}`, true);
   }
 }
-
-// Test-only exports
-export const _test = {
-  setPluginRoot(p: string) { pluginRoot = p; },
-};

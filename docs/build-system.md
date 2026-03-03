@@ -13,7 +13,7 @@ TypeScript compilation and esbuild bundling pipeline.
 
 ## Bundle Commit Policy
 
-Both bundles (`bridge/coral-codex.cjs` and `bridge/coral-discuss.cjs`) are committed to the repository. This means users can use the plugin by pointing to the plugin directory without running `npm install` + `npm run build`:
+Both bundles (`bridge/coral-ax.cjs` and `bridge/coral-discuss.cjs`) are committed to the repository. This means users can use the plugin by pointing to the plugin directory without running `npm install` + `npm run build`:
 
 ```bash
 claude --plugin-dir /path/to/coral
@@ -30,7 +30,7 @@ src/**/*.ts
 dist/**/*.js + dist/**/*.d.ts
     |
     v  esbuild (bundling, 2 entry points)
-bridge/coral-codex.cjs     (src/codex/server.ts)
+bridge/coral-ax.cjs     (src/ax/server.ts)
 bridge/coral-discuss.cjs   (src/discuss/server.ts)
 ```
 
@@ -52,12 +52,12 @@ The build script performs two tasks before bundling: version sync and manifest u
 
 | Setting | Value | Reason |
 |---|---|---|
-| `entryPoints` | `src/codex/server.ts`, `src/discuss/server.ts` | Two MCP server entry points (one bundle per server) |
+| `entryPoints` | `src/ax/server.ts`, `src/discuss/server.ts` | Two MCP server entry points (one bundle per server) |
 | `bundle` | `true` | Bundle all dependencies into a single file |
 | `platform` | `node` | Target Node.js environment |
 | `target` | `node18` | Generate Node 18+ compatible code |
 | `format` | `cjs` | CommonJS format (matches `.cjs` extension) |
-| `outfile` | `bridge/coral-codex.cjs`, `bridge/coral-discuss.cjs` | Bundle output paths |
+| `outfile` | `bridge/coral-ax.cjs`, `bridge/coral-discuss.cjs` | Bundle output paths |
 | `external` | `['node:*']` | Externalize Node.js built-in modules |
 | `minify` | `true` | Minimize bundle size |
 | `banner` | `var __PLUGIN_ROOT__=...` | Resolve plugin root at runtime via CJS `__dirname` |
@@ -68,7 +68,7 @@ The build script performs two tasks before bundling: version sync and manifest u
 | Constant | Source | Usage |
 |---|---|---|
 | `__VERSION__` | `package.json` version | MCP server initialization (`server.ts`) |
-| `__PLUGIN_ROOT__` | CJS `__dirname` + `..` | Runtime CLAUDE.md file reading for Codex prompt injection (`codex-executor.ts`) |
+| `__PLUGIN_ROOT__` | CJS `__dirname` + `..` | Runtime plugin-root resolution for shared resolver + Codex CLAUDE.md injection |
 
 `__PLUGIN_ROOT__` is a CJS banner variable (not a `define` replacement), set to `path.resolve(__dirname, '..')` at runtime. This allows the bundled server to locate `CLAUDE.md` regardless of where the plugin is installed.
 
@@ -80,10 +80,10 @@ Run tests with vitest:
 npm test
 ```
 
-Tests live in `src/codex/__tests__/` and `src/discuss/__tests__/`. See `vitest.config.ts`.
+Tests live in `src/ax/__tests__/`, `src/runner/__tests__/`, `src/codex/__tests__/`, `src/claude/__tests__/`, and `src/discuss/__tests__/`. See `vitest.config.ts`.
 
 One test file per source module. External dependencies (Codex CLI, filesystem) are mocked — real Codex is never called in tests.
 
 ## Connection to .mcp.json
 
-Claude Code runs both MCP servers via stdio. The `cx` server provides Codex CLI tools (`codex` tool with `exec/list/fork/abort` ops), and the `dc` server provides discuss tools (`discuss` and `discuss_lead`). `CLAUDE_PLUGIN_ROOT` in `.mcp.json` is auto-replaced with the plugin root directory at registration time.
+Claude Code runs both MCP servers via stdio. The `ax` server provides Codex + Claude CLI tools (`codex` and `claude`), and the `dc` server provides discuss tools (`discuss` and `discuss_lead`). `CLAUDE_PLUGIN_ROOT` in `.mcp.json` is auto-replaced with the plugin root directory at registration time.

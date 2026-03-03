@@ -1,11 +1,11 @@
-/** Coral MCP Server - stdio transport for Codex CLI integration. */
+/** Coral AX MCP Server - unified stdio transport for Codex and Claude CLI integration. */
 
 declare const __VERSION__: string;
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { killAllChildren } from './codex-executor.js';
+import { killAllChildren } from '../runner/engine.js';
 import { SessionManager } from '../runner/session-manager.js';
 import { writeSessionError } from '../runner/progress.js';
 import { activeSessions, tryClaimTerminalWrite, shutdownSignal } from '../runner/job-manager.js';
@@ -32,7 +32,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 });
 
 function shutdown() {
-  process.stderr.write('Coral MCP Server shutting down...\n');
+  process.stderr.write('Coral AX MCP Server shutting down...\n');
 
   // 1. Signal all wait handlers to exit their poll loops immediately
   shutdownSignal.abort();
@@ -60,7 +60,7 @@ const sessionManager = new SessionManager(process.cwd());
 
 const transport = new StdioServerTransport();
 server.connect(transport).then(() => {
-  process.stderr.write('Coral MCP Server running on stdio\n');
+  process.stderr.write('Coral AX MCP Server running on stdio\n');
 }).catch((error) => {
   process.stderr.write(`Fatal error: ${error}\n`);
   process.exit(1);

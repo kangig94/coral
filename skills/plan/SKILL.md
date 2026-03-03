@@ -83,7 +83,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
     #### Phase 1 — Codex Review (only with `--codex`)
 
-    Reviewers: `mcp__plugin_coral_cx__codex({ op: "coral:architect", ... })` + `mcp__plugin_coral_cx__codex({ op: "coral:critic", ... })`
+    Reviewers: `mcp__plugin_coral_ax__codex({ op: "coral:architect", ... })` + `mcp__plugin_coral_ax__codex({ op: "coral:critic", ... })`
 
     Repeat (max 5 rounds):
 

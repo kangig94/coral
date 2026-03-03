@@ -13,7 +13,8 @@ vi.mock('../cli-detection.js', () => ({
   detectCodexCli: vi.fn(),
 }));
 
-vi.mock('../progress.js', () => ({
+// Mock runner/progress.ts — imported directly by runner/job-manager.ts
+vi.mock('../../runner/progress.js', () => ({
   createSessionDir: vi.fn(() => ({
     id: '12345678-1234-4234-8234-123456789abc',
     dir: '/tmp/coral-sessions/12345678-1234-4234-8234-123456789abc',
@@ -24,8 +25,25 @@ vi.mock('../progress.js', () => ({
   resolveSessionDir: vi.fn((id: string) => `/tmp/coral-sessions/${id}`),
   SESSIONS_DIR: '/tmp/coral-sessions',
   PROGRESS_FILE: 'progress.jsonl',
+  appendProgressEvent: vi.fn(),
+  formatElapsed: vi.fn(() => ''),
+}));
+
+// Mock codex/progress.ts — imported by codex/server-handlers.ts (extractProgressMessage)
+vi.mock('../progress.js', () => ({
   extractProgressMessage: vi.fn(),
   appendProgressEvent: vi.fn(),
+  // Stubs for re-exported symbols (in case any path imports from codex/progress.ts)
+  createSessionDir: vi.fn(() => ({
+    id: '12345678-1234-4234-8234-123456789abc',
+    dir: '/tmp/coral-sessions/12345678-1234-4234-8234-123456789abc',
+  })),
+  writeSessionResult: vi.fn(),
+  writeSessionError: vi.fn(),
+  readSessionStatus: vi.fn(() => ({ status: 'running' })),
+  resolveSessionDir: vi.fn((id: string) => `/tmp/coral-sessions/${id}`),
+  SESSIONS_DIR: '/tmp/coral-sessions',
+  PROGRESS_FILE: 'progress.jsonl',
   formatElapsed: vi.fn(() => ''),
 }));
 
@@ -41,8 +59,8 @@ import {
   readSessionStatus,
   resolveSessionDir,
   SESSIONS_DIR,
-} from '../progress.js';
-import { SessionManager } from '../session-manager.js';
+} from '../../runner/progress.js';
+import { SessionManager } from '../../runner/session-manager.js';
 import { jsonResult, type McpResult } from '../../shared/mcp-utils.js';
 import {
   extractCompletionData,
@@ -56,8 +74,8 @@ import {
   handleWait,
   handleToolCall,
   tools,
-  _test as handlerTest,
 } from '../server-handlers.js';
+import { _test as resolverTest } from '../../runner/coral-resolver.js';
 
 function makeExecResult(overrides: Partial<CodexExecResult> = {}): CodexExecResult {
   return {
@@ -83,7 +101,7 @@ beforeEach(() => {
   mkdirSync(join(tmpDir, 'workspace'), { recursive: true });
   mkdirSync(join(tmpDir, 'agents'), { recursive: true });
   writeFileSync(join(tmpDir, 'agents', 'scanner.md'), '# Scanner Agent\n');
-  handlerTest.setPluginRoot(tmpDir);
+  resolverTest.setPluginRoot(tmpDir);
   mgr = new SessionManager(join(tmpDir, 'workspace'));
 
   activeSessions.clear();
@@ -106,7 +124,7 @@ afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
   }
   dirsToClean.clear();
-  handlerTest.setPluginRoot(defaultPluginRoot);
+  resolverTest.setPluginRoot(defaultPluginRoot);
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -115,7 +133,8 @@ describe('extractCompletionData', () => {
     const result = jsonResult({ response: 'hi', thread_id: 'thread-1', model: 'o4-mini', duration_ms: 10 });
     const { responseText, metadata } = extractCompletionData(result, 's1');
     expect(responseText).toBe('hi');
-    expect(metadata).toMatchObject({ thread_id: 'thread-1', session_name: 's1' });
+    expect(metadata).toMatchObject({ thread_id: 'thread-1' });
+    expect(metadata).not.toHaveProperty('session_name'); // session_name injected by launchJob, not extractCompletionData
   });
 
   it('falls back to legacy session field and warns', () => {
@@ -339,7 +358,7 @@ describe('API response: thread_id leakage and field presence', () => {
     vi.mocked(readSessionStatus).mockReturnValue({ status: 'running' });
 
     const { createSessionDir: realCreate } =
-      await vi.importActual<typeof import('../progress.js')>('../progress.js');
+      await vi.importActual<typeof import('../../runner/progress.js')>('../../runner/progress.js');
     const { dir } = realCreate(`timeout-test-${sessionId}`);
 
     try {
@@ -376,7 +395,7 @@ describe('handleWait: behavioral gaps', () => {
   it('completed response does not include cursors field', async () => {
     const sessionId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
     const { createSessionDir: realCreate, writeSessionResult: realWrite, readSessionStatus: realRead } =
-      await vi.importActual<typeof import('../progress.js')>('../progress.js');
+      await vi.importActual<typeof import('../../runner/progress.js')>('../../runner/progress.js');
     const { dir } = realCreate('cursor-test');
 
     try {
@@ -405,7 +424,7 @@ describe('handleWait: behavioral gaps', () => {
   it('progress notification dedup skips repeated messages', async () => {
     const sessionId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
     const { createSessionDir: realCreate } =
-      await vi.importActual<typeof import('../progress.js')>('../progress.js');
+      await vi.importActual<typeof import('../../runner/progress.js')>('../../runner/progress.js');
     const { dir } = realCreate('wait-dedup');
     const progressFile = join(dir, 'progress.jsonl');
     const line = JSON.stringify({ event: 'thread.message.delta', message: 'same message' });
@@ -447,7 +466,7 @@ describe('handleWait: behavioral gaps', () => {
   it('progress notification ignores trailing partial JSONL line', async () => {
     const sessionId = '11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const { createSessionDir: realCreate } =
-      await vi.importActual<typeof import('../progress.js')>('../progress.js');
+      await vi.importActual<typeof import('../../runner/progress.js')>('../../runner/progress.js');
     const { dir } = realCreate('wait-partial-line');
     const progressFile = join(dir, 'progress.jsonl');
     const completeLine = JSON.stringify({ event: 'thread.message.delta', message: 'complete message' });
@@ -591,7 +610,7 @@ describe('resolveAgentPrompt: file content and return type', () => {
   it('missing agent returns isError without Error: prefix doubling', async () => {
     const result = await handleToolCall('codex', { op: 'coral:does-not-exist-xyz', prompt: 'test' }, mgr);
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('Agent file not found: agents/does-not-exist-xyz.md');
+    expect(result.content[0].text).toContain('does-not-exist-xyz');
     expect(result.content[0].text).not.toMatch(/^Error: Error:/);
   });
 });
@@ -750,7 +769,7 @@ describe('coral:* tool schema and Zod validation routing', () => {
   it('non-existent agent returns file-not-found error (not path-traversal)', async () => {
     const result = await handleToolCall('codex', { op: 'coral:ghost-agent', prompt: 'test' }, mgr);
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('Agent file not found: agents/ghost-agent.md');
+    expect(result.content[0].text).toContain('Coral content not found: ghost-agent');
     expect(result.content[0].text).not.toContain('Invalid agent name');
   });
 });

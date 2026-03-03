@@ -9,7 +9,7 @@ vi.mock('node:os', () => ({
   homedir: () => tmpDir,
 }));
 
-import { SessionManager } from '../session-manager.js';
+import { SessionManager } from '../../runner/session-manager.js';
 
 const LEGACY_SESSION_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
 

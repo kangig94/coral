@@ -1,5 +1,5 @@
 /**
- * Shared MCP utilities used by both cx (Codex) and dc (Discuss) servers.
+ * Shared MCP utilities used by both ax (Codex/Claude) and dc (Discuss) servers.
  * Note: resultExtras is Codex-specific - dc server should NOT import it.
  */
 

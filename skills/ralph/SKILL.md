@@ -83,7 +83,7 @@ Strip `--codex` and `--red` flags before passing the prompt to the execution pat
 
     Spawn immediately before step 6a (lint), in background (`run_in_background: true`).
     Cross-model diversity: use the opposite model from the main execution:
-    - ralph=Claude (no --codex) → `mcp__plugin_coral_cx__codex({ op: "coral:red-attacker", prompt, working_directory })`
+    - ralph=Claude (no --codex) → `mcp__plugin_coral_ax__codex({ op: "coral:red-attacker", prompt, working_directory })`
     - ralph=Codex (--codex) → `Agent("coral:red-attacker")`
 
     Prompt must include:

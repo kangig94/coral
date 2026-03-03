@@ -334,6 +334,80 @@ describe('preChecked auth guard for executeResume', () => {
     expect(mockDetect).not.toHaveBeenCalled();
     expect(result.response).toBe('OK');
   });
+
+  it('authenticated state spawns process, detectCodexCli not called', async () => {
+    mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
+
+    await executeResume(
+      'thread-abc', 'continue', 'o4-mini', undefined, undefined, false,
+      undefined, undefined, { available: true as const, version: '1.0.0', authState: 'authenticated' as const },
+    );
+
+    expect(mockSpawn).toHaveBeenCalled();
+    expect(mockDetect).not.toHaveBeenCalled();
+  });
+});
+
+describe('preChecked auth guard for executeFork', () => {
+  const agentOk = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
+  const unauthChecked = {
+    available: true as const,
+    version: '1.0.0',
+    authState: 'unauthenticated' as const,
+    authError: 'Codex CLI is not authenticated. Run "codex login" or set the OPENAI_API_KEY environment variable.',
+  };
+
+  it('unauthenticated throws before spawn, detectCodexCli not called', async () => {
+    await expect(
+      executeFork('thread-orig', undefined, undefined, undefined, undefined, false, undefined, undefined, unauthChecked),
+    ).rejects.toThrow('Codex CLI is not authenticated');
+
+    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(mockDetect).not.toHaveBeenCalled();
+  });
+
+  it('thrown message matches cli.authError verbatim', async () => {
+    const customError = 'Fork-specific custom auth error';
+    await expect(
+      executeFork('thread-orig', 'prompt', undefined, undefined, undefined, false, undefined, undefined, {
+        ...unauthChecked, authError: customError,
+      }),
+    ).rejects.toThrow(customError);
+  });
+
+  it('unknown auth state spawns process (fail-open), detectCodexCli not called', async () => {
+    mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
+
+    const result = await executeFork(
+      'thread-orig', 'do something new', 'o4-mini', undefined, undefined, false,
+      undefined, undefined, { available: true as const, version: '1.0.0', authState: 'unknown' as const },
+    );
+
+    expect(mockSpawn).toHaveBeenCalled();
+    expect(mockDetect).not.toHaveBeenCalled();
+    expect(result.response).toBe('OK');
+  });
+
+  it('authenticated state spawns process, detectCodexCli not called', async () => {
+    mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
+
+    await executeFork(
+      'thread-orig', undefined, 'o4-mini', undefined, undefined, false,
+      undefined, undefined, { available: true as const, version: '1.0.0', authState: 'authenticated' as const },
+    );
+
+    expect(mockSpawn).toHaveBeenCalled();
+    expect(mockDetect).not.toHaveBeenCalled();
+  });
+
+  it('without preChecked delegates to detectCodexCli (normal path)', async () => {
+    mockDetect.mockResolvedValue({ available: true, version: '1.0.0', authState: 'authenticated' as const });
+    mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
+
+    await executeFork('thread-orig');
+
+    expect(mockDetect).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('idle timeout', () => {

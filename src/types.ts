@@ -15,16 +15,7 @@ export type CodexExecResult = {
   aborted: boolean;
 };
 
-/** A named session entry in the registry */
-export type SessionEntry = {
-  id: string;
-  name: string;
-  threadId: string;
-  model: string;
-  createdAt: string;
-  lastUsedAt: string;
-  workingDirectory: string;
-};
+export type { SessionEntry } from './runner/types.js';
 
 /**
  * Codex JSONL event types (matches codex-rs/exec/src/exec_events.rs).

@@ -2,105 +2,151 @@
 
 Detailed description of the TypeScript modules across both MCP servers.
 
-## Codex Server Modules (`src/codex/`)
+## Unified AX Server Modules (`src/ax/`)
 
-### src/types.ts - Shared Type Definitions
+### src/ax/server.ts - AX Composition Root
 
-Defines `CodexExecResult` (execution result: response, session ID, model, duration, exit code, errors, warnings), `SessionEntry` (per-session persistence: coral UUID `id`, display `name`, internal `threadId`, model, timestamps, working directory), and `CodexThreadEvent` / `CodexThreadItemDetails` (union types for Codex CLI JSONL event stream, based on `codex-rs/exec/src/exec_events.rs`). Referenced by all codex modules. See `src/types.ts`.
-
----
-
-### src/codex/schemas.ts - Zod Input Validation
-
-Defines a discriminated-union Zod schema for the unified `codex` MCP tool. Runtime validation uses `.parse()` at every handler entry point. Duplicated patterns are extracted into reusable building blocks:
-
-| Schema | Usage |
-|---|---|
-| `identPattern` | Regex for model/session names - prevents flag injection |
-| `sessionNameSchema` | Session name validation |
-| `promptSchema` | Non-empty prompt string |
-| `sessionRefSchema` | Opaque session reference string (exec/fork/coral) |
-| `cwdSchema` | Optional working directory |
-| `reasoningEffortSchema` | Optional enum: `low`, `medium`, `high`, `xhigh` |
-
-See `src/codex/schemas.ts`.
+Creates one MCP stdio server exposing two tools (`codex`, `claude`). Wires request handlers, shared `SessionManager`, shutdown behavior, and child-process cleanup through `runner/engine.ts`. See `src/ax/server.ts`.
 
 ---
 
-### src/codex/cli-detection.ts - Codex CLI Detection
+### src/ax/server-handlers.ts - AX Tool Router
 
-Checks whether Codex CLI is installed. **Checks once per server lifetime** and caches the result - first call runs `codex --version`, subsequent calls return immediately. See `src/codex/cli-detection.ts`.
+Routes by tool name:
+- `codex` requests to the Codex adapter
+- `claude` requests to the Claude adapter
+- `coral:<name>` delegation rules:
+  - Codex supports both agent and skill content (prompt prepend)
+  - Claude supports agents only; skills return an explicit error
 
----
-
-### src/codex/output-parser.ts - JSONL Output Parsing
-
-Extracts text and session ID from Codex CLI `--json` mode JSONL output. **Single-pass pure function** - no state, no side effects.
-
-**Handled event types:**
-
-1. **`thread.started`** - Extract session ID (mapped from CLI's `thread_id`)
-2. **`item.completed` + `agent_message`** - Extract `text` (multiple joined with `\n`) → `response`
-3. **`item.completed` + `error`** - Collect `message` into `warnings`
-4. **`error`** - Collect `message` into `errors` (deduplicated via Set)
-5. **`turn.failed`** - Collect `error.message` into `errors` (skip if already collected via `error` event)
-
-Lines that fail JSON parsing are silently skipped - Codex may intersperse debug output between JSONL lines. See `src/codex/output-parser.ts`.
+See `src/ax/server-handlers.ts`.
 
 ---
 
-### src/codex/codex-executor.ts - Codex CLI Execution
+## Shared Runner Modules (`src/runner/`)
 
-Core module that runs Codex CLI via `child_process.spawn` and collects results. Key behaviors:
+### src/runner/types.ts - Runner Contracts
 
-- **Idle timeout**: 10 minutes - kills process if no stdout/stderr activity
-- **Buffer limit**: 10MB - truncates with notice when exceeded
-- **SIGTERM escalation**: 5-second grace period before SIGKILL
-- **`activeChildren` set**: tracks all running child processes for graceful shutdown
-- **`executeOneShot`**: new session (`codex exec -m MODEL --json --full-auto < prompt`)
-- **`executeResume`**: continue session (`codex exec resume THREAD_ID ...`)
-- **`executeFork`**: delegates to `executeResume` - `codex fork` is TUI-only and cannot run headlessly
+Defines provider-aware shared types:
+- `SessionProvider = 'codex' | 'claude'`
+- `SessionEntry` (provider-scoped persisted session metadata)
+- `CliExecResult` (generic CLI execution output)
+- `CompletionMetadata` (terminal status payload contract)
 
-**CLAUDE.md injection**: On new sessions, the plugin's CLAUDE.md is prepended to the prompt so Codex receives the same behavioral guidelines as Claude. Path resolved via `__PLUGIN_ROOT__` injected at build time. Content is cached after first read.
-
-See `src/codex/codex-executor.ts`.
+These are consumed by both adapters and AX handlers.
 
 ---
 
-### src/codex/progress.ts - Session Directory Utilities
+### src/runner/engine.ts - Shared Spawn Engine
 
-Pure helper functions for session-run directory management. No server dependencies.
+Owns process lifecycle and backpressure:
+- `spawnCli(...)` for Codex/Claude subprocesses
+- idle timeout + bounded output buffering
+- graceful kill (`SIGTERM` then `SIGKILL`)
+- launch caps: global and per-provider
+- `killAllChildren()` for shutdown
 
-**Key exports**: `createSessionDir(sessionLabel)` → `{ id, dir }` (creates UUID-named directory with `status.json` and empty `progress.jsonl`); `writeSessionResult(dir, text, meta)` (writes `result.md`, updates `status.json` to `completed` — idempotent); `writeSessionError(dir, message)` (updates `status.json` to `error` — idempotent); `readSessionStatus(dir)` → status object; `resolveSessionDir(id)` → path (throws on non-UUID input).
-
-**Progress events**: `extractProgressMessage(event)` → human-readable string for `CodexThreadEvent` objects (e.g., `Running: <command>`, `Editing: <path>`); `appendProgressEvent(filePath, eventType, message)` appends a JSONL line.
-
-Session directories are stored under `$TMPDIR/coral-sessions/`. See `src/codex/progress.ts`.
-
----
-
-### src/codex/session-manager.ts - Session Management
-
-Per-session file persistence. Each session is stored as an individual JSON file under `~/.claude/coral/sessions/<project-hash>/`. Per-session files eliminate race conditions - concurrent sessions never touch the same file.
-
-- **Atomic writes**: written to `.tmp` then `renameSync` - prevents corruption on crash
-- **Project hash**: `sha256(resolve(workingDirectory)).slice(0, 12)` - isolates sessions per project
-- **Lookup**: direct by coral UUID (filename stem)
-- **Migration**: deterministic UUID v5 migration from legacy v1 session files
-
-See `src/codex/session-manager.ts`.
+See `src/runner/engine.ts`.
 
 ---
 
-### src/codex/server-handlers.ts - Business Logic Handlers
+### src/runner/session-manager.ts - Persisted Session Registry
 
-All MCP tool business logic, extracted from `server.ts` to enable independent testing. `server.ts` is the composition root (wiring only); this module contains all handlers and the dispatch switch.
+Project-scoped session files under `~/.claude/coral/sessions/<project-hash>/`. Provider-aware methods (`register/get/list/remove/updateSession`) enforce Codex/Claude isolation. Includes v1 + v2-no-provider migrations defaulting to `provider: 'codex'`.
 
-Key design: all execution is asynchronous. `launchJob(sessionLabel, handler, mgr)` starts execution in the background and returns `{ session, session_dir, session_name, status: "running" }` immediately. `handleWait` polls `activeJobs` with FD-based progress tailing and an abort-aware sleep loop. `handleToolCall` is the entry point — Zod validation at the top, then dispatch by `op`. Auto-generated session names (`session-{timestamp}`) are assigned here before calling handlers.
-
-Exported state: `activeJobs: Map<string, JobEntry>` (single registry keyed by session UUID), `shutdownSignal: AbortController` (cooperative poll-loop cleanup on server shutdown), `tryClaimTerminalWrite(id, state)` (in-memory CAS to prevent double terminal writes). See `src/codex/server-handlers.ts`.
+See `src/runner/session-manager.ts`.
 
 ---
+
+### src/runner/progress.ts - Session Run I/O
+
+Creates and manages run directories under `$TMPDIR/coral-sessions/`:
+- `createSessionDir`, `resolveSessionDir`
+- `writeSessionResult`, `writeSessionError`, `readSessionStatus`
+- append-only `progress.jsonl` writes
+
+See `src/runner/progress.ts`.
+
+---
+
+### src/runner/job-manager.ts - Shared Job Lifecycle
+
+Provides adapter-agnostic execution lifecycle:
+- `launchJob(...)` with hook contract (`makeOnEvent`, `extractCompletion`)
+- `activeSessions` (ephemeral provider-scoped running map)
+- `tryClaimTerminalWrite(...)` CAS for terminal state writes
+- `handleWait(provider, ...)` cursor-based progress polling
+- `shutdownSignal` for cooperative shutdown
+
+See `src/runner/job-manager.ts`.
+
+---
+
+### src/runner/coral-resolver.ts - Agent/Skill Resolver
+
+Resolves `coral:<name>` content from plugin root with containment checks:
+- first `agents/<name>.md`
+- then `skills/<name>/SKILL.md`
+- path traversal rejection
+- `stripAgentMetadata(...)` helper for Claude `--system-prompt` injection
+
+See `src/runner/coral-resolver.ts`.
+
+---
+
+## Codex Adapter Modules (`src/codex/`)
+
+The Codex adapter is now thin and provider-specific. Shared launch/wait/session infrastructure lives in `src/runner/`.
+
+### src/codex/codex-executor.ts
+
+Codex-specific execution wrapper over `runner/engine.ts`:
+- builds Codex CLI args (`exec`, `resume`, `fork`)
+- parses JSONL events through `output-parser.ts`
+- prepends plugin `CLAUDE.md` for one-shot sessions
+
+### src/codex/server-handlers.ts
+
+Codex MCP behavior (`exec/list/fork/wait/abort/coral:*`) using runner primitives for background job execution and waiting.
+
+### src/codex/schemas.ts / cli-detection.ts / output-parser.ts / progress.ts / session-manager.ts
+
+Input validation, CLI/auth probing, JSONL parsing, and small compatibility wrappers retained for Codex-specific behavior.
+
+---
+
+## Claude CLI Adapter Modules (`src/claude/`)
+
+### src/claude/schemas.ts
+
+Zod schemas for `claude` tool operations:
+- `exec`, `list`, `wait`, `abort`
+- `coral:<name>` routing input for AX handlers
+
+### src/claude/cli-detection.ts
+
+Claude CLI availability/auth probe with cache + in-flight deduplication:
+- binary detection via `claude --version`
+- auth fast path via `ANTHROPIC_API_KEY`
+- canonical auth probe via `claude auth status --json`
+
+### src/claude/claude-executor.ts
+
+Claude execution wrapper over `runner/engine.ts`:
+- prompt transport via stdin (`-p` mode)
+- JSON output parsing (`--output-format json`)
+- resume support via `--resume`
+- structured parse-failure surface (`ClaudeExecParseError`)
+
+### src/claude/types.ts
+
+Defines `ClaudeExecResult`, `ClaudeJsonOutput`, and `ClaudeExecFailure`.
+
+---
+
+### src/types.ts - Shared Cross-Adapter Types
+
+Defines `CodexExecResult` and Codex JSONL event types (`CodexThreadEvent`, `CodexThreadItemDetails`) and re-exports shared `SessionEntry` from `runner/types.ts`.
 
 ## Discuss Server Modules (`src/discuss/`)
 

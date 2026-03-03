@@ -15,12 +15,14 @@
 │                            │                ┌─────────┴─────────┐         │
 │                            ▼                ▼                   ▼         │
 │  ┌────────────────────────────────┐  ┌─────────────────────────────────┐  │
-│  │  MCP Server "cx"               │  │  MCP Server "dc"                │  │
-│  │  (bridge/coral-codex.cjs)      │  │  (bridge/coral-discuss.cjs)     │  │
+│  │  MCP Server "ax"               │  │  MCP Server "dc"                │  │
+│  │  (bridge/coral-ax.cjs)      │  │  (bridge/coral-discuss.cjs)     │  │
 │  │                                │  │                                 │  │
-│  │  Tool: codex                   │  │  Tools: discuss (2 ops)         │  │
-│  │  (exec/list/fork/wait/abort    │  │    + discuss_lead (7 ops)       │  │
-│  │   + coral:<agent>)             │  │                                 │  │
+│  │  Tools: codex + claude         │  │  Tools: discuss (2 ops)         │  │
+│  │  codex: exec/list/fork/wait/   │  │    + discuss_lead (7 ops)       │  │
+│  │   abort + coral:<name>         │  │                                 │  │
+│  │  claude: exec/list/wait/abort  │  │                                 │  │
+│  │   + coral:<agent>              │  │                                 │  │
 │  │                                │  │                                 │  │
 │  │  Session: ~/.claude/coral/     │  │  Session: {project}/.claude/    │  │
 │  │           sessions/            │  │           coral/discuss/        │  │
@@ -28,12 +30,12 @@
 │                  │                                                        │
 └──────────────────┼────────────────────────────────────────────────────────┘
                    ▼
-        ┌──────────────────────┐
-        │  Codex CLI (v0.104+) │
-        │  codex exec --json   │
-        │  --full-auto         │
-        │  JSONL event stream  │
-        └──────────────────────┘
+        ┌──────────────────────┐   ┌────────────────────────┐
+        │  Codex CLI (v0.104+) │   │  Claude CLI            │
+        │  codex exec --json   │   │  claude -p             │
+        │  --full-auto         │   │  --output-format json  │
+        │  JSONL event stream  │   │  JSON object output    │
+        └──────────────────────┘   └────────────────────────┘
 ```
 
 ## Data Flow
@@ -165,18 +167,33 @@ Each session directory is created atomically with collision detection. State mut
 coral/
 ├── .claude-plugin/              # Plugin + marketplace manifests
 ├── src/
-│   ├── types.ts                 # Shared Codex type definitions
+│   ├── types.ts                 # Shared Codex event/result types
 │   ├── shared/
 │   │   └── mcp-utils.ts         # Shared MCP response utilities
-│   ├── codex/                   # Codex MCP server (cx)
+│   ├── ax/                      # Unified MCP server (tool router)
 │   │   ├── server.ts            # Composition root
-│   │   ├── server-handlers.ts   # Business logic
-│   │   ├── schemas.ts           # Zod validation
-│   │   ├── codex-executor.ts    # Process management
-│   │   ├── output-parser.ts     # JSONL parsing
-│   │   ├── cli-detection.ts     # CLI availability
-│   │   ├── session-manager.ts   # Session persistence
-│   │   └── progress.ts          # Background progress files
+│   │   └── server-handlers.ts   # codex + claude tool routing
+│   ├── runner/                  # Shared runner infrastructure
+│   │   ├── types.ts             # SessionProvider, SessionEntry, CompletionMetadata
+│   │   ├── engine.ts            # spawnCli, child caps, kill lifecycle
+│   │   ├── session-manager.ts   # Provider-scoped persisted session registry
+│   │   ├── progress.ts          # Session dir + status/progress I/O
+│   │   ├── job-manager.ts       # launchJob, activeSessions, wait polling
+│   │   └── coral-resolver.ts    # agents/ + skills/ resolver + metadata stripping
+│   ├── codex/                   # Codex adapter (thin over runner)
+│   │   ├── server.ts            # Legacy codex-only composition root
+│   │   ├── server-handlers.ts   # Codex tool handlers
+│   │   ├── schemas.ts           # Codex Zod validation
+│   │   ├── codex-executor.ts    # Codex CLI adapter over runner/engine
+│   │   ├── cli-detection.ts     # Codex CLI/auth detection cache
+│   │   ├── output-parser.ts     # Codex JSONL parsing
+│   │   ├── progress.ts          # Codex progress helper wrapper
+│   │   └── session-manager.ts   # SessionManager re-export wrapper
+│   ├── claude/              # Claude CLI adapter
+│   │   ├── types.ts             # Claude JSON/result types
+│   │   ├── schemas.ts           # Claude Zod validation
+│   │   ├── cli-detection.ts     # Claude CLI/auth detection cache
+│   │   └── claude-executor.ts   # stdin prompt execution + JSON parsing
 │   └── discuss/                 # Discuss MCP server (dc)
 │       ├── server.ts            # Composition root
 │       ├── server-handlers.ts   # Tool dispatch
@@ -212,7 +229,7 @@ coral/
 ├── scripts/
 │   └── build-server.mjs         # esbuild bundling + version sync
 ├── bridge/
-│   ├── coral-codex.cjs          # Codex MCP server bundle (committed)
+│   ├── coral-ax.cjs             # Unified ax MCP server bundle (committed)
 │   └── coral-discuss.cjs        # Discuss MCP server bundle (committed)
 ├── docs/                        # Documentation
 ├── vitest.config.ts
@@ -223,20 +240,25 @@ coral/
 
 ## Module Dependency Graph
 
-### Codex Server (`cx`)
+### Unified AX Server (`ax`)
 
 ```
-codex/server.ts  (composition root — wiring only)
-  └── codex/server-handlers.ts  (business logic, launchJob dispatch, handleWait polling)
-        ├── codex/schemas.ts        (Zod input validation)
-        ├── codex/codex-executor.ts (process spawn, timeout, buffer)
-        │     ├── codex/output-parser.ts  (pure JSONL → result)
-        │     └── codex/cli-detection.ts  (cached singleton)
-        ├── codex/session-manager.ts     (atomic file I/O)
-        ├── codex/progress.ts            (session directory I/O)
-        └── shared/mcp-utils.ts          (textResult, jsonResult)
+ax/server.ts                    (composition root)
+  └── ax/server-handlers.ts     (tool router: codex + claude)
+      ├── codex/server-handlers.ts       (codex adapter)
+      │   ├── codex/schemas.ts
+      │   ├── codex/codex-executor.ts
+      │   │   ├── codex/output-parser.ts
+      │   │   ├── codex/cli-detection.ts
+      │   │   └── runner/engine.ts
+      │   └── runner/{job-manager,session-manager,progress}.ts
+      ├── claude/{schemas,cli-detection,claude-executor}.ts
+      │   ├── runner/engine.ts
+      │   └── runner/{job-manager,session-manager}.ts
+      ├── runner/coral-resolver.ts
+      └── shared/mcp-utils.ts
 
-types.ts ← referenced by all codex modules
+runner/types.ts + types.ts provide shared contracts across adapters
 ```
 
 ### Discuss Server (`dc`)
