@@ -135,8 +135,8 @@ describe('ax server-handlers', () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('exposes codex, claude, and wait tool definitions', () => {
-    expect(tools.map((tool) => tool.name).sort()).toEqual(['claude', 'codex', 'wait']);
+  it('exposes codex, claude, wait, and workflow tool definitions', () => {
+    expect(tools.map((tool) => tool.name).sort()).toEqual(['claude', 'codex', 'wait', 'workflow']);
   });
 
   it('exposes claude bypass field in tool schema with boolean default false', () => {

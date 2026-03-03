@@ -19,11 +19,13 @@
 │  │  (bridge/coral-ax.cjs)      │  │  (bridge/coral-discuss.cjs)     │  │
 │  │                                │  │                                 │  │
 │  │  Tools: codex + claude + wait  │  │  Tools: discuss (2 ops)         │  │
-│  │  codex: exec/list/fork/abort   │  │    + discuss_lead (7 ops)       │  │
+│  │         + workflow             │  │    + discuss_lead (7 ops)       │  │
+│  │  codex: exec/list/fork/abort   │  │                                 │  │
 │  │   + coral:<name>               │  │                                 │  │
 │  │  claude: exec/list/abort       │  │                                 │  │
 │  │   + coral:<agent>              │  │                                 │  │
 │  │  wait: provider-agnostic       │  │                                 │  │
+│  │  workflow: pipeline executor   │  │                                 │  │
 │  │                                │  │                                 │  │
 │  │  Session: ~/.claude/coral/     │  │  Session: {project}/.claude/    │  │
 │  │           sessions/            │  │           coral/discuss/        │  │
@@ -111,7 +113,26 @@ User → /coral:discuss "AI ethics in healthcare"
      → Present synthesis to user, shutdown teammates
 ```
 
-### 5. Session-based Conversation (Codex)
+### 5. Workflow Pipeline Execution
+
+```
+User/Skill → workflow({ expression: "(architect, critic) -> resolver", prompt: "..." })
+           → AX router calls handleWorkflow(args, handleToolCall, sessionManager)
+           → Schema validation + AST parsing + args/namespace validation
+           → launchJob fires background handler:
+              Step 1: Promise.all → launchAtomWithRetry(architect) + launchAtomWithRetry(critic)
+                → dispatch(codex, { op: "coral:architect", prompt: "..." })
+                → dispatch(codex, { op: "coral:critic", prompt: "..." })
+              → waitForAllAtoms polls readSessionStatus until both complete
+              → formatStepOutput → "<architect>...\n</architect>\n\n<critic>...\n</critic>"
+              Step 2: launchAtomWithRetry(resolver) with step 1 XML output as prompt
+              → waitForAllAtoms
+              → readAtomOutput(result.md)
+           → Final output written to session_dir/result.md
+           → wait({ sessions: [session] }) + Read(session_dir + "/result.md")
+```
+
+### 6. Session-based Conversation (Codex)
 
 ```
 User → codex({ op: "exec", name: "review", prompt: "analyze auth.ts" })
@@ -123,7 +144,7 @@ User → codex({ op: "exec", name: "review", prompt: "analyze auth.ts" })
      → lastUsedAt updated
 ```
 
-### 6. Session Storage Layout (Codex)
+### 7. Session Storage Layout (Codex)
 
 ```
 ~/.claude/coral/sessions/
@@ -135,7 +156,7 @@ User → codex({ op: "exec", name: "review", prompt: "analyze auth.ts" })
 
 Each file is a single `SessionEntry`. Corrupt files are skipped with a warning; valid files continue loading.
 
-### 7. Session Storage Layout (Discuss)
+### 8. Session Storage Layout (Discuss)
 
 ```
 {project}/.claude/coral/discuss/
@@ -147,7 +168,7 @@ Each file is a single `SessionEntry`. Corrupt files are skipped with a warning; 
 
 Each session directory is created atomically with collision detection. State mutations are serialized via a cross-process `mkdir`-based lock (`state.lock/`). `transcript.md` is append-only — the `transcript_rendered` cursor tracks which entries have been written to the markdown file.
 
-### 8. Knowledge Base Storage
+### 9. Knowledge Base Storage
 
 ```
 {project}/.claude/coral/kb/          # Git-tracked (multi-device sync)
@@ -194,6 +215,12 @@ coral/
 │   │   ├── schemas.ts           # Claude Zod validation
 │   │   ├── cli-detection.ts     # Claude CLI/auth detection cache
 │   │   └── claude-executor.ts   # stdin prompt execution + JSON parsing
+│   ├── workflow/                # Workflow pipeline executor
+│   │   ├── types.ts             # PipeAtom, PipeStep, PipelineAST
+│   │   ├── pipe-parser.ts       # DSL expression parser
+│   │   ├── schemas.ts           # Zod input validation
+│   │   ├── pipe-executor.ts     # Launch, retry, wait, output formatting
+│   │   └── handler.ts           # Entry point (DI from ax router)
 │   └── discuss/                 # Discuss MCP server (dc)
 │       ├── server.ts            # Composition root
 │       ├── server-handlers.ts   # Tool dispatch
@@ -244,7 +271,7 @@ coral/
 
 ```
 ax/server.ts                    (composition root)
-  └── ax/server-handlers.ts     (tool router: codex + claude + wait)
+  └── ax/server-handlers.ts     (tool router: codex + claude + wait + workflow)
       ├── codex/server-handlers.ts       (codex adapter)
       │   ├── codex/schemas.ts
       │   ├── codex/codex-executor.ts
@@ -255,10 +282,16 @@ ax/server.ts                    (composition root)
       ├── claude/{schemas,cli-detection,claude-executor}.ts
       │   ├── runner/engine.ts
       │   └── runner/{job-manager,session-manager}.ts
+      ├── workflow/handler.ts            (pipeline handler, DI via handleToolCall)
+      │   ├── workflow/schemas.ts
+      │   ├── workflow/pipe-executor.ts
+      │   │   └── workflow/pipe-parser.ts
+      │   └── runner/{job-manager,progress}.ts
       ├── runner/coral-resolver.ts
       └── shared/mcp-utils.ts
 
 runner/types.ts + types.ts provide shared contracts across adapters
+workflow/types.ts provides pipeline AST types (imports runner/types.ts)
 ```
 
 ### Discuss Server (`dc`)

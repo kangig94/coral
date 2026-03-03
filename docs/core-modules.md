@@ -16,6 +16,7 @@ Routes by tool name:
 - `codex` requests to the Codex adapter
 - `claude` requests to the Claude adapter
 - `wait` requests to the provider-agnostic runner wait handler
+- `workflow` requests to the workflow pipeline handler
 - `coral:<name>` delegation rules:
   - Codex supports both agent and skill content (prompt prepend)
   - Claude supports agents only; skills return an explicit error
@@ -92,6 +93,58 @@ Resolves `coral:<name>` content from plugin root with containment checks:
 - `stripAgentMetadata(...)` helper for Claude `--system-prompt` injection
 
 See `src/runner/coral-resolver.ts`.
+
+---
+
+## Workflow Modules (`src/workflow/`)
+
+Deterministic multi-agent pipeline executor. Dependency-injected: `src/workflow/` imports from `src/runner/` and `src/shared/` but never from `src/ax/` (circular dependency avoidance via `AtomDispatchFn` callback).
+
+### src/workflow/types.ts - Pipeline AST
+
+Defines the pipeline data model:
+- `PipeAtom` — single agent reference (`{ namespace?, agent, provider? }`)
+- `PipeStep` — array of atoms (parallel when >1)
+- `PipelineAST` — array of steps (sequential execution order)
+
+Imports `SessionProvider` from `runner/types.ts`. See `src/workflow/types.ts`.
+
+---
+
+### src/workflow/pipe-parser.ts - DSL Parser
+
+Parses expression strings into `PipelineAST`. Key functions: `parseExpression` (entry point), `splitSteps` (depth-aware `->` splitting respecting parentheses), `parseAtom` (validates against `IDENTIFIER_PATTERN = /^[a-z][a-z0-9-]*/`), `parseParallelStep` (duplicate atom detection within a step).
+
+Validates: agent name format, provider values (`codex`/`claude`), namespace syntax, balanced parentheses, no nested groups. See `src/workflow/pipe-parser.ts`.
+
+---
+
+### src/workflow/schemas.ts - Input Validation
+
+Zod schema (`workflowInputSchema`) with `superRefine` for per-atom `bypass` rejection. Defaults `provider` to `codex`. See `src/workflow/schemas.ts`.
+
+---
+
+### src/workflow/pipe-executor.ts - Pipeline Executor
+
+Orchestrates the sequential step loop with concurrent parallel atom launches. Key exports:
+- `executePipeline(ast, prompt, provider, dispatch, options)` — main loop
+- `launchAtomWithRetry(context)` — busy retry with exponential backoff (3 attempts)
+- `readLaunchBootstrapStatus(sessionDir, signal)` — bounded poll (50ms/2s) for async bootstrap failures
+- `waitForAllAtoms(atoms, signal, onProgress, requestAbort)` — all-semantics wait with sibling abort + drain timeout
+- `formatStepOutput(results)` — single pass-through or XML wrapping
+
+Named constants: `BUSY_PREFIX`, `MAX_LAUNCH_ATTEMPTS`, `BOOTSTRAP_POLL_INTERVAL_MS`, `BOOTSTRAP_TIMEOUT_MS`, `SIBLING_DRAIN_TIMEOUT_MS`.
+
+See `src/workflow/pipe-executor.ts`.
+
+---
+
+### src/workflow/handler.ts - Workflow Handler
+
+Entry point called by AX tool router. Validates input (schema + args keys + namespaces), then delegates to `launchJob` from `runner/job-manager.ts`. The `AtomDispatchFn` callback receives `handleToolCall` from the AX router via dependency injection, avoiding circular imports.
+
+See `src/workflow/handler.ts`.
 
 ---
 

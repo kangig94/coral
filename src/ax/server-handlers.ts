@@ -22,6 +22,7 @@ import { resolveCoralContent, stripAgentMetadata } from '../runner/coral-resolve
 import { SessionManager } from '../runner/session-manager.js';
 import type { CompletionMetadata } from '../runner/types.js';
 import { type McpResult, textResult, jsonResult } from '../shared/mcp-utils.js';
+import { handleWorkflow } from '../workflow/handler.js';
 
 type NotifyFn = (n: { method: string; params: Record<string, unknown> }) => Promise<void>;
 
@@ -64,7 +65,22 @@ const waitTool = {
   },
 };
 
-export const tools = [codexTools[0], claudeTool, waitTool];
+const workflowTool = {
+  name: 'workflow',
+  description: 'Execute a deterministic multi-agent pipeline. DSL: "(architect, critic) -> resolver". Use @provider for per-atom provider override.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      expression: { type: 'string', description: 'Pipeline expression: "(a, b) -> c" or "a -> b -> c"' },
+      prompt: { type: 'string', description: 'Initial prompt for the first pipeline step' },
+      provider: { type: 'string', enum: ['codex', 'claude'], description: 'Default provider for atoms without @ override' },
+      args: { type: 'object', description: 'Per-atom args map: { atomName: { model?, working_directory?, files?, flags?, ...context } }' },
+    },
+    required: ['expression', 'prompt'],
+  },
+};
+
+export const tools = [codexTools[0], claudeTool, waitTool, workflowTool];
 
 function claudeSessionNotFoundError(ref: string): McpResult {
   return textResult(
@@ -459,6 +475,9 @@ export async function handleToolCall(
     }
     if (name === 'wait') {
       return await handleWaitTool(rawArgs, progressToken, notify);
+    }
+    if (name === 'workflow') {
+      return handleWorkflow(rawArgs, handleToolCall, sessionManager, progressToken, notify);
     }
     return textResult(`Unknown tool: ${name}`, true);
   } catch (err) {
