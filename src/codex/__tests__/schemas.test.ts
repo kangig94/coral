@@ -40,6 +40,37 @@ describe('codexOpSchema', () => {
     const result = codexOpSchema.safeParse({ op: 'abort', job_id: '12345678-1234-1234-1234-123456789abc' });
     expect(result.success).toBe(false);
   });
+
+  it('defaults exec bypass to false when omitted', () => {
+    const parsed = codexOpSchema.parse({ op: 'exec', prompt: 'hello' });
+    expect(parsed.op).toBe('exec');
+    if (parsed.op === 'exec') expect(parsed.bypass).toBe(false);
+  });
+
+  it('preserves explicit exec bypass true', () => {
+    const parsed = codexOpSchema.parse({ op: 'exec', prompt: 'hello', bypass: true });
+    expect(parsed.op).toBe('exec');
+    if (parsed.op === 'exec') expect(parsed.bypass).toBe(true);
+  });
+
+  it('defaults fork bypass to false when omitted', () => {
+    const parsed = codexOpSchema.parse({
+      op: 'fork',
+      session: 'base-session',
+    });
+    expect(parsed.op).toBe('fork');
+    if (parsed.op === 'fork') expect(parsed.bypass).toBe(false);
+  });
+
+  it('preserves explicit fork bypass true', () => {
+    const parsed = codexOpSchema.parse({
+      op: 'fork',
+      session: 'base-session',
+      bypass: true,
+    });
+    expect(parsed.op).toBe('fork');
+    if (parsed.op === 'fork') expect(parsed.bypass).toBe(true);
+  });
 });
 
 describe('coralAgentSchema', () => {
@@ -57,6 +88,23 @@ describe('coralAgentSchema', () => {
       prompt: 'analyze',
       model: 'o4-mini',
     });
+  });
+
+  it('defaults coral bypass to false when omitted', () => {
+    const parsed = coralAgentSchema.parse({
+      op: 'coral:architect',
+      prompt: 'Do it',
+    });
+    expect(parsed.bypass).toBe(false);
+  });
+
+  it('preserves explicit coral bypass true', () => {
+    const parsed = coralAgentSchema.parse({
+      op: 'coral:architect',
+      prompt: 'Do it',
+      bypass: true,
+    });
+    expect(parsed.bypass).toBe(true);
   });
 
   it('accepts single-char agent name coral:a', () => {

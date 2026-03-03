@@ -186,6 +186,41 @@ describe('session handlers', () => {
     expect(data.thread_id).toBe('thread-fork-1');
   });
 
+  it('handleSessionCreate forwards bypass true to executeOneShot', async () => {
+    const result = await handleSessionCreate({ prompt: 'hi', name: 'bypass-create', bypass: true }, mgr, new AbortController().signal);
+    expect(result.isError).toBe(false);
+    const bypassArg = vi.mocked(executeOneShot).mock.calls[0]?.[4];
+    expect(bypassArg).toBe(true);
+  });
+
+  it('handleSessionSend forwards bypass true to executeResume', async () => {
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-bbbbbbbbbbbb';
+    mgr.register(sessionId, 'bypass-send', 'thread-bypass', 'o4-mini', '/workspace');
+
+    await handleSessionSend(
+      { session: sessionId, prompt: 'continue', bypass: true },
+      mgr,
+      new AbortController().signal,
+    );
+
+    const bypassArg = vi.mocked(executeResume).mock.calls[0]?.[5];
+    expect(bypassArg).toBe(true);
+  });
+
+  it('handleSessionFork forwards bypass true to executeFork', async () => {
+    const sourceSessionId = 'bbbbbbbb-bbbb-4bbb-8bbb-cccccccccccc';
+    mgr.register(sourceSessionId, 'bypass-fork-base', 'thread-fork-base', 'o4-mini', '/workspace');
+
+    await handleSessionFork(
+      { session: sourceSessionId, name: 'bypass-fork', bypass: true },
+      mgr,
+      new AbortController().signal,
+    );
+
+    const bypassArg = vi.mocked(executeFork).mock.calls[0]?.[5];
+    expect(bypassArg).toBe(true);
+  });
+
   it('handleSessionAbort aborts by single UUID session', async () => {
     const sessionId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
     const controller = new AbortController();
