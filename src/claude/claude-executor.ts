@@ -24,7 +24,7 @@ export async function executeClaudeOneShot(
   options: ClaudeExecOptions = {},
 ): Promise<ClaudeExecResult> {
   const args = ['-p', '--output-format', 'json'];
-  if (options.systemPrompt) args.push('--system-prompt', options.systemPrompt);
+  if (options.systemPrompt) args.push('--append-system-prompt', options.systemPrompt);
   if (options.model) args.push('--model', options.model);
   if (options.sessionId) args.push('--session-id', options.sessionId);
   return executeClaude(args, prompt, options);
@@ -36,7 +36,7 @@ export async function executeClaudeResume(
   options: Omit<ClaudeExecOptions, 'sessionId'> = {},
 ): Promise<ClaudeExecResult> {
   const args = ['-p', '--output-format', 'json', '--resume', sessionId];
-  if (options.systemPrompt) args.push('--system-prompt', options.systemPrompt);
+  if (options.systemPrompt) args.push('--append-system-prompt', options.systemPrompt);
   if (options.model) args.push('--model', options.model);
   return executeClaude(args, prompt, options);
 }

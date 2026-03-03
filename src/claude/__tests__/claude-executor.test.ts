@@ -46,7 +46,7 @@ describe('claude-executor', () => {
         '-p',
         '--output-format',
         'json',
-        '--system-prompt',
+        '--append-system-prompt',
         'You are precise',
         '--model',
         'claude-3-5-sonnet',
@@ -67,7 +67,7 @@ describe('claude-executor', () => {
     });
   });
 
-  it('adds --resume and optional --system-prompt when resuming', async () => {
+  it('adds --resume and optional --append-system-prompt when resuming', async () => {
     mockSpawnCli.mockResolvedValue({
       stdout: JSON.stringify({ type: 'result', result: { response: 'done' }, session_id: 'sess-2' }),
       stderr: '',
@@ -90,7 +90,7 @@ describe('claude-executor', () => {
         'json',
         '--resume',
         'sess-1',
-        '--system-prompt',
+        '--append-system-prompt',
         'Resume mode',
         '--model',
         'claude-sonnet',

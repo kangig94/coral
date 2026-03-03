@@ -8,7 +8,7 @@ describe.skipIf(!process.env.CORAL_SMOKE_TEST)('claude-executor smoke', () => {
     expect(result.response.length).toBeGreaterThan(0);
   }, 120_000);
 
-  it('supports --resume with --system-prompt', async () => {
+  it('supports --resume with --append-system-prompt', async () => {
     const first = await executeClaudeOneShot('Reply with exactly: READY');
 
     if (!first.sessionId) {

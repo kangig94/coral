@@ -39,7 +39,7 @@ const claudeTool = {
       name: { type: 'string', description: 'Session name (exec optional)' },
       model: { type: 'string', description: 'Claude model to use (e.g., sonnet, opus, haiku)' },
       working_directory: { type: 'string', description: 'Working directory for execution' },
-      system_prompt: { type: 'string', description: 'Custom system prompt (replaces default)' },
+      system_prompt: { type: 'string', description: 'Additional system prompt (appended to default)' },
       sessions: { type: 'array', items: { type: 'string' }, description: 'Session UUIDs to monitor (wait op)' },
       timeout_seconds: { type: 'number', description: 'Max wait time in seconds (1-1200, default 600)' },
     },
