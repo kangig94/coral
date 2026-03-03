@@ -16,7 +16,7 @@
 
 | Directory | Contents | Modification Rule |
 |-----------|----------|-------------------|
-| `src/ax/` | Unified MCP server composition + codex/claude routing | Runtime entrypoint surface — changes affect tool dispatch behavior |
+| `src/server/` | Unified MCP server composition + tool routing | Runtime entrypoint surface — changes affect tool dispatch behavior |
 | `src/runner/` | Shared spawn, sessions, wait polling, coral resolver | Cross-provider core — changes affect both codex and claude adapters |
 | `src/codex/` | Codex adapter (schemas, executor, parser, detection) | Provider adapter — preserve Codex wire-compatibility |
 | `src/claude/` | Claude adapter (schemas, executor, detection) | Provider adapter — preserve Claude JSON + resume semantics |

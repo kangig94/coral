@@ -37,5 +37,5 @@ it('passes --dangerously-skip-permissions when bypassPermissions is true', async
 ```
 
 Context: surfaced during conditional-bypass plan synthesis where verification steps initially
-asked AX handler tests to assert spawned args directly (`src/ax/__tests__/server-handlers.test.ts`
+asked AX handler tests to assert spawned args directly (`src/server/__tests__/server-handlers.test.ts`
 mocks `claude-executor`; CLI arg tests live in `src/claude/__tests__/claude-executor.test.ts`).

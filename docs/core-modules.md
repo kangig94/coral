@@ -2,15 +2,15 @@
 
 Detailed description of the TypeScript modules across both MCP servers.
 
-## Unified AX Server Modules (`src/ax/`)
+## Unified AX Server Modules (`src/server/`)
 
-### src/ax/server.ts - AX Composition Root
+### src/server/server.ts - AX Composition Root
 
-Creates one MCP stdio server exposing three tools (`codex`, `claude`, `wait`). Wires request handlers, shared `SessionManager`, shutdown behavior, and child-process cleanup through `runner/engine.ts`. See `src/ax/server.ts`.
+Creates one MCP stdio server exposing three tools (`codex`, `claude`, `wait`). Wires request handlers, shared `SessionManager`, shutdown behavior, and child-process cleanup through `runner/engine.ts`. See `src/server/server.ts`.
 
 ---
 
-### src/ax/server-handlers.ts - AX Tool Router
+### src/server/server-handlers.ts - AX Tool Router
 
 Routes by tool name:
 - `codex` requests to the Codex adapter
@@ -21,7 +21,7 @@ Routes by tool name:
   - Codex supports both agent and skill content (prompt prepend)
   - Claude supports agents only; skills return an explicit error
 
-See `src/ax/server-handlers.ts`.
+See `src/server/server-handlers.ts`.
 
 ---
 
@@ -98,7 +98,7 @@ See `src/runner/coral-resolver.ts`.
 
 ## Workflow Modules (`src/workflow/`)
 
-Deterministic multi-agent pipeline executor. Dependency-injected: `src/workflow/` imports from `src/runner/` and `src/shared/` but never from `src/ax/` (circular dependency avoidance via `AtomDispatchFn` callback).
+Deterministic multi-agent pipeline executor. Dependency-injected: `src/workflow/` imports from `src/runner/` and `src/shared/` but never from `src/server/` (circular dependency avoidance via `AtomDispatchFn` callback).
 
 ### src/workflow/types.ts - Pipeline AST
 

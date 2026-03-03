@@ -32,7 +32,7 @@ const sharedOpts = {
 
 await esbuild.build({
   ...sharedOpts,
-  entryPoints: ['src/ax/server.ts'],
+  entryPoints: ['src/server/server.ts'],
   outfile: 'bridge/coral-ax.cjs',
 });
 console.log('Built bridge/coral-ax.cjs');

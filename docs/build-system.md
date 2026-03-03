@@ -30,7 +30,7 @@ src/**/*.ts
 dist/**/*.js + dist/**/*.d.ts
     |
     v  esbuild (bundling, 2 entry points)
-bridge/coral-ax.cjs     (src/ax/server.ts)
+bridge/coral-ax.cjs     (src/server/server.ts)
 bridge/coral-discuss.cjs   (src/discuss/server.ts)
 ```
 
@@ -52,7 +52,7 @@ The build script performs two tasks before bundling: version sync and manifest u
 
 | Setting | Value | Reason |
 |---|---|---|
-| `entryPoints` | `src/ax/server.ts`, `src/discuss/server.ts` | Two MCP server entry points (one bundle per server) |
+| `entryPoints` | `src/server/server.ts`, `src/discuss/server.ts` | Two MCP server entry points (one bundle per server) |
 | `bundle` | `true` | Bundle all dependencies into a single file |
 | `platform` | `node` | Target Node.js environment |
 | `target` | `node18` | Generate Node 18+ compatible code |
@@ -80,7 +80,7 @@ Run tests with vitest:
 npm test
 ```
 
-Tests live in `src/ax/__tests__/`, `src/runner/__tests__/`, `src/codex/__tests__/`, `src/claude/__tests__/`, and `src/discuss/__tests__/`. See `vitest.config.ts`.
+Tests live in `src/server/__tests__/`, `src/runner/__tests__/`, `src/codex/__tests__/`, `src/claude/__tests__/`, `src/workflow/__tests__/`, and `src/discuss/__tests__/`. See `vitest.config.ts`.
 
 One test file per source module. External dependencies (Codex CLI, filesystem) are mocked — real Codex is never called in tests.
 

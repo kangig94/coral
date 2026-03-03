@@ -192,7 +192,7 @@ coral/
 │   ├── types.ts                 # Shared Codex event/result types
 │   ├── shared/
 │   │   └── mcp-utils.ts         # Shared MCP response utilities
-│   ├── ax/                      # Unified MCP server (tool router)
+│   ├── server/                  # Unified MCP server (tool router)
 │   │   ├── server.ts            # Composition root
 │   │   └── server-handlers.ts   # codex + claude + wait tool routing
 │   ├── runner/                  # Shared runner infrastructure
@@ -270,8 +270,8 @@ coral/
 ### Unified AX Server (`ax`)
 
 ```
-ax/server.ts                    (composition root)
-  └── ax/server-handlers.ts     (tool router: codex + claude + wait + workflow)
+server/server.ts                    (composition root)
+  └── server/server-handlers.ts     (tool router: codex + claude + wait + workflow)
       ├── codex/server-handlers.ts       (codex adapter)
       │   ├── codex/schemas.ts
       │   ├── codex/codex-executor.ts

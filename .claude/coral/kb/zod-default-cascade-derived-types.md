@@ -39,4 +39,4 @@ const createInput: ClaudeSessionCreateInput = {
 ```
 
 Context: conditional-bypass plan review Round 2, March 2026. Files:
-`src/claude/schemas.ts` type aliases, `src/ax/server-handlers.ts` coral create/resume literals.
+`src/claude/schemas.ts` type aliases, `src/server/server-handlers.ts` coral create/resume literals.
