@@ -196,6 +196,7 @@ describe('session handlers', () => {
     const sessionId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
     const controller = new AbortController();
     activeSessions.set(sessionId, {
+      provider: 'codex',
       sessionDir: '/tmp/x',
       controller,
       sessionName: 'abort-me',
@@ -548,6 +549,7 @@ describe('activeSessions lifecycle', () => {
     const sessionId = '33333333-cccc-4ccc-8ccc-cccccccccccc';
     const controller = new AbortController();
     activeSessions.set(sessionId, {
+      provider: 'codex',
       sessionDir: '/tmp/test',
       controller,
       sessionName: 'terminalizing-job',

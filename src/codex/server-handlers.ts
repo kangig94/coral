@@ -278,7 +278,7 @@ export async function handleSessionFork(
 
 export async function handleSessionAbort(input: CodexSessionAbortInput, _mgr: SessionManager): Promise<McpResult> {
   const entry = activeSessions.get(input.session);
-  if (!entry || (entry.provider ?? 'codex') !== 'codex') {
+  if (!entry || entry.provider !== 'codex') {
     return textResult(
       `No active execution found for session "${input.session}". The session may have already completed or the ID is invalid.`,
       true,

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 
 declare const __PLUGIN_ROOT__: string;
@@ -18,23 +18,19 @@ export function resolveCoralContent(name: string): CoralContent {
   const agentsDir = join(pluginRoot, 'agents');
   const agentPath = resolve(agentsDir, `${name}.md`);
   ensureContained(agentsDir, agentPath);
-  if (existsSync(agentPath)) {
-    return {
-      type: 'agent',
-      content: readFileSync(agentPath, 'utf-8'),
-      path: agentPath,
-    };
+  try {
+    return { type: 'agent', content: readFileSync(agentPath, 'utf-8'), path: agentPath };
+  } catch (err: unknown) {
+    if (!isNoEntryError(err)) throw err;
   }
 
   const skillsDir = join(pluginRoot, 'skills');
   const skillPath = resolve(skillsDir, name, 'SKILL.md');
   ensureContained(skillsDir, skillPath);
-  if (existsSync(skillPath)) {
-    return {
-      type: 'skill',
-      content: readFileSync(skillPath, 'utf-8'),
-      path: skillPath,
-    };
+  try {
+    return { type: 'skill', content: readFileSync(skillPath, 'utf-8'), path: skillPath };
+  } catch (err: unknown) {
+    if (!isNoEntryError(err)) throw err;
   }
 
   throw new Error(`Coral content not found: ${name} (expected agents/${name}.md or skills/${name}/SKILL.md)`);
@@ -54,6 +50,10 @@ function isValidName(name: string): boolean {
     && !name.includes('..')
     && !name.includes('/')
     && !name.includes('\\');
+}
+
+function isNoEntryError(err: unknown): boolean {
+  return err instanceof Error && (err as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
 function ensureContained(rootDir: string, targetPath: string): void {

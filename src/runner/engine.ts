@@ -68,6 +68,7 @@ function gracefulKill(child: ChildProcess): void {
 }
 
 function appendBuffer(current: string, chunk: string): string {
+  if (current.length >= MAX_BUFFER) return current;
   const combined = current + chunk;
   if (combined.length > MAX_BUFFER) {
     return combined.slice(0, MAX_BUFFER) + '\n[output truncated at 10MB]';

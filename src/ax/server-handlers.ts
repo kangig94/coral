@@ -25,6 +25,8 @@ import { type McpResult, textResult, jsonResult } from '../shared/mcp-utils.js';
 
 type NotifyFn = (n: { method: string; params: Record<string, unknown> }) => Promise<void>;
 
+const CORAL_OP_PREFIX = 'coral:';
+
 const claudeTool = {
   name: 'claude',
   description: 'Execute a prompt with Claude CLI. Use op field to select exec/list/wait/abort. For agent delegation, use op: "coral:<agent-name>" (e.g., coral:architect, coral:critic). Skills (coral:<skill>) are not supported - use the codex tool for skill delegation.',
@@ -255,7 +257,7 @@ function handleClaudeSessionList(mgr: SessionManager): McpResult {
 
 async function handleClaudeSessionAbort(input: ClaudeSessionAbortInput): Promise<McpResult> {
   const entry = activeSessions.get(input.session);
-  if (!entry || (entry.provider ?? 'codex') !== 'claude') {
+  if (!entry || entry.provider !== 'claude') {
     return textResult(
       `No active execution found for session "${input.session}". The session may have already completed or the ID is invalid.`,
       true,
@@ -270,11 +272,11 @@ export async function handleClaudeCoralAgent(
   input: ClaudeCoralInput,
   sessionManager: SessionManager,
 ): Promise<McpResult> {
-  const coralName = input.op.slice(6);
+  const coralName = input.op.slice(CORAL_OP_PREFIX.length);
   const resolved = resolveCoralContent(coralName);
   if (resolved.type === 'skill') {
     return textResult(
-      `Error: coral:${coralName} is a skill and is not supported by the claude tool. Skills require the Codex tool environment.`,
+      `Error: ${CORAL_OP_PREFIX}${coralName} is a skill and is not supported by the claude tool. Skills require the Codex tool environment.`,
       true,
     );
   }
@@ -326,7 +328,7 @@ export async function handleClaudeOp(
   notify?: NotifyFn,
 ): Promise<McpResult> {
   const rawOp = (rawArgs as { op?: unknown }).op;
-  if (typeof rawOp === 'string' && rawOp.startsWith('coral:')) {
+  if (typeof rawOp === 'string' && rawOp.startsWith(CORAL_OP_PREFIX)) {
     const parsed = coralClaudeSchema.safeParse(rawArgs);
     if (!parsed.success) throw parsed.error;
     return handleClaudeCoralAgent(parsed.data, sessionManager);
@@ -389,7 +391,7 @@ async function handleCodexOpWithCoralResolution(
   notify?: NotifyFn,
 ): Promise<McpResult> {
   const rawOp = (rawArgs as { op?: unknown }).op;
-  if (typeof rawOp !== 'string' || !rawOp.startsWith('coral:')) {
+  if (typeof rawOp !== 'string' || !rawOp.startsWith(CORAL_OP_PREFIX)) {
     return handleCodexToolCall('codex', rawArgs, sessionManager, progressToken, notify);
   }
 
@@ -397,7 +399,7 @@ async function handleCodexOpWithCoralResolution(
   if (!parsed.success) throw parsed.error;
 
   const codexCoralInput: CodexCoralInput = parsed.data;
-  const coralName = codexCoralInput.op.slice(6);
+  const coralName = codexCoralInput.op.slice(CORAL_OP_PREFIX.length);
   const resolved = resolveCoralContent(coralName);
   const injectedPrompt = `${resolved.content}\n\n---\n\n${codexCoralInput.prompt}`;
 
