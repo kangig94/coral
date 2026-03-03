@@ -185,11 +185,13 @@ describe('ax server-handlers', () => {
     expect(options?.systemPrompt).toBe('# Frontmatter Agent\nBody text');
   });
 
-  it('coral:<name> returns isError for skills on claude tool', async () => {
+  it('coral:<name> launches skills on claude tool via append-system-prompt', async () => {
     const result = await handleToolCall('claude', { op: 'coral:plan', prompt: 'Run skill' }, mgr);
 
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('is a skill and is not supported by the claude tool');
+    expect(result.isError).toBe(false);
+    const data = JSON.parse(result.content[0].text);
+    expect(data.status).toBe('running');
+    expect(data.session_name).toMatch(/^plan-/);
   });
 
   it('coral:<name> rejects traversal attempts', async () => {

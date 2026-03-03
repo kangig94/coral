@@ -29,11 +29,11 @@ const CORAL_OP_PREFIX = 'coral:';
 
 const claudeTool = {
   name: 'claude',
-  description: 'Execute a prompt with Claude CLI. Use op field to select exec/list/wait/abort. For agent delegation, use op: "coral:<agent-name>" (e.g., coral:architect, coral:critic). Skills (coral:<skill>) are not supported - use the codex tool for skill delegation.',
+  description: 'Execute a prompt with Claude CLI. Use op field to select exec/list/wait/abort. For agent delegation, use op: "coral:<agent-name>" (e.g., coral:architect, coral:critic).',
   inputSchema: {
     type: 'object' as const,
     properties: {
-      op: { type: 'string', description: 'Operation: exec/list/wait/abort, or coral:<agent-name> for agent delegation (skills not supported)' },
+      op: { type: 'string', description: 'Operation: exec/list/wait/abort, or coral:<agent-name> for agent delegation' },
       prompt: { type: 'string', description: 'Prompt to send (exec required)' },
       session: { type: 'string', description: 'Session ID for resume (exec with existing session)' },
       name: { type: 'string', description: 'Session name (exec optional)' },
@@ -274,13 +274,6 @@ export async function handleClaudeCoralAgent(
 ): Promise<McpResult> {
   const coralName = input.op.slice(CORAL_OP_PREFIX.length);
   const resolved = resolveCoralContent(coralName);
-  if (resolved.type === 'skill') {
-    return textResult(
-      `Error: ${CORAL_OP_PREFIX}${coralName} is a skill and is not supported by the claude tool. Skills require the Codex tool environment.`,
-      true,
-    );
-  }
-
   const systemPrompt = stripAgentMetadata(resolved.content);
   const preflight = await preflightClaudeCliCheck();
   if (!preflight.pass) return preflight.result;
