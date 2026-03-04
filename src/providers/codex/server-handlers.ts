@@ -71,13 +71,7 @@ export function extractCompletionData(
   _sessionLabel?: string,
 ): { responseText: string; metadata: CompletionMetadata; sessionId?: string } {
   const data = JSON.parse(result.content[0].text);
-  let threadId: string | null = null;
-  if (typeof data.thread_id === 'string') {
-    threadId = data.thread_id;
-  } else if (typeof data.session === 'string') {
-    process.stderr.write(`Warning: Completion payload uses legacy 'session' field; update producer to emit 'thread_id'\n`);
-    threadId = data.session;
-  }
+  const threadId = typeof data.thread_id === 'string' ? data.thread_id : null;
   const metadata: CompletionMetadata = {
     thread_id: threadId,
     model: data.model,

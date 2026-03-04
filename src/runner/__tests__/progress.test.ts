@@ -183,12 +183,6 @@ describe('createSessionDir', () => {
     expect(existsSync(join(dir, 'progress.jsonl'))).toBe(true);
   });
 
-  it('defaults provider to codex for backwards compatibility', () => {
-    const { dir } = createSessionDir('test-session');
-    dirsToClean.push(dir);
-    const status = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf-8'));
-    expect(status.provider).toBe('codex');
-  });
 });
 
 describe('writeSessionResult', () => {

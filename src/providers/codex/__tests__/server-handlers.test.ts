@@ -110,12 +110,10 @@ describe('extractCompletionData', () => {
     expect(metadata).toMatchObject({ thread_id: 'thread-1' });
   });
 
-  it('falls back to legacy session field and warns', () => {
-    const warn = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+  it('ignores non-thread_id fields for session identification', () => {
     const result = jsonResult({ response: 'hi', session: 'thread-old', model: 'o4-mini', duration_ms: 10 });
     const { metadata } = extractCompletionData(result, 's1');
-    expect(metadata.thread_id).toBe('thread-old');
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("legacy 'session' field"));
+    expect(metadata.thread_id).toBeNull();
   });
 });
 
@@ -128,7 +126,7 @@ describe('session handlers', () => {
 
   it('handleSessionSend resumes using stored threadId', async () => {
     const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-    mgr.register(sessionId, 'test-session', 'thread-001', 'o4-mini', '/workspace');
+    mgr.register('codex', sessionId, 'test-session', 'thread-001', 'o4-mini', '/workspace');
 
     const result = await handleSessionSend(
       { session: sessionId, prompt: 'follow up', bypass: false },
@@ -152,7 +150,7 @@ describe('session handlers', () => {
 
   it('forked_from uses source coral UUID', async () => {
     const sourceSessionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
-    mgr.register(sourceSessionId, 'base-session', 'thread-base', 'o4-mini', '/workspace');
+    mgr.register('codex', sourceSessionId, 'base-session', 'thread-base', 'o4-mini', '/workspace');
 
     const result = await handleSessionFork(
       { session: sourceSessionId, name: 'forked', bypass: false },
@@ -186,7 +184,7 @@ describe('session handlers', () => {
 describe('handleCodexOp routing', () => {
   it('exec resume with UUID succeeds', async () => {
     const sessionId = '11111111-1111-4111-8111-111111111111';
-    mgr.register(sessionId, 'session-1', 'thread-1', 'o4-mini', '/workspace');
+    mgr.register('codex', sessionId, 'session-1', 'thread-1', 'o4-mini', '/workspace');
 
     const result = await handleCodexOp({ op: 'exec', session: sessionId, prompt: 'hi' }, mgr);
     expect(result.isError).toBe(false);
@@ -269,7 +267,7 @@ describe('handleCodexCoralOp', () => {
 
   it('resume path dispatches via executeResume with session cwd fallback and bypass=true', async () => {
     const sessionId = '22222222-2222-4222-8222-222222222222';
-    mgr.register(sessionId, 'resume-session', 'thread-resume-002', 'o4-mini', '/project/root');
+    mgr.register('codex', sessionId, 'resume-session', 'thread-resume-002', 'o4-mini', '/project/root');
 
     const result = await handleCodexCoralOp(
       'scanner',
