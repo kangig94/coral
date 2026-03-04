@@ -68,6 +68,17 @@ function makeLaunchedAtom(
   };
 }
 
+function abortWithSessionError(
+  target: { session: string; session_dir: string },
+  error = 'stale abort',
+): ({ session }: { session: string }) => Promise<void> {
+  return async ({ session }: { session: string }) => {
+    if (session === target.session) {
+      writeSessionError(target.session_dir, error);
+    }
+  };
+}
+
 describe('workflow pipe executor', () => {
   it('formatStepOutput returns unwrapped output for one atom', () => {
     expect(formatStepOutput([{ tagName: 'architect', output: 'hello' }])).toBe('hello');
@@ -391,31 +402,11 @@ describe('workflow pipe executor', () => {
     }, 20);
 
     const atoms: LaunchedAtom[] = [
-      {
-        session: failed.session,
-        sessionDir: failed.session_dir,
-        agent: 'architect',
-        tagName: 'architect',
-        providerTool: 'codex',
-        stepIndex: 0,
-        resumeOp: 'coral:architect',
-      },
-      {
-        session: sibling.session,
-        sessionDir: sibling.session_dir,
-        agent: 'critic',
-        tagName: 'critic',
-        providerTool: 'codex',
-        stepIndex: 0,
-        resumeOp: 'coral:critic',
-      },
+      makeLaunchedAtom(failed, 'architect'),
+      makeLaunchedAtom(sibling, 'critic'),
     ];
 
-    const requestAbort = vi.fn(async ({ session }: { session: string }) => {
-      if (session === sibling.session) {
-        writeSessionError(sibling.session_dir, 'abort requested');
-      }
-    });
+    const requestAbort = vi.fn(abortWithSessionError(sibling, 'abort requested'));
 
     await expect(
       waitForAllAtoms(atoms, undefined, () => {}, requestAbort),
@@ -516,15 +507,7 @@ describe('workflow pipe executor', () => {
 
   it('waitForAllAtoms throws abort error immediately when signal is already aborted', async () => {
     const completed = registerSession('done', 'codex', 'output');
-    const atoms: LaunchedAtom[] = [{
-      session: completed.session,
-      sessionDir: completed.session_dir,
-      agent: 'a',
-      tagName: 'a',
-      providerTool: 'codex',
-      stepIndex: 0,
-      resumeOp: 'coral:a',
-    }];
+    const atoms: LaunchedAtom[] = [makeLaunchedAtom(completed, 'a')];
     const controller = new AbortController();
     controller.abort();
 
@@ -539,24 +522,8 @@ describe('workflow pipe executor', () => {
     writeSessionError(failed.session_dir, 'atom-failure');
 
     const atoms: LaunchedAtom[] = [
-      {
-        session: failed.session,
-        sessionDir: failed.session_dir,
-        agent: 'fail-agent',
-        tagName: 'fail-agent',
-        providerTool: 'codex',
-        stepIndex: 2,
-        resumeOp: 'coral:fail-agent',
-      },
-      {
-        session: sibling.session,
-        sessionDir: sibling.session_dir,
-        agent: 'sibling-agent',
-        tagName: 'sibling-agent',
-        providerTool: 'codex',
-        stepIndex: 2,
-        resumeOp: 'coral:sibling-agent',
-      },
+      makeLaunchedAtom(failed, 'fail-agent', 2),
+      makeLaunchedAtom(sibling, 'sibling-agent', 2),
     ];
 
     const requestAbort = vi.fn(async () => {
@@ -574,24 +541,8 @@ describe('workflow pipe executor', () => {
     writeSessionError(failed.session_dir, 'primary-fail');
 
     const atoms: LaunchedAtom[] = [
-      {
-        session: failed.session,
-        sessionDir: failed.session_dir,
-        agent: 'failed',
-        tagName: 'failed',
-        providerTool: 'codex',
-        stepIndex: 0,
-        resumeOp: 'coral:failed',
-      },
-      {
-        session: hanging.session,
-        sessionDir: hanging.session_dir,
-        agent: 'hanging',
-        tagName: 'hanging',
-        providerTool: 'codex',
-        stepIndex: 0,
-        resumeOp: 'coral:hanging',
-      },
+      makeLaunchedAtom(failed, 'failed'),
+      makeLaunchedAtom(hanging, 'hanging'),
     ];
 
     // Mock Date.now to advance past SIBLING_DRAIN_TIMEOUT_MS after abort is triggered
@@ -687,11 +638,7 @@ describe('workflow pipe executor', () => {
   describe('stale atom detection', () => {
     it('triggers abort after stale timeout', async () => {
       const stale = registerSession('stale-detect', 'codex');
-      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
-        if (session === stale.session) {
-          writeSessionError(stale.session_dir, 'stale abort');
-        }
-      });
+      const requestAbort = vi.fn(abortWithSessionError(stale));
       const dispatch = vi.fn<AtomDispatchFn>(async () => textResult('cannot resume', true));
 
       await expect(
@@ -716,11 +663,7 @@ describe('workflow pipe executor', () => {
       const stale = registerSession('stale-resume-old', 'codex');
       const resumed = registerSession('stale-resume-new', 'codex');
 
-      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
-        if (session === stale.session) {
-          writeSessionError(stale.session_dir, 'stale abort');
-        }
-      });
+      const requestAbort = vi.fn(abortWithSessionError(stale));
       const dispatch = vi.fn<AtomDispatchFn>(async () => {
         setTimeout(() => {
           writeSessionResult(resumed.session_dir, 'done', { session_name: 'stale-resume-new' });
@@ -817,11 +760,7 @@ describe('workflow pipe executor', () => {
   describe('stale resume failure stops workflow', () => {
     it('throws when resume dispatch reports non-resumable session', async () => {
       const stale = registerSession('stale-resume-fail', 'codex');
-      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
-        if (session === stale.session) {
-          writeSessionError(stale.session_dir, 'stale abort');
-        }
-      });
+      const requestAbort = vi.fn(abortWithSessionError(stale));
       const dispatch = vi.fn<AtomDispatchFn>(async () => textResult('resume failed', true));
 
       await expect(
@@ -878,11 +817,7 @@ describe('workflow pipe executor', () => {
   describe('stale resume response validation', () => {
     it('throws explicit error for malformed resume JSON response', async () => {
       const stale = registerSession('stale-resume-malformed', 'codex');
-      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
-        if (session === stale.session) {
-          writeSessionError(stale.session_dir, 'stale abort');
-        }
-      });
+      const requestAbort = vi.fn(abortWithSessionError(stale));
       const dispatch = vi.fn<AtomDispatchFn>(async () => textResult('not-json'));
 
       await expect(
@@ -1019,9 +954,7 @@ describe('workflow pipe executor', () => {
       const stale = registerSession('stale-old-uuid', 'codex');
       const resumed = registerSession('stale-new-uuid', 'codex');
       const capturedResumeArgs: Record<string, unknown>[] = [];
-      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
-        if (session === stale.session) writeSessionError(stale.session_dir, 'stale abort');
-      });
+      const requestAbort = vi.fn(abortWithSessionError(stale));
       const dispatch = vi.fn<AtomDispatchFn>(async (_tool, args) => {
         capturedResumeArgs.push({ ...args });
         setTimeout(() => {
@@ -1106,9 +1039,7 @@ describe('workflow pipe executor', () => {
   describe('waitForAllAtoms — resume response validation edge cases', () => {
     it('throws when resume JSON has session field missing', async () => {
       const stale = registerSession('resume-no-session', 'codex');
-      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
-        if (session === stale.session) writeSessionError(stale.session_dir, 'stale abort');
-      });
+      const requestAbort = vi.fn(abortWithSessionError(stale));
       const dispatch = vi.fn<AtomDispatchFn>(async () =>
         textResult(JSON.stringify({ session_dir: '/tmp/dir' })),
       );
@@ -1125,9 +1056,7 @@ describe('workflow pipe executor', () => {
 
     it('throws when resume JSON has session_dir field missing', async () => {
       const stale = registerSession('resume-no-session-dir', 'codex');
-      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
-        if (session === stale.session) writeSessionError(stale.session_dir, 'stale abort');
-      });
+      const requestAbort = vi.fn(abortWithSessionError(stale));
       const dispatch = vi.fn<AtomDispatchFn>(async () =>
         textResult(JSON.stringify({ session: 'abc-uuid' })),
       );
@@ -1144,9 +1073,7 @@ describe('workflow pipe executor', () => {
 
     it('throws empty-response error when resume result has empty content array', async () => {
       const stale = registerSession('resume-empty-content', 'codex');
-      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
-        if (session === stale.session) writeSessionError(stale.session_dir, 'stale abort');
-      });
+      const requestAbort = vi.fn(abortWithSessionError(stale));
       const dispatch = vi.fn<AtomDispatchFn>(async () => ({
         content: [] as unknown as [{ type: 'text'; text: string }],
         isError: false,

@@ -24,11 +24,13 @@ export class ClaudeExecParseError extends Error {
   }
 }
 
+const STREAM_JSON_ARGS = ['-p', '--verbose', '--output-format', 'stream-json'];
+
 export async function executeClaudeOneShot(
   prompt: string,
   options: ClaudeExecOptions = {},
 ): Promise<ClaudeExecResult> {
-  const args = ['-p', '--verbose', '--output-format', 'stream-json'];
+  const args = [...STREAM_JSON_ARGS];
   appendSharedArgs(args, options);
   if (options.sessionId) args.push('--session-id', options.sessionId);
   return executeClaude(args, prompt, options);
@@ -39,7 +41,7 @@ export async function executeClaudeResume(
   prompt: string,
   options: Omit<ClaudeExecOptions, 'sessionId'> = {},
 ): Promise<ClaudeExecResult> {
-  const args = ['-p', '--verbose', '--output-format', 'stream-json', '--resume', sessionId];
+  const args = [...STREAM_JSON_ARGS, '--resume', sessionId];
   appendSharedArgs(args, options);
   return executeClaude(args, prompt, options);
 }
@@ -54,7 +56,7 @@ function appendSharedArgs(args: string[], options: ClaudeExecOptions): void {
 async function executeClaude(
   args: string[],
   prompt: string,
-  options: Omit<ClaudeExecOptions, 'sessionId'>,
+  options: ClaudeExecOptions,
 ): Promise<ClaudeExecResult> {
   const start = Date.now();
   const { stdout, stderr, code, aborted } = await spawnCli({

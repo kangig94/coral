@@ -16,14 +16,18 @@ import {
   coralOpSchema,
 } from '../../shared/schemas.js';
 
-const sessionExecFields = {
-  prompt: promptSchema,
-  session: sessionRefSchema.optional(),
-  name: sessionNameSchema.optional(),
+const sessionOptions = {
   model: modelSchema,
   working_directory: cwdSchema,
   effort: effortSchema,
   bypass: boolDefaultFalse,
+};
+
+const sessionExecFields = {
+  prompt: promptSchema,
+  session: sessionRefSchema.optional(),
+  name: sessionNameSchema.optional(),
+  ...sessionOptions,
 };
 
 const execShape = z.object({
@@ -40,10 +44,7 @@ const forkShape = z.object({
   session: sessionRefSchema,
   name: sessionNameSchema.optional(),
   prompt: z.string().optional(),
-  model: modelSchema,
-  working_directory: cwdSchema,
-  effort: effortSchema,
-  bypass: boolDefaultFalse,
+  ...sessionOptions,
 });
 
 const abortShape = z.object({

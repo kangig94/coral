@@ -2,33 +2,41 @@ import { describe, it, expect } from 'vitest';
 import { ZodError } from 'zod';
 import { codexOpSchema, coralAgentSchema } from '../schemas.js';
 
+function expectCodexParseError(input: unknown): void {
+  expect(() => codexOpSchema.parse(input)).toThrow(ZodError);
+}
+
+function expectCoralParseError(op: string): void {
+  expect(() => coralAgentSchema.parse({ op, prompt: 'x' })).toThrow(ZodError);
+}
+
 describe('codexOpSchema', () => {
   it('list rejects unknown properties', () => {
-    expect(() => codexOpSchema.parse({ op: 'list', extra: true })).toThrow(ZodError);
+    expectCodexParseError({ op: 'list', extra: true });
   });
 
   it('rejects unknown discriminator op', () => {
-    expect(() => codexOpSchema.parse({ op: 'invalid_op' })).toThrow(ZodError);
+    expectCodexParseError({ op: 'invalid_op' });
   });
 
   it('rejects missing op', () => {
-    expect(() => codexOpSchema.parse({})).toThrow(ZodError);
+    expectCodexParseError({});
   });
 
   it('rejects wait discriminator', () => {
-    expect(() => codexOpSchema.parse({
+    expectCodexParseError({
       op: 'wait',
       sessions: ['12345678-1234-1234-1234-123456789abc'],
       timeout_seconds: 10,
-    })).toThrow(ZodError);
+    });
   });
 
   it('abort rejects non-UUID session', () => {
-    expect(() => codexOpSchema.parse({ op: 'abort', session: 'session-a' })).toThrow(ZodError);
+    expectCodexParseError({ op: 'abort', session: 'session-a' });
   });
 
   it('abort requires session', () => {
-    expect(() => codexOpSchema.parse({ op: 'abort' })).toThrow(ZodError);
+    expectCodexParseError({ op: 'abort' });
   });
 
   it('rejects legacy wait payloads because wait op is unsupported', () => {
@@ -43,14 +51,14 @@ describe('codexOpSchema', () => {
 
   it('defaults exec bypass to false when omitted', () => {
     const parsed = codexOpSchema.parse({ op: 'exec', prompt: 'hello' });
-    expect(parsed.op).toBe('exec');
-    if (parsed.op === 'exec') expect(parsed.bypass).toBe(false);
+    if (parsed.op !== 'exec') throw new Error('Expected exec op');
+    expect(parsed.bypass).toBe(false);
   });
 
   it('preserves explicit exec bypass true', () => {
     const parsed = codexOpSchema.parse({ op: 'exec', prompt: 'hello', bypass: true });
-    expect(parsed.op).toBe('exec');
-    if (parsed.op === 'exec') expect(parsed.bypass).toBe(true);
+    if (parsed.op !== 'exec') throw new Error('Expected exec op');
+    expect(parsed.bypass).toBe(true);
   });
 
   it('defaults fork bypass to false when omitted', () => {
@@ -58,8 +66,8 @@ describe('codexOpSchema', () => {
       op: 'fork',
       session: 'base-session',
     });
-    expect(parsed.op).toBe('fork');
-    if (parsed.op === 'fork') expect(parsed.bypass).toBe(false);
+    if (parsed.op !== 'fork') throw new Error('Expected fork op');
+    expect(parsed.bypass).toBe(false);
   });
 
   it('preserves explicit fork bypass true', () => {
@@ -68,8 +76,8 @@ describe('codexOpSchema', () => {
       session: 'base-session',
       bypass: true,
     });
-    expect(parsed.op).toBe('fork');
-    if (parsed.op === 'fork') expect(parsed.bypass).toBe(true);
+    if (parsed.op !== 'fork') throw new Error('Expected fork op');
+    expect(parsed.bypass).toBe(true);
   });
 });
 
@@ -112,34 +120,34 @@ describe('coralAgentSchema', () => {
   });
 
   it('rejects coral: with empty agent name', () => {
-    expect(() => coralAgentSchema.parse({ op: 'coral:', prompt: 'x' })).toThrow(ZodError);
+    expectCoralParseError('coral:');
   });
 
   it('rejects non-coral prefix', () => {
-    expect(() => coralAgentSchema.parse({ op: 'exec-scanner', prompt: 'x' })).toThrow(ZodError);
+    expectCoralParseError('exec-scanner');
   });
 
   it('rejects coral:../x path traversal', () => {
-    expect(() => coralAgentSchema.parse({ op: 'coral:../x', prompt: 'x' })).toThrow(ZodError);
+    expectCoralParseError('coral:../x');
   });
 
   it('rejects coral:scanner/extra slash in name', () => {
-    expect(() => coralAgentSchema.parse({ op: 'coral:scanner/extra', prompt: 'x' })).toThrow(ZodError);
+    expectCoralParseError('coral:scanner/extra');
   });
 
   it('rejects uppercase letter coral:Scanner', () => {
-    expect(() => coralAgentSchema.parse({ op: 'coral:Scanner', prompt: 'go' })).toThrow(ZodError);
+    expectCoralParseError('coral:Scanner');
   });
 
   it('rejects underscore coral:scanner_two', () => {
-    expect(() => coralAgentSchema.parse({ op: 'coral:scanner_two', prompt: 'go' })).toThrow(ZodError);
+    expectCoralParseError('coral:scanner_two');
   });
 
   it('rejects hyphen-start coral:-scanner', () => {
-    expect(() => coralAgentSchema.parse({ op: 'coral:-scanner', prompt: 'go' })).toThrow(ZodError);
+    expectCoralParseError('coral:-scanner');
   });
 
   it('rejects double-colon coral::scanner', () => {
-    expect(() => coralAgentSchema.parse({ op: 'coral::scanner', prompt: 'go' })).toThrow(ZodError);
+    expectCoralParseError('coral::scanner');
   });
 });

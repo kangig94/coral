@@ -1,6 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import { claudeOpSchema, coralClaudeSchema } from '../schemas.js';
 
+function expectExecBypassValue(input: Record<string, unknown>, expected: boolean): void {
+  const parsed = claudeOpSchema.parse({ op: 'exec', prompt: 'hello', ...input });
+  expect(parsed.op).toBe('exec');
+  if (parsed.op === 'exec') expect(parsed.bypass).toBe(expected);
+}
+
+function expectCoralBypassValue(input: Record<string, unknown>, expected: boolean): void {
+  const parsed = coralClaudeSchema.parse({ op: 'coral:architect', prompt: 'Do it', ...input });
+  expect(parsed.bypass).toBe(expected);
+}
+
 describe('claude schemas', () => {
   it('validates exec op with optional fields', () => {
     const parsed = claudeOpSchema.safeParse({
@@ -18,24 +29,11 @@ describe('claude schemas', () => {
   });
 
   it('defaults exec bypass to false when omitted', () => {
-    const parsed = claudeOpSchema.parse({
-      op: 'exec',
-      prompt: 'hello',
-    });
-
-    expect(parsed.op).toBe('exec');
-    if (parsed.op === 'exec') expect(parsed.bypass).toBe(false);
+    expectExecBypassValue({}, false);
   });
 
   it('preserves explicit exec bypass true', () => {
-    const parsed = claudeOpSchema.parse({
-      op: 'exec',
-      prompt: 'hello',
-      bypass: true,
-    });
-
-    expect(parsed.op).toBe('exec');
-    if (parsed.op === 'exec') expect(parsed.bypass).toBe(true);
+    expectExecBypassValue({ bypass: true }, true);
   });
 
   it('validates list op with strict shape', () => {
@@ -91,21 +89,10 @@ describe('claude schemas', () => {
   });
 
   it('defaults coral bypass to false when omitted', () => {
-    const parsed = coralClaudeSchema.parse({
-      op: 'coral:architect',
-      prompt: 'Do it',
-    });
-
-    expect(parsed.bypass).toBe(false);
+    expectCoralBypassValue({}, false);
   });
 
   it('preserves explicit coral bypass true', () => {
-    const parsed = coralClaudeSchema.parse({
-      op: 'coral:architect',
-      prompt: 'Do it',
-      bypass: true,
-    });
-
-    expect(parsed.bypass).toBe(true);
+    expectCoralBypassValue({ bypass: true }, true);
   });
 });

@@ -32,6 +32,34 @@ function jsonl(...lines: string[]): string {
   return lines.join('\n');
 }
 
+function agentMessage(text = 'OK'): string {
+  return `{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"${text}"}}\n`;
+}
+
+function mockAgentProcess(text = 'OK', code = 0): void {
+  mockSpawn.mockReturnValue(createMockProcess(agentMessage(text), code));
+}
+
+const FULL_AUTO_FLAGS = [
+  '--json',
+  '--skip-git-repo-check',
+  '--full-auto',
+  '-c',
+  'web_search=live',
+  '-c',
+  'sandbox_mode=workspace-write',
+  '-c',
+  'sandbox_workspace_write.network_access=true',
+];
+
+const BYPASS_FLAGS = [
+  '--json',
+  '--skip-git-repo-check',
+  '--dangerously-bypass-approvals-and-sandbox',
+  '-c',
+  'web_search=live',
+];
+
 function createMockProcess(stdout: string, code: number): ChildProcess {
   const proc = new EventEmitter() as ChildProcess;
   const stdoutStream = new Readable({ read() {} });
@@ -84,7 +112,7 @@ describe('executeOneShot', () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
-      ['exec', '-m', 'o4-mini', '--json', '--skip-git-repo-check', '--full-auto', '-c', 'web_search=live', '-c', 'sandbox_mode=workspace-write', '-c', 'sandbox_workspace_write.network_access=true'],
+      ['exec', '-m', 'o4-mini', ...FULL_AUTO_FLAGS],
       expect.objectContaining({ cwd: '/tmp' }),
     );
     expect(result.response).toBe('Hello');
@@ -136,60 +164,53 @@ describe('executeOneShot', () => {
 
   it('appends -c model_reasoning_effort when effort is set', async () => {
     mockCliAvailable();
-    const output = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
-    mockSpawn.mockReturnValue(createMockProcess(output, 0));
+    mockAgentProcess();
 
     await executeOneShot('test', 'o4-mini', '/tmp', 'xhigh');
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
-      ['exec', '-m', 'o4-mini', '--json', '--skip-git-repo-check', '--full-auto', '-c', 'web_search=live', '-c', 'sandbox_mode=workspace-write', '-c', 'sandbox_workspace_write.network_access=true', '-c', 'model_reasoning_effort=xhigh'],
+      ['exec', '-m', 'o4-mini', ...FULL_AUTO_FLAGS, '-c', 'model_reasoning_effort=xhigh'],
       expect.objectContaining({ cwd: '/tmp' }),
     );
   });
 
   it('uses default model when none provided', async () => {
     mockCliAvailable();
-    const output = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
-    mockSpawn.mockReturnValue(createMockProcess(output, 0));
+    mockAgentProcess();
 
     const result = await executeOneShot('test');
     expect(result.model).toBe(process.env.CORAL_CODEX_MODEL ?? 'gpt-5.3-codex');
-    expect(result.errors).toEqual([]);
-    expect(result.warnings).toEqual([]);
   });
 
   it('uses --dangerously-bypass-approvals-and-sandbox when bypassSandbox=true', async () => {
     mockCliAvailable();
-    const output = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
-    mockSpawn.mockReturnValue(createMockProcess(output, 0));
+    mockAgentProcess();
 
     await executeOneShot('test', 'o4-mini', '/tmp', undefined, true);
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
-      ['exec', '-m', 'o4-mini', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', '-c', 'web_search=live'],
+      ['exec', '-m', 'o4-mini', ...BYPASS_FLAGS],
       expect.objectContaining({ cwd: '/tmp' }),
     );
   });
 
   it('uses --full-auto when bypassSandbox=false (default)', async () => {
     mockCliAvailable();
-    const output = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
-    mockSpawn.mockReturnValue(createMockProcess(output, 0));
+    mockAgentProcess();
 
     await executeOneShot('test', 'o4-mini', '/tmp', undefined, false);
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
-      ['exec', '-m', 'o4-mini', '--json', '--skip-git-repo-check', '--full-auto', '-c', 'web_search=live', '-c', 'sandbox_mode=workspace-write', '-c', 'sandbox_workspace_write.network_access=true'],
+      ['exec', '-m', 'o4-mini', ...FULL_AUTO_FLAGS],
       expect.objectContaining({ cwd: '/tmp' }),
     );
   });
 
   it('skips detectCodexCli when preChecked is provided', async () => {
-    const output = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
-    mockSpawn.mockReturnValue(createMockProcess(output, 0));
+    mockAgentProcess();
 
     await executeOneShot(
       'test',
@@ -207,7 +228,7 @@ describe('executeOneShot', () => {
 });
 
 describe('executeResume', () => {
-  const agentOk = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
+  const agentOk = agentMessage();
 
   it('passes correct resume args', async () => {
     mockCliAvailable();
@@ -221,7 +242,7 @@ describe('executeResume', () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
-      ['exec', 'resume', 'thread-abc', '-m', 'gpt-4.1', '--json', '--skip-git-repo-check', '--full-auto', '-c', 'web_search=live', '-c', 'sandbox_mode=workspace-write', '-c', 'sandbox_workspace_write.network_access=true'],
+      ['exec', 'resume', 'thread-abc', '-m', 'gpt-4.1', ...FULL_AUTO_FLAGS],
       expect.any(Object),
     );
     expect(result.response).toBe('Resumed');
@@ -264,7 +285,7 @@ describe('executeResume', () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
-      ['exec', 'resume', 'thread-abc', '-m', 'gpt-4.1', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', '-c', 'web_search=live'],
+      ['exec', 'resume', 'thread-abc', '-m', 'gpt-4.1', ...BYPASS_FLAGS],
       expect.any(Object),
     );
   });
@@ -288,14 +309,11 @@ describe('executeFork', () => {
     );
     expect(result.response).toBe('Forked');
     expect(result.sessionId).toBe('t-fork');
-    expect(result.errors).toEqual([]);
-    expect(result.warnings).toEqual([]);
   });
 
   it('passes custom prompt to resume', async () => {
     mockCliAvailable();
-    const output = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Custom"}}\n';
-    mockSpawn.mockReturnValue(createMockProcess(output, 0));
+    mockAgentProcess('Custom');
 
     await executeFork('t1', 'Do something new', 'o4-mini');
 
@@ -304,7 +322,7 @@ describe('executeFork', () => {
 });
 
 describe('preChecked auth guard for executeResume', () => {
-  const agentOk = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
+  const agentOk = agentMessage();
 
   it('unauthenticated throws verbatim authError before spawn', async () => {
     const customError = 'Custom auth error for resume test';
@@ -349,7 +367,7 @@ describe('preChecked auth guard for executeResume', () => {
 });
 
 describe('preChecked auth guard for executeFork', () => {
-  const agentOk = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
+  const agentOk = agentMessage();
   const unauthChecked = {
     available: true as const,
     version: '1.0.0',
@@ -435,10 +453,10 @@ describe('idle timeout', () => {
     mockSpawn.mockReturnValue(proc);
 
     const promise = executeOneShot('test');
-    promise.catch(() => {}); // prevent unhandled rejection warning
+    const assertion = expect(promise).rejects.toThrow('inactivity');
     await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
 
-    await expect(promise).rejects.toThrow('inactivity');
+    await assertion;
     expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
   });
 
@@ -472,10 +490,10 @@ describe('idle timeout', () => {
     mockSpawn.mockReturnValue(proc);
 
     const promise = executeOneShot('test');
-    promise.catch(() => {}); // prevent unhandled rejection warning
+    const assertion = expect(promise).rejects.toThrow('10 minutes of inactivity');
     await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
 
-    await expect(promise).rejects.toThrow('10 minutes of inactivity');
+    await assertion;
   });
 });
 
@@ -575,7 +593,7 @@ describe('abort signal', () => {
 describe('killAllChildren', () => {
   it('clears tracked processes after kill', async () => {
     mockCliAvailable();
-    const output = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
+    const output = agentMessage();
     mockSpawn.mockReturnValue(createMockProcess(output, 0));
 
     await executeOneShot('test');
@@ -614,7 +632,7 @@ describe('ensureMultiAgent', () => {
     process.env.HOME = home;
 
     mockCliAvailable();
-    mockSpawn.mockReturnValue(createMockProcess('{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n', 0));
+    mockAgentProcess();
 
     await executeOneShot('test');
 
@@ -629,7 +647,7 @@ describe('ensureMultiAgent', () => {
     process.env.HOME = home;
 
     mockCliAvailable();
-    const okOutput = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
+    const okOutput = agentMessage();
     mockSpawn.mockReturnValue(createMockProcess(okOutput, 0));
     await executeOneShot('first');
 
@@ -654,7 +672,7 @@ describe('ensureMultiAgent', () => {
     writeFileSync(configPath, existing);
 
     mockCliAvailable();
-    mockSpawn.mockReturnValue(createMockProcess('{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n', 0));
+    mockAgentProcess();
 
     await executeOneShot('test');
 

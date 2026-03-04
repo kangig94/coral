@@ -20,83 +20,54 @@ function textBlock(text: string): { type: 'text'; text: string } {
   return { type: 'text', text };
 }
 
+function assistantToolEvent(name: string, input: Record<string, unknown> = {}): ClaudeStreamEvent {
+  return assistantEvent([toolUseBlock(name, input)]);
+}
+
+function expectNullMessage(event: ClaudeStreamEvent): void {
+  expect(extractClaudeProgressMessage(event)).toBeNull();
+}
+
+function expectNoThrow(event: ClaudeStreamEvent): void {
+  expect(() => extractClaudeProgressMessage(event)).not.toThrow();
+}
+
 describe('extractClaudeProgressMessage', () => {
   it('formats Read tool_use with filename and range', () => {
-    const event: ClaudeStreamEvent = {
-      type: 'assistant',
-      message: {
-        content: [
-          {
-            type: 'tool_use',
-            name: 'Read',
-            input: { file_path: '/repo/src/main.ts', offset: 10, limit: 20 },
-          },
-        ],
-      },
-    };
+    const event = assistantToolEvent('Read', { file_path: '/repo/src/main.ts', offset: 10, limit: 20 });
 
     expect(extractClaudeProgressMessage(event)).toBe('Read(/repo/src/main.ts:10-30)');
   });
 
   it('formats Edit tool_use with contextual preview', () => {
-    const event: ClaudeStreamEvent = {
-      type: 'assistant',
-      message: {
-        content: [
-          {
-            type: 'tool_use',
-            name: 'Edit',
-            input: { file_path: '/repo/src/main.ts', old_string: 'before\nextra', new_string: 'after\nextra' },
-          },
-        ],
-      },
-    };
+    const event = assistantToolEvent('Edit', {
+      file_path: '/repo/src/main.ts',
+      old_string: 'before\nextra',
+      new_string: 'after\nextra',
+    });
 
     expect(extractClaudeProgressMessage(event)).toBe('Edit(/repo/src/main.ts, "before" → "after")');
   });
 
   it('formats Bash tool_use using description fallback', () => {
-    const event: ClaudeStreamEvent = {
-      type: 'assistant',
-      message: {
-        content: [
-          {
-            type: 'tool_use',
-            name: 'Bash',
-            input: { description: 'List repository files' },
-          },
-        ],
-      },
-    };
+    const event = assistantToolEvent('Bash', { description: 'List repository files' });
 
     expect(extractClaudeProgressMessage(event)).toBe('Bash(List repository files)');
   });
 
   it('returns generating message for assistant text blocks', () => {
-    const event: ClaudeStreamEvent = {
-      type: 'assistant',
-      message: {
-        content: [{ type: 'text', text: 'drafting response' }],
-      },
-    };
+    const event = assistantEvent([textBlock('drafting response')]);
 
     expect(extractClaudeProgressMessage(event)).toBe('Generating response...');
   });
 
   it('returns null for non-assistant events', () => {
     const event: ClaudeStreamEvent = { type: 'result', result: 'done' };
-    expect(extractClaudeProgressMessage(event)).toBeNull();
+    expectNullMessage(event);
   });
 
   it('returns null when assistant content has no text/tool_use blocks', () => {
-    const event: ClaudeStreamEvent = {
-      type: 'assistant',
-      message: {
-        content: [{ type: 'tool_result', text: 'ignored' }],
-      },
-    };
-
-    expect(extractClaudeProgressMessage(event)).toBeNull();
+    expectNullMessage(assistantEvent([{ type: 'tool_result', text: 'ignored' }]));
   });
 });
 
@@ -139,12 +110,12 @@ describe('extractClaudeProgressMessage — adversarial', () => {
           content: [{ type: 'tool_use', id: 'tu-x', input: { file_path: 'f.ts' } }],
         },
       };
-      expect(() => extractClaudeProgressMessage(event)).not.toThrow();
+      expectNoThrow(event);
     });
 
     it('handles tool_use block where name is empty string', () => {
       const event = assistantEvent([toolUseBlock('', { file_path: 'f.ts' })]);
-      expect(() => extractClaudeProgressMessage(event)).not.toThrow();
+      expectNoThrow(event);
     });
   });
 
@@ -156,7 +127,7 @@ describe('extractClaudeProgressMessage — adversarial', () => {
           content: [{ type: 'tool_use', name: 'Read', id: 'tu-2' }],
         },
       };
-      expect(() => extractClaudeProgressMessage(event)).not.toThrow();
+      expectNoThrow(event);
     });
 
     it('handles tool_use block where input is a string (malformed)', () => {
@@ -166,7 +137,7 @@ describe('extractClaudeProgressMessage — adversarial', () => {
           content: [{ type: 'tool_use', name: 'Read', id: 'tu-3', input: 'bad-input' as unknown as Record<string, unknown> }],
         },
       };
-      expect(() => extractClaudeProgressMessage(event)).not.toThrow();
+      expectNoThrow(event);
     });
 
     it('handles tool_use block where input is null', () => {
@@ -176,23 +147,21 @@ describe('extractClaudeProgressMessage — adversarial', () => {
           content: [{ type: 'tool_use', name: 'Bash', id: 'tu-4', input: null as unknown as Record<string, unknown> }],
         },
       };
-      expect(() => extractClaudeProgressMessage(event)).not.toThrow();
+      expectNoThrow(event);
     });
   });
 
   describe('assistant event with empty content array', () => {
     it('returns null for assistant event with empty content array', () => {
       const event = assistantEvent([]);
-      const msg = extractClaudeProgressMessage(event);
-      expect(msg).toBeNull();
+      expectNullMessage(event);
     });
   });
 
   describe('assistant event with no message field', () => {
     it('returns null for assistant event with no message field', () => {
       const event: ClaudeStreamEvent = { type: 'assistant' };
-      const msg = extractClaudeProgressMessage(event);
-      expect(msg).toBeNull();
+      expectNullMessage(event);
     });
 
     it('returns null for assistant event where message has no content field', () => {
@@ -200,8 +169,7 @@ describe('extractClaudeProgressMessage — adversarial', () => {
         type: 'assistant',
         message: { role: 'assistant' },
       };
-      const msg = extractClaudeProgressMessage(event);
-      expect(msg).toBeNull();
+      expectNullMessage(event);
     });
   });
 
@@ -213,8 +181,7 @@ describe('extractClaudeProgressMessage — adversarial', () => {
           content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'abc' } }],
         },
       };
-      const msg = extractClaudeProgressMessage(event);
-      expect(msg).toBeNull();
+      expectNullMessage(event);
     });
 
     it('returns null for assistant event with only tool_result block', () => {
@@ -224,9 +191,8 @@ describe('extractClaudeProgressMessage — adversarial', () => {
           content: [{ type: 'tool_result', tool_use_id: 'tu-1', content: 'ok' }],
         },
       };
-      expect(() => extractClaudeProgressMessage(event)).not.toThrow();
-      const msg = extractClaudeProgressMessage(event);
-      expect(msg).toBeNull();
+      expectNoThrow(event);
+      expectNullMessage(event);
     });
   });
 
@@ -239,15 +205,13 @@ describe('extractClaudeProgressMessage — adversarial', () => {
           content: [{ type: 'tool_result', tool_use_id: 'tu-1', content: 'file contents' }],
         },
       };
-      expect(extractClaudeProgressMessage(event)).toBeNull();
+      expectNullMessage(event);
     });
   });
 
   describe('Write tool routing', () => {
     it('formats Write tool as Write(basename)', () => {
-      const event = assistantEvent([
-        toolUseBlock('Write', { file_path: '/deep/nested/path/output.ts', content: 'hello' }),
-      ]);
+      const event = assistantToolEvent('Write', { file_path: '/deep/nested/path/output.ts', content: 'hello' });
       const msg = extractClaudeProgressMessage(event);
       expect(msg).toBe('Write(/deep/nested/path/output.ts)');
     });
@@ -255,9 +219,7 @@ describe('extractClaudeProgressMessage — adversarial', () => {
 
   describe('Glob tool routing', () => {
     it('formats Glob tool as Glob(pattern)', () => {
-      const event = assistantEvent([
-        toolUseBlock('Glob', { pattern: '**/*.test.ts', path: '/src' }),
-      ]);
+      const event = assistantToolEvent('Glob', { pattern: '**/*.test.ts', path: '/src' });
       const msg = extractClaudeProgressMessage(event);
       expect(msg).toBe('Glob(**/*.test.ts)');
     });
@@ -265,9 +227,7 @@ describe('extractClaudeProgressMessage — adversarial', () => {
 
   describe('Agent tool routing', () => {
     it('formats Agent tool with description', () => {
-      const event = assistantEvent([
-        toolUseBlock('Agent', { description: 'Run code analysis subagent', input: {} }),
-      ]);
+      const event = assistantToolEvent('Agent', { description: 'Run code analysis subagent', input: {} });
       const msg = extractClaudeProgressMessage(event);
       expect(msg).toMatch(/^Agent\(/);
     });
@@ -275,9 +235,7 @@ describe('extractClaudeProgressMessage — adversarial', () => {
 
   describe('unknown tool name fallback', () => {
     it('formats unrecognized tool name as "Using: <name>"', () => {
-      const event = assistantEvent([
-        toolUseBlock('UnknownCustomTool', { arg1: 'value' }),
-      ]);
+      const event = assistantToolEvent('UnknownCustomTool', { arg1: 'value' });
       const msg = extractClaudeProgressMessage(event);
       expect(msg).toMatch(/UnknownCustomTool/);
     });
@@ -290,7 +248,7 @@ describe('extractClaudeProgressMessage — adversarial', () => {
         result: 'done',
         session_id: 'sess-1',
       };
-      expect(extractClaudeProgressMessage(event)).toBeNull();
+      expectNullMessage(event);
     });
 
     it('returns null for system event type', () => {
@@ -299,7 +257,7 @@ describe('extractClaudeProgressMessage — adversarial', () => {
         subtype: 'init',
         session_id: 'sess-1',
       };
-      expect(extractClaudeProgressMessage(event)).toBeNull();
+      expectNullMessage(event);
     });
 
     it('returns null for rate_limit_event type', () => {
@@ -307,7 +265,7 @@ describe('extractClaudeProgressMessage — adversarial', () => {
         type: 'rate_limit_event',
         delta_ms: 5000,
       };
-      expect(extractClaudeProgressMessage(event)).toBeNull();
+      expectNullMessage(event);
     });
   });
 });

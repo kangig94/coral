@@ -14,8 +14,10 @@ const RULES: Rule[] = [
 
 export function stripShellWrapper(command: string): string {
   const shell = command.match(/^(?:\/usr\/bin\/|\/bin\/)?(?:zsh|bash|sh)\s+(?:-lc|-c)\s+(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')\s*$/);
-  if (shell) return stripCdPrefix(shell[1] !== undefined ? shell[1].replace(/\\"/g, '"') : (shell[2] ?? command));
-  return stripCdPrefix(command);
+  const unwrapped = shell
+    ? (shell[1] !== undefined ? shell[1].replace(/\\"/g, '"') : (shell[2] ?? command))
+    : command;
+  return stripCdPrefix(unwrapped);
 }
 
 function stripCdPrefix(command: string): string {

@@ -23,35 +23,21 @@ const PARSE_FAILURE_SENTINEL: ParsedClaudeStreamOutput = {
 
 export function parseClaudeStreamJson(output: string): ParsedClaudeStreamOutput {
   const lines = output.split('\n').filter(Boolean);
-  if (lines.length > 1) {
-    return parseNdjson(lines);
+  if (lines.length === 0) return PARSE_FAILURE_SENTINEL;
+  if (lines.length > 1) return parseNdjson(lines);
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(lines[0]);
+  } catch {
+    return PARSE_FAILURE_SENTINEL;
   }
 
-  if (lines.length === 1) {
-    try {
-      const parsed = JSON.parse(lines[0]);
-      // Old legacy format: result field is an object (content array or response field).
-      // Stream-json result events carry result as a string or null.
-      if (isRecord(parsed) && isRecord((parsed as Record<string, unknown>).result)) {
-        const legacy = parsed as ClaudeJsonOutput;
-        return {
-          response: extractLegacyResponse(legacy),
-          sessionId: typeof legacy.session_id === 'string' ? legacy.session_id : null,
-          model: typeof legacy.model === 'string' ? legacy.model : null,
-          costUsd: typeof legacy.total_cost_usd === 'number' ? legacy.total_cost_usd : 0,
-          durationMs: null,
-          numTurns: null,
-          isError: false,
-        };
-      }
-      // Stream-json single-event (system, result with string, etc.) → NDJSON path
-      return parseNdjson(lines);
-    } catch {
-      return PARSE_FAILURE_SENTINEL;
-    }
-  }
-
-  return PARSE_FAILURE_SENTINEL;
+  // Old legacy format: result field is an object (content array or response field).
+  // Stream-json result events carry result as a string or null.
+  if (isLegacySingleJson(parsed)) return toLegacyParsedOutput(parsed);
+  // Stream-json single-event (system, result with string, etc.) → NDJSON path
+  return parseNdjson(lines);
 }
 
 function parseNdjson(lines: string[]): ParsedClaudeStreamOutput {
@@ -63,7 +49,7 @@ function parseNdjson(lines: string[]): ParsedClaudeStreamOutput {
   let numTurns: number | null = null;
   let isError = false;
   let hasValidLine = false;
-  const textParts: string[] = [];
+  const assistantTextParts: string[] = [];
 
   for (const line of lines) {
     let event: unknown;
@@ -91,14 +77,14 @@ function parseNdjson(lines: string[]): ParsedClaudeStreamOutput {
       const content = Array.isArray(event.message.content) ? event.message.content : [];
       for (const block of content) {
         if (isRecord(block) && block.type === 'text' && typeof block.text === 'string') {
-          textParts.push(block.text);
+          assistantTextParts.push(block.text);
         }
       }
     }
   }
 
   if (!hasValidLine) return PARSE_FAILURE_SENTINEL;
-  if (!response && textParts.length > 0) response = textParts.join('');
+  if (!response && assistantTextParts.length > 0) response = assistantTextParts.join('');
 
   return {
     response,
@@ -108,6 +94,22 @@ function parseNdjson(lines: string[]): ParsedClaudeStreamOutput {
     durationMs,
     numTurns,
     isError,
+  };
+}
+
+function isLegacySingleJson(parsed: unknown): parsed is ClaudeJsonOutput {
+  return isRecord(parsed) && isRecord(parsed.result);
+}
+
+function toLegacyParsedOutput(legacy: ClaudeJsonOutput): ParsedClaudeStreamOutput {
+  return {
+    response: extractLegacyResponse(legacy),
+    sessionId: typeof legacy.session_id === 'string' ? legacy.session_id : null,
+    model: typeof legacy.model === 'string' ? legacy.model : null,
+    costUsd: typeof legacy.total_cost_usd === 'number' ? legacy.total_cost_usd : 0,
+    durationMs: null,
+    numTurns: null,
+    isError: false,
   };
 }
 

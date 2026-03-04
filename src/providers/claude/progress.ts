@@ -20,7 +20,7 @@ export function extractClaudeProgressMessage(event: ClaudeStreamEvent): string |
 
   const content = Array.isArray(event.message?.content) ? event.message.content : [];
   for (const block of content) {
-    if (!isRecord(block) || !('type' in block)) continue;
+    if (!isRecord(block)) continue;
     if (block.type === 'tool_use' && typeof block.name === 'string' && block.name && isRecord(block.input)) {
       return formatToolProgress(block.name, block.input);
     }
@@ -29,4 +29,3 @@ export function extractClaudeProgressMessage(event: ClaudeStreamEvent): string |
 
   return null;
 }
-

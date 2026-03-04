@@ -5,6 +5,30 @@ function ndjson(...events: object[]): string {
   return events.map((e) => JSON.stringify(e)).join('\n') + '\n';
 }
 
+const parseFailureSentinel = {
+  response: '',
+  sessionId: null,
+  model: null,
+  costUsd: 0,
+  durationMs: null,
+  numTurns: null,
+  isError: true,
+};
+
+function parse(output: string) {
+  return parseClaudeStreamJson(output);
+}
+
+function expectSuccess(output: string) {
+  const result = parse(output);
+  expect(result.isError).toBe(false);
+  return result;
+}
+
+function expectParseFailure(output: string) {
+  expect(parse(output)).toEqual(parseFailureSentinel);
+}
+
 describe('parseClaudeStreamJson', () => {
   it('extracts response/session/cost/model/duration from NDJSON result + assistant events', () => {
     const output = [
@@ -12,7 +36,7 @@ describe('parseClaudeStreamJson', () => {
       '{\"type\":\"result\",\"result\":\"final answer\",\"session_id\":\"sess-123\",\"total_cost_usd\":0.12,\"duration_ms\":4200,\"num_turns\":2,\"is_error\":false}',
     ].join('\n');
 
-    const parsed = parseClaudeStreamJson(output);
+    const parsed = parse(output);
 
     expect(parsed).toEqual({
       response: 'final answer',
@@ -31,7 +55,7 @@ describe('parseClaudeStreamJson', () => {
       '{\"type\":\"result\",\"session_id\":\"sess-fallback\",\"total_cost_usd\":0.02}',
     ].join('\n');
 
-    const parsed = parseClaudeStreamJson(output);
+    const parsed = parse(output);
 
     expect(parsed.response).toBe('part-1 part-2');
     expect(parsed.sessionId).toBe('sess-fallback');
@@ -47,7 +71,7 @@ describe('parseClaudeStreamJson', () => {
       '{\"type\":\"result\",\"result\":\"done\"}',
     ].join('\n');
 
-    const parsed = parseClaudeStreamJson(output);
+    const parsed = parse(output);
 
     expect(parsed.response).toBe('done');
     expect(parsed.model).toBe('claude-3-7-sonnet');
@@ -68,7 +92,7 @@ describe('parseClaudeStreamJson', () => {
       model: 'legacy-model',
     });
 
-    const parsed = parseClaudeStreamJson(output);
+    const parsed = parse(output);
 
     expect(parsed).toEqual({
       response: 'line one\nline two',
@@ -82,25 +106,11 @@ describe('parseClaudeStreamJson', () => {
   });
 
   it('returns parse-failure sentinel for fully unparseable output', () => {
-    const parsed = parseClaudeStreamJson('garbage-output');
-
-    expect(parsed).toEqual({
-      response: '',
-      sessionId: null,
-      model: null,
-      costUsd: 0,
-      durationMs: null,
-      numTurns: null,
-      isError: true,
-    });
+    expectParseFailure('garbage-output');
   });
 
   it('returns parse-failure sentinel for empty output', () => {
-    const parsed = parseClaudeStreamJson('');
-
-    expect(parsed.isError).toBe(true);
-    expect(parsed.response).toBe('');
-    expect(parsed.sessionId).toBeNull();
+    expectParseFailure('');
   });
 });
 
@@ -110,11 +120,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
       const output = ndjson(
         { type: 'system', subtype: 'init', session_id: 'sess-x', tools: [], mcp_servers: [] },
       );
-      const result = parseClaudeStreamJson(output);
-      expect(result.response).toBe('');
-      expect(result.isError).toBe(true);
-      expect(result.sessionId).toBeNull();
-      expect(result.costUsd).toBe(0);
+      expectParseFailure(output);
     });
 
     it('returns sentinel when stream has system + rate_limit_event but no result', () => {
@@ -122,9 +128,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
         { type: 'system', subtype: 'init', session_id: 'sess-y' },
         { type: 'rate_limit_event', delta_ms: 5000 },
       );
-      const result = parseClaudeStreamJson(output);
-      expect(result.response).toBe('');
-      expect(result.isError).toBe(true);
+      expectParseFailure(output);
     });
   });
 
@@ -140,8 +144,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
         }),
       ].join('\n') + '\n';
 
-      const result = parseClaudeStreamJson(output);
-      expect(result.isError).toBe(false);
+      const result = expectSuccess(output);
       expect(result.response).toBe('hello from result');
       expect(result.sessionId).toBe('sess-good');
     });
@@ -153,8 +156,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
         'also bad',
       ].join('\n') + '\n';
 
-      const result = parseClaudeStreamJson(output);
-      expect(result.isError).toBe(false);
+      const result = expectSuccess(output);
       expect(result.response).toBe('ok');
     });
 
@@ -165,8 +167,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
         JSON.stringify({ type: 'result', result: 'final answer', session_id: 's2', total_cost_usd: 0.02 }),
       ].join('\n') + '\n';
 
-      const result = parseClaudeStreamJson(output);
-      expect(result.isError).toBe(false);
+      const result = expectSuccess(output);
       expect(result.response).toBe('final answer');
     });
   });
@@ -180,7 +181,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
         is_error: true,
         total_cost_usd: 0,
       });
-      const result = parseClaudeStreamJson(output);
+      const result = parse(output);
       expect(result.isError).toBe(true);
     });
 
@@ -192,7 +193,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
         is_error: true,
         total_cost_usd: 0,
       });
-      const result = parseClaudeStreamJson(output);
+      const result = parse(output);
       expect(result.response).toBe('partial error response');
       expect(result.isError).toBe(true);
     });
@@ -205,7 +206,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
         is_error: true,
         total_cost_usd: 0,
       });
-      const result = parseClaudeStreamJson(output);
+      const result = parse(output);
       expect(result.response).toBe('');
       expect(result.isError).toBe(true);
     });
@@ -217,7 +218,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
         { type: 'assistant', message: { content: [{ type: 'text', text: 'fallback text' }] } },
         { type: 'result', result: null, session_id: 'sess-null', total_cost_usd: 0.003, is_error: false },
       );
-      const result = parseClaudeStreamJson(output);
+      const result = parse(output);
       expect(result.response).toBe('fallback text');
       expect(result.sessionId).toBe('sess-null');
       expect(result.isError).toBe(false);
@@ -228,7 +229,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
         { type: 'assistant', message: { content: [{ type: 'text', text: 'assistant fallback' }] } },
         { type: 'result', session_id: 'sess-missing', total_cost_usd: 0.001 },
       );
-      const result = parseClaudeStreamJson(output);
+      const result = parse(output);
       expect(result.response).toBe('assistant fallback');
       expect(result.sessionId).toBe('sess-missing');
     });
@@ -241,7 +242,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
         is_error: true,
         total_cost_usd: 0,
       });
-      const result = parseClaudeStreamJson(output);
+      const result = parse(output);
       expect(result.response).toBe('');
       expect(result.isError).toBe(true);
     });
@@ -260,7 +261,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
         session_id: 'sess-nested',
         total_cost_usd: 0.01,
       });
-      const result = parseClaudeStreamJson(output);
+      const result = parse(output);
       expect(result.response).not.toBe('');
       expect(result.sessionId).toBe('sess-nested');
     });
@@ -274,8 +275,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
         '   ',
         '',
       ].join('\n');
-      const result = parseClaudeStreamJson(output);
-      expect(result.isError).toBe(false);
+      const result = expectSuccess(output);
       expect(result.response).toBe('clean');
     });
   });
@@ -287,7 +287,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
         { type: 'assistant', message: { content: [{ type: 'text', text: 'second' }] } },
         { type: 'assistant', message: { content: [{ type: 'text', text: 'third' }] } },
       );
-      const result = parseClaudeStreamJson(output);
+      const result = parse(output);
       const idx1 = result.response.indexOf('first');
       const idx2 = result.response.indexOf('second');
       const idx3 = result.response.indexOf('third');
@@ -307,7 +307,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
         num_turns: 7,
         duration_ms: 1234,
       });
-      const result = parseClaudeStreamJson(output);
+      const result = parse(output);
       expect(result.numTurns).toBe(7);
       expect(result.durationMs).toBe(1234);
     });
@@ -319,7 +319,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
         session_id: 'sess-no-meta',
         total_cost_usd: 0.01,
       });
-      const result = parseClaudeStreamJson(output);
+      const result = parse(output);
       expect(result.numTurns).toBeNull();
       expect(result.durationMs).toBeNull();
     });
@@ -332,7 +332,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
         result: 'answer',
         session_id: 'sess-nocost',
       });
-      const result = parseClaudeStreamJson(output);
+      const result = parse(output);
       expect(result.costUsd).toBe(0);
     });
 
@@ -343,7 +343,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
         session_id: 'sess-nancost',
         total_cost_usd: 'free',
       });
-      const result = parseClaudeStreamJson(output);
+      const result = parse(output);
       expect(result.costUsd).toBe(0);
     });
   });
@@ -361,7 +361,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
         },
         { type: 'result', result: 'hi', session_id: 's-model', total_cost_usd: 0 },
       );
-      const result = parseClaudeStreamJson(output);
+      const result = parse(output);
       expect(result.model).toBe('claude-3-5-sonnet-20241022');
     });
 
@@ -372,7 +372,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
         session_id: 'sess-nomodel',
         total_cost_usd: 0,
       });
-      const result = parseClaudeStreamJson(output);
+      const result = parse(output);
       expect(result.model).toBeNull();
     });
   });
@@ -385,7 +385,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
         session_id: 'sess-single',
         total_cost_usd: 0.007,
       });
-      const result = parseClaudeStreamJson(singleJson);
+      const result = parse(singleJson);
       expect(result.response).toBe('single-json-response');
       expect(result.sessionId).toBe('sess-single');
       expect(result.isError).toBe(false);
@@ -396,7 +396,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
         result: { response: 'nested response string' },
         session_id: 'sess-nested-res',
       });
-      const result = parseClaudeStreamJson(singleJson);
+      const result = parse(singleJson);
       expect(result.response).toBe('nested response string');
     });
   });
@@ -404,20 +404,11 @@ describe('parseClaudeStreamJson — adversarial', () => {
   describe('fully unparseable output', () => {
     it('returns sentinel for completely non-JSON output (all garbage)', () => {
       const output = 'error: claude not found\nusage: claude [options]\n';
-      const result = parseClaudeStreamJson(output);
-      expect(result.response).toBe('');
-      expect(result.sessionId).toBeNull();
-      expect(result.model).toBeNull();
-      expect(result.costUsd).toBe(0);
-      expect(result.durationMs).toBeNull();
-      expect(result.numTurns).toBeNull();
-      expect(result.isError).toBe(true);
+      expectParseFailure(output);
     });
 
     it('returns sentinel for truly empty string', () => {
-      const result = parseClaudeStreamJson('');
-      expect(result.response).toBe('');
-      expect(result.isError).toBe(true);
+      expectParseFailure('');
     });
   });
 });

@@ -24,30 +24,38 @@ export { killAllRunnerChildren as killAllChildren };
  * Shared execution pipeline: detect CLI, spawn, parse JSONL output.
  */
 let multiAgentEnsured = false;
+const MULTI_AGENT_CONFIG = '[features]\nmulti_agent = true\n';
+
+function withMultiAgentEnabled(content: string): string {
+  const lines = content.split('\n').filter((line) => !line.includes('multi_agent'));
+  const featuresIndex = lines.findIndex((line) => /^\[features\]/.test(line));
+  if (featuresIndex >= 0) {
+    lines.splice(featuresIndex + 1, 0, 'multi_agent = true');
+  } else {
+    lines.push('', '[features]', 'multi_agent = true');
+  }
+  return lines.join('\n');
+}
 
 function ensureMultiAgent(): void {
   if (multiAgentEnsured) return;
   try {
-    const configPath = join(homedir(), '.codex', 'config.toml');
+    const codexDir = join(homedir(), '.codex');
+    const configPath = join(codexDir, 'config.toml');
     if (!existsSync(configPath)) {
-      mkdirSync(join(homedir(), '.codex'), { recursive: true });
-      writeFileSync(configPath, '[features]\nmulti_agent = true\n');
+      mkdirSync(codexDir, { recursive: true });
+      writeFileSync(configPath, MULTI_AGENT_CONFIG);
       multiAgentEnsured = true;
       return;
     }
+
     const content = readFileSync(configPath, 'utf8');
     if (/multi_agent\s*=\s*true/.test(content)) {
       multiAgentEnsured = true;
       return;
     }
-    const lines = content.split('\n').filter((l) => !l.includes('multi_agent'));
-    const featIdx = lines.findIndex((l) => /^\[features\]/.test(l));
-    if (featIdx >= 0) {
-      lines.splice(featIdx + 1, 0, 'multi_agent = true');
-    } else {
-      lines.push('', '[features]', 'multi_agent = true');
-    }
-    writeFileSync(configPath, lines.join('\n'));
+
+    writeFileSync(configPath, withMultiAgentEnabled(content));
     multiAgentEnsured = true;
   } catch {
     // Fail-open parity with hook: do not throw, allow retry on next exec call.
@@ -122,16 +130,21 @@ function prependClaudeMd(prompt: string): string {
 
 /** Base flags shared by all exec modes. Web search is always enabled. */
 function baseFlags(bypassSandbox: boolean): string[] {
-  return [
+  const flags = [
     '--json',
     '--skip-git-repo-check',
     bypassSandbox ? '--dangerously-bypass-approvals-and-sandbox' : '--full-auto',
     '-c', 'web_search=live',
-    ...bypassSandbox ? [] : [
+  ];
+
+  if (!bypassSandbox) {
+    flags.push(
       '-c', 'sandbox_mode=workspace-write',
       '-c', 'sandbox_workspace_write.network_access=true',
-    ],
-  ];
+    );
+  }
+
+  return flags;
 }
 
 /** Build optional CLI flags for effort. */

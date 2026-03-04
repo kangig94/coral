@@ -17,15 +17,17 @@ export async function handleCoralDispatch(
   const provider = getProvider(toolName);
   if (!provider) return textResult(`Unknown provider: ${toolName}`, true);
 
-  const op = rawArgs.op;
-  if (typeof op !== 'string' || !op.startsWith(CORAL_OP_PREFIX)) {
-    return textResult(`Invalid coral op: ${String(op ?? '')}`, true);
+  const rawOp = rawArgs.op;
+  if (typeof rawOp !== 'string' || !rawOp.startsWith(CORAL_OP_PREFIX)) {
+    return textResult(`Invalid coral op: ${String(rawOp ?? '')}`, true);
   }
 
-  const coralName = op.slice(CORAL_OP_PREFIX.length);
+  const coralName = rawOp.slice(CORAL_OP_PREFIX.length);
   const { content } = resolveCoralContent(coralName);
 
-  const args = 'effort' in rawArgs ? rawArgs : { ...rawArgs, effort: CORAL_DEFAULT_EFFORT };
+  const argsWithEffort = 'effort' in rawArgs
+    ? rawArgs
+    : { ...rawArgs, effort: CORAL_DEFAULT_EFFORT };
 
-  return provider.handleCoralOp(coralName, content, args, mgr, progressToken, notify);
+  return provider.handleCoralOp(coralName, content, argsWithEffort, mgr, progressToken, notify);
 }

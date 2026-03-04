@@ -115,6 +115,62 @@ function missingSessionNotice(aborted: boolean): string {
     : 'No session ID returned by Claude CLI output. Session not registered.';
 }
 
+function buildExecutorOptions(
+  input: {
+    model?: string;
+    system_prompt?: string;
+    effort?: ClaudeSessionCreateInput['effort'];
+    bypass: boolean;
+  },
+  signal: AbortSignal,
+  onEvent: OnEventCallback | undefined,
+  workingDirectory?: string,
+): {
+  model: string | undefined;
+  workingDirectory: string | undefined;
+  systemPrompt: string | undefined;
+  effort: ClaudeSessionCreateInput['effort'];
+  bypassPermissions: boolean;
+  signal: AbortSignal;
+  onEvent: OnEventCallback | undefined;
+} {
+  return {
+    model: input.model,
+    workingDirectory,
+    systemPrompt: input.system_prompt,
+    effort: input.effort,
+    bypassPermissions: input.bypass,
+    signal,
+    onEvent,
+  };
+}
+
+function sessionCreateParseErrorResult(error: ClaudeExecParseError, model: string | undefined): McpResult {
+  return jsonResult({
+    response: '',
+    notice: 'Claude CLI returned non-JSON output; session result is non-resumable.',
+    non_resumable: true,
+    model: model ?? 'unknown',
+    duration_ms: 0,
+    cost_usd: 0,
+    exit_code: error.failure.exitCode,
+    errors: [error.failure],
+  });
+}
+
+function sessionSendParseErrorResult(error: ClaudeExecParseError, model: string): McpResult {
+  return jsonResult({
+    response: '',
+    notice: 'Claude CLI returned non-JSON output while resuming session.',
+    non_resumable: true,
+    model,
+    duration_ms: 0,
+    cost_usd: 0,
+    exit_code: error.failure.exitCode,
+    errors: [error.failure],
+  });
+}
+
 export async function handleClaudeSessionCreate(
   input: ClaudeSessionCreateInput,
   _mgr: SessionManager,
@@ -126,27 +182,13 @@ export async function handleClaudeSessionCreate(
 
   let result;
   try {
-    result = await executeClaudeOneShot(input.prompt, {
-      model: input.model,
-      workingDirectory: input.working_directory,
-      systemPrompt: input.system_prompt,
-      effort: input.effort,
-      bypassPermissions: input.bypass,
-      signal,
-      onEvent,
-    });
+    result = await executeClaudeOneShot(
+      input.prompt,
+      buildExecutorOptions(input, signal, onEvent, input.working_directory),
+    );
   } catch (error: unknown) {
     if (error instanceof ClaudeExecParseError) {
-      return jsonResult({
-        response: '',
-        notice: 'Claude CLI returned non-JSON output; session result is non-resumable.',
-        non_resumable: true,
-        model: input.model ?? 'unknown',
-        duration_ms: 0,
-        cost_usd: 0,
-        exit_code: error.failure.exitCode,
-        errors: [error.failure],
-      });
+      return sessionCreateParseErrorResult(error, input.model);
     }
     throw error;
   }
@@ -190,27 +232,14 @@ export async function handleClaudeSessionSend(
 
   let result;
   try {
-    result = await executeClaudeResume(entry.threadId, input.prompt, {
-      model: input.model,
-      workingDirectory,
-      systemPrompt: input.system_prompt,
-      effort: input.effort,
-      bypassPermissions: input.bypass,
-      signal,
-      onEvent,
-    });
+    result = await executeClaudeResume(
+      entry.threadId,
+      input.prompt,
+      buildExecutorOptions(input, signal, onEvent, workingDirectory),
+    );
   } catch (error: unknown) {
     if (error instanceof ClaudeExecParseError) {
-      return jsonResult({
-        response: '',
-        notice: 'Claude CLI returned non-JSON output while resuming session.',
-        non_resumable: true,
-        model: input.model ?? entry.model,
-        duration_ms: 0,
-        cost_usd: 0,
-        exit_code: error.failure.exitCode,
-        errors: [error.failure],
-      });
+      return sessionSendParseErrorResult(error, input.model ?? entry.model);
     }
     throw error;
   }
@@ -345,7 +374,7 @@ export async function handleClaudeOp(
     case 'list':
       return handleClaudeSessionList(sessionManager);
     case 'abort':
-      return handleClaudeSessionAbort(input as ClaudeSessionAbortInput);
+      return handleClaudeSessionAbort(input);
     default: {
       const _exhaustive: never = input;
       return textResult(`Unhandled op: ${(_exhaustive as ClaudeOpInput).op}`, true);
