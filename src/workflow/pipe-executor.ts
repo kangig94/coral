@@ -293,8 +293,9 @@ function readAtomOutput(stepIndex: number, atomName: string, sessionDir: string)
 export async function readLaunchBootstrapStatus(
   sessionDir: string,
   signal?: AbortSignal,
+  timeoutMs = BOOTSTRAP_TIMEOUT_MS,
 ): Promise<BootstrapStatus> {
-  const deadline = Date.now() + BOOTSTRAP_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (signal?.aborted) return { kind: 'error', error: 'aborted during bootstrap' };
     const status = readSessionStatus(sessionDir);

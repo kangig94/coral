@@ -481,13 +481,14 @@ describe('workflow pipe executor', () => {
   });
 
   it('readLaunchBootstrapStatus treats long-running bootstrap as running after timeout', async () => {
+    const testTimeout = 200;
     const launch = registerSession('bootstrap-running', 'codex');
     const started = Date.now();
-    const status = await readLaunchBootstrapStatus(launch.session_dir);
+    const status = await readLaunchBootstrapStatus(launch.session_dir, undefined, testTimeout);
 
     expect(status).toEqual({ kind: 'running' });
-    expect(Date.now() - started).toBeGreaterThanOrEqual(BOOTSTRAP_TIMEOUT_MS - 50);
-  }, BOOTSTRAP_TIMEOUT_MS + 500);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(testTimeout - 50);
+  });
 
   it('formatStepOutput returns empty string for empty results array', () => {
     expect(formatStepOutput([])).toBe('');
