@@ -19,8 +19,7 @@ const reasoningEffortSchema = z
   .enum(['low', 'medium', 'high', 'xhigh'])
   .optional();
 
-const execShape = z.object({
-  op: z.literal('exec'),
+const sessionExecFields = {
   prompt: promptSchema,
   session: sessionRefSchema.optional(),
   name: sessionNameSchema.optional(),
@@ -28,6 +27,11 @@ const execShape = z.object({
   working_directory: cwdSchema,
   reasoning_effort: reasoningEffortSchema,
   bypass: boolDefaultFalse,
+};
+
+const execShape = z.object({
+  op: z.literal('exec'),
+  ...sessionExecFields,
 });
 
 const listShape = z.object({
@@ -65,13 +69,7 @@ export type CodexSessionAbortInput = Omit<z.infer<typeof abortShape>, 'op'>;
 
 export const coralAgentSchema = z.object({
   op: coralOpSchema,
-  prompt: promptSchema,
-  session: sessionRefSchema.optional(),
-  name: sessionNameSchema.optional(),
-  model: modelSchema,
-  working_directory: cwdSchema,
-  reasoning_effort: reasoningEffortSchema,
-  bypass: boolDefaultFalse,
+  ...sessionExecFields,
 });
 
 export type CoralAgentInput = z.infer<typeof coralAgentSchema>;

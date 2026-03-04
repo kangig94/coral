@@ -95,7 +95,7 @@ describe('runner engine spawnCli', () => {
 
   it('enforces global active child cap with structured busy error', async () => {
     for (let i = 0; i < MAX_ACTIVE_CHILDREN; i += 1) {
-      activeChildren.add({ provider: 'codex', child: createMockProcess({ autoClose: false }) as ChildProcess });
+      activeChildren.add({ provider: 'codex', child: createMockProcess({ autoClose: false }) });
     }
 
     await expect(spawnCli({
@@ -117,7 +117,7 @@ describe('runner engine spawnCli', () => {
 
   it('enforces per-provider cap with structured busy error', async () => {
     for (let i = 0; i < MAX_ACTIVE_CHILDREN_PER_PROVIDER; i += 1) {
-      activeChildren.add({ provider: 'claude', child: createMockProcess({ autoClose: false }) as ChildProcess });
+      activeChildren.add({ provider: 'claude', child: createMockProcess({ autoClose: false }) });
     }
 
     await expect(spawnCli({
@@ -176,7 +176,7 @@ describe('runner engine cap boundary and cross-provider accounting', () => {
 
   it('does not block a claude spawn when only codex fills per-provider cap', async () => {
     for (let i = 0; i < MAX_ACTIVE_CHILDREN_PER_PROVIDER; i += 1) {
-      activeChildren.add({ provider: 'codex', child: createMockProcess({ autoClose: false }) as ChildProcess });
+      activeChildren.add({ provider: 'codex', child: createMockProcess({ autoClose: false }) });
     }
 
     const proc = createMockProcess({ stdout: 'ok', closeCode: 0 });
@@ -188,7 +188,7 @@ describe('runner engine cap boundary and cross-provider accounting', () => {
 
   it('does not block a codex spawn when only claude fills per-provider cap', async () => {
     for (let i = 0; i < MAX_ACTIVE_CHILDREN_PER_PROVIDER; i += 1) {
-      activeChildren.add({ provider: 'claude', child: createMockProcess({ autoClose: false }) as ChildProcess });
+      activeChildren.add({ provider: 'claude', child: createMockProcess({ autoClose: false }) });
     }
 
     const proc = createMockProcess({ stdout: 'ok', closeCode: 0 });
@@ -200,11 +200,11 @@ describe('runner engine cap boundary and cross-provider accounting', () => {
 
   it('CliBusyError.detail.providerActive counts only the requesting provider', async () => {
     for (let i = 0; i < MAX_ACTIVE_CHILDREN_PER_PROVIDER; i += 1) {
-      activeChildren.add({ provider: 'codex', child: createMockProcess({ autoClose: false }) as ChildProcess });
+      activeChildren.add({ provider: 'codex', child: createMockProcess({ autoClose: false }) });
     }
     // Claude children must not inflate the codex count.
-    activeChildren.add({ provider: 'claude', child: createMockProcess({ autoClose: false }) as ChildProcess });
-    activeChildren.add({ provider: 'claude', child: createMockProcess({ autoClose: false }) as ChildProcess });
+    activeChildren.add({ provider: 'claude', child: createMockProcess({ autoClose: false }) });
+    activeChildren.add({ provider: 'claude', child: createMockProcess({ autoClose: false }) });
 
     try {
       await spawnCli({ provider: 'codex', command: 'codex', args: ['exec'], prompt: 'x' });
@@ -220,7 +220,7 @@ describe('runner engine cap boundary and cross-provider accounting', () => {
 
   it('allows spawn at MAX-1 active children (off-by-one: >= not >)', async () => {
     for (let i = 0; i < MAX_ACTIVE_CHILDREN - 1; i += 1) {
-      activeChildren.add({ provider: 'codex', child: createMockProcess({ autoClose: false }) as ChildProcess });
+      activeChildren.add({ provider: 'codex', child: createMockProcess({ autoClose: false }) });
     }
 
     const proc = createMockProcess({ stdout: 'allowed', closeCode: 0 });
@@ -232,7 +232,7 @@ describe('runner engine cap boundary and cross-provider accounting', () => {
 
   it('rejects spawn at exactly MAX active children (>= boundary)', async () => {
     for (let i = 0; i < MAX_ACTIVE_CHILDREN; i += 1) {
-      activeChildren.add({ provider: 'codex', child: createMockProcess({ autoClose: false }) as ChildProcess });
+      activeChildren.add({ provider: 'codex', child: createMockProcess({ autoClose: false }) });
     }
 
     await expect(

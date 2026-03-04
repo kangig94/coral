@@ -157,8 +157,12 @@ export function formatElapsed(startedAt: number | undefined): string {
 }
 
 export function appendProgressEvent(filePath: string, eventType: string, message: string): void {
-  try { appendFileSync(filePath, JSON.stringify({ ts: Date.now(), event: eventType, message }) + '\n'); }
-  catch { /* file write must not break execution */ }
+  try {
+    const line = JSON.stringify({ ts: Date.now(), event: eventType, message }) + '\n';
+    appendFileSync(filePath, line);
+  } catch {
+    /* file write must not break execution */
+  }
 }
 
 export type ProgressEvent = { ts: number; event: string; message: string };

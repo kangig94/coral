@@ -11,8 +11,7 @@ import {
 
 const systemPromptSchema = z.string().optional();
 
-const execShape = z.object({
-  op: z.literal('exec'),
+const sessionExecFields = {
   prompt: promptSchema,
   session: sessionRefSchema.optional(),
   name: sessionNameSchema.optional(),
@@ -20,6 +19,11 @@ const execShape = z.object({
   working_directory: cwdSchema,
   system_prompt: systemPromptSchema,
   bypass: boolDefaultFalse,
+};
+
+const execShape = z.object({
+  op: z.literal('exec'),
+  ...sessionExecFields,
 });
 
 const listShape = z.object({
@@ -44,13 +48,7 @@ export type ClaudeSessionAbortInput = Omit<z.infer<typeof abortShape>, 'op'>;
 
 export const coralClaudeSchema = z.object({
   op: coralOpSchema,
-  prompt: promptSchema,
-  session: sessionRefSchema.optional(),
-  name: sessionNameSchema.optional(),
-  model: modelSchema,
-  working_directory: cwdSchema,
-  system_prompt: systemPromptSchema,
-  bypass: boolDefaultFalse,
+  ...sessionExecFields,
 });
 
 export type ClaudeCoralInput = z.infer<typeof coralClaudeSchema>;

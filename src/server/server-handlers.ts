@@ -27,15 +27,10 @@ const waitTool = {
 };
 
 const workflowProviderSchema = (): Record<string, unknown> => {
+  const baseSchema = { type: 'string', description: 'Default provider for atoms without @ override' };
   const providers = getProviderNames();
-  if (providers.length === 0) {
-    return { type: 'string', description: 'Default provider for atoms without @ override' };
-  }
-  return {
-    type: 'string',
-    enum: providers,
-    description: 'Default provider for atoms without @ override',
-  };
+  if (providers.length === 0) return baseSchema;
+  return { ...baseSchema, enum: providers };
 };
 
 function workflowTool() {

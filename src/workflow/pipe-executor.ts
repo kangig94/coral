@@ -387,6 +387,22 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
   );
 }
 
+function emitProgressEvents(
+  agent: string,
+  sessionDir: string,
+  cursor: ProgressCursor,
+  onProgress: (message: string) => void,
+  lastActivityTime: Map<string, number>,
+): void {
+  const events = readProgressEvents(join(sessionDir, PROGRESS_FILE), cursor);
+  if (events.length > 0) {
+    lastActivityTime.set(agent, Date.now());
+  }
+  for (const evt of events) {
+    onProgress(`atom ${agent}: ${evt.message}`);
+  }
+}
+
 export async function waitForAllAtoms(
   atoms: LaunchedAtom[],
   signal: AbortSignal | undefined,
@@ -426,16 +442,7 @@ export async function waitForAllAtoms(
     for (const atom of atoms) {
       const overlay = sessionOverlay.get(atom.agent)!;
       if (!pending.has(overlay.session)) continue;
-
-      const progressFile = join(overlay.sessionDir, PROGRESS_FILE);
-      const cursor = cursors.get(overlay.session)!;
-      const events = readProgressEvents(progressFile, cursor);
-      if (events.length > 0) {
-        lastActivityTime.set(atom.agent, Date.now());
-      }
-      for (const evt of events) {
-        onProgress(`atom ${atom.agent}: ${evt.message}`);
-      }
+      emitProgressEvents(atom.agent, overlay.sessionDir, cursors.get(overlay.session)!, onProgress, lastActivityTime);
     }
 
     for (const atom of atoms) {
@@ -445,15 +452,7 @@ export async function waitForAllAtoms(
       const status = readSessionStatus(overlay.sessionDir);
       if (status.status !== 'completed' && status.status !== 'error') continue;
 
-      const progressFile = join(overlay.sessionDir, PROGRESS_FILE);
-      const cursor = cursors.get(overlay.session)!;
-      const finalEvents = readProgressEvents(progressFile, cursor);
-      if (finalEvents.length > 0) {
-        lastActivityTime.set(atom.agent, Date.now());
-      }
-      for (const evt of finalEvents) {
-        onProgress(`atom ${atom.agent}: ${evt.message}`);
-      }
+      emitProgressEvents(atom.agent, overlay.sessionDir, cursors.get(overlay.session)!, onProgress, lastActivityTime);
 
       pending.delete(overlay.session);
       cursors.delete(overlay.session);

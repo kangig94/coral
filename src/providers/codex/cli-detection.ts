@@ -51,36 +51,30 @@ export function resetCliCache(): void {
 }
 
 async function runProbe(): Promise<CliInfo> {
-  if (cachedCli === null) {
-    const detected = await queryCodexVersion();
-    cachedCli = detected;
-    if (!detected.available) return detected;
-  }
-
-  if (!cachedCli.available) return cachedCli;
+  const cli = cachedCli ?? await queryCodexVersion();
+  cachedCli = cli;
+  if (!cli.available) return cli;
 
   const auth = await queryAuthState();
-  const version = cachedCli.version;
+  const version = cli.version;
+  let nextCli: CliInfo;
 
   if (auth.authState === 'authenticated') {
     confirmedAuth = true;
-    cachedCli = { available: true, version, authState: 'authenticated' };
-    return cachedCli;
-  }
-
-  if (auth.authState === 'unauthenticated') {
-    cachedCli = {
+    nextCli = { available: true, version, authState: 'authenticated' };
+  } else if (auth.authState === 'unauthenticated') {
+    nextCli = {
       available: true,
       version,
       authState: 'unauthenticated',
       authError: auth.authError,
     };
-    return cachedCli;
+  } else {
+    nextCli = { available: true, version, authState: 'unknown' };
   }
 
-  cachedCli = { available: true, version, authState: 'unknown' };
-
-  return cachedCli;
+  cachedCli = nextCli;
+  return nextCli;
 }
 
 function queryCodexVersion(): Promise<CliInfo> {

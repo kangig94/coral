@@ -75,9 +75,10 @@ describe('detectClaudeCli', () => {
 
     const result = await detectClaudeCli();
 
-    expect(result.available).toBe(true);
-    if (!result.available) throw new Error('Expected available result');
-    expect(result.authState).toBe('unauthenticated');
+    expect(result).toMatchObject({
+      available: true,
+      authState: 'unauthenticated',
+    });
   });
 
   it('returns unavailable when claude binary is missing', async () => {
@@ -87,9 +88,10 @@ describe('detectClaudeCli', () => {
 
     const result = await detectClaudeCli();
 
-    expect(result.available).toBe(false);
-    if (result.available) throw new Error('Expected unavailable result');
-    expect(result.error).toContain('not found');
+    expect(result).toEqual(expect.objectContaining({
+      available: false,
+      error: expect.stringContaining('not found'),
+    }));
     expect(mockExecFile).toHaveBeenCalledTimes(1);
   });
 
@@ -110,8 +112,14 @@ describe('detectClaudeCli', () => {
 
     const [first, second] = await Promise.all([detectClaudeCli(), detectClaudeCli()]);
 
-    expect(first.available && first.authState).toBe('unauthenticated');
-    expect(second.available && second.authState).toBe('unauthenticated');
+    expect(first).toMatchObject({
+      available: true,
+      authState: 'unauthenticated',
+    });
+    expect(second).toMatchObject({
+      available: true,
+      authState: 'unauthenticated',
+    });
     expect(versionCalls).toBe(1);
     expect(authCalls).toBe(1);
   });

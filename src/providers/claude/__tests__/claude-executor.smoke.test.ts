@@ -11,12 +11,9 @@ describe.skipIf(!process.env.CORAL_SMOKE_TEST)('claude-executor smoke', () => {
   it('supports --resume with --append-system-prompt', async () => {
     const first = await executeClaudeOneShot('Reply with exactly: READY');
 
-    if (!first.sessionId) {
-      expect(first.sessionId).toBeTruthy();
-      return;
-    }
+    expect(first.sessionId).toBeTruthy();
 
-    const resumed = await executeClaudeResume(first.sessionId, 'Reply with exactly: CONTINUE', {
+    const resumed = await executeClaudeResume(first.sessionId!, 'Reply with exactly: CONTINUE', {
       systemPrompt: 'You are a test assistant. Output exactly one token.',
     });
 

@@ -133,14 +133,15 @@ export async function handleWait(
   const lastSent = new Map<string, string>();
 
   for (const id of sessions) {
+    const unknownSession = `Unknown session: "${id}". No session directory found.`;
     let dir: string;
     try {
       dir = resolveSessionDir(id);
     } catch {
-      return textResult(`Unknown session: "${id}". No session directory found.`, true);
+      return textResult(unknownSession, true);
     }
     if (!existsSync(dir)) {
-      return textResult(`Unknown session: "${id}". No session directory found.`, true);
+      return textResult(unknownSession, true);
     }
 
     const status = readSessionStatus(dir);

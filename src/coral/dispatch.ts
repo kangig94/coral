@@ -16,13 +16,13 @@ export async function handleCoralDispatch(
   const provider = getProvider(toolName);
   if (!provider) return textResult(`Unknown provider: ${toolName}`, true);
 
-  const op = (rawArgs as { op?: unknown }).op;
+  const op = rawArgs.op;
   if (typeof op !== 'string' || !op.startsWith(CORAL_OP_PREFIX)) {
     return textResult(`Invalid coral op: ${String(op ?? '')}`, true);
   }
 
   const coralName = op.slice(CORAL_OP_PREFIX.length);
-  const resolved = resolveCoralContent(coralName);
+  const { content } = resolveCoralContent(coralName);
 
-  return provider.handleCoralOp(coralName, resolved.content, rawArgs, mgr, progressToken, notify);
+  return provider.handleCoralOp(coralName, content, rawArgs, mgr, progressToken, notify);
 }

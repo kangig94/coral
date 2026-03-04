@@ -67,11 +67,11 @@ describe('detectCodexCli', () => {
 
     const result = await detectCodexCli();
 
-    expect(result.available).toBe(true);
-    if (!result.available) throw new Error('expected available result');
-    expect(result.authState).toBe('unauthenticated');
-    if (result.authState !== 'unauthenticated') throw new Error('expected unauthenticated');
-    expect(result.authError).toContain('codex login');
+    expect(result).toEqual(expect.objectContaining({
+      available: true,
+      authState: 'unauthenticated',
+      authError: expect.stringContaining('codex login'),
+    }));
   });
 
   it('returns unauthenticated when stdout alone matches auth pattern', async () => {
@@ -82,9 +82,10 @@ describe('detectCodexCli', () => {
 
     const result = await detectCodexCli();
 
-    expect(result.available).toBe(true);
-    if (!result.available) throw new Error('expected available result');
-    expect(result.authState).toBe('unauthenticated');
+    expect(result).toMatchObject({
+      available: true,
+      authState: 'unauthenticated',
+    });
   });
 
   it('returns unknown when whoami fails without auth-pattern output', async () => {
@@ -117,9 +118,10 @@ describe('detectCodexCli', () => {
 
     const result = await detectCodexCli();
 
-    expect(result.available).toBe(false);
-    if (result.available) throw new Error('expected unavailable result');
-    expect(result.error).toContain('not found');
+    expect(result).toEqual(expect.objectContaining({
+      available: false,
+      error: expect.stringContaining('not found'),
+    }));
     expect(mockExecFile).toHaveBeenCalledTimes(1);
     expect(mockExecFile.mock.calls[0]?.[1]).toEqual(['--version']);
   });
@@ -206,9 +208,10 @@ describe('detectCodexCli', () => {
 
     const result = await detectCodexCli();
 
-    expect(result.available).toBe(true);
-    if (!result.available) throw new Error('expected available');
-    expect(result.authState).toBe('unauthenticated');
+    expect(result).toMatchObject({
+      available: true,
+      authState: 'unauthenticated',
+    });
   });
 
   it('empty string OPENAI_API_KEY falls through to whoami probe', async () => {
@@ -220,9 +223,10 @@ describe('detectCodexCli', () => {
 
     const result = await detectCodexCli();
 
-    expect(result.available).toBe(true);
-    if (!result.available) throw new Error('expected available');
-    expect(result.authState).toBe('authenticated');
+    expect(result).toMatchObject({
+      available: true,
+      authState: 'authenticated',
+    });
   });
 
   it('AUTH_ERROR_PATTERN is case-insensitive', async () => {
@@ -233,9 +237,10 @@ describe('detectCodexCli', () => {
 
     const result = await detectCodexCli();
 
-    expect(result.available).toBe(true);
-    if (!result.available) throw new Error('expected available');
-    expect(result.authState).toBe('unauthenticated');
+    expect(result).toMatchObject({
+      available: true,
+      authState: 'unauthenticated',
+    });
   });
 
   it('auth phrase matched mid-sentence triggers unauthenticated', async () => {
@@ -246,9 +251,10 @@ describe('detectCodexCli', () => {
 
     const result = await detectCodexCli();
 
-    expect(result.available).toBe(true);
-    if (!result.available) throw new Error('expected available');
-    expect(result.authState).toBe('unauthenticated');
+    expect(result).toMatchObject({
+      available: true,
+      authState: 'unauthenticated',
+    });
   });
 
   it('resetCliCache then fresh call re-probes from scratch', async () => {
@@ -293,9 +299,10 @@ describe('detectCodexCli', () => {
     delete process.env.OPENAI_API_KEY;
 
     const second = await detectCodexCli();
-    expect(second.available).toBe(true);
-    if (!second.available) throw new Error('expected available result');
-    expect(second.authState).toBe('unauthenticated');
+    expect(second).toMatchObject({
+      available: true,
+      authState: 'unauthenticated',
+    });
     expect(mockExecFile).toHaveBeenCalledTimes(3);
   });
 });

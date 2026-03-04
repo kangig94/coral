@@ -26,9 +26,7 @@ export async function executeClaudeOneShot(
   options: ClaudeExecOptions = {},
 ): Promise<ClaudeExecResult> {
   const args = ['-p', '--output-format', 'json'];
-  if (options.bypassPermissions) args.push('--dangerously-skip-permissions');
-  if (options.systemPrompt) args.push('--append-system-prompt', options.systemPrompt);
-  if (options.model) args.push('--model', options.model);
+  appendSharedArgs(args, options);
   if (options.sessionId) args.push('--session-id', options.sessionId);
   return executeClaude(args, prompt, options);
 }
@@ -39,10 +37,14 @@ export async function executeClaudeResume(
   options: Omit<ClaudeExecOptions, 'sessionId'> = {},
 ): Promise<ClaudeExecResult> {
   const args = ['-p', '--output-format', 'json', '--resume', sessionId];
+  appendSharedArgs(args, options);
+  return executeClaude(args, prompt, options);
+}
+
+function appendSharedArgs(args: string[], options: ClaudeExecOptions): void {
   if (options.bypassPermissions) args.push('--dangerously-skip-permissions');
   if (options.systemPrompt) args.push('--append-system-prompt', options.systemPrompt);
   if (options.model) args.push('--model', options.model);
-  return executeClaude(args, prompt, options);
 }
 
 async function executeClaude(
@@ -103,4 +105,3 @@ function extractResponseText(parsed: ClaudeJsonOutput): string {
   }
   return '';
 }
-

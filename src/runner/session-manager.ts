@@ -181,14 +181,28 @@ export class SessionManager {
     modelOrWorkingDirectory: string,
     maybeWorkingDirectory?: string,
   ): SessionEntry {
-    const provider: SessionProvider = maybeWorkingDirectory == null
-      ? 'codex'
-      : providerOrId as SessionProvider;
-    const id = maybeWorkingDirectory == null ? providerOrId as string : idOrName;
-    const name = maybeWorkingDirectory == null ? idOrName : nameOrThreadId;
-    const threadId = maybeWorkingDirectory == null ? nameOrThreadId : threadIdOrModel;
-    const model = maybeWorkingDirectory == null ? threadIdOrModel : modelOrWorkingDirectory;
-    const workingDirectory = maybeWorkingDirectory == null ? modelOrWorkingDirectory : maybeWorkingDirectory;
+    let provider: SessionProvider;
+    let id: string;
+    let name: string;
+    let threadId: string;
+    let model: string;
+    let workingDirectory: string;
+
+    if (maybeWorkingDirectory == null) {
+      provider = 'codex';
+      id = providerOrId;
+      name = idOrName;
+      threadId = nameOrThreadId;
+      model = threadIdOrModel;
+      workingDirectory = modelOrWorkingDirectory;
+    } else {
+      provider = providerOrId;
+      id = idOrName;
+      name = nameOrThreadId;
+      threadId = threadIdOrModel;
+      model = modelOrWorkingDirectory;
+      workingDirectory = maybeWorkingDirectory;
+    }
 
     const now = new Date().toISOString();
     const entry: SessionEntry = {
@@ -208,8 +222,8 @@ export class SessionManager {
   get(provider: SessionProvider, id: string): SessionEntry | null;
   get(id: string): SessionEntry | null;
   get(providerOrId: SessionProvider | string, maybeId?: string): SessionEntry | null {
-    const provider: SessionProvider = maybeId == null ? 'codex' : providerOrId as SessionProvider;
-    const id = maybeId == null ? providerOrId as string : maybeId;
+    const provider: SessionProvider = maybeId == null ? 'codex' : providerOrId;
+    const id = maybeId == null ? providerOrId : maybeId;
     const entry = this.readSession(id);
     if (!entry || entry.provider !== provider) return null;
     return entry;
@@ -235,9 +249,10 @@ export class SessionManager {
     idOrFields?: string | { model?: string; threadId?: string },
     maybeFields?: { model?: string; threadId?: string },
   ): void {
-    const provider: SessionProvider = typeof idOrFields === 'string' ? providerOrId as SessionProvider : 'codex';
-    const id = typeof idOrFields === 'string' ? idOrFields : providerOrId as string;
-    const fields = typeof idOrFields === 'string' ? maybeFields : idOrFields;
+    const hasProvider = typeof idOrFields === 'string';
+    const provider: SessionProvider = hasProvider ? providerOrId : 'codex';
+    const id = hasProvider ? idOrFields : providerOrId;
+    const fields = hasProvider ? maybeFields : idOrFields;
 
     const entry = this.readSession(id);
     if (!entry || entry.provider !== provider) return;
@@ -251,8 +266,8 @@ export class SessionManager {
   remove(provider: SessionProvider, id: string): boolean;
   remove(id: string): boolean;
   remove(providerOrId: SessionProvider | string, maybeId?: string): boolean {
-    const provider: SessionProvider = maybeId == null ? 'codex' : providerOrId as SessionProvider;
-    const id = maybeId == null ? providerOrId as string : maybeId;
+    const provider: SessionProvider = maybeId == null ? 'codex' : providerOrId;
+    const id = maybeId == null ? providerOrId : maybeId;
     const entry = this.readSession(id);
     if (!entry || entry.provider !== provider) return false;
 

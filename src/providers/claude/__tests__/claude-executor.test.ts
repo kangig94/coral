@@ -190,18 +190,14 @@ describe('claude-executor', () => {
       aborted: false,
     });
 
-    await expect(executeClaudeOneShot('bad output')).rejects.toBeInstanceOf(ClaudeExecParseError);
+    const error = await executeClaudeOneShot('bad output').catch((caught: unknown) => caught);
 
-    try {
-      await executeClaudeOneShot('bad output');
-    } catch (error: unknown) {
-      expect(error).toBeInstanceOf(ClaudeExecParseError);
-      const parseError = error as ClaudeExecParseError;
-      expect(parseError.failure).toEqual(expect.objectContaining({
-        exitCode: 17,
-        stdout: 'not-json-output',
-        stderr: 'stderr text',
-      }));
-    }
+    expect(error).toBeInstanceOf(ClaudeExecParseError);
+    if (!(error instanceof ClaudeExecParseError)) return;
+    expect(error.failure).toEqual(expect.objectContaining({
+      exitCode: 17,
+      stdout: 'not-json-output',
+      stderr: 'stderr text',
+    }));
   });
 });

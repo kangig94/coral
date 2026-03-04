@@ -7,9 +7,7 @@ let bootstrapped = false;
 
 export function registerBuiltInProviders(extraAdapters: ProviderAdapter[] = []): void {
   if (bootstrapped) return;
-  registerProvider(codexAdapter);
-  registerProvider(claudeAdapter);
-  for (const adapter of extraAdapters) {
+  for (const adapter of [codexAdapter, claudeAdapter, ...extraAdapters]) {
     registerProvider(adapter);
   }
   bootstrapped = true;
