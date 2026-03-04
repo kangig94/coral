@@ -9,6 +9,7 @@ import {
 } from '../runner/progress.js';
 import type { SessionProvider } from '../runner/types.js';
 import type { McpResult } from '../shared/mcp-utils.js';
+import type { EffortLevel } from '../shared/schemas.js';
 import type { PipeAtom, PipelineAST } from './types.js';
 
 export const BUSY_PREFIX = 'Runner is busy (';
@@ -27,7 +28,7 @@ type WorkflowArgs = Record<string, Record<string, unknown>>;
 type AtomExecutionParams = {
   model?: string;
   working_directory?: string;
-  effort?: string;
+  effort?: EffortLevel;
 };
 
 type AtomPromptContext = {
@@ -205,7 +206,7 @@ function splitAtomArgs(stepIndex: number, atomName: string, args: Record<string,
       if (typeof value !== 'string') {
         throw new Error(`Step ${stepIndex + 1}, atom '${atomName}' args.effort must be a string`);
       }
-      executionParams.effort = value;
+      executionParams.effort = value as EffortLevel;
       continue;
     }
     if (key === 'files') {

@@ -22,7 +22,7 @@ const PARSE_FAILURE_SENTINEL: ParsedClaudeStreamOutput = {
 };
 
 export function parseClaudeStreamJson(output: string): ParsedClaudeStreamOutput {
-  const lines = output.split('\n').filter((line) => line.trim());
+  const lines = output.split('\n').filter(Boolean);
   if (lines.length > 1) {
     return parseNdjson(lines);
   }

@@ -11,6 +11,22 @@ import type { McpResult } from '../../shared/mcp-utils.js';
 let tmpDir = '';
 const defaultPluginRoot = process.cwd();
 
+const okResult: McpResult = { content: [{ type: 'text', text: 'ok' }], isError: false };
+
+function makeMockProvider(
+  handleCoralOp: ProviderAdapter['handleCoralOp'],
+  name = 'mock-provider',
+): ProviderAdapter {
+  return {
+    name,
+    tool: { name, description: 'mock', inputSchema: {} },
+    handleOp: async () => ({ content: [{ type: 'text', text: 'unused' }], isError: false }),
+    handleCoralOp,
+    extractCompletion: () => ({ responseText: '', metadata: {} }),
+    makeOnEvent: () => () => {},
+  };
+}
+
 describe('coral dispatch', () => {
   beforeEach(() => {
     _resetProvidersForTests();
@@ -27,17 +43,8 @@ describe('coral dispatch', () => {
   });
 
   it('routes coral dispatch to the registered provider adapter', async () => {
-    const okResult: McpResult = { content: [{ type: 'text', text: 'ok' }], isError: false };
     const handleCoralOp = vi.fn<ProviderAdapter['handleCoralOp']>(async () => okResult);
-    const adapter: ProviderAdapter = {
-      name: 'mock-provider',
-      tool: { name: 'mock-provider', description: 'mock', inputSchema: {} },
-      handleOp: async () => ({ content: [{ type: 'text', text: 'unused' }], isError: false }),
-      handleCoralOp,
-      extractCompletion: () => ({ responseText: '', metadata: {} }),
-      makeOnEvent: () => () => {},
-    };
-    registerProvider(adapter);
+    registerProvider(makeMockProvider(handleCoralOp));
 
     const mgr = {} as SessionManager;
     const result = await handleCoralDispatch(
@@ -59,17 +66,8 @@ describe('coral dispatch', () => {
   });
 
   it('defaults effort to xhigh when not specified', async () => {
-    const handleCoralOp = vi.fn<ProviderAdapter['handleCoralOp']>(
-      async () => ({ content: [{ type: 'text', text: 'ok' }], isError: false }),
-    );
-    registerProvider({
-      name: 'mock-provider',
-      tool: { name: 'mock-provider', description: 'mock', inputSchema: {} },
-      handleOp: async () => ({ content: [{ type: 'text', text: 'unused' }], isError: false }),
-      handleCoralOp,
-      extractCompletion: () => ({ responseText: '', metadata: {} }),
-      makeOnEvent: () => () => {},
-    });
+    const handleCoralOp = vi.fn<ProviderAdapter['handleCoralOp']>(async () => okResult);
+    registerProvider(makeMockProvider(handleCoralOp));
 
     await handleCoralDispatch('mock-provider', { op: 'coral:architect', prompt: 'go' }, {} as SessionManager);
 
@@ -78,17 +76,8 @@ describe('coral dispatch', () => {
   });
 
   it('preserves explicit effort and does not override with xhigh', async () => {
-    const handleCoralOp = vi.fn<ProviderAdapter['handleCoralOp']>(
-      async () => ({ content: [{ type: 'text', text: 'ok' }], isError: false }),
-    );
-    registerProvider({
-      name: 'mock-provider',
-      tool: { name: 'mock-provider', description: 'mock', inputSchema: {} },
-      handleOp: async () => ({ content: [{ type: 'text', text: 'unused' }], isError: false }),
-      handleCoralOp,
-      extractCompletion: () => ({ responseText: '', metadata: {} }),
-      makeOnEvent: () => () => {},
-    });
+    const handleCoralOp = vi.fn<ProviderAdapter['handleCoralOp']>(async () => okResult);
+    registerProvider(makeMockProvider(handleCoralOp));
 
     await handleCoralDispatch('mock-provider', { op: 'coral:architect', prompt: 'go', effort: 'low' }, {} as SessionManager);
 
@@ -108,14 +97,7 @@ describe('coral dispatch', () => {
   });
 
   it('throws missing-content errors from resolver with stable shape', async () => {
-    registerProvider({
-      name: 'mock-provider',
-      tool: { name: 'mock-provider', description: 'mock', inputSchema: {} },
-      handleOp: async () => ({ content: [{ type: 'text', text: 'unused' }], isError: false }),
-      handleCoralOp: async () => ({ content: [{ type: 'text', text: 'unused' }], isError: false }),
-      extractCompletion: () => ({ responseText: '', metadata: {} }),
-      makeOnEvent: () => () => {},
-    });
+    registerProvider(makeMockProvider(async () => okResult));
 
     await expect(handleCoralDispatch(
       'mock-provider',
@@ -134,14 +116,10 @@ describe('dispatch — op field type coercion and boundary values', () => {
     mkdirSync(join(tmpDir, 'agents'), { recursive: true });
     writeFileSync(join(tmpDir, 'agents', 'architect.md'), '# Architect\nBody\n');
     resolverTest.setPluginRoot(tmpDir);
-    registerProvider({
-      name: 'mock-p',
-      tool: { name: 'mock-p', description: 'mock', inputSchema: {} },
-      handleOp: async () => ({ content: [{ type: 'text', text: 'op' }], isError: false }),
-      handleCoralOp: async () => ({ content: [{ type: 'text', text: 'coral-ok' }], isError: false }),
-      extractCompletion: () => ({ responseText: '', metadata: {} }),
-      makeOnEvent: () => () => {},
-    });
+    registerProvider(makeMockProvider(
+      async () => ({ content: [{ type: 'text', text: 'coral-ok' }], isError: false }),
+      'mock-p',
+    ));
   });
 
   afterEach(() => {
@@ -195,18 +173,9 @@ describe('dispatch — op field type coercion and boundary values', () => {
   });
 
   it('numeric progressToken passes through to handleCoralOp unchanged', async () => {
-    const spy = vi.fn<ProviderAdapter['handleCoralOp']>(
-      async () => ({ content: [{ type: 'text', text: 'ok' }], isError: false }),
-    );
+    const spy = vi.fn<ProviderAdapter['handleCoralOp']>(async () => okResult);
     _resetProvidersForTests();
-    registerProvider({
-      name: 'mock-p',
-      tool: { name: 'mock-p', description: 'mock', inputSchema: {} },
-      handleOp: async () => ({ content: [{ type: 'text', text: 'op' }], isError: false }),
-      handleCoralOp: spy,
-      extractCompletion: () => ({ responseText: '', metadata: {} }),
-      makeOnEvent: () => () => {},
-    });
+    registerProvider(makeMockProvider(spy, 'mock-p'));
 
     await handleCoralDispatch('mock-p', { op: 'coral:architect' }, nullMgr, 99);
 
@@ -215,18 +184,9 @@ describe('dispatch — op field type coercion and boundary values', () => {
   });
 
   it('undefined notify passes through to handleCoralOp as undefined', async () => {
-    const spy = vi.fn<ProviderAdapter['handleCoralOp']>(
-      async () => ({ content: [{ type: 'text', text: 'ok' }], isError: false }),
-    );
+    const spy = vi.fn<ProviderAdapter['handleCoralOp']>(async () => okResult);
     _resetProvidersForTests();
-    registerProvider({
-      name: 'mock-p',
-      tool: { name: 'mock-p', description: 'mock', inputSchema: {} },
-      handleOp: async () => ({ content: [{ type: 'text', text: 'op' }], isError: false }),
-      handleCoralOp: spy,
-      extractCompletion: () => ({ responseText: '', metadata: {} }),
-      makeOnEvent: () => () => {},
-    });
+    registerProvider(makeMockProvider(spy, 'mock-p'));
 
     await handleCoralDispatch('mock-p', { op: 'coral:architect' }, nullMgr, undefined, undefined);
 

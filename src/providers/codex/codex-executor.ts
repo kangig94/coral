@@ -8,6 +8,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { CodexExecResult } from '../../types.js';
 import { spawnCli, activeChildren, killAllChildren as killAllRunnerChildren } from '../../runner/engine.js';
+import type { EffortLevel } from '../../shared/schemas.js';
 import { parseCodexJsonl } from './output-parser.js';
 import { detectCodexCli, type CliInfo } from './cli-detection.js';
 
@@ -134,7 +135,7 @@ function baseFlags(bypassSandbox: boolean): string[] {
 }
 
 /** Build optional CLI flags for effort. */
-function extraFlags(effort?: string): string[] {
+function extraFlags(effort?: EffortLevel): string[] {
   return effort ? ['-c', `model_reasoning_effort=${effort}`] : [];
 }
 
@@ -143,7 +144,7 @@ export async function executeOneShot(
   prompt: string,
   model?: string,
   cwd?: string,
-  effort?: string,
+  effort?: EffortLevel,
   bypassSandbox = false,
   onEvent?: (line: string) => void,
   signal?: AbortSignal,
@@ -162,7 +163,7 @@ export async function executeResume(
   prompt: string,
   model?: string,
   cwd?: string,
-  effort?: string,
+  effort?: EffortLevel,
   bypassSandbox = false,
   onEvent?: (line: string) => void,
   signal?: AbortSignal,
@@ -186,7 +187,7 @@ export async function executeFork(
   prompt?: string,
   model?: string,
   cwd?: string,
-  effort?: string,
+  effort?: EffortLevel,
   bypassSandbox = false,
   onEvent?: (line: string) => void,
   signal?: AbortSignal,

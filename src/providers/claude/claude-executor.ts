@@ -1,4 +1,5 @@
 import { spawnCli } from '../../runner/engine.js';
+import type { EffortLevel } from '../../shared/schemas.js';
 import { parseClaudeStreamJson, type ParsedClaudeStreamOutput } from './output-parser.js';
 import type { ClaudeExecFailure, ClaudeExecResult } from './types.js';
 
@@ -6,7 +7,7 @@ export type ClaudeExecOptions = {
   model?: string;
   workingDirectory?: string;
   systemPrompt?: string;
-  effort?: string;
+  effort?: EffortLevel;
   sessionId?: string;
   bypassPermissions?: boolean;
   signal?: AbortSignal;

@@ -21,6 +21,10 @@ export const boolDefaultFalse = z.boolean().default(false);
 
 export const effortSchema = z.enum(['low', 'medium', 'high', 'xhigh']).optional();
 
+export type EffortLevel = z.infer<typeof effortSchema>;
+
+export const CORAL_DEFAULT_EFFORT = 'xhigh' as const;
+
 export const coralOpSchema = z
   .string()
   .regex(
