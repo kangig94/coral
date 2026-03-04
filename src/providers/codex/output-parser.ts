@@ -3,15 +3,13 @@
  * Ref: codex-rs/exec/src/exec_events.rs
  */
 
+import { isRecord } from '../../shared/mcp-utils.js';
+
 export interface ParsedCodexOutput {
   response: string;
   sessionId: string | null;
   errors: string[];
   warnings: string[];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 /**

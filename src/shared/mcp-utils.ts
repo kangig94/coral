@@ -3,6 +3,16 @@
 /** MCP CallTool response shape. */
 export type McpResult = { content: [{ type: 'text'; text: string }]; isError: boolean };
 
+/** Check if an error is an ENOENT (file not found) error. */
+export function isNoEntryError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
+/** Runtime check for plain objects (non-null, non-array). */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
 /** Identifier pattern: alphanumeric start, allows dots, hyphens, underscores. */
 export const identPattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 

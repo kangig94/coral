@@ -6,13 +6,12 @@ import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { getProvider, getProviderNames } from '../providers/registry.js';
 import type { SessionManager } from '../runner/session-manager.js';
 import type { SessionProvider } from '../runner/types.js';
+import type { NotifyFn } from '../providers/types.js';
 import { type McpResult, textResult } from '../shared/mcp-utils.js';
 import { executePipeline, type AtomDispatchFn } from './pipe-executor.js';
 import { parseExpression } from './pipe-parser.js';
 import { workflowInputSchema } from './schemas.js';
 import type { PipelineAST } from './types.js';
-
-type NotifyFn = (n: { method: string; params: Record<string, unknown> }) => Promise<void>;
 
 type ToolCallFn = (
   name: SessionProvider,

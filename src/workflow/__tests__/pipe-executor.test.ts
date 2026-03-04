@@ -1140,7 +1140,7 @@ describe('workflow pipe executor', () => {
         if (session === stale.session) writeSessionError(stale.session_dir, 'stale abort');
       });
       const dispatch = vi.fn<AtomDispatchFn>(async () => ({
-        content: [],
+        content: [] as unknown as [{ type: 'text'; text: string }],
         isError: false,
       }));
       await expect(

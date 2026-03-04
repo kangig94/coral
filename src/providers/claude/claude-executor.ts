@@ -1,4 +1,5 @@
 import { spawnCli } from '../../runner/engine.js';
+import { isRecord } from '../../shared/mcp-utils.js';
 import type { ClaudeExecFailure, ClaudeExecResult, ClaudeJsonOutput } from './types.js';
 
 export type ClaudeExecOptions = {
@@ -103,6 +104,3 @@ function extractResponseText(parsed: ClaudeJsonOutput): string {
   return '';
 }
 
-function isRecord(value: unknown): value is Record<string, any> {
-  return value !== null && typeof value === 'object';
-}

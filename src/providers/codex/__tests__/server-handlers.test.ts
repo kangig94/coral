@@ -52,11 +52,11 @@ import {
   handleSessionCreate,
   handleSessionSend,
   handleSessionFork,
-  handleSessionList,
-  handleSessionAbort,
-  handleToolCall,
+  handleCodexSessionList,
+  handleCodexSessionAbort,
+  handleCodexOp,
   handleCodexCoralOp,
-  tools,
+  codexTool,
 } from '../server-handlers.js';
 
 function makeExecResult(overrides: Partial<CodexExecResult> = {}): CodexExecResult {
@@ -164,7 +164,7 @@ describe('session handlers', () => {
     expect(data.thread_id).toBe('thread-fork-1');
   });
 
-  it('handleSessionAbort aborts by single UUID session', async () => {
+  it('handleCodexSessionAbort aborts by single UUID session', () => {
     const sessionId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
     const controller = new AbortController();
     activeSessions.set(sessionId, {
@@ -175,7 +175,7 @@ describe('session handlers', () => {
       terminalState: 'running',
     } as never);
 
-    const result = await handleSessionAbort({ session: sessionId }, mgr);
+    const result = handleCodexSessionAbort({ session: sessionId });
     const data = JSON.parse(result.content[0].text);
     expect(result.isError).toBe(false);
     expect(data.status).toBe('abort_requested');
@@ -183,18 +183,18 @@ describe('session handlers', () => {
   });
 });
 
-describe('tool routing', () => {
+describe('handleCodexOp routing', () => {
   it('exec resume with UUID succeeds', async () => {
     const sessionId = '11111111-1111-4111-8111-111111111111';
     mgr.register(sessionId, 'session-1', 'thread-1', 'o4-mini', '/workspace');
 
-    const result = await handleToolCall('codex', { op: 'exec', session: sessionId, prompt: 'hi' }, mgr);
+    const result = await handleCodexOp({ op: 'exec', session: sessionId, prompt: 'hi' }, mgr);
     expect(result.isError).toBe(false);
     expect(executeResume).toHaveBeenCalled();
   });
 
-  it('coral:* op is no longer handled inside codex adapter handleToolCall', async () => {
-    const result = await handleToolCall('codex', { op: 'coral:scanner', prompt: 'scan' }, mgr);
+  it('coral:* op returns unknown_op in codex adapter', async () => {
+    const result = await handleCodexOp({ op: 'coral:scanner', prompt: 'scan' }, mgr);
     expect(result.isError).toBe(false);
     expect(result.content[0].text).toContain('"error": "unknown_op"');
   });
@@ -202,7 +202,7 @@ describe('tool routing', () => {
 
 describe('handleCodexCoralOp', () => {
   it('op description provides a concrete coral: example', () => {
-    const opProp = tools[0].inputSchema.properties.op as { description?: string };
+    const opProp = codexTool.inputSchema.properties.op as { description?: string };
     expect(opProp.description).toMatch(/coral:[a-z]/);
   });
 

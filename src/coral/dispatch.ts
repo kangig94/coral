@@ -4,7 +4,7 @@ import type { SessionManager } from '../runner/session-manager.js';
 import { type McpResult, textResult } from '../shared/mcp-utils.js';
 import { resolveCoralContent } from './resolver.js';
 
-const CORAL_OP_PREFIX = 'coral:';
+export const CORAL_OP_PREFIX = 'coral:';
 
 export async function handleCoralDispatch(
   toolName: string,

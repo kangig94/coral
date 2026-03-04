@@ -5,18 +5,6 @@
  */
 export type SessionProvider = string;
 
-export type ExecResult = {
-  response: string;
-  sessionId: string | null;
-  model: string;
-  durationMs: number;
-  aborted: boolean;
-  costUsd?: number;
-  exitCode?: number | null;
-  errors?: string[];
-  warnings?: string[];
-};
-
 export type SessionEntry = {
   id: string;
   provider: SessionProvider;

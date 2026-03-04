@@ -9,13 +9,13 @@ import {
   type ClaudeSessionAbortInput,
 } from './schemas.js';
 import {
-  activeSessions,
   launchJob as launchRunnerJob,
   type OnEventCallback,
 } from '../../runner/job-manager.js';
 import type { SessionManager } from '../../runner/session-manager.js';
 import type { CompletionMetadata } from '../../runner/types.js';
 import { type McpResult, textResult, jsonResult } from '../../shared/mcp-utils.js';
+import { sessionNotFoundError, handleSessionList, handleSessionAbort } from '../session-ops.js';
 import { stripAgentMetadata } from '../../coral/resolver.js';
 import type { ProviderAdapter, NotifyFn } from '../types.js';
 
@@ -37,13 +37,6 @@ export const claudeTool = {
     required: ['op'],
   },
 };
-
-function claudeSessionNotFoundError(ref: string): McpResult {
-  return textResult(
-    `Session not found: "${ref}". To resume, use a coral session UUID. Use claude({ op: "list" }) to see registered sessions, or claude({ op: "exec" }) to start a new session.`,
-    true,
-  );
-}
 
 const noopEventCallback: OnEventCallback = () => {};
 
@@ -178,7 +171,7 @@ export async function handleClaudeSessionSend(
   sourceSessionId?: string,
 ): Promise<McpResult> {
   const entry = mgr.get('claude', input.session);
-  if (!entry) return claudeSessionNotFoundError(input.session);
+  if (!entry) return sessionNotFoundError(input.session, 'claude');
 
   const sessionName = entry.name;
   const workingDirectory = input.working_directory ?? entry.workingDirectory;
@@ -228,34 +221,11 @@ export async function handleClaudeSessionSend(
 }
 
 export function handleClaudeSessionList(mgr: SessionManager): McpResult {
-  const registered = mgr.list('claude').map((s) => {
-    const active = activeSessions.get(s.id);
-    const owner = active?.provider ?? 'codex';
-    return {
-      name: s.name,
-      session: s.id,
-      model: s.model,
-      created_at: s.createdAt,
-      last_used_at: s.lastUsedAt,
-      working_directory: s.workingDirectory,
-      status: owner === 'claude' && active?.terminalState === 'running' ? 'running' : 'completed',
-    };
-  });
-
-  return jsonResult({ sessions: registered, total: registered.length });
+  return handleSessionList(mgr, 'claude');
 }
 
-export async function handleClaudeSessionAbort(input: ClaudeSessionAbortInput): Promise<McpResult> {
-  const entry = activeSessions.get(input.session);
-  if (!entry || entry.provider !== 'claude') {
-    return textResult(
-      `No active execution found for session "${input.session}". The session may have already completed or the ID is invalid.`,
-      true,
-    );
-  }
-
-  entry.controller.abort();
-  return jsonResult({ session: input.session, session_name: entry.sessionName, status: 'abort_requested' });
+export function handleClaudeSessionAbort(input: ClaudeSessionAbortInput): McpResult {
+  return handleSessionAbort(input.session, 'claude');
 }
 
 export async function handleClaudeCoralOp(
@@ -276,7 +246,7 @@ export async function handleClaudeCoralOp(
 
   if (input.session) {
     const entry = sessionManager.get('claude', input.session);
-    if (!entry) return claudeSessionNotFoundError(input.session);
+    if (!entry) return sessionNotFoundError(input.session, 'claude');
 
     const sendInput: ClaudeSessionSendInput = {
       session: input.session,
@@ -336,7 +306,7 @@ export async function handleClaudeOp(
 
       if (sessionRef) {
         const entry = sessionManager.get('claude', sessionRef);
-        if (!entry) return claudeSessionNotFoundError(sessionRef);
+        if (!entry) return sessionNotFoundError(sessionRef, 'claude');
 
         const sendInput: ClaudeSessionSendInput = { ...rest, session: sessionRef };
         return launchClaudeJob(

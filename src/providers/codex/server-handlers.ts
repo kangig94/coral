@@ -22,12 +22,12 @@ import {
   appendProgressEvent,
 } from './progress.js';
 import {
-  activeSessions,
   launchJob as launchRunnerJob,
   type OnEventCallback,
 } from '../../runner/job-manager.js';
 import type { CompletionMetadata } from '../../runner/types.js';
 import { type McpResult, textResult, jsonResult } from '../../shared/mcp-utils.js';
+import { sessionNotFoundError, handleSessionList, handleSessionAbort } from '../session-ops.js';
 import { resultExtras } from './mcp-utils.js';
 import type { NotifyFn, ProviderAdapter } from '../types.js';
 
@@ -52,16 +52,6 @@ export const codexTool = {
     required: ['op'],
   },
 };
-
-export const tools = [codexTool];
-
-/** Session-not-found error message with recovery hint. */
-export function sessionNotFoundError(ref: string): McpResult {
-  return textResult(
-    `Session not found: "${ref}". To resume, use a coral session UUID. Use codex({ op: "list" }) to see registered sessions, or codex({ op: "exec" }) to start a new session.`,
-    true,
-  );
-}
 
 export function makeEventCallback(progressFile: string): OnEventCallback {
   return (line: string) => {
@@ -186,7 +176,7 @@ export async function handleSessionSend(
   sourceSessionId?: string,
 ): Promise<McpResult> {
   const entry = mgr.get('codex', input.session);
-  if (!entry) return sessionNotFoundError(input.session);
+  if (!entry) return sessionNotFoundError(input.session, 'codex');
   const sessionName = entry.name;
   const workingDirectory = input.working_directory ?? entry.workingDirectory;
   const modelUpdate = input.model ? { model: input.model } : undefined;
@@ -216,22 +206,8 @@ export async function handleSessionSend(
   });
 }
 
-export function handleSessionList(mgr: SessionManager): McpResult {
-  const registered = mgr.list('codex').map((s) => {
-    const active = activeSessions.get(s.id);
-    const owner = active?.provider ?? 'codex';
-    return {
-      name: s.name,
-      session: s.id,
-      model: s.model,
-      created_at: s.createdAt,
-      last_used_at: s.lastUsedAt,
-      working_directory: s.workingDirectory,
-      status: owner === 'codex' && active?.terminalState === 'running' ? 'running' : 'completed',
-    };
-  });
-
-  return jsonResult({ sessions: registered, total: registered.length });
+export function handleCodexSessionList(mgr: SessionManager): McpResult {
+  return handleSessionList(mgr, 'codex');
 }
 
 export async function handleSessionFork(
@@ -242,7 +218,7 @@ export async function handleSessionFork(
   preChecked?: CliInfo & { available: true },
 ): Promise<McpResult> {
   const entry = mgr.get('codex', input.session);
-  if (!entry) return sessionNotFoundError(input.session);
+  if (!entry) return sessionNotFoundError(input.session, 'codex');
 
   const cwd = input.working_directory ?? entry.workingDirectory;
   const result = await executeFork(
@@ -268,17 +244,8 @@ export async function handleSessionFork(
   });
 }
 
-export async function handleSessionAbort(input: CodexSessionAbortInput, _mgr: SessionManager): Promise<McpResult> {
-  const entry = activeSessions.get(input.session);
-  if (!entry || entry.provider !== 'codex') {
-    return textResult(
-      `No active execution found for session "${input.session}". The session may have already completed or the ID is invalid.`,
-      true,
-    );
-  }
-
-  entry.controller.abort();
-  return jsonResult({ session: input.session, session_name: entry.sessionName, status: 'abort_requested' });
+export function handleCodexSessionAbort(input: CodexSessionAbortInput): McpResult {
+  return handleSessionAbort(input.session, 'codex');
 }
 
 async function handleParsedCodexOp(
@@ -293,7 +260,7 @@ async function handleParsedCodexOp(
       if (sessionRef) {
         const { name: _name, ...sendRest } = rest;
         const entry = sessionManager.get('codex', sessionRef);
-        if (!entry) return sessionNotFoundError(sessionRef);
+        if (!entry) return sessionNotFoundError(sessionRef, 'codex');
 
         const preflight = await preflightCliCheck();
         if (!preflight.pass) return preflight.result;
@@ -320,11 +287,11 @@ async function handleParsedCodexOp(
       );
     }
     case 'list':
-      return handleSessionList(sessionManager);
+      return handleCodexSessionList(sessionManager);
     case 'fork': {
       const { op: _op, ...forkInput } = input;
       const entry = sessionManager.get('codex', forkInput.session);
-      if (!entry) return sessionNotFoundError(forkInput.session);
+      if (!entry) return sessionNotFoundError(forkInput.session, 'codex');
 
       const preflight = await preflightCliCheck();
       if (!preflight.pass) return preflight.result;
@@ -338,7 +305,7 @@ async function handleParsedCodexOp(
       );
     }
     case 'abort':
-      return handleSessionAbort(input, sessionManager);
+      return handleCodexSessionAbort(input);
     default: {
       const _exhaustive: never = input;
       return textResult(`Unhandled op: ${(_exhaustive as CodexOpInput).op}`, true);
@@ -363,7 +330,7 @@ export async function handleCodexCoralOp(
   if (input.session) {
     const entry = mgr.get('codex', input.session);
     if (!entry) {
-      return sessionNotFoundError(input.session);
+      return sessionNotFoundError(input.session, 'codex');
     }
 
     const preflight = await preflightCliCheck();
@@ -421,30 +388,6 @@ export async function handleCodexOp(
   }
 
   return handleParsedCodexOp(parsed.data, sessionManager, progressToken, notify);
-}
-
-/**
- * MCP tool call dispatcher. Routes tool calls to handlers.
- * Catches Zod validation errors and returns them as MCP error responses.
- */
-export async function handleToolCall(
-  name: string,
-  rawArgs: Record<string, unknown>,
-  sessionManager: SessionManager,
-  progressToken?: string | number,
-  notify?: NotifyFn,
-): Promise<McpResult> {
-  try {
-    if (name !== 'codex') {
-      return textResult(`Unknown tool: ${name}`, true);
-    }
-
-    return await handleCodexOp(rawArgs, sessionManager, progressToken, notify);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`Tool ${name} error: ${message}\n`);
-    return textResult(`Error: ${message}`, true);
-  }
 }
 
 export const codexAdapter: ProviderAdapter = {

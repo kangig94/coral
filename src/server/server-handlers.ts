@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { handleCoralDispatch } from '../coral/dispatch.js';
+import { CORAL_OP_PREFIX, handleCoralDispatch } from '../coral/dispatch.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { getAllTools, getProvider, getProviderNames } from '../providers/registry.js';
 import type { NotifyFn } from '../providers/types.js';
@@ -7,8 +7,6 @@ import { handleWait } from '../runner/job-manager.js';
 import { SessionManager } from '../runner/session-manager.js';
 import { type McpResult, textResult } from '../shared/mcp-utils.js';
 import { handleWorkflow } from '../workflow/handler.js';
-
-const CORAL_OP_PREFIX = 'coral:';
 
 const waitToolSchema = z.object({
   sessions: z.array(z.string().uuid()).min(1, 'At least one session required'),

@@ -11,6 +11,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { isNoEntryError } from '../shared/mcp-utils.js';
 import type { SessionProvider } from './types.js';
 
 export type SessionStatus = {
@@ -32,9 +33,8 @@ export const PROGRESS_FILE = 'progress.jsonl';
 const READ_CHUNK = 8 * 1024;
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function isNoEntryError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
-}
+/** Shared read buffer — safe to reuse because readSync is synchronous (single-threaded). */
+const readBuffer = Buffer.alloc(READ_CHUNK);
 
 function readNewProgressLines(progressFile: string, cursor: ProgressCursor): string[] {
   let fd: number;
@@ -47,14 +47,13 @@ function readNewProgressLines(progressFile: string, cursor: ProgressCursor): str
 
   try {
     const chunks: string[] = [];
-    const buffer = Buffer.alloc(READ_CHUNK);
     let nextOffset = cursor.lastOffset;
 
     while (true) {
-      const bytesRead = readSync(fd, buffer, 0, READ_CHUNK, nextOffset);
+      const bytesRead = readSync(fd, readBuffer, 0, READ_CHUNK, nextOffset);
       if (bytesRead <= 0) break;
       nextOffset += bytesRead;
-      chunks.push(buffer.toString('utf-8', 0, bytesRead));
+      chunks.push(readBuffer.toString('utf-8', 0, bytesRead));
       if (bytesRead < READ_CHUNK) break;
     }
 

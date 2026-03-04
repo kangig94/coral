@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
+import { isNoEntryError } from '../shared/mcp-utils.js';
 
 declare const __PLUGIN_ROOT__: string;
 let pluginRoot: string = typeof __PLUGIN_ROOT__ === 'string'
@@ -50,10 +51,6 @@ function isValidName(name: string): boolean {
     && !name.includes('..')
     && !name.includes('/')
     && !name.includes('\\');
-}
-
-function isNoEntryError(err: unknown): boolean {
-  return err instanceof Error && (err as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
 function ensureContained(rootDir: string, targetPath: string): void {
