@@ -249,3 +249,28 @@ describe('workflow pipe parser', () => {
     expect(() => parseExpression('architect@')).toThrow('Expected provider after "@"');
   });
 });
+
+describe('@provider suffix boundary values', () => {
+  it('@a (single lowercase char) is accepted as a valid provider suffix', () => {
+    const ast = parseExpression('architect@a');
+    expect(ast[0][0]).toMatchObject({ kind: 'agent', provider: 'a' });
+  });
+
+  it('@1bad (digit start) is rejected by the provider pattern', () => {
+    expect(() => parseExpression('architect@1bad')).toThrow(/Unknown provider/i);
+  });
+
+  it('@Claude (uppercase start) is rejected by the provider pattern', () => {
+    expect(() => parseExpression('architect@Claude')).toThrow(/Unknown provider/i);
+  });
+
+  it('@-bad (hyphen start) is rejected by the provider pattern', () => {
+    expect(() => parseExpression('architect@-bad')).toThrow(/Unknown provider/i);
+  });
+
+  it('@abc- (trailing hyphen) is accepted — providerIdentPattern allows trailing hyphen', () => {
+    expect(() => parseExpression('architect@abc-')).not.toThrow();
+    const ast = parseExpression('architect@abc-');
+    expect(ast[0][0]).toMatchObject({ kind: 'agent', provider: 'abc-' });
+  });
+});

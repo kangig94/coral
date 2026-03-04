@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { McpResult } from '../../shared/mcp-utils.js';
 import {
   _resetProvidersForTests,
@@ -8,13 +8,18 @@ import {
   hasProvider,
   registerProvider,
 } from '../registry.js';
+import {
+  _resetProviderBootstrapForTests,
+  registerBuiltInProviders,
+} from '../bootstrap.js';
 import type { ProviderAdapter } from '../types.js';
 
-function makeAdapter(name: string): ProviderAdapter {
+function makeAdapter(name: string, toolName?: string): ProviderAdapter {
+  const tname = toolName ?? name;
   return {
     name,
     tool: {
-      name,
+      name: tname,
       description: `${name} tool`,
       inputSchema: { type: 'object', properties: {}, required: [] },
     },
@@ -57,5 +62,127 @@ describe('providers registry', () => {
   it('rejects duplicate provider registrations', () => {
     registerProvider(makeAdapter('dup'));
     expect(() => registerProvider(makeAdapter('dup'))).toThrow('already registered');
+  });
+});
+
+describe('registry — zero-state before any registration', () => {
+  beforeEach(() => { _resetProvidersForTests(); });
+  afterEach(() => { _resetProvidersForTests(); });
+
+  it('getAllTools returns empty array before any registration', () => {
+    expect(getAllTools()).toEqual([]);
+  });
+
+  it('getProviderNames returns empty array before any registration', () => {
+    expect(getProviderNames()).toEqual([]);
+  });
+
+  it('hasProvider returns false for a name that was never registered', () => {
+    expect(hasProvider('codex')).toBe(false);
+  });
+
+  it('getProvider returns undefined (not null) for an unregistered name', () => {
+    expect(getProvider('codex')).toBeUndefined();
+  });
+});
+
+describe('registry — guard clause ordering', () => {
+  beforeEach(() => { _resetProvidersForTests(); });
+  afterEach(() => { _resetProvidersForTests(); });
+
+  it('name/tool.name mismatch fires BEFORE reserved-name check', () => {
+    const adapter = makeAdapter('wait', 'workflow');
+    expect(() => registerProvider(adapter)).toThrow(/must match/i);
+  });
+
+  it('reserved-name check fires BEFORE duplicate check', () => {
+    registerProvider(makeAdapter('alpha'));
+    expect(() => registerProvider(makeAdapter('wait'))).toThrow(/reserved/i);
+  });
+
+  it('duplicate check fires when name+tool match and name is not reserved', () => {
+    registerProvider(makeAdapter('beta'));
+    expect(() => registerProvider(makeAdapter('beta'))).toThrow(/already registered/i);
+  });
+});
+
+describe('registry — insertion order and case sensitivity', () => {
+  beforeEach(() => { _resetProvidersForTests(); });
+  afterEach(() => { _resetProvidersForTests(); });
+
+  it('getAllTools and getProviderNames preserve registration insertion order', () => {
+    registerProvider(makeAdapter('zzz'));
+    registerProvider(makeAdapter('aaa'));
+    registerProvider(makeAdapter('mmm'));
+    expect(getProviderNames()).toEqual(['zzz', 'aaa', 'mmm']);
+    expect(getAllTools().map((t) => t.name)).toEqual(['zzz', 'aaa', 'mmm']);
+  });
+
+  it('"waitx" (reserved prefix, different name) is not rejected as reserved', () => {
+    expect(() => registerProvider(makeAdapter('waitx'))).not.toThrow();
+  });
+
+  it('"workflowx" is not rejected as reserved', () => {
+    expect(() => registerProvider(makeAdapter('workflowx'))).not.toThrow();
+  });
+});
+
+describe('bootstrap — empty extra adapters is a no-op beyond built-ins', () => {
+  beforeEach(() => {
+    _resetProvidersForTests();
+    _resetProviderBootstrapForTests();
+  });
+  afterEach(() => {
+    _resetProvidersForTests();
+    _resetProviderBootstrapForTests();
+  });
+
+  it('registerBuiltInProviders([]) registers codex and claude and sets bootstrapped=true', () => {
+    registerBuiltInProviders([]);
+    expect(getProviderNames()).toContain('codex');
+    expect(getProviderNames()).toContain('claude');
+  });
+
+  it('second call to registerBuiltInProviders([]) after first call is idempotent', () => {
+    registerBuiltInProviders([]);
+    expect(() => registerBuiltInProviders([])).not.toThrow();
+    expect(getProviderNames().filter((n) => n === 'codex')).toHaveLength(1);
+  });
+});
+
+describe('bootstrap — extra adapter name collides with built-in', () => {
+  beforeEach(() => {
+    _resetProvidersForTests();
+    _resetProviderBootstrapForTests();
+  });
+  afterEach(() => {
+    _resetProvidersForTests();
+    _resetProviderBootstrapForTests();
+  });
+
+  it('extra adapter named "codex" throws during bootstrap (duplicate after built-in codex)', () => {
+    expect(() => registerBuiltInProviders([makeAdapter('codex')])).toThrow(/already registered/i);
+  });
+
+  it('after failed bootstrap, codex is already in the registry (partial state)', () => {
+    try { registerBuiltInProviders([makeAdapter('codex')]); } catch { /* expected */ }
+    expect(hasProvider('codex')).toBe(true);
+  });
+});
+
+describe('bootstrap — resetting flag without resetting registry', () => {
+  beforeEach(() => {
+    _resetProvidersForTests();
+    _resetProviderBootstrapForTests();
+  });
+  afterEach(() => {
+    _resetProvidersForTests();
+    _resetProviderBootstrapForTests();
+  });
+
+  it('resetting only the bootstrap flag then calling registerBuiltInProviders again throws duplicate', () => {
+    registerBuiltInProviders();
+    _resetProviderBootstrapForTests();
+    expect(() => registerBuiltInProviders()).toThrow(/already registered/i);
   });
 });

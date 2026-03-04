@@ -16,7 +16,7 @@
 │                            ▼                ▼                   ▼         │
 │  ┌────────────────────────────────┐  ┌─────────────────────────────────┐  │
 │  │  MCP Server "ax"               │  │  MCP Server "dc"                │  │
-│  │  (bridge/coral-ax.cjs)      │  │  (bridge/coral-discuss.cjs)     │  │
+│  │  (bridge/coral-ax.cjs)         │  │  (bridge/coral-discuss.cjs)     │  │
 │  │                                │  │                                 │  │
 │  │  Tools: codex + claude + wait  │  │  Tools: discuss (2 ops)         │  │
 │  │         + workflow             │  │    + discuss_lead (7 ops)       │  │
@@ -64,7 +64,7 @@ How the AX MCP server routes tool calls internally. The top-level router (`serve
 │  server-handlers.ts — Top-level Router                           │
 │                                                                  │
 │  provider in registry?   YES → provider.handleOp / handleCoralOp │
-│                          NO  → wait/workflow/unknown tool         │
+│                          NO  → wait/workflow/unknown tool        │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -145,23 +145,24 @@ handleWorkflow()                              workflow/handler.ts
                     │  MCP Client  │
                     └──────┬───────┘
                            │
-              ┌────────────┼────────────┬──────────┐
-              ▼            ▼            ▼          ▼
-          "codex"      "claude"      "wait"    "workflow"
-              │            │            │          │
-              ▼            ▼            │          ▼
-     provider registry lookup              │
-         │                                 │
-         ├─ coral:<name> → coral/dispatch  │
-         │                  → resolver      │
-         │                  → handleCoralOp │
-         │                                 │
-         └─ non-coral op → handleOp        │
-                          → launchJob()     │
-                              ↓             │
-                       spawn CLI (background)
-                              ↓             │
-  result → session_dir ◄────────────────────┘
+              ┌────────────┼─────────────┬──────────┐
+              ▼            ▼             ▼          ▼
+          "codex"      "claude"       "wait"    "workflow"
+              │            │             │          │
+              ▼            ▼             │          ▼
+     provider registry lookup            │
+         │                               │
+         ├─ coral:<name> → coral/dispatch│
+         │               → resolver      │
+         │               → handleCoralOp │
+         │                               │
+         └─ non-coral op → handleOp      │
+                          → launchJob()  │
+                              ↓          │
+                       spawn CLI         │
+                       (background)      │
+                              ↓          │
+  result → session_dir ◄─────────────────┘
   (background)              poll loop
 ```
 

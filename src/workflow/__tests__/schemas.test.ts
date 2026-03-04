@@ -148,3 +148,45 @@ describe('workflowInputSchema', () => {
     ).toThrow();
   });
 });
+
+describe('provider identifier boundary values', () => {
+  it('single lowercase letter is a valid provider identifier', () => {
+    const parsed = workflowInputSchema.parse({ expression: 'a', prompt: 'hi', provider: 'a' });
+    expect(parsed.provider).toBe('a');
+  });
+
+  it('provider starting with digit is rejected', () => {
+    expect(() =>
+      workflowInputSchema.parse({ expression: 'a', prompt: 'hi', provider: '1abc' }),
+    ).toThrow();
+  });
+
+  it('provider starting with hyphen is rejected', () => {
+    expect(() =>
+      workflowInputSchema.parse({ expression: 'a', prompt: 'hi', provider: '-abc' }),
+    ).toThrow();
+  });
+
+  it('provider with internal hyphens (a-b-c) is accepted', () => {
+    const parsed = workflowInputSchema.parse({ expression: 'a', prompt: 'hi', provider: 'a-b-c' });
+    expect(parsed.provider).toBe('a-b-c');
+  });
+
+  it('empty string provider is rejected', () => {
+    expect(() =>
+      workflowInputSchema.parse({ expression: 'a', prompt: 'hi', provider: '' }),
+    ).toThrow();
+  });
+
+  it('provider with uppercase letter is rejected', () => {
+    expect(() =>
+      workflowInputSchema.parse({ expression: 'a', prompt: 'hi', provider: 'Claude' }),
+    ).toThrow();
+  });
+
+  it('provider with underscore is rejected (providerIdentPattern excludes underscores)', () => {
+    expect(() =>
+      workflowInputSchema.parse({ expression: 'a', prompt: 'hi', provider: 'my_provider' }),
+    ).toThrow();
+  });
+});

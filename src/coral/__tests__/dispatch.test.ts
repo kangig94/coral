@@ -86,3 +86,113 @@ describe('coral dispatch', () => {
     )).rejects.toThrow('Coral content not found: does-not-exist');
   });
 });
+
+describe('dispatch — op field type coercion and boundary values', () => {
+  const nullMgr = {} as SessionManager;
+
+  beforeEach(() => {
+    _resetProvidersForTests();
+    tmpDir = mkdtempSync(join('/tmp', 'coral-dispatch-coerce-'));
+    mkdirSync(join(tmpDir, 'agents'), { recursive: true });
+    writeFileSync(join(tmpDir, 'agents', 'architect.md'), '# Architect\nBody\n');
+    resolverTest.setPluginRoot(tmpDir);
+    registerProvider({
+      name: 'mock-p',
+      tool: { name: 'mock-p', description: 'mock', inputSchema: {} },
+      handleOp: async () => ({ content: [{ type: 'text', text: 'op' }], isError: false }),
+      handleCoralOp: async () => ({ content: [{ type: 'text', text: 'coral-ok' }], isError: false }),
+      extractCompletion: () => ({ responseText: '', metadata: {} }),
+      makeOnEvent: () => () => {},
+    });
+  });
+
+  afterEach(() => {
+    resolverTest.setPluginRoot(defaultPluginRoot);
+    _resetProvidersForTests();
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('op=null — returns isError MCP result containing "Invalid coral op"', async () => {
+    const result = await handleCoralDispatch(
+      'mock-p',
+      { op: null as unknown as string },
+      nullMgr,
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Invalid coral op');
+  });
+
+  it('op=42 (number) — returns isError MCP result containing "Invalid coral op"', async () => {
+    const result = await handleCoralDispatch(
+      'mock-p',
+      { op: 42 as unknown as string },
+      nullMgr,
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Invalid coral op');
+  });
+
+  it('op="coral" (no colon) — returns isError MCP result (missing prefix)', async () => {
+    const result = await handleCoralDispatch('mock-p', { op: 'coral' }, nullMgr);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Invalid coral op');
+  });
+
+  it('op="CORAL:architect" (wrong case) — returns isError MCP result', async () => {
+    const result = await handleCoralDispatch('mock-p', { op: 'CORAL:architect' }, nullMgr);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Invalid coral op');
+  });
+
+  it('op absent entirely — returns isError MCP result', async () => {
+    const result = await handleCoralDispatch('mock-p', {}, nullMgr);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Invalid coral op');
+  });
+
+  it('op="coral:" (empty name after prefix) — propagates resolver "Invalid coral target name" throw', async () => {
+    await expect(
+      handleCoralDispatch('mock-p', { op: 'coral:' }, nullMgr),
+    ).rejects.toThrow(/Invalid coral target name/i);
+  });
+
+  it('numeric progressToken passes through to handleCoralOp unchanged', async () => {
+    const spy = vi.fn<ProviderAdapter['handleCoralOp']>(
+      async () => ({ content: [{ type: 'text', text: 'ok' }], isError: false }),
+    );
+    _resetProvidersForTests();
+    registerProvider({
+      name: 'mock-p',
+      tool: { name: 'mock-p', description: 'mock', inputSchema: {} },
+      handleOp: async () => ({ content: [{ type: 'text', text: 'op' }], isError: false }),
+      handleCoralOp: spy,
+      extractCompletion: () => ({ responseText: '', metadata: {} }),
+      makeOnEvent: () => () => {},
+    });
+
+    await handleCoralDispatch('mock-p', { op: 'coral:architect' }, nullMgr, 99);
+
+    const [, , , , progressToken] = spy.mock.calls[0] ?? [];
+    expect(progressToken).toBe(99);
+  });
+
+  it('undefined notify passes through to handleCoralOp as undefined', async () => {
+    const spy = vi.fn<ProviderAdapter['handleCoralOp']>(
+      async () => ({ content: [{ type: 'text', text: 'ok' }], isError: false }),
+    );
+    _resetProvidersForTests();
+    registerProvider({
+      name: 'mock-p',
+      tool: { name: 'mock-p', description: 'mock', inputSchema: {} },
+      handleOp: async () => ({ content: [{ type: 'text', text: 'op' }], isError: false }),
+      handleCoralOp: spy,
+      extractCompletion: () => ({ responseText: '', metadata: {} }),
+      makeOnEvent: () => () => {},
+    });
+
+    await handleCoralDispatch('mock-p', { op: 'coral:architect' }, nullMgr, undefined, undefined);
+
+    const [, , , , , notifyArg] = spy.mock.calls[0] ?? [];
+    expect(notifyArg).toBeUndefined();
+  });
+});

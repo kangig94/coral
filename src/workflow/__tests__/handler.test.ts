@@ -1,5 +1,7 @@
-import { describe, expect, it, afterEach, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync, rmSync } from 'node:fs';
+import { _resetProvidersForTests } from '../../providers/registry.js';
+import { _resetProviderBootstrapForTests, registerBuiltInProviders } from '../../providers/bootstrap.js';
 import { join } from 'node:path';
 import { createSessionDir, readSessionStatus, writeSessionResult } from '../../runner/progress.js';
 import { jsonResult, type McpResult } from '../../shared/mcp-utils.js';
@@ -315,5 +317,39 @@ describe('workflow handler', () => {
         mgr,
       ),
     ).toThrow();
+  });
+});
+
+describe('workflow handler — singular vs plural unknown provider error', () => {
+  beforeEach(() => {
+    _resetProvidersForTests();
+    _resetProviderBootstrapForTests();
+    registerBuiltInProviders();
+  });
+  afterEach(() => {
+    _resetProvidersForTests();
+    _resetProviderBootstrapForTests();
+  });
+
+  it('two distinct unknown providers produce the plural "Unknown providers:" message', () => {
+    const mgr = makeSessionManager();
+    expect(() =>
+      handleWorkflow(
+        { expression: 'architect@bad2', prompt: 'hi', provider: 'bad1' },
+        async () => jsonResult({}),
+        mgr,
+      ),
+    ).toThrow(/Unknown providers:/i);
+  });
+
+  it('one unknown per-atom provider produces singular "Unknown provider \\"..." message', () => {
+    const mgr = makeSessionManager();
+    expect(() =>
+      handleWorkflow(
+        { expression: 'architect@nobody', prompt: 'hi', provider: 'codex' },
+        async () => jsonResult({}),
+        mgr,
+      ),
+    ).toThrow(/Unknown provider "/i);
   });
 });

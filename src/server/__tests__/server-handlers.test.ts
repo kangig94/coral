@@ -98,4 +98,61 @@ describe('ax server-handlers router', () => {
     expect(coralName).toBe('architect');
     expect(String(coralContent)).toContain('# Architect');
   });
+
+  it('non-string op on a registered provider routes to handleOp, not coral dispatch', async () => {
+    const handleOpSpy = vi.fn<ProviderAdapter['handleOp']>(
+      async () => ({ content: [{ type: 'text', text: 'from-handleOp' }], isError: false }),
+    );
+    const handleCoralOpSpy = vi.fn<ProviderAdapter['handleCoralOp']>(
+      async () => ({ content: [{ type: 'text', text: 'should-not-call' }], isError: false }),
+    );
+
+    registerBuiltInProviders([makeSyntheticAdapter({
+      handleOp: handleOpSpy,
+      handleCoralOp: handleCoralOpSpy,
+    })]);
+
+    await handleToolCall('synthetic', { op: 123 }, mgr);
+
+    expect(handleOpSpy).toHaveBeenCalledTimes(1);
+    expect(handleCoralOpSpy).not.toHaveBeenCalled();
+  });
+
+  it('op="coral:" on registered provider — server wraps resolver throw as isError MCP result', async () => {
+    const handleCoralOpSpy = vi.fn<ProviderAdapter['handleCoralOp']>(
+      async () => ({ content: [{ type: 'text', text: 'unreachable' }], isError: false }),
+    );
+
+    registerBuiltInProviders([makeSyntheticAdapter({
+      handleCoralOp: handleCoralOpSpy,
+    })]);
+
+    const result = await handleToolCall('synthetic', { op: 'coral:' }, mgr);
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Invalid coral target name');
+    expect(handleCoralOpSpy).not.toHaveBeenCalled();
+  });
+
+  it('workflow tool provider enum contains registered providers after bootstrap', () => {
+    const tools = getTools();
+    const workflowTool = tools.find((t) => t.name === 'workflow');
+    expect(workflowTool).toBeDefined();
+    const providerProp = (workflowTool?.inputSchema as {
+      properties?: Record<string, { enum?: string[]; type?: string }>;
+    })?.properties?.provider;
+    expect(providerProp).toBeDefined();
+    expect(providerProp?.enum).toContain('codex');
+    expect(providerProp?.enum).toContain('claude');
+  });
+
+  it('workflow tool provider metadata is an object regardless of registry state', () => {
+    const tools = getTools();
+    const workflow = tools.find((t) => t.name === 'workflow');
+    const providerProp = (workflow?.inputSchema as {
+      properties?: Record<string, unknown>;
+    })?.properties?.provider;
+    expect(providerProp).toBeDefined();
+    expect(typeof providerProp).toBe('object');
+  });
 });
