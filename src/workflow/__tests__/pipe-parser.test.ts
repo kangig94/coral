@@ -138,6 +138,34 @@ describe('workflow pipe parser', () => {
     expect(ast[0][0]).toEqual({ kind: 'prompt', text: 'run (debug)', provider: undefined });
   });
 
+  it('handles escaped single quote inside single-quoted prompt literal', () => {
+    const ast = parseExpression("'it\\'s done'");
+    expect(ast[0][0]).toEqual({ kind: 'prompt', text: "it's done", provider: undefined });
+  });
+
+  it('handles escaped double quote inside double-quoted prompt literal', () => {
+    const ast = parseExpression('"say \\"hello\\""');
+    expect(ast[0][0]).toEqual({ kind: 'prompt', text: 'say "hello"', provider: undefined });
+  });
+
+  it('handles escaped quote in parallel group', () => {
+    expect(parseExpression("('it\\'s ok', architect)")).toEqual([[
+      { kind: 'prompt', text: "it's ok", provider: undefined },
+      { kind: 'agent', namespace: undefined, agent: 'architect', provider: undefined },
+    ]]);
+  });
+
+  it('handles escaped quote in chained step', () => {
+    const ast = parseExpression("'say \\'hi\\'' -> resolver");
+    expect(ast).toHaveLength(2);
+    expect(ast[0][0]).toEqual({ kind: 'prompt', text: "say 'hi'", provider: undefined });
+  });
+
+  it('backslash before non-quote char is literal', () => {
+    const ast = parseExpression("'path\\\\n'");
+    expect(ast[0][0]).toEqual({ kind: 'prompt', text: 'path\\\\n', provider: undefined });
+  });
+
   it('rejects empty prompt literal (single quote)', () => {
     expect(() => parseExpression('\'\'')).toThrow('Empty prompt literal');
   });

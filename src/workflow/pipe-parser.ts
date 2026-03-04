@@ -10,7 +10,12 @@ function isProvider(value: string): value is SessionProvider {
 
 function hasUnquotedParentheses(text: string): boolean {
   let inQuote: string | null = null;
-  for (const char of text) {
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (inQuote !== null && char === '\\' && text[i + 1] === inQuote) {
+      i += 1;
+      continue;
+    }
     if ((char === '\'' || char === '"') && inQuote === null) {
       inQuote = char;
       continue;
@@ -29,7 +34,13 @@ function splitByComma(text: string): string[] {
   const parts: string[] = [];
   let current = '';
   let inQuote: string | null = null;
-  for (const char of text) {
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (inQuote !== null && char === '\\' && text[i + 1] === inQuote) {
+      current += char + text[i + 1];
+      i += 1;
+      continue;
+    }
     if ((char === '\'' || char === '"') && inQuote === null) {
       inQuote = char;
       current += char;
@@ -57,7 +68,12 @@ function splitByComma(text: string): string[] {
 
 function hasTopLevelComma(text: string): boolean {
   let inQuote: string | null = null;
-  for (const char of text) {
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (inQuote !== null && char === '\\' && text[i + 1] === inQuote) {
+      i += 1;
+      continue;
+    }
     if ((char === '\'' || char === '"') && inQuote === null) {
       inQuote = char;
       continue;
@@ -74,9 +90,21 @@ function hasTopLevelComma(text: string): boolean {
 
 function parsePromptLiteral(atomText: string): PromptAtom {
   const quoteChar = atomText[0];
-  const closeIndex = atomText.indexOf(quoteChar, 1);
+  let text = '';
+  let closeIndex = -1;
+  for (let i = 1; i < atomText.length; i++) {
+    if (atomText[i] === '\\' && atomText[i + 1] === quoteChar) {
+      text += quoteChar;
+      i += 1;
+      continue;
+    }
+    if (atomText[i] === quoteChar) {
+      closeIndex = i;
+      break;
+    }
+    text += atomText[i];
+  }
   if (closeIndex === -1) throw new Error('Unclosed quote in expression');
-  const text = atomText.slice(1, closeIndex);
   if (!text) throw new Error('Empty prompt literal');
   const rest = atomText.slice(closeIndex + 1).trim();
 
@@ -188,6 +216,11 @@ function splitSteps(expression: string): string[] {
 
   for (let index = 0; index < expression.length; index += 1) {
     const char = expression[index];
+    if (inQuote !== null && char === '\\' && expression[index + 1] === inQuote) {
+      current += char + expression[index + 1];
+      index += 1;
+      continue;
+    }
     if ((char === '\'' || char === '"') && inQuote === null) {
       inQuote = char;
       current += char;
