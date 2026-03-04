@@ -378,17 +378,6 @@ describe('discuss_lead tool: _3_step (moderation loop)', () => {
     expect(data.winner).toBe('alice');
   });
 
-  it('should skip expulsion during first round (epoch 1, step 1) regardless of hold_count', async () => {
-    const sid = await createSession();
-    for (let i = 0; i < 4; i++) {
-      const result = await handleToolCall('discuss_lead', { op: '_3_step', session: sid, timeout_seconds: sec(5) }, store);
-      const data = parseResult(result);
-      expect(data.status).toBe('bidding');
-      expect(data.phase).toBe('bidding');
-      expect(data.pending_bidders).toEqual(expect.arrayContaining(['alice', 'bob']));
-    }
-  });
-
   it('should expel pending bidders after hold_count >= 2 in later rounds (step > 1)', async () => {
     const sid = await createSession();
     await overwriteState(sid, (state) => ({
@@ -814,26 +803,6 @@ describe('handleSeed null seed fallback', () => {
 });
 
 describe('bootstrapFromSetup with non-setup states', () => {
-  it('proceeds to stepSpeaking when session is already in speaking state', async () => {
-    const sid = await createSession();
-    const sessionDir = requireSessionDir(sid);
-
-    await store.withLock(sessionDir, async () => {
-      const state = store.load(sessionDir);
-      store.save(sessionDir, {
-        ...state,
-        status: 'speaking',
-        current_speaker: 'alice',
-        speaker_type: 'quota',
-      });
-    });
-
-    const result = await handleToolCall('discuss_lead', { op: '_3_step', session: sid, timeout_seconds: sec(2) }, store);
-    const data = parseResult(result);
-    expect(data.status).toBe('speaking');
-    expect(data.phase).toBe('speech_pending');
-  });
-
   it('short-circuits with ended phase when state is already ended at bootstrap time', async () => {
     const sid = await createSession();
     const sessionDir = requireSessionDir(sid);

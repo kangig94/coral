@@ -141,14 +141,16 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
       ## Round N (Codex)
 
-      | Reviewer  | Verdict        | Key Findings              |
-      |-----------|----------------|---------------------------|
-      | Architect | [VERDICT]      | `file:line` — finding     |
-      | Critic    | [VERDICT]      | `file:line` — finding     |
+      | # | Source | Finding | Severity | Level | Classification |
+      |---|--------|---------|----------|-------|----------------|
+      | 1 | Critic #1/#4 | Description of the finding | HIGH | FRAME | Adopt |
+      | 2 | Both | Description of the finding | MEDIUM | — | Adapt |
+      | 3 | Architect #1 | Description of the finding | LOW | DETAIL | Defer |
 
-      | Adopt | Adapt | Defer | Diverge |
-      |-------|-------|-------|---------|
-      | item  | item  | —     | —       |
+      - Deduplicate overlapping findings across reviewers (use "Both" as source)
+      - Map each reviewer's original finding numbers in the Source column
+      - Order by Severity (CRITICAL > HIGH > MEDIUM > LOW)
+      - Level (FRAME/STRUCTURE/DETAIL): fill when available from resolver, `—` otherwise
 
       **Changes Applied**: [what was edited in the plan file]
       **Counterexample Coverage**: [types explored / not yet]
@@ -210,8 +212,9 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     - Key changes from review: [brief list]
 
     ### Final Plan
-    Read the plan file and display its full content to the user
-    (render the complete `.claude/coral/plans/{name}.md` — not a summary or excerpt).
+    Summarize the plan file for the user — include all decisions, constraints,
+    and action items the user needs to know, but omit verbose details they can
+    look up in `.claude/coral/plans/{name}.md` if needed.
 
     ### Implementation Handoff
 
