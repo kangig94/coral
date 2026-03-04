@@ -139,6 +139,13 @@ Strip `--codex` and `--red` flags before passing the prompt to the execution pat
     | Red Gate | red-attacker | 3 tests staged (if `--red`) |
     | Red Triage | review + merge | 2 merged, 1 discarded (if `--red`) |
 
+    ### Notes
+    What was hard, what tradeoffs were made, what you should know:
+    - Difficulties encountered and how they were resolved
+    - Design decisions made during implementation and why
+    - Gotchas or surprises discovered along the way
+    - Risks or concerns about the changes going forward
+
     ### Remaining Issues
     (none if complete)
   </Output_Format>
