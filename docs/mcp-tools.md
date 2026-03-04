@@ -39,7 +39,7 @@ the same background session pipeline as `op: exec`.
 | `prompt` | string | Yes | User prompt appended after agent content |
 | `model` | string | No | Model to use |
 | `working_directory` | string | No | Working directory |
-| `reasoning_effort` | string | No | `low`, `medium`, `high`, `xhigh` |
+| `effort` | string | No | `low`, `medium`, `high`, `xhigh` |
 | `bypass` | boolean | No | Bypass sandbox/approvals only on explicit user request |
 
 ### Behavior Notes
@@ -63,7 +63,7 @@ Start a new Codex session (omit `session`) or resume an existing one (pass `sess
 | `prompt` | string | Yes | Prompt to send to Codex (min 1 char) |
 | `model` | string | No | Model to use (default: `gpt-5.3-codex`, configurable via `CORAL_CODEX_MODEL`) |
 | `working_directory` | string | No | Working directory |
-| `reasoning_effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
+| `effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
 | `bypass` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when the user explicitly requests bypass mode. |
 
 ### Output
@@ -131,7 +131,7 @@ Fork an existing session to continue the conversation in a new branch. Returns i
 | `prompt` | string | No | Additional prompt for the forked session |
 | `model` | string | No | Model to use |
 | `working_directory` | string | No | Working directory |
-| `reasoning_effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
+| `effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
 | `bypass` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when the user explicitly requests bypass mode. |
 
 ### Output
@@ -228,6 +228,7 @@ Single entry point for Claude CLI execution. Use the required `op` discriminator
       "name": { "type": "string", "description": "Session name (exec optional)" },
       "model": { "type": "string", "description": "Claude model to use (e.g., sonnet, opus, haiku)" },
       "working_directory": { "type": "string", "description": "Working directory for execution" },
+      "effort": { "type": "string", "enum": ["low", "medium", "high", "xhigh"], "description": "Model reasoning effort level (xhigh maps to high on Claude CLI)" },
       "system_prompt": { "type": "string", "description": "Custom system prompt (replaces default)" }
     },
     "required": ["op"]
@@ -251,9 +252,10 @@ Starts a new Claude CLI run (or resumes when `session` is provided). Returns imm
 Execution details:
 - Uses `claude -p --output-format json`
 - Prompt is sent via stdin (not argv)
-- Optional flags: `--model`, `--system-prompt`
+- Optional flags: `--model`, `--system-prompt`, `--effort`
 - Resume mode uses `--resume <session-id>`
 - `--no-session-persistence` is not used
+- `effort` accepts `low`, `medium`, `high`, `xhigh`; `xhigh` is mapped to `high` for Claude CLI
 
 ### op: coral:*
 
@@ -356,7 +358,7 @@ Agent names: `[a-z][a-z0-9-]*`. Provider: `codex` or `claude`. Namespace: `[a-z]
 **Execution params** (forwarded to dispatch payload):
 - `model` (string) — model override
 - `working_directory` (string) — working directory
-- `reasoning_effort` (string) — `low`, `medium`, `high`, `xhigh`
+- `effort` (string) — `low`, `medium`, `high`, `xhigh`
 
 **Prompt context** (serialized into the atom's prompt):
 - `files` (string[]) — file paths read and injected as `<file path="...">content</file>`

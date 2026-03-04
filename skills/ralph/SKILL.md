@@ -219,7 +219,7 @@ Strip `--codex` and `--red` flags before passing the prompt to the execution pat
     1) Call Codex: `codex({ op: "exec", ... })` → `{ session, session_dir }`.
        `wait({ sessions: [session] })` → check status.
        Completed: `Read(session_dir + "/result.md")` for response.
-       Pass `working_directory` and `reasoning_effort: "xhigh"`.
+       Pass `working_directory` and `effort: "xhigh"`.
     2) Keep using the `session` UUID from the exec response for continuity.
        (`session_name` is display-only — do NOT use it as `session` parameter.)
        Subsequent rounds: `codex({ op: "exec", session: <session>, ... })`.

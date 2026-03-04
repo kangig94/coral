@@ -50,8 +50,8 @@ Pass `bypass: true` only when the user explicitly requests bypass mode.
 ## 4a. Review (parallel Codex ops)
 
 Dispatch TWO Codex jobs in parallel:
-- `codex({ op: "coral:architect", prompt, session, working_directory, reasoning_effort: "xhigh" })`
-- `codex({ op: "coral:critic", prompt, session, working_directory, reasoning_effort: "xhigh" })`
+- `codex({ op: "coral:architect", prompt, session, working_directory, effort: "xhigh" })`
+- `codex({ op: "coral:critic", prompt, session, working_directory, effort: "xhigh" })`
 
 Use `session` only when available from step 2. Omit it for fresh review sessions.
 Then wait with timeout handling until both jobs finish:

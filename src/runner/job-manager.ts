@@ -154,6 +154,9 @@ export async function handleWait(
   let notifCounter = 0;
   const startMs = Date.now();
   const timeoutMs = timeout_seconds * 1000;
+  const progressNotifier = progressToken != null && notify != null
+    ? { progressToken, notify }
+    : null;
 
   const timeoutResponse = (): McpResult => {
     const running = sessions.filter((id) => {
@@ -164,11 +167,7 @@ export async function handleWait(
   };
 
   while (true) {
-    if (shutdownSignal.signal.aborted) {
-      return timeoutResponse();
-    }
-
-    if (Date.now() - startMs >= timeoutMs) {
+    if (shutdownSignal.signal.aborted || Date.now() - startMs >= timeoutMs) {
       return timeoutResponse();
     }
 
@@ -180,7 +179,7 @@ export async function handleWait(
       const progressFile = join(dir, PROGRESS_FILE);
       const cursor = cursors.get(id)!;
 
-      if (progressToken != null && notify != null) {
+      if (progressNotifier != null) {
         const events = readProgressEvents(progressFile, cursor);
         for (const evt of events) {
           const previousMessage = lastSent.get(id);
@@ -190,10 +189,10 @@ export async function handleWait(
           const elapsed = formatElapsed(meta.startedAt);
           const tag = elapsed ? `${elapsed}: ${meta.name}` : meta.name;
           lastSent.set(id, evt.message);
-          void notify({
+          void progressNotifier.notify({
             method: 'notifications/progress',
             params: {
-              progressToken,
+              progressToken: progressNotifier.progressToken,
               progress: ++notifCounter,
               message: `[${tag}] ${evt.message}`,
             },
@@ -205,10 +204,10 @@ export async function handleWait(
       }
 
       const sessionStatus = readSessionStatus(dir);
-      if ((sessionStatus.status === 'completed' || sessionStatus.status === 'error') && completedId === null) {
-        completedId = id;
-        completedStatus = sessionStatus;
-      }
+      if (completedId !== null) continue;
+      if (sessionStatus.status !== 'completed' && sessionStatus.status !== 'error') continue;
+      completedId = id;
+      completedStatus = sessionStatus;
     }
 
     if (completedId !== null && completedStatus !== null) {

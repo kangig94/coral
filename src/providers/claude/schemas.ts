@@ -6,6 +6,7 @@ import {
   sessionRefSchema,
   cwdSchema,
   boolDefaultFalse,
+  effortSchema,
   coralOpSchema,
 } from '../../shared/schemas.js';
 
@@ -17,6 +18,7 @@ const sessionExecFields = {
   name: sessionNameSchema.optional(),
   model: modelSchema,
   working_directory: cwdSchema,
+  effort: effortSchema,
   system_prompt: systemPromptSchema,
   bypass: boolDefaultFalse,
 };
@@ -42,8 +44,9 @@ export const claudeOpSchema = z.discriminatedUnion('op', [
 ]);
 
 export type ClaudeOpInput = z.infer<typeof claudeOpSchema>;
-export type ClaudeSessionCreateInput = Omit<Extract<ClaudeOpInput, { op: 'exec' }>, 'op' | 'session'>;
-export type ClaudeSessionSendInput = Omit<Extract<ClaudeOpInput, { op: 'exec' }>, 'op' | 'name'> & { session: string };
+type ClaudeExecInput = Extract<ClaudeOpInput, { op: 'exec' }>;
+export type ClaudeSessionCreateInput = Omit<ClaudeExecInput, 'op' | 'session'>;
+export type ClaudeSessionSendInput = Omit<ClaudeExecInput, 'op' | 'name'> & { session: string };
 export type ClaudeSessionAbortInput = Omit<z.infer<typeof abortShape>, 'op'>;
 
 export const coralClaudeSchema = z.object({

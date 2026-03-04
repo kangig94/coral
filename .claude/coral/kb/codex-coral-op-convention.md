@@ -13,7 +13,7 @@ codex({
   op: "coral:architect",
   prompt: "Review this plan for missing failure modes.",
   working_directory,
-  reasoning_effort: "xhigh",
+  effort: "xhigh",
 });
 
 // Session continuation

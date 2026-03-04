@@ -25,7 +25,13 @@ vi.mock('../claude-executor.js', () => {
     ClaudeExecParseError: MockClaudeExecParseError,
     executeClaudeOneShot: vi.fn(async (
       prompt: string,
-      options?: { model?: string; systemPrompt?: string; bypassPermissions?: boolean; onEvent?: (line: string) => void },
+      options?: {
+        model?: string;
+        systemPrompt?: string;
+        effort?: string;
+        bypassPermissions?: boolean;
+        onEvent?: (line: string) => void;
+      },
     ) => ({
       response: `one-shot:${prompt}`,
       sessionId: 'claude-thread-1',
@@ -37,7 +43,14 @@ vi.mock('../claude-executor.js', () => {
     executeClaudeResume: vi.fn(async (
       _sessionId: string,
       prompt: string,
-      options?: { model?: string; workingDirectory?: string; systemPrompt?: string; bypassPermissions?: boolean; onEvent?: (line: string) => void },
+      options?: {
+        model?: string;
+        workingDirectory?: string;
+        systemPrompt?: string;
+        effort?: string;
+        bypassPermissions?: boolean;
+        onEvent?: (line: string) => void;
+      },
     ) => ({
       response: `resume:${prompt}`,
       sessionId: 'claude-thread-2',
@@ -66,6 +79,34 @@ const defaultPluginRoot = process.cwd();
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function trackSessionDir(result: { content: Array<{ text: string }> }): void {
+  const launchData = JSON.parse(result.content[0].text) as { session_dir?: string };
+  if (launchData.session_dir) sessionDirs.add(launchData.session_dir);
+}
+
+async function expectLaunched(result: { isError: boolean; content: Array<{ text: string }> }): Promise<void> {
+  trackSessionDir(result);
+  expect(result.isError).toBe(false);
+  await sleep(30);
+}
+
+function registerSession(name: string, threadId: string, workingDirectory = '/tmp/work'): string {
+  const claudeSession = createSessionDir(name, 'claude');
+  sessionDirs.add(claudeSession.dir);
+  mgr.register('claude', claudeSession.id, name, threadId, 'sonnet', workingDirectory);
+  return claudeSession.id;
+}
+
+function oneShotOptions() {
+  const [, options] = mockExecuteClaudeOneShot.mock.calls[0] ?? [];
+  return options;
+}
+
+function resumeOptions() {
+  const [, , options] = mockExecuteClaudeResume.mock.calls[0] ?? [];
+  return options;
 }
 
 describe('claude provider server-handlers', () => {
@@ -108,6 +149,15 @@ describe('claude provider server-handlers', () => {
     expect(claudeAdapter.tool.name).toBe('claude');
   });
 
+  it('tool schema exposes effort field', () => {
+    const properties = claudeAdapter.tool.inputSchema.properties as Record<string, unknown>;
+    expect(properties.effort).toEqual({
+      type: 'string',
+      enum: ['low', 'medium', 'high', 'xhigh'],
+      description: 'Model reasoning effort level',
+    });
+  });
+
   it('makeClaudeEventCallback appends tool/text progress from assistant events', () => {
     const progressFile = join(tmpDir, 'workspace', 'progress.jsonl');
     const onEvent = makeClaudeEventCallback(progressFile);
@@ -130,7 +180,7 @@ describe('claude provider server-handlers', () => {
     const lines = readFileSync(progressFile, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
     expect(lines).toHaveLength(2);
     expect(lines[0].event).toBe('assistant');
-    expect(lines[0].message).toBe('Read(main.ts)');
+    expect(lines[0].message).toBe('Read(/repo/src/main.ts)');
     expect(lines[1].message).toBe('Generating response...');
   });
 
@@ -158,66 +208,68 @@ describe('claude provider server-handlers', () => {
     const result = await claudeAdapter.handleCoralOp(
       'frontmatter',
       resolveCoralContent('frontmatter').content,
-      { op: 'coral:frontmatter', prompt: 'Implement this', name: 'front-agent-session', bypass: false },
+      { op: 'coral:frontmatter', prompt: 'Implement this', name: 'front-agent-session', effort: 'xhigh', bypass: false },
       mgr,
     );
-    const launchData = JSON.parse(result.content[0].text) as { session_dir?: string };
-    if (launchData.session_dir) sessionDirs.add(launchData.session_dir);
+    await expectLaunched(result);
 
-    expect(result.isError).toBe(false);
-    await sleep(30);
-
-    const [, options] = mockExecuteClaudeOneShot.mock.calls[0] ?? [];
+    const options = oneShotOptions();
     expect(options?.systemPrompt).toBe('# Frontmatter Agent\nBody text');
+    expect(options?.effort).toBe('xhigh');
     expect(options?.bypassPermissions).toBe(true);
   });
 
   it('coral resume forwards bypassPermissions=true and defaults working_directory from session', async () => {
-    const claudeSession = createSessionDir('claude-coral-resume', 'claude');
-    sessionDirs.add(claudeSession.dir);
-    mgr.register('claude', claudeSession.id, 'claude-coral-resume', 'thread-claude-coral-resume', 'sonnet', '/tmp/work');
+    const sessionId = registerSession('claude-coral-resume', 'thread-claude-coral-resume');
 
     const result = await claudeAdapter.handleCoralOp(
       'architect',
       resolveCoralContent('architect').content,
-      { op: 'coral:architect', prompt: 'continue', session: claudeSession.id, bypass: false },
+      { op: 'coral:architect', prompt: 'continue', session: sessionId, effort: 'high', bypass: false },
       mgr,
     );
-    const launchData = JSON.parse(result.content[0].text) as { session_dir?: string };
-    if (launchData.session_dir) sessionDirs.add(launchData.session_dir);
+    await expectLaunched(result);
 
-    expect(result.isError).toBe(false);
-    await sleep(30);
-
-    const [, , options] = mockExecuteClaudeResume.mock.calls[0] ?? [];
+    const options = resumeOptions();
     expect(options?.workingDirectory).toBe('/tmp/work');
+    expect(options?.effort).toBe('high');
     expect(options?.bypassPermissions).toBe(true);
     expect(options?.onEvent).toEqual(expect.any(Function));
   });
 
   it('direct exec create defaults bypassPermissions to false', async () => {
-    const result = await handleClaudeOp({ op: 'exec', prompt: 'create default bypass' }, mgr);
-    const launchData = JSON.parse(result.content[0].text) as { session_dir?: string };
-    if (launchData.session_dir) sessionDirs.add(launchData.session_dir);
+    const result = await handleClaudeOp({ op: 'exec', prompt: 'create default bypass', effort: 'medium' }, mgr);
+    await expectLaunched(result);
 
-    expect(result.isError).toBe(false);
-    await sleep(30);
-
-    const [, options] = mockExecuteClaudeOneShot.mock.calls[0] ?? [];
+    const options = oneShotOptions();
+    expect(options?.effort).toBe('medium');
     expect(options?.bypassPermissions).toBe(false);
     expect(options?.onEvent).toEqual(expect.any(Function));
   });
 
   it('direct exec create forwards bypassPermissions=true when bypass is true', async () => {
     const result = await handleClaudeOp({ op: 'exec', prompt: 'create bypass true', bypass: true }, mgr);
-    const launchData = JSON.parse(result.content[0].text) as { session_dir?: string };
-    if (launchData.session_dir) sessionDirs.add(launchData.session_dir);
+    await expectLaunched(result);
 
-    expect(result.isError).toBe(false);
-    await sleep(30);
-
-    const [, options] = mockExecuteClaudeOneShot.mock.calls[0] ?? [];
+    const options = oneShotOptions();
     expect(options?.bypassPermissions).toBe(true);
     expect(options?.onEvent).toEqual(expect.any(Function));
   });
+
+  it('direct exec resume forwards effort to executeClaudeResume', async () => {
+    const sessionId = registerSession('claude-direct-resume', 'thread-claude-direct-resume');
+
+    const result = await handleClaudeOp({
+      op: 'exec',
+      session: sessionId,
+      prompt: 'resume now',
+      effort: 'high',
+    }, mgr);
+    await expectLaunched(result);
+
+    const options = resumeOptions();
+    expect(options?.effort).toBe('high');
+    expect(options?.onEvent).toEqual(expect.any(Function));
+  });
+
 });

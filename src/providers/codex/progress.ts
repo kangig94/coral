@@ -21,6 +21,15 @@ export {
   type SessionStatus,
 } from '../../runner/progress.js';
 
+function formatCommandExecution(command: string): string {
+  const stripped = stripShellWrapper(command);
+  return matchCommandPattern(stripped) ?? `Bash(${truncate(stripped)})`;
+}
+
+function formatFileChange(path?: string): string {
+  return `Edit(${basename(path ?? 'file')})`;
+}
+
 /** Extract a human-readable progress message from a Codex JSONL event. */
 export function extractProgressMessage(event: CodexThreadEvent): string | null {
   if (event.type === 'turn.started') return 'Processing...';
@@ -34,16 +43,11 @@ export function extractProgressMessage(event: CodexThreadEvent): string | null {
       return typeof item.query === 'string' ? `Searching: ${item.query}` : null;
     case 'agent_message':
       return 'Generating response...';
-    case 'command_execution': {
-      if (typeof item.command !== 'string') return null;
-      const stripped = stripShellWrapper(item.command);
-      const matched = matchCommandPattern(stripped);
-      return matched ?? `Bash(${truncate(stripped)})`;
-    }
+    case 'command_execution':
+      return typeof item.command === 'string' ? formatCommandExecution(item.command) : null;
     case 'file_change': {
       const firstChange = Array.isArray(item.changes) ? item.changes[0] : undefined;
-      const filePath = typeof firstChange?.path === 'string' ? firstChange.path : 'file';
-      return `Edit(${basename(filePath)})`;
+      return formatFileChange(typeof firstChange?.path === 'string' ? firstChange.path : undefined);
     }
     case 'mcp_tool_call':
       return typeof item.tool === 'string' ? `Calling: ${item.tool}` : null;

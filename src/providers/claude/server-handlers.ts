@@ -33,6 +33,7 @@ export const claudeTool = {
       name: { type: 'string', description: 'Session name (exec optional)' },
       model: { type: 'string', description: 'Claude model to use (e.g., sonnet, opus, haiku)' },
       working_directory: { type: 'string', description: 'Working directory for execution' },
+      effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh'], description: 'Model reasoning effort level' },
       system_prompt: { type: 'string', description: 'Additional system prompt (appended to default)' },
       bypass: { type: 'boolean', description: 'Bypass Claude permission checks. Only set when the user explicitly requests bypass mode.', default: false },
     },
@@ -129,6 +130,7 @@ export async function handleClaudeSessionCreate(
       model: input.model,
       workingDirectory: input.working_directory,
       systemPrompt: input.system_prompt,
+      effort: input.effort,
       bypassPermissions: input.bypass,
       signal,
       onEvent,
@@ -192,6 +194,7 @@ export async function handleClaudeSessionSend(
       model: input.model,
       workingDirectory,
       systemPrompt: input.system_prompt,
+      effort: input.effort,
       bypassPermissions: input.bypass,
       signal,
       onEvent,
@@ -264,6 +267,7 @@ export async function handleClaudeCoralOp(
       prompt: input.prompt,
       model: input.model,
       working_directory: input.working_directory ?? entry.workingDirectory,
+      effort: input.effort,
       system_prompt: systemPrompt,
       bypass: true,
     };
@@ -281,6 +285,7 @@ export async function handleClaudeCoralOp(
     name: sessionName,
     model: input.model,
     working_directory: input.working_directory,
+    effort: input.effort,
     system_prompt: systemPrompt,
     bypass: true,
   };
@@ -340,7 +345,7 @@ export async function handleClaudeOp(
     case 'list':
       return handleClaudeSessionList(sessionManager);
     case 'abort':
-      return handleClaudeSessionAbort(input as ClaudeSessionAbortInput);
+      return handleClaudeSessionAbort(input);
     default: {
       const _exhaustive: never = input;
       return textResult(`Unhandled op: ${(_exhaustive as ClaudeOpInput).op}`, true);

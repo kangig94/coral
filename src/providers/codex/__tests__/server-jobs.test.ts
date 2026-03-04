@@ -23,6 +23,16 @@ afterEach(() => {
   dirsToClean.length = 0;
 });
 
+function createTrackedSession(name: string): { id: string; dir: string } {
+  const session = createSessionDir(name);
+  dirsToClean.push(session.dir);
+  return session;
+}
+
+function readJson(path: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+}
+
 describe('extractProgressMessage', () => {
   it('returns "Processing..." for turn.started', () => {
     const event: CodexThreadEvent = { type: 'turn.started' };
@@ -78,25 +88,21 @@ describe('extractProgressMessage', () => {
     expect(extractProgressMessage(event)).toBe('Calling: my_tool');
   });
 
-  it('returns null for turn.completed', () => {
-    const event: CodexThreadEvent = {
-      type: 'turn.completed',
-      usage: { input_tokens: 100, cached_input_tokens: 50, output_tokens: 30 },
-    };
-    expect(extractProgressMessage(event)).toBeNull();
-  });
-
-  it('returns null for thread.started', () => {
-    const event: CodexThreadEvent = { type: 'thread.started', thread_id: 't1' };
-    expect(extractProgressMessage(event)).toBeNull();
-  });
-
-  it('returns null for item.started', () => {
-    const event: CodexThreadEvent = {
-      type: 'item.started',
-      item: { id: '1', type: 'reasoning', text: 'thinking' },
-    };
-    expect(extractProgressMessage(event)).toBeNull();
+  it('returns null for non-item completed events', () => {
+    const nonMessageEvents: CodexThreadEvent[] = [
+      {
+        type: 'turn.completed',
+        usage: { input_tokens: 100, cached_input_tokens: 50, output_tokens: 30 },
+      },
+      { type: 'thread.started', thread_id: 't1' },
+      {
+        type: 'item.started',
+        item: { id: '1', type: 'reasoning', text: 'thinking' },
+      },
+    ];
+    for (const event of nonMessageEvents) {
+      expect(extractProgressMessage(event)).toBeNull();
+    }
   });
 });
 
@@ -132,8 +138,7 @@ describe('formatElapsed', () => {
 
 describe('appendProgressEvent', () => {
   it('appends JSONL lines to progress file', () => {
-    const { dir } = createSessionDir('test');
-    dirsToClean.push(dir);
+    const { dir } = createTrackedSession('test');
     const filePath = join(dir, 'progress.jsonl');
 
     appendProgressEvent(filePath, 'turn.started', 'Processing...');
@@ -159,13 +164,12 @@ describe('appendProgressEvent', () => {
 
 describe('createSessionDir', () => {
   it('creates session directory with status.json and progress.jsonl', () => {
-    const { id, dir } = createSessionDir('test-session');
-    dirsToClean.push(dir);
+    const { id, dir } = createTrackedSession('test-session');
 
     expect(existsSync(dir)).toBe(true);
     expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 
-    const status = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf-8'));
+    const status = readJson(join(dir, 'status.json'));
     expect(status.status).toBe('running');
     expect(status.session_name).toBe('test-session');
     expect(status.startedAt).toBeTypeOf('number');
@@ -181,8 +185,7 @@ describe('createSessionDir', () => {
   });
 
   it('session dir is under SESSIONS_DIR', () => {
-    const { dir } = createSessionDir('s');
-    dirsToClean.push(dir);
+    const { dir } = createTrackedSession('s');
 
     expect(dir.startsWith(SESSIONS_DIR)).toBe(true);
   });
@@ -190,8 +193,7 @@ describe('createSessionDir', () => {
 
 describe('writeSessionResult', () => {
   it('writes result.md and sets status.json to completed', () => {
-    const { dir } = createSessionDir('test');
-    dirsToClean.push(dir);
+    const { dir } = createTrackedSession('test');
 
     writeSessionResult(dir, 'Hello world', {
       thread_id: 'thread-1',
@@ -203,14 +205,13 @@ describe('writeSessionResult', () => {
     const resultText = readFileSync(join(dir, 'result.md'), 'utf-8');
     expect(resultText).toBe('Hello world');
 
-    const status = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf-8'));
+    const status = readJson(join(dir, 'status.json'));
     expect(status.status).toBe('completed');
     expect(status.thread_id).toBe('thread-1');
   });
 
   it('is idempotent when already completed', () => {
-    const { dir } = createSessionDir('test');
-    dirsToClean.push(dir);
+    const { dir } = createTrackedSession('test');
 
     writeSessionResult(dir, 'first', { session_name: 'test' });
     writeSessionResult(dir, 'second', { session_name: 'test' });
@@ -221,20 +222,18 @@ describe('writeSessionResult', () => {
 
 describe('writeSessionError', () => {
   it('sets status.json to error with message', () => {
-    const { dir } = createSessionDir('test');
-    dirsToClean.push(dir);
+    const { dir } = createTrackedSession('test');
 
     writeSessionError(dir, 'Codex timed out');
 
-    const status = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf-8'));
+    const status = readJson(join(dir, 'status.json'));
     expect(status.status).toBe('error');
     expect(status.error).toBe('Codex timed out');
     expect(status.session_name).toBe('test');
   });
 
   it('does not write result.md', () => {
-    const { dir } = createSessionDir('test');
-    dirsToClean.push(dir);
+    const { dir } = createTrackedSession('test');
 
     writeSessionError(dir, 'error');
 
@@ -242,21 +241,19 @@ describe('writeSessionError', () => {
   });
 
   it('is idempotent when already errored', () => {
-    const { dir } = createSessionDir('test');
-    dirsToClean.push(dir);
+    const { dir } = createTrackedSession('test');
 
     writeSessionError(dir, 'first error');
     writeSessionError(dir, 'second error');
 
-    const status = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf-8'));
+    const status = readJson(join(dir, 'status.json'));
     expect(status.error).toBe('first error');
   });
 });
 
 describe('readSessionStatus', () => {
   it('returns running status from a fresh session dir', () => {
-    const { dir } = createSessionDir('test');
-    dirsToClean.push(dir);
+    const { dir } = createTrackedSession('test');
 
     expect(readSessionStatus(dir).status).toBe('running');
   });
@@ -270,8 +267,7 @@ describe('readSessionStatus', () => {
   });
 
   it('returns completed after writeSessionResult', () => {
-    const { dir } = createSessionDir('test');
-    dirsToClean.push(dir);
+    const { dir } = createTrackedSession('test');
 
     writeSessionResult(dir, 'done', { session_name: 'test' });
     expect(readSessionStatus(dir).status).toBe('completed');

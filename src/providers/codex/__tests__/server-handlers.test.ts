@@ -102,6 +102,17 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function parseResult(result: McpResult): Record<string, unknown> {
+  return JSON.parse(result.content[0].text) as Record<string, unknown>;
+}
+
+const SCANNER_CONTENT = '# Scanner\n';
+const SCANNER_AGENT_CONTENT = '# Scanner Agent\n';
+
+async function runCoralOp(rawArgs: Record<string, unknown>, coralContent = SCANNER_CONTENT): Promise<McpResult> {
+  return handleCodexCoralOp('scanner', coralContent, rawArgs, mgr);
+}
+
 describe('extractCompletionData', () => {
   it('uses thread_id as canonical metadata field', () => {
     const result = jsonResult({ response: 'hi', thread_id: 'thread-1', model: 'o4-mini', duration_ms: 10 });
@@ -120,7 +131,7 @@ describe('extractCompletionData', () => {
 describe('session handlers', () => {
   it('handleSessionCreate emits thread_id in completion payload', async () => {
     const result = await handleSessionCreate({ prompt: 'hi', name: 'my-session', bypass: false }, mgr, new AbortController().signal);
-    const data = JSON.parse(result.content[0].text);
+    const data = parseResult(result);
     expect(data.thread_id).toBe('thread-123');
   });
 
@@ -157,7 +168,7 @@ describe('session handlers', () => {
       mgr,
       new AbortController().signal,
     );
-    const data = JSON.parse(result.content[0].text);
+    const data = parseResult(result);
     expect(data.forked_from).toBe(sourceSessionId);
     expect(data.thread_id).toBe('thread-fork-1');
   });
@@ -174,7 +185,7 @@ describe('session handlers', () => {
     } as never);
 
     const result = handleCodexSessionAbort({ session: sessionId });
-    const data = JSON.parse(result.content[0].text);
+    const data = parseResult(result);
     expect(result.isError).toBe(false);
     expect(data.status).toBe('abort_requested');
     expect(controller.signal.aborted).toBe(true);
@@ -196,6 +207,7 @@ describe('handleCodexOp routing', () => {
     expect(result.isError).toBe(false);
     expect(result.content[0].text).toContain('"error": "unknown_op"');
   });
+
 });
 
 describe('handleCodexCoralOp', () => {
@@ -204,15 +216,19 @@ describe('handleCodexCoralOp', () => {
     expect(opProp.description).toMatch(/coral:[a-z]/);
   });
 
+  it('tool schema exposes effort field', () => {
+    const properties = codexTool.inputSchema.properties as Record<string, unknown>;
+    expect(properties.effort).toEqual({
+      type: 'string',
+      enum: ['low', 'medium', 'high', 'xhigh'],
+      description: 'Model reasoning effort level',
+    });
+  });
+
   it('session not in mgr returns error before CLI preflight', async () => {
     vi.mocked(detectCodexCli).mockResolvedValue({ available: false, error: 'CLI not installed' });
 
-    const result = await handleCodexCoralOp(
-      'scanner',
-      '# Scanner\n',
-      { op: 'coral:scanner', session: 'nonexistent-session', prompt: 'hi' },
-      mgr,
-    );
+    const result = await runCoralOp({ op: 'coral:scanner', session: 'nonexistent-session', prompt: 'hi' });
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('nonexistent-session');
@@ -220,28 +236,18 @@ describe('handleCodexCoralOp', () => {
   });
 
   it('explicit name field overrides generated agentName-timestamp label', async () => {
-    const result = await handleCodexCoralOp(
-      'scanner',
-      '# Scanner\n',
-      { op: 'coral:scanner', prompt: 'scan this', name: 'my-custom-session' },
-      mgr,
-    );
-    const data = JSON.parse(result.content[0].text) as { session_name: string };
+    const result = await runCoralOp({ op: 'coral:scanner', prompt: 'scan this', name: 'my-custom-session' });
+    const data = parseResult(result) as { session_name: string };
     expect(result.isError).toBe(false);
     expect(data.session_name).toBe('my-custom-session');
   });
 
   it('without explicit name, session_name follows agentName-timestamp pattern', async () => {
     const before = Date.now();
-    const result = await handleCodexCoralOp(
-      'scanner',
-      '# Scanner\n',
-      { op: 'coral:scanner', prompt: 'scan this' },
-      mgr,
-    );
+    const result = await runCoralOp({ op: 'coral:scanner', prompt: 'scan this' });
     const after = Date.now();
 
-    const data = JSON.parse(result.content[0].text) as { session_name: string };
+    const data = parseResult(result) as { session_name: string };
     expect(result.isError).toBe(false);
     expect(data.session_name).toMatch(/^scanner-\d+$/);
     const ts = parseInt(data.session_name.replace('scanner-', ''), 10);
@@ -250,12 +256,7 @@ describe('handleCodexCoralOp', () => {
   });
 
   it('create path prepends coral content and forces bypass=true', async () => {
-    await handleCodexCoralOp(
-      'scanner',
-      '# Scanner Agent\n',
-      { op: 'coral:scanner', prompt: 'scan this', bypass: false },
-      mgr,
-    );
+    await runCoralOp({ op: 'coral:scanner', prompt: 'scan this', bypass: false }, SCANNER_AGENT_CONTENT);
     await sleep(30);
 
     const calledPrompt = vi.mocked(executeOneShot).mock.calls[0]?.[0];
@@ -269,11 +270,9 @@ describe('handleCodexCoralOp', () => {
     const sessionId = '22222222-2222-4222-8222-222222222222';
     mgr.register('codex', sessionId, 'resume-session', 'thread-resume-002', 'o4-mini', '/project/root');
 
-    const result = await handleCodexCoralOp(
-      'scanner',
-      '# Scanner Agent\n',
+    const result = await runCoralOp(
       { op: 'coral:scanner', session: sessionId, prompt: 'analyze again', bypass: false },
-      mgr,
+      SCANNER_AGENT_CONTENT,
     );
     expect(result.isError).toBe(false);
     await sleep(30);
@@ -289,27 +288,16 @@ describe('handleCodexCoralOp', () => {
   });
 
   it('schema validation failures occur before execution', async () => {
-    await expect(handleCodexCoralOp(
-      'scanner',
-      '# Scanner Agent\n',
+    const invalidPayloads: Record<string, unknown>[] = [
       { op: 'coral:scanner', prompt: '' },
-      mgr,
-    )).rejects.toThrow();
-
-    await expect(handleCodexCoralOp(
-      'scanner',
-      '# Scanner Agent\n',
       { op: 'coral:scanner' },
-      mgr,
-    )).rejects.toThrow();
-
-    await expect(handleCodexCoralOp(
-      'scanner',
-      '# Scanner Agent\n',
-      { op: 'coral:scanner', prompt: 'go', reasoning_effort: 'ultra-high' },
-      mgr,
-    )).rejects.toThrow();
+      { op: 'coral:scanner', prompt: 'go', effort: 'ultra-high' },
+    ];
+    for (const payload of invalidPayloads) {
+      await expect(runCoralOp(payload, SCANNER_AGENT_CONTENT)).rejects.toThrow();
+    }
   });
+
 });
 
 describe('launchJob', () => {

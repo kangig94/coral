@@ -9,6 +9,7 @@ import {
 } from '../runner/progress.js';
 import type { SessionProvider } from '../runner/types.js';
 import type { McpResult } from '../shared/mcp-utils.js';
+import type { EffortLevel } from '../shared/schemas.js';
 import type { PipeAtom, PipelineAST } from './types.js';
 
 export const BUSY_PREFIX = 'Runner is busy (';
@@ -27,7 +28,7 @@ type WorkflowArgs = Record<string, Record<string, unknown>>;
 type AtomExecutionParams = {
   model?: string;
   working_directory?: string;
-  reasoning_effort?: string;
+  effort?: EffortLevel;
 };
 
 type AtomPromptContext = {
@@ -187,36 +188,35 @@ function splitAtomArgs(stepIndex: number, atomName: string, args: Record<string,
 
   for (const [key, value] of Object.entries(args)) {
     if (value === undefined) continue;
-    if (key === 'model') {
-      if (typeof value !== 'string') {
-        throw new Error(`Step ${stepIndex + 1}, atom '${atomName}' args.model must be a string`);
-      }
-      executionParams.model = value;
-      continue;
+    switch (key) {
+      case 'model':
+        if (typeof value !== 'string') {
+          throw new Error(`Step ${stepIndex + 1}, atom '${atomName}' args.model must be a string`);
+        }
+        executionParams.model = value;
+        break;
+      case 'working_directory':
+        if (typeof value !== 'string') {
+          throw new Error(`Step ${stepIndex + 1}, atom '${atomName}' args.working_directory must be a string`);
+        }
+        executionParams.working_directory = value;
+        break;
+      case 'effort':
+        if (typeof value !== 'string') {
+          throw new Error(`Step ${stepIndex + 1}, atom '${atomName}' args.effort must be a string`);
+        }
+        executionParams.effort = value as EffortLevel;
+        break;
+      case 'files':
+        promptContext.files = parseStringArrayArg(value, 'files', stepIndex, atomName);
+        break;
+      case 'flags':
+        promptContext.flags = parseStringArrayArg(value, 'flags', stepIndex, atomName);
+        break;
+      default:
+        promptContext.extra[key] = value;
+        break;
     }
-    if (key === 'working_directory') {
-      if (typeof value !== 'string') {
-        throw new Error(`Step ${stepIndex + 1}, atom '${atomName}' args.working_directory must be a string`);
-      }
-      executionParams.working_directory = value;
-      continue;
-    }
-    if (key === 'reasoning_effort') {
-      if (typeof value !== 'string') {
-        throw new Error(`Step ${stepIndex + 1}, atom '${atomName}' args.reasoning_effort must be a string`);
-      }
-      executionParams.reasoning_effort = value;
-      continue;
-    }
-    if (key === 'files') {
-      promptContext.files = parseStringArrayArg(value, 'files', stepIndex, atomName);
-      continue;
-    }
-    if (key === 'flags') {
-      promptContext.flags = parseStringArrayArg(value, 'flags', stepIndex, atomName);
-      continue;
-    }
-    promptContext.extra[key] = value;
   }
 
   return { executionParams, promptContext };
@@ -266,6 +266,11 @@ function buildAtomPrompt(
   return sections.join('\n\n');
 }
 
+function buildLiteralPrompt(stepIndex: number, atomText: string, stepPrompt: string): string {
+  if (stepIndex === 0 || stepPrompt.length === 0) return atomText;
+  return `${atomText}\n\n${stepPrompt}`;
+}
+
 function atomTagName(atom: PipeAtom): string {
   return atom.kind === 'prompt' ? 'step-result' : atom.agent;
 }
@@ -304,6 +309,19 @@ export async function readLaunchBootstrapStatus(
   return { kind: 'running' };
 }
 
+async function retryBusyLaunchAttempt(
+  attempt: number,
+  stepIndex: number,
+  atomLabel: string,
+  onProgress: (message: string) => void,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (attempt === MAX_LAUNCH_ATTEMPTS) return false;
+  onProgress(`step ${stepIndex + 1} atom ${atomLabel} busy (attempt ${attempt}), retrying`);
+  await sleep(computeBackoffMs(attempt), signal);
+  return true;
+}
+
 export async function launchAtomWithRetry(context: LaunchContext): Promise<LaunchedAtom> {
   const {
     atom,
@@ -336,13 +354,13 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
       prompt: atomPrompt,
       ...(executionParams.model ? { model: executionParams.model } : {}),
       ...(executionParams.working_directory ? { working_directory: executionParams.working_directory } : {}),
-      ...(executionParams.reasoning_effort ? { reasoning_effort: executionParams.reasoning_effort } : {}),
+      ...(executionParams.effort ? { effort: executionParams.effort } : {}),
     };
   } else {
     // First-step prompt literals use only the literal text — the initial pipeline prompt is intentionally
     // not forwarded, because the literal itself IS the complete instruction. Middle steps prepend the
     // literal before the previous step's output so the LLM reads instruction first, then context.
-    const promptText = stepIndex === 0 ? atom.text : (stepPrompt ? `${atom.text}\n\n${stepPrompt}` : atom.text);
+    const promptText = buildLiteralPrompt(stepIndex, atom.text, stepPrompt);
     dispatchPayload = {
       op: 'coral:workflow-literal',
       prompt: promptText,
@@ -355,19 +373,15 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     const launch = await dispatch(providerTool, dispatchPayload);
     const parsed = parseLaunchResult(launch, stepIndex, label);
     if (parsed.kind === 'busy') {
-      if (attempt === MAX_LAUNCH_ATTEMPTS) break;
-      onProgress(`step ${stepIndex + 1} atom ${label} busy (attempt ${attempt}), retrying`);
-      await sleep(computeBackoffMs(attempt), signal);
-      continue;
+      if (await retryBusyLaunchAttempt(attempt, stepIndex, label, onProgress, signal)) continue;
+      break;
     }
     if (parsed.kind === 'fatal') throw parsed.error;
 
     const bootstrap = await readLaunchBootstrapStatus(parsed.sessionDir, signal);
     if (bootstrap.kind === 'busy') {
-      if (attempt === MAX_LAUNCH_ATTEMPTS) break;
-      onProgress(`step ${stepIndex + 1} atom ${label} busy (attempt ${attempt}), retrying`);
-      await sleep(computeBackoffMs(attempt), signal);
-      continue;
+      if (await retryBusyLaunchAttempt(attempt, stepIndex, label, onProgress, signal)) continue;
+      break;
     }
     if (bootstrap.kind === 'error') {
       throw new Error(`Step ${stepIndex + 1}, atom '${label}' failed: ${normalizeErrorText(bootstrap.error)}`);
@@ -403,6 +417,28 @@ function emitProgressEvents(
   for (const evt of events) {
     onProgress(`atom ${agent}: ${evt.message}`);
   }
+}
+
+function parseResumePayload(
+  resumeText: string,
+  stepIndex: number,
+  atomName: string,
+): { session: string; sessionDir: string } {
+  let parsed: { session?: string; session_dir?: string };
+  try {
+    parsed = JSON.parse(resumeText) as { session?: string; session_dir?: string };
+  } catch {
+    throw new Error(`Step ${stepIndex + 1}, atom '${atomName}' resume returned malformed JSON`);
+  }
+
+  if (!parsed.session || !parsed.session_dir) {
+    throw new Error(`Step ${stepIndex + 1}, atom '${atomName}' resume returned invalid response`);
+  }
+
+  return {
+    session: parsed.session,
+    sessionDir: parsed.session_dir,
+  };
 }
 
 export async function waitForAllAtoms(
@@ -508,6 +544,12 @@ export async function waitForAllAtoms(
         }
 
         const staleSession = overlay.session;
+        const stepAtomPrefix = `Step ${atom.stepIndex + 1}, atom '${atom.agent}'`;
+        const failResume = (detail: string): never => {
+          expectedStaleAbortSessions.delete(staleSession);
+          throw new Error(`${stepAtomPrefix} ${detail}`);
+        };
+
         expectedStaleAbortSessions.add(staleSession);
         onProgress(`atom ${atom.agent} stale (no activity for ${Math.floor(staleTimeoutMs / 1000)}s), aborting`);
         await requestAbort({
@@ -529,37 +571,29 @@ export async function waitForAllAtoms(
         });
 
         if (resumeResult.isError) {
-          expectedStaleAbortSessions.delete(staleSession);
-          throw new Error(
-            `Step ${atom.stepIndex + 1}, atom '${atom.agent}' resume failed: non-resumable session`,
-          );
+          failResume('resume failed: non-resumable session');
         }
 
         const resumeText = resumeResult.content?.[0]?.text;
         if (typeof resumeText !== 'string' || resumeText.length === 0) {
-          expectedStaleAbortSessions.delete(staleSession);
-          throw new Error(`Step ${atom.stepIndex + 1}, atom '${atom.agent}' resume returned empty response`);
+          failResume('resume returned empty response');
         }
 
-        let parsed: { session?: string; session_dir?: string };
+        let resumedSession: { session: string; sessionDir: string };
         try {
-          parsed = JSON.parse(resumeText) as { session?: string; session_dir?: string };
-        } catch {
+          resumedSession = parseResumePayload(resumeText, atom.stepIndex, atom.agent);
+        } catch (error) {
           expectedStaleAbortSessions.delete(staleSession);
-          throw new Error(`Step ${atom.stepIndex + 1}, atom '${atom.agent}' resume returned malformed JSON`);
-        }
-        if (!parsed.session || !parsed.session_dir) {
-          expectedStaleAbortSessions.delete(staleSession);
-          throw new Error(`Step ${atom.stepIndex + 1}, atom '${atom.agent}' resume returned invalid response`);
+          throw error;
         }
 
         pending.delete(staleSession);
         cursors.delete(staleSession);
         expectedStaleAbortSessions.delete(staleSession);
 
-        sessionOverlay.set(atom.agent, { session: parsed.session, sessionDir: parsed.session_dir });
-        pending.add(parsed.session);
-        cursors.set(parsed.session, createProgressCursor());
+        sessionOverlay.set(atom.agent, resumedSession);
+        pending.add(resumedSession.session);
+        cursors.set(resumedSession.session, createProgressCursor());
         lastActivityTime.set(atom.agent, Date.now());
         staleRetryCount.set(atom.agent, retries + 1);
 

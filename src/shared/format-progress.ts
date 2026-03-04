@@ -1,29 +1,41 @@
-import { basename } from 'node:path';
+import { relative } from 'node:path';
+
+function shortPath(filePath: string): string {
+  const rel = relative(process.cwd(), filePath);
+  return rel.startsWith('..') ? filePath : rel;
+}
+
+function formatFilePath(input: Record<string, unknown>): string {
+  return typeof input.file_path === 'string' ? shortPath(input.file_path) : 'file';
+}
+
+function firstLine(value: unknown): string {
+  return typeof value === 'string' ? value.split('\n')[0] : '';
+}
 
 export function formatToolProgress(name: string, input: Record<string, unknown>): string {
   switch (name) {
     case 'Read': {
-      const file = typeof input.file_path === 'string' ? basename(input.file_path) : 'file';
+      const file = formatFilePath(input);
       const offset = typeof input.offset === 'number' ? input.offset : null;
       const limit = typeof input.limit === 'number' ? input.limit : null;
-      if (offset !== null && limit !== null) return `Read(${file}:${offset}-${offset + limit})`;
-      if (offset !== null) return `Read(${file}:${offset}+)`;
-      return `Read(${file})`;
+      if (offset === null) return `Read(${file})`;
+      if (limit === null) return `Read(${file}:${offset}+)`;
+      return `Read(${file}:${offset}-${offset + limit})`;
     }
     case 'Edit': {
-      const file = typeof input.file_path === 'string' ? basename(input.file_path) : 'file';
-      const old = typeof input.old_string === 'string' ? input.old_string.split('\n')[0] : '';
-      const next = typeof input.new_string === 'string' ? input.new_string.split('\n')[0] : '';
+      const file = formatFilePath(input);
+      const old = firstLine(input.old_string);
+      const next = firstLine(input.new_string);
       return `Edit(${file}, "${truncate(old, 30)}" → "${truncate(next, 30)}")`;
     }
     case 'Write': {
-      const file = typeof input.file_path === 'string' ? basename(input.file_path) : 'file';
-      return `Write(${file})`;
+      return `Write(${formatFilePath(input)})`;
     }
     case 'Bash': {
-      const text = typeof input.description === 'string'
-        ? input.description
-        : (typeof input.command === 'string' ? input.command : '');
+      const description = typeof input.description === 'string' ? input.description : null;
+      const command = typeof input.command === 'string' ? input.command : '';
+      const text = description ?? command;
       return `Bash(${truncate(text)})`;
     }
     case 'Grep':

@@ -1,4 +1,5 @@
 import { spawnCli } from '../../runner/engine.js';
+import type { EffortLevel } from '../../shared/schemas.js';
 import { parseClaudeStreamJson, type ParsedClaudeStreamOutput } from './output-parser.js';
 import type { ClaudeExecFailure, ClaudeExecResult } from './types.js';
 
@@ -6,6 +7,7 @@ export type ClaudeExecOptions = {
   model?: string;
   workingDirectory?: string;
   systemPrompt?: string;
+  effort?: EffortLevel;
   sessionId?: string;
   bypassPermissions?: boolean;
   signal?: AbortSignal;
@@ -22,11 +24,13 @@ export class ClaudeExecParseError extends Error {
   }
 }
 
+const STREAM_JSON_ARGS = ['-p', '--verbose', '--output-format', 'stream-json'];
+
 export async function executeClaudeOneShot(
   prompt: string,
   options: ClaudeExecOptions = {},
 ): Promise<ClaudeExecResult> {
-  const args = ['-p', '--verbose', '--output-format', 'stream-json'];
+  const args = [...STREAM_JSON_ARGS];
   appendSharedArgs(args, options);
   if (options.sessionId) args.push('--session-id', options.sessionId);
   return executeClaude(args, prompt, options);
@@ -37,7 +41,7 @@ export async function executeClaudeResume(
   prompt: string,
   options: Omit<ClaudeExecOptions, 'sessionId'> = {},
 ): Promise<ClaudeExecResult> {
-  const args = ['-p', '--verbose', '--output-format', 'stream-json', '--resume', sessionId];
+  const args = [...STREAM_JSON_ARGS, '--resume', sessionId];
   appendSharedArgs(args, options);
   return executeClaude(args, prompt, options);
 }
@@ -46,12 +50,13 @@ function appendSharedArgs(args: string[], options: ClaudeExecOptions): void {
   if (options.bypassPermissions) args.push('--dangerously-skip-permissions');
   if (options.systemPrompt) args.push('--append-system-prompt', options.systemPrompt);
   if (options.model) args.push('--model', options.model);
+  if (options.effort) args.push('--effort', options.effort === 'xhigh' ? 'high' : options.effort);
 }
 
 async function executeClaude(
   args: string[],
   prompt: string,
-  options: Omit<ClaudeExecOptions, 'sessionId'>,
+  options: ClaudeExecOptions,
 ): Promise<ClaudeExecResult> {
   const start = Date.now();
   const { stdout, stderr, code, aborted } = await spawnCli({

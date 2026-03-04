@@ -12,21 +12,22 @@ import {
   sessionRefSchema,
   cwdSchema,
   boolDefaultFalse,
+  effortSchema,
   coralOpSchema,
 } from '../../shared/schemas.js';
 
-const reasoningEffortSchema = z
-  .enum(['low', 'medium', 'high', 'xhigh'])
-  .optional();
+const sessionOptions = {
+  model: modelSchema,
+  working_directory: cwdSchema,
+  effort: effortSchema,
+  bypass: boolDefaultFalse,
+};
 
 const sessionExecFields = {
   prompt: promptSchema,
   session: sessionRefSchema.optional(),
   name: sessionNameSchema.optional(),
-  model: modelSchema,
-  working_directory: cwdSchema,
-  reasoning_effort: reasoningEffortSchema,
-  bypass: boolDefaultFalse,
+  ...sessionOptions,
 };
 
 const execShape = z.object({
@@ -43,10 +44,7 @@ const forkShape = z.object({
   session: sessionRefSchema,
   name: sessionNameSchema.optional(),
   prompt: z.string().optional(),
-  model: modelSchema,
-  working_directory: cwdSchema,
-  reasoning_effort: reasoningEffortSchema,
-  bypass: boolDefaultFalse,
+  ...sessionOptions,
 });
 
 const abortShape = z.object({
