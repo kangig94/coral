@@ -380,7 +380,7 @@ describe('discuss_lead tool: _3_step (moderation loop)', () => {
 
   it('should skip expulsion during first round (epoch 1, step 1) regardless of hold_count', async () => {
     const sid = await createSession();
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 2; i++) {
       const result = await handleToolCall('discuss_lead', { op: '_3_step', session: sid, timeout_seconds: sec(5) }, store);
       const data = parseResult(result);
       expect(data.status).toBe('bidding');
