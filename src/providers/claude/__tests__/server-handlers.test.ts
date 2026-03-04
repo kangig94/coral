@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 vi.mock('../cli-detection.js', () => ({
@@ -25,7 +25,7 @@ vi.mock('../claude-executor.js', () => {
     ClaudeExecParseError: MockClaudeExecParseError,
     executeClaudeOneShot: vi.fn(async (
       prompt: string,
-      options?: { model?: string; systemPrompt?: string; bypassPermissions?: boolean },
+      options?: { model?: string; systemPrompt?: string; bypassPermissions?: boolean; onEvent?: (line: string) => void },
     ) => ({
       response: `one-shot:${prompt}`,
       sessionId: 'claude-thread-1',
@@ -37,7 +37,7 @@ vi.mock('../claude-executor.js', () => {
     executeClaudeResume: vi.fn(async (
       _sessionId: string,
       prompt: string,
-      options?: { model?: string; workingDirectory?: string; systemPrompt?: string; bypassPermissions?: boolean },
+      options?: { model?: string; workingDirectory?: string; systemPrompt?: string; bypassPermissions?: boolean; onEvent?: (line: string) => void },
     ) => ({
       response: `resume:${prompt}`,
       sessionId: 'claude-thread-2',
@@ -50,7 +50,7 @@ vi.mock('../claude-executor.js', () => {
 });
 
 import { executeClaudeOneShot, executeClaudeResume } from '../claude-executor.js';
-import { handleClaudeOp, claudeAdapter } from '../server-handlers.js';
+import { handleClaudeOp, claudeAdapter, makeClaudeEventCallback } from '../server-handlers.js';
 import { SessionManager } from '../../../runner/session-manager.js';
 import { createSessionDir } from '../../../runner/progress.js';
 import { activeSessions } from '../../../runner/job-manager.js';
@@ -108,6 +108,43 @@ describe('claude provider server-handlers', () => {
     expect(claudeAdapter.tool.name).toBe('claude');
   });
 
+  it('makeClaudeEventCallback appends tool/text progress from assistant events', () => {
+    const progressFile = join(tmpDir, 'workspace', 'progress.jsonl');
+    const onEvent = makeClaudeEventCallback(progressFile);
+
+    onEvent(JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'tool_use', name: 'Read', input: { file_path: '/repo/src/main.ts' } },
+        ],
+      },
+    }));
+    onEvent(JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [{ type: 'text', text: 'drafting...' }],
+      },
+    }));
+
+    const lines = readFileSync(progressFile, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(lines).toHaveLength(2);
+    expect(lines[0].event).toBe('assistant');
+    expect(lines[0].message).toBe('Read(main.ts)');
+    expect(lines[1].message).toBe('Generating response...');
+  });
+
+  it('makeClaudeEventCallback ignores non-JSON and unsupported event types', () => {
+    const progressFile = join(tmpDir, 'workspace', 'progress-ignored.jsonl');
+    const onEvent = makeClaudeEventCallback(progressFile);
+
+    onEvent('not-json');
+    onEvent(JSON.stringify({ type: 'result', result: 'done' }));
+    onEvent(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_result', text: 'ignored' }] } }));
+
+    expect(existsSync(progressFile)).toBe(false);
+  });
+
   it('list op returns empty sessions when none are registered', async () => {
     const result = await handleClaudeOp({ op: 'list' }, mgr);
     const data = JSON.parse(result.content[0].text) as { sessions: unknown[]; total: number };
@@ -155,6 +192,7 @@ describe('claude provider server-handlers', () => {
     const [, , options] = mockExecuteClaudeResume.mock.calls[0] ?? [];
     expect(options?.workingDirectory).toBe('/tmp/work');
     expect(options?.bypassPermissions).toBe(true);
+    expect(options?.onEvent).toEqual(expect.any(Function));
   });
 
   it('direct exec create defaults bypassPermissions to false', async () => {
@@ -167,6 +205,7 @@ describe('claude provider server-handlers', () => {
 
     const [, options] = mockExecuteClaudeOneShot.mock.calls[0] ?? [];
     expect(options?.bypassPermissions).toBe(false);
+    expect(options?.onEvent).toEqual(expect.any(Function));
   });
 
   it('direct exec create forwards bypassPermissions=true when bypass is true', async () => {
@@ -179,5 +218,6 @@ describe('claude provider server-handlers', () => {
 
     const [, options] = mockExecuteClaudeOneShot.mock.calls[0] ?? [];
     expect(options?.bypassPermissions).toBe(true);
+    expect(options?.onEvent).toEqual(expect.any(Function));
   });
 });
