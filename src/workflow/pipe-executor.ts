@@ -18,8 +18,8 @@ export const BOOTSTRAP_POLL_INTERVAL_MS = 50;
 export const BOOTSTRAP_TIMEOUT_MS = 2_000;
 export const SIBLING_DRAIN_TIMEOUT_MS = 15_000;
 
-const WAIT_POLL_INTERVAL_MS = 500;
-const BACKOFF_BASE_MS = 100;
+const DEFAULT_WAIT_POLL_INTERVAL_MS = 500;
+const DEFAULT_BACKOFF_BASE_MS = 100;
 const MAX_STALE_RECOVERY_RETRIES = 2;
 const STALE_RESUME_PROMPT = 'Your previous execution timed out due to inactivity. Continue where you left off.';
 
@@ -97,7 +97,7 @@ function isBusyMessage(text: string): boolean {
 }
 
 function computeBackoffMs(attempt: number): number {
-  return BACKOFF_BASE_MS * (2 ** (attempt - 1));
+  return DEFAULT_BACKOFF_BASE_MS * (2 ** (attempt - 1));
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -450,6 +450,7 @@ export async function waitForAllAtoms(
   options?: {
     staleTimeoutMs?: number;
     dispatch?: AtomDispatchFn;
+    pollIntervalMs?: number;
   },
 ): Promise<Map<string, { session: string; sessionDir: string }>> {
   const pending = new Set<string>();
@@ -458,6 +459,7 @@ export async function waitForAllAtoms(
   const lastActivityTime = new Map<string, number>();
   const staleRetryCount = new Map<string, number>();
   const expectedStaleAbortSessions = new Set<string>();
+  const pollIntervalMs = options?.pollIntervalMs ?? DEFAULT_WAIT_POLL_INTERVAL_MS;
   const staleTimeoutMs = options?.staleTimeoutMs ?? 0;
 
   const now = Date.now();
@@ -615,7 +617,7 @@ export async function waitForAllAtoms(
     }
 
     if (pending.size > 0) {
-      await sleep(WAIT_POLL_INTERVAL_MS, signal);
+      await sleep(pollIntervalMs, signal);
     }
   }
 
@@ -638,6 +640,7 @@ export async function executePipeline(
     signal?: AbortSignal;
     onProgress?: (message: string) => void;
     staleTimeoutMs?: number;
+    pollIntervalMs?: number;
   } = {},
 ): Promise<string> {
   const onProgress = options.onProgress ?? (() => {});
@@ -675,6 +678,7 @@ export async function executePipeline(
       {
         staleTimeoutMs: options.staleTimeoutMs,
         dispatch,
+        pollIntervalMs: options.pollIntervalMs,
       },
     );
 

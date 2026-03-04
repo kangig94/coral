@@ -42,13 +42,19 @@ function isStaleOwner(owner: { pid: number; startedAt: number } | null, staleThr
   return !owner || !isProcessAlive(owner.pid) || Date.now() - owner.startedAt > staleThresholdMs;
 }
 
+export interface LockOptions {
+  maxRetries?: number;
+  baseDelay?: number;
+  staleThresholdMs?: number;
+}
+
 export class SessionLock {
-  async acquire<T>(sessionDir: string, fn: () => Promise<T>): Promise<T> {
+  async acquire<T>(sessionDir: string, fn: () => Promise<T>, opts?: LockOptions): Promise<T> {
     const lockDir = path.join(sessionDir, 'state.lock');
     const pidFile = path.join(lockDir, 'pid');
-    const maxRetries = 10;
-    const baseDelay = 50;
-    const staleThresholdMs = 30_000;
+    const maxRetries = opts?.maxRetries ?? 10;
+    const baseDelay = opts?.baseDelay ?? 50;
+    const staleThresholdMs = opts?.staleThresholdMs ?? 30_000;
     const clearLockFiles = (): void => {
       tryRemoveSync(pidFile);
       tryRemoveSync(lockDir);

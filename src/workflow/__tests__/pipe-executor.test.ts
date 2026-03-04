@@ -25,6 +25,7 @@ import {
   type LaunchedAtom,
 } from '../pipe-executor.js';
 
+const FAST_POLL = { pollIntervalMs: 10 };
 const dirsToClean = new Set<string>();
 
 afterEach(() => {
@@ -98,7 +99,7 @@ describe('workflow pipe executor', () => {
       return jsonResult(registerSession('architect', tool, 'architect output'));
     };
 
-    const output = await executePipeline(parseExpression('architect'), 'hello', 'codex', dispatch);
+    const output = await executePipeline(parseExpression('architect'), 'hello', 'codex', dispatch, FAST_POLL);
 
     expect(output).toBe('architect output');
     expect(dispatchCalls).toHaveLength(1);
@@ -117,7 +118,7 @@ describe('workflow pipe executor', () => {
       return jsonResult(registerSession('resolver', tool, 'step-2-output'));
     };
 
-    const output = await executePipeline(parseExpression('architect -> resolver'), 'seed prompt', 'codex', dispatch);
+    const output = await executePipeline(parseExpression('architect -> resolver'), 'seed prompt', 'codex', dispatch, FAST_POLL);
 
     expect(output).toBe('step-2-output');
     expect(prompts).toEqual(['seed prompt', 'step-1-output']);
@@ -137,7 +138,7 @@ describe('workflow pipe executor', () => {
       return jsonResult(registerSession('resolver', tool, 'FINAL'));
     };
 
-    const output = await executePipeline(parseExpression('(architect, critic) -> resolver'), 'seed', 'codex', dispatch);
+    const output = await executePipeline(parseExpression('(architect, critic) -> resolver'), 'seed', 'codex', dispatch, FAST_POLL);
 
     expect(output).toBe('FINAL');
     expect(resolverPrompt).toContain('<architect>\nARCH\n</architect>');
@@ -153,7 +154,7 @@ describe('workflow pipe executor', () => {
       return jsonResult(registerSession('resolver', tool, 'B'));
     };
 
-    await executePipeline(parseExpression('architect@claude -> resolver'), 'seed', 'codex', dispatch);
+    await executePipeline(parseExpression('architect@claude -> resolver'), 'seed', 'codex', dispatch, FAST_POLL);
 
     expect(providers).toEqual(['claude', 'codex']);
   });
@@ -162,7 +163,7 @@ describe('workflow pipe executor', () => {
     const dispatch = vi.fn<AtomDispatchFn>(async (tool, _args) =>
       jsonResult(registerSession('workflow-literal', tool, 'literal output')));
 
-    const output = await executePipeline(parseExpression('\'summarize\''), 'seed', 'codex', dispatch);
+    const output = await executePipeline(parseExpression('\'summarize\''), 'seed', 'codex', dispatch, FAST_POLL);
 
     expect(output).toBe('literal output');
     expect(dispatch).toHaveBeenCalledWith('codex', expect.objectContaining({
@@ -178,7 +179,7 @@ describe('workflow pipe executor', () => {
       return jsonResult(registerSession('workflow-literal', tool, 'literal output'));
     };
 
-    await executePipeline(parseExpression('\'summarize\''), 'seed context', 'codex', dispatch);
+    await executePipeline(parseExpression('\'summarize\''), 'seed context', 'codex', dispatch, FAST_POLL);
 
     expect(prompts).toEqual(['summarize']);
   });
@@ -194,7 +195,7 @@ describe('workflow pipe executor', () => {
       return jsonResult(registerSession('workflow-literal', tool, 'SUMMARIZED'));
     };
 
-    await executePipeline(parseExpression('architect -> \'summarize\''), 'seed', 'codex', dispatch);
+    await executePipeline(parseExpression('architect -> \'summarize\''), 'seed', 'codex', dispatch, FAST_POLL);
 
     expect(promptLiteralPrompt).toBe('summarize\n\nARCH_OUTPUT');
   });
@@ -213,7 +214,7 @@ describe('workflow pipe executor', () => {
       return jsonResult(registerSession('resolver', tool, 'FINAL'));
     };
 
-    await executePipeline(parseExpression('(architect, \'summarize\') -> resolver'), 'seed', 'codex', dispatch);
+    await executePipeline(parseExpression('(architect, \'summarize\') -> resolver'), 'seed', 'codex', dispatch, FAST_POLL);
 
     expect(resolverPrompt).toContain('<architect>\nARCH\n</architect>');
     expect(resolverPrompt).toContain('<step-result>\nSUM\n</step-result>');
@@ -226,7 +227,7 @@ describe('workflow pipe executor', () => {
       return jsonResult(registerSession('workflow-literal', tool, 'done'));
     };
 
-    await executePipeline(parseExpression('\'text\'@claude'), 'seed', 'codex', dispatch);
+    await executePipeline(parseExpression('\'text\'@claude'), 'seed', 'codex', dispatch, FAST_POLL);
 
     expect(providers).toEqual(['claude']);
   });
@@ -243,6 +244,7 @@ describe('workflow pipe executor', () => {
     };
 
     await executePipeline(parseExpression('\'abcdefghijklmnopqrstuvwxyz\''), 'seed', 'codex', dispatch, {
+      ...FAST_POLL,
       onProgress: (message) => progress.push(message),
     });
 
@@ -253,21 +255,21 @@ describe('workflow pipe executor', () => {
   it('rejects non-coral namespaces in v1', async () => {
     const dispatch: AtomDispatchFn = async () => jsonResult(registerSession('noop', 'codex', 'x'));
     await expect(
-      executePipeline(parseExpression('some-plugin:agent'), 'seed', 'codex', dispatch),
+      executePipeline(parseExpression('some-plugin:agent'), 'seed', 'codex', dispatch, FAST_POLL),
     ).rejects.toThrow('unsupported namespace');
   });
 
   it('fails with launch diagnostics when nested dispatch returns isError', async () => {
     const dispatch: AtomDispatchFn = async () => textResult('Error: launch failed', true);
     await expect(
-      executePipeline(parseExpression('architect'), 'seed', 'codex', dispatch),
+      executePipeline(parseExpression('architect'), 'seed', 'codex', dispatch, FAST_POLL),
     ).rejects.toThrow("Step 1, atom 'architect' launch failed");
   });
 
   it('fails with launch diagnostics when nested launch payload is malformed', async () => {
     const dispatch: AtomDispatchFn = async () => jsonResult({ session: 'only-session' });
     await expect(
-      executePipeline(parseExpression('architect'), 'seed', 'codex', dispatch),
+      executePipeline(parseExpression('architect'), 'seed', 'codex', dispatch, FAST_POLL),
     ).rejects.toThrow('missing session/session_dir');
   });
 
@@ -282,6 +284,7 @@ describe('workflow pipe executor', () => {
       'codex',
       dispatch,
       {
+        ...FAST_POLL,
         args: {
           architect: {
             model: 'o4-mini',
@@ -318,6 +321,7 @@ describe('workflow pipe executor', () => {
       'codex',
       dispatch,
       {
+        ...FAST_POLL,
         args: {
           architect: {
             files: [filePath],
@@ -341,7 +345,7 @@ describe('workflow pipe executor', () => {
         'seed',
         'codex',
         dispatch,
-        { args: { architect: { bypass: true } } },
+        { ...FAST_POLL, args: { architect: { bypass: true } } },
       ),
     ).rejects.toThrow('args.architect.bypass');
   });
@@ -358,6 +362,7 @@ describe('workflow pipe executor', () => {
     };
 
     const output = await executePipeline(parseExpression('architect'), 'seed', 'codex', dispatch, {
+      ...FAST_POLL,
       onProgress: (message) => progress.push(message),
     });
 
@@ -378,7 +383,7 @@ describe('workflow pipe executor', () => {
       return jsonResult(registerSession('architect', tool, 'done'));
     };
 
-    const output = await executePipeline(parseExpression('architect'), 'seed', 'codex', dispatch);
+    const output = await executePipeline(parseExpression('architect'), 'seed', 'codex', dispatch, FAST_POLL);
 
     expect(output).toBe('done');
     expect(attempts).toBe(2);
@@ -389,7 +394,7 @@ describe('workflow pipe executor', () => {
       textResult(`Error: ${BUSY_PREFIX}10/10 total, 6/6 for ${tool})`, true);
 
     await expect(
-      executePipeline(parseExpression('architect'), 'seed', 'codex', dispatch),
+      executePipeline(parseExpression('architect'), 'seed', 'codex', dispatch, FAST_POLL),
     ).rejects.toThrow('capacity busy after 3 attempts');
   });
 
@@ -409,7 +414,7 @@ describe('workflow pipe executor', () => {
     const requestAbort = vi.fn(abortWithSessionError(sibling, 'abort requested'));
 
     await expect(
-      waitForAllAtoms(atoms, undefined, () => {}, requestAbort),
+      waitForAllAtoms(atoms, undefined, () => {}, requestAbort, FAST_POLL),
     ).rejects.toThrow("Step 1, atom 'architect' failed: primary failure");
 
     expect(requestAbort).toHaveBeenCalledWith(expect.objectContaining({
@@ -423,6 +428,7 @@ describe('workflow pipe executor', () => {
     const dispatch: AtomDispatchFn = async (tool) => jsonResult(registerSession('architect', tool, 'done'));
 
     await executePipeline(parseExpression('architect'), 'seed', 'codex', dispatch, {
+      ...FAST_POLL,
       onProgress: (message) => progress.push(message),
     });
 
@@ -445,7 +451,7 @@ describe('workflow pipe executor', () => {
       return jsonResult(registerSession('d', tool, 'D'));
     };
 
-    const output = await executePipeline(parseExpression('(a, b) -> c -> d'), 'seed', 'codex', dispatch);
+    const output = await executePipeline(parseExpression('(a, b) -> c -> d'), 'seed', 'codex', dispatch, FAST_POLL);
 
     expect(output).toBe('D');
     expect(seenPrompts[0]).toContain('<a>\nA\n</a>');
@@ -465,7 +471,7 @@ describe('workflow pipe executor', () => {
       return jsonResult(launch);
     };
 
-    await executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', dispatch);
+    await executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', dispatch, FAST_POLL);
 
     expect(callTimes).toHaveLength(2);
     expect(callTimes[1]).toBeLessThanOrEqual(firstResolveAt);
@@ -513,7 +519,7 @@ describe('workflow pipe executor', () => {
     controller.abort();
 
     await expect(
-      waitForAllAtoms(atoms, controller.signal, () => {}, async () => {}),
+      waitForAllAtoms(atoms, controller.signal, () => {}, async () => {}, FAST_POLL),
     ).rejects.toThrow('Pipeline aborted');
   });
 
@@ -532,7 +538,7 @@ describe('workflow pipe executor', () => {
     });
 
     await expect(
-      waitForAllAtoms(atoms, undefined, () => {}, requestAbort),
+      waitForAllAtoms(atoms, undefined, () => {}, requestAbort, FAST_POLL),
     ).rejects.toThrow("Step 3, atom 'fail-agent' failed: atom-failure");
   });
 
@@ -557,7 +563,7 @@ describe('workflow pipe executor', () => {
 
     try {
       await expect(
-        waitForAllAtoms(atoms, undefined, () => {}, async () => {}),
+        waitForAllAtoms(atoms, undefined, () => {}, async () => {}, FAST_POLL),
       ).rejects.toThrow("Step 1, atom 'failed' failed: primary-fail");
     } finally {
       nowSpy.mockRestore();
@@ -576,6 +582,7 @@ describe('workflow pipe executor', () => {
         undefined,
         (message) => progress.push(message),
         async () => {},
+        FAST_POLL,
       );
 
       expect(progress).toContain('atom architect: inner message');
@@ -599,6 +606,7 @@ describe('workflow pipe executor', () => {
         undefined,
         (message) => progress.push(message),
         async () => {},
+        FAST_POLL,
       );
 
       expect(progress.some((message) => message.startsWith('atom architect:'))).toBe(false);
@@ -626,6 +634,7 @@ describe('workflow pipe executor', () => {
         undefined,
         (message) => progress.push(message),
         async () => {},
+        FAST_POLL,
       );
 
       const tailIndex = progress.indexOf('atom architect: tail message');
@@ -648,7 +657,7 @@ describe('workflow pipe executor', () => {
           undefined,
           () => {},
           requestAbort,
-          { staleTimeoutMs: 10, dispatch },
+          { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
         ),
       ).rejects.toThrow("Step 1, atom 'architect' resume failed: non-resumable session");
 
@@ -678,7 +687,7 @@ describe('workflow pipe executor', () => {
         undefined,
         (message) => progress.push(message),
         requestAbort,
-        { staleTimeoutMs: 10, dispatch },
+        { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
       );
 
       expect(progress).toContain('atom architect resuming (attempt 1)');
@@ -709,7 +718,7 @@ describe('workflow pipe executor', () => {
         undefined,
         () => {},
         requestAbort,
-        { staleTimeoutMs: 0, dispatch },
+        { staleTimeoutMs: 0, dispatch, pollIntervalMs: 50 },
       );
 
       expect(requestAbort).not.toHaveBeenCalled();
@@ -743,7 +752,7 @@ describe('workflow pipe executor', () => {
         undefined,
         () => {},
         requestAbort,
-        { staleTimeoutMs: 10, dispatch },
+        { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
       );
 
       expect(abortedSessions).toEqual([stale.session]);
@@ -770,7 +779,7 @@ describe('workflow pipe executor', () => {
           undefined,
           () => {},
           requestAbort,
-          { staleTimeoutMs: 10, dispatch },
+          { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
         ),
       ).rejects.toThrow("Step 1, atom 'architect' resume failed: non-resumable session");
     });
@@ -807,7 +816,7 @@ describe('workflow pipe executor', () => {
           undefined,
           () => {},
           requestAbort,
-          { staleTimeoutMs: 10, dispatch },
+          { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
         ),
       ).rejects.toThrow("Step 1, atom 'architect' stale after 2 recovery attempts");
 
@@ -827,7 +836,7 @@ describe('workflow pipe executor', () => {
           undefined,
           () => {},
           requestAbort,
-          { staleTimeoutMs: 10, dispatch },
+          { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
         ),
       ).rejects.toThrow("Step 1, atom 'architect' resume returned malformed JSON");
     });
@@ -836,7 +845,8 @@ describe('workflow pipe executor', () => {
   it('rejects bypass: false (property presence triggers rejection, not truthiness)', async () => {
     const dispatch: AtomDispatchFn = async () => jsonResult(registerSession('a', 'codex', 'done'));
     await expect(
-      executePipeline(parseExpression('a'), 'seed', 'codex', dispatch, { args: { a: { bypass: false } } }),
+      executePipeline(parseExpression('a'), 'seed', 'codex', dispatch, {
+      ...FAST_POLL, args: { a: { bypass: false } } }),
     ).rejects.toThrow('bypass');
   });
 
@@ -847,7 +857,8 @@ describe('workflow pipe executor', () => {
       return jsonResult(registerSession('a', tool, 'done'));
     };
 
-    await executePipeline(parseExpression('a'), 'seed', 'codex', dispatch, { args: { a: { files: [] } } });
+    await executePipeline(parseExpression('a'), 'seed', 'codex', dispatch, {
+      ...FAST_POLL, args: { a: { files: [] } } });
 
     expect(capturedPrompt).not.toContain('<file');
     expect(capturedPrompt).toBe('seed');
@@ -860,7 +871,8 @@ describe('workflow pipe executor', () => {
       return jsonResult(registerSession('a', tool, 'done'));
     };
 
-    await executePipeline(parseExpression('a'), 'seed', 'codex', dispatch, { args: { a: { flags: [] } } });
+    await executePipeline(parseExpression('a'), 'seed', 'codex', dispatch, {
+      ...FAST_POLL, args: { a: { flags: [] } } });
 
     expect(capturedPrompt).not.toContain('Flags:');
     expect(capturedPrompt).toBe('seed');
@@ -869,7 +881,8 @@ describe('workflow pipe executor', () => {
   it('rejects mixed-type array for files arg', async () => {
     const dispatch: AtomDispatchFn = async () => jsonResult(registerSession('a', 'codex', 'done'));
     await expect(
-      executePipeline(parseExpression('a'), 'seed', 'codex', dispatch, { args: { a: { files: ['readme.txt', 42] } } }),
+      executePipeline(parseExpression('a'), 'seed', 'codex', dispatch, {
+      ...FAST_POLL, args: { a: { files: ['readme.txt', 42] } } }),
     ).rejects.toThrow('args.files must be an array of strings');
   });
 
@@ -882,7 +895,8 @@ describe('workflow pipe executor', () => {
       return jsonResult(registerSession('a2', tool, 'step2'));
     };
 
-    await executePipeline(parseExpression('a -> a'), 'seed', 'codex', dispatch, { args: { a: { model: 'o4-mini' } } });
+    await executePipeline(parseExpression('a -> a'), 'seed', 'codex', dispatch, {
+      ...FAST_POLL, args: { a: { model: 'o4-mini' } } });
 
     expect(capturedModels).toHaveLength(2);
     expect(capturedModels[0]).toBe('o4-mini');
@@ -911,7 +925,7 @@ describe('workflow pipe executor', () => {
 
   describe('waitForAllAtoms — empty atoms array', () => {
     it('returns an empty Map immediately when given zero atoms', async () => {
-      const result = await waitForAllAtoms([], undefined, () => {}, async () => {});
+      const result = await waitForAllAtoms([], undefined, () => {}, async () => {}, FAST_POLL);
       expect(result).toBeInstanceOf(Map);
       expect(result.size).toBe(0);
     });
@@ -926,6 +940,7 @@ describe('workflow pipe executor', () => {
         undefined,
         () => {},
         async () => {},
+        FAST_POLL,
       );
       expect(overlay.get('alpha')).toEqual({ session: s1.session, sessionDir: s1.session_dir });
       expect(overlay.get('beta')).toEqual({ session: s2.session, sessionDir: s2.session_dir });
@@ -944,6 +959,7 @@ describe('workflow pipe executor', () => {
         undefined,
         (msg) => messages.push(msg),
         async () => {},
+        FAST_POLL,
       );
       expect(messages).toContain('atom worker: first event');
       expect(messages).toContain('atom worker: second event');
@@ -968,7 +984,7 @@ describe('workflow pipe executor', () => {
         undefined,
         () => {},
         requestAbort,
-        { staleTimeoutMs: 10, dispatch },
+        { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
       );
       expect(capturedResumeArgs).toHaveLength(1);
       expect(capturedResumeArgs[0].session).toBe(stale.session);
@@ -1004,7 +1020,7 @@ describe('workflow pipe executor', () => {
           undefined,
           () => {},
           requestAbort,
-          { staleTimeoutMs: 10, dispatch },
+          { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
         ),
       ).rejects.toThrow("Step 1, atom 'architect' stale after 2 recovery attempts");
       expect(dispatch).toHaveBeenCalledTimes(2);
@@ -1030,7 +1046,7 @@ describe('workflow pipe executor', () => {
           controller.signal,
           () => {},
           requestAbort,
-          { staleTimeoutMs: 10, dispatch },
+          { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
         ),
       ).rejects.toThrow('Pipeline aborted');
       expect(dispatch).not.toHaveBeenCalled();
@@ -1050,7 +1066,7 @@ describe('workflow pipe executor', () => {
           undefined,
           () => {},
           requestAbort,
-          { staleTimeoutMs: 10, dispatch },
+          { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
         ),
       ).rejects.toThrow("Step 1, atom 'architect' resume returned invalid response");
     });
@@ -1067,7 +1083,7 @@ describe('workflow pipe executor', () => {
           undefined,
           () => {},
           requestAbort,
-          { staleTimeoutMs: 10, dispatch },
+          { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
         ),
       ).rejects.toThrow("Step 1, atom 'architect' resume returned invalid response");
     });
@@ -1085,7 +1101,7 @@ describe('workflow pipe executor', () => {
           undefined,
           () => {},
           requestAbort,
-          { staleTimeoutMs: 10, dispatch },
+          { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
         ),
       ).rejects.toThrow("Step 1, atom 'architect' resume returned empty response");
     });

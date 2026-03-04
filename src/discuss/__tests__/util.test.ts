@@ -665,8 +665,8 @@ describe('SessionLock', () => {
     writeFileSync(join(lockDir, 'pid'), `${process.pid}-${Date.now()}`);
 
     const lock = new SessionLock();
-    await expect(lock.acquire(tmpDir, async () => 'never')).rejects.toThrow(
+    await expect(lock.acquire(tmpDir, async () => 'never', { maxRetries: 3, baseDelay: 5 })).rejects.toThrow(
       `Lock timeout for session ${tmpDir}`,
     );
-  }, 15000); // maxRetries=10 × baseDelay=50ms × 2^min(i,5) — up to ~3200ms total
+  });
 });

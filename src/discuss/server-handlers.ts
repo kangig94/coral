@@ -167,7 +167,7 @@ export const tools = [
         },
         seed: { type: ['integer', 'null'], description: 'Seed value (_1_seed)' },
         session: { type: 'string', description: 'Session ID' },
-        timeout_seconds: { type: 'number', minimum: 0.1, maximum: 120, description: '_3_step timeout (seconds)' },
+        timeout_seconds: { type: 'integer', minimum: 1, maximum: 120, description: '_3_step timeout (seconds)' },
         force_stop: { type: 'boolean', description: '_3_step timeout escalation flag' },
         mode: { type: 'string', enum: ['full', 'recent', 'summary'], description: '_4_transcript' },
         last_n: { type: 'integer', minimum: 1, maximum: 50, description: 'Override recent turns (_4_transcript)' },
