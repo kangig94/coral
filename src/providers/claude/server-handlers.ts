@@ -61,11 +61,7 @@ export function extractClaudeCompletionData(
   result: McpResult,
 ): { responseText: string; metadata: CompletionMetadata; sessionId?: string } {
   const data = JSON.parse(result.content[0].text) as Record<string, unknown>;
-  const threadId = typeof data.thread_id === 'string'
-    ? data.thread_id
-    : typeof data.session === 'string'
-      ? data.session
-      : undefined;
+  const threadId = typeof data.thread_id === 'string' ? data.thread_id : undefined;
 
   const metadata: CompletionMetadata = {
     thread_id: threadId,

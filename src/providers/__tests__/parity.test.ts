@@ -168,4 +168,17 @@ describe('provider parity', () => {
       metadata: expect.objectContaining({ thread_id: 'thread-claude' }),
     }));
   });
+
+  it('claude completion extraction ignores legacy session field', () => {
+    const legacy = claudeAdapter.extractCompletion(jsonResult({
+      response: 'claude text',
+      session: 'thread-legacy',
+      model: 'sonnet',
+      duration_ms: 5,
+      cost_usd: 0.001,
+    }));
+
+    expect(legacy.sessionId).toBeUndefined();
+    expect(legacy.metadata.thread_id).toBeUndefined();
+  });
 });
