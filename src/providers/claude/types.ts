@@ -23,3 +23,28 @@ export type ClaudeExecFailure = {
   stderr: string;
   parseError: string;
 };
+
+export type ClaudeStreamEvent = {
+  type: string;
+  subtype?: string;
+  message?: {
+    role?: string;
+    content?: Array<{
+      type: string;
+      text?: string;
+      name?: string;
+      id?: string;
+      input?: Record<string, unknown>;
+      [key: string]: unknown;
+    }>;
+    model?: string;
+    usage?: unknown;
+  };
+  session_id?: string;
+  total_cost_usd?: number;
+  result?: unknown;
+  duration_ms?: number;
+  num_turns?: number;
+  is_error?: boolean;
+  [key: string]: unknown;
+};

@@ -17,6 +17,8 @@ import type { CompletionMetadata } from '../../runner/types.js';
 import { type McpResult, textResult, jsonResult } from '../../shared/mcp-utils.js';
 import { sessionNotFoundError, handleSessionList, handleSessionAbort } from '../session-ops.js';
 import { stripAgentMetadata } from '../../coral/resolver.js';
+import { extractClaudeProgressMessage, appendProgressEvent } from './progress.js';
+import type { ClaudeStreamEvent } from './types.js';
 import type { ProviderAdapter, NotifyFn } from '../types.js';
 
 export const claudeTool = {
@@ -38,7 +40,18 @@ export const claudeTool = {
   },
 };
 
-const noopEventCallback: OnEventCallback = () => {};
+export function makeClaudeEventCallback(progressFile: string): OnEventCallback {
+  return (line: string) => {
+    try {
+      const event = JSON.parse(line) as ClaudeStreamEvent;
+      const message = extractClaudeProgressMessage(event);
+      if (!message) return;
+      appendProgressEvent(progressFile, event.type, message);
+    } catch {
+      /* ignore non-JSON lines */
+    }
+  };
+}
 
 function launchClaudeJob(
   sessionLabel: string,
@@ -52,7 +65,7 @@ function launchClaudeJob(
     workingDirectory,
     handler,
     mgr,
-    makeOnEvent: () => noopEventCallback,
+    makeOnEvent: ({ progressFile }) => makeClaudeEventCallback(progressFile),
     extractCompletion: (result) => extractClaudeCompletionData(result),
   });
 }
@@ -105,7 +118,7 @@ export async function handleClaudeSessionCreate(
   input: ClaudeSessionCreateInput,
   _mgr: SessionManager,
   signal: AbortSignal,
-  _onEvent?: OnEventCallback,
+  onEvent?: OnEventCallback,
   _preChecked?: ClaudeCliInfo & { available: true },
 ): Promise<McpResult> {
   const sessionName = input.name ?? `session-${Date.now()}`;
@@ -118,6 +131,7 @@ export async function handleClaudeSessionCreate(
       systemPrompt: input.system_prompt,
       bypassPermissions: input.bypass,
       signal,
+      onEvent,
     });
   } catch (error: unknown) {
     if (error instanceof ClaudeExecParseError) {
@@ -162,7 +176,7 @@ export async function handleClaudeSessionSend(
   input: ClaudeSessionSendInput,
   mgr: SessionManager,
   signal: AbortSignal,
-  _onEvent?: OnEventCallback,
+  onEvent?: OnEventCallback,
   _preChecked?: ClaudeCliInfo & { available: true },
   sourceSessionId?: string,
 ): Promise<McpResult> {
@@ -180,6 +194,7 @@ export async function handleClaudeSessionSend(
       systemPrompt: input.system_prompt,
       bypassPermissions: input.bypass,
       signal,
+      onEvent,
     });
   } catch (error: unknown) {
     if (error instanceof ClaudeExecParseError) {
@@ -339,5 +354,5 @@ export const claudeAdapter: ProviderAdapter = {
   handleOp: handleClaudeOp,
   handleCoralOp: handleClaudeCoralOp,
   extractCompletion: extractClaudeCompletionData,
-  makeOnEvent: () => noopEventCallback,
+  makeOnEvent: ({ progressFile }) => makeClaudeEventCallback(progressFile),
 };

@@ -18,15 +18,12 @@ describe('claude-executor', () => {
     mockSpawnCli.mockReset();
   });
 
-  it('sends one-shot prompt via stdin with json output args', async () => {
+  it('sends one-shot prompt via stdin with stream-json output args', async () => {
     mockSpawnCli.mockResolvedValue({
-      stdout: JSON.stringify({
-        type: 'result',
-        result: 'hello',
-        session_id: 'sess-1',
-        total_cost_usd: 0.02,
-        model: 'claude-3-5-sonnet',
-      }),
+      stdout: [
+        '{"type":"assistant","message":{"model":"claude-3-5-sonnet","content":[{"type":"text","text":"hello"}]}}',
+        '{"type":"result","result":"hello","session_id":"sess-1","total_cost_usd":0.02}',
+      ].join('\n'),
       stderr: '',
       code: 0,
       aborted: false,
@@ -44,8 +41,9 @@ describe('claude-executor', () => {
       command: 'claude',
       args: [
         '-p',
+        '--verbose',
         '--output-format',
-        'json',
+        'stream-json',
         '--append-system-prompt',
         'You are precise',
         '--model',
@@ -56,6 +54,7 @@ describe('claude-executor', () => {
       prompt: 'Say hello',
       cwd: '/tmp/work',
       signal: undefined,
+      onEvent: undefined,
     });
 
     expect(result).toMatchObject({
@@ -69,7 +68,7 @@ describe('claude-executor', () => {
 
   it('adds --resume and optional --append-system-prompt when resuming', async () => {
     mockSpawnCli.mockResolvedValue({
-      stdout: JSON.stringify({ type: 'result', result: { response: 'done' }, session_id: 'sess-2' }),
+      stdout: '{"type":"result","result":"done","session_id":"sess-2"}',
       stderr: '',
       code: 0,
       aborted: false,
@@ -86,8 +85,9 @@ describe('claude-executor', () => {
       command: 'claude',
       args: [
         '-p',
+        '--verbose',
         '--output-format',
-        'json',
+        'stream-json',
         '--resume',
         'sess-1',
         '--append-system-prompt',
@@ -98,6 +98,7 @@ describe('claude-executor', () => {
       prompt: 'Continue',
       cwd: '/tmp/project',
       signal: undefined,
+      onEvent: undefined,
     });
 
     expect(result.response).toBe('done');
@@ -106,7 +107,7 @@ describe('claude-executor', () => {
 
   it('includes --dangerously-skip-permissions for one-shot when bypassPermissions is true', async () => {
     mockSpawnCli.mockResolvedValue({
-      stdout: JSON.stringify({ type: 'result', result: 'ok', session_id: 'sess-5' }),
+      stdout: '{"type":"result","result":"ok","session_id":"sess-5"}',
       stderr: '',
       code: 0,
       aborted: false,
@@ -117,8 +118,9 @@ describe('claude-executor', () => {
     expect(mockSpawnCli).toHaveBeenCalledWith(expect.objectContaining({
       args: [
         '-p',
+        '--verbose',
         '--output-format',
-        'json',
+        'stream-json',
         '--dangerously-skip-permissions',
       ],
     }));
@@ -126,7 +128,7 @@ describe('claude-executor', () => {
 
   it('includes --dangerously-skip-permissions for resume when bypassPermissions is true', async () => {
     mockSpawnCli.mockResolvedValue({
-      stdout: JSON.stringify({ type: 'result', result: 'ok', session_id: 'sess-6' }),
+      stdout: '{"type":"result","result":"ok","session_id":"sess-6"}',
       stderr: '',
       code: 0,
       aborted: false,
@@ -137,8 +139,9 @@ describe('claude-executor', () => {
     expect(mockSpawnCli).toHaveBeenCalledWith(expect.objectContaining({
       args: [
         '-p',
+        '--verbose',
         '--output-format',
-        'json',
+        'stream-json',
         '--resume',
         'sess-6',
         '--dangerously-skip-permissions',
@@ -146,17 +149,12 @@ describe('claude-executor', () => {
     }));
   });
 
-  it('parses nested content-array text output', async () => {
+  it('parses assistant text blocks when result event has no response text', async () => {
     mockSpawnCli.mockResolvedValue({
-      stdout: JSON.stringify({
-        result: {
-          content: [
-            { type: 'text', text: 'line one' },
-            { type: 'text', text: 'line two' },
-          ],
-        },
-        session_id: 'sess-3',
-      }),
+      stdout: [
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"line one\\nline two"}]}}',
+        '{"type":"result","session_id":"sess-3","total_cost_usd":0.01}',
+      ].join('\n'),
       stderr: '',
       code: 0,
       aborted: false,
@@ -168,9 +166,9 @@ describe('claude-executor', () => {
     expect(result.sessionId).toBe('sess-3');
   });
 
-  it('returns null sessionId when JSON output omits session_id', async () => {
+  it('returns null sessionId when stream output omits session_id', async () => {
     mockSpawnCli.mockResolvedValue({
-      stdout: JSON.stringify({ type: 'result', result: 'ok' }),
+      stdout: '{"type":"result","result":"ok"}',
       stderr: '',
       code: 0,
       aborted: false,
@@ -182,7 +180,23 @@ describe('claude-executor', () => {
     expect(result.response).toBe('ok');
   });
 
-  it('throws structured ClaudeExecParseError when stdout is non-JSON', async () => {
+  it('passes onEvent callback to spawnCli', async () => {
+    mockSpawnCli.mockResolvedValue({
+      stdout: '{"type":"result","result":"ok","session_id":"sess-on-event"}',
+      stderr: '',
+      code: 0,
+      aborted: false,
+    });
+
+    const onEvent = vi.fn();
+    await executeClaudeOneShot('stream events', { onEvent });
+
+    expect(mockSpawnCli).toHaveBeenCalledWith(expect.objectContaining({
+      onEvent,
+    }));
+  });
+
+  it('throws structured ClaudeExecParseError when stdout is fully unparseable', async () => {
     mockSpawnCli.mockResolvedValue({
       stdout: 'not-json-output',
       stderr: 'stderr text',
@@ -198,6 +212,7 @@ describe('claude-executor', () => {
       exitCode: 17,
       stdout: 'not-json-output',
       stderr: 'stderr text',
+      parseError: 'Fully unparseable stream-json output',
     }));
   });
 });

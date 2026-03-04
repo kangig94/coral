@@ -59,7 +59,7 @@ describe('extractProgressMessage', () => {
       type: 'item.completed',
       item: { id: '1', type: 'command_execution', command: 'ls -la', aggregated_output: '', exit_code: 0, status: 'completed' },
     };
-    expect(extractProgressMessage(event)).toBe('Running: ls -la');
+    expect(extractProgressMessage(event)).toBe('Bash(ls -la)');
   });
 
   it('returns file path for file_change', () => {
@@ -67,7 +67,7 @@ describe('extractProgressMessage', () => {
       type: 'item.completed',
       item: { id: '1', type: 'file_change', changes: [{ path: 'src/main.ts', kind: 'edit' }], status: 'completed' },
     };
-    expect(extractProgressMessage(event)).toBe('Editing: src/main.ts');
+    expect(extractProgressMessage(event)).toBe('Edit(main.ts)');
   });
 
   it('returns tool name for mcp_tool_call', () => {

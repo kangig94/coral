@@ -3,7 +3,10 @@
  * Generic session/progress file helpers live in ../../runner/progress.ts.
  */
 
+import { basename } from 'node:path';
 import type { CodexThreadEvent } from '../../types.js';
+import { truncate } from '../../shared/format-progress.js';
+import { stripShellWrapper, matchCommandPattern } from './command-patterns.js';
 
 export {
   createSessionDir,
@@ -31,11 +34,16 @@ export function extractProgressMessage(event: CodexThreadEvent): string | null {
       return typeof item.query === 'string' ? `Searching: ${item.query}` : null;
     case 'agent_message':
       return 'Generating response...';
-    case 'command_execution':
-      return typeof item.command === 'string' ? `Running: ${item.command}` : null;
+    case 'command_execution': {
+      if (typeof item.command !== 'string') return null;
+      const stripped = stripShellWrapper(item.command);
+      const matched = matchCommandPattern(stripped);
+      return matched ?? `Bash(${truncate(stripped)})`;
+    }
     case 'file_change': {
       const firstChange = Array.isArray(item.changes) ? item.changes[0] : undefined;
-      return `Editing: ${typeof firstChange?.path === 'string' ? firstChange.path : 'file'}`;
+      const filePath = typeof firstChange?.path === 'string' ? firstChange.path : 'file';
+      return `Edit(${basename(filePath)})`;
     }
     case 'mcp_tool_call':
       return typeof item.tool === 'string' ? `Calling: ${item.tool}` : null;

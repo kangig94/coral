@@ -36,7 +36,7 @@ export type LaunchJobOptions<T> = {
   mgr: SessionManager;
   makeOnEvent: (ctx: {
     provider: SessionProvider;
-    sessionId: string;
+    coralSessionId: string;
     sessionDir: string;
     progressFile: string;
   }) => OnEventCallback;
@@ -78,7 +78,7 @@ export function launchJob<T>(options: LaunchJobOptions<T>): McpResult {
   const progressFile = join(dir, PROGRESS_FILE);
   const onEvent = options.makeOnEvent({
     provider: options.provider,
-    sessionId: id,
+    coralSessionId: id,
     sessionDir: dir,
     progressFile,
   });

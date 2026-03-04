@@ -60,6 +60,7 @@ export type LaunchedAtom = {
   tagName: string;
   providerTool: SessionProvider;
   stepIndex: number;
+  resumeOp: string;
 };
 
 type AtomAbortTarget = {
@@ -379,6 +380,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
       tagName,
       providerTool,
       stepIndex,
+      resumeOp: String(dispatchPayload.op),
     };
   }
 
@@ -521,7 +523,7 @@ export async function waitForAllAtoms(
 
         onProgress(`atom ${atom.agent} resuming (attempt ${retries + 1})`);
         const resumeResult = await options.dispatch(atom.providerTool, {
-          op: 'exec',
+          op: atom.resumeOp,
           session: staleSession,
           prompt: STALE_RESUME_PROMPT,
         });
