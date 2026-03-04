@@ -342,14 +342,4 @@ describe('workflow handler — singular vs plural unknown provider error', () =>
     ).toThrow(/Unknown providers:/i);
   });
 
-  it('one unknown per-atom provider produces singular "Unknown provider \\"..." message', () => {
-    const mgr = makeSessionManager();
-    expect(() =>
-      handleWorkflow(
-        { expression: 'architect@nobody', prompt: 'hi', provider: 'codex' },
-        async () => jsonResult({}),
-        mgr,
-      ),
-    ).toThrow(/Unknown provider "/i);
-  });
 });

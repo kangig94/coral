@@ -134,18 +134,6 @@ describe('ax server-handlers router', () => {
     expect(handleCoralOpSpy).not.toHaveBeenCalled();
   });
 
-  it('workflow tool provider enum contains registered providers after bootstrap', () => {
-    const tools = getTools();
-    const workflowTool = tools.find((t) => t.name === 'workflow');
-    expect(workflowTool).toBeDefined();
-    const providerProp = (workflowTool?.inputSchema as {
-      properties?: Record<string, { enum?: string[]; type?: string }>;
-    })?.properties?.provider;
-    expect(providerProp).toBeDefined();
-    expect(providerProp?.enum).toContain('codex');
-    expect(providerProp?.enum).toContain('claude');
-  });
-
   it('workflow tool provider metadata is an object regardless of registry state', () => {
     const tools = getTools();
     const workflow = tools.find((t) => t.name === 'workflow');

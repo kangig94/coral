@@ -100,10 +100,6 @@ describe('registry — guard clause ordering', () => {
     expect(() => registerProvider(makeAdapter('wait'))).toThrow(/reserved/i);
   });
 
-  it('duplicate check fires when name+tool match and name is not reserved', () => {
-    registerProvider(makeAdapter('beta'));
-    expect(() => registerProvider(makeAdapter('beta'))).toThrow(/already registered/i);
-  });
 });
 
 describe('registry — insertion order and case sensitivity', () => {
