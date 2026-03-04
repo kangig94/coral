@@ -183,6 +183,9 @@ describe('save and load', () => {
 
 
 describe('cleanupExpiredSessions', () => {
+  beforeEach(() => { process.env.CORAL_DISCUSS_TTL_DAYS = '30'; });
+  afterEach(() => { delete process.env.CORAL_DISCUSS_TTL_DAYS; });
+
   function saveSessionWithStatus(topic: string, status: string, lastActivity: Date) {
     const { sessionId, fullPath } = store.createSessionDir(topic);
     const state = initSession({ topic, agents: AGENTS, min_bid_delay_ms: 0 }, new Date().toISOString());
@@ -217,6 +220,15 @@ describe('cleanupExpiredSessions', () => {
 
   it('should return 0 when no sessions exist', () => {
     expect(store.cleanupExpiredSessions()).toBe(0);
+  });
+
+  it('should skip cleanup when TTL is 0 (disabled)', () => {
+    process.env.CORAL_DISCUSS_TTL_DAYS = '0';
+    const old = daysAgo(365);
+    const { fullPath } = saveSessionWithStatus('Ancient Topic', 'ended', old);
+    const removed = store.cleanupExpiredSessions();
+    expect(removed).toBe(0);
+    expect(existsSync(fullPath)).toBe(true);
   });
 });
 

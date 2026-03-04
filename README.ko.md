@@ -189,7 +189,7 @@ Claude가 놓치기 쉬운 것을 발견하면 (근본 원인, 주의사항, 기
 |------|--------|------|
 | `CORAL_CODEX_MODEL` | `gpt-5.3-codex` | Codex CLI 기본 모델 |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | 토론 자동 종료 전 최대 에포크 (1–10) |
-| `CORAL_DISCUSS_TTL_DAYS` | `30` | 완료된 토론 세션 자동 정리 기한 (일) |
+| `CORAL_DISCUSS_TTL_DAYS` | `0` | 완료된 토론 세션 자동 정리 기한 (일, 0 = 비활성화) |
 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(미설정)_ | `/coral:discuss` **필수**. `1`로 설정. |
 `.claude/settings.json`에 설정 (세션 간 유지):
 
@@ -198,7 +198,7 @@ Claude가 놓치기 쉬운 것을 발견하면 (근본 원인, 주의사항, 기
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
     "CORAL_DISCUSS_MAX_EPOCHS": "2",
-    "CORAL_DISCUSS_TTL_DAYS": "30"
+    "CORAL_DISCUSS_TTL_DAYS": "0"
   }
 }
 ```
