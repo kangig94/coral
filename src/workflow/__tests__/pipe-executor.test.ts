@@ -64,6 +64,7 @@ function makeLaunchedAtom(
     tagName: agent,
     providerTool: 'codex',
     stepIndex,
+    resumeOp: `coral:${agent}`,
   };
 }
 
@@ -397,6 +398,7 @@ describe('workflow pipe executor', () => {
         tagName: 'architect',
         providerTool: 'codex',
         stepIndex: 0,
+        resumeOp: 'coral:architect',
       },
       {
         session: sibling.session,
@@ -405,6 +407,7 @@ describe('workflow pipe executor', () => {
         tagName: 'critic',
         providerTool: 'codex',
         stepIndex: 0,
+        resumeOp: 'coral:critic',
       },
     ];
 
@@ -520,6 +523,7 @@ describe('workflow pipe executor', () => {
       tagName: 'a',
       providerTool: 'codex',
       stepIndex: 0,
+      resumeOp: 'coral:a',
     }];
     const controller = new AbortController();
     controller.abort();
@@ -542,6 +546,7 @@ describe('workflow pipe executor', () => {
         tagName: 'fail-agent',
         providerTool: 'codex',
         stepIndex: 2,
+        resumeOp: 'coral:fail-agent',
       },
       {
         session: sibling.session,
@@ -550,6 +555,7 @@ describe('workflow pipe executor', () => {
         tagName: 'sibling-agent',
         providerTool: 'codex',
         stepIndex: 2,
+        resumeOp: 'coral:sibling-agent',
       },
     ];
 
@@ -575,6 +581,7 @@ describe('workflow pipe executor', () => {
         tagName: 'failed',
         providerTool: 'codex',
         stepIndex: 0,
+        resumeOp: 'coral:failed',
       },
       {
         session: hanging.session,
@@ -583,6 +590,7 @@ describe('workflow pipe executor', () => {
         tagName: 'hanging',
         providerTool: 'codex',
         stepIndex: 0,
+        resumeOp: 'coral:hanging',
       },
     ];
 
@@ -731,7 +739,7 @@ describe('workflow pipe executor', () => {
 
       expect(progress).toContain('atom architect resuming (attempt 1)');
       expect(dispatch).toHaveBeenCalledWith('codex', expect.objectContaining({
-        op: 'exec',
+        op: 'coral:architect',
         session: stale.session,
         prompt: 'Your previous execution timed out due to inactivity. Continue where you left off.',
       }));

@@ -1,4 +1,5 @@
 import { formatToolProgress } from '../../shared/format-progress.js';
+import { isRecord } from '../../shared/mcp-utils.js';
 import type { ClaudeStreamEvent } from './types.js';
 
 export {
@@ -31,8 +32,4 @@ export function extractClaudeProgressMessage(event: ClaudeStreamEvent): string |
 
 function isBlock(block: unknown): block is { type: string; name?: string; input?: unknown; text?: string } {
   return typeof block === 'object' && block !== null && 'type' in block;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }

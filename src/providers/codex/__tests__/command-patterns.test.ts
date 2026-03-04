@@ -242,16 +242,12 @@ describe('matchCommandPattern — adversarial', () => {
 
     it('matches sed -n range + file (without nl prefix)', () => {
       const result = matchCommandPattern("sed -n '1,10p' config.ts");
-      if (result !== null) {
-        expect(result).toBe('Read(config.ts:1-10)');
-      }
+      expect(result).toBe('Read(config.ts:1-10)');
     });
 
     it('does not match nl -ba without the sed pipe', () => {
       const result = matchCommandPattern('nl -ba src/main.ts');
-      if (result !== null) {
-        expect(result).not.toMatch(/:\d+-\d+/);
-      }
+      expect(result).toBeNull();
     });
   });
 });
