@@ -9,6 +9,7 @@ describe('workflowInputSchema', () => {
     });
 
     expect(parsed.provider).toBe('codex');
+    expect(parsed.stale_timeout_seconds).toBe(900);
   });
 
   it('accepts full valid input', () => {
@@ -113,6 +114,15 @@ describe('workflowInputSchema', () => {
     expect(parsed.args).toEqual({});
   });
 
+  it('accepts stale_timeout_seconds set to zero (disable stale recovery)', () => {
+    const parsed = workflowInputSchema.parse({
+      expression: 'architect',
+      prompt: 'hello',
+      stale_timeout_seconds: 0,
+    });
+    expect(parsed.stale_timeout_seconds).toBe(0);
+  });
+
   it('rejects bypass: null (property presence, not truthiness)', () => {
     expect(() =>
       workflowInputSchema.parse({ expression: 'a', prompt: 'hi', args: { a: { bypass: null } } }),
@@ -188,5 +198,24 @@ describe('provider identifier boundary values', () => {
     expect(() =>
       workflowInputSchema.parse({ expression: 'a', prompt: 'hi', provider: 'my_provider' }),
     ).toThrow();
+  });
+});
+
+describe('stale_timeout_seconds validation', () => {
+  it('rejects negative stale_timeout_seconds', () => {
+    expect(() =>
+      workflowInputSchema.parse({ expression: 'architect', prompt: 'hello', stale_timeout_seconds: -1 }),
+    ).toThrow();
+  });
+
+  it('rejects stale_timeout_seconds supplied as a string', () => {
+    expect(() =>
+      workflowInputSchema.parse({ expression: 'architect', prompt: 'hello', stale_timeout_seconds: '900' }),
+    ).toThrow();
+  });
+
+  it('accepts stale_timeout_seconds of exactly 1 (minimum positive value)', () => {
+    const parsed = workflowInputSchema.parse({ expression: 'architect', prompt: 'hello', stale_timeout_seconds: 1 });
+    expect(parsed.stale_timeout_seconds).toBe(1);
   });
 });

@@ -2,7 +2,14 @@ import { describe, expect, it, vi, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createSessionDir, writeSessionError, writeSessionResult } from '../../runner/progress.js';
+import * as runnerProgress from '../../runner/progress.js';
+import {
+  appendProgressEvent,
+  createSessionDir,
+  PROGRESS_FILE,
+  writeSessionError,
+  writeSessionResult,
+} from '../../runner/progress.js';
 import type { SessionProvider } from '../../runner/types.js';
 import { jsonResult, textResult } from '../../shared/mcp-utils.js';
 import { parseExpression } from '../pipe-parser.js';
@@ -25,6 +32,7 @@ afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
   }
   dirsToClean.clear();
+  vi.restoreAllMocks();
 });
 
 function registerSession(
@@ -42,6 +50,21 @@ function registerSession(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function makeLaunchedAtom(
+  session: { session: string; session_dir: string },
+  agent: string,
+  stepIndex = 0,
+): LaunchedAtom {
+  return {
+    session: session.session,
+    sessionDir: session.session_dir,
+    agent,
+    tagName: agent,
+    providerTool: 'codex',
+    stepIndex,
+  };
 }
 
 describe('workflow pipe executor', () => {
@@ -581,6 +604,291 @@ describe('workflow pipe executor', () => {
     }
   });
 
+  describe('atom progress forwarding', () => {
+    it('forwards atom progress with agent-prefixed messages', async () => {
+      const completed = registerSession('forward-progress', 'codex');
+      appendProgressEvent(join(completed.session_dir, PROGRESS_FILE), 'item.completed', 'inner message');
+      writeSessionResult(completed.session_dir, 'done', { session_name: 'forward-progress' });
+
+      const progress: string[] = [];
+      const finalOverlay = await waitForAllAtoms(
+        [makeLaunchedAtom(completed, 'architect')],
+        undefined,
+        (message) => progress.push(message),
+        async () => {},
+      );
+
+      expect(progress).toContain('atom architect: inner message');
+      expect(progress).toContain('step 1 atom architect completed');
+      expect(finalOverlay.get('architect')).toEqual({
+        session: completed.session,
+        sessionDir: completed.session_dir,
+      });
+    });
+  });
+
+  describe('atom progress forwarding (no progress.jsonl)', () => {
+    it('ignores missing progress file and still completes', async () => {
+      const completed = registerSession('forward-missing-file', 'codex');
+      rmSync(join(completed.session_dir, PROGRESS_FILE), { force: true });
+      writeSessionResult(completed.session_dir, 'done', { session_name: 'forward-missing-file' });
+
+      const progress: string[] = [];
+      await waitForAllAtoms(
+        [makeLaunchedAtom(completed, 'architect')],
+        undefined,
+        (message) => progress.push(message),
+        async () => {},
+      );
+
+      expect(progress.some((message) => message.startsWith('atom architect:'))).toBe(false);
+      expect(progress).toContain('step 1 atom architect completed');
+    });
+  });
+
+  describe('terminal-tail progress read', () => {
+    it('forwards final events before terminal removal', async () => {
+      const completed = registerSession('terminal-tail', 'codex');
+      writeSessionResult(completed.session_dir, 'done', { session_name: 'terminal-tail' });
+
+      let readCount = 0;
+      vi.spyOn(runnerProgress, 'readProgressEvents').mockImplementation(() => {
+        readCount += 1;
+        if (readCount === 2) {
+          return [{ ts: 1, event: 'item.completed', message: 'tail message' }];
+        }
+        return [];
+      });
+
+      const progress: string[] = [];
+      await waitForAllAtoms(
+        [makeLaunchedAtom(completed, 'architect')],
+        undefined,
+        (message) => progress.push(message),
+        async () => {},
+      );
+
+      const tailIndex = progress.indexOf('atom architect: tail message');
+      const terminalIndex = progress.indexOf('step 1 atom architect completed');
+      expect(tailIndex).toBeGreaterThanOrEqual(0);
+      expect(terminalIndex).toBeGreaterThanOrEqual(0);
+      expect(tailIndex).toBeLessThan(terminalIndex);
+    });
+  });
+
+  describe('stale atom detection', () => {
+    it('triggers abort after stale timeout', async () => {
+      const stale = registerSession('stale-detect', 'codex');
+      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
+        if (session === stale.session) {
+          writeSessionError(stale.session_dir, 'stale abort');
+        }
+      });
+      const dispatch = vi.fn<AtomDispatchFn>(async () => textResult('cannot resume', true));
+
+      await expect(
+        waitForAllAtoms(
+          [makeLaunchedAtom(stale, 'architect')],
+          undefined,
+          () => {},
+          requestAbort,
+          { staleTimeoutMs: 10, dispatch },
+        ),
+      ).rejects.toThrow("Step 1, atom 'architect' resume failed: non-resumable session");
+
+      expect(requestAbort).toHaveBeenCalledWith(expect.objectContaining({
+        session: stale.session,
+        agent: 'architect',
+      }));
+    });
+  });
+
+  describe('stale atom resume', () => {
+    it('resumes with a new session and returns updated overlay', async () => {
+      const stale = registerSession('stale-resume-old', 'codex');
+      const resumed = registerSession('stale-resume-new', 'codex');
+
+      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
+        if (session === stale.session) {
+          writeSessionError(stale.session_dir, 'stale abort');
+        }
+      });
+      const dispatch = vi.fn<AtomDispatchFn>(async () => {
+        setTimeout(() => {
+          writeSessionResult(resumed.session_dir, 'done', { session_name: 'stale-resume-new' });
+        }, 20);
+        return jsonResult({ session: resumed.session, session_dir: resumed.session_dir, status: 'running' });
+      });
+
+      const progress: string[] = [];
+      const finalOverlay = await waitForAllAtoms(
+        [makeLaunchedAtom(stale, 'architect')],
+        undefined,
+        (message) => progress.push(message),
+        requestAbort,
+        { staleTimeoutMs: 10, dispatch },
+      );
+
+      expect(progress).toContain('atom architect resuming (attempt 1)');
+      expect(dispatch).toHaveBeenCalledWith('codex', expect.objectContaining({
+        op: 'exec',
+        session: stale.session,
+        prompt: 'Your previous execution timed out due to inactivity. Continue where you left off.',
+      }));
+      expect(finalOverlay.get('architect')).toEqual({
+        session: resumed.session,
+        sessionDir: resumed.session_dir,
+      });
+    });
+  });
+
+  describe('stale timeout disabled', () => {
+    it('does not trigger abort or resume when staleTimeoutMs is zero', async () => {
+      const running = registerSession('stale-disabled', 'codex');
+      setTimeout(() => {
+        writeSessionResult(running.session_dir, 'done', { session_name: 'stale-disabled' });
+      }, 20);
+
+      const requestAbort = vi.fn(async () => {});
+      const dispatch = vi.fn<AtomDispatchFn>(async () => jsonResult(registerSession('unexpected', 'codex', 'done')));
+
+      await waitForAllAtoms(
+        [makeLaunchedAtom(running, 'architect')],
+        undefined,
+        () => {},
+        requestAbort,
+        { staleTimeoutMs: 0, dispatch },
+      );
+
+      expect(requestAbort).not.toHaveBeenCalled();
+      expect(dispatch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('stale expected-abort isolation', () => {
+    it('does not abort siblings when stale recovery succeeds', async () => {
+      const stale = registerSession('stale-isolation-old', 'codex');
+      const sibling = registerSession('stale-isolation-sibling', 'codex');
+      const resumed = registerSession('stale-isolation-new', 'codex');
+
+      const abortedSessions: string[] = [];
+      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
+        abortedSessions.push(session);
+        if (session === stale.session) {
+          writeSessionError(stale.session_dir, 'stale abort');
+        }
+      });
+      const dispatch = vi.fn<AtomDispatchFn>(async () => {
+        setTimeout(() => {
+          writeSessionResult(resumed.session_dir, 'done', { session_name: 'stale-isolation-new' });
+          writeSessionResult(sibling.session_dir, 'done', { session_name: 'stale-isolation-sibling' });
+        }, 20);
+        return jsonResult({ session: resumed.session, session_dir: resumed.session_dir, status: 'running' });
+      });
+
+      const finalOverlay = await waitForAllAtoms(
+        [makeLaunchedAtom(stale, 'architect'), makeLaunchedAtom(sibling, 'critic')],
+        undefined,
+        () => {},
+        requestAbort,
+        { staleTimeoutMs: 10, dispatch },
+      );
+
+      expect(abortedSessions).toEqual([stale.session]);
+      expect(finalOverlay.get('architect')).toEqual({
+        session: resumed.session,
+        sessionDir: resumed.session_dir,
+      });
+      expect(finalOverlay.get('critic')).toEqual({
+        session: sibling.session,
+        sessionDir: sibling.session_dir,
+      });
+    });
+  });
+
+  describe('stale resume failure stops workflow', () => {
+    it('throws when resume dispatch reports non-resumable session', async () => {
+      const stale = registerSession('stale-resume-fail', 'codex');
+      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
+        if (session === stale.session) {
+          writeSessionError(stale.session_dir, 'stale abort');
+        }
+      });
+      const dispatch = vi.fn<AtomDispatchFn>(async () => textResult('resume failed', true));
+
+      await expect(
+        waitForAllAtoms(
+          [makeLaunchedAtom(stale, 'architect')],
+          undefined,
+          () => {},
+          requestAbort,
+          { staleTimeoutMs: 10, dispatch },
+        ),
+      ).rejects.toThrow("Step 1, atom 'architect' resume failed: non-resumable session");
+    });
+  });
+
+  describe('stale max retries stops workflow', () => {
+    it('throws after two recovery attempts are exhausted', async () => {
+      const first = registerSession('stale-retry-0', 'codex');
+      const second = registerSession('stale-retry-1', 'codex');
+      const third = registerSession('stale-retry-2', 'codex');
+
+      const sessionDirs = new Map<string, string>([
+        [first.session, first.session_dir],
+        [second.session, second.session_dir],
+        [third.session, third.session_dir],
+      ]);
+      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
+        const dir = sessionDirs.get(session);
+        if (dir) writeSessionError(dir, 'stale abort');
+      });
+
+      let resumeCount = 0;
+      const dispatch = vi.fn<AtomDispatchFn>(async () => {
+        resumeCount += 1;
+        if (resumeCount === 1) {
+          return jsonResult({ session: second.session, session_dir: second.session_dir, status: 'running' });
+        }
+        return jsonResult({ session: third.session, session_dir: third.session_dir, status: 'running' });
+      });
+
+      await expect(
+        waitForAllAtoms(
+          [makeLaunchedAtom(first, 'architect')],
+          undefined,
+          () => {},
+          requestAbort,
+          { staleTimeoutMs: 10, dispatch },
+        ),
+      ).rejects.toThrow("Step 1, atom 'architect' stale after 2 recovery attempts");
+
+      expect(dispatch).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('stale resume response validation', () => {
+    it('throws explicit error for malformed resume JSON response', async () => {
+      const stale = registerSession('stale-resume-malformed', 'codex');
+      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
+        if (session === stale.session) {
+          writeSessionError(stale.session_dir, 'stale abort');
+        }
+      });
+      const dispatch = vi.fn<AtomDispatchFn>(async () => textResult('not-json'));
+
+      await expect(
+        waitForAllAtoms(
+          [makeLaunchedAtom(stale, 'architect')],
+          undefined,
+          () => {},
+          requestAbort,
+          { staleTimeoutMs: 10, dispatch },
+        ),
+      ).rejects.toThrow("Step 1, atom 'architect' resume returned malformed JSON");
+    });
+  });
+
   it('rejects bypass: false (property presence triggers rejection, not truthiness)', async () => {
     const dispatch: AtomDispatchFn = async () => jsonResult(registerSession('a', 'codex', 'done'));
     await expect(
@@ -655,5 +963,195 @@ describe('workflow pipe executor', () => {
     writeSessionError(s.session_dir, 'disk full');
     const result = await readLaunchBootstrapStatus(s.session_dir);
     expect(result).toEqual({ kind: 'error', error: 'disk full' });
+  });
+
+  describe('waitForAllAtoms — empty atoms array', () => {
+    it('returns an empty Map immediately when given zero atoms', async () => {
+      const result = await waitForAllAtoms([], undefined, () => {}, async () => {});
+      expect(result).toBeInstanceOf(Map);
+      expect(result.size).toBe(0);
+    });
+  });
+
+  describe('waitForAllAtoms — returned overlay completeness', () => {
+    it('overlay contains all launched atoms even when no stale recovery occurred', async () => {
+      const s1 = registerSession('overlay-a', 'codex', 'out-a');
+      const s2 = registerSession('overlay-b', 'codex', 'out-b');
+      const overlay = await waitForAllAtoms(
+        [makeLaunchedAtom(s1, 'alpha'), makeLaunchedAtom(s2, 'beta')],
+        undefined,
+        () => {},
+        async () => {},
+      );
+      expect(overlay.get('alpha')).toEqual({ session: s1.session, sessionDir: s1.session_dir });
+      expect(overlay.get('beta')).toEqual({ session: s2.session, sessionDir: s2.session_dir });
+    });
+  });
+
+  describe('waitForAllAtoms — multiple events in one poll batch', () => {
+    it('forwards all events from a single-read batch', async () => {
+      const s = registerSession('multi-event', 'codex');
+      appendProgressEvent(join(s.session_dir, PROGRESS_FILE), 'e', 'first event');
+      appendProgressEvent(join(s.session_dir, PROGRESS_FILE), 'e', 'second event');
+      writeSessionResult(s.session_dir, 'done', { session_name: 'multi-event' });
+      const messages: string[] = [];
+      await waitForAllAtoms(
+        [makeLaunchedAtom(s, 'worker')],
+        undefined,
+        (msg) => messages.push(msg),
+        async () => {},
+      );
+      expect(messages).toContain('atom worker: first event');
+      expect(messages).toContain('atom worker: second event');
+    });
+  });
+
+  describe('waitForAllAtoms — resume dispatch receives OLD session UUID', () => {
+    it('passes the pre-recovery session UUID to the resume dispatch', async () => {
+      const stale = registerSession('stale-old-uuid', 'codex');
+      const resumed = registerSession('stale-new-uuid', 'codex');
+      const capturedResumeArgs: Record<string, unknown>[] = [];
+      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
+        if (session === stale.session) writeSessionError(stale.session_dir, 'stale abort');
+      });
+      const dispatch = vi.fn<AtomDispatchFn>(async (_tool, args) => {
+        capturedResumeArgs.push({ ...args });
+        setTimeout(() => {
+          writeSessionResult(resumed.session_dir, 'done', { session_name: 'stale-new-uuid' });
+        }, 20);
+        return jsonResult({ session: resumed.session, session_dir: resumed.session_dir, status: 'running' });
+      });
+      await waitForAllAtoms(
+        [makeLaunchedAtom(stale, 'architect')],
+        undefined,
+        () => {},
+        requestAbort,
+        { staleTimeoutMs: 10, dispatch },
+      );
+      expect(capturedResumeArgs).toHaveLength(1);
+      expect(capturedResumeArgs[0].session).toBe(stale.session);
+      expect(capturedResumeArgs[0].session).not.toBe(resumed.session);
+    });
+  });
+
+  describe('waitForAllAtoms — second stale on same atom increments counter correctly', () => {
+    it('throws after second recovery without a third dispatch call', async () => {
+      const first = registerSession('second-stale-0', 'codex');
+      const second = registerSession('second-stale-1', 'codex');
+      const third = registerSession('second-stale-2', 'codex');
+      const sessionDirMap = new Map([
+        [first.session, first.session_dir],
+        [second.session, second.session_dir],
+        [third.session, third.session_dir],
+      ]);
+      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
+        const dir = sessionDirMap.get(session);
+        if (dir) writeSessionError(dir, 'stale abort');
+      });
+      let dispatchCount = 0;
+      const dispatch = vi.fn<AtomDispatchFn>(async () => {
+        dispatchCount += 1;
+        if (dispatchCount === 1) {
+          return jsonResult({ session: second.session, session_dir: second.session_dir, status: 'running' });
+        }
+        return jsonResult({ session: third.session, session_dir: third.session_dir, status: 'running' });
+      });
+      await expect(
+        waitForAllAtoms(
+          [makeLaunchedAtom(first, 'architect')],
+          undefined,
+          () => {},
+          requestAbort,
+          { staleTimeoutMs: 10, dispatch },
+        ),
+      ).rejects.toThrow("Step 1, atom 'architect' stale after 2 recovery attempts");
+      expect(dispatch).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('waitForAllAtoms — expectedStaleAbortSessions cleanup on abort mid-recovery', () => {
+    it('cleans up when pipeline signal aborts after requestAbort', async () => {
+      const stale = registerSession('mid-abort-stale', 'codex');
+      const controller = new AbortController();
+      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
+        if (session === stale.session) {
+          writeSessionError(stale.session_dir, 'stale abort');
+          controller.abort();
+        }
+      });
+      const dispatch = vi.fn<AtomDispatchFn>(async () =>
+        jsonResult({ session: 'new-session', session_dir: '/tmp/new', status: 'running' }),
+      );
+      await expect(
+        waitForAllAtoms(
+          [makeLaunchedAtom(stale, 'architect')],
+          controller.signal,
+          () => {},
+          requestAbort,
+          { staleTimeoutMs: 10, dispatch },
+        ),
+      ).rejects.toThrow('Pipeline aborted');
+      expect(dispatch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('waitForAllAtoms — resume response validation edge cases', () => {
+    it('throws when resume JSON has session field missing', async () => {
+      const stale = registerSession('resume-no-session', 'codex');
+      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
+        if (session === stale.session) writeSessionError(stale.session_dir, 'stale abort');
+      });
+      const dispatch = vi.fn<AtomDispatchFn>(async () =>
+        textResult(JSON.stringify({ session_dir: '/tmp/dir' })),
+      );
+      await expect(
+        waitForAllAtoms(
+          [makeLaunchedAtom(stale, 'architect')],
+          undefined,
+          () => {},
+          requestAbort,
+          { staleTimeoutMs: 10, dispatch },
+        ),
+      ).rejects.toThrow("Step 1, atom 'architect' resume returned invalid response");
+    });
+
+    it('throws when resume JSON has session_dir field missing', async () => {
+      const stale = registerSession('resume-no-session-dir', 'codex');
+      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
+        if (session === stale.session) writeSessionError(stale.session_dir, 'stale abort');
+      });
+      const dispatch = vi.fn<AtomDispatchFn>(async () =>
+        textResult(JSON.stringify({ session: 'abc-uuid' })),
+      );
+      await expect(
+        waitForAllAtoms(
+          [makeLaunchedAtom(stale, 'architect')],
+          undefined,
+          () => {},
+          requestAbort,
+          { staleTimeoutMs: 10, dispatch },
+        ),
+      ).rejects.toThrow("Step 1, atom 'architect' resume returned invalid response");
+    });
+
+    it('throws empty-response error when resume result has empty content array', async () => {
+      const stale = registerSession('resume-empty-content', 'codex');
+      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
+        if (session === stale.session) writeSessionError(stale.session_dir, 'stale abort');
+      });
+      const dispatch = vi.fn<AtomDispatchFn>(async () => ({
+        content: [],
+        isError: false,
+      }));
+      await expect(
+        waitForAllAtoms(
+          [makeLaunchedAtom(stale, 'architect')],
+          undefined,
+          () => {},
+          requestAbort,
+          { staleTimeoutMs: 10, dispatch },
+        ),
+      ).rejects.toThrow("Step 1, atom 'architect' resume returned empty response");
+    });
   });
 });

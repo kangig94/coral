@@ -1,20 +1,21 @@
-import { closeSync, existsSync, openSync, readSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   createSessionDir,
+  createProgressCursor,
   writeSessionResult,
   writeSessionError,
   readSessionStatus,
   resolveSessionDir,
+  readProgressEvents,
   formatElapsed,
   PROGRESS_FILE,
+  type ProgressCursor,
   type SessionStatus,
 } from './progress.js';
 import { SessionManager } from './session-manager.js';
 import type { CompletionMetadata, SessionProvider } from './types.js';
 import { type McpResult, textResult, jsonResult } from '../shared/mcp-utils.js';
-
-const READ_CHUNK = 8 * 1024;
 
 export type OnEventCallback = (line: string) => void;
 
@@ -50,11 +51,6 @@ export type WaitInput = {
   timeout_seconds?: number;
 };
 
-type ProgressCursor = {
-  lastOffset: number;
-  remainder: string;
-};
-
 export const activeSessions = new Map<string, ActiveSession>();
 
 /** Atomically transition a session from 'running' to 'terminalizing'. Returns true if claim succeeded. */
@@ -66,44 +62,6 @@ export function tryClaimTerminalWrite(id: string): boolean {
 }
 
 export const shutdownSignal = new AbortController();
-
-function isNoEntryError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
-}
-
-function readNewProgressLines(progressFile: string, cursor: ProgressCursor): string[] {
-  let fd: number;
-  try {
-    fd = openSync(progressFile, 'r');
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) return [];
-    throw error;
-  }
-
-  try {
-    const chunks: string[] = [];
-    const buffer = Buffer.alloc(READ_CHUNK);
-    let nextOffset = cursor.lastOffset;
-
-    while (true) {
-      const bytesRead = readSync(fd, buffer, 0, READ_CHUNK, nextOffset);
-      if (bytesRead <= 0) break;
-      nextOffset += bytesRead;
-      chunks.push(buffer.toString('utf-8', 0, bytesRead));
-      if (bytesRead < READ_CHUNK) break;
-    }
-
-    cursor.lastOffset = nextOffset;
-    if (chunks.length === 0) return [];
-
-    const combined = cursor.remainder + chunks.join('');
-    const lines = combined.split('\n');
-    cursor.remainder = lines.pop() ?? '';
-    return lines.filter((line) => line.trim().length > 0);
-  } finally {
-    closeSync(fd);
-  }
-}
 
 export function launchJob<T>(options: LaunchJobOptions<T>): McpResult {
   const { id, dir } = createSessionDir(options.sessionLabel, options.provider);
@@ -189,7 +147,7 @@ export async function handleWait(
 
     sessionDirs.set(id, dir);
     sessionMeta.set(id, { name: status.session_name ?? id, startedAt: status.startedAt });
-    cursors.set(id, { lastOffset: 0, remainder: '' });
+    cursors.set(id, createProgressCursor());
   }
 
   let notifCounter = 0;
@@ -222,33 +180,27 @@ export async function handleWait(
       const cursor = cursors.get(id)!;
 
       if (progressToken != null && notify != null) {
-        const newLines = readNewProgressLines(progressFile, cursor);
-        for (const line of newLines) {
-          try {
-            const parsed = JSON.parse(line) as { message?: unknown };
-            if (typeof parsed.message !== 'string' || !parsed.message) continue;
-            const previousMessage = lastSent.get(id);
-            if (previousMessage === parsed.message) continue;
+        const events = readProgressEvents(progressFile, cursor);
+        for (const evt of events) {
+          const previousMessage = lastSent.get(id);
+          if (previousMessage === evt.message) continue;
 
-            const meta = sessionMeta.get(id)!;
-            const elapsed = formatElapsed(meta.startedAt);
-            const tag = elapsed ? `${elapsed}: ${meta.name}` : meta.name;
-            lastSent.set(id, parsed.message);
-            void notify({
-              method: 'notifications/progress',
-              params: {
-                progressToken,
-                progress: ++notifCounter,
-                message: `[${tag}] ${parsed.message}`,
-              },
-            }).catch(() => {});
-          } catch {
-            // malformed progress line should not fail wait
-          }
+          const meta = sessionMeta.get(id)!;
+          const elapsed = formatElapsed(meta.startedAt);
+          const tag = elapsed ? `${elapsed}: ${meta.name}` : meta.name;
+          lastSent.set(id, evt.message);
+          void notify({
+            method: 'notifications/progress',
+            params: {
+              progressToken,
+              progress: ++notifCounter,
+              message: `[${tag}] ${evt.message}`,
+            },
+          }).catch(() => {});
         }
       } else {
         // Keep cursor advancement in sync even when notifications are disabled.
-        readNewProgressLines(progressFile, cursor);
+        readProgressEvents(progressFile, cursor);
       }
 
       const sessionStatus = readSessionStatus(dir);

@@ -10,6 +10,7 @@ export const workflowInputSchema = z.object({
     .string()
     .regex(providerIdentPattern, 'Provider name must be lowercase letters, digits, or hyphens')
     .default('codex'),
+  stale_timeout_seconds: z.number().min(0).default(900),
   args: z.record(z.string(), atomArgsSchema).optional(),
 }).superRefine((value, ctx) => {
   if (!value.args) return;

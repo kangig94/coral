@@ -133,6 +133,7 @@ export function handleWorkflow(
         args: input.args,
         signal,
         onProgress: (message) => onEvent(message),
+        staleTimeoutMs: input.stale_timeout_seconds * 1000,
       });
       return textResult(output);
     },

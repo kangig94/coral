@@ -51,6 +51,7 @@ function workflowTool() {
         prompt: { type: 'string', description: 'Initial prompt for the first pipeline step' },
         provider: workflowProviderSchema(),
         args: { type: 'object', description: 'Per-atom args map: { atomName: { model?, working_directory?, files?, flags?, ...context } }' },
+        stale_timeout_seconds: { type: 'number', description: 'Seconds of inactivity before stale atom recovery triggers (0 disables, default: 900)' },
       },
       required: ['expression', 'prompt'],
     },

@@ -129,7 +129,11 @@ Validates: agent name format, provider identifier syntax, namespace syntax, bala
 
 ### src/workflow/schemas.ts - Input Validation
 
-Zod schema (`workflowInputSchema`) with `superRefine` for per-atom `bypass` rejection. Defaults `provider` to `codex`. See `src/workflow/schemas.ts`.
+Zod schema (`workflowInputSchema`) with `superRefine` for per-atom `bypass` rejection. Defaults:
+- `provider: "codex"`
+- `stale_timeout_seconds: 900` (`0` disables stale recovery)
+
+See `src/workflow/schemas.ts`.
 
 ---
 
@@ -139,7 +143,11 @@ Orchestrates the sequential step loop with concurrent parallel atom launches. Ke
 - `executePipeline(ast, prompt, provider, dispatch, options)` — main loop
 - `launchAtomWithRetry(context)` — busy retry with exponential backoff (3 attempts)
 - `readLaunchBootstrapStatus(sessionDir, signal)` — bounded poll (50ms/2s) for async bootstrap failures
-- `waitForAllAtoms(atoms, signal, onProgress, requestAbort)` — all-semantics wait with sibling abort + drain timeout
+- `waitForAllAtoms(atoms, signal, onProgress, requestAbort, options?)` — all-semantics wait with:
+  - atom progress forwarding (`atom <agent>: <message>`) from each atom `progress.jsonl`
+  - optional stale recovery (`staleTimeoutMs`, `dispatch`) with abort+resume per stale atom
+  - sibling abort + drain timeout behavior on non-recovery failures
+  - return value: `Map<string, { session: string; sessionDir: string }>` final overlay for output reads after recovery
 - `formatStepOutput(results)` — single pass-through or XML wrapping
 
 Named constants: `BUSY_PREFIX`, `MAX_LAUNCH_ATTEMPTS`, `BOOTSTRAP_POLL_INTERVAL_MS`, `BOOTSTRAP_TIMEOUT_MS`, `SIBLING_DRAIN_TIMEOUT_MS`.

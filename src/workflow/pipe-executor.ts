@@ -1,6 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
-import { readSessionStatus } from '../runner/progress.js';
+import {
+  createProgressCursor,
+  readProgressEvents,
+  readSessionStatus,
+  PROGRESS_FILE,
+  type ProgressCursor,
+} from '../runner/progress.js';
 import type { SessionProvider } from '../runner/types.js';
 import type { McpResult } from '../shared/mcp-utils.js';
 import type { PipeAtom, PipelineAST } from './types.js';
@@ -13,6 +19,8 @@ export const SIBLING_DRAIN_TIMEOUT_MS = 15_000;
 
 const WAIT_POLL_INTERVAL_MS = 500;
 const BACKOFF_BASE_MS = 100;
+const MAX_STALE_RECOVERY_RETRIES = 2;
+const STALE_RESUME_PROMPT = 'Your previous execution timed out due to inactivity. Continue where you left off.';
 
 type WorkflowArgs = Record<string, Record<string, unknown>>;
 
@@ -384,8 +392,28 @@ export async function waitForAllAtoms(
   signal: AbortSignal | undefined,
   onProgress: (message: string) => void,
   requestAbort: (target: AtomAbortTarget) => Promise<void>,
-): Promise<void> {
-  const pending = new Set(atoms.map((atom) => atom.session));
+  options?: {
+    staleTimeoutMs?: number;
+    dispatch?: AtomDispatchFn;
+  },
+): Promise<Map<string, { session: string; sessionDir: string }>> {
+  const pending = new Set<string>();
+  const sessionOverlay = new Map<string, { session: string; sessionDir: string }>();
+  const cursors = new Map<string, ProgressCursor>();
+  const lastActivityTime = new Map<string, number>();
+  const staleRetryCount = new Map<string, number>();
+  const expectedStaleAbortSessions = new Set<string>();
+  const staleTimeoutMs = options?.staleTimeoutMs ?? 0;
+
+  const now = Date.now();
+  for (const atom of atoms) {
+    sessionOverlay.set(atom.agent, { session: atom.session, sessionDir: atom.sessionDir });
+    pending.add(atom.session);
+    cursors.set(atom.session, createProgressCursor());
+    lastActivityTime.set(atom.agent, now);
+    staleRetryCount.set(atom.agent, 0);
+  }
+
   let firstFailure: Error | null = null;
   let abortRequested = false;
   let drainDeadline = 0;
@@ -396,15 +424,48 @@ export async function waitForAllAtoms(
     }
 
     for (const atom of atoms) {
-      if (!pending.has(atom.session)) continue;
+      const overlay = sessionOverlay.get(atom.agent)!;
+      if (!pending.has(overlay.session)) continue;
 
-      const status = readSessionStatus(atom.sessionDir);
+      const progressFile = join(overlay.sessionDir, PROGRESS_FILE);
+      const cursor = cursors.get(overlay.session)!;
+      const events = readProgressEvents(progressFile, cursor);
+      if (events.length > 0) {
+        lastActivityTime.set(atom.agent, Date.now());
+      }
+      for (const evt of events) {
+        onProgress(`atom ${atom.agent}: ${evt.message}`);
+      }
+    }
+
+    for (const atom of atoms) {
+      const overlay = sessionOverlay.get(atom.agent)!;
+      if (!pending.has(overlay.session)) continue;
+
+      const status = readSessionStatus(overlay.sessionDir);
       if (status.status !== 'completed' && status.status !== 'error') continue;
 
-      pending.delete(atom.session);
-      onProgress(`step ${atom.stepIndex + 1} atom ${atom.agent} ${status.status}`);
+      const progressFile = join(overlay.sessionDir, PROGRESS_FILE);
+      const cursor = cursors.get(overlay.session)!;
+      const finalEvents = readProgressEvents(progressFile, cursor);
+      if (finalEvents.length > 0) {
+        lastActivityTime.set(atom.agent, Date.now());
+      }
+      for (const evt of finalEvents) {
+        onProgress(`atom ${atom.agent}: ${evt.message}`);
+      }
 
-      if (status.status === 'error' && firstFailure === null) {
+      pending.delete(overlay.session);
+      cursors.delete(overlay.session);
+      onProgress(`step ${atom.stepIndex + 1} atom ${atom.agent} ${status.status}`);
+      lastActivityTime.set(atom.agent, Date.now());
+
+      if (status.status !== 'error') continue;
+      if (expectedStaleAbortSessions.has(overlay.session)) {
+        expectedStaleAbortSessions.delete(overlay.session);
+        continue;
+      }
+      if (firstFailure === null) {
         firstFailure = new Error(
           `Step ${atom.stepIndex + 1}, atom '${atom.agent}' failed: ${normalizeErrorText(status.error ?? 'unknown error')}`,
         );
@@ -415,10 +476,11 @@ export async function waitForAllAtoms(
       abortRequested = true;
       drainDeadline = Date.now() + SIBLING_DRAIN_TIMEOUT_MS;
       for (const atom of atoms) {
-        if (!pending.has(atom.session)) continue;
+        const overlay = sessionOverlay.get(atom.agent)!;
+        if (!pending.has(overlay.session)) continue;
         void requestAbort({
           providerTool: atom.providerTool,
-          session: atom.session,
+          session: overlay.session,
           agent: atom.agent,
         }).catch(() => {});
       }
@@ -428,10 +490,100 @@ export async function waitForAllAtoms(
       throw firstFailure;
     }
 
+    if (staleTimeoutMs > 0 && options?.dispatch) {
+      let recoveredThisCycle = false;
+      for (const atom of atoms) {
+        const overlay = sessionOverlay.get(atom.agent)!;
+        if (!pending.has(overlay.session)) continue;
+
+        const lastActive = lastActivityTime.get(atom.agent) ?? Date.now();
+        if (Date.now() - lastActive < staleTimeoutMs) continue;
+
+        const retries = staleRetryCount.get(atom.agent) ?? 0;
+        if (retries >= MAX_STALE_RECOVERY_RETRIES) {
+          throw new Error(
+            `Step ${atom.stepIndex + 1}, atom '${atom.agent}' stale after ${retries} recovery attempts`,
+          );
+        }
+
+        const staleSession = overlay.session;
+        expectedStaleAbortSessions.add(staleSession);
+        onProgress(`atom ${atom.agent} stale (no activity for ${Math.floor(staleTimeoutMs / 1000)}s), aborting`);
+        await requestAbort({
+          providerTool: atom.providerTool,
+          session: staleSession,
+          agent: atom.agent,
+        });
+
+        if (signal?.aborted) {
+          expectedStaleAbortSessions.delete(staleSession);
+          break;
+        }
+
+        onProgress(`atom ${atom.agent} resuming (attempt ${retries + 1})`);
+        const resumeResult = await options.dispatch(atom.providerTool, {
+          op: 'exec',
+          session: staleSession,
+          prompt: STALE_RESUME_PROMPT,
+        });
+
+        if (resumeResult.isError) {
+          expectedStaleAbortSessions.delete(staleSession);
+          throw new Error(
+            `Step ${atom.stepIndex + 1}, atom '${atom.agent}' resume failed: non-resumable session`,
+          );
+        }
+
+        const resumeText = resumeResult.content?.[0]?.text;
+        if (typeof resumeText !== 'string' || resumeText.length === 0) {
+          expectedStaleAbortSessions.delete(staleSession);
+          throw new Error(`Step ${atom.stepIndex + 1}, atom '${atom.agent}' resume returned empty response`);
+        }
+
+        let parsed: { session?: string; session_dir?: string };
+        try {
+          parsed = JSON.parse(resumeText) as { session?: string; session_dir?: string };
+        } catch {
+          expectedStaleAbortSessions.delete(staleSession);
+          throw new Error(`Step ${atom.stepIndex + 1}, atom '${atom.agent}' resume returned malformed JSON`);
+        }
+        if (!parsed.session || !parsed.session_dir) {
+          expectedStaleAbortSessions.delete(staleSession);
+          throw new Error(`Step ${atom.stepIndex + 1}, atom '${atom.agent}' resume returned invalid response`);
+        }
+
+        pending.delete(staleSession);
+        cursors.delete(staleSession);
+        expectedStaleAbortSessions.delete(staleSession);
+
+        sessionOverlay.set(atom.agent, { session: parsed.session, sessionDir: parsed.session_dir });
+        pending.add(parsed.session);
+        cursors.set(parsed.session, createProgressCursor());
+        lastActivityTime.set(atom.agent, Date.now());
+        staleRetryCount.set(atom.agent, retries + 1);
+
+        // Reset activity time for all still-pending siblings to prevent
+        // recovery latency from falsely triggering their stale detection.
+        for (const sibling of atoms) {
+          if (sibling.agent === atom.agent) continue;
+          const siblingOverlay = sessionOverlay.get(sibling.agent)!;
+          if (pending.has(siblingOverlay.session)) {
+            lastActivityTime.set(sibling.agent, Date.now());
+          }
+        }
+
+        recoveredThisCycle = true;
+        break;
+      }
+      if (recoveredThisCycle) continue;
+    }
+
     if (pending.size > 0) {
       await sleep(WAIT_POLL_INTERVAL_MS, signal);
     }
   }
+
+  return sessionOverlay;
 }
 
 export function formatStepOutput(results: Array<{ tagName: string; output: string }>): string {
@@ -449,6 +601,7 @@ export async function executePipeline(
     args?: WorkflowArgs;
     signal?: AbortSignal;
     onProgress?: (message: string) => void;
+    staleTimeoutMs?: number;
   } = {},
 ): Promise<string> {
   const onProgress = options.onProgress ?? (() => {});
@@ -472,7 +625,7 @@ export async function executePipeline(
       })),
     );
 
-    await waitForAllAtoms(
+    const finalOverlay = await waitForAllAtoms(
       launchedAtoms,
       options.signal,
       onProgress,
@@ -483,11 +636,15 @@ export async function executePipeline(
           // best effort only
         }
       },
+      {
+        staleTimeoutMs: options.staleTimeoutMs,
+        dispatch,
+      },
     );
 
     const stepOutputs = launchedAtoms.map((atom) => ({
       tagName: atom.tagName,
-      output: readAtomOutput(stepIndex, atom.agent, atom.sessionDir),
+      output: readAtomOutput(stepIndex, atom.agent, finalOverlay.get(atom.agent)?.sessionDir ?? atom.sessionDir),
     }));
     stepPrompt = formatStepOutput(stepOutputs);
     onProgress(`step ${stepIndex + 1} completed`);

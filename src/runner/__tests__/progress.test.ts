@@ -1,8 +1,9 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { existsSync, readFileSync, mkdirSync, rmSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  createProgressCursor,
   createSessionDir,
   writeSessionResult,
   writeSessionError,
@@ -10,6 +11,8 @@ import {
   resolveSessionDir,
   appendProgressEvent,
   formatElapsed,
+  readProgressEvents,
+  PROGRESS_FILE,
   SESSIONS_DIR,
 } from '../progress.js';
 
@@ -47,6 +50,120 @@ describe('appendProgressEvent', () => {
     expect(lines).toHaveLength(2);
     expect(JSON.parse(lines[0])).toMatchObject({ event: 'turn.started', message: 'Processing...' });
     expect(JSON.parse(lines[1])).toMatchObject({ event: 'item.completed', message: 'Searching: weather' });
+  });
+});
+
+describe('readProgressEvents', () => {
+  it('returns typed events from valid JSONL lines', () => {
+    const { dir } = createSessionDir('progress-read');
+    dirsToClean.push(dir);
+    const progressFile = join(dir, PROGRESS_FILE);
+    writeFileSync(progressFile, `${JSON.stringify({ ts: 1, event: 'a', message: 'm1' })}\n`, 'utf-8');
+
+    const cursor = createProgressCursor();
+    const events = readProgressEvents(progressFile, cursor);
+
+    expect(events).toEqual([{ ts: 1, event: 'a', message: 'm1' }]);
+  });
+
+  it('skips malformed JSON and lines without message', () => {
+    const { dir } = createSessionDir('progress-skip-malformed');
+    dirsToClean.push(dir);
+    const progressFile = join(dir, PROGRESS_FILE);
+    writeFileSync(
+      progressFile,
+      `${JSON.stringify({ ts: 1, event: 'ok', message: 'good' })}\nnot-json\n${JSON.stringify({ ts: 2, event: 'noop' })}\n`,
+      'utf-8',
+    );
+
+    const cursor = createProgressCursor();
+    const events = readProgressEvents(progressFile, cursor);
+
+    expect(events).toEqual([{ ts: 1, event: 'ok', message: 'good' }]);
+  });
+
+  it('advances cursor incrementally and returns only new events', () => {
+    const { dir } = createSessionDir('progress-incremental');
+    dirsToClean.push(dir);
+    const progressFile = join(dir, PROGRESS_FILE);
+    writeFileSync(progressFile, `${JSON.stringify({ ts: 1, event: 'a', message: 'first' })}\n`, 'utf-8');
+
+    const cursor = createProgressCursor();
+    expect(readProgressEvents(progressFile, cursor).map((event) => event.message)).toEqual(['first']);
+
+    appendFileSync(progressFile, `${JSON.stringify({ ts: 2, event: 'b', message: 'second' })}\n`, 'utf-8');
+    expect(readProgressEvents(progressFile, cursor).map((event) => event.message)).toEqual(['second']);
+  });
+
+  it('returns empty array for missing progress file', () => {
+    const cursor = createProgressCursor();
+    const missingFile = join(tmpdir(), `coral-progress-missing-${Date.now()}.jsonl`);
+    expect(readProgressEvents(missingFile, cursor)).toEqual([]);
+  });
+
+  it('handles partial lines with cursor remainder', () => {
+    const { dir } = createSessionDir('progress-remainder');
+    dirsToClean.push(dir);
+    const progressFile = join(dir, PROGRESS_FILE);
+    const partial = JSON.stringify({ ts: 2, event: 'delta', message: 'second' });
+    writeFileSync(progressFile, `${JSON.stringify({ ts: 1, event: 'delta', message: 'first' })}\n${partial}`, 'utf-8');
+
+    const cursor = createProgressCursor();
+    expect(readProgressEvents(progressFile, cursor).map((event) => event.message)).toEqual(['first']);
+
+    appendFileSync(progressFile, '\n', 'utf-8');
+    expect(readProgressEvents(progressFile, cursor).map((event) => event.message)).toEqual(['second']);
+  });
+
+  it('filters out lines where message is empty string (falsy guard)', () => {
+    const { dir } = createSessionDir('progress-empty-msg');
+    dirsToClean.push(dir);
+    const file = join(dir, PROGRESS_FILE);
+    writeFileSync(
+      file,
+      `${JSON.stringify({ ts: 1, event: 'e', message: '' })}\n` +
+      `${JSON.stringify({ ts: 2, event: 'e', message: 'real' })}\n`,
+      'utf-8',
+    );
+    const cursor = createProgressCursor();
+    const events = readProgressEvents(file, cursor);
+    expect(events).toHaveLength(1);
+    expect(events[0].message).toBe('real');
+  });
+
+  it('defaults ts to 0 and event to empty string when fields are absent', () => {
+    const { dir } = createSessionDir('progress-missing-fields');
+    dirsToClean.push(dir);
+    const file = join(dir, PROGRESS_FILE);
+    writeFileSync(
+      file,
+      `${JSON.stringify({ message: 'only-message' })}\n`,
+      'utf-8',
+    );
+    const cursor = createProgressCursor();
+    const events = readProgressEvents(file, cursor);
+    expect(events).toHaveLength(1);
+    expect(events[0].ts).toBe(0);
+    expect(events[0].event).toBe('');
+    expect(events[0].message).toBe('only-message');
+  });
+
+  it('cursor state is stable when file does not grow between calls', () => {
+    const { dir } = createSessionDir('progress-no-growth');
+    dirsToClean.push(dir);
+    const file = join(dir, PROGRESS_FILE);
+    writeFileSync(
+      file,
+      `${JSON.stringify({ ts: 1, event: 'a', message: 'msg' })}\n`,
+      'utf-8',
+    );
+    const cursor = createProgressCursor();
+    const first = readProgressEvents(file, cursor);
+    expect(first).toHaveLength(1);
+    const offsetAfterFirst = cursor.lastOffset;
+    const second = readProgressEvents(file, cursor);
+    expect(second).toHaveLength(0);
+    expect(cursor.lastOffset).toBe(offsetAfterFirst);
   });
 });
 

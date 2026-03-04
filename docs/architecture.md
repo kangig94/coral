@@ -106,7 +106,7 @@ runner/job-manager.handleWait()               job-manager.ts:165
         │
         ├─ resolveSessionDir(id) for each session
         ├─ poll loop (500ms interval):
-        │   ├─ readNewProgressLines() → MCP progress notifications
+        │   ├─ readProgressEvents() → MCP progress notifications
         │   ├─ readSessionStatus(dir) → check completed/error
         │   └─ check timeout / shutdown signal
         └─ return { status, completed_session, session_dir }
@@ -125,6 +125,7 @@ handleWorkflow()                              workflow/handler.ts
         ├─ parseExpression(expression) → AST: PipeAtom[][]
         ├─ normalizeAst(ast, defaultProvider)
         ├─ validateArgs / validateNamespaces / validateParallelDuplicates
+        ├─ stale_timeout_seconds default = 900 (0 disables stale recovery)
         └─ executePipeline(ast, prompt, handleToolCall, ...)
                 │
                 ▼
@@ -134,7 +135,10 @@ handleWorkflow()                              workflow/handler.ts
         │   └─ PromptAtom: handleToolCall(provider, { op: "coral:workflow-literal", prompt })
         │                       ↓
         │               Re-enters top-level handleToolCall() (recursive)
-        ├─ wait({ sessions }) → collect results
+        ├─ waitForAllAtoms:
+        │   ├─ forward atom progress ("atom <agent>: <message>") into workflow progress stream
+        │   ├─ detect stale atoms (no activity for stale_timeout_seconds)
+        │   └─ abort + resume stale atoms (max 2 retries) before failing workflow
         └─ Format XML output → pass as next step's prompt
 ```
 
@@ -243,12 +247,12 @@ User → /coral:discuss "AI ethics in healthcare"
 ```
 User/Skill → workflow({ expression: "(architect, critic) -> resolver", prompt: "..." })
            → AX router calls handleWorkflow(args, handleToolCall, sessionManager)
-           → Schema validation + AST parsing + args/namespace validation
+           → Schema validation + AST parsing + args/namespace validation + stale_timeout_seconds
            → launchJob fires background handler:
               Step 1: Promise.all → launchAtomWithRetry(architect) + launchAtomWithRetry(critic)
                 → dispatch(codex, { op: "coral:architect", prompt: "..." })
                 → dispatch(codex, { op: "coral:critic", prompt: "..." })
-              → waitForAllAtoms polls readSessionStatus until both complete
+              → waitForAllAtoms forwards atom progress + performs stale detection/recovery
               → formatStepOutput → "<architect>...\n</architect>\n\n<critic>...\n</critic>"
               Step 2: launchAtomWithRetry(resolver) with step 1 XML output as prompt
               → waitForAllAtoms
