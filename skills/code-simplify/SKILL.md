@@ -40,16 +40,21 @@ Strip the `--codex` flag before passing the prompt to the execution path.
 
     Clarity is the primary metric — not brevity, not line count, not "modern" style. If the original code is already clear and intentional, leave it alone.
 
+    "No change" is a valid result. If a file is already clear and intentional, skip it.
+    Do not force changes to justify being invoked.
+
     | DO | DON'T |
     |----|-------|
     | Reduce unnecessary nesting and complexity | Add new features or change behavior |
     | Eliminate redundant code and dead abstractions | Remove abstractions that improve organization |
     | Improve variable and function names for clarity | Rename things just for style preference |
-    | Consolidate related logic | Combine unrelated concerns into single functions |
+    | Consolidate logic duplicated 2+ times | Extract single-use code into new helpers |
     | Read project CLAUDE.md for coding standards | Hardcode language-specific style rules |
     | Preserve semantic API choices (e.g., `insert_or_assign` vs `operator[]`) | Replace domain-specific APIs with "simpler" alternatives that lose precision |
     | Preserve intentional local references that cache expensive access | Inline cached references into repeated expressions |
     | Choose clarity over brevity | Create clever one-liners that are hard to read |
+    | Skip files that are already clean | Rename variables that are already clear in context |
+    | In tests, only extract setup used by 2+ cases | Extract single-use test setup into helpers that hide what's being tested |
   </Constraints>
   <Protocol>
     1) Identify target scope:
@@ -67,7 +72,7 @@ Strip the `--codex` flag before passing the prompt to the execution path.
        Single pass:
        - Default: run `<Execution>` directly on the target files.
        - `--codex`: call `codex({ op: "exec", ... })` with `<Execution>`, `<Constraints>`,
-         target file paths, and coding standards as context.
+         `<Failure_Modes_To_Avoid>`, `<Output_Format>`, target file paths, and coding standards.
          Pass `working_directory`, `effort: "xhigh"`.
          Pass `bypass: true` only when the user explicitly requests bypass mode.
          Then wait in a timeout loop:
@@ -82,11 +87,16 @@ Strip the `--codex` flag before passing the prompt to the execution path.
          2. If `status: "timeout"`, continue
          3. If `status: "completed"`, read `session_dir/result.md`, remove completed session
          4. If `status: "error"`, read `session_dir/status.json`, remove failed session, continue
-    5) Review each change: confirm purely structural with zero logic alteration.
+    5) Review each change for correctness AND justification.
        Use git diff as a before/after reference when the diff is manageable.
+       Correctness:
        a. API substitutions preserve semantic intent
        b. Local variable removal does not inline expensive access patterns
        c. If a change could affect behavior or performance, revert it
+       Justification:
+       d. Every new helper/extraction must either deduplicate (2+ call sites) or name a complex block for clarity — revert if it merely relocates code
+       e. Every rename must fix a genuinely misleading name — revert cosmetic renames
+       f. If no files were skipped as "already clean", treat as red flag and re-examine
     6) Run build and tests to verify no regressions. When parallel Tasks were used,
        run only after ALL tasks complete — not per-task.
        If tests fail, the simplification broke behavior — revert the offending change
@@ -96,13 +106,21 @@ Strip the `--codex` flag before passing the prompt to the execution path.
     Simplify code for clarity while preserving exact behavior.
     Read each target file completely. For each file, identify simplification opportunities:
     a. Unnecessary nesting (flatten with early returns, guard clauses)
-    b. Redundant code (duplicated logic, unused imports/variables)
-    c. Unclear naming (vague variables, misleading function names)
-    d. Over-abstraction (single-use helpers, premature generalization)
+    b. Redundant code (duplicated logic in 2+ places, unused imports/variables)
+    c. Unclear naming (vague variables, misleading function names — not merely "could be slightly better")
+    d. Over-abstraction (remove single-use helpers, premature generalization)
     e. Unnecessary complexity (nested ternaries, dense one-liners)
     f. Unnecessary comments that describe obvious code
     g. Dead code (unreachable branches, commented-out code)
     Apply surgically — one logical change per edit, touch only what improves clarity.
+
+    CRITICAL: Every structural change must make the code clearer to read.
+    Extracting a helper is justified when it either eliminates duplication (2+ call sites)
+    or gives a clear name to a complex inline block that improves readability.
+    It is NOT justified when it merely moves code around without improving clarity —
+    e.g., wrapping a single call site's field mapping into a named function.
+
+    If a file has no clear opportunities, report it as clean and move on.
   </Execution>
   <Output_Format>
     ## Simplification Report
@@ -116,6 +134,9 @@ Strip the `--codex` flag before passing the prompt to the execution path.
 
     ### Skipped (ambiguous or risky)
     - `file:line` - [What could be simplified] - [Why it was skipped]
+
+    ### Already Clean
+    - `file` - No simplification opportunities found
   </Output_Format>
   <Failure_Modes_To_Avoid>
     - Behavior change: simplifying code that changes output or side effects. Run tests to verify.
@@ -125,5 +146,7 @@ Strip the `--codex` flag before passing the prompt to the execution path.
     - Semantic downgrade: replacing purpose-built APIs with generic alternatives that lose intent.
     - Inlining cached access: removing locals that cache expensive access (GPU memory, pointer chains).
     - Harming debuggability: losing clear control flow or meaningful intermediate variables.
+    - Manufactured abstractions: extracting code into new helpers/wrappers that add indirection without improving clarity. A valid extraction either deduplicates (2+ sites) or names a complex block — merely relocating code is not simplification.
+    - Cosmetic renames: renaming variables that are already clear in their local context (e.g., `op` → `rawOp` in a 5-line function). Only rename when the current name is actively misleading.
   </Failure_Modes_To_Avoid>
 </Code_Simplifier>
