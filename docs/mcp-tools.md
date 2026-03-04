@@ -334,16 +334,20 @@ Deterministic multi-agent pipeline executor. Chains coral agents via a DSL expre
 ```
 expression = step ( "->" step )*
 step       = atom | "(" atom ( "," atom )* ")"
-atom       = ( namespace ":" )? agent ( "@" provider )?
+atom       = agent_ref | prompt_literal
+agent_ref  = ( namespace ":" )? agent ( "@" provider )?
+prompt_lit = ( "'" text "'" | '"' text '"' ) ( "@" provider )?
 ```
 
 - **Bare name**: `architect` → defaults to `coral` namespace
 - **Explicit namespace**: `coral:architect` → same as bare, but explicit
 - **Provider override**: `architect@claude` → runs on Claude instead of default
+- **Prompt literal**: `'What is 2+2?'@codex` → runs the quoted text directly on the specified provider, bypassing agent resolution
 - **Parallel step**: `(architect, critic)` → launches concurrently, output XML-wrapped
 - **Sequential chain**: `architect -> resolver` → step 1 output becomes step 2 prompt
+- **Mixed parallel**: `(architect@claude, 'analyze this'@codex)` → agent refs and prompt literals can be mixed in a parallel step
 
-Agent names: `[a-z][a-z0-9-]*`. Provider: `codex` or `claude`. Namespace: `[a-z][a-z0-9-]*` (v1 only allows `coral`).
+Agent names: `[a-z][a-z0-9-]*`. Provider: `codex` or `claude`. Namespace: `[a-z][a-z0-9-]*` (v1 only allows `coral`). Prompt literals use single or double quotes; the `@provider` suffix is optional (defaults to the `provider` parameter).
 
 ### Args Routing
 
