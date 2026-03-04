@@ -12,16 +12,22 @@ describe('truncate', () => {
 });
 
 describe('formatToolProgress', () => {
-  it('formats Read variants', () => {
-    expect(formatToolProgress('Read', { file_path: '/tmp/src/main.ts', offset: 12, limit: 8 })).toBe('Read(main.ts:12-20)');
-    expect(formatToolProgress('Read', { file_path: '/tmp/src/main.ts', offset: 12 })).toBe('Read(main.ts:12+)');
-    expect(formatToolProgress('Read', { file_path: '/tmp/src/main.ts' })).toBe('Read(main.ts)');
+  it('formats Read with relative path when inside cwd', () => {
+    const file = `${process.cwd()}/src/main.ts`;
+    expect(formatToolProgress('Read', { file_path: file, offset: 12, limit: 8 })).toBe('Read(src/main.ts:12-20)');
+    expect(formatToolProgress('Read', { file_path: file, offset: 12 })).toBe('Read(src/main.ts:12+)');
+    expect(formatToolProgress('Read', { file_path: file })).toBe('Read(src/main.ts)');
+  });
+
+  it('formats Read with absolute path when outside cwd', () => {
+    expect(formatToolProgress('Read', { file_path: '/tmp/src/main.ts' })).toBe('Read(/tmp/src/main.ts)');
   });
 
   it('formats Edit and Write tools', () => {
-    expect(formatToolProgress('Edit', { file_path: '/tmp/main.ts', old_string: 'before\nline', new_string: 'after\nline' }))
-      .toBe('Edit(main.ts, "before" → "after")');
-    expect(formatToolProgress('Write', { file_path: '/tmp/main.ts' })).toBe('Write(main.ts)');
+    const file = `${process.cwd()}/src/main.ts`;
+    expect(formatToolProgress('Edit', { file_path: file, old_string: 'before\nline', new_string: 'after\nline' }))
+      .toBe('Edit(src/main.ts, "before" → "after")');
+    expect(formatToolProgress('Write', { file_path: file })).toBe('Write(src/main.ts)');
   });
 
   it('formats Bash/Grep/Glob/Agent tools', () => {
@@ -233,12 +239,12 @@ describe('formatToolProgress — adversarial', () => {
   });
 
   describe('Write edge cases', () => {
-    it('formats Write with deep path — shows only basename', () => {
+    it('formats Write with path outside cwd — shows absolute path', () => {
       const msg = formatToolProgress('Write', {
         file_path: '/very/deep/nested/path/to/output.ts',
         content: 'file content',
       });
-      expect(msg).toBe('Write(output.ts)');
+      expect(msg).toBe('Write(/very/deep/nested/path/to/output.ts)');
     });
 
     it('formats Write with missing file_path', () => {

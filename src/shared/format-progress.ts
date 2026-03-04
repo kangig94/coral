@@ -1,9 +1,14 @@
-import { basename } from 'node:path';
+import { basename, relative } from 'node:path';
+
+function shortPath(filePath: string): string {
+  const rel = relative(process.cwd(), filePath);
+  return rel.startsWith('..') ? filePath : rel;
+}
 
 export function formatToolProgress(name: string, input: Record<string, unknown>): string {
   switch (name) {
     case 'Read': {
-      const file = typeof input.file_path === 'string' ? basename(input.file_path) : 'file';
+      const file = typeof input.file_path === 'string' ? shortPath(input.file_path) : 'file';
       const offset = typeof input.offset === 'number' ? input.offset : null;
       const limit = typeof input.limit === 'number' ? input.limit : null;
       if (offset !== null && limit !== null) return `Read(${file}:${offset}-${offset + limit})`;
@@ -11,13 +16,13 @@ export function formatToolProgress(name: string, input: Record<string, unknown>)
       return `Read(${file})`;
     }
     case 'Edit': {
-      const file = typeof input.file_path === 'string' ? basename(input.file_path) : 'file';
+      const file = typeof input.file_path === 'string' ? shortPath(input.file_path) : 'file';
       const old = typeof input.old_string === 'string' ? input.old_string.split('\n')[0] : '';
       const next = typeof input.new_string === 'string' ? input.new_string.split('\n')[0] : '';
       return `Edit(${file}, "${truncate(old, 30)}" → "${truncate(next, 30)}")`;
     }
     case 'Write': {
-      const file = typeof input.file_path === 'string' ? basename(input.file_path) : 'file';
+      const file = typeof input.file_path === 'string' ? shortPath(input.file_path) : 'file';
       return `Write(${file})`;
     }
     case 'Bash': {

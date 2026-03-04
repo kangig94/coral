@@ -35,7 +35,7 @@ describe('extractClaudeProgressMessage', () => {
       },
     };
 
-    expect(extractClaudeProgressMessage(event)).toBe('Read(main.ts:10-30)');
+    expect(extractClaudeProgressMessage(event)).toBe('Read(/repo/src/main.ts:10-30)');
   });
 
   it('formats Edit tool_use with contextual preview', () => {
@@ -52,7 +52,7 @@ describe('extractClaudeProgressMessage', () => {
       },
     };
 
-    expect(extractClaudeProgressMessage(event)).toBe('Edit(main.ts, "before" → "after")');
+    expect(extractClaudeProgressMessage(event)).toBe('Edit(/repo/src/main.ts, "before" → "after")');
   });
 
   it('formats Bash tool_use using description fallback', () => {
@@ -249,7 +249,7 @@ describe('extractClaudeProgressMessage — adversarial', () => {
         toolUseBlock('Write', { file_path: '/deep/nested/path/output.ts', content: 'hello' }),
       ]);
       const msg = extractClaudeProgressMessage(event);
-      expect(msg).toBe('Write(output.ts)');
+      expect(msg).toBe('Write(/deep/nested/path/output.ts)');
     });
   });
 

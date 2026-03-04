@@ -130,7 +130,7 @@ describe('claude provider server-handlers', () => {
     const lines = readFileSync(progressFile, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
     expect(lines).toHaveLength(2);
     expect(lines[0].event).toBe('assistant');
-    expect(lines[0].message).toBe('Read(main.ts)');
+    expect(lines[0].message).toBe('Read(/repo/src/main.ts)');
     expect(lines[1].message).toBe('Generating response...');
   });
 
