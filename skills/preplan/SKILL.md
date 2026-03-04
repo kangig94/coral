@@ -105,8 +105,9 @@ Structured problem-definition conversation with the user before planning begins.
     ### 4. Transition Proposal
 
     When all required items are free of "unconfirmed" markers:
-    - Read the agreement file and display its full content to the user
-      (render the complete `.claude/coral/plans/pre-{topic}.md` — not a summary or excerpt)
+    - Summarize the agreement file for the user — include all decisions, constraints,
+      and open items the user needs to know, but omit verbose details they can
+      look up in `.claude/coral/plans/pre-{topic}.md` if needed
     - Ask via AskUserQuestion:
       - question: "Proceed to coral:plan?"
       - options: "Proceed (Recommended)", "Proceed --deep", "Proceed --codex", "Proceed --deep --codex"
