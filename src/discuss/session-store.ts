@@ -97,8 +97,9 @@ export class SessionStore {
   }
 
   cleanupExpiredSessions(): number {
-    const ttlDays = Number.parseInt(process.env.CORAL_DISCUSS_TTL_DAYS ?? '', 10);
-    const ttl = Number.isFinite(ttlDays) && ttlDays > 0 ? ttlDays : 30;
+    const ttlDays = Number.parseInt(process.env.CORAL_DISCUSS_TTL_DAYS ?? '0', 10);
+    const ttl = Number.isFinite(ttlDays) && ttlDays > 0 ? ttlDays : 0;
+    if (ttl === 0) return 0;
     const cutoff = Date.now() - ttl * 24 * 60 * 60 * 1000;
     let removed = 0;
 
