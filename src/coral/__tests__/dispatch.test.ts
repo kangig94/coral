@@ -53,9 +53,47 @@ describe('coral dispatch', () => {
     const [coralName, coralContent, rawArgs, passedMgr, progressToken] = handleCoralOp.mock.calls[0] ?? [];
     expect(coralName).toBe('architect');
     expect(String(coralContent)).toContain('# Architect');
-    expect(rawArgs).toEqual({ op: 'coral:architect', prompt: 'Run checks' });
+    expect(rawArgs).toEqual({ op: 'coral:architect', prompt: 'Run checks', effort: 'xhigh' });
     expect(passedMgr).toBe(mgr);
     expect(progressToken).toBe('token-1');
+  });
+
+  it('defaults effort to xhigh when not specified', async () => {
+    const handleCoralOp = vi.fn<ProviderAdapter['handleCoralOp']>(
+      async () => ({ content: [{ type: 'text', text: 'ok' }], isError: false }),
+    );
+    registerProvider({
+      name: 'mock-provider',
+      tool: { name: 'mock-provider', description: 'mock', inputSchema: {} },
+      handleOp: async () => ({ content: [{ type: 'text', text: 'unused' }], isError: false }),
+      handleCoralOp,
+      extractCompletion: () => ({ responseText: '', metadata: {} }),
+      makeOnEvent: () => () => {},
+    });
+
+    await handleCoralDispatch('mock-provider', { op: 'coral:architect', prompt: 'go' }, {} as SessionManager);
+
+    const [, , rawArgs] = handleCoralOp.mock.calls[0] ?? [];
+    expect(rawArgs).toHaveProperty('effort', 'xhigh');
+  });
+
+  it('preserves explicit effort and does not override with xhigh', async () => {
+    const handleCoralOp = vi.fn<ProviderAdapter['handleCoralOp']>(
+      async () => ({ content: [{ type: 'text', text: 'ok' }], isError: false }),
+    );
+    registerProvider({
+      name: 'mock-provider',
+      tool: { name: 'mock-provider', description: 'mock', inputSchema: {} },
+      handleOp: async () => ({ content: [{ type: 'text', text: 'unused' }], isError: false }),
+      handleCoralOp,
+      extractCompletion: () => ({ responseText: '', metadata: {} }),
+      makeOnEvent: () => () => {},
+    });
+
+    await handleCoralDispatch('mock-provider', { op: 'coral:architect', prompt: 'go', effort: 'low' }, {} as SessionManager);
+
+    const [, , rawArgs] = handleCoralOp.mock.calls[0] ?? [];
+    expect(rawArgs).toHaveProperty('effort', 'low');
   });
 
   it('returns an MCP error when provider is unknown', async () => {

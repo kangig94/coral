@@ -6,6 +6,7 @@ import {
   sessionRefSchema,
   cwdSchema,
   boolDefaultFalse,
+  effortSchema,
   coralOpSchema,
 } from '../../shared/schemas.js';
 
@@ -17,6 +18,7 @@ const sessionExecFields = {
   name: sessionNameSchema.optional(),
   model: modelSchema,
   working_directory: cwdSchema,
+  effort: effortSchema,
   system_prompt: systemPromptSchema,
   bypass: boolDefaultFalse,
 };

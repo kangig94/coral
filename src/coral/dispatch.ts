@@ -24,5 +24,7 @@ export async function handleCoralDispatch(
   const coralName = op.slice(CORAL_OP_PREFIX.length);
   const { content } = resolveCoralContent(coralName);
 
-  return provider.handleCoralOp(coralName, content, rawArgs, mgr, progressToken, notify);
+  const args = 'effort' in rawArgs ? rawArgs : { ...rawArgs, effort: 'xhigh' };
+
+  return provider.handleCoralOp(coralName, content, args, mgr, progressToken, notify);
 }

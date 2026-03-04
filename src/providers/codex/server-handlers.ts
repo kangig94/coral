@@ -46,7 +46,7 @@ export const codexTool = {
       name: { type: 'string', description: 'Session name (exec/fork optional)' },
       model: { type: 'string', description: 'Codex model to use' },
       working_directory: { type: 'string', description: 'Working directory for Codex execution' },
-      reasoning_effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh'], description: 'Model reasoning effort level' },
+      effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh'], description: 'Model reasoning effort level' },
       bypass: { type: 'boolean', description: 'Bypass Codex sandbox and approval checks. Only set when the user explicitly requests bypass mode.', default: false },
     },
     required: ['op'],
@@ -131,7 +131,7 @@ export async function handleSessionCreate(
     input.prompt,
     input.model,
     input.working_directory,
-    input.reasoning_effort,
+    input.effort,
     input.bypass,
     onEvent,
     signal,
@@ -180,7 +180,7 @@ export async function handleSessionSend(
     input.prompt,
     input.model,
     workingDirectory,
-    input.reasoning_effort,
+    input.effort,
     input.bypass,
     onEvent,
     signal,
@@ -220,7 +220,7 @@ export async function handleSessionFork(
     input.prompt,
     input.model,
     cwd,
-    input.reasoning_effort,
+    input.effort,
     input.bypass,
     onEvent,
     signal,
@@ -335,7 +335,7 @@ export async function handleCodexCoralOp(
       session: input.session,
       model: input.model,
       working_directory: input.working_directory ?? entry.workingDirectory,
-      reasoning_effort: input.reasoning_effort,
+      effort: input.effort,
       bypass: true,
     };
     return launchJob(
@@ -355,7 +355,7 @@ export async function handleCodexCoralOp(
     name: sessionName,
     model: input.model,
     working_directory: input.working_directory,
-    reasoning_effort: input.reasoning_effort,
+    effort: input.effort,
     bypass: true,
   };
   return launchJob(

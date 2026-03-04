@@ -27,7 +27,7 @@ type WorkflowArgs = Record<string, Record<string, unknown>>;
 type AtomExecutionParams = {
   model?: string;
   working_directory?: string;
-  reasoning_effort?: string;
+  effort?: string;
 };
 
 type AtomPromptContext = {
@@ -201,11 +201,11 @@ function splitAtomArgs(stepIndex: number, atomName: string, args: Record<string,
       executionParams.working_directory = value;
       continue;
     }
-    if (key === 'reasoning_effort') {
+    if (key === 'effort') {
       if (typeof value !== 'string') {
-        throw new Error(`Step ${stepIndex + 1}, atom '${atomName}' args.reasoning_effort must be a string`);
+        throw new Error(`Step ${stepIndex + 1}, atom '${atomName}' args.effort must be a string`);
       }
-      executionParams.reasoning_effort = value;
+      executionParams.effort = value;
       continue;
     }
     if (key === 'files') {
@@ -336,7 +336,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
       prompt: atomPrompt,
       ...(executionParams.model ? { model: executionParams.model } : {}),
       ...(executionParams.working_directory ? { working_directory: executionParams.working_directory } : {}),
-      ...(executionParams.reasoning_effort ? { reasoning_effort: executionParams.reasoning_effort } : {}),
+      ...(executionParams.effort ? { effort: executionParams.effort } : {}),
     };
   } else {
     // First-step prompt literals use only the literal text — the initial pipeline prompt is intentionally

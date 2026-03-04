@@ -134,7 +134,7 @@ describe('executeOneShot', () => {
     expect(result.errors).toEqual(['Rate limit']);
   });
 
-  it('appends -c model_reasoning_effort when set', async () => {
+  it('appends -c model_reasoning_effort when effort is set', async () => {
     mockCliAvailable();
     const output = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n';
     mockSpawn.mockReturnValue(createMockProcess(output, 0));

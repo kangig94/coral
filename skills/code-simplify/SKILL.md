@@ -68,7 +68,7 @@ Strip the `--codex` flag before passing the prompt to the execution path.
        - Default: run `<Execution>` directly on the target files.
        - `--codex`: call `codex({ op: "exec", ... })` with `<Execution>`, `<Constraints>`,
          target file paths, and coding standards as context.
-         Pass `working_directory`, `reasoning_effort: "xhigh"`.
+         Pass `working_directory`, `effort: "xhigh"`.
          Pass `bypass: true` only when the user explicitly requests bypass mode.
          Then wait in a timeout loop:
          `wait({ sessions: [session], timeout_seconds })`

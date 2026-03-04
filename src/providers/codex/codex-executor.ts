@@ -133,9 +133,9 @@ function baseFlags(bypassSandbox: boolean): string[] {
   ];
 }
 
-/** Build optional CLI flags for reasoning_effort. */
-function extraFlags(reasoningEffort?: string): string[] {
-  return reasoningEffort ? ['-c', `model_reasoning_effort=${reasoningEffort}`] : [];
+/** Build optional CLI flags for effort. */
+function extraFlags(effort?: string): string[] {
+  return effort ? ['-c', `model_reasoning_effort=${effort}`] : [];
 }
 
 /** One-shot execution: codex exec -m MODEL --json --full-auto */
@@ -143,7 +143,7 @@ export async function executeOneShot(
   prompt: string,
   model?: string,
   cwd?: string,
-  reasoningEffort?: string,
+  effort?: string,
   bypassSandbox = false,
   onEvent?: (line: string) => void,
   signal?: AbortSignal,
@@ -151,7 +151,7 @@ export async function executeOneShot(
 ): Promise<CodexExecResult> {
   const resolvedModel = getModel(model);
   return executeCodex(
-    ['exec', '-m', resolvedModel, ...baseFlags(bypassSandbox), ...extraFlags(reasoningEffort)],
+    ['exec', '-m', resolvedModel, ...baseFlags(bypassSandbox), ...extraFlags(effort)],
     prependClaudeMd(prompt), resolvedModel, cwd, onEvent, signal, preChecked,
   );
 }
@@ -162,7 +162,7 @@ export async function executeResume(
   prompt: string,
   model?: string,
   cwd?: string,
-  reasoningEffort?: string,
+  effort?: string,
   bypassSandbox = false,
   onEvent?: (line: string) => void,
   signal?: AbortSignal,
@@ -170,7 +170,7 @@ export async function executeResume(
 ): Promise<CodexExecResult> {
   const resolvedModel = getModel(model);
   return executeCodex(
-    ['exec', 'resume', threadId, '-m', resolvedModel, ...baseFlags(bypassSandbox), ...extraFlags(reasoningEffort)],
+    ['exec', 'resume', threadId, '-m', resolvedModel, ...baseFlags(bypassSandbox), ...extraFlags(effort)],
     prompt,
     resolvedModel,
     cwd,
@@ -186,14 +186,14 @@ export async function executeFork(
   prompt?: string,
   model?: string,
   cwd?: string,
-  reasoningEffort?: string,
+  effort?: string,
   bypassSandbox = false,
   onEvent?: (line: string) => void,
   signal?: AbortSignal,
   preChecked?: CliInfo & { available: true },
 ): Promise<CodexExecResult> {
   const forkPrompt = prompt ?? 'Continue from where we left off.';
-  return executeResume(threadId, forkPrompt, model, cwd, reasoningEffort, bypassSandbox, onEvent, signal, preChecked);
+  return executeResume(threadId, forkPrompt, model, cwd, effort, bypassSandbox, onEvent, signal, preChecked);
 }
 
 // Test-only exports

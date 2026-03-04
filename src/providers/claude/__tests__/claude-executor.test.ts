@@ -105,6 +105,50 @@ describe('claude-executor', () => {
     expect(result.sessionId).toBe('sess-2');
   });
 
+  it('appends --effort when effort is set', async () => {
+    mockSpawnCli.mockResolvedValue({
+      stdout: '{"type":"result","result":"ok","session_id":"sess-effort"}',
+      stderr: '',
+      code: 0,
+      aborted: false,
+    });
+
+    await executeClaudeOneShot('Use effort', { effort: 'high' });
+
+    expect(mockSpawnCli).toHaveBeenCalledWith(expect.objectContaining({
+      args: [
+        '-p',
+        '--verbose',
+        '--output-format',
+        'stream-json',
+        '--effort',
+        'high',
+      ],
+    }));
+  });
+
+  it('maps xhigh effort to --effort high', async () => {
+    mockSpawnCli.mockResolvedValue({
+      stdout: '{"type":"result","result":"ok","session_id":"sess-effort-map"}',
+      stderr: '',
+      code: 0,
+      aborted: false,
+    });
+
+    await executeClaudeOneShot('Use max effort', { effort: 'xhigh' });
+
+    expect(mockSpawnCli).toHaveBeenCalledWith(expect.objectContaining({
+      args: [
+        '-p',
+        '--verbose',
+        '--output-format',
+        'stream-json',
+        '--effort',
+        'high',
+      ],
+    }));
+  });
+
   it('includes --dangerously-skip-permissions for one-shot when bypassPermissions is true', async () => {
     mockSpawnCli.mockResolvedValue({
       stdout: '{"type":"result","result":"ok","session_id":"sess-5"}',

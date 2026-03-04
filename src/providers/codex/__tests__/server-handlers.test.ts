@@ -196,12 +196,22 @@ describe('handleCodexOp routing', () => {
     expect(result.isError).toBe(false);
     expect(result.content[0].text).toContain('"error": "unknown_op"');
   });
+
 });
 
 describe('handleCodexCoralOp', () => {
   it('op description provides a concrete coral: example', () => {
     const opProp = codexTool.inputSchema.properties.op as { description?: string };
     expect(opProp.description).toMatch(/coral:[a-z]/);
+  });
+
+  it('tool schema exposes effort field', () => {
+    const properties = codexTool.inputSchema.properties as Record<string, unknown>;
+    expect(properties.effort).toEqual({
+      type: 'string',
+      enum: ['low', 'medium', 'high', 'xhigh'],
+      description: 'Model reasoning effort level',
+    });
   });
 
   it('session not in mgr returns error before CLI preflight', async () => {
@@ -306,10 +316,11 @@ describe('handleCodexCoralOp', () => {
     await expect(handleCodexCoralOp(
       'scanner',
       '# Scanner Agent\n',
-      { op: 'coral:scanner', prompt: 'go', reasoning_effort: 'ultra-high' },
+      { op: 'coral:scanner', prompt: 'go', effort: 'ultra-high' },
       mgr,
     )).rejects.toThrow();
   });
+
 });
 
 describe('launchJob', () => {

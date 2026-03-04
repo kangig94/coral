@@ -275,7 +275,7 @@ describe('workflow pipe executor', () => {
           architect: {
             model: 'o4-mini',
             working_directory: '/tmp/workflow-test',
-            reasoning_effort: 'high',
+            effort: 'high',
           },
         },
       },
@@ -285,7 +285,7 @@ describe('workflow pipe executor', () => {
       op: 'coral:architect',
       model: 'o4-mini',
       working_directory: '/tmp/workflow-test',
-      reasoning_effort: 'high',
+      effort: 'high',
     }));
   });
 

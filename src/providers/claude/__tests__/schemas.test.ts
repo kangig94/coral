@@ -10,6 +10,7 @@ describe('claude schemas', () => {
       name: 'my-session',
       model: 'claude-3-5-sonnet',
       working_directory: '/tmp/work',
+      effort: 'high',
       system_prompt: 'Be strict',
     });
 
@@ -64,6 +65,7 @@ describe('claude schemas', () => {
     const ok = coralClaudeSchema.safeParse({
       op: 'coral:architect',
       prompt: 'Do it',
+      effort: 'xhigh',
     });
     const bad = coralClaudeSchema.safeParse({
       op: 'coral:../architect',
@@ -72,6 +74,20 @@ describe('claude schemas', () => {
 
     expect(ok.success).toBe(true);
     expect(bad.success).toBe(false);
+  });
+
+  it('accepts effort enum values including xhigh', () => {
+    expect(claudeOpSchema.safeParse({
+      op: 'exec',
+      prompt: 'hello',
+      effort: 'xhigh',
+    }).success).toBe(true);
+
+    expect(coralClaudeSchema.safeParse({
+      op: 'coral:architect',
+      prompt: 'Do it',
+      effort: 'xhigh',
+    }).success).toBe(true);
   });
 
   it('defaults coral bypass to false when omitted', () => {

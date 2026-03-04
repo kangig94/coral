@@ -80,7 +80,7 @@ describe('coralAgentSchema', () => {
       prompt: 'analyze',
       model: 'o4-mini',
       working_directory: '/tmp',
-      reasoning_effort: 'high',
+      effort: 'high',
       bypass: true,
     });
     expect(result).toMatchObject({
