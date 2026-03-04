@@ -6,8 +6,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { CodexExecResult } from '../types.js';
-import { spawnCli, activeChildren, killAllChildren as killAllRunnerChildren } from '../runner/engine.js';
+import type { CodexExecResult } from '../../types.js';
+import { spawnCli, activeChildren, killAllChildren as killAllRunnerChildren } from '../../runner/engine.js';
 import { parseCodexJsonl } from './output-parser.js';
 import { detectCodexCli, type CliInfo } from './cli-detection.js';
 

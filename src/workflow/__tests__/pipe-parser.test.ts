@@ -190,8 +190,10 @@ describe('workflow pipe parser', () => {
     expect(() => parseExpression('coral:../x')).toThrow('Invalid agent "../x"');
   });
 
-  it('rejects unknown provider suffixes', () => {
-    expect(() => parseExpression('architect@unknown')).toThrow('Unknown provider "unknown"');
+  it('accepts provider suffixes that match provider identifier syntax', () => {
+    expect(parseExpression('architect@unknown')).toEqual([
+      [{ kind: 'agent', namespace: undefined, agent: 'architect', provider: 'unknown' }],
+    ]);
   });
 
   it('arrow embedded in parallel group yields atom error, not a structure error', () => {

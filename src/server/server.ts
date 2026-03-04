@@ -9,7 +9,7 @@ import { killAllChildren } from '../runner/engine.js';
 import { SessionManager } from '../runner/session-manager.js';
 import { writeSessionError } from '../runner/progress.js';
 import { activeSessions, tryClaimTerminalWrite, shutdownSignal } from '../runner/job-manager.js';
-import { tools, handleToolCall } from './server-handlers.js';
+import { getTools, handleToolCall } from './server-handlers.js';
 
 const server = new Server(
   {
@@ -19,7 +19,7 @@ const server = new Server(
   { capabilities: { tools: {} } },
 );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: getTools() }));
 
 server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const { name, arguments: args } = request.params;

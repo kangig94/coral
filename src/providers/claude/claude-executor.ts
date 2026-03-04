@@ -1,4 +1,4 @@
-import { spawnCli } from '../runner/engine.js';
+import { spawnCli } from '../../runner/engine.js';
 import type { ClaudeExecFailure, ClaudeExecResult, ClaudeJsonOutput } from './types.js';
 
 export type ClaudeExecOptions = {

@@ -1,9 +1,9 @@
 /**
  * Codex-specific progress helpers.
- * Generic session/progress file helpers live in ../runner/progress.ts.
+ * Generic session/progress file helpers live in ../../runner/progress.ts.
  */
 
-import type { CodexThreadEvent } from '../types.js';
+import type { CodexThreadEvent } from '../../types.js';
 
 export {
   createSessionDir,
@@ -16,7 +16,7 @@ export {
   SESSIONS_DIR,
   PROGRESS_FILE,
   type SessionStatus,
-} from '../runner/progress.js';
+} from '../../runner/progress.js';
 
 /** Extract a human-readable progress message from a Codex JSONL event. */
 export function extractProgressMessage(event: CodexThreadEvent): string | null {

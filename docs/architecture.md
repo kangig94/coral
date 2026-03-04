@@ -41,6 +41,130 @@
         └──────────────────────┘   └────────────────────────┘
 ```
 
+## AX Internal Dispatch
+
+How the AX MCP server routes tool calls internally. The top-level router (`server-handlers.ts`) is registry-first: provider lookup, optional coral dispatch, then provider handler execution.
+
+### Top-Level Router
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  Claude Code (Host)                                              │
+│  MCP tool call: codex / claude / wait / workflow                 │
+└─────────────────────────────┬────────────────────────────────────┘
+                              │ stdio (JSON-RPC)
+                              ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  server.ts — MCP Server (composition root, wiring only)          │
+│  CallToolRequest → handleToolCall(name, rawArgs, sessionManager) │
+└─────────────────────────────┬────────────────────────────────────┘
+                              │
+                              ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  server-handlers.ts — Top-level Router                           │
+│                                                                  │
+│  provider in registry?   YES → provider.handleOp / handleCoralOp │
+│                          NO  → wait/workflow/unknown tool         │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Provider Tools (`codex`, `claude`, and future providers)
+
+```
+<provider>({ op, ... })
+        │
+        ▼
+server/server-handlers.handleToolCall()
+        │
+        ├─ getProvider(name) from providers/registry.ts
+        ├─ op starts with "coral:" ?
+        │   YES → coral/dispatch.handleCoralDispatch()
+        │         ├─ resolveCoralContent(name) from coral/resolver.ts
+        │         └─ provider.handleCoralOp(coralName, coralContent, ...)
+        │
+        │   NO  → provider.handleOp(...)
+        │
+        ▼
+provider adapter (`providers/<name>/server-handlers.ts`)
+        │
+        ├─ op === "exec" / "fork" → launchJob() → spawn CLI (background)
+        ├─ op === "list"          → provider session list
+        └─ op === "abort"         → active session abort
+```
+
+`coral:` resolution is centralized in `src/coral/dispatch.ts`; provider adapters only implement provider-specific injection:
+- Codex: prepends coral content to prompt with `\n\n---\n\n`, forces `bypass: true`
+- Claude: `stripAgentMetadata(...)` into `system_prompt`, forces `bypass: true`
+
+### `wait` Tool
+
+```
+wait({ sessions: [uuid1, uuid2], timeout_seconds })
+        │
+        ▼
+runner/job-manager.handleWait()               job-manager.ts:165
+        │
+        ├─ resolveSessionDir(id) for each session
+        ├─ poll loop (500ms interval):
+        │   ├─ readNewProgressLines() → MCP progress notifications
+        │   ├─ readSessionStatus(dir) → check completed/error
+        │   └─ check timeout / shutdown signal
+        └─ return { status, completed_session, session_dir }
+```
+
+Provider-agnostic: monitors any session regardless of whether it was launched by codex or claude.
+
+### `workflow` Tool
+
+```
+workflow({ expression: "(architect, critic) -> resolver", prompt, provider })
+        │
+        ▼
+handleWorkflow()                              workflow/handler.ts
+        │
+        ├─ parseExpression(expression) → AST: PipeAtom[][]
+        ├─ normalizeAst(ast, defaultProvider)
+        ├─ validateArgs / validateNamespaces / validateParallelDuplicates
+        └─ executePipeline(ast, prompt, handleToolCall, ...)
+                │
+                ▼
+        For each step:
+        ├─ Parallel atoms → launchAtomWithRetry()
+        │   ├─ AgentAtom:  handleToolCall(provider, { op: "coral:{name}", prompt })
+        │   └─ PromptAtom: handleToolCall(provider, { op: "coral:workflow-literal", prompt })
+        │                       ↓
+        │               Re-enters top-level handleToolCall() (recursive)
+        ├─ wait({ sessions }) → collect results
+        └─ Format XML output → pass as next step's prompt
+```
+
+### Summary: End-to-End Flow
+
+```
+                    ┌──────────────┐
+                    │  MCP Client  │
+                    └──────┬───────┘
+                           │
+              ┌────────────┼────────────┬──────────┐
+              ▼            ▼            ▼          ▼
+          "codex"      "claude"      "wait"    "workflow"
+              │            │            │          │
+              ▼            ▼            │          ▼
+     provider registry lookup              │
+         │                                 │
+         ├─ coral:<name> → coral/dispatch  │
+         │                  → resolver      │
+         │                  → handleCoralOp │
+         │                                 │
+         └─ non-coral op → handleOp        │
+                          → launchJob()     │
+                              ↓             │
+                       spawn CLI (background)
+                              ↓             │
+  result → session_dir ◄────────────────────┘
+  (background)              poll loop
+```
+
 ## Data Flow
 
 ### 1. Skill-to-Agent Routing
@@ -194,27 +318,34 @@ coral/
 │   │   └── mcp-utils.ts         # Shared MCP response utilities
 │   ├── server/                  # Unified MCP server (tool router)
 │   │   ├── server.ts            # Composition root
-│   │   └── server-handlers.ts   # codex + claude + wait tool routing
+│   │   └── server-handlers.ts   # Pure router (registry + coral dispatch + wait/workflow)
 │   ├── runner/                  # Shared runner infrastructure
 │   │   ├── types.ts             # SessionProvider, SessionEntry, CompletionMetadata
 │   │   ├── engine.ts            # spawnCli, child caps, kill lifecycle
 │   │   ├── session-manager.ts   # Provider-scoped persisted session registry
 │   │   ├── progress.ts          # Session dir + status/progress I/O
-│   │   ├── job-manager.ts       # launchJob, activeSessions, provider-agnostic wait polling
-│   │   └── coral-resolver.ts    # agents/ + skills/ resolver + metadata stripping
-│   ├── codex/                   # Codex adapter (thin over runner)
-│   │   ├── server-handlers.ts   # Codex tool handlers
-│   │   ├── schemas.ts           # Codex Zod validation
-│   │   ├── codex-executor.ts    # Codex CLI adapter over runner/engine
-│   │   ├── cli-detection.ts     # Codex CLI/auth detection cache
-│   │   ├── output-parser.ts     # Codex JSONL parsing
-│   │   ├── progress.ts          # Codex progress helper wrapper
-│   │   └── session-manager.ts   # SessionManager re-export wrapper
-│   ├── claude/              # Claude CLI adapter
-│   │   ├── types.ts             # Claude JSON/result types
-│   │   ├── schemas.ts           # Claude Zod validation
-│   │   ├── cli-detection.ts     # Claude CLI/auth detection cache
-│   │   └── claude-executor.ts   # stdin prompt execution + JSON parsing
+│   │   └── job-manager.ts       # launchJob, activeSessions, provider-agnostic wait polling
+│   ├── coral/                   # Shared coral content resolution + dispatch
+│   │   ├── resolver.ts          # agents/ + skills/ resolver + metadata stripping
+│   │   └── dispatch.ts          # coral:<name> routing to provider adapters
+│   ├── providers/               # Provider adapter system
+│   │   ├── types.ts             # ProviderAdapter + NotifyFn contract
+│   │   ├── registry.ts          # Provider registration + lookup
+│   │   ├── bootstrap.ts         # Built-in provider registration
+│   │   ├── codex/
+│   │   │   ├── server-handlers.ts
+│   │   │   ├── schemas.ts
+│   │   │   ├── codex-executor.ts
+│   │   │   ├── cli-detection.ts
+│   │   │   ├── output-parser.ts
+│   │   │   ├── progress.ts
+│   │   │   └── mcp-utils.ts
+│   │   └── claude/
+│   │       ├── server-handlers.ts
+│   │       ├── types.ts
+│   │       ├── schemas.ts
+│   │       ├── cli-detection.ts
+│   │       └── claude-executor.ts
 │   ├── workflow/                # Workflow pipeline executor
 │   │   ├── types.ts             # PipeAtom, PipeStep, PipelineAST
 │   │   ├── pipe-parser.ts       # DSL expression parser
@@ -271,23 +402,22 @@ coral/
 
 ```
 server/server.ts                    (composition root)
-  └── server/server-handlers.ts     (tool router: codex + claude + wait + workflow)
-      ├── codex/server-handlers.ts       (codex adapter)
-      │   ├── codex/schemas.ts
-      │   ├── codex/codex-executor.ts
-      │   │   ├── codex/output-parser.ts
-      │   │   ├── codex/cli-detection.ts
-      │   │   └── runner/engine.ts
-      │   └── runner/{job-manager,session-manager,progress}.ts
-      ├── claude/{schemas,cli-detection,claude-executor}.ts
-      │   ├── runner/engine.ts
-      │   └── runner/{job-manager,session-manager}.ts
+  └── server/server-handlers.ts     (pure router: provider registry + coral dispatch + wait + workflow)
+      ├── providers/bootstrap.ts
+      ├── providers/registry.ts
+      ├── coral/dispatch.ts
+      │   └── coral/resolver.ts
+      ├── providers/codex/server-handlers.ts
+      │   ├── providers/codex/{schemas,codex-executor,cli-detection,output-parser,progress,mcp-utils}.ts
+      │   └── runner/{job-manager,session-manager,progress,engine}.ts
+      ├── providers/claude/server-handlers.ts
+      │   ├── providers/claude/{schemas,cli-detection,claude-executor,types}.ts
+      │   └── runner/{job-manager,session-manager,engine}.ts
       ├── workflow/handler.ts            (pipeline handler, DI via handleToolCall)
       │   ├── workflow/schemas.ts
       │   ├── workflow/pipe-executor.ts
       │   │   └── workflow/pipe-parser.ts
       │   └── runner/{job-manager,progress}.ts
-      ├── runner/coral-resolver.ts
       └── shared/mcp-utils.ts
 
 runner/types.ts + types.ts provide shared contracts across adapters

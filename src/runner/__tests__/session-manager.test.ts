@@ -122,4 +122,17 @@ describe('runner SessionManager', () => {
     expect(mgr.remove('claude', id)).toBe(true);
     expect(existsSync(sessionFilePath(workDir, id))).toBe(false);
   });
+
+  it('persists and round-trips non-built-in provider identifiers', () => {
+    const { mgr, workDir } = setup('custom-provider');
+    const id = '55555555-5555-4555-8555-555555555555';
+    mgr.register('custom-provider', id, 'custom', 'thread-custom', 'model-x', workDir);
+
+    expect(mgr.get('custom-provider', id)?.provider).toBe('custom-provider');
+    expect(mgr.get('codex', id)).toBeNull();
+    expect(mgr.list('custom-provider').map((entry) => entry.id)).toEqual([id]);
+
+    const fromDisk = JSON.parse(readFileSync(sessionFilePath(workDir, id), 'utf-8'));
+    expect(fromDisk.provider).toBe('custom-provider');
+  });
 });

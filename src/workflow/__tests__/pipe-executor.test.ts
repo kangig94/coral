@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createSessionDir, writeSessionError, writeSessionResult } from '../../runner/progress.js';
+import type { SessionProvider } from '../../runner/types.js';
 import { jsonResult, textResult } from '../../shared/mcp-utils.js';
 import { parseExpression } from '../pipe-parser.js';
 import {
@@ -28,7 +29,7 @@ afterEach(() => {
 
 function registerSession(
   label: string,
-  provider: 'codex' | 'claude',
+  provider: SessionProvider,
   output?: string,
 ): { session: string; session_dir: string } {
   const { id, dir } = createSessionDir(label, provider);

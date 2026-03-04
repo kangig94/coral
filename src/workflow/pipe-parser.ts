@@ -1,10 +1,11 @@
 import type { SessionProvider } from '../runner/types.js';
+import { providerIdentPattern } from '../shared/mcp-utils.js';
 import type { PipeAtom, PipelineAST, PipeStep, PromptAtom } from './types.js';
 
 const IDENTIFIER_PATTERN = /^[a-z][a-z0-9-]*$/;
 
 function isProvider(value: string): value is SessionProvider {
-  return value === 'codex' || value === 'claude';
+  return providerIdentPattern.test(value);
 }
 
 function hasUnquotedParentheses(text: string): boolean {

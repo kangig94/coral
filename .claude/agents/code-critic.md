@@ -76,16 +76,16 @@ disallowedTools: Write, Edit
     4) Convention adherence check against `.claude/rules/conventions.md`:
        ```typescript
        // CORRECT: kebab-case files, camelCase functions, PascalCase types
-       // src/codex/session-manager.ts
+       // src/runner/session-manager.ts
        export class SessionManager { ... }
        export function parseCodexJsonl() { ... }
 
        // WRONG: inconsistent naming
-       // src/codex/SessionManager.ts
+       // src/runner/SessionManager.ts
        export class session_manager { ... }
        ```
     5) Test coverage check per changed module:
-       - Codex modules: `src/codex/__tests__/<module>.test.ts`
+       - Codex modules: `src/providers/codex/__tests__/<module>.test.ts`
        - Discuss modules: `src/discuss/__tests__/<module>.test.ts`
        - Edge cases covered (empty input, corrupt data, timeout)?
        - Error paths tested (spawn failure, invalid JSON)?
@@ -102,13 +102,13 @@ disallowedTools: Write, Edit
   <Tool_Usage>
     ```bash
     # Find long functions in TypeScript source
-    grep -n 'function\|export async function\|export function' src/codex/*.ts src/discuss/*.ts
+    grep -n 'function\|export async function\|export function' src/providers/codex/*.ts src/discuss/*.ts
 
     # Find TODOs in recent changes
     git diff --name-only | xargs grep -n 'TODO\|FIXME\|HACK' 2>/dev/null
 
     # Check test file existence for each source module
-    ls src/codex/__tests__/*.test.ts
+    ls src/providers/codex/__tests__/*.test.ts
     ls src/discuss/__tests__/*.test.ts
 
     # Run tests to verify coverage
@@ -118,10 +118,10 @@ disallowedTools: Write, Edit
     Key files:
     | File | Concern |
     |------|---------|
-    | `src/codex/server-handlers.ts` | Handler patterns, job dispatch and wait logic |
-    | `src/codex/schemas.ts` | Zod schema conventions |
-    | `src/codex/codex-executor.ts` | Process management patterns |
-    | `src/codex/session-manager.ts` | File I/O patterns |
+    | `src/providers/codex/server-handlers.ts` | Handler patterns, job dispatch and wait logic |
+    | `src/providers/codex/schemas.ts` | Zod schema conventions |
+    | `src/providers/codex/codex-executor.ts` | Process management patterns |
+    | `src/runner/session-manager.ts` | File I/O patterns |
     | `src/discuss/state-machine.ts` | Pure function patterns (no I/O) |
     | `src/discuss/session-store.ts` | Lock + atomic write patterns |
     | `.claude/rules/conventions.md` | Naming and style rules |
@@ -149,7 +149,7 @@ disallowedTools: Write, Edit
     - Confusing brevity with elegance: Praising short code that's hard to understand. Instead: evaluate by cognitive load — how much context must a reader hold?
     - Rubber-stamping: Approving without reading every changed file. Instead: cite file:line evidence for every finding.
     - Style wars: Rejecting working code for personal preference. Instead: only flag violations per `.claude/rules/conventions.md`.
-    - Ignoring tests: Passing code with no test coverage. Instead: always check for corresponding tests in `src/codex/__tests__/` or `src/discuss/__tests__/`.
+    - Ignoring tests: Passing code with no test coverage. Instead: always check for corresponding tests in `src/providers/codex/__tests__/` or `src/discuss/__tests__/`.
     - Scope creep: Flagging pre-existing issues not in the diff. Instead: review only what changed.
   </Failure_Modes_To_Avoid>
 </Agent_Prompt>

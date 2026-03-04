@@ -2,6 +2,8 @@ import { appendProgressEvent } from '../runner/progress.js';
 import {
   launchJob as launchRunnerJob,
 } from '../runner/job-manager.js';
+import { registerBuiltInProviders } from '../providers/bootstrap.js';
+import { getProvider, getProviderNames } from '../providers/registry.js';
 import type { SessionManager } from '../runner/session-manager.js';
 import type { SessionProvider } from '../runner/types.js';
 import { type McpResult, textResult } from '../shared/mcp-utils.js';
@@ -83,6 +85,29 @@ function validateParallelDuplicates(ast: PipelineAST): void {
   }
 }
 
+function validateRegisteredProviders(ast: PipelineAST, defaultProvider: SessionProvider): void {
+  registerBuiltInProviders();
+  const providerNames = getProviderNames();
+  if (providerNames.length === 0) return;
+
+  const unknownProviders = new Set<string>();
+  if (!getProvider(defaultProvider)) unknownProviders.add(defaultProvider);
+
+  for (const step of ast) {
+    for (const atom of step) {
+      const provider = atom.provider ?? defaultProvider;
+      if (!getProvider(provider)) unknownProviders.add(provider);
+    }
+  }
+
+  if (unknownProviders.size === 1) {
+    throw new Error(`Unknown provider "${[...unknownProviders][0]}"`);
+  }
+  if (unknownProviders.size > 1) {
+    throw new Error(`Unknown providers: ${[...unknownProviders].join(', ')}`);
+  }
+}
+
 export function handleWorkflow(
   rawArgs: Record<string, unknown>,
   toolCallFn: ToolCallFn,
@@ -96,6 +121,7 @@ export function handleWorkflow(
   if (input.args) validateArgsKeys(input.args, normalized);
   validateNamespaces(normalized);
   validateParallelDuplicates(normalized);
+  validateRegisteredProviders(normalized, input.provider);
 
   return launchRunnerJob({
     provider: input.provider,

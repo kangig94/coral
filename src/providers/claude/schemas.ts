@@ -1,21 +1,15 @@
 import { z } from 'zod';
-import { identPattern } from '../shared/mcp-utils.js';
+import {
+  modelSchema,
+  sessionNameSchema,
+  promptSchema,
+  sessionRefSchema,
+  cwdSchema,
+  boolDefaultFalse,
+  coralOpSchema,
+} from '../../shared/schemas.js';
 
-const modelSchema = z
-  .string()
-  .regex(identPattern, 'Model name must be alphanumeric with dots, hyphens, or underscores')
-  .optional();
-
-const sessionNameSchema = z
-  .string()
-  .min(1, 'Session name is required')
-  .regex(identPattern, 'Session name must be alphanumeric (with . _ - allowed)');
-
-const promptSchema = z.string().min(1, 'Prompt is required');
-const sessionRefSchema = z.string().min(1, 'Session reference is required');
-const cwdSchema = z.string().optional();
 const systemPromptSchema = z.string().optional();
-const boolDefaultFalse = z.boolean().default(false);
 
 const execShape = z.object({
   op: z.literal('exec'),
@@ -47,13 +41,6 @@ export type ClaudeOpInput = z.infer<typeof claudeOpSchema>;
 export type ClaudeSessionCreateInput = Omit<Extract<ClaudeOpInput, { op: 'exec' }>, 'op' | 'session'>;
 export type ClaudeSessionSendInput = Omit<Extract<ClaudeOpInput, { op: 'exec' }>, 'op' | 'name'> & { session: string };
 export type ClaudeSessionAbortInput = Omit<z.infer<typeof abortShape>, 'op'>;
-
-const coralOpSchema = z
-  .string()
-  .regex(
-    /^coral:[a-z0-9][a-z0-9-]*$/,
-    'Op must be coral:<agent-name> (lowercase letters, digits, hyphens)',
-  );
 
 export const coralClaudeSchema = z.object({
   op: coralOpSchema,

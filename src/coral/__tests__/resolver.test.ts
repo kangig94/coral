@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { resolveCoralContent, stripAgentMetadata, _test } from '../coral-resolver.js';
+import { resolveCoralContent, stripAgentMetadata, _test } from '../resolver.js';
 
 let tmpDir = '';
 const defaultPluginRoot = process.cwd();

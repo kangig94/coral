@@ -16,6 +16,7 @@ export type CodexExecResult = {
 };
 
 export type { SessionEntry } from './runner/types.js';
+export type { ClaudeExecResult, ClaudeJsonOutput, ClaudeExecFailure } from './providers/claude/types.js';
 
 /**
  * Codex JSONL event types (matches codex-rs/exec/src/exec_events.rs).

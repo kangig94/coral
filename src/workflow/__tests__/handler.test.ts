@@ -5,6 +5,7 @@ import { createSessionDir, readSessionStatus, writeSessionResult } from '../../r
 import { jsonResult, type McpResult } from '../../shared/mcp-utils.js';
 import { handleWorkflow } from '../handler.js';
 import type { SessionManager } from '../../runner/session-manager.js';
+import type { SessionProvider } from '../../runner/types.js';
 
 const dirsToClean = new Set<string>();
 
@@ -42,7 +43,7 @@ describe('workflow handler', () => {
     const mgr = makeSessionManager();
 
     const toolCallFn = async (
-      provider: 'codex' | 'claude',
+      provider: SessionProvider,
       args: Record<string, unknown>,
     ): Promise<McpResult> => {
       const label = String(args.op);
@@ -116,11 +117,39 @@ describe('workflow handler', () => {
       )).toThrow('unsupported namespace');
   });
 
+  it('rejects unknown default provider before dispatching any atoms', () => {
+    const mgr = makeSessionManager();
+    const toolCallFn = vi.fn(async () => jsonResult({}));
+
+    expect(() =>
+      handleWorkflow(
+        { expression: 'architect', prompt: 'hello', provider: 'unknown-provider' },
+        toolCallFn,
+        mgr,
+      ),
+    ).toThrow('Unknown provider "unknown-provider"');
+    expect(toolCallFn).not.toHaveBeenCalled();
+  });
+
+  it('rejects unknown per-atom provider override before dispatch', () => {
+    const mgr = makeSessionManager();
+    const toolCallFn = vi.fn(async () => jsonResult({}));
+
+    expect(() =>
+      handleWorkflow(
+        { expression: 'architect@unknown-provider', prompt: 'hello', provider: 'codex' },
+        toolCallFn,
+        mgr,
+      ),
+    ).toThrow('Unknown provider "unknown-provider"');
+    expect(toolCallFn).not.toHaveBeenCalled();
+  });
+
   it('writes step progress events through launchJob makeOnEvent wiring', async () => {
     const mgr = makeSessionManager();
 
     const toolCallFn = async (
-      provider: 'codex' | 'claude',
+      provider: SessionProvider,
       args: Record<string, unknown>,
     ): Promise<McpResult> => {
       const launch = createSessionDir(String(args.op), provider);
@@ -154,7 +183,7 @@ describe('workflow handler', () => {
 
     const notify = vi.fn(async () => {});
     const toolCallFn = vi.fn(async (
-      provider: 'codex' | 'claude',
+      provider: SessionProvider,
       args: Record<string, unknown>,
       _mgr: SessionManager,
       progressToken?: string | number,
@@ -195,7 +224,7 @@ describe('workflow handler', () => {
   it('normalizes defaults before validation', async () => {
     const mgr = makeSessionManager();
     const toolCallFn = vi.fn(async (
-      provider: 'codex' | 'claude',
+      provider: SessionProvider,
       args: Record<string, unknown>,
     ): Promise<McpResult> => {
       expect(provider).toBe('codex');

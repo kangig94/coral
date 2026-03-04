@@ -6,20 +6,16 @@ Detailed description of the TypeScript modules across both MCP servers.
 
 ### src/server/server.ts - AX Composition Root
 
-Creates one MCP stdio server exposing three tools (`codex`, `claude`, `wait`). Wires request handlers, shared `SessionManager`, shutdown behavior, and child-process cleanup through `runner/engine.ts`. See `src/server/server.ts`.
+Creates one MCP stdio server exposing provider tools plus built-in `wait` and `workflow`. Wires request handlers, shared `SessionManager`, shutdown behavior, and child-process cleanup through `runner/engine.ts`. See `src/server/server.ts`.
 
 ---
 
 ### src/server/server-handlers.ts - AX Tool Router
 
-Routes by tool name:
-- `codex` requests to the Codex adapter
-- `claude` requests to the Claude adapter
-- `wait` requests to the provider-agnostic runner wait handler
-- `workflow` requests to the workflow pipeline handler
-- `coral:<name>` delegation rules:
-  - Codex supports both agent and skill content (prompt prepend)
-  - Claude supports agents only; skills return an explicit error
+Pure router with registry-first dispatch:
+- provider tools are resolved through `providers/registry.ts`
+- `coral:<name>` is routed through `coral/dispatch.ts`
+- non-provider tools route to `wait` and `workflow` handlers
 
 See `src/server/server-handlers.ts`.
 
@@ -30,7 +26,7 @@ See `src/server/server-handlers.ts`.
 ### src/runner/types.ts - Runner Contracts
 
 Defines provider-aware shared types:
-- `SessionProvider = 'codex' | 'claude'`
+- `SessionProvider = string` (identifier-format; dispatch authority is registry-driven)
 - `SessionEntry` (provider-scoped persisted session metadata)
 - `CliExecResult` (generic CLI execution output)
 - `CompletionMetadata` (terminal status payload contract)
@@ -54,7 +50,7 @@ See `src/runner/engine.ts`.
 
 ### src/runner/session-manager.ts - Persisted Session Registry
 
-Project-scoped session files under `~/.claude/coral/sessions/<project-hash>/`. Provider-aware methods (`register/get/list/remove/updateSession`) enforce Codex/Claude isolation. Includes v1 + v2-no-provider migrations defaulting to `provider: 'codex'`.
+Project-scoped session files under `~/.claude/coral/sessions/<project-hash>/`. Provider-aware methods (`register/get/list/remove/updateSession`) enforce provider isolation by identifier. Includes v1 + v2-no-provider migrations defaulting to `provider: 'codex'`.
 
 See `src/runner/session-manager.ts`.
 
@@ -84,7 +80,9 @@ See `src/runner/job-manager.ts`.
 
 ---
 
-### src/runner/coral-resolver.ts - Agent/Skill Resolver
+## Coral Modules (`src/coral/`)
+
+### src/coral/resolver.ts - Agent/Skill Resolver
 
 Resolves `coral:<name>` content from plugin root with containment checks:
 - first `agents/<name>.md`
@@ -92,7 +90,15 @@ Resolves `coral:<name>` content from plugin root with containment checks:
 - path traversal rejection
 - `stripAgentMetadata(...)` helper for Claude `--system-prompt` injection
 
-See `src/runner/coral-resolver.ts`.
+See `src/coral/resolver.ts`.
+
+---
+
+### src/coral/dispatch.ts - Coral Delegation Dispatcher
+
+Resolves `coral:<name>` content and delegates to the selected provider adapter via `ProviderAdapter.handleCoralOp(...)`.
+
+See `src/coral/dispatch.ts`.
 
 ---
 
@@ -117,7 +123,7 @@ Imports `SessionProvider` from `runner/types.ts`. See `src/workflow/types.ts`.
 
 Parses expression strings into `PipelineAST`. Key functions: `parseExpression` (entry point), `splitSteps` (depth-aware and quote-aware `->` splitting), `parseAtom` (agent refs plus quoted prompt literals), `parseParallelStep` (quote-aware comma splitting for mixed agent/prompt parallel groups).
 
-Validates: agent name format, provider values (`codex`/`claude`), namespace syntax, balanced parentheses, no nested groups, prompt literal syntax, unclosed quotes, and empty literals. Parser no longer enforces parallel duplicate identity; that is handled post-normalization in `handler.ts`. See `src/workflow/pipe-parser.ts`.
+Validates: agent name format, provider identifier syntax, namespace syntax, balanced parentheses, no nested groups, prompt literal syntax, unclosed quotes, and empty literals. Parser no longer enforces parallel duplicate identity; that is handled post-normalization in `handler.ts`. See `src/workflow/pipe-parser.ts`.
 
 ---
 
@@ -150,43 +156,54 @@ See `src/workflow/handler.ts`.
 
 ---
 
-## Codex Adapter Modules (`src/codex/`)
+## Provider Modules (`src/providers/`)
+
+### src/providers/types.ts / registry.ts / bootstrap.ts
+
+Provider contract and authority boundary:
+- `ProviderAdapter` contract (`handleOp`, `handleCoralOp`, `extractCompletion`, `makeOnEvent`)
+- registry APIs (`registerProvider`, `getProvider`, `getAllTools`, `getProviderNames`)
+- built-in bootstrap (`registerBuiltInProviders`)
+
+---
+
+## Codex Adapter Modules (`src/providers/codex/`)
 
 The Codex adapter is now thin and provider-specific. Shared launch/wait/session infrastructure lives in `src/runner/`.
 
-### src/codex/codex-executor.ts
+### src/providers/codex/codex-executor.ts
 
 Codex-specific execution wrapper over `runner/engine.ts`:
 - builds Codex CLI args (`exec`, `resume`, `fork`)
 - parses JSONL events through `output-parser.ts`
 - prepends plugin `CLAUDE.md` for one-shot sessions
 
-### src/codex/server-handlers.ts
+### src/providers/codex/server-handlers.ts
 
 Codex MCP behavior (`exec/list/fork/abort/coral:*`) using runner primitives for background job execution.
 
-### src/codex/schemas.ts / cli-detection.ts / output-parser.ts / progress.ts / session-manager.ts
+### src/providers/codex/schemas.ts / cli-detection.ts / output-parser.ts / progress.ts / mcp-utils.ts
 
-Input validation, CLI/auth probing, JSONL parsing, and small compatibility wrappers retained for Codex-specific behavior.
+Input validation, CLI/auth probing, JSONL parsing, and Codex-specific response helpers retained for Codex behavior.
 
 ---
 
-## Claude CLI Adapter Modules (`src/claude/`)
+## Claude CLI Adapter Modules (`src/providers/claude/`)
 
-### src/claude/schemas.ts
+### src/providers/claude/schemas.ts
 
 Zod schemas for `claude` tool operations:
 - `exec`, `list`, `abort`
 - `coral:<name>` routing input for AX handlers
 
-### src/claude/cli-detection.ts
+### src/providers/claude/cli-detection.ts
 
 Claude CLI availability/auth probe with cache + in-flight deduplication:
 - binary detection via `claude --version`
 - auth fast path via `ANTHROPIC_API_KEY`
 - canonical auth probe via `claude auth status --json`
 
-### src/claude/claude-executor.ts
+### src/providers/claude/claude-executor.ts
 
 Claude execution wrapper over `runner/engine.ts`:
 - prompt transport via stdin (`-p` mode)
@@ -194,9 +211,9 @@ Claude execution wrapper over `runner/engine.ts`:
 - resume support via `--resume`
 - structured parse-failure surface (`ClaudeExecParseError`)
 
-### src/claude/types.ts
+### src/providers/claude/server-handlers.ts / types.ts
 
-Defines `ClaudeExecResult`, `ClaudeJsonOutput`, and `ClaudeExecFailure`.
+Defines Claude provider operations (`exec/list/abort/coral:*`) and `claudeAdapter`, plus `ClaudeExecResult` / JSON output types.
 
 ---
 

@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import type { SessionEntry, SessionProvider } from './types.js';
+import { providerIdentPattern } from '../shared/mcp-utils.js';
 
 function projectHash(dir: string): string {
   return createHash('sha256').update(resolve(dir)).digest('hex').slice(0, 12);
@@ -13,7 +14,7 @@ function isNoEntryError(error: unknown): error is NodeJS.ErrnoException {
 }
 
 function isSessionProvider(value: unknown): value is SessionProvider {
-  return value === 'codex' || value === 'claude';
+  return typeof value === 'string' && providerIdentPattern.test(value);
 }
 
 // Fixed namespace for deterministic legacy migration.

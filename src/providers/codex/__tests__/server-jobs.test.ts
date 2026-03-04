@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, readFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { CodexThreadEvent } from '../../types.js';
+import type { CodexThreadEvent } from '../../../types.js';
 import {
   createSessionDir,
   writeSessionResult,

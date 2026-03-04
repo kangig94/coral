@@ -6,18 +6,17 @@
 
 import { executeOneShot, executeResume, executeFork } from './codex-executor.js';
 import { detectCodexCli, type CliInfo } from './cli-detection.js';
-import { SessionManager } from '../runner/session-manager.js';
+import type { SessionManager } from '../../runner/session-manager.js';
 import {
   codexOpSchema,
   coralAgentSchema,
   type CodexOpInput,
-  type CoralAgentInput,
   type CodexSessionCreateInput,
   type CodexSessionSendInput,
   type CodexSessionForkInput,
   type CodexSessionAbortInput,
 } from './schemas.js';
-import type { CodexThreadEvent } from '../types.js';
+import type { CodexThreadEvent } from '../../types.js';
 import {
   extractProgressMessage,
   appendProgressEvent,
@@ -26,34 +25,35 @@ import {
   activeSessions,
   launchJob as launchRunnerJob,
   type OnEventCallback,
-} from '../runner/job-manager.js';
-import type { CompletionMetadata } from '../runner/types.js';
-import { resolveCoralContent } from '../runner/coral-resolver.js';
-import { type McpResult, textResult, jsonResult, resultExtras } from '../shared/mcp-utils.js';
+} from '../../runner/job-manager.js';
+import type { CompletionMetadata } from '../../runner/types.js';
+import { type McpResult, textResult, jsonResult } from '../../shared/mcp-utils.js';
+import { resultExtras } from './mcp-utils.js';
+import type { NotifyFn, ProviderAdapter } from '../types.js';
 
-export const tools = [
-  {
-    name: 'codex',
-    description: 'Execute a prompt with OpenAI Codex CLI. Use op field to select exec/list/fork/abort. For agent delegation, use op: "coral:<agent-name>" (e.g., coral:scanner, coral:architect).',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        op: {
-          type: 'string',
-          description: 'Operation to run: exec/list/fork/abort, or coral:<agent> for agent delegation (e.g., coral:scanner, coral:architect)',
-        },
-        session: { type: 'string', description: 'Session UUID for resume (exec/fork/abort)' },
-        prompt: { type: 'string', description: 'Prompt to send (exec required, fork optional)' },
-        name: { type: 'string', description: 'Session name (exec/fork optional)' },
-        model: { type: 'string', description: 'Codex model to use' },
-        working_directory: { type: 'string', description: 'Working directory for Codex execution' },
-        reasoning_effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh'], description: 'Model reasoning effort level' },
-        bypass: { type: 'boolean', description: 'Bypass Codex sandbox and approval checks. Only set when the user explicitly requests bypass mode.', default: false },
+export const codexTool = {
+  name: 'codex',
+  description: 'Execute a prompt with OpenAI Codex CLI. Use op field to select exec/list/fork/abort. For agent delegation, use op: "coral:<agent-name>" (e.g., coral:scanner, coral:architect).',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      op: {
+        type: 'string',
+        description: 'Operation to run: exec/list/fork/abort, or coral:<agent> for agent delegation (e.g., coral:scanner, coral:architect)',
       },
-      required: ['op'],
+      session: { type: 'string', description: 'Session UUID for resume (exec/fork/abort)' },
+      prompt: { type: 'string', description: 'Prompt to send (exec required, fork optional)' },
+      name: { type: 'string', description: 'Session name (exec/fork optional)' },
+      model: { type: 'string', description: 'Codex model to use' },
+      working_directory: { type: 'string', description: 'Working directory for Codex execution' },
+      reasoning_effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh'], description: 'Model reasoning effort level' },
+      bypass: { type: 'boolean', description: 'Bypass Codex sandbox and approval checks. Only set when the user explicitly requests bypass mode.', default: false },
     },
+    required: ['op'],
   },
-];
+};
+
+export const tools = [codexTool];
 
 /** Session-not-found error message with recovery hint. */
 export function sessionNotFoundError(ref: string): McpResult {
@@ -281,11 +281,11 @@ export async function handleSessionAbort(input: CodexSessionAbortInput, _mgr: Se
   return jsonResult({ session: input.session, session_name: entry.sessionName, status: 'abort_requested' });
 }
 
-async function handleCodexOp(
+async function handleParsedCodexOp(
   input: CodexOpInput,
   sessionManager: SessionManager,
   progressToken?: string | number,
-  notify?: (n: { method: string; params: Record<string, unknown> }) => Promise<void>,
+  notify?: NotifyFn,
 ): Promise<McpResult> {
   switch (input.op) {
     case 'exec': {
@@ -346,19 +346,19 @@ async function handleCodexOp(
   }
 }
 
-async function handleCoralAgent(
-  input: CoralAgentInput,
+export async function handleCodexCoralOp(
+  coralName: string,
+  coralContent: string,
+  rawArgs: Record<string, unknown>,
   mgr: SessionManager,
+  _progressToken?: string | number,
+  _notify?: NotifyFn,
 ): Promise<McpResult> {
-  const coralName = input.op.slice(6); // op already validated by coralAgentSchema
-  let resolved;
-  try {
-    resolved = resolveCoralContent(coralName);
-  } catch (err) {
-    return textResult(`Error: ${err instanceof Error ? err.message : String(err)}`, true);
-  }
+  const parsed = coralAgentSchema.safeParse(rawArgs);
+  if (!parsed.success) throw parsed.error;
+  const input = parsed.data;
 
-  const augmentedPrompt = `${resolved.content}\n\n---\n\n${input.prompt}`;
+  const augmentedPrompt = `${coralContent}\n\n---\n\n${input.prompt}`;
 
   if (input.session) {
     const entry = mgr.get('codex', input.session);
@@ -405,6 +405,24 @@ async function handleCoralAgent(
   );
 }
 
+export async function handleCodexOp(
+  rawArgs: Record<string, unknown>,
+  sessionManager: SessionManager,
+  progressToken?: string | number,
+  notify?: NotifyFn,
+): Promise<McpResult> {
+  const rawOp = (rawArgs as { op?: unknown }).op;
+  const parsed = codexOpSchema.safeParse(rawArgs);
+  if (!parsed.success) {
+    if (rawOp !== undefined && parsed.error.issues.some((issue) => issue.code === 'invalid_union_discriminator')) {
+      return jsonResult({ error: 'unknown_op', op: rawOp });
+    }
+    throw parsed.error;
+  }
+
+  return handleParsedCodexOp(parsed.data, sessionManager, progressToken, notify);
+}
+
 /**
  * MCP tool call dispatcher. Routes tool calls to handlers.
  * Catches Zod validation errors and returns them as MCP error responses.
@@ -414,32 +432,26 @@ export async function handleToolCall(
   rawArgs: Record<string, unknown>,
   sessionManager: SessionManager,
   progressToken?: string | number,
-  notify?: (n: { method: string; params: Record<string, unknown> }) => Promise<void>,
+  notify?: NotifyFn,
 ): Promise<McpResult> {
   try {
     if (name !== 'codex') {
       return textResult(`Unknown tool: ${name}`, true);
     }
 
-    const rawOp = (rawArgs as { op?: unknown }).op;
-    if (typeof rawOp === 'string' && rawOp.startsWith('coral:')) {
-      const parsed = coralAgentSchema.safeParse(rawArgs);
-      if (!parsed.success) throw parsed.error;
-      return handleCoralAgent(parsed.data, sessionManager);
-    }
-
-    const parsed = codexOpSchema.safeParse(rawArgs);
-    if (!parsed.success) {
-      if (rawOp !== undefined && parsed.error.issues.some((issue) => issue.code === 'invalid_union_discriminator')) {
-        return jsonResult({ error: 'unknown_op', op: rawOp });
-      }
-      throw parsed.error;
-    }
-
-    return await handleCodexOp(parsed.data, sessionManager, progressToken, notify);
+    return await handleCodexOp(rawArgs, sessionManager, progressToken, notify);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     process.stderr.write(`Tool ${name} error: ${message}\n`);
     return textResult(`Error: ${message}`, true);
   }
 }
+
+export const codexAdapter: ProviderAdapter = {
+  name: 'codex',
+  tool: codexTool,
+  handleOp: handleCodexOp,
+  handleCoralOp: handleCodexCoralOp,
+  extractCompletion: extractCompletionData,
+  makeOnEvent: ({ progressFile }) => makeEventCallback(progressFile),
+};

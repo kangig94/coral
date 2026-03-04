@@ -1,4 +1,21 @@
-export type SessionProvider = 'codex' | 'claude';
+/**
+ * Provider identifier: a lowercase-letter/digit/hyphen string matching `providerIdentPattern`.
+ * Examples: "codex", "claude", "gemini", "my-provider".
+ * Validated at registration boundaries; stored as-is in session files.
+ */
+export type SessionProvider = string;
+
+export type ExecResult = {
+  response: string;
+  sessionId: string | null;
+  model: string;
+  durationMs: number;
+  aborted: boolean;
+  costUsd?: number;
+  exitCode?: number | null;
+  errors?: string[];
+  warnings?: string[];
+};
 
 export type SessionEntry = {
   id: string;

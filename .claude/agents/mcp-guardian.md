@@ -17,14 +17,14 @@ disallowedTools: Write, Edit
 
     | Situation | Priority |
     |-----------|----------|
-    | Any change to `src/codex/server-handlers.ts` | MANDATORY |
-    | Any change to `src/codex/schemas.ts` | MANDATORY |
-    | Any change to `src/codex/codex-executor.ts` | MANDATORY |
-    | Any change to `src/codex/session-manager.ts` | MANDATORY |
+    | Any change to `src/providers/codex/server-handlers.ts` | MANDATORY |
+    | Any change to `src/providers/codex/schemas.ts` | MANDATORY |
+    | Any change to `src/providers/codex/codex-executor.ts` | MANDATORY |
+    | Any change to `src/runner/session-manager.ts` | MANDATORY |
     | Any change to `src/discuss/server-handlers.ts` | MANDATORY |
     | Any change to `src/discuss/schemas.ts` | MANDATORY |
     | Any change to `src/discuss/session-store.ts` | MANDATORY |
-    | Any change to `src/codex/output-parser.ts` | RECOMMENDED |
+    | Any change to `src/providers/codex/output-parser.ts` | RECOMMENDED |
     | New MCP tool addition | MANDATORY |
   </Role>
   <Why_This_Matters>
@@ -156,13 +156,13 @@ disallowedTools: Write, Edit
     grep -rn 'console\.log' src/
 
     # Check for non-atomic writes in session manager
-    grep -n 'writeFileSync' src/codex/session-manager.ts
+    grep -n 'writeFileSync' src/runner/session-manager.ts
 
     # Check for non-atomic writes in session store
     grep -n 'writeFileSync' src/discuss/session-store.ts
 
-    # Verify shutdown handlers exist in codex server
-    grep -n 'SIGTERM\|SIGINT\|killAllChildren' src/codex/server.ts
+    # Verify shutdown handlers exist in ax server
+    grep -n 'SIGTERM\|SIGINT\|killAllChildren' src/server/server.ts
 
     # Run test suite
     npm test
@@ -171,12 +171,12 @@ disallowedTools: Write, Edit
     Key files:
     | File | Concern |
     |------|---------|
-    | `src/codex/server.ts` | Tool handlers, response format, shutdown |
-    | `src/codex/server-handlers.ts` | Business logic, dispatch |
-    | `src/codex/schemas.ts` | Zod schemas must match inputSchema declarations |
-    | `src/codex/codex-executor.ts` | Process spawn, timeout, child tracking |
-    | `src/codex/session-manager.ts` | Atomic writes, corrupt file handling |
-    | `src/codex/output-parser.ts` | JSONL parsing contract with Codex CLI |
+    | `src/server/server.ts` | Tool handlers, response format, shutdown |
+    | `src/providers/codex/server-handlers.ts` | Business logic, dispatch |
+    | `src/providers/codex/schemas.ts` | Zod schemas must match inputSchema declarations |
+    | `src/providers/codex/codex-executor.ts` | Process spawn, timeout, child tracking |
+    | `src/runner/session-manager.ts` | Atomic writes, corrupt file handling |
+    | `src/providers/codex/output-parser.ts` | JSONL parsing contract with Codex CLI |
     | `src/discuss/server-handlers.ts` | Discuss dispatch, withLock usage |
     | `src/discuss/session-store.ts` | Discuss atomic writes, cross-process lock |
     | `src/shared/mcp-utils.ts` | textResult/jsonResult — the only valid response constructors |

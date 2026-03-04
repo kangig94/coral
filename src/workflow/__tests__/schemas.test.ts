@@ -47,11 +47,20 @@ describe('workflowInputSchema', () => {
     expect(() => workflowInputSchema.parse({ expression: 'architect', prompt: '' })).toThrow('Prompt required');
   });
 
-  it('rejects invalid provider values', () => {
-    expect(() => workflowInputSchema.parse({
+  it('accepts provider identifiers beyond built-in providers', () => {
+    const parsed = workflowInputSchema.parse({
       expression: 'architect',
       prompt: 'hello',
       provider: 'openai',
+    });
+    expect(parsed.provider).toBe('openai');
+  });
+
+  it('rejects invalid provider identifier syntax', () => {
+    expect(() => workflowInputSchema.parse({
+      expression: 'architect',
+      prompt: 'hello',
+      provider: 'OpenAI',
     })).toThrow();
   });
 
