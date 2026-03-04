@@ -14,12 +14,26 @@ describe('stripShellWrapper', () => {
   it('returns command unchanged when no shell wrapper matches', () => {
     expect(stripShellWrapper('git status')).toBe('git status');
   });
+
+  it('strips cd <dir> && prefix', () => {
+    expect(stripShellWrapper('cd /home/user/project && nl -ba src/main.ts')).toBe('nl -ba src/main.ts');
+    expect(stripShellWrapper('cd /tmp && rg -n "TODO" src/')).toBe('rg -n "TODO" src/');
+  });
+
+  it('strips cd prefix inside shell wrapper', () => {
+    expect(stripShellWrapper('/usr/bin/zsh -lc "cd /project && cat file.ts"')).toBe('cat file.ts');
+  });
 });
 
 describe('matchCommandPattern', () => {
   it('matches nl|sed and sed range reads', () => {
     expect(matchCommandPattern("nl -ba src/main.ts | sed -n '10,20p'")).toBe('Read(main.ts:10-20)');
     expect(matchCommandPattern("sed -n '5,8p' src/app.ts")).toBe('Read(app.ts:5-8)');
+  });
+
+  it('matches bare nl -ba as Read', () => {
+    expect(matchCommandPattern('nl -ba src/providers/codex/codex-executor.ts')).toBe('Read(codex-executor.ts)');
+    expect(matchCommandPattern('nl -ba .claude/coral/plans/effort-parameter-unification.md')).toBe('Read(effort-parameter-unification.md)');
   });
 
   it('matches cat and rg patterns', () => {
@@ -245,9 +259,9 @@ describe('matchCommandPattern — adversarial', () => {
       expect(result).toBe('Read(config.ts:1-10)');
     });
 
-    it('does not match nl -ba without the sed pipe', () => {
+    it('matches bare nl -ba as Read(basename)', () => {
       const result = matchCommandPattern('nl -ba src/main.ts');
-      expect(result).toBeNull();
+      expect(result).toBe('Read(main.ts)');
     });
   });
 });
