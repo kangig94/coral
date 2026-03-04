@@ -10,7 +10,7 @@ import { resultToMcp, type McpResult } from '../../shared/mcp-utils.js';
 import type { DiscussState, Result } from '../types.js';
 
 const T = 0.1;
-const sec = (s: number): number => Math.max(1, Math.round(s * T));
+const sec = (s: number): number => Math.max(0.1, s * T);
 type SynthesisTranscriptEvent = Extract<DiscussState['transcript'][number], { type: 'session_event' }> & {
   event: 'synthesis';
 };

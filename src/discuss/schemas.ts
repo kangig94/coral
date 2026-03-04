@@ -71,7 +71,7 @@ const createShape = z.object({
 const stepShape = z.object({
   op: z.literal('_3_step'),
   session: sessionIdField,
-  timeout_seconds: z.number().min(1).max(120),
+  timeout_seconds: z.number().min(0.1).max(120),
   force_stop: z.boolean().default(false),
 }).strict();
 
