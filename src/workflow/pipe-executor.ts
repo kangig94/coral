@@ -35,6 +35,7 @@ type ParsedLaunchResult =
 
 type LaunchContext = {
   atom: PipeAtom;
+  atomIndex: number;
   stepIndex: number;
   stepPrompt: string;
   defaultProvider: SessionProvider;
@@ -48,6 +49,7 @@ export type LaunchedAtom = {
   session: string;
   sessionDir: string;
   agent: string;
+  tagName: string;
   providerTool: SessionProvider;
   stepIndex: number;
 };
@@ -255,6 +257,16 @@ function buildAtomPrompt(
   return sections.join('\n\n');
 }
 
+function atomTagName(atom: PipeAtom): string {
+  return atom.kind === 'prompt' ? 'step-result' : atom.agent;
+}
+
+function atomDiagnosticLabel(atom: PipeAtom, atomIndex: number): string {
+  if (atom.kind === 'agent') return atom.agent;
+  const truncated = atom.text.length > 20 ? `${atom.text.slice(0, 20)}...` : atom.text;
+  return `prompt#${atomIndex + 1}(${truncated})`;
+}
+
 function readAtomOutput(stepIndex: number, atomName: string, sessionDir: string): string {
   try {
     return readFileSync(join(sessionDir, 'result.md'), 'utf-8');
@@ -286,6 +298,7 @@ export async function readLaunchBootstrapStatus(
 export async function launchAtomWithRetry(context: LaunchContext): Promise<LaunchedAtom> {
   const {
     atom,
+    atomIndex,
     stepIndex,
     stepPrompt,
     defaultProvider,
@@ -294,34 +307,47 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     signal,
     onProgress,
   } = context;
+  const label = atomDiagnosticLabel(atom, atomIndex);
+  const tagName = atomTagName(atom);
   const providerTool: SessionProvider = atom.provider ?? defaultProvider;
-  const namespace = atom.namespace ?? 'coral';
-  if (namespace !== 'coral') {
-    throw new Error(`Step ${stepIndex + 1}, atom '${atom.agent}' launch failed: unsupported namespace "${namespace}"`);
+  let dispatchPayload: Record<string, unknown>;
+  if (atom.kind === 'agent') {
+    const namespace = atom.namespace ?? 'coral';
+    if (namespace !== 'coral') {
+      throw new Error(`Step ${stepIndex + 1}, atom '${label}' launch failed: unsupported namespace "${namespace}"`);
+    }
+
+    const atomArgs = readAtomArgs(stepIndex, atom.agent, args?.[atom.agent]);
+    const { executionParams, promptContext } = splitAtomArgs(stepIndex, atom.agent, atomArgs);
+    const baseDir = executionParams.working_directory ?? process.cwd();
+    const atomPrompt = buildAtomPrompt(stepPrompt, promptContext, baseDir, stepIndex, atom.agent);
+
+    dispatchPayload = {
+      op: `coral:${atom.agent}`,
+      prompt: atomPrompt,
+      ...(executionParams.model ? { model: executionParams.model } : {}),
+      ...(executionParams.working_directory ? { working_directory: executionParams.working_directory } : {}),
+      ...(executionParams.reasoning_effort ? { reasoning_effort: executionParams.reasoning_effort } : {}),
+    };
+  } else {
+    // First-step prompt literals use only the literal text — the initial pipeline prompt is intentionally
+    // not forwarded, because the literal itself IS the complete instruction. Middle steps prepend the
+    // literal before the previous step's output so the LLM reads instruction first, then context.
+    const promptText = stepIndex === 0 ? atom.text : (stepPrompt ? `${atom.text}\n\n${stepPrompt}` : atom.text);
+    dispatchPayload = {
+      op: 'coral:workflow-literal',
+      prompt: promptText,
+    };
   }
-
-  const atomArgs = readAtomArgs(stepIndex, atom.agent, args?.[atom.agent]);
-  const { executionParams, promptContext } = splitAtomArgs(stepIndex, atom.agent, atomArgs);
-  const baseDir = executionParams.working_directory ?? process.cwd();
-  const atomPrompt = buildAtomPrompt(stepPrompt, promptContext, baseDir, stepIndex, atom.agent);
-
-  // TODO: Support inline raw-exec atoms (non-agent references) in a future workflow DSL version.
-  const dispatchPayload: Record<string, unknown> = {
-    op: `coral:${atom.agent}`,
-    prompt: atomPrompt,
-    ...(executionParams.model ? { model: executionParams.model } : {}),
-    ...(executionParams.working_directory ? { working_directory: executionParams.working_directory } : {}),
-    ...(executionParams.reasoning_effort ? { reasoning_effort: executionParams.reasoning_effort } : {}),
-  };
 
   for (let attempt = 1; attempt <= MAX_LAUNCH_ATTEMPTS; attempt += 1) {
     if (signal?.aborted) throw new Error('Pipeline aborted (launched atoms may continue)');
 
     const launch = await dispatch(providerTool, dispatchPayload);
-    const parsed = parseLaunchResult(launch, stepIndex, atom.agent);
+    const parsed = parseLaunchResult(launch, stepIndex, label);
     if (parsed.kind === 'busy') {
       if (attempt === MAX_LAUNCH_ATTEMPTS) break;
-      onProgress(`step ${stepIndex + 1} atom ${atom.agent} busy (attempt ${attempt}), retrying`);
+      onProgress(`step ${stepIndex + 1} atom ${label} busy (attempt ${attempt}), retrying`);
       await sleep(computeBackoffMs(attempt), signal);
       continue;
     }
@@ -330,25 +356,26 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     const bootstrap = await readLaunchBootstrapStatus(parsed.sessionDir, signal);
     if (bootstrap.kind === 'busy') {
       if (attempt === MAX_LAUNCH_ATTEMPTS) break;
-      onProgress(`step ${stepIndex + 1} atom ${atom.agent} busy (attempt ${attempt}), retrying`);
+      onProgress(`step ${stepIndex + 1} atom ${label} busy (attempt ${attempt}), retrying`);
       await sleep(computeBackoffMs(attempt), signal);
       continue;
     }
     if (bootstrap.kind === 'error') {
-      throw new Error(`Step ${stepIndex + 1}, atom '${atom.agent}' failed: ${normalizeErrorText(bootstrap.error)}`);
+      throw new Error(`Step ${stepIndex + 1}, atom '${label}' failed: ${normalizeErrorText(bootstrap.error)}`);
     }
 
     return {
       session: parsed.session,
       sessionDir: parsed.sessionDir,
-      agent: atom.agent,
+      agent: label,
+      tagName,
       providerTool,
       stepIndex,
     };
   }
 
   throw new Error(
-    `Step ${stepIndex + 1}, atom '${atom.agent}' failed: capacity busy after ${MAX_LAUNCH_ATTEMPTS} attempts`,
+    `Step ${stepIndex + 1}, atom '${label}' failed: capacity busy after ${MAX_LAUNCH_ATTEMPTS} attempts`,
   );
 }
 
@@ -407,10 +434,10 @@ export async function waitForAllAtoms(
   }
 }
 
-export function formatStepOutput(results: Array<{ agent: string; output: string }>): string {
+export function formatStepOutput(results: Array<{ tagName: string; output: string }>): string {
   if (results.length === 0) return '';
   if (results.length === 1) return results[0].output;
-  return results.map((result) => `<${result.agent}>\n${result.output}\n</${result.agent}>`).join('\n\n');
+  return results.map((result) => `<${result.tagName}>\n${result.output}\n</${result.tagName}>`).join('\n\n');
 }
 
 export async function executePipeline(
@@ -432,8 +459,9 @@ export async function executePipeline(
     onProgress(`step ${stepIndex + 1} started`);
 
     const launchedAtoms = await Promise.all(
-      step.map((atom) => launchAtomWithRetry({
+      step.map((atom, atomIndex) => launchAtomWithRetry({
         atom,
+        atomIndex,
         stepIndex,
         stepPrompt,
         defaultProvider,
@@ -458,7 +486,7 @@ export async function executePipeline(
     );
 
     const stepOutputs = launchedAtoms.map((atom) => ({
-      agent: atom.agent,
+      tagName: atom.tagName,
       output: readAtomOutput(stepIndex, atom.agent, atom.sessionDir),
     }));
     stepPrompt = formatStepOutput(stepOutputs);

@@ -24,6 +24,7 @@ function collectAtomNames(ast: PipelineAST): Set<string> {
   const names = new Set<string>();
   for (const step of ast) {
     for (const atom of step) {
+      if (atom.kind !== 'agent') continue;
       names.add(atom.agent);
     }
   }
@@ -38,14 +39,46 @@ function validateArgsKeys(args: Record<string, Record<string, unknown>>, ast: Pi
   }
 }
 
+function normalizeAst(ast: PipelineAST, defaultProvider: SessionProvider): PipelineAST {
+  return ast.map((step) => step.map((atom) => {
+    if (atom.kind === 'prompt') {
+      return {
+        ...atom,
+        provider: atom.provider ?? defaultProvider,
+      };
+    }
+    return {
+      ...atom,
+      namespace: atom.namespace ?? 'coral',
+      provider: atom.provider ?? defaultProvider,
+    };
+  }));
+}
+
 function validateNamespaces(ast: PipelineAST): void {
   for (let stepIndex = 0; stepIndex < ast.length; stepIndex += 1) {
     const step = ast[stepIndex];
     for (const atom of step) {
-      const namespace = atom.namespace ?? 'coral';
-      if (namespace !== 'coral') {
-        throw new Error(`Step ${stepIndex + 1}, atom '${atom.agent}' has unsupported namespace '${namespace}'`);
+      if (atom.kind !== 'agent') continue;
+      if (atom.namespace !== 'coral') {
+        throw new Error(
+          `Step ${stepIndex + 1}, atom '${atom.agent}' has unsupported namespace '${atom.namespace}'`,
+        );
       }
+    }
+  }
+}
+
+function validateParallelDuplicates(ast: PipelineAST): void {
+  for (const step of ast) {
+    const atomKeys = new Set<string>();
+    for (const atom of step) {
+      if (atom.kind !== 'agent') continue;
+      const atomKey = `${atom.namespace}:${atom.agent}@${atom.provider}`;
+      if (atomKeys.has(atomKey)) {
+        throw new Error(`Duplicate atom "${atomKey}" in parallel step`);
+      }
+      atomKeys.add(atomKey);
     }
   }
 }
@@ -59,8 +92,10 @@ export function handleWorkflow(
 ): McpResult {
   const input = workflowInputSchema.parse(rawArgs);
   const ast = parseExpression(input.expression);
-  if (input.args) validateArgsKeys(input.args, ast);
-  validateNamespaces(ast);
+  const normalized = normalizeAst(ast, input.provider);
+  if (input.args) validateArgsKeys(input.args, normalized);
+  validateNamespaces(normalized);
+  validateParallelDuplicates(normalized);
 
   return launchRunnerJob({
     provider: input.provider,
@@ -68,7 +103,7 @@ export function handleWorkflow(
     workingDirectory: process.cwd(),
     handler: async (signal, onEvent) => {
       const dispatch: AtomDispatchFn = (name, args) => toolCallFn(name, args, sessionManager, progressToken, notify);
-      const output = await executePipeline(ast, input.prompt, input.provider, dispatch, {
+      const output = await executePipeline(normalized, input.prompt, input.provider, dispatch, {
         args: input.args,
         signal,
         onProgress: (message) => onEvent(message),

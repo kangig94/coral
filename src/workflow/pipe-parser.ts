@@ -1,5 +1,5 @@
 import type { SessionProvider } from '../runner/types.js';
-import type { PipeAtom, PipelineAST, PipeStep } from './types.js';
+import type { PipeAtom, PipelineAST, PipeStep, PromptAtom } from './types.js';
 
 const IDENTIFIER_PATTERN = /^[a-z][a-z0-9-]*$/;
 
@@ -7,9 +7,99 @@ function isProvider(value: string): value is SessionProvider {
   return value === 'codex' || value === 'claude';
 }
 
+function hasUnquotedParentheses(text: string): boolean {
+  let inQuote: string | null = null;
+  for (const char of text) {
+    if ((char === '\'' || char === '"') && inQuote === null) {
+      inQuote = char;
+      continue;
+    }
+    if (char === inQuote) {
+      inQuote = null;
+      continue;
+    }
+    if (inQuote !== null) continue;
+    if (char === '(' || char === ')') return true;
+  }
+  return false;
+}
+
+function splitByComma(text: string): string[] {
+  const parts: string[] = [];
+  let current = '';
+  let inQuote: string | null = null;
+  for (const char of text) {
+    if ((char === '\'' || char === '"') && inQuote === null) {
+      inQuote = char;
+      current += char;
+      continue;
+    }
+    if (char === inQuote) {
+      inQuote = null;
+      current += char;
+      continue;
+    }
+    if (inQuote !== null) {
+      current += char;
+      continue;
+    }
+    if (char === ',') {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  parts.push(current);
+  return parts.map((part) => part.trim());
+}
+
+function hasTopLevelComma(text: string): boolean {
+  let inQuote: string | null = null;
+  for (const char of text) {
+    if ((char === '\'' || char === '"') && inQuote === null) {
+      inQuote = char;
+      continue;
+    }
+    if (char === inQuote) {
+      inQuote = null;
+      continue;
+    }
+    if (inQuote !== null) continue;
+    if (char === ',') return true;
+  }
+  return false;
+}
+
+function parsePromptLiteral(atomText: string): PromptAtom {
+  const quoteChar = atomText[0];
+  const closeIndex = atomText.indexOf(quoteChar, 1);
+  if (closeIndex === -1) throw new Error('Unclosed quote in expression');
+  const text = atomText.slice(1, closeIndex);
+  if (!text) throw new Error('Empty prompt literal');
+  const rest = atomText.slice(closeIndex + 1).trim();
+
+  let provider: SessionProvider | undefined;
+  if (rest.startsWith('@')) {
+    const providerText = rest.slice(1).trim();
+    if (!providerText) throw new Error(`Expected provider after "@": "${atomText}"`);
+    if (!isProvider(providerText)) throw new Error(`Unknown provider "${providerText}" in "${atomText}"`);
+    provider = providerText;
+  } else if (rest) {
+    throw new Error(`Invalid prompt literal "${atomText}"`);
+  }
+
+  return { kind: 'prompt', text, provider };
+}
+
 function parseAtom(rawAtom: string): PipeAtom {
   const atomText = rawAtom.trim();
   if (!atomText) throw new Error('Expected atom');
+
+  if (atomText.startsWith('\'') || atomText.startsWith('"')) {
+    return parsePromptLiteral(atomText);
+  }
+
   if (atomText.includes('(') || atomText.includes(')')) {
     throw new Error(`Nested groups are not allowed: "${atomText}"`);
   }
@@ -53,31 +143,22 @@ function parseAtom(rawAtom: string): PipeAtom {
     throw new Error(`Invalid agent "${agent}" in "${atomText}"`);
   }
 
-  return { namespace, agent, provider };
+  return { kind: 'agent', namespace, agent, provider };
 }
 
 function parseParallelStep(rawStep: string): PipeStep {
   const content = rawStep.slice(1, -1).trim();
   if (!content) throw new Error('Parallel group cannot be empty');
-  if (content.includes('(') || content.includes(')')) {
+  if (hasUnquotedParentheses(content)) {
     throw new Error(`Nested groups are not allowed: "${rawStep}"`);
   }
 
-  const parts = content.split(',').map((part) => part.trim());
+  const parts = splitByComma(content);
   if (parts.some((part) => part.length === 0)) {
     throw new Error(`Expected atom name in parallel group "${rawStep}"`);
   }
 
-  const atoms = parts.map((part) => parseAtom(part));
-  const names = new Set<string>();
-  for (const atom of atoms) {
-    if (names.has(atom.agent)) {
-      throw new Error(`Duplicate atom "${atom.agent}" in parallel step`);
-    }
-    names.add(atom.agent);
-  }
-
-  return atoms;
+  return parts.map((part) => parseAtom(part));
 }
 
 function parseStep(rawStep: string): PipeStep {
@@ -92,7 +173,7 @@ function parseStep(rawStep: string): PipeStep {
     return parseParallelStep(stepText);
   }
 
-  if (stepText.includes(','))
+  if (hasTopLevelComma(stepText))
     throw new Error(`Parallel steps must be wrapped in parentheses: "${stepText}"`);
 
   return [parseAtom(stepText)];
@@ -101,10 +182,25 @@ function parseStep(rawStep: string): PipeStep {
 function splitSteps(expression: string): string[] {
   const steps: string[] = [];
   let depth = 0;
+  let inQuote: string | null = null;
   let current = '';
 
   for (let index = 0; index < expression.length; index += 1) {
     const char = expression[index];
+    if ((char === '\'' || char === '"') && inQuote === null) {
+      inQuote = char;
+      current += char;
+      continue;
+    }
+    if (char === inQuote) {
+      inQuote = null;
+      current += char;
+      continue;
+    }
+    if (inQuote !== null) {
+      current += char;
+      continue;
+    }
     if (char === '(') {
       if (depth > 0) throw new Error('Nested groups are not allowed');
       depth += 1;
@@ -129,6 +225,7 @@ function splitSteps(expression: string): string[] {
   }
 
   if (depth !== 0) throw new Error('Unclosed "(" in expression');
+  if (inQuote !== null) throw new Error('Unclosed quote in expression');
 
   const lastStep = current.trim();
   if (!lastStep) throw new Error('Expected step expression after "->"');

@@ -3,70 +3,151 @@ import { parseExpression } from '../pipe-parser.js';
 
 describe('workflow pipe parser', () => {
   it('parses a single atom', () => {
-    expect(parseExpression('architect')).toEqual([[{ namespace: undefined, agent: 'architect', provider: undefined }]]);
+    expect(parseExpression('architect')).toEqual([[
+      { kind: 'agent', namespace: undefined, agent: 'architect', provider: undefined },
+    ]]);
   });
 
   it('parses sequential atoms', () => {
     expect(parseExpression('architect -> resolver')).toEqual([
-      [{ namespace: undefined, agent: 'architect', provider: undefined }],
-      [{ namespace: undefined, agent: 'resolver', provider: undefined }],
+      [{ kind: 'agent', namespace: undefined, agent: 'architect', provider: undefined }],
+      [{ kind: 'agent', namespace: undefined, agent: 'resolver', provider: undefined }],
     ]);
   });
 
   it('parses a parallel group followed by single atom', () => {
     expect(parseExpression('(architect, critic) -> resolver')).toEqual([
       [
-        { namespace: undefined, agent: 'architect', provider: undefined },
-        { namespace: undefined, agent: 'critic', provider: undefined },
+        { kind: 'agent', namespace: undefined, agent: 'architect', provider: undefined },
+        { kind: 'agent', namespace: undefined, agent: 'critic', provider: undefined },
       ],
-      [{ namespace: undefined, agent: 'resolver', provider: undefined }],
+      [{ kind: 'agent', namespace: undefined, agent: 'resolver', provider: undefined }],
     ]);
   });
 
   it('parses long sequential chains', () => {
     expect(parseExpression('a -> b -> c -> d')).toEqual([
-      [{ namespace: undefined, agent: 'a', provider: undefined }],
-      [{ namespace: undefined, agent: 'b', provider: undefined }],
-      [{ namespace: undefined, agent: 'c', provider: undefined }],
-      [{ namespace: undefined, agent: 'd', provider: undefined }],
+      [{ kind: 'agent', namespace: undefined, agent: 'a', provider: undefined }],
+      [{ kind: 'agent', namespace: undefined, agent: 'b', provider: undefined }],
+      [{ kind: 'agent', namespace: undefined, agent: 'c', provider: undefined }],
+      [{ kind: 'agent', namespace: undefined, agent: 'd', provider: undefined }],
     ]);
   });
 
   it('parses per-atom provider overrides', () => {
     expect(parseExpression('architect@claude -> resolver@codex')).toEqual([
-      [{ namespace: undefined, agent: 'architect', provider: 'claude' }],
-      [{ namespace: undefined, agent: 'resolver', provider: 'codex' }],
+      [{ kind: 'agent', namespace: undefined, agent: 'architect', provider: 'claude' }],
+      [{ kind: 'agent', namespace: undefined, agent: 'resolver', provider: 'codex' }],
     ]);
   });
 
   it('parses explicit namespaces', () => {
     expect(parseExpression('coral:architect -> some-plugin:critic')).toEqual([
-      [{ namespace: 'coral', agent: 'architect', provider: undefined }],
-      [{ namespace: 'some-plugin', agent: 'critic', provider: undefined }],
+      [{ kind: 'agent', namespace: 'coral', agent: 'architect', provider: undefined }],
+      [{ kind: 'agent', namespace: 'some-plugin', agent: 'critic', provider: undefined }],
     ]);
   });
 
   it('supports whitespace around tokens', () => {
     expect(parseExpression(' ( architect , critic ) -> resolver ')).toEqual([
       [
-        { namespace: undefined, agent: 'architect', provider: undefined },
-        { namespace: undefined, agent: 'critic', provider: undefined },
+        { kind: 'agent', namespace: undefined, agent: 'architect', provider: undefined },
+        { kind: 'agent', namespace: undefined, agent: 'critic', provider: undefined },
       ],
-      [{ namespace: undefined, agent: 'resolver', provider: undefined }],
+      [{ kind: 'agent', namespace: undefined, agent: 'resolver', provider: undefined }],
     ]);
   });
 
   it('accepts single atom inside parentheses', () => {
     expect(parseExpression('(architect)')).toEqual([
-      [{ namespace: undefined, agent: 'architect', provider: undefined }],
+      [{ kind: 'agent', namespace: undefined, agent: 'architect', provider: undefined }],
     ]);
   });
 
   it('allows same atom name across different steps', () => {
     expect(parseExpression('architect -> architect@claude')).toEqual([
-      [{ namespace: undefined, agent: 'architect', provider: undefined }],
-      [{ namespace: undefined, agent: 'architect', provider: 'claude' }],
+      [{ kind: 'agent', namespace: undefined, agent: 'architect', provider: undefined }],
+      [{ kind: 'agent', namespace: undefined, agent: 'architect', provider: 'claude' }],
     ]);
+  });
+
+  it('allows same agent name with different providers in parallel group', () => {
+    expect(parseExpression('(architect, architect@claude)')).toEqual([[
+      { kind: 'agent', namespace: undefined, agent: 'architect', provider: undefined },
+      { kind: 'agent', namespace: undefined, agent: 'architect', provider: 'claude' },
+    ]]);
+  });
+
+  it('parses single-quoted prompt literal', () => {
+    expect(parseExpression('\'summarize\'')).toEqual([[
+      { kind: 'prompt', text: 'summarize', provider: undefined },
+    ]]);
+  });
+
+  it('parses double-quoted prompt literal', () => {
+    expect(parseExpression('"summarize"')).toEqual([[
+      { kind: 'prompt', text: 'summarize', provider: undefined },
+    ]]);
+  });
+
+  it('parses prompt literal with @provider override', () => {
+    expect(parseExpression('\'text\'@claude')).toEqual([[
+      { kind: 'prompt', text: 'text', provider: 'claude' },
+    ]]);
+  });
+
+  it('parses prompt literal in parallel group with agent', () => {
+    expect(parseExpression('(architect, \'summarize\')')).toEqual([[
+      { kind: 'agent', namespace: undefined, agent: 'architect', provider: undefined },
+      { kind: 'prompt', text: 'summarize', provider: undefined },
+    ]]);
+  });
+
+  it('parses prompt literal as middle step in chain', () => {
+    const ast = parseExpression('architect -> \'summarize\' -> resolver');
+    expect(ast).toHaveLength(3);
+    expect(ast[1][0]).toEqual({ kind: 'prompt', text: 'summarize', provider: undefined });
+  });
+
+  it('handles embedded alternate quotes in prompt literal', () => {
+    const ast = parseExpression('\'say "hello"\'');
+    expect(ast[0][0]).toEqual({ kind: 'prompt', text: 'say "hello"', provider: undefined });
+  });
+
+  it('handles commas inside quoted prompt literal in parallel group', () => {
+    expect(parseExpression('(\'do a, b\', architect)')).toEqual([[
+      { kind: 'prompt', text: 'do a, b', provider: undefined },
+      { kind: 'agent', namespace: undefined, agent: 'architect', provider: undefined },
+    ]]);
+  });
+
+  it('handles commas inside quoted prompt literal in single-step chain', () => {
+    const ast = parseExpression('\'do a, b\' -> resolver');
+    expect(ast).toHaveLength(2);
+    expect(ast[0][0]).toEqual({ kind: 'prompt', text: 'do a, b', provider: undefined });
+  });
+
+  it('handles -> inside quoted prompt literal', () => {
+    const ast = parseExpression('\'use -> arrows\' -> architect');
+    expect(ast).toHaveLength(2);
+    expect(ast[0][0]).toEqual({ kind: 'prompt', text: 'use -> arrows', provider: undefined });
+  });
+
+  it('handles parentheses inside quoted prompt literal in parallel group', () => {
+    const ast = parseExpression('(\'run (debug)\', architect)');
+    expect(ast[0][0]).toEqual({ kind: 'prompt', text: 'run (debug)', provider: undefined });
+  });
+
+  it('rejects empty prompt literal (single quote)', () => {
+    expect(() => parseExpression('\'\'')).toThrow('Empty prompt literal');
+  });
+
+  it('rejects empty prompt literal (double quote)', () => {
+    expect(() => parseExpression('""')).toThrow('Empty prompt literal');
+  });
+
+  it('rejects unclosed quote', () => {
+    expect(() => parseExpression('\'unclosed')).toThrow('Unclosed quote');
   });
 
   it('rejects empty expressions', () => {
@@ -113,10 +194,6 @@ describe('workflow pipe parser', () => {
     expect(() => parseExpression('architect@unknown')).toThrow('Unknown provider "unknown"');
   });
 
-  it('rejects duplicate atom names in same parallel step', () => {
-    expect(() => parseExpression('(architect, architect@claude)')).toThrow('Duplicate atom "architect"');
-  });
-
   it('arrow embedded in parallel group yields atom error, not a structure error', () => {
     expect(() => parseExpression('(a -> b)')).toThrow('Invalid agent');
   });
@@ -156,8 +233,14 @@ describe('workflow pipe parser', () => {
   it('parses tight arrow without spaces (architect->resolver)', () => {
     const ast = parseExpression('architect->resolver');
     expect(ast).toHaveLength(2);
-    expect(ast[0][0].agent).toBe('architect');
-    expect(ast[1][0].agent).toBe('resolver');
+    expect(ast[0][0].kind).toBe('agent');
+    if (ast[0][0].kind === 'agent') {
+      expect(ast[0][0].agent).toBe('architect');
+    }
+    expect(ast[1][0].kind).toBe('agent');
+    if (ast[1][0].kind === 'agent') {
+      expect(ast[1][0].agent).toBe('resolver');
+    }
   });
 
   it('rejects empty provider text after @ (architect@)', () => {

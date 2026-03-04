@@ -103,7 +103,9 @@ Deterministic multi-agent pipeline executor. Dependency-injected: `src/workflow/
 ### src/workflow/types.ts - Pipeline AST
 
 Defines the pipeline data model:
-- `PipeAtom` — single agent reference (`{ namespace?, agent, provider? }`)
+- `PipeAtom` — discriminated union:
+  - `AgentAtom` (`{ kind: 'agent', namespace?, agent, provider? }`)
+  - `PromptAtom` (`{ kind: 'prompt', text, provider? }`)
 - `PipeStep` — array of atoms (parallel when >1)
 - `PipelineAST` — array of steps (sequential execution order)
 
@@ -113,9 +115,9 @@ Imports `SessionProvider` from `runner/types.ts`. See `src/workflow/types.ts`.
 
 ### src/workflow/pipe-parser.ts - DSL Parser
 
-Parses expression strings into `PipelineAST`. Key functions: `parseExpression` (entry point), `splitSteps` (depth-aware `->` splitting respecting parentheses), `parseAtom` (validates against `IDENTIFIER_PATTERN = /^[a-z][a-z0-9-]*/`), `parseParallelStep` (duplicate atom detection within a step).
+Parses expression strings into `PipelineAST`. Key functions: `parseExpression` (entry point), `splitSteps` (depth-aware and quote-aware `->` splitting), `parseAtom` (agent refs plus quoted prompt literals), `parseParallelStep` (quote-aware comma splitting for mixed agent/prompt parallel groups).
 
-Validates: agent name format, provider values (`codex`/`claude`), namespace syntax, balanced parentheses, no nested groups. See `src/workflow/pipe-parser.ts`.
+Validates: agent name format, provider values (`codex`/`claude`), namespace syntax, balanced parentheses, no nested groups, prompt literal syntax, unclosed quotes, and empty literals. Parser no longer enforces parallel duplicate identity; that is handled post-normalization in `handler.ts`. See `src/workflow/pipe-parser.ts`.
 
 ---
 
@@ -142,7 +144,7 @@ See `src/workflow/pipe-executor.ts`.
 
 ### src/workflow/handler.ts - Workflow Handler
 
-Entry point called by AX tool router. Validates input (schema + args keys + namespaces), then delegates to `launchJob` from `runner/job-manager.ts`. The `AtomDispatchFn` callback receives `handleToolCall` from the AX router via dependency injection, avoiding circular imports.
+Entry point called by AX tool router. Parses expression, normalizes atoms with resolved defaults (`namespace`/`provider`), validates args keys, namespaces, and parallel duplicate identity (`namespace:agent@provider`), then delegates to `launchJob` from `runner/job-manager.ts`. The `AtomDispatchFn` callback receives `handleToolCall` from the AX router via dependency injection, avoiding circular imports.
 
 See `src/workflow/handler.ts`.
 

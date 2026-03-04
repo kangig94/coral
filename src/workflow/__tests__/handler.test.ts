@@ -182,14 +182,73 @@ describe('workflow handler', () => {
     expect(toolCallFn).toHaveBeenCalled();
   });
 
-  it('preserves v1 agent-only atom semantics (inline raw-exec remains unsupported)', () => {
+  it('parses double-quoted workflow prompt literals', () => {
     const mgr = makeSessionManager();
     expect(() =>
       handleWorkflow(
         { expression: '"echo hi"', prompt: 'hello' },
         async () => jsonResult({}),
         mgr,
-      )).toThrow('Invalid agent');
+      )).not.toThrow();
+  });
+
+  it('normalizes defaults before validation', async () => {
+    const mgr = makeSessionManager();
+    const toolCallFn = vi.fn(async (
+      provider: 'codex' | 'claude',
+      args: Record<string, unknown>,
+    ): Promise<McpResult> => {
+      expect(provider).toBe('codex');
+      expect(args.op).toBe('coral:architect');
+      const launch = createSessionDir(String(args.op), provider);
+      dirsToClean.add(launch.dir);
+      writeSessionResult(launch.dir, 'done', { session_name: String(args.op) });
+      return jsonResult({ session: launch.id, session_dir: launch.dir, status: 'running' });
+    });
+
+    const result = handleWorkflow(
+      { expression: 'architect', prompt: 'hello', provider: 'codex' },
+      toolCallFn,
+      mgr,
+    );
+    const launch = parseLaunch(result);
+    dirsToClean.add(launch.session_dir);
+    await waitForTerminalStatus(launch.session_dir);
+
+    expect(toolCallFn).toHaveBeenCalled();
+  });
+
+  it('rejects parallel step with same resolved provider', () => {
+    const mgr = makeSessionManager();
+    expect(() =>
+      handleWorkflow(
+        { expression: '(architect, architect@codex)', prompt: 'hello', provider: 'codex' },
+        async () => jsonResult({}),
+        mgr,
+      ),
+    ).toThrow('Duplicate atom');
+  });
+
+  it('allows parallel step with different resolved providers', () => {
+    const mgr = makeSessionManager();
+    expect(() =>
+      handleWorkflow(
+        { expression: '(architect, architect@claude)', prompt: 'hello', provider: 'codex' },
+        async () => jsonResult({}),
+        mgr,
+      ),
+    ).not.toThrow();
+  });
+
+  it('skips duplicate check for prompt literals in parallel group', () => {
+    const mgr = makeSessionManager();
+    expect(() =>
+      handleWorkflow(
+        { expression: "('summarize', architect)", prompt: 'hello', provider: 'codex' },
+        async () => jsonResult({}),
+        mgr,
+      ),
+    ).not.toThrow();
   });
 
   it('accepts args key matching atom that appears in multiple sequential steps', () => {

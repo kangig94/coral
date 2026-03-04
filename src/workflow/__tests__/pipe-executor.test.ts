@@ -45,13 +45,13 @@ function sleep(ms: number): Promise<void> {
 
 describe('workflow pipe executor', () => {
   it('formatStepOutput returns unwrapped output for one atom', () => {
-    expect(formatStepOutput([{ agent: 'architect', output: 'hello' }])).toBe('hello');
+    expect(formatStepOutput([{ tagName: 'architect', output: 'hello' }])).toBe('hello');
   });
 
   it('formatStepOutput wraps multiple outputs in xml tags', () => {
     expect(formatStepOutput([
-      { agent: 'architect', output: 'A' },
-      { agent: 'critic', output: 'B' },
+      { tagName: 'architect', output: 'A' },
+      { tagName: 'critic', output: 'B' },
     ])).toBe('<architect>\nA\n</architect>\n\n<critic>\nB\n</critic>');
   });
 
@@ -120,6 +120,98 @@ describe('workflow pipe executor', () => {
     await executePipeline(parseExpression('architect@claude -> resolver'), 'seed', 'codex', dispatch);
 
     expect(providers).toEqual(['claude', 'codex']);
+  });
+
+  it('dispatches prompt atom with op coral:workflow-literal', async () => {
+    const dispatch = vi.fn<AtomDispatchFn>(async (tool, _args) =>
+      jsonResult(registerSession('workflow-literal', tool, 'literal output')));
+
+    const output = await executePipeline(parseExpression('\'summarize\''), 'seed', 'codex', dispatch);
+
+    expect(output).toBe('literal output');
+    expect(dispatch).toHaveBeenCalledWith('codex', expect.objectContaining({
+      op: 'coral:workflow-literal',
+      prompt: 'summarize',
+    }));
+  });
+
+  it('prompt atom uses literal text only for first step (no previous output)', async () => {
+    const prompts: string[] = [];
+    const dispatch: AtomDispatchFn = async (tool, args) => {
+      prompts.push(String(args.prompt));
+      return jsonResult(registerSession('workflow-literal', tool, 'literal output'));
+    };
+
+    await executePipeline(parseExpression('\'summarize\''), 'seed context', 'codex', dispatch);
+
+    expect(prompts).toEqual(['summarize']);
+  });
+
+  it('prompt atom prepends literal before previous output for middle step', async () => {
+    let promptLiteralPrompt = '';
+    const dispatch: AtomDispatchFn = async (tool, args) => {
+      const op = String(args.op);
+      if (op === 'coral:architect') {
+        return jsonResult(registerSession('architect', tool, 'ARCH_OUTPUT'));
+      }
+      promptLiteralPrompt = String(args.prompt);
+      return jsonResult(registerSession('workflow-literal', tool, 'SUMMARIZED'));
+    };
+
+    await executePipeline(parseExpression('architect -> \'summarize\''), 'seed', 'codex', dispatch);
+
+    expect(promptLiteralPrompt).toBe('summarize\n\nARCH_OUTPUT');
+  });
+
+  it('formats prompt atom output with step-result tag in parallel group', async () => {
+    let resolverPrompt = '';
+    const dispatch: AtomDispatchFn = async (tool, args) => {
+      const op = String(args.op);
+      if (op === 'coral:architect') {
+        return jsonResult(registerSession('architect', tool, 'ARCH'));
+      }
+      if (op === 'coral:workflow-literal') {
+        return jsonResult(registerSession('workflow-literal', tool, 'SUM'));
+      }
+      resolverPrompt = String(args.prompt);
+      return jsonResult(registerSession('resolver', tool, 'FINAL'));
+    };
+
+    await executePipeline(parseExpression('(architect, \'summarize\') -> resolver'), 'seed', 'codex', dispatch);
+
+    expect(resolverPrompt).toContain('<architect>\nARCH\n</architect>');
+    expect(resolverPrompt).toContain('<step-result>\nSUM\n</step-result>');
+  });
+
+  it('prompt atom respects @provider override', async () => {
+    const providers: string[] = [];
+    const dispatch: AtomDispatchFn = async (tool, _args) => {
+      providers.push(tool);
+      return jsonResult(registerSession('workflow-literal', tool, 'done'));
+    };
+
+    await executePipeline(parseExpression('\'text\'@claude'), 'seed', 'codex', dispatch);
+
+    expect(providers).toEqual(['claude']);
+  });
+
+  it('uses prompt diagnostic labels in progress messages', async () => {
+    const progress: string[] = [];
+    let attempts = 0;
+    const dispatch: AtomDispatchFn = async (tool) => {
+      attempts += 1;
+      if (attempts === 1) {
+        return textResult(`Error: ${BUSY_PREFIX}1/1 total, 1/1 for ${tool})`, true);
+      }
+      return jsonResult(registerSession('workflow-literal', tool, 'done'));
+    };
+
+    await executePipeline(parseExpression('\'abcdefghijklmnopqrstuvwxyz\''), 'seed', 'codex', dispatch, {
+      onProgress: (message) => progress.push(message),
+    });
+
+    expect(progress.some((message) =>
+      message.includes('atom prompt#1(abcdefghijklmnopqrst...) busy (attempt 1), retrying'))).toBe(true);
   });
 
   it('rejects non-coral namespaces in v1', async () => {
@@ -278,6 +370,7 @@ describe('workflow pipe executor', () => {
         session: failed.session,
         sessionDir: failed.session_dir,
         agent: 'architect',
+        tagName: 'architect',
         providerTool: 'codex',
         stepIndex: 0,
       },
@@ -285,6 +378,7 @@ describe('workflow pipe executor', () => {
         session: sibling.session,
         sessionDir: sibling.session_dir,
         agent: 'critic',
+        tagName: 'critic',
         providerTool: 'codex',
         stepIndex: 0,
       },
@@ -383,14 +477,14 @@ describe('workflow pipe executor', () => {
 
   it('formatStepOutput wraps empty output string in xml tags for multiple results', () => {
     const result = formatStepOutput([
-      { agent: 'a', output: '' },
-      { agent: 'b', output: 'X' },
+      { tagName: 'a', output: '' },
+      { tagName: 'b', output: 'X' },
     ]);
     expect(result).toBe('<a>\n\n</a>\n\n<b>\nX\n</b>');
   });
 
   it('formatStepOutput passes through empty string output for a single result', () => {
-    expect(formatStepOutput([{ agent: 'a', output: '' }])).toBe('');
+    expect(formatStepOutput([{ tagName: 'a', output: '' }])).toBe('');
   });
 
   it('waitForAllAtoms throws abort error immediately when signal is already aborted', async () => {
@@ -399,6 +493,7 @@ describe('workflow pipe executor', () => {
       session: completed.session,
       sessionDir: completed.session_dir,
       agent: 'a',
+      tagName: 'a',
       providerTool: 'codex',
       stepIndex: 0,
     }];
@@ -416,8 +511,22 @@ describe('workflow pipe executor', () => {
     writeSessionError(failed.session_dir, 'atom-failure');
 
     const atoms: LaunchedAtom[] = [
-      { session: failed.session, sessionDir: failed.session_dir, agent: 'fail-agent', providerTool: 'codex', stepIndex: 2 },
-      { session: sibling.session, sessionDir: sibling.session_dir, agent: 'sibling-agent', providerTool: 'codex', stepIndex: 2 },
+      {
+        session: failed.session,
+        sessionDir: failed.session_dir,
+        agent: 'fail-agent',
+        tagName: 'fail-agent',
+        providerTool: 'codex',
+        stepIndex: 2,
+      },
+      {
+        session: sibling.session,
+        sessionDir: sibling.session_dir,
+        agent: 'sibling-agent',
+        tagName: 'sibling-agent',
+        providerTool: 'codex',
+        stepIndex: 2,
+      },
     ];
 
     const requestAbort = vi.fn(async () => {
@@ -435,8 +544,22 @@ describe('workflow pipe executor', () => {
     writeSessionError(failed.session_dir, 'primary-fail');
 
     const atoms: LaunchedAtom[] = [
-      { session: failed.session, sessionDir: failed.session_dir, agent: 'failed', providerTool: 'codex', stepIndex: 0 },
-      { session: hanging.session, sessionDir: hanging.session_dir, agent: 'hanging', providerTool: 'codex', stepIndex: 0 },
+      {
+        session: failed.session,
+        sessionDir: failed.session_dir,
+        agent: 'failed',
+        tagName: 'failed',
+        providerTool: 'codex',
+        stepIndex: 0,
+      },
+      {
+        session: hanging.session,
+        sessionDir: hanging.session_dir,
+        agent: 'hanging',
+        tagName: 'hanging',
+        providerTool: 'codex',
+        stepIndex: 0,
+      },
     ];
 
     // Mock Date.now to advance past SIBLING_DRAIN_TIMEOUT_MS after abort is triggered
