@@ -10,7 +10,7 @@ MCP tool calls are synchronous — the client blocks until the server responds. 
 2. **Dual-path complexity**: A `background: true/false` flag forces every caller to handle two response shapes — instant `{ session, session_dir, status }` vs blocking `{ response }`. Each agent and skill needs both code paths.
 
 The exec-always-background design eliminates both:
-- Timeout: `wait` has an explicit `timeout_seconds` (1–600). Caller controls how long to block. On timeout, caller can re-wait with cursors — no work is lost.
+- Timeout: `wait` has an explicit `timeout_seconds` (1–600). Caller controls how long to block. On timeout, caller can re-wait — no work is lost.
 - Dual-path: One response shape, one caller pattern. All agents and skills follow exec → wait → Read.
 
 ## Pattern

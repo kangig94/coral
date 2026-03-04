@@ -7,6 +7,8 @@ Environment variables, config files, and the plugin manifest.
 | Variable | Default | Description |
 |---|---|---|
 | `CORAL_CODEX_MODEL` | `gpt-5.3-codex` | Default Codex model for new sessions |
+| `CORAL_MAX_CHILDREN` | `10` | Global max concurrent CLI children across providers (`codex` + `claude`) |
+| `CORAL_MAX_CHILDREN_PER_PROVIDER` | `6` | Per-provider max concurrent CLI children |
 | `CORAL_DISCUSS_BID_THRESHOLD` | `30` | Minimum bid score (1–100) for floor eligibility. Stored per-session at creation time. |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Maximum epochs before discussion ends automatically (1–10). Stored per-session at creation time. |
 | `CORAL_DISCUSS_QUOTA_PER_EPOCH` | `3` | Speaking turns per agent per epoch (1–10). Stored per-session at creation time. |
@@ -53,7 +55,7 @@ Version is managed in `package.json` (single source of truth) and synced to `plu
 
 ### .mcp.json - MCP Server Registration
 
-Registers both MCP servers with Claude Code. `cx` runs `bridge/coral-codex.cjs` and `dc` runs `bridge/coral-discuss.cjs` via Node.js stdio transport.
+Registers both MCP servers with Claude Code. `ax` runs `bridge/coral-ax.cjs` (tools: `codex`, `claude`, `wait`) and `dc` runs `bridge/coral-discuss.cjs` via Node.js stdio transport.
 
 ### hooks/hooks.json - Hook Configuration
 
@@ -61,15 +63,15 @@ Configures all 8 hooks: SessionStart (CLAUDE.md injection), SessionStart/compact
 
 See [Hooks documentation](./hooks.md) for details.
 
-### Codex Session Files
+### AX Session Files (Codex + Claude)
 
-**Location**: `~/.claude/coral/sessions/<project-hash>/<session-name>.json`
+**Location**: `~/.claude/coral/sessions/<project-hash>/<session-uuid>.json`
 
 **Project hash**: `sha256(resolve(workingDirectory)).slice(0, 12)` — isolates sessions per project
 
-**Creation**: Auto-created by `SessionManager` when a new session starts
+**Creation**: Auto-created by `SessionManager` when a resumable session completes
 
-**Format**: Single `SessionEntry` JSON object per file
+**Format**: Single provider-aware `SessionEntry` JSON object per file (`provider: "codex" | "claude"`)
 
 **Updates**: Written atomically (`.tmp` + rename) on session create, use, or delete
 
@@ -119,7 +121,7 @@ See [Hooks documentation](./hooks.md) for details.
 
 ```
 .claude-plugin/plugin.json  -> Claude Code recognizes the plugin
-.mcp.json                   -> Claude Code registers/starts both MCP servers (cx + dc)
+.mcp.json                   -> Claude Code registers/starts both MCP servers (ax + dc)
 hooks/hooks.json            -> Claude Code configures all 8 hooks
 hooks/kb-lookup-reminder.mjs  -> PostToolUseFailure KB hint script
 hooks/silent-failure-detector.mjs -> PostToolUse silent-failure KB hint script
@@ -129,9 +131,9 @@ hooks/plan-guard.mjs          -> Compact plan-mode recovery script
 hooks/plan-state-tracker.mjs  -> UserPromptSubmit/Stop plan tracking script
 hooks/discuss-idle-guard.mjs  -> TeammateIdle bid/speak/vote enforcer
 
-~/.claude/coral/sessions/<project-hash>/*.json  -> Runtime Codex session files (auto-created)
+~/.claude/coral/sessions/<project-hash>/*.json  -> Runtime AX session files (Codex + Claude, auto-created)
 {project}/.claude/coral/discuss/<session-dir>/  -> Runtime discuss session dirs (auto-created)
 
-bridge/coral-codex.cjs   -> Codex MCP server bundle (committed)
+bridge/coral-ax.cjs   -> Unified AX MCP server bundle (codex + claude + wait, committed)
 bridge/coral-discuss.cjs -> Discuss MCP server bundle (committed)
 ```

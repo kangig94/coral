@@ -79,11 +79,24 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
     ### 4. Review Loop
 
-    Two phases. Phase 1 runs only when `--codex` flag is set. Phase 2 always runs.
+    Three phases. Phase 0 always runs first. Phase 1 runs only when `--codex` flag is set. Phase 2 always runs.
+
+    #### Phase 0 — Frame Gate (always)
+
+    Self-review. Before spawning any reviewer agents, verify the plan's fundamental direction:
+
+    1. Does the plan address the core requirement the user asked for?
+    2. Are there fundamental constraints being violated or ignored?
+    3. Is this approach viable given the codebase's actual structure?
+
+    If any answer is NO: edit the plan file to correct the frame, then re-check.
+    If all YES: proceed to Phase 1 (or Phase 2 if no `--codex`).
+
+    No `--deep` methodology, no subagents, no round summary. Just pause and verify.
 
     #### Phase 1 — Codex Review (only with `--codex`)
 
-    Reviewers: `mcp__plugin_coral_cx__codex({ op: "coral:architect", ... })` + `mcp__plugin_coral_cx__codex({ op: "coral:critic", ... })`
+    Reviewers: `mcp__plugin_coral_ax__codex({ op: "coral:architect", ... })` + `mcp__plugin_coral_ax__codex({ op: "coral:critic", ... })`
 
     Repeat (max 5 rounds):
 
@@ -96,9 +109,9 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     **CRITICAL**: Use `op: "coral:<role>"`, NOT `op: "exec"`. Never pass `session` — each round is a fresh call (no session continuity), so reviewers evaluate the current plan without prior-round bias. Use unique `name` per round (e.g., `architect-r1`, `architect-r2`) to avoid conflicts.
     Provide each: plan file path, working directory, relevant context. In `--deep`, include `--deep` in each reviewer's prompt.
 
-    Use a cursor-aware wait loop until both reviewer jobs finish:
-    1. Call `codex({ op: "wait", sessions: pendingSessions, timeout_seconds, cursors })`.
-    2. If `status: "timeout"`, update `cursors` from the response and continue waiting.
+    Use a wait loop until both reviewer jobs finish:
+    1. Call `wait({ sessions: pendingSessions })`.
+    2. If `status: "timeout"`, continue waiting.
     3. If `status: "completed"`, record `session_dir` path and remove that session from `pendingSessions`.
        **Do NOT read `result.md` yet** — pass paths to the resolver to save context.
     4. If `status: "error"`, read `session_dir/status.json`, record the failure, remove that session, continue.
@@ -191,7 +204,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     **Plan file**: `.claude/coral/plans/{name}.md`
 
     ### Review Summary
-    - Phases: [1 (Codex) + 2 (Claude) | 2 (Claude) only]
+    - Phases: [0 (Frame Gate) + 1 (Codex) + 2 (Claude) | 0 (Frame Gate) + 1 (Claude)]
     - Rounds: N per phase
     - Final verdict: [APPROVED / APPROVED WITH CONDITIONS]
     - Key changes from review: [brief list]
@@ -220,6 +233,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
   </Failure_Modes_To_Avoid>
   <Final_Checklist>
     - Did I create the stub plan file before researching?
+    - Did I run the Phase 0 frame gate before spawning reviewers?
     - Did I spawn reviewers in parallel?
     - Did I synthesize directly (or spawn resolver if `--deep`)?
     - Did I edit the plan file myself (or let resolver edit if `--deep`)?

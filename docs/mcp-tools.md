@@ -2,14 +2,14 @@
 
 Coral exposes two MCP servers, each with its own tool set:
 
-- **`cx` (Codex)**: 1 tool for Codex CLI session management. Prefix: `mcp__plugin_coral_cx__`
+- **`ax` (Agent Execution)**: 4 tools (`codex`, `claude`, `wait`, `workflow`) for Codex/Claude CLI session management and pipeline orchestration. Prefix: `mcp__plugin_coral_ax__`
 - **`dc` (Discuss)**: 2 tools for moderated multi-agent discussions. Prefix: `mcp__plugin_coral_dc__`
 
-All tool inputs are validated at runtime with Zod schemas (`src/codex/schemas.ts`, `src/discuss/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
+All tool inputs are validated at runtime with Zod schemas (`src/codex/schemas.ts`, `src/claude/schemas.ts`, `src/discuss/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
 
 ---
 
-# Codex Tools (`cx`)
+# Codex Tools (`ax`)
 
 ## codex
 
@@ -19,7 +19,7 @@ Single entry point for all Codex execution. Use the required `op` discriminator.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `op` | string | Yes | `exec`, `wait`, `list`, `fork`, `abort`, or `coral:<agent-name>` |
+| `op` | string | Yes | `exec`, `list`, `fork`, `abort`, or `coral:<agent-name>` |
 
 ---
 
@@ -79,55 +79,7 @@ Returns immediately. Codex runs in background.
 }
 ```
 
-`session_dir` is the filesystem path to the session run directory. Use `wait` to poll for completion, then `Read` files from `session_dir`.
-
----
-
-### op: wait
-
-Poll for completion. Blocks until one of the requested sessions finishes or `timeout_seconds` elapses.
-
-### Input Schema
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `sessions` | string[] | Yes | Array of session UUIDs to wait on. Min 1 element. |
-| `timeout_seconds` | integer | No | Max wait time in seconds (1–600, default: 300) |
-| `cursors` | object | No | `{ [session: UUID]: byteOffset }` — Resume progress tailing from a previous wait call. Pass the `cursors` field from the prior response. |
-
-### Output — Completed or Error
-
-```json
-{
-  "status": "completed",
-  "completed_session": "uuid",
-  "session_dir": "/tmp/coral-sessions/uuid",
-  "session_name": "my-review",
-  "cursors": { "uuid": 1234 }
-}
-```
-
-- `status`: `"completed"` or `"error"`
-- `Read(session_dir + "/result.md")` → response text (completed runs only)
-- `Read(session_dir + "/status.json")` → terminal metadata (`error`, timing, model, etc.)
-
-### Output — Timeout
-
-```json
-{
-  "status": "timeout",
-  "running_sessions": ["uuid1"],
-  "cursors": { "uuid1": 1024 }
-}
-```
-
-Pass `cursors` to the next `wait` call to resume progress tailing without re-reading seen output.
-
-### Wait Semantics
-
-- **Any-semantics**: Returns on the FIRST session completion. For wait-all, loop: call `wait` with the remaining `running_sessions` and the returned `cursors`.
-- **Progress**: `[Codex]` prefixed messages sent via `notifications/progress` during the wait.
-- **Immediate return**: If a session finished before `wait` is called, returns `completed` immediately.
+`session_dir` is the filesystem path to the session run directory. Use the top-level AX `wait` tool to poll for completion, then `Read` files from `session_dir`.
 
 ---
 
@@ -158,7 +110,7 @@ No parameters (empty object). This envelope is strict.
 }
 ```
 
-`status` is `"running"` for sessions in the `activeJobs` map (still executing), `"completed"` otherwise.
+`status` is `"running"` for sessions currently in the active session map, `"completed"` otherwise.
 
 Only shows sessions registered in the Coral registry.
 
@@ -233,7 +185,7 @@ if status == "completed":
 if status == "error":
   Read(session_dir + "/status.json") → { error } for diagnostics
 if status == "timeout":
-  re-wait with returned cursors, or abort(session)
+  re-wait, or abort(session)
 ```
 
 ## Session Continuity
@@ -246,6 +198,234 @@ if status == "timeout":
 | `session` | exec/fork response | Pass to next `exec` for continuity |
 
 Do NOT pass `session_name` as the `session` parameter on subsequent exec calls.
+
+---
+
+# Claude Tools (`ax`)
+
+## claude
+
+Single entry point for Claude CLI execution. Use the required `op` discriminator.
+
+### Input Envelope
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `op` | string | Yes | `exec`, `list`, `abort`, or `coral:<agent-name>` |
+
+### Official Input Schema
+
+```json
+{
+  "name": "claude",
+  "description": "Execute a prompt with Claude CLI. Use op field to select exec/list/abort. For agent delegation, use op: \"coral:<agent-name>\" (e.g., coral:architect, coral:critic). Skills (coral:<skill>) are not supported — use the codex tool for skill delegation.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "op": { "type": "string", "description": "Operation: exec/list/abort, or coral:<agent-name> for agent delegation (skills not supported)" },
+      "prompt": { "type": "string", "description": "Prompt to send (exec required)" },
+      "session": { "type": "string", "description": "Session ID for resume (exec with existing session)" },
+      "name": { "type": "string", "description": "Session name (exec optional)" },
+      "model": { "type": "string", "description": "Claude model to use (e.g., sonnet, opus, haiku)" },
+      "working_directory": { "type": "string", "description": "Working directory for execution" },
+      "system_prompt": { "type": "string", "description": "Custom system prompt (replaces default)" }
+    },
+    "required": ["op"]
+  }
+}
+```
+
+### op: exec
+
+Starts a new Claude CLI run (or resumes when `session` is provided). Returns immediately with a Coral session UUID:
+
+```json
+{
+  "session": "uuid",
+  "session_dir": "/tmp/coral-sessions/uuid",
+  "session_name": "my-session",
+  "status": "running"
+}
+```
+
+Execution details:
+- Uses `claude -p --output-format json`
+- Prompt is sent via stdin (not argv)
+- Optional flags: `--model`, `--system-prompt`
+- Resume mode uses `--resume <session-id>`
+- `--no-session-persistence` is not used
+
+### op: coral:*
+
+- `coral:<agent>`: loads `agents/<agent>.md`, strips YAML frontmatter + `> **CORAL_...` directive lines, and injects into `--system-prompt`
+- `coral:<skill>`: returns `isError` (skills require Claude Code tool environment and are only supported through the `codex` tool)
+
+### op: list / abort
+
+Same lifecycle contract as Codex for provider-local operations: `list` returns registered Claude sessions, and `abort` targets active Claude sessions.
+
+### Missing `session_id` Behavior
+
+If CLI JSON output does not include `session_id`, the run is marked non-resumable:
+- response still returns normally
+- metadata includes `non_resumable: true`
+- no persisted provider session mapping is created
+
+---
+
+# Wait Tool (`ax`)
+
+## wait
+
+Provider-agnostic wait for background sessions from any AX adapter. Wait returns when the first requested session completes, errors, or timeout elapses.
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `sessions` | string[] (UUID) | Yes | Session UUIDs to monitor (min 1). |
+| `timeout_seconds` | integer | No | Max wait time in seconds (1-1200, default 600). |
+
+### Output — Completed or Error
+
+```json
+{
+  "status": "completed",
+  "completed_session": "uuid",
+  "session_dir": "/tmp/coral-sessions/uuid",
+  "session_name": "my-review"
+}
+```
+
+### Output — Timeout
+
+```json
+{
+  "status": "timeout",
+  "running_sessions": ["uuid1"]
+}
+```
+
+### Wait Semantics
+
+- **Any-semantics**: returns on the first completion in `sessions`.
+- **Cross-provider**: accepts mixed Codex/Claude session UUIDs in one call.
+- **Progress notifications**: incremental updates are emitted through `notifications/progress`.
+
+---
+
+# Workflow Tool (`ax`)
+
+## workflow
+
+Deterministic multi-agent pipeline executor. Chains coral agents via a DSL expression without LLM mediation between steps. Each step's output becomes the next step's prompt.
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `expression` | string | Yes | Pipeline DSL expression (min 1 char). See grammar below. |
+| `prompt` | string | Yes | Initial prompt fed to the first step (min 1 char). |
+| `provider` | string | No | Default provider for atoms without `@provider` suffix. `codex` (default) or `claude`. |
+| `args` | object | No | Per-atom argument overrides, keyed by atom name. See args routing below. |
+
+### DSL Grammar
+
+```
+expression = step ( "->" step )*
+step       = atom | "(" atom ( "," atom )* ")"
+atom       = ( namespace ":" )? agent ( "@" provider )?
+```
+
+- **Bare name**: `architect` → defaults to `coral` namespace
+- **Explicit namespace**: `coral:architect` → same as bare, but explicit
+- **Provider override**: `architect@claude` → runs on Claude instead of default
+- **Parallel step**: `(architect, critic)` → launches concurrently, output XML-wrapped
+- **Sequential chain**: `architect -> resolver` → step 1 output becomes step 2 prompt
+
+Agent names: `[a-z][a-z0-9-]*`. Provider: `codex` or `claude`. Namespace: `[a-z][a-z0-9-]*` (v1 only allows `coral`).
+
+### Args Routing
+
+`args` keys must match atom names in the expression. Each atom's args object is split into:
+
+**Execution params** (forwarded to dispatch payload):
+- `model` (string) — model override
+- `working_directory` (string) — working directory
+- `reasoning_effort` (string) — `low`, `medium`, `high`, `xhigh`
+
+**Prompt context** (serialized into the atom's prompt):
+- `files` (string[]) — file paths read and injected as `<file path="...">content</file>`
+- `flags` (string[]) — injected as `Flags: --a --b` text
+- Any other key — injected as `Context:\n{JSON}` block
+
+`bypass` is rejected in v1 (coral agent handlers force bypass internally).
+
+Args keys apply to ALL occurrences of that atom name across steps (global matching).
+
+### Output
+
+Returns immediately (same as `codex`/`claude` exec). Pipeline runs in background.
+
+```json
+{
+  "session": "uuid",
+  "session_dir": "/tmp/coral-sessions/uuid",
+  "session_name": "workflow-1709500000000",
+  "status": "running"
+}
+```
+
+Use `wait({ sessions: [session] })` then `Read(session_dir + "/result.md")` for the pipeline result.
+
+### Step Output Format
+
+- **Single atom**: raw output pass-through
+- **Parallel step** (2+ atoms): XML-wrapped per atom:
+  ```
+  <architect>
+  architect output
+  </architect>
+
+  <critic>
+  critic output
+  </critic>
+  ```
+
+### Orchestration Behavior
+
+- **Concurrent launch**: parallel step atoms launch via `Promise.all`
+- **Busy retry**: up to 3 attempts with exponential backoff (100ms, 200ms, 400ms). Detects busy from both immediate dispatch errors and async bootstrap failures.
+- **Bootstrap polling**: 50ms intervals, 2s timeout — catches race window between `launchJob` return and CLI startup failure
+- **Wait-for-all**: polls `readSessionStatus` directly (not the `wait` tool which has any-semantics)
+- **Sibling abort on failure**: first failure triggers best-effort abort of siblings with 15s drain timeout
+
+### v1 Limitations
+
+- Non-coral namespaces rejected (`unsupported namespace` error)
+- Raw-exec atoms (non-agent shell commands) not supported
+- XML tag collision: agent output containing `</agent-name>` creates ambiguous XML (low probability)
+
+### Examples
+
+```
+# Simple sequential: architect reviews, resolver synthesizes
+workflow({ expression: "architect -> resolver", prompt: "Review auth.ts" })
+
+# Parallel review with synthesis
+workflow({
+  expression: "(architect, critic) -> resolver",
+  prompt: "Analyze the login flow",
+  provider: "codex",
+  args: { architect: { model: "o4-mini" }, critic: { flags: ["--deep"] } }
+})
+
+# Mixed providers: codex for analysis, claude for writing
+workflow({
+  expression: "scanner@codex -> architect@claude",
+  prompt: "Map and review the API layer"
+})
+```
 
 ---
 
@@ -419,9 +599,9 @@ The moderator (`discuss-lead`) uses `_1_seed` within a 3-phase setup:
 
 ---
 
-# cx ↔ dc Integration
+# ax ↔ dc Integration
 
-The `cx` (Codex) and `dc` (Discuss) MCP servers do **not** communicate directly at runtime. They are independent processes with no shared state or IPC.
+The `ax` (Codex) and `dc` (Discuss) MCP servers do **not** communicate directly at runtime. They are independent processes with no shared state or IPC.
 
 ## Coupling Points
 
@@ -439,13 +619,13 @@ The discuss system itself does **not** call Codex tools unless a skill/workflow 
 - Discuss session IDs: `yymmdd-HHmm-xxxx` (managed by dc)
 - Discuss session dirs: `{session_id}-{topic_slug}` (managed by dc)
 - Discuss teams: `coral-dc-{session_id}` (managed by Claude Code Agent Teams)
-- Codex sessions: `session-{timestamp}` or user-provided name (managed by cx)
+- Codex sessions: `session-{timestamp}` or user-provided name (managed by ax)
 
 These namespaces do not overlap. Collision risk is between discuss sessions only (mitigated by 4-char random suffix per timestamp-minute).
 
 ## Contract
 
-1. **dc never calls cx tools** - the discuss MCP server has no dependency on the codex MCP server
-2. **cx never reads dc state** - Codex sessions have no awareness of discuss sessions
+1. **dc never calls ax tools** - the discuss MCP server has no dependency on the codex MCP server
+2. **ax never reads dc state** - Codex sessions have no awareness of discuss sessions
 3. **Agent delegation is explicit** - Codex delegation uses `codex({ op: "coral:<agent>" })`; no hook bridge is involved
 4. **Modifying either server independently is safe** - as long as tool input/output contracts are preserved

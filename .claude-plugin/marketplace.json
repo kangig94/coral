@@ -1,15 +1,15 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "coral",
-  "description": "Claude Code plugin - structured agents with Codex CLI bridge",
+  "description": "Claude Code plugin - structured agents with Codex and Claude CLI bridges",
   "owner": {
     "name": "kangig94"
   },
   "plugins": [
     {
       "name": "coral",
-      "description": "Claude Code plugin - structured agents with Codex CLI bridge",
-      "version": "0.4.2",
+      "description": "Claude Code plugin - structured agents with Codex and Claude CLI bridges",
+      "version": "0.4.3",
       "author": {
         "name": "kangig94"
       },
@@ -19,10 +19,11 @@
       "tags": [
         "agents",
         "codex",
+        "claude",
         "bridge",
         "orchestration"
       ]
     }
   ],
-  "version": "0.4.2"
+  "version": "0.4.3"
 }

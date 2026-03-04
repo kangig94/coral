@@ -91,7 +91,7 @@ disallowedTools: Write, Edit
        a. Can common operations be one-liners while advanced options are discoverable?
           Level 1: `codex({ op: "exec", prompt: "review auth.ts" })`
           Level 2: `codex({ op: "exec", prompt: "...", model: "...", name: "..." })`
-          Level 3: `codex({ op: "exec", ..., reasoning_effort: "xhigh" })` + `codex({ op: "wait", job_ids: [...] })`
+          Level 3: `codex({ op: "exec", ..., reasoning_effort: "xhigh" })` + `wait({ sessions: [...] })`
        b. Do descriptions hint at advanced capabilities without overwhelming?
        c. Flag: all parameters equally prominent, advanced features undiscoverable,
           simple operations requiring expert-level knowledge
@@ -114,11 +114,11 @@ disallowedTools: Write, Edit
   <Tool_Usage>
     ```bash
     # Find tool descriptions and argument hints in both servers
-    grep -A3 "description:" src/codex/server-handlers.ts | grep -v "^--$"
+    grep -A3 "description:" src/providers/codex/server-handlers.ts | grep -v "^--$"
     grep -A3 "description:" src/discuss/server-handlers.ts | grep -v "^--$"
 
     # Find all error messages (textResult with isError=true)
-    grep -n "textResult(" src/codex/server-handlers.ts | grep "true"
+    grep -n "textResult(" src/providers/codex/server-handlers.ts | grep "true"
     grep -n "textResult(" src/discuss/server-handlers.ts | grep "true"
 
     # List skill descriptions
@@ -128,9 +128,9 @@ disallowedTools: Write, Edit
     Key files:
     | File | Concern |
     |------|---------|
-    | `src/codex/server-handlers.ts` | Codex tool descriptions, argument hints, error messages |
+    | `src/providers/codex/server-handlers.ts` | Codex tool descriptions, argument hints, error messages |
     | `src/discuss/server-handlers.ts` | Discuss tool descriptions, error messages |
-    | `src/codex/schemas.ts` | Zod error messages (user-facing on codex validation failure) |
+    | `src/providers/codex/schemas.ts` | Zod error messages (user-facing on codex validation failure) |
     | `src/discuss/schemas.ts` | Zod error messages (user-facing on discuss validation failure) |
     | `skills/*/SKILL.md` | Skill discoverability and descriptions |
     | `agents/*.md` | Agent descriptions (shown in agent selection) |

@@ -1,6 +1,6 @@
 # Coral - Development Instructions
 
-Claude Code plugin providing structured agents with Codex CLI bridge and moderated multi-agent discussions. Exposes two MCP servers: `cx` for Codex CLI tools and `dc` for discuss tools. Includes skills (slash commands), hooks (lifecycle injection), and agent definitions for Claude-native, Codex-delegated, and discuss workflows.
+Claude Code plugin providing structured agents with Codex and Claude CLI bridges and moderated multi-agent discussions. Exposes two MCP servers: `ax` for Codex and Claude CLI tools and `dc` for discuss tools. Includes skills (slash commands), hooks (lifecycle injection), and agent definitions for Claude-native, Codex-delegated, and discuss workflows.
 
 **Critical Requirements**:
 - MCP protocol compliance: all tool responses must use `{ content: [{ type: "text", text }], isError }` format

@@ -83,7 +83,7 @@ Strip `--codex` and `--red` flags before passing the prompt to the execution pat
 
     Spawn immediately before step 6a (lint), in background (`run_in_background: true`).
     Cross-model diversity: use the opposite model from the main execution:
-    - ralph=Claude (no --codex) → `mcp__plugin_coral_cx__codex({ op: "coral:red-attacker", prompt, working_directory })`
+    - ralph=Claude (no --codex) → `mcp__plugin_coral_ax__codex({ op: "coral:red-attacker", prompt, working_directory })`
     - ralph=Codex (--codex) → `Agent("coral:red-attacker")`
 
     Prompt must include:
@@ -138,6 +138,13 @@ Strip `--codex` and `--red` flags before passing the prompt to the execution pat
     | Test | `npm test` | 42 passed, 0 failed |
     | Red Gate | red-attacker | 3 tests staged (if `--red`) |
     | Red Triage | review + merge | 2 merged, 1 discarded (if `--red`) |
+
+    ### Notes
+    What was hard, what tradeoffs were made, what you should know:
+    - Difficulties encountered and how they were resolved
+    - Design decisions made during implementation and why
+    - Gotchas or surprises discovered along the way
+    - Risks or concerns about the changes going forward
 
     ### Remaining Issues
     (none if complete)
@@ -210,7 +217,7 @@ Strip `--codex` and `--red` flags before passing the prompt to the execution pat
 
     Execution loop:
     1) Call Codex: `codex({ op: "exec", ... })` → `{ session, session_dir }`.
-       `codex({ op: "wait", sessions: [session] })` → check status.
+       `wait({ sessions: [session] })` → check status.
        Completed: `Read(session_dir + "/result.md")` for response.
        Pass `working_directory` and `reasoning_effort: "xhigh"`.
     2) Keep using the `session` UUID from the exec response for continuity.
