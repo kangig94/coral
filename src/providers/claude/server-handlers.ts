@@ -16,7 +16,6 @@ import type { SessionManager } from '../../runner/session-manager.js';
 import type { CompletionMetadata } from '../../runner/types.js';
 import { type McpResult, textResult, jsonResult } from '../../shared/mcp-utils.js';
 import { sessionNotFoundError, handleSessionList } from '../session-ops.js';
-import { stripAgentMetadata } from '../../coral/resolver.js';
 import { extractClaudeProgressMessage, appendProgressEvent } from './progress.js';
 import type { ClaudeStreamEvent } from './types.js';
 import type { ProviderAdapter, NotifyFn } from '../types.js';
@@ -312,7 +311,7 @@ export async function handleClaudeCoralOp(
   if (!parsed.success) throw parsed.error;
   const input = parsed.data;
 
-  const systemPrompt = stripAgentMetadata(coralContent);
+  const systemPrompt = coralContent;
   const preflight = await preflightClaudeCliCheck();
   if (!preflight.pass) return preflight.result;
 

@@ -79,7 +79,7 @@ import { handleClaudeOp, handleClaudeSessionFork, claudeAdapter, makeClaudeEvent
 import { SessionManager } from '../../../runner/session-manager.js';
 import { createSessionDir } from '../../../runner/progress.js';
 import { activeSessions } from '../../../runner/job-manager.js';
-import { _test as resolverTest, resolveCoralContent } from '../../../coral/resolver.js';
+import { _test as resolverTest } from '../../../coral/resolver.js';
 
 const mockExecuteClaudeOneShot = vi.mocked(executeClaudeOneShot);
 const mockExecuteClaudeResume = vi.mocked(executeClaudeResume);
@@ -218,27 +218,29 @@ describe('claude provider server-handlers', () => {
     expect(data.total).toBe(0);
   });
 
-  it('coral create strips metadata into system prompt and forces bypass', async () => {
+  it('coral create uses pre-stripped system prompt and forces bypass', async () => {
+    const strippedPrompt = '# Frontmatter Agent\nBody text';
     const result = await claudeAdapter.handleCoralOp(
       'frontmatter',
-      resolveCoralContent('frontmatter').content,
+      strippedPrompt,
       { op: 'coral:frontmatter', prompt: 'Implement this', name: 'front-agent-session', effort: 'xhigh', bypass: false },
       mgr,
     );
     await expectLaunched(result);
 
     const options = oneShotOptions();
-    expect(options?.systemPrompt).toBe('# Frontmatter Agent\nBody text');
+    expect(options?.systemPrompt).toBe(strippedPrompt);
     expect(options?.effort).toBe('xhigh');
     expect(options?.bypassPermissions).toBe(true);
   });
 
   it('coral resume forwards bypassPermissions=true and defaults working_directory from session', async () => {
     const sessionId = registerSession('claude-coral-resume', 'thread-claude-coral-resume');
+    const strippedPrompt = '# Architect\nAgent body';
 
     const result = await claudeAdapter.handleCoralOp(
       'architect',
-      resolveCoralContent('architect').content,
+      strippedPrompt,
       { op: 'coral:architect', prompt: 'continue', session: sessionId, effort: 'high', bypass: false },
       mgr,
     );
@@ -247,6 +249,7 @@ describe('claude provider server-handlers', () => {
     const options = resumeOptions();
     expect(options?.workingDirectory).toBe('/tmp/work');
     expect(options?.effort).toBe('high');
+    expect(options?.systemPrompt).toBe(strippedPrompt);
     expect(options?.bypassPermissions).toBe(true);
     expect(options?.onEvent).toEqual(expect.any(Function));
   });

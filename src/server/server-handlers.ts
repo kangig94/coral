@@ -58,14 +58,14 @@ const workflowProviderSchema = (): Record<string, unknown> => {
 function workflowTool() {
   return {
     name: 'workflow',
-    description: 'Execute a deterministic multi-agent pipeline. DSL: "(architect, critic) -> resolver". Use @provider for per-atom provider override.',
+    description: 'Execute a deterministic multi-agent pipeline. DSL: "(architect, critic) -> resolver". Use @provider for per-atom provider override and atoms for per-atom config.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         expression: { type: 'string', description: 'Pipeline expression: "(a, b) -> c" or "a -> b -> c"' },
         prompt: { type: 'string', description: 'Initial prompt for the first pipeline step' },
         provider: workflowProviderSchema(),
-        args: { type: 'object', description: 'Per-atom args map: { atomName: { model?, working_directory?, files?, flags?, ...context } }' },
+        atoms: { type: 'object', description: 'Per-atom config: { atomName: { effort?, instruction? } }' },
         stale_timeout_seconds: { type: 'number', description: 'Seconds of inactivity before stale atom recovery triggers (0 disables, default: 900)' },
       },
       required: ['expression', 'prompt'],

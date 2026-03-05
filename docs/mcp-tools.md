@@ -350,7 +350,7 @@ Deterministic multi-agent pipeline executor. Chains coral agents via a DSL expre
 | `expression` | string | Yes | Pipeline DSL expression (min 1 char). See grammar below. |
 | `prompt` | string | Yes | Initial prompt fed to the first step (min 1 char). |
 | `provider` | string | No | Default provider for atoms without `@provider` suffix. `claude` (default) or `codex`. |
-| `args` | object | No | Per-atom argument overrides, keyed by atom name. See args routing below. |
+| `atoms` | object | No | Per-atom config: `{ atomName: { effort?, instruction? } }`. See Atoms below. |
 
 ### DSL Grammar
 
@@ -372,23 +372,15 @@ prompt_lit = ( "'" text "'" | '"' text '"' ) ( "@" provider )?
 
 Agent names: `[a-z][a-z0-9-]*`. Provider: `codex` or `claude`. Namespace: `[a-z][a-z0-9-]*` (v1 only allows `coral`). Prompt literals use single or double quotes; the `@provider` suffix is optional (defaults to the `provider` parameter).
 
-### Args Routing
+### Atoms
 
-`args` keys must match atom names in the expression. Each atom's args object is split into:
-
-**Execution params** (forwarded to dispatch payload):
-- `model` (string) — model override
-- `working_directory` (string) — working directory
+`atoms` keys must match atom names in the expression. Each atom config accepts:
 - `effort` (string) — `low`, `medium`, `high`, `xhigh`
+- `instruction` (string) — appended to the atom's prompt after pipeline data
 
-**Prompt context** (serialized into the atom's prompt):
-- `files` (string[]) — file paths read and injected as `<file path="...">content</file>`
-- `flags` (string[]) — injected as `Flags: --a --b` text
-- Any other key — injected as `Context:\n{JSON}` block
-
-`bypass` is rejected in v1 (coral agent handlers force bypass internally).
-
-Args keys apply to ALL occurrences of that atom name across steps (global matching).
+Unknown keys are rejected. `bypass` is not supported in v1.
+Atoms config applies to ALL occurrences of that atom name across steps (global matching).
+Per-occurrence atom overrides are intentionally out of scope in v1; use distinct atom names when different per-step config is required.
 
 ### Output
 
@@ -444,7 +436,7 @@ workflow({
   expression: "(architect, critic) -> resolver",
   prompt: "Analyze the login flow",
   provider: "codex",
-  args: { architect: { model: "o4-mini" }, critic: { flags: ["--deep"] } }
+  atoms: { architect: { effort: "high" }, critic: { instruction: "Focus on edge cases." } }
 })
 
 # Mixed providers: codex for analysis, claude for writing

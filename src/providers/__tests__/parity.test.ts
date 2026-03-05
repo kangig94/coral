@@ -118,18 +118,12 @@ describe('provider parity', () => {
     expect(calledBypass).toBe(true);
   });
 
-  it('claude coral injection strips metadata into system prompt and forces bypass', async () => {
+  it('claude coral injection uses pre-stripped system prompt and forces bypass', async () => {
     const mgr = new SessionManager(join(tmpDir, 'workspace'));
+    const strippedPrompt = '# Claude Agent\nBody text';
     const result = await claudeAdapter.handleCoralOp(
       'architect',
-      [
-        '---',
-        'title: Agent',
-        '---',
-        '> **CORAL_METHODS**: use strict protocol',
-        '# Claude Agent',
-        'Body text',
-      ].join('\n'),
+      strippedPrompt,
       { op: 'coral:architect', prompt: 'Run checks', bypass: false },
       mgr,
     );
@@ -138,7 +132,7 @@ describe('provider parity', () => {
 
     expect(mockExecuteClaudeOneShot).toHaveBeenCalledTimes(1);
     const [, options] = mockExecuteClaudeOneShot.mock.calls[0] ?? [];
-    expect(options?.systemPrompt).toBe('# Claude Agent\nBody text');
+    expect(options?.systemPrompt).toBe(strippedPrompt);
     expect(options?.bypassPermissions).toBe(true);
   });
 

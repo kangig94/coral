@@ -95,7 +95,7 @@ provider adapter (`providers/<name>/server-handlers.ts`)
 
 `coral:` resolution is centralized in `src/coral/dispatch.ts`; provider adapters only implement provider-specific injection:
 - Codex: prepends coral content to prompt with `\n\n---\n\n`, forces `bypass: true`
-- Claude: `stripAgentMetadata(...)` into `system_prompt`, forces `bypass: true`
+- Claude: uses pre-stripped coral content as `system_prompt`, forces `bypass: true`
 
 ### `wait` Tool
 
@@ -125,7 +125,7 @@ handleWorkflow()                              workflow/handler.ts
         │
         ├─ parseExpression(expression) → AST: PipeAtom[][]
         ├─ normalizeAst(ast, defaultProvider)
-        ├─ validateArgs / validateNamespaces / validateParallelDuplicates
+        ├─ validateAtoms / validateNamespaces / validateParallelDuplicates
         ├─ stale_timeout_seconds default = 900 (0 disables stale recovery)
         └─ executePipeline(ast, prompt, handleToolCall, ...)
                 │
@@ -249,8 +249,8 @@ User → /coral:discuss "AI ethics in healthcare"
 
 ```
 User/Skill → workflow({ expression: "(architect, critic) -> resolver", prompt: "..." })
-           → AX router calls handleWorkflow(args, handleToolCall, sessionManager)
-           → Schema validation + AST parsing + args/namespace validation + stale_timeout_seconds
+           → AX router calls handleWorkflow(atoms, handleToolCall, sessionManager)
+           → Schema validation + AST parsing + atoms/namespace validation + stale_timeout_seconds
            → launchJob fires background handler:
               Step 1: Promise.all → launchAtomWithRetry(architect) + launchAtomWithRetry(critic)
                 → dispatch(codex, { op: "coral:architect", prompt: "..." })

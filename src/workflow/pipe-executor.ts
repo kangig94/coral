@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { join } from 'node:path';
 import {
   createProgressCursor,
   readProgressEvents,
@@ -23,19 +23,7 @@ const DEFAULT_BACKOFF_BASE_MS = 100;
 const MAX_STALE_RECOVERY_RETRIES = 2;
 const STALE_RESUME_PROMPT = 'Your previous execution timed out due to inactivity. Continue where you left off.';
 
-type WorkflowArgs = Record<string, Record<string, unknown>>;
-
-type AtomExecutionParams = {
-  model?: string;
-  working_directory?: string;
-  effort?: EffortLevel;
-};
-
-type AtomPromptContext = {
-  files: string[];
-  flags: string[];
-  extra: Record<string, unknown>;
-};
+type WorkflowAtoms = Record<string, { effort?: EffortLevel; instruction?: string }>;
 
 type ParsedLaunchResult =
   | { kind: 'launched'; session: string; sessionDir: string }
@@ -49,7 +37,7 @@ type LaunchContext = {
   stepPrompt: string;
   defaultProvider: SessionProvider;
   dispatch: AtomDispatchFn;
-  args?: WorkflowArgs;
+  atoms?: WorkflowAtoms;
   signal?: AbortSignal;
   onProgress: (message: string) => void;
 };
@@ -150,119 +138,21 @@ function parseLaunchResult(result: McpResult, stepIndex: number, atomName: strin
   }
 }
 
-function readAtomArgs(stepIndex: number, atomName: string, rawArgs: unknown): Record<string, unknown> {
-  if (rawArgs == null) return {};
-  if (typeof rawArgs !== 'object' || Array.isArray(rawArgs)) {
-    throw new Error(`Step ${stepIndex + 1}, atom '${atomName}' args must be an object`);
-  }
-  return rawArgs as Record<string, unknown>;
-}
-
-function parseStringArrayArg(
-  value: unknown,
-  key: 'files' | 'flags',
+function readAtomConfig(
   stepIndex: number,
   atomName: string,
-): string[] {
-  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
-    throw new Error(`Step ${stepIndex + 1}, atom '${atomName}' args.${key} must be an array of strings`);
+  rawConfig: unknown,
+): { effort?: EffortLevel; instruction?: string } {
+  if (rawConfig == null) return {};
+  if (typeof rawConfig !== 'object' || Array.isArray(rawConfig)) {
+    throw new Error(`Step ${stepIndex + 1}, atom '${atomName}' atoms config must be an object`);
   }
-  return value as string[];
+  return rawConfig as { effort?: EffortLevel; instruction?: string };
 }
 
-function splitAtomArgs(stepIndex: number, atomName: string, args: Record<string, unknown>): {
-  executionParams: AtomExecutionParams;
-  promptContext: AtomPromptContext;
-} {
-  if (Object.prototype.hasOwnProperty.call(args, 'bypass')) {
-    throw new Error(`Validation error: args.${atomName}.bypass is not supported in workflow v1`);
-  }
-
-  const executionParams: AtomExecutionParams = {};
-  const promptContext: AtomPromptContext = {
-    files: [],
-    flags: [],
-    extra: {},
-  };
-
-  for (const [key, value] of Object.entries(args)) {
-    if (value === undefined) continue;
-    switch (key) {
-      case 'model':
-        if (typeof value !== 'string') {
-          throw new Error(`Step ${stepIndex + 1}, atom '${atomName}' args.model must be a string`);
-        }
-        executionParams.model = value;
-        break;
-      case 'working_directory':
-        if (typeof value !== 'string') {
-          throw new Error(`Step ${stepIndex + 1}, atom '${atomName}' args.working_directory must be a string`);
-        }
-        executionParams.working_directory = value;
-        break;
-      case 'effort':
-        if (typeof value !== 'string') {
-          throw new Error(`Step ${stepIndex + 1}, atom '${atomName}' args.effort must be a string`);
-        }
-        executionParams.effort = value as EffortLevel;
-        break;
-      case 'files':
-        promptContext.files = parseStringArrayArg(value, 'files', stepIndex, atomName);
-        break;
-      case 'flags':
-        promptContext.flags = parseStringArrayArg(value, 'flags', stepIndex, atomName);
-        break;
-      default:
-        promptContext.extra[key] = value;
-        break;
-    }
-  }
-
-  return { executionParams, promptContext };
-}
-
-function buildFileContext(
-  filePath: string,
-  baseDir: string,
-  stepIndex: number,
-  atomName: string,
-): string {
-  const resolvedPath = isAbsolute(filePath) ? filePath : resolve(baseDir, filePath);
-  let content: string;
-  try {
-    content = readFileSync(resolvedPath, 'utf-8');
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`Step ${stepIndex + 1}, atom '${atomName}' failed to read file "${filePath}": ${detail}`);
-  }
-  return `<file path="${filePath}">\n${content}\n</file>`;
-}
-
-function buildAtomPrompt(
-  stepPrompt: string,
-  promptContext: AtomPromptContext,
-  workingDirectory: string,
-  stepIndex: number,
-  atomName: string,
-): string {
-  const sections: string[] = [stepPrompt];
-
-  if (promptContext.files.length > 0) {
-    const files = promptContext.files
-      .map((filePath) => buildFileContext(filePath, workingDirectory, stepIndex, atomName))
-      .join('\n\n');
-    sections.push(files);
-  }
-
-  if (promptContext.flags.length > 0) {
-    sections.push(`Flags: ${promptContext.flags.join(' ')}`);
-  }
-
-  if (Object.keys(promptContext.extra).length > 0) {
-    sections.push(`Context:\n${JSON.stringify(promptContext.extra, null, 2)}`);
-  }
-
-  return sections.join('\n\n');
+function buildAtomPrompt(stepPrompt: string, instruction?: string): string {
+  if (!instruction) return stepPrompt;
+  return `${stepPrompt}\n\n${instruction}`;
 }
 
 function buildLiteralPrompt(stepIndex: number, atomText: string, stepPrompt: string): string {
@@ -330,7 +220,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     stepPrompt,
     defaultProvider,
     dispatch,
-    args,
+    atoms,
     signal,
     onProgress,
   } = context;
@@ -344,18 +234,14 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
       throw new Error(`Step ${stepIndex + 1}, atom '${label}' launch failed: unsupported namespace "${namespace}"`);
     }
 
-    const atomArgs = readAtomArgs(stepIndex, atom.agent, args?.[atom.agent]);
-    const { executionParams, promptContext } = splitAtomArgs(stepIndex, atom.agent, atomArgs);
-    const baseDir = executionParams.working_directory ?? process.cwd();
-    const atomPrompt = buildAtomPrompt(stepPrompt, promptContext, baseDir, stepIndex, atom.agent);
+    const config = readAtomConfig(stepIndex, atom.agent, atoms?.[atom.agent]);
+    const atomPrompt = buildAtomPrompt(stepPrompt, config.instruction);
 
     dispatchPayload = {
       op: `coral:${atom.agent}`,
       prompt: atomPrompt,
       bypass: true,
-      ...(executionParams.model ? { model: executionParams.model } : {}),
-      ...(executionParams.working_directory ? { working_directory: executionParams.working_directory } : {}),
-      ...(executionParams.effort ? { effort: executionParams.effort } : {}),
+      ...(config.effort ? { effort: config.effort } : {}),
     };
   } else {
     // First-step prompt literals use only the literal text — the initial pipeline prompt is intentionally
@@ -635,7 +521,7 @@ export async function executePipeline(
   defaultProvider: SessionProvider,
   dispatch: AtomDispatchFn,
   options: {
-    args?: WorkflowArgs;
+    atoms?: WorkflowAtoms;
     signal?: AbortSignal;
     onProgress?: (message: string) => void;
     staleTimeoutMs?: number;
@@ -658,7 +544,7 @@ export async function executePipeline(
         stepPrompt,
         defaultProvider,
         dispatch,
-        args: options.args,
+        atoms: options.atoms,
         signal: options.signal,
         onProgress,
       })),

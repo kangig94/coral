@@ -93,20 +93,20 @@ describe('workflow handler', () => {
       )).toThrow('Expected step expression before "->"');
   });
 
-  it('throws when args keys do not match expression atoms', () => {
+  it('throws when atoms keys do not match expression atoms', () => {
     const mgr = makeSessionManager();
     expect(() =>
       handleWorkflow(
         {
           expression: 'architect',
           prompt: 'hello',
-          args: {
-            resolver: { model: 'o4-mini' },
+          atoms: {
+            resolver: { instruction: 'review this' },
           },
         },
         async () => jsonResult({}),
         mgr,
-      )).toThrow('Unknown args keys: resolver');
+      )).toThrow('Unknown atoms keys: resolver');
   });
 
   it('throws for unsupported namespaces in v1', () => {
@@ -282,14 +282,14 @@ describe('workflow handler', () => {
     ).not.toThrow();
   });
 
-  it('accepts args key matching atom that appears in multiple sequential steps', () => {
+  it('accepts atoms key matching atom that appears in multiple sequential steps', () => {
     const mgr = makeSessionManager();
     expect(() =>
       handleWorkflow(
         {
           expression: 'architect -> resolver -> architect',
           prompt: 'hello',
-          args: { architect: { model: 'o4-mini' }, resolver: {} },
+          atoms: { architect: { effort: 'high' }, resolver: {} },
         },
         async () => jsonResult({}),
         mgr,

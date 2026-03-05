@@ -33,11 +33,11 @@ function collectAtomNames(ast: PipelineAST): Set<string> {
   return names;
 }
 
-function validateArgsKeys(args: Record<string, Record<string, unknown>>, ast: PipelineAST): void {
+function validateAtomsKeys(atoms: Record<string, Record<string, unknown>>, ast: PipelineAST): void {
   const atomNames = collectAtomNames(ast);
-  const unknownKeys = Object.keys(args).filter((key) => !atomNames.has(key));
+  const unknownKeys = Object.keys(atoms).filter((key) => !atomNames.has(key));
   if (unknownKeys.length > 0) {
-    throw new Error(`Unknown args keys: ${unknownKeys.join(', ')}`);
+    throw new Error(`Unknown atoms keys: ${unknownKeys.join(', ')}`);
   }
 }
 
@@ -118,7 +118,7 @@ export function handleWorkflow(
   const input = workflowInputSchema.parse(rawArgs);
   const ast = parseExpression(input.expression);
   const normalized = normalizeAst(ast, input.provider);
-  if (input.args) validateArgsKeys(input.args, normalized);
+  if (input.atoms) validateAtomsKeys(input.atoms, normalized);
   validateNamespaces(normalized);
   validateParallelDuplicates(normalized);
   validateRegisteredProviders(normalized, input.provider);
@@ -130,7 +130,7 @@ export function handleWorkflow(
     handler: async (signal, onEvent) => {
       const dispatch: AtomDispatchFn = (name, args) => toolCallFn(name, args, sessionManager, progressToken, notify);
       const output = await executePipeline(normalized, input.prompt, input.provider, dispatch, {
-        args: input.args,
+        atoms: input.atoms,
         signal,
         onProgress: (message) => onEvent(message),
         staleTimeoutMs: input.stale_timeout_seconds * 1000,

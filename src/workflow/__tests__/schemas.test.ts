@@ -12,24 +12,22 @@ describe('workflowInputSchema', () => {
     expect(parsed.stale_timeout_seconds).toBe(900);
   });
 
-  it('accepts full valid input', () => {
+  it('accepts full valid input with atoms', () => {
     const parsed = workflowInputSchema.parse({
       expression: '(architect, critic) -> resolver@claude',
       prompt: 'analyze',
       provider: 'claude',
-      args: {
+      atoms: {
         architect: {
-          model: 'o4-mini',
-          working_directory: '/tmp/work',
-          files: ['README.md'],
-          flags: ['--fast'],
-          priority: 'high',
+          effort: 'high',
+          instruction: 'Review the auth flow with extra attention to edge cases.',
         },
       },
     });
 
     expect(parsed.provider).toBe('claude');
-    expect(parsed.args?.architect?.priority).toBe('high');
+    expect(parsed.atoms?.architect?.effort).toBe('high');
+    expect(parsed.atoms?.architect?.instruction).toContain('auth flow');
   });
 
   it('rejects missing expression', () => {
@@ -65,42 +63,90 @@ describe('workflowInputSchema', () => {
     })).toThrow();
   });
 
-  it('rejects non-object args per atom', () => {
+  it('rejects non-object atoms per atom', () => {
     expect(() => workflowInputSchema.parse({
       expression: 'architect',
       prompt: 'hello',
-      args: {
+      atoms: {
         architect: 'bad-shape',
       },
     })).toThrow();
   });
 
-  it('rejects args.<atom>.bypass in v1', () => {
+  it('rejects legacy top-level args key', () => {
     expect(() => workflowInputSchema.parse({
       expression: 'architect',
       prompt: 'hello',
-      args: {
-        architect: {
-          bypass: true,
-        },
-      },
-    })).toThrow('Workflow v1 does not support args.<atom>.bypass');
+      args: {},
+    })).toThrow(/Unrecognized key\(s\) in object: 'args'/);
   });
 
-  it('accepts arbitrary context keys in args', () => {
+  it('accepts atoms instruction field', () => {
     const parsed = workflowInputSchema.parse({
       expression: 'architect',
       prompt: 'hello',
-      args: {
+      atoms: {
         architect: {
-          ticket: 1234,
-          labels: ['p1', 'infra'],
-          nested: { safe: true },
+          instruction: 'Do a security pass.',
         },
       },
     });
 
-    expect(parsed.args?.architect?.ticket).toBe(1234);
+    expect(parsed.atoms?.architect?.instruction).toBe('Do a security pass.');
+  });
+
+  it('accepts atoms effort field', () => {
+    const parsed = workflowInputSchema.parse({
+      expression: 'architect',
+      prompt: 'hello',
+      atoms: {
+        architect: {
+          effort: 'xhigh',
+        },
+      },
+    });
+
+    expect(parsed.atoms?.architect?.effort).toBe('xhigh');
+  });
+
+  it('rejects unknown keys in atom config', () => {
+    expect(() => workflowInputSchema.parse({
+      expression: 'architect',
+      prompt: 'hello',
+      atoms: {
+        architect: {
+          model: 'o4-mini',
+        },
+      },
+    })).toThrow(/Unrecognized key\(s\) in object: 'model'/);
+  });
+
+  it.each([
+    { key: 'working_directory', value: '/tmp/work' },
+    { key: 'files', value: ['README.md'] },
+    { key: 'flags', value: ['--deep'] },
+  ])('rejects legacy atom key $key', ({ key, value }) => {
+    expect(() => workflowInputSchema.parse({
+      expression: 'architect',
+      prompt: 'hello',
+      atoms: {
+        architect: {
+          [key]: value,
+        },
+      },
+    })).toThrow(/Unrecognized key\(s\) in object/);
+  });
+
+  it('rejects bypass in atoms via strict object validation', () => {
+    expect(() => workflowInputSchema.parse({
+      expression: 'architect',
+      prompt: 'hello',
+      atoms: {
+        architect: {
+          bypass: true,
+        },
+      },
+    })).toThrow(/Unrecognized key\(s\) in object: 'bypass'/);
   });
 
   it('rejects provider: null', () => {
@@ -109,9 +155,9 @@ describe('workflowInputSchema', () => {
     ).toThrow();
   });
 
-  it('accepts args: {} empty object', () => {
-    const parsed = workflowInputSchema.parse({ expression: 'a', prompt: 'hi', args: {} });
-    expect(parsed.args).toEqual({});
+  it('accepts atoms: {} empty object', () => {
+    const parsed = workflowInputSchema.parse({ expression: 'a', prompt: 'hi', atoms: {} });
+    expect(parsed.atoms).toEqual({});
   });
 
   it('accepts stale_timeout_seconds set to zero (disable stale recovery)', () => {
@@ -123,38 +169,9 @@ describe('workflowInputSchema', () => {
     expect(parsed.stale_timeout_seconds).toBe(0);
   });
 
-  it('rejects bypass: null (property presence, not truthiness)', () => {
+  it('rejects atoms with array value for atom (not a record)', () => {
     expect(() =>
-      workflowInputSchema.parse({ expression: 'a', prompt: 'hi', args: { a: { bypass: null } } }),
-    ).toThrow('Workflow v1 does not support args.<atom>.bypass');
-  });
-
-  it('rejects bypass: 0 (falsy but present)', () => {
-    expect(() =>
-      workflowInputSchema.parse({ expression: 'a', prompt: 'hi', args: { a: { bypass: 0 } } }),
-    ).toThrow('Workflow v1 does not support args.<atom>.bypass');
-  });
-
-  it('rejects bypass on one atom only — error is per-atom, clean atom passes', () => {
-    expect(() =>
-      workflowInputSchema.parse({
-        expression: '(a, b)',
-        prompt: 'hi',
-        args: { a: { bypass: true }, b: { model: 'o4-mini' } },
-      }),
-    ).toThrow('Workflow v1 does not support args.<atom>.bypass');
-
-    const parsed = workflowInputSchema.parse({
-      expression: '(a, b)',
-      prompt: 'hi',
-      args: { b: { model: 'o4-mini' } },
-    });
-    expect(parsed.args?.b?.model).toBe('o4-mini');
-  });
-
-  it('rejects args with array value for atom (not a record)', () => {
-    expect(() =>
-      workflowInputSchema.parse({ expression: 'a', prompt: 'hi', args: { a: [1, 2, 3] } }),
+      workflowInputSchema.parse({ expression: 'a', prompt: 'hi', atoms: { a: [1, 2, 3] } }),
     ).toThrow();
   });
 });

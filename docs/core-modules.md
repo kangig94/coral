@@ -88,7 +88,7 @@ Resolves `coral:<name>` content from plugin root with containment checks:
 - first `agents/<name>.md`
 - then `skills/<name>/SKILL.md`
 - path traversal rejection
-- `stripAgentMetadata(...)` helper for Claude `--system-prompt` injection
+- `stripAgentMetadata(...)` helper used by dispatch before provider delegation
 
 See `src/coral/resolver.ts`.
 
@@ -96,7 +96,7 @@ See `src/coral/resolver.ts`.
 
 ### src/coral/dispatch.ts - Coral Delegation Dispatcher
 
-Resolves `coral:<name>` content and delegates to the selected provider adapter via `ProviderAdapter.handleCoralOp(...)`.
+Resolves `coral:<name>` content, strips agent metadata, and delegates to the selected provider adapter via `ProviderAdapter.handleCoralOp(...)`.
 
 See `src/coral/dispatch.ts`.
 
@@ -129,7 +129,7 @@ Validates: agent name format, provider identifier syntax, namespace syntax, bala
 
 ### src/workflow/schemas.ts - Input Validation
 
-Zod schema (`workflowInputSchema`) with `superRefine` for per-atom `bypass` rejection. Defaults:
+Zod schema (`workflowInputSchema`) with strict top-level input and strict per-atom `atoms` config (`effort`, `instruction`). Unknown keys (including legacy `args` and atom-level `bypass`) are rejected at schema level. Defaults:
 - `provider: "claude"`
 - `stale_timeout_seconds: 900` (`0` disables stale recovery)
 
@@ -158,7 +158,7 @@ See `src/workflow/pipe-executor.ts`.
 
 ### src/workflow/handler.ts - Workflow Handler
 
-Entry point called by AX tool router. Parses expression, normalizes atoms with resolved defaults (`namespace`/`provider`), validates args keys, namespaces, and parallel duplicate identity (`namespace:agent@provider`), then delegates to `launchJob` from `runner/job-manager.ts`. The `AtomDispatchFn` callback receives `handleToolCall` from the AX router via dependency injection, avoiding circular imports.
+Entry point called by AX tool router. Parses expression, normalizes atoms with resolved defaults (`namespace`/`provider`), validates atoms keys, namespaces, and parallel duplicate identity (`namespace:agent@provider`), then delegates to `launchJob` from `runner/job-manager.ts`. The `AtomDispatchFn` callback receives `handleToolCall` from the AX router via dependency injection, avoiding circular imports.
 
 See `src/workflow/handler.ts`.
 

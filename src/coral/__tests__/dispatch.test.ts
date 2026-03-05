@@ -48,7 +48,19 @@ afterEach(() => {
 
 describe('coral dispatch', () => {
   beforeEach(() => {
-    setupResolverFixture('coral-dispatch-test-', '# Architect\nAgent content\n');
+    setupResolverFixture(
+      'coral-dispatch-test-',
+      [
+        '---',
+        'title: Architect Agent',
+        '---',
+        '',
+        '> **CORAL_METHODS**: use method list',
+        '# Architect',
+        'Agent content',
+        '',
+      ].join('\n'),
+    );
   });
 
   it('routes coral dispatch to the registered provider adapter', async () => {
@@ -68,7 +80,9 @@ describe('coral dispatch', () => {
     expect(handleCoralOp).toHaveBeenCalledTimes(1);
     const [coralName, coralContent, rawArgs, passedMgr, progressToken] = handleCoralOp.mock.calls[0] ?? [];
     expect(coralName).toBe('architect');
-    expect(String(coralContent)).toContain('# Architect');
+    expect(coralContent).toBe('# Architect\nAgent content');
+    expect(String(coralContent)).not.toContain('---');
+    expect(String(coralContent)).not.toContain('CORAL_METHODS');
     expect(rawArgs).toEqual({ op: 'coral:architect', prompt: 'Run checks', effort: 'xhigh' });
     expect(passedMgr).toBe(mgr);
     expect(progressToken).toBe('token-1');

@@ -1,7 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import * as runnerProgress from '../../runner/progress.js';
 import {
   appendProgressEvent,
@@ -274,7 +273,7 @@ describe('workflow pipe executor', () => {
     ).rejects.toThrow('missing session/session_dir');
   });
 
-  it('forwards execution args into nested dispatch payload', async () => {
+  it('forwards atoms effort into nested dispatch payload', async () => {
     const dispatch = vi.fn<AtomDispatchFn>(async (tool, _args) => {
       return jsonResult(registerSession('architect', tool, 'done'));
     });
@@ -286,10 +285,8 @@ describe('workflow pipe executor', () => {
       dispatch,
       {
         ...FAST_POLL,
-        args: {
+        atoms: {
           architect: {
-            model: 'o4-mini',
-            working_directory: '/tmp/workflow-test',
             effort: 'high',
           },
         },
@@ -299,10 +296,58 @@ describe('workflow pipe executor', () => {
     expect(dispatch).toHaveBeenCalledWith('codex', expect.objectContaining({
       op: 'coral:architect',
       bypass: true,
-      model: 'o4-mini',
-      working_directory: '/tmp/workflow-test',
       effort: 'high',
     }));
+    const payload = dispatch.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(payload.model).toBeUndefined();
+    expect(payload.working_directory).toBeUndefined();
+  });
+
+  it('appends atoms instruction to prompt after prior step output', async () => {
+    let resolverPrompt = '';
+    const dispatch: AtomDispatchFn = async (tool, args) => {
+      const op = String(args.op);
+      if (op === 'coral:architect') {
+        return jsonResult(registerSession('architect', tool, 'ARCH_OUTPUT'));
+      }
+      resolverPrompt = String(args.prompt);
+      return jsonResult(registerSession('resolver', tool, 'DONE'));
+    };
+
+    await executePipeline(
+      parseExpression('architect -> resolver'),
+      'seed',
+      'codex',
+      dispatch,
+      {
+        ...FAST_POLL,
+        atoms: {
+          resolver: {
+            instruction: 'Summarize the architecture and list risks.',
+          },
+        },
+      },
+    );
+
+    expect(resolverPrompt).toBe('ARCH_OUTPUT\n\nSummarize the architecture and list risks.');
+  });
+
+  it('throws for invalid atom config shape when executePipeline is called directly', async () => {
+    const dispatch: AtomDispatchFn = async () => jsonResult(registerSession('architect', 'codex', 'done'));
+    await expect(
+      executePipeline(
+        parseExpression('architect'),
+        'seed',
+        'codex',
+        dispatch,
+        {
+          ...FAST_POLL,
+          atoms: {
+            architect: 'bad-shape' as unknown as { effort?: 'low'; instruction?: string },
+          },
+        },
+      ),
+    ).rejects.toThrow("atoms config must be an object");
   });
 
   it('injects bypass=true for both agent and prompt literal dispatch payloads', async () => {
@@ -319,53 +364,6 @@ describe('workflow pipe executor', () => {
 
     expect(calls).toHaveLength(2);
     expect(calls.every((call) => call.bypass === true)).toBe(true);
-  });
-
-  it('injects files, flags, and extra args into atom prompt context', async () => {
-    const tmp = mkdtempSync(join(tmpdir(), 'workflow-exec-context-'));
-    dirsToClean.add(tmp);
-    const filePath = join(tmp, 'note.txt');
-    writeFileSync(filePath, 'note content', 'utf-8');
-
-    let receivedPrompt = '';
-    const dispatch: AtomDispatchFn = async (tool, args) => {
-      receivedPrompt = String(args.prompt);
-      return jsonResult(registerSession('architect', tool, 'done'));
-    };
-
-    await executePipeline(
-      parseExpression('architect'),
-      'seed',
-      'codex',
-      dispatch,
-      {
-        ...FAST_POLL,
-        args: {
-          architect: {
-            files: [filePath],
-            flags: ['--a', '--b'],
-            ticket: 7,
-          },
-        },
-      },
-    );
-
-    expect(receivedPrompt).toContain(`<file path="${filePath}">\nnote content\n</file>`);
-    expect(receivedPrompt).toContain('Flags: --a --b');
-    expect(receivedPrompt).toContain('"ticket": 7');
-  });
-
-  it('rejects bypass inside args in v1', async () => {
-    const dispatch: AtomDispatchFn = async () => jsonResult(registerSession('architect', 'codex', 'done'));
-    await expect(
-      executePipeline(
-        parseExpression('architect'),
-        'seed',
-        'codex',
-        dispatch,
-        { ...FAST_POLL, args: { architect: { bypass: true } } },
-      ),
-    ).rejects.toThrow('args.architect.bypass');
   });
 
   it('retries immediate busy launches and succeeds', async () => {
@@ -896,65 +894,23 @@ describe('workflow pipe executor', () => {
     });
   });
 
-  it('rejects bypass: false (property presence triggers rejection, not truthiness)', async () => {
-    const dispatch: AtomDispatchFn = async () => jsonResult(registerSession('a', 'codex', 'done'));
-    await expect(
-      executePipeline(parseExpression('a'), 'seed', 'codex', dispatch, {
-      ...FAST_POLL, args: { a: { bypass: false } } }),
-    ).rejects.toThrow('bypass');
-  });
-
-  it('accepts empty files array without injecting file context into prompt', async () => {
-    let capturedPrompt = '';
+  it('applies atoms config to all occurrences of the same atom name across sequential steps', async () => {
+    const capturedEffort: Array<string | undefined> = [];
     const dispatch: AtomDispatchFn = async (tool, args) => {
-      capturedPrompt = String(args.prompt);
-      return jsonResult(registerSession('a', tool, 'done'));
-    };
-
-    await executePipeline(parseExpression('a'), 'seed', 'codex', dispatch, {
-      ...FAST_POLL, args: { a: { files: [] } } });
-
-    expect(capturedPrompt).not.toContain('<file');
-    expect(capturedPrompt).toBe('seed');
-  });
-
-  it('accepts empty flags array without injecting Flags section into prompt', async () => {
-    let capturedPrompt = '';
-    const dispatch: AtomDispatchFn = async (tool, args) => {
-      capturedPrompt = String(args.prompt);
-      return jsonResult(registerSession('a', tool, 'done'));
-    };
-
-    await executePipeline(parseExpression('a'), 'seed', 'codex', dispatch, {
-      ...FAST_POLL, args: { a: { flags: [] } } });
-
-    expect(capturedPrompt).not.toContain('Flags:');
-    expect(capturedPrompt).toBe('seed');
-  });
-
-  it('rejects mixed-type array for files arg', async () => {
-    const dispatch: AtomDispatchFn = async () => jsonResult(registerSession('a', 'codex', 'done'));
-    await expect(
-      executePipeline(parseExpression('a'), 'seed', 'codex', dispatch, {
-      ...FAST_POLL, args: { a: { files: ['readme.txt', 42] } } }),
-    ).rejects.toThrow('args.files must be an array of strings');
-  });
-
-  it('applies args to all occurrences of the same atom name across sequential steps', async () => {
-    const capturedModels: Array<string | undefined> = [];
-    const dispatch: AtomDispatchFn = async (tool, args) => {
-      capturedModels.push(args.model as string | undefined);
+      capturedEffort.push(args.effort as string | undefined);
       const op = String(args.op);
       if (op === 'coral:a') return jsonResult(registerSession('a1', tool, 'step1'));
       return jsonResult(registerSession('a2', tool, 'step2'));
     };
 
     await executePipeline(parseExpression('a -> a'), 'seed', 'codex', dispatch, {
-      ...FAST_POLL, args: { a: { model: 'o4-mini' } } });
+      ...FAST_POLL,
+      atoms: { a: { effort: 'medium' } },
+    });
 
-    expect(capturedModels).toHaveLength(2);
-    expect(capturedModels[0]).toBe('o4-mini');
-    expect(capturedModels[1]).toBe('o4-mini');
+    expect(capturedEffort).toHaveLength(2);
+    expect(capturedEffort[0]).toBe('medium');
+    expect(capturedEffort[1]).toBe('medium');
   });
 
   it('readLaunchBootstrapStatus returns running immediately when session is already completed', async () => {
@@ -1122,13 +1078,13 @@ describe('workflow pipe executor', () => {
       'seed',
       'codex',
       dispatch,
-      { ...FAST_POLL, args: { architect: { model: 'sonnet' } } },
+      { ...FAST_POLL, atoms: { architect: { effort: 'high' } } },
     );
 
     expect(calls).toHaveLength(2);
     const agentCall = calls.find((call) => call.args.op === 'coral:architect');
     const literalCall = calls.find((call) => call.args.op === 'coral:workflow-literal');
-    expect(agentCall).toMatchObject({ tool: 'claude', args: { bypass: true, model: 'sonnet' } });
+    expect(agentCall).toMatchObject({ tool: 'claude', args: { bypass: true, effort: 'high' } });
     expect(literalCall).toMatchObject({ tool: 'codex', args: { bypass: true, prompt: 'literal' } });
   });
 
