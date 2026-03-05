@@ -2,7 +2,7 @@
 
 Coral exposes two MCP servers, each with its own tool set:
 
-- **`ax` (Agent Execution)**: 4 tools (`codex`, `claude`, `wait`, `workflow`) for Codex/Claude CLI session management and pipeline orchestration. Prefix: `mcp__plugin_coral_ax__`
+- **`ax` (Agent Execution)**: 5 tools (`codex`, `claude`, `wait`, `abort`, `workflow`) for Codex/Claude CLI session management and pipeline orchestration. Prefix: `mcp__plugin_coral_ax__`
 - **`dc` (Discuss)**: 2 tools for moderated multi-agent discussions. Prefix: `mcp__plugin_coral_dc__`
 
 All tool inputs are validated at runtime with Zod schemas (`src/codex/schemas.ts`, `src/claude/schemas.ts`, `src/discuss/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
@@ -19,7 +19,7 @@ Single entry point for all Codex execution. Use the required `op` discriminator.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `op` | string | Yes | `exec`, `list`, `fork`, `abort`, or `coral:<agent-name>` |
+| `op` | string | Yes | `exec`, `list`, `fork`, or `coral:<agent-name>` |
 
 ---
 
@@ -151,30 +151,6 @@ Use `wait({ sessions: [session] })` then `Read(session_dir + "/result.md")` to g
 
 ---
 
-### op: abort
-
-Abort an active execution by session UUID.
-
-### Input Schema
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `session` | string (UUID) | Yes | Session UUID from a previous `exec`/`fork` response. Direct lookup in `activeJobs`. |
-
-### Output (JSON)
-
-```json
-{
-  "session": "uuid",
-  "session_name": "my-review",
-  "status": "abort_requested"
-}
-```
-
-Abort is best-effort: if the session already finished or does not exist in this process, abort returns an error.
-
----
-
 ## Usage Pattern
 
 ```
@@ -185,7 +161,7 @@ if status == "completed":
 if status == "error":
   Read(session_dir + "/status.json") → { error } for diagnostics
 if status == "timeout":
-  re-wait, or abort(session)
+  re-wait, or abort({ sessions: [session] })
 ```
 
 ## Session Continuity
@@ -211,25 +187,26 @@ Single entry point for Claude CLI execution. Use the required `op` discriminator
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `op` | string | Yes | `exec`, `list`, `abort`, or `coral:<agent-name>` |
+| `op` | string | Yes | `exec`, `list`, `fork`, or `coral:<agent-name>` |
 
 ### Official Input Schema
 
 ```json
 {
   "name": "claude",
-  "description": "Execute a prompt with Claude CLI. Use op field to select exec/list/abort. For agent delegation, use op: \"coral:<agent-name>\" (e.g., coral:architect, coral:critic). Skills (coral:<skill>) are not supported — use the codex tool for skill delegation.",
+  "description": "Execute a prompt with Claude CLI. Use op field to select exec/list/fork. For agent delegation, use op: \"coral:<agent-name>\" (e.g., coral:architect, coral:critic).",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "op": { "type": "string", "description": "Operation: exec/list/abort, or coral:<agent-name> for agent delegation (skills not supported)" },
+      "op": { "type": "string", "description": "Operation: exec/list/fork, or coral:<agent-name> for agent delegation" },
       "prompt": { "type": "string", "description": "Prompt to send (exec required)" },
       "session": { "type": "string", "description": "Session ID for resume (exec with existing session)" },
       "name": { "type": "string", "description": "Session name (exec optional)" },
       "model": { "type": "string", "description": "Claude model to use (e.g., sonnet, opus, haiku)" },
       "working_directory": { "type": "string", "description": "Working directory for execution" },
       "effort": { "type": "string", "enum": ["low", "medium", "high", "xhigh"], "description": "Model reasoning effort level (xhigh maps to high on Claude CLI)" },
-      "system_prompt": { "type": "string", "description": "Custom system prompt (replaces default)" }
+      "system_prompt": { "type": "string", "description": "Custom system prompt (replaces default)" },
+      "bypass": { "type": "boolean", "description": "Bypass Claude permission checks", "default": false }
     },
     "required": ["op"]
   }
@@ -262,9 +239,26 @@ Execution details:
 - `coral:<agent>`: loads `agents/<agent>.md`, strips YAML frontmatter + `> **CORAL_...` directive lines, and injects into `--system-prompt`
 - `coral:<skill>`: returns `isError` (skills require Claude Code tool environment and are only supported through the `codex` tool)
 
-### op: list / abort
+### op: list
 
-Same lifecycle contract as Codex for provider-local operations: `list` returns registered Claude sessions, and `abort` targets active Claude sessions.
+Returns registered Claude sessions in the same session-list format as Codex.
+
+### op: fork
+
+Fork an existing Claude session into a new branch. Uses `claude -p --resume <thread-id> --fork-session --output-format stream-json`.
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `session` | string | Yes | Source session identifier (must exist in Coral registry) |
+| `name` | string | No | New session display name |
+| `prompt` | string | No | Additional prompt for the forked session |
+| `model` | string | No | Model override |
+| `working_directory` | string | No | Working directory |
+| `effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
+| `system_prompt` | string | No | Additional system prompt (appended) |
+| `bypass` | boolean | No | Bypass Claude permission checks (default: `false`) |
 
 ### Missing `session_id` Behavior
 
@@ -316,6 +310,33 @@ Provider-agnostic wait for background sessions from any AX adapter. Wait returns
 
 ---
 
+# Abort Tool (`ax`)
+
+## abort
+
+Provider-agnostic abort for active sessions. Works for codex, claude, and workflow sessions.
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `sessions` | string[] (UUID) | Yes | Session UUIDs to abort (min 1). |
+
+### Output (JSON)
+
+```json
+{
+  "results": [
+    { "session": "uuid-1", "session_name": "my-review", "status": "abort_requested" },
+    { "session": "uuid-2", "status": "not_found" }
+  ]
+}
+```
+
+`not_found` means the session already finished or was never active — not an error condition.
+
+---
+
 # Workflow Tool (`ax`)
 
 ## workflow
@@ -328,7 +349,7 @@ Deterministic multi-agent pipeline executor. Chains coral agents via a DSL expre
 |---|---|---|---|
 | `expression` | string | Yes | Pipeline DSL expression (min 1 char). See grammar below. |
 | `prompt` | string | Yes | Initial prompt fed to the first step (min 1 char). |
-| `provider` | string | No | Default provider for atoms without `@provider` suffix. `codex` (default) or `claude`. |
+| `provider` | string | No | Default provider for atoms without `@provider` suffix. `claude` (default) or `codex`. |
 | `args` | object | No | Per-atom argument overrides, keyed by atom name. See args routing below. |
 
 ### DSL Grammar

@@ -15,7 +15,7 @@ Creates one MCP stdio server exposing provider tools plus built-in `wait` and `w
 Pure router with registry-first dispatch:
 - provider tools are resolved through `providers/registry.ts`
 - `coral:<name>` is routed through `coral/dispatch.ts`
-- non-provider tools route to `wait` and `workflow` handlers
+- non-provider tools route to built-in `wait`, unified `abort`, and `workflow` handlers
 
 See `src/server/server-handlers.ts`.
 
@@ -130,7 +130,7 @@ Validates: agent name format, provider identifier syntax, namespace syntax, bala
 ### src/workflow/schemas.ts - Input Validation
 
 Zod schema (`workflowInputSchema`) with `superRefine` for per-atom `bypass` rejection. Defaults:
-- `provider: "codex"`
+- `provider: "claude"`
 - `stale_timeout_seconds: 900` (`0` disables stale recovery)
 
 See `src/workflow/schemas.ts`.
@@ -173,6 +173,14 @@ Provider contract and authority boundary:
 - registry APIs (`registerProvider`, `getProvider`, `getAllTools`, `getProviderNames`)
 - built-in bootstrap (`registerBuiltInProviders`)
 
+### src/providers/session-ops.ts
+
+Shared provider session operations used by provider adapters and built-in tools:
+- `handleSessionList(...)` for provider-filtered session list views
+- `handleSessionAbort(session)` for single-session abort by active session UUID
+- `handleBatchAbort(sessions)` for unified abort-tool batch semantics (`abort_requested` / `not_found`)
+- `sessionNotFoundError(...)` helper for provider resume/fork paths
+
 ---
 
 ## Codex Adapter Modules (`src/providers/codex/`)
@@ -188,7 +196,7 @@ Codex-specific execution wrapper over `runner/engine.ts`:
 
 ### src/providers/codex/server-handlers.ts
 
-Codex MCP behavior (`exec/list/fork/abort/coral:*`) using runner primitives for background job execution.
+Codex MCP behavior (`exec/list/fork/coral:*`) using runner primitives for background job execution.
 
 ### src/providers/codex/schemas.ts / cli-detection.ts / output-parser.ts / progress.ts / mcp-utils.ts
 
@@ -201,7 +209,7 @@ Input validation, CLI/auth probing, JSONL parsing, and Codex-specific response h
 ### src/providers/claude/schemas.ts
 
 Zod schemas for `claude` tool operations:
-- `exec`, `list`, `abort`
+- `exec`, `list`, `fork`
 - `coral:<name>` routing input for AX handlers
 
 ### src/providers/claude/cli-detection.ts
@@ -221,7 +229,7 @@ Claude execution wrapper over `runner/engine.ts`:
 
 ### src/providers/claude/server-handlers.ts / types.ts
 
-Defines Claude provider operations (`exec/list/abort/coral:*`) and `claudeAdapter`, plus `ClaudeExecResult` / JSON output types.
+Defines Claude provider operations (`exec/list/fork/coral:*`) and `claudeAdapter`, plus `ClaudeExecResult` / JSON output types.
 
 ---
 

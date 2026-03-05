@@ -6,11 +6,16 @@ import type { NotifyFn } from '../providers/types.js';
 import { handleWait } from '../runner/job-manager.js';
 import { SessionManager } from '../runner/session-manager.js';
 import { type McpResult, textResult } from '../shared/mcp-utils.js';
+import { handleBatchAbort } from '../providers/session-ops.js';
 import { handleWorkflow } from '../workflow/handler.js';
 
 const waitToolSchema = z.object({
   sessions: z.array(z.string().uuid()).min(1, 'At least one session required'),
   timeout_seconds: z.number().min(1).max(1200).optional(),
+});
+
+const abortToolSchema = z.object({
+  sessions: z.array(z.string().uuid()).min(1, 'At least one session required'),
 });
 
 const waitTool = {
@@ -21,6 +26,23 @@ const waitTool = {
     properties: {
       sessions: { type: 'array', items: { type: 'string' }, description: 'Session UUIDs to monitor (from exec/fork response)' },
       timeout_seconds: { type: 'number', description: 'Max wait time in seconds (1-1200, default 600)' },
+    },
+    required: ['sessions'],
+  },
+};
+
+const abortTool = {
+  name: 'abort',
+  description: 'Abort active sessions. Provider-agnostic — works for codex, claude, and workflow sessions.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      sessions: {
+        type: 'array',
+        items: { type: 'string', format: 'uuid' },
+        minItems: 1,
+        description: 'Session UUIDs to abort',
+      },
     },
     required: ['sessions'],
   },
@@ -53,7 +75,7 @@ function workflowTool() {
 
 export function getTools(): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> {
   registerBuiltInProviders();
-  return [...getAllTools(), waitTool, workflowTool()];
+  return [...getAllTools(), waitTool, abortTool, workflowTool()];
 }
 
 export const tools = getTools();
@@ -62,6 +84,12 @@ async function handleWaitTool(rawArgs: Record<string, unknown>, notify?: NotifyF
   const parsed = waitToolSchema.safeParse(rawArgs);
   if (!parsed.success) throw parsed.error;
   return handleWait(parsed.data, notify, progressToken);
+}
+
+function handleAbortTool(rawArgs: Record<string, unknown>): McpResult {
+  const parsed = abortToolSchema.safeParse(rawArgs);
+  if (!parsed.success) throw parsed.error;
+  return handleBatchAbort(parsed.data.sessions);
 }
 
 export async function handleToolCall(
@@ -82,6 +110,7 @@ export async function handleToolCall(
       return await provider.handleOp(rawArgs, mgr, progressToken, notify);
     }
     if (name === 'wait') return await handleWaitTool(rawArgs, notify, progressToken);
+    if (name === 'abort') return handleAbortTool(rawArgs);
     if (name === 'workflow') return handleWorkflow(rawArgs, handleToolCall, mgr, progressToken, notify);
     return textResult(`Unknown tool: ${name}`, true);
   } catch (err) {

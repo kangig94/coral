@@ -50,13 +50,32 @@ describe('claude schemas', () => {
     expect(parsed.success).toBe(false);
   });
 
-  it('validates abort op session uuid', () => {
+  it('validates fork op with session and optional fields', () => {
+    const parsed = claudeOpSchema.safeParse({
+      op: 'fork',
+      session: 'base-session-ref',
+      name: 'forked-session',
+      model: 'sonnet',
+      effort: 'high',
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('fork requires session field', () => {
+    expect(claudeOpSchema.safeParse({ op: 'fork' }).success).toBe(false);
+  });
+
+  it('defaults fork bypass to false when omitted', () => {
+    const parsed = claudeOpSchema.parse({ op: 'fork', session: 'ref' });
+    if (parsed.op !== 'fork') throw new Error('Expected fork op');
+    expect(parsed.bypass).toBe(false);
+  });
+
+  it('rejects abort discriminator (removed — use unified abort tool)', () => {
     expect(claudeOpSchema.safeParse({
       op: 'abort',
       session: '12345678-1234-4234-8234-123456789abc',
-    }).success).toBe(true);
-
-    expect(claudeOpSchema.safeParse({ op: 'abort', session: 'not-a-uuid' }).success).toBe(false);
+    }).success).toBe(false);
   });
 
   it('validates coral:<name> schema and rejects traversal-like names', () => {

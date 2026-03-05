@@ -1,4 +1,4 @@
-import { executeClaudeOneShot, executeClaudeResume, ClaudeExecParseError } from './claude-executor.js';
+import { executeClaudeOneShot, executeClaudeResume, executeClaudeFork, ClaudeExecParseError } from './claude-executor.js';
 import { detectClaudeCli, type ClaudeCliInfo } from './cli-detection.js';
 import {
   claudeOpSchema,
@@ -6,7 +6,7 @@ import {
   type ClaudeOpInput,
   type ClaudeSessionCreateInput,
   type ClaudeSessionSendInput,
-  type ClaudeSessionAbortInput,
+  type ClaudeSessionForkInput,
 } from './schemas.js';
 import {
   launchJob as launchRunnerJob,
@@ -15,7 +15,7 @@ import {
 import type { SessionManager } from '../../runner/session-manager.js';
 import type { CompletionMetadata } from '../../runner/types.js';
 import { type McpResult, textResult, jsonResult } from '../../shared/mcp-utils.js';
-import { sessionNotFoundError, handleSessionList, handleSessionAbort } from '../session-ops.js';
+import { sessionNotFoundError, handleSessionList } from '../session-ops.js';
 import { stripAgentMetadata } from '../../coral/resolver.js';
 import { extractClaudeProgressMessage, appendProgressEvent } from './progress.js';
 import type { ClaudeStreamEvent } from './types.js';
@@ -23,11 +23,11 @@ import type { ProviderAdapter, NotifyFn } from '../types.js';
 
 export const claudeTool = {
   name: 'claude',
-  description: 'Execute a prompt with Claude CLI. Use op field to select exec/list/abort. For agent delegation, use op: "coral:<agent-name>" (e.g., coral:architect, coral:critic).',
+  description: 'Execute a prompt with Claude CLI. Use op field to select exec/list/fork. For agent delegation, use op: "coral:<agent-name>" (e.g., coral:architect, coral:critic).',
   inputSchema: {
     type: 'object' as const,
     properties: {
-      op: { type: 'string', description: 'Operation: exec/list/abort, or coral:<agent-name> for agent delegation' },
+      op: { type: 'string', description: 'Operation: exec/list/fork, or coral:<agent-name> for agent delegation' },
       prompt: { type: 'string', description: 'Prompt to send (exec required)' },
       session: { type: 'string', description: 'Session ID for resume (exec with existing session)' },
       name: { type: 'string', description: 'Session name (exec optional)' },
@@ -234,12 +234,70 @@ export async function handleClaudeSessionSend(
   });
 }
 
-export function handleClaudeSessionList(mgr: SessionManager): McpResult {
-  return handleSessionList(mgr, 'claude');
+export async function handleClaudeSessionFork(
+  input: ClaudeSessionForkInput,
+  mgr: SessionManager,
+  signal: AbortSignal,
+  onEvent?: OnEventCallback,
+  _preChecked?: ClaudeCliInfo & { available: true },
+): Promise<McpResult> {
+  const entry = mgr.get('claude', input.session);
+  if (!entry) return sessionNotFoundError(input.session, 'claude');
+
+  const workingDirectory = input.working_directory ?? entry.workingDirectory;
+  let result;
+  try {
+    result = await executeClaudeFork(entry.threadId, input.prompt ?? '', {
+      model: input.model,
+      workingDirectory,
+      systemPrompt: input.system_prompt,
+      effort: input.effort,
+      bypassPermissions: input.bypass,
+      signal,
+      onEvent,
+    });
+  } catch (error: unknown) {
+    if (error instanceof ClaudeExecParseError) {
+      return jsonResult({
+        response: '',
+        notice: 'Claude CLI returned non-JSON output while forking session.',
+        non_resumable: true,
+        model: input.model ?? entry.model,
+        duration_ms: 0,
+        cost_usd: 0,
+        exit_code: error.failure.exitCode,
+        errors: [error.failure],
+      });
+    }
+    throw error;
+  }
+
+  if (!result.sessionId) {
+    return jsonResult({
+      response: result.response,
+      notice: missingSessionNotice(result.aborted),
+      ...(result.aborted ? { aborted: true } : {}),
+      non_resumable: true,
+      model: result.model,
+      duration_ms: result.durationMs,
+      cost_usd: result.costUsd,
+    });
+  }
+
+  return jsonResult({
+    response: result.response,
+    thread_id: result.sessionId,
+    forked_from: input.session,
+    ...(input.name ? { session_name: input.name } : {}),
+    model: result.model,
+    duration_ms: result.durationMs,
+    cost_usd: result.costUsd,
+    ...(result.aborted ? { aborted: true } : {}),
+  });
 }
 
-export function handleClaudeSessionAbort(input: ClaudeSessionAbortInput): McpResult {
-  return handleSessionAbort(input.session, 'claude');
+export function handleClaudeSessionList(mgr: SessionManager): McpResult {
+  return handleSessionList(mgr, 'claude');
 }
 
 export async function handleClaudeCoralOp(
@@ -298,6 +356,26 @@ export async function handleClaudeCoralOp(
   );
 }
 
+async function handleForkOp(
+  input: Extract<ClaudeOpInput, { op: 'fork' }>,
+  sessionManager: SessionManager,
+): Promise<McpResult> {
+  const { op: _op, ...forkInput } = input;
+  const entry = sessionManager.get('claude', forkInput.session);
+  if (!entry) return sessionNotFoundError(forkInput.session, 'claude');
+
+  const preflight = await preflightClaudeCliCheck();
+  if (!preflight.pass) return preflight.result;
+
+  const sessionLabel = forkInput.name ?? entry.name;
+  return launchClaudeJob(
+    sessionLabel,
+    (signal, onEvent) => handleClaudeSessionFork(forkInput, sessionManager, signal, onEvent, preflight.cli),
+    sessionManager,
+    forkInput.working_directory ?? entry.workingDirectory,
+  );
+}
+
 export async function handleClaudeOp(
   rawArgs: Record<string, unknown>,
   sessionManager: SessionManager,
@@ -344,8 +422,8 @@ export async function handleClaudeOp(
     }
     case 'list':
       return handleClaudeSessionList(sessionManager);
-    case 'abort':
-      return handleClaudeSessionAbort(input);
+    case 'fork':
+      return handleForkOp(input, sessionManager);
     default: {
       const _exhaustive: never = input;
       return textResult(`Unhandled op: ${(_exhaustive as ClaudeOpInput).op}`, true);

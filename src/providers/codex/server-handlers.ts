@@ -14,7 +14,6 @@ import {
   type CodexSessionCreateInput,
   type CodexSessionSendInput,
   type CodexSessionForkInput,
-  type CodexSessionAbortInput,
 } from './schemas.js';
 import type { CodexThreadEvent } from '../../types.js';
 import {
@@ -27,21 +26,21 @@ import {
 } from '../../runner/job-manager.js';
 import type { CompletionMetadata } from '../../runner/types.js';
 import { type McpResult, textResult, jsonResult } from '../../shared/mcp-utils.js';
-import { sessionNotFoundError, handleSessionList, handleSessionAbort } from '../session-ops.js';
+import { sessionNotFoundError, handleSessionList } from '../session-ops.js';
 import { resultExtras } from './mcp-utils.js';
 import type { NotifyFn, ProviderAdapter } from '../types.js';
 
 export const codexTool = {
   name: 'codex',
-  description: 'Execute a prompt with OpenAI Codex CLI. Use op field to select exec/list/fork/abort. For agent delegation, use op: "coral:<agent-name>" (e.g., coral:scanner, coral:architect).',
+  description: 'Execute a prompt with OpenAI Codex CLI. Use op field to select exec/list/fork. For agent delegation, use op: "coral:<agent-name>" (e.g., coral:scanner, coral:architect).',
   inputSchema: {
     type: 'object' as const,
     properties: {
       op: {
         type: 'string',
-        description: 'Operation to run: exec/list/fork/abort, or coral:<agent> for agent delegation (e.g., coral:scanner, coral:architect)',
+        description: 'Operation to run: exec/list/fork, or coral:<agent> for agent delegation (e.g., coral:scanner, coral:architect)',
       },
-      session: { type: 'string', description: 'Session UUID for resume (exec/fork/abort)' },
+      session: { type: 'string', description: 'Session UUID for resume (exec/fork)' },
       prompt: { type: 'string', description: 'Prompt to send (exec required, fork optional)' },
       name: { type: 'string', description: 'Session name (exec/fork optional)' },
       model: { type: 'string', description: 'Codex model to use' },
@@ -238,10 +237,6 @@ export async function handleSessionFork(
   });
 }
 
-export function handleCodexSessionAbort(input: CodexSessionAbortInput): McpResult {
-  return handleSessionAbort(input.session, 'codex');
-}
-
 async function handleExecOp(
   input: Extract<CodexOpInput, { op: 'exec' }>,
   sessionManager: SessionManager,
@@ -309,8 +304,6 @@ async function handleParsedCodexOp(
       return handleCodexSessionList(sessionManager);
     case 'fork':
       return handleForkOp(input, sessionManager);
-    case 'abort':
-      return handleCodexSessionAbort(input);
     default: {
       const _exhaustive: never = input;
       return textResult(`Unhandled op: ${(_exhaustive as CodexOpInput).op}`, true);

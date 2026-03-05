@@ -104,7 +104,7 @@ describe('workflow pipe executor', () => {
     expect(output).toBe('architect output');
     expect(dispatchCalls).toHaveLength(1);
     expect(dispatchCalls[0].tool).toBe('codex');
-    expect(dispatchCalls[0].args).toMatchObject({ op: 'coral:architect', prompt: 'hello' });
+    expect(dispatchCalls[0].args).toMatchObject({ op: 'coral:architect', prompt: 'hello', bypass: true });
   });
 
   it('chains step output into the next step prompt', async () => {
@@ -169,6 +169,7 @@ describe('workflow pipe executor', () => {
     expect(dispatch).toHaveBeenCalledWith('codex', expect.objectContaining({
       op: 'coral:workflow-literal',
       prompt: 'summarize',
+      bypass: true,
     }));
   });
 
@@ -297,10 +298,27 @@ describe('workflow pipe executor', () => {
 
     expect(dispatch).toHaveBeenCalledWith('codex', expect.objectContaining({
       op: 'coral:architect',
+      bypass: true,
       model: 'o4-mini',
       working_directory: '/tmp/workflow-test',
       effort: 'high',
     }));
+  });
+
+  it('injects bypass=true for both agent and prompt literal dispatch payloads', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const dispatch: AtomDispatchFn = async (tool, args) => {
+      calls.push(args);
+      if (args.op === 'coral:architect') {
+        return jsonResult(registerSession('architect', tool, 'ARCH'));
+      }
+      return jsonResult(registerSession('workflow-literal', tool, 'LIT'));
+    };
+
+    await executePipeline(parseExpression('(architect, \'literal\')'), 'seed', 'codex', dispatch, FAST_POLL);
+
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => call.bypass === true)).toBe(true);
   });
 
   it('injects files, flags, and extra args into atom prompt context', async () => {
@@ -421,6 +439,42 @@ describe('workflow pipe executor', () => {
       session: sibling.session,
       agent: 'critic',
     }));
+  });
+
+  it('executePipeline aborts siblings via abortSession callback (without provider abort dispatch)', async () => {
+    const sessionDirsById = new Map<string, string>();
+    let siblingSessionId = '';
+    const dispatch = vi.fn<AtomDispatchFn>(async (tool, args) => {
+      const op = String(args.op);
+      if (op === 'coral:architect') {
+        const failed = registerSession('failed-atom', tool);
+        sessionDirsById.set(failed.session, failed.session_dir);
+        setTimeout(() => {
+          writeSessionError(failed.session_dir, 'primary failure');
+        }, BOOTSTRAP_TIMEOUT_MS + 50);
+        return jsonResult(failed);
+      }
+      const sibling = registerSession('sibling-atom', tool);
+      siblingSessionId = sibling.session;
+      sessionDirsById.set(sibling.session, sibling.session_dir);
+      return jsonResult(sibling);
+    });
+
+    const abortSession = vi.fn((sessionId: string) => {
+      const dir = sessionDirsById.get(sessionId);
+      if (dir) writeSessionError(dir, 'abort requested');
+    });
+
+    await expect(
+      executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', dispatch, {
+        ...FAST_POLL,
+        abortSession,
+      }),
+    ).rejects.toThrow("Step 1, atom 'architect' failed: primary failure");
+
+    expect(siblingSessionId).not.toBe('');
+    expect(abortSession).toHaveBeenCalledWith(siblingSessionId);
+    expect(dispatch.mock.calls.some(([, args]) => args.op === 'abort')).toBe(false);
   });
 
   it('reports progress for step and atom lifecycle events', async () => {
@@ -1051,6 +1105,97 @@ describe('workflow pipe executor', () => {
       ).rejects.toThrow('Pipeline aborted');
       expect(dispatch).not.toHaveBeenCalled();
     });
+  });
+
+  it('injects bypass:true for mixed-provider parallel atoms', async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const dispatch: AtomDispatchFn = async (tool, args) => {
+      calls.push({ tool, args });
+      if (args.op === 'coral:architect') {
+        return jsonResult(registerSession('architect', tool, 'ARCH'));
+      }
+      return jsonResult(registerSession('workflow-literal', tool, 'LIT'));
+    };
+
+    await executePipeline(
+      parseExpression('(architect@claude, \'literal\'@codex)'),
+      'seed',
+      'codex',
+      dispatch,
+      { ...FAST_POLL, args: { architect: { model: 'sonnet' } } },
+    );
+
+    expect(calls).toHaveLength(2);
+    const agentCall = calls.find((call) => call.args.op === 'coral:architect');
+    const literalCall = calls.find((call) => call.args.op === 'coral:workflow-literal');
+    expect(agentCall).toMatchObject({ tool: 'claude', args: { bypass: true, model: 'sonnet' } });
+    expect(literalCall).toMatchObject({ tool: 'codex', args: { bypass: true, prompt: 'literal' } });
+  });
+
+  it('aborts all pending siblings via abortSession callback on multi-sibling failure', async () => {
+    const sessionDirsById = new Map<string, string>();
+    const siblings: string[] = [];
+    const dispatch = vi.fn<AtomDispatchFn>(async (tool, args) => {
+      const op = String(args.op);
+      if (op === 'coral:architect') {
+        const failed = registerSession('failed-atom', tool);
+        sessionDirsById.set(failed.session, failed.session_dir);
+        setTimeout(() => {
+          writeSessionError(failed.session_dir, 'primary failure');
+        }, BOOTSTRAP_TIMEOUT_MS + 50);
+        return jsonResult(failed);
+      }
+      const label = op === 'coral:critic' ? 'critic-atom' : 'resolver-atom';
+      const sibling = registerSession(label, tool);
+      siblings.push(sibling.session);
+      sessionDirsById.set(sibling.session, sibling.session_dir);
+      return jsonResult(sibling);
+    });
+
+    const abortSession = vi.fn((sessionId: string) => {
+      const dir = sessionDirsById.get(sessionId);
+      if (dir) writeSessionError(dir, `abort requested: ${sessionId}`);
+    });
+
+    await expect(
+      executePipeline(parseExpression('(architect, critic, resolver)'), 'seed', 'codex', dispatch, {
+        ...FAST_POLL,
+        abortSession,
+      }),
+    ).rejects.toThrow("Step 1, atom 'architect' failed: primary failure");
+
+    expect(siblings).toHaveLength(2);
+    expect(abortSession).toHaveBeenCalledTimes(2);
+    expect(new Set(abortSession.mock.calls.map(([session]) => String(session)))).toEqual(new Set(siblings));
+    expect(dispatch.mock.calls.some(([, args]) => (args as { op?: unknown }).op === 'abort')).toBe(false);
+  });
+
+  it('emits progress when sibling abort is skipped because abortSession handler is missing', async () => {
+    const progress: string[] = [];
+    const dispatch: AtomDispatchFn = async (tool, args) => {
+      const op = String(args.op);
+      if (op === 'coral:architect') {
+        const failed = registerSession('failed-atom-no-di', tool);
+        setTimeout(() => {
+          writeSessionError(failed.session_dir, 'primary failure');
+        }, BOOTSTRAP_TIMEOUT_MS + 50);
+        return jsonResult(failed);
+      }
+      const sibling = registerSession('sibling-no-di', tool);
+      setTimeout(() => {
+        writeSessionError(sibling.session_dir, 'secondary stop');
+      }, BOOTSTRAP_TIMEOUT_MS + 120);
+      return jsonResult(sibling);
+    };
+
+    await expect(
+      executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', dispatch, {
+        ...FAST_POLL,
+        onProgress: (message) => progress.push(message),
+      }),
+    ).rejects.toThrow("Step 1, atom 'architect' failed: primary failure");
+
+    expect(progress).toContain('atom critic abort skipped: no abortSession handler');
   });
 
   describe('waitForAllAtoms — resume response validation edge cases', () => {

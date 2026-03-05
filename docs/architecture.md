@@ -19,12 +19,13 @@
 │  │  (bridge/coral-ax.cjs)         │  │  (bridge/coral-discuss.cjs)     │  │
 │  │                                │  │                                 │  │
 │  │  Tools: codex + claude + wait  │  │  Tools: discuss (2 ops)         │  │
-│  │         + workflow             │  │    + discuss_lead (7 ops)       │  │
-│  │  codex: exec/list/fork/abort   │  │                                 │  │
+│  │         + abort + workflow     │  │    + discuss_lead (7 ops)       │  │
+│  │  codex: exec/list/fork         │  │                                 │  │
 │  │   + coral:<name>               │  │                                 │  │
-│  │  claude: exec/list/abort       │  │                                 │  │
+│  │  claude: exec/list/fork        │  │                                 │  │
 │  │   + coral:<agent>              │  │                                 │  │
 │  │  wait: provider-agnostic       │  │                                 │  │
+│  │  abort: provider-agnostic      │  │                                 │  │
 │  │  workflow: pipeline executor   │  │                                 │  │
 │  │                                │  │                                 │  │
 │  │  Session: ~/.claude/coral/     │  │  Session: {project}/.claude/    │  │
@@ -50,7 +51,7 @@ How the AX MCP server routes tool calls internally. The top-level router (`serve
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │  Claude Code (Host)                                              │
-│  MCP tool call: codex / claude / wait / workflow                 │
+│  MCP tool call: codex / claude / wait / abort / workflow         │
 └─────────────────────────────┬────────────────────────────────────┘
                               │ stdio (JSON-RPC)
                               ▼
@@ -64,7 +65,7 @@ How the AX MCP server routes tool calls internally. The top-level router (`serve
 │  server-handlers.ts — Top-level Router                           │
 │                                                                  │
 │  provider in registry?   YES → provider.handleOp / handleCoralOp │
-│                          NO  → wait/workflow/unknown tool        │
+│                          NO  → wait/abort/workflow/unknown tool  │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -89,7 +90,7 @@ provider adapter (`providers/<name>/server-handlers.ts`)
         │
         ├─ op === "exec" / "fork" → launchJob() → spawn CLI (background)
         ├─ op === "list"          → provider session list
-        └─ op === "abort"         → active session abort
+        └─ op === "coral:*"       → provider-specific coral injection path
 ```
 
 `coral:` resolution is centralized in `src/coral/dispatch.ts`; provider adapters only implement provider-specific injection:
@@ -150,10 +151,10 @@ handleWorkflow()                              workflow/handler.ts
                     └──────┬───────┘
                            │
               ┌────────────┼─────────────┬──────────┐
-              ▼            ▼             ▼          ▼
-          "codex"      "claude"       "wait"    "workflow"
-              │            │             │          │
-              ▼            ▼             │          ▼
+              ▼            ▼             ▼          ▼          ▼
+          "codex"      "claude"       "wait"    "abort"   "workflow"
+              │            │             │          │          │
+              ▼            ▼             │          │          ▼
      provider registry lookup            │
          │                               │
          ├─ coral:<name> → coral/dispatch│
@@ -166,8 +167,10 @@ handleWorkflow()                              workflow/handler.ts
                        spawn CLI         │
                        (background)      │
                               ↓          │
-  result → session_dir ◄─────────────────┘
+  result → session_dir ◄─────────────────┴───────────────┐
   (background)              poll loop
+                                │
+                                └─ abort({ sessions }) → activeSessions controller.abort()
 ```
 
 ## Data Flow
@@ -323,7 +326,7 @@ coral/
 │   │   └── mcp-utils.ts         # Shared MCP response utilities
 │   ├── server/                  # Unified MCP server (tool router)
 │   │   ├── server.ts            # Composition root
-│   │   └── server-handlers.ts   # Pure router (registry + coral dispatch + wait/workflow)
+│   │   └── server-handlers.ts   # Pure router (registry + coral dispatch + wait/abort/workflow)
 │   ├── runner/                  # Shared runner infrastructure
 │   │   ├── types.ts             # SessionProvider, SessionEntry, CompletionMetadata
 │   │   ├── engine.ts            # spawnCli, child caps, kill lifecycle
@@ -407,7 +410,7 @@ coral/
 
 ```
 server/server.ts                    (composition root)
-  └── server/server-handlers.ts     (pure router: provider registry + coral dispatch + wait + workflow)
+  └── server/server-handlers.ts     (pure router: provider registry + coral dispatch + wait + abort + workflow)
       ├── providers/bootstrap.ts
       ├── providers/registry.ts
       ├── coral/dispatch.ts

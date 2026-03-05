@@ -46,6 +46,16 @@ export async function executeClaudeResume(
   return executeClaude(args, prompt, options);
 }
 
+export async function executeClaudeFork(
+  sessionId: string,
+  prompt: string,
+  options: Omit<ClaudeExecOptions, 'sessionId'> = {},
+): Promise<ClaudeExecResult> {
+  const args = [...STREAM_JSON_ARGS, '--resume', sessionId, '--fork-session'];
+  appendSharedArgs(args, options);
+  return executeClaude(args, prompt, options);
+}
+
 function appendSharedArgs(args: string[], options: ClaudeExecOptions): void {
   if (options.bypassPermissions) args.push('--dangerously-skip-permissions');
   if (options.systemPrompt) args.push('--append-system-prompt', options.systemPrompt);

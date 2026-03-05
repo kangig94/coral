@@ -1,6 +1,7 @@
 import { appendProgressEvent } from '../runner/progress.js';
 import {
   launchJob as launchRunnerJob,
+  activeSessions,
 } from '../runner/job-manager.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { getProvider, getProviderNames } from '../providers/registry.js';
@@ -133,6 +134,10 @@ export function handleWorkflow(
         signal,
         onProgress: (message) => onEvent(message),
         staleTimeoutMs: input.stale_timeout_seconds * 1000,
+        abortSession: (id) => {
+          const entry = activeSessions.get(id);
+          if (entry) entry.controller.abort();
+        },
       });
       return textResult(output);
     },

@@ -9,7 +9,7 @@ export const workflowInputSchema = z.object({
   provider: z
     .string()
     .regex(providerIdentPattern, 'Provider name must be lowercase letters, digits, or hyphens')
-    .default('codex'),
+    .default('claude'),
   stale_timeout_seconds: z.number().min(0).default(900),
   args: z.record(z.string(), atomArgsSchema).optional(),
 }).superRefine((value, ctx) => {

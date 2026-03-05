@@ -1,6 +1,6 @@
 import type { ProviderAdapter, ProviderTool } from './types.js';
 
-const RESERVED_TOOL_NAMES = new Set(['wait', 'workflow']);
+const RESERVED_TOOL_NAMES = new Set(['wait', 'workflow', 'abort']);
 const providers = new Map<string, ProviderAdapter>();
 
 export function registerProvider(adapter: ProviderAdapter): void {

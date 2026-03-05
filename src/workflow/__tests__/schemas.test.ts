@@ -2,13 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { workflowInputSchema } from '../schemas.js';
 
 describe('workflowInputSchema', () => {
-  it('accepts minimal valid input and defaults provider to codex', () => {
+  it('accepts minimal valid input and defaults provider to claude', () => {
     const parsed = workflowInputSchema.parse({
       expression: 'architect -> resolver',
       prompt: 'hello',
     });
 
-    expect(parsed.provider).toBe('codex');
+    expect(parsed.provider).toBe('claude');
     expect(parsed.stale_timeout_seconds).toBe(900);
   });
 

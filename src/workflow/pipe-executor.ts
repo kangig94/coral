@@ -65,7 +65,6 @@ export type LaunchedAtom = {
 };
 
 type AtomAbortTarget = {
-  providerTool: SessionProvider;
   session: string;
   agent: string;
 };
@@ -353,6 +352,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     dispatchPayload = {
       op: `coral:${atom.agent}`,
       prompt: atomPrompt,
+      bypass: true,
       ...(executionParams.model ? { model: executionParams.model } : {}),
       ...(executionParams.working_directory ? { working_directory: executionParams.working_directory } : {}),
       ...(executionParams.effort ? { effort: executionParams.effort } : {}),
@@ -365,6 +365,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     dispatchPayload = {
       op: 'coral:workflow-literal',
       prompt: promptText,
+      bypass: true,
     };
   }
 
@@ -519,7 +520,6 @@ export async function waitForAllAtoms(
         const overlay = sessionOverlay.get(atom.agent)!;
         if (!pending.has(overlay.session)) continue;
         void requestAbort({
-          providerTool: atom.providerTool,
           session: overlay.session,
           agent: atom.agent,
         }).catch(() => {});
@@ -556,7 +556,6 @@ export async function waitForAllAtoms(
         expectedStaleAbortSessions.add(staleSession);
         onProgress(`atom ${atom.agent} stale (no activity for ${Math.floor(staleTimeoutMs / 1000)}s), aborting`);
         await requestAbort({
-          providerTool: atom.providerTool,
           session: staleSession,
           agent: atom.agent,
         });
@@ -641,6 +640,7 @@ export async function executePipeline(
     onProgress?: (message: string) => void;
     staleTimeoutMs?: number;
     pollIntervalMs?: number;
+    abortSession?: (sessionId: string) => void;
   } = {},
 ): Promise<string> {
   const onProgress = options.onProgress ?? (() => {});
@@ -668,11 +668,11 @@ export async function executePipeline(
       launchedAtoms,
       options.signal,
       onProgress,
-      async ({ providerTool, session }) => {
-        try {
-          await dispatch(providerTool, { op: 'abort', session });
-        } catch {
-          // best effort only
+      async ({ session, agent }) => {
+        if (options.abortSession) {
+          options.abortSession(session);
+        } else {
+          onProgress(`atom ${agent} abort skipped: no abortSession handler`);
         }
       },
       {

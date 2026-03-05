@@ -33,15 +33,14 @@ export function handleSessionList(mgr: SessionManager, provider: SessionProvider
   return jsonResult({ sessions: registered, total: registered.length });
 }
 
-export function handleSessionAbort(session: string, provider: SessionProvider): McpResult {
-  const entry = activeSessions.get(session);
-  if (!entry || entry.provider !== provider) {
-    return textResult(
-      `No active execution found for session "${session}". The session may have already completed or the ID is invalid.`,
-      true,
-    );
-  }
-
-  entry.controller.abort();
-  return jsonResult({ session, session_name: entry.sessionName, status: 'abort_requested' });
+export function handleBatchAbort(sessions: string[]): McpResult {
+  const results = sessions.map((session) => {
+    const entry = activeSessions.get(session);
+    if (!entry) {
+      return { session, status: 'not_found' as const };
+    }
+    entry.controller.abort();
+    return { session, session_name: entry.sessionName, status: 'abort_requested' as const };
+  });
+  return jsonResult({ results });
 }

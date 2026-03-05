@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { SessionManager } from '../../runner/session-manager.js';
 import { SessionManager as RealSessionManager } from '../../runner/session-manager.js';
+import { activeSessions, type ActiveSession } from '../../runner/job-manager.js';
 import { _test as resolverTest } from '../../coral/resolver.js';
 import { _resetProviderBootstrapForTests, registerBuiltInProviders } from '../../providers/bootstrap.js';
 import { _resetProvidersForTests } from '../../providers/registry.js';
@@ -52,7 +53,7 @@ describe('ax server-handlers router', () => {
 
   it('exposes built-in provider tools plus wait and workflow', () => {
     const names = getTools().map((tool) => tool.name).sort();
-    expect(names).toEqual(['claude', 'codex', 'wait', 'workflow']);
+    expect(names).toEqual(['abort', 'claude', 'codex', 'wait', 'workflow']);
   });
 
   it('returns isError for unknown tool names', async () => {
@@ -65,6 +66,19 @@ describe('ax server-handlers router', () => {
     const result = await handleToolCall('wait', { sessions: [] }, mgr);
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('At least one session required');
+  });
+
+  it('validates abort tool input via zod schema', async () => {
+    const result = await handleToolCall('abort', { sessions: [] }, mgr);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('At least one session required');
+  });
+
+  it('abort tool returns not_found for unknown sessions', async () => {
+    const result = await handleToolCall('abort', { sessions: ['12345678-1234-4234-8234-123456789abc'] }, mgr);
+    expect(result.isError).toBe(false);
+    const data = JSON.parse(result.content[0].text) as { results: Array<{ status: string }> };
+    expect(data.results[0].status).toBe('not_found');
   });
 
   it('bootstraps a synthetic provider through single bootstrap touchpoint', async () => {
@@ -142,5 +156,103 @@ describe('ax server-handlers router', () => {
     })?.properties?.provider;
     expect(providerProp).toBeDefined();
     expect(typeof providerProp).toBe('object');
+  });
+});
+
+type AbortItem = {
+  session: string;
+  session_name?: string;
+  status: 'abort_requested' | 'not_found';
+};
+
+function parseAbortResults(text: string): AbortItem[] {
+  return (JSON.parse(text) as { results: AbortItem[] }).results;
+}
+
+function registerActiveSession(
+  sessionId: string,
+  provider: 'codex' | 'claude',
+  sessionName: string,
+  sessionDir: string,
+  controller = new AbortController(),
+): AbortController {
+  const entry: ActiveSession = {
+    provider,
+    sessionDir,
+    controller,
+    sessionName,
+    terminalState: 'running',
+  };
+  activeSessions.set(sessionId, entry);
+  return controller;
+}
+
+describe('abort tool edge cases', () => {
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join('/tmp', 'coral-abort-edge-'));
+    mkdirSync(join(tmpDir, 'workspace'), { recursive: true });
+    mgr = new RealSessionManager(join(tmpDir, 'workspace'));
+    activeSessions.clear();
+    _resetProvidersForTests();
+    _resetProviderBootstrapForTests();
+  });
+
+  afterEach(() => {
+    activeSessions.clear();
+    _resetProvidersForTests();
+    _resetProviderBootstrapForTests();
+    rmSync(tmpDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  it('aborts codex and claude sessions while preserving not_found items in mixed batches', async () => {
+    const codexSession = '00000000-0000-4000-8000-000000000001';
+    const missingSession = '00000000-0000-4000-8000-000000000002';
+    const claudeSession = '00000000-0000-4000-8000-000000000003';
+    const codexController = registerActiveSession(codexSession, 'codex', 'codex-live', join(tmpDir, 'workspace', codexSession));
+    const claudeController = registerActiveSession(claudeSession, 'claude', 'claude-live', join(tmpDir, 'workspace', claudeSession));
+
+    const result = await handleToolCall('abort', { sessions: [codexSession, missingSession, claudeSession] }, mgr);
+
+    expect(result.isError).toBe(false);
+    expect(parseAbortResults(result.content[0]?.text ?? '')).toEqual([
+      { session: codexSession, session_name: 'codex-live', status: 'abort_requested' },
+      { session: missingSession, status: 'not_found' },
+      { session: claudeSession, session_name: 'claude-live', status: 'abort_requested' },
+    ]);
+    expect(codexController.signal.aborted).toBe(true);
+    expect(claudeController.signal.aborted).toBe(true);
+  });
+
+  it('remains stable when aborting an already-aborted controller', async () => {
+    const session = '00000000-0000-4000-8000-00000000000a';
+    const controller = new AbortController();
+    controller.abort();
+    registerActiveSession(session, 'codex', 'already-aborted', join(tmpDir, 'workspace', session), controller);
+
+    const result = await handleToolCall('abort', { sessions: [session] }, mgr);
+
+    expect(result.isError).toBe(false);
+    expect(parseAbortResults(result.content[0]?.text ?? '')).toEqual([
+      { session, session_name: 'already-aborted', status: 'abort_requested' },
+    ]);
+    expect(controller.signal.aborted).toBe(true);
+  });
+
+  it('returns not_found for all sessions when batch contains only unknown UUIDs', async () => {
+    const sessions = ['00000000-0000-4000-8000-000000000010', '00000000-0000-4000-8000-000000000011'];
+    const result = await handleToolCall('abort', { sessions }, mgr);
+
+    expect(result.isError).toBe(false);
+    expect(parseAbortResults(result.content[0]?.text ?? '')).toEqual([
+      { session: sessions[0], status: 'not_found' },
+      { session: sessions[1], status: 'not_found' },
+    ]);
+  });
+
+  it('rejects non-UUID strings in sessions array', async () => {
+    const result = await handleToolCall('abort', { sessions: ['not-a-uuid'] }, mgr);
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain('Invalid uuid');
   });
 });

@@ -53,7 +53,6 @@ import {
   handleSessionSend,
   handleSessionFork,
   handleCodexSessionList,
-  handleCodexSessionAbort,
   handleCodexOp,
   handleCodexCoralOp,
   codexTool,
@@ -171,24 +170,6 @@ describe('session handlers', () => {
     const data = parseResult(result);
     expect(data.forked_from).toBe(sourceSessionId);
     expect(data.thread_id).toBe('thread-fork-1');
-  });
-
-  it('handleCodexSessionAbort aborts by single UUID session', () => {
-    const sessionId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
-    const controller = new AbortController();
-    activeSessions.set(sessionId, {
-      provider: 'codex',
-      sessionDir: '/tmp/x',
-      controller,
-      sessionName: 'abort-me',
-      terminalState: 'running',
-    } as never);
-
-    const result = handleCodexSessionAbort({ session: sessionId });
-    const data = parseResult(result);
-    expect(result.isError).toBe(false);
-    expect(data.status).toBe('abort_requested');
-    expect(controller.signal.aborted).toBe(true);
   });
 });
 

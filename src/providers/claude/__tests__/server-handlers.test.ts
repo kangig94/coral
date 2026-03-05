@@ -59,11 +59,23 @@ vi.mock('../claude-executor.js', () => {
       costUsd: 0.001,
       aborted: false,
     })),
+    executeClaudeFork: vi.fn(async (
+      _sessionId: string,
+      prompt: string,
+      options?: { model?: string; onEvent?: (line: string) => void },
+    ) => ({
+      response: `fork:${prompt}`,
+      sessionId: 'claude-thread-forked',
+      model: options?.model ?? 'sonnet',
+      durationMs: 5,
+      costUsd: 0.001,
+      aborted: false,
+    })),
   };
 });
 
-import { executeClaudeOneShot, executeClaudeResume } from '../claude-executor.js';
-import { handleClaudeOp, claudeAdapter, makeClaudeEventCallback } from '../server-handlers.js';
+import { executeClaudeOneShot, executeClaudeResume, executeClaudeFork, ClaudeExecParseError } from '../claude-executor.js';
+import { handleClaudeOp, handleClaudeSessionFork, claudeAdapter, makeClaudeEventCallback } from '../server-handlers.js';
 import { SessionManager } from '../../../runner/session-manager.js';
 import { createSessionDir } from '../../../runner/progress.js';
 import { activeSessions } from '../../../runner/job-manager.js';
@@ -71,6 +83,7 @@ import { _test as resolverTest, resolveCoralContent } from '../../../coral/resol
 
 const mockExecuteClaudeOneShot = vi.mocked(executeClaudeOneShot);
 const mockExecuteClaudeResume = vi.mocked(executeClaudeResume);
+const mockExecuteClaudeFork = vi.mocked(executeClaudeFork);
 
 let tmpDir = '';
 let mgr: SessionManager;
@@ -134,6 +147,7 @@ describe('claude provider server-handlers', () => {
     sessionDirs.clear();
     mockExecuteClaudeOneShot.mockClear();
     mockExecuteClaudeResume.mockClear();
+    mockExecuteClaudeFork.mockClear();
   });
 
   afterEach(() => {
@@ -270,6 +284,71 @@ describe('claude provider server-handlers', () => {
     const options = resumeOptions();
     expect(options?.effort).toBe('high');
     expect(options?.onEvent).toEqual(expect.any(Function));
+  });
+
+  it('fork op routes through handleClaudeOp and returns forked_from', async () => {
+    const sessionId = registerSession('claude-fork-source', 'thread-fork-source');
+    const result = await handleClaudeOp({ op: 'fork', session: sessionId, name: 'forked' }, mgr);
+    await expectLaunched(result);
+  });
+
+  it('fork op with non-existent session returns error', async () => {
+    const result = await handleClaudeOp({ op: 'fork', session: 'nonexistent-ref' }, mgr);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('nonexistent-ref');
+  });
+
+  it('fork returns non_resumable when CLI output cannot be parsed', async () => {
+    const sessionId = registerSession('claude-fork-parse-fail', 'thread-fork-parse');
+    const failure = {
+      exitCode: 17,
+      stdout: 'not-json',
+      stderr: 'parse exploded',
+      parseError: 'Fully unparseable stream-json output',
+    };
+    mockExecuteClaudeFork.mockRejectedValueOnce(new ClaudeExecParseError(failure));
+
+    const result = await handleClaudeSessionFork(
+      { session: sessionId, prompt: 'fork it', model: 'opus', bypass: false },
+      mgr,
+      new AbortController().signal,
+    );
+
+    expect(result.isError).toBe(false);
+    const payload = JSON.parse(result.content[0]?.text ?? '{}') as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      response: '',
+      notice: 'Claude CLI returned non-JSON output while forking session.',
+      non_resumable: true,
+    });
+  });
+
+  it('fork marks as non_resumable when CLI returns no session id', async () => {
+    const sessionId = registerSession('claude-fork-no-id', 'thread-fork-no-id');
+    mockExecuteClaudeFork.mockResolvedValueOnce({
+      response: 'fork-output',
+      sessionId: '',
+      model: 'sonnet',
+      durationMs: 22,
+      costUsd: 0.004,
+      aborted: false,
+    });
+
+    const result = await handleClaudeSessionFork(
+      { session: sessionId, prompt: 'fork without id', name: 'child', bypass: false },
+      mgr,
+      new AbortController().signal,
+    );
+
+    expect(result.isError).toBe(false);
+    const payload = JSON.parse(result.content[0]?.text ?? '{}') as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      response: 'fork-output',
+      notice: 'No session ID returned by Claude CLI output. Session not registered.',
+      non_resumable: true,
+    });
+    expect(payload).not.toHaveProperty('thread_id');
+    expect(payload).not.toHaveProperty('forked_from');
   });
 
 });

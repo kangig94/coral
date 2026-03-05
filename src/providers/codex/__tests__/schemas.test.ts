@@ -31,21 +31,12 @@ describe('codexOpSchema', () => {
     });
   });
 
-  it('abort rejects non-UUID session', () => {
-    expectCodexParseError({ op: 'abort', session: 'session-a' });
-  });
-
-  it('abort requires session', () => {
-    expectCodexParseError({ op: 'abort' });
+  it('rejects abort discriminator (removed — use unified abort tool)', () => {
+    expectCodexParseError({ op: 'abort', session: '12345678-1234-4234-8234-123456789abc' });
   });
 
   it('rejects legacy wait payloads because wait op is unsupported', () => {
     const result = codexOpSchema.safeParse({ op: 'wait', job_ids: ['12345678-1234-1234-1234-123456789abc'] });
-    expect(result.success).toBe(false);
-  });
-
-  it('abort rejects job_id (old field name)', () => {
-    const result = codexOpSchema.safeParse({ op: 'abort', job_id: '12345678-1234-1234-1234-123456789abc' });
     expect(result.success).toBe(false);
   });
 
