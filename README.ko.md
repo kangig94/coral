@@ -1,4 +1,4 @@
-# Coral
+# 🪸 Coral
 
 Claude Code는 이미 코딩할 줄 압니다. Coral은 *당신의 방식대로* 코딩하도록 가르칩니다.
 

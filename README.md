@@ -1,4 +1,4 @@
-# Coral
+# 🪸 Coral
 
 [한국어](README.ko.md)
 
