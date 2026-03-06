@@ -1,10 +1,11 @@
 ---
 name: analyze
-description: "Deep analysis - project scanning, requirement gaps, root cause investigation. Pass --codex to delegate to Codex CLI."
-argument-hint: "[--codex] [investigation target or question]"
+description: "Deep analysis - project scanning, requirement gaps, root cause investigation. Pass --deep for HOW method injection, --codex to delegate to Codex CLI."
+argument-hint: "[--deep] [--codex] [investigation target or question]"
 ---
 
 > **CORAL_AGENTS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/agents/")`
+> **CORAL_METHODS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/methods/")`
 
 # Deep Analysis & Investigation
 
@@ -16,10 +17,11 @@ argument-hint: "[--codex] [investigation target or question]"
   | Argument | Mode |
   |----------|------|
   | `<prompt>` | Claude-native (default) |
+  | `--deep` | HOW method injection (combinable with other flags) |
   | `--codex` | Codex delegation (context from conversation) |
   | `--codex <prompt>` | Codex delegation |
 
-  Strip the `--codex` flag before passing the prompt to the execution path.
+  Strip `--deep` and `--codex` flags before passing the prompt to the execution path.
 </Argument_Routing>
 <Protocol>
   ## Phase 1 — Create Analysis File
@@ -59,9 +61,12 @@ argument-hint: "[--codex] [investigation target or question]"
   **Claude-native (default)**: Read `CORAL_AGENTS/<agent>.md`, follow its Investigation_Protocol
   with Claude-native tools (Read, Grep, Glob, Bash git-only). Constrain to scope.
   You (the executor) append to the file — agent protocols are read-only references.
+  **If `--deep`**: read the agent's `methods:` frontmatter, then read each listed HOW file
+  from `CORAL_METHODS/` (e.g., `HOW-FALSIFY.md`). Apply HOW methods during that step's execution.
 
   **Codex (`--codex`)**: call `codex({ op: "coral:<role_name>", ... })` with scope,
   `working_directory`, and analysis file content so far.
+  **If `--deep`**: append ` --deep` to the op string (e.g., `coral:scanner --deep`).
   Run one step at a time — do NOT launch steps in parallel. Each step's output informs
   the next step's scope and "Needed when" evaluation.
   After each exec:
