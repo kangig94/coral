@@ -252,7 +252,7 @@ describe('codex provider adapter', () => {
     const result = await codexProvider.execute(makeRequest(), makeRuntime().runtime);
 
     expect(result).toEqual({
-      text: 'mapped codex text',
+      content: 'mapped codex text',
       conversationRef: 'thread-mapped',
       model: 'o4-mini',
       durationMs: 12,
@@ -382,7 +382,7 @@ describe('claude provider adapter', () => {
     const result = await claudeProvider.execute(makeRequest({ model: 'sonnet' }), makeRuntime().runtime);
 
     expect(result).toEqual({
-      text: '',
+      content: '',
       notice: 'Claude CLI returned non-JSON output; result is non-resumable.',
       nonResumable: true,
       model: 'sonnet',
@@ -409,7 +409,7 @@ describe('claude provider adapter', () => {
     const result = await claudeProvider.execute(makeRequest({ model: 'sonnet' }), makeRuntime().runtime);
 
     expect(result).toEqual({
-      text: 'mapped claude text',
+      content: 'mapped claude text',
       conversationRef: 'claude-session-9',
       model: 'sonnet',
       durationMs: 18,
@@ -551,7 +551,7 @@ describe('claude adapter: ClaudeExecParseError handling', () => {
 
     expect(result.nonResumable).toBe(true);
     expect(result.exitCode).toBe(3);
-    expect(result.text).toBe('');
+    expect(result.content).toBe('');
     expect(Array.isArray(result.errors)).toBe(true);
     expect(result.errors).toHaveLength(1);
   });

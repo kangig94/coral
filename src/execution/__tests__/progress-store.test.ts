@@ -77,7 +77,7 @@ describe('execution ProgressStore', () => {
   it('appendTerminal updates status.json result', () => {
     const store = new ProgressStore();
     const jobId = `progress-terminal-${randomUUID()}`;
-    const result = { text: 'done', exitCode: 0 } satisfies TerminalResult;
+    const result = { content: 'done', exitCode: 0 } satisfies TerminalResult;
     jobIdsToClean.add(jobId);
     store.initJob(jobId, 'session-1', 'codex');
 
@@ -123,13 +123,13 @@ describe('execution ProgressStore', () => {
     const jobId = `progress-terminal-only-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob(jobId, 'session-1', 'codex');
-    store.appendTerminal(jobId, 'session-1', { text: 'result text' }, 'completed');
+    store.appendTerminal(jobId, 'session-1', { content: 'result text' }, 'completed');
 
     const events = store.replayFrom(jobId, 0, createReplayCursor());
 
     expect(events).toHaveLength(1);
     expect(events[0].type).toBe('terminal');
-    expect(events[0].result?.text).toBe('result text');
+    expect(events[0].result?.content).toBe('result text');
   });
 
   it('appendTerminal is safe when status.json does not exist (no unhandled throw)', () => {
@@ -140,7 +140,7 @@ describe('execution ProgressStore', () => {
     writeFileSync(join(store.jobDir(jobId), 'progress.jsonl'), '', 'utf-8');
 
     expect(() => {
-      store.appendTerminal(jobId, 'session-1', { text: 'done' }, 'completed');
+      store.appendTerminal(jobId, 'session-1', { content: 'done' }, 'completed');
     }).not.toThrow();
   });
 

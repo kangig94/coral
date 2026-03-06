@@ -284,7 +284,7 @@ With `include_result: true`:
   "completedJobId": "job-uuid",
   "sessionId": "session-uuid",
   "remainingJobIds": [],
-  "result": { "text": "...", "durationMs": 1234 }
+  "result": { "content": "...", "durationMs": 1234 }
 }
 ```
 
@@ -303,7 +303,7 @@ With `include_result: true`:
 - **Cross-provider**: accepts mixed Codex/Claude job IDs in one call.
 - **Progress notifications**: incremental updates are emitted through `notifications/progress`.
 - **Incremental streaming**: pass `cursor` from a previous wait response to resume from where the last call left off.
-- **Context control**: `include_result: false` (default) omits `result.text` and provides `result.path` instead. `Read(result.path)` to selectively load results.
+- **Context control**: `include_result: false` (default) omits `result.content` and provides `result.path` instead. `Read(result.path)` to selectively load results.
 
 ---
 

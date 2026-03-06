@@ -63,7 +63,7 @@ export interface ProviderRequest {
 
 /** Result returned by a Provider adapter after execution completes. */
 export interface ProviderResult {
-  text: string;
+  content: string;
   conversationRef?: string;
   model?: string;
   durationMs?: number;
@@ -87,7 +87,7 @@ export type LaunchDecision =
 
 /** Terminal result payload included in WaitStreamEvent and PersistedStatusRecord. */
 export interface TerminalResult {
-  text: string;
+  content: string;
   durationMs?: number;
   aborted?: boolean;
   nonResumable?: boolean;

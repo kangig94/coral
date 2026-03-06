@@ -122,7 +122,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
             sendProgress(notify, progressToken, ++progressCount, event.message);
             continue;
           case 'terminal': {
-            const { text, ...resultMeta } = event.result;
+            const { content, ...resultMeta } = event.result;
             const result = parsed.include_result
               ? event.result
               : { ...resultMeta, path: `/tmp/coral-jobs/${event.completedJobId}/result.md` };

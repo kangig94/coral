@@ -126,7 +126,7 @@ function describeLaunchRejection(
 function describeTerminalFailure(result: TerminalResult): string {
   if (result.notice) return normalizeErrorText(result.notice);
   if (result.aborted) return 'aborted';
-  return normalizeErrorText(result.text);
+  return normalizeErrorText(result.content);
 }
 
 function waitTimeoutSeconds(staleTimeoutMs: number, pollIntervalMs: number): number {
@@ -384,7 +384,7 @@ export async function waitForAtoms(
           continue;
         }
 
-        results.set(atom.agent, event.result.text);
+        results.set(atom.agent, event.result.content);
         continue;
       }
 

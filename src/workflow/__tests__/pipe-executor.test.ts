@@ -80,9 +80,9 @@ describe('workflow pipe executor', () => {
       }),
       waitStream: vi.fn((req: WaitRequest) => {
         if (req.jobIds[0] === 'job-1') {
-          return emit([terminal('job-1', 'session-1', { text: 'ARCH' })]);
+          return emit([terminal('job-1', 'session-1', { content: 'ARCH' })]);
         }
-        return emit([terminal('job-2', 'session-2', { text: 'FINAL' })]);
+        return emit([terminal('job-2', 'session-2', { content: 'FINAL' })]);
       }),
     });
 
@@ -105,8 +105,8 @@ describe('workflow pipe executor', () => {
         return running('job-b', 'session-b');
       }),
       waitStream: vi.fn((_req: WaitRequest) => emit([
-        terminal('job-a', 'session-a', { text: 'ARCH' }),
-        terminal('job-b', 'session-b', { text: 'CRIT' }),
+        terminal('job-a', 'session-a', { content: 'ARCH' }),
+        terminal('job-b', 'session-b', { content: 'CRIT' }),
       ])),
     });
 
@@ -155,7 +155,7 @@ describe('workflow pipe executor', () => {
         if (req.jobIds[0] === 'job-stale') {
           return emit([timeout(['job-stale'])]);
         }
-        return emit([terminal('job-resumed', 'session-1', { text: 'DONE' })]);
+        return emit([terminal('job-resumed', 'session-1', { content: 'DONE' })]);
       }),
     });
 
@@ -194,9 +194,9 @@ describe('workflow pipe executor', () => {
       }),
       waitStream: vi.fn((req: WaitRequest) => {
         if (req.jobIds.includes('job-a') && req.jobIds.includes('job-b')) {
-          return emit([terminal('job-a', 'session-a', { text: '', notice: 'primary failure' })]);
+          return emit([terminal('job-a', 'session-a', { content: '', notice: 'primary failure' })]);
         }
-        return emit([terminal('job-b', 'session-b', { text: '', aborted: true })]);
+        return emit([terminal('job-b', 'session-b', { content: '', aborted: true })]);
       }),
     });
 
@@ -282,7 +282,7 @@ describe('waitForAtoms: terminal event with notice field', () => {
   it('treats notice on terminal result as a failure (not a success)', async () => {
     const executionSvc = createExecutionService({
       waitStream: vi.fn((_req: WaitRequest) => emit([
-        terminal('job-1', 'session-1', { text: '', notice: 'process killed' }),
+        terminal('job-1', 'session-1', { content: '', notice: 'process killed' }),
       ])),
     });
 
@@ -323,10 +323,10 @@ describe('executePipeline: stale recovery resets sibling activity clocks', () =>
         }
         const events: WaitStreamEvent[] = [];
         if (req.jobIds.includes('job-a-resumed')) {
-          events.push(terminal('job-a-resumed', 'session-a', { text: 'ARCH DONE' }));
+          events.push(terminal('job-a-resumed', 'session-a', { content: 'ARCH DONE' }));
         }
         if (req.jobIds.includes('job-b')) {
-          events.push(terminal('job-b', 'session-b', { text: 'CRIT DONE' }));
+          events.push(terminal('job-b', 'session-b', { content: 'CRIT DONE' }));
         }
         return emit(events.length > 0 ? events : []);
       }),
@@ -362,7 +362,7 @@ describe('executePipeline: literal prompt atoms', () => {
         capturedPrompts.push(String(input.prompt));
         return running('job-1', 'session-1');
       }),
-      waitStream: vi.fn(() => emit([terminal('job-1', 'session-1', { text: 'OUT' })])),
+      waitStream: vi.fn(() => emit([terminal('job-1', 'session-1', { content: 'OUT' })])),
     });
 
     await executePipeline(
@@ -388,9 +388,9 @@ describe('executePipeline: literal prompt atoms', () => {
       }),
       waitStream: vi.fn((req: WaitRequest) => {
         if (req.jobIds[0] === 'job-1') {
-          return emit([terminal('job-1', 'session-1', { text: 'PREV OUTPUT' })]);
+          return emit([terminal('job-1', 'session-1', { content: 'PREV OUTPUT' })]);
         }
-        return emit([terminal('job-2', 'session-2', { text: 'DONE' })]);
+        return emit([terminal('job-2', 'session-2', { content: 'DONE' })]);
       }),
     });
 
@@ -414,7 +414,7 @@ describe('executePipeline: error propagation', () => {
     const executionSvc = createExecutionService({
       coralDispatch: vi.fn(async () => running('job-1', 'session-1')),
       waitStream: vi.fn(() => emit([
-        terminal('job-1', 'session-1', { text: '', aborted: true }),
+        terminal('job-1', 'session-1', { content: '', aborted: true }),
       ])),
     });
 

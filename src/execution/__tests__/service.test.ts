@@ -65,7 +65,7 @@ function makeProvider(options?: {
   const execute = vi.fn(
     options?.execute ??
       (async (): Promise<ProviderResult> => ({
-        text: 'ok',
+        content: 'ok',
       })),
   );
   const preflight = options?.preflight ? vi.fn(options.preflight) : undefined;
@@ -309,7 +309,7 @@ describe('ExecutionService', () => {
         eventId: 2,
         type: 'terminal',
         ts: '2026-03-06T00:00:02.000Z',
-        result: { text: 'done' },
+        result: { content: 'done' },
       },
     ];
 
@@ -334,7 +334,7 @@ describe('ExecutionService', () => {
         completedJobId: 'job-1',
         sessionId: 'session-1',
         remainingJobIds: [],
-        result: { text: 'done' },
+        result: { content: 'done' },
       },
     ]);
   });
@@ -545,7 +545,7 @@ describe('ExecutionService adversarial', () => {
         const all = [
           { jobId, sessionId: 'session-1', eventId: 1, type: 'progress' as const, ts: '', message: 'event-1' },
           { jobId, sessionId: 'session-1', eventId: 2, type: 'progress' as const, ts: '', message: 'event-2' },
-          { jobId, sessionId: 'session-1', eventId: 3, type: 'terminal' as const, ts: '', result: { text: 'done' } },
+          { jobId, sessionId: 'session-1', eventId: 3, type: 'terminal' as const, ts: '', result: { content: 'done' } },
         ];
         return all.filter((e) => e.eventId > fromEventId);
       });

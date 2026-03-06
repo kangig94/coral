@@ -60,7 +60,7 @@ function createFakeExecutionService(overrides: Partial<FakeExecutionService> = {
         completedJobId: 'job-1',
         sessionId: 'session-1',
         remainingJobIds: [],
-        result: { text: 'done' },
+        result: { content: 'done' },
       };
     }),
     ...overrides,
@@ -306,7 +306,7 @@ describe('execution backend server', () => {
     expect(body).toContain('event: progress');
     expect(body).toContain('event: terminal');
     expect(body).toContain('"message":"working"');
-    expect(body).toContain('"text":"done"');
+    expect(body).toContain('"content":"done"');
 
     const firstIdLine = body.split('\n').find((line) => line.startsWith('id: '));
     expect(firstIdLine).toBeTruthy();

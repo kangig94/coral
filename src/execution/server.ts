@@ -266,7 +266,7 @@ function markJobAsError(
   sessionId: string,
   notice: string,
 ): void {
-  const terminalResult: TerminalResult = { text: '', notice };
+  const terminalResult: TerminalResult = { content: '', notice };
   progressStore.updateLaunchState(jobId, 'error', notice);
   progressStore.appendTerminal(jobId, sessionId, terminalResult, 'error');
 }

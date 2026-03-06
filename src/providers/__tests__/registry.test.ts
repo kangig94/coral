@@ -15,7 +15,7 @@ function makeProvider(name: string): Provider {
   return {
     name,
     capabilities: { resumable: true, forkable: true },
-    execute: async () => ({ text: `${name} response` }),
+    execute: async () => ({ content: `${name} response` }),
   };
 }
 

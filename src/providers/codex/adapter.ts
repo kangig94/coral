@@ -60,7 +60,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
         runtime.signal,
       );
       return {
-        text: result.response,
+        content: result.response,
         conversationRef: result.sessionId ?? undefined,
         model: result.model,
         durationMs: result.durationMs,
@@ -84,7 +84,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
         runtime.signal,
       );
       return {
-        text: result.response,
+        content: result.response,
         conversationRef: result.sessionId ?? request.conversationRef,
         model: result.model,
         durationMs: result.durationMs,
@@ -107,7 +107,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
         runtime.signal,
       );
       return {
-        text: result.response,
+        content: result.response,
         conversationRef: result.sessionId ?? undefined,
         model: result.model,
         durationMs: result.durationMs,

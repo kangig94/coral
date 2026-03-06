@@ -67,7 +67,7 @@ function makeOnEvent(runtime: ProviderRuntime, jobId: string, projectRoot?: stri
 function parseError(error: unknown, fallbackModel: string): ProviderResult {
   if (error instanceof ClaudeExecParseError) {
     return {
-      text: '',
+      content: '',
       notice: 'Claude CLI returned non-JSON output; result is non-resumable.',
       nonResumable: true,
       model: fallbackModel,
@@ -96,7 +96,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
           onEvent,
         });
         return {
-          text: result.response,
+          content: result.response,
           conversationRef: result.sessionId ?? undefined,
           model: result.model,
           durationMs: result.durationMs,
@@ -121,7 +121,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
           onEvent,
         });
         return {
-          text: result.response,
+          content: result.response,
           conversationRef: result.sessionId ?? request.conversationRef,
           model: result.model,
           durationMs: result.durationMs,
@@ -146,7 +146,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
           onEvent,
         });
         return {
-          text: result.response,
+          content: result.response,
           conversationRef: result.sessionId ?? undefined,
           model: result.model,
           durationMs: result.durationMs,

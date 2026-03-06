@@ -383,7 +383,7 @@ export class ExecutionService {
               completedJobId: jobId,
               sessionId,
               remainingJobIds,
-              result: event.result ?? { text: '' },
+              result: event.result ?? { content: '' },
             };
             pending.delete(jobId);
             break;
@@ -421,7 +421,7 @@ export class ExecutionService {
 
         const phase: JobPhase = result.aborted ? 'aborted' : 'completed';
         const terminalResult: TerminalResult = {
-          text: result.text,
+          content: result.content,
           durationMs: result.durationMs,
           aborted: result.aborted,
           nonResumable: result.nonResumable,
@@ -433,7 +433,7 @@ export class ExecutionService {
         };
 
         this.progressStore.appendTerminal(jobId, sessionId, terminalResult, phase);
-        this.progressStore.writeResultMd(jobId, result.text);
+        this.progressStore.writeResultMd(jobId, result.content);
         this.jobManager.setPhase(jobId, phase);
         this.jobManager.remove(jobId);
 
@@ -470,7 +470,7 @@ export class ExecutionService {
     this.jobManager.setLaunchState(jobId, launchState, message);
     this.progressStore.updateLaunchState(jobId, launchState, message);
     this.jobManager.setPhase(jobId, 'error');
-    this.progressStore.appendTerminal(jobId, sessionId, { text: '', notice: message }, 'error');
+    this.progressStore.appendTerminal(jobId, sessionId, { content: '', notice: message }, 'error');
     this.jobManager.remove(jobId);
     this.sessionManager.releaseJob(sessionId, jobId);
   }
@@ -502,7 +502,7 @@ export class ExecutionService {
       },
     )
       .then((text) => {
-        const terminalResult: TerminalResult = { text };
+        const terminalResult: TerminalResult = { content: text };
         this.progressStore.appendTerminal(jobId, sessionId, terminalResult, 'completed');
         this.progressStore.writeResultMd(jobId, text);
         this.jobManager.setPhase(jobId, 'completed');
@@ -512,7 +512,7 @@ export class ExecutionService {
       })
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
-        const terminalResult: TerminalResult = { text: '', notice: message };
+        const terminalResult: TerminalResult = { content: '', notice: message };
         this.progressStore.appendTerminal(jobId, sessionId, terminalResult, 'error');
         this.jobManager.setPhase(jobId, 'error');
         this.jobManager.remove(jobId);
