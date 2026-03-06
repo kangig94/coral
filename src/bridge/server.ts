@@ -7,6 +7,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { ensureBackend, proxyToolCall, streamWait } from './backend-client.js';
+import { buildToolList, handleBackendToolCall } from './backend-tool.js';
 import { isRecord, textResult } from '../shared/mcp-utils.js';
 
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
@@ -18,7 +19,7 @@ const waitInputSchema = z.object({
   cursor: z.string().min(1).optional(),
 });
 
-type ToolDescriptor = {
+export type ToolDescriptor = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
@@ -90,9 +91,9 @@ const server = new Server(
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   try {
-    return { tools: await fetchTools() };
+    return { tools: buildToolList(await fetchTools()) };
   } catch {
-    return { tools: [] };
+    return { tools: buildToolList(null) };
   }
 });
 
@@ -134,6 +135,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       }
 
       return textResult('wait stream ended without a terminal event', true);
+    }
+
+    if (name === 'backend') {
+      return handleBackendToolCall(rawArgs);
     }
 
     const response = await proxyToolCall(name, rawArgs, {

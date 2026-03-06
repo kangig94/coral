@@ -6,7 +6,7 @@ Detailed description of the TypeScript modules across both MCP servers.
 
 ### src/bridge/server.ts - MCP Stdio Proxy
 
-MCP stdio server (composition root). Receives MCP tool calls from the Claude Code host, proxies them to the backend daemon via HTTP. Handles `wait` tool locally via SSE streaming from `POST /wait/stream`, forwarding progress events as MCP progress notifications. All other tools are forwarded to the backend via `proxyToolCall`. No business logic — tool discovery is delegated to `GET /tools` on the backend. See `src/bridge/server.ts`.
+MCP stdio server (composition root). Receives MCP tool calls from the Claude Code host, proxies them to the backend daemon via HTTP. Handles `wait` locally via SSE streaming from `POST /wait/stream`, forwarding progress events as MCP progress notifications. Intercepts the bridge-local `backend` tool for daemon status and graceful shutdown without auto-starting the backend. `ListTools` still discovers remote tools from `GET /tools`, then appends the static `backend` descriptor so it remains visible even when remote discovery fails. See `src/bridge/server.ts`.
 
 ---
 
@@ -14,12 +14,20 @@ MCP stdio server (composition root). Receives MCP tool calls from the Claude Cod
 
 HTTP client for the persistent backend daemon. Key exports:
 - `ensureBackend()` — read `backend.json`, healthcheck, spawn if not running or version-mismatched, poll until ready. Handles replacement of outdated daemons (shutdown old, acquire replacement lock, spawn new, wait for ready).
+- `getBackendStatus()` — read `backend.json`, confirm PID liveness, then query `GET /health` without auto-starting the backend. Returns full health payload or `shutting_down` during drain.
+- `shutdownBackend()` — read `backend.json`, confirm PID liveness, then call `POST /admin/shutdown` without auto-starting the backend. Returns idempotent drain-aware status.
 - `proxyToolCall(name, args, ctx)` — `POST /tool` with JSON body and auth token
 - `streamWait(jobIds, timeoutSeconds, backendInfo, lastEventId?)` — async generator yielding `WaitStreamEvent` from SSE response. Includes SSE block parsing (`parseSseBlock`) and typed event validation (`parseWaitStreamEvent`).
 
 Named constants: `STARTUP_POLL_MS`, `STARTUP_TIMEOUT_MS`, `HEALTH_TIMEOUT_MS`, `REPLACEMENT_TIMEOUT_MS`, `TOOL_TIMEOUT_MS`.
 
 See `src/bridge/backend-client.ts`.
+
+---
+
+### src/bridge/backend-tool.ts - Bridge-Local Backend Tool
+
+Static descriptor and handler for the `backend` MCP tool. Defines the `op` Zod schema, formats MCP responses with `textResult()`, delegates `status` to `getBackendStatus()`, delegates `shutdown` to `shutdownBackend()`, and appends the local descriptor to discovered remote tools via `buildToolList()`. See `src/bridge/backend-tool.ts`.
 
 ---
 

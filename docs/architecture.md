@@ -83,9 +83,9 @@ How the AX MCP server routes tool calls internally. The MCP stdio proxy (`bridge
 ┌──────────────────────────────────────────────────────────────────┐
 │  bridge/server.ts — MCP stdio proxy (composition root)           │
 │                                                                  │
-│  name === "wait" ?                                               │
-│    YES → streamWait() via POST /wait/stream (SSE)                │
-│    NO  → proxyToolCall() via POST /tool                          │
+│  name === "wait"    ? → streamWait() via POST /wait/stream (SSE) │
+│  name === "backend" ? → handleBackendToolCall() (bridge-local)   │
+│  otherwise          → proxyToolCall() via POST /tool             │
 └─────────────────────────────┬────────────────────────────────────┘
                               │ HTTP (127.0.0.1)
                               ▼
@@ -200,15 +200,15 @@ handleWorkflow()                              workflow/handler.ts
                     │  MCP Client  │
                     └──────┬───────┘
                            │ stdio (JSON-RPC)
-              ┌────────────┼─────────────┬──────────┐
-              ▼            ▼             ▼          ▼          ▼
-          "codex"      "claude"       "wait"    "abort"   "workflow"
-              │            │             │          │          │
-              └────────┬───┘             │          │          │
-                       │                 │          │          │
-         bridge/server.ts (MCP proxy)    │          │          │
-              │                          │          │          │
-              ▼                          ▼          ▼          ▼
+              ┌────────────┼─────────────┬──────────┬──────────┐
+              ▼            ▼             ▼          ▼          ▼          ▼
+          "codex"      "claude"       "wait"    "abort"   "workflow" "backend"
+              │            │             │          │          │          │
+              └────────┬───┘             │          │          │          │
+                       │                 │          │          │          │
+         bridge/server.ts (MCP proxy)    │          │          │          │
+              │                          │          │          │   (bridge-local,
+              ▼                          ▼          ▼          ▼   no HTTP)  │
          ┌────────────────────────────────────────────────────────┐
          │  HTTP → execution/server.ts (backend daemon)           │
          │                                                        │
@@ -397,7 +397,8 @@ coral/
 │   │   └── format-progress.ts   # Progress message formatting
 │   ├── bridge/                  # MCP stdio proxy to backend daemon
 │   │   ├── server.ts            # MCP composition root (stdio transport)
-│   │   └── backend-client.ts    # HTTP client (ensureBackend, proxyToolCall, streamWait)
+│   │   ├── backend-tool.ts      # Bridge-local backend tool (status/shutdown, never proxied)
+│   │   └── backend-client.ts    # HTTP client (ensureBackend, proxyToolCall, streamWait, getBackendStatus, shutdownBackend)
 │   ├── execution/               # Persistent HTTP backend daemon
 │   │   ├── server.ts            # HTTP server, routing, lifecycle, singleton startup
 │   │   ├── service.ts           # ExecutionService (start/resume/fork/coralDispatch/wait)
@@ -490,6 +491,9 @@ coral/
 
 ```
 bridge/server.ts                        (MCP stdio proxy — composition root)
+  ├── bridge/backend-tool.ts            (bridge-local backend tool: handler, descriptor, buildToolList)
+  │   ├── bridge/backend-client.ts      (getBackendStatus, shutdownBackend)
+  │   └── shared/mcp-utils.ts
   └── bridge/backend-client.ts          (HTTP client: ensureBackend, proxyToolCall, streamWait)
       ├── execution/backend-info.ts     (read connection info)
       ├── execution/backend-lock.ts     (lock path constant)

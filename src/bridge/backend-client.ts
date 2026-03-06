@@ -25,6 +25,22 @@ type BackendHealth = {
   instanceId: string;
 };
 
+export type BackendStatus = {
+  status: 'ok';
+  version: string;
+  instanceId: string;
+  uptime: number;
+  activeChildren: number;
+  activeJobs: number;
+  inflightRequests: number;
+} | {
+  status: 'shutting_down';
+};
+
+export type ShutdownResult =
+  | { ok: true; alreadyDraining?: true }
+  | { ok: false; reason: string };
+
 type ReplacementLock = {
   payload: string;
 };
@@ -49,6 +65,33 @@ function isBackendHealth(value: unknown): value is BackendHealth {
     && value.status === 'ok'
     && typeof value.version === 'string'
     && typeof value.instanceId === 'string';
+}
+
+function isBackendStatus(value: unknown): value is Extract<BackendStatus, { status: 'ok' }> {
+  return isRecord(value)
+    && value.status === 'ok'
+    && typeof value.version === 'string'
+    && typeof value.instanceId === 'string'
+    && Number.isFinite(value.uptime)
+    && Number.isInteger(value.activeChildren)
+    && Number.isInteger(value.activeJobs)
+    && Number.isInteger(value.inflightRequests);
+}
+
+function isShuttingDownError(value: unknown): value is { error: 'backend_shutting_down' } {
+  return isRecord(value) && value.error === 'backend_shutting_down';
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return false;
+    if (code === 'EPERM') return true;
+    throw error;
+  }
 }
 
 async function fetchBackendHealth(info: BackendInfo): Promise<BackendHealth | null> {
@@ -92,6 +135,70 @@ async function requestBackendShutdown(info: BackendInfo): Promise<void> {
     });
   } catch {
     /* best effort */
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function getBackendStatus(): Promise<BackendStatus | null> {
+  const info = readBackendInfo();
+  if (!info || !isProcessAlive(info.pid)) return null;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${info.port}/health`, {
+      method: 'GET',
+      headers: { 'X-Coral-Backend-Token': info.token },
+      signal: controller.signal,
+    });
+
+    const body = await parseJsonResponse(response);
+    if (response.status === 200) {
+      return isBackendStatus(body) ? body : null;
+    }
+    if (response.status === 503 && isShuttingDownError(body)) {
+      return { status: 'shutting_down' };
+    }
+    if (response.status === 401) return null;
+    return null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function shutdownBackend(): Promise<ShutdownResult> {
+  const info = readBackendInfo();
+  if (!info || !isProcessAlive(info.pid)) {
+    return { ok: false, reason: 'not_running' };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${info.port}/admin/shutdown`, {
+      method: 'POST',
+      headers: { 'X-Coral-Backend-Token': info.token },
+      signal: controller.signal,
+    });
+
+    const body = await parseJsonResponse(response);
+    if (response.status === 200 && isRecord(body) && body.status === 'shutting_down') {
+      return { ok: true };
+    }
+    if (response.status === 503 && isShuttingDownError(body)) {
+      return { ok: true, alreadyDraining: true };
+    }
+    if (response.status === 401) {
+      return { ok: false, reason: 'unauthorized' };
+    }
+    return { ok: false, reason: `${response.status} ${response.statusText}` };
+  } catch {
+    return { ok: false, reason: 'not_running' };
   } finally {
     clearTimeout(timeout);
   }

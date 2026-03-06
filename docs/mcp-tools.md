@@ -2,7 +2,7 @@
 
 Coral exposes two MCP servers, each with its own tool set:
 
-- **`ax` (Agent Execution)**: 5 tools (`codex`, `claude`, `wait`, `abort`, `workflow`) for Codex/Claude CLI session management and pipeline orchestration. Prefix: `mcp__plugin_coral_ax__`
+- **`ax` (Agent Execution)**: 6 tools (`codex`, `claude`, `wait`, `abort`, `workflow`, `backend`) for Codex/Claude CLI session management, backend control, and pipeline orchestration. Prefix: `mcp__plugin_coral_ax__`
 - **`dc` (Discuss)**: 2 tools for moderated multi-agent discussions. Prefix: `mcp__plugin_coral_dc__`
 
 All tool inputs are validated at runtime with Zod schemas (`src/providers/codex/schemas.ts`, `src/providers/claude/schemas.ts`, `src/discuss/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
@@ -439,6 +439,65 @@ workflow({
   prompt: "Map and review the API layer"
 })
 ```
+
+---
+
+# Backend Tool (`ax`)
+
+## backend
+
+Bridge-local backend control tool. It is intercepted in the AX bridge and is never proxied through the backend `/tool` route.
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `op` | string | Yes | `status` or `shutdown`. |
+
+### op: status
+
+Returns the current backend health payload when the daemon is running:
+
+```json
+{
+  "status": "ok",
+  "version": "0.4.3",
+  "instanceId": "backend-instance",
+  "uptime": 12345,
+  "activeChildren": 0,
+  "activeJobs": 0,
+  "inflightRequests": 1
+}
+```
+
+If the bridge cannot confirm a live backend process, the tool returns an MCP error: `Backend is not running`.
+
+If the backend is already draining and still answers `/health`, the tool returns:
+
+```json
+{
+  "status": "shutting_down"
+}
+```
+
+### op: shutdown
+
+Requests graceful backend shutdown through `POST /admin/shutdown`.
+
+Successful shutdown requests return:
+
+```json
+{
+  "status": "shutting_down"
+}
+```
+
+Behavior notes:
+
+- Returns the same success payload when the backend is already draining.
+- Returns MCP error `not_running` when no live backend can be reached.
+- Returns MCP error `unauthorized` when `backend.json` contains a stale token.
+- Never auto-starts the backend for `status` or `shutdown`.
 
 ---
 

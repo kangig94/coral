@@ -47,6 +47,7 @@ describe('providers registry', () => {
     expect(() => registerNewProvider(makeProvider('wait'))).toThrow('reserved');
     expect(() => registerNewProvider(makeProvider('workflow'))).toThrow('reserved');
     expect(() => registerNewProvider(makeProvider('abort'))).toThrow('reserved');
+    expect(() => registerNewProvider(makeProvider('backend'))).toThrow('reserved');
   });
 
   it('rejects duplicate provider registrations', () => {
