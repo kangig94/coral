@@ -65,8 +65,12 @@ argument-hint: "[--deep] [--codex] [investigation target or question]"
   Run one step at a time — do NOT launch steps in parallel. Each step's output informs
   the next step's scope and "Needed when" evaluation.
   Each step is a fresh call (no session continuity — each agent has a different role).
-  After each exec: `wait({ jobs: [job] })` → use `result.text` from the response.
-  On error, abort the chain and report. Post-process and append each step's result to the file.
+  After each exec:
+  1. Capture `job` from the exec response.
+  2. `wait({ jobs: [job] })`.
+  3. On completion, read `/tmp/coral-jobs/<job>/result.md`.
+  4. On error, read `/tmp/coral-jobs/<job>/status.json`, abort the chain, and report the error.
+  You (the executor) post-process and append the result to the file after each step completes.
 
   ### Steps
 

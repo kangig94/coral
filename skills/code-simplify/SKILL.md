@@ -73,12 +73,18 @@ Strip the `--codex` flag before passing the prompt to the execution path.
        - `--codex`: call `codex({ op: "exec", ... })` with `<Execution>`, `<Constraints>`,
          `<Failure_Modes_To_Avoid>`, `<Output_Format>`, target file paths, and coding standards.
          Pass `working_directory`.
-         `wait({ jobs: [job] })` → `result.text` for output.
+         Then wait in a timeout loop:
+         `wait({ jobs: [job] })`
+         until terminal status, then `Read("/tmp/coral-jobs/<job>/result.md")` for output.
        Parallel split:
        - Default: spawn each group as a parallel Task (`subagent_type: "general-purpose"`).
          Pass `<Execution>`, `<Constraints>`, the file group, and project coding standards.
        - `--codex`: dispatch one `codex({ op: "exec", ... })` call per file group,
-         collect all `job`s, then `wait({ jobs: pendingJobs })` — wait returns on each completion.
+         collect all `job`s, then wait:
+         1. Call `wait({ jobs: pendingJobs })`
+         2. If `status: "timeout"`, continue
+         3. If `status: "completed"`, read `/tmp/coral-jobs/<job>/result.md`, remove completed job
+         4. If `status: "error"`, read `/tmp/coral-jobs/<job>/status.json`, remove failed job, continue
     5) Review each change for correctness AND justification.
        Use git diff as a before/after reference when the diff is manageable.
        Correctness:
