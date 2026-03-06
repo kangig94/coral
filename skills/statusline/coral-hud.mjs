@@ -230,7 +230,15 @@ function getCacheTtlMs(cache) {
 
 function isFreshCacheEntry(cache, now = Date.now()) {
   if (cache.ts <= 0 || cache.ts > now) return false;
-  return now - cache.ts <= getCacheTtlMs(cache);
+  if (now - cache.ts > getCacheTtlMs(cache)) return false;
+  if (cache.data && !cache.error) {
+    for (const rt of [cache.data.fiveHourResetsAt, cache.data.weeklyResetsAt]) {
+      if (!rt) continue;
+      const resetMs = new Date(rt).getTime();
+      if (Number.isFinite(resetMs) && resetMs > cache.ts && resetMs <= now) return false;
+    }
+  }
+  return true;
 }
 
 function readCacheFile(path) {
@@ -293,7 +301,7 @@ function releaseFetchLock(lockPath) {
 function readStaleCacheData(cachePath) {
   try {
     const cache = normalizeCacheEntry(JSON.parse(readFileSync(cachePath, "utf-8")));
-    if (cache.data) return formatLimits(cache.data);
+    if (cache.data) return formatLimits(cache.data, true);
     return null;
   } catch {
     return null;
@@ -369,20 +377,21 @@ function formatResetTime(isoString, mode) {
   return `${totalHr}:${String(mm).padStart(2, "0")}`;
 }
 
-function formatWindow(label, val, resetsAt, mode, dimLabel = false) {
+function formatWindow(label, val, resetsAt, mode, dimLabel = false, stale = false) {
   if (val == null) return null;
   const pct = clampPct(val);
+  if (stale) return `${DIM}${label}:${String(pct).padStart(2)}%${RESET}`;
   const reset = formatResetTime(resetsAt, mode);
   const resetStr = reset ? ` ${DIM}(${reset})${RESET}` : "";
   const prefix = dimLabel ? `${DIM}${label}:${RESET}` : `${label}:`;
   return `${prefix}${colorPct(pct)}${resetStr}`;
 }
 
-function formatLimits(data) {
+function formatLimits(data, stale = false) {
   if (!data) return null;
   const parts = [
-    formatWindow("5h", data.fiveHour, data.fiveHourResetsAt, "5h"),
-    formatWindow("wk", data.weekly, data.weeklyResetsAt, "wk", true),
+    formatWindow("5h", data.fiveHour, data.fiveHourResetsAt, "5h", false, stale),
+    formatWindow("wk", data.weekly, data.weeklyResetsAt, "wk", true, stale),
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(" ") : null;
 }
@@ -408,7 +417,7 @@ async function renderLimits() {
   const cached = readCacheFile(CACHE_FILE);
   if (cached) {
     if (cached.error) {
-      if (cached.data) return formatLimits(cached.data);
+      if (cached.data) return formatLimits(cached.data, true);
       return formatErrorIndicator(cached);
     }
     return formatLimits(cached.data);
