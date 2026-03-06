@@ -166,7 +166,7 @@ describe('execution backend server', () => {
       activeJobs: 0,
       inflightRequests: 1,
     });
-    expect(typeof body.uptime).toBe('number');
+    expect(typeof body.uptimeMs).toBe('number');
   });
 
   it('returns 200 from /tools with provider and built-in descriptors', async () => {

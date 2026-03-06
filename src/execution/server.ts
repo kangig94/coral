@@ -721,7 +721,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         status: 'ok',
         version,
         instanceId,
-        uptime: now() - startedAt,
+        uptimeMs: now() - startedAt,
         activeChildren: activeChildren.size,
         activeJobs: listLiveJobs(progressStore).length,
         inflightRequests: idleTimer.inflightRequests,

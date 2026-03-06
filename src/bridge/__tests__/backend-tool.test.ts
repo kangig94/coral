@@ -36,7 +36,7 @@ describe('bridge backend-tool', () => {
       status: 'ok' as const,
       version: '0.1.0',
       instanceId: 'backend-instance',
-      uptime: 10,
+      uptimeMs: 10,
       activeChildren: 1,
       activeJobs: 2,
       inflightRequests: 3,

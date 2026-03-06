@@ -73,7 +73,7 @@ async function loadBackendClientModule(): Promise<BridgeBackendClientModule> {
 function makeBackendStatus(overrides: Partial<{
   version: string;
   instanceId: string;
-  uptime: number;
+  uptimeMs: number;
   activeChildren: number;
   activeJobs: number;
   inflightRequests: number;
@@ -82,7 +82,7 @@ function makeBackendStatus(overrides: Partial<{
     status: 'ok' as const,
     version: '0.1.0',
     instanceId: 'backend-instance',
-    uptime: 12_345,
+    uptimeMs: 12_345,
     activeChildren: 2,
     activeJobs: 3,
     inflightRequests: 1,

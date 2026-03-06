@@ -29,7 +29,7 @@ export type BackendStatus = {
   status: 'ok';
   version: string;
   instanceId: string;
-  uptime: number;
+  uptimeMs: number;
   activeChildren: number;
   activeJobs: number;
   inflightRequests: number;
@@ -72,7 +72,7 @@ function isBackendStatus(value: unknown): value is Extract<BackendStatus, { stat
     && value.status === 'ok'
     && typeof value.version === 'string'
     && typeof value.instanceId === 'string'
-    && Number.isFinite(value.uptime)
+    && Number.isFinite(value.uptimeMs)
     && Number.isInteger(value.activeChildren)
     && Number.isInteger(value.activeJobs)
     && Number.isInteger(value.inflightRequests);
