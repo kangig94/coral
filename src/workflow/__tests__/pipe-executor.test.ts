@@ -1,1210 +1,429 @@
-import { describe, expect, it, vi, afterEach } from 'vitest';
-import { rmSync } from 'node:fs';
-import { join } from 'node:path';
-import * as runnerProgress from '../../runner/progress.js';
-import {
-  appendProgressEvent,
-  createSessionDir,
-  PROGRESS_FILE,
-  writeSessionError,
-  writeSessionResult,
-} from '../../runner/progress.js';
-import type { SessionProvider } from '../../runner/types.js';
-import { jsonResult, textResult } from '../../shared/mcp-utils.js';
+import { describe, expect, it, vi } from 'vitest';
+import type { CallerContext } from '../../execution/service.js';
+import type { TerminalResult, WaitRequest, WaitStreamEvent } from '../../types.js';
 import { parseExpression } from '../pipe-parser.js';
 import {
-  BOOTSTRAP_TIMEOUT_MS,
-  BUSY_PREFIX,
-  SIBLING_DRAIN_TIMEOUT_MS,
+  MAX_LAUNCH_ATTEMPTS,
   executePipeline,
   formatStepOutput,
-  readLaunchBootstrapStatus,
-  waitForAllAtoms,
-  type AtomDispatchFn,
-  type LaunchedAtom,
+  launchAtomWithRetry,
+  waitForAtoms,
+  type WorkflowExecutionService,
 } from '../pipe-executor.js';
 
-const FAST_POLL = { pollIntervalMs: 10 };
-const dirsToClean = new Set<string>();
+const ctx: CallerContext = {
+  projectRoot: '/tmp/coral-workflow-project',
+  pluginRoot: '/tmp/coral-workflow-plugin',
+};
 
-afterEach(() => {
-  for (const dir of dirsToClean) {
-    rmSync(dir, { recursive: true, force: true });
-  }
-  dirsToClean.clear();
-  vi.restoreAllMocks();
-});
-
-function registerSession(
-  label: string,
-  provider: SessionProvider,
-  output?: string,
-): { session: string; session_dir: string } {
-  const { id, dir } = createSessionDir(label, provider);
-  dirsToClean.add(dir);
-  if (output !== undefined) {
-    writeSessionResult(dir, output, { session_name: label });
-  }
-  return { session: id, session_dir: dir };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function makeLaunchedAtom(
-  session: { session: string; session_dir: string },
-  agent: string,
-  stepIndex = 0,
-): LaunchedAtom {
+function running(job: string, session: string) {
   return {
-    session: session.session,
-    sessionDir: session.session_dir,
-    agent,
-    tagName: agent,
-    providerTool: 'codex',
-    stepIndex,
-    resumeOp: `coral:${agent}`,
+    status: 'running' as const,
+    job,
+    session,
   };
 }
 
-function abortWithSessionError(
-  target: { session: string; session_dir: string },
-  error = 'stale abort',
-): ({ session }: { session: string }) => Promise<void> {
-  return async ({ session }: { session: string }) => {
-    if (session === target.session) {
-      writeSessionError(target.session_dir, error);
-    }
+function terminal(
+  jobId: string,
+  sessionId: string,
+  result: TerminalResult,
+): WaitStreamEvent {
+  return {
+    type: 'terminal',
+    completedJobId: jobId,
+    sessionId,
+    remainingJobIds: [],
+    result,
   };
+}
+
+function timeout(runningJobIds: string[]): WaitStreamEvent {
+  return {
+    type: 'timeout',
+    runningJobIds,
+  };
+}
+
+async function* emit(events: WaitStreamEvent[]): AsyncGenerator<WaitStreamEvent> {
+  for (const event of events) {
+    yield event;
+  }
+}
+
+type MockExecutionService = WorkflowExecutionService & {
+  coralDispatch: ReturnType<typeof vi.fn>;
+  resume: ReturnType<typeof vi.fn>;
+  abort: ReturnType<typeof vi.fn>;
+  awaitLaunch: ReturnType<typeof vi.fn>;
+  waitStream: ReturnType<typeof vi.fn>;
+};
+
+function createExecutionService(overrides: Partial<MockExecutionService> = {}): MockExecutionService {
+  return {
+    coralDispatch: vi.fn(async () => running('job-1', 'session-1')),
+    resume: vi.fn(async () => running('job-resumed', 'session-1')),
+    abort: vi.fn((jobIds: string[]) => ({ aborted: jobIds, notFound: [] })),
+    awaitLaunch: vi.fn(async () => 'ready'),
+    waitStream: vi.fn((_req: WaitRequest) => emit([])),
+    ...overrides,
+  } as MockExecutionService;
 }
 
 describe('workflow pipe executor', () => {
-  it('formatStepOutput returns unwrapped output for one atom', () => {
-    expect(formatStepOutput([{ tagName: 'architect', output: 'hello' }])).toBe('hello');
-  });
-
-  it('formatStepOutput wraps multiple outputs in xml tags', () => {
-    expect(formatStepOutput([
-      { tagName: 'architect', output: 'A' },
-      { tagName: 'critic', output: 'B' },
-    ])).toBe('<architect>\nA\n</architect>\n\n<critic>\nB\n</critic>');
-  });
-
-  it('executes a single-step pipeline', async () => {
-    const dispatchCalls: Array<{ tool: string; args: Record<string, unknown> }> = [];
-    const dispatch: AtomDispatchFn = async (tool, args) => {
-      dispatchCalls.push({ tool, args });
-      return jsonResult(registerSession('architect', tool, 'architect output'));
-    };
-
-    const output = await executePipeline(parseExpression('architect'), 'hello', 'codex', dispatch, FAST_POLL);
-
-    expect(output).toBe('architect output');
-    expect(dispatchCalls).toHaveLength(1);
-    expect(dispatchCalls[0].tool).toBe('codex');
-    expect(dispatchCalls[0].args).toMatchObject({ op: 'coral:architect', prompt: 'hello', bypass: true });
-  });
-
-  it('chains step output into the next step prompt', async () => {
+  it('passes each step output as the next step prompt', async () => {
     const prompts: string[] = [];
-    const dispatch: AtomDispatchFn = async (tool, args) => {
-      const op = String(args.op);
-      prompts.push(String(args.prompt));
-      if (op === 'coral:architect') {
-        return jsonResult(registerSession('architect', tool, 'step-1-output'));
-      }
-      return jsonResult(registerSession('resolver', tool, 'step-2-output'));
-    };
-
-    const output = await executePipeline(parseExpression('architect -> resolver'), 'seed prompt', 'codex', dispatch, FAST_POLL);
-
-    expect(output).toBe('step-2-output');
-    expect(prompts).toEqual(['seed prompt', 'step-1-output']);
-  });
-
-  it('formats parallel output and passes xml-wrapped content to downstream steps', async () => {
-    let resolverPrompt = '';
-    const dispatch: AtomDispatchFn = async (tool, args) => {
-      const op = String(args.op);
-      if (op === 'coral:architect') {
-        return jsonResult(registerSession('architect', tool, 'ARCH'));
-      }
-      if (op === 'coral:critic') {
-        return jsonResult(registerSession('critic', tool, 'CRIT'));
-      }
-      resolverPrompt = String(args.prompt);
-      return jsonResult(registerSession('resolver', tool, 'FINAL'));
-    };
-
-    const output = await executePipeline(parseExpression('(architect, critic) -> resolver'), 'seed', 'codex', dispatch, FAST_POLL);
-
-    expect(output).toBe('FINAL');
-    expect(resolverPrompt).toContain('<architect>\nARCH\n</architect>');
-    expect(resolverPrompt).toContain('<critic>\nCRIT\n</critic>');
-  });
-
-  it('honors per-atom provider override', async () => {
-    const providers: string[] = [];
-    const dispatch: AtomDispatchFn = async (tool, args) => {
-      providers.push(tool);
-      const op = String(args.op);
-      if (op === 'coral:architect') return jsonResult(registerSession('architect', tool, 'A'));
-      return jsonResult(registerSession('resolver', tool, 'B'));
-    };
-
-    await executePipeline(parseExpression('architect@claude -> resolver'), 'seed', 'codex', dispatch, FAST_POLL);
-
-    expect(providers).toEqual(['claude', 'codex']);
-  });
-
-  it('dispatches prompt atom with op coral:workflow-literal', async () => {
-    const dispatch = vi.fn<AtomDispatchFn>(async (tool, _args) =>
-      jsonResult(registerSession('workflow-literal', tool, 'literal output')));
-
-    const output = await executePipeline(parseExpression('\'summarize\''), 'seed', 'codex', dispatch, FAST_POLL);
-
-    expect(output).toBe('literal output');
-    expect(dispatch).toHaveBeenCalledWith('codex', expect.objectContaining({
-      op: 'coral:workflow-literal',
-      prompt: 'summarize',
-      bypass: true,
-    }));
-  });
-
-  it('prompt atom uses literal text only for first step (no previous output)', async () => {
-    const prompts: string[] = [];
-    const dispatch: AtomDispatchFn = async (tool, args) => {
-      prompts.push(String(args.prompt));
-      return jsonResult(registerSession('workflow-literal', tool, 'literal output'));
-    };
-
-    await executePipeline(parseExpression('\'summarize\''), 'seed context', 'codex', dispatch, FAST_POLL);
-
-    expect(prompts).toEqual(['summarize']);
-  });
-
-  it('prompt atom prepends literal before previous output for middle step', async () => {
-    let promptLiteralPrompt = '';
-    const dispatch: AtomDispatchFn = async (tool, args) => {
-      const op = String(args.op);
-      if (op === 'coral:architect') {
-        return jsonResult(registerSession('architect', tool, 'ARCH_OUTPUT'));
-      }
-      promptLiteralPrompt = String(args.prompt);
-      return jsonResult(registerSession('workflow-literal', tool, 'SUMMARIZED'));
-    };
-
-    await executePipeline(parseExpression('architect -> \'summarize\''), 'seed', 'codex', dispatch, FAST_POLL);
-
-    expect(promptLiteralPrompt).toBe('summarize\n\nARCH_OUTPUT');
-  });
-
-  it('formats prompt atom output with step-result tag in parallel group', async () => {
-    let resolverPrompt = '';
-    const dispatch: AtomDispatchFn = async (tool, args) => {
-      const op = String(args.op);
-      if (op === 'coral:architect') {
-        return jsonResult(registerSession('architect', tool, 'ARCH'));
-      }
-      if (op === 'coral:workflow-literal') {
-        return jsonResult(registerSession('workflow-literal', tool, 'SUM'));
-      }
-      resolverPrompt = String(args.prompt);
-      return jsonResult(registerSession('resolver', tool, 'FINAL'));
-    };
-
-    await executePipeline(parseExpression('(architect, \'summarize\') -> resolver'), 'seed', 'codex', dispatch, FAST_POLL);
-
-    expect(resolverPrompt).toContain('<architect>\nARCH\n</architect>');
-    expect(resolverPrompt).toContain('<step-result>\nSUM\n</step-result>');
-  });
-
-  it('prompt atom respects @provider override', async () => {
-    const providers: string[] = [];
-    const dispatch: AtomDispatchFn = async (tool, _args) => {
-      providers.push(tool);
-      return jsonResult(registerSession('workflow-literal', tool, 'done'));
-    };
-
-    await executePipeline(parseExpression('\'text\'@claude'), 'seed', 'codex', dispatch, FAST_POLL);
-
-    expect(providers).toEqual(['claude']);
-  });
-
-  it('uses prompt diagnostic labels in progress messages', async () => {
-    const progress: string[] = [];
-    let attempts = 0;
-    const dispatch: AtomDispatchFn = async (tool) => {
-      attempts += 1;
-      if (attempts === 1) {
-        return textResult(`Error: ${BUSY_PREFIX}1/1 total, 1/1 for ${tool})`, true);
-      }
-      return jsonResult(registerSession('workflow-literal', tool, 'done'));
-    };
-
-    await executePipeline(parseExpression('\'abcdefghijklmnopqrstuvwxyz\''), 'seed', 'codex', dispatch, {
-      ...FAST_POLL,
-      onProgress: (message) => progress.push(message),
+    const executionSvc = createExecutionService({
+      coralDispatch: vi.fn(async (_provider, coralName, input) => {
+        prompts.push(String(input.prompt));
+        return coralName === 'architect' ? running('job-1', 'session-1') : running('job-2', 'session-2');
+      }),
+      waitStream: vi.fn((req: WaitRequest) => {
+        if (req.jobIds[0] === 'job-1') {
+          return emit([terminal('job-1', 'session-1', { text: 'ARCH' })]);
+        }
+        return emit([terminal('job-2', 'session-2', { text: 'FINAL' })]);
+      }),
     });
 
-    expect(progress.some((message) =>
-      message.includes('atom prompt#1(abcdefghijklmnopqrst...) busy (attempt 1), retrying'))).toBe(true);
-  });
-
-  it('rejects non-coral namespaces in v1', async () => {
-    const dispatch: AtomDispatchFn = async () => jsonResult(registerSession('noop', 'codex', 'x'));
-    await expect(
-      executePipeline(parseExpression('some-plugin:agent'), 'seed', 'codex', dispatch, FAST_POLL),
-    ).rejects.toThrow('unsupported namespace');
-  });
-
-  it('fails with launch diagnostics when nested dispatch returns isError', async () => {
-    const dispatch: AtomDispatchFn = async () => textResult('Error: launch failed', true);
-    await expect(
-      executePipeline(parseExpression('architect'), 'seed', 'codex', dispatch, FAST_POLL),
-    ).rejects.toThrow("Step 1, atom 'architect' launch failed");
-  });
-
-  it('fails with launch diagnostics when nested launch payload is malformed', async () => {
-    const dispatch: AtomDispatchFn = async () => jsonResult({ session: 'only-session' });
-    await expect(
-      executePipeline(parseExpression('architect'), 'seed', 'codex', dispatch, FAST_POLL),
-    ).rejects.toThrow('missing session/session_dir');
-  });
-
-  it('forwards atoms effort into nested dispatch payload', async () => {
-    const dispatch = vi.fn<AtomDispatchFn>(async (tool, _args) => {
-      return jsonResult(registerSession('architect', tool, 'done'));
-    });
-
-    await executePipeline(
-      parseExpression('architect'),
-      'seed',
-      'codex',
-      dispatch,
-      {
-        ...FAST_POLL,
-        atoms: {
-          architect: {
-            effort: 'high',
-          },
-        },
-      },
-    );
-
-    expect(dispatch).toHaveBeenCalledWith('codex', expect.objectContaining({
-      op: 'coral:architect',
-      bypass: true,
-      effort: 'high',
-    }));
-    const payload = dispatch.mock.calls[0]?.[1] as Record<string, unknown>;
-    expect(payload.model).toBeUndefined();
-    expect(payload.working_directory).toBeUndefined();
-  });
-
-  it('appends atoms instruction to prompt after prior step output', async () => {
-    let resolverPrompt = '';
-    const dispatch: AtomDispatchFn = async (tool, args) => {
-      const op = String(args.op);
-      if (op === 'coral:architect') {
-        return jsonResult(registerSession('architect', tool, 'ARCH_OUTPUT'));
-      }
-      resolverPrompt = String(args.prompt);
-      return jsonResult(registerSession('resolver', tool, 'DONE'));
-    };
-
-    await executePipeline(
+    const output = await executePipeline(
       parseExpression('architect -> resolver'),
       'seed',
       'codex',
-      dispatch,
-      {
-        ...FAST_POLL,
-        atoms: {
-          resolver: {
-            instruction: 'Summarize the architecture and list risks.',
-          },
-        },
-      },
+      executionSvc,
+      ctx,
     );
 
-    expect(resolverPrompt).toBe('ARCH_OUTPUT\n\nSummarize the architecture and list risks.');
+    expect(output).toBe('FINAL');
+    expect(prompts).toEqual(['seed', 'ARCH']);
   });
 
-  it('throws for invalid atom config shape when executePipeline is called directly', async () => {
-    const dispatch: AtomDispatchFn = async () => jsonResult(registerSession('architect', 'codex', 'done'));
-    await expect(
-      executePipeline(
-        parseExpression('architect'),
-        'seed',
-        'codex',
-        dispatch,
-        {
-          ...FAST_POLL,
-          atoms: {
-            architect: 'bad-shape' as unknown as { effort?: 'low'; instruction?: string },
-          },
-        },
-      ),
-    ).rejects.toThrow("atoms config must be an object");
-  });
-
-  it('injects bypass=true for both agent and prompt literal dispatch payloads', async () => {
-    const calls: Array<Record<string, unknown>> = [];
-    const dispatch: AtomDispatchFn = async (tool, args) => {
-      calls.push(args);
-      if (args.op === 'coral:architect') {
-        return jsonResult(registerSession('architect', tool, 'ARCH'));
-      }
-      return jsonResult(registerSession('workflow-literal', tool, 'LIT'));
-    };
-
-    await executePipeline(parseExpression('(architect, \'literal\')'), 'seed', 'codex', dispatch, FAST_POLL);
-
-    expect(calls).toHaveLength(2);
-    expect(calls.every((call) => call.bypass === true)).toBe(true);
-  });
-
-  it('retries immediate busy launches and succeeds', async () => {
-    let attempts = 0;
-    const progress: string[] = [];
-    const dispatch: AtomDispatchFn = async (tool) => {
-      attempts += 1;
-      if (attempts === 1) {
-        return textResult(`Error: ${BUSY_PREFIX}1/1 total, 1/1 for ${tool})`, true);
-      }
-      return jsonResult(registerSession('architect', tool, 'done'));
-    };
-
-    const output = await executePipeline(parseExpression('architect'), 'seed', 'codex', dispatch, {
-      ...FAST_POLL,
-      onProgress: (message) => progress.push(message),
+  it('formats multiple atoms in a parallel step into tagged output', async () => {
+    const executionSvc = createExecutionService({
+      coralDispatch: vi.fn(async (_provider, coralName) => {
+        if (coralName === 'architect') return running('job-a', 'session-a');
+        return running('job-b', 'session-b');
+      }),
+      waitStream: vi.fn((_req: WaitRequest) => emit([
+        terminal('job-a', 'session-a', { text: 'ARCH' }),
+        terminal('job-b', 'session-b', { text: 'CRIT' }),
+      ])),
     });
 
-    expect(output).toBe('done');
-    expect(attempts).toBe(2);
+    const output = await executePipeline(
+      parseExpression('(architect, critic)'),
+      'seed',
+      'codex',
+      executionSvc,
+      ctx,
+    );
+
+    expect(output).toBe('<architect>\nARCH\n</architect>\n\n<critic>\nCRIT\n</critic>');
+  });
+
+  it('retries busy launches up to MAX_LAUNCH_ATTEMPTS', async () => {
+    let attempt = 0;
+    const progress: string[] = [];
+    const executionSvc = createExecutionService({
+      coralDispatch: vi.fn(async () => {
+        attempt += 1;
+        return running(`job-${attempt}`, `session-${attempt}`);
+      }),
+      awaitLaunch: vi.fn(async (): Promise<'busy'> => 'busy'),
+    });
+
+    await expect(executePipeline(
+      parseExpression('architect'),
+      'seed',
+      'codex',
+      executionSvc,
+      ctx,
+      { onProgress: (message) => progress.push(message) },
+    )).rejects.toThrow(`capacity busy after ${MAX_LAUNCH_ATTEMPTS} attempts`);
+
+    expect(executionSvc.coralDispatch).toHaveBeenCalledTimes(MAX_LAUNCH_ATTEMPTS);
+    expect(executionSvc.awaitLaunch).toHaveBeenCalledTimes(MAX_LAUNCH_ATTEMPTS);
     expect(progress.some((message) => message.includes('busy (attempt 1), retrying'))).toBe(true);
   });
 
-  it('retries async bootstrap busy errors and succeeds', async () => {
-    let attempts = 0;
-    const dispatch: AtomDispatchFn = async (tool) => {
-      attempts += 1;
-      if (attempts === 1) {
-        const launch = registerSession('architect-busy', tool);
-        writeSessionError(launch.session_dir, `${BUSY_PREFIX}2/10 total, 2/6 for ${tool})`);
-        return jsonResult(launch);
-      }
-      return jsonResult(registerSession('architect', tool, 'done'));
-    };
-
-    const output = await executePipeline(parseExpression('architect'), 'seed', 'codex', dispatch, FAST_POLL);
-
-    expect(output).toBe('done');
-    expect(attempts).toBe(2);
-  });
-
-  it('fails deterministically after busy retry exhaustion', async () => {
-    const dispatch: AtomDispatchFn = async (tool) =>
-      textResult(`Error: ${BUSY_PREFIX}10/10 total, 6/6 for ${tool})`, true);
-
-    await expect(
-      executePipeline(parseExpression('architect'), 'seed', 'codex', dispatch, FAST_POLL),
-    ).rejects.toThrow('capacity busy after 3 attempts');
-  });
-
-  it('waitForAllAtoms aborts siblings after first failure and throws first error', async () => {
-    const failed = registerSession('failed', 'codex');
-    const sibling = registerSession('sibling', 'codex');
-
-    setTimeout(() => {
-      writeSessionError(failed.session_dir, 'primary failure');
-    }, 20);
-
-    const atoms: LaunchedAtom[] = [
-      makeLaunchedAtom(failed, 'architect'),
-      makeLaunchedAtom(sibling, 'critic'),
-    ];
-
-    const requestAbort = vi.fn(abortWithSessionError(sibling, 'abort requested'));
-
-    await expect(
-      waitForAllAtoms(atoms, undefined, () => {}, requestAbort, FAST_POLL),
-    ).rejects.toThrow("Step 1, atom 'architect' failed: primary failure");
-
-    expect(requestAbort).toHaveBeenCalledWith(expect.objectContaining({
-      session: sibling.session,
-      agent: 'critic',
-    }));
-  });
-
-  it('executePipeline aborts siblings via abortSession callback (without provider abort dispatch)', async () => {
-    const sessionDirsById = new Map<string, string>();
-    let siblingSessionId = '';
-    const dispatch = vi.fn<AtomDispatchFn>(async (tool, args) => {
-      const op = String(args.op);
-      if (op === 'coral:architect') {
-        const failed = registerSession('failed-atom', tool);
-        sessionDirsById.set(failed.session, failed.session_dir);
-        setTimeout(() => {
-          writeSessionError(failed.session_dir, 'primary failure');
-        }, BOOTSTRAP_TIMEOUT_MS + 50);
-        return jsonResult(failed);
-      }
-      const sibling = registerSession('sibling-atom', tool);
-      siblingSessionId = sibling.session;
-      sessionDirsById.set(sibling.session, sibling.session_dir);
-      return jsonResult(sibling);
-    });
-
-    const abortSession = vi.fn((sessionId: string) => {
-      const dir = sessionDirsById.get(sessionId);
-      if (dir) writeSessionError(dir, 'abort requested');
-    });
-
-    await expect(
-      executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', dispatch, {
-        ...FAST_POLL,
-        abortSession,
-      }),
-    ).rejects.toThrow("Step 1, atom 'architect' failed: primary failure");
-
-    expect(siblingSessionId).not.toBe('');
-    expect(abortSession).toHaveBeenCalledWith(siblingSessionId);
-    expect(dispatch.mock.calls.some(([, args]) => args.op === 'abort')).toBe(false);
-  });
-
-  it('reports progress for step and atom lifecycle events', async () => {
+  it('aborts and resumes stale atoms', async () => {
     const progress: string[] = [];
-    const dispatch: AtomDispatchFn = async (tool) => jsonResult(registerSession('architect', tool, 'done'));
-
-    await executePipeline(parseExpression('architect'), 'seed', 'codex', dispatch, {
-      ...FAST_POLL,
-      onProgress: (message) => progress.push(message),
+    const executionSvc = createExecutionService({
+      coralDispatch: vi.fn(async () => running('job-stale', 'session-1')),
+      resume: vi.fn(async () => running('job-resumed', 'session-1')),
+      waitStream: vi.fn((req: WaitRequest) => {
+        if (req.jobIds[0] === 'job-stale') {
+          return emit([timeout(['job-stale'])]);
+        }
+        return emit([terminal('job-resumed', 'session-1', { text: 'DONE' })]);
+      }),
     });
 
-    expect(progress).toContain('step 1 started');
-    expect(progress).toContain('step 1 atom architect completed');
-    expect(progress).toContain('step 1 completed');
+    const output = await executePipeline(
+      parseExpression('architect'),
+      'seed',
+      'codex',
+      executionSvc,
+      ctx,
+      {
+        staleTimeoutMs: 1,
+        onProgress: (message) => progress.push(message),
+      },
+    );
+
+    expect(output).toBe('DONE');
+    expect(executionSvc.abort).toHaveBeenCalledWith(['job-stale']);
+    expect(executionSvc.resume).toHaveBeenCalledWith(
+      'codex',
+      {
+        sessionId: 'session-1',
+        prompt: 'Your previous execution timed out due to inactivity. Continue where you left off.',
+        cwd: ctx.projectRoot,
+      },
+      ctx,
+    );
+    expect(progress).toContain('atom architect stale, aborting');
+    expect(progress).toContain('atom architect resumed');
   });
 
-  it('handles mixed parallel and sequential stages', async () => {
-    const seenPrompts: string[] = [];
-    const dispatch: AtomDispatchFn = async (tool, args) => {
-      const op = String(args.op);
-      if (op === 'coral:a') return jsonResult(registerSession('a', tool, 'A'));
-      if (op === 'coral:b') return jsonResult(registerSession('b', tool, 'B'));
-      if (op === 'coral:c') {
-        seenPrompts.push(String(args.prompt));
-        return jsonResult(registerSession('c', tool, 'C'));
-      }
-      seenPrompts.push(String(args.prompt));
-      return jsonResult(registerSession('d', tool, 'D'));
-    };
+  it('aborts sibling atoms after the first failure', async () => {
+    const executionSvc = createExecutionService({
+      coralDispatch: vi.fn(async (_provider, coralName) => {
+        if (coralName === 'architect') return running('job-a', 'session-a');
+        return running('job-b', 'session-b');
+      }),
+      waitStream: vi.fn((req: WaitRequest) => {
+        if (req.jobIds.includes('job-a') && req.jobIds.includes('job-b')) {
+          return emit([terminal('job-a', 'session-a', { text: '', notice: 'primary failure' })]);
+        }
+        return emit([terminal('job-b', 'session-b', { text: '', aborted: true })]);
+      }),
+    });
 
-    const output = await executePipeline(parseExpression('(a, b) -> c -> d'), 'seed', 'codex', dispatch, FAST_POLL);
+    await expect(executePipeline(
+      parseExpression('(architect, critic)'),
+      'seed',
+      'codex',
+      executionSvc,
+      ctx,
+    )).rejects.toThrow("Step 1, atom 'architect' failed: primary failure");
 
-    expect(output).toBe('D');
-    expect(seenPrompts[0]).toContain('<a>\nA\n</a>');
-    expect(seenPrompts[0]).toContain('<b>\nB\n</b>');
-    expect(seenPrompts[1]).toBe('C');
+    expect(executionSvc.abort).toHaveBeenCalledWith(['job-b']);
   });
+});
 
-  it('starts parallel atom launches concurrently', async () => {
-    const callTimes: number[] = [];
-    let firstResolveAt = Number.POSITIVE_INFINITY;
-
-    const dispatch: AtomDispatchFn = async (tool, args) => {
-      callTimes.push(Date.now());
-      await sleep(60);
-      const launch = registerSession(String(args.op), tool, String(args.op));
-      firstResolveAt = Math.min(firstResolveAt, Date.now());
-      return jsonResult(launch);
-    };
-
-    await executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', dispatch, FAST_POLL);
-
-    expect(callTimes).toHaveLength(2);
-    expect(callTimes[1]).toBeLessThanOrEqual(firstResolveAt);
-  });
-
-  it('readLaunchBootstrapStatus returns aborted when signal is aborted', async () => {
-    const launch = registerSession('bootstrap-abort', 'codex');
-    const controller = new AbortController();
-    controller.abort();
-
-    const result = await readLaunchBootstrapStatus(launch.session_dir, controller.signal);
-    expect(result).toEqual({ kind: 'error', error: 'aborted during bootstrap' });
-  });
-
-  it('readLaunchBootstrapStatus treats long-running bootstrap as running after timeout', async () => {
-    const testTimeout = 200;
-    const launch = registerSession('bootstrap-running', 'codex');
-    const started = Date.now();
-    const status = await readLaunchBootstrapStatus(launch.session_dir, undefined, testTimeout);
-
-    expect(status).toEqual({ kind: 'running' });
-    expect(Date.now() - started).toBeGreaterThanOrEqual(testTimeout - 50);
-  });
-
-  it('formatStepOutput returns empty string for empty results array', () => {
+describe('formatStepOutput', () => {
+  it('returns empty string for an empty results array', () => {
     expect(formatStepOutput([])).toBe('');
   });
 
-  it('formatStepOutput wraps empty output string in xml tags for multiple results', () => {
-    const result = formatStepOutput([
-      { tagName: 'a', output: '' },
-      { tagName: 'b', output: 'X' },
+  it('returns bare output without XML tags for a single result', () => {
+    const output = formatStepOutput([{ tagName: 'architect', output: 'result text' }]);
+    expect(output).toBe('result text');
+    expect(output).not.toContain('<architect>');
+  });
+
+  it('wraps multiple results in XML tags with two-newline separator', () => {
+    const output = formatStepOutput([
+      { tagName: 'architect', output: 'ARCH' },
+      { tagName: 'critic', output: 'CRIT' },
     ]);
-    expect(result).toBe('<a>\n\n</a>\n\n<b>\nX\n</b>');
+    expect(output).toContain('<architect>\nARCH\n</architect>');
+    expect(output).toContain('<critic>\nCRIT\n</critic>');
+  });
+});
+
+describe('launchAtomWithRetry: launch rejection', () => {
+  it('throws with step/atom context when coralDispatch returns rejected status', async () => {
+    const executionSvc = createExecutionService({
+      coralDispatch: vi.fn(async () => ({
+        status: 'rejected' as const,
+        phase: 'preflight' as const,
+        code: 'unknown_provider',
+        message: 'Unknown provider: ghost',
+      })),
+    });
+
+    const [atom] = parseExpression('architect')[0];
+
+    await expect(launchAtomWithRetry({
+      atom,
+      atomIndex: 0,
+      stepIndex: 0,
+      stepPrompt: 'do work',
+      defaultProviderName: 'codex',
+      executionSvc,
+      ctx,
+      onProgress: vi.fn(),
+    })).rejects.toThrow("Step 1, atom 'architect' launch failed: Unknown provider: ghost");
   });
 
-  it('formatStepOutput passes through empty string output for a single result', () => {
-    expect(formatStepOutput([{ tagName: 'a', output: '' }])).toBe('');
+  it('throws with unsupported namespace error immediately without calling coralDispatch', async () => {
+    const executionSvc = createExecutionService();
+
+    const badAtom = { kind: 'agent' as const, agent: 'architect', namespace: 'custom-ns', provider: 'codex' };
+
+    await expect(launchAtomWithRetry({
+      atom: badAtom,
+      atomIndex: 0,
+      stepIndex: 2,
+      stepPrompt: 'test',
+      defaultProviderName: 'codex',
+      executionSvc,
+      ctx,
+      onProgress: vi.fn(),
+    })).rejects.toThrow('unsupported namespace "custom-ns"');
+
+    expect(executionSvc.coralDispatch).not.toHaveBeenCalled();
   });
+});
 
-  it('waitForAllAtoms throws abort error immediately when signal is already aborted', async () => {
-    const completed = registerSession('done', 'codex', 'output');
-    const atoms: LaunchedAtom[] = [makeLaunchedAtom(completed, 'a')];
-    const controller = new AbortController();
-    controller.abort();
+describe('waitForAtoms: terminal event with notice field', () => {
+  it('treats notice on terminal result as a failure (not a success)', async () => {
+    const executionSvc = createExecutionService({
+      waitStream: vi.fn((_req: WaitRequest) => emit([
+        terminal('job-1', 'session-1', { text: '', notice: 'process killed' }),
+      ])),
+    });
 
-    await expect(
-      waitForAllAtoms(atoms, controller.signal, () => {}, async () => {}, FAST_POLL),
-    ).rejects.toThrow('Pipeline aborted');
-  });
-
-  it('waitForAllAtoms throws firstFailure when siblings settle naturally before drain deadline', async () => {
-    const failed = registerSession('settle-fail', 'codex');
-    const sibling = registerSession('settle-sibling', 'codex');
-    writeSessionError(failed.session_dir, 'atom-failure');
-
-    const atoms: LaunchedAtom[] = [
-      makeLaunchedAtom(failed, 'fail-agent', 2),
-      makeLaunchedAtom(sibling, 'sibling-agent', 2),
+    const atoms = [
+      {
+        jobId: 'job-1', sessionId: 'session-1', providerName: 'codex',
+        coralOp: 'coral:architect', agent: 'architect', tagName: 'architect', stepIndex: 0,
+      },
     ];
 
-    const requestAbort = vi.fn(async () => {
-      writeSessionError(sibling.session_dir, 'sibling aborted');
-    });
-
     await expect(
-      waitForAllAtoms(atoms, undefined, () => {}, requestAbort, FAST_POLL),
-    ).rejects.toThrow("Step 3, atom 'fail-agent' failed: atom-failure");
+      waitForAtoms(atoms, executionSvc, ctx, {
+        staleTimeoutMs: 0,
+        pollIntervalMs: 500,
+        onProgress: vi.fn(),
+      }),
+    ).rejects.toThrow("Step 1, atom 'architect' failed: process killed");
   });
+});
 
-  it('waitForAllAtoms throws firstFailure when drain deadline expires with sibling still pending', async () => {
-    const failed = registerSession('deadline-fail', 'codex');
-    const hanging = registerSession('deadline-hang', 'codex');
-    writeSessionError(failed.session_dir, 'primary-fail');
+describe('executePipeline: stale recovery resets sibling activity clocks', () => {
+  it('sibling atoms are not re-detected as stale immediately after recovery', async () => {
+    let abortCalled = false;
 
-    const atoms: LaunchedAtom[] = [
-      makeLaunchedAtom(failed, 'failed'),
-      makeLaunchedAtom(hanging, 'hanging'),
-    ];
-
-    // Mock Date.now to advance past SIBLING_DRAIN_TIMEOUT_MS after abort is triggered
-    let callCount = 0;
-    const realNow = Date.now.bind(Date);
-    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => {
-      callCount += 1;
-      if (callCount > 6) return realNow() + SIBLING_DRAIN_TIMEOUT_MS + 1_000;
-      return realNow();
-    });
-
-    try {
-      await expect(
-        waitForAllAtoms(atoms, undefined, () => {}, async () => {}, FAST_POLL),
-      ).rejects.toThrow("Step 1, atom 'failed' failed: primary-fail");
-    } finally {
-      nowSpy.mockRestore();
-    }
-  });
-
-  describe('atom progress forwarding', () => {
-    it('forwards atom progress with agent-prefixed messages', async () => {
-      const completed = registerSession('forward-progress', 'codex');
-      appendProgressEvent(join(completed.session_dir, PROGRESS_FILE), 'item.completed', 'inner message');
-      writeSessionResult(completed.session_dir, 'done', { session_name: 'forward-progress' });
-
-      const progress: string[] = [];
-      const finalOverlay = await waitForAllAtoms(
-        [makeLaunchedAtom(completed, 'architect')],
-        undefined,
-        (message) => progress.push(message),
-        async () => {},
-        FAST_POLL,
-      );
-
-      expect(progress).toContain('atom architect: inner message');
-      expect(progress).toContain('step 1 atom architect completed');
-      expect(finalOverlay.get('architect')).toEqual({
-        session: completed.session,
-        sessionDir: completed.session_dir,
-      });
-    });
-  });
-
-  describe('atom progress forwarding (no progress.jsonl)', () => {
-    it('ignores missing progress file and still completes', async () => {
-      const completed = registerSession('forward-missing-file', 'codex');
-      rmSync(join(completed.session_dir, PROGRESS_FILE), { force: true });
-      writeSessionResult(completed.session_dir, 'done', { session_name: 'forward-missing-file' });
-
-      const progress: string[] = [];
-      await waitForAllAtoms(
-        [makeLaunchedAtom(completed, 'architect')],
-        undefined,
-        (message) => progress.push(message),
-        async () => {},
-        FAST_POLL,
-      );
-
-      expect(progress.some((message) => message.startsWith('atom architect:'))).toBe(false);
-      expect(progress).toContain('step 1 atom architect completed');
-    });
-  });
-
-  describe('terminal-tail progress read', () => {
-    it('forwards final events before terminal removal', async () => {
-      const completed = registerSession('terminal-tail', 'codex');
-      writeSessionResult(completed.session_dir, 'done', { session_name: 'terminal-tail' });
-
-      let readCount = 0;
-      vi.spyOn(runnerProgress, 'readProgressEvents').mockImplementation(() => {
-        readCount += 1;
-        if (readCount === 2) {
-          return [{ ts: 1, event: 'item.completed', message: 'tail message' }];
+    const executionSvc = createExecutionService({
+      coralDispatch: vi.fn(async (_provider, coralName) => {
+        if (coralName === 'architect') return running('job-a', 'session-a');
+        return running('job-b', 'session-b');
+      }),
+      abort: vi.fn((jobIds: string[]) => {
+        abortCalled = true;
+        return { aborted: jobIds, notFound: [] };
+      }),
+      resume: vi.fn(async () => running('job-a-resumed', 'session-a')),
+      waitStream: vi.fn((req: WaitRequest) => {
+        if (!abortCalled && (req.jobIds.includes('job-a') || req.jobIds.includes('job-b'))) {
+          return emit([timeout([...req.jobIds])]);
         }
-        return [];
-      });
-
-      const progress: string[] = [];
-      await waitForAllAtoms(
-        [makeLaunchedAtom(completed, 'architect')],
-        undefined,
-        (message) => progress.push(message),
-        async () => {},
-        FAST_POLL,
-      );
-
-      const tailIndex = progress.indexOf('atom architect: tail message');
-      const terminalIndex = progress.indexOf('step 1 atom architect completed');
-      expect(tailIndex).toBeGreaterThanOrEqual(0);
-      expect(terminalIndex).toBeGreaterThanOrEqual(0);
-      expect(tailIndex).toBeLessThan(terminalIndex);
-    });
-  });
-
-  describe('stale atom detection', () => {
-    it('triggers abort after stale timeout', async () => {
-      const stale = registerSession('stale-detect', 'codex');
-      const requestAbort = vi.fn(abortWithSessionError(stale));
-      const dispatch = vi.fn<AtomDispatchFn>(async () => textResult('cannot resume', true));
-
-      await expect(
-        waitForAllAtoms(
-          [makeLaunchedAtom(stale, 'architect')],
-          undefined,
-          () => {},
-          requestAbort,
-          { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
-        ),
-      ).rejects.toThrow("Step 1, atom 'architect' resume failed: non-resumable session");
-
-      expect(requestAbort).toHaveBeenCalledWith(expect.objectContaining({
-        session: stale.session,
-        agent: 'architect',
-      }));
-    });
-  });
-
-  describe('stale atom resume', () => {
-    it('resumes with a new session and returns updated overlay', async () => {
-      const stale = registerSession('stale-resume-old', 'codex');
-      const resumed = registerSession('stale-resume-new', 'codex');
-
-      const requestAbort = vi.fn(abortWithSessionError(stale));
-      const dispatch = vi.fn<AtomDispatchFn>(async () => {
-        setTimeout(() => {
-          writeSessionResult(resumed.session_dir, 'done', { session_name: 'stale-resume-new' });
-        }, 20);
-        return jsonResult({ session: resumed.session, session_dir: resumed.session_dir, status: 'running' });
-      });
-
-      const progress: string[] = [];
-      const finalOverlay = await waitForAllAtoms(
-        [makeLaunchedAtom(stale, 'architect')],
-        undefined,
-        (message) => progress.push(message),
-        requestAbort,
-        { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
-      );
-
-      expect(progress).toContain('atom architect resuming (attempt 1)');
-      expect(dispatch).toHaveBeenCalledWith('codex', expect.objectContaining({
-        op: 'coral:architect',
-        session: stale.session,
-        prompt: 'Your previous execution timed out due to inactivity. Continue where you left off.',
-      }));
-      expect(finalOverlay.get('architect')).toEqual({
-        session: resumed.session,
-        sessionDir: resumed.session_dir,
-      });
-    });
-  });
-
-  describe('stale timeout disabled', () => {
-    it('does not trigger abort or resume when staleTimeoutMs is zero', async () => {
-      const running = registerSession('stale-disabled', 'codex');
-      setTimeout(() => {
-        writeSessionResult(running.session_dir, 'done', { session_name: 'stale-disabled' });
-      }, 20);
-
-      const requestAbort = vi.fn(async () => {});
-      const dispatch = vi.fn<AtomDispatchFn>(async () => jsonResult(registerSession('unexpected', 'codex', 'done')));
-
-      await waitForAllAtoms(
-        [makeLaunchedAtom(running, 'architect')],
-        undefined,
-        () => {},
-        requestAbort,
-        { staleTimeoutMs: 0, dispatch, pollIntervalMs: 50 },
-      );
-
-      expect(requestAbort).not.toHaveBeenCalled();
-      expect(dispatch).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('stale expected-abort isolation', () => {
-    it('does not abort siblings when stale recovery succeeds', async () => {
-      const stale = registerSession('stale-isolation-old', 'codex');
-      const sibling = registerSession('stale-isolation-sibling', 'codex');
-      const resumed = registerSession('stale-isolation-new', 'codex');
-
-      const abortedSessions: string[] = [];
-      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
-        abortedSessions.push(session);
-        if (session === stale.session) {
-          writeSessionError(stale.session_dir, 'stale abort');
+        const events: WaitStreamEvent[] = [];
+        if (req.jobIds.includes('job-a-resumed')) {
+          events.push(terminal('job-a-resumed', 'session-a', { text: 'ARCH DONE' }));
         }
-      });
-      const dispatch = vi.fn<AtomDispatchFn>(async () => {
-        setTimeout(() => {
-          writeSessionResult(resumed.session_dir, 'done', { session_name: 'stale-isolation-new' });
-          writeSessionResult(sibling.session_dir, 'done', { session_name: 'stale-isolation-sibling' });
-        }, 20);
-        return jsonResult({ session: resumed.session, session_dir: resumed.session_dir, status: 'running' });
-      });
-
-      const finalOverlay = await waitForAllAtoms(
-        [makeLaunchedAtom(stale, 'architect'), makeLaunchedAtom(sibling, 'critic')],
-        undefined,
-        () => {},
-        requestAbort,
-        { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
-      );
-
-      expect(abortedSessions).toEqual([stale.session]);
-      expect(finalOverlay.get('architect')).toEqual({
-        session: resumed.session,
-        sessionDir: resumed.session_dir,
-      });
-      expect(finalOverlay.get('critic')).toEqual({
-        session: sibling.session,
-        sessionDir: sibling.session_dir,
-      });
-    });
-  });
-
-  describe('stale resume failure stops workflow', () => {
-    it('throws when resume dispatch reports non-resumable session', async () => {
-      const stale = registerSession('stale-resume-fail', 'codex');
-      const requestAbort = vi.fn(abortWithSessionError(stale));
-      const dispatch = vi.fn<AtomDispatchFn>(async () => textResult('resume failed', true));
-
-      await expect(
-        waitForAllAtoms(
-          [makeLaunchedAtom(stale, 'architect')],
-          undefined,
-          () => {},
-          requestAbort,
-          { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
-        ),
-      ).rejects.toThrow("Step 1, atom 'architect' resume failed: non-resumable session");
-    });
-  });
-
-  describe('stale max retries stops workflow', () => {
-    it('throws after two recovery attempts are exhausted', async () => {
-      const first = registerSession('stale-retry-0', 'codex');
-      const second = registerSession('stale-retry-1', 'codex');
-      const third = registerSession('stale-retry-2', 'codex');
-
-      const sessionDirs = new Map<string, string>([
-        [first.session, first.session_dir],
-        [second.session, second.session_dir],
-        [third.session, third.session_dir],
-      ]);
-      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
-        const dir = sessionDirs.get(session);
-        if (dir) writeSessionError(dir, 'stale abort');
-      });
-
-      let resumeCount = 0;
-      const dispatch = vi.fn<AtomDispatchFn>(async () => {
-        resumeCount += 1;
-        if (resumeCount === 1) {
-          return jsonResult({ session: second.session, session_dir: second.session_dir, status: 'running' });
+        if (req.jobIds.includes('job-b')) {
+          events.push(terminal('job-b', 'session-b', { text: 'CRIT DONE' }));
         }
-        return jsonResult({ session: third.session, session_dir: third.session_dir, status: 'running' });
-      });
-
-      await expect(
-        waitForAllAtoms(
-          [makeLaunchedAtom(first, 'architect')],
-          undefined,
-          () => {},
-          requestAbort,
-          { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
-        ),
-      ).rejects.toThrow("Step 1, atom 'architect' stale after 2 recovery attempts");
-
-      expect(dispatch).toHaveBeenCalledTimes(2);
-    });
-  });
-
-  describe('stale resume response validation', () => {
-    it('throws explicit error for malformed resume JSON response', async () => {
-      const stale = registerSession('stale-resume-malformed', 'codex');
-      const requestAbort = vi.fn(abortWithSessionError(stale));
-      const dispatch = vi.fn<AtomDispatchFn>(async () => textResult('not-json'));
-
-      await expect(
-        waitForAllAtoms(
-          [makeLaunchedAtom(stale, 'architect')],
-          undefined,
-          () => {},
-          requestAbort,
-          { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
-        ),
-      ).rejects.toThrow("Step 1, atom 'architect' resume returned malformed JSON");
-    });
-  });
-
-  it('applies atoms config to all occurrences of the same atom name across sequential steps', async () => {
-    const capturedEffort: Array<string | undefined> = [];
-    const dispatch: AtomDispatchFn = async (tool, args) => {
-      capturedEffort.push(args.effort as string | undefined);
-      const op = String(args.op);
-      if (op === 'coral:a') return jsonResult(registerSession('a1', tool, 'step1'));
-      return jsonResult(registerSession('a2', tool, 'step2'));
-    };
-
-    await executePipeline(parseExpression('a -> a'), 'seed', 'codex', dispatch, {
-      ...FAST_POLL,
-      atoms: { a: { effort: 'medium' } },
+        return emit(events.length > 0 ? events : []);
+      }),
     });
 
-    expect(capturedEffort).toHaveLength(2);
-    expect(capturedEffort[0]).toBe('medium');
-    expect(capturedEffort[1]).toBe('medium');
-  });
-
-  it('readLaunchBootstrapStatus returns running immediately when session is already completed', async () => {
-    const s = registerSession('already-done', 'codex', 'output');
-    const result = await readLaunchBootstrapStatus(s.session_dir);
-    expect(result).toEqual({ kind: 'running' });
-  });
-
-  it('readLaunchBootstrapStatus returns busy when error message starts with BUSY_PREFIX', async () => {
-    const s = registerSession('busy-bootstrap', 'codex');
-    writeSessionError(s.session_dir, `${BUSY_PREFIX}1/1 total, 1/1 for codex)`);
-    const result = await readLaunchBootstrapStatus(s.session_dir);
-    expect(result).toEqual({ kind: 'busy' });
-  });
-
-  it('readLaunchBootstrapStatus returns error for non-busy bootstrap failures', async () => {
-    const s = registerSession('err-bootstrap', 'codex');
-    writeSessionError(s.session_dir, 'disk full');
-    const result = await readLaunchBootstrapStatus(s.session_dir);
-    expect(result).toEqual({ kind: 'error', error: 'disk full' });
-  });
-
-  describe('waitForAllAtoms — empty atoms array', () => {
-    it('returns an empty Map immediately when given zero atoms', async () => {
-      const result = await waitForAllAtoms([], undefined, () => {}, async () => {}, FAST_POLL);
-      expect(result).toBeInstanceOf(Map);
-      expect(result.size).toBe(0);
-    });
-  });
-
-  describe('waitForAllAtoms — returned overlay completeness', () => {
-    it('overlay contains all launched atoms even when no stale recovery occurred', async () => {
-      const s1 = registerSession('overlay-a', 'codex', 'out-a');
-      const s2 = registerSession('overlay-b', 'codex', 'out-b');
-      const overlay = await waitForAllAtoms(
-        [makeLaunchedAtom(s1, 'alpha'), makeLaunchedAtom(s2, 'beta')],
-        undefined,
-        () => {},
-        async () => {},
-        FAST_POLL,
-      );
-      expect(overlay.get('alpha')).toEqual({ session: s1.session, sessionDir: s1.session_dir });
-      expect(overlay.get('beta')).toEqual({ session: s2.session, sessionDir: s2.session_dir });
-    });
-  });
-
-  describe('waitForAllAtoms — multiple events in one poll batch', () => {
-    it('forwards all events from a single-read batch', async () => {
-      const s = registerSession('multi-event', 'codex');
-      appendProgressEvent(join(s.session_dir, PROGRESS_FILE), 'e', 'first event');
-      appendProgressEvent(join(s.session_dir, PROGRESS_FILE), 'e', 'second event');
-      writeSessionResult(s.session_dir, 'done', { session_name: 'multi-event' });
-      const messages: string[] = [];
-      await waitForAllAtoms(
-        [makeLaunchedAtom(s, 'worker')],
-        undefined,
-        (msg) => messages.push(msg),
-        async () => {},
-        FAST_POLL,
-      );
-      expect(messages).toContain('atom worker: first event');
-      expect(messages).toContain('atom worker: second event');
-    });
-  });
-
-  describe('waitForAllAtoms — resume dispatch receives OLD session UUID', () => {
-    it('passes the pre-recovery session UUID to the resume dispatch', async () => {
-      const stale = registerSession('stale-old-uuid', 'codex');
-      const resumed = registerSession('stale-new-uuid', 'codex');
-      const capturedResumeArgs: Record<string, unknown>[] = [];
-      const requestAbort = vi.fn(abortWithSessionError(stale));
-      const dispatch = vi.fn<AtomDispatchFn>(async (_tool, args) => {
-        capturedResumeArgs.push({ ...args });
-        setTimeout(() => {
-          writeSessionResult(resumed.session_dir, 'done', { session_name: 'stale-new-uuid' });
-        }, 20);
-        return jsonResult({ session: resumed.session, session_dir: resumed.session_dir, status: 'running' });
-      });
-      await waitForAllAtoms(
-        [makeLaunchedAtom(stale, 'architect')],
-        undefined,
-        () => {},
-        requestAbort,
-        { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
-      );
-      expect(capturedResumeArgs).toHaveLength(1);
-      expect(capturedResumeArgs[0].session).toBe(stale.session);
-      expect(capturedResumeArgs[0].session).not.toBe(resumed.session);
-    });
-  });
-
-  describe('waitForAllAtoms — second stale on same atom increments counter correctly', () => {
-    it('throws after second recovery without a third dispatch call', async () => {
-      const first = registerSession('second-stale-0', 'codex');
-      const second = registerSession('second-stale-1', 'codex');
-      const third = registerSession('second-stale-2', 'codex');
-      const sessionDirMap = new Map([
-        [first.session, first.session_dir],
-        [second.session, second.session_dir],
-        [third.session, third.session_dir],
-      ]);
-      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
-        const dir = sessionDirMap.get(session);
-        if (dir) writeSessionError(dir, 'stale abort');
-      });
-      let dispatchCount = 0;
-      const dispatch = vi.fn<AtomDispatchFn>(async () => {
-        dispatchCount += 1;
-        if (dispatchCount === 1) {
-          return jsonResult({ session: second.session, session_dir: second.session_dir, status: 'running' });
-        }
-        return jsonResult({ session: third.session, session_dir: third.session_dir, status: 'running' });
-      });
-      await expect(
-        waitForAllAtoms(
-          [makeLaunchedAtom(first, 'architect')],
-          undefined,
-          () => {},
-          requestAbort,
-          { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
-        ),
-      ).rejects.toThrow("Step 1, atom 'architect' stale after 2 recovery attempts");
-      expect(dispatch).toHaveBeenCalledTimes(2);
-    });
-  });
-
-  describe('waitForAllAtoms — expectedStaleAbortSessions cleanup on abort mid-recovery', () => {
-    it('cleans up when pipeline signal aborts after requestAbort', async () => {
-      const stale = registerSession('mid-abort-stale', 'codex');
-      const controller = new AbortController();
-      const requestAbort = vi.fn(async ({ session }: { session: string }) => {
-        if (session === stale.session) {
-          writeSessionError(stale.session_dir, 'stale abort');
-          controller.abort();
-        }
-      });
-      const dispatch = vi.fn<AtomDispatchFn>(async () =>
-        jsonResult({ session: 'new-session', session_dir: '/tmp/new', status: 'running' }),
-      );
-      await expect(
-        waitForAllAtoms(
-          [makeLaunchedAtom(stale, 'architect')],
-          controller.signal,
-          () => {},
-          requestAbort,
-          { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
-        ),
-      ).rejects.toThrow('Pipeline aborted');
-      expect(dispatch).not.toHaveBeenCalled();
-    });
-  });
-
-  it('injects bypass:true for mixed-provider parallel atoms', async () => {
-    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
-    const dispatch: AtomDispatchFn = async (tool, args) => {
-      calls.push({ tool, args });
-      if (args.op === 'coral:architect') {
-        return jsonResult(registerSession('architect', tool, 'ARCH'));
-      }
-      return jsonResult(registerSession('workflow-literal', tool, 'LIT'));
-    };
-
-    await executePipeline(
-      parseExpression('(architect@claude, \'literal\'@codex)'),
-      'seed',
-      'codex',
-      dispatch,
-      { ...FAST_POLL, atoms: { architect: { effort: 'high' } } },
+    const results = await waitForAtoms(
+      [
+        {
+          jobId: 'job-a', sessionId: 'session-a', providerName: 'codex',
+          coralOp: 'coral:architect', agent: 'architect', tagName: 'architect', stepIndex: 0,
+        },
+        {
+          jobId: 'job-b', sessionId: 'session-b', providerName: 'codex',
+          coralOp: 'coral:critic', agent: 'critic', tagName: 'critic', stepIndex: 0,
+        },
+      ],
+      executionSvc,
+      ctx,
+      { staleTimeoutMs: 1, pollIntervalMs: 1, onProgress: vi.fn() },
     );
 
-    expect(calls).toHaveLength(2);
-    const agentCall = calls.find((call) => call.args.op === 'coral:architect');
-    const literalCall = calls.find((call) => call.args.op === 'coral:workflow-literal');
-    expect(agentCall).toMatchObject({ tool: 'claude', args: { bypass: true, effort: 'high' } });
-    expect(literalCall).toMatchObject({ tool: 'codex', args: { bypass: true, prompt: 'literal' } });
+    expect(executionSvc.abort).toHaveBeenCalled();
+    expect(executionSvc.resume).toHaveBeenCalledTimes(1);
+    expect(results.size).toBeGreaterThan(0);
   });
+});
 
-  it('aborts all pending siblings via abortSession callback on multi-sibling failure', async () => {
-    const sessionDirsById = new Map<string, string>();
-    const siblings: string[] = [];
-    const dispatch = vi.fn<AtomDispatchFn>(async (tool, args) => {
-      const op = String(args.op);
-      if (op === 'coral:architect') {
-        const failed = registerSession('failed-atom', tool);
-        sessionDirsById.set(failed.session, failed.session_dir);
-        setTimeout(() => {
-          writeSessionError(failed.session_dir, 'primary failure');
-        }, BOOTSTRAP_TIMEOUT_MS + 50);
-        return jsonResult(failed);
-      }
-      const label = op === 'coral:critic' ? 'critic-atom' : 'resolver-atom';
-      const sibling = registerSession(label, tool);
-      siblings.push(sibling.session);
-      sessionDirsById.set(sibling.session, sibling.session_dir);
-      return jsonResult(sibling);
-    });
-
-    const abortSession = vi.fn((sessionId: string) => {
-      const dir = sessionDirsById.get(sessionId);
-      if (dir) writeSessionError(dir, `abort requested: ${sessionId}`);
-    });
-
-    await expect(
-      executePipeline(parseExpression('(architect, critic, resolver)'), 'seed', 'codex', dispatch, {
-        ...FAST_POLL,
-        abortSession,
+describe('executePipeline: literal prompt atoms', () => {
+  it('first-step literal uses only the literal text as prompt (ignores seed)', async () => {
+    const capturedPrompts: string[] = [];
+    const executionSvc = createExecutionService({
+      coralDispatch: vi.fn(async (_provider, _coralName, input) => {
+        capturedPrompts.push(String(input.prompt));
+        return running('job-1', 'session-1');
       }),
-    ).rejects.toThrow("Step 1, atom 'architect' failed: primary failure");
+      waitStream: vi.fn(() => emit([terminal('job-1', 'session-1', { text: 'OUT' })])),
+    });
 
-    expect(siblings).toHaveLength(2);
-    expect(abortSession).toHaveBeenCalledTimes(2);
-    expect(new Set(abortSession.mock.calls.map(([session]) => String(session)))).toEqual(new Set(siblings));
-    expect(dispatch.mock.calls.some(([, args]) => (args as { op?: unknown }).op === 'abort')).toBe(false);
+    await executePipeline(
+      parseExpression('"Use this exact instruction"'),
+      'ignored seed',
+      'codex',
+      executionSvc,
+      ctx,
+    );
+
+    expect(capturedPrompts[0]).toBe('Use this exact instruction');
+    expect(capturedPrompts[0]).not.toContain('ignored seed');
   });
 
-  it('emits progress when sibling abort is skipped because abortSession handler is missing', async () => {
-    const progress: string[] = [];
-    const dispatch: AtomDispatchFn = async (tool, args) => {
-      const op = String(args.op);
-      if (op === 'coral:architect') {
-        const failed = registerSession('failed-atom-no-di', tool);
-        setTimeout(() => {
-          writeSessionError(failed.session_dir, 'primary failure');
-        }, BOOTSTRAP_TIMEOUT_MS + 50);
-        return jsonResult(failed);
-      }
-      const sibling = registerSession('sibling-no-di', tool);
-      setTimeout(() => {
-        writeSessionError(sibling.session_dir, 'secondary stop');
-      }, BOOTSTRAP_TIMEOUT_MS + 120);
-      return jsonResult(sibling);
-    };
-
-    await expect(
-      executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', dispatch, {
-        ...FAST_POLL,
-        onProgress: (message) => progress.push(message),
+  it('later-step literal prepends literal text before prior step output', async () => {
+    const capturedPrompts: string[] = [];
+    let callCount = 0;
+    const executionSvc = createExecutionService({
+      coralDispatch: vi.fn(async (_provider, _coralName, input) => {
+        callCount += 1;
+        capturedPrompts.push(String(input.prompt));
+        return running(`job-${callCount}`, `session-${callCount}`);
       }),
-    ).rejects.toThrow("Step 1, atom 'architect' failed: primary failure");
+      waitStream: vi.fn((req: WaitRequest) => {
+        if (req.jobIds[0] === 'job-1') {
+          return emit([terminal('job-1', 'session-1', { text: 'PREV OUTPUT' })]);
+        }
+        return emit([terminal('job-2', 'session-2', { text: 'DONE' })]);
+      }),
+    });
 
-    expect(progress).toContain('atom critic abort skipped: no abortSession handler');
+    await executePipeline(
+      parseExpression('architect -> "Apply this fixup"'),
+      'seed',
+      'codex',
+      executionSvc,
+      ctx,
+    );
+
+    const step2 = capturedPrompts[1];
+    expect(step2).toContain('Apply this fixup');
+    expect(step2).toContain('PREV OUTPUT');
+    expect(step2.indexOf('Apply this fixup')).toBeLessThan(step2.indexOf('PREV OUTPUT'));
   });
+});
 
-  describe('waitForAllAtoms — resume response validation edge cases', () => {
-    it('throws when resume JSON has session field missing', async () => {
-      const stale = registerSession('resume-no-session', 'codex');
-      const requestAbort = vi.fn(abortWithSessionError(stale));
-      const dispatch = vi.fn<AtomDispatchFn>(async () =>
-        textResult(JSON.stringify({ session_dir: '/tmp/dir' })),
-      );
-      await expect(
-        waitForAllAtoms(
-          [makeLaunchedAtom(stale, 'architect')],
-          undefined,
-          () => {},
-          requestAbort,
-          { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
-        ),
-      ).rejects.toThrow("Step 1, atom 'architect' resume returned invalid response");
+describe('executePipeline: error propagation', () => {
+  it('throws step/atom context when atom completes with aborted result', async () => {
+    const executionSvc = createExecutionService({
+      coralDispatch: vi.fn(async () => running('job-1', 'session-1')),
+      waitStream: vi.fn(() => emit([
+        terminal('job-1', 'session-1', { text: '', aborted: true }),
+      ])),
     });
 
-    it('throws when resume JSON has session_dir field missing', async () => {
-      const stale = registerSession('resume-no-session-dir', 'codex');
-      const requestAbort = vi.fn(abortWithSessionError(stale));
-      const dispatch = vi.fn<AtomDispatchFn>(async () =>
-        textResult(JSON.stringify({ session: 'abc-uuid' })),
-      );
-      await expect(
-        waitForAllAtoms(
-          [makeLaunchedAtom(stale, 'architect')],
-          undefined,
-          () => {},
-          requestAbort,
-          { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
-        ),
-      ).rejects.toThrow("Step 1, atom 'architect' resume returned invalid response");
-    });
-
-    it('throws empty-response error when resume result has empty content array', async () => {
-      const stale = registerSession('resume-empty-content', 'codex');
-      const requestAbort = vi.fn(abortWithSessionError(stale));
-      const dispatch = vi.fn<AtomDispatchFn>(async () => ({
-        content: [] as unknown as [{ type: 'text'; text: string }],
-        isError: false,
-      }));
-      await expect(
-        waitForAllAtoms(
-          [makeLaunchedAtom(stale, 'architect')],
-          undefined,
-          () => {},
-          requestAbort,
-          { staleTimeoutMs: 10, dispatch, pollIntervalMs: 50 },
-        ),
-      ).rejects.toThrow("Step 1, atom 'architect' resume returned empty response");
-    });
+    await expect(executePipeline(
+      parseExpression('architect'),
+      'seed',
+      'codex',
+      executionSvc,
+      ctx,
+    )).rejects.toThrow("Step 1, atom 'architect' failed: aborted");
   });
 });

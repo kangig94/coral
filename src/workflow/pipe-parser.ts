@@ -1,10 +1,9 @@
-import type { SessionProvider } from '../runner/types.js';
 import { providerIdentPattern } from '../shared/mcp-utils.js';
 import type { PipeAtom, PipelineAST, PipeStep, PromptAtom } from './types.js';
 
 const IDENTIFIER_PATTERN = /^[a-z][a-z0-9-]*$/;
 
-function isProvider(value: string): value is SessionProvider {
+function isProvider(value: string): boolean {
   return providerIdentPattern.test(value);
 }
 
@@ -108,7 +107,7 @@ function parsePromptLiteral(atomText: string): PromptAtom {
   if (!text) throw new Error('Empty prompt literal');
   const rest = atomText.slice(closeIndex + 1).trim();
 
-  let provider: SessionProvider | undefined;
+  let provider: string | undefined;
   if (rest.startsWith('@')) {
     const providerText = rest.slice(1).trim();
     if (!providerText) throw new Error(`Expected provider after "@": "${atomText}"`);
@@ -139,7 +138,7 @@ function parseAtom(rawAtom: string): PipeAtom {
     throw new Error(`Invalid atom "${atomText}"`);
   }
 
-  let provider: SessionProvider | undefined;
+  let provider: string | undefined;
   let qualified = atomText;
   if (atFirst >= 0) {
     qualified = atomText.slice(0, atFirst).trim();

@@ -1,37 +1,26 @@
-import type { ProviderAdapter, ProviderTool } from './types.js';
+import type { Provider } from './types.js';
 
 const RESERVED_TOOL_NAMES = new Set(['wait', 'workflow', 'abort']);
-const providers = new Map<string, ProviderAdapter>();
+const newProviders = new Map<string, Provider>();
 
-export function registerProvider(adapter: ProviderAdapter): void {
-  if (adapter.name !== adapter.tool.name) {
-    throw new Error(`Provider name "${adapter.name}" must match tool name "${adapter.tool.name}"`);
+export function registerNewProvider(provider: Provider): void {
+  if (RESERVED_TOOL_NAMES.has(provider.name)) {
+    throw new Error(`Provider name "${provider.name}" is reserved`);
   }
-  if (RESERVED_TOOL_NAMES.has(adapter.name)) {
-    throw new Error(`Provider name "${adapter.name}" is reserved`);
+  if (newProviders.has(provider.name)) {
+    throw new Error(`New provider "${provider.name}" is already registered`);
   }
-  if (providers.has(adapter.name)) {
-    throw new Error(`Provider "${adapter.name}" is already registered`);
-  }
-  providers.set(adapter.name, adapter);
+  newProviders.set(provider.name, provider);
 }
 
-export function getProvider(name: string): ProviderAdapter | undefined {
-  return providers.get(name);
+export function getNewProvider(name: string): Provider | undefined {
+  return newProviders.get(name);
 }
 
-export function hasProvider(name: string): boolean {
-  return providers.has(name);
+export function getAllNewProviders(): Provider[] {
+  return [...newProviders.values()];
 }
 
-export function getAllTools(): ProviderTool[] {
-  return [...providers.values()].map((provider) => provider.tool);
-}
-
-export function getProviderNames(): string[] {
-  return [...providers.keys()];
-}
-
-export function _resetProvidersForTests(): void {
-  providers.clear();
+export function _resetNewProvidersForTests(): void {
+  newProviders.clear();
 }

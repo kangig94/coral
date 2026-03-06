@@ -1,4 +1,4 @@
-import { spawnCli } from '../../runner/engine.js';
+import { spawnCli } from '../../execution/engine.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 import { parseClaudeStreamJson, type ParsedClaudeStreamOutput } from './output-parser.js';
 import type { ClaudeExecFailure, ClaudeExecResult } from './types.js';

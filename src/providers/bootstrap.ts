@@ -1,18 +1,17 @@
-import { claudeAdapter } from './claude/server-handlers.js';
-import { codexAdapter } from './codex/server-handlers.js';
-import { registerProvider } from './registry.js';
-import type { ProviderAdapter } from './types.js';
+import { claudeProvider } from './claude/adapter.js';
+import { codexProvider } from './codex/adapter.js';
+import { _resetNewProvidersForTests, registerNewProvider } from './registry.js';
 
 let bootstrapped = false;
 
-export function registerBuiltInProviders(extraAdapters: ProviderAdapter[] = []): void {
+export function registerBuiltInProviders(): void {
   if (bootstrapped) return;
-  for (const adapter of [codexAdapter, claudeAdapter, ...extraAdapters]) {
-    registerProvider(adapter);
-  }
+  registerNewProvider(codexProvider);
+  registerNewProvider(claudeProvider);
   bootstrapped = true;
 }
 
 export function _resetProviderBootstrapForTests(): void {
   bootstrapped = false;
+  _resetNewProvidersForTests();
 }

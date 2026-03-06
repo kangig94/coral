@@ -1,26 +1,10 @@
-import { appendProgressEvent } from '../runner/progress.js';
-import {
-  launchJob as launchRunnerJob,
-  activeSessions,
-} from '../runner/job-manager.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
-import { getProvider, getProviderNames } from '../providers/registry.js';
-import type { SessionManager } from '../runner/session-manager.js';
-import type { SessionProvider } from '../runner/types.js';
-import type { NotifyFn } from '../providers/types.js';
-import { type McpResult, textResult } from '../shared/mcp-utils.js';
-import { executePipeline, type AtomDispatchFn } from './pipe-executor.js';
+import { getNewProvider } from '../providers/registry.js';
+import type { LaunchDecision } from '../types.js';
+import type { CallerContext, ExecutionService } from '../execution/service.js';
 import { parseExpression } from './pipe-parser.js';
 import { workflowInputSchema } from './schemas.js';
 import type { PipelineAST } from './types.js';
-
-type ToolCallFn = (
-  name: SessionProvider,
-  args: Record<string, unknown>,
-  sessionManager: SessionManager,
-  progressToken?: string | number,
-  notify?: NotifyFn,
-) => Promise<McpResult>;
 
 function collectAtomNames(ast: PipelineAST): Set<string> {
   const names = new Set<string>();
@@ -41,26 +25,26 @@ function validateAtomsKeys(atoms: Record<string, Record<string, unknown>>, ast: 
   }
 }
 
-function normalizeAst(ast: PipelineAST, defaultProvider: SessionProvider): PipelineAST {
+function normalizeAst(ast: PipelineAST, defaultProviderName: string): PipelineAST {
   return ast.map((step) => step.map((atom) => {
     if (atom.kind === 'prompt') {
       return {
         ...atom,
-        provider: atom.provider ?? defaultProvider,
+        provider: atom.provider ?? defaultProviderName,
       };
     }
+
     return {
       ...atom,
       namespace: atom.namespace ?? 'coral',
-      provider: atom.provider ?? defaultProvider,
+      provider: atom.provider ?? defaultProviderName,
     };
   }));
 }
 
 function validateNamespaces(ast: PipelineAST): void {
   for (let stepIndex = 0; stepIndex < ast.length; stepIndex += 1) {
-    const step = ast[stepIndex];
-    for (const atom of step) {
+    for (const atom of ast[stepIndex]) {
       if (atom.kind !== 'agent') continue;
       if (atom.namespace !== 'coral') {
         throw new Error(
@@ -85,69 +69,53 @@ function validateParallelDuplicates(ast: PipelineAST): void {
   }
 }
 
-function validateRegisteredProviders(ast: PipelineAST, defaultProvider: SessionProvider): void {
+function unknownProviderDecision(providers: string[]): LaunchDecision {
+  const providerLabel = providers.join(', ');
+  const isSingular = providers.length === 1;
+  return {
+    status: 'rejected',
+    phase: 'preflight',
+    code: 'unknown_provider',
+    message: isSingular ? `Unknown provider: ${providerLabel}` : `Unknown providers: ${providerLabel}`,
+  };
+}
+
+function findUnknownProviders(ast: PipelineAST, defaultProviderName: string): string[] {
   registerBuiltInProviders();
-  const providerNames = getProviderNames();
-  if (providerNames.length === 0) return;
 
   const unknownProviders = new Set<string>();
-  if (!getProvider(defaultProvider)) unknownProviders.add(defaultProvider);
+  if (!getNewProvider(defaultProviderName)) {
+    unknownProviders.add(defaultProviderName);
+  }
 
   for (const step of ast) {
     for (const atom of step) {
-      const provider = atom.provider ?? defaultProvider;
-      if (!getProvider(provider)) unknownProviders.add(provider);
+      const providerName = atom.provider ?? defaultProviderName;
+      if (!getNewProvider(providerName)) {
+        unknownProviders.add(providerName);
+      }
     }
   }
 
-  if (unknownProviders.size === 1) {
-    throw new Error(`Unknown provider "${[...unknownProviders][0]}"`);
-  }
-  if (unknownProviders.size > 1) {
-    throw new Error(`Unknown providers: ${[...unknownProviders].join(', ')}`);
-  }
+  return [...unknownProviders];
 }
 
-export function handleWorkflow(
+export async function handleWorkflow(
   rawArgs: Record<string, unknown>,
-  toolCallFn: ToolCallFn,
-  sessionManager: SessionManager,
-  projectRoot: string,
-  progressToken?: string | number,
-  notify?: NotifyFn,
-): McpResult {
+  executionSvc: ExecutionService,
+  ctx: CallerContext,
+): Promise<LaunchDecision> {
   const input = workflowInputSchema.parse(rawArgs);
-  const ast = parseExpression(input.expression);
-  const normalized = normalizeAst(ast, input.provider);
-  if (input.atoms) validateAtomsKeys(input.atoms, normalized);
-  validateNamespaces(normalized);
-  validateParallelDuplicates(normalized);
-  validateRegisteredProviders(normalized, input.provider);
+  const ast = normalizeAst(parseExpression(input.expression), input.provider);
 
-  return launchRunnerJob({
-    provider: input.provider,
-    sessionLabel: `workflow-${Date.now()}`,
-    workingDirectory: projectRoot,
-    handler: async (signal, onEvent) => {
-      const dispatch: AtomDispatchFn = (name, args) => toolCallFn(name, args, sessionManager, progressToken, notify);
-      const output = await executePipeline(normalized, input.prompt, input.provider, dispatch, {
-        atoms: input.atoms,
-        projectRoot,
-        signal,
-        onProgress: (message) => onEvent(message),
-        staleTimeoutMs: input.stale_timeout_seconds * 1000,
-        abortSession: (id) => {
-          const entry = activeSessions.get(id);
-          if (entry) entry.controller.abort();
-        },
-      });
-      return textResult(output);
-    },
-    mgr: sessionManager,
-    makeOnEvent: ({ progressFile }) => (line) => appendProgressEvent(progressFile, 'pipeline', line),
-    extractCompletion: (result) => ({
-      responseText: result.content[0]?.text ?? '',
-      metadata: {},
-    }),
-  });
+  if (input.atoms) validateAtomsKeys(input.atoms, ast);
+  validateNamespaces(ast);
+  validateParallelDuplicates(ast);
+
+  const unknownProviders = findUnknownProviders(ast, input.provider);
+  if (unknownProviders.length > 0) {
+    return unknownProviderDecision(unknownProviders);
+  }
+
+  return executionSvc.executeWorkflow(input.provider, ast, input, ctx);
 }

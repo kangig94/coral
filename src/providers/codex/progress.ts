@@ -1,25 +1,7 @@
-/**
- * Codex-specific progress helpers.
- * Generic session/progress file helpers live in ../../runner/progress.ts.
- */
-
 import { basename } from 'node:path';
-import type { CodexThreadEvent } from '../../types.js';
+import type { CodexThreadEvent } from './types.js';
 import { truncate } from '../../shared/format-progress.js';
 import { stripShellWrapper, matchCommandPattern } from './command-patterns.js';
-
-export {
-  createSessionDir,
-  writeSessionResult,
-  writeSessionError,
-  readSessionStatus,
-  resolveSessionDir,
-  formatElapsed,
-  appendProgressEvent,
-  SESSIONS_DIR,
-  PROGRESS_FILE,
-  type SessionStatus,
-} from '../../runner/progress.js';
 
 function formatCommandExecution(command: string): string {
   const stripped = stripShellWrapper(command);

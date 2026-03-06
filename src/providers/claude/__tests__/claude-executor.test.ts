@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-vi.mock('../../../runner/engine.js', () => ({
+vi.mock('../../../execution/engine.js', () => ({
   spawnCli: vi.fn(),
 }));
 
-import { spawnCli } from '../../../runner/engine.js';
+import { spawnCli } from '../../../execution/engine.js';
 import {
   executeClaudeOneShot,
   executeClaudeResume,
