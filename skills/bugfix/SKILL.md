@@ -29,9 +29,7 @@ Strip the `--codex` flag before passing the prompt to the execution path.
      follow `<Investigation_Protocol>` steps with conversation context.
      Present diagnosis in `<Output_Format>` structure.
    - **`--codex`**: Call `codex({ op: "coral:debugger", prompt: "--deep " + prompt, working_directory })`.
-     Capture `job` from the exec response, then `wait({ jobs: [job] })`.
-     On completion, read `/tmp/coral-jobs/<job>/result.md` for findings.
-     On error, read `/tmp/coral-jobs/<job>/status.json` and stop with the Codex error.
+     `wait({ jobs: [job] })` → `result.text` contains findings. On error, stop and report.
      Verify cited file:line references. Drop findings with incorrect references.
 
 2. **Plan fix**: Invoke `Skill({ skill: "coral:plan", args: "--no-handoff fix-{short-bug-description}" })`.

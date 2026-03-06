@@ -215,12 +215,9 @@ Strip `--codex` and `--red` flags before passing the prompt to the execution pat
     - Constraints or preferences stated by the user
 
     Execution loop:
-    1) Call Codex: `codex({ op: "exec", ... })` → `{ job, session }`.
-       `wait({ jobs: [job] })` → check status.
-       Completed: `Read("/tmp/coral-jobs/<job>/result.md")` for response.
-       Pass `working_directory`.
-    2) Keep using the `session` UUID from the exec response for continuity.
-       Subsequent rounds: `codex({ op: "exec", session: <session>, ... })`.
+    1) `codex({ op: "exec", ... })` → `{ job, session }`.
+       `wait({ jobs: [job] })` → `result.text` contains the response. Pass `working_directory`.
+    2) Keep using `session` for continuity: `codex({ op: "exec", session, ... })`.
     3) Verify changes yourself: read changed files, compare against acceptance criteria.
        LSP/type-check only — NEVER run build or test during the loop.
     4) Loop decision: all criteria pass → exit to Post-Completion Review.
