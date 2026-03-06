@@ -4,7 +4,7 @@
 // Line 1: model │ limits │ ctx │ session │ skill
 // Line 2: codex model │ codex limits │ spark limits
 
-import { readFileSync, existsSync, writeFileSync, mkdirSync, openSync, fstatSync, readSync, closeSync, renameSync } from "fs";
+import { readFileSync, existsSync, writeFileSync, mkdirSync, openSync, fstatSync, readSync, closeSync, renameSync, unlinkSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { execSync } from "child_process";
@@ -15,6 +15,7 @@ const RED = "\x1b[31m";
 const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 const CYAN = "\x1b[36m";
+const CODEX_USER_AGENT = "codex_cli_rs";
 
 function getCodexClientId(idToken) {
   try {
@@ -23,16 +24,6 @@ function getCodexClientId(idToken) {
     return Array.isArray(aud) ? aud[0] : aud;
   } catch {
     return null;
-  }
-}
-
-function getCodexUserAgent() {
-  try {
-    const ver = execSync("codex --version", { encoding: "utf-8", timeout: 2000 }).trim();
-    const m = ver.match(/(\d+\.\d+\.\d+)/);
-    return m ? `codex_cli_rs/${m[1]}` : "codex_cli_rs";
-  } catch {
-    return "codex_cli_rs";
   }
 }
 
@@ -63,14 +54,33 @@ function renderModel(input) {
 }
 
 function renderSession(input) {
-  if (!input.cost?.total_duration_ms) return null;
-  const totalSec = Math.floor(input.cost.total_duration_ms / 1000);
-  if (totalSec < 60) return `${totalSec}s`;
-  const min = Math.floor(totalSec / 60);
-  if (min < 60) return `${min}m`;
-  const hr = Math.floor(min / 60);
-  const remMin = min % 60;
-  return `${hr}h${remMin > 0 ? remMin + "m" : ""}`;
+  const costUsd = input.cost?.total_cost_usd;
+  const durationMs = input.cost?.total_duration_ms;
+
+  let costStr = null;
+  if (costUsd > 0) {
+    if (costUsd < 1) costStr = `$${costUsd.toFixed(2)}`;
+    else if (costUsd < 100) costStr = `$${costUsd.toFixed(1)}`;
+    else costStr = `$${costUsd.toFixed(0)}`;
+  }
+
+  let durationStr = null;
+  if (durationMs > 0) {
+    const totalSec = Math.floor(durationMs / 1000);
+    if (totalSec < 60) durationStr = `${totalSec}s`;
+    else {
+      const min = Math.floor(totalSec / 60);
+      if (min < 60) durationStr = `${min}m`;
+      else {
+        const hr = Math.floor(min / 60);
+        const remMin = min % 60;
+        durationStr = `${hr}h${remMin > 0 ? remMin + "m" : ""}`;
+      }
+    }
+  }
+
+  const parts = [costStr, durationStr].filter(Boolean);
+  return parts.length > 0 ? parts.join(" ") : null;
 }
 
 function renderContext(input) {
@@ -195,13 +205,19 @@ const CACHE_FAIL_TTL_MS = 30_000;
 const RATE_LIMIT_BASE_MS = 120_000;
 const RATE_LIMIT_MAX_MS = 600_000;
 const API_TIMEOUT_MS = 5_000;
+const LOCK_STALE_MS = 10_000;
 
 function normalizeCacheEntry(raw) {
+  const error = Boolean(raw?.error);
+  const rateLimit = Number.isInteger(raw?.rateLimit) ? raw.rateLimit : 0;
+  const derivedErrorKind = error ? (rateLimit > 0 ? "rateLimit" : "generic") : null;
+  const hasErrorKind = raw && typeof raw === "object" && "errorKind" in raw;
   return {
     ts: Number.isFinite(raw?.ts) ? raw.ts : 0,
     data: raw?.data ?? null,
-    error: Boolean(raw?.error),
-    rateLimit: Number.isInteger(raw?.rateLimit) ? raw.rateLimit : 0,
+    error,
+    rateLimit,
+    errorKind: hasErrorKind ? raw.errorKind : derivedErrorKind,
   };
 }
 
@@ -239,12 +255,49 @@ function readBackoffState(path) {
   }
 }
 
-function writeCacheFile(path, data, error = false, rateLimit = 0) {
+function writeCacheFile(path, data, error = false, rateLimit = 0, errorKind = null) {
   try {
     mkdirSync(CACHE_DIR, { recursive: true });
-    const payload = { ts: Date.now(), data, error, rateLimit };
+    let nextData = data;
+    if (error && nextData == null) {
+      try {
+        const existing = normalizeCacheEntry(JSON.parse(readFileSync(path, "utf-8")));
+        if (existing.data != null) nextData = existing.data;
+      } catch {}
+    }
+    const payload = { ts: Date.now(), data: nextData, error, rateLimit, errorKind };
     writeFileSync(path, JSON.stringify(payload), { mode: 0o600 });
   } catch {}
+}
+
+function acquireFetchLock(cachePath) {
+  const lockPath = cachePath + ".lock";
+  try {
+    const raw = readFileSync(lockPath, "utf-8");
+    const lockData = JSON.parse(raw);
+    if (Date.now() - lockData.ts <= LOCK_STALE_MS) return null;
+    try { unlinkSync(lockPath); } catch {}
+  } catch {}
+  try {
+    writeFileSync(lockPath, JSON.stringify({ ts: Date.now() }), { flag: "wx", mode: 0o600 });
+    return lockPath;
+  } catch {
+    return null;
+  }
+}
+
+function releaseFetchLock(lockPath) {
+  try { unlinkSync(lockPath); } catch {}
+}
+
+function readStaleCacheData(cachePath) {
+  try {
+    const cache = normalizeCacheEntry(JSON.parse(readFileSync(cachePath, "utf-8")));
+    if (cache.data) return formatLimits(cache.data);
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 // --- Claude rate limits ---
@@ -283,6 +336,7 @@ async function fetchUsage(accessToken, signal) {
       },
       signal,
     });
+    if (resp.status === 401 || resp.status === 403) return { unauthorized: true };
     if (resp.status === 429) return { rateLimited: true };
     if (!resp.ok) return null;
     return await resp.json();
@@ -315,12 +369,12 @@ function formatResetTime(isoString, mode) {
   return `${totalHr}:${String(mm).padStart(2, "0")}`;
 }
 
-function formatWindow(label, val, resetsAt, mode, dim = false) {
+function formatWindow(label, val, resetsAt, mode, dimLabel = false) {
   if (val == null) return null;
   const pct = clampPct(val);
   const reset = formatResetTime(resetsAt, mode);
   const resetStr = reset ? ` ${DIM}(${reset})${RESET}` : "";
-  const prefix = dim ? `${DIM}${label}:${RESET}` : `${label}:`;
+  const prefix = dimLabel ? `${DIM}${label}:${RESET}` : `${label}:`;
   return `${prefix}${colorPct(pct)}${resetStr}`;
 }
 
@@ -333,12 +387,35 @@ function formatLimits(data) {
   return parts.length > 0 ? parts.join(" ") : null;
 }
 
+function formatRemainingTime(cache) {
+  const remaining = cache.ts + getCacheTtlMs(cache) - Date.now();
+  const minutes = Math.max(1, Math.ceil(remaining / 60000));
+  return `${minutes}m`;
+}
+
+function formatErrorIndicator(cache) {
+  switch (cache.errorKind) {
+    case "rateLimit":
+      return `${DIM}throttled: refreshes in ${formatRemainingTime(cache)}${RESET}`;
+    case "auth":
+      return `${DIM}re-login required${RESET}`;
+    default:
+      return `${DIM}API unavailable${RESET}`;
+  }
+}
+
 async function renderLimits() {
   const cached = readCacheFile(CACHE_FILE);
   if (cached) {
-    if (cached.error) return null;
+    if (cached.error) {
+      if (cached.data) return formatLimits(cached.data);
+      return formatErrorIndicator(cached);
+    }
     return formatLimits(cached.data);
   }
+
+  const lock = acquireFetchLock(CACHE_FILE);
+  if (!lock) return readStaleCacheData(CACHE_FILE);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
@@ -347,13 +424,18 @@ async function renderLimits() {
     if (!token) return null;
 
     const resp = await fetchUsage(token, controller.signal);
+    if (resp?.unauthorized) {
+      writeCacheFile(CACHE_FILE, null, true, 0, "auth");
+      return formatErrorIndicator({ error: true, errorKind: "auth", ts: Date.now(), rateLimit: 0 });
+    }
     if (resp?.rateLimited) {
-      writeCacheFile(CACHE_FILE, null, true, readBackoffState(CACHE_FILE) + 1);
-      return null;
+      const newRL = readBackoffState(CACHE_FILE) + 1;
+      writeCacheFile(CACHE_FILE, null, true, newRL, "rateLimit");
+      return formatErrorIndicator({ error: true, errorKind: "rateLimit", ts: Date.now(), rateLimit: newRL });
     }
     if (!resp) {
-      writeCacheFile(CACHE_FILE, null, true);
-      return null;
+      writeCacheFile(CACHE_FILE, null, true, 0, "generic");
+      return formatErrorIndicator({ error: true, errorKind: "generic", ts: Date.now(), rateLimit: 0 });
     }
 
     const data = {
@@ -366,6 +448,7 @@ async function renderLimits() {
     return formatLimits(data);
   } finally {
     clearTimeout(timer);
+    releaseFetchLock(lock);
   }
 }
 
@@ -437,14 +520,14 @@ function parseLimitsFromRl(rl) {
   };
 }
 
-async function fetchCodexUsage(accessToken, accountId, userAgent, signal) {
+async function fetchCodexUsage(accessToken, accountId, signal) {
   try {
     const resp = await fetch("https://chatgpt.com/backend-api/wham/usage", {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         "chatgpt-account-id": accountId,
-        "User-Agent": userAgent,
-        originator: "codex_cli_rs",
+        "User-Agent": CODEX_USER_AGENT,
+        originator: CODEX_USER_AGENT,
       },
       signal,
     });
@@ -479,12 +562,24 @@ async function fetchCodexUsage(accessToken, accountId, userAgent, signal) {
 }
 
 async function renderCodexData() {
-  if (!existsSync(CODEX_FLAG_FILE)) return null;
+  if (!existsSync(CODEX_FLAG_FILE)) return { kind: "none" };
 
   const cached = readCacheFile(CODEX_CACHE_FILE);
   if (cached) {
-    if (cached.error) return null;
-    return cached.data;
+    if (cached.error) {
+      if (cached.data) return { kind: "data", ...cached.data };
+      return { kind: "error", message: formatErrorIndicator(cached) };
+    }
+    return { kind: "data", ...cached.data };
+  }
+
+  const lock = acquireFetchLock(CODEX_CACHE_FILE);
+  if (!lock) {
+    try {
+      const prev = normalizeCacheEntry(JSON.parse(readFileSync(CODEX_CACHE_FILE, "utf-8")));
+      if (prev.data) return { kind: "data", ...prev.data };
+    } catch {}
+    return { kind: "none" };
   }
 
   const controller = new AbortController();
@@ -492,40 +587,61 @@ async function renderCodexData() {
 
   try {
     const creds = readCodexCredentials();
-    if (!creds) return null;
+    if (!creds) return { kind: "none" };
 
-    const userAgent = getCodexUserAgent();
     let token = creds.accessToken;
-    let result = await fetchCodexUsage(token, creds.accountId, userAgent, controller.signal);
+    let result = await fetchCodexUsage(token, creds.accountId, controller.signal);
 
     if (result?.unauthorized) {
       const refreshed = await refreshCodexToken(creds.refreshToken, creds.clientId, controller.signal);
       if (!refreshed) {
-        writeCacheFile(CODEX_CACHE_FILE, null, true);
-        return null;
+        writeCacheFile(CODEX_CACHE_FILE, null, true, 0, "generic");
+        return {
+          kind: "error",
+          message: formatErrorIndicator({ error: true, errorKind: "generic", ts: Date.now(), rateLimit: 0 }),
+        };
       }
       token = refreshed.accessToken;
       if (refreshed.refreshToken) writeBackCodexCredentials(creds, refreshed);
-      result = await fetchCodexUsage(token, creds.accountId, userAgent, controller.signal);
+      result = await fetchCodexUsage(token, creds.accountId, controller.signal);
+    }
+
+    if (result?.unauthorized) {
+      writeCacheFile(CODEX_CACHE_FILE, null, true, 0, "auth");
+      return {
+        kind: "error",
+        message: formatErrorIndicator({ error: true, errorKind: "auth", ts: Date.now(), rateLimit: 0 }),
+      };
     }
 
     if (result?.rateLimited) {
-      writeCacheFile(CODEX_CACHE_FILE, null, true, readBackoffState(CODEX_CACHE_FILE) + 1);
-      return null;
+      const newRL = readBackoffState(CODEX_CACHE_FILE) + 1;
+      writeCacheFile(CODEX_CACHE_FILE, null, true, newRL, "rateLimit");
+      return {
+        kind: "error",
+        message: formatErrorIndicator({ error: true, errorKind: "rateLimit", ts: Date.now(), rateLimit: newRL }),
+      };
     }
 
-    if (result && !result.unauthorized) {
+    if (result && !result.unauthorized && !result.rateLimited) {
       writeCacheFile(CODEX_CACHE_FILE, result);
-      return result;
+      return { kind: "data", ...result };
     }
 
-    writeCacheFile(CODEX_CACHE_FILE, null, true);
-    return null;
+    writeCacheFile(CODEX_CACHE_FILE, null, true, 0, "generic");
+    return {
+      kind: "error",
+      message: formatErrorIndicator({ error: true, errorKind: "generic", ts: Date.now(), rateLimit: 0 }),
+    };
   } catch {
-    writeCacheFile(CODEX_CACHE_FILE, null, true);
-    return null;
+    writeCacheFile(CODEX_CACHE_FILE, null, true, 0, "generic");
+    return {
+      kind: "error",
+      message: formatErrorIndicator({ error: true, errorKind: "generic", ts: Date.now(), rateLimit: 0 }),
+    };
   } finally {
     clearTimeout(timer);
+    releaseFetchLock(lock);
   }
 }
 
@@ -554,22 +670,32 @@ async function main() {
   }
 
   const safe = (p) => p.catch(() => null);
-  const [limits, codexData] = await Promise.all([
+  const [limits, rawCodexData] = await Promise.all([
     safe(renderLimits()),
     safe(renderCodexData()),
   ]);
+  const codexData = rawCodexData ?? { kind: "none" };
 
   // Column alignment: model name + limits (up to second |)
   const claudeModel = renderModel(input);
   const envModel = process.env.CORAL_CODEX_MODEL || "gpt-5.3-codex";
-  const addonTier = codexData?.additionalLabel?.toLowerCase() || null;
-  const hasAddon = addonTier ? envModel.toLowerCase().endsWith(`-${addonTier}`) : false;
-  const baseModel = hasAddon ? envModel.slice(0, envModel.lastIndexOf("-")) : envModel;
-  const codexModel = codexData ? baseModel : null;
+  let col1Claude, col1Codex, col2Claude, col2Codex;
 
-  let [col1Claude, col1Codex] = alignColumns(claudeModel, codexModel);
-  const codexLimits = codexData ? formatLimits(codexData.codex) : null;
-  const [col2Claude, col2Codex] = alignColumns(limits, codexLimits);
+  if (codexData.kind === "data") {
+    const addonTier = codexData.additionalLabel?.toLowerCase() || null;
+    const hasAddon = addonTier ? envModel.toLowerCase().endsWith(`-${addonTier}`) : false;
+    const baseModel = hasAddon ? envModel.slice(0, envModel.lastIndexOf("-")) : envModel;
+    const codexModel = baseModel;
+
+    [col1Claude, col1Codex] = alignColumns(claudeModel, codexModel);
+    const codexLimits = formatLimits(codexData.codex);
+    [col2Claude, col2Codex] = alignColumns(limits, codexLimits);
+  } else {
+    col1Claude = claudeModel;
+    col2Claude = limits;
+    col1Codex = null;
+    col2Codex = null;
+  }
 
   // Line 1: Claude
   const line1 = [
@@ -582,10 +708,13 @@ async function main() {
 
   let output = line1.join(SEP);
 
-  // Line 2: Codex (only if data available)
-  if (codexData) {
+  // Line 2: Codex
+  if (codexData.kind === "data") {
+    const addonTier = codexData.additionalLabel?.toLowerCase() || null;
+    const hasAddon = addonTier ? envModel.toLowerCase().endsWith(`-${addonTier}`) : false;
     const sparkLabel = hasAddon ? `${GREEN}${codexData.additionalLabel}${RESET}` : codexData.additionalLabel;
-    const sparkStr = codexData.spark ? `${sparkLabel} ${formatLimits(codexData.spark)}` : null;
+    const sparkLimits = codexData.spark ? formatLimits(codexData.spark) : null;
+    const sparkStr = sparkLimits ? `${sparkLabel} ${sparkLimits}` : null;
     if (col1Codex) col1Codex = hasAddon ? col1Codex : `${GREEN}${col1Codex}${RESET}`;
     const line2 = [
       col1Codex,
@@ -595,8 +724,14 @@ async function main() {
     if (line2.length > 0) {
       output += "\n" + line2.join(SEP);
     }
+  } else if (codexData.kind === "error") {
+    output += "\n" + codexData.message;
   }
 
+  output = output
+    .split("\n")
+    .map(line => line.replace(/ +$/, m => "\u00A0".repeat(m.length)))
+    .join("\n");
   process.stdout.write(output);
 }
 
