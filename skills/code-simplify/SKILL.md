@@ -4,7 +4,7 @@ description: "Simplifies and refines code for clarity, consistency, and maintain
 argument-hint: "[--codex] <scope or prompt>"
 ---
 
-> **CORAL_AGENTS**: `Bash("ls ~/.claude/plugins/cache/coral/coral/*/agents/")`
+> **CORAL_AGENTS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/agents/")`
 
 # Code Simplification
 

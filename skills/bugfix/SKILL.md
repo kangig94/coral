@@ -4,7 +4,7 @@ description: "Systematic bug diagnosis, planning, and fix execution."
 argument-hint: "[--codex] <bug description or error message>"
 ---
 
-> **CORAL_AGENTS**: `Bash("ls ~/.claude/plugins/cache/coral/coral/*/agents/")`
+> **CORAL_AGENTS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/agents/")`
 
 # Bug Debugging
 

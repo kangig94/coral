@@ -4,7 +4,7 @@ description: "Planning with parallel architect/critic review. Pass --deep for me
 argument-hint: "[--deep] [--codex] [task description]"
 ---
 
-> **CORAL_METHODS**: `Bash("ls ~/.claude/plugins/cache/coral/coral/*/methods/")`
+> **CORAL_METHODS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/methods/")`
 
 # Planning
 

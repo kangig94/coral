@@ -4,7 +4,7 @@ description: Initialize project for AI-assisted development with rules, agents, 
 argument-hint: "[existing|new]"
 ---
 
-> **CORAL_SKILLS**: `Bash("ls ~/.claude/plugins/cache/coral/coral/*/skills/")`
+> **CORAL_SKILLS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/skills/")`
 
 # Project Initialization
 

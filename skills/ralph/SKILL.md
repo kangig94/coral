@@ -5,7 +5,7 @@ argument-hint: "[--red] [--codex] [task description]"
 model: sonnet
 ---
 
-> **CORAL_AGENTS**: `Bash("ls ~/.claude/plugins/cache/coral/coral/*/agents/")`
+> **CORAL_AGENTS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/agents/")`
 
 # Persistent Execution with Verification
 

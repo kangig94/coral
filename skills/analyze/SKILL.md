@@ -4,7 +4,7 @@ description: "Deep analysis - project scanning, requirement gaps, root cause inv
 argument-hint: "[--codex] [investigation target or question]"
 ---
 
-> **CORAL_AGENTS**: `Bash("ls ~/.claude/plugins/cache/coral/coral/*/agents/")`
+> **CORAL_AGENTS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/agents/")`
 
 # Deep Analysis & Investigation
 

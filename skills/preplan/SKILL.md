@@ -4,7 +4,7 @@ description: "Structured problem-definition conversation before planning. Aligns
 argument-hint: "<issue or topic>"
 ---
 
-> **CORAL_METHODS**: `Bash("ls ~/.claude/plugins/cache/coral/coral/*/methods/")`
+> **CORAL_METHODS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/methods/")`
 
 # Pre-plan
 
