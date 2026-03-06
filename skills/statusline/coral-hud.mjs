@@ -16,8 +16,25 @@ const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 const CYAN = "\x1b[36m";
 
-const CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
-const CODEX_USER_AGENT = "codex_cli_rs/0.104.0";
+function getCodexClientId(idToken) {
+  try {
+    const payload = JSON.parse(Buffer.from(idToken.split(".")[1], "base64url").toString());
+    const aud = payload.aud;
+    return Array.isArray(aud) ? aud[0] : aud;
+  } catch {
+    return null;
+  }
+}
+
+function getCodexUserAgent() {
+  try {
+    const ver = execSync("codex --version", { encoding: "utf-8", timeout: 2000 }).trim();
+    const m = ver.match(/(\d+\.\d+\.\d+)/);
+    return m ? `codex_cli_rs/${m[1]}` : "codex_cli_rs";
+  } catch {
+    return "codex_cli_rs";
+  }
+}
 
 // --- stdin ---
 
@@ -401,9 +418,11 @@ function readCodexCredentials() {
   try {
     const authPath = join(homedir(), ".codex", "auth.json");
     const parsed = JSON.parse(readFileSync(authPath, "utf-8"));
-    const { access_token, refresh_token, account_id } = parsed.tokens || {};
+    const { id_token, access_token, refresh_token, account_id } = parsed.tokens || {};
     if (!account_id) return null;
-    return { accessToken: access_token, refreshToken: refresh_token, accountId: account_id };
+    const clientId = getCodexClientId(id_token);
+    if (!clientId) return null;
+    return { accessToken: access_token, refreshToken: refresh_token, accountId: account_id, clientId };
   } catch {
     return null;
   }
@@ -421,14 +440,14 @@ function writeBackCodexCredentials(creds, refreshed) {
   } catch {}
 }
 
-async function refreshCodexToken(refreshTok, signal) {
+async function refreshCodexToken(refreshTok, clientId, signal) {
   try {
     const resp = await fetch("https://auth.openai.com/oauth/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
         grant_type: "refresh_token",
-        client_id: CODEX_CLIENT_ID,
+        client_id: clientId,
         refresh_token: refreshTok,
         scope: "openid profile email",
       }),
@@ -461,13 +480,13 @@ function parseLimitsFromRl(rl) {
   };
 }
 
-async function fetchCodexUsage(accessToken, accountId, signal) {
+async function fetchCodexUsage(accessToken, accountId, userAgent, signal) {
   try {
     const resp = await fetch("https://chatgpt.com/backend-api/wham/usage", {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         "chatgpt-account-id": accountId,
-        "User-Agent": CODEX_USER_AGENT,
+        "User-Agent": userAgent,
         originator: "codex_cli_rs",
       },
       signal,
@@ -518,18 +537,19 @@ async function renderCodexData() {
     const creds = readCodexCredentials();
     if (!creds) return null;
 
+    const userAgent = getCodexUserAgent();
     let token = creds.accessToken;
-    let result = await fetchCodexUsage(token, creds.accountId, controller.signal);
+    let result = await fetchCodexUsage(token, creds.accountId, userAgent, controller.signal);
 
     if (result?.unauthorized) {
-      const refreshed = await refreshCodexToken(creds.refreshToken, controller.signal);
+      const refreshed = await refreshCodexToken(creds.refreshToken, creds.clientId, controller.signal);
       if (!refreshed) {
         writeCacheFile(CODEX_CACHE_FILE, null, true);
         return null;
       }
       token = refreshed.accessToken;
       if (refreshed.refreshToken) writeBackCodexCredentials(creds, refreshed);
-      result = await fetchCodexUsage(token, creds.accountId, controller.signal);
+      result = await fetchCodexUsage(token, creds.accountId, userAgent, controller.signal);
     }
 
     if (result?.rateLimited) {
