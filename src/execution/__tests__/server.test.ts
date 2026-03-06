@@ -1,19 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import type { WaitStreamEvent } from '../../types.js';
 import { JOBS_DIR, ProgressStore, jobResultPath } from '../progress-store.js';
 import type { BackendServerController } from '../server.js';
 
-let tmpHome = '';
+const mockState = vi.hoisted(() => ({
+  tmpHome: '',
+  tmpRoot: `${process.env.TMPDIR || '/tmp'}/coral-execution-backend-test-tmp`,
+}));
+
 const createdJobIds = new Set<string>();
 
 vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof import('node:os')>('node:os');
   return {
     ...actual,
-    homedir: () => tmpHome,
+    homedir: () => mockState.tmpHome,
+    tmpdir: () => mockState.tmpRoot,
   };
 });
 
@@ -112,7 +116,9 @@ describe('execution backend server', () => {
   let controller: BackendServerController | null = null;
 
   beforeEach(() => {
-    tmpHome = mkdtempSync(join(tmpdir(), 'coral-execution-backend-test-'));
+    rmSync(mockState.tmpRoot, { recursive: true, force: true });
+    mkdirSync(mockState.tmpRoot, { recursive: true });
+    mockState.tmpHome = mkdtempSync(join(mockState.tmpRoot, 'home-'));
   });
 
   afterEach(async () => {
@@ -130,8 +136,8 @@ describe('execution backend server', () => {
     createdJobIds.clear();
     vi.restoreAllMocks();
     vi.resetModules();
-    rmSync(tmpHome, { recursive: true, force: true });
-    tmpHome = '';
+    rmSync(mockState.tmpRoot, { recursive: true, force: true });
+    mockState.tmpHome = '';
   });
 
   async function startBackendServer(
@@ -172,6 +178,7 @@ describe('execution backend server', () => {
       activeChildren: 0,
       activeJobs: 0,
       inflightRequests: 1,
+      queueDepth: 0,
     });
     expect(typeof body.uptimeMs).toBe('number');
   });

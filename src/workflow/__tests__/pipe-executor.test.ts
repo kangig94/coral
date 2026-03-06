@@ -3,7 +3,7 @@ import type { CallerContext } from '../../execution/service.js';
 import type { TerminalResult, WaitRequest, WaitStreamEvent } from '../../types.js';
 import { parseExpression } from '../pipe-parser.js';
 import {
-  MAX_LAUNCH_ATTEMPTS,
+  BOOTSTRAP_TIMEOUT_MS,
   WorkflowExecutionError,
   executePipeline,
   formatStepOutput,
@@ -187,31 +187,6 @@ describe('workflow pipe executor', () => {
         output: 'OUT B',
       },
     ]);
-  });
-
-  it('retries busy launches up to MAX_LAUNCH_ATTEMPTS', async () => {
-    let attempt = 0;
-    const progress: string[] = [];
-    const executionSvc = createExecutionService({
-      coralDispatch: vi.fn(async () => {
-        attempt += 1;
-        return running(`job-${attempt}`, `session-${attempt}`);
-      }),
-      awaitLaunch: vi.fn(async (): Promise<'busy'> => 'busy'),
-    });
-
-    await expect(executePipeline(
-      parseExpression('architect'),
-      'seed',
-      'codex',
-      executionSvc,
-      ctx,
-      { onProgress: (message) => progress.push(message) },
-    )).rejects.toThrow(`capacity busy after ${MAX_LAUNCH_ATTEMPTS} attempts`);
-
-    expect(executionSvc.coralDispatch).toHaveBeenCalledTimes(MAX_LAUNCH_ATTEMPTS);
-    expect(executionSvc.awaitLaunch).toHaveBeenCalledTimes(MAX_LAUNCH_ATTEMPTS);
-    expect(progress.some((message) => message.includes('0-arc busy (attempt 1), retrying'))).toBe(true);
   });
 
   it('keeps same-agent different-provider outputs separate across stale recovery', async () => {
@@ -458,6 +433,45 @@ describe('formatStepOutput', () => {
 });
 
 describe('launchAtomWithRetry', () => {
+  it('accepts queued launches as valid bootstrap outcomes', async () => {
+    const executionSvc = createExecutionService({
+      coralDispatch: vi.fn(async () => ({
+        status: 'queued' as const,
+        job: 'job-queued',
+        session: 'session-queued',
+      })),
+      awaitLaunch: vi.fn(async (): Promise<'queued'> => 'queued'),
+    });
+
+    const [atom] = parseExpression('architect')[0];
+    const launched = await launchAtomWithRetry({
+      atom,
+      atomIndex: 0,
+      stepIndex: 0,
+      stepPrompt: 'do work',
+      defaultProviderName: 'codex',
+      executionSvc,
+      ctx,
+      onProgress: vi.fn(),
+      completedStepDetails: [],
+    });
+
+    expect(launched).toEqual({
+      jobId: 'job-queued',
+      sessionId: 'session-queued',
+      providerName: 'codex',
+      coralOp: 'coral:architect',
+      agent: 'architect',
+      tagName: 'architect',
+      stepIndex: 0,
+      atomIndex: 0,
+      atomKey: '0:0',
+      kind: 'agent',
+    });
+    expect(executionSvc.coralDispatch).toHaveBeenCalledTimes(1);
+    expect(executionSvc.awaitLaunch).toHaveBeenCalledWith('job-queued', BOOTSTRAP_TIMEOUT_MS);
+  });
+
   it('throws with step/atom context when coralDispatch returns rejected status', async () => {
     const executionSvc = createExecutionService({
       coralDispatch: vi.fn(async () => ({
@@ -504,6 +518,37 @@ describe('launchAtomWithRetry', () => {
 });
 
 describe('waitForAtoms', () => {
+  it('treats queued wait events as progress and keeps waiting for completion', async () => {
+    const progress = vi.fn();
+    const executionSvc = createExecutionService({
+      waitStream: vi.fn(() => emit([
+        {
+          type: 'queued',
+          jobId: 'job-1',
+          sessionId: 'session-1',
+          queuePosition: 2,
+          runningJobIds: ['job-a'],
+        },
+        terminal('job-1', 'session-1', { content: 'ARCH' }),
+      ])),
+    });
+
+    const results = await waitForAtoms(
+      [launchedAtom()],
+      executionSvc,
+      ctx,
+      {
+        staleTimeoutMs: 0,
+        pollIntervalMs: 500,
+        onProgress: progress,
+      },
+    );
+
+    expect(results.get('0:0')).toBe('ARCH');
+    expect(progress).toHaveBeenCalledWith('0-arc queued (position 2)');
+    expect(progress).toHaveBeenCalledWith('0-arc done');
+  });
+
   it('treats notice on terminal result as a failure and preserves completed details', async () => {
     const executionSvc = createExecutionService({
       waitStream: vi.fn(() => emit([

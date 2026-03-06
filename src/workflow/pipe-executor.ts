@@ -3,14 +3,12 @@ import type { LaunchDecision, TerminalResult, WaitCursor } from '../types.js';
 import type { EffortLevel } from '../shared/schemas.js';
 import type { PipeAtom, PipelineAST } from './types.js';
 
-export const BUSY_PREFIX = 'Runner is busy (';
 export const MAX_LAUNCH_ATTEMPTS = 3;
 export const BOOTSTRAP_POLL_INTERVAL_MS = 50;
 export const BOOTSTRAP_TIMEOUT_MS = 2_000;
 export const SIBLING_DRAIN_TIMEOUT_MS = 15_000;
 
 const DEFAULT_WAIT_POLL_INTERVAL_MS = 500;
-const DEFAULT_BACKOFF_BASE_MS = 100;
 const MAX_STALE_RECOVERY_RETRIES = 2;
 const STALE_RESUME_PROMPT = 'Your previous execution timed out due to inactivity. Continue where you left off.';
 
@@ -96,32 +94,6 @@ function stripElapsedPrefix(message: string): string {
   return message.slice(closeBracket + 2);
 }
 
-function computeBackoffMs(attempt: number): number {
-  return DEFAULT_BACKOFF_BASE_MS * (2 ** (attempt - 1));
-}
-
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal?.aborted) {
-      resolve();
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    };
-
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
 function readAtomConfig(
   stepIndex: number,
   atomName: string,
@@ -147,7 +119,7 @@ function atomDiagnosticLabel(atom: PipeAtom, atomIndex: number): string {
 function describeLaunchRejection(
   stepIndex: number,
   atomName: string,
-  decision: Exclude<LaunchDecision, { status: 'running' }>,
+  decision: Extract<LaunchDecision, { status: 'rejected' }>,
 ): Error {
   return new Error(`Step ${stepIndex + 1}, atom '${atomName}' launch failed: ${decision.message}`);
 }
@@ -273,52 +245,40 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
       : `${atom.text}\n\n${stepPrompt}`;
   }
 
-  for (let attempt = 1; attempt <= MAX_LAUNCH_ATTEMPTS; attempt += 1) {
-    if (signal?.aborted) throw readLaunchAbortError(completedStepDetails);
+  if (signal?.aborted) throw readLaunchAbortError(completedStepDetails);
 
-    const decision = await executionSvc.coralDispatch(
-      providerName,
-      coralName,
-      {
-        prompt: atomPrompt,
-        cwd: ctx.projectRoot,
-      },
-      ctx,
-    );
+  const decision = await executionSvc.coralDispatch(
+    providerName,
+    coralName,
+    {
+      prompt: atomPrompt,
+      cwd: ctx.projectRoot,
+    },
+    ctx,
+  );
 
-    if (decision.status === 'rejected') {
-      throw describeLaunchRejection(stepIndex, label, decision);
-    }
-
-    const launchState = await executionSvc.awaitLaunch(decision.job, BOOTSTRAP_TIMEOUT_MS);
-    if (launchState === 'busy') {
-      if (attempt === MAX_LAUNCH_ATTEMPTS) break;
-      onProgress(`${stepIndex}-${label.slice(0, 3)} busy (attempt ${attempt}), retrying`);
-      await sleep(computeBackoffMs(attempt), signal);
-      continue;
-    }
-    if (launchState === 'error') {
-      const message = await readLaunchFailureMessage(decision.job, executionSvc, signal);
-      throw new Error(`Step ${stepIndex + 1}, atom '${label}' failed: ${message ?? 'unknown error'}`);
-    }
-
-    return {
-      jobId: decision.job,
-      sessionId: decision.session,
-      providerName,
-      coralOp: `coral:${coralName}`,
-      agent: label,
-      tagName,
-      stepIndex,
-      atomIndex,
-      atomKey,
-      kind: atom.kind,
-    };
+  if (decision.status === 'rejected') {
+    throw describeLaunchRejection(stepIndex, label, decision);
   }
 
-  throw new Error(
-    `Step ${stepIndex + 1}, atom '${label}' failed: capacity busy after ${MAX_LAUNCH_ATTEMPTS} attempts`,
-  );
+  const launchState = await executionSvc.awaitLaunch(decision.job, BOOTSTRAP_TIMEOUT_MS);
+  if (launchState === 'error') {
+    const message = await readLaunchFailureMessage(decision.job, executionSvc, signal);
+    throw new Error(`Step ${stepIndex + 1}, atom '${label}' failed: ${message ?? 'unknown error'}`);
+  }
+
+  return {
+    jobId: decision.job,
+    sessionId: decision.session,
+    providerName,
+    coralOp: `coral:${coralName}`,
+    agent: label,
+    tagName,
+    stepIndex,
+    atomIndex,
+    atomKey,
+    kind: atom.kind,
+  };
 }
 
 async function recoverStaleAtom(
@@ -382,13 +342,6 @@ async function recoverStaleAtom(
     }
 
     const launchState = await executionSvc.awaitLaunch(resumed.job, BOOTSTRAP_TIMEOUT_MS);
-    if (launchState === 'busy') {
-      throw createWorkflowExecutionError(
-        resumeFailureForAtom(atom, 'capacity busy'),
-        false,
-        options.buildPartialStepDetails(),
-      );
-    }
     if (launchState === 'error') {
       const message = await readLaunchFailureMessage(resumed.job, executionSvc, options.signal);
       throw createWorkflowExecutionError(
@@ -468,6 +421,14 @@ export async function waitForAtoms(
       timeoutSeconds,
       cursor,
     })) {
+      if (event.type === 'queued') {
+        const atom = pending.get(event.jobId);
+        if (!atom) continue;
+        lastActivityAt.set(atom.atomKey, Date.now());
+        options.onProgress(`${atom.stepIndex}-${atom.agent.slice(0, 3)} queued (position ${event.queuePosition})`);
+        continue;
+      }
+
       if (event.type === 'progress') {
         cursor.jobs[event.jobId] = event.eventId;
         const atom = pending.get(event.jobId);

@@ -8,7 +8,7 @@ import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { isNoEntryError, isRecord } from '../shared/mcp-utils.js';
 import type { ExecutionService } from './service.js';
-import { activeChildren, killAllChildren } from './engine.js';
+import { activeChildren, killAllChildren, queueDepth } from './engine.js';
 import { writeBackendInfo, removeBackendInfoIfOwner } from './backend-info.js';
 import { acquireLock, BackendAlreadyRunningError, removeLockIfOwner } from './backend-lock.js';
 import { IdleTimer } from './idle-timer.js';
@@ -257,7 +257,7 @@ function listLiveJobs(progressStore: ProgressStore): PersistedStatusRecord[] {
   return readJobIds()
     .map((jobId) => progressStore.readStatus(jobId))
     .filter((status): status is PersistedStatusRecord =>
-      status !== null && (status.phase === 'launching' || status.phase === 'running'));
+      status !== null && (status.phase === 'queued' || status.phase === 'launching' || status.phase === 'running'));
 }
 
 function markJobAsError(
@@ -474,7 +474,7 @@ async function routeToolCall(
 
 function writeSseEvent(
   res: ServerResponse,
-  event: 'progress' | 'terminal' | 'timeout',
+  event: 'progress' | 'terminal' | 'timeout' | 'queued',
   data: unknown,
   cursorId?: string,
 ): void {
@@ -667,6 +667,13 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         continue;
       }
 
+      if (event.type === 'queued') {
+        // No cursor update: queued events are synthetic (not persisted in JSONL)
+        // and must not advance the replay cursor position.
+        writeSseEvent(res, 'queued', event);
+        continue;
+      }
+
       writeSseEvent(res, 'timeout', event);
     }
 
@@ -705,6 +712,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         uptimeMs: now() - startedAt,
         activeChildren: activeChildren.size,
         activeJobs: listLiveJobs(progressStore).length,
+        queueDepth: queueDepth(),
         inflightRequests: idleTimer.inflightRequests,
       });
       return;

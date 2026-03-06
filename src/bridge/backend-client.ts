@@ -321,6 +321,17 @@ function parseWaitStreamEvent(eventType: string | undefined, rawData: string): W
         return parsed as WaitStreamEvent;
       }
       throw new Error('Invalid timeout wait stream event');
+    case 'queued':
+      if (
+        typeof parsed.jobId === 'string'
+        && typeof parsed.sessionId === 'string'
+        && typeof parsed.queuePosition === 'number'
+        && Array.isArray(parsed.runningJobIds)
+        && parsed.runningJobIds.every((jobId) => typeof jobId === 'string')
+      ) {
+        return parsed as WaitStreamEvent;
+      }
+      throw new Error('Invalid queued wait stream event');
     default:
       return null;
   }

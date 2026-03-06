@@ -61,7 +61,7 @@ Start a new Codex session (omit `session`) or resume an existing one (pass `sess
 
 ### Output
 
-Returns immediately. Codex runs in background.
+Returns immediately. Codex runs in background. Accepted launches return one of:
 
 ```json
 {
@@ -70,6 +70,16 @@ Returns immediately. Codex runs in background.
   "session": "session-uuid"
 }
 ```
+
+```json
+{
+  "status": "queued",
+  "job": "job-uuid",
+  "session": "session-uuid"
+}
+```
+
+`status: "queued"` is a normal accepted launch outcome, not an error. The job will auto-execute when a launch slot frees up.
 
 `job` is the job ID used with `wait` and `abort`. `session` is the session ID for resume/fork continuity. Use the `wait` tool to stream progress, then `Read` the result from `/tmp/coral-jobs/<job>/result.md`.
 
@@ -124,7 +134,7 @@ Fork an existing session to continue the conversation in a new branch. Returns i
 
 ### Output
 
-Returns immediately. Same format as `exec`:
+Returns immediately. Same accepted format as `exec` (`status: "running"` or `status: "queued"`):
 
 ```json
 {
@@ -134,6 +144,8 @@ Returns immediately. Same format as `exec`:
 }
 ```
 
+`status: "queued"` means the fork request was accepted and will auto-execute when capacity is available.
+
 Use `wait({ jobs: [job] })` then `Read("/tmp/coral-jobs/<job>/result.md")` to get the fork response.
 
 ---
@@ -141,7 +153,7 @@ Use `wait({ jobs: [job] })` then `Read("/tmp/coral-jobs/<job>/result.md")` to ge
 ## Usage Pattern
 
 ```
-exec → { status, job, session }
+exec → { status: "running" | "queued", job, session }
 wait({ jobs: [job] }) → { state, ... }
 if state == "completed":
   Read("/tmp/coral-jobs/<job>/result.md") → response text
@@ -195,7 +207,7 @@ Single entry point for Claude CLI execution. Use the required `op` discriminator
 
 ### op: exec
 
-Starts a new Claude CLI run (or resumes when `session` is provided). Returns immediately:
+Starts a new Claude CLI run (or resumes when `session` is provided). Accepted launches return either:
 
 ```json
 {
@@ -204,6 +216,16 @@ Starts a new Claude CLI run (or resumes when `session` is provided). Returns imm
   "session": "session-uuid"
 }
 ```
+
+```json
+{
+  "status": "queued",
+  "job": "job-uuid",
+  "session": "session-uuid"
+}
+```
+
+`status: "queued"` is a normal accepted launch outcome. Claude will auto-dispatch when capacity is available.
 
 Execution details:
 - Uses `claude -p --output-format json`
@@ -241,6 +263,10 @@ Fork an existing Claude session into a new branch. Uses `claude -p --resume <thr
 | `session` | string | Yes | Source session identifier (must exist in Coral registry) |
 | `prompt` | string | No | Additional prompt for the forked session |
 | `working_directory` | string | No | Working directory |
+
+### Output
+
+Accepted launches use the same response format as `exec`: `status: "running"` or `status: "queued"`, plus `job` and `session`. `status: "queued"` means the fork was accepted and will auto-execute when a slot frees up.
 
 ### Missing `session_id` Behavior
 
@@ -318,6 +344,20 @@ Workflow jobs always return metadata plus `result.path`, even when `include_resu
   }
 }
 ```
+
+### Queued Launches
+
+When all launch slots are busy, `exec`, `resume`, or `fork` may return:
+
+```json
+{
+  "status": "queued",
+  "job": "job-uuid",
+  "session": "session-uuid"
+}
+```
+
+This is a normal accepted launch outcome, not an error. The job auto-dispatches when capacity becomes available. While it waits, `wait()` emits `queued (position N)` progress notifications. If nothing completes before `timeout_seconds`, the `wait` tool still returns the normal timeout payload below.
 
 ### Output — Running
 

@@ -123,6 +123,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
             case 'progress':
               sendProgress(notify, progressToken, ++progressCount, event.message);
               continue;
+            case 'queued':
+              sendProgress(notify, progressToken, ++progressCount, `queued (position ${event.queuePosition})`);
+              continue;
             case 'terminal': {
               const { content, ...resultMeta } = event.result;
               const isWorkflow = event.result.workflow !== undefined;

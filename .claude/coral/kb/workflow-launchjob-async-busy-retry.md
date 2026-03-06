@@ -1,20 +1,20 @@
-# Workflow LaunchJob Busy Retry
+# Workflow LaunchJob Queue Semantics
+
 ## Rule
-Do not treat capacity-limit handling as a synchronous dispatch concern when launching nested codex/claude jobs through `handleToolCall` + `launchJob`. Launch returns `{ status: "running" }` immediately, so `CliBusyError` can surface later as session `status: "error"` in `status.json`; retry logic must inspect launch responses and early session status, not only `try/catch` around dispatch.
+When capacity is full, `coralDispatch` returns `{ status: "queued" }` — not a rejection and not a `CliBusyError`. Treat `status: "queued"` as a successful launch outcome identical to `status: "running"`. The atom will auto-execute when a slot frees; `waitForAtoms` handles the queued-to-running transition transparently via `type: 'queued'` wait events.
 
 ## Why
-If retry logic only wraps the dispatch call, busy-capacity failures escape the retry path because the failure happens after dispatch returns. Pipelines then appear to launch successfully but fail later with unhandled atom errors, violating deterministic orchestration and making concurrency behavior flaky under load.
+The job queue system (added in 0.4.x) moves capacity pressure handling from the workflow layer into the execution engine. Before this change, `launchAtomWithRetry` used a bounded backoff retry loop to handle `busy` responses. That loop is now removed. Keeping a retry loop or treating 'queued' as an error creates a false failure path and prevents queued atoms from executing at all.
 
 ## Pattern
-Right:
+Right (current):
 ```text
-launch atom -> parse launch payload -> bootstrap status check ->
-if busy: bounded backoff + retry
-else: track session and continue
+coralDispatch -> decision.status === 'queued' -> return LaunchedAtom immediately
+waitForAtoms sees type:'queued' events -> updates lastActivityAt -> atom eventually transitions to terminal
 ```
-Wrong:
+
+Wrong (removed pattern):
 ```text
-try dispatch once
-catch CliBusyError and retry
-# assumes busy is thrown synchronously from dispatch
+launch atom -> awaitLaunch returns 'busy' -> retry with backoff N times -> throw if exhausted
+# CliBusyError from spawnCli never reaches this path now; queue handles it upstream
 ```

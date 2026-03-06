@@ -76,14 +76,20 @@ export class ProgressStore {
   }
 
   /** Create the job directory and write initial status.json. */
-  initJob(jobId: string, sessionId: string, provider: string, jobKind?: JobKind): void {
+  initJob(
+    jobId: string,
+    sessionId: string,
+    provider: string,
+    jobKind?: JobKind,
+    initialPhase: JobPhase = 'launching',
+  ): void {
     const dir = this.jobDir(jobId);
     mkdirSync(dir, { recursive: true });
     const record: PersistedStatusRecord = {
       jobId,
       sessionId,
       provider,
-      phase: 'launching',
+      phase: initialPhase,
       launch: { state: 'pending', updatedAt: new Date().toISOString() },
     };
     if (jobKind !== undefined) {

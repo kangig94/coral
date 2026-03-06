@@ -19,15 +19,19 @@ export type AbortResult = {
 export class JobManager {
   private readonly jobs = new Map<string, JobEntry>();
 
-  /** Allocate a new jobId and register it as 'launching'. Returns the new jobId. */
-  allocate(sessionId: string, provider: string): string {
-    const jobId = randomUUID();
+  /** Allocate a new jobId and register it with its initial phase. Returns the jobId. */
+  allocate(
+    sessionId: string,
+    provider: string,
+    initialPhase: Extract<JobPhase, 'queued' | 'launching'> = 'launching',
+    jobId: string = randomUUID(),
+  ): string {
     const entry: JobEntry = {
       jobId,
       sessionId,
       provider,
       controller: new AbortController(),
-      phase: 'launching',
+      phase: initialPhase,
       launchState: 'pending',
     };
     this.jobs.set(jobId, entry);
@@ -63,7 +67,7 @@ export class JobManager {
   isActive(jobId: string): boolean {
     const entry = this.jobs.get(jobId);
     if (!entry) return false;
-    return entry.phase === 'launching' || entry.phase === 'running';
+    return entry.phase === 'queued' || entry.phase === 'launching' || entry.phase === 'running';
   }
 
   /** Abort specific jobs. Returns which were found and aborted vs not found. */

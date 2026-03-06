@@ -17,10 +17,10 @@ export type SessionId = string;
 export type SessionState = 'pending' | 'ready' | 'non_resumable';
 
 /** Lifecycle phase of a single job. */
-export type JobPhase = 'launching' | 'running' | 'completed' | 'error' | 'aborted';
+export type JobPhase = 'queued' | 'launching' | 'running' | 'completed' | 'error' | 'aborted';
 
 /** Bootstrap state surfaced by awaitLaunch(). */
-export type LaunchState = 'pending' | 'ready' | 'busy' | 'error';
+export type LaunchState = 'pending' | 'queued' | 'ready' | 'busy' | 'error';
 
 /** Progress event emitted by a Provider during execution. */
 export interface ProviderProgressEvent {
@@ -83,6 +83,7 @@ export interface ProviderResult {
  */
 export type LaunchDecision =
   | { status: 'running'; job: string; session: string }
+  | { status: 'queued'; job: string; session: string; message?: undefined }
   | { status: 'rejected'; phase: 'preflight'; code: string; message: string };
 
 /** Terminal result payload included in WaitStreamEvent and PersistedStatusRecord. */
@@ -158,6 +159,13 @@ export interface WaitRequest {
 /** Events emitted by the wait stream. */
 export type WaitStreamEvent =
   | { type: 'progress'; jobId: string; sessionId: string; eventId: number; message: string }
+  | {
+    type: 'queued';
+    jobId: string;
+    sessionId: string;
+    queuePosition: number;
+    runningJobIds: string[];
+  }
   | {
     type: 'terminal';
     completedJobId: string;

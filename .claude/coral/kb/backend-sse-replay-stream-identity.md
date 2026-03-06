@@ -1,8 +1,8 @@
 # Backend SSE Replay Needs Stable Stream Identity
 ## Rule
-Persisting a monotonic `eventId` is not sufficient for SSE replay across daemon restarts unless the replay cursor is scoped to a stable stream identity. `Last-Event-ID` must be interpreted against a persisted per-job stream, or against a tuple that includes a restart epoch, not against a counter that can be regenerated after process restart. When one SSE connection multiplexes multiple job streams, the replay cursor must become a serialized map keyed by job id rather than a single scalar counter. When that cursor is parsed from the request, treat it as immutable input and update a cloned accumulator for outbound SSE `id` values instead of mutating the same object passed into replay.
+Persisting a monotonic `eventId` is not sufficient for SSE replay across daemon restarts unless the replay cursor is scoped to a stable stream identity. `Last-Event-ID` must be interpreted against a persisted per-job stream, or against a tuple that includes a restart epoch, not against a counter that can be regenerated after process restart. When one SSE connection multiplexes multiple job streams, the replay cursor must become a serialized map keyed by job id rather than a single scalar counter. When that cursor is parsed from the request, treat it as immutable input and update a cloned accumulator for outbound SSE `id` values instead of mutating the same object passed into replay. Synthetic SSE-only events that have no persisted `eventId` must never advance that cursor.
 ## Why
-If the daemon restarts and the event counter resets or the event log is rebuilt, the bridge cannot tell whether `Last-Event-ID: 17` means "resume after the 17th event in this same job stream" or "resume after a stale pre-restart counter value". That ambiguity causes duplicate delivery, skipped events, or terminal replay failures exactly in the reconnect/restart path the SSE design is supposed to harden.
+If the daemon restarts and the event counter resets or the event log is rebuilt, the bridge cannot tell whether `Last-Event-ID: 17` means "resume after the 17th event in this same job stream" or "resume after a stale pre-restart counter value". That ambiguity causes duplicate delivery, skipped events, or terminal replay failures exactly in the reconnect/restart path the SSE design is supposed to harden. The same problem appears if a synthetic queued-status event advances the cursor even though no matching JSONL record exists: reconnect logic skips the next real persisted event because the cursor points past an `eventId` that never existed.
 ## Pattern
 ```typescript
 // Wrong: process-local monotonic counter with restart ambiguity
@@ -50,6 +50,21 @@ const inputCursor = decodeCursor(lastEventId);
 const sseCursor = { jobs: { ...inputCursor.jobs } };
 await waitStream({ jobIds, cursor: inputCursor });
 sseCursor.jobs[jobId] = eventId;
+```
+
+```typescript
+// Right: synthetic queued events are emitted without advancing the cursor
+if (event.type === 'queued') {
+  writeSseEvent(res, 'queued', event);
+  continue;
+}
+```
+
+```typescript
+// Wrong: synthetic events consume a cursor position that cannot be replayed
+if (event.type === 'queued') {
+  sseCursor.jobs[event.jobId] = event.eventId;
+}
 ```
 
 ```typescript

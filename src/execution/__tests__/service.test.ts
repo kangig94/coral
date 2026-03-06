@@ -13,6 +13,12 @@ import type {
 import { CORAL_DEFAULT_EFFORT } from '../../shared/schemas.js';
 import type { Provider } from '../../providers/types.js';
 import { parseExpression } from '../../workflow/pipe-parser.js';
+import {
+  MAX_ACTIVE_CHILDREN_PER_PROVIDER,
+  cancelQueued,
+  killAllChildren,
+  releaseLaunch,
+} from '../engine.js';
 import { JOBS_DIR, jobResultPath, type ProgressStore } from '../progress-store.js';
 import { SessionManager } from '../session-manager.js';
 import { ExecutionService, type CallerContext } from '../service.js';
@@ -103,6 +109,29 @@ function makeProvider(options?: {
   return { provider, execute, preflight };
 }
 
+async function occupyProviderSlots(
+  service: ExecutionService,
+  ctx: CallerContext,
+  providerName: string,
+): Promise<string[]> {
+  const decisions = await Promise.all(
+    Array.from({ length: MAX_ACTIVE_CHILDREN_PER_PROVIDER }, (_value, index) =>
+      service.start(providerName, { prompt: `occupy-${index}` }, ctx)),
+  );
+
+  const jobIds: string[] = [];
+  for (const decision of decisions) {
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') {
+      throw new Error('expected running launch while occupying capacity');
+    }
+    trackJob(decision.job);
+    jobIds.push(decision.job);
+  }
+
+  return jobIds;
+}
+
 async function waitForTerminalEvent(
   service: ExecutionService,
   jobId: string,
@@ -129,8 +158,14 @@ describe('ExecutionService', () => {
     mockState.resolveCoralContent.mockReset();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     trackAllJobDirs();
+    killAllChildren();
+    for (const jobId of createdJobIds) {
+      cancelQueued(jobId);
+      releaseLaunch(jobId);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
     for (const jobId of createdJobIds) {
       rmSync(join(JOBS_DIR, jobId), { recursive: true, force: true });
     }
@@ -192,6 +227,31 @@ describe('ExecutionService', () => {
       phase: 'preflight',
       code: 'preflight_failed',
       message: 'not ready',
+    });
+  });
+
+  it('start returns queued when provider launch slots are full', async () => {
+    const never = new Promise<ProviderResult>(() => {});
+    const { provider } = makeProvider({ execute: () => never });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = new ExecutionService(ctx);
+    await occupyProviderSlots(service, ctx, 'codex');
+
+    const decision = await service.start('codex', { prompt: 'queued job' }, ctx);
+
+    expect(decision.status).toBe('queued');
+    if (decision.status !== 'queued') throw new Error('expected queued launch');
+    trackJob(decision.job);
+
+    const { progressStore } = getInternals(service);
+    expect(progressStore.readStatus(decision.job)).toMatchObject({
+      jobId: decision.job,
+      sessionId: decision.session,
+      provider: 'codex',
+      phase: 'queued',
+      launch: {
+        state: 'queued',
+      },
     });
   });
 
@@ -276,6 +336,36 @@ describe('ExecutionService', () => {
     });
     expect(jobManager.get(first.job)?.controller.signal.aborted).toBe(true);
     expect(jobManager.get(second.job)?.controller.signal.aborted).toBe(false);
+  });
+
+  it('abort persists queued jobs as aborted instead of error', async () => {
+    const never = new Promise<ProviderResult>(() => {});
+    const { provider } = makeProvider({ execute: () => never });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = new ExecutionService(ctx);
+    await occupyProviderSlots(service, ctx, 'codex');
+
+    const decision = await service.start('codex', { prompt: 'queued job' }, ctx);
+
+    expect(decision.status).toBe('queued');
+    if (decision.status !== 'queued') throw new Error('expected queued launch');
+    trackJob(decision.job);
+
+    const abortResult = service.abort([decision.job]);
+    const { jobManager, progressStore } = getInternals(service);
+
+    expect(abortResult).toEqual({
+      aborted: [decision.job],
+      notFound: [],
+    });
+    expect(jobManager.get(decision.job)).toBeNull();
+    expect(progressStore.readStatus(decision.job)).toMatchObject({
+      phase: 'aborted',
+      result: {
+        aborted: true,
+        notice: 'Aborted while queued.',
+      },
+    });
   });
 
   it('awaitLaunch returns ready once the launch state changes', async () => {
@@ -378,6 +468,43 @@ describe('ExecutionService', () => {
         result: { content: 'done' },
       },
     ]);
+  });
+
+  it('waitStream emits a queued event before replaying queued progress records', async () => {
+    const never = new Promise<ProviderResult>(() => {});
+    const { provider } = makeProvider({ execute: () => never });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = new ExecutionService(ctx);
+    const runningJobIds = await occupyProviderSlots(service, ctx, 'codex');
+    const decision = await service.start('codex', { prompt: 'queued job' }, ctx);
+
+    expect(decision.status).toBe('queued');
+    if (decision.status !== 'queued') throw new Error('expected queued launch');
+    trackJob(decision.job);
+
+    const events: WaitStreamEvent[] = [];
+    for await (const event of service.waitStream({ jobIds: [decision.job], timeoutSeconds: 1 })) {
+      events.push(event);
+      if (events.length === 2) break;
+    }
+
+    expect(events).toHaveLength(2);
+    expect(events[0]).toEqual({
+      type: 'queued',
+      jobId: decision.job,
+      sessionId: decision.session,
+      queuePosition: 1,
+      runningJobIds,
+    });
+    expect(events[1]).toMatchObject({
+      type: 'progress',
+      jobId: decision.job,
+      sessionId: decision.session,
+      eventId: 1,
+    });
+    if (events[1]?.type === 'progress') {
+      expect(events[1].message).toContain('queued (position 1)');
+    }
   });
 
   it('persists successful workflow results before exposing the terminal event', async () => {

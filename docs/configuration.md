@@ -8,6 +8,7 @@ Environment variables, config files, and the plugin manifest.
 |---|---|---|
 | `CORAL_CODEX_MODEL` | `gpt-5.4` | Default Codex model for new sessions |
 | `CORAL_MAX_CHILDREN` | `10` | Global max concurrent CLI children across providers (`codex` + `claude`) |
+| `CORAL_MAX_QUEUE` | `10` | Maximum number of jobs that can be queued waiting for a launch slot. Requests exceeding this limit are rejected with `{ status: "rejected", code: "busy" }`. |
 | `CORAL_MAX_CHILDREN_PER_PROVIDER` | `6` | Per-provider max concurrent CLI children |
 | `CORAL_DISCUSS_BID_THRESHOLD` | `30` | Minimum bid score (1–100) for floor eligibility. Stored per-session at creation time. |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Maximum epochs before discussion ends automatically (1–10). Stored per-session at creation time. |
