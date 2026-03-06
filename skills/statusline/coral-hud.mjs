@@ -576,17 +576,17 @@ async function renderCodexData() {
   const cached = readCacheFile(CODEX_CACHE_FILE);
   if (cached) {
     if (cached.error) {
-      if (cached.data) return { kind: "data", ...cached.data };
+      if (cached.data) return { kind: "data", stale: true, ...cached.data };
       return { kind: "error", message: formatErrorIndicator(cached) };
     }
-    return { kind: "data", ...cached.data };
+    return { kind: "data", stale: false, ...cached.data };
   }
 
   const lock = acquireFetchLock(CODEX_CACHE_FILE);
   if (!lock) {
     try {
       const prev = normalizeCacheEntry(JSON.parse(readFileSync(CODEX_CACHE_FILE, "utf-8")));
-      if (prev.data) return { kind: "data", ...prev.data };
+      if (prev.data) return { kind: "data", stale: true, ...prev.data };
     } catch {}
     return { kind: "none" };
   }
@@ -634,7 +634,7 @@ async function renderCodexData() {
 
     if (result && !result.unauthorized && !result.rateLimited) {
       writeCacheFile(CODEX_CACHE_FILE, result);
-      return { kind: "data", ...result };
+      return { kind: "data", stale: false, ...result };
     }
 
     writeCacheFile(CODEX_CACHE_FILE, null, true, 0, "generic");
@@ -691,13 +691,14 @@ async function main() {
   let col1Claude, col1Codex, col2Claude, col2Codex;
 
   if (codexData.kind === "data") {
+    const stale = codexData.stale || false;
     const addonTier = codexData.additionalLabel?.toLowerCase() || null;
     const hasAddon = addonTier ? envModel.toLowerCase().endsWith(`-${addonTier}`) : false;
     const baseModel = hasAddon ? envModel.slice(0, envModel.lastIndexOf("-")) : envModel;
     const codexModel = baseModel;
 
     [col1Claude, col1Codex] = alignColumns(claudeModel, codexModel);
-    const codexLimits = formatLimits(codexData.codex);
+    const codexLimits = formatLimits(codexData.codex, stale);
     [col2Claude, col2Codex] = alignColumns(limits, codexLimits);
   } else {
     col1Claude = claudeModel;
@@ -719,12 +720,13 @@ async function main() {
 
   // Line 2: Codex
   if (codexData.kind === "data") {
+    const stale = codexData.stale || false;
     const addonTier = codexData.additionalLabel?.toLowerCase() || null;
     const hasAddon = addonTier ? envModel.toLowerCase().endsWith(`-${addonTier}`) : false;
-    const sparkLabel = hasAddon ? `${GREEN}${codexData.additionalLabel}${RESET}` : codexData.additionalLabel;
-    const sparkLimits = codexData.spark ? formatLimits(codexData.spark) : null;
+    const sparkLabel = hasAddon && !stale ? `${GREEN}${codexData.additionalLabel}${RESET}` : stale ? `${DIM}${codexData.additionalLabel}${RESET}` : codexData.additionalLabel;
+    const sparkLimits = codexData.spark ? formatLimits(codexData.spark, stale) : null;
     const sparkStr = sparkLimits ? `${sparkLabel} ${sparkLimits}` : null;
-    if (col1Codex) col1Codex = hasAddon ? col1Codex : `${GREEN}${col1Codex}${RESET}`;
+    if (col1Codex) col1Codex = stale ? `${DIM}${col1Codex}${RESET}` : hasAddon ? col1Codex : `${GREEN}${col1Codex}${RESET}`;
     const line2 = [
       col1Codex,
       col2Codex,
