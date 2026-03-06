@@ -67,7 +67,7 @@ argument-hint: "[--deep] [--codex] [investigation target or question]"
   Each step is a fresh call (no session continuity — each agent has a different role).
   After each exec:
   1. Capture `job` from the exec response.
-  2. `wait({ jobs: [job], timeout_seconds })`.
+  2. `wait({ jobs: [job] })`.
   3. On completion, read `/tmp/coral-jobs/<job>/result.md`.
   4. On error, read `/tmp/coral-jobs/<job>/status.json`, abort the chain, and report the error.
   You (the executor) post-process and append the result to the file after each step completes.

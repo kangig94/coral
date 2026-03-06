@@ -51,7 +51,7 @@ Dispatch TWO Codex jobs in parallel:
 
 Use `session` only when available from step 2. Omit it for fresh review sessions.
 Then wait with timeout handling until both jobs finish:
-1. `wait({ jobs: pendingJobs, timeout_seconds })`
+1. `wait({ jobs: pendingJobs })`
 2. If `status: "timeout"`, keep waiting
 3. If `status: "completed"`, read `/tmp/coral-jobs/<job>/result.md` and remove that job from `pendingJobs`
 4. If `status: "error"`, read `/tmp/coral-jobs/<job>/status.json`, record the failure, remove that job, continue
