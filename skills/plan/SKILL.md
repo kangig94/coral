@@ -40,7 +40,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     Write a stub plan file to `.claude/coral/plans/{name}.md` **immediately** — before any research.
     Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not project-local.
 
-    Stub structure (empty sections):
+    Stub structure (empty sections) — copy headings verbatim including parenthetical annotations:
       # [Plan Title]
       ## Requirements Summary
       ## Acceptance Criteria (testable, verifiable — register each as a Task during implementation)
@@ -49,6 +49,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
       ## Risks & Mitigations
       ## Verification Steps
 
+    Parenthetical annotations are instructions to the implementer who reads the plan file.
     The plan file is the single source of truth. All subsequent work edits this file directly.
 
     ### 2. Gather Context
