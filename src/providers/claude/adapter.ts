@@ -50,11 +50,11 @@ function buildClaudeArgs(request: ProviderRequest): { prompt: string; systemProm
   };
 }
 
-function makeOnEvent(runtime: ProviderRuntime, jobId: string): (line: string) => void {
+function makeOnEvent(runtime: ProviderRuntime, jobId: string, projectRoot?: string): (line: string) => void {
   return (line: string) => {
     try {
       const event = JSON.parse(line) as ClaudeStreamEvent;
-      const message = extractClaudeProgressMessage(event);
+      const message = extractClaudeProgressMessage(event, projectRoot);
       if (!message) return;
       const progressEvent: ProviderProgressEvent = { jobId, message, ts: new Date().toISOString() };
       runtime.onEvent(progressEvent);
@@ -81,7 +81,7 @@ function parseError(error: unknown, fallbackModel: string): ProviderResult {
 async function execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult> {
   const { prompt, systemPrompt } = buildClaudeArgs(request);
   const effort = request.effort as EffortLevel | undefined;
-  const onEvent = makeOnEvent(runtime, request.sessionId);
+  const onEvent = makeOnEvent(runtime, request.sessionId, request.cwd);
 
   switch (request.action) {
     case 'exec': {

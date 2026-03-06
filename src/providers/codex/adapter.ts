@@ -29,11 +29,11 @@ function buildPrompt(request: ProviderRequest): string {
   return parts.join('\n\n---\n\n');
 }
 
-function makeOnEvent(runtime: ProviderRuntime, jobId: string): (line: string) => void {
+function makeOnEvent(runtime: ProviderRuntime, jobId: string, projectRoot?: string): (line: string) => void {
   return (line: string) => {
     try {
       const event = JSON.parse(line) as CodexThreadEvent;
-      const message = extractProgressMessage(event);
+      const message = extractProgressMessage(event, projectRoot);
       if (!message) return;
       const progressEvent: ProviderProgressEvent = { jobId, message, ts: new Date().toISOString() };
       runtime.onEvent(progressEvent);
@@ -56,7 +56,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
         request.cwd,
         effort,
         request.bypassPermissions,
-        makeOnEvent(runtime, request.sessionId),
+        makeOnEvent(runtime, request.sessionId, request.cwd),
         runtime.signal,
       );
       return {
@@ -80,7 +80,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
         request.cwd,
         effort,
         request.bypassPermissions,
-        makeOnEvent(runtime, request.sessionId),
+        makeOnEvent(runtime, request.sessionId, request.cwd),
         runtime.signal,
       );
       return {
@@ -103,7 +103,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
         request.cwd,
         effort,
         request.bypassPermissions,
-        makeOnEvent(runtime, request.sessionId),
+        makeOnEvent(runtime, request.sessionId, request.cwd),
         runtime.signal,
       );
       return {

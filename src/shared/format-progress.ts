@@ -1,9 +1,10 @@
-import { relative } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
 
-function shortPath(filePath: string, projectRoot?: string): string {
+export function shortPath(filePath: string, projectRoot?: string): string {
   const base = projectRoot ?? process.cwd();
-  const rel = relative(base, filePath);
-  return rel.startsWith('..') ? filePath : rel;
+  const abs = isAbsolute(filePath) ? filePath : resolve(base, filePath);
+  const rel = relative(base, abs);
+  return rel.startsWith('..') ? abs : rel;
 }
 
 function formatFilePath(input: Record<string, unknown>, projectRoot?: string): string {

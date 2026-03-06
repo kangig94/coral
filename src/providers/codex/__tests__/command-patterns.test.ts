@@ -1,12 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { stripShellWrapper, matchCommandPattern } from '../command-patterns.js';
 
-function expectPattern(command: string, expected: string): void {
-  expect(matchCommandPattern(command)).toBe(expected);
+const projectRoot = '/repo';
+
+function expectPattern(command: string, expected: string, cwd = projectRoot): void {
+  expect(matchCommandPattern(command, cwd)).toBe(expected);
 }
 
-function expectNoPattern(command: string): void {
-  expect(matchCommandPattern(command)).toBeNull();
+function expectNoPattern(command: string, cwd = projectRoot): void {
+  expect(matchCommandPattern(command, cwd)).toBeNull();
 }
 
 describe('stripShellWrapper', () => {
@@ -35,19 +37,23 @@ describe('stripShellWrapper', () => {
 
 describe('matchCommandPattern', () => {
   it('matches nl|sed and sed range reads', () => {
-    expectPattern("nl -ba src/main.ts | sed -n '10,20p'", 'Read(main.ts:10-20)');
-    expectPattern("sed -n '5,8p' src/app.ts", 'Read(app.ts:5-8)');
+    expectPattern("nl -ba src/main.ts | sed -n '10,20p'", 'Read(src/main.ts:10-20)');
+    expectPattern("sed -n '5,8p' src/app.ts", 'Read(src/app.ts:5-8)');
   });
 
   it('matches bare nl -ba as Read', () => {
-    expectPattern('nl -ba src/providers/codex/codex-executor.ts', 'Read(codex-executor.ts)');
-    expectPattern('nl -ba .claude/coral/plans/effort-parameter-unification.md', 'Read(effort-parameter-unification.md)');
+    expectPattern('nl -ba src/providers/codex/codex-executor.ts', 'Read(src/providers/codex/codex-executor.ts)');
+    expectPattern('nl -ba .claude/coral/plans/effort-parameter-unification.md', 'Read(.claude/coral/plans/effort-parameter-unification.md)');
   });
 
   it('matches cat and rg patterns', () => {
-    expectPattern('cat src/main.ts', 'Read(main.ts)');
+    expectPattern('cat src/main.ts', 'Read(src/main.ts)');
     expectPattern('rg -n "extractProgressMessage" src', 'Grep(extractProgressMessage)');
     expectPattern("rg -n 'parseClaudeStreamJson' src", 'Grep(parseClaudeStreamJson)');
+  });
+
+  it('falls back to process.cwd() when projectRoot is omitted', () => {
+    expect(matchCommandPattern(`cat ${process.cwd()}/src/main.ts`)).toBe('Read(src/main.ts)');
   });
 
   it('returns null for unknown commands', () => {
@@ -136,11 +142,11 @@ describe('stripShellWrapper — adversarial', () => {
 describe('matchCommandPattern — adversarial', () => {
   describe('cat command', () => {
     it('matches "cat file.ts" → Read(file.ts)', () => {
-      expectPattern('cat src/parser.ts', 'Read(parser.ts)');
+      expectPattern('cat src/parser.ts', 'Read(src/parser.ts)');
     });
 
-    it('matches "cat /deep/path/to/file.ts" → Read(file.ts) with basename', () => {
-      expectPattern('cat /home/user/project/src/index.ts', 'Read(index.ts)');
+    it('matches absolute path inside projectRoot as a relative Read path', () => {
+      expectPattern('cat /repo/src/index.ts', 'Read(src/index.ts)');
     });
 
     it('returns null for bare "cat" with no file argument (reads stdin)', () => {
@@ -154,12 +160,12 @@ describe('matchCommandPattern — adversarial', () => {
 
   describe('rg with unquoted pattern', () => {
     it('matches rg with unquoted single-word pattern', () => {
-      const result = matchCommandPattern('rg TODO src/');
+      const result = matchCommandPattern('rg TODO src/', projectRoot);
       expect(result).toMatch(/^Grep\(/);
     });
 
     it('matches rg with -n flag before pattern', () => {
-      const result = matchCommandPattern('rg -n "import" src/');
+      const result = matchCommandPattern('rg -n "import" src/', projectRoot);
       expect(result).toMatch(/^Grep\(/);
     });
 
@@ -168,12 +174,12 @@ describe('matchCommandPattern — adversarial', () => {
     });
 
     it('matches rg with path argument after pattern', () => {
-      const result = matchCommandPattern('rg "TODO" /home/user/project/src');
+      const result = matchCommandPattern('rg "TODO" /home/user/project/src', projectRoot);
       expect(result).toMatch(/^Grep\(/);
     });
 
     it('matches bare "rg" with no args — does not crash', () => {
-      expect(() => matchCommandPattern('rg')).not.toThrow();
+      expect(() => matchCommandPattern('rg', projectRoot)).not.toThrow();
     });
   });
 
@@ -188,8 +194,8 @@ describe('matchCommandPattern — adversarial', () => {
   });
 
   describe('sed alone — maps to Read per plan rule table', () => {
-    it('matches sed -n range pattern as Read(basename:N-M)', () => {
-      // Plan rule table includes: sed -n 'N,Mp' file → Read(basename:N-M)
+    it('matches sed -n range pattern as Read(path:N-M)', () => {
+      // Plan rule table includes: sed -n 'N,Mp' file → Read(path:N-M)
       expectPattern("sed -n '10,20p' file.ts", 'Read(file.ts:10-20)');
     });
   });
@@ -232,21 +238,21 @@ describe('matchCommandPattern — adversarial', () => {
 
     it('does not crash on very long command string', () => {
       const longCmd = 'ls ' + '-la '.repeat(500);
-      expect(() => matchCommandPattern(longCmd)).not.toThrow();
+      expect(() => matchCommandPattern(longCmd, projectRoot)).not.toThrow();
     });
   });
 
   describe('nl -ba + sed range pattern — boundary variants', () => {
     it('matches nl -ba file | sed pattern and extracts line range', () => {
-      expectPattern("nl -ba src/parser.ts | sed -n '50,100p'", 'Read(parser.ts:50-100)');
+      expectPattern("nl -ba src/parser.ts | sed -n '50,100p'", 'Read(src/parser.ts:50-100)');
     });
 
     it('matches sed -n range + file (without nl prefix)', () => {
-      expectPattern("sed -n '1,10p' config.ts", 'Read(config.ts:1-10)');
+      expectPattern("sed -n '1,10p' src/config.ts", 'Read(src/config.ts:1-10)');
     });
 
-    it('matches bare nl -ba as Read(basename)', () => {
-      expectPattern('nl -ba src/main.ts', 'Read(main.ts)');
+    it('matches bare nl -ba as Read(path)', () => {
+      expectPattern('nl -ba src/main.ts', 'Read(src/main.ts)');
     });
   });
 });
