@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -12,7 +12,8 @@ import type {
 } from '../../types.js';
 import { CORAL_DEFAULT_EFFORT } from '../../shared/schemas.js';
 import type { Provider } from '../../providers/types.js';
-import { JOBS_DIR, type ProgressStore } from '../progress-store.js';
+import { parseExpression } from '../../workflow/pipe-parser.js';
+import { JOBS_DIR, jobResultPath, type ProgressStore } from '../progress-store.js';
 import { SessionManager } from '../session-manager.js';
 import { ExecutionService, type CallerContext } from '../service.js';
 import type { JobManager } from '../job-manager.js';
@@ -49,6 +50,7 @@ type ServiceInternals = {
 };
 
 const createdJobIds = new Set<string>();
+let baselineJobIds = new Set<string>();
 
 function getInternals(service: ExecutionService): ServiceInternals {
   return service as unknown as ServiceInternals;
@@ -56,6 +58,29 @@ function getInternals(service: ExecutionService): ServiceInternals {
 
 function trackJob(jobId: string): void {
   createdJobIds.add(jobId);
+}
+
+function listJobDirs(): Set<string> {
+  try {
+    return new Set(
+      readdirSync(JOBS_DIR, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name),
+    );
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function trackAllJobDirs(): void {
+  try {
+    for (const jobId of listJobDirs()) {
+      if (baselineJobIds.has(jobId)) continue;
+      createdJobIds.add(jobId);
+    }
+  } catch {
+    /* best effort */
+  }
 }
 
 function makeProvider(options?: {
@@ -78,6 +103,19 @@ function makeProvider(options?: {
   return { provider, execute, preflight };
 }
 
+async function waitForTerminalEvent(
+  service: ExecutionService,
+  jobId: string,
+): Promise<Extract<WaitStreamEvent, { type: 'terminal' }>> {
+  for await (const event of service.waitStream({ jobIds: [jobId], timeoutSeconds: 5 })) {
+    if (event.type === 'terminal') {
+      return event;
+    }
+  }
+
+  throw new Error(`Expected terminal event for ${jobId}`);
+}
+
 describe('ExecutionService', () => {
   let ctx: CallerContext;
 
@@ -86,11 +124,13 @@ describe('ExecutionService', () => {
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
     ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin') };
+    baselineJobIds = listJobDirs();
     mockState.getNewProvider.mockReset();
     mockState.resolveCoralContent.mockReset();
   });
 
   afterEach(() => {
+    trackAllJobDirs();
     for (const jobId of createdJobIds) {
       rmSync(join(JOBS_DIR, jobId), { recursive: true, force: true });
     }
@@ -334,9 +374,239 @@ describe('ExecutionService', () => {
         completedJobId: 'job-1',
         sessionId: 'session-1',
         remainingJobIds: [],
+        resultPath: `${JOBS_DIR}/job-1/result.md`,
         result: { content: 'done' },
       },
     ]);
+  });
+
+  it('persists successful workflow results before exposing the terminal event', async () => {
+    const { provider } = makeProvider({
+      execute: async (request) => {
+        if (request.name?.startsWith('architect')) {
+          return { content: 'ARCH' };
+        }
+        if (request.name?.startsWith('resolver')) {
+          return { content: 'FINAL' };
+        }
+        return { content: 'unexpected' };
+      },
+    });
+    mockState.getNewProvider.mockReturnValue(provider);
+    mockState.resolveCoralContent.mockImplementation((name: string) => ({
+      type: 'agent',
+      content: `Injected ${name} content`,
+      path: `/tmp/${name}.md`,
+    }));
+
+    const service = new ExecutionService(ctx);
+    const decision = await service.executeWorkflow(
+      'codex',
+      parseExpression('architect -> resolver'),
+      {
+        expression: 'architect -> resolver',
+        prompt: 'seed',
+        provider: 'codex',
+        stale_timeout_seconds: 0,
+      },
+      ctx,
+    );
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running');
+    trackAllJobDirs();
+
+    const terminal = await waitForTerminalEvent(service, decision.job);
+    const markdownAtTerminal = readFileSync(terminal.resultPath, 'utf-8');
+    const session = new SessionManager(ctx.projectRoot).get('codex', decision.session);
+    const { progressStore } = getInternals(service);
+    const status = progressStore.readStatus(decision.job);
+
+    expect(existsSync(terminal.resultPath)).toBe(true);
+    expect(markdownAtTerminal).toBe([
+      '# Step 1.1: architect',
+      '',
+      'ARCH',
+      '',
+      '# Step 2.1: resolver',
+      '',
+      'FINAL',
+      '',
+    ].join('\n'));
+    expect(terminal.result).toEqual({
+      content: 'FINAL',
+      workflow: {
+        steps: [
+          {
+            agent: 'architect',
+            step: 1,
+            atom: 1,
+            kind: 'agent',
+            provider: 'codex',
+            tagName: 'architect',
+            headingLine: 1,
+            line: 3,
+            endLine: 3,
+          },
+          {
+            agent: 'resolver',
+            step: 2,
+            atom: 1,
+            kind: 'agent',
+            provider: 'codex',
+            tagName: 'resolver',
+            headingLine: 5,
+            line: 7,
+            endLine: 7,
+          },
+        ],
+      },
+    });
+    expect(status).toMatchObject({
+      phase: 'completed',
+      jobKind: 'workflow',
+      result: terminal.result,
+    });
+    expect(session?.state).toBe('non_resumable');
+  });
+
+  it('persists partial workflow results on failure and marks the workflow session non_resumable', async () => {
+    const { provider } = makeProvider({
+      execute: async (request) => {
+        if (request.name?.startsWith('architect')) {
+          return { content: 'ARCH' };
+        }
+        if (request.name?.startsWith('resolver')) {
+          return { content: '', notice: 'resolver failed' };
+        }
+        return { content: 'unexpected' };
+      },
+    });
+    mockState.getNewProvider.mockReturnValue(provider);
+    mockState.resolveCoralContent.mockImplementation((name: string) => ({
+      type: 'agent',
+      content: `Injected ${name} content`,
+      path: `/tmp/${name}.md`,
+    }));
+
+    const service = new ExecutionService(ctx);
+    const decision = await service.executeWorkflow(
+      'codex',
+      parseExpression('architect -> resolver'),
+      {
+        expression: 'architect -> resolver',
+        prompt: 'seed',
+        provider: 'codex',
+        stale_timeout_seconds: 0,
+      },
+      ctx,
+    );
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running');
+    trackAllJobDirs();
+
+    const terminal = await waitForTerminalEvent(service, decision.job);
+    const markdownAtTerminal = readFileSync(terminal.resultPath, 'utf-8');
+    const session = new SessionManager(ctx.projectRoot).get('codex', decision.session);
+    const { progressStore } = getInternals(service);
+    const status = progressStore.readStatus(decision.job);
+
+    expect(markdownAtTerminal).toBe('# Step 1.1: architect\n\nARCH\n');
+    expect(terminal.result).toEqual({
+      content: '',
+      notice: "Step 2, atom 'resolver' failed: resolver failed",
+      workflow: {
+        steps: [
+          {
+            agent: 'architect',
+            step: 1,
+            atom: 1,
+            kind: 'agent',
+            provider: 'codex',
+            tagName: 'architect',
+            headingLine: 1,
+            line: 3,
+            endLine: 3,
+          },
+        ],
+      },
+    });
+    expect(status).toMatchObject({
+      phase: 'error',
+      result: terminal.result,
+    });
+    expect(session?.state).toBe('non_resumable');
+  });
+
+  it('persists partial workflow results on abort and marks the workflow session non_resumable', async () => {
+    const { provider } = makeProvider({
+      execute: async (request) => {
+        if (request.name?.startsWith('architect')) {
+          return { content: 'ARCH' };
+        }
+        if (request.name?.startsWith('resolver')) {
+          return { content: '', aborted: true };
+        }
+        return { content: 'unexpected' };
+      },
+    });
+    mockState.getNewProvider.mockReturnValue(provider);
+    mockState.resolveCoralContent.mockImplementation((name: string) => ({
+      type: 'agent',
+      content: `Injected ${name} content`,
+      path: `/tmp/${name}.md`,
+    }));
+
+    const service = new ExecutionService(ctx);
+    const decision = await service.executeWorkflow(
+      'codex',
+      parseExpression('architect -> resolver'),
+      {
+        expression: 'architect -> resolver',
+        prompt: 'seed',
+        provider: 'codex',
+        stale_timeout_seconds: 0,
+      },
+      ctx,
+    );
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running');
+    trackAllJobDirs();
+
+    const terminal = await waitForTerminalEvent(service, decision.job);
+    const markdownAtTerminal = readFileSync(terminal.resultPath, 'utf-8');
+    const session = new SessionManager(ctx.projectRoot).get('codex', decision.session);
+    const { progressStore } = getInternals(service);
+    const status = progressStore.readStatus(decision.job);
+
+    expect(markdownAtTerminal).toBe('# Step 1.1: architect\n\nARCH\n');
+    expect(terminal.result).toEqual({
+      content: '',
+      aborted: true,
+      notice: "Step 2, atom 'resolver' failed: aborted",
+      workflow: {
+        steps: [
+          {
+            agent: 'architect',
+            step: 1,
+            atom: 1,
+            kind: 'agent',
+            provider: 'codex',
+            tagName: 'architect',
+            headingLine: 1,
+            line: 3,
+            endLine: 3,
+          },
+        ],
+      },
+    });
+    expect(status).toMatchObject({
+      phase: 'aborted',
+      result: terminal.result,
+    });
+    expect(session?.state).toBe('non_resumable');
   });
 });
 
@@ -348,11 +618,13 @@ describe('ExecutionService adversarial', () => {
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
     ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin') };
+    baselineJobIds = listJobDirs();
     mockState.getNewProvider.mockReset();
     mockState.resolveCoralContent.mockReset();
   });
 
   afterEach(() => {
+    trackAllJobDirs();
     for (const jobId of createdJobIds) {
       rmSync(join(JOBS_DIR, jobId), { recursive: true, force: true });
     }
@@ -563,6 +835,7 @@ describe('ExecutionService adversarial', () => {
       expect(events[0].type).toBe('terminal');
       if (events[0].type !== 'terminal') throw new Error('expected terminal');
       expect(events[0].completedJobId).toBe(jobId);
+      expect(events[0].resultPath).toBe(jobResultPath(jobId));
 
       const progressMessages = events
         .filter((e): e is Extract<WaitStreamEvent, { type: 'progress' }> => e.type === 'progress')

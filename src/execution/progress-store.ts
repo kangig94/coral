@@ -5,12 +5,14 @@ import {
   openSync,
   readFileSync,
   readSync,
+  rmSync,
   renameSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
+  JobKind,
   JobPhase,
   LaunchState,
   PersistedProgressRecord,
@@ -28,6 +30,10 @@ const READ_CHUNK = 8 * 1024;
 const readBuffer = Buffer.alloc(READ_CHUNK);
 
 export type ReplayCursor = { lastOffset: number; remainder: string };
+
+export function jobResultPath(jobId: string): string {
+  return join(JOBS_DIR, jobId, 'result.md');
+}
 
 export function createReplayCursor(): ReplayCursor {
   return { lastOffset: 0, remainder: '' };
@@ -56,7 +62,7 @@ export class ProgressStore {
   }
 
   /** Create the job directory and write initial status.json. */
-  initJob(jobId: string, sessionId: string, provider: string): void {
+  initJob(jobId: string, sessionId: string, provider: string, jobKind?: JobKind): void {
     const dir = this.jobDir(jobId);
     mkdirSync(dir, { recursive: true });
     const record: PersistedStatusRecord = {
@@ -66,6 +72,9 @@ export class ProgressStore {
       phase: 'launching',
       launch: { state: 'pending', updatedAt: new Date().toISOString() },
     };
+    if (jobKind !== undefined) {
+      record.jobKind = jobKind;
+    }
     this.writeStatus(jobId, record);
     writeFileSync(this.progressPath(jobId), '');
   }
@@ -154,13 +163,26 @@ export class ProgressStore {
   /** Write result.md as a debugging/recovery artifact. */
   writeResultMd(jobId: string, text: string): void {
     const dir = this.jobDir(jobId);
-    const tmpPath = join(dir, 'result.md.tmp');
-    const finalPath = join(dir, 'result.md');
+    const tmpPath = `${jobResultPath(jobId)}.tmp`;
+    const finalPath = jobResultPath(jobId);
     try {
       writeFileSync(tmpPath, text, 'utf-8');
       renameSync(tmpPath, finalPath);
     } catch {
       /* result.md write must not break execution */
+    }
+  }
+
+  writeWorkflowResultMdOrThrow(jobId: string, text: string): void {
+    const dir = this.jobDir(jobId);
+    const finalPath = jobResultPath(jobId);
+    const tmpPath = `${finalPath}.tmp`;
+    mkdirSync(dir, { recursive: true });
+    try {
+      writeFileSync(tmpPath, text, 'utf-8');
+      renameSync(tmpPath, finalPath);
+    } finally {
+      rmSync(tmpPath, { force: true });
     }
   }
 

@@ -125,10 +125,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
               continue;
             case 'terminal': {
               const { content, ...resultMeta } = event.result;
-              const result = parsed.include_result
-                ? event.result
-                : { ...resultMeta, path: `/tmp/coral-jobs/${event.completedJobId}/result.md` };
+              const isWorkflow = event.result.workflow !== undefined;
+              const result = isWorkflow
+                ? { ...resultMeta, path: event.resultPath }
+                : parsed.include_result
+                  ? event.result
+                  : { ...resultMeta, path: event.resultPath };
               return textResult(JSON.stringify({
+                state: 'completed',
                 completedJobId: event.completedJobId,
                 sessionId: event.sessionId,
                 remainingJobIds: event.remainingJobIds,
@@ -137,7 +141,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
             }
             case 'timeout':
               return textResult(JSON.stringify({
-                timeout: true,
+                state: 'running',
                 runningJobIds: event.runningJobIds,
               }));
           }
@@ -147,7 +151,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       } catch (waitError) {
         if (waitError instanceof Error && waitError.name === 'AbortError') {
           return textResult(JSON.stringify({
-            timeout: true,
+            state: 'running',
             runningJobIds: parsed.jobs,
           }));
         }

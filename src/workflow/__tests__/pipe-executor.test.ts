@@ -4,10 +4,12 @@ import type { TerminalResult, WaitRequest, WaitStreamEvent } from '../../types.j
 import { parseExpression } from '../pipe-parser.js';
 import {
   MAX_LAUNCH_ATTEMPTS,
+  WorkflowExecutionError,
   executePipeline,
   formatStepOutput,
   launchAtomWithRetry,
   waitForAtoms,
+  type LaunchedAtom,
   type WorkflowExecutionService,
 } from '../pipe-executor.js';
 
@@ -34,6 +36,7 @@ function terminal(
     completedJobId: jobId,
     sessionId,
     remainingJobIds: [],
+    resultPath: `/tmp/coral-jobs/${jobId}/result.md`,
     result,
   };
 }
@@ -70,8 +73,24 @@ function createExecutionService(overrides: Partial<MockExecutionService> = {}): 
   } as MockExecutionService;
 }
 
+function launchedAtom(overrides: Partial<LaunchedAtom> = {}): LaunchedAtom {
+  return {
+    jobId: 'job-1',
+    sessionId: 'session-1',
+    providerName: 'codex',
+    coralOp: 'coral:architect',
+    agent: 'architect',
+    tagName: 'architect',
+    stepIndex: 0,
+    atomIndex: 0,
+    atomKey: '0:0',
+    kind: 'agent',
+    ...overrides,
+  };
+}
+
 describe('workflow pipe executor', () => {
-  it('passes each step output as the next step prompt', async () => {
+  it('passes each step output as the next step prompt and returns ordered step details', async () => {
     const prompts: string[] = [];
     const executionSvc = createExecutionService({
       coralDispatch: vi.fn(async (_provider, coralName, input) => {
@@ -86,7 +105,7 @@ describe('workflow pipe executor', () => {
       }),
     });
 
-    const output = await executePipeline(
+    const result = await executePipeline(
       parseExpression('architect -> resolver'),
       'seed',
       'codex',
@@ -94,31 +113,80 @@ describe('workflow pipe executor', () => {
       ctx,
     );
 
-    expect(output).toBe('FINAL');
+    expect(result.finalOutput).toBe('FINAL');
+    expect(result.stepDetails).toEqual([
+      {
+        stepIndex: 0,
+        atomIndex: 0,
+        kind: 'agent',
+        label: 'architect',
+        provider: 'codex',
+        tagName: 'architect',
+        output: 'ARCH',
+      },
+      {
+        stepIndex: 1,
+        atomIndex: 0,
+        kind: 'agent',
+        label: 'resolver',
+        provider: 'codex',
+        tagName: 'resolver',
+        output: 'FINAL',
+      },
+    ]);
     expect(prompts).toEqual(['seed', 'ARCH']);
   });
 
-  it('formats multiple atoms in a parallel step into tagged output', async () => {
+  it('formats parallel prompt literals into tagged output and preserves prompt step details', async () => {
+    const prompts: string[] = [];
+    let callCount = 0;
     const executionSvc = createExecutionService({
-      coralDispatch: vi.fn(async (_provider, coralName) => {
-        if (coralName === 'architect') return running('job-a', 'session-a');
-        return running('job-b', 'session-b');
+      coralDispatch: vi.fn(async (_provider, _coralName, input) => {
+        prompts.push(String(input.prompt));
+        callCount += 1;
+        return running(`job-${callCount}`, `session-${callCount}`);
       }),
-      waitStream: vi.fn((_req: WaitRequest) => emit([
-        terminal('job-a', 'session-a', { content: 'ARCH' }),
-        terminal('job-b', 'session-b', { content: 'CRIT' }),
-      ])),
+      waitStream: vi.fn((req: WaitRequest) => {
+        if (req.jobIds.includes('job-1') && req.jobIds.includes('job-2')) {
+          return emit([
+            terminal('job-1', 'session-1', { content: 'OUT A' }),
+            terminal('job-2', 'session-2', { content: 'OUT B' }),
+          ]);
+        }
+        return emit([]);
+      }),
     });
 
-    const output = await executePipeline(
-      parseExpression('(architect, critic)'),
-      'seed',
+    const result = await executePipeline(
+      parseExpression('("Use A", "Use B")'),
+      'ignored seed',
       'codex',
       executionSvc,
       ctx,
     );
 
-    expect(output).toBe('<architect>\nARCH\n</architect>\n\n<critic>\nCRIT\n</critic>');
+    expect(prompts).toEqual(['Use A', 'Use B']);
+    expect(result.finalOutput).toBe('<step-result>\nOUT A\n</step-result>\n\n<step-result>\nOUT B\n</step-result>');
+    expect(result.stepDetails).toEqual([
+      {
+        stepIndex: 0,
+        atomIndex: 0,
+        kind: 'prompt',
+        label: 'prompt#1(Use A)',
+        provider: 'codex',
+        tagName: 'step-result',
+        output: 'OUT A',
+      },
+      {
+        stepIndex: 0,
+        atomIndex: 1,
+        kind: 'prompt',
+        label: 'prompt#2(Use B)',
+        provider: 'codex',
+        tagName: 'step-result',
+        output: 'OUT B',
+      },
+    ]);
   });
 
   it('retries busy launches up to MAX_LAUNCH_ATTEMPTS', async () => {
@@ -146,57 +214,86 @@ describe('workflow pipe executor', () => {
     expect(progress.some((message) => message.includes('busy (attempt 1), retrying'))).toBe(true);
   });
 
-  it('aborts and resumes stale atoms', async () => {
-    const progress: string[] = [];
+  it('keeps same-agent different-provider outputs separate across stale recovery', async () => {
+    // Mock Date.now to guarantee time advances between lastActivityAt set and stale check.
+    // Without this, real Date.now() may not advance 1ms between sync mock calls → stale
+    // detection never triggers → infinite loop → OOM.
+    let mockNow = 10_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => {
+      mockNow += 10;
+      return mockNow;
+    });
+
+    let firstCycle = true;
     const executionSvc = createExecutionService({
-      coralDispatch: vi.fn(async () => running('job-stale', 'session-1')),
-      resume: vi.fn(async () => running('job-resumed', 'session-1')),
+      resume: vi.fn(async () => running('job-codex-resumed', 'session-codex')),
       waitStream: vi.fn((req: WaitRequest) => {
-        if (req.jobIds[0] === 'job-stale') {
-          return emit([timeout(['job-stale'])]);
+        if (firstCycle) {
+          firstCycle = false;
+          return emit([timeout([...req.jobIds])]);
         }
-        return emit([terminal('job-resumed', 'session-1', { content: 'DONE' })]);
+        return emit([
+          terminal('job-codex-resumed', 'session-codex', { content: 'CODEX DONE' }),
+          terminal('job-claude', 'session-claude', { content: 'CLAUDE DONE' }),
+        ]);
       }),
     });
 
-    const output = await executePipeline(
-      parseExpression('architect'),
-      'seed',
-      'codex',
-      executionSvc,
-      ctx,
-      {
-        staleTimeoutMs: 1,
-        onProgress: (message) => progress.push(message),
-      },
-    );
+    try {
+      const results = await waitForAtoms(
+        [
+          launchedAtom({
+            jobId: 'job-codex',
+            sessionId: 'session-codex',
+            providerName: 'codex',
+            agent: 'architect',
+            atomKey: '0:0',
+          }),
+          launchedAtom({
+            jobId: 'job-claude',
+            sessionId: 'session-claude',
+            providerName: 'claude',
+            agent: 'architect',
+            atomIndex: 1,
+            atomKey: '0:1',
+          }),
+        ],
+        executionSvc,
+        ctx,
+        {
+          staleTimeoutMs: 1,
+          pollIntervalMs: 1,
+          onProgress: vi.fn(),
+        },
+      );
 
-    expect(output).toBe('DONE');
-    expect(executionSvc.abort).toHaveBeenCalledWith(['job-stale']);
-    expect(executionSvc.resume).toHaveBeenCalledWith(
-      'codex',
-      {
-        sessionId: 'session-1',
-        prompt: 'Your previous execution timed out due to inactivity. Continue where you left off.',
-        cwd: ctx.projectRoot,
-      },
-      ctx,
-    );
-    expect(progress).toContain('atom architect stale, aborting');
-    expect(progress).toContain('atom architect resumed');
+      expect(executionSvc.abort).toHaveBeenCalledWith(['job-codex']);
+      expect(executionSvc.resume).toHaveBeenCalledTimes(1);
+      expect([...results.entries()]).toEqual([
+        ['0:0', 'CODEX DONE'],
+        ['0:1', 'CLAUDE DONE'],
+      ]);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
-  it('aborts sibling atoms after the first failure', async () => {
+  it('preserves launched sibling output when a parallel launch fails', async () => {
     const executionSvc = createExecutionService({
       coralDispatch: vi.fn(async (_provider, coralName) => {
         if (coralName === 'architect') return running('job-a', 'session-a');
-        return running('job-b', 'session-b');
+        return {
+          status: 'rejected' as const,
+          phase: 'preflight' as const,
+          code: 'busy',
+          message: 'launch blocked',
+        };
       }),
       waitStream: vi.fn((req: WaitRequest) => {
-        if (req.jobIds.includes('job-a') && req.jobIds.includes('job-b')) {
-          return emit([terminal('job-a', 'session-a', { content: '', notice: 'primary failure' })]);
+        if (req.jobIds.includes('job-a')) {
+          return emit([terminal('job-a', 'session-a', { content: 'ARCH' })]);
         }
-        return emit([terminal('job-b', 'session-b', { content: '', aborted: true })]);
+        return emit([]);
       }),
     });
 
@@ -206,175 +303,105 @@ describe('workflow pipe executor', () => {
       'codex',
       executionSvc,
       ctx,
-    )).rejects.toThrow("Step 1, atom 'architect' failed: primary failure");
-
-    expect(executionSvc.abort).toHaveBeenCalledWith(['job-b']);
-  });
-});
-
-describe('formatStepOutput', () => {
-  it('returns empty string for an empty results array', () => {
-    expect(formatStepOutput([])).toBe('');
-  });
-
-  it('returns bare output without XML tags for a single result', () => {
-    const output = formatStepOutput([{ tagName: 'architect', output: 'result text' }]);
-    expect(output).toBe('result text');
-    expect(output).not.toContain('<architect>');
-  });
-
-  it('wraps multiple results in XML tags with two-newline separator', () => {
-    const output = formatStepOutput([
-      { tagName: 'architect', output: 'ARCH' },
-      { tagName: 'critic', output: 'CRIT' },
-    ]);
-    expect(output).toContain('<architect>\nARCH\n</architect>');
-    expect(output).toContain('<critic>\nCRIT\n</critic>');
-  });
-});
-
-describe('launchAtomWithRetry: launch rejection', () => {
-  it('throws with step/atom context when coralDispatch returns rejected status', async () => {
-    const executionSvc = createExecutionService({
-      coralDispatch: vi.fn(async () => ({
-        status: 'rejected' as const,
-        phase: 'preflight' as const,
-        code: 'unknown_provider',
-        message: 'Unknown provider: ghost',
-      })),
+    )).rejects.toMatchObject({
+      message: "Step 1, atom 'critic' launch failed: launch blocked",
+      aborted: false,
+      stepDetails: [
+        {
+          stepIndex: 0,
+          atomIndex: 0,
+          kind: 'agent',
+          label: 'architect',
+          provider: 'codex',
+          tagName: 'architect',
+          output: 'ARCH',
+        },
+      ],
     });
 
-    const [atom] = parseExpression('architect')[0];
-
-    await expect(launchAtomWithRetry({
-      atom,
-      atomIndex: 0,
-      stepIndex: 0,
-      stepPrompt: 'do work',
-      defaultProviderName: 'codex',
-      executionSvc,
-      ctx,
-      onProgress: vi.fn(),
-    })).rejects.toThrow("Step 1, atom 'architect' launch failed: Unknown provider: ghost");
+    expect(executionSvc.abort).toHaveBeenCalledWith(['job-a']);
   });
 
-  it('throws with unsupported namespace error immediately without calling coralDispatch', async () => {
-    const executionSvc = createExecutionService();
-
-    const badAtom = { kind: 'agent' as const, agent: 'architect', namespace: 'custom-ns', provider: 'codex' };
-
-    await expect(launchAtomWithRetry({
-      atom: badAtom,
-      atomIndex: 0,
-      stepIndex: 2,
-      stepPrompt: 'test',
-      defaultProviderName: 'codex',
-      executionSvc,
-      ctx,
-      onProgress: vi.fn(),
-    })).rejects.toThrow('unsupported namespace "custom-ns"');
-
-    expect(executionSvc.coralDispatch).not.toHaveBeenCalled();
-  });
-});
-
-describe('waitForAtoms: terminal event with notice field', () => {
-  it('treats notice on terminal result as a failure (not a success)', async () => {
-    const executionSvc = createExecutionService({
-      waitStream: vi.fn((_req: WaitRequest) => emit([
-        terminal('job-1', 'session-1', { content: '', notice: 'process killed' }),
-      ])),
-    });
-
-    const atoms = [
-      {
-        jobId: 'job-1', sessionId: 'session-1', providerName: 'codex',
-        coralOp: 'coral:architect', agent: 'architect', tagName: 'architect', stepIndex: 0,
-      },
-    ];
-
-    await expect(
-      waitForAtoms(atoms, executionSvc, ctx, {
-        staleTimeoutMs: 0,
-        pollIntervalMs: 500,
-        onProgress: vi.fn(),
-      }),
-    ).rejects.toThrow("Step 1, atom 'architect' failed: process killed");
-  });
-});
-
-describe('executePipeline: stale recovery resets sibling activity clocks', () => {
-  it('sibling atoms are not re-detected as stale immediately after recovery', async () => {
-    let abortCalled = false;
-
+  it('preserves completed sibling output when a parallel atom fails after partial completion', async () => {
     const executionSvc = createExecutionService({
       coralDispatch: vi.fn(async (_provider, coralName) => {
         if (coralName === 'architect') return running('job-a', 'session-a');
         return running('job-b', 'session-b');
       }),
-      abort: vi.fn((jobIds: string[]) => {
-        abortCalled = true;
-        return { aborted: jobIds, notFound: [] };
-      }),
-      resume: vi.fn(async () => running('job-a-resumed', 'session-a')),
-      waitStream: vi.fn((req: WaitRequest) => {
-        if (!abortCalled && (req.jobIds.includes('job-a') || req.jobIds.includes('job-b'))) {
-          return emit([timeout([...req.jobIds])]);
-        }
-        const events: WaitStreamEvent[] = [];
-        if (req.jobIds.includes('job-a-resumed')) {
-          events.push(terminal('job-a-resumed', 'session-a', { content: 'ARCH DONE' }));
-        }
-        if (req.jobIds.includes('job-b')) {
-          events.push(terminal('job-b', 'session-b', { content: 'CRIT DONE' }));
-        }
-        return emit(events.length > 0 ? events : []);
-      }),
+      waitStream: vi.fn(() => emit([
+        terminal('job-a', 'session-a', { content: 'ARCH' }),
+        terminal('job-b', 'session-b', { content: '', notice: 'primary failure' }),
+      ])),
     });
 
-    const results = await waitForAtoms(
-      [
-        {
-          jobId: 'job-a', sessionId: 'session-a', providerName: 'codex',
-          coralOp: 'coral:architect', agent: 'architect', tagName: 'architect', stepIndex: 0,
-        },
-        {
-          jobId: 'job-b', sessionId: 'session-b', providerName: 'codex',
-          coralOp: 'coral:critic', agent: 'critic', tagName: 'critic', stepIndex: 0,
-        },
-      ],
-      executionSvc,
-      ctx,
-      { staleTimeoutMs: 1, pollIntervalMs: 1, onProgress: vi.fn() },
-    );
-
-    expect(executionSvc.abort).toHaveBeenCalled();
-    expect(executionSvc.resume).toHaveBeenCalledTimes(1);
-    expect(results.size).toBeGreaterThan(0);
-  });
-});
-
-describe('executePipeline: literal prompt atoms', () => {
-  it('first-step literal uses only the literal text as prompt (ignores seed)', async () => {
-    const capturedPrompts: string[] = [];
-    const executionSvc = createExecutionService({
-      coralDispatch: vi.fn(async (_provider, _coralName, input) => {
-        capturedPrompts.push(String(input.prompt));
-        return running('job-1', 'session-1');
-      }),
-      waitStream: vi.fn(() => emit([terminal('job-1', 'session-1', { content: 'OUT' })])),
-    });
-
-    await executePipeline(
-      parseExpression('"Use this exact instruction"'),
-      'ignored seed',
+    await expect(executePipeline(
+      parseExpression('(architect, critic)'),
+      'seed',
       'codex',
       executionSvc,
       ctx,
-    );
+    )).rejects.toMatchObject({
+      message: "Step 1, atom 'critic' failed: primary failure",
+      aborted: false,
+      stepDetails: [
+        {
+          stepIndex: 0,
+          atomIndex: 0,
+          kind: 'agent',
+          label: 'architect',
+          provider: 'codex',
+          tagName: 'architect',
+          output: 'ARCH',
+        },
+      ],
+    });
+  });
 
-    expect(capturedPrompts[0]).toBe('Use this exact instruction');
-    expect(capturedPrompts[0]).not.toContain('ignored seed');
+  it('surfaces aborted=true and preserves prior step details on user abort', async () => {
+    const controller = new AbortController();
+    let secondStepWait = 0;
+    const executionSvc = createExecutionService({
+      coralDispatch: vi.fn(async (_provider, coralName) => {
+        if (coralName === 'architect') return running('job-1', 'session-1');
+        return running('job-2', 'session-2');
+      }),
+      waitStream: vi.fn((req: WaitRequest) => {
+        if (req.jobIds.includes('job-1')) {
+          return emit([terminal('job-1', 'session-1', { content: 'ARCH' })]);
+        }
+        secondStepWait += 1;
+        if (secondStepWait === 1) {
+          controller.abort();
+          return emit([timeout(['job-2'])]);
+        }
+        return emit([terminal('job-2', 'session-2', { content: '', aborted: true })]);
+      }),
+    });
+
+    await expect(executePipeline(
+      parseExpression('architect -> resolver'),
+      'seed',
+      'codex',
+      executionSvc,
+      ctx,
+      { signal: controller.signal },
+    )).rejects.toMatchObject({
+      message: 'Pipeline aborted (launched atoms may continue)',
+      aborted: true,
+      stepDetails: [
+        {
+          stepIndex: 0,
+          atomIndex: 0,
+          kind: 'agent',
+          label: 'architect',
+          provider: 'codex',
+          tagName: 'architect',
+          output: 'ARCH',
+        },
+      ],
+    });
+
+    expect(executionSvc.abort).toHaveBeenCalledWith(['job-2']);
   });
 
   it('later-step literal prepends literal text before prior step output', async () => {
@@ -409,21 +436,139 @@ describe('executePipeline: literal prompt atoms', () => {
   });
 });
 
-describe('executePipeline: error propagation', () => {
-  it('throws step/atom context when atom completes with aborted result', async () => {
+describe('formatStepOutput', () => {
+  it('returns empty string for an empty results array', () => {
+    expect(formatStepOutput([])).toBe('');
+  });
+
+  it('returns bare output without XML tags for a single result', () => {
+    const output = formatStepOutput([{ tagName: 'architect', output: 'result text' }]);
+    expect(output).toBe('result text');
+    expect(output).not.toContain('<architect>');
+  });
+
+  it('wraps multiple results in XML tags with two-newline separator', () => {
+    const output = formatStepOutput([
+      { tagName: 'architect', output: 'ARCH' },
+      { tagName: 'critic', output: 'CRIT' },
+    ]);
+    expect(output).toContain('<architect>\nARCH\n</architect>');
+    expect(output).toContain('<critic>\nCRIT\n</critic>');
+  });
+});
+
+describe('launchAtomWithRetry', () => {
+  it('throws with step/atom context when coralDispatch returns rejected status', async () => {
     const executionSvc = createExecutionService({
-      coralDispatch: vi.fn(async () => running('job-1', 'session-1')),
+      coralDispatch: vi.fn(async () => ({
+        status: 'rejected' as const,
+        phase: 'preflight' as const,
+        code: 'unknown_provider',
+        message: 'Unknown provider: ghost',
+      })),
+    });
+
+    const [atom] = parseExpression('architect')[0];
+
+    await expect(launchAtomWithRetry({
+      atom,
+      atomIndex: 0,
+      stepIndex: 0,
+      stepPrompt: 'do work',
+      defaultProviderName: 'codex',
+      executionSvc,
+      ctx,
+      onProgress: vi.fn(),
+      completedStepDetails: [],
+    })).rejects.toThrow("Step 1, atom 'architect' launch failed: Unknown provider: ghost");
+  });
+
+  it('throws with unsupported namespace error immediately without calling coralDispatch', async () => {
+    const executionSvc = createExecutionService();
+    const badAtom = { kind: 'agent' as const, agent: 'architect', namespace: 'custom-ns', provider: 'codex' };
+
+    await expect(launchAtomWithRetry({
+      atom: badAtom,
+      atomIndex: 0,
+      stepIndex: 2,
+      stepPrompt: 'test',
+      defaultProviderName: 'codex',
+      executionSvc,
+      ctx,
+      onProgress: vi.fn(),
+      completedStepDetails: [],
+    })).rejects.toThrow('unsupported namespace "custom-ns"');
+
+    expect(executionSvc.coralDispatch).not.toHaveBeenCalled();
+  });
+});
+
+describe('waitForAtoms', () => {
+  it('treats notice on terminal result as a failure and preserves completed details', async () => {
+    const executionSvc = createExecutionService({
+      waitStream: vi.fn(() => emit([
+        terminal('job-1', 'session-1', { content: 'ARCH' }),
+        terminal('job-2', 'session-2', { content: '', notice: 'process killed' }),
+      ])),
+    });
+
+    await expect(
+      waitForAtoms(
+        [
+          launchedAtom({ jobId: 'job-1', sessionId: 'session-1', atomKey: '0:0' }),
+          launchedAtom({
+            jobId: 'job-2',
+            sessionId: 'session-2',
+            agent: 'critic',
+            tagName: 'critic',
+            coralOp: 'coral:critic',
+            atomIndex: 1,
+            atomKey: '0:1',
+          }),
+        ],
+        executionSvc,
+        ctx,
+        {
+          staleTimeoutMs: 0,
+          pollIntervalMs: 500,
+          onProgress: vi.fn(),
+        },
+      ),
+    ).rejects.toMatchObject({
+      message: "Step 1, atom 'critic' failed: process killed",
+      aborted: false,
+      stepDetails: [
+        {
+          stepIndex: 0,
+          atomIndex: 0,
+          kind: 'agent',
+          label: 'architect',
+          provider: 'codex',
+          tagName: 'architect',
+          output: 'ARCH',
+        },
+      ],
+    });
+  });
+
+  it('throws WorkflowExecutionError on aborted terminal results', async () => {
+    const executionSvc = createExecutionService({
       waitStream: vi.fn(() => emit([
         terminal('job-1', 'session-1', { content: '', aborted: true }),
       ])),
     });
 
-    await expect(executePipeline(
-      parseExpression('architect'),
-      'seed',
-      'codex',
-      executionSvc,
-      ctx,
-    )).rejects.toThrow("Step 1, atom 'architect' failed: aborted");
+    await expect(
+      waitForAtoms(
+        [launchedAtom()],
+        executionSvc,
+        ctx,
+        {
+          staleTimeoutMs: 0,
+          pollIntervalMs: 500,
+          onProgress: vi.fn(),
+        },
+      ),
+    ).rejects.toBeInstanceOf(WorkflowExecutionError);
   });
 });

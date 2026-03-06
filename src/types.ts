@@ -86,6 +86,24 @@ export type LaunchDecision =
   | { status: 'rejected'; phase: 'preflight'; code: string; message: string };
 
 /** Terminal result payload included in WaitStreamEvent and PersistedStatusRecord. */
+export interface WorkflowStepMeta {
+  agent: string;
+  step: number;
+  atom: number;
+  kind: 'agent' | 'prompt';
+  provider: string;
+  tagName: string;
+  headingLine: number;
+  line: number;
+  endLine: number;
+}
+
+export interface WorkflowResultMeta {
+  steps: WorkflowStepMeta[];
+}
+
+export type JobKind = 'provider' | 'workflow';
+
 export interface TerminalResult {
   content: string;
   durationMs?: number;
@@ -96,6 +114,7 @@ export interface TerminalResult {
   errors?: unknown[];
   warnings?: string[];
   usage?: { inputTokens?: number; outputTokens?: number; costUsd?: number };
+  workflow?: WorkflowResultMeta;
 }
 
 /** Opaque serializable replay cursor carried in SSE Last-Event-ID. */
@@ -108,6 +127,7 @@ export interface PersistedStatusRecord {
   jobId: string;
   sessionId: string;
   provider: string;
+  jobKind?: JobKind;
   phase: JobPhase;
   launch: {
     state: LaunchState;
@@ -138,5 +158,12 @@ export interface WaitRequest {
 /** Events emitted by the wait stream. */
 export type WaitStreamEvent =
   | { type: 'progress'; jobId: string; sessionId: string; eventId: number; message: string }
-  | { type: 'terminal'; completedJobId: string; sessionId: string; remainingJobIds: string[]; result: TerminalResult }
+  | {
+    type: 'terminal';
+    completedJobId: string;
+    sessionId: string;
+    remainingJobIds: string[];
+    resultPath: string;
+    result: TerminalResult;
+  }
   | { type: 'timeout'; runningJobIds: string[] };

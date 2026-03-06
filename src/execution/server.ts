@@ -262,25 +262,29 @@ function listLiveJobs(progressStore: ProgressStore): PersistedStatusRecord[] {
 
 function markJobAsError(
   progressStore: ProgressStore,
-  jobId: string,
-  sessionId: string,
+  status: PersistedStatusRecord,
   notice: string,
 ): void {
-  const terminalResult: TerminalResult = { content: '', notice };
-  progressStore.updateLaunchState(jobId, 'error', notice);
-  progressStore.appendTerminal(jobId, sessionId, terminalResult, 'error');
+  const terminalResult: TerminalResult = status.jobKind === 'workflow'
+    ? { content: '', notice, workflow: { steps: [] } }
+    : { content: '', notice };
+  progressStore.updateLaunchState(status.jobId, 'error', notice);
+  if (status.jobKind === 'workflow') {
+    progressStore.writeWorkflowResultMdOrThrow(status.jobId, '');
+  }
+  progressStore.appendTerminal(status.jobId, status.sessionId, terminalResult, 'error');
 }
 
 function recoverOrphanedJobs(progressStore: ProgressStore, log: (message: string) => void): void {
   for (const status of listLiveJobs(progressStore)) {
-    markJobAsError(progressStore, status.jobId, status.sessionId, ORPHANED_JOB_NOTICE);
+    markJobAsError(progressStore, status, ORPHANED_JOB_NOTICE);
     log(`Recovered orphaned job: ${status.jobId}\n`);
   }
 }
 
 function markJobsAsError(progressStore: ProgressStore, message: string): void {
   for (const status of listLiveJobs(progressStore)) {
-    markJobAsError(progressStore, status.jobId, status.sessionId, message);
+    markJobAsError(progressStore, status, message);
   }
 }
 

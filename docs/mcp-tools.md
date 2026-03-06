@@ -142,11 +142,11 @@ Use `wait({ jobs: [job] })` then `Read("/tmp/coral-jobs/<job>/result.md")` to ge
 
 ```
 exec → { status, job, session }
-wait({ jobs: [job] }) → { completedJobId, sessionId, result, ... }
-if completed:
+wait({ jobs: [job] }) → { state, ... }
+if state == "completed":
   Read("/tmp/coral-jobs/<job>/result.md") → response text
-if timeout:
-  re-wait with cursor, or abort({ jobs: [job] })
+if state == "running":
+  wait again with cursor, or abort({ jobs: [job] })
 ```
 
 ## Session Continuity
@@ -271,6 +271,7 @@ Provider-agnostic wait for background jobs from any AX adapter. Wait returns whe
 Default (`include_result: false`):
 ```json
 {
+  "state": "completed",
   "completedJobId": "job-uuid",
   "sessionId": "session-uuid",
   "remainingJobIds": [],
@@ -281,6 +282,7 @@ Default (`include_result: false`):
 With `include_result: true`:
 ```json
 {
+  "state": "completed",
   "completedJobId": "job-uuid",
   "sessionId": "session-uuid",
   "remainingJobIds": [],
@@ -288,11 +290,40 @@ With `include_result: true`:
 }
 ```
 
-### Output — Timeout
+Workflow jobs always return metadata plus `result.path`, even when `include_result: true`:
+```json
+{
+  "state": "completed",
+  "completedJobId": "workflow-job",
+  "sessionId": "workflow-session",
+  "remainingJobIds": [],
+  "result": {
+    "notice": "Step 2, atom 'resolver' failed: primary failure",
+    "workflow": {
+      "steps": [
+        {
+          "agent": "architect",
+          "step": 1,
+          "atom": 1,
+          "kind": "agent",
+          "provider": "codex",
+          "tagName": "architect",
+          "headingLine": 1,
+          "line": 3,
+          "endLine": 3
+        }
+      ]
+    },
+    "path": "/tmp/coral-jobs/workflow-job/result.md"
+  }
+}
+```
+
+### Output — Running
 
 ```json
 {
-  "timeout": true,
+  "state": "running",
   "runningJobIds": ["job-uuid"]
 }
 ```
@@ -304,6 +335,8 @@ With `include_result: true`:
 - **Progress notifications**: incremental updates are emitted through `notifications/progress`.
 - **Incremental streaming**: pass `cursor` from a previous wait response to resume from where the last call left off.
 - **Context control**: `include_result: false` (default) omits `result.content` and provides `result.path` instead. `Read(result.path)` to selectively load results.
+- **Workflow exception**: workflow jobs never inline `result.content`; use `result.workflow.steps` plus `Read(result.path, offset, limit)` to read only the step you need.
+- **Workflow line semantics**: `headingLine` points to the markdown heading (`# Step ...`), while `line` and `endLine` bound only the content block for that step.
 
 ---
 
@@ -389,7 +422,7 @@ Returns immediately (same as `codex`/`claude` exec). Pipeline runs in background
 }
 ```
 
-Use `wait({ jobs: [job] })` then `Read("/tmp/coral-jobs/<job>/result.md")` for the pipeline result.
+Use `wait({ jobs: [job] })` then `Read("/tmp/coral-jobs/<job>/result.md")` for the pipeline result. Successful, failed, and aborted workflow waits include `result.workflow.steps` so callers can read only the relevant section without loading the full artifact.
 
 ### Step Output Format
 

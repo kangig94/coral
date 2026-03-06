@@ -76,7 +76,7 @@ Call MCP tool directly. Pass prompt **verbatim**. Never rephrase, filter, or ref
 | No session | `codex({ op: "exec", prompt, working_directory })` → `{ job, session }` |
 | Session exists | `codex({ op: "exec", session, prompt, working_directory })` → `{ job, session }` |
 
-`wait({ jobs: [job], include_result: true })` (re-wait on timeout) → read `result.content`.
+`wait({ jobs: [job], include_result: true })` → read `result.content`.
 Keep using the `session` UUID from the exec/fork response for continuity.
 Show the response, then append: `session: <session_name>`.
 On error, show the error and suggest resuming with /codex.

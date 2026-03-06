@@ -8,19 +8,25 @@ import type {
   TerminalResult,
   WaitRequest,
   WaitStreamEvent,
+  WorkflowResultMeta,
 } from '../types.js';
 import { resolveCoralContent, stripAgentMetadata, parseAgentMeta } from '../coral/resolver.js';
 import { getNewProvider } from '../providers/registry.js';
 import { CORAL_DEFAULT_EFFORT } from '../shared/schemas.js';
 import type { Provider, ProviderRuntime } from '../providers/types.js';
-import { executePipeline } from '../workflow/pipe-executor.js';
+import {
+  executePipeline,
+  type PipelineResult,
+  type StepDetail,
+  WorkflowExecutionError,
+} from '../workflow/pipe-executor.js';
 import type { WorkflowInput } from '../workflow/schemas.js';
 import type { PipelineAST } from '../workflow/types.js';
 import { CliBusyError } from './engine.js';
 import { buildCoralInstruction } from './instruction.js';
 import { JobManager } from './job-manager.js';
 import type { AbortResult } from './job-manager.js';
-import { ProgressStore, createReplayCursor } from './progress-store.js';
+import { ProgressStore, createReplayCursor, jobResultPath } from './progress-store.js';
 import { SessionManager } from './session-manager.js';
 import type { SessionEntry } from './session-manager.js';
 
@@ -86,6 +92,42 @@ function rejectLaunch(code: string, message: string): LaunchDecision {
     phase: 'preflight',
     code,
     message,
+  };
+}
+
+export function serializeWorkflowResult(details: StepDetail[]): {
+  markdown: string;
+  workflow: WorkflowResultMeta;
+} {
+  const lines: string[] = [];
+  const steps: WorkflowResultMeta['steps'] = [];
+
+  for (const detail of details) {
+    const headingLine = lines.length + 1;
+    lines.push(`# Step ${detail.stepIndex + 1}.${detail.atomIndex + 1}: ${detail.label}`);
+    lines.push('');
+    const contentLine = lines.length + 1;
+    const contentLines = detail.output.split('\n');
+    lines.push(...contentLines);
+    const endLine = lines.length;
+    lines.push('');
+
+    steps.push({
+      agent: detail.label,
+      step: detail.stepIndex + 1,
+      atom: detail.atomIndex + 1,
+      kind: detail.kind,
+      provider: detail.provider,
+      tagName: detail.tagName,
+      headingLine,
+      line: contentLine,
+      endLine,
+    });
+  }
+
+  return {
+    markdown: lines.join('\n'),
+    workflow: { steps },
   };
 }
 
@@ -308,7 +350,7 @@ export class ExecutionService {
       return rejectLaunch('session_busy', 'Session is already running a job');
     }
 
-    this.progressStore.initJob(jobId, session.sessionId, providerName);
+    this.progressStore.initJob(jobId, session.sessionId, providerName, 'workflow');
     this.markJobRunning(jobId);
 
     this.runWorkflowAsync(session.sessionId, jobId, providerName, ast, input, ctx);
@@ -383,6 +425,7 @@ export class ExecutionService {
               completedJobId: jobId,
               sessionId,
               remainingJobIds,
+              resultPath: jobResultPath(jobId),
               result: event.result ?? { content: '' },
             };
             pending.delete(jobId);
@@ -475,6 +518,34 @@ export class ExecutionService {
     this.sessionManager.releaseJob(sessionId, jobId);
   }
 
+  private finishWorkflowJob(
+    sessionId: string,
+    jobId: string,
+    phase: Extract<JobPhase, 'completed' | 'error' | 'aborted'>,
+    result: TerminalResult,
+    markdown: string,
+  ): void {
+    this.progressStore.writeWorkflowResultMdOrThrow(jobId, markdown);
+    this.progressStore.appendTerminal(jobId, sessionId, result, phase);
+    this.jobManager.setPhase(jobId, phase);
+    this.sessionManager.setNonResumable(sessionId);
+    this.jobManager.remove(jobId);
+    this.sessionManager.releaseJob(sessionId, jobId);
+  }
+
+  private finishWorkflowWithEmptyArtifact(
+    sessionId: string,
+    jobId: string,
+    message: string,
+    aborted: boolean,
+  ): void {
+    const phase: Extract<JobPhase, 'error' | 'aborted'> = aborted ? 'aborted' : 'error';
+    const result: TerminalResult = aborted
+      ? { content: '', aborted: true, notice: message, workflow: { steps: [] } }
+      : { content: '', notice: message, workflow: { steps: [] } };
+    this.finishWorkflowJob(sessionId, jobId, phase, result, '');
+  }
+
   private runWorkflowAsync(
     sessionId: string,
     jobId: string,
@@ -501,22 +572,43 @@ export class ExecutionService {
         },
       },
     )
-      .then((text) => {
-        const terminalResult: TerminalResult = { content: text };
-        this.progressStore.appendTerminal(jobId, sessionId, terminalResult, 'completed');
-        this.progressStore.writeResultMd(jobId, text);
-        this.jobManager.setPhase(jobId, 'completed');
-        this.jobManager.remove(jobId);
-        this.sessionManager.setNonResumable(sessionId);
-        this.sessionManager.releaseJob(sessionId, jobId);
+      .then((result: PipelineResult) => {
+        const serialized = serializeWorkflowResult(result.stepDetails);
+        this.finishWorkflowJob(
+          sessionId,
+          jobId,
+          'completed',
+          {
+            content: result.finalOutput,
+            workflow: serialized.workflow,
+          },
+          serialized.markdown,
+        );
       })
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
-        const terminalResult: TerminalResult = { content: '', notice: message };
-        this.progressStore.appendTerminal(jobId, sessionId, terminalResult, 'error');
-        this.jobManager.setPhase(jobId, 'error');
-        this.jobManager.remove(jobId);
-        this.sessionManager.releaseJob(sessionId, jobId);
+        const aborted = err instanceof WorkflowExecutionError ? err.aborted : signal.aborted;
+        const phase: Extract<JobPhase, 'error' | 'aborted'> = aborted ? 'aborted' : 'error';
+        const stepDetails = err instanceof WorkflowExecutionError ? err.stepDetails : [];
+
+        try {
+          const serialized = serializeWorkflowResult(stepDetails);
+          const terminalResult: TerminalResult = aborted
+            ? {
+              content: '',
+              aborted: true,
+              notice: message,
+              workflow: serialized.workflow,
+            }
+            : {
+              content: '',
+              notice: message,
+              workflow: serialized.workflow,
+            };
+          this.finishWorkflowJob(sessionId, jobId, phase, terminalResult, serialized.markdown);
+        } catch {
+          this.finishWorkflowWithEmptyArtifact(sessionId, jobId, message, aborted);
+        }
       });
   }
 }

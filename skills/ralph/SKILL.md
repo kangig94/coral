@@ -216,7 +216,7 @@ Strip `--codex` and `--red` flags before passing the prompt to the execution pat
 
     Execution loop:
     1) Call Codex: `codex({ op: "exec", ... })` → `{ job, session }`.
-       `wait({ jobs: [job], include_result: true })` (re-wait on timeout) → read `result.content`.
+       `wait({ jobs: [job], include_result: true })` → read `result.content`.
        Pass `working_directory`.
     2) Keep using the `session` UUID from the exec response for continuity.
        Subsequent rounds: `codex({ op: "exec", session: <session>, ... })`.

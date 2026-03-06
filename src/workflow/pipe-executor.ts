@@ -16,6 +16,21 @@ const STALE_RESUME_PROMPT = 'Your previous execution timed out due to inactivity
 
 type WorkflowAtoms = Record<string, { effort?: EffortLevel; instruction?: string }>;
 
+export type StepDetail = {
+  stepIndex: number;
+  atomIndex: number;
+  kind: 'agent' | 'prompt';
+  label: string;
+  provider: string;
+  tagName: string;
+  output: string;
+};
+
+export type PipelineResult = {
+  finalOutput: string;
+  stepDetails: StepDetail[];
+};
+
 type LaunchContext = {
   atom: PipeAtom;
   atomIndex: number;
@@ -27,6 +42,7 @@ type LaunchContext = {
   atoms?: WorkflowAtoms;
   signal?: AbortSignal;
   onProgress: (message: string) => void;
+  completedStepDetails: StepDetail[];
 };
 
 export type WorkflowExecutionService = Pick<
@@ -42,21 +58,35 @@ export type LaunchedAtom = {
   agent: string;
   tagName: string;
   stepIndex: number;
+  atomIndex: number;
+  atomKey: string;
+  kind: PipeAtom['kind'];
 };
+
+type WaitFailure = {
+  aborted: boolean;
+  message: string;
+};
+
+export class WorkflowExecutionError extends Error {
+  readonly aborted: boolean;
+  readonly stepDetails: StepDetail[];
+
+  constructor(message: string, options: { aborted: boolean; stepDetails: StepDetail[] }) {
+    super(message);
+    this.name = 'WorkflowExecutionError';
+    this.aborted = options.aborted;
+    this.stepDetails = [...options.stepDetails];
+  }
+}
 
 function normalizeErrorText(text: string): string {
   const trimmed = text.trim();
   return trimmed.length > 0 ? trimmed : 'unknown error';
 }
 
-function stripErrorPrefix(text: string): string {
-  const trimmed = text.trim();
-  if (trimmed.startsWith('Error:')) return trimmed.slice('Error:'.length).trimStart();
-  return trimmed;
-}
-
-function isBusyMessage(text: string): boolean {
-  return stripErrorPrefix(text).startsWith(BUSY_PREFIX);
+function computeAtomKey(stepIndex: number, atomIndex: number): string {
+  return `${stepIndex}:${atomIndex}`;
 }
 
 function computeBackoffMs(attempt: number): number {
@@ -107,14 +137,6 @@ function atomDiagnosticLabel(atom: PipeAtom, atomIndex: number): string {
   return `prompt#${atomIndex + 1}(${truncated})`;
 }
 
-function failureForAtom(atom: LaunchedAtom, message: string): Error {
-  return new Error(`Step ${atom.stepIndex + 1}, atom '${atom.agent}' failed: ${message}`);
-}
-
-function resumeFailureForAtom(atom: LaunchedAtom, message: string): Error {
-  return new Error(`Step ${atom.stepIndex + 1}, atom '${atom.agent}' resume failed: ${message}`);
-}
-
 function describeLaunchRejection(
   stepIndex: number,
   atomName: string,
@@ -132,6 +154,61 @@ function describeTerminalFailure(result: TerminalResult): string {
 function waitTimeoutSeconds(staleTimeoutMs: number, pollIntervalMs: number): number {
   const timeoutMs = staleTimeoutMs > 0 ? Math.min(staleTimeoutMs, pollIntervalMs) : pollIntervalMs;
   return Math.max(1, Math.ceil(timeoutMs / 1000));
+}
+
+function buildStepDetailsForAtoms(atoms: LaunchedAtom[], results: Map<string, string>): StepDetail[] {
+  const stepDetails: StepDetail[] = [];
+
+  for (const atom of atoms) {
+    const output = results.get(atom.atomKey);
+    if (output === undefined) continue;
+    stepDetails.push({
+      stepIndex: atom.stepIndex,
+      atomIndex: atom.atomIndex,
+      kind: atom.kind,
+      label: atom.agent,
+      provider: atom.providerName,
+      tagName: atom.tagName,
+      output,
+    });
+  }
+
+  return stepDetails;
+}
+
+function createWorkflowExecutionError(
+  message: string,
+  aborted: boolean,
+  stepDetails: StepDetail[],
+): WorkflowExecutionError {
+  return new WorkflowExecutionError(message, { aborted, stepDetails });
+}
+
+function buildCombinedStepDetails(
+  completedStepDetails: StepDetail[],
+  atoms: LaunchedAtom[],
+  results: Map<string, string>,
+): StepDetail[] {
+  return [...completedStepDetails, ...buildStepDetailsForAtoms(atoms, results)];
+}
+
+function failureForAtom(atom: LaunchedAtom, result: TerminalResult): WaitFailure {
+  return {
+    aborted: Boolean(result.aborted),
+    message: `Step ${atom.stepIndex + 1}, atom '${atom.agent}' failed: ${describeTerminalFailure(result)}`,
+  };
+}
+
+function resumeFailureForAtom(atom: LaunchedAtom, message: string): string {
+  return `Step ${atom.stepIndex + 1}, atom '${atom.agent}' resume failed: ${message}`;
+}
+
+function readLaunchAbortError(completedStepDetails: StepDetail[]): WorkflowExecutionError {
+  return createWorkflowExecutionError(
+    'Pipeline aborted (launched atoms may continue)',
+    true,
+    completedStepDetails,
+  );
 }
 
 async function readLaunchFailureMessage(
@@ -161,14 +238,15 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     atoms,
     signal,
     onProgress,
+    completedStepDetails,
   } = context;
   const label = atomDiagnosticLabel(atom, atomIndex);
   const tagName = atomTagName(atom);
   const providerName = atom.provider ?? defaultProviderName;
+  const atomKey = computeAtomKey(stepIndex, atomIndex);
 
   let coralName: string;
   let atomPrompt: string;
-  let effort: EffortLevel | undefined;
 
   if (atom.kind === 'agent') {
     const namespace = atom.namespace ?? 'coral';
@@ -179,7 +257,6 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     const config = readAtomConfig(stepIndex, atom.agent, atoms?.[atom.agent]);
     coralName = atom.agent;
     atomPrompt = config.instruction ? `${stepPrompt}\n\n${config.instruction}` : stepPrompt;
-    effort = config.effort;
   } else {
     coralName = 'workflow-literal';
     // First-step prompt literals use only the literal text. Later prompt literals
@@ -190,7 +267,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
   }
 
   for (let attempt = 1; attempt <= MAX_LAUNCH_ATTEMPTS; attempt += 1) {
-    if (signal?.aborted) throw new Error('Pipeline aborted (launched atoms may continue)');
+    if (signal?.aborted) throw readLaunchAbortError(completedStepDetails);
 
     const decision = await executionSvc.coralDispatch(
       providerName,
@@ -226,6 +303,9 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
       agent: label,
       tagName,
       stepIndex,
+      atomIndex,
+      atomKey,
+      kind: atom.kind,
     };
   }
 
@@ -246,18 +326,21 @@ async function recoverStaleAtom(
     signal?: AbortSignal;
     staleTimeoutMs: number;
     onProgress: (message: string) => void;
+    buildPartialStepDetails: () => StepDetail[];
   },
 ): Promise<boolean> {
   const now = Date.now();
 
   for (const atom of pending.values()) {
-    const lastActive = lastActivityAt.get(atom.agent) ?? now;
+    const lastActive = lastActivityAt.get(atom.atomKey) ?? now;
     if (now - lastActive < options.staleTimeoutMs) continue;
 
-    const retries = staleRetries.get(atom.agent) ?? 0;
+    const retries = staleRetries.get(atom.atomKey) ?? 0;
     if (retries >= MAX_STALE_RECOVERY_RETRIES) {
-      throw new Error(
+      throw createWorkflowExecutionError(
         `Step ${atom.stepIndex + 1}, atom '${atom.agent}' stale after ${retries} recovery attempts`,
+        false,
+        options.buildPartialStepDetails(),
       );
     }
 
@@ -266,7 +349,11 @@ async function recoverStaleAtom(
     executionSvc.abort([atom.jobId]);
 
     if (options.signal?.aborted) {
-      throw new Error('Pipeline aborted (launched atoms may continue)');
+      throw createWorkflowExecutionError(
+        'Pipeline aborted (launched atoms may continue)',
+        true,
+        options.buildPartialStepDetails(),
+      );
     }
 
     const resumed = await executionSvc.resume(
@@ -280,16 +367,28 @@ async function recoverStaleAtom(
     );
 
     if (resumed.status === 'rejected') {
-      throw resumeFailureForAtom(atom, resumed.message);
+      throw createWorkflowExecutionError(
+        resumeFailureForAtom(atom, resumed.message),
+        false,
+        options.buildPartialStepDetails(),
+      );
     }
 
     const launchState = await executionSvc.awaitLaunch(resumed.job, BOOTSTRAP_TIMEOUT_MS);
     if (launchState === 'busy') {
-      throw resumeFailureForAtom(atom, 'capacity busy');
+      throw createWorkflowExecutionError(
+        resumeFailureForAtom(atom, 'capacity busy'),
+        false,
+        options.buildPartialStepDetails(),
+      );
     }
     if (launchState === 'error') {
       const message = await readLaunchFailureMessage(resumed.job, executionSvc, options.signal);
-      throw resumeFailureForAtom(atom, message ?? 'unknown error');
+      throw createWorkflowExecutionError(
+        resumeFailureForAtom(atom, message ?? 'unknown error'),
+        false,
+        options.buildPartialStepDetails(),
+      );
     }
 
     pending.delete(atom.jobId);
@@ -299,11 +398,11 @@ async function recoverStaleAtom(
       jobId: resumed.job,
       sessionId: resumed.session,
     });
-    staleRetries.set(atom.agent, retries + 1);
+    staleRetries.set(atom.atomKey, retries + 1);
 
     const resumedAt = Date.now();
     for (const sibling of pending.values()) {
-      lastActivityAt.set(sibling.agent, resumedAt);
+      lastActivityAt.set(sibling.atomKey, resumedAt);
     }
 
     options.onProgress(`atom ${atom.agent} resumed`);
@@ -322,6 +421,7 @@ export async function waitForAtoms(
     staleTimeoutMs: number;
     pollIntervalMs: number;
     onProgress: (message: string) => void;
+    completedStepDetails?: StepDetail[];
   },
 ): Promise<Map<string, string>> {
   const pending = new Map<string, LaunchedAtom>();
@@ -331,20 +431,26 @@ export async function waitForAtoms(
   const expectedStaleAborts = new Set<string>();
   const cursor: WaitCursor = { jobs: {} };
   const startedAt = Date.now();
+  const completedStepDetails = options.completedStepDetails ?? [];
 
   for (const atom of atoms) {
     pending.set(atom.jobId, atom);
-    lastActivityAt.set(atom.agent, startedAt);
-    staleRetries.set(atom.agent, 0);
+    lastActivityAt.set(atom.atomKey, startedAt);
+    staleRetries.set(atom.atomKey, 0);
   }
 
-  let firstFailure: Error | null = null;
+  let firstFailure: WaitFailure | null = null;
   let abortRequested = false;
   let drainDeadline = 0;
 
+  const buildPartialStepDetails = (): StepDetail[] => buildCombinedStepDetails(completedStepDetails, atoms, results);
+
   while (pending.size > 0) {
-    if (options.signal?.aborted) {
-      throw new Error('Pipeline aborted (launched atoms may continue)');
+    if (options.signal?.aborted && firstFailure === null) {
+      firstFailure = { aborted: true, message: 'Pipeline aborted (launched atoms may continue)' };
+      abortRequested = true;
+      drainDeadline = Date.now() + SIBLING_DRAIN_TIMEOUT_MS;
+      executionSvc.abort([...pending.keys()]);
     }
 
     let recoveredThisCycle = false;
@@ -359,7 +465,7 @@ export async function waitForAtoms(
         cursor.jobs[event.jobId] = event.eventId;
         const atom = pending.get(event.jobId);
         if (!atom) continue;
-        lastActivityAt.set(atom.agent, Date.now());
+        lastActivityAt.set(atom.atomKey, Date.now());
         options.onProgress(`atom ${atom.agent}: ${event.message}`);
         continue;
       }
@@ -380,15 +486,20 @@ export async function waitForAtoms(
         }
 
         if (event.result.aborted || event.result.notice) {
-          firstFailure ??= failureForAtom(atom, describeTerminalFailure(event.result));
+          firstFailure ??= failureForAtom(atom, event.result);
+          if (!abortRequested) {
+            abortRequested = true;
+            drainDeadline = Date.now() + SIBLING_DRAIN_TIMEOUT_MS;
+            executionSvc.abort([...pending.keys()]);
+          }
           continue;
         }
 
-        results.set(atom.agent, event.result.content);
+        results.set(atom.atomKey, event.result.content);
         continue;
       }
 
-      if (options.staleTimeoutMs <= 0) continue;
+      if (firstFailure !== null || options.staleTimeoutMs <= 0) continue;
 
       recoveredThisCycle = await recoverStaleAtom(
         pending,
@@ -402,26 +513,53 @@ export async function waitForAtoms(
           signal: options.signal,
           staleTimeoutMs: options.staleTimeoutMs,
           onProgress: options.onProgress,
+          buildPartialStepDetails,
         },
       );
 
       if (recoveredThisCycle) break;
     }
 
-    if (firstFailure !== null && !abortRequested) {
-      abortRequested = true;
-      drainDeadline = Date.now() + SIBLING_DRAIN_TIMEOUT_MS;
-      executionSvc.abort([...pending.keys()]);
-    }
-
     if (firstFailure !== null && (pending.size === 0 || Date.now() >= drainDeadline)) {
-      throw firstFailure;
+      throw createWorkflowExecutionError(firstFailure.message, firstFailure.aborted, buildPartialStepDetails());
     }
 
     if (recoveredThisCycle) continue;
   }
 
   return results;
+}
+
+async function drainLaunchedAtoms(
+  launchedAtoms: LaunchedAtom[],
+  executionSvc: WorkflowExecutionService,
+  ctx: CallerContext,
+  options: {
+    signal?: AbortSignal;
+    staleTimeoutMs: number;
+    pollIntervalMs: number;
+    onProgress: (message: string) => void;
+  },
+): Promise<StepDetail[]> {
+  if (launchedAtoms.length === 0) return [];
+
+  executionSvc.abort(launchedAtoms.map((atom) => atom.jobId));
+
+  try {
+    const results = await waitForAtoms(launchedAtoms, executionSvc, ctx, {
+      signal: options.signal,
+      staleTimeoutMs: options.staleTimeoutMs,
+      pollIntervalMs: options.pollIntervalMs,
+      onProgress: options.onProgress,
+      completedStepDetails: [],
+    });
+    return buildStepDetailsForAtoms(launchedAtoms, results);
+  } catch (error) {
+    if (error instanceof WorkflowExecutionError) {
+      return error.stepDetails;
+    }
+    throw error;
+  }
 }
 
 export function formatStepOutput(results: Array<{ tagName: string; output: string }>): string {
@@ -431,7 +569,7 @@ export function formatStepOutput(results: Array<{ tagName: string; output: strin
 }
 
 function requireStepResult(stepIndex: number, atom: LaunchedAtom, results: Map<string, string>): string {
-  const output = results.get(atom.agent);
+  const output = results.get(atom.atomKey);
   if (output !== undefined) return output;
   throw new Error(`Step ${stepIndex + 1}, atom '${atom.agent}' completed without a result`);
 }
@@ -449,44 +587,86 @@ export async function executePipeline(
     staleTimeoutMs?: number;
     pollIntervalMs?: number;
   } = {},
-): Promise<string> {
+): Promise<PipelineResult> {
   const onProgress = options.onProgress ?? (() => {});
   const staleTimeoutMs = options.staleTimeoutMs ?? 0;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_WAIT_POLL_INTERVAL_MS;
+  const stepDetails: StepDetail[] = [];
   let stepPrompt = initialPrompt;
 
   for (let stepIndex = 0; stepIndex < ast.length; stepIndex += 1) {
     const step = ast[stepIndex];
     onProgress(`step ${stepIndex + 1} started`);
 
-    const launchedAtoms = await Promise.all(
-      step.map((atom, atomIndex) => launchAtomWithRetry({
-        atom,
-        atomIndex,
-        stepIndex,
-        stepPrompt,
-        defaultProviderName,
-        executionSvc,
-        ctx,
-        atoms: options.atoms,
+    const launchedAtoms: LaunchedAtom[] = [];
+    let launchError: unknown = null;
+
+    await Promise.all(step.map(async (atom, atomIndex) => {
+      try {
+        const launched = await launchAtomWithRetry({
+          atom,
+          atomIndex,
+          stepIndex,
+          stepPrompt,
+          defaultProviderName,
+          executionSvc,
+          ctx,
+          atoms: options.atoms,
+          signal: options.signal,
+          onProgress,
+          completedStepDetails: stepDetails,
+        });
+        launchedAtoms.push(launched);
+      } catch (error) {
+        launchError ??= error;
+      }
+    }));
+
+    launchedAtoms.sort((left, right) => left.atomIndex - right.atomIndex);
+
+    if (launchError !== null) {
+      const drainedStepDetails = await drainLaunchedAtoms(launchedAtoms, executionSvc, ctx, {
         signal: options.signal,
+        staleTimeoutMs,
+        pollIntervalMs,
         onProgress,
-      })),
-    );
+      });
+      const baseStepDetails = launchError instanceof WorkflowExecutionError
+        ? launchError.stepDetails
+        : stepDetails;
+      const message = launchError instanceof Error ? launchError.message : String(launchError);
+      const aborted = launchError instanceof WorkflowExecutionError ? launchError.aborted : false;
+      throw createWorkflowExecutionError(message, aborted, [...baseStepDetails, ...drainedStepDetails]);
+    }
 
-    const stepResults = await waitForAtoms(launchedAtoms, executionSvc, ctx, {
-      signal: options.signal,
-      staleTimeoutMs,
-      pollIntervalMs,
-      onProgress,
-    });
+    try {
+      const stepResults = await waitForAtoms(launchedAtoms, executionSvc, ctx, {
+        signal: options.signal,
+        staleTimeoutMs,
+        pollIntervalMs,
+        onProgress,
+        completedStepDetails: stepDetails,
+      });
 
-    stepPrompt = formatStepOutput(launchedAtoms.map((atom) => ({
-      tagName: atom.tagName,
-      output: requireStepResult(stepIndex, atom, stepResults),
-    })));
-    onProgress(`step ${stepIndex + 1} completed`);
+      const orderedStepDetails = buildStepDetailsForAtoms(launchedAtoms, stepResults);
+      stepDetails.push(...orderedStepDetails);
+      stepPrompt = formatStepOutput(launchedAtoms.map((atom) => ({
+        tagName: atom.tagName,
+        output: requireStepResult(stepIndex, atom, stepResults),
+      })));
+      onProgress(`step ${stepIndex + 1} completed`);
+    } catch (error) {
+      if (error instanceof WorkflowExecutionError) {
+        throw error;
+      }
+
+      const message = error instanceof Error ? error.message : String(error);
+      throw createWorkflowExecutionError(message, Boolean(options.signal?.aborted), [...stepDetails]);
+    }
   }
 
-  return stepPrompt;
+  return {
+    finalOutput: stepPrompt,
+    stepDetails,
+  };
 }

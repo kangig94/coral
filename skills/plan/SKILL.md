@@ -124,7 +124,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     })
     ```
 
-    `wait({ jobs: [job], include_result: true })` (re-wait on timeout) → read `result.content`.
+    `wait({ jobs: [job], include_result: true })` → read `result.content`.
 
     **4b. Post-Round Processing**
 

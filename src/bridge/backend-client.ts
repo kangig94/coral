@@ -15,6 +15,8 @@ const STARTUP_TIMEOUT_MS = 60_000;
 const HEALTH_TIMEOUT_MS = 3_000;
 const REPLACEMENT_TIMEOUT_MS = 45_000;
 const TOOL_TIMEOUT_MS = 300_000;
+const MAX_WAIT_FETCH_TIMEOUT_MS = 30 * 60 * 1000;
+const WAIT_FETCH_MARGIN_MS = 30_000;
 const CURRENT_VERSION = typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0';
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
 const BACKEND_BIN = join(pluginRoot, 'bridge', 'coral-backend.cjs');
@@ -305,6 +307,7 @@ function parseWaitStreamEvent(eventType: string | undefined, rawData: string): W
         && typeof parsed.sessionId === 'string'
         && Array.isArray(parsed.remainingJobIds)
         && parsed.remainingJobIds.every((jobId) => typeof jobId === 'string')
+        && typeof parsed.resultPath === 'string'
         && isRecord(parsed.result)
       ) {
         return parsed as WaitStreamEvent;
@@ -467,8 +470,12 @@ export async function* streamWait(
   lastEventId?: string,
   signal?: AbortSignal,
 ): AsyncGenerator<WaitStreamEvent> {
+  const fetchTimeoutMs = Math.min(
+    (timeoutSeconds ?? 600) * 1000 + WAIT_FETCH_MARGIN_MS,
+    MAX_WAIT_FETCH_TIMEOUT_MS,
+  );
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), TOOL_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), fetchTimeoutMs);
   const onExternalAbort = () => controller.abort();
   signal?.addEventListener('abort', onExternalAbort);
 

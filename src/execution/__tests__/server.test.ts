@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { WaitStreamEvent } from '../../types.js';
+import { JOBS_DIR, ProgressStore, jobResultPath } from '../progress-store.js';
 import type { BackendServerController } from '../server.js';
 
 let tmpHome = '';
+const createdJobIds = new Set<string>();
 
 vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof import('node:os')>('node:os');
@@ -60,6 +62,7 @@ function createFakeExecutionService(overrides: Partial<FakeExecutionService> = {
         completedJobId: 'job-1',
         sessionId: 'session-1',
         remainingJobIds: [],
+        resultPath: jobResultPath('job-1'),
         result: { content: 'done' },
       };
     }),
@@ -121,6 +124,10 @@ describe('execution backend server', () => {
       }
     }
     controller = null;
+    for (const jobId of createdJobIds) {
+      rmSync(join(JOBS_DIR, jobId), { recursive: true, force: true });
+    }
+    createdJobIds.clear();
     vi.restoreAllMocks();
     vi.resetModules();
     rmSync(tmpHome, { recursive: true, force: true });
@@ -318,6 +325,44 @@ describe('execution backend server', () => {
       jobIds: ['job-1'],
       timeoutSeconds: 1,
       cursor: { jobs: {} },
+    });
+  });
+
+  it('recovers orphaned workflow jobs with an empty artifact and workflow marker', async () => {
+    const progressStore = new ProgressStore();
+    const jobId = 'workflow-orphan-job';
+    createdJobIds.add(jobId);
+    progressStore.initJob(jobId, 'workflow-session', 'codex', 'workflow');
+    progressStore.updatePhase(jobId, 'running');
+
+    const backend = await startBackendServer();
+    const response = await fetch(`${backend.baseUrl}/wait/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        jobIds: [jobId],
+        timeoutSeconds: 1,
+      }),
+    });
+    const body = await response.text();
+    const status = progressStore.readStatus(jobId);
+
+    expect(response.status).toBe(200);
+    expect(body).toContain('event: terminal');
+    expect(body).toContain(`"resultPath":"${jobResultPath(jobId)}"`);
+    expect(body).toContain('"workflow":{"steps":[]}');
+    expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe('');
+    expect(status).toMatchObject({
+      phase: 'error',
+      jobKind: 'workflow',
+      result: {
+        content: '',
+        notice: 'Unclean shutdown - orphaned job',
+        workflow: { steps: [] },
+      },
     });
   });
 

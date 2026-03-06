@@ -338,7 +338,7 @@ describe('bridge backend-client', () => {
       '',
       'event: terminal',
       'id: eyJqb2JzIjp7ImpvYi0xIjo3fX0',
-      'data: {"type":"terminal","completedJobId":"job-1","sessionId":"session-1","remainingJobIds":[],"result":{"text":"done"}}',
+      'data: {"type":"terminal","completedJobId":"job-1","sessionId":"session-1","remainingJobIds":[],"resultPath":"/tmp/coral-jobs/job-1/result.md","result":{"content":"done"}}',
       '',
     ].join('\n'), {
       status: 200,
@@ -368,7 +368,8 @@ describe('bridge backend-client', () => {
         completedJobId: 'job-1',
         sessionId: 'session-1',
         remainingJobIds: [],
-        result: { text: 'done' },
+        resultPath: '/tmp/coral-jobs/job-1/result.md',
+        result: { content: 'done' },
       },
     ]);
     expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:4100/wait/stream', expect.objectContaining({
