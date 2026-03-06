@@ -286,7 +286,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     const launchState = await executionSvc.awaitLaunch(decision.job, BOOTSTRAP_TIMEOUT_MS);
     if (launchState === 'busy') {
       if (attempt === MAX_LAUNCH_ATTEMPTS) break;
-      onProgress(`step ${stepIndex + 1} atom ${label} busy (attempt ${attempt}), retrying`);
+      onProgress(`${stepIndex}-${label.slice(0, 3)} busy (attempt ${attempt}), retrying`);
       await sleep(computeBackoffMs(attempt), signal);
       continue;
     }
@@ -345,7 +345,7 @@ async function recoverStaleAtom(
     }
 
     expectedStaleAborts.add(atom.jobId);
-    options.onProgress(`atom ${atom.agent} stale, aborting`);
+    options.onProgress(`${atom.stepIndex}-${atom.agent.slice(0, 3)} stale, aborting`);
     executionSvc.abort([atom.jobId]);
 
     if (options.signal?.aborted) {
@@ -405,7 +405,7 @@ async function recoverStaleAtom(
       lastActivityAt.set(sibling.atomKey, resumedAt);
     }
 
-    options.onProgress(`atom ${atom.agent} resumed`);
+    options.onProgress(`${atom.stepIndex}-${atom.agent.slice(0, 3)} resumed`);
     return true;
   }
 
@@ -466,7 +466,7 @@ export async function waitForAtoms(
         const atom = pending.get(event.jobId);
         if (!atom) continue;
         lastActivityAt.set(atom.atomKey, Date.now());
-        options.onProgress(`atom ${atom.agent}: ${event.message}`);
+        options.onProgress(`${atom.stepIndex}-${atom.agent.slice(0, 3)} ${event.message}`);
         continue;
       }
 
@@ -477,8 +477,8 @@ export async function waitForAtoms(
         pending.delete(event.completedJobId);
         delete cursor.jobs[event.completedJobId];
 
-        const terminalState = event.result.aborted || event.result.notice ? 'error' : 'completed';
-        options.onProgress(`step ${atom.stepIndex + 1} atom ${atom.agent} ${terminalState}`);
+        const terminalState = event.result.aborted || event.result.notice ? 'error' : 'done';
+        options.onProgress(`${atom.stepIndex}-${atom.agent.slice(0, 3)} ${terminalState}`);
 
         if (expectedStaleAborts.has(event.completedJobId)) {
           expectedStaleAborts.delete(event.completedJobId);
@@ -596,7 +596,7 @@ export async function executePipeline(
 
   for (let stepIndex = 0; stepIndex < ast.length; stepIndex += 1) {
     const step = ast[stepIndex];
-    onProgress(`step ${stepIndex + 1} started`);
+    onProgress(`step ${stepIndex} started`);
 
     const launchedAtoms: LaunchedAtom[] = [];
     let launchError: unknown = null;
@@ -654,7 +654,7 @@ export async function executePipeline(
         tagName: atom.tagName,
         output: requireStepResult(stepIndex, atom, stepResults),
       })));
-      onProgress(`step ${stepIndex + 1} completed`);
+      onProgress(`step ${stepIndex} completed`);
     } catch (error) {
       if (error instanceof WorkflowExecutionError) {
         throw error;

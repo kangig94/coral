@@ -211,7 +211,7 @@ describe('workflow pipe executor', () => {
 
     expect(executionSvc.coralDispatch).toHaveBeenCalledTimes(MAX_LAUNCH_ATTEMPTS);
     expect(executionSvc.awaitLaunch).toHaveBeenCalledTimes(MAX_LAUNCH_ATTEMPTS);
-    expect(progress.some((message) => message.includes('busy (attempt 1), retrying'))).toBe(true);
+    expect(progress.some((message) => message.includes('0-arc busy (attempt 1), retrying'))).toBe(true);
   });
 
   it('keeps same-agent different-provider outputs separate across stale recovery', async () => {

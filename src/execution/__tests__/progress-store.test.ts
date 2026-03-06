@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { PersistedStatusRecord, TerminalResult } from '../../types.js';
-import { JOBS_DIR, ProgressStore, createReplayCursor } from '../progress-store.js';
+import { JOBS_DIR, ProgressStore, createReplayCursor, formatElapsed } from '../progress-store.js';
 
 const jobIdsToClean = new Set<string>();
 const renameCalls = vi.hoisted(() => [] as Array<[unknown, unknown]>);
@@ -71,7 +71,7 @@ describe('execution ProgressStore', () => {
     const events = store.replayFrom(jobId, 1, createReplayCursor());
 
     expect(events.map((event) => event.eventId)).toEqual([2, 3]);
-    expect(events.map((event) => event.message)).toEqual(['second', 'third']);
+    expect(events.map((event) => event.message)).toEqual(['[ 0m  0s] second', '[ 0m  0s] third']);
   });
 
   it('appendTerminal updates status.json result', () => {
@@ -154,12 +154,25 @@ describe('execution ProgressStore', () => {
 
     const cursor = createReplayCursor();
     const batch1 = store.replayFrom(jobId, 0, cursor);
-    expect(batch1.map((e) => e.message)).toEqual(['first', 'second']);
+    expect(batch1.map((e) => e.message)).toEqual(['[ 0m  0s] first', '[ 0m  0s] second']);
 
     store.appendProgress(jobId, 'session-1', 'third');
 
     const batch2 = store.replayFrom(jobId, 2, cursor);
-    expect(batch2.map((e) => e.message)).toEqual(['third']);
+    expect(batch2.map((e) => e.message)).toEqual(['[ 0m  0s] third']);
     expect(batch2.map((e) => e.eventId)).toEqual([3]);
+  });
+});
+
+describe('formatElapsed', () => {
+  it.each([
+    [0, ' 0m  0s'],
+    [3_000, ' 0m  3s'],
+    [62_000, ' 1m  2s'],
+    [570_000, ' 9m 30s'],
+    [765_000, '12m 45s'],
+    [3_750_000, '1h 02m 30s'],
+  ])('formats %ims as %s', (ms, expected) => {
+    expect(formatElapsed(ms)).toBe(expected);
   });
 });

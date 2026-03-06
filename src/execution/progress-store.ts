@@ -39,8 +39,22 @@ export function createReplayCursor(): ReplayCursor {
   return { lastOffset: 0, remainder: '' };
 }
 
+export function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const s = String(seconds).padStart(2, ' ');
+  const m = String(minutes).padStart(2, ' ');
+  if (hours > 0) {
+    return `${hours}h ${String(minutes).padStart(2, '0')}m ${String(seconds).padStart(2, '0')}s`;
+  }
+  return `${m}m ${s}s`;
+}
+
 export class ProgressStore {
   private readonly eventCounters = new Map<string, number>();
+  private readonly jobStartedAt = new Map<string, number>();
 
   jobDir(jobId: string): string {
     return join(JOBS_DIR, jobId);
@@ -77,6 +91,7 @@ export class ProgressStore {
     }
     this.writeStatus(jobId, record);
     writeFileSync(this.progressPath(jobId), '');
+    this.jobStartedAt.set(jobId, Date.now());
   }
 
   /** Atomically write status.json. */
@@ -116,13 +131,15 @@ export class ProgressStore {
   /** Append a progress event to progress.jsonl. Returns the eventId. */
   appendProgress(jobId: string, sessionId: string, message: string): number {
     const eventId = this.nextEventId(jobId);
+    const elapsed = Date.now() - (this.jobStartedAt.get(jobId) ?? Date.now());
+    const stamped = `[${formatElapsed(elapsed)}] ${message}`;
     const entry: PersistedProgressRecord = {
       jobId,
       sessionId,
       eventId,
       type: 'progress',
       ts: new Date().toISOString(),
-      message,
+      message: stamped,
     };
     try {
       appendFileSync(this.progressPath(jobId), JSON.stringify(entry) + '\n');
@@ -157,6 +174,7 @@ export class ProgressStore {
     }
 
     this.eventCounters.delete(jobId);
+    this.jobStartedAt.delete(jobId);
     return eventId;
   }
 
