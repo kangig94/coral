@@ -17,8 +17,6 @@ export const sessionRefSchema = z.string().min(1, 'Session reference is required
 
 export const cwdSchema = z.string().optional();
 
-export const boolDefaultFalse = z.boolean().default(false);
-
 export const effortSchema = z.enum(['low', 'medium', 'high', 'xhigh']).optional();
 
 export type EffortLevel = z.infer<typeof effortSchema>;
@@ -46,11 +44,7 @@ export const sharedExecSchema = z.object({
   op: z.literal('exec'),
   prompt: promptSchema,
   session: sessionRefSchema.optional(),
-  name: sessionNameSchema.optional(),
-  model: modelSchema,
   working_directory: cwdSchema,
-  effort: effortSchema,
-  bypass: boolDefaultFalse,
 });
 
 /**
@@ -60,10 +54,7 @@ export const sharedResumeSchema = z.object({
   op: z.literal('resume'),
   session: sessionRefSchema,
   prompt: promptSchema,
-  model: modelSchema,
   working_directory: cwdSchema,
-  effort: effortSchema,
-  bypass: boolDefaultFalse,
 });
 
 /**
@@ -72,12 +63,8 @@ export const sharedResumeSchema = z.object({
 export const sharedForkSchema = z.object({
   op: z.literal('fork'),
   session: sessionRefSchema,
-  name: sessionNameSchema.optional(),
   prompt: z.string().optional(),
-  model: modelSchema,
   working_directory: cwdSchema,
-  effort: effortSchema,
-  bypass: boolDefaultFalse,
 });
 
 /**

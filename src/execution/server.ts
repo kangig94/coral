@@ -296,11 +296,7 @@ function getToolDescriptors(): Array<Record<string, unknown>> {
         op: { type: 'string' },
         prompt: { type: 'string' },
         session: { type: 'string' },
-        name: { type: 'string' },
-        model: { type: 'string' },
         working_directory: { type: 'string' },
-        effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh'] },
-        bypass: { type: 'boolean', default: false },
         system_prompt: { type: 'string' },
       },
       required: ['op'],
@@ -423,12 +419,8 @@ async function routeToolCall(
       statusCode: 200,
       body: await service.fork(request.name, {
         sessionId,
-        name: optionalString(request.args, 'name'),
         prompt,
-        model: optionalString(request.args, 'model'),
         cwd,
-        effort: optionalString(request.args, 'effort'),
-        bypassPermissions: optionalBoolean(request.args, 'bypass'),
         systemPrompt: optionalString(request.args, 'system_prompt'),
       }, request.context),
     };
@@ -443,11 +435,7 @@ async function routeToolCall(
       body: await service.resume(request.name, {
         sessionId,
         prompt,
-        name: optionalString(request.args, 'name'),
-        model: optionalString(request.args, 'model'),
         cwd,
-        effort: optionalString(request.args, 'effort'),
-        bypassPermissions: optionalBoolean(request.args, 'bypass'),
         systemPrompt: optionalString(request.args, 'system_prompt'),
       }, request.context),
     };
@@ -461,11 +449,7 @@ async function routeToolCall(
       statusCode: 200,
       body: await service.start(request.name, {
         prompt,
-        name: optionalString(request.args, 'name'),
-        model: optionalString(request.args, 'model'),
         cwd: cwd ?? defaultCwd,
-        effort: optionalString(request.args, 'effort'),
-        bypassPermissions: optionalBoolean(request.args, 'bypass'),
         systemPrompt: optionalString(request.args, 'system_prompt'),
       }, request.context),
     };
@@ -480,10 +464,7 @@ async function routeToolCall(
       body: await service.coralDispatch(request.name, op.slice(CORAL_OP_PREFIX.length), {
         prompt,
         sessionId,
-        name: optionalString(request.args, 'name'),
-        model: optionalString(request.args, 'model'),
         cwd: sessionId ? cwd : cwd ?? defaultCwd,
-        effort: optionalString(request.args, 'effort'),
       }, request.context),
     };
   }

@@ -9,7 +9,7 @@ import type {
   WaitRequest,
   WaitStreamEvent,
 } from '../types.js';
-import { resolveCoralContent, stripAgentMetadata } from '../coral/resolver.js';
+import { resolveCoralContent, stripAgentMetadata, parseAgentMeta } from '../coral/resolver.js';
 import { getNewProvider } from '../providers/registry.js';
 import { CORAL_DEFAULT_EFFORT } from '../shared/schemas.js';
 import type { Provider, ProviderRuntime } from '../providers/types.js';
@@ -67,10 +67,7 @@ export interface ForkInput {
 export interface CoralInput {
   prompt: string;
   sessionId?: string;
-  name?: string;
-  model?: string;
   cwd?: string;
-  effort?: string;
 }
 
 export interface ListResult {
@@ -256,10 +253,12 @@ export class ExecutionService {
     ctx: CallerContext,
   ): Promise<LaunchDecision> {
     const { content } = resolveCoralContent(coralName);
+    const meta = parseAgentMeta(content);
     const stripped = stripAgentMetadata(content);
     const instruction = buildCoralInstruction(stripped);
 
-    const effort = input.effort ?? CORAL_DEFAULT_EFFORT;
+    const model = meta.model;
+    const effort = CORAL_DEFAULT_EFFORT;
     const cwd = input.cwd ?? ctx.projectRoot;
 
     if (input.sessionId) {
@@ -268,8 +267,8 @@ export class ExecutionService {
         {
           sessionId: input.sessionId,
           prompt: input.prompt,
-          name: input.name,
-          model: input.model,
+          name: coralName,
+          model,
           cwd,
           effort,
           bypassPermissions: true,
@@ -283,8 +282,8 @@ export class ExecutionService {
       providerName,
       {
         prompt: input.prompt,
-        name: input.name ?? `${coralName}-${Date.now()}`,
-        model: input.model,
+        name: `${coralName}-${Date.now()}`,
+        model,
         cwd,
         effort,
         bypassPermissions: true,

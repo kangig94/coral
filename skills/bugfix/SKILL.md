@@ -29,7 +29,7 @@ Strip the `--codex` flag before passing the prompt to the execution path.
    - **Default**: Read `CORAL_AGENTS/debugger.md`. **You** execute it directly with `--deep` —
      follow `<Investigation_Protocol>` steps with conversation context.
      Present diagnosis in `<Output_Format>` structure.
-   - **`--codex`**: Call `codex({ op: "coral:debugger", prompt: "--deep " + prompt, working_directory, effort: "xhigh" })`.
+   - **`--codex`**: Call `codex({ op: "coral:debugger", prompt: "--deep " + prompt, working_directory })`.
      Capture `{ session, session_dir }` from the exec response, then wait in a timeout loop (`wait({ sessions: [session], timeout_seconds })`).
      On completion, read `session_dir/result.md` for findings.
      On error, read `session_dir/status.json` and stop with the Codex error.
@@ -45,10 +45,6 @@ Strip the `--codex` flag before passing the prompt to the execution path.
 
 4. **Project validation**: If project instructions define workflow rules (e.g., review gates,
    post-implementation steps), follow them.
-
-## Sandbox bypass
-
-Pass `bypass: true` only when the user explicitly requests bypass mode. Otherwise, omit the field.
 
 ## Error Policy
 

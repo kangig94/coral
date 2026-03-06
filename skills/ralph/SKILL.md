@@ -219,7 +219,7 @@ Strip `--codex` and `--red` flags before passing the prompt to the execution pat
     1) Call Codex: `codex({ op: "exec", ... })` → `{ session, session_dir }`.
        `wait({ sessions: [session] })` → check status.
        Completed: `Read(session_dir + "/result.md")` for response.
-       Pass `working_directory` and `effort: "xhigh"`.
+       Pass `working_directory`.
     2) Keep using the `session` UUID from the exec response for continuity.
        (`session_name` is display-only — do NOT use it as `session` parameter.)
        Subsequent rounds: `codex({ op: "exec", session: <session>, ... })`.
@@ -238,6 +238,5 @@ Strip `--codex` and `--red` flags before passing the prompt to the execution pat
     d. Fix discrepancies yourself — do not send back to Codex; fix them directly
     e. Report to the user what was done correctly and what you corrected
 
-    Sandbox: pass `bypass: true` only when the user explicitly requests it.
   </Codex_Mode>
 </Ralph_Protocol>

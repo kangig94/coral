@@ -34,18 +34,15 @@ the same background session pipeline as `op: exec`.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `op` | string | Yes | Must match `coral:[a-z0-9][a-z0-9-]*` |
-| `session` | string | No | Existing coral session UUID to resume |
-| `name` | string | No | New session display name (when starting fresh) |
 | `prompt` | string | Yes | User prompt appended after agent content |
-| `model` | string | No | Model to use |
+| `session` | string | No | Existing coral session UUID to resume |
 | `working_directory` | string | No | Working directory |
-| `effort` | string | No | `low`, `medium`, `high`, `xhigh` |
-| `bypass` | boolean | No | Bypass sandbox/approvals only on explicit user request |
 
 ### Behavior Notes
 
 - Unknown agent files return an MCP error: `Agent file not found: agents/<agent>.md`
-- Agent content is prepended as-is (no frontmatter parsing/stripping)
+- Agent YAML frontmatter is parsed for metadata (`model`, `methods`, `deep`) then stripped before injection
+- `model` from frontmatter is used as the default model for the agent
 - Path traversal is blocked by op validation before filesystem reads
 
 ---
@@ -58,13 +55,9 @@ Start a new Codex session (omit `session`) or resume an existing one (pass `sess
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `session` | string | No | Coral session UUID from a prior `exec`/`fork` response. Omit to start a new session. |
-| `name` | string | No | Session display name (auto-generated as `session-{timestamp}` if omitted) |
 | `prompt` | string | Yes | Prompt to send to Codex (min 1 char) |
-| `model` | string | No | Model to use (default: `gpt-5.4`, configurable via `CORAL_CODEX_MODEL`) |
+| `session` | string | No | Coral session UUID from a prior `exec`/`fork` response. Omit to start a new session. |
 | `working_directory` | string | No | Working directory |
-| `effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
-| `bypass` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when the user explicitly requests bypass mode. |
 
 ### Output
 
@@ -126,12 +119,8 @@ Fork an existing session to continue the conversation in a new branch. Returns i
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `session` | string | Yes | Source session identifier (must exist in Coral registry) |
-| `name` | string | No | New session display name |
 | `prompt` | string | No | Additional prompt for the forked session |
-| `model` | string | No | Model to use |
 | `working_directory` | string | No | Working directory |
-| `effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
-| `bypass` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when the user explicitly requests bypass mode. |
 
 ### Output
 
@@ -197,12 +186,8 @@ Single entry point for Claude CLI execution. Use the required `op` discriminator
       "op": { "type": "string", "description": "Operation: exec/list/fork, or coral:<agent-name> for agent delegation" },
       "prompt": { "type": "string", "description": "Prompt to send (exec required)" },
       "session": { "type": "string", "description": "Session ID for resume (exec with existing session)" },
-      "name": { "type": "string", "description": "Session name (exec optional)" },
-      "model": { "type": "string", "description": "Claude model to use (e.g., sonnet, opus, haiku)" },
       "working_directory": { "type": "string", "description": "Working directory for execution" },
-      "effort": { "type": "string", "enum": ["low", "medium", "high", "xhigh"], "description": "Model reasoning effort level (xhigh maps to high on Claude CLI)" },
-      "system_prompt": { "type": "string", "description": "Custom system prompt (replaces default)" },
-      "bypass": { "type": "boolean", "description": "Bypass Claude permission checks", "default": false }
+      "system_prompt": { "type": "string", "description": "Custom system prompt (replaces default)" }
     },
     "required": ["op"]
   }
@@ -224,14 +209,22 @@ Starts a new Claude CLI run (or resumes when `session` is provided). Returns imm
 Execution details:
 - Uses `claude -p --output-format json`
 - Prompt is sent via stdin (not argv)
-- Optional flags: `--model`, `--system-prompt`, `--effort`
+- Optional flags: `--system-prompt`
 - Resume mode uses `--resume <session-id>`
 - `--no-session-persistence` is not used
-- `effort` accepts `low`, `medium`, `high`, `xhigh`; `xhigh` is mapped to `high` for Claude CLI
 
 ### op: coral:*
 
-- `coral:<agent>`: loads `agents/<agent>.md`, strips YAML frontmatter + `> **CORAL_...` directive lines, and injects into `--system-prompt`
+Delegate a Claude CLI call through an agent file. Same schema as the Codex `coral:*` op:
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `op` | string | Yes | Must match `coral:[a-z0-9][a-z0-9-]*` |
+| `prompt` | string | Yes | User prompt appended after agent content |
+| `session` | string | No | Existing coral session UUID to resume |
+| `working_directory` | string | No | Working directory |
+
+- `coral:<agent>`: loads `agents/<agent>.md`, parses frontmatter metadata, strips it, and injects into `--append-system-prompt`
 - `coral:<skill>`: returns `isError` (skills require Claude Code tool environment and are only supported through the `codex` tool)
 
 ### op: list
@@ -247,13 +240,9 @@ Fork an existing Claude session into a new branch. Uses `claude -p --resume <thr
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `session` | string | Yes | Source session identifier (must exist in Coral registry) |
-| `name` | string | No | New session display name |
 | `prompt` | string | No | Additional prompt for the forked session |
-| `model` | string | No | Model override |
 | `working_directory` | string | No | Working directory |
-| `effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
 | `system_prompt` | string | No | Additional system prompt (appended) |
-| `bypass` | boolean | No | Bypass Claude permission checks (default: `false`) |
 
 ### Missing `session_id` Behavior
 
@@ -373,7 +362,7 @@ Agent names: `[a-z][a-z0-9-]*`. Provider: `codex` or `claude`. Namespace: `[a-z]
 - `effort` (string) — `low`, `medium`, `high`, `xhigh`
 - `instruction` (string) — appended to the atom's prompt after pipeline data
 
-Unknown keys are rejected. `bypass` is not supported in v1.
+Unknown keys are rejected.
 Atoms config applies to ALL occurrences of that atom name across steps (global matching).
 Per-occurrence atom overrides are intentionally out of scope in v1; use distinct atom names when different per-step config is required.
 

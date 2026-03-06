@@ -40,35 +40,14 @@ describe('codexOpSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it('defaults exec bypass to false when omitted', () => {
+  it('parses exec with minimal fields', () => {
     const parsed = codexOpSchema.parse({ op: 'exec', prompt: 'hello' });
-    if (parsed.op !== 'exec') throw new Error('Expected exec op');
-    expect(parsed.bypass).toBe(false);
+    expect(parsed).toMatchObject({ op: 'exec', prompt: 'hello' });
   });
 
-  it('preserves explicit exec bypass true', () => {
-    const parsed = codexOpSchema.parse({ op: 'exec', prompt: 'hello', bypass: true });
-    if (parsed.op !== 'exec') throw new Error('Expected exec op');
-    expect(parsed.bypass).toBe(true);
-  });
-
-  it('defaults fork bypass to false when omitted', () => {
-    const parsed = codexOpSchema.parse({
-      op: 'fork',
-      session: 'base-session',
-    });
-    if (parsed.op !== 'fork') throw new Error('Expected fork op');
-    expect(parsed.bypass).toBe(false);
-  });
-
-  it('preserves explicit fork bypass true', () => {
-    const parsed = codexOpSchema.parse({
-      op: 'fork',
-      session: 'base-session',
-      bypass: true,
-    });
-    if (parsed.op !== 'fork') throw new Error('Expected fork op');
-    expect(parsed.bypass).toBe(true);
+  it('parses fork with session', () => {
+    const parsed = codexOpSchema.parse({ op: 'fork', session: 'base-session' });
+    expect(parsed).toMatchObject({ op: 'fork', session: 'base-session' });
   });
 });
 
@@ -77,15 +56,12 @@ describe('coralAgentSchema', () => {
     const result = coralAgentSchema.parse({
       op: 'coral:scanner',
       prompt: 'analyze',
-      model: 'o4-mini',
       working_directory: '/tmp',
-      effort: 'high',
-      bypass: true,
     });
     expect(result).toMatchObject({
       op: 'coral:scanner',
       prompt: 'analyze',
-      model: 'o4-mini',
+      working_directory: '/tmp',
     });
   });
 

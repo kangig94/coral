@@ -198,7 +198,6 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
       {
         prompt: atomPrompt,
         cwd: ctx.projectRoot,
-        effort,
       },
       ctx,
     );

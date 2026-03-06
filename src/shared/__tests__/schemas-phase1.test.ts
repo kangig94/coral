@@ -13,22 +13,14 @@ describe('Phase 1 shared schemas', () => {
       op: 'exec',
       prompt: 'Analyze this change',
       session: 'session-1',
-      name: 'phase1',
-      model: 'o4-mini',
       working_directory: '/tmp/work',
-      effort: 'high',
-      bypass: true,
     });
 
     expect(parsed).toMatchObject({
       op: 'exec',
       prompt: 'Analyze this change',
       session: 'session-1',
-      name: 'phase1',
-      model: 'o4-mini',
       working_directory: '/tmp/work',
-      effort: 'high',
-      bypass: true,
     });
   });
 

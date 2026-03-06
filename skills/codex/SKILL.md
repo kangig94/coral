@@ -43,15 +43,11 @@ Note: routes 4b and 4c delegate to other skills that manage their own sessions.
 | Persistent execution | ralph, persistent, loop, keep going, until done | → **4c** |
 | Everything else | (default) | → **4d** |
 
-## Sandbox bypass
-
-Pass `bypass: true` only when the user explicitly requests bypass mode.
-
 ## 4a. Review (parallel Codex ops)
 
 Dispatch TWO Codex jobs in parallel:
-- `codex({ op: "coral:architect", prompt, session, working_directory, effort: "xhigh" })`
-- `codex({ op: "coral:critic", prompt, session, working_directory, effort: "xhigh" })`
+- `codex({ op: "coral:architect", prompt, session, working_directory })`
+- `codex({ op: "coral:critic", prompt, session, working_directory })`
 
 Use `session` only when available from step 2. Omit it for fresh review sessions.
 Then wait with timeout handling until both jobs finish:

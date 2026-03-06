@@ -73,8 +73,7 @@ Strip the `--codex` flag before passing the prompt to the execution path.
        - Default: run `<Execution>` directly on the target files.
        - `--codex`: call `codex({ op: "exec", ... })` with `<Execution>`, `<Constraints>`,
          `<Failure_Modes_To_Avoid>`, `<Output_Format>`, target file paths, and coding standards.
-         Pass `working_directory`, `effort: "xhigh"`.
-         Pass `bypass: true` only when the user explicitly requests bypass mode.
+         Pass `working_directory`.
          Then wait in a timeout loop:
          `wait({ sessions: [session], timeout_seconds })`
          until terminal status, then Read(`session_dir + "/result.md"`) for output.

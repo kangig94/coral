@@ -11,6 +11,32 @@ export type CoralContent =
   | { type: 'agent'; content: string; path: string }
   | { type: 'skill'; content: string; path: string };
 
+export interface AgentMeta {
+  model?: string;
+  methods?: string[];
+  deep?: boolean;  // true when frontmatter contains "deep: bool"
+}
+
+export function parseAgentMeta(content: string): AgentMeta {
+  const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!fmMatch) return {};
+
+  const fm = fmMatch[1];
+  const meta: AgentMeta = {};
+
+  const modelMatch = fm.match(/^model:\s*(.+)$/m);
+  if (modelMatch) meta.model = modelMatch[1].trim();
+
+  const methodsMatch = fm.match(/^methods:\s*\[([^\]]*)\]$/m);
+  if (methodsMatch) {
+    meta.methods = methodsMatch[1].split(',').map((s) => s.trim()).filter(Boolean);
+  }
+
+  if (/^deep:\s*bool\s*$/m.test(fm)) meta.deep = true;
+
+  return meta;
+}
+
 export function resolveCoralContent(name: string): CoralContent {
   if (!isValidName(name)) {
     throw new Error(`Invalid coral target name: ${name}`);

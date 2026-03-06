@@ -109,10 +109,10 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     **4a. Parallel Review**
     Dispatch both reviewers in parallel:
     ```
-    codex({ op: "coral:architect", prompt: "...", name: "architect-r{N}", working_directory })
-    codex({ op: "coral:critic",    prompt: "...", name: "critic-r{N}",    working_directory })
+    codex({ op: "coral:architect", prompt: "...", working_directory })
+    codex({ op: "coral:critic",    prompt: "...", working_directory })
     ```
-    **CRITICAL**: Use `op: "coral:<role>"`, NOT `op: "exec"`. Never pass `session` — each round is a fresh call (no session continuity), so reviewers evaluate the current plan without prior-round bias. Use unique `name` per round (e.g., `architect-r1`, `architect-r2`) to avoid conflicts.
+    **CRITICAL**: Use `op: "coral:<role>"`, NOT `op: "exec"`. Never pass `session` — each round is a fresh call (no session continuity), so reviewers evaluate the current plan without prior-round bias.
     Provide each: plan file path, working directory, relevant context. If preplan confirmed items exist, include them as immutable constraints. In `--deep`, include `--deep` in each reviewer's prompt.
 
     Use a wait loop until both reviewer jobs finish:
@@ -126,7 +126,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
     **If `--deep`**:
     ```
-    codex({ op: "coral:resolver", prompt: "...", name: "resolver-r{N}", working_directory })
+    codex({ op: "coral:resolver", prompt: "...", working_directory })
     ```
     Pass the plan file path, both reviewers' `session_dir` paths (resolver reads `result.md` itself), working directory, and preplan confirmed items as immutable constraints (if any).
     No `session` — each round spawns a fresh resolver (session memory would create author bias toward its own prior edits).
