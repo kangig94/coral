@@ -32,9 +32,6 @@ export interface ProviderProgressEvent {
 /** Provider action type — the three launch operations a provider handles. */
 export type ProviderAction = 'exec' | 'resume' | 'fork';
 
-/** All actions dispatched through the tool router, including list. */
-export type ToolAction = ProviderAction | 'list';
-
 /** Instruction injected by the framework (coral dispatch or workflow). */
 export interface ProviderInstruction {
   content: string;

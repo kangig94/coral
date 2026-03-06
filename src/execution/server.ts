@@ -15,7 +15,7 @@ import { IdleTimer } from './idle-timer.js';
 import type { AbortResult } from './job-manager.js';
 import { ProgressStore, JOBS_DIR } from './progress-store.js';
 import type { CallerContext, ToolRequest } from './request-context.js';
-import { getAllNewProviders } from '../providers/registry.js';
+import { getAllNewProviders, getNewProvider } from '../providers/registry.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import {
   ExecutionService as DefaultExecutionService,
@@ -276,7 +276,6 @@ function markJobAsError(
   const terminalResult: TerminalResult = { text: '', notice };
   progressStore.updateLaunchState(jobId, 'error', notice);
   progressStore.appendTerminal(jobId, sessionId, terminalResult, 'error');
-  progressStore.updatePhase(jobId, 'error');
 }
 
 function recoverOrphanedJobs(progressStore: ProgressStore, log: (message: string) => void): void {
@@ -401,8 +400,7 @@ async function routeToolCall(
     return { statusCode: 200, body: decision };
   }
 
-  const providerNames = new Set(getAllNewProviders().map((provider) => provider.name));
-  if (!providerNames.has(request.name)) {
+  if (!getNewProvider(request.name)) {
     return {
       statusCode: 404,
       body: { error: 'not_found', message: `Unknown tool: ${request.name}` },

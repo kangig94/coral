@@ -147,6 +147,7 @@ export class ProgressStore {
       this.writeStatus(jobId, record);
     }
 
+    this.eventCounters.delete(jobId);
     return eventId;
   }
 

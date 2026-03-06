@@ -106,6 +106,3 @@ export const abortInputSchema = z.object({
 });
 
 export type AbortInput = z.infer<typeof abortInputSchema>;
-
-/** All tool actions available through the router. */
-export type ToolAction = 'exec' | 'resume' | 'fork' | 'list';

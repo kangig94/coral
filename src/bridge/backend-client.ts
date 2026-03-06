@@ -1,7 +1,7 @@
 declare const __PLUGIN_ROOT__: string;
 declare const __VERSION__: string;
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -148,10 +148,6 @@ function removeStaleBackendInfo(): void {
 }
 
 function spawnBackend(): void {
-  if (!existsSync(BACKEND_BIN)) {
-    throw new Error(`Coral backend binary not found: ${BACKEND_BIN}`);
-  }
-
   const child = spawn(process.execPath, [BACKEND_BIN], {
     detached: true,
     stdio: ['ignore', 'ignore', 'ignore'],
@@ -401,9 +397,9 @@ export async function* streamWait(
     let buffer = '';
 
     for await (const chunk of response.body) {
-      buffer += decoder.decode(chunk, { stream: true });
-      const normalized = buffer.replace(/\r\n/g, '\n');
-      const blocks = normalized.split('\n\n');
+      const decoded = decoder.decode(chunk, { stream: true }).replace(/\r\n/g, '\n');
+      buffer += decoded;
+      const blocks = buffer.split('\n\n');
       buffer = blocks.pop() ?? '';
 
       for (const block of blocks) {

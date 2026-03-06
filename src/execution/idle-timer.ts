@@ -1,8 +1,4 @@
-function parsePositiveInt(raw: string | undefined, fallback: number): number {
-  if (!raw) return fallback;
-  const parsed = Number(raw);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
+import { parsePositiveInt } from './engine.js';
 
 export const IDLE_TIMEOUT_MS = parsePositiveInt(process.env.CORAL_BACKEND_IDLE_MS, 21_600_000);
 

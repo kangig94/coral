@@ -585,7 +585,6 @@ export class ExecutionService {
         this.progressStore.appendTerminal(jobId, sessionId, terminalResult, 'completed');
         this.progressStore.writeResultMd(jobId, text);
         this.jobManager.setPhase(jobId, 'completed');
-        this.progressStore.updatePhase(jobId, 'completed');
         this.jobManager.remove(jobId);
         this.sessionManager.setNonResumable(sessionId);
         this.sessionManager.releaseJob(sessionId, jobId);
@@ -595,7 +594,6 @@ export class ExecutionService {
         const terminalResult: TerminalResult = { text: '', notice: message };
         this.progressStore.appendTerminal(jobId, sessionId, terminalResult, 'error');
         this.jobManager.setPhase(jobId, 'error');
-        this.progressStore.updatePhase(jobId, 'error');
         this.jobManager.remove(jobId);
         this.sessionManager.releaseJob(sessionId, jobId);
       });
