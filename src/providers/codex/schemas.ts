@@ -60,7 +60,12 @@ export type CodexSessionForkInput = Omit<Extract<CodexOpInput, { op: 'fork' }>, 
 
 export const coralAgentSchema = z.object({
   op: coralOpSchema,
-  ...sessionExecFields,
+  prompt: promptSchema,
+  session: sessionRefSchema.optional(),
+  name: sessionNameSchema.optional(),
+  model: modelSchema,
+  working_directory: cwdSchema,
+  effort: effortSchema,
 });
 
 export type CoralAgentInput = z.infer<typeof coralAgentSchema>;

@@ -58,7 +58,12 @@ export type ClaudeSessionForkInput = Omit<Extract<ClaudeOpInput, { op: 'fork' }>
 
 export const coralClaudeSchema = z.object({
   op: coralOpSchema,
-  ...sessionExecFields,
+  prompt: promptSchema,
+  session: sessionRefSchema.optional(),
+  name: sessionNameSchema.optional(),
+  model: modelSchema,
+  working_directory: cwdSchema,
+  effort: effortSchema,
 });
 
 export type ClaudeCoralInput = z.infer<typeof coralClaudeSchema>;

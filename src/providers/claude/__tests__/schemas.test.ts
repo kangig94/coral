@@ -6,11 +6,6 @@ function expectExecBypassValue(input: Record<string, unknown>, expected: boolean
   expect(parsed).toMatchObject({ op: 'exec', bypass: expected });
 }
 
-function expectCoralBypassValue(input: Record<string, unknown>, expected: boolean): void {
-  const parsed = coralClaudeSchema.parse({ op: 'coral:architect', prompt: 'Do it', ...input });
-  expect(parsed.bypass).toBe(expected);
-}
-
 describe('claude schemas', () => {
   it('validates exec op with optional fields', () => {
     const parsed = claudeOpSchema.safeParse({
@@ -105,11 +100,4 @@ describe('claude schemas', () => {
     }).success).toBe(true);
   });
 
-  it('defaults coral bypass to false when omitted', () => {
-    expectCoralBypassValue({}, false);
-  });
-
-  it('preserves explicit coral bypass true', () => {
-    expectCoralBypassValue({ bypass: true }, true);
-  });
 });
