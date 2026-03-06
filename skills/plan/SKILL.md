@@ -61,7 +61,6 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     - **Preplan constraint**: If `.claude/coral/plans/pre-{topic}.md` exists, read it.
       Items marked `[confirmed]` are user-agreed decisions — treat them as immutable constraints.
       The plan must not contradict or redefine confirmed preplan items.
-      Register each confirmed item as a Task (TaskCreate). These are verified at Phase 0.
     - **Bug enrichment**: If the task involves deep bug diagnosis (root cause unclear, multiple
       possible causes), `Agent("coral:debugger")` in the background (`run_in_background: true`).
       Continue with step 3 without waiting. When the debugger result arrives, incorporate its
@@ -93,11 +92,11 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     2. Are there fundamental constraints being violated or ignored?
     3. Is this approach viable given the codebase's actual structure?
 
-    4. If preplan tasks were registered: does the plan satisfy each confirmed item?
+    4. If preplan confirmed items exist: does the plan satisfy each one?
        If violated, fix the plan before proceeding.
 
     If any answer is NO: edit the plan file to correct the frame, then re-check.
-    If all YES (and all preplan items satisfied): proceed to Phase 1 (or Phase 2 if no `--codex`).
+    If all YES: proceed to Phase 1 (or Phase 2 if no `--codex`).
 
     No `--deep` methodology, no subagents, no round summary. Just pause and verify.
 
@@ -184,7 +183,6 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     - **4e. Exit Condition**: Same rules as Phase 1. On pass, proceed to step 5. On max rounds (5), `AskUserQuestion` — continue, finalize, or abort.
 
     ### 5. Completion
-    If preplan tasks were registered: TaskUpdate(status: "completed") for each satisfied item.
     Return: plan file path + final summary (see `<Output_Format>`).
   </Protocol>
   <Error_Handling>
