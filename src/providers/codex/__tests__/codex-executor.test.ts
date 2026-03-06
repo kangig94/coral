@@ -180,7 +180,7 @@ describe('executeOneShot', () => {
     mockAgentProcess();
 
     const result = await executeOneShot('test');
-    expect(result.model).toBe(process.env.CORAL_CODEX_MODEL ?? 'gpt-5.3-codex');
+    expect(result.model).toBe(process.env.CORAL_CODEX_MODEL ?? 'gpt-5.4');
   });
 
   it('uses --dangerously-bypass-approvals-and-sandbox when bypassSandbox=true', async () => {

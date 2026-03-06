@@ -6,7 +6,7 @@ Environment variables, config files, and the plugin manifest.
 
 | Variable | Default | Description |
 |---|---|---|
-| `CORAL_CODEX_MODEL` | `gpt-5.3-codex` | Default Codex model for new sessions |
+| `CORAL_CODEX_MODEL` | `gpt-5.4` | Default Codex model for new sessions |
 | `CORAL_MAX_CHILDREN` | `10` | Global max concurrent CLI children across providers (`codex` + `claude`) |
 | `CORAL_MAX_CHILDREN_PER_PROVIDER` | `6` | Per-provider max concurrent CLI children |
 | `CORAL_DISCUSS_BID_THRESHOLD` | `30` | Minimum bid score (1–100) for floor eligibility. Stored per-session at creation time. |
@@ -19,7 +19,7 @@ Environment variables, config files, and the plugin manifest.
 ### Usage - Shell
 
 ```bash
-export CORAL_CODEX_MODEL=gpt-5.3-codex
+export CORAL_CODEX_MODEL=gpt-5.4
 export CORAL_DISCUSS_BID_THRESHOLD=50
 export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
 ```
@@ -31,7 +31,7 @@ Set environment variables in `.claude/settings.json` (project-level or global). 
 ```json
 {
   "env": {
-    "CORAL_CODEX_MODEL": "gpt-5.3-codex",
+    "CORAL_CODEX_MODEL": "gpt-5.4",
     "CORAL_DISCUSS_BID_THRESHOLD": "50",
     "CORAL_DISCUSS_MAX_EPOCHS": "3",
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"

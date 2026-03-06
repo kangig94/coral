@@ -187,7 +187,7 @@ Claude가 놓치기 쉬운 것을 발견하면 (근본 원인, 주의사항, 기
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
-| `CORAL_CODEX_MODEL` | `gpt-5.3-codex` | Codex CLI 기본 모델 |
+| `CORAL_CODEX_MODEL` | `gpt-5.4` | Codex CLI 기본 모델 |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | 토론 자동 종료 전 최대 에포크 (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `0` | 완료된 토론 세션 자동 정리 기한 (일, 0 = 비활성화) |
 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(미설정)_ | `/coral:discuss` **필수**. `1`로 설정. |
@@ -203,7 +203,7 @@ Claude가 놓치기 쉬운 것을 발견하면 (근본 원인, 주의사항, 기
 }
 ```
 
-또는 셸에서: `export CORAL_CODEX_MODEL=gpt-5.3-codex`
+또는 셸에서: `export CORAL_CODEX_MODEL=gpt-5.4`
 
 ## 문서
 
@@ -228,8 +228,8 @@ Claude Code 세션용 실시간 HUD (선택):
 /coral:statusline install
 
 # 설치 후:
-opus 4.6      | 5h:39% (1:23) wk:36% (5.2d) | ctx:58% | 50m | coral:analyze
-gpt-5.3-codex | 5h: 0% (4:59) wk:22% (2.8d) | spark 5h: 3% (0:47) wk: 1% (6.8d)
+opus 4.6 | 5h:39% (1:23) wk:36% (5.2d) | ctx:58% | $1.57 50m | coral:analyze
+gpt-5.4  | 5h: 0% (4:59) wk:22% (2.8d) | spark 5h: 3% (0:47) wk: 1% (6.8d)
 ```
 
 - **1줄 (항상)**: 모델, Claude 속도 제한, 컨텍스트 사용량, 세션 ID, 마지막 활성 스킬

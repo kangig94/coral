@@ -61,7 +61,7 @@ Start a new Codex session (omit `session`) or resume an existing one (pass `sess
 | `session` | string | No | Coral session UUID from a prior `exec`/`fork` response. Omit to start a new session. |
 | `name` | string | No | Session display name (auto-generated as `session-{timestamp}` if omitted) |
 | `prompt` | string | Yes | Prompt to send to Codex (min 1 char) |
-| `model` | string | No | Model to use (default: `gpt-5.3-codex`, configurable via `CORAL_CODEX_MODEL`) |
+| `model` | string | No | Model to use (default: `gpt-5.4`, configurable via `CORAL_CODEX_MODEL`) |
 | `working_directory` | string | No | Working directory |
 | `effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
 | `bypass` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when the user explicitly requests bypass mode. |
@@ -98,7 +98,7 @@ No parameters (empty object). This envelope is strict.
     {
       "name": "my-review",
       "session": "uuid-1",
-      "model": "gpt-5.3-codex",
+      "model": "gpt-5.4",
       "created_at": "2026-02-18T08:30:00.000Z",
       "last_used_at": "2026-02-18T09:15:00.000Z",
       "working_directory": "/home/user/project",

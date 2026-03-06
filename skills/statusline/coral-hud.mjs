@@ -686,7 +686,7 @@ async function main() {
 
   // Column alignment: model name + limits (up to second |)
   const claudeModel = renderModel(input);
-  const envModel = process.env.CORAL_CODEX_MODEL || "gpt-5.3-codex";
+  const envModel = process.env.CORAL_CODEX_MODEL || "gpt-5.4";
   let col1Claude, col1Codex, col2Claude, col2Codex;
 
   if (codexData.kind === "data") {
