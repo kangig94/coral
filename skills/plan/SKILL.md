@@ -101,71 +101,60 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
     #### Phase 1 — Codex Review (only with `--codex`)
 
-    Reviewers: `mcp__plugin_coral_ax__codex({ op: "coral:architect", ... })` + `mcp__plugin_coral_ax__codex({ op: "coral:critic", ... })`
-
     Repeat (max 5 rounds):
 
-    **4a. Parallel Review**
-    Dispatch both reviewers in parallel:
-    ```
-    codex({ op: "coral:architect", prompt: "...", working_directory })
-    codex({ op: "coral:critic",    prompt: "...", working_directory })
-    ```
-    **CRITICAL**: Use `op: "coral:<role>"`, NOT `op: "exec"`. Never pass `session` — each round is a fresh call (no session continuity), so reviewers evaluate the current plan without prior-round bias.
-    Provide each: plan file path, working directory, relevant context. If preplan confirmed items exist, include them as immutable constraints. In `--deep`, include `--deep` in each reviewer's prompt.
-
-    Use a wait loop until both reviewer jobs finish:
-    1. Call `wait({ sessions: pendingSessions })`.
-    2. If `status: "timeout"`, continue waiting.
-    3. If `status: "completed"`, record `session_dir` path and remove that session from `pendingSessions`.
-       **Do NOT read `result.md` yet** — pass paths to the resolver to save context.
-    4. If `status: "error"`, read `session_dir/status.json`, record the failure, remove that session, continue.
-
-    **4b. Synthesize Feedback**
+    **4a. Workflow Dispatch**
 
     **If `--deep`**:
     ```
-    codex({ op: "coral:resolver", prompt: "...", working_directory })
+    workflow({
+      expression: "(architect, critic) -> resolver",
+      prompt: "--deep\n\nReview plan: {plan file path}\nWorking directory: {working_directory}\n{context, preplan constraints}",
+      provider: "codex"
+    })
     ```
-    Pass the plan file path, both reviewers' `session_dir` paths (resolver reads `result.md` itself), working directory, and preplan confirmed items as immutable constraints (if any).
-    No `session` — each round spawns a fresh resolver (session memory would create author bias toward its own prior edits).
-    Skip to 4c.
 
-    **Otherwise** (no `--deep`): Read both reviewers' `session_dir/result.md` now.
+    **Otherwise** (no `--deep`):
+    ```
+    workflow({
+      expression: "(architect, critic)",
+      prompt: "Review plan: {plan file path}\nWorking directory: {working_directory}\n{context, preplan constraints}",
+      provider: "codex"
+    })
+    ```
+
+    Wait for the workflow job: `wait({ jobs: [job] })`, then read result.
+
+    **4b. Post-Round Processing**
+
+    **If `--deep`**: Resolver has already applied Adopt/Adapt changes to the plan file.
+    Read the updated plan file, then the resolver's synthesis report from the workflow result.
+    Record Deferred/Diverged items.
+
+    **Otherwise**: Workflow result is XML-wrapped `<architect>...</architect>` + `<critic>...</critic>`.
     Synthesize directly — classify each finding as Adopt / Adapt / Defer / Diverge.
-    Reviewers can be wrong — verify against actual code. When reviewers contradict each other, neither is right; find the hidden assumption. Edit the plan file yourself, then go to 4d (skip 4c).
+    When reviewers contradict each other, find the hidden assumption. Edit the plan file yourself.
 
-    **4c. Review Synthesis Report** (`--deep` only)
-    The resolver has already applied Adopt/Adapt changes directly to the plan file.
-    Read the updated plan file to understand what changed. Then read the resolver's synthesis report.
-    Record any Deferred items for the next round.
-    Log Diverged items with the resolver's rationale. Do NOT edit the plan file yourself.
-
-    **4d. Round Summary** (AFTER 4b/4c — never before synthesis is complete)
-    Summarize the synthesis result, not just the reviews. Show what was resolved:
+    **4c. Round Summary** (AFTER 4b)
 
       ## Round N (Codex)
 
       | # | Source | Finding | Severity | Level | Classification |
       |---|--------|---------|----------|-------|----------------|
-      | 1 | Critic #1/#4 | Description of the finding | HIGH | FRAME | Adopt |
-      | 2 | Both | Description of the finding | MEDIUM | — | Adapt |
-      | 3 | Architect #1 | Description of the finding | LOW | DETAIL | Defer |
+      | 1 | Critic #1/#4 | Description | HIGH | FRAME | Adopt |
+      | 2 | Both | Description | MEDIUM | — | Adapt |
 
-      - Deduplicate overlapping findings across reviewers (use "Both" as source)
-      - Map each reviewer's original finding numbers in the Source column
+      - Deduplicate overlapping findings (use "Both" as source)
       - Order by Severity (CRITICAL > HIGH > MEDIUM > LOW)
-      - Level (FRAME/STRUCTURE/DETAIL): fill when available from resolver, `—` otherwise
 
-      **Changes Applied**: [what was edited in the plan file]
-      **Counterexample Coverage**: [types explored / not yet]
+      **Changes Applied**: [what was edited]
 
-    **4e. Exit Condition**
+    **4d. Exit Condition**
     **If `--deep`**: Read `CORAL_METHODS/HOW-COMPLETE.md` and apply its additional completion criteria alongside the rules below.
     Evaluate based on what reviewers RETURNED this round (not your post-edit assessment):
-    - **Continue**: Either reviewer returned CRITICAL or HIGH → fixes already applied at 4b (by resolver in `--deep`, or by you), go to 4a for re-verification. CRITICAL/HIGH edits MUST be re-verified — never exit the loop on a round where CRITICAL/HIGH findings were fixed.
-    - **Fix and pass**: Both reviewers returned NO CRITICAL or HIGH, but MEDIUM/LOW findings exist → fixes already applied at 4b, exit. MEDIUM/LOW fixes do not require re-verification.
-    - **Clean pass**: Both reviewers returned NO findings above LOW (and HOW-COMPLETE criteria satisfied, if `--deep`) → proceed to Phase 2.
+    - **Continue**: Either reviewer returned CRITICAL or HIGH → go to 4a for re-verification.
+    - **Fix and pass**: No CRITICAL/HIGH but MEDIUM/LOW exist → fixes applied, exit.
+    - **Clean pass**: No findings above LOW (and HOW-COMPLETE satisfied, if `--deep`) → proceed to Phase 2.
     - **Max rounds (5)**: Proceed to Phase 2 with current plan state.
 
     #### Phase 2 — Claude Review (always)
@@ -173,32 +162,29 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     Reviewers: `coral:architect` + `coral:critic`
 
     Repeat (max 5 rounds):
-    Same review loop structure as Phase 1, but reviewers are Claude-native agents (output returns in conversation, no session_dir files).
-    In `--deep`: read `CORAL_METHODS/HOW-COMPLETE.md` yourself at 4e.
+    Same structure as Phase 1, but reviewers are Claude-native agents (output returns in conversation, not workflow jobs).
+    In `--deep`: read `CORAL_METHODS/HOW-COMPLETE.md` yourself at 4d.
     - **4a. Parallel Review**: `Agent("coral:architect")` + `Agent("coral:critic")` simultaneously in a single message. Provide each: plan file path, working directory, relevant context. In `--deep`, include `--deep` in each reviewer's prompt.
-    - **4b. Synthesize Feedback**: Synthesize and edit directly, skip 4c. In `--deep` → `Agent("coral:resolver")`, fresh spawn each round. Pass both reviewers' output text directly (no file paths — Claude agents return output in conversation, not to disk).
-    - **4c. Review Synthesis Report** (`--deep` only): Resolver has applied changes; read the updated plan file, then read its report, record Deferred/Diverged items.
-    - **4d. Round Summary**: Same format, label as `(Claude)`. AFTER 4b/4c — never before synthesis is complete.
-    - **4e. Exit Condition**: Same rules as Phase 1. On pass, proceed to step 5. On max rounds (5), `AskUserQuestion` — continue, finalize, or abort.
+    - **4b. Post-Round Processing**: Synthesize and edit directly. In `--deep` → `Agent("coral:resolver")`, fresh spawn each round. Pass both reviewers' output text directly (no file paths — Claude agents return output in conversation, not to disk). If `--deep`, read resolver's report and record Deferred/Diverged items.
+    - **4c. Round Summary**: Same format, label as `(Claude)`. AFTER 4b.
+    - **4d. Exit Condition**: Same rules as Phase 1. On pass, proceed to step 5. On max rounds (5), `AskUserQuestion` — continue, finalize, or abort.
 
     ### 5. Completion
     Return: plan file path + final summary (see `<Output_Format>`).
   </Protocol>
   <Error_Handling>
-    | Scenario | Action |
-    |----------|--------|
-    | One reviewer fails (timeout or creation error) | Proceed with other reviewer's feedback |
-    | Both reviewers fail | Report error, ask whether to retry |
-    | Resolver fails (timeout, creation error, or malformed output) | `--deep` only. Retry once. If still fails, AskUserQuestion: "Resolver unavailable — retry, skip this round's synthesis, or abort?" Do NOT synthesize directly. |
-
-    Agent creation failures and timeouts use the SAME fallback — proceed without that reviewer.
-    Malformed resolver output: if the response lacks Classification Table or Applied Changes sections, treat as failure (retry/escalate path above). Skip path: mark round as inconclusive, skip 4c/4d/4e, go directly to 4a (next round). Skip still increments round count.
+    | Scenario | Phase | Action |
+    |----------|-------|--------|
+    | Workflow job fails | Phase 1 | Retry once. If still fails, skip Phase 1 — Phase 2 will review. |
+    | One Claude reviewer fails | Phase 2 | Proceed with other reviewer's feedback |
+    | Both Claude reviewers fail | Phase 2 | Report error, ask whether to retry |
+    | Resolver fails | Phase 2 `--deep` | Retry once. If still fails, AskUserQuestion. |
   </Error_Handling>
   <Constraints>
     | DO | DON'T |
     |----|-------|
     | Create stub plan file first | Use EnterPlanMode (`~/.claude/plans/`) |
-    | Spawn reviewers in parallel | Run reviewers sequentially |
+    | Use workflow for Codex review, parallel Agent for Claude review | Run reviewers sequentially |
     | Synthesize feedback directly | Spawn resolver without `--deep` |
     | Edit plan file yourself during review | Let resolver edit without `--deep` |
     | Cite file:line in plans | Write vague plans without references |
