@@ -65,7 +65,7 @@ The install command reads this file and writes it to `~/.claude/hud/coral-hud.mj
 - Skill detection reads last 500KB of `transcript_path` JSONL (tail-read for performance), finds last `Skill` or `proxy_Skill` tool_use block
 - Both fetches run in parallel
 - Claude API results are cached for 180 seconds on success, 30 seconds on error. HTTP 429 responses trigger exponential backoff from 2 minutes up to 10 minutes.
-- On error, the HUD preserves last-known-good rate-limit data and shows it dimmed until the error cache expires. The error indicator is shown only when no stale data exists.
+- On error, the HUD preserves last-known-good rate-limit data until the error cache expires. The error indicator is shown only when no stale data exists.
 - Error indicators are explicit: `throttled: refreshes in Xm` for HTTP 429, `re-login required` for explicit 401/403 auth failures, and `API unavailable` for other fetch/refresh failures.
 - Missing or unsupported credentials stay silent; `re-login required` appears only for observable auth failures.
 - The session slot combines spend and duration when available, for example `$0.43 47m`.
