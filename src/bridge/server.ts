@@ -17,6 +17,7 @@ const waitInputSchema = z.object({
   jobs: z.array(z.string()).min(1, 'At least one job required'),
   timeout_seconds: z.number().min(1).max(1200).optional(),
   cursor: z.string().min(1).optional(),
+  include_result: z.boolean().default(false),
 });
 
 export type ToolDescriptor = {
@@ -43,6 +44,7 @@ function waitToolDescriptor(tool: ToolDescriptor): ToolDescriptor {
         jobs: { type: 'array', items: { type: 'string' }, description: 'Job IDs to monitor (from exec/fork response)' },
         timeout_seconds: { type: 'number', description: 'Max wait time in seconds (1-1200, default 600)' },
         cursor: { type: 'string', description: 'Opaque stream cursor returned by the previous wait call' },
+        include_result: { type: 'boolean', description: 'Include result text in response (default false — result.path provides the file to Read instead)' },
       },
       required: ['jobs'],
     },
@@ -119,13 +121,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
           case 'progress':
             sendProgress(notify, progressToken, ++progressCount, event.message);
             continue;
-          case 'terminal':
+          case 'terminal': {
+            const { text, ...resultMeta } = event.result;
+            const result = parsed.include_result
+              ? event.result
+              : { ...resultMeta, path: `/tmp/coral-jobs/${event.completedJobId}/result.md` };
             return textResult(JSON.stringify({
               completedJobId: event.completedJobId,
               sessionId: event.sessionId,
               remainingJobIds: event.remainingJobIds,
-              result: event.result,
+              result,
             }));
+          }
           case 'timeout':
             return textResult(JSON.stringify({
               timeout: true,

@@ -264,9 +264,21 @@ Provider-agnostic wait for background jobs from any AX adapter. Wait returns whe
 | `jobs` | string[] | Yes | Job IDs to monitor (min 1, from exec/fork response). |
 | `timeout_seconds` | number | No | Max wait time in seconds (1-1200, default 600). |
 | `cursor` | string | No | Opaque stream cursor returned by the previous wait call (for incremental streaming). |
+| `include_result` | boolean | No | Include result text in response (default `false`). When `false`, `result.path` provides the file to `Read` instead. |
 
 ### Output — Completed or Error
 
+Default (`include_result: false`):
+```json
+{
+  "completedJobId": "job-uuid",
+  "sessionId": "session-uuid",
+  "remainingJobIds": [],
+  "result": { "durationMs": 1234, "path": "/tmp/coral-jobs/job-uuid/result.md" }
+}
+```
+
+With `include_result: true`:
 ```json
 {
   "completedJobId": "job-uuid",
@@ -291,6 +303,7 @@ Provider-agnostic wait for background jobs from any AX adapter. Wait returns whe
 - **Cross-provider**: accepts mixed Codex/Claude job IDs in one call.
 - **Progress notifications**: incremental updates are emitted through `notifications/progress`.
 - **Incremental streaming**: pass `cursor` from a previous wait response to resume from where the last call left off.
+- **Context control**: `include_result: false` (default) omits `result.text` and provides `result.path` instead. `Read(result.path)` to selectively load results.
 
 ---
 
