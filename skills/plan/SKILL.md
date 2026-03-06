@@ -44,7 +44,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     Stub structure (empty sections):
       # [Plan Title]
       ## Requirements Summary
-      ## Acceptance Criteria (testable, verifiable)
+      ## Acceptance Criteria (testable, verifiable — register each as a Task during implementation)
       ## Mathematical Specification (if applicable)
       ## Implementation Phases (with file:line references)
       ## Risks & Mitigations
@@ -58,6 +58,10 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     - Identify acceptance criteria from the task
     - Extract working directory for reviewer agents
     - Note any constraints or preferences stated by the user
+    - **Preplan constraint**: If `.claude/coral/plans/pre-{topic}.md` exists, read it.
+      Items marked `[confirmed]` are user-agreed decisions — treat them as immutable constraints.
+      The plan must not contradict or redefine confirmed preplan items.
+      Register each confirmed item as a Task (TaskCreate). These are verified at Phase 0.
     - **Bug enrichment**: If the task involves deep bug diagnosis (root cause unclear, multiple
       possible causes), `Agent("coral:debugger")` in the background (`run_in_background: true`).
       Continue with step 3 without waiting. When the debugger result arrives, incorporate its
@@ -89,8 +93,11 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     2. Are there fundamental constraints being violated or ignored?
     3. Is this approach viable given the codebase's actual structure?
 
+    4. If preplan tasks were registered: does the plan satisfy each confirmed item?
+       If violated, fix the plan before proceeding.
+
     If any answer is NO: edit the plan file to correct the frame, then re-check.
-    If all YES: proceed to Phase 1 (or Phase 2 if no `--codex`).
+    If all YES (and all preplan items satisfied): proceed to Phase 1 (or Phase 2 if no `--codex`).
 
     No `--deep` methodology, no subagents, no round summary. Just pause and verify.
 
@@ -107,7 +114,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     codex({ op: "coral:critic",    prompt: "...", name: "critic-r{N}",    working_directory })
     ```
     **CRITICAL**: Use `op: "coral:<role>"`, NOT `op: "exec"`. Never pass `session` — each round is a fresh call (no session continuity), so reviewers evaluate the current plan without prior-round bias. Use unique `name` per round (e.g., `architect-r1`, `architect-r2`) to avoid conflicts.
-    Provide each: plan file path, working directory, relevant context. In `--deep`, include `--deep` in each reviewer's prompt.
+    Provide each: plan file path, working directory, relevant context. If preplan confirmed items exist, include them as immutable constraints. In `--deep`, include `--deep` in each reviewer's prompt.
 
     Use a wait loop until both reviewer jobs finish:
     1. Call `wait({ sessions: pendingSessions })`.
@@ -122,7 +129,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     ```
     codex({ op: "coral:resolver", prompt: "...", name: "resolver-r{N}", working_directory })
     ```
-    Pass the plan file path, both reviewers' `session_dir` paths (resolver reads `result.md` itself), and working directory.
+    Pass the plan file path, both reviewers' `session_dir` paths (resolver reads `result.md` itself), working directory, and preplan confirmed items as immutable constraints (if any).
     No `session` — each round spawns a fresh resolver (session memory would create author bias toward its own prior edits).
     Skip to 4c.
 
@@ -177,6 +184,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     - **4e. Exit Condition**: Same rules as Phase 1. On pass, proceed to step 5. On max rounds (5), `AskUserQuestion` — continue, finalize, or abort.
 
     ### 5. Completion
+    If preplan tasks were registered: TaskUpdate(status: "completed") for each satisfied item.
     Return: plan file path + final summary (see `<Output_Format>`).
   </Protocol>
   <Error_Handling>
@@ -210,6 +218,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     - Rounds: N per phase
     - Final verdict: [APPROVED / APPROVED WITH CONDITIONS]
     - Key changes from review: [brief list]
+    - ⚠️ **Unsatisfied preplan constraints**: [list with reasons] *(omit if all satisfied)*
 
     ### Final Plan
     Summarize the plan file for the user — include all decisions, constraints,
