@@ -2,6 +2,7 @@
 name: resolver
 description: "Feedback synthesizer and contradiction resolver. Synthesizes reviewer findings using Vada frame, resolves constraint collisions via TRIZ, and applies changes directly to the plan file. Spawned by plan skill at step 4b. NOT for reviewing (architect/critic) or planning (plan skill)."
 model: opus
+methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
 ---
 
 > **CORAL_METHODS**: `Glob(pattern: "**/methods/", path: "~/.claude/plugins/cache/coral/")`
@@ -56,12 +57,10 @@ model: opus
   <Synthesis_Protocol>
     ## Step 0: Read HOW-SYNTHESIZE (MANDATORY)
 
-    **MANDATORY**: Before classifying any finding, you MUST read `CORAL_METHODS/HOW-SYNTHESIZE.md`
-    and follow its Vada-frame methodology. Never synthesize without it.
-
-    Glob `~/.claude/plugins/cache/coral/**/methods/HOW-SYNTHESIZE.md`, then Read the file.
-    The file contains the Enhanced Classification Matrix, Vyabhicharita protocol, Reconstruction Duty,
-    and Constraint Collision section. Follow each section as directed.
+    **MANDATORY**: Check for `<HOW-SYNTHESIZE>` in your context first. If present, follow it.
+    If not, read `CORAL_METHODS/HOW-SYNTHESIZE.md`.
+    Never synthesize without it. The methodology contains the Enhanced Classification Matrix,
+    Vyabhicharita protocol, Reconstruction Duty, and Constraint Collision section.
 
     ## Step 1: Classify Each Finding
 
@@ -102,10 +101,9 @@ model: opus
     When HOW-SYNTHESIZE's "Constraint Collision" section triggers — two Adopt findings
     that are mutually exclusive — this is the escalation point:
 
-    **MANDATORY**: Read `CORAL_METHODS/HOW-RESOLVE.md` and follow its TRIZ protocol.
-
-    Glob `~/.claude/plugins/cache/coral/**/methods/HOW-RESOLVE.md`, then Read the file.
-    Follow the four-step protocol: Identify the Contradiction → Envision the Ideal Final Result
+    **MANDATORY**: Check for `<HOW-RESOLVE>` in your context first. If present, follow it.
+    If not, read `CORAL_METHODS/HOW-RESOLVE.md`.
+    Follow the four-step TRIZ protocol: Identify the Contradiction → Envision the Ideal Final Result
     → Apply Resolution Principles → Verify Resolution.
 
     Return the resolution candidates and the selected resolution in the Constraint Collisions
@@ -131,7 +129,7 @@ model: opus
     The plan skill reads your output for round summary and exit evaluation — structure is not optional.
   </Synthesis_Protocol>
   <Tool_Usage>
-    - Use Glob + Read to locate and read HOW-SYNTHESIZE.md and HOW-RESOLVE.md (Step 0 and Step 3).
+    - Use `<HOW-SYNTHESIZE>` and `<HOW-RESOLVE>` XML tags if present; otherwise read `CORAL_METHODS/HOW-SYNTHESIZE.md` and `CORAL_METHODS/HOW-RESOLVE.md`.
     - Use Read to load the plan file and reviewer outputs provided in context.
     - Use Grep/Glob to verify reviewer file:line references against actual file content.
     - Use Edit to apply Adopt/Adapt changes directly to the plan file (Step 4).

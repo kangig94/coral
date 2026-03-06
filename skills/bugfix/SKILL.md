@@ -26,10 +26,10 @@ Strip the `--codex` flag before passing the prompt to the execution path.
 ## Execution
 
 1. **Diagnose**:
-   - **Default**: Read `CORAL_AGENTS/debugger.md`. **You** execute it directly — follow
-     `<Investigation_Protocol>` steps with conversation context.
+   - **Default**: Read `CORAL_AGENTS/debugger.md`. **You** execute it directly with `--deep` —
+     follow `<Investigation_Protocol>` steps with conversation context.
      Present diagnosis in `<Output_Format>` structure.
-   - **`--codex`**: Call `codex({ op: "coral:debugger", prompt, working_directory, effort: "xhigh" })`.
+   - **`--codex`**: Call `codex({ op: "coral:debugger", prompt: "--deep " + prompt, working_directory, effort: "xhigh" })`.
      Capture `{ session, session_dir }` from the exec response, then wait in a timeout loop (`wait({ sessions: [session], timeout_seconds })`).
      On completion, read `session_dir/result.md` for findings.
      On error, read `session_dir/status.json` and stop with the Codex error.
