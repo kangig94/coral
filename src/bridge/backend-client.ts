@@ -465,9 +465,12 @@ export async function* streamWait(
   timeoutSeconds: number | undefined,
   backendInfo: { port: number; token: string },
   lastEventId?: string,
+  signal?: AbortSignal,
 ): AsyncGenerator<WaitStreamEvent> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TOOL_TIMEOUT_MS);
+  const onExternalAbort = () => controller.abort();
+  signal?.addEventListener('abort', onExternalAbort);
 
   try {
     const response = await fetch(`http://127.0.0.1:${backendInfo.port}/wait/stream`, {
@@ -520,5 +523,6 @@ export async function* streamWait(
     throw new Error(`Backend communication error: ${String(error)}`);
   } finally {
     clearTimeout(timeout);
+    signal?.removeEventListener('abort', onExternalAbort);
   }
 }

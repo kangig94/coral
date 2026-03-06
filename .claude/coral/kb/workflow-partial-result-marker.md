@@ -1,0 +1,44 @@
+# Workflow Preservation Needs a Stable Marker on Failure
+## Rule
+When a workflow preserves intermediate outputs, do not use success-only step metadata as the only workflow identity marker. Terminal workflow results must carry a stable workflow marker on both success and failure, and partial completed outputs must survive error paths. Atom accumulation must use a stable identity such as `jobId` or `{stepIndex, atomIndex, kind, provider}` rather than a human-readable label that can collide.
+
+## Why
+If the bridge identifies workflows by `steps` only when the workflow succeeds, failed workflows silently fall back to single-job wait behavior and lose the preserved outputs that matter most for debugging and audit. The risk increases in legal parallel workflows where prompt literals share the XML tag `step-result` and same agent names may appear under different providers. A label-keyed accumulator can swap or overwrite outputs, and a success-only workflow marker makes the bridge return the wrong shape exactly on failure.
+
+## Pattern
+```typescript
+// WRONG: success metadata doubles as workflow identity
+type TerminalResult = {
+  content: string;
+  steps?: Array<{ agent: string; step: number; line: number; endLine: number }>;
+};
+
+const isWorkflow = Array.isArray(event.result.steps);
+const results = new Map<string, string>(); // keyed by human label
+results.set(atom.agent, event.result.content);
+```
+
+```typescript
+// RIGHT: explicit workflow marker plus stable atom identity
+type WorkflowStepMeta = {
+  step: number;
+  atom: number;
+  kind: 'agent' | 'prompt';
+  provider: string;
+  agent: string;   // human label
+  tagName: string; // XML tag
+  headingLine: number;
+  line: number;
+  endLine: number;
+};
+
+type TerminalResult = {
+  content: string;
+  notice?: string;
+  workflow?: { steps: WorkflowStepMeta[] };
+};
+
+const isWorkflow = event.result.workflow !== undefined;
+const results = new Map<string, string>(); // keyed by jobId
+results.set(atom.jobId, event.result.content);
+```

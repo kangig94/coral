@@ -110,38 +110,49 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       const parsed = waitInputSchema.parse(rawArgs);
       const backendInfo = await ensureBackend();
 
-      let progressCount = 0;
-      for await (const event of streamWait(
-        parsed.jobs,
-        parsed.timeout_seconds,
-        backendInfo,
-        parsed.cursor,
-      )) {
-        switch (event.type) {
-          case 'progress':
-            sendProgress(notify, progressToken, ++progressCount, event.message);
-            continue;
-          case 'terminal': {
-            const { content, ...resultMeta } = event.result;
-            const result = parsed.include_result
-              ? event.result
-              : { ...resultMeta, path: `/tmp/coral-jobs/${event.completedJobId}/result.md` };
-            return textResult(JSON.stringify({
-              completedJobId: event.completedJobId,
-              sessionId: event.sessionId,
-              remainingJobIds: event.remainingJobIds,
-              result,
-            }));
+      try {
+        let progressCount = 0;
+        for await (const event of streamWait(
+          parsed.jobs,
+          parsed.timeout_seconds,
+          backendInfo,
+          parsed.cursor,
+          extra.signal,
+        )) {
+          switch (event.type) {
+            case 'progress':
+              sendProgress(notify, progressToken, ++progressCount, event.message);
+              continue;
+            case 'terminal': {
+              const { content, ...resultMeta } = event.result;
+              const result = parsed.include_result
+                ? event.result
+                : { ...resultMeta, path: `/tmp/coral-jobs/${event.completedJobId}/result.md` };
+              return textResult(JSON.stringify({
+                completedJobId: event.completedJobId,
+                sessionId: event.sessionId,
+                remainingJobIds: event.remainingJobIds,
+                result,
+              }));
+            }
+            case 'timeout':
+              return textResult(JSON.stringify({
+                timeout: true,
+                runningJobIds: event.runningJobIds,
+              }));
           }
-          case 'timeout':
-            return textResult(JSON.stringify({
-              timeout: true,
-              runningJobIds: event.runningJobIds,
-            }), true);
         }
-      }
 
-      return textResult('wait stream ended without a terminal event', true);
+        return textResult('wait stream ended without a terminal event', true);
+      } catch (waitError) {
+        if (waitError instanceof Error && waitError.name === 'AbortError') {
+          return textResult(JSON.stringify({
+            timeout: true,
+            runningJobIds: parsed.jobs,
+          }));
+        }
+        throw waitError;
+      }
     }
 
     if (name === 'backend') {
