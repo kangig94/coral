@@ -2,81 +2,110 @@
 
 Detailed description of the TypeScript modules across both MCP servers.
 
-## Unified AX Server Modules (`src/server/`)
+## Bridge Modules (`src/bridge/`)
 
-### src/server/server.ts - AX Composition Root
+### src/bridge/server.ts - MCP Stdio Proxy
 
-Creates one MCP stdio server exposing provider tools plus built-in `wait` and `workflow`. Wires request handlers, shared `SessionManager`, shutdown behavior, and child-process cleanup through `runner/engine.ts`. See `src/server/server.ts`.
-
----
-
-### src/server/server-handlers.ts - AX Tool Router
-
-Pure router with registry-first dispatch:
-- provider tools are resolved through `providers/registry.ts`
-- `coral:<name>` is routed through `coral/dispatch.ts`
-- non-provider tools route to built-in `wait`, unified `abort`, and `workflow` handlers
-
-See `src/server/server-handlers.ts`.
+MCP stdio server (composition root). Receives MCP tool calls from the Claude Code host, proxies them to the backend daemon via HTTP. Handles `wait` tool locally via SSE streaming from `POST /wait/stream`, forwarding progress events as MCP progress notifications. All other tools are forwarded to the backend via `proxyToolCall`. No business logic — tool discovery is delegated to `GET /tools` on the backend. See `src/bridge/server.ts`.
 
 ---
 
-## Shared Runner Modules (`src/runner/`)
+### src/bridge/backend-client.ts - Backend HTTP Client
 
-### src/runner/types.ts - Runner Contracts
+HTTP client for the persistent backend daemon. Key exports:
+- `ensureBackend()` — read `backend.json`, healthcheck, spawn if not running or version-mismatched, poll until ready. Handles replacement of outdated daemons (shutdown old, acquire replacement lock, spawn new, wait for ready).
+- `proxyToolCall(name, args, ctx)` — `POST /tool` with JSON body and auth token
+- `streamWait(jobIds, timeoutSeconds, backendInfo, lastEventId?)` — async generator yielding `WaitStreamEvent` from SSE response. Includes SSE block parsing (`parseSseBlock`) and typed event validation (`parseWaitStreamEvent`).
 
-Defines provider-aware shared types:
-- `SessionProvider = string` (identifier-format; dispatch authority is registry-driven)
-- `SessionEntry` (provider-scoped persisted session metadata)
-- `CliExecResult` (generic CLI execution output)
-- `CompletionMetadata` (terminal status payload contract)
+Named constants: `STARTUP_POLL_MS`, `STARTUP_TIMEOUT_MS`, `HEALTH_TIMEOUT_MS`, `REPLACEMENT_TIMEOUT_MS`, `TOOL_TIMEOUT_MS`.
 
-These are consumed by both adapters and AX handlers.
+See `src/bridge/backend-client.ts`.
 
 ---
 
-### src/runner/engine.ts - Shared Spawn Engine
+## Execution Modules (`src/execution/`)
+
+### src/execution/server.ts - Backend HTTP Daemon
+
+`createBackendServer(options)`: persistent HTTP daemon. Singleton lock via `backend-lock.ts`, idle timer via `idle-timer.ts`, HTTP routing (`GET /health`, `GET /tools`, `POST /tool`, `POST /wait/stream`, `POST /admin/shutdown`). Creates per-project `ExecutionService` instances and routes tool calls through `routeToolCall`. Manages lifecycle states (`starting` → `running` → `draining` → `stopped`). Recovers orphaned jobs on startup. Exports `BackendServerController` with `start()`, `shutdown(reason)`, `waitForShutdown()`, `getLifecycle()`. See `src/execution/server.ts`.
+
+---
+
+### src/execution/service.ts - Core Business Logic
+
+`ExecutionService`: central orchestrator. Owns `SessionManager`, `JobManager`, and `ProgressStore` instances. Methods:
+- `start(providerName, input, ctx)` — provider preflight, session allocation, job allocation, async CLI spawn
+- `resume(providerName, input, ctx)` — session lookup, busy/non-resumable guards, async CLI spawn
+- `fork(providerName, input, ctx)` — source session lookup, new session allocation, async CLI spawn
+- `coralDispatch(providerName, coralName, input, ctx)` — resolve coral content, strip metadata, build instruction, delegate to `start`/`resume`
+- `executeWorkflow(providerName, ast, input, ctx)` — allocate workflow job, delegate to `executePipeline`
+- `list(providerName)` — provider-filtered session list
+- `abort(jobIds)` — delegate to `JobManager.abort()`
+- `awaitLaunch(jobId, timeoutMs)` — poll until launch state is non-pending
+- `waitStream(req)` — async generator yielding progress/terminal/timeout events for monitored jobs
+
+See `src/execution/service.ts`.
+
+---
+
+### src/execution/backend-lock.ts - Singleton Lock
+
+Singleton lock using `~/.claude/coral/backend.lock`. Healthcheck-based stale detection: if the lock holder's PID is alive and responds to healthcheck, throws `BackendAlreadyRunningError`; if PID is dead or deadline expires, removes stale lock and retries. Key exports: `acquireLock(instanceId, version)`, `BackendAlreadyRunningError`, `removeLockIfOwner(instanceId)`. See `src/execution/backend-lock.ts`.
+
+---
+
+### src/execution/backend-info.ts - Connection Info
+
+Connection info at `~/.claude/coral/backend.json`. Stores `{ pid, port, token, version, instanceId, startedAt }`. Key exports: `writeBackendInfo(info)` (atomic `.tmp` + rename), `readBackendInfo()` (returns null on missing/corrupt), `removeBackendInfoIfOwner(instanceId)`. See `src/execution/backend-info.ts`.
+
+---
+
+### src/execution/idle-timer.ts - Auto-Shutdown Timer
+
+`IdleTimer`: auto-shutdown when no requests for `CORAL_BACKEND_IDLE_MS` (default 6 hours). Tracks inflight request count via `beginRequest()`/`endRequest()`. `startWatching(checkIdle, onIdle)` polls at 1-second intervals; fires `onIdle` callback when idle timeout expires and `checkIdle()` confirms no active children or live jobs. See `src/execution/idle-timer.ts`.
+
+---
+
+### src/execution/job-manager.ts - In-Memory Job Registry
+
+`JobManager`: in-memory `Map<string, JobEntry>` of active jobs. Each `JobEntry` has `AbortController` for cancellation. Key methods: `allocate(sessionId, provider)` (returns new jobId), `setPhase(jobId, phase)`, `setLaunchState(jobId, state, message?)`, `getSignal(jobId)`, `get(jobId)`, `isActive(jobId)`, `abort(jobIds)` (returns `AbortResult { aborted, notFound }`), `remove(jobId)`. See `src/execution/job-manager.ts`.
+
+---
+
+### src/execution/progress-store.ts - File-Based Event Storage
+
+`ProgressStore`: file-based event storage under `/tmp/coral-jobs/<jobId>/`. Per-job directory contains `status.json` (atomic writes) and `progress.jsonl` (append-only). Key methods: `initJob(jobId, sessionId, provider)`, `appendProgress(jobId, sessionId, message)`, `appendTerminal(jobId, sessionId, result, phase)`, `writeResultMd(jobId, text)`, `readStatus(jobId)`, `updateLaunchState(jobId, state, message?)`, `updatePhase(jobId, phase)`, `replayFrom(jobId, fromEventId, cursor)` with cursor-based incremental reads via low-level `readSync`. See `src/execution/progress-store.ts`.
+
+---
+
+### src/execution/session-manager.ts - Persisted Session Registry
+
+`SessionManager`: persisted session registry under `~/.claude/coral/execution/sessions/<project-hash>/`. Provider-aware methods: `allocate(provider, name, model, cwd)`, `get(provider, sessionId)`, `list(provider)`, `setConversationRef(sessionId, ref)`, `setNonResumable(sessionId)`, `claimForJob(sessionId, jobId)` (single-active-job invariant), `releaseJob(sessionId, jobId)`. Atomic writes (`.tmp` + rename). Includes migration from old runner session format. See `src/execution/session-manager.ts`.
+
+---
+
+### src/execution/engine.ts - CLI Spawn Engine
 
 Owns process lifecycle and backpressure:
-- `spawnCli(...)` for Codex/Claude subprocesses
-- idle timeout + bounded output buffering
-- graceful kill (`SIGTERM` then `SIGKILL`)
-- launch caps: global and per-provider
+- `spawnCli(options)` for Codex/Claude subprocesses with idle timeout, bounded output buffering (`MAX_BUFFER` 10MB), and line-based event callback
+- graceful kill (`SIGTERM` then `SIGKILL` after 5s grace)
+- launch caps: `MAX_ACTIVE_CHILDREN` (global, default 10) and `MAX_ACTIVE_CHILDREN_PER_PROVIDER` (default 6), throws `CliBusyError` when exceeded
 - `killAllChildren()` for shutdown
+- `activeChildren` set for tracking live child processes
 
-See `src/runner/engine.ts`.
-
----
-
-### src/runner/session-manager.ts - Persisted Session Registry
-
-Project-scoped session files under `~/.claude/coral/sessions/<project-hash>/`. Provider-aware methods (`register/get/list/remove/updateSession`) enforce provider isolation by identifier. Includes v1 + v2-no-provider migrations defaulting to `provider: 'codex'`.
-
-See `src/runner/session-manager.ts`.
+See `src/execution/engine.ts`.
 
 ---
 
-### src/runner/progress.ts - Session Run I/O
+### src/execution/instruction.ts - Coral Instruction Builder
 
-Creates and manages run directories under `$TMPDIR/coral-sessions/`:
-- `createSessionDir`, `resolveSessionDir`
-- `writeSessionResult`, `writeSessionError`, `readSessionStatus`
-- append-only `progress.jsonl` writes
-
-See `src/runner/progress.ts`.
+`buildCoralInstruction(strippedAgentContent)`: constructs a `ProviderInstruction` from stripped agent markdown content with `channel: 'system'`. See `src/execution/instruction.ts`.
 
 ---
 
-### src/runner/job-manager.ts - Shared Job Lifecycle
+### src/execution/request-context.ts - Request Type Definitions
 
-Provides adapter-agnostic execution lifecycle:
-- `launchJob(...)` with hook contract (`makeOnEvent`, `extractCompletion`)
-- `activeSessions` (ephemeral provider-scoped running map)
-- `tryClaimTerminalWrite(...)` CAS for terminal state writes
-- `handleWait(input, ...)` provider-agnostic cursor-based progress polling
-- `shutdownSignal` for cooperative shutdown
-
-See `src/runner/job-manager.ts`.
+Type definitions for backend request routing: `CallerContext { projectRoot, pluginRoot }` and `ToolRequest { name, args, context }`. See `src/execution/request-context.ts`.
 
 ---
 
@@ -88,23 +117,15 @@ Resolves `coral:<name>` content from plugin root with containment checks:
 - first `agents/<name>.md`
 - then `skills/<name>/SKILL.md`
 - path traversal rejection
-- `stripAgentMetadata(...)` helper used by dispatch before provider delegation
+- `stripAgentMetadata(...)` helper used by `ExecutionService.coralDispatch()` before provider delegation
 
 See `src/coral/resolver.ts`.
 
 ---
 
-### src/coral/dispatch.ts - Coral Delegation Dispatcher
-
-Resolves `coral:<name>` content, strips agent metadata, and delegates to the selected provider adapter via `ProviderAdapter.handleCoralOp(...)`.
-
-See `src/coral/dispatch.ts`.
-
----
-
 ## Workflow Modules (`src/workflow/`)
 
-Deterministic multi-agent pipeline executor. Dependency-injected: `src/workflow/` imports from `src/runner/` and `src/shared/` but never from `src/server/` (circular dependency avoidance via `AtomDispatchFn` callback).
+Deterministic multi-agent pipeline executor. Dependency-injected: `src/workflow/` imports from `src/execution/` and `src/shared/` but never from `src/bridge/` (the `ExecutionService` is passed directly by the backend server).
 
 ### src/workflow/types.ts - Pipeline AST
 
@@ -115,7 +136,7 @@ Defines the pipeline data model:
 - `PipeStep` — array of atoms (parallel when >1)
 - `PipelineAST` — array of steps (sequential execution order)
 
-Imports `SessionProvider` from `runner/types.ts`. See `src/workflow/types.ts`.
+See `src/workflow/types.ts`.
 
 ---
 
@@ -139,15 +160,14 @@ See `src/workflow/schemas.ts`.
 
 ### src/workflow/pipe-executor.ts - Pipeline Executor
 
-Orchestrates the sequential step loop with concurrent parallel atom launches. Key exports:
-- `executePipeline(ast, prompt, provider, dispatch, options)` — main loop
-- `launchAtomWithRetry(context)` — busy retry with exponential backoff (3 attempts)
-- `readLaunchBootstrapStatus(sessionDir, signal)` — bounded poll (50ms/2s) for async bootstrap failures
-- `waitForAllAtoms(atoms, signal, onProgress, requestAbort, options?)` — all-semantics wait with:
-  - atom progress forwarding (`atom <agent>: <message>`) from each atom `progress.jsonl`
-  - optional stale recovery (`staleTimeoutMs`, `dispatch`) with abort+resume per stale atom
+Orchestrates the sequential step loop with concurrent parallel atom launches. Imports `ExecutionService` from `execution/service.ts` (via `WorkflowExecutionService` type pick). Key exports:
+- `executePipeline(ast, prompt, provider, executionSvc, ctx, options)` — main loop
+- `launchAtomWithRetry(context)` — busy retry with exponential backoff (3 attempts), uses `executionSvc.coralDispatch()` and `executionSvc.awaitLaunch()`
+- `waitForAtoms(atoms, executionSvc, ctx, options)` — all-semantics wait with:
+  - atom progress forwarding (`atom <agent>: <message>`) via `executionSvc.waitStream()`
+  - optional stale recovery (`staleTimeoutMs`) with abort+resume per stale atom
   - sibling abort + drain timeout behavior on non-recovery failures
-  - return value: `Map<string, { session: string; sessionDir: string }>` final overlay for output reads after recovery
+  - return value: `Map<string, string>` (agent name → result text)
 - `formatStepOutput(results)` — single pass-through or XML wrapping
 
 Named constants: `BUSY_PREFIX`, `MAX_LAUNCH_ATTEMPTS`, `BOOTSTRAP_POLL_INTERVAL_MS`, `BOOTSTRAP_TIMEOUT_MS`, `SIBLING_DRAIN_TIMEOUT_MS`.
@@ -158,7 +178,7 @@ See `src/workflow/pipe-executor.ts`.
 
 ### src/workflow/handler.ts - Workflow Handler
 
-Entry point called by AX tool router. Parses expression, normalizes atoms with resolved defaults (`namespace`/`provider`), validates atoms keys, namespaces, and parallel duplicate identity (`namespace:agent@provider`), then delegates to `launchJob` from `runner/job-manager.ts`. The `AtomDispatchFn` callback receives `handleToolCall` from the AX router via dependency injection, avoiding circular imports.
+Entry point called by the backend server's tool router. Parses expression, normalizes atoms with resolved defaults (`namespace`/`provider`), validates atoms keys, namespaces, and parallel duplicate identity (`namespace:agent@provider`), then delegates to `ExecutionService.executeWorkflow()`. Receives `ExecutionService` and `CallerContext` from `execution/service.ts` via dependency injection.
 
 See `src/workflow/handler.ts`.
 
@@ -169,48 +189,40 @@ See `src/workflow/handler.ts`.
 ### src/providers/types.ts / registry.ts / bootstrap.ts
 
 Provider contract and authority boundary:
-- `ProviderAdapter` contract (`handleOp`, `handleCoralOp`, `extractCompletion`, `makeOnEvent`)
-- registry APIs (`registerProvider`, `getProvider`, `getAllTools`, `getProviderNames`)
-- built-in bootstrap (`registerBuiltInProviders`)
-
-### src/providers/session-ops.ts
-
-Shared provider session operations used by provider adapters and built-in tools:
-- `handleSessionList(...)` for provider-filtered session list views
-- `handleSessionAbort(session)` for single-session abort by active session UUID
-- `handleBatchAbort(sessions)` for unified abort-tool batch semantics (`abort_requested` / `not_found`)
-- `sessionNotFoundError(...)` helper for provider resume/fork paths
+- `Provider` interface (`name`, `capabilities`, `execute(request, runtime)`, optional `preflight()`)
+- `ProviderRuntime` (signal + onEvent callback injected by `ExecutionService`)
+- `ProviderCapabilities` (`resumable`, `forkable`)
+- registry APIs (`registerNewProvider`, `getNewProvider`, `getAllNewProviders`)
+- built-in bootstrap (`registerBuiltInProviders`) registers codex + claude adapters
 
 ---
 
 ## Codex Adapter Modules (`src/providers/codex/`)
 
-The Codex adapter is now thin and provider-specific. Shared launch/wait/session infrastructure lives in `src/runner/`.
+The Codex adapter implements `Provider` interface. Shared launch/wait/session infrastructure lives in `src/execution/`.
+
+### src/providers/codex/adapter.ts
+
+Codex `Provider` implementation. `preflight()` probes CLI availability and auth via `cli-detection.ts`. `execute(request, runtime)` dispatches to `executeOneShot`, `executeResume`, or `executeFork` from `codex-executor.ts`, mapping `ProviderResult` fields. Builds prompt by prepending instruction/systemPrompt (both channels map to prompt prepend — Codex has no system prompt flag). See `src/providers/codex/adapter.ts`.
 
 ### src/providers/codex/codex-executor.ts
 
-Codex-specific execution wrapper over `runner/engine.ts`:
+Codex-specific execution wrapper over `execution/engine.ts`:
 - builds Codex CLI args (`exec`, `resume`, `fork`)
 - parses JSONL events through `output-parser.ts`
 - prepends plugin `CLAUDE.md` for one-shot sessions
 
-### src/providers/codex/server-handlers.ts
+### src/providers/codex/schemas.ts / cli-detection.ts / output-parser.ts / progress.ts / command-patterns.ts / types.ts
 
-Codex MCP behavior (`exec/list/fork/coral:*`) using runner primitives for background job execution.
-
-### src/providers/codex/schemas.ts / cli-detection.ts / output-parser.ts / progress.ts / mcp-utils.ts
-
-Input validation, CLI/auth probing, JSONL parsing, and Codex-specific response helpers retained for Codex behavior.
+Input validation, CLI/auth probing, JSONL parsing, progress message extraction, CLI arg patterns, and Codex-specific types (`CodexExecResult`, `CodexThreadEvent`).
 
 ---
 
 ## Claude CLI Adapter Modules (`src/providers/claude/`)
 
-### src/providers/claude/schemas.ts
+### src/providers/claude/adapter.ts
 
-Zod schemas for `claude` tool operations:
-- `exec`, `list`, `fork`
-- `coral:<name>` routing input for AX handlers
+Claude `Provider` implementation. `preflight()` probes CLI availability and auth via `cli-detection.ts`. `execute(request, runtime)` dispatches to `executeClaudeOneShot`, `executeClaudeResume`, or `executeClaudeFork` from `claude-executor.ts`. Instruction channel routing: `system` channel maps to `--append-system-prompt`, `prompt` channel prepends to prompt text. See `src/providers/claude/adapter.ts`.
 
 ### src/providers/claude/cli-detection.ts
 
@@ -221,21 +233,27 @@ Claude CLI availability/auth probe with cache + in-flight deduplication:
 
 ### src/providers/claude/claude-executor.ts
 
-Claude execution wrapper over `runner/engine.ts`:
+Claude execution wrapper over `execution/engine.ts`:
 - prompt transport via stdin (`-p` mode)
 - JSON output parsing (`--output-format json`)
 - resume support via `--resume`
 - structured parse-failure surface (`ClaudeExecParseError`)
 
-### src/providers/claude/server-handlers.ts / types.ts
+### src/providers/claude/schemas.ts / output-parser.ts / progress.ts / types.ts
 
-Defines Claude provider operations (`exec/list/fork/coral:*`) and `claudeAdapter`, plus `ClaudeExecResult` / JSON output types.
+Input validation, JSON output parsing, progress message extraction, and Claude-specific types (`ClaudeExecResult`, `ClaudeJsonOutput`, `ClaudeStreamEvent`).
 
 ---
 
-### src/types.ts - Shared Cross-Adapter Types
+### src/types.ts - Shared Type Definitions
 
-Defines `CodexExecResult` and Codex JSONL event types (`CodexThreadEvent`, `CodexThreadItemDetails`) and re-exports shared `SessionEntry` from `runner/types.ts`.
+Central type hub for the execution service contract. Re-exports provider-specific types from `providers/codex/types.ts` and `providers/claude/types.ts`. Defines:
+- Identity types: `JobId`, `SessionId`, `SessionState`, `JobPhase`, `LaunchState`
+- Provider contract types: `ProviderProgressEvent`, `ProviderAction`, `ProviderInstruction`, `ProviderRequest`, `ProviderResult`
+- Execution types: `LaunchDecision`, `TerminalResult`, `WaitCursor`, `WaitRequest`, `WaitStreamEvent`
+- Persistence types: `PersistedStatusRecord`, `PersistedProgressRecord`
+
+See `src/types.ts`.
 
 ## Discuss Server Modules (`src/discuss/`)
 

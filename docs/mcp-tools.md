@@ -5,7 +5,7 @@ Coral exposes two MCP servers, each with its own tool set:
 - **`ax` (Agent Execution)**: 5 tools (`codex`, `claude`, `wait`, `abort`, `workflow`) for Codex/Claude CLI session management and pipeline orchestration. Prefix: `mcp__plugin_coral_ax__`
 - **`dc` (Discuss)**: 2 tools for moderated multi-agent discussions. Prefix: `mcp__plugin_coral_dc__`
 
-All tool inputs are validated at runtime with Zod schemas (`src/codex/schemas.ts`, `src/claude/schemas.ts`, `src/discuss/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
+All tool inputs are validated at runtime with Zod schemas (`src/providers/codex/schemas.ts`, `src/providers/claude/schemas.ts`, `src/discuss/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
 
 ---
 
@@ -72,14 +72,13 @@ Returns immediately. Codex runs in background.
 
 ```json
 {
-  "session": "uuid",
-  "session_dir": "/tmp/coral-sessions/uuid",
-  "session_name": "my-review",
-  "status": "running"
+  "status": "running",
+  "job": "job-uuid",
+  "session": "session-uuid"
 }
 ```
 
-`session_dir` is the filesystem path to the session run directory. Use the top-level AX `wait` tool to poll for completion, then `Read` files from `session_dir`.
+`job` is the job ID used with `wait` and `abort`. `session` is the session ID for resume/fork continuity. Use the `wait` tool to stream progress, then `Read` the result from `/tmp/coral-jobs/<job>/result.md`.
 
 ---
 
@@ -140,40 +139,37 @@ Returns immediately. Same format as `exec`:
 
 ```json
 {
-  "session": "uuid",
-  "session_dir": "/tmp/coral-sessions/uuid",
-  "session_name": "forked-review",
-  "status": "running"
+  "status": "running",
+  "job": "job-uuid",
+  "session": "session-uuid"
 }
 ```
 
-Use `wait({ sessions: [session] })` then `Read(session_dir + "/result.md")` to get the fork response.
+Use `wait({ jobs: [job] })` then `Read("/tmp/coral-jobs/<job>/result.md")` to get the fork response.
 
 ---
 
 ## Usage Pattern
 
 ```
-exec → { session, session_dir }
-wait({ sessions: [session] }) → { status, ... }
-if status == "completed":
-  Read(session_dir + "/result.md") → response text
-if status == "error":
-  Read(session_dir + "/status.json") → { error } for diagnostics
-if status == "timeout":
-  re-wait, or abort({ sessions: [session] })
+exec → { status, job, session }
+wait({ jobs: [job] }) → { completedJobId, sessionId, result, ... }
+if completed:
+  Read("/tmp/coral-jobs/<job>/result.md") → response text
+if timeout:
+  re-wait with cursor, or abort({ jobs: [job] })
 ```
 
 ## Session Continuity
 
-`session_name` (from exec response) is the human-readable display label. `session` (from exec/fork response) is the UUID needed for continuity.
+`job` (from exec/fork response) is the job ID for `wait`/`abort` and result file access. `session` (from exec/fork response) is the session ID for resume/fork continuity.
 
 | Field | Source | Purpose |
 |-------|--------|---------|
-| `session_name` | exec/fork response | Display label shown to user |
-| `session` | exec/fork response | Pass to next `exec` for continuity |
+| `job` | exec/fork response | Pass to `wait`/`abort`, read results from `/tmp/coral-jobs/<job>/result.md` |
+| `session` | exec/fork response | Pass to next `exec`/`fork` for session continuity |
 
-Do NOT pass `session_name` as the `session` parameter on subsequent exec calls.
+Do NOT pass `job` as the `session` parameter on subsequent exec calls.
 
 ---
 
@@ -215,14 +211,13 @@ Single entry point for Claude CLI execution. Use the required `op` discriminator
 
 ### op: exec
 
-Starts a new Claude CLI run (or resumes when `session` is provided). Returns immediately with a Coral session UUID:
+Starts a new Claude CLI run (or resumes when `session` is provided). Returns immediately:
 
 ```json
 {
-  "session": "uuid",
-  "session_dir": "/tmp/coral-sessions/uuid",
-  "session_name": "my-session",
-  "status": "running"
+  "status": "running",
+  "job": "job-uuid",
+  "session": "session-uuid"
 }
 ```
 
@@ -273,23 +268,24 @@ If CLI JSON output does not include `session_id`, the run is marked non-resumabl
 
 ## wait
 
-Provider-agnostic wait for background sessions from any AX adapter. Wait returns when the first requested session completes, errors, or timeout elapses.
+Provider-agnostic wait for background jobs from any AX adapter. Wait returns when the first requested job completes, errors, or timeout elapses.
 
 ### Input Schema
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `sessions` | string[] (UUID) | Yes | Session UUIDs to monitor (min 1). |
-| `timeout_seconds` | integer | No | Max wait time in seconds (1-1200, default 600). |
+| `jobs` | string[] | Yes | Job IDs to monitor (min 1, from exec/fork response). |
+| `timeout_seconds` | number | No | Max wait time in seconds (1-1200, default 600). |
+| `cursor` | string | No | Opaque stream cursor returned by the previous wait call (for incremental streaming). |
 
 ### Output — Completed or Error
 
 ```json
 {
-  "status": "completed",
-  "completed_session": "uuid",
-  "session_dir": "/tmp/coral-sessions/uuid",
-  "session_name": "my-review"
+  "completedJobId": "job-uuid",
+  "sessionId": "session-uuid",
+  "remainingJobIds": [],
+  "result": { "text": "...", "durationMs": 1234 }
 }
 ```
 
@@ -297,16 +293,17 @@ Provider-agnostic wait for background sessions from any AX adapter. Wait returns
 
 ```json
 {
-  "status": "timeout",
-  "running_sessions": ["uuid1"]
+  "timeout": true,
+  "runningJobIds": ["job-uuid"]
 }
 ```
 
 ### Wait Semantics
 
-- **Any-semantics**: returns on the first completion in `sessions`.
-- **Cross-provider**: accepts mixed Codex/Claude session UUIDs in one call.
+- **Any-semantics**: returns on the first completion in `jobs`.
+- **Cross-provider**: accepts mixed Codex/Claude job IDs in one call.
 - **Progress notifications**: incremental updates are emitted through `notifications/progress`.
+- **Incremental streaming**: pass `cursor` from a previous wait response to resume from where the last call left off.
 
 ---
 
@@ -314,26 +311,24 @@ Provider-agnostic wait for background sessions from any AX adapter. Wait returns
 
 ## abort
 
-Provider-agnostic abort for active sessions. Works for codex, claude, and workflow sessions.
+Provider-agnostic abort for active jobs. Works for codex, claude, and workflow jobs.
 
 ### Input Schema
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `sessions` | string[] (UUID) | Yes | Session UUIDs to abort (min 1). |
+| `jobs` | string[] | Yes | Job IDs to abort (min 1). |
 
 ### Output (JSON)
 
 ```json
 {
-  "results": [
-    { "session": "uuid-1", "session_name": "my-review", "status": "abort_requested" },
-    { "session": "uuid-2", "status": "not_found" }
-  ]
+  "aborted": ["job-uuid-1"],
+  "notFound": ["job-uuid-2"]
 }
 ```
 
-`not_found` means the session already finished or was never active — not an error condition.
+`notFound` lists jobs that already finished or were never active — not an error condition.
 
 ---
 
@@ -388,14 +383,13 @@ Returns immediately (same as `codex`/`claude` exec). Pipeline runs in background
 
 ```json
 {
-  "session": "uuid",
-  "session_dir": "/tmp/coral-sessions/uuid",
-  "session_name": "workflow-1709500000000",
-  "status": "running"
+  "status": "running",
+  "job": "job-uuid",
+  "session": "session-uuid"
 }
 ```
 
-Use `wait({ sessions: [session] })` then `Read(session_dir + "/result.md")` for the pipeline result.
+Use `wait({ jobs: [job] })` then `Read("/tmp/coral-jobs/<job>/result.md")` for the pipeline result.
 
 ### Step Output Format
 

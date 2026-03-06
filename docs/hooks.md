@@ -7,7 +7,7 @@ Hooks provide automatic context injection, agent routing, plan-mode persistence,
 Claude Code's hook system executes scripts on specific events. Coral uses hooks at two levels:
 
 **Plugin hooks** (`hooks/hooks.json`):
-1. **SessionStart** (`*`) - Injects CLAUDE.md behavioral guidelines into every Claude session
+1. **SessionStart** (`*`) - Injects CLAUDE.md behavioral guidelines into every Claude session and warm-starts the backend daemon
 2. **SessionStart** (`compact`) - After context compaction, restores plan-mode state and reminds about KB promotion
 3. **UserPromptSubmit** - Tracks plan-mode activation when `/plan` or `/coral:plan` is invoked
 4. **PreToolUse** - Periodically reminds Claude to write memos for non-obvious discoveries
@@ -18,7 +18,7 @@ Claude Code's hook system executes scripts on specific events. Coral uses hooks 
 
 ## Hook Configuration
 
-Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/kb-lookup-reminder.mjs`, `hooks/silent-failure-detector.mjs`, `hooks/kb-memo-reminder.mjs`, `hooks/kb-promote-reminder.mjs`, `hooks/plan-guard.mjs`, `hooks/plan-state-tracker.mjs`, `hooks/discuss-idle-guard.mjs`.
+Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/kb-lookup-reminder.mjs`, `hooks/silent-failure-detector.mjs`, `hooks/kb-memo-reminder.mjs`, `hooks/kb-promote-reminder.mjs`, `hooks/plan-guard.mjs`, `hooks/plan-state-tracker.mjs`, `hooks/discuss-idle-guard.mjs`, `hooks/backend-warm-start.mjs`.
 
 All hook scripts are **Node.js ESM** (`.mjs`). They read input JSON from stdin, write output JSON to stdout, and **fail-open** via `try/catch { process.exit(0) }` - a crash or timeout never blocks the user.
 
@@ -29,6 +29,18 @@ Injects the plugin's CLAUDE.md content into Claude's context at the start of eve
 Implementation: inline `cat` command reading `CLAUDE.md` from the plugin root directory. No script file needed.
 
 > **Note**: Codex sessions receive CLAUDE.md through a separate mechanism - the MCP server prepends it to the prompt in `executeOneShot()`. See [Core Modules](./core-modules.md) for details.
+
+## SessionStart Hook (Backend Warm-Start)
+
+Script: `hooks/backend-warm-start.mjs`. Fires at session start (matcher: `*`, timeout: 10s). Ensures the coral-backend HTTP daemon is running before the session begins.
+
+**Sequence**:
+1. Reads `~/.claude/coral/backend.json` for existing backend connection info
+2. If the file exists and contains a PID, checks if the process is alive via `process.kill(pid, 0)`
+3. If the process is alive, exits immediately (backend already running)
+4. If the process is not alive (or no file exists), spawns `bridge/coral-backend.cjs` as a detached child process with stdio ignored and `child.unref()`
+
+**Fail-open**: The entire script is wrapped in `try/catch {}`. If `CLAUDE_PLUGIN_ROOT` is unset, the hook exits silently. Any error during file read, PID check, or spawn results in a silent exit — the backend will be started lazily on first tool call if the hook fails.
 
 ## SessionStart (Compact) Hook
 

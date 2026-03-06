@@ -13,6 +13,7 @@ Environment variables, config files, and the plugin manifest.
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Maximum epochs before discussion ends automatically (1–10). Stored per-session at creation time. |
 | `CORAL_DISCUSS_QUOTA_PER_EPOCH` | `3` | Speaking turns per agent per epoch (1–10). Stored per-session at creation time. |
 | `CORAL_DISCUSS_TTL_DAYS` | `0` | Days before completed discuss sessions are eligible for pruning (0 = disabled) |
+| `CORAL_BACKEND_IDLE_MS` | `21600000` | Backend daemon idle timeout in milliseconds (default 6 hours) |
 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(unset)_ | Required for `/coral:discuss`. Set to `1`. |
 
 ### Usage - Shell
@@ -55,11 +56,11 @@ Version is managed in `package.json` (single source of truth) and synced to `plu
 
 ### .mcp.json - MCP Server Registration
 
-Registers both MCP servers with Claude Code. `ax` runs `bridge/coral-ax.cjs` (tools: `codex`, `claude`, `wait`) and `dc` runs `bridge/coral-discuss.cjs` via Node.js stdio transport.
+Registers both MCP servers with Claude Code. `ax` runs `bridge/coral-ax.cjs`, which proxies to the backend daemon (`bridge/coral-backend.cjs`) for tools: `codex`, `claude`, `wait`. `dc` runs `bridge/coral-discuss.cjs` via Node.js stdio transport.
 
 ### hooks/hooks.json - Hook Configuration
 
-Configures all 8 hooks: SessionStart (CLAUDE.md injection), SessionStart/compact (plan-mode recovery + KB promotion reminder), UserPromptSubmit (plan state tracking), PreToolUse (memo reminder), PostToolUse (silent failure detector), PostToolUseFailure (KB lookup reminder), Stop (KB promotion gate + plan state cleanup), TeammateIdle (discuss idle guard).
+Configures all 9 hooks: SessionStart (CLAUDE.md injection + backend warm-start), SessionStart/compact (plan-mode recovery + KB promotion reminder), UserPromptSubmit (plan state tracking), PreToolUse (memo reminder), PostToolUse (silent failure detector), PostToolUseFailure (KB lookup reminder), Stop (KB promotion gate + plan state cleanup), TeammateIdle (discuss idle guard).
 
 See [Hooks documentation](./hooks.md) for details.
 
@@ -122,7 +123,7 @@ See [Hooks documentation](./hooks.md) for details.
 ```
 .claude-plugin/plugin.json  -> Claude Code recognizes the plugin
 .mcp.json                   -> Claude Code registers/starts both MCP servers (ax + dc)
-hooks/hooks.json            -> Claude Code configures all 8 hooks
+hooks/hooks.json            -> Claude Code configures all 9 hooks
 hooks/kb-lookup-reminder.mjs  -> PostToolUseFailure KB hint script
 hooks/silent-failure-detector.mjs -> PostToolUse silent-failure KB hint script
 hooks/kb-memo-reminder.mjs    -> PreToolUse memo reminder script
@@ -130,10 +131,15 @@ hooks/kb-promote-reminder.mjs -> Stop/Compact promotion script
 hooks/plan-guard.mjs          -> Compact plan-mode recovery script
 hooks/plan-state-tracker.mjs  -> UserPromptSubmit/Stop plan tracking script
 hooks/discuss-idle-guard.mjs  -> TeammateIdle bid/speak/vote enforcer
+hooks/backend-warm-start.mjs  -> SessionStart backend warm-start hook
 
 ~/.claude/coral/sessions/<project-hash>/*.json  -> Runtime AX session files (Codex + Claude, auto-created)
+~/.claude/coral/backend.json                    -> Runtime backend connection info (auto-created)
+~/.claude/coral/backend.lock                    -> Runtime backend singleton lock (auto-created)
+/tmp/coral-jobs/<jobId>/                        -> Runtime job directories (temporary)
 {project}/.claude/coral/discuss/<session-dir>/  -> Runtime discuss session dirs (auto-created)
 
-bridge/coral-ax.cjs   -> Unified AX MCP server bundle (codex + claude + wait, committed)
-bridge/coral-discuss.cjs -> Discuss MCP server bundle (committed)
+bridge/coral-ax.cjs      -> Unified AX MCP server bundle (codex + claude + wait, committed)
+bridge/coral-discuss.cjs  -> Discuss MCP server bundle (committed)
+bridge/coral-backend.cjs  -> HTTP backend daemon bundle (committed)
 ```
