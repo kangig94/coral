@@ -4,8 +4,7 @@ description: "Deep analysis - project scanning, requirement gaps, root cause inv
 argument-hint: "[--codex] [investigation target or question]"
 ---
 
-> **CORAL_AGENTS**: `Glob(pattern: "**/agents/", path: "~/.claude/plugins/cache/coral/")`
-> Pass `~` literally to the Glob tool — it expands to the home directory. Do not resolve it yourself.
+> **CORAL_AGENTS**: `Bash("ls ~/.claude/plugins/cache/coral/coral/*/agents/")`
 
 # Deep Analysis & Investigation
 

@@ -5,8 +5,7 @@ model: opus
 methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
 ---
 
-> **CORAL_METHODS**: `Glob(pattern: "**/methods/", path: "~/.claude/plugins/cache/coral/")`
-> Pass `~` literally to the Glob tool — it expands to the home directory. Do not resolve it yourself.
+> **CORAL_METHODS**: `Bash("ls ~/.claude/plugins/cache/coral/coral/*/methods/")`
 
 <Agent_Prompt>
   <Role>

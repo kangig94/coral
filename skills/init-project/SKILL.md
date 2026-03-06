@@ -4,8 +4,7 @@ description: Initialize project for AI-assisted development with rules, agents, 
 argument-hint: "[existing|new]"
 ---
 
-> **CORAL_SKILLS**: `Glob(pattern: "**/skills/", path: "~/.claude/plugins/cache/coral/")`
-> Pass `~` literally to the Glob tool — it expands to the home directory. Do not resolve it yourself.
+> **CORAL_SKILLS**: `Bash("ls ~/.claude/plugins/cache/coral/coral/*/skills/")`
 
 # Project Initialization
 

@@ -4,8 +4,7 @@ description: "Planning with parallel architect/critic review. Pass --deep for me
 argument-hint: "[--deep] [--codex] [task description]"
 ---
 
-> **CORAL_METHODS**: `Glob(pattern: "**/methods/", path: "~/.claude/plugins/cache/coral/")`
-> Pass `~` literally to the Glob tool — it expands to the home directory. Do not resolve it yourself.
+> **CORAL_METHODS**: `Bash("ls ~/.claude/plugins/cache/coral/coral/*/methods/")`
 
 # Planning
 

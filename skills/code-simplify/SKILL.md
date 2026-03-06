@@ -4,8 +4,7 @@ description: "Simplifies and refines code for clarity, consistency, and maintain
 argument-hint: "[--codex] <scope or prompt>"
 ---
 
-> **CORAL_AGENTS**: `Glob(pattern: "**/agents/", path: "~/.claude/plugins/cache/coral/")`
-> Pass `~` literally to the Glob tool — it expands to the home directory. Do not resolve it yourself.
+> **CORAL_AGENTS**: `Bash("ls ~/.claude/plugins/cache/coral/coral/*/agents/")`
 
 # Code Simplification
 
