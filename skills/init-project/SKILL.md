@@ -63,7 +63,7 @@ argument-hint: "[existing|new]"
 
     Agent("general-purpose", prompt="""
       Follow the analysis protocol from CORAL_SKILLS/analyze/SKILL.md (Claude-native Execution).
-      Run Step 1 (scanner) — always needed for project understanding.
+      Run Step 1 (scanner --deep) — always needed for project understanding.
       Skip Step 2 (gap-finder) and Step 3 (debugger) — requirement gaps are
       handled during Phase 2 plan review, and there are no bugs to diagnose.
 
@@ -134,7 +134,7 @@ argument-hint: "[existing|new]"
      in full. This is the primary input for planning — the tech stack, dependency graph,
      build/test config, existing docs state, and documentation gaps all come from this document.
      Do NOT write the plan from memory of Phase 1 — read the file.
-  2. **Follow planning protocol**: Invoke `Skill({ skill: "coral:plan", args: "--no-handoff init-{project-name}" })`.
+  2. **Follow planning protocol**: Invoke `Skill({ skill: "coral:plan", args: "--deep --no-handoff init-{project-name}" })`.
      - Plan name: `init-{project-name}`
      - Plan content requirements:
        * Structure: Requirements, Acceptance Criteria, Artifact Manifest, Risks, Verification Steps
@@ -182,7 +182,7 @@ argument-hint: "[existing|new]"
 
   ## Phase 3.5: Verify Artifacts
 
-  `Agent("coral:architect")` and `Agent("coral:critic")` in parallel to verify generated artifacts.
+  `Agent("coral:architect --deep")` and `Agent("coral:critic --deep")` in parallel to verify generated artifacts.
   Provide each with: plan file path, list of generated/enhanced files from Phase 3.
   Each outputs a findings table with severity (CRITICAL/HIGH/MEDIUM/LOW) and file:line references.
 
