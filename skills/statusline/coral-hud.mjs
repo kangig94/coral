@@ -249,9 +249,7 @@ function writeCacheFile(path, data, error = false, rateLimit = 0) {
 
 // --- Claude rate limits ---
 
-const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-
-function readRawCredentials() {
+function getClaudeAccessToken() {
   // macOS Keychain
   if (process.platform === "darwin") {
     try {
@@ -261,7 +259,7 @@ function readRawCredentials() {
       ).trim();
       if (raw) {
         const parsed = JSON.parse(raw);
-        return parsed.claudeAiOauth || parsed;
+        return (parsed.claudeAiOauth || parsed).accessToken || null;
       }
     } catch {}
   }
@@ -269,51 +267,10 @@ function readRawCredentials() {
   try {
     const credPath = join(homedir(), ".claude", ".credentials.json");
     const parsed = JSON.parse(readFileSync(credPath, "utf-8"));
-    return parsed.claudeAiOauth || parsed;
+    return (parsed.claudeAiOauth || parsed).accessToken || null;
   } catch {
     return null;
   }
-}
-
-async function refreshToken(refreshTok, signal) {
-  try {
-    const resp = await fetch("https://platform.claude.com/v1/oauth/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "refresh_token",
-        refresh_token: refreshTok,
-        client_id: OAUTH_CLIENT_ID,
-      }),
-      signal,
-    });
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    if (!data.access_token) return null;
-    try {
-      const credPath = join(homedir(), ".claude", ".credentials.json");
-      const file = JSON.parse(readFileSync(credPath, "utf-8"));
-      const target = file.claudeAiOauth || file;
-      target.accessToken = data.access_token;
-      if (data.refresh_token) target.refreshToken = data.refresh_token;
-      if (data.expires_in) target.expiresAt = Date.now() + data.expires_in * 1000;
-      const tmpPath = credPath + ".tmp";
-      writeFileSync(tmpPath, JSON.stringify(file, null, 2), { mode: 0o600 });
-      renameSync(tmpPath, credPath);
-    } catch {}
-    return data.access_token;
-  } catch {
-    return null;
-  }
-}
-
-async function getCredentials(signal) {
-  const creds = readRawCredentials();
-  if (!creds?.accessToken) return null;
-  if (creds.expiresAt && creds.expiresAt <= Date.now()) {
-    return creds.refreshToken ? refreshToken(creds.refreshToken, signal) : null;
-  }
-  return creds.accessToken;
 }
 
 async function fetchUsage(accessToken, signal) {
@@ -386,7 +343,7 @@ async function renderLimits() {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
   try {
-    const token = await getCredentials(controller.signal);
+    const token = getClaudeAccessToken();
     if (!token) return null;
 
     const resp = await fetchUsage(token, controller.signal);
