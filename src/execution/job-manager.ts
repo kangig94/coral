@@ -74,10 +74,10 @@ export class JobManager {
       const entry = this.jobs.get(jobId);
       if (!entry) {
         notFound.push(jobId);
-      } else {
-        entry.controller.abort();
-        aborted.push(jobId);
+        continue;
       }
+      entry.controller.abort();
+      aborted.push(jobId);
     }
     return { aborted, notFound };
   }

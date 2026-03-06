@@ -37,7 +37,6 @@ type BackendHandle = {
 
 type SseEventBlock = {
   event?: string;
-  id?: string;
   data: string;
 };
 
@@ -182,50 +181,45 @@ function parseWaitStreamEvent(eventType: string | undefined, rawData: string): W
     throw new Error(`Invalid wait stream event payload for ${eventType}`);
   }
 
-  if (eventType === 'progress') {
-    if (
-      typeof parsed.jobId === 'string'
-      && typeof parsed.sessionId === 'string'
-      && Number.isInteger(parsed.eventId)
-      && typeof parsed.message === 'string'
-    ) {
-      return parsed as WaitStreamEvent;
-    }
-    throw new Error('Invalid progress wait stream event');
+  switch (eventType) {
+    case 'progress':
+      if (
+        typeof parsed.jobId === 'string'
+        && typeof parsed.sessionId === 'string'
+        && Number.isInteger(parsed.eventId)
+        && typeof parsed.message === 'string'
+      ) {
+        return parsed as WaitStreamEvent;
+      }
+      throw new Error('Invalid progress wait stream event');
+    case 'terminal':
+      if (
+        typeof parsed.completedJobId === 'string'
+        && typeof parsed.sessionId === 'string'
+        && Array.isArray(parsed.remainingJobIds)
+        && parsed.remainingJobIds.every((jobId) => typeof jobId === 'string')
+        && isRecord(parsed.result)
+      ) {
+        return parsed as WaitStreamEvent;
+      }
+      throw new Error('Invalid terminal wait stream event');
+    case 'timeout':
+      if (
+        Array.isArray(parsed.runningJobIds)
+        && parsed.runningJobIds.every((jobId) => typeof jobId === 'string')
+      ) {
+        return parsed as WaitStreamEvent;
+      }
+      throw new Error('Invalid timeout wait stream event');
+    default:
+      return null;
   }
-
-  if (eventType === 'terminal') {
-    if (
-      typeof parsed.completedJobId === 'string'
-      && typeof parsed.sessionId === 'string'
-      && Array.isArray(parsed.remainingJobIds)
-      && parsed.remainingJobIds.every((jobId) => typeof jobId === 'string')
-      && isRecord(parsed.result)
-    ) {
-      return parsed as WaitStreamEvent;
-    }
-    throw new Error('Invalid terminal wait stream event');
-  }
-
-  if (eventType === 'timeout') {
-    if (
-      Array.isArray(parsed.runningJobIds)
-      && parsed.runningJobIds.every((jobId) => typeof jobId === 'string')
-    ) {
-      return parsed as WaitStreamEvent;
-    }
-    throw new Error('Invalid timeout wait stream event');
-  }
-
-  return null;
 }
 
 function parseSseBlock(block: string): SseEventBlock | null {
-  const trimmed = block.trim();
-  if (!trimmed) return null;
+  if (!block.trim()) return null;
 
   let event: string | undefined;
-  let id: string | undefined;
   const data: string[] = [];
 
   for (const rawLine of block.split('\n')) {
@@ -236,21 +230,18 @@ function parseSseBlock(block: string): SseEventBlock | null {
     const field = separator >= 0 ? line.slice(0, separator) : line;
     const value = separator >= 0 ? line.slice(separator + 1).replace(/^ /, '') : '';
 
-    if (field === 'event') {
-      event = value;
-      continue;
-    }
-    if (field === 'id') {
-      id = value;
-      continue;
-    }
-    if (field === 'data') {
-      data.push(value);
+    switch (field) {
+      case 'event':
+        event = value;
+        break;
+      case 'data':
+        data.push(value);
+        break;
     }
   }
 
   if (data.length === 0) return null;
-  return { event, id, data: data.join('\n') };
+  return { event, data: data.join('\n') };
 }
 
 function describeHttpError(status: number, statusText: string): string {
@@ -274,9 +265,11 @@ export async function ensureBackend(): Promise<BackendHandle> {
     return summarizeBackend(existingHealthy);
   }
 
-  const replacedInstanceId = existingHealthy?.version === CURRENT_VERSION ? null : existingHealthy?.instanceId ?? null;
-  let shutdownRequestedFor = existingHealthy?.version === CURRENT_VERSION ? null : existingHealthy?.instanceId ?? null;
-  if (existingHealthy && existingHealthy.version !== CURRENT_VERSION) {
+  let replacedInstanceId: string | null = null;
+  let shutdownRequestedFor: string | null = null;
+  if (existingHealthy) {
+    replacedInstanceId = existingHealthy.instanceId;
+    shutdownRequestedFor = existingHealthy.instanceId;
     await requestBackendShutdown(existingHealthy);
   }
 

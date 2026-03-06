@@ -19,21 +19,28 @@ function makeProvider(name: string): Provider {
   };
 }
 
-describe('providers registry', () => {
-  beforeEach(() => {
-    _resetNewProvidersForTests();
-  });
+function resetRegistry(): void {
+  _resetNewProvidersForTests();
+}
 
-  afterEach(() => {
-    _resetNewProvidersForTests();
-  });
+function resetBootstrap(): void {
+  _resetProviderBootstrapForTests();
+}
+
+function providerNames(): string[] {
+  return getAllNewProviders().map((provider) => provider.name);
+}
+
+describe('providers registry', () => {
+  beforeEach(resetRegistry);
+  afterEach(resetRegistry);
 
   it('registers and resolves providers', () => {
     const provider = makeProvider('codex-like');
     registerNewProvider(provider);
 
     expect(getNewProvider('codex-like')).toBe(provider);
-    expect(getAllNewProviders().map((entry) => entry.name)).toEqual(['codex-like']);
+    expect(providerNames()).toEqual(['codex-like']);
   });
 
   it('rejects reserved provider names', () => {
@@ -52,7 +59,7 @@ describe('providers registry', () => {
     registerNewProvider(makeProvider('aaa'));
     registerNewProvider(makeProvider('mmm'));
 
-    expect(getAllNewProviders().map((provider) => provider.name)).toEqual(['zzz', 'aaa', 'mmm']);
+    expect(providerNames()).toEqual(['zzz', 'aaa', 'mmm']);
   });
 
   it('returns empty state before any registration', () => {
@@ -62,30 +69,25 @@ describe('providers registry', () => {
 });
 
 describe('provider bootstrap', () => {
-  beforeEach(() => {
-    _resetProviderBootstrapForTests();
-  });
-
-  afterEach(() => {
-    _resetProviderBootstrapForTests();
-  });
+  beforeEach(resetBootstrap);
+  afterEach(resetBootstrap);
 
   it('registers built-in execution providers once', () => {
     registerBuiltInProviders();
 
-    expect(getAllNewProviders().map((provider) => provider.name)).toEqual(['codex', 'claude']);
+    expect(providerNames()).toEqual(['codex', 'claude']);
   });
 
   it('is idempotent across repeated calls', () => {
     registerBuiltInProviders();
     expect(() => registerBuiltInProviders()).not.toThrow();
-    expect(getAllNewProviders().map((provider) => provider.name)).toEqual(['codex', 'claude']);
+    expect(providerNames()).toEqual(['codex', 'claude']);
   });
 
   it('fails when a conflicting provider is already registered', () => {
     registerNewProvider(makeProvider('codex'));
 
     expect(() => registerBuiltInProviders()).toThrow(/already registered/i);
-    expect(getAllNewProviders().map((provider) => provider.name)).toEqual(['codex']);
+    expect(providerNames()).toEqual(['codex']);
   });
 });

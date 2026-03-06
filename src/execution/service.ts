@@ -83,6 +83,25 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function rejectLaunch(code: string, message: string): LaunchDecision {
+  return {
+    status: 'rejected',
+    phase: 'preflight',
+    code,
+    message,
+  };
+}
+
+async function runProviderPreflight(provider: Provider): Promise<string | null> {
+  if (!provider.preflight) return null;
+  try {
+    await provider.preflight();
+    return null;
+  } catch (error: unknown) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
 export class ExecutionService {
   private readonly sessionManager: SessionManager;
   private readonly jobManager: JobManager;
@@ -96,27 +115,10 @@ export class ExecutionService {
 
   async start(providerName: string, input: ExecInput, ctx: CallerContext): Promise<LaunchDecision> {
     const provider = getNewProvider(providerName);
-    if (!provider) {
-      return {
-        status: 'rejected',
-        phase: 'preflight',
-        code: 'unknown_provider',
-        message: `Unknown provider: ${providerName}`,
-      };
-    }
+    if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
-    if (provider.preflight) {
-      try {
-        await provider.preflight();
-      } catch (err: unknown) {
-        return {
-          status: 'rejected',
-          phase: 'preflight',
-          code: 'preflight_failed',
-          message: err instanceof Error ? err.message : String(err),
-        };
-      }
-    }
+    const preflightError = await runProviderPreflight(provider);
+    if (preflightError) return rejectLaunch('preflight_failed', preflightError);
 
     const cwd = input.cwd ?? ctx.projectRoot;
     const name = input.name ?? `session-${Date.now()}`;
@@ -126,12 +128,7 @@ export class ExecutionService {
     const jobId = this.jobManager.allocate(session.sessionId, providerName);
 
     if (!this.sessionManager.claimForJob(session.sessionId, jobId)) {
-      return {
-        status: 'rejected',
-        phase: 'preflight',
-        code: 'session_busy',
-        message: 'Session is already running a job',
-      };
+      return rejectLaunch('session_busy', 'Session is already running a job');
     }
 
     this.progressStore.initJob(jobId, session.sessionId, providerName);
@@ -155,63 +152,33 @@ export class ExecutionService {
 
   async resume(providerName: string, input: ResumeInput, ctx: CallerContext): Promise<LaunchDecision> {
     const provider = getNewProvider(providerName);
-    if (!provider) {
-      return {
-        status: 'rejected',
-        phase: 'preflight',
-        code: 'unknown_provider',
-        message: `Unknown provider: ${providerName}`,
-      };
-    }
+    if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
     const session = this.sessionManager.get(providerName, input.sessionId);
-    if (!session) {
-      return {
-        status: 'rejected',
-        phase: 'preflight',
-        code: 'session_not_found',
-        message: `Session not found: ${input.sessionId}. Use exec to start a new session.`,
-      };
-    }
+    if (!session) return rejectLaunch(
+      'session_not_found',
+      `Session not found: ${input.sessionId}. Use exec to start a new session.`,
+    );
     if (session.state === 'non_resumable') {
-      return {
-        status: 'rejected',
-        phase: 'preflight',
-        code: 'non_resumable',
-        message: `Session ${input.sessionId} is non-resumable. Use exec to start a new session or fork to branch from it.`,
-      };
+      return rejectLaunch(
+        'non_resumable',
+        `Session ${input.sessionId} is non-resumable. Use exec to start a new session or fork to branch from it.`,
+      );
     }
     if (session.activeJobId) {
-      return {
-        status: 'rejected',
-        phase: 'preflight',
-        code: 'session_busy',
-        message: `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`,
-      };
+      return rejectLaunch(
+        'session_busy',
+        `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`,
+      );
     }
 
-    if (provider.preflight) {
-      try {
-        await provider.preflight();
-      } catch (err: unknown) {
-        return {
-          status: 'rejected',
-          phase: 'preflight',
-          code: 'preflight_failed',
-          message: err instanceof Error ? err.message : String(err),
-        };
-      }
-    }
+    const preflightError = await runProviderPreflight(provider);
+    if (preflightError) return rejectLaunch('preflight_failed', preflightError);
 
     const jobId = this.jobManager.allocate(session.sessionId, providerName);
 
     if (!this.sessionManager.claimForJob(session.sessionId, jobId)) {
-      return {
-        status: 'rejected',
-        phase: 'preflight',
-        code: 'session_busy',
-        message: 'Session is already running a job',
-      };
+      return rejectLaunch('session_busy', 'Session is already running a job');
     }
 
     this.progressStore.initJob(jobId, session.sessionId, providerName);
@@ -233,47 +200,24 @@ export class ExecutionService {
     return { status: 'running', job: jobId, session: session.sessionId };
   }
 
-  async fork(providerName: string, input: ForkInput, ctx: CallerContext): Promise<LaunchDecision> {
+  async fork(providerName: string, input: ForkInput, _ctx: CallerContext): Promise<LaunchDecision> {
     const provider = getNewProvider(providerName);
-    if (!provider) {
-      return {
-        status: 'rejected',
-        phase: 'preflight',
-        code: 'unknown_provider',
-        message: `Unknown provider: ${providerName}`,
-      };
-    }
+    if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
     const sourceSession = this.sessionManager.get(providerName, input.sessionId);
-    if (!sourceSession) {
-      return {
-        status: 'rejected',
-        phase: 'preflight',
-        code: 'session_not_found',
-        message: `Session not found: ${input.sessionId}. Use exec to start a new session.`,
-      };
-    }
+    if (!sourceSession) return rejectLaunch(
+      'session_not_found',
+      `Session not found: ${input.sessionId}. Use exec to start a new session.`,
+    );
     if (sourceSession.activeJobId) {
-      return {
-        status: 'rejected',
-        phase: 'preflight',
-        code: 'session_busy',
-        message: `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`,
-      };
+      return rejectLaunch(
+        'session_busy',
+        `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`,
+      );
     }
 
-    if (provider.preflight) {
-      try {
-        await provider.preflight();
-      } catch (err: unknown) {
-        return {
-          status: 'rejected',
-          phase: 'preflight',
-          code: 'preflight_failed',
-          message: err instanceof Error ? err.message : String(err),
-        };
-      }
-    }
+    const preflightError = await runProviderPreflight(provider);
+    if (preflightError) return rejectLaunch('preflight_failed', preflightError);
 
     const name = input.name ?? `fork-${Date.now()}`;
     const model = input.model ?? sourceSession.model;
@@ -282,12 +226,7 @@ export class ExecutionService {
     const jobId = this.jobManager.allocate(newSession.sessionId, providerName);
 
     if (!this.sessionManager.claimForJob(newSession.sessionId, jobId)) {
-      return {
-        status: 'rejected',
-        phase: 'preflight',
-        code: 'session_busy',
-        message: 'New fork session already has an active job',
-      };
+      return rejectLaunch('session_busy', 'New fork session already has an active job');
     }
 
     this.progressStore.initJob(jobId, newSession.sessionId, providerName);
@@ -361,32 +300,17 @@ export class ExecutionService {
     input: WorkflowInput,
     ctx: CallerContext,
   ): Promise<LaunchDecision> {
-    if (!getNewProvider(providerName)) {
-      return {
-        status: 'rejected',
-        phase: 'preflight',
-        code: 'unknown_provider',
-        message: `Unknown provider: ${providerName}`,
-      };
-    }
+    if (!getNewProvider(providerName)) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
     const session = this.sessionManager.allocate(providerName, `workflow-${Date.now()}`, 'workflow', ctx.projectRoot);
     const jobId = this.jobManager.allocate(session.sessionId, providerName);
 
     if (!this.sessionManager.claimForJob(session.sessionId, jobId)) {
-      return {
-        status: 'rejected',
-        phase: 'preflight',
-        code: 'session_busy',
-        message: 'Session is already running a job',
-      };
+      return rejectLaunch('session_busy', 'Session is already running a job');
     }
 
     this.progressStore.initJob(jobId, session.sessionId, providerName);
-    this.jobManager.setLaunchState(jobId, 'ready');
-    this.progressStore.updateLaunchState(jobId, 'ready');
-    this.jobManager.setPhase(jobId, 'running');
-    this.progressStore.updatePhase(jobId, 'running');
+    this.markJobRunning(jobId);
 
     this.runWorkflowAsync(session.sessionId, jobId, providerName, ast, input, ctx);
     return { status: 'running', job: jobId, session: session.sessionId };
@@ -434,9 +358,7 @@ export class ExecutionService {
       }
 
       for (const jobId of [...pending]) {
-        const fileCursor = fileCursors.get(jobId);
-        if (!fileCursor) continue;
-
+        const fileCursor = fileCursors.get(jobId)!;
         const fromEventId = fromEventIds[jobId] ?? 0;
         const status = this.progressStore.readStatus(jobId);
         if (!status) continue;
@@ -487,12 +409,7 @@ export class ExecutionService {
 
     const onEvent = (event: ProviderProgressEvent): void => {
       const job = this.jobManager.get(jobId);
-      if (job && job.launchState === 'pending') {
-        this.jobManager.setLaunchState(jobId, 'ready');
-        this.progressStore.updateLaunchState(jobId, 'ready');
-        this.jobManager.setPhase(jobId, 'running');
-        this.progressStore.updatePhase(jobId, 'running');
-      }
+      if (job && job.launchState === 'pending') this.markJobRunning(jobId);
       this.progressStore.appendProgress(jobId, sessionId, event.message);
     };
 
@@ -501,10 +418,7 @@ export class ExecutionService {
     provider.execute(request, runtime)
       .then((result) => {
         const job = this.jobManager.get(jobId);
-        if (job && job.launchState === 'pending') {
-          this.jobManager.setLaunchState(jobId, 'ready');
-          this.progressStore.updateLaunchState(jobId, 'ready');
-        }
+        if (job && job.launchState === 'pending') this.markJobReady(jobId);
 
         const phase: JobPhase = result.aborted ? 'aborted' : 'completed';
         const terminalResult: TerminalResult = {
@@ -533,25 +447,33 @@ export class ExecutionService {
       })
       .catch((err: unknown) => {
         if (err instanceof CliBusyError) {
-          this.jobManager.setLaunchState(jobId, 'busy', err.message);
-          this.progressStore.updateLaunchState(jobId, 'busy', err.message);
-          this.jobManager.setPhase(jobId, 'error');
-          const terminalResult: TerminalResult = { text: '', notice: err.message };
-          this.progressStore.appendTerminal(jobId, sessionId, terminalResult, 'error');
-          this.jobManager.remove(jobId);
-          this.sessionManager.releaseJob(sessionId, jobId);
+          this.failJob(jobId, sessionId, 'busy', err.message);
           return;
         }
 
         const message = err instanceof Error ? err.message : String(err);
-        this.jobManager.setLaunchState(jobId, 'error', message);
-        this.progressStore.updateLaunchState(jobId, 'error', message);
-        this.jobManager.setPhase(jobId, 'error');
-        const terminalResult: TerminalResult = { text: '', notice: message };
-        this.progressStore.appendTerminal(jobId, sessionId, terminalResult, 'error');
-        this.jobManager.remove(jobId);
-        this.sessionManager.releaseJob(sessionId, jobId);
+        this.failJob(jobId, sessionId, 'error', message);
       });
+  }
+
+  private markJobReady(jobId: string): void {
+    this.jobManager.setLaunchState(jobId, 'ready');
+    this.progressStore.updateLaunchState(jobId, 'ready');
+  }
+
+  private markJobRunning(jobId: string): void {
+    this.markJobReady(jobId);
+    this.jobManager.setPhase(jobId, 'running');
+    this.progressStore.updatePhase(jobId, 'running');
+  }
+
+  private failJob(jobId: string, sessionId: string, launchState: LaunchState, message: string): void {
+    this.jobManager.setLaunchState(jobId, launchState, message);
+    this.progressStore.updateLaunchState(jobId, launchState, message);
+    this.jobManager.setPhase(jobId, 'error');
+    this.progressStore.appendTerminal(jobId, sessionId, { text: '', notice: message }, 'error');
+    this.jobManager.remove(jobId);
+    this.sessionManager.releaseJob(sessionId, jobId);
   }
 
   private runWorkflowAsync(

@@ -60,15 +60,11 @@ function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest 
 
 function makeRuntime() {
   const controller = new AbortController();
-  const events: unknown[] = [];
   return {
     signal: controller.signal,
-    events,
     runtime: {
       signal: controller.signal,
-      onEvent: (event: unknown) => {
-        events.push(event);
-      },
+      onEvent: () => {},
     },
   };
 }
@@ -131,36 +127,21 @@ beforeEach(() => {
 describe('codex provider adapter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockExecuteOneShot.mockResolvedValue({
+    mockExecuteOneShot.mockResolvedValue(baseCodexResult({
       response: 'codex response',
       sessionId: 'codex-thread',
-      model: 'o4-mini',
       durationMs: 25,
-      exitCode: 0,
-      errors: [],
-      warnings: [],
-      aborted: false,
-    });
-    mockExecuteResume.mockResolvedValue({
+    }));
+    mockExecuteResume.mockResolvedValue(baseCodexResult({
       response: 'codex resume',
       sessionId: 'codex-thread-resume',
-      model: 'o4-mini',
       durationMs: 30,
-      exitCode: 0,
-      errors: [],
-      warnings: [],
-      aborted: false,
-    });
-    mockExecuteFork.mockResolvedValue({
+    }));
+    mockExecuteFork.mockResolvedValue(baseCodexResult({
       response: 'codex fork',
       sessionId: 'codex-thread-fork',
-      model: 'o4-mini',
       durationMs: 35,
-      exitCode: 0,
-      errors: [],
-      warnings: [],
-      aborted: false,
-    });
+    }));
   });
 
   it('exec calls executeOneShot with instruction-prefixed prompt', async () => {
@@ -286,30 +267,23 @@ describe('codex provider adapter', () => {
 describe('claude provider adapter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockExecuteClaudeOneShot.mockResolvedValue({
+    mockExecuteClaudeOneShot.mockResolvedValue(baseClaudeResult({
       response: 'claude response',
-      sessionId: 'claude-thread',
-      model: 'sonnet',
       durationMs: 20,
       costUsd: 0.001,
-      aborted: false,
-    });
-    mockExecuteClaudeResume.mockResolvedValue({
+    }));
+    mockExecuteClaudeResume.mockResolvedValue(baseClaudeResult({
       response: 'claude resume',
       sessionId: 'claude-thread-resume',
-      model: 'sonnet',
       durationMs: 22,
       costUsd: 0.002,
-      aborted: false,
-    });
-    mockExecuteClaudeFork.mockResolvedValue({
+    }));
+    mockExecuteClaudeFork.mockResolvedValue(baseClaudeResult({
       response: 'claude fork',
       sessionId: 'claude-thread-fork',
-      model: 'sonnet',
       durationMs: 24,
       costUsd: 0.003,
-      aborted: false,
-    });
+    }));
   });
 
   it('exec combines system-channel instruction with systemPrompt', async () => {

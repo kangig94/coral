@@ -13,11 +13,12 @@ const RULES: Rule[] = [
 ];
 
 export function stripShellWrapper(command: string): string {
-  const shell = command.match(/^(?:\/usr\/bin\/|\/bin\/)?(?:zsh|bash|sh)\s+(?:-lc|-c)\s+(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')\s*$/);
-  const unwrapped = shell
-    ? (shell[1] !== undefined ? shell[1].replace(/\\"/g, '"') : (shell[2] ?? command))
-    : command;
-  return stripCdPrefix(unwrapped);
+  const shellMatch = command.match(/^(?:\/usr\/bin\/|\/bin\/)?(?:zsh|bash|sh)\s+(?:-lc|-c)\s+(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')\s*$/);
+  if (shellMatch === null) return stripCdPrefix(command);
+  if (shellMatch[1] !== undefined) {
+    return stripCdPrefix(shellMatch[1].replace(/\\"/g, '"'));
+  }
+  return stripCdPrefix(shellMatch[2] ?? command);
 }
 
 function stripCdPrefix(command: string): string {

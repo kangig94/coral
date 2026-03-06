@@ -20,12 +20,9 @@ export class IdleTimer {
   }
 
   endRequest(): void {
-    if (this.inflight > 0) {
-      this.inflight -= 1;
-    }
-    if (this.inflight === 0) {
-      this.lastActiveAt = Date.now();
-    }
+    if (this.inflight > 0) this.inflight -= 1;
+    if (this.inflight !== 0) return;
+    this.lastActiveAt = Date.now();
   }
 
   get inflightRequests(): number {

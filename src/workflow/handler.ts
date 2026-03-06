@@ -6,23 +6,18 @@ import { parseExpression } from './pipe-parser.js';
 import { workflowInputSchema } from './schemas.js';
 import type { PipelineAST } from './types.js';
 
-function collectAtomNames(ast: PipelineAST): Set<string> {
-  const names = new Set<string>();
+function validateAtomConfigKeys(atoms: Record<string, Record<string, unknown>>, ast: PipelineAST): void {
+  const atomNames = new Set<string>();
   for (const step of ast) {
     for (const atom of step) {
       if (atom.kind !== 'agent') continue;
-      names.add(atom.agent);
+      atomNames.add(atom.agent);
     }
   }
-  return names;
-}
 
-function validateAtomsKeys(atoms: Record<string, Record<string, unknown>>, ast: PipelineAST): void {
-  const atomNames = collectAtomNames(ast);
   const unknownKeys = Object.keys(atoms).filter((key) => !atomNames.has(key));
-  if (unknownKeys.length > 0) {
-    throw new Error(`Unknown atoms keys: ${unknownKeys.join(', ')}`);
-  }
+  if (unknownKeys.length === 0) return;
+  throw new Error(`Unknown atoms keys: ${unknownKeys.join(', ')}`);
 }
 
 function normalizeAst(ast: PipelineAST, defaultProviderName: string): PipelineAST {
@@ -45,12 +40,10 @@ function normalizeAst(ast: PipelineAST, defaultProviderName: string): PipelineAS
 function validateNamespaces(ast: PipelineAST): void {
   for (let stepIndex = 0; stepIndex < ast.length; stepIndex += 1) {
     for (const atom of ast[stepIndex]) {
-      if (atom.kind !== 'agent') continue;
-      if (atom.namespace !== 'coral') {
-        throw new Error(
-          `Step ${stepIndex + 1}, atom '${atom.agent}' has unsupported namespace '${atom.namespace}'`,
-        );
-      }
+      if (atom.kind !== 'agent' || atom.namespace === 'coral') continue;
+      throw new Error(
+        `Step ${stepIndex + 1}, atom '${atom.agent}' has unsupported namespace '${atom.namespace}'`,
+      );
     }
   }
 }
@@ -61,9 +54,7 @@ function validateParallelDuplicates(ast: PipelineAST): void {
     for (const atom of step) {
       if (atom.kind !== 'agent') continue;
       const atomKey = `${atom.namespace}:${atom.agent}@${atom.provider}`;
-      if (atomKeys.has(atomKey)) {
-        throw new Error(`Duplicate atom "${atomKey}" in parallel step`);
-      }
+      if (atomKeys.has(atomKey)) throw new Error(`Duplicate atom "${atomKey}" in parallel step`);
       atomKeys.add(atomKey);
     }
   }
@@ -108,7 +99,7 @@ export async function handleWorkflow(
   const input = workflowInputSchema.parse(rawArgs);
   const ast = normalizeAst(parseExpression(input.expression), input.provider);
 
-  if (input.atoms) validateAtomsKeys(input.atoms, ast);
+  if (input.atoms) validateAtomConfigKeys(input.atoms, ast);
   validateNamespaces(ast);
   validateParallelDuplicates(ast);
 

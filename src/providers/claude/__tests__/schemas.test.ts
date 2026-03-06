@@ -3,8 +3,7 @@ import { claudeOpSchema, coralClaudeSchema } from '../schemas.js';
 
 function expectExecBypassValue(input: Record<string, unknown>, expected: boolean): void {
   const parsed = claudeOpSchema.parse({ op: 'exec', prompt: 'hello', ...input });
-  expect(parsed.op).toBe('exec');
-  if (parsed.op === 'exec') expect(parsed.bypass).toBe(expected);
+  expect(parsed).toMatchObject({ op: 'exec', bypass: expected });
 }
 
 function expectCoralBypassValue(input: Record<string, unknown>, expected: boolean): void {
@@ -67,8 +66,7 @@ describe('claude schemas', () => {
 
   it('defaults fork bypass to false when omitted', () => {
     const parsed = claudeOpSchema.parse({ op: 'fork', session: 'ref' });
-    if (parsed.op !== 'fork') throw new Error('Expected fork op');
-    expect(parsed.bypass).toBe(false);
+    expect(parsed).toMatchObject({ op: 'fork', bypass: false });
   });
 
   it('rejects abort discriminator (removed — use unified abort tool)', () => {

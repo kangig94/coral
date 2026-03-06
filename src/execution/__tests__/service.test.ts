@@ -497,10 +497,9 @@ describe('ExecutionService adversarial', () => {
       createdJobIds.add(jobIdB);
 
       const service = new ExecutionService(ctx);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const svc = service as any;
+      const { progressStore } = getInternals(service);
 
-      vi.spyOn(svc.progressStore, 'readStatus').mockImplementation((...args: unknown[]) => {
+      vi.spyOn(progressStore, 'readStatus').mockImplementation((...args: unknown[]) => {
         const jobId = args[0] as string;
         if (jobId === jobIdA) {
           return { jobId: jobIdA, sessionId: 'session-a', provider: 'codex', phase: 'running', launch: { state: 'ready', updatedAt: '' } };
@@ -510,7 +509,7 @@ describe('ExecutionService adversarial', () => {
         }
         return null;
       });
-      vi.spyOn(svc.progressStore, 'replayFrom').mockReturnValue([]);
+      vi.spyOn(progressStore, 'replayFrom').mockReturnValue([]);
 
       const events: WaitStreamEvent[] = [];
       for await (const event of service.waitStream({
@@ -533,15 +532,14 @@ describe('ExecutionService adversarial', () => {
       createdJobIds.add(jobId);
 
       const service = new ExecutionService(ctx);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const svc = service as any;
+      const { progressStore } = getInternals(service);
 
-      vi.spyOn(svc.progressStore, 'readStatus').mockImplementation((...args: unknown[]) => {
+      vi.spyOn(progressStore, 'readStatus').mockImplementation((...args: unknown[]) => {
         const jid = args[0] as string;
         if (jid !== jobId) return null;
         return { jobId, sessionId: 'session-1', provider: 'codex', phase: 'running', launch: { state: 'ready', updatedAt: '' } };
       });
-      vi.spyOn(svc.progressStore, 'replayFrom').mockImplementation((...args: unknown[]) => {
+      vi.spyOn(progressStore, 'replayFrom').mockImplementation((...args: unknown[]) => {
         const [jid, fromEventId] = args as [string, number];
         void jid;
         const all = [

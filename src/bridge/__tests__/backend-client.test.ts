@@ -9,12 +9,10 @@ let tmpDir = '';
 const {
   readBackendInfoMock,
   spawnMock,
-  existsSyncMock,
   fetchMock,
 } = vi.hoisted(() => ({
   readBackendInfoMock: vi.fn(),
   spawnMock: vi.fn(() => ({ unref: vi.fn() })),
-  existsSyncMock: vi.fn(() => true),
   fetchMock: vi.fn(),
 }));
 
@@ -38,14 +36,6 @@ vi.mock('../../execution/backend-lock.js', () => ({
 vi.mock('node:child_process', () => ({
   spawn: spawnMock,
 }));
-
-vi.mock('node:fs', async () => {
-  const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
-  return {
-    ...actual,
-    existsSync: existsSyncMock,
-  };
-});
 
 type BridgeBackendClientModule = typeof import('../backend-client.js');
 
@@ -85,8 +75,6 @@ describe('bridge backend-client', () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'coral-bridge-backend-client-test-'));
     readBackendInfoMock.mockReset();
     spawnMock.mockClear();
-    existsSyncMock.mockReset();
-    existsSyncMock.mockReturnValue(true);
     fetchMock.mockReset();
     vi.stubGlobal('fetch', fetchMock);
   });

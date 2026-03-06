@@ -97,16 +97,6 @@ function readAtomConfig(
   return rawConfig as { effort?: EffortLevel; instruction?: string };
 }
 
-function buildAtomPrompt(stepPrompt: string, instruction?: string): string {
-  if (!instruction) return stepPrompt;
-  return `${stepPrompt}\n\n${instruction}`;
-}
-
-function buildLiteralPrompt(stepIndex: number, atomText: string, stepPrompt: string): string {
-  if (stepIndex === 0 || stepPrompt.length === 0) return atomText;
-  return `${atomText}\n\n${stepPrompt}`;
-}
-
 function atomTagName(atom: PipeAtom): string {
   return atom.kind === 'prompt' ? 'step-result' : atom.agent;
 }
@@ -159,19 +149,6 @@ async function readLaunchFailureMessage(
   return null;
 }
 
-async function retryBusyLaunchAttempt(
-  attempt: number,
-  stepIndex: number,
-  atomLabel: string,
-  onProgress: (message: string) => void,
-  signal?: AbortSignal,
-): Promise<boolean> {
-  if (attempt === MAX_LAUNCH_ATTEMPTS) return false;
-  onProgress(`step ${stepIndex + 1} atom ${atomLabel} busy (attempt ${attempt}), retrying`);
-  await sleep(computeBackoffMs(attempt), signal);
-  return true;
-}
-
 export async function launchAtomWithRetry(context: LaunchContext): Promise<LaunchedAtom> {
   const {
     atom,
@@ -201,13 +178,15 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
 
     const config = readAtomConfig(stepIndex, atom.agent, atoms?.[atom.agent]);
     coralName = atom.agent;
-    atomPrompt = buildAtomPrompt(stepPrompt, config.instruction);
+    atomPrompt = config.instruction ? `${stepPrompt}\n\n${config.instruction}` : stepPrompt;
     effort = config.effort;
   } else {
     coralName = 'workflow-literal';
     // First-step prompt literals use only the literal text. Later prompt literals
     // prepend the literal before the previous step output so instruction comes first.
-    atomPrompt = buildLiteralPrompt(stepIndex, atom.text, stepPrompt);
+    atomPrompt = stepIndex === 0 || stepPrompt.length === 0
+      ? atom.text
+      : `${atom.text}\n\n${stepPrompt}`;
   }
 
   for (let attempt = 1; attempt <= MAX_LAUNCH_ATTEMPTS; attempt += 1) {
@@ -230,8 +209,10 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
 
     const launchState = await executionSvc.awaitLaunch(decision.job, BOOTSTRAP_TIMEOUT_MS);
     if (launchState === 'busy') {
-      if (await retryBusyLaunchAttempt(attempt, stepIndex, label, onProgress, signal)) continue;
-      break;
+      if (attempt === MAX_LAUNCH_ATTEMPTS) break;
+      onProgress(`step ${stepIndex + 1} atom ${label} busy (attempt ${attempt}), retrying`);
+      await sleep(computeBackoffMs(attempt), signal);
+      continue;
     }
     if (launchState === 'error') {
       const message = await readLaunchFailureMessage(decision.job, executionSvc, signal);

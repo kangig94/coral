@@ -186,21 +186,7 @@ function serializeWaitCursor(cursor: WaitCursor): string {
   return Buffer.from(JSON.stringify(cursor)).toString('base64url');
 }
 
-function trackRequest(idleTimer: IdleTimer, res: ServerResponse): void {
-  let completed = false;
-  const finish = () => {
-    if (completed) return;
-    completed = true;
-    res.off('finish', finish);
-    res.off('close', finish);
-    idleTimer.endRequest();
-  };
-
-  res.once('finish', finish);
-  res.once('close', finish);
-}
-
-function runAfterResponse(res: ServerResponse, fn: () => void): void {
+function runOnResponseDone(res: ServerResponse, fn: () => void): void {
   let called = false;
   const run = () => {
     if (called) return;
@@ -212,6 +198,16 @@ function runAfterResponse(res: ServerResponse, fn: () => void): void {
 
   res.once('finish', run);
   res.once('close', run);
+}
+
+function trackRequest(idleTimer: IdleTimer, res: ServerResponse): void {
+  runOnResponseDone(res, () => {
+    idleTimer.endRequest();
+  });
+}
+
+function runAfterResponse(res: ServerResponse, fn: () => void): void {
+  runOnResponseDone(res, fn);
 }
 
 function closeServer(server: Server): Promise<void> {
@@ -257,14 +253,11 @@ function readJobIds(): string[] {
   }
 }
 
-function isLivePhase(phase: JobPhase): boolean {
-  return phase === 'launching' || phase === 'running';
-}
-
 function listLiveJobs(progressStore: ProgressStore): PersistedStatusRecord[] {
   return readJobIds()
     .map((jobId) => progressStore.readStatus(jobId))
-    .filter((status): status is PersistedStatusRecord => status !== null && isLivePhase(status.phase));
+    .filter((status): status is PersistedStatusRecord =>
+      status !== null && (status.phase === 'launching' || status.phase === 'running'));
 }
 
 function markJobAsError(
@@ -567,10 +560,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     return created;
   }
 
-  function getWaitService(): ExecutionServiceLike {
-    return getExecutionService(defaultContext);
-  }
-
   function abortJobs(jobIds: string[]): AbortResult {
     const pending = new Set(jobIds);
     const aborted: string[] = [];
@@ -683,7 +672,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     req.once('close', onClose);
     res.once('close', onClose);
 
-    for await (const event of getWaitService().waitStream(waitRequest)) {
+    for await (const event of getExecutionService(defaultContext).waitStream(waitRequest)) {
       if (closed || res.writableEnded || res.destroyed) break;
 
       if (event.type === 'progress') {

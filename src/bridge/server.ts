@@ -114,24 +114,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         backendInfo,
         parsed.cursor,
       )) {
-        if (event.type === 'progress') {
-          sendProgress(notify, progressToken, ++progressCount, event.message);
-          continue;
+        switch (event.type) {
+          case 'progress':
+            sendProgress(notify, progressToken, ++progressCount, event.message);
+            continue;
+          case 'terminal':
+            return textResult(JSON.stringify({
+              completedJobId: event.completedJobId,
+              sessionId: event.sessionId,
+              remainingJobIds: event.remainingJobIds,
+              result: event.result,
+            }));
+          case 'timeout':
+            return textResult(JSON.stringify({
+              timeout: true,
+              runningJobIds: event.runningJobIds,
+            }), true);
         }
-
-        if (event.type === 'terminal') {
-          return textResult(JSON.stringify({
-            completedJobId: event.completedJobId,
-            sessionId: event.sessionId,
-            remainingJobIds: event.remainingJobIds,
-            result: event.result,
-          }));
-        }
-
-        return textResult(JSON.stringify({
-          timeout: true,
-          runningJobIds: event.runningJobIds,
-        }), true);
       }
 
       return textResult('wait stream ended without a terminal event', true);
