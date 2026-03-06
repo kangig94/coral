@@ -112,6 +112,7 @@ export function handleWorkflow(
   rawArgs: Record<string, unknown>,
   toolCallFn: ToolCallFn,
   sessionManager: SessionManager,
+  projectRoot: string,
   progressToken?: string | number,
   notify?: NotifyFn,
 ): McpResult {
@@ -126,11 +127,12 @@ export function handleWorkflow(
   return launchRunnerJob({
     provider: input.provider,
     sessionLabel: `workflow-${Date.now()}`,
-    workingDirectory: process.cwd(),
+    workingDirectory: projectRoot,
     handler: async (signal, onEvent) => {
       const dispatch: AtomDispatchFn = (name, args) => toolCallFn(name, args, sessionManager, progressToken, notify);
       const output = await executePipeline(normalized, input.prompt, input.provider, dispatch, {
         atoms: input.atoms,
+        projectRoot,
         signal,
         onProgress: (message) => onEvent(message),
         staleTimeoutMs: input.stale_timeout_seconds * 1000,

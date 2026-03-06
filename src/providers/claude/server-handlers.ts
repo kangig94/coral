@@ -57,7 +57,7 @@ function launchClaudeJob(
   sessionLabel: string,
   handler: (signal: AbortSignal, onEvent: OnEventCallback) => Promise<McpResult>,
   mgr: SessionManager,
-  workingDirectory: string = process.cwd(),
+  workingDirectory: string,
 ): McpResult {
   return launchRunnerJob({
     provider: 'claude',

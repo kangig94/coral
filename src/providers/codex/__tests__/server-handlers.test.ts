@@ -287,6 +287,7 @@ describe('launchJob', () => {
       'failing-session',
       () => Promise.reject(new Error('boom')),
       mgr,
+      '/tmp/work',
     );
     await sleep(20);
     expect(writeSessionError).toHaveBeenCalled();

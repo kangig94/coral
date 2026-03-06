@@ -9,6 +9,8 @@ import { handleWorkflow } from '../handler.js';
 import type { SessionManager } from '../../runner/session-manager.js';
 import type { SessionProvider } from '../../runner/types.js';
 
+const PROJECT_ROOT = '/tmp/coral-workflow-project';
+
 const dirsToClean = new Set<string>();
 
 afterEach(() => {
@@ -59,6 +61,7 @@ describe('workflow handler', () => {
       { expression: 'architect -> resolver', prompt: 'hello' },
       toolCallFn,
       mgr,
+      PROJECT_ROOT,
     );
     const launch = parseLaunch(result);
     dirsToClean.add(launch.session_dir);
@@ -80,6 +83,7 @@ describe('workflow handler', () => {
         { expression: 'architect' },
         async () => jsonResult({}),
         mgr,
+        PROJECT_ROOT,
       )).toThrow();
   });
 
@@ -90,6 +94,7 @@ describe('workflow handler', () => {
         { expression: '-> resolver', prompt: 'hello' },
         async () => jsonResult({}),
         mgr,
+        PROJECT_ROOT,
       )).toThrow('Expected step expression before "->"');
   });
 
@@ -106,6 +111,7 @@ describe('workflow handler', () => {
         },
         async () => jsonResult({}),
         mgr,
+        PROJECT_ROOT,
       )).toThrow('Unknown atoms keys: resolver');
   });
 
@@ -116,6 +122,7 @@ describe('workflow handler', () => {
         { expression: 'some-plugin:architect', prompt: 'hello' },
         async () => jsonResult({}),
         mgr,
+        PROJECT_ROOT,
       )).toThrow('unsupported namespace');
   });
 
@@ -128,6 +135,7 @@ describe('workflow handler', () => {
         { expression: 'architect', prompt: 'hello', provider: 'unknown-provider' },
         toolCallFn,
         mgr,
+        PROJECT_ROOT,
       ),
     ).toThrow('Unknown provider "unknown-provider"');
     expect(toolCallFn).not.toHaveBeenCalled();
@@ -142,6 +150,7 @@ describe('workflow handler', () => {
         { expression: 'architect@unknown-provider', prompt: 'hello', provider: 'codex' },
         toolCallFn,
         mgr,
+        PROJECT_ROOT,
       ),
     ).toThrow('Unknown provider "unknown-provider"');
     expect(toolCallFn).not.toHaveBeenCalled();
@@ -164,6 +173,7 @@ describe('workflow handler', () => {
       { expression: 'architect', prompt: 'hello' },
       toolCallFn,
       mgr,
+      PROJECT_ROOT,
     );
     const launch = parseLaunch(result);
     dirsToClean.add(launch.session_dir);
@@ -203,6 +213,7 @@ describe('workflow handler', () => {
       { expression: 'architect', prompt: 'hello' },
       toolCallFn,
       mgr,
+      PROJECT_ROOT,
       'token-1',
       notify,
     );
@@ -213,6 +224,92 @@ describe('workflow handler', () => {
     expect(toolCallFn).toHaveBeenCalled();
   });
 
+  it('passes caller projectRoot to workflow launch workingDirectory', async () => {
+    vi.resetModules();
+    const launchJobMock = vi.fn(() => jsonResult({
+      session: 'workflow-session',
+      session_dir: '/tmp/workflow-session',
+      status: 'running',
+    }));
+
+    vi.doMock('../../runner/job-manager.js', async () => {
+      const actual = await vi.importActual<typeof import('../../runner/job-manager.js')>('../../runner/job-manager.js');
+      return {
+        ...actual,
+        launchJob: launchJobMock,
+      };
+    });
+
+    try {
+      const { handleWorkflow: handleWorkflowWithMock } = await import('../handler.js');
+      handleWorkflowWithMock(
+        { expression: 'architect', prompt: 'hello' },
+        async () => jsonResult({}),
+        makeSessionManager(),
+        PROJECT_ROOT,
+      );
+
+      expect(launchJobMock).toHaveBeenCalledWith(expect.objectContaining({
+        workingDirectory: PROJECT_ROOT,
+      }));
+    } finally {
+      vi.doUnmock('../../runner/job-manager.js');
+      vi.resetModules();
+    }
+  });
+
+  it('uses projectRoot for both nested launch and stale resume working_directory', async () => {
+    const mgr = makeSessionManager();
+    const initial = createSessionDir('stale-launch-old', 'codex');
+    const resumed = createSessionDir('stale-launch-new', 'codex');
+    dirsToClean.add(initial.dir);
+    dirsToClean.add(resumed.dir);
+
+    const payloads: Record<string, unknown>[] = [];
+    const toolCallFn = vi.fn(async (
+      _provider: SessionProvider,
+      args: Record<string, unknown>,
+    ): Promise<McpResult> => {
+      payloads.push({ ...args });
+
+      if (payloads.length === 1) {
+        return jsonResult({ session: initial.id, session_dir: initial.dir, status: 'running' });
+      }
+
+      setTimeout(() => {
+        writeSessionResult(resumed.dir, 'done', { session_name: 'coral:architect' });
+      }, 20);
+      return jsonResult({ session: resumed.id, session_dir: resumed.dir, status: 'running' });
+    });
+
+    const result = handleWorkflow(
+      {
+        expression: 'architect',
+        prompt: 'hello',
+        provider: 'codex',
+        stale_timeout_seconds: 0.01,
+      },
+      toolCallFn,
+      mgr,
+      PROJECT_ROOT,
+    );
+    const launch = parseLaunch(result);
+    dirsToClean.add(launch.session_dir);
+
+    const terminal = await waitForTerminalStatus(launch.session_dir, 8_000);
+    expect(terminal.status).toBe('completed');
+    expect(toolCallFn).toHaveBeenCalledTimes(2);
+    expect(payloads[0]).toEqual(expect.objectContaining({
+      op: 'coral:architect',
+      working_directory: PROJECT_ROOT,
+    }));
+    expect(payloads[1]).toEqual(expect.objectContaining({
+      op: 'coral:architect',
+      session: initial.id,
+      working_directory: PROJECT_ROOT,
+    }));
+  });
+
   it('parses double-quoted workflow prompt literals', () => {
     const mgr = makeSessionManager();
     expect(() =>
@@ -220,6 +317,7 @@ describe('workflow handler', () => {
         { expression: '"echo hi"', prompt: 'hello' },
         async () => jsonResult({}),
         mgr,
+        PROJECT_ROOT,
       )).not.toThrow();
   });
 
@@ -241,6 +339,7 @@ describe('workflow handler', () => {
       { expression: 'architect', prompt: 'hello', provider: 'codex' },
       toolCallFn,
       mgr,
+      PROJECT_ROOT,
     );
     const launch = parseLaunch(result);
     dirsToClean.add(launch.session_dir);
@@ -256,6 +355,7 @@ describe('workflow handler', () => {
         { expression: '(architect, architect@codex)', prompt: 'hello', provider: 'codex' },
         async () => jsonResult({}),
         mgr,
+        PROJECT_ROOT,
       ),
     ).toThrow('Duplicate atom');
   });
@@ -267,6 +367,7 @@ describe('workflow handler', () => {
         { expression: '(architect, architect@claude)', prompt: 'hello', provider: 'codex' },
         async () => jsonResult({}),
         mgr,
+        PROJECT_ROOT,
       ),
     ).not.toThrow();
   });
@@ -278,6 +379,7 @@ describe('workflow handler', () => {
         { expression: "('summarize', architect)", prompt: 'hello', provider: 'codex' },
         async () => jsonResult({}),
         mgr,
+        PROJECT_ROOT,
       ),
     ).not.toThrow();
   });
@@ -293,6 +395,7 @@ describe('workflow handler', () => {
         },
         async () => jsonResult({}),
         mgr,
+        PROJECT_ROOT,
       ),
     ).not.toThrow();
   });
@@ -304,6 +407,7 @@ describe('workflow handler', () => {
         { expression: 'coral:architect', prompt: 'hello' },
         async () => jsonResult({}),
         mgr,
+        PROJECT_ROOT,
       ),
     ).not.toThrow();
   });
@@ -315,6 +419,7 @@ describe('workflow handler', () => {
         { expression: '   ', prompt: 'hello' },
         async () => jsonResult({}),
         mgr,
+        PROJECT_ROOT,
       ),
     ).toThrow();
   });
@@ -338,6 +443,7 @@ describe('workflow handler — singular vs plural unknown provider error', () =>
         { expression: 'architect@bad2', prompt: 'hi', provider: 'bad1' },
         async () => jsonResult({}),
         mgr,
+        PROJECT_ROOT,
       ),
     ).toThrow(/Unknown providers:/i);
   });

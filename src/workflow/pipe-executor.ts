@@ -38,6 +38,7 @@ type LaunchContext = {
   defaultProvider: SessionProvider;
   dispatch: AtomDispatchFn;
   atoms?: WorkflowAtoms;
+  projectRoot?: string;
   signal?: AbortSignal;
   onProgress: (message: string) => void;
 };
@@ -221,6 +222,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     defaultProvider,
     dispatch,
     atoms,
+    projectRoot,
     signal,
     onProgress,
   } = context;
@@ -241,6 +243,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
       op: `coral:${atom.agent}`,
       prompt: atomPrompt,
       bypass: true,
+      ...(projectRoot ? { working_directory: projectRoot } : {}),
       ...(config.effort ? { effort: config.effort } : {}),
     };
   } else {
@@ -252,6 +255,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
       op: 'coral:workflow-literal',
       prompt: promptText,
       bypass: true,
+      ...(projectRoot ? { working_directory: projectRoot } : {}),
     };
   }
 
@@ -338,6 +342,7 @@ export async function waitForAllAtoms(
     staleTimeoutMs?: number;
     dispatch?: AtomDispatchFn;
     pollIntervalMs?: number;
+    projectRoot?: string;
   },
 ): Promise<Map<string, { session: string; sessionDir: string }>> {
   const pending = new Set<string>();
@@ -456,6 +461,7 @@ export async function waitForAllAtoms(
           op: atom.resumeOp,
           session: staleSession,
           prompt: STALE_RESUME_PROMPT,
+          ...(options.projectRoot ? { working_directory: options.projectRoot } : {}),
         });
 
         if (resumeResult.isError) {
@@ -522,6 +528,7 @@ export async function executePipeline(
   dispatch: AtomDispatchFn,
   options: {
     atoms?: WorkflowAtoms;
+    projectRoot?: string;
     signal?: AbortSignal;
     onProgress?: (message: string) => void;
     staleTimeoutMs?: number;
@@ -545,6 +552,7 @@ export async function executePipeline(
         defaultProvider,
         dispatch,
         atoms: options.atoms,
+        projectRoot: options.projectRoot,
         signal: options.signal,
         onProgress,
       })),
@@ -565,6 +573,7 @@ export async function executePipeline(
         staleTimeoutMs: options.staleTimeoutMs,
         dispatch,
         pollIntervalMs: options.pollIntervalMs,
+        projectRoot: options.projectRoot,
       },
     );
 

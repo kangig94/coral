@@ -5,11 +5,10 @@ declare const __VERSION__: string;
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { killAllChildren } from '../runner/engine.js';
 import { SessionManager } from '../runner/session-manager.js';
-import { writeSessionError } from '../runner/progress.js';
-import { activeSessions, tryClaimTerminalWrite, shutdownSignal } from '../runner/job-manager.js';
-import { getTools, handleToolCall } from './server-handlers.js';
+import { shutdownSignal } from '../runner/job-manager.js';
+import { handleToolCall } from './server-handlers.js';
+import { getTools } from './tools.js';
 
 const server = new Server(
   {
@@ -33,23 +32,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 
 function shutdown() {
   process.stderr.write('Coral AX MCP Server shutting down...\n');
-
-  // 1. Signal all wait handlers to exit their poll loops immediately
   shutdownSignal.abort();
-
-  // 2. Claim terminal write for all active sessions and mark as error
-  for (const [sessionId, entry] of activeSessions) {
-    if (tryClaimTerminalWrite(sessionId)) {
-      writeSessionError(entry.sessionDir, 'Server shutting down');
-      entry.terminalState = 'error';
-    }
-    entry.controller.abort();
-  }
-  activeSessions.clear();
-
-  // 3. Kill all OS-level child processes
-  killAllChildren();
-
   server.close().finally(() => process.exit(0));
 }
 
