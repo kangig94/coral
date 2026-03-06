@@ -69,12 +69,12 @@ argument-hint: "[--deep] [--codex] [investigation target or question]"
   **If `--deep`**: append ` --deep` to the op string (e.g., `coral:scanner --deep`).
   Run one step at a time — do NOT launch steps in parallel. Each step's output informs
   the next step's scope and "Needed when" evaluation.
+  Each step is a fresh call (no session continuity — each agent has a different role).
   After each exec:
-  1. Capture `session` and `session_dir` from the exec response (`{ session, session_dir, session_name, status }`).
-  2. Wait using `wait({ sessions: [session], timeout_seconds })` in a loop.
-  3. On `status: "completed"`, read `session_dir/result.md`.
-  4. If wait returns `status: "error"`, read `session_dir/status.json`, abort the chain, and report the error.
-  5. Pass the same `session` UUID to the next `codex({ op: "coral:<role_name>", session, ... })` call.
+  1. Capture `job` from the exec response.
+  2. `wait({ jobs: [job], timeout_seconds })`.
+  3. On completion, read `/tmp/coral-jobs/<job>/result.md`.
+  4. On error, read `/tmp/coral-jobs/<job>/status.json`, abort the chain, and report the error.
   You (the executor) post-process and append the result to the file after each step completes.
 
   ### Scoping Framework

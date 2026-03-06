@@ -74,17 +74,17 @@ Strip the `--codex` flag before passing the prompt to the execution path.
          `<Failure_Modes_To_Avoid>`, `<Output_Format>`, target file paths, and coding standards.
          Pass `working_directory`.
          Then wait in a timeout loop:
-         `wait({ sessions: [session], timeout_seconds })`
-         until terminal status, then Read(`session_dir + "/result.md"`) for output.
+         `wait({ jobs: [job], timeout_seconds })`
+         until terminal status, then `Read("/tmp/coral-jobs/<job>/result.md")` for output.
        Parallel split:
        - Default: spawn each group as a parallel Task (`subagent_type: "general-purpose"`).
          Pass `<Execution>`, `<Constraints>`, the file group, and project coding standards.
-       - `--codex`: dispatch one `codex({ op: "exec", ... })` call per file group
-         (include group-specific scope/context), collect all `session`s, then wait for all sessions:
-         1. Call `wait({ sessions: pendingSessions, timeout_seconds })`
+       - `--codex`: dispatch one `codex({ op: "exec", ... })` call per file group,
+         collect all `job`s, then wait:
+         1. Call `wait({ jobs: pendingJobs, timeout_seconds })`
          2. If `status: "timeout"`, continue
-         3. If `status: "completed"`, read `session_dir/result.md`, remove completed session
-         4. If `status: "error"`, read `session_dir/status.json`, remove failed session, continue
+         3. If `status: "completed"`, read `/tmp/coral-jobs/<job>/result.md`, remove completed job
+         4. If `status: "error"`, read `/tmp/coral-jobs/<job>/status.json`, remove failed job, continue
     5) Review each change for correctness AND justification.
        Use git diff as a before/after reference when the diff is manageable.
        Correctness:

@@ -18,7 +18,7 @@ If the argument starts with `session`, handle directly:
 | Command | Action |
 |---------|--------|
 | `session list` | `codex({ op: "list" })` |
-| `session fork <session-uuid> [new-name]` | `codex({ op: "fork", session: sessionUuid, name: newName })` → wait(session) → Read(session_dir/result.md) |
+| `session fork <session-uuid> [new-name]` | `codex({ op: "fork", session: sessionUuid, name: newName })` → wait(job) → Read(/tmp/coral-jobs/\<job\>/result.md) |
 
 Present: list → table (name, model, last used). fork → show response from result.md.
 Never show raw `session` UUID, `model`, or `duration_ms` unless asked.
@@ -51,10 +51,10 @@ Dispatch TWO Codex jobs in parallel:
 
 Use `session` only when available from step 2. Omit it for fresh review sessions.
 Then wait with timeout handling until both jobs finish:
-1. `wait({ sessions: pendingSessions, timeout_seconds })`
+1. `wait({ jobs: pendingJobs, timeout_seconds })`
 2. If `status: "timeout"`, keep waiting
-3. If `status: "completed"`, read `session_dir/result.md` and remove that session from `pendingSessions`
-4. If `status: "error"`, read `session_dir/status.json`, record the failure, remove that session, continue
+3. If `status: "completed"`, read `/tmp/coral-jobs/<job>/result.md` and remove that job from `pendingJobs`
+4. If `status: "error"`, read `/tmp/coral-jobs/<job>/status.json`, record the failure, remove that job, continue
 
 After both return, synthesize:
 1. Merge findings, deduplicate
@@ -77,14 +77,14 @@ Call MCP tool directly. Pass prompt **verbatim**. Never rephrase, filter, or ref
 
 | Condition | Action |
 |-----------|--------|
-| No session | `codex({ op: "exec", prompt, working_directory })` → `{ session, session_dir, session_name }` |
-| Session exists | `codex({ op: "exec", session, prompt, working_directory })` → `{ session, session_dir, session_name }` |
+| No session | `codex({ op: "exec", prompt, working_directory })` → `{ job, session }` |
+| Session exists | `codex({ op: "exec", session, prompt, working_directory })` → `{ job, session }` |
 
 After exec, poll and read the result:
-1. `wait({ sessions: [session] })` → check `status`
-2. Completed: `Read(session_dir + "/result.md")` for response. Keep using the same `session` UUID from the exec/fork response for continuity.
-3. Error: `Read(session_dir + "/status.json")` for `error` field
-4. Timeout: re-wait, or abort with `codex({ op: "abort", session })`
+1. `wait({ jobs: [job] })` → check status
+2. Completed: `Read("/tmp/coral-jobs/<job>/result.md")` for response. Keep using the same `session` UUID from the exec/fork response for continuity.
+3. Error: `Read("/tmp/coral-jobs/<job>/status.json")` for `error` field
+4. Timeout: re-wait, or abort with `abort({ jobs: [job] })`
 
 Show the result:
 1. Completed → show response from result.md, then append: `session: <session_name>`
