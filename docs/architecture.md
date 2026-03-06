@@ -469,9 +469,8 @@ coral/
 │   ├── silent-failure-detector.mjs # PostToolUse silent-failure detector
 │   ├── kb-memo-reminder.mjs     # PreToolUse memo hint
 │   ├── kb-promote-reminder.mjs  # Stop/Compact promotion hint
-│   ├── plan-guard.mjs           # Compact plan-mode recovery
-│   ├── plan-state-tracker.mjs   # UserPromptSubmit/Stop plan tracking
-│   └── discuss-idle-guard.mjs   # TeammateIdle bid/speak/vote enforcer
+│   ├── discuss-idle-guard.mjs   # TeammateIdle bid/speak/vote enforcer
+│   └── hud-auto-update.mjs     # SessionStart HUD auto-update
 ├── scripts/
 │   └── build-server.mjs         # esbuild bundling + version sync
 ├── bridge/

@@ -128,10 +128,9 @@ hooks/kb-lookup-reminder.mjs  -> PostToolUseFailure KB hint script
 hooks/silent-failure-detector.mjs -> PostToolUse silent-failure KB hint script
 hooks/kb-memo-reminder.mjs    -> PreToolUse memo reminder script
 hooks/kb-promote-reminder.mjs -> Stop/Compact promotion script
-hooks/plan-guard.mjs          -> Compact plan-mode recovery script
-hooks/plan-state-tracker.mjs  -> UserPromptSubmit/Stop plan tracking script
 hooks/discuss-idle-guard.mjs  -> TeammateIdle bid/speak/vote enforcer
 hooks/backend-warm-start.mjs  -> SessionStart backend warm-start hook
+hooks/hud-auto-update.mjs    -> SessionStart HUD auto-update hook
 
 ~/.claude/coral/sessions/<project-hash>/*.json  -> Runtime AX session files (Codex + Claude, auto-created)
 ~/.claude/coral/backend.json                    -> Runtime backend connection info (auto-created)

@@ -1,24 +1,23 @@
 # Hooks
 
-Hooks provide automatic context injection, agent routing, plan-mode persistence, error-aware KB reminders, and KB promotion enforcement.
+Hooks provide automatic context injection, agent routing, HUD auto-update, error-aware KB reminders, and KB promotion enforcement.
 
 ## Overview
 
 Claude Code's hook system executes scripts on specific events. Coral uses hooks at two levels:
 
 **Plugin hooks** (`hooks/hooks.json`):
-1. **SessionStart** (`*`) - Injects CLAUDE.md behavioral guidelines into every Claude session and warm-starts the backend daemon
-2. **SessionStart** (`compact`) - After context compaction, restores plan-mode state and reminds about KB promotion
-3. **UserPromptSubmit** - Tracks plan-mode activation when `/plan` or `/coral:plan` is invoked
-4. **PreToolUse** - Periodically reminds Claude to write memos for non-obvious discoveries
-5. **PostToolUseFailure** (`*`) - On any non-zero tool exit, reminds Claude to check `.claude/coral/kb/` before debugging
-6. **PostToolUse** (`Bash`) - Detects silent failures in command output when exit codes are masked and injects the same KB lookup reminder context
-7. **Stop** - Enforces KB promotion for unprocessed memos; cleans up plan-mode state
-8. **TeammateIdle** (`dc-*`) - Blocks idle when discuss agents have pending actions (bid/speak/vote)
+1. **SessionStart** (`*`) - Injects CLAUDE.md behavioral guidelines, warm-starts the backend daemon, and auto-updates HUD script
+2. **SessionStart** (`compact`) - After context compaction, reminds about KB promotion
+3. **PreToolUse** - Periodically reminds Claude to write memos for non-obvious discoveries
+4. **PostToolUseFailure** (`*`) - On any non-zero tool exit, reminds Claude to check `.claude/coral/kb/` before debugging
+5. **PostToolUse** (`Bash`) - Detects silent failures in command output when exit codes are masked and injects the same KB lookup reminder context
+6. **Stop** - Enforces KB promotion for unprocessed memos
+7. **TeammateIdle** (`dc-*`) - Blocks idle when discuss agents have pending actions (bid/speak/vote)
 
 ## Hook Configuration
 
-Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/kb-lookup-reminder.mjs`, `hooks/silent-failure-detector.mjs`, `hooks/kb-memo-reminder.mjs`, `hooks/kb-promote-reminder.mjs`, `hooks/plan-guard.mjs`, `hooks/plan-state-tracker.mjs`, `hooks/discuss-idle-guard.mjs`, `hooks/backend-warm-start.mjs`.
+Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/kb-lookup-reminder.mjs`, `hooks/silent-failure-detector.mjs`, `hooks/kb-memo-reminder.mjs`, `hooks/kb-promote-reminder.mjs`, `hooks/discuss-idle-guard.mjs`, `hooks/backend-warm-start.mjs`, `hooks/hud-auto-update.mjs`.
 
 All hook scripts are **Node.js ESM** (`.mjs`). They read input JSON from stdin, write output JSON to stdout, and **fail-open** via `try/catch { process.exit(0) }` - a crash or timeout never blocks the user.
 
@@ -42,31 +41,31 @@ Script: `hooks/backend-warm-start.mjs`. Fires at session start (matcher: `*`, ti
 
 **Fail-open**: The entire script is wrapped in `try/catch {}`. If `CLAUDE_PLUGIN_ROOT` is unset, the hook exits silently. Any error during file read, PID check, or spawn results in a silent exit — the backend will be started lazily on first tool call if the hook fails.
 
+## SessionStart Hook (HUD Auto-Update)
+
+Script: `hooks/hud-auto-update.mjs`. Fires at session start (matcher: `*`, timeout: 3s). Silently updates the installed HUD script if a newer version is available in the plugin cache.
+
+**Sequence**:
+1. Reads `~/.claude/hud/coral-hud.mjs` — if missing, exits (HUD not installed)
+2. Computes SHA-256 hash of installed file and source (`skills/statusline/coral-hud.mjs`)
+3. If hashes match, exits (already up to date)
+4. If different, copies source over installed file
+
+**Fail-open**: Entire script wrapped in `try/catch {}`. Uninstalled HUD or missing plugin root results in silent exit.
+
 ## SessionStart (Compact) Hook
 
-Fires after context compaction (matcher: `compact`). Runs two scripts:
+Fires after context compaction (matcher: `compact`).
 
-**Script 1: `hooks/plan-guard.mjs`** — Reads `session_id` from stdin. Checks for `.claude/coral/tmp/plan-active-{sessionId}` flag file. If present, injects `hookSpecificOutput` with `additionalContext` containing plan-mode recovery instructions (re-read SKILL.md, recover plan file, resume without starting over). If absent, exits silently.
+**Script: `hooks/kb-promote-reminder.mjs`** — Checks for unprocessed memos in `.claude/coral/memo/`. Injects `hookSpecificOutput` with `additionalContext` reminding about KB promotion.
 
-**Script 2: `hooks/kb-promote-reminder.mjs`** — Checks for unprocessed memos in `.claude/coral/memo/`. Injects `hookSpecificOutput` with `additionalContext` reminding about KB promotion.
-
-**Purpose**: After compaction the model loses prior context. This hook restores critical state — plan-mode awareness and KB promotion reminders — so work continues seamlessly.
+**Purpose**: After compaction the model loses prior context. This hook restores KB promotion reminders so work continues seamlessly.
 
 ## Removed SubagentStart Hook
 
 The prior `SubagentStart` codex delegation hook has been removed. Codex delegation now uses
 direct MCP tool dispatch (`codex({ op: "coral:<agent>", ... })`) and executor-side
 `ensureMultiAgent()` configuration.
-
-## UserPromptSubmit Hook (Plan State Tracker)
-
-Script: `hooks/plan-state-tracker.mjs`. Fires on every user prompt submission.
-
-Reads `hook_event_name` and `session_id` from stdin JSON. If the user prompt matches `/plan` or `/coral:plan` (case-insensitive), creates `.claude/coral/tmp/plan-active-{sessionId}` flag file to signal that a planning session is active.
-
-Also cleans up stale flag files older than 24 hours from other sessions.
-
-**Purpose**: Works with plan-guard.mjs (SessionStart compact) and the Stop hook to maintain plan-mode state across context compaction. The flag persists even if the context window is compacted, allowing plan-guard to restore plan-mode awareness.
 
 ## PreToolUse Hook (Memo Reminder)
 
@@ -94,9 +93,7 @@ On successful Bash tool executions (`PostToolUse` only fires when exit code is 0
 
 ## Stop Hook
 
-Runs two scripts on every response completion:
-
-**Script 1: `hooks/kb-promote-reminder.mjs`** — Skill-scoped via state file.
+Script: `hooks/kb-promote-reminder.mjs`. Skill-scoped via state file.
 
 **State file pattern**: Skills (ralph, bugfix) create `.claude/coral/tmp/kb-active` on start. The Stop hook checks for this file — if absent, exits silently (normal conversation unaffected).
 
@@ -104,8 +101,6 @@ When state file exists:
 1. Delete state file (unconditionally)
 2. `decision: "block"` prevents Claude from stopping
 3. `reason` instructs Claude to review memos for KB promotion (even if no memos exist, the block fires to ensure the KB review step runs)
-
-**Script 2: `hooks/plan-state-tracker.mjs`** — Cleans up the plan-active flag. If `.claude/coral/tmp/plan-active-{sessionId}` exists, deletes it (planning turn has ended).
 
 ## TeammateIdle Hook (Discuss Idle Guard)
 
