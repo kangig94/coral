@@ -89,6 +89,13 @@ function computeAtomKey(stepIndex: number, atomIndex: number): string {
   return `${stepIndex}:${atomIndex}`;
 }
 
+function stripElapsedPrefix(message: string): string {
+  if (!message.startsWith('[')) return message;
+  const closeBracket = message.indexOf('] ');
+  if (closeBracket < 0) return message;
+  return message.slice(closeBracket + 2);
+}
+
 function computeBackoffMs(attempt: number): number {
   return DEFAULT_BACKOFF_BASE_MS * (2 ** (attempt - 1));
 }
@@ -466,7 +473,7 @@ export async function waitForAtoms(
         const atom = pending.get(event.jobId);
         if (!atom) continue;
         lastActivityAt.set(atom.atomKey, Date.now());
-        options.onProgress(`${atom.stepIndex}-${atom.agent.slice(0, 3)} ${event.message}`);
+        options.onProgress(`${atom.stepIndex}-${atom.agent.slice(0, 3)} ${stripElapsedPrefix(event.message)}`);
         continue;
       }
 
