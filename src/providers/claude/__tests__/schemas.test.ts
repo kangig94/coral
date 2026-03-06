@@ -8,7 +8,6 @@ describe('claude schemas', () => {
       prompt: 'hello',
       session: 'session-ref',
       working_directory: '/tmp/work',
-      system_prompt: 'Be strict',
     });
 
     expect(parsed.success).toBe(true);
@@ -52,7 +51,6 @@ describe('claude schemas', () => {
     const ok = coralClaudeSchema.safeParse({
       op: 'coral:architect',
       prompt: 'Do it',
-      effort: 'xhigh',
     });
     const bad = coralClaudeSchema.safeParse({
       op: 'coral:../architect',

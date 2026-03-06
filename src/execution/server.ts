@@ -297,7 +297,6 @@ function getToolDescriptors(): Array<Record<string, unknown>> {
         prompt: { type: 'string' },
         session: { type: 'string' },
         working_directory: { type: 'string' },
-        system_prompt: { type: 'string' },
       },
       required: ['op'],
     },
@@ -421,7 +420,6 @@ async function routeToolCall(
         sessionId,
         prompt,
         cwd,
-        systemPrompt: optionalString(request.args, 'system_prompt'),
       }, request.context),
     };
   }
@@ -436,7 +434,6 @@ async function routeToolCall(
         sessionId,
         prompt,
         cwd,
-        systemPrompt: optionalString(request.args, 'system_prompt'),
       }, request.context),
     };
   }
@@ -450,7 +447,6 @@ async function routeToolCall(
       body: await service.start(request.name, {
         prompt,
         cwd: cwd ?? defaultCwd,
-        systemPrompt: optionalString(request.args, 'system_prompt'),
       }, request.context),
     };
   }

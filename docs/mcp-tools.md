@@ -186,8 +186,7 @@ Single entry point for Claude CLI execution. Use the required `op` discriminator
       "op": { "type": "string", "description": "Operation: exec/list/fork, or coral:<agent-name> for agent delegation" },
       "prompt": { "type": "string", "description": "Prompt to send (exec required)" },
       "session": { "type": "string", "description": "Session ID for resume (exec with existing session)" },
-      "working_directory": { "type": "string", "description": "Working directory for execution" },
-      "system_prompt": { "type": "string", "description": "Custom system prompt (replaces default)" }
+      "working_directory": { "type": "string", "description": "Working directory for execution" }
     },
     "required": ["op"]
   }
@@ -209,7 +208,7 @@ Starts a new Claude CLI run (or resumes when `session` is provided). Returns imm
 Execution details:
 - Uses `claude -p --output-format json`
 - Prompt is sent via stdin (not argv)
-- Optional flags: `--system-prompt`
+- System prompt is injected internally for `coral:*` ops via `--append-system-prompt`
 - Resume mode uses `--resume <session-id>`
 - `--no-session-persistence` is not used
 
@@ -242,7 +241,6 @@ Fork an existing Claude session into a new branch. Uses `claude -p --resume <thr
 | `session` | string | Yes | Source session identifier (must exist in Coral registry) |
 | `prompt` | string | No | Additional prompt for the forked session |
 | `working_directory` | string | No | Working directory |
-| `system_prompt` | string | No | Additional system prompt (appended) |
 
 ### Missing `session_id` Behavior
 

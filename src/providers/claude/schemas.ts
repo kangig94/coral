@@ -6,13 +6,10 @@ import {
   coralOpSchema,
 } from '../../shared/schemas.js';
 
-const systemPromptSchema = z.string().optional();
-
 const sessionExecFields = {
   prompt: promptSchema,
   session: sessionRefSchema.optional(),
   working_directory: cwdSchema,
-  system_prompt: systemPromptSchema,
 };
 
 const execShape = z.object({
@@ -29,7 +26,6 @@ const forkShape = z.object({
   session: sessionRefSchema,
   prompt: z.string().optional(),
   working_directory: cwdSchema,
-  system_prompt: systemPromptSchema,
 });
 
 export const claudeOpSchema = z.discriminatedUnion('op', [
