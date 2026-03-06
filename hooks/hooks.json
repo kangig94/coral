@@ -8,6 +8,11 @@
             "type": "command",
             "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; cat \"${CLAUDE_PLUGIN_ROOT}/CLAUDE.md\"",
             "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/backend-warm-start.mjs\"",
+            "timeout": 10
           }
         ]
       },
