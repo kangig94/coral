@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { join } from 'node:path';
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { type McpResult, jsonResult } from '../../shared/mcp-utils.js';
-import { launchJob, handleWait, activeSessions } from '../job-manager.js';
+import { launchJob, handleWait, activeSessions, DEFAULT_POLL_MS } from '../job-manager.js';
 import {
   createSessionDir,
   appendProgressEvent,
@@ -196,6 +196,25 @@ describe('runner job-manager handleWait', () => {
         message: '[wait-dedup] same message',
       }),
     }));
+  });
+
+  it('DEFAULT_POLL_MS defaults to 500', () => {
+    expect(DEFAULT_POLL_MS).toBe(500);
+  });
+
+  it('respects poll_ms override for faster polling', async () => {
+    const { id, dir } = createSessionDir('fast-poll', 'codex');
+    dirsToClean.add(dir);
+
+    const start = Date.now();
+    setTimeout(() => writeSessionResult(dir, 'done', { session_name: 'fast-poll' }), 80);
+
+    const result = await handleWait({ sessions: [id], timeout_seconds: 3, poll_ms: 50 });
+    const elapsed = Date.now() - start;
+    const data = JSON.parse(result.content[0].text) as { status: string };
+
+    expect(data.status).toBe('completed');
+    expect(elapsed).toBeLessThan(500);
   });
 
   it('progress notification ignores trailing partial JSONL line', async () => {

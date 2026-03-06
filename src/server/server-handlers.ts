@@ -12,6 +12,7 @@ import { handleWorkflow } from '../workflow/handler.js';
 const waitToolSchema = z.object({
   sessions: z.array(z.string().uuid()).min(1, 'At least one session required'),
   timeout_seconds: z.number().min(1).max(1200).optional(),
+  poll_ms: z.number().int().min(50).max(5000).optional(),
 });
 
 const abortToolSchema = z.object({
@@ -26,6 +27,7 @@ const waitTool = {
     properties: {
       sessions: { type: 'array', items: { type: 'string' }, description: 'Session UUIDs to monitor (from exec/fork response)' },
       timeout_seconds: { type: 'number', description: 'Max wait time in seconds (1-1200, default 600)' },
+      poll_ms: { type: 'number', description: 'Poll interval in ms (50-5000, default from CORAL_WAIT_POLL_MS or 500)' },
     },
     required: ['sessions'],
   },

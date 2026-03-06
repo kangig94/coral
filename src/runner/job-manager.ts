@@ -46,9 +46,18 @@ export type LaunchJobOptions<T> = {
   ) => { responseText: string; metadata: CompletionMetadata; sessionId?: string };
 };
 
+function parsePositiveInt(raw: string | undefined, fallback: number): number {
+  if (!raw) return fallback;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
+export const DEFAULT_POLL_MS = parsePositiveInt(process.env.CORAL_WAIT_POLL_MS, 500);
+
 export type WaitInput = {
   sessions: string[];
   timeout_seconds?: number;
+  poll_ms?: number;
 };
 
 export const activeSessions = new Map<string, ActiveSession>();
@@ -125,7 +134,8 @@ export async function handleWait(
   notify?: (n: { method: string; params: Record<string, unknown> }) => Promise<void>,
   progressToken?: string | number,
 ): Promise<McpResult> {
-  const { sessions, timeout_seconds = 600 } = input;
+  const { sessions, timeout_seconds = 600, poll_ms } = input;
+  const pollInterval = poll_ms ?? DEFAULT_POLL_MS;
 
   const sessionDirs = new Map<string, string>();
   const sessionMeta = new Map<string, { name: string; startedAt: number | undefined }>();
@@ -229,7 +239,7 @@ export async function handleWait(
       const timer = setTimeout(() => {
         shutdownSignal.signal.removeEventListener('abort', onAbort);
         resolve();
-      }, 500);
+      }, pollInterval);
       shutdownSignal.signal.addEventListener('abort', onAbort);
     });
   }
