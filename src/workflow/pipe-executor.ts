@@ -1,9 +1,11 @@
+import { homedir } from 'node:os';
+import { readdir, unlink } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { CallerContext, ExecutionService } from '../execution/service.js';
 import type { LaunchDecision, TerminalResult, WaitCursor } from '../types.js';
 import type { EffortLevel } from '../shared/schemas.js';
 import type { PipeAtom, PipelineAST } from './types.js';
 
-export const BOOTSTRAP_POLL_INTERVAL_MS = 50;
 export const BOOTSTRAP_TIMEOUT_MS = 2_000;
 export const SIBLING_DRAIN_TIMEOUT_MS = 15_000;
 
@@ -33,6 +35,7 @@ type LaunchContext = {
   atomIndex: number;
   stepIndex: number;
   stepPrompt: string;
+  context?: string;
   defaultProviderName: string;
   executionSvc: WorkflowExecutionService;
   ctx: CallerContext;
@@ -75,6 +78,22 @@ export class WorkflowExecutionError extends Error {
     this.aborted = options.aborted;
     this.stepDetails = [...options.stepDetails];
   }
+}
+
+function cleanupClaudeSessions(sessionIds: string[]): void {
+  if (sessionIds.length === 0) return;
+  const targets = new Set(sessionIds.map((id) => `${id}.jsonl`));
+  const projectsDir = join(homedir(), '.claude', 'projects');
+  (async () => {
+    const dirs = await readdir(projectsDir, { withFileTypes: true });
+    for (const dir of dirs) {
+      if (!dir.isDirectory()) continue;
+      const files = await readdir(join(projectsDir, dir.name)).catch(() => [] as string[]);
+      for (const file of files) {
+        if (targets.has(file)) await unlink(join(projectsDir, dir.name, file)).catch(() => {});
+      }
+    }
+  })().catch(() => {});
 }
 
 function normalizeErrorText(text: string): string {
@@ -210,6 +229,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     atomIndex,
     stepIndex,
     stepPrompt,
+    context: sharedContext,
     defaultProviderName,
     executionSvc,
     ctx,
@@ -225,6 +245,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
 
   let coralName: string;
   let atomPrompt: string;
+  let config: { effort?: EffortLevel; instruction?: string } = {};
 
   if (atom.kind === 'agent') {
     const namespace = atom.namespace ?? 'coral';
@@ -232,16 +253,17 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
       throw new Error(`Step ${stepIndex + 1}, atom '${label}' launch failed: unsupported namespace "${namespace}"`);
     }
 
-    const config = readAtomConfig(stepIndex, atom.agent, atoms?.[atom.agent]);
+    config = readAtomConfig(stepIndex, atom.agent, atoms?.[atom.agent]);
     coralName = atom.agent;
-    atomPrompt = config.instruction ? `${stepPrompt}\n\n${config.instruction}` : stepPrompt;
+    atomPrompt = [sharedContext, stepPrompt, config.instruction].filter(Boolean).join('\n\n');
   } else {
     coralName = 'workflow-literal';
-    // First-step prompt literals use only the literal text. Later prompt literals
-    // prepend the literal before the previous step output so instruction comes first.
-    atomPrompt = stepIndex === 0 || stepPrompt.length === 0
-      ? atom.text
-      : `${atom.text}\n\n${stepPrompt}`;
+    // First-step prompt literals use the literal as the instruction body; shared
+    // context still prepends when present. Later prompt literals prepend the
+    // literal before the previous step output so instruction comes first.
+    atomPrompt = stepIndex === 0
+      ? (sharedContext ? `${sharedContext}\n\n${atom.text}` : atom.text)
+      : [sharedContext, atom.text, stepPrompt].filter(Boolean).join('\n\n');
   }
 
   if (signal?.aborted) throw readLaunchAbortError(completedStepDetails);
@@ -252,6 +274,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     {
       prompt: atomPrompt,
       cwd: ctx.projectRoot,
+      effort: config.effort,
     },
     ctx,
   );
@@ -381,6 +404,7 @@ export async function waitForAtoms(
     pollIntervalMs: number;
     onProgress: (message: string) => void;
     completedStepDetails?: StepDetail[];
+    claudeSessionIds?: string[];
   },
 ): Promise<Map<string, string>> {
   const pending = new Map<string, LaunchedAtom>();
@@ -463,6 +487,9 @@ export async function waitForAtoms(
         }
 
         results.set(atom.atomKey, event.result.content);
+        if (atom.providerName === 'claude' && options.claudeSessionIds) {
+          options.claudeSessionIds.push(atom.sessionId);
+        }
         continue;
       }
 
@@ -549,6 +576,7 @@ export async function executePipeline(
   ctx: CallerContext,
   options: {
     atoms?: WorkflowAtoms;
+    context?: string;
     signal?: AbortSignal;
     onProgress?: (message: string) => void;
     staleTimeoutMs?: number;
@@ -559,6 +587,7 @@ export async function executePipeline(
   const staleTimeoutMs = options.staleTimeoutMs ?? 0;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_WAIT_POLL_INTERVAL_MS;
   const stepDetails: StepDetail[] = [];
+  const claudeSessionIds: string[] = [];
   let stepPrompt = initialPrompt;
 
   for (let stepIndex = 0; stepIndex < ast.length; stepIndex += 1) {
@@ -575,6 +604,7 @@ export async function executePipeline(
           atomIndex,
           stepIndex,
           stepPrompt,
+          context: options.context,
           defaultProviderName,
           executionSvc,
           ctx,
@@ -613,6 +643,7 @@ export async function executePipeline(
         pollIntervalMs,
         onProgress,
         completedStepDetails: stepDetails,
+        claudeSessionIds,
       });
 
       const orderedStepDetails = buildStepDetailsForAtoms(launchedAtoms, stepResults);
@@ -631,6 +662,10 @@ export async function executePipeline(
       throw createWorkflowExecutionError(message, Boolean(options.signal?.aborted), [...stepDetails]);
     }
   }
+
+  // Fire-and-forget: clean up Claude session files after successful completion.
+  // Done here (not per-atom) so stale recovery can still resume mid-pipeline.
+  cleanupClaudeSessions(claudeSessionIds);
 
   return {
     finalOutput: stepPrompt,

@@ -1,13 +1,13 @@
 declare const __PLUGIN_ROOT__: string;
 declare const __VERSION__: string;
 
-import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { readFileSync, unlinkSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BACKEND_INFO_PATH, readBackendInfo, type BackendInfo } from '../execution/backend-info.js';
 import { BACKEND_LOCK_PATH } from '../execution/backend-lock.js';
-import { isNoEntryError, isRecord } from '../shared/mcp-utils.js';
+import { isNoEntryError, isProcessAlive, isRecord, tryExclusiveWrite } from '../shared/mcp-utils.js';
 import type { WaitStreamEvent } from '../types.js';
 
 const STARTUP_POLL_MS = 200;
@@ -82,18 +82,6 @@ function isBackendStatus(value: unknown): value is Extract<BackendStatus, { stat
 
 function isShuttingDownError(value: unknown): value is { error: 'backend_shutting_down' } {
   return isRecord(value) && value.error === 'backend_shutting_down';
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error: unknown) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === 'ESRCH') return false;
-    if (code === 'EPERM') return true;
-    throw error;
-  }
 }
 
 async function fetchBackendHealth(info: BackendInfo): Promise<BackendHealth | null> {
@@ -207,26 +195,13 @@ export async function shutdownBackend(): Promise<ShutdownResult> {
 }
 
 function tryAcquireReplacementLock(): ReplacementLock | null {
-  mkdirSync(dirname(BACKEND_LOCK_PATH), { recursive: true });
-
   const payload = JSON.stringify({
     instanceId: `proxy-replacement-${process.pid}-${Date.now()}`,
     pid: process.pid,
     version: CURRENT_VERSION,
     startedAt: Date.now(),
   });
-
-  try {
-    writeFileSync(BACKEND_LOCK_PATH, payload, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
-  } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return null;
-    throw error;
-  }
-
-  if (process.platform !== 'win32') {
-    chmodSync(BACKEND_LOCK_PATH, 0o600);
-  }
-
+  if (!tryExclusiveWrite(BACKEND_LOCK_PATH, payload)) return null;
   return { payload };
 }
 
@@ -480,6 +455,7 @@ export async function* streamWait(
   backendInfo: { port: number; token: string },
   lastEventId?: string,
   signal?: AbortSignal,
+  projectRoot?: string,
 ): AsyncGenerator<WaitStreamEvent> {
   const fetchTimeoutMs = Math.min(
     (timeoutSeconds ?? 600) * 1000 + WAIT_FETCH_MARGIN_MS,
@@ -498,7 +474,7 @@ export async function* streamWait(
         'X-Coral-Backend-Token': backendInfo.token,
         ...(lastEventId ? { 'Last-Event-ID': lastEventId } : {}),
       },
-      body: JSON.stringify({ jobIds, timeoutSeconds }),
+      body: JSON.stringify({ jobIds, timeoutSeconds, projectRoot }),
       signal: controller.signal,
     });
 

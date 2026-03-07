@@ -6,14 +6,12 @@ import {
   executeClaudeFork,
   ClaudeExecParseError,
 } from './claude-executor.js';
-import { detectClaudeCli } from './cli-detection.js';
+import { detectClaudeCli } from '../cli-detection.js';
 import { extractClaudeProgressMessage } from './progress.js';
-import type { ClaudeStreamEvent } from './types.js';
-import type { ProviderProgressEvent, ProviderRequest, ProviderResult } from '../../types.js';
-import type { Provider, ProviderCapabilities, ProviderRuntime } from '../types.js';
+import type { ProviderRequest, ProviderResult } from '../../types.js';
+import { mapProviderResultBase } from '../result-mapping.js';
+import { makeOnEvent, type Provider, type ProviderRuntime } from '../types.js';
 import type { EffortLevel } from '../../shared/schemas.js';
-
-const capabilities: ProviderCapabilities = { resumable: true, forkable: true };
 
 async function preflight(): Promise<void> {
   const cli = await detectClaudeCli();
@@ -50,20 +48,6 @@ function buildClaudeArgs(request: ProviderRequest): { prompt: string; systemProm
   };
 }
 
-function makeOnEvent(runtime: ProviderRuntime, jobId: string, projectRoot?: string): (line: string) => void {
-  return (line: string) => {
-    try {
-      const event = JSON.parse(line) as ClaudeStreamEvent;
-      const message = extractClaudeProgressMessage(event, projectRoot);
-      if (!message) return;
-      const progressEvent: ProviderProgressEvent = { jobId, message, ts: new Date().toISOString() };
-      runtime.onEvent(progressEvent);
-    } catch {
-      /* ignore non-JSON or unparseable lines */
-    }
-  };
-}
-
 function parseError(error: unknown, fallbackModel: string): ProviderResult {
   if (error instanceof ClaudeExecParseError) {
     return {
@@ -81,7 +65,7 @@ function parseError(error: unknown, fallbackModel: string): ProviderResult {
 async function execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult> {
   const { prompt, systemPrompt } = buildClaudeArgs(request);
   const effort = request.effort as EffortLevel | undefined;
-  const onEvent = makeOnEvent(runtime, request.sessionId, request.cwd);
+  const onEvent = makeOnEvent(runtime, request.sessionId, extractClaudeProgressMessage, request.cwd);
 
   switch (request.action) {
     case 'exec': {
@@ -96,11 +80,8 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
           onEvent,
         });
         return {
-          content: result.response,
+          ...mapProviderResultBase(result),
           conversationRef: result.sessionId ?? undefined,
-          model: result.model,
-          durationMs: result.durationMs,
-          aborted: result.aborted || undefined,
           nonResumable: result.sessionId == null ? true : undefined,
           usage: result.costUsd != null ? { costUsd: result.costUsd } : undefined,
         };
@@ -121,11 +102,8 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
           onEvent,
         });
         return {
-          content: result.response,
+          ...mapProviderResultBase(result),
           conversationRef: result.sessionId ?? request.conversationRef,
-          model: result.model,
-          durationMs: result.durationMs,
-          aborted: result.aborted || undefined,
           nonResumable: result.sessionId == null ? true : undefined,
           usage: result.costUsd != null ? { costUsd: result.costUsd } : undefined,
         };
@@ -146,11 +124,8 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
           onEvent,
         });
         return {
-          content: result.response,
+          ...mapProviderResultBase(result),
           conversationRef: result.sessionId ?? undefined,
-          model: result.model,
-          durationMs: result.durationMs,
-          aborted: result.aborted || undefined,
           nonResumable: result.sessionId == null ? true : undefined,
           usage: result.costUsd != null ? { costUsd: result.costUsd } : undefined,
         };
@@ -166,7 +141,6 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
 
 export const claudeProvider: Provider = {
   name: 'claude',
-  capabilities,
   execute,
   preflight,
 };

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { detectCodexCli, resetCliCache } from '../cli-detection.js';
+import { detectCodexCli, resetCodexCliCache } from '../../cli-detection.js';
 
 vi.mock('node:child_process', () => ({
   execFile: vi.fn(),
@@ -27,7 +27,7 @@ describe('detectCodexCli', () => {
   beforeEach(() => {
     originalApiKey = process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
-    resetCliCache();
+    resetCodexCliCache();
     mockExecFile.mockReset();
   });
 
@@ -257,7 +257,7 @@ describe('detectCodexCli', () => {
     });
   });
 
-  it('resetCliCache then fresh call re-probes from scratch', async () => {
+  it('resetCodexCliCache then fresh call re-probes from scratch', async () => {
     let versionCallCount = 0;
     mockExecByArgs({
       '--version': (cb) => { versionCallCount += 1; cb(null, 'codex 1.0.0\n', ''); },
@@ -265,7 +265,7 @@ describe('detectCodexCli', () => {
     });
 
     await detectCodexCli();
-    resetCliCache();
+    resetCodexCliCache();
     await detectCodexCli();
 
     expect(versionCallCount).toBe(2);
@@ -285,7 +285,7 @@ describe('detectCodexCli', () => {
     expect(whoamiCalls).toBe(2);
   });
 
-  it('resetCliCache clears confirmed auth and allows later unauthenticated detection', async () => {
+  it('resetCodexCliCache clears confirmed auth and allows later unauthenticated detection', async () => {
     process.env.OPENAI_API_KEY = 'sk-test';
     mockExecByArgs({
       '--version': (cb) => cb(null, 'codex 1.0.0\n', ''),
@@ -295,7 +295,7 @@ describe('detectCodexCli', () => {
     const first = await detectCodexCli();
     expect(first).toEqual({ available: true, version: 'codex 1.0.0', authState: 'authenticated' });
 
-    resetCliCache();
+    resetCodexCliCache();
     delete process.env.OPENAI_API_KEY;
 
     const second = await detectCodexCli();

@@ -165,7 +165,7 @@ Provider-agnostic: monitors any job regardless of whether it was launched by cod
 ### `workflow` Tool
 
 ```
-workflow({ expression: "(architect, critic) -> resolver", prompt, provider })
+workflow({ expression: "(architect, critic) -> resolver", init_prompt, provider })
         │
         ▼
 handleWorkflow()                              workflow/handler.ts
@@ -177,7 +177,7 @@ handleWorkflow()                              workflow/handler.ts
         └─ ExecutionService.executeWorkflow(ast, input, ctx)
                 │
                 ▼
-        executePipeline(ast, prompt, providerName, service, ctx, ...)
+        executePipeline(ast, init_prompt, providerName, service, ctx, ...)
                 │
                 ▼
         For each step:
@@ -305,7 +305,7 @@ User → /coral:discuss "AI ethics in healthcare"
 ### 5. Workflow Pipeline Execution
 
 ```
-User/Skill → workflow({ expression: "(architect, critic) -> resolver", prompt: "..." })
+User/Skill → workflow({ expression: "(architect, critic) -> resolver", init_prompt: "..." })
            → AX router calls handleWorkflow(args, service, ctx)
            → Schema validation + AST parsing + atoms/namespace validation + stale_timeout_seconds
            → ExecutionService.executeWorkflow fires background handler:

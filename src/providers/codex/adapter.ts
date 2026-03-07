@@ -1,19 +1,20 @@
 /** Codex provider adapter for the execution service. */
 
 import { executeOneShot, executeResume, executeFork } from './codex-executor.js';
-import { detectCodexCli } from './cli-detection.js';
+import { detectCodexCli, type CliInfo } from '../cli-detection.js';
 import { extractProgressMessage } from './progress.js';
-import type { CodexThreadEvent } from './types.js';
-import type { ProviderProgressEvent, ProviderRequest, ProviderResult } from '../../types.js';
-import type { Provider, ProviderCapabilities, ProviderRuntime } from '../types.js';
+import type { ProviderRequest, ProviderResult } from '../../types.js';
+import { mapProviderResultBase } from '../result-mapping.js';
+import { makeOnEvent, type Provider, type ProviderRuntime } from '../types.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 
-const capabilities: ProviderCapabilities = { resumable: true, forkable: true };
+let lastValidatedCli: (CliInfo & { available: true }) | undefined;
 
 async function preflight(): Promise<void> {
   const cli = await detectCodexCli();
   if (!cli.available) throw new Error(`Codex CLI not available: ${cli.error}`);
   if (cli.authState === 'unauthenticated') throw new Error(`Codex CLI unauthenticated: ${cli.authError}`);
+  lastValidatedCli = cli;
 }
 
 /**
@@ -29,20 +30,6 @@ function buildPrompt(request: ProviderRequest): string {
   return parts.join('\n\n---\n\n');
 }
 
-function makeOnEvent(runtime: ProviderRuntime, jobId: string, projectRoot?: string): (line: string) => void {
-  return (line: string) => {
-    try {
-      const event = JSON.parse(line) as CodexThreadEvent;
-      const message = extractProgressMessage(event, projectRoot);
-      if (!message) return;
-      const progressEvent: ProviderProgressEvent = { jobId, message, ts: new Date().toISOString() };
-      runtime.onEvent(progressEvent);
-    } catch {
-      /* ignore non-JSON or unparseable lines */
-    }
-  };
-}
-
 async function execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult> {
   const prompt = buildPrompt(request);
   const effort = request.effort as EffortLevel | undefined;
@@ -50,21 +37,18 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
   switch (request.action) {
     case 'exec': {
       // executeOneShot internally prepends CLAUDE.md to the prompt
-      const result = await executeOneShot(
-        prompt,
-        request.model,
-        request.cwd,
+      const result = await executeOneShot(prompt, {
+        model: request.model,
+        workingDirectory: request.cwd,
         effort,
-        request.bypassPermissions,
-        makeOnEvent(runtime, request.sessionId, request.cwd),
-        runtime.signal,
-      );
+        bypassSandbox: request.bypassPermissions,
+        onEvent: makeOnEvent(runtime, request.sessionId, extractProgressMessage, request.cwd),
+        signal: runtime.signal,
+        preChecked: lastValidatedCli!,
+      });
       return {
-        content: result.response,
+        ...mapProviderResultBase(result),
         conversationRef: result.sessionId ?? undefined,
-        model: result.model,
-        durationMs: result.durationMs,
-        aborted: result.aborted || undefined,
         nonResumable: result.sessionId == null ? true : undefined,
         exitCode: result.exitCode,
         errors: result.errors.length > 0 ? result.errors : undefined,
@@ -73,22 +57,18 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
     }
     case 'resume': {
       if (!request.conversationRef) throw new Error('resume requires conversationRef');
-      const result = await executeResume(
-        request.conversationRef,
-        prompt,
-        request.model,
-        request.cwd,
+      const result = await executeResume(request.conversationRef, prompt, {
+        model: request.model,
+        workingDirectory: request.cwd,
         effort,
-        request.bypassPermissions,
-        makeOnEvent(runtime, request.sessionId, request.cwd),
-        runtime.signal,
-      );
+        bypassSandbox: request.bypassPermissions,
+        onEvent: makeOnEvent(runtime, request.sessionId, extractProgressMessage, request.cwd),
+        signal: runtime.signal,
+        preChecked: lastValidatedCli!,
+      });
       return {
-        content: result.response,
+        ...mapProviderResultBase(result),
         conversationRef: result.sessionId ?? request.conversationRef,
-        model: result.model,
-        durationMs: result.durationMs,
-        aborted: result.aborted || undefined,
         exitCode: result.exitCode,
         errors: result.errors.length > 0 ? result.errors : undefined,
         warnings: result.warnings.length > 0 ? result.warnings : undefined,
@@ -96,22 +76,18 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
     }
     case 'fork': {
       if (!request.conversationRef) throw new Error('fork requires conversationRef');
-      const result = await executeFork(
-        request.conversationRef,
-        prompt,
-        request.model,
-        request.cwd,
+      const result = await executeFork(request.conversationRef, prompt, {
+        model: request.model,
+        workingDirectory: request.cwd,
         effort,
-        request.bypassPermissions,
-        makeOnEvent(runtime, request.sessionId, request.cwd),
-        runtime.signal,
-      );
+        bypassSandbox: request.bypassPermissions,
+        onEvent: makeOnEvent(runtime, request.sessionId, extractProgressMessage, request.cwd),
+        signal: runtime.signal,
+        preChecked: lastValidatedCli!,
+      });
       return {
-        content: result.response,
+        ...mapProviderResultBase(result),
         conversationRef: result.sessionId ?? undefined,
-        model: result.model,
-        durationMs: result.durationMs,
-        aborted: result.aborted || undefined,
         nonResumable: result.sessionId == null ? true : undefined,
         exitCode: result.exitCode,
         errors: result.errors.length > 0 ? result.errors : undefined,
@@ -126,7 +102,6 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
 
 export const codexProvider: Provider = {
   name: 'codex',
-  capabilities,
   execute,
   preflight,
 };

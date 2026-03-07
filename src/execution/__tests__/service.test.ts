@@ -19,10 +19,10 @@ import {
   killAllChildren,
   releaseLaunch,
 } from '../engine.js';
+import { AbortRegistry } from '../abort-registry.js';
 import { JOBS_DIR, jobResultPath, type ProgressStore } from '../progress-store.js';
 import { SessionManager } from '../session-manager.js';
 import { ExecutionService, type CallerContext } from '../service.js';
-import type { JobManager } from '../job-manager.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -51,7 +51,7 @@ vi.mock('../../coral/resolver.js', async () => {
 });
 
 type ServiceInternals = {
-  jobManager: JobManager;
+  abortRegistry: AbortRegistry;
   progressStore: ProgressStore;
 };
 
@@ -102,7 +102,6 @@ function makeProvider(options?: {
   const preflight = options?.preflight ? vi.fn(options.preflight) : undefined;
   const provider: Provider = {
     name: 'codex',
-    capabilities: { resumable: true, forkable: true },
     execute,
     ...(preflight ? { preflight } : {}),
   };
@@ -328,14 +327,14 @@ describe('ExecutionService', () => {
     trackJob(first.job);
     trackJob(second.job);
     const result = service.abort([first.job, 'missing-job']);
-    const { jobManager } = getInternals(service);
+    const { abortRegistry } = getInternals(service);
 
     expect(result).toEqual({
       aborted: [first.job],
       notFound: ['missing-job'],
     });
-    expect(jobManager.get(first.job)?.controller.signal.aborted).toBe(true);
-    expect(jobManager.get(second.job)?.controller.signal.aborted).toBe(false);
+    expect(abortRegistry.getSignal(first.job)?.aborted).toBe(true);
+    expect(abortRegistry.getSignal(second.job)?.aborted).toBe(false);
   });
 
   it('abort persists queued jobs as aborted instead of error', async () => {
@@ -352,13 +351,12 @@ describe('ExecutionService', () => {
     trackJob(decision.job);
 
     const abortResult = service.abort([decision.job]);
-    const { jobManager, progressStore } = getInternals(service);
+    const { progressStore } = getInternals(service);
 
     expect(abortResult).toEqual({
       aborted: [decision.job],
       notFound: [],
     });
-    expect(jobManager.get(decision.job)).toBeNull();
     expect(progressStore.readStatus(decision.job)).toMatchObject({
       phase: 'aborted',
       result: {
@@ -370,15 +368,15 @@ describe('ExecutionService', () => {
 
   it('awaitLaunch returns ready once the launch state changes', async () => {
     const service = new ExecutionService(ctx);
-    const { jobManager } = getInternals(service);
-    const jobId = jobManager.allocate('session-1', 'codex');
+    const { progressStore } = getInternals(service);
+    const jobId = `test-await-launch-${Date.now()}`;
+    progressStore.initJob(jobId, 'test-session', 'codex');
 
     setTimeout(() => {
-      jobManager.setLaunchState(jobId, 'ready');
+      progressStore.updateLaunchState(jobId, 'ready');
     }, 10);
 
     await expect(service.awaitLaunch(jobId, 1000)).resolves.toBe('ready');
-    jobManager.remove(jobId);
   });
 
   it('coralDispatch resolves coral content and injects a system instruction', async () => {
@@ -532,7 +530,7 @@ describe('ExecutionService', () => {
       parseExpression('architect -> resolver'),
       {
         expression: 'architect -> resolver',
-        prompt: 'seed',
+        init_prompt: 'seed',
         provider: 'codex',
         stale_timeout_seconds: 0,
       },
@@ -616,7 +614,7 @@ describe('ExecutionService', () => {
       parseExpression('architect -> resolver'),
       {
         expression: 'architect -> resolver',
-        prompt: 'seed',
+        init_prompt: 'seed',
         provider: 'codex',
         stale_timeout_seconds: 0,
       },
@@ -682,7 +680,7 @@ describe('ExecutionService', () => {
       parseExpression('architect -> resolver'),
       {
         expression: 'architect -> resolver',
-        prompt: 'seed',
+        init_prompt: 'seed',
         provider: 'codex',
         stale_timeout_seconds: 0,
       },

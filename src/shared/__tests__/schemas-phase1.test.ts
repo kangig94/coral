@@ -13,14 +13,22 @@ describe('Phase 1 shared schemas', () => {
       op: 'exec',
       prompt: 'Analyze this change',
       session: 'session-1',
-      working_directory: '/tmp/work',
+      work_dir: '/tmp/work',
+      model: 'o4-mini',
+      effort: 'high',
+      bypass_permissions: true,
+      system_prompt: 'Follow the policy',
     });
 
     expect(parsed).toMatchObject({
       op: 'exec',
       prompt: 'Analyze this change',
       session: 'session-1',
-      working_directory: '/tmp/work',
+      work_dir: '/tmp/work',
+      model: 'o4-mini',
+      effort: 'high',
+      bypass_permissions: true,
+      system_prompt: 'Follow the policy',
     });
   });
 
@@ -40,13 +48,13 @@ describe('Phase 1 shared schemas', () => {
   it('waitInputSchema rejects empty jobs array', () => {
     expect(() => waitInputSchema.parse({
       jobs: [],
-    })).toThrow('At least one job ID required');
+    })).toThrow('At least one job required');
   });
 
   it('abortInputSchema rejects empty jobs array', () => {
     expect(() => abortInputSchema.parse({
       jobs: [],
-    })).toThrow('At least one job ID required');
+    })).toThrow('At least one job required');
   });
 });
 

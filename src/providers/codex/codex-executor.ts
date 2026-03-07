@@ -10,7 +10,17 @@ import type { CodexExecResult } from './types.js';
 import { spawnCli, activeChildren, killAllChildren as killAllRunnerChildren } from '../../execution/engine.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 import { parseCodexJsonl } from './output-parser.js';
-import { detectCodexCli, type CliInfo } from './cli-detection.js';
+import type { CliInfo } from '../cli-detection.js';
+
+export interface CodexExecOptions {
+  model?: string;
+  workingDirectory?: string;
+  effort?: EffortLevel;
+  bypassSandbox?: boolean;
+  onEvent?: (line: string) => void;
+  signal?: AbortSignal;
+  preChecked: CliInfo & { available: true };
+}
 
 const DEFAULT_MODEL = process.env.CORAL_CODEX_MODEL ?? 'gpt-5.4';
 
@@ -66,15 +76,11 @@ async function executeCodex(
   args: string[],
   prompt: string,
   resolvedModel: string,
-  cwd?: string,
-  onEvent?: (line: string) => void,
-  signal?: AbortSignal,
-  preChecked?: CliInfo & { available: true },
+  opts: CodexExecOptions,
 ): Promise<CodexExecResult> {
   ensureMultiAgent();
 
-  const cli = preChecked ?? await detectCodexCli();
-  if (!cli.available) throw new Error(cli.error);
+  const cli = opts.preChecked;
   if (cli.authState === 'unauthenticated') throw new Error(cli.authError);
 
   const start = Date.now();
@@ -83,9 +89,9 @@ async function executeCodex(
     command: 'codex',
     args,
     prompt,
-    cwd,
-    onEvent,
-    signal,
+    cwd: opts.workingDirectory,
+    onEvent: opts.onEvent,
+    signal: opts.signal,
   });
 
   if (code !== 0 && !stdout.trim() && !aborted) {
@@ -155,18 +161,14 @@ function extraFlags(effort?: EffortLevel): string[] {
 /** One-shot execution: codex exec -m MODEL --json --full-auto */
 export async function executeOneShot(
   prompt: string,
-  model?: string,
-  cwd?: string,
-  effort?: EffortLevel,
-  bypassSandbox = false,
-  onEvent?: (line: string) => void,
-  signal?: AbortSignal,
-  preChecked?: CliInfo & { available: true },
+  opts: CodexExecOptions,
 ): Promise<CodexExecResult> {
-  const resolvedModel = getModel(model);
+  const resolvedModel = getModel(opts.model);
   return executeCodex(
-    ['exec', '-m', resolvedModel, ...baseFlags(bypassSandbox), ...extraFlags(effort)],
-    prependClaudeMd(prompt), resolvedModel, cwd, onEvent, signal, preChecked,
+    ['exec', '-m', resolvedModel, ...baseFlags(opts.bypassSandbox ?? false), ...extraFlags(opts.effort)],
+    prependClaudeMd(prompt),
+    resolvedModel,
+    opts,
   );
 }
 
@@ -174,46 +176,22 @@ export async function executeOneShot(
 export async function executeResume(
   threadId: string,
   prompt: string,
-  model?: string,
-  cwd?: string,
-  effort?: EffortLevel,
-  bypassSandbox = false,
-  onEvent?: (line: string) => void,
-  signal?: AbortSignal,
-  preChecked?: CliInfo & { available: true },
+  opts: CodexExecOptions,
 ): Promise<CodexExecResult> {
-  const resolvedModel = getModel(model);
+  const resolvedModel = getModel(opts.model);
   return executeCodex(
-    ['exec', 'resume', threadId, '-m', resolvedModel, ...baseFlags(bypassSandbox), ...extraFlags(effort)],
+    ['exec', 'resume', threadId, '-m', resolvedModel, ...baseFlags(opts.bypassSandbox ?? false), ...extraFlags(opts.effort)],
     prompt,
     resolvedModel,
-    cwd,
-    onEvent,
-    signal,
-    preChecked,
+    opts,
   );
 }
 
 /** Fork a session by resuming with a new prompt (codex fork is TUI-only). */
 export async function executeFork(
   threadId: string,
-  prompt?: string,
-  model?: string,
-  cwd?: string,
-  effort?: EffortLevel,
-  bypassSandbox = false,
-  onEvent?: (line: string) => void,
-  signal?: AbortSignal,
-  preChecked?: CliInfo & { available: true },
+  prompt: string,
+  opts: CodexExecOptions,
 ): Promise<CodexExecResult> {
-  const forkPrompt = prompt ?? 'Continue from where we left off.';
-  return executeResume(threadId, forkPrompt, model, cwd, effort, bypassSandbox, onEvent, signal, preChecked);
+  return executeResume(threadId, prompt, opts);
 }
-
-// Test-only exports
-export const _test = {
-  set claudeMdCache(v: string | undefined) { claudeMdCache = v; },
-  setMultiAgentEnsured(v: boolean) { multiAgentEnsured = v; },
-  prependClaudeMd,
-  activeChildren,
-};

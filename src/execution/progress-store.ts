@@ -9,6 +9,7 @@ import {
   renameSync,
   writeFileSync,
 } from 'node:fs';
+import { writeFile, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
@@ -27,7 +28,7 @@ const STATUS_FILE = 'status.json';
 const PROGRESS_FILE = 'progress.jsonl';
 const READ_CHUNK = 8 * 1024;
 
-const readBuffer = Buffer.alloc(READ_CHUNK);
+// Allocated per-call in readNewLines to avoid shared mutable state
 
 export type ReplayCursor = { lastOffset: number; remainder: string };
 
@@ -55,6 +56,37 @@ export function formatElapsed(ms: number): string {
 export class ProgressStore {
   private readonly eventCounters = new Map<string, number>();
   private readonly jobStartedAt = new Map<string, number>();
+  private readonly statusCache = new Map<string, PersistedStatusRecord>();
+  private readonly writeGeneration = new Map<string, number>();
+  private liveCount = 0;
+  private changeSeq = 0;
+  private waiters: Array<() => void> = [];
+
+  /**
+   * Returns a snapshot of the change sequence counter.
+   * Pass this to `waitForChange()` to avoid missing notifications.
+   */
+  getChangeSeq(): number {
+    return this.changeSeq;
+  }
+
+  /**
+   * Waits until the change sequence advances past `sinceSeq`.
+   * Returns immediately if changes have already occurred since `sinceSeq`.
+   */
+  waitForChange(sinceSeq: number): Promise<void> {
+    if (this.changeSeq !== sinceSeq) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      this.waiters.push(resolve);
+    });
+  }
+
+  private notifyWaiters(): void {
+    this.changeSeq++;
+    const batch = this.waiters;
+    this.waiters = [];
+    for (const resolve of batch) resolve();
+  }
 
   jobDir(jobId: string): string {
     return join(JOBS_DIR, jobId);
@@ -75,11 +107,43 @@ export class ProgressStore {
     return next;
   }
 
+  private isLivePhase(phase: JobPhase): boolean {
+    return phase === 'queued' || phase === 'launching' || phase === 'running';
+  }
+
+  liveJobCount(): number {
+    return this.liveCount;
+  }
+
+  private nextWriteGeneration(jobId: string): number {
+    const next = (this.writeGeneration.get(jobId) ?? 0) + 1;
+    this.writeGeneration.set(jobId, next);
+    return next;
+  }
+
+  private applyStatusRecord(jobId: string, record: PersistedStatusRecord): void {
+    const oldRecord = this.statusCache.get(jobId);
+    const wasLive = oldRecord ? this.isLivePhase(oldRecord.phase) : false;
+    const isLive = this.isLivePhase(record.phase);
+    if (!wasLive && isLive) this.liveCount++;
+    if (wasLive && !isLive) this.liveCount--;
+    this.statusCache.set(jobId, { ...record });
+    this.notifyWaiters();
+  }
+
+  private persistStatusSync(jobId: string, record: PersistedStatusRecord): void {
+    const filePath = this.statusPath(jobId);
+    const tmpPath = filePath + '.tmp';
+    writeFileSync(tmpPath, JSON.stringify(record, null, 2), 'utf-8');
+    renameSync(tmpPath, filePath);
+  }
+
   /** Create the job directory and write initial status.json. */
   initJob(
     jobId: string,
     sessionId: string,
     provider: string,
+    projectRoot?: string,
     jobKind?: JobKind,
     initialPhase: JobPhase = 'launching',
   ): void {
@@ -92,27 +156,56 @@ export class ProgressStore {
       phase: initialPhase,
       launch: { state: 'pending', updatedAt: new Date().toISOString() },
     };
+    if (projectRoot !== undefined) {
+      record.projectRoot = projectRoot;
+    }
     if (jobKind !== undefined) {
       record.jobKind = jobKind;
     }
-    this.writeStatus(jobId, record);
+    this.nextWriteGeneration(jobId);
+    this.persistStatusSync(jobId, record);
+    this.applyStatusRecord(jobId, record);
     writeFileSync(this.progressPath(jobId), '');
     this.jobStartedAt.set(jobId, Date.now());
   }
 
   /** Atomically write status.json. */
   writeStatus(jobId: string, record: PersistedStatusRecord): void {
+    const generation = this.nextWriteGeneration(jobId);
+    const isTerminal = record.phase === 'completed' || record.phase === 'error' || record.phase === 'aborted';
+
+    if (isTerminal) {
+      this.persistStatusSync(jobId, record);
+      this.applyStatusRecord(jobId, record);
+      return;
+    }
+
+    this.applyStatusRecord(jobId, record);
+
     const filePath = this.statusPath(jobId);
     const tmpPath = filePath + '.tmp';
-    writeFileSync(tmpPath, JSON.stringify(record, null, 2), 'utf-8');
-    renameSync(tmpPath, filePath);
+    const payload = JSON.stringify(record, null, 2);
+    void writeFile(tmpPath, payload, 'utf-8')
+      .then(() => {
+        if (this.writeGeneration.get(jobId) !== generation) return;
+        return rename(tmpPath, filePath);
+      })
+      .catch(() => {
+        /* status write must not break execution */
+      });
   }
 
   /** Read status.json. Returns null if not found or corrupt. */
   readStatus(jobId: string): PersistedStatusRecord | null {
+    const cached = this.statusCache.get(jobId);
+    if (cached) return { ...cached };
+
     try {
       const data = readFileSync(this.statusPath(jobId), 'utf-8');
-      return JSON.parse(data) as PersistedStatusRecord;
+      const record = JSON.parse(data) as PersistedStatusRecord;
+      this.statusCache.set(jobId, { ...record });
+      if (this.isLivePhase(record.phase)) this.liveCount++;
+      return { ...record };
     } catch {
       return null;
     }
@@ -152,6 +245,7 @@ export class ProgressStore {
     } catch {
       /* progress write must not break execution */
     }
+    this.notifyWaiters();
     return eventId;
   }
 
@@ -181,12 +275,12 @@ export class ProgressStore {
 
     this.eventCounters.delete(jobId);
     this.jobStartedAt.delete(jobId);
+    this.writeGeneration.delete(jobId);
     return eventId;
   }
 
   /** Write result.md as a debugging/recovery artifact. */
   writeResultMd(jobId: string, text: string): void {
-    const dir = this.jobDir(jobId);
     const tmpPath = `${jobResultPath(jobId)}.tmp`;
     const finalPath = jobResultPath(jobId);
     try {
@@ -240,12 +334,13 @@ export class ProgressStore {
     }
     try {
       const chunks: string[] = [];
+      const buf = Buffer.alloc(READ_CHUNK);
       let nextOffset = cursor.lastOffset;
       while (true) {
-        const bytesRead = readSync(fd, readBuffer, 0, READ_CHUNK, nextOffset);
+        const bytesRead = readSync(fd, buf, 0, READ_CHUNK, nextOffset);
         if (bytesRead <= 0) break;
         nextOffset += bytesRead;
-        chunks.push(readBuffer.toString('utf-8', 0, bytesRead));
+        chunks.push(buf.toString('utf-8', 0, bytesRead));
         if (bytesRead < READ_CHUNK) break;
       }
       cursor.lastOffset = nextOffset;

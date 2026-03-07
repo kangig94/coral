@@ -56,12 +56,12 @@ describe('coralAgentSchema', () => {
     const result = coralAgentSchema.parse({
       op: 'coral:scanner',
       prompt: 'analyze',
-      working_directory: '/tmp',
+      work_dir: '/tmp',
     });
     expect(result).toMatchObject({
       op: 'coral:scanner',
       prompt: 'analyze',
-      working_directory: '/tmp',
+      work_dir: '/tmp',
     });
   });
 

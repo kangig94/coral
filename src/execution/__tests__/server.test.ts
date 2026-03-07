@@ -280,7 +280,7 @@ describe('execution backend server', () => {
       },
       body: JSON.stringify({
         name: 'workflow',
-        args: { expression: 'architect', prompt: 'hello' },
+        args: { expression: 'architect', init_prompt: 'hello' },
         context: { projectRoot: '/tmp/project' },
       }),
     });
@@ -339,10 +339,10 @@ describe('execution backend server', () => {
     const progressStore = new ProgressStore();
     const jobId = 'workflow-orphan-job';
     createdJobIds.add(jobId);
-    progressStore.initJob(jobId, 'workflow-session', 'codex', 'workflow');
+    progressStore.initJob(jobId, 'workflow-session', 'codex', undefined, 'workflow');
     progressStore.updatePhase(jobId, 'running');
 
-    const backend = await startBackendServer();
+    const backend = await startBackendServer({ progressStore });
     const response = await fetch(`${backend.baseUrl}/wait/stream`, {
       method: 'POST',
       headers: {

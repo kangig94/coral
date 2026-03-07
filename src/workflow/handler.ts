@@ -1,10 +1,12 @@
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { getNewProvider } from '../providers/registry.js';
 import type { LaunchDecision } from '../types.js';
-import type { CallerContext, ExecutionService } from '../execution/service.js';
+import type { CallerContext } from '../execution/service.js';
 import { parseExpression } from './pipe-parser.js';
 import { workflowInputSchema } from './schemas.js';
 import type { PipelineAST } from './types.js';
+
+type WorkflowService = Pick<import('../execution/service.js').ExecutionService, 'executeWorkflow'>;
 
 function validateAtomConfigKeys(atoms: Record<string, Record<string, unknown>>, ast: PipelineAST): void {
   const atomNames = new Set<string>();
@@ -93,7 +95,7 @@ function findUnknownProviders(ast: PipelineAST, defaultProviderName: string): st
 
 export async function handleWorkflow(
   rawArgs: Record<string, unknown>,
-  executionSvc: ExecutionService,
+  executionSvc: WorkflowService,
   ctx: CallerContext,
 ): Promise<LaunchDecision> {
   const input = workflowInputSchema.parse(rawArgs);
@@ -108,5 +110,9 @@ export async function handleWorkflow(
     return unknownProviderDecision(unknownProviders);
   }
 
-  return executionSvc.executeWorkflow(input.provider, ast, input, ctx);
+  const effectiveCtx = input.work_dir
+    ? { ...ctx, projectRoot: input.work_dir }
+    : ctx;
+
+  return executionSvc.executeWorkflow(input.provider, ast, input, effectiveCtx);
 }

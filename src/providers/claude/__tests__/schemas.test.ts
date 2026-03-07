@@ -7,7 +7,7 @@ describe('claude schemas', () => {
       op: 'exec',
       prompt: 'hello',
       session: 'session-ref',
-      working_directory: '/tmp/work',
+      work_dir: '/tmp/work',
     });
 
     expect(parsed.success).toBe(true);
@@ -31,7 +31,7 @@ describe('claude schemas', () => {
     const parsed = claudeOpSchema.safeParse({
       op: 'fork',
       session: 'base-session-ref',
-      working_directory: '/tmp',
+      work_dir: '/tmp',
     });
     expect(parsed.success).toBe(true);
   });
@@ -61,11 +61,11 @@ describe('claude schemas', () => {
     expect(bad.success).toBe(false);
   });
 
-  it('validates coral schema with working_directory', () => {
+  it('validates coral schema with work_dir', () => {
     expect(coralClaudeSchema.safeParse({
       op: 'coral:architect',
       prompt: 'Do it',
-      working_directory: '/tmp',
+      work_dir: '/tmp',
     }).success).toBe(true);
   });
 

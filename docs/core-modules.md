@@ -169,7 +169,7 @@ See `src/workflow/schemas.ts`.
 ### src/workflow/pipe-executor.ts - Pipeline Executor
 
 Orchestrates the sequential step loop with concurrent parallel atom launches. Imports `ExecutionService` from `execution/service.ts` (via `WorkflowExecutionService` type pick). Key exports:
-- `executePipeline(ast, prompt, provider, executionSvc, ctx, options)` — main loop
+- `executePipeline(ast, init_prompt, provider, executionSvc, ctx, options)` — main loop
 - `launchAtomWithRetry(context)` — busy retry with exponential backoff (3 attempts), uses `executionSvc.coralDispatch()` and `executionSvc.awaitLaunch()`
 - `waitForAtoms(atoms, executionSvc, ctx, options)` — all-semantics wait with:
   - atom progress forwarding (`atom <agent>: <message>`) via `executionSvc.waitStream()`

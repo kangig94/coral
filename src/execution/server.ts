@@ -6,15 +6,17 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { isNoEntryError, isRecord } from '../shared/mcp-utils.js';
+import { isNoEntryError, isRecord, formatError } from '../shared/mcp-utils.js';
+import { sharedExecSchema, sharedForkSchema, sharedResumeSchema } from '../shared/schemas.js';
 import type { ExecutionService } from './service.js';
 import { activeChildren, killAllChildren, queueDepth } from './engine.js';
 import { writeBackendInfo, removeBackendInfoIfOwner } from './backend-info.js';
 import { acquireLock, BackendAlreadyRunningError, removeLockIfOwner } from './backend-lock.js';
+import type { AbortResult } from './abort-registry.js';
 import { IdleTimer } from './idle-timer.js';
-import type { AbortResult } from './job-manager.js';
 import { ProgressStore, JOBS_DIR } from './progress-store.js';
 import type { CallerContext, ToolRequest } from './request-context.js';
+import { SessionManager } from './session-manager.js';
 import { getAllNewProviders, getNewProvider } from '../providers/registry.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import {
@@ -51,6 +53,7 @@ type RouteToolCallFn = (
 ) => Promise<ToolRouteResponse>;
 
 type BackendServerOptions = {
+  progressStore?: ProgressStore;
   version?: string;
   instanceId?: string;
   token?: string;
@@ -102,10 +105,6 @@ function sendJson(res: ServerResponse, statusCode: number, body: unknown): void 
     res.setHeader('Connection', 'close');
   }
   res.end(payload);
-}
-
-function formatError(error: unknown): string {
-  return error instanceof Error ? error.stack ?? error.message : String(error);
 }
 
 function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -169,6 +168,7 @@ function parseWaitRequest(body: unknown): WaitRequest | null {
     jobIds: body.jobIds,
     timeoutSeconds: typeof body.timeoutSeconds === 'number' ? body.timeoutSeconds : undefined,
     cursor: isWaitCursor(body.cursor) ? body.cursor : undefined,
+    projectRoot: typeof body.projectRoot === 'string' && body.projectRoot.length > 0 ? body.projectRoot : undefined,
   };
 }
 
@@ -264,27 +264,44 @@ function markJobAsError(
   progressStore: ProgressStore,
   status: PersistedStatusRecord,
   notice: string,
+  log: (message: string) => void,
 ): void {
   const terminalResult: TerminalResult = status.jobKind === 'workflow'
     ? { content: '', notice, workflow: { steps: [] } }
     : { content: '', notice };
   progressStore.updateLaunchState(status.jobId, 'error', notice);
   if (status.jobKind === 'workflow') {
-    progressStore.writeWorkflowResultMdOrThrow(status.jobId, '');
+    try {
+      progressStore.writeWorkflowResultMdOrThrow(status.jobId, '');
+    } catch (err) {
+      log(`Failed to write workflow result for ${status.jobId}: ${formatError(err)}\n`);
+    }
   }
   progressStore.appendTerminal(status.jobId, status.sessionId, terminalResult, 'error');
 }
 
 function recoverOrphanedJobs(progressStore: ProgressStore, log: (message: string) => void): void {
   for (const status of listLiveJobs(progressStore)) {
-    markJobAsError(progressStore, status, ORPHANED_JOB_NOTICE);
-    log(`Recovered orphaned job: ${status.jobId}\n`);
+    try {
+      markJobAsError(progressStore, status, ORPHANED_JOB_NOTICE, log);
+      if (status.projectRoot) {
+        const sessionManager = new SessionManager(status.projectRoot);
+        sessionManager.releaseJob(status.sessionId, status.jobId);
+      }
+      log(`Recovered orphaned job: ${status.jobId}\n`);
+    } catch (err) {
+      log(`Failed to recover orphaned job ${status.jobId}: ${formatError(err)}\n`);
+    }
   }
 }
 
 function markJobsAsError(progressStore: ProgressStore, message: string): void {
   for (const status of listLiveJobs(progressStore)) {
-    markJobAsError(progressStore, status, message);
+    try {
+      markJobAsError(progressStore, status, message, () => {});
+    } catch {
+      // fail-isolated: skip this job, continue with others
+    }
   }
 }
 
@@ -300,7 +317,7 @@ function getToolDescriptors(): Array<Record<string, unknown>> {
         op: { type: 'string' },
         prompt: { type: 'string' },
         session: { type: 'string' },
-        working_directory: { type: 'string' },
+        work_dir: { type: 'string' },
       },
       required: ['op'],
     },
@@ -338,11 +355,13 @@ function getToolDescriptors(): Array<Record<string, unknown>> {
       inputSchema: {
         type: 'object',
         properties: {
-          expression: { type: 'string' },
-          prompt: { type: 'string' },
-          provider: { type: 'string' },
+          expression: { type: 'string', description: 'Pipeline DSL expression' },
+          init_prompt: { type: 'string', description: 'Initial prompt fed to the first step' },
+          context: { type: 'string', description: 'Shared context prepended to every atom prompt in every step' },
+          provider: { type: 'string', description: 'Default provider for atoms (claude or codex)' },
+          work_dir: { type: 'string', description: 'Working directory for spawned atoms' },
         },
-        required: ['expression', 'prompt'],
+        required: ['expression', 'init_prompt'],
       },
     },
   ];
@@ -356,11 +375,6 @@ function requireString(args: Record<string, unknown>, key: string): string | nul
 function optionalString(args: Record<string, unknown>, key: string): string | undefined {
   const value = args[key];
   return typeof value === 'string' ? value : undefined;
-}
-
-function optionalBoolean(args: Record<string, unknown>, key: string): boolean | undefined {
-  const value = args[key];
-  return typeof value === 'boolean' ? value : undefined;
 }
 
 async function routeToolCall(
@@ -388,7 +402,7 @@ async function routeToolCall(
 
   if (request.name === 'workflow') {
     const svc = helpers.getExecutionService(request.context);
-    const decision = await handleWorkflow(request.args, svc as ExecutionService, request.context);
+    const decision = await handleWorkflow(request.args, svc, request.context);
     return { statusCode: 200, body: decision };
   }
 
@@ -408,49 +422,74 @@ async function routeToolCall(
   const sessionId = optionalString(request.args, 'session');
   const prompt = optionalString(request.args, 'prompt');
   const defaultCwd = request.context.projectRoot;
-  const cwd = optionalString(request.args, 'working_directory');
+  const cwd = optionalString(request.args, 'work_dir');
 
   if (op === 'list') {
     return { statusCode: 200, body: service.list(request.name) };
   }
 
   if (op === 'fork') {
-    if (!sessionId) {
-      return { statusCode: 400, body: { error: 'invalid_request' } };
-    }
+    const parsed = sharedForkSchema.safeParse(request.args);
+    if (!parsed.success) return { statusCode: 400, body: { error: 'invalid_request' } };
     return {
       statusCode: 200,
       body: await service.fork(request.name, {
-        sessionId,
-        prompt,
-        cwd,
+        sessionId: parsed.data.session,
+        prompt: parsed.data.prompt,
+        cwd: parsed.data.work_dir,
+        model: parsed.data.model,
+        effort: parsed.data.effort,
+        bypassPermissions: parsed.data.bypass_permissions ?? false,
+        systemPrompt: parsed.data.system_prompt,
       }, request.context),
     };
   }
 
-  if (op === 'resume' || (op === 'exec' && sessionId)) {
-    if (!sessionId || typeof prompt !== 'string') {
-      return { statusCode: 400, body: { error: 'invalid_request' } };
-    }
+  if (op === 'resume') {
+    const parsed = sharedResumeSchema.safeParse(request.args);
+    if (!parsed.success) return { statusCode: 400, body: { error: 'invalid_request' } };
     return {
       statusCode: 200,
       body: await service.resume(request.name, {
-        sessionId,
-        prompt,
-        cwd,
+        sessionId: parsed.data.session,
+        prompt: parsed.data.prompt,
+        cwd: parsed.data.work_dir,
+        model: parsed.data.model,
+        effort: parsed.data.effort,
+        bypassPermissions: parsed.data.bypass_permissions ?? false,
+        systemPrompt: parsed.data.system_prompt,
       }, request.context),
     };
   }
 
   if (op === 'exec') {
-    if (typeof prompt !== 'string') {
-      return { statusCode: 400, body: { error: 'invalid_request' } };
+    const parsed = sharedExecSchema.safeParse(request.args);
+    if (!parsed.success) return { statusCode: 400, body: { error: 'invalid_request' } };
+
+    if (parsed.data.session) {
+      return {
+        statusCode: 200,
+        body: await service.resume(request.name, {
+          sessionId: parsed.data.session,
+          prompt: parsed.data.prompt,
+          cwd: parsed.data.work_dir,
+          model: parsed.data.model,
+          effort: parsed.data.effort,
+          bypassPermissions: parsed.data.bypass_permissions ?? false,
+          systemPrompt: parsed.data.system_prompt,
+        }, request.context),
+      };
     }
+
     return {
       statusCode: 200,
       body: await service.start(request.name, {
-        prompt,
-        cwd: cwd ?? defaultCwd,
+        prompt: parsed.data.prompt,
+        cwd: parsed.data.work_dir ?? defaultCwd,
+        model: parsed.data.model,
+        effort: parsed.data.effort,
+        bypassPermissions: parsed.data.bypass_permissions ?? false,
+        systemPrompt: parsed.data.system_prompt,
       }, request.context),
     };
   }
@@ -505,12 +544,13 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const instanceId = options.instanceId ?? randomUUID();
   const token = options.token ?? randomBytes(32).toString('hex');
   const idleTimer = options.createIdleTimer?.() ?? new IdleTimer();
-  const progressStore = new ProgressStore();
+  const progressStore = options.progressStore ?? new ProgressStore();
   const now = options.now ?? (() => Date.now());
   const log = options.log ?? ((message: string) => {
     process.stderr.write(message);
   });
-  const createExecutionService = options.createExecutionService ?? ((ctx: CallerContext) => new DefaultExecutionService(ctx));
+  const createExecutionService = options.createExecutionService
+    ?? ((ctx: CallerContext) => new DefaultExecutionService(ctx, progressStore));
   const acquireLockFn = options.acquireLockFn ?? acquireLock;
   const writeBackendInfoFn = options.writeBackendInfoFn ?? writeBackendInfo;
   const removeBackendInfoIfOwnerFn = options.removeBackendInfoIfOwnerFn ?? removeBackendInfoIfOwner;
@@ -634,6 +674,9 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       ...parsed,
       cursor: inputCursor,
     };
+    const ctx: CallerContext = parsed.projectRoot
+      ? { projectRoot: parsed.projectRoot, pluginRoot: defaultPluginRoot }
+      : defaultContext;
 
     res.statusCode = 200;
     res.setHeader('Content-Type', 'text/event-stream');
@@ -653,7 +696,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     req.once('close', onClose);
     res.once('close', onClose);
 
-    for await (const event of getExecutionService(defaultContext).waitStream(waitRequest)) {
+    for await (const event of getExecutionService(ctx).waitStream(waitRequest)) {
       if (closed || res.writableEnded || res.destroyed) break;
 
       if (event.type === 'progress') {
@@ -697,6 +740,8 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     }
 
     if (req.method === 'POST' && req.url === '/wait/stream') {
+      idleTimer.beginRequest();
+      trackRequest(idleTimer, res);
       await handleWaitStream(req, res);
       return;
     }
@@ -711,7 +756,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         instanceId,
         uptimeMs: now() - startedAt,
         activeChildren: activeChildren.size,
-        activeJobs: listLiveJobs(progressStore).length,
+        activeJobs: progressStore.liveJobCount(),
         queueDepth: queueDepth(),
         inflightRequests: idleTimer.inflightRequests,
       });
@@ -780,7 +825,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       idleTimer.startWatching(
         () => lifecycle === 'running'
           && activeChildren.size === 0
-          && listLiveJobs(progressStore).length === 0
+          && progressStore.liveJobCount() === 0
           && idleTimer.inflightRequests === 0,
         () => {
           void shutdown('idle').catch(() => {});

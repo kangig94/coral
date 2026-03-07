@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync } from 'node:fs';
+import { readFileSync, statSync, writeFileSync, mkdirSync, readdirSync, renameSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
@@ -18,6 +18,12 @@ export interface SessionEntry {
   createdAt: string;
   lastUsedAt: string;
 }
+
+type CachedSession = {
+  entry: SessionEntry;
+  mtimeMs: number;
+  size: number;
+};
 
 function projectHash(dir: string): string {
   return createHash('sha256').update(resolve(dir)).digest('hex').slice(0, 12);
@@ -55,6 +61,7 @@ function migrateOldEntry(value: Record<string, unknown>): SessionEntry | null {
 
 export class SessionManager {
   private readonly sessionDir: string;
+  private readonly cache = new Map<string, CachedSession>();
 
   constructor(workingDirectory: string) {
     this.sessionDir = join(homedir(), '.claude', 'coral', 'execution', 'sessions', projectHash(workingDirectory));
@@ -65,16 +72,48 @@ export class SessionManager {
     return join(this.sessionDir, `${sessionId}.json`);
   }
 
+  private getFileStats(sessionId: string): { mtimeMs: number; size: number } | null {
+    try {
+      const stats = statSync(this.sessionPath(sessionId));
+      return { mtimeMs: stats.mtimeMs, size: stats.size };
+    } catch {
+      return null;
+    }
+  }
+
+  private populateCache(sessionId: string, entry: SessionEntry): void {
+    const stats = this.getFileStats(sessionId);
+    if (stats) {
+      this.cache.set(sessionId, {
+        entry: { ...entry },
+        mtimeMs: stats.mtimeMs,
+        size: stats.size,
+      });
+    }
+  }
+
   private readEntry(sessionId: string): SessionEntry | null {
+    const cached = this.cache.get(sessionId);
+    if (cached) {
+      const stats = this.getFileStats(sessionId);
+      if (stats && stats.mtimeMs === cached.mtimeMs && stats.size === cached.size) {
+        return { ...cached.entry };
+      }
+      this.cache.delete(sessionId);
+    }
+
     try {
       const data = readFileSync(this.sessionPath(sessionId), 'utf-8');
       const parsed: unknown = JSON.parse(data);
-      if (isValidEntry(parsed)) return parsed;
+      if (isValidEntry(parsed)) {
+        this.populateCache(sessionId, parsed);
+        return { ...parsed };
+      }
       if (parsed && typeof parsed === 'object') {
         const migrated = migrateOldEntry(parsed as Record<string, unknown>);
         if (migrated) {
           this.writeEntry(migrated);
-          return migrated;
+          return { ...migrated };
         }
       }
       process.stderr.write(`Warning: Session file ${sessionId}.json has unexpected shape, skipping\n`);
@@ -94,6 +133,7 @@ export class SessionManager {
     const tmpPath = filePath + '.tmp';
     writeFileSync(tmpPath, JSON.stringify(entry, null, 2), 'utf-8');
     renameSync(tmpPath, filePath);
+    this.populateCache(entry.sessionId, entry);
   }
 
   /** Allocate a new sessionId and persist as 'pending'. Returns the new entry. */

@@ -3,29 +3,62 @@ import type { ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { EventEmitter, Readable, Writable } from 'node:stream';
+import type { CodexExecOptions } from '../codex-executor.js';
 
-vi.mock('../cli-detection.js', () => ({
+const mockState = vi.hoisted(() => ({
   detectCodexCli: vi.fn(),
-}));
-
-vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }));
 
-import { detectCodexCli } from '../cli-detection.js';
-import { spawn } from 'node:child_process';
-import { executeOneShot, executeResume, executeFork, killAllChildren, _test } from '../codex-executor.js';
+vi.mock('../../cli-detection.js', () => ({
+  detectCodexCli: mockState.detectCodexCli,
+}));
 
-const mockDetect = vi.mocked(detectCodexCli);
-const mockSpawn = vi.mocked(spawn);
+vi.mock('node:child_process', () => ({
+  spawn: mockState.spawn,
+}));
 
-beforeEach(() => {
+type ExecutorModule = typeof import('../codex-executor.js');
+
+let executeOneShot: ExecutorModule['executeOneShot'];
+let executeResume: ExecutorModule['executeResume'];
+let executeFork: ExecutorModule['executeFork'];
+let killAllChildren: ExecutorModule['killAllChildren'];
+
+async function loadExecutor(pluginRoot?: string): Promise<ExecutorModule> {
+  vi.resetModules();
+  vi.unstubAllGlobals();
+  if (pluginRoot !== undefined) {
+    vi.stubGlobal('__PLUGIN_ROOT__', pluginRoot);
+  }
+  return import('../codex-executor.js');
+}
+
+const mockDetect = mockState.detectCodexCli;
+const mockSpawn = mockState.spawn;
+
+beforeEach(async () => {
   mockDetect.mockReset();
   mockSpawn.mockReset();
+  ({ executeOneShot, executeResume, executeFork, killAllChildren } = await loadExecutor());
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.resetModules();
 });
 
 function mockCliAvailable(): void {
   mockDetect.mockResolvedValue({ available: true, version: '1.0.0', authState: 'authenticated' as const });
+}
+
+const authenticatedCli = { available: true as const, version: '1.0.0', authState: 'authenticated' as const };
+
+function withAuthenticatedCli(overrides: Omit<CodexExecOptions, 'preChecked'> = {}): CodexExecOptions {
+  return {
+    ...overrides,
+    preChecked: authenticatedCli,
+  };
 }
 
 function jsonl(...lines: string[]): string {
@@ -60,12 +93,18 @@ const BYPASS_FLAGS = [
   'web_search=live',
 ];
 
-function createMockProcess(stdout: string, code: number): ChildProcess {
+type MockProcess = ChildProcess & { stdinWrites: string[] };
+
+function createMockProcess(stdout: string, code: number): MockProcess {
   const proc = new EventEmitter() as ChildProcess;
   const stdoutStream = new Readable({ read() {} });
   const stderrStream = new Readable({ read() {} });
+  const stdinWrites: string[] = [];
   const stdinStream = new Writable({
-    write(_chunk, _enc, cb) { cb(); },
+    write(chunk, _enc, cb) {
+      stdinWrites.push(Buffer.isBuffer(chunk) ? chunk.toString() : String(chunk));
+      cb();
+    },
   });
 
   Object.assign(proc, {
@@ -74,6 +113,7 @@ function createMockProcess(stdout: string, code: number): ChildProcess {
     stdin: stdinStream,
     kill: vi.fn(),
     pid: 12345,
+    stdinWrites,
   });
 
   setTimeout(() => {
@@ -81,21 +121,40 @@ function createMockProcess(stdout: string, code: number): ChildProcess {
     stdoutStream.push(null);
     proc.emit('close', code);
   }, 10);
-
-  return proc;
+  return proc as MockProcess;
 }
 
 describe('prependClaudeMd', () => {
-  afterEach(() => { _test.claudeMdCache = undefined; });
+  it('prepends CLAUDE.md content to prompt', async () => {
+    const pluginRoot = mkdtempSync(join('/tmp', 'coral-codex-plugin-'));
+    try {
+      writeFileSync(join(pluginRoot, 'CLAUDE.md'), '# Guidelines\nBe concise.');
+      const customExecutor = await loadExecutor(pluginRoot);
+      const proc = createMockProcess(agentMessage(), 0);
+      mockSpawn.mockReturnValue(proc);
 
-  it('prepends CLAUDE.md content to prompt', () => {
-    _test.claudeMdCache = '# Guidelines\nBe concise.';
-    expect(_test.prependClaudeMd('do something')).toBe('# Guidelines\nBe concise.\n\n---\n\ndo something');
+      await customExecutor.executeOneShot('do something', withAuthenticatedCli());
+
+      expect(proc.stdinWrites.join('')).toBe('# Guidelines\nBe concise.\n\n---\n\ndo something');
+    } finally {
+      rmSync(pluginRoot, { recursive: true, force: true });
+    }
   });
 
-  it('returns prompt unchanged when CLAUDE.md is empty', () => {
-    _test.claudeMdCache = '';
-    expect(_test.prependClaudeMd('do something')).toBe('do something');
+  it('returns prompt unchanged when CLAUDE.md is empty', async () => {
+    const pluginRoot = mkdtempSync(join('/tmp', 'coral-codex-plugin-'));
+    try {
+      writeFileSync(join(pluginRoot, 'CLAUDE.md'), '');
+      const customExecutor = await loadExecutor(pluginRoot);
+      const proc = createMockProcess(agentMessage(), 0);
+      mockSpawn.mockReturnValue(proc);
+
+      await customExecutor.executeOneShot('do something', withAuthenticatedCli());
+
+      expect(proc.stdinWrites.join('')).toBe('do something');
+    } finally {
+      rmSync(pluginRoot, { recursive: true, force: true });
+    }
   });
 });
 
@@ -108,7 +167,7 @@ describe('executeOneShot', () => {
     );
     mockSpawn.mockReturnValue(createMockProcess(output, 0));
 
-    const result = await executeOneShot('test prompt', 'o4-mini', '/tmp');
+    const result = await executeOneShot('test prompt', withAuthenticatedCli({ model: 'o4-mini', workingDirectory: '/tmp' }));
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
@@ -123,29 +182,24 @@ describe('executeOneShot', () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it('throws when CLI is not available', async () => {
-    mockDetect.mockResolvedValue({ available: false, error: 'Codex CLI not found.' });
-
-    await expect(executeOneShot('test')).rejects.toThrow('Codex CLI not found.');
-  });
-
-  it('throws when CLI is unauthenticated', async () => {
-    mockDetect.mockResolvedValue({
-      available: true,
-      version: '1.0.0',
-      authState: 'unauthenticated',
-      authError: 'Codex CLI is not authenticated. Run "codex login" or set the OPENAI_API_KEY environment variable.',
-    });
-
-    await expect(executeOneShot('test')).rejects.toThrow('Codex CLI is not authenticated');
+  it('throws when preChecked is unauthenticated', async () => {
+    await expect(executeOneShot('test', {
+      preChecked: {
+        available: true,
+        version: '1.0.0',
+        authState: 'unauthenticated',
+        authError: 'Codex CLI is not authenticated. Run "codex login" or set the OPENAI_API_KEY environment variable.',
+      },
+    })).rejects.toThrow('Codex CLI is not authenticated');
     expect(mockSpawn).not.toHaveBeenCalled();
+    expect(mockDetect).not.toHaveBeenCalled();
   });
 
   it('throws on non-zero exit with no stdout', async () => {
     mockCliAvailable();
     mockSpawn.mockReturnValue(createMockProcess('', 1));
 
-    await expect(executeOneShot('test')).rejects.toThrow('Codex exited with code 1');
+    await expect(executeOneShot('test', withAuthenticatedCli())).rejects.toThrow('Codex exited with code 1');
   });
 
   it('returns exitCode when non-zero with stdout', async () => {
@@ -156,7 +210,7 @@ describe('executeOneShot', () => {
     );
     mockSpawn.mockReturnValue(createMockProcess(output, 1));
 
-    const result = await executeOneShot('test');
+    const result = await executeOneShot('test', withAuthenticatedCli());
     expect(result.exitCode).toBe(1);
     expect(result.response).toBe('');
     expect(result.errors).toEqual(['Rate limit']);
@@ -166,7 +220,7 @@ describe('executeOneShot', () => {
     mockCliAvailable();
     mockAgentProcess();
 
-    await executeOneShot('test', 'o4-mini', '/tmp', 'xhigh');
+    await executeOneShot('test', withAuthenticatedCli({ model: 'o4-mini', workingDirectory: '/tmp', effort: 'xhigh' }));
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
@@ -179,7 +233,7 @@ describe('executeOneShot', () => {
     mockCliAvailable();
     mockAgentProcess();
 
-    const result = await executeOneShot('test');
+    const result = await executeOneShot('test', withAuthenticatedCli());
     expect(result.model).toBe(process.env.CORAL_CODEX_MODEL ?? 'gpt-5.4');
   });
 
@@ -187,7 +241,7 @@ describe('executeOneShot', () => {
     mockCliAvailable();
     mockAgentProcess();
 
-    await executeOneShot('test', 'o4-mini', '/tmp', undefined, true);
+    await executeOneShot('test', withAuthenticatedCli({ model: 'o4-mini', workingDirectory: '/tmp', bypassSandbox: true }));
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
@@ -200,7 +254,7 @@ describe('executeOneShot', () => {
     mockCliAvailable();
     mockAgentProcess();
 
-    await executeOneShot('test', 'o4-mini', '/tmp', undefined, false);
+    await executeOneShot('test', withAuthenticatedCli({ model: 'o4-mini', workingDirectory: '/tmp', bypassSandbox: false }));
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
@@ -209,18 +263,16 @@ describe('executeOneShot', () => {
     );
   });
 
-  it('skips detectCodexCli when preChecked is provided', async () => {
+  it('does not call detectCodexCli when preChecked is provided', async () => {
     mockAgentProcess();
 
     await executeOneShot(
       'test',
-      'o4-mini',
-      '/tmp',
-      undefined,
-      false,
-      undefined,
-      undefined,
-      { available: true, version: '1.0.0', authState: 'authenticated' },
+      withAuthenticatedCli({
+        model: 'o4-mini',
+        workingDirectory: '/tmp',
+        bypassSandbox: false,
+      }),
     );
 
     expect(mockDetect).not.toHaveBeenCalled();
@@ -238,7 +290,7 @@ describe('executeResume', () => {
     );
     mockSpawn.mockReturnValue(createMockProcess(output, 0));
 
-    const result = await executeResume('thread-abc', 'continue', 'gpt-4.1');
+    const result = await executeResume('thread-abc', 'continue', withAuthenticatedCli({ model: 'gpt-4.1' }));
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
@@ -251,11 +303,11 @@ describe('executeResume', () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it('passes working_directory as cwd to spawn', async () => {
+  it('passes work_dir as cwd to spawn', async () => {
     mockCliAvailable();
     mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
 
-    await executeResume('thread-abc', 'review', undefined, '/home/user/project');
+    await executeResume('thread-abc', 'review', withAuthenticatedCli({ workingDirectory: '/home/user/project' }));
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
@@ -264,11 +316,11 @@ describe('executeResume', () => {
     );
   });
 
-  it('omits cwd when working_directory not provided', async () => {
+  it('omits cwd when work_dir not provided', async () => {
     mockCliAvailable();
     mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
 
-    await executeResume('thread-abc', 'review');
+    await executeResume('thread-abc', 'review', withAuthenticatedCli());
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
@@ -281,7 +333,7 @@ describe('executeResume', () => {
     mockCliAvailable();
     mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
 
-    await executeResume('thread-abc', 'continue', 'gpt-4.1', undefined, undefined, true);
+    await executeResume('thread-abc', 'continue', withAuthenticatedCli({ model: 'gpt-4.1', bypassSandbox: true }));
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
@@ -292,7 +344,7 @@ describe('executeResume', () => {
 });
 
 describe('executeFork', () => {
-  it('delegates to resume with default prompt', async () => {
+  it('delegates to resume with the provided prompt', async () => {
     mockCliAvailable();
     const output = jsonl(
       '{"type":"thread.started","thread_id":"t-fork"}',
@@ -300,7 +352,7 @@ describe('executeFork', () => {
     );
     mockSpawn.mockReturnValue(createMockProcess(output, 0));
 
-    const result = await executeFork('thread-orig');
+    const result = await executeFork('thread-orig', 'Continue from where we left off.', withAuthenticatedCli());
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
@@ -315,7 +367,7 @@ describe('executeFork', () => {
     mockCliAvailable();
     mockAgentProcess('Custom');
 
-    await executeFork('t1', 'Do something new', 'o4-mini');
+    await executeFork('t1', 'Do something new', withAuthenticatedCli({ model: 'o4-mini' }));
 
     expect(mockSpawn).toHaveBeenCalled();
   });
@@ -328,10 +380,16 @@ describe('preChecked auth guard for executeResume', () => {
     const customError = 'Custom auth error for resume test';
     await expect(
       executeResume(
-        'thread-abc', 'continue', undefined, undefined, undefined, false,
-        undefined, undefined, {
-          available: true as const, version: '1.0.0',
-          authState: 'unauthenticated' as const, authError: customError,
+        'thread-abc',
+        'continue',
+        {
+          bypassSandbox: false,
+          preChecked: {
+            available: true as const,
+            version: '1.0.0',
+            authState: 'unauthenticated' as const,
+            authError: customError,
+          },
         },
       ),
     ).rejects.toThrow(customError);
@@ -344,8 +402,13 @@ describe('preChecked auth guard for executeResume', () => {
     mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
 
     const result = await executeResume(
-      'thread-abc', 'continue', 'o4-mini', undefined, undefined, false,
-      undefined, undefined, { available: true as const, version: '1.0.0', authState: 'unknown' as const },
+      'thread-abc',
+      'continue',
+      {
+        model: 'o4-mini',
+        bypassSandbox: false,
+        preChecked: { available: true as const, version: '1.0.0', authState: 'unknown' as const },
+      },
     );
 
     expect(mockSpawn).toHaveBeenCalled();
@@ -357,8 +420,13 @@ describe('preChecked auth guard for executeResume', () => {
     mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
 
     await executeResume(
-      'thread-abc', 'continue', 'o4-mini', undefined, undefined, false,
-      undefined, undefined, { available: true as const, version: '1.0.0', authState: 'authenticated' as const },
+      'thread-abc',
+      'continue',
+      {
+        model: 'o4-mini',
+        bypassSandbox: false,
+        preChecked: { available: true as const, version: '1.0.0', authState: 'authenticated' as const },
+      },
     );
 
     expect(mockSpawn).toHaveBeenCalled();
@@ -377,7 +445,7 @@ describe('preChecked auth guard for executeFork', () => {
 
   it('unauthenticated throws before spawn, detectCodexCli not called', async () => {
     await expect(
-      executeFork('thread-orig', undefined, undefined, undefined, undefined, false, undefined, undefined, unauthChecked),
+      executeFork('thread-orig', 'Continue from where we left off.', { bypassSandbox: false, preChecked: unauthChecked }),
     ).rejects.toThrow('Codex CLI is not authenticated');
 
     expect(mockSpawn).not.toHaveBeenCalled();
@@ -387,8 +455,9 @@ describe('preChecked auth guard for executeFork', () => {
   it('thrown message matches cli.authError verbatim', async () => {
     const customError = 'Fork-specific custom auth error';
     await expect(
-      executeFork('thread-orig', 'prompt', undefined, undefined, undefined, false, undefined, undefined, {
-        ...unauthChecked, authError: customError,
+      executeFork('thread-orig', 'prompt', {
+        bypassSandbox: false,
+        preChecked: { ...unauthChecked, authError: customError },
       }),
     ).rejects.toThrow(customError);
   });
@@ -397,8 +466,13 @@ describe('preChecked auth guard for executeFork', () => {
     mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
 
     const result = await executeFork(
-      'thread-orig', 'do something new', 'o4-mini', undefined, undefined, false,
-      undefined, undefined, { available: true as const, version: '1.0.0', authState: 'unknown' as const },
+      'thread-orig',
+      'do something new',
+      {
+        model: 'o4-mini',
+        bypassSandbox: false,
+        preChecked: { available: true as const, version: '1.0.0', authState: 'unknown' as const },
+      },
     );
 
     expect(mockSpawn).toHaveBeenCalled();
@@ -410,22 +484,19 @@ describe('preChecked auth guard for executeFork', () => {
     mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
 
     await executeFork(
-      'thread-orig', undefined, 'o4-mini', undefined, undefined, false,
-      undefined, undefined, { available: true as const, version: '1.0.0', authState: 'authenticated' as const },
+      'thread-orig',
+      'Continue from where we left off.',
+      {
+        model: 'o4-mini',
+        bypassSandbox: false,
+        preChecked: { available: true as const, version: '1.0.0', authState: 'authenticated' as const },
+      },
     );
 
     expect(mockSpawn).toHaveBeenCalled();
     expect(mockDetect).not.toHaveBeenCalled();
   });
 
-  it('without preChecked delegates to detectCodexCli (normal path)', async () => {
-    mockDetect.mockResolvedValue({ available: true, version: '1.0.0', authState: 'authenticated' as const });
-    mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
-
-    await executeFork('thread-orig');
-
-    expect(mockDetect).toHaveBeenCalledTimes(1);
-  });
 });
 
 describe('idle timeout', () => {
@@ -452,7 +523,7 @@ describe('idle timeout', () => {
     const proc = createIdleProcess();
     mockSpawn.mockReturnValue(proc);
 
-    const promise = executeOneShot('test');
+    const promise = executeOneShot('test', withAuthenticatedCli());
     const assertion = expect(promise).rejects.toThrow('inactivity');
     await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
 
@@ -465,7 +536,7 @@ describe('idle timeout', () => {
     const proc = createIdleProcess();
     mockSpawn.mockReturnValue(proc);
 
-    const promise = executeOneShot('test');
+    const promise = executeOneShot('test', withAuthenticatedCli());
 
     // Emit data every 5 minutes - should reset idle timer each time
     for (let i = 0; i < 4; i++) {
@@ -489,7 +560,7 @@ describe('idle timeout', () => {
     const proc = createIdleProcess();
     mockSpawn.mockReturnValue(proc);
 
-    const promise = executeOneShot('test');
+    const promise = executeOneShot('test', withAuthenticatedCli());
     const assertion = expect(promise).rejects.toThrow('10 minutes of inactivity');
     await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
 
@@ -508,8 +579,7 @@ function createManualProcess() {
 }
 
 describe('abort signal', () => {
-  // executeOneShot awaits detectCodexCli() as a microtask before calling spawnCodex.
-  // We must yield one tick (await Promise.resolve()) so that spawnCodex runs and
+  // executeOneShot still needs one tick so the async call reaches spawnCli and
   // attaches its event listeners before we push data or emit close.
 
   it('resolves with aborted=true and preserves partial output when signal fires', async () => {
@@ -518,9 +588,9 @@ describe('abort signal', () => {
     mockSpawn.mockReturnValue(proc);
 
     const controller = new AbortController();
-    const promise = executeOneShot('test', undefined, undefined, undefined, undefined, undefined, controller.signal);
+    const promise = executeOneShot('test', withAuthenticatedCli({ signal: controller.signal }));
 
-    await Promise.resolve(); // let detectCodexCli resolve and spawnCodex attach listeners
+    await Promise.resolve(); // let spawnCli attach listeners
 
     // emit('data') fires the listener synchronously (unlike push() which buffers)
     (proc.stdout as Readable).emit('data', Buffer.from('{"type":"thread.started","thread_id":"t-partial"}\n'));
@@ -538,7 +608,7 @@ describe('abort signal', () => {
     mockSpawn.mockReturnValue(proc);
 
     const controller = new AbortController();
-    const promise = executeOneShot('test', undefined, undefined, undefined, undefined, undefined, controller.signal);
+    const promise = executeOneShot('test', withAuthenticatedCli({ signal: controller.signal }));
 
     await Promise.resolve();
     controller.abort();
@@ -553,7 +623,7 @@ describe('abort signal', () => {
     mockSpawn.mockReturnValue(proc);
 
     const controller = new AbortController();
-    const promise = executeOneShot('test', undefined, undefined, undefined, undefined, undefined, controller.signal);
+    const promise = executeOneShot('test', withAuthenticatedCli({ signal: controller.signal }));
 
     await Promise.resolve();
     (proc.stdout as Readable).emit('data', Buffer.from('{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Done"}}\n'));
@@ -575,9 +645,9 @@ describe('abort signal', () => {
       mockSpawn.mockReturnValue(proc);
 
       const controller = new AbortController();
-      const promise = executeOneShot('test', undefined, undefined, undefined, undefined, undefined, controller.signal);
+      const promise = executeOneShot('test', withAuthenticatedCli({ signal: controller.signal }));
 
-      await vi.advanceTimersByTimeAsync(0); // flush microtasks so spawnCodex attaches listeners
+      await vi.advanceTimersByTimeAsync(0); // flush microtasks so spawnCli attaches listeners
 
       controller.abort();
       proc.emit('close', null);
@@ -596,12 +666,12 @@ describe('killAllChildren', () => {
     const output = agentMessage();
     mockSpawn.mockReturnValue(createMockProcess(output, 0));
 
-    await executeOneShot('test');
+    await executeOneShot('test', withAuthenticatedCli());
     killAllChildren();
 
     const proc2 = createMockProcess(output, 0);
     const killSpy = vi.fn();
-    (proc2 as ChildProcess & { kill: ReturnType<typeof vi.fn> }).kill = killSpy;
+    (proc2 as unknown as { kill: ReturnType<typeof vi.fn> }).kill = killSpy;
     mockSpawn.mockReturnValue(proc2);
 
     killAllChildren();
@@ -613,12 +683,7 @@ describe('ensureMultiAgent', () => {
   const originalHome = process.env.HOME;
   const homesToClean = new Set<string>();
 
-  beforeEach(() => {
-    _test.setMultiAgentEnsured(false);
-  });
-
   afterEach(() => {
-    _test.setMultiAgentEnsured(false);
     process.env.HOME = originalHome;
     for (const home of homesToClean) {
       rmSync(home, { recursive: true, force: true });
@@ -634,7 +699,7 @@ describe('ensureMultiAgent', () => {
     mockCliAvailable();
     mockAgentProcess();
 
-    await executeOneShot('test');
+    await executeOneShot('test', withAuthenticatedCli());
 
     const configPath = join(home, '.codex', 'config.toml');
     expect(existsSync(configPath)).toBe(true);
@@ -649,14 +714,14 @@ describe('ensureMultiAgent', () => {
     mockCliAvailable();
     const okOutput = agentMessage();
     mockSpawn.mockReturnValue(createMockProcess(okOutput, 0));
-    await executeOneShot('first');
+    await executeOneShot('first', withAuthenticatedCli());
 
     const configPath = join(home, '.codex', 'config.toml');
     const firstMtime = statSync(configPath).mtimeMs;
 
     await new Promise((resolve) => setTimeout(resolve, 20));
     mockSpawn.mockReturnValue(createMockProcess(okOutput, 0));
-    await executeOneShot('second');
+    await executeOneShot('second', withAuthenticatedCli());
 
     const secondMtime = statSync(configPath).mtimeMs;
     expect(secondMtime).toBe(firstMtime);
@@ -674,7 +739,7 @@ describe('ensureMultiAgent', () => {
     mockCliAvailable();
     mockAgentProcess();
 
-    await executeOneShot('test');
+    await executeOneShot('test', withAuthenticatedCli());
 
     expect(readFileSync(configPath, 'utf8')).toBe(existing);
   });

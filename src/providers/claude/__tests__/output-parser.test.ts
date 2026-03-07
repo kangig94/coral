@@ -297,6 +297,68 @@ describe('parseClaudeStreamJson — adversarial', () => {
     });
   });
 
+  describe('trailing Insight block recovery', () => {
+    it('prepends previous assistant message when result starts with Insight marker', () => {
+      const review = '**[OKAY]**\n\nFindings:\n| # | Severity | Finding |\n|---|----------|---------|';
+      const insight = '`★ Insight ─────────────────────────────────────`\n1. Key observation.\n`─────────────────────────────────────────────────`';
+      const output = ndjson(
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'Let me read the files.' }] } },
+        { type: 'assistant', message: { content: [{ type: 'text', text: review }] } },
+        { type: 'assistant', message: { content: [{ type: 'text', text: insight }] } },
+        { type: 'result', result: insight, session_id: 'sess-insight', total_cost_usd: 0.05 },
+      );
+      const result = parse(output);
+      expect(result.response).toBe(review + '\n\n' + insight);
+      expect(result.sessionId).toBe('sess-insight');
+    });
+
+    it('walks back through consecutive Insight messages to find non-Insight content', () => {
+      const review = '## Findings\nAll good.';
+      const insight1 = '`★ Insight ─────────────────────────────────────`\nFirst insight.';
+      const insight2 = '`★ Insight ─────────────────────────────────────`\nSecond insight.';
+      const output = ndjson(
+        { type: 'assistant', message: { content: [{ type: 'text', text: review }] } },
+        { type: 'assistant', message: { content: [{ type: 'text', text: insight1 }] } },
+        { type: 'assistant', message: { content: [{ type: 'text', text: insight2 }] } },
+        { type: 'result', result: insight2, session_id: 'sess-multi', total_cost_usd: 0.03 },
+      );
+      const result = parse(output);
+      expect(result.response).toBe(review + '\n\n' + insight1 + '\n\n' + insight2);
+    });
+
+    it('does not modify result when it does not start with Insight marker', () => {
+      const output = ndjson(
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'thinking...' }] } },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'final answer' }] } },
+        { type: 'result', result: 'final answer', session_id: 'sess-normal', total_cost_usd: 0.01 },
+      );
+      const result = parse(output);
+      expect(result.response).toBe('final answer');
+    });
+
+    it('handles leading newlines before Insight marker (real CLI format)', () => {
+      const review = '<critic>\n## Findings\n| # | Severity |\n</critic>';
+      const insightWithNewlines = '\n\n`★ Insight ─────────────────────────────────────`\nKey point.\n`─────────────────────────────────────────────────`';
+      const output = ndjson(
+        { type: 'assistant', message: { content: [{ type: 'text', text: review }] } },
+        { type: 'assistant', message: { content: [{ type: 'text', text: insightWithNewlines }] } },
+        { type: 'result', result: insightWithNewlines, session_id: 'sess-newline', total_cost_usd: 0.02 },
+      );
+      const result = parse(output);
+      expect(result.response).toBe(review + '\n\n' + insightWithNewlines);
+    });
+
+    it('does not modify result when only one assistant message exists', () => {
+      const insight = '`★ Insight ─────────────────────────────────────`\nSolo insight.';
+      const output = ndjson(
+        { type: 'assistant', message: { content: [{ type: 'text', text: insight }] } },
+        { type: 'result', result: insight, session_id: 'sess-solo', total_cost_usd: 0.01 },
+      );
+      const result = parse(output);
+      expect(result.response).toBe(insight);
+    });
+  });
+
   describe('num_turns and durationMs mapping', () => {
     it('maps num_turns from result event', () => {
       const output = ndjson({

@@ -55,5 +55,7 @@ disallowedTools: Write, Edit
 
     ## References
     - `path/to/file.ts:42` - [what it shows]
+
+    **Reviewed plan**: [absolute path to plan file, if a plan was reviewed — required for downstream resolver]
   </Output_Format>
 </Agent_Prompt>

@@ -3,23 +3,16 @@ declare const __VERSION__: string;
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { z } from 'zod';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { ensureBackend, proxyToolCall, streamWait } from './backend-client.js';
 import { buildToolList, handleBackendToolCall } from './backend-tool.js';
 import { isRecord, textResult } from '../shared/mcp-utils.js';
+import { waitInputSchema } from '../shared/schemas.js';
 
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
 const version = typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0';
-
-const waitInputSchema = z.object({
-  jobs: z.array(z.string()).min(1, 'At least one job required'),
-  timeout_seconds: z.number().min(1).max(1200).optional(),
-  cursor: z.string().min(1).optional(),
-  inline: z.boolean().default(false),
-}).strict();
 
 export type ToolDescriptor = {
   name: string;
@@ -119,6 +112,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
           backendInfo,
           parsed.cursor,
           extra.signal,
+          process.cwd(),
         )) {
           switch (event.type) {
             case 'progress':

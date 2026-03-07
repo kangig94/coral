@@ -36,7 +36,7 @@ the same background session pipeline as `op: exec`.
 | `op` | string | Yes | Must match `coral:[a-z0-9][a-z0-9-]*` |
 | `prompt` | string | Yes | User prompt appended after agent content |
 | `session` | string | No | Existing coral session UUID to resume |
-| `working_directory` | string | No | Working directory |
+| `work_dir` | string | No | Working directory |
 
 ### Behavior Notes
 
@@ -57,7 +57,7 @@ Start a new Codex session (omit `session`) or resume an existing one (pass `sess
 |---|---|---|---|
 | `prompt` | string | Yes | Prompt to send to Codex (min 1 char) |
 | `session` | string | No | Coral session UUID from a prior `exec`/`fork` response. Omit to start a new session. |
-| `working_directory` | string | No | Working directory |
+| `work_dir` | string | No | Working directory |
 
 ### Output
 
@@ -104,7 +104,7 @@ No parameters (empty object). This envelope is strict.
       "model": "gpt-5.4",
       "created_at": "2026-02-18T08:30:00.000Z",
       "last_used_at": "2026-02-18T09:15:00.000Z",
-      "working_directory": "/home/user/project",
+      "work_dir": "/home/user/project",
       "status": "completed"
     }
   ],
@@ -130,7 +130,7 @@ Fork an existing session to continue the conversation in a new branch. Returns i
 |---|---|---|---|
 | `session` | string | Yes | Source session identifier (must exist in Coral registry) |
 | `prompt` | string | No | Additional prompt for the forked session |
-| `working_directory` | string | No | Working directory |
+| `work_dir` | string | No | Working directory |
 
 ### Output
 
@@ -198,7 +198,7 @@ Single entry point for Claude CLI execution. Use the required `op` discriminator
       "op": { "type": "string", "description": "Operation: exec/list/fork, or coral:<agent-name> for agent delegation" },
       "prompt": { "type": "string", "description": "Prompt to send (exec required)" },
       "session": { "type": "string", "description": "Session ID for resume (exec with existing session)" },
-      "working_directory": { "type": "string", "description": "Working directory for execution" }
+      "work_dir": { "type": "string", "description": "Working directory for execution" }
     },
     "required": ["op"]
   }
@@ -243,7 +243,7 @@ Delegate a Claude CLI call through an agent file. Same schema as the Codex `cora
 | `op` | string | Yes | Must match `coral:[a-z0-9][a-z0-9-]*` |
 | `prompt` | string | Yes | User prompt appended after agent content |
 | `session` | string | No | Existing coral session UUID to resume |
-| `working_directory` | string | No | Working directory |
+| `work_dir` | string | No | Working directory |
 
 - `coral:<agent>`: loads `agents/<agent>.md`, parses frontmatter metadata, strips it, and injects into `--append-system-prompt`
 - `coral:<skill>`: returns `isError` (skills require Claude Code tool environment and are only supported through the `codex` tool)
@@ -262,7 +262,7 @@ Fork an existing Claude session into a new branch. Uses `claude -p --resume <thr
 |---|---|---|---|
 | `session` | string | Yes | Source session identifier (must exist in Coral registry) |
 | `prompt` | string | No | Additional prompt for the forked session |
-| `working_directory` | string | No | Working directory |
+| `work_dir` | string | No | Working directory |
 
 ### Output
 
@@ -413,8 +413,10 @@ Deterministic multi-agent pipeline executor. Chains coral agents via a DSL expre
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `expression` | string | Yes | Pipeline DSL expression (min 1 char). See grammar below. |
-| `prompt` | string | Yes | Initial prompt fed to the first step (min 1 char). |
+| `init_prompt` | string | Yes | Initial prompt fed to the first step (min 1 char). |
+| `context` | string | No | Shared context prepended to every atom's prompt in every step. |
 | `provider` | string | No | Default provider for atoms without `@provider` suffix. `claude` (default) or `codex`. |
+| `work_dir` | string | No | Working directory for spawned atoms. Overrides the caller's project root. |
 | `atoms` | object | No | Per-atom config: `{ atomName: { effort?, instruction? } }`. See Atoms below. |
 
 ### DSL Grammar
@@ -493,12 +495,12 @@ Use `wait({ jobs: [job] })` then `Read(result.content)` for the pipeline result.
 
 ```
 # Simple sequential: architect reviews, resolver synthesizes
-workflow({ expression: "architect -> resolver", prompt: "Review auth.ts" })
+workflow({ expression: "architect -> resolver", init_prompt: "Review auth.ts" })
 
 # Parallel review with synthesis
 workflow({
   expression: "(architect, critic) -> resolver",
-  prompt: "Analyze the login flow",
+  init_prompt: "Analyze the login flow",
   provider: "codex",
   atoms: { architect: { effort: "high" }, critic: { instruction: "Focus on edge cases." } }
 })
@@ -506,7 +508,7 @@ workflow({
 # Mixed providers: codex for analysis, claude for writing
 workflow({
   expression: "scanner@codex -> architect@claude",
-  prompt: "Map and review the API layer"
+  init_prompt: "Map and review the API layer"
 })
 ```
 

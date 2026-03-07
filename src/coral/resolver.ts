@@ -13,8 +13,6 @@ export type CoralContent =
 
 export interface AgentMeta {
   model?: string;
-  methods?: string[];
-  deep?: boolean;  // true when frontmatter contains "deep: bool"
 }
 
 export function parseAgentMeta(content: string): AgentMeta {
@@ -26,13 +24,6 @@ export function parseAgentMeta(content: string): AgentMeta {
 
   const modelMatch = fm.match(/^model:\s*(.+)$/m);
   if (modelMatch) meta.model = modelMatch[1].trim();
-
-  const methodsMatch = fm.match(/^methods:\s*\[([^\]]*)\]$/m);
-  if (methodsMatch) {
-    meta.methods = methodsMatch[1].split(',').map((s) => s.trim()).filter(Boolean);
-  }
-
-  if (/^deep:\s*bool\s*$/m.test(fm)) meta.deep = true;
 
   return meta;
 }
@@ -88,9 +79,3 @@ function readFileIfExists(path: string): string | null {
     throw err;
   }
 }
-
-export const _test = {
-  setPluginRoot(p: string) {
-    pluginRoot = p;
-  },
-};

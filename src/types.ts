@@ -125,6 +125,7 @@ export interface PersistedStatusRecord {
   jobId: string;
   sessionId: string;
   provider: string;
+  projectRoot?: string;
   jobKind?: JobKind;
   phase: JobPhase;
   launch: {
@@ -151,6 +152,7 @@ export interface WaitRequest {
   jobIds: string[];
   timeoutSeconds?: number;
   cursor?: WaitCursor;
+  projectRoot?: string;
 }
 
 /** Events emitted by the wait stream. */

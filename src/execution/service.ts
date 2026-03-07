@@ -13,7 +13,7 @@ import type {
 } from '../types.js';
 import { resolveCoralContent, stripAgentMetadata, parseAgentMeta } from '../coral/resolver.js';
 import { getNewProvider } from '../providers/registry.js';
-import { CORAL_DEFAULT_EFFORT } from '../shared/schemas.js';
+import { CORAL_DEFAULT_EFFORT, type EffortLevel } from '../shared/schemas.js';
 import type { Provider, ProviderRuntime } from '../providers/types.js';
 import {
   executePipeline,
@@ -34,17 +34,14 @@ import {
   type AdmissionResult,
   type QueuedHandle,
 } from './engine.js';
+import { AbortRegistry, type AbortResult } from './abort-registry.js';
 import { buildCoralInstruction } from './instruction.js';
-import { JobManager } from './job-manager.js';
-import type { AbortResult } from './job-manager.js';
 import { ProgressStore, createReplayCursor, jobResultPath } from './progress-store.js';
 import { SessionManager } from './session-manager.js';
 import type { SessionEntry } from './session-manager.js';
 
-export interface CallerContext {
-  projectRoot: string;
-  pluginRoot: string; // used by resolveCoralContent (module-level var set by esbuild)
-}
+import type { CallerContext } from './request-context.js';
+export type { CallerContext } from './request-context.js';
 
 export interface ExecInput {
   prompt: string;
@@ -85,21 +82,17 @@ export interface CoralInput {
   prompt: string;
   sessionId?: string;
   cwd?: string;
+  effort?: EffortLevel;
 }
 
 export interface ListResult {
   sessions: SessionEntry[];
 }
 
-const POLL_INTERVAL_MS = 500;
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
 const QUEUED_ABORT_MESSAGE = 'Aborted while queued.';
 
 type AcceptedAdmission = Exclude<AdmissionResult, 'queue_full'>;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function rejectLaunch(code: string, message: string): LaunchDecision {
   return {
@@ -154,13 +147,13 @@ async function runProviderPreflight(provider: Provider): Promise<string | null> 
 
 export class ExecutionService {
   private readonly sessionManager: SessionManager;
-  private readonly jobManager: JobManager;
+  private readonly abortRegistry: AbortRegistry;
   private readonly progressStore: ProgressStore;
 
-  constructor(ctx: CallerContext) {
+  constructor(ctx: CallerContext, progressStore?: ProgressStore) {
     this.sessionManager = new SessionManager(ctx.projectRoot);
-    this.jobManager = new JobManager();
-    this.progressStore = new ProgressStore();
+    this.abortRegistry = new AbortRegistry();
+    this.progressStore = progressStore ?? new ProgressStore();
   }
 
   private claimAndAdmitJob(
@@ -190,10 +183,11 @@ export class ExecutionService {
     providerName: string,
     request: ProviderRequest,
     admission: AcceptedAdmission,
+    projectRoot: string,
   ): LaunchDecision {
     const initialPhase: Extract<JobPhase, 'queued' | 'launching'> = admission.type === 'queued' ? 'queued' : 'launching';
-    this.jobManager.allocate(sessionId, providerName, initialPhase, jobId);
-    this.progressStore.initJob(jobId, sessionId, providerName, undefined, initialPhase);
+    this.abortRegistry.register(jobId);
+    this.progressStore.initJob(jobId, sessionId, providerName, projectRoot, undefined, initialPhase);
 
     if (admission.type === 'queued') {
       this.markJobQueued(jobId, sessionId, admission.queuePosition);
@@ -233,7 +227,15 @@ export class ExecutionService {
       instruction: input.instruction,
     };
 
-    return this.launchProviderJob(provider, session.sessionId, admitted.jobId, providerName, request, admitted.admission);
+    return this.launchProviderJob(
+      provider,
+      session.sessionId,
+      admitted.jobId,
+      providerName,
+      request,
+      admitted.admission,
+      ctx.projectRoot,
+    );
   }
 
   async resume(providerName: string, input: ResumeInput, ctx: CallerContext): Promise<LaunchDecision> {
@@ -277,10 +279,18 @@ export class ExecutionService {
       instruction: input.instruction,
     };
 
-    return this.launchProviderJob(provider, session.sessionId, admitted.jobId, providerName, request, admitted.admission);
+    return this.launchProviderJob(
+      provider,
+      session.sessionId,
+      admitted.jobId,
+      providerName,
+      request,
+      admitted.admission,
+      ctx.projectRoot,
+    );
   }
 
-  async fork(providerName: string, input: ForkInput, _ctx: CallerContext): Promise<LaunchDecision> {
+  async fork(providerName: string, input: ForkInput, ctx: CallerContext): Promise<LaunchDecision> {
     const provider = getNewProvider(providerName);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
@@ -324,7 +334,15 @@ export class ExecutionService {
       instruction: input.instruction,
     };
 
-    return this.launchProviderJob(provider, newSession.sessionId, admitted.jobId, providerName, request, admitted.admission);
+    return this.launchProviderJob(
+      provider,
+      newSession.sessionId,
+      admitted.jobId,
+      providerName,
+      request,
+      admitted.admission,
+      ctx.projectRoot,
+    );
   }
 
   async coralDispatch(
@@ -339,7 +357,7 @@ export class ExecutionService {
     const instruction = buildCoralInstruction(stripped);
 
     const model = meta.model;
-    const effort = CORAL_DEFAULT_EFFORT;
+    const effort = input.effort ?? CORAL_DEFAULT_EFFORT;
     const cwd = input.cwd ?? ctx.projectRoot;
 
     if (input.sessionId) {
@@ -385,13 +403,13 @@ export class ExecutionService {
     const session = this.sessionManager.allocate(providerName, `workflow-${Date.now()}`, 'workflow', ctx.projectRoot);
     // Workflow jobs bypass the admission queue: the workflow coordinator itself
     // does not occupy a child-process slot — only the individual atoms it launches do.
-    const jobId = this.jobManager.allocate(session.sessionId, providerName);
+    const jobId = this.abortRegistry.register();
 
     if (!this.sessionManager.claimForJob(session.sessionId, jobId)) {
       return rejectLaunch('session_busy', 'Session is already running a job');
     }
 
-    this.progressStore.initJob(jobId, session.sessionId, providerName, 'workflow');
+    this.progressStore.initJob(jobId, session.sessionId, providerName, ctx.projectRoot, 'workflow');
     this.markJobRunning(jobId);
 
     this.runWorkflowAsync(session.sessionId, jobId, providerName, ast, input, ctx);
@@ -407,19 +425,19 @@ export class ExecutionService {
     const notFound: string[] = [];
 
     for (const jobId of jobIds) {
-      const job = this.jobManager.get(jobId);
-      if (!job) {
+      if (!this.abortRegistry.has(jobId)) {
         notFound.push(jobId);
         continue;
       }
 
-      if (job.phase === 'queued' && cancelQueued(jobId)) {
-        this.finishQueuedAbort(jobId, job.sessionId, QUEUED_ABORT_MESSAGE);
+      const status = this.progressStore.readStatus(jobId);
+      if (status?.phase === 'queued' && cancelQueued(jobId)) {
+        this.finishQueuedAbort(jobId, status.sessionId, QUEUED_ABORT_MESSAGE);
         aborted.push(jobId);
         continue;
       }
 
-      job.controller.abort();
+      this.abortRegistry.abort([jobId]);
       aborted.push(jobId);
     }
 
@@ -434,16 +452,16 @@ export class ExecutionService {
   async awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchState> {
     const start = Date.now();
     while (true) {
-      const job = this.jobManager.get(jobId);
-      if (job && job.launchState !== 'pending') return job.launchState;
-
+      const seq = this.progressStore.getChangeSeq();
       const status = this.progressStore.readStatus(jobId);
       if (status && status.launch.state !== 'pending') return status.launch.state;
 
-      if (!job && status && status.phase !== 'launching') return 'ready';
-
-      if (Date.now() - start >= timeoutMs) return 'pending';
-      await sleep(200);
+      const remainingMs = timeoutMs - (Date.now() - start);
+      if (remainingMs <= 0) return 'pending';
+      await Promise.race([
+        this.progressStore.waitForChange(seq),
+        new Promise<void>((resolve) => setTimeout(resolve, remainingMs)),
+      ]);
     }
   }
 
@@ -463,6 +481,8 @@ export class ExecutionService {
         yield { type: 'timeout', runningJobIds: [...pending] };
         return;
       }
+
+      const seq = this.progressStore.getChangeSeq();
 
       for (const jobId of [...pending]) {
         const fileCursor = fileCursors.get(jobId)!;
@@ -511,7 +531,12 @@ export class ExecutionService {
       }
 
       if (pending.size > 0) {
-        await sleep(POLL_INTERVAL_MS);
+        const remainingMs = timeoutMs - (Date.now() - startMs);
+        if (remainingMs <= 0) continue;
+        await Promise.race([
+          this.progressStore.waitForChange(seq),
+          new Promise<void>((resolve) => setTimeout(resolve, remainingMs)),
+        ]);
       }
     }
   }
@@ -523,7 +548,7 @@ export class ExecutionService {
     request: ProviderRequest,
     admission: AcceptedAdmission,
   ): void {
-    const signal = this.jobManager.getSignal(jobId);
+    const signal = this.abortRegistry.getSignal(jobId);
     if (!signal) {
       if (admission.type === 'queued') admission.cancel();
       else releaseLaunch(jobId);
@@ -531,8 +556,16 @@ export class ExecutionService {
     }
 
     const onEvent = (event: ProviderProgressEvent): void => {
-      const job = this.jobManager.get(jobId);
-      if (job && job.launchState !== 'ready') this.markJobRunning(jobId);
+      const currentStatus = this.progressStore.readStatus(jobId);
+      if (
+        currentStatus
+        && currentStatus.phase !== 'completed'
+        && currentStatus.phase !== 'error'
+        && currentStatus.phase !== 'aborted'
+        && currentStatus.launch.state !== 'ready'
+      ) {
+        this.markJobRunning(jobId);
+      }
       this.progressStore.appendProgress(jobId, sessionId, event.message);
     };
 
@@ -556,8 +589,16 @@ export class ExecutionService {
         const runtime: ProviderRuntime = { signal, onEvent };
         const result = await provider.execute(request, runtime);
 
-        const job = this.jobManager.get(jobId);
-        if (job && job.launchState !== 'ready') this.markJobReady(jobId);
+        const currentStatus = this.progressStore.readStatus(jobId);
+        if (
+          currentStatus
+          && currentStatus.phase !== 'completed'
+          && currentStatus.phase !== 'error'
+          && currentStatus.phase !== 'aborted'
+          && currentStatus.launch.state !== 'ready'
+        ) {
+          this.markJobReady(jobId);
+        }
 
         const phase: JobPhase = result.aborted ? 'aborted' : 'completed';
         const terminalResult: TerminalResult = {
@@ -574,8 +615,7 @@ export class ExecutionService {
 
         this.progressStore.appendTerminal(jobId, sessionId, terminalResult, phase);
         this.progressStore.writeResultMd(jobId, result.content);
-        this.jobManager.setPhase(jobId, phase);
-        this.jobManager.remove(jobId);
+        this.abortRegistry.remove(jobId);
 
         if (result.conversationRef) {
           this.sessionManager.setConversationRef(sessionId, result.conversationRef);
@@ -584,7 +624,10 @@ export class ExecutionService {
         }
         this.sessionManager.releaseJob(sessionId, jobId);
       } catch (err: unknown) {
-        if (!this.jobManager.get(jobId)) return;
+        const currentStatus = this.progressStore.readStatus(jobId);
+        if (!currentStatus || currentStatus.phase === 'completed' || currentStatus.phase === 'error' || currentStatus.phase === 'aborted') {
+          return;
+        }
 
         if (err instanceof CliBusyError) {
           this.failJob(jobId, sessionId, 'busy', err.message);
@@ -600,13 +643,11 @@ export class ExecutionService {
   }
 
   private markJobQueued(jobId: string, sessionId: string, queuePosition: number): void {
-    this.jobManager.setLaunchState(jobId, 'queued');
     this.progressStore.updateLaunchState(jobId, 'queued');
     this.progressStore.appendProgress(jobId, sessionId, `queued (position ${queuePosition})`);
   }
 
   private markJobLaunching(jobId: string): void {
-    this.jobManager.setPhase(jobId, 'launching');
     this.progressStore.updatePhase(jobId, 'launching');
   }
 
@@ -652,29 +693,25 @@ export class ExecutionService {
   }
 
   private finishQueuedAbort(jobId: string, sessionId: string, message: string): void {
+    this.progressStore.updateLaunchState(jobId, 'error', message);
     this.progressStore.appendTerminal(jobId, sessionId, { content: '', aborted: true, notice: message }, 'aborted');
-    this.jobManager.setPhase(jobId, 'aborted');
-    this.jobManager.remove(jobId);
+    this.abortRegistry.remove(jobId);
     this.sessionManager.releaseJob(sessionId, jobId);
   }
 
   private markJobReady(jobId: string): void {
-    this.jobManager.setLaunchState(jobId, 'ready');
     this.progressStore.updateLaunchState(jobId, 'ready');
   }
 
   private markJobRunning(jobId: string): void {
     this.markJobReady(jobId);
-    this.jobManager.setPhase(jobId, 'running');
     this.progressStore.updatePhase(jobId, 'running');
   }
 
   private failJob(jobId: string, sessionId: string, launchState: LaunchState, message: string): void {
-    this.jobManager.setLaunchState(jobId, launchState, message);
     this.progressStore.updateLaunchState(jobId, launchState, message);
-    this.jobManager.setPhase(jobId, 'error');
     this.progressStore.appendTerminal(jobId, sessionId, { content: '', notice: message }, 'error');
-    this.jobManager.remove(jobId);
+    this.abortRegistry.remove(jobId);
     this.sessionManager.releaseJob(sessionId, jobId);
   }
 
@@ -687,9 +724,8 @@ export class ExecutionService {
   ): void {
     this.progressStore.writeWorkflowResultMdOrThrow(jobId, markdown);
     this.progressStore.appendTerminal(jobId, sessionId, result, phase);
-    this.jobManager.setPhase(jobId, phase);
     this.sessionManager.setNonResumable(sessionId);
-    this.jobManager.remove(jobId);
+    this.abortRegistry.remove(jobId);
     this.sessionManager.releaseJob(sessionId, jobId);
   }
 
@@ -714,17 +750,18 @@ export class ExecutionService {
     input: WorkflowInput,
     ctx: CallerContext,
   ): void {
-    const signal = this.jobManager.getSignal(jobId);
+    const signal = this.abortRegistry.getSignal(jobId);
     if (!signal) return;
 
     void executePipeline(
       ast,
-      input.prompt,
+      input.init_prompt,
       providerName,
       this,
       ctx,
       {
         atoms: input.atoms,
+        context: input.context,
         signal,
         staleTimeoutMs: input.stale_timeout_seconds * 1000,
         onProgress: (message) => {
