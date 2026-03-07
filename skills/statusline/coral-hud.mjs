@@ -54,7 +54,9 @@ function renderGitBranch(input) {
     const opts = { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"], cwd, timeout: 2000 };
     const branch = execSync("git branch --show-current", opts).trim()
       || execSync("git rev-parse --short HEAD", opts).trim();
-    return branch ? `⎇ ${branch}` : null;
+    if (!branch) return null;
+    const dirty = execSync("git status --porcelain", opts).trim() ? `${YELLOW}*${RESET}` : "";
+    return `${CYAN}⎇ ${branch}${RESET}${dirty}`;
   } catch {
     return null;
   }
