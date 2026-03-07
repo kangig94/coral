@@ -98,7 +98,9 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
       provider: "{phase provider}"
     })
     ```
-    `wait({ jobs: [job], inline: true })` → read `result.content`.
+    - **If `--deep`**: `wait({ jobs: [job], inline: false })` →
+      `{ start, end } = result.workflow.steps.find(s => s.agent === "resolver")` → `Read(result.content, start, end - start + 1)`.
+    - **Otherwise**: `wait({ jobs: [job], inline: true })` → read `result.content`.
 
     **4b. Post-Round Processing**
 
