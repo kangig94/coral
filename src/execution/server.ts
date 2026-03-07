@@ -359,6 +359,7 @@ function getToolDescriptors(): Array<Record<string, unknown>> {
           init_prompt: { type: 'string' },
           context: { type: 'string' },
           provider: { type: 'string' },
+          work_dir: { type: 'string' },
         },
         required: ['expression', 'init_prompt'],
       },
