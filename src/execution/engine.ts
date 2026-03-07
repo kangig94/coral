@@ -5,9 +5,8 @@ const IDLE_TIMEOUT = 10 * 60 * 1000; // 10 minutes of inactivity
 const MAX_BUFFER = 10 * 1024 * 1024; // 10MB
 const SIGTERM_GRACE_MS = 5_000; // grace period before escalating to SIGKILL
 
-export const MAX_ACTIVE_CHILDREN = parsePositiveInt(process.env.CORAL_MAX_CHILDREN, 10);
-export const MAX_ACTIVE_CHILDREN_PER_PROVIDER = parsePositiveInt(process.env.CORAL_MAX_CHILDREN_PER_PROVIDER, 6);
-export const MAX_QUEUE_SIZE = parsePositiveInt(process.env.CORAL_MAX_QUEUE, 10);
+export const MAX_ACTIVE_CHILDREN = Math.min(Math.max(parsePositiveInt(process.env.CORAL_MAX_CHILDREN, 10), 1), 10);
+const MAX_QUEUE_SIZE = 20;
 
 export type LaunchPermit = { type: 'immediate' };
 
@@ -53,16 +52,14 @@ export type CliBusyErrorDetail = {
   error: 'busy';
   provider: string;
   globalActive: number;
-  providerActive: number;
   globalLimit: number;
-  providerLimit: number;
 };
 
 export class CliBusyError extends Error {
   readonly detail: CliBusyErrorDetail;
 
   constructor(detail: CliBusyErrorDetail) {
-    const message = `Runner is busy (${detail.globalActive}/${detail.globalLimit} total, ${detail.providerActive}/${detail.providerLimit} for ${detail.provider})`;
+    const message = `Runner is busy (${detail.globalActive}/${detail.globalLimit} for ${detail.provider})`;
     super(message);
     this.name = 'CliBusyError';
     this.detail = detail;
@@ -76,17 +73,8 @@ export function parsePositiveInt(raw: string | undefined, fallback: number): num
   return parsed;
 }
 
-function countLaunchesByProvider(provider: string): number {
-  let count = 0;
-  for (const activeProvider of activeLaunches.values()) {
-    if (activeProvider === provider) count += 1;
-  }
-  return count;
-}
-
-function hasLaunchCapacity(provider: string): boolean {
-  if (activeLaunches.size >= MAX_ACTIVE_CHILDREN) return false;
-  return countLaunchesByProvider(provider) < MAX_ACTIVE_CHILDREN_PER_PROVIDER;
+function hasLaunchCapacity(): boolean {
+  return activeLaunches.size < MAX_ACTIVE_CHILDREN;
 }
 
 function queuedHandle(entry: QueuedLaunchEntry): QueuedHandle {
@@ -110,7 +98,7 @@ function findQueuedLaunch(jobId: string): QueuedLaunchEntry | null {
 function admitQueueHead(): void {
   const head = queuedLaunches[0];
   if (!head) return;
-  if (!hasLaunchCapacity(head.provider)) return;
+  if (!hasLaunchCapacity()) return;
   queuedLaunches.shift();
   activeLaunches.set(head.jobId, head.provider);
   head.resolve();
@@ -137,7 +125,7 @@ export function requestLaunch(jobId: string, provider: string): AdmissionResult 
   const existingQueued = findQueuedLaunch(jobId);
   if (existingQueued) return queuedHandle(existingQueued);
 
-  if (queuedLaunches.length === 0 && hasLaunchCapacity(provider)) {
+  if (queuedLaunches.length === 0 && hasLaunchCapacity()) {
     activeLaunches.set(jobId, provider);
     return IMMEDIATE_PERMIT;
   }
@@ -229,15 +217,12 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
 
   if (!usingReservedPermit) {
     const globalActive = activeLaunches.size;
-    const providerActive = countLaunchesByProvider(options.provider);
-    if (queuedLaunches.length > 0 || globalActive >= MAX_ACTIVE_CHILDREN || providerActive >= MAX_ACTIVE_CHILDREN_PER_PROVIDER) {
+    if (queuedLaunches.length > 0 || globalActive >= MAX_ACTIVE_CHILDREN) {
       return Promise.reject(new CliBusyError({
         error: 'busy',
         provider: options.provider,
         globalActive,
-        providerActive,
         globalLimit: MAX_ACTIVE_CHILDREN,
-        providerLimit: MAX_ACTIVE_CHILDREN_PER_PROVIDER,
       }));
     }
     internalPermitJobId = `spawncli-${randomUUID()}`;

@@ -188,9 +188,7 @@ Claude가 놓치기 쉬운 것을 발견하면 (근본 원인, 주의사항, 기
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
 | `CORAL_CODEX_MODEL` | `gpt-5.4` | Codex CLI 기본 모델 |
-| `CORAL_MAX_CHILDREN` | `10` | provider 전체에서 동시 실행 가능한 최대 CLI 자식 프로세스 수 |
-| `CORAL_MAX_CHILDREN_PER_PROVIDER` | `6` | provider별 동시 실행 가능한 최대 CLI 자식 프로세스 수 |
-| `CORAL_MAX_QUEUE` | `10` | 슬롯 대기 중인 최대 큐 작업 수 |
+| `CORAL_MAX_CHILDREN` | `10` | 최대 동시 CLI 자식 프로세스 수 (1–10) |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | 토론 자동 종료 전 최대 에포크 (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `0` | 완료된 토론 세션 자동 정리 기한 (일, 0 = 비활성화) |
 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(미설정)_ | `/coral:discuss` **필수**. `1`로 설정. |

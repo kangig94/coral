@@ -3,10 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 type EngineModule = typeof import('../engine.js');
 
 const ORIGINAL_MAX_CHILDREN = process.env.CORAL_MAX_CHILDREN;
-const ORIGINAL_MAX_CHILDREN_PER_PROVIDER = process.env.CORAL_MAX_CHILDREN_PER_PROVIDER;
-const ORIGINAL_MAX_QUEUE = process.env.CORAL_MAX_QUEUE;
 
-function restoreEnv(name: 'CORAL_MAX_CHILDREN' | 'CORAL_MAX_CHILDREN_PER_PROVIDER' | 'CORAL_MAX_QUEUE', value: string | undefined): void {
+function restoreEnv(name: 'CORAL_MAX_CHILDREN', value: string | undefined): void {
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;
 }
@@ -21,15 +19,11 @@ describe('engine admission queue', () => {
 
   beforeEach(async () => {
     process.env.CORAL_MAX_CHILDREN = '1';
-    process.env.CORAL_MAX_CHILDREN_PER_PROVIDER = '1';
-    process.env.CORAL_MAX_QUEUE = '2';
     engine = await loadEngine();
   });
 
   afterEach(() => {
     restoreEnv('CORAL_MAX_CHILDREN', ORIGINAL_MAX_CHILDREN);
-    restoreEnv('CORAL_MAX_CHILDREN_PER_PROVIDER', ORIGINAL_MAX_CHILDREN_PER_PROVIDER);
-    restoreEnv('CORAL_MAX_QUEUE', ORIGINAL_MAX_QUEUE);
     vi.restoreAllMocks();
     vi.resetModules();
   });
@@ -55,14 +49,26 @@ describe('engine admission queue', () => {
     expect(engine.queuePosition('job-2')).toBe(1);
   });
 
-  it('returns queue_full when the queue limit is reached', () => {
-    expect(engine.MAX_QUEUE_SIZE).toBe(2);
+  it('returns queue_full when the internal queue limit (20) is reached', async () => {
     expect(engine.requestLaunch('job-1', 'codex')).toEqual({ type: 'immediate' });
-    expect(engine.requestLaunch('job-2', 'codex')).toMatchObject({ type: 'queued', queuePosition: 1 });
-    expect(engine.requestLaunch('job-3', 'codex')).toMatchObject({ type: 'queued', queuePosition: 2 });
 
-    expect(engine.requestLaunch('job-4', 'codex')).toBe('queue_full');
-    expect(engine.queueDepth()).toBe(2);
+    // Fill queue to capacity (internal limit is 20)
+    const handles: Array<{ waitForPermit: () => Promise<void> }> = [];
+    for (let i = 2; i <= 21; i += 1) {
+      const result = engine.requestLaunch(`job-${i}`, 'codex');
+      expect(result).toMatchObject({ type: 'queued' });
+      if (result !== 'queue_full' && result.type === 'queued') {
+        void result.waitForPermit().catch(() => null);
+        handles.push(result);
+      }
+    }
+    expect(engine.queueDepth()).toBe(20);
+
+    // 22nd should be rejected
+    expect(engine.requestLaunch('job-22', 'codex')).toBe('queue_full');
+
+    // Cleanup
+    engine.killAllChildren();
   });
 
   it('admits queued jobs in strict FIFO order when a launch is released', async () => {

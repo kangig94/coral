@@ -14,7 +14,7 @@ import { CORAL_DEFAULT_EFFORT } from '../../shared/schemas.js';
 import type { Provider } from '../../providers/types.js';
 import { parseExpression } from '../../workflow/pipe-parser.js';
 import {
-  MAX_ACTIVE_CHILDREN_PER_PROVIDER,
+  MAX_ACTIVE_CHILDREN,
   cancelQueued,
   killAllChildren,
   releaseLaunch,
@@ -115,7 +115,7 @@ async function occupyProviderSlots(
   providerName: string,
 ): Promise<string[]> {
   const decisions = await Promise.all(
-    Array.from({ length: MAX_ACTIVE_CHILDREN_PER_PROVIDER }, (_value, index) =>
+    Array.from({ length: MAX_ACTIVE_CHILDREN }, (_value, index) =>
       service.start(providerName, { prompt: `occupy-${index}` }, ctx)),
   );
 

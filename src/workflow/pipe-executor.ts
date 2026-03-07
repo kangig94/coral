@@ -3,7 +3,6 @@ import type { LaunchDecision, TerminalResult, WaitCursor } from '../types.js';
 import type { EffortLevel } from '../shared/schemas.js';
 import type { PipeAtom, PipelineAST } from './types.js';
 
-export const MAX_LAUNCH_ATTEMPTS = 3;
 export const BOOTSTRAP_POLL_INTERVAL_MS = 50;
 export const BOOTSTRAP_TIMEOUT_MS = 2_000;
 export const SIBLING_DRAIN_TIMEOUT_MS = 15_000;
