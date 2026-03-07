@@ -15,6 +15,7 @@ const RED = "\x1b[31m";
 const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 const CYAN = "\x1b[36m";
+const MAGENTA = "\x1b[35m";
 const CODEX_USER_AGENT = "codex_cli_rs";
 
 function getCodexClientId(idToken) {
@@ -40,6 +41,23 @@ async function readStdin() {
     const raw = chunks.join("");
     if (!raw.trim()) return null;
     return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+// --- git ---
+
+function renderGitBranch(input) {
+  const cwd = input.cwd || input.workspace?.current_dir || input.workspace?.project_dir;
+  if (!cwd) return null;
+  try {
+    const opts = { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"], cwd, timeout: 2000 };
+    const branch = execSync("git branch --show-current", opts).trim()
+      || execSync("git rev-parse --short HEAD", opts).trim();
+    if (!branch) return null;
+    const dirty = execSync("git status --porcelain", opts).trim() ? `${YELLOW}*${RESET}` : "";
+    return `${CYAN}⎇ ${branch}${RESET}${dirty}`;
   } catch {
     return null;
   }
@@ -102,7 +120,7 @@ function readTranscriptTail(transcriptPath) {
   try {
     fd = openSync(transcriptPath, "r");
     const { size } = fstatSync(fd);
-    const readSize = Math.min(size, 500 * 1024);
+    const readSize = Math.min(size, 512 * 1024);
     const buf = Buffer.alloc(readSize);
     readSync(fd, buf, 0, readSize, size - readSize);
     const lines = buf.toString("utf-8").split("\n");
@@ -653,6 +671,54 @@ async function renderCodexData() {
   }
 }
 
+// --- coral backend ---
+
+const BACKEND_INFO_PATH = join(homedir(), ".claude", "coral", "backend.json");
+const REEF_INFO_PATH = join(homedir(), ".claude", "coral", "reef.json");
+
+function readReefInfo() {
+  try {
+    const info = JSON.parse(readFileSync(REEF_INFO_PATH, "utf-8"));
+    return info?.url ? info : null;
+  } catch {
+    return null;
+  }
+}
+
+async function renderCoralLine() {
+  let info;
+  try {
+    info = JSON.parse(readFileSync(BACKEND_INFO_PATH, "utf-8"));
+    if (!info?.port || !info?.token) return null;
+  } catch {
+    return null;
+  }
+
+  try {
+    const resp = await fetch(`http://127.0.0.1:${info.port}/health`, {
+      headers: { "x-coral-backend-token": info.token },
+      signal: AbortSignal.timeout(1000),
+    });
+    if (!resp.ok) return `coral ${DIM}○ offline${RESET}`;
+    const data = await resp.json();
+    const parts = [`coral ${GREEN}●${RESET}`];
+    if (data.activeChildren > 0) parts.push(`${MAGENTA}⚙ ${data.activeChildren}${RESET}`);
+    if (data.queueDepth > 0) parts.push(`queue:${data.queueDepth}`);
+
+    const reefInfo = readReefInfo();
+    if (reefInfo) {
+      try {
+        const reefResp = await fetch(`${reefInfo.url}/health`, { signal: AbortSignal.timeout(500) });
+        if (reefResp.ok) parts.push(`\x1b]8;;${reefInfo.url}\x07reef\x1b]8;;\x07`);
+      } catch {}
+    }
+
+    return parts.join(SEP);
+  } catch {
+    return `coral ${DIM}○ offline${RESET}`;
+  }
+}
+
 // --- main ---
 
 function visualLen(str) {
@@ -678,9 +744,10 @@ async function main() {
   }
 
   const safe = (p) => p.catch(() => null);
-  const [limits, rawCodexData] = await Promise.all([
+  const [limits, rawCodexData, coralLine] = await Promise.all([
     safe(renderLimits()),
     safe(renderCodexData()),
+    safe(renderCoralLine()),
   ]);
   const codexData = rawCodexData ?? { kind: "none" };
 
@@ -711,6 +778,7 @@ async function main() {
     col2Claude,
     renderContext(input),
     renderSession(input),
+    renderGitBranch(input),
     renderActivity(input),
   ].filter(Boolean);
 
@@ -735,6 +803,9 @@ async function main() {
   } else if (codexData.kind === "error") {
     output += "\n" + codexData.message;
   }
+
+  // Line 3: Coral backend
+  if (coralLine) output += "\n" + coralLine;
 
   output = output
     .split("\n")

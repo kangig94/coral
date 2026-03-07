@@ -17,7 +17,15 @@ const REPLACEMENT_TIMEOUT_MS = 45_000;
 const TOOL_TIMEOUT_MS = 300_000;
 const MAX_WAIT_FETCH_TIMEOUT_MS = 30 * 60 * 1000;
 const WAIT_FETCH_MARGIN_MS = 30_000;
-const CURRENT_VERSION = typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0';
+function currentVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf-8'));
+    return typeof pkg.version === 'string' ? pkg.version : fallbackVersion;
+  } catch {
+    return fallbackVersion;
+  }
+}
+const fallbackVersion = typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0';
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
 const BACKEND_BIN = join(pluginRoot, 'bridge', 'coral-backend.cjs');
 
@@ -198,7 +206,7 @@ function tryAcquireReplacementLock(): ReplacementLock | null {
   const payload = JSON.stringify({
     instanceId: `proxy-replacement-${process.pid}-${Date.now()}`,
     pid: process.pid,
-    version: CURRENT_VERSION,
+    version: currentVersion(),
     startedAt: Date.now(),
   });
   if (!tryExclusiveWrite(BACKEND_LOCK_PATH, payload)) return null;
@@ -246,7 +254,7 @@ async function waitForReplacementBackend(
     const info = await readHealthyBackendInfo();
     if (
       info
-      && info.version === CURRENT_VERSION
+      && info.version === currentVersion()
       && (oldInstanceId === null || info.instanceId !== oldInstanceId)
     ) {
       return info;
@@ -357,7 +365,7 @@ async function parseJsonResponse(response: Response): Promise<unknown> {
 export async function ensureBackend(): Promise<BackendHandle> {
   const existingInfo = readBackendInfo();
   const existingHealthy = await readHealthyBackendInfo(existingInfo);
-  if (existingHealthy && existingHealthy.version === CURRENT_VERSION) {
+  if (existingHealthy && existingHealthy.version === currentVersion()) {
     return summarizeBackend(existingHealthy);
   }
 
@@ -374,7 +382,7 @@ export async function ensureBackend(): Promise<BackendHandle> {
     const healthy = await readHealthyBackendInfo();
     if (
       healthy
-      && healthy.version === CURRENT_VERSION
+      && healthy.version === currentVersion()
       && (replacedInstanceId === null || healthy.instanceId !== replacedInstanceId)
     ) {
       return summarizeBackend(healthy);
@@ -382,7 +390,7 @@ export async function ensureBackend(): Promise<BackendHandle> {
 
     if (
       healthy
-      && healthy.version !== CURRENT_VERSION
+      && healthy.version !== currentVersion()
       && shutdownRequestedFor !== healthy.instanceId
     ) {
       shutdownRequestedFor = healthy.instanceId;

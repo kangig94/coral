@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { WaitStreamEvent } from '../../types.js';
 
 let tmpDir = '';
+const PKG_VERSION = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf-8')).version as string;
 
 const {
   readBackendInfoMock,
@@ -51,7 +52,7 @@ function makeInfo(overrides: Partial<{
     pid: 1234,
     port: 4100,
     token: 'backend-token',
-    version: '0.1.0',
+    version: PKG_VERSION,
     instanceId: 'backend-instance',
     startedAt: 1_700_000_000_000,
     ...overrides,
@@ -80,7 +81,7 @@ function makeBackendStatus(overrides: Partial<{
 }> = {}) {
   return {
     status: 'ok' as const,
-    version: '0.1.0',
+    version: PKG_VERSION,
     instanceId: 'backend-instance',
     uptimeMs: 12_345,
     activeChildren: 2,
