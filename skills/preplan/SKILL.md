@@ -68,6 +68,16 @@ Structured problem-definition conversation with the user before planning begins.
     If ambiguous about a specific item, call it out and ask for clarification.
 
     After each exchange, assess: are all 5 required items free of "unconfirmed" markers?
+    If yes — including after a previously confirmed item was changed and re-confirmed —
+    **always** present the agreement summary and call `AskUserQuestion`:
+    ```
+    AskUserQuestion({
+      question: "All items confirmed. Proceed to coral:plan?",
+      options: ["Proceed", "Proceed --deep", "Proceed --codex", "Proceed --deep --codex", "Continue discussion"]
+    })
+    ```
+    If the user chooses "Continue discussion", stay in the loop.
+    Otherwise, proceed to step 4.
 
     ### 3a. Early Exit
 
@@ -75,8 +85,7 @@ Structured problem-definition conversation with the user before planning begins.
 
     ### 4. Completion
 
-    When all required items are free of "unconfirmed" markers:
-    summarize the agreement, then transition (see `<Output_Format>`).
+    All items confirmed and user approved transition.
   </Protocol>
   <Constraints>
     | DO | DON'T |
@@ -131,18 +140,7 @@ Structured problem-definition conversation with the user before planning begins.
 
     ### Transition Handoff
 
-    Summarize the agreement file for the user — include all decisions, constraints,
-    and open items the user needs to know, but omit verbose details they can
-    look up in `.claude/coral/plans/pre-{topic}.md` if needed.
-
-    Do NOT propose transition while any required item still has "unconfirmed" marker.
-
-    ```
-    AskUserQuestion({
-      question: "Proceed to coral:plan?",
-      options: ["Proceed", "Proceed --deep", "Proceed --codex", "Proceed --deep --codex"]
-    })
-    ```
+    User approved transition via AskUserQuestion in step 3.
     Finalize `.claude/coral/plans/pre-{topic}.md`, then: `Skill({ skill: "coral:plan", args: "{topic} [selected flags]" })`
     Do NOT pass `--no-handoff` — preplan has no post-plan step, so plan owns the implementation handoff.
   </Output_Format>
