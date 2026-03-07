@@ -4,7 +4,7 @@
 When LLM-generated output requires diversity (names, styles, perspectives), never use optional fields with vague instructions like "freely assign diverse values." LLMs interpret unconstrained freedom as permission to follow context defaults — conversation language, recent examples, or training priors. Make diversity-sensitive fields mandatory with explicit distinct values per instance.
 
 ## Why
-In real sessions, "assign diverse cultural backgrounds freely" produced all-Korean names in Korean conversations, all-Western names in English. A weak model repeated the same name (준호) 4 times across 4 agents. The instruction had zero effect — LLMs don't actively diversify when the instruction is vague.
+In real sessions, "assign diverse cultural backgrounds freely" produced all-Korean names in Korean conversations, all-Western names in English. A weak model repeated the same name (Junho) 4 times across 4 agents. The instruction had zero effect — LLMs don't actively diversify when the instruction is vague.
 
 ## Pattern
 Wrong:

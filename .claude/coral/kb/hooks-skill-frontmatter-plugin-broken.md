@@ -33,22 +33,22 @@ PreToolUse(Skill) hook input shape (verified):
 ```json
 { "tool_name": "Skill", "tool_input": { "skill": "coral:ralph", "args": "..." }, "session_id": "..." }
 ```
-matcher: `"Skill"`, 필드: `input.tool_input.skill`
+Matcher: `"Skill"`, field: `input.tool_input.skill`
 
-**중요 제한**: PreToolUse(Skill)은 Claude가 코드에서 `Skill("coral:ralph")`를 호출할 때만 fire된다.
-사용자가 `/coral:ralph`를 직접 타이핑하면 CLI가 prompt injection으로 처리하므로 PreToolUse가 fire되지 않는다.
-plan → AskUserQuestion → ralph 선택 → Claude가 Skill() 호출하는 경우는 fire된다 ✓
+**Key limitation**: PreToolUse(Skill) only fires when Claude calls `Skill("coral:ralph")` from code.
+When a user types `/coral:ralph` directly, the CLI processes it as prompt injection, so PreToolUse does not fire.
+plan -> AskUserQuestion -> user selects ralph -> Claude calls Skill() — this path does fire.
 
-**UserPromptSubmit으로 사용자 slash command 커버**:
-UserPromptSubmit hook의 `input.prompt` 필드에는 **namespace prefix가 제거**된다.
-`/coral:ralph` → `"/ralph 발동됐어?"` (coral: 없음)
-`input.tool_input.skill`은 `"coral:ralph"` 전체 보존 — 두 경로 regex가 달라야 한다:
+**UserPromptSubmit covers user-typed slash commands**:
+The UserPromptSubmit hook's `input.prompt` field has the **namespace prefix stripped**.
+`/coral:ralph` -> `"/ralph fired?"` (no coral: prefix)
+`input.tool_input.skill` preserves the full `"coral:ralph"` — the two paths need different regexes:
 ```javascript
-// UserPromptSubmit: /ralph 또는 /coral:ralph 모두 매칭
+// UserPromptSubmit: matches both /ralph and /coral:ralph
 const KB_SKILL_RE = /\/(?:coral:)?ralph|\/(?:coral:)?bugfix/;
 const msg = input.user_message || input.message || input.prompt || '';
 
-// PreToolUse(Skill): coral: prefix 포함
+// PreToolUse(Skill): includes coral: prefix
 const skill = input.tool_input?.skill || '';  // "coral:ralph"
 ```
 

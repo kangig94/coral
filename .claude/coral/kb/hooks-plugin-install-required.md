@@ -1,20 +1,20 @@
 # Plugin Hook Registration — Install vs plugin-dir Mode
 
 ## Rule
-`--plugin-dir ./` 개발 모드에서 hooks가 동작하려면 `plugin.json`에 `"hooks": "./hooks/hooks.json"` 필드가 명시적으로 선언되어야 한다. 선언 없이는 SessionStart 등 일부 hook만 우연히 동작하거나 전혀 동작하지 않는다. Cache 수동 복사도 새 hook 이벤트를 등록하지 않으므로 정식 설치가 필요하다.
+For hooks to work in `--plugin-dir ./` development mode, `plugin.json` must explicitly declare `"hooks": "./hooks/hooks.json"`. Without this declaration, some hooks (e.g., SessionStart) may work by coincidence or not fire at all. Manually copying to the cache directory also does not register new hook events — a proper install is required.
 
 ## Why
-`plugin.json`에 `"hooks"` 필드가 없으면 `--plugin-dir` 모드에서 hooks.json이 무시된다. 코드나 hook 로직을 의심하며 디버깅하다가 근본 원인을 놓친다.
+Without the `"hooks"` field in `plugin.json`, hooks.json is ignored in `--plugin-dir` mode. You end up debugging code and hook logic while missing the root cause entirely.
 
 ## Pattern
 ```json
-// WRONG: plugin.json에 hooks 선언 없음 → --plugin-dir 모드에서 PreToolUse 등 미등록
+// WRONG: no hooks declaration in plugin.json — PreToolUse etc. not registered in --plugin-dir mode
 {
   "skills": "./skills/",
   "mcpServers": "./.mcp.json"
 }
 
-// RIGHT: hooks 필드 명시
+// RIGHT: hooks field explicitly declared
 {
   "skills": "./skills/",
   "hooks": "./hooks/hooks.json",
@@ -22,7 +22,7 @@
 }
 ```
 
-개발 중 hooks 로직만 빠르게 검증할 때는 `.claude/settings.local.json`에 직접 등록하는 방법도 있다:
+For quick hook logic verification during development, you can register hooks directly in `.claude/settings.local.json`:
 ```json
 {
   "hooks": {
@@ -30,4 +30,4 @@
   }
 }
 ```
-단, 이 파일은 gitignore되므로 최종 등록은 `plugin.json` + `hooks/hooks.json`으로 해야 한다.
+Note: this file is gitignored, so final registration must go through `plugin.json` + `hooks/hooks.json`.
