@@ -50,5 +50,7 @@ disallowedTools: Write, Edit
     | # | Severity | Finding | Suggestion |
     |---|----------|---------|------------|
     | 1 | CRITICAL/HIGH/MEDIUM/LOW | [What's wrong] | [How to fix] |
+
+    **Reviewed plan**: [absolute path to plan file, if a plan was reviewed — required for downstream resolver]
   </Output_Format>
 </Agent_Prompt>
