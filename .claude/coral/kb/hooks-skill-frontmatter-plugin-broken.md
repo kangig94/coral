@@ -39,4 +39,17 @@ matcher: `"Skill"`, 필드: `input.tool_input.skill`
 사용자가 `/coral:ralph`를 직접 타이핑하면 CLI가 prompt injection으로 처리하므로 PreToolUse가 fire되지 않는다.
 plan → AskUserQuestion → ralph 선택 → Claude가 Skill() 호출하는 경우는 fire된다 ✓
 
+**UserPromptSubmit으로 사용자 slash command 커버**:
+UserPromptSubmit hook의 `input.prompt` 필드에는 **namespace prefix가 제거**된다.
+`/coral:ralph` → `"/ralph 발동됐어?"` (coral: 없음)
+`input.tool_input.skill`은 `"coral:ralph"` 전체 보존 — 두 경로 regex가 달라야 한다:
+```javascript
+// UserPromptSubmit: /ralph 또는 /coral:ralph 모두 매칭
+const KB_SKILL_RE = /\/(?:coral:)?ralph|\/(?:coral:)?bugfix/;
+const msg = input.user_message || input.message || input.prompt || '';
+
+// PreToolUse(Skill): coral: prefix 포함
+const skill = input.tool_input?.skill || '';  // "coral:ralph"
+```
+
 Verified against claude-code v2.1.50: all official plugins (hookify, ralph-wiggum, security-guidance) register hooks exclusively in hooks.json. Zero plugins use SKILL.md frontmatter hooks.
