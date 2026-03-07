@@ -1,14 +1,25 @@
 import type { ProviderProgressEvent, ProviderRequest, ProviderResult } from '../types.js';
 
-/** MCP progress notification sender injected into provider handlers. */
-export type NotifyFn = (n: { method: string; params: Record<string, unknown> }) => Promise<void>;
-
-/** MCP tool descriptor exposed by a provider (name, description, inputSchema). */
-export type ProviderTool = {
-  name: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
-};
+/** Build an onEvent callback that parses JSON lines and emits ProviderProgressEvents. */
+export function makeOnEvent(
+  runtime: ProviderRuntime,
+  jobId: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  extractor: (event: any, projectRoot?: string) => string | null,
+  projectRoot?: string,
+): (line: string) => void {
+  return (line: string) => {
+    try {
+      const event: unknown = JSON.parse(line);
+      const message = extractor(event, projectRoot);
+      if (!message) return;
+      const progressEvent: ProviderProgressEvent = { jobId, message, ts: new Date().toISOString() };
+      runtime.onEvent(progressEvent);
+    } catch {
+      /* ignore non-JSON or unparseable lines */
+    }
+  };
+}
 
 /** Runtime context injected by the ExecutionService into Provider.execute(). */
 export interface ProviderRuntime {

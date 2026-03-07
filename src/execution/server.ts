@@ -6,7 +6,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { isNoEntryError, isRecord } from '../shared/mcp-utils.js';
+import { isNoEntryError, isRecord, formatError } from '../shared/mcp-utils.js';
 import type { ExecutionService } from './service.js';
 import { activeChildren, killAllChildren, queueDepth } from './engine.js';
 import { writeBackendInfo, removeBackendInfoIfOwner } from './backend-info.js';
@@ -102,10 +102,6 @@ function sendJson(res: ServerResponse, statusCode: number, body: unknown): void 
     res.setHeader('Connection', 'close');
   }
   res.end(payload);
-}
-
-function formatError(error: unknown): string {
-  return error instanceof Error ? error.stack ?? error.message : String(error);
 }
 
 function readJsonBody(req: IncomingMessage): Promise<unknown> {

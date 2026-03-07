@@ -78,10 +78,10 @@ export const sharedListSchema = z.object({
  * Wait tool input schema — accepts a list of jobIds to monitor.
  */
 export const waitInputSchema = z.object({
-  jobs: z.array(z.string().min(1)).min(1, 'At least one job ID required'),
-  timeout_seconds: z.number().int().positive().optional(),
-  cursor: z.string().optional(), // opaque serialized WaitCursor from Last-Event-ID
-  inline: z.boolean().default(false), // inline: true → result.content is text; false → result.content is file path
+  jobs: z.array(z.string()).min(1, 'At least one job required'),
+  timeout_seconds: z.number().min(1).max(1200).optional(),
+  cursor: z.string().min(1).optional(),
+  inline: z.boolean().default(false),
 }).strict();
 
 export type WaitInput = z.infer<typeof waitInputSchema>;
@@ -90,7 +90,7 @@ export type WaitInput = z.infer<typeof waitInputSchema>;
  * Abort tool input schema — accepts a list of jobIds to abort.
  */
 export const abortInputSchema = z.object({
-  jobs: z.array(z.string().min(1)).min(1, 'At least one job ID required'),
+  jobs: z.array(z.string().min(1)).min(1, 'At least one job required'),
 });
 
 export type AbortInput = z.infer<typeof abortInputSchema>;

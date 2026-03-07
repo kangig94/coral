@@ -20,6 +20,22 @@ export function jsonResult(data: Record<string, unknown>): McpResult {
   return textResult(JSON.stringify(data, null, 2));
 }
 
+export function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return false;
+    if (code === 'EPERM') return true;
+    throw error;
+  }
+}
+
+export function formatError(error: unknown): string {
+  return error instanceof Error ? error.stack ?? error.message : String(error);
+}
+
 type ResultLike<T extends Record<string, unknown>> =
   | { ok: true; value: T }
   | { ok: false; error: string; detail?: Record<string, unknown> };

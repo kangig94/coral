@@ -41,10 +41,8 @@ import { ProgressStore, createReplayCursor, jobResultPath } from './progress-sto
 import { SessionManager } from './session-manager.js';
 import type { SessionEntry } from './session-manager.js';
 
-export interface CallerContext {
-  projectRoot: string;
-  pluginRoot: string; // used by resolveCoralContent (module-level var set by esbuild)
-}
+import type { CallerContext } from './request-context.js';
+export type { CallerContext } from './request-context.js';
 
 export interface ExecInput {
   prompt: string;

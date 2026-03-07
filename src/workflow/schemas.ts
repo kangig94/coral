@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import { providerIdentPattern } from '../shared/mcp-utils.js';
+import { effortSchema } from '../shared/schemas.js';
 
 export const atomConfigSchema = z.object({
-  effort: z.enum(['low', 'medium', 'high', 'xhigh']).optional(),
+  effort: effortSchema,
   instruction: z.string().optional(),
 }).strict();
 

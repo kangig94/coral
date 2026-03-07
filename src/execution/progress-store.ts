@@ -27,7 +27,7 @@ const STATUS_FILE = 'status.json';
 const PROGRESS_FILE = 'progress.jsonl';
 const READ_CHUNK = 8 * 1024;
 
-const readBuffer = Buffer.alloc(READ_CHUNK);
+// Allocated per-call in readNewLines to avoid shared mutable state
 
 export type ReplayCursor = { lastOffset: number; remainder: string };
 
@@ -186,7 +186,6 @@ export class ProgressStore {
 
   /** Write result.md as a debugging/recovery artifact. */
   writeResultMd(jobId: string, text: string): void {
-    const dir = this.jobDir(jobId);
     const tmpPath = `${jobResultPath(jobId)}.tmp`;
     const finalPath = jobResultPath(jobId);
     try {
@@ -240,12 +239,13 @@ export class ProgressStore {
     }
     try {
       const chunks: string[] = [];
+      const buf = Buffer.alloc(READ_CHUNK);
       let nextOffset = cursor.lastOffset;
       while (true) {
-        const bytesRead = readSync(fd, readBuffer, 0, READ_CHUNK, nextOffset);
+        const bytesRead = readSync(fd, buf, 0, READ_CHUNK, nextOffset);
         if (bytesRead <= 0) break;
         nextOffset += bytesRead;
-        chunks.push(readBuffer.toString('utf-8', 0, bytesRead));
+        chunks.push(buf.toString('utf-8', 0, bytesRead));
         if (bytesRead < READ_CHUNK) break;
       }
       cursor.lastOffset = nextOffset;

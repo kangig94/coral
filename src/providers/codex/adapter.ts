@@ -3,9 +3,8 @@
 import { executeOneShot, executeResume, executeFork } from './codex-executor.js';
 import { detectCodexCli } from './cli-detection.js';
 import { extractProgressMessage } from './progress.js';
-import type { CodexThreadEvent } from './types.js';
-import type { ProviderProgressEvent, ProviderRequest, ProviderResult } from '../../types.js';
-import type { Provider, ProviderCapabilities, ProviderRuntime } from '../types.js';
+import type { ProviderRequest, ProviderResult } from '../../types.js';
+import { makeOnEvent, type Provider, type ProviderCapabilities, type ProviderRuntime } from '../types.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 
 const capabilities: ProviderCapabilities = { resumable: true, forkable: true };
@@ -29,20 +28,6 @@ function buildPrompt(request: ProviderRequest): string {
   return parts.join('\n\n---\n\n');
 }
 
-function makeOnEvent(runtime: ProviderRuntime, jobId: string, projectRoot?: string): (line: string) => void {
-  return (line: string) => {
-    try {
-      const event = JSON.parse(line) as CodexThreadEvent;
-      const message = extractProgressMessage(event, projectRoot);
-      if (!message) return;
-      const progressEvent: ProviderProgressEvent = { jobId, message, ts: new Date().toISOString() };
-      runtime.onEvent(progressEvent);
-    } catch {
-      /* ignore non-JSON or unparseable lines */
-    }
-  };
-}
-
 async function execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult> {
   const prompt = buildPrompt(request);
   const effort = request.effort as EffortLevel | undefined;
@@ -56,7 +41,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
         request.cwd,
         effort,
         request.bypassPermissions,
-        makeOnEvent(runtime, request.sessionId, request.cwd),
+        makeOnEvent(runtime, request.sessionId, extractProgressMessage, request.cwd),
         runtime.signal,
       );
       return {
@@ -80,7 +65,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
         request.cwd,
         effort,
         request.bypassPermissions,
-        makeOnEvent(runtime, request.sessionId, request.cwd),
+        makeOnEvent(runtime, request.sessionId, extractProgressMessage, request.cwd),
         runtime.signal,
       );
       return {
@@ -103,7 +88,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
         request.cwd,
         effort,
         request.bypassPermissions,
-        makeOnEvent(runtime, request.sessionId, request.cwd),
+        makeOnEvent(runtime, request.sessionId, extractProgressMessage, request.cwd),
         runtime.signal,
       );
       return {

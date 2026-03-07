@@ -1,37 +1,18 @@
 import { z } from 'zod';
 import {
+  sharedExecSchema,
+  sharedListSchema,
+  sharedForkSchema,
+  coralOpSchema,
   promptSchema,
   sessionRefSchema,
   cwdSchema,
-  coralOpSchema,
 } from '../../shared/schemas.js';
 
-const sessionExecFields = {
-  prompt: promptSchema,
-  session: sessionRefSchema.optional(),
-  working_directory: cwdSchema,
-};
-
-const execShape = z.object({
-  op: z.literal('exec'),
-  ...sessionExecFields,
-});
-
-const listShape = z.object({
-  op: z.literal('list'),
-}).strict();
-
-const forkShape = z.object({
-  op: z.literal('fork'),
-  session: sessionRefSchema,
-  prompt: z.string().optional(),
-  working_directory: cwdSchema,
-});
-
 export const claudeOpSchema = z.discriminatedUnion('op', [
-  execShape,
-  listShape,
-  forkShape,
+  sharedExecSchema,
+  sharedListSchema,
+  sharedForkSchema,
 ]);
 
 export type ClaudeOpInput = z.infer<typeof claudeOpSchema>;

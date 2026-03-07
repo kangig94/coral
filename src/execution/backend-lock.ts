@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readBackendInfo } from './backend-info.js';
-import { isNoEntryError } from '../shared/mcp-utils.js';
+import { isNoEntryError, isProcessAlive } from '../shared/mcp-utils.js';
 
 export const BACKEND_LOCK_PATH = join(homedir(), '.claude', 'coral', 'backend.lock');
 export const STARTUP_DEADLINE = 30_000;
@@ -84,15 +84,6 @@ function writeLockFile(record: LockRecord): boolean {
     chmodSync(BACKEND_LOCK_PATH, 0o600);
   }
   return true;
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error: unknown) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
-  }
 }
 
 async function isMatchingHealthyBackend(record: LockRecord): Promise<boolean> {

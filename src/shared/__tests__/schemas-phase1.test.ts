@@ -40,13 +40,13 @@ describe('Phase 1 shared schemas', () => {
   it('waitInputSchema rejects empty jobs array', () => {
     expect(() => waitInputSchema.parse({
       jobs: [],
-    })).toThrow('At least one job ID required');
+    })).toThrow('At least one job required');
   });
 
   it('abortInputSchema rejects empty jobs array', () => {
     expect(() => abortInputSchema.parse({
       jobs: [],
-    })).toThrow('At least one job ID required');
+    })).toThrow('At least one job required');
   });
 });
 

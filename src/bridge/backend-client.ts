@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BACKEND_INFO_PATH, readBackendInfo, type BackendInfo } from '../execution/backend-info.js';
 import { BACKEND_LOCK_PATH } from '../execution/backend-lock.js';
-import { isNoEntryError, isRecord } from '../shared/mcp-utils.js';
+import { isNoEntryError, isProcessAlive, isRecord } from '../shared/mcp-utils.js';
 import type { WaitStreamEvent } from '../types.js';
 
 const STARTUP_POLL_MS = 200;
@@ -82,18 +82,6 @@ function isBackendStatus(value: unknown): value is Extract<BackendStatus, { stat
 
 function isShuttingDownError(value: unknown): value is { error: 'backend_shutting_down' } {
   return isRecord(value) && value.error === 'backend_shutting_down';
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error: unknown) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === 'ESRCH') return false;
-    if (code === 'EPERM') return true;
-    throw error;
-  }
 }
 
 async function fetchBackendHealth(info: BackendInfo): Promise<BackendHealth | null> {
