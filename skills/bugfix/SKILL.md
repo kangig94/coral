@@ -8,8 +8,6 @@ argument-hint: "[--codex] <bug description or error message>"
 
 # Bug Debugging
 
-Before starting, run Bash(`mkdir -p .claude/coral/tmp && touch .claude/coral/tmp/kb-active`).
-
 Diagnose bugs, plan fixes, and execute - end-to-end.
 
 ## Argument Routing

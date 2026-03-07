@@ -20,16 +20,13 @@ hooks:
 # hooks/hooks.json
 "Stop": [{ "hooks": [{ "type": "command", "command": "...", "timeout": 5 }] }]
 
-# Script checks state file to scope to specific skills:
-STATE_FILE=".claude/coral/tmp/kb-active"
-[ ! -f "$STATE_FILE" ] && exit 0
+# Script checks session-scoped flag to scope to specific skills:
+FLAG=".claude/coral/tmp/kb-active-${session_id}"
+[ ! -f "$FLAG" ] && exit 0
 
-# SKILL.md creates state file via inline Bash instruction in prose:
-# Before starting, run Bash(`mkdir -p .claude/coral/tmp && touch .claude/coral/tmp/kb-active`).
-#
-# NOTE: Do NOT use ```! blocks for this — they bypass PermissionRequest hooks entirely.
-# Claude Code checks the raw markdown block against sensitive-path rules before hooks fire,
-# causing "sensitive file" errors on .claude/ paths with no hook-based workaround.
+# Flag created by a PreToolUse(Skill) hook — NOT by SKILL.md Bash.
+# The hook has access to input.session_id for multi-session isolation.
+# See hooks/kb-promote-reminder.mjs for the session-scoped pattern.
 ```
 
 Verified against claude-code v2.1.50: all official plugins (hookify, ralph-wiggum, security-guidance) register hooks exclusively in hooks.json. Zero plugins use SKILL.md frontmatter hooks.

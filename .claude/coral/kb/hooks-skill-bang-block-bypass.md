@@ -13,9 +13,12 @@ Three layers of failure discovered:
 ```markdown
 # WRONG: ```! block — bypasses PermissionRequest hooks, blocked by sensitive-path check
 ```!
-mkdir -p .claude/coral/tmp && touch .claude/coral/tmp/kb-active
+mkdir -p .claude/coral/tmp && touch .claude/coral/tmp/some-flag
 ```
 
 # RIGHT: Inline instruction — Claude executes via Bash tool, PermissionRequest hook can auto-approve
-Before starting, run: `mkdir -p .claude/coral/tmp && touch .claude/coral/tmp/kb-active`
+Before starting, run: `mkdir -p .claude/coral/tmp && touch .claude/coral/tmp/some-flag`
+
+# BEST: Move flag creation to a hook with session_id access (no SKILL.md Bash needed)
+# PreToolUse(Skill) hook creates session-scoped flags automatically
 ```

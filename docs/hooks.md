@@ -91,14 +91,20 @@ On successful Bash tool executions (`PostToolUse` only fires when exit code is 0
 
 **Fail-open**: Any parse/read error, no pattern match, or empty KB directory — silent exit 0.
 
+## PreToolUse Hook (Skill KB Flag)
+
+Script: `hooks/kb-promote-reminder.mjs`. Matcher: `Skill`.
+
+Creates a session-scoped flag file `.claude/coral/tmp/kb-active-{session_id}` when `coral:ralph` or `coral:bugfix` is invoked. This moves the flag creation from SKILL.md Bash commands to a hook with access to `input.session_id`, enabling multi-session isolation.
+
 ## Stop Hook
 
-Script: `hooks/kb-promote-reminder.mjs`. Skill-scoped via state file.
+Script: `hooks/kb-promote-reminder.mjs`. Session-scoped via flag file.
 
-**State file pattern**: Skills (ralph, bugfix) create `.claude/coral/tmp/kb-active` on start. The Stop hook checks for this file — if absent, exits silently (normal conversation unaffected).
+**Flag file pattern**: The PreToolUse(Skill) hook creates `.claude/coral/tmp/kb-active-{session_id}` for KB-producing skills. The Stop hook checks for its own session's flag — if absent, exits silently (normal conversation unaffected). Stale flags (>24h) from expired sessions are cleaned up automatically.
 
-When state file exists:
-1. Delete state file (unconditionally)
+When flag exists:
+1. Delete session's flag file
 2. `decision: "block"` prevents Claude from stopping
 3. `reason` instructs Claude to review memos for KB promotion (even if no memos exist, the block fires to ensure the KB review step runs)
 

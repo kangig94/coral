@@ -9,8 +9,6 @@ model: sonnet
 
 # Persistent Execution with Verification
 
-Before starting, run Bash(`mkdir -p .claude/coral/tmp && touch .claude/coral/tmp/kb-active`).
-
 Announce at start: "Using ralph to execute this task with verification loop."
 
 ## Argument Routing
