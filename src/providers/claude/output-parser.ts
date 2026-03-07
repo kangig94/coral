@@ -49,7 +49,7 @@ function parseNdjson(lines: string[]): ParsedClaudeStreamOutput {
   let numTurns: number | null = null;
   let isError = false;
   let hasValidLine = false;
-  const assistantTextParts: string[] = [];
+  const assistantMessages: string[] = [];
 
   for (const line of lines) {
     let event: unknown;
@@ -75,16 +75,24 @@ function parseNdjson(lines: string[]): ParsedClaudeStreamOutput {
     if (event.type === 'assistant' && isRecord(event.message)) {
       if (typeof event.message.model === 'string' && !model) model = event.message.model;
       const content = Array.isArray(event.message.content) ? event.message.content : [];
+      const parts: string[] = [];
       for (const block of content) {
         if (isRecord(block) && block.type === 'text' && typeof block.text === 'string') {
-          assistantTextParts.push(block.text);
+          parts.push(block.text);
         }
       }
+      if (parts.length > 0) assistantMessages.push(parts.join(''));
     }
   }
 
   if (!hasValidLine) return PARSE_FAILURE_SENTINEL;
-  if (!response && assistantTextParts.length > 0) response = assistantTextParts.join('');
+  if (!response && assistantMessages.length > 0) response = assistantMessages.join('');
+
+  // If the result event only captured a trailing Insight block (last assistant turn),
+  // prepend the previous assistant message to recover the full response.
+  if (response && response.trimStart().startsWith('`★ Insight') && assistantMessages.length >= 2) {
+    response = assistantMessages[assistantMessages.length - 2] + '\n\n' + response;
+  }
 
   return {
     response,
