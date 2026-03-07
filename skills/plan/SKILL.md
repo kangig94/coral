@@ -29,11 +29,13 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
   </Role>
   <Protocol>
     ### 1. Create Plan File
-    Write a stub plan file to `.claude/coral/plans/{name}.md` **immediately** — before any research.
+    If invoked from preplan, `{topic}` is already defined. Otherwise, derive `{topic}` from the user's input as English kebab-case.
+    Write a stub plan file to `.claude/coral/plans/{topic}.md` **immediately** — before any research.
     Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not project-local.
 
     Stub structure (empty sections) — copy headings verbatim including parenthetical annotations:
       # [Plan Title]
+      **Preplan**: `.claude/coral/plans/pre-{topic}.md` (omit if no preplan exists)
       ## Requirements Summary
       ## Acceptance Criteria (testable, verifiable — register each as a Task during implementation)
       ## Mathematical Specification (if applicable)
@@ -46,9 +48,9 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
     ### 2. Gather Context
     Parse task description, read key files, identify acceptance criteria, extract working directory.
-    - **Preplan constraint**: If `.claude/coral/plans/pre-{topic}.md` exists, read it.
-      Items marked `[confirmed]` are user-agreed decisions — treat them as immutable constraints.
-      The plan must not contradict or redefine confirmed preplan items.
+    - **Preplan**: If `.claude/coral/plans/pre-{topic}.md` exists, read it.
+      Extract the **Success Criteria** section — these are the acceptance criteria the plan must satisfy.
+      Pass them to reviewers in step 4a.
     - **Bug enrichment**: If the task involves deep bug diagnosis (root cause unclear, multiple
       possible causes), `Agent("coral:debugger")` in the background (`run_in_background: true`).
       Continue with step 3 without waiting. When the debugger result arrives, incorporate its
@@ -72,13 +74,22 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
     Three phases. Phase 0 always runs first. Phase 1 runs only when `--codex` flag is set. Phase 2 always runs.
 
+    **Task registration**: Before starting Phase 0, register one Task per applicable phase:
+    - `TaskCreate({ subject: "Phase 0 — Frame Gate" })`
+    - `TaskCreate({ subject: "Phase 1 — Codex review" })` (only if `--codex`)
+    - `TaskCreate({ subject: "Phase 2 — Claude review" })`
+
+    On phase start: `TaskUpdate({ taskId, status: "in_progress" })`.
+    On each round: `TaskUpdate({ taskId, subject: "Phase N — {label} (round M/5)" })`.
+    On phase complete: `TaskUpdate({ taskId, status: "completed" })`.
+
     #### Phase 0 — Frame Gate (always)
 
     Self-review before spawning reviewers. Verify all hold, fix plan if not:
     - [ ] Plan addresses the core requirement
     - [ ] No fundamental constraints violated
     - [ ] Approach viable given actual codebase structure
-    - [ ] Preplan confirmed items satisfied (if they exist)
+    - [ ] Preplan Success Criteria satisfied (if they exist)
 
     #### Review Phases
 
@@ -94,7 +105,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     ```
     workflow({
       expression: "(architect, critic)" + (if --deep: " -> resolver"),
-      prompt: (if --deep: "--deep\n\n") + "Review plan: {plan file path}\nWorking directory: {work_dir}\n{context, preplan constraints}",
+      prompt: (if --deep: "--deep\n\n") + "Review plan: {plan file path}\nWorking directory: {work_dir}\n{context}\nSuccess Criteria (must be satisfied):\n{preplan Success Criteria items}",
       provider: "{phase provider}"
     })
     ```
@@ -134,6 +145,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     - **Max rounds (5)**: Proceed to next phase (or `AskUserQuestion` — continue, finalize, or abort — if last phase).
 
     ### 5. Completion
+    Delete all Phase Tasks created in step 4.
     Return: plan file path + final summary (see `<Output_Format>`).
   </Protocol>
   <Error_Handling>
@@ -155,19 +167,19 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
   <Output_Format>
     ## Planning Complete
 
-    **Plan file**: `.claude/coral/plans/{name}.md`
+    **Plan file**: `.claude/coral/plans/{topic}.md`
 
     ### Review Summary
     - Phases: [0 (Frame Gate) + 1 (Codex) + 2 (Claude)] or [0 (Frame Gate) + 1 (Claude)]
     - Rounds: N per phase
     - Final verdict: [APPROVED / APPROVED WITH CONDITIONS]
     - Key changes from review: [brief list]
-    - ⚠️ **Unsatisfied preplan constraints**: [list with reasons] *(omit if all satisfied)*
+    - ⚠️ **Unsatisfied Success Criteria**: [list with reasons] *(omit if all satisfied)*
 
     ### Final Plan
     Summarize the plan file for the user — include all decisions, constraints,
     and action items the user needs to know, but omit verbose details they can
-    look up in `.claude/coral/plans/{name}.md` if needed.
+    look up in `.claude/coral/plans/{topic}.md` if needed.
 
     ### Implementation Handoff
 
