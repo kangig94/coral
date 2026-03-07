@@ -10,7 +10,7 @@ import type { CodexExecResult } from './types.js';
 import { spawnCli, activeChildren, killAllChildren as killAllRunnerChildren } from '../../execution/engine.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 import { parseCodexJsonl } from './output-parser.js';
-import { detectCodexCli, type CliInfo } from '../cli-detection.js';
+import type { CliInfo } from '../cli-detection.js';
 
 export interface CodexExecOptions {
   model?: string;
@@ -19,7 +19,7 @@ export interface CodexExecOptions {
   bypassSandbox?: boolean;
   onEvent?: (line: string) => void;
   signal?: AbortSignal;
-  preChecked?: CliInfo & { available: true };
+  preChecked: CliInfo & { available: true };
 }
 
 const DEFAULT_MODEL = process.env.CORAL_CODEX_MODEL ?? 'gpt-5.4';
@@ -80,8 +80,7 @@ async function executeCodex(
 ): Promise<CodexExecResult> {
   ensureMultiAgent();
 
-  const cli = opts.preChecked ?? await detectCodexCli();
-  if (!cli.available) throw new Error(cli.error);
+  const cli = opts.preChecked;
   if (cli.authState === 'unauthenticated') throw new Error(cli.authError);
 
   const start = Date.now();
@@ -162,7 +161,7 @@ function extraFlags(effort?: EffortLevel): string[] {
 /** One-shot execution: codex exec -m MODEL --json --full-auto */
 export async function executeOneShot(
   prompt: string,
-  opts: CodexExecOptions = {},
+  opts: CodexExecOptions,
 ): Promise<CodexExecResult> {
   const resolvedModel = getModel(opts.model);
   return executeCodex(
@@ -177,7 +176,7 @@ export async function executeOneShot(
 export async function executeResume(
   threadId: string,
   prompt: string,
-  opts: CodexExecOptions = {},
+  opts: CodexExecOptions,
 ): Promise<CodexExecResult> {
   const resolvedModel = getModel(opts.model);
   return executeCodex(
@@ -191,17 +190,8 @@ export async function executeResume(
 /** Fork a session by resuming with a new prompt (codex fork is TUI-only). */
 export async function executeFork(
   threadId: string,
-  prompt?: string,
-  opts: CodexExecOptions = {},
+  prompt: string,
+  opts: CodexExecOptions,
 ): Promise<CodexExecResult> {
-  const forkPrompt = prompt ?? 'Continue from where we left off.';
-  return executeResume(threadId, forkPrompt, opts);
+  return executeResume(threadId, prompt, opts);
 }
-
-// Test-only exports
-export const _test = {
-  set claudeMdCache(v: string | undefined) { claudeMdCache = v; },
-  setMultiAgentEnsured(v: boolean) { multiAgentEnsured = v; },
-  prependClaudeMd,
-  activeChildren,
-};

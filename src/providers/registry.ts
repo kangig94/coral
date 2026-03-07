@@ -20,7 +20,3 @@ export function getNewProvider(name: string): Provider | undefined {
 export function getAllNewProviders(): Provider[] {
   return [...newProviders.values()];
 }
-
-export function _resetNewProvidersForTests(): void {
-  newProviders.clear();
-}

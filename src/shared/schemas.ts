@@ -45,6 +45,10 @@ export const sharedExecSchema = z.object({
   prompt: promptSchema,
   session: sessionRefSchema.optional(),
   work_dir: cwdSchema,
+  model: modelSchema,
+  effort: effortSchema,
+  bypass_permissions: z.boolean().optional(),
+  system_prompt: z.string().optional(),
 });
 
 /**
@@ -55,6 +59,10 @@ export const sharedResumeSchema = z.object({
   session: sessionRefSchema,
   prompt: promptSchema,
   work_dir: cwdSchema,
+  model: modelSchema,
+  effort: effortSchema,
+  bypass_permissions: z.boolean().optional(),
+  system_prompt: z.string().optional(),
 });
 
 /**
@@ -65,6 +73,10 @@ export const sharedForkSchema = z.object({
   session: sessionRefSchema,
   prompt: z.string().optional(),
   work_dir: cwdSchema,
+  model: modelSchema,
+  effort: effortSchema,
+  bypass_permissions: z.boolean().optional(),
+  system_prompt: z.string().optional(),
 });
 
 /**

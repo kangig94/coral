@@ -202,8 +202,10 @@ describe('workflow pipe parser', () => {
     expect(() => parseExpression('Architect')).toThrow('Invalid agent "Architect"');
   });
 
-  it('rejects names that start with digits', () => {
-    expect(() => parseExpression('1architect')).toThrow('Invalid agent "1architect"');
+  it('accepts agent names that start with digits', () => {
+    expect(parseExpression('3-step')).toEqual([[
+      { kind: 'agent', namespace: undefined, agent: '3-step', provider: undefined },
+    ]]);
   });
 
   it('rejects underscores in names', () => {

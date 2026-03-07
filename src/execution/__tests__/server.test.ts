@@ -339,7 +339,7 @@ describe('execution backend server', () => {
     const progressStore = new ProgressStore();
     const jobId = 'workflow-orphan-job';
     createdJobIds.add(jobId);
-    progressStore.initJob(jobId, 'workflow-session', 'codex', 'workflow');
+    progressStore.initJob(jobId, 'workflow-session', 'codex', undefined, 'workflow');
     progressStore.updatePhase(jobId, 'running');
 
     const backend = await startBackendServer({ progressStore });

@@ -158,14 +158,14 @@ describe('codex provider adapter', () => {
 
     expect(mockExecuteOneShot).toHaveBeenCalledWith(
       'Follow the repo rules\n\n---\n\nSystem guidance\n\n---\n\nRun checks',
-      {
+      expect.objectContaining({
         model: 'o4-mini',
         workingDirectory: '/repo',
         effort: 'high',
         bypassSandbox: true,
         onEvent: expect.any(Function),
         signal,
-      },
+      }),
     );
   });
 
@@ -176,14 +176,14 @@ describe('codex provider adapter', () => {
 
     expect(mockExecuteOneShot).toHaveBeenCalledWith(
       'Only the user prompt',
-      {
+      expect.objectContaining({
         model: undefined,
         workingDirectory: undefined,
         effort: undefined,
         bypassSandbox: false,
         onEvent: expect.any(Function),
         signal: runtime.signal,
-      },
+      }),
     );
   });
 
@@ -199,14 +199,14 @@ describe('codex provider adapter', () => {
     expect(mockExecuteResume).toHaveBeenCalledWith(
       'codex-thread-123',
       'Continue',
-      {
+      expect.objectContaining({
         model: undefined,
         workingDirectory: undefined,
         effort: undefined,
         bypassSandbox: false,
         onEvent: expect.any(Function),
         signal,
-      },
+      }),
     );
   });
 
@@ -222,14 +222,14 @@ describe('codex provider adapter', () => {
     expect(mockExecuteFork).toHaveBeenCalledWith(
       'codex-thread-456',
       'Fork this',
-      {
+      expect.objectContaining({
         model: undefined,
         workingDirectory: undefined,
         effort: undefined,
         bypassSandbox: false,
         onEvent: expect.any(Function),
         signal,
-      },
+      }),
     );
   });
 
@@ -438,14 +438,14 @@ describe('codex adapter: instruction channel mapping', () => {
 
     expect(mockExecuteOneShot).toHaveBeenCalledWith(
       'System-style instruction\n\n---\n\nUser prompt',
-      {
+      expect.objectContaining({
         model: undefined,
         workingDirectory: undefined,
         effort: undefined,
         bypassSandbox: false,
         onEvent: expect.any(Function),
         signal,
-      },
+      }),
     );
   });
 
@@ -460,14 +460,14 @@ describe('codex adapter: instruction channel mapping', () => {
 
     expect(mockExecuteOneShot).toHaveBeenCalledWith(
       'Agent rules\n\n---\n\nSystem policy\n\n---\n\nBase prompt',
-      {
+      expect.objectContaining({
         model: undefined,
         workingDirectory: undefined,
         effort: undefined,
         bypassSandbox: false,
         onEvent: expect.any(Function),
         signal,
-      },
+      }),
     );
   });
 });
@@ -535,14 +535,14 @@ describe('codex adapter: effort values', () => {
 
     expect(mockExecuteOneShot).toHaveBeenCalledWith(
       expect.any(String),
-      {
+      expect.objectContaining({
         model: undefined,
         workingDirectory: undefined,
         effort: 'xhigh',
         bypassSandbox: false,
         onEvent: expect.any(Function),
         signal,
-      },
+      }),
     );
   });
 });

@@ -89,9 +89,9 @@ describe('execution ProgressStore', () => {
     });
   });
 
-  it('writeStatus is atomic (write to .tmp then rename)', () => {
+  it('writeStatus non-terminal updates cache immediately (async disk write)', () => {
     const store = new ProgressStore();
-    const jobId = `progress-atomic-${randomUUID()}`;
+    const jobId = `progress-atomic-nonterminal-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob(jobId, 'session-1', 'codex');
 
@@ -102,10 +102,32 @@ describe('execution ProgressStore', () => {
       sessionId: 'session-1',
       provider: 'codex',
       phase: 'running',
-      launch: {
-        state: 'ready',
-        updatedAt: '2026-03-06T00:00:00.000Z',
-      },
+      launch: { state: 'ready', updatedAt: '2026-03-06T00:00:00.000Z' },
+    } satisfies PersistedStatusRecord;
+
+    store.writeStatus(jobId, record);
+
+    // Cache is updated immediately — readStatus returns new record synchronously
+    expect(store.readStatus(jobId)).toMatchObject({ phase: 'running', launch: { state: 'ready' } });
+    // Non-terminal disk write is async — renameSync is NOT called synchronously
+    expect(renameCalls).toHaveLength(0);
+  });
+
+  it('writeStatus terminal is atomic (sync renameSync before cache)', () => {
+    const store = new ProgressStore();
+    const jobId = `progress-atomic-terminal-${randomUUID()}`;
+    jobIdsToClean.add(jobId);
+    store.initJob(jobId, 'session-1', 'codex');
+
+    renameCalls.length = 0;
+
+    const record = {
+      jobId,
+      sessionId: 'session-1',
+      provider: 'codex',
+      phase: 'completed',
+      launch: { state: 'ready', updatedAt: '2026-03-06T00:00:00.000Z' },
+      result: { content: 'done' },
     } satisfies PersistedStatusRecord;
 
     store.writeStatus(jobId, record);

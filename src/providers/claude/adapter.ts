@@ -10,10 +10,8 @@ import { detectClaudeCli } from '../cli-detection.js';
 import { extractClaudeProgressMessage } from './progress.js';
 import type { ProviderRequest, ProviderResult } from '../../types.js';
 import { mapProviderResultBase } from '../result-mapping.js';
-import { makeOnEvent, type Provider, type ProviderCapabilities, type ProviderRuntime } from '../types.js';
+import { makeOnEvent, type Provider, type ProviderRuntime } from '../types.js';
 import type { EffortLevel } from '../../shared/schemas.js';
-
-const capabilities: ProviderCapabilities = { resumable: true, forkable: true };
 
 async function preflight(): Promise<void> {
   const cli = await detectClaudeCli();
@@ -143,7 +141,6 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
 
 export const claudeProvider: Provider = {
   name: 'claude',
-  capabilities,
   execute,
   preflight,
 };

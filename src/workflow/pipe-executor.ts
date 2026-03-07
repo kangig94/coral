@@ -3,7 +3,6 @@ import type { LaunchDecision, TerminalResult, WaitCursor } from '../types.js';
 import type { EffortLevel } from '../shared/schemas.js';
 import type { PipeAtom, PipelineAST } from './types.js';
 
-export const BOOTSTRAP_POLL_INTERVAL_MS = 50;
 export const BOOTSTRAP_TIMEOUT_MS = 2_000;
 export const SIBLING_DRAIN_TIMEOUT_MS = 15_000;
 
@@ -225,6 +224,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
 
   let coralName: string;
   let atomPrompt: string;
+  let config: { effort?: EffortLevel; instruction?: string } = {};
 
   if (atom.kind === 'agent') {
     const namespace = atom.namespace ?? 'coral';
@@ -232,7 +232,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
       throw new Error(`Step ${stepIndex + 1}, atom '${label}' launch failed: unsupported namespace "${namespace}"`);
     }
 
-    const config = readAtomConfig(stepIndex, atom.agent, atoms?.[atom.agent]);
+    config = readAtomConfig(stepIndex, atom.agent, atoms?.[atom.agent]);
     coralName = atom.agent;
     atomPrompt = config.instruction ? `${stepPrompt}\n\n${config.instruction}` : stepPrompt;
   } else {
@@ -252,6 +252,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     {
       prompt: atomPrompt,
       cwd: ctx.projectRoot,
+      effort: config.effort,
     },
     ctx,
   );

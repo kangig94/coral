@@ -14,6 +14,10 @@ describe('Phase 1 shared schemas', () => {
       prompt: 'Analyze this change',
       session: 'session-1',
       work_dir: '/tmp/work',
+      model: 'o4-mini',
+      effort: 'high',
+      bypass_permissions: true,
+      system_prompt: 'Follow the policy',
     });
 
     expect(parsed).toMatchObject({
@@ -21,6 +25,10 @@ describe('Phase 1 shared schemas', () => {
       prompt: 'Analyze this change',
       session: 'session-1',
       work_dir: '/tmp/work',
+      model: 'o4-mini',
+      effort: 'high',
+      bypass_permissions: true,
+      system_prompt: 'Follow the policy',
     });
   });
 

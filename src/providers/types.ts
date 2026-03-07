@@ -27,15 +27,8 @@ export interface ProviderRuntime {
   onEvent: (event: ProviderProgressEvent) => void;
 }
 
-/** Capability flags declared by a provider adapter. */
-export interface ProviderCapabilities {
-  resumable: boolean;
-  forkable: boolean;
-}
-
 export interface Provider {
   name: string;
-  capabilities: ProviderCapabilities;
   execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult>;
   /** Optional preflight check: auth/availability. Throw to reject launch before jobId is allocated. */
   preflight?(): Promise<void>;

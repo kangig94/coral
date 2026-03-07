@@ -112,6 +112,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
           backendInfo,
           parsed.cursor,
           extra.signal,
+          process.cwd(),
         )) {
           switch (event.type) {
             case 'progress':

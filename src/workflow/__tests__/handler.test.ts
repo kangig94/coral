@@ -1,8 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { _resetNewProvidersForTests } from '../../providers/registry.js';
-import { _resetProviderBootstrapForTests } from '../../providers/bootstrap.js';
-import type { ExecutionService, CallerContext } from '../../execution/service.js';
-import { handleWorkflow } from '../handler.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { CallerContext } from '../../execution/service.js';
 
 const ctx: CallerContext = {
   projectRoot: '/tmp/coral-workflow-project',
@@ -12,22 +9,22 @@ const ctx: CallerContext = {
 function createExecutionService(result = { status: 'running', job: 'job-1', session: 'session-1' } as const) {
   return {
     executeWorkflow: vi.fn(async () => result),
-  } as unknown as ExecutionService;
+  };
+}
+
+async function loadWorkflowHandler() {
+  vi.resetModules();
+  return import('../handler.js');
 }
 
 describe('workflow handler', () => {
-  beforeEach(() => {
-    _resetNewProvidersForTests();
-    _resetProviderBootstrapForTests();
-  });
-
   afterEach(() => {
-    _resetNewProvidersForTests();
-    _resetProviderBootstrapForTests();
     vi.restoreAllMocks();
+    vi.resetModules();
   });
 
   it('validates schema and returns a LaunchDecision', async () => {
+    const { handleWorkflow } = await loadWorkflowHandler();
     const executionSvc = createExecutionService();
 
     const decision = await handleWorkflow(
@@ -56,6 +53,7 @@ describe('workflow handler', () => {
   });
 
   it('returns a rejected LaunchDecision when a provider is unknown', async () => {
+    const { handleWorkflow } = await loadWorkflowHandler();
     const executionSvc = createExecutionService();
 
     const decision = await handleWorkflow(
@@ -78,6 +76,7 @@ describe('workflow handler', () => {
   });
 
   it('throws on schema validation failures', async () => {
+    const { handleWorkflow } = await loadWorkflowHandler();
     const executionSvc = createExecutionService();
 
     await expect(handleWorkflow(
@@ -88,6 +87,7 @@ describe('workflow handler', () => {
   });
 
   it('rejected LaunchDecision has no job or session properties', async () => {
+    const { handleWorkflow } = await loadWorkflowHandler();
     const executionSvc = createExecutionService();
 
     const decision = await handleWorkflow(
@@ -107,6 +107,7 @@ describe('workflow handler', () => {
   });
 
   it('throws when duplicate agent names appear in the same parallel step', async () => {
+    const { handleWorkflow } = await loadWorkflowHandler();
     const executionSvc = createExecutionService();
 
     await expect(handleWorkflow(
@@ -123,6 +124,7 @@ describe('workflow handler', () => {
   });
 
   it('throws when atoms keys reference agent names not present in the AST', async () => {
+    const { handleWorkflow } = await loadWorkflowHandler();
     const executionSvc = createExecutionService();
 
     await expect(handleWorkflow(
@@ -140,6 +142,7 @@ describe('workflow handler', () => {
   });
 
   it('throws on missing expression field', async () => {
+    const { handleWorkflow } = await loadWorkflowHandler();
     const executionSvc = createExecutionService();
 
     await expect(handleWorkflow(
@@ -150,6 +153,7 @@ describe('workflow handler', () => {
   });
 
   it('rejected message names multiple unknown providers', async () => {
+    const { handleWorkflow } = await loadWorkflowHandler();
     const executionSvc = createExecutionService();
 
     const decision = await handleWorkflow(

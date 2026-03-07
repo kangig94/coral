@@ -9,6 +9,7 @@ import {
   renameSync,
   writeFileSync,
 } from 'node:fs';
+import { writeFile, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
@@ -56,6 +57,7 @@ export class ProgressStore {
   private readonly eventCounters = new Map<string, number>();
   private readonly jobStartedAt = new Map<string, number>();
   private readonly statusCache = new Map<string, PersistedStatusRecord>();
+  private readonly writeGeneration = new Map<string, number>();
   private liveCount = 0;
   private changeSeq = 0;
   private waiters: Array<() => void> = [];
@@ -113,11 +115,35 @@ export class ProgressStore {
     return this.liveCount;
   }
 
+  private nextWriteGeneration(jobId: string): number {
+    const next = (this.writeGeneration.get(jobId) ?? 0) + 1;
+    this.writeGeneration.set(jobId, next);
+    return next;
+  }
+
+  private applyStatusRecord(jobId: string, record: PersistedStatusRecord): void {
+    const oldRecord = this.statusCache.get(jobId);
+    const wasLive = oldRecord ? this.isLivePhase(oldRecord.phase) : false;
+    const isLive = this.isLivePhase(record.phase);
+    if (!wasLive && isLive) this.liveCount++;
+    if (wasLive && !isLive) this.liveCount--;
+    this.statusCache.set(jobId, { ...record });
+    this.notifyWaiters();
+  }
+
+  private persistStatusSync(jobId: string, record: PersistedStatusRecord): void {
+    const filePath = this.statusPath(jobId);
+    const tmpPath = filePath + '.tmp';
+    writeFileSync(tmpPath, JSON.stringify(record, null, 2), 'utf-8');
+    renameSync(tmpPath, filePath);
+  }
+
   /** Create the job directory and write initial status.json. */
   initJob(
     jobId: string,
     sessionId: string,
     provider: string,
+    projectRoot?: string,
     jobKind?: JobKind,
     initialPhase: JobPhase = 'launching',
   ): void {
@@ -130,28 +156,43 @@ export class ProgressStore {
       phase: initialPhase,
       launch: { state: 'pending', updatedAt: new Date().toISOString() },
     };
+    if (projectRoot !== undefined) {
+      record.projectRoot = projectRoot;
+    }
     if (jobKind !== undefined) {
       record.jobKind = jobKind;
     }
-    this.writeStatus(jobId, record);
+    this.nextWriteGeneration(jobId);
+    this.persistStatusSync(jobId, record);
+    this.applyStatusRecord(jobId, record);
     writeFileSync(this.progressPath(jobId), '');
     this.jobStartedAt.set(jobId, Date.now());
   }
 
   /** Atomically write status.json. */
   writeStatus(jobId: string, record: PersistedStatusRecord): void {
+    const generation = this.nextWriteGeneration(jobId);
+    const isTerminal = record.phase === 'completed' || record.phase === 'error' || record.phase === 'aborted';
+
+    if (isTerminal) {
+      this.persistStatusSync(jobId, record);
+      this.applyStatusRecord(jobId, record);
+      return;
+    }
+
+    this.applyStatusRecord(jobId, record);
+
     const filePath = this.statusPath(jobId);
     const tmpPath = filePath + '.tmp';
-    writeFileSync(tmpPath, JSON.stringify(record, null, 2), 'utf-8');
-    renameSync(tmpPath, filePath);
-
-    const oldRecord = this.statusCache.get(jobId);
-    const wasLive = oldRecord ? this.isLivePhase(oldRecord.phase) : false;
-    const isLive = this.isLivePhase(record.phase);
-    if (!wasLive && isLive) this.liveCount++;
-    if (wasLive && !isLive) this.liveCount--;
-    this.statusCache.set(jobId, { ...record });
-    this.notifyWaiters();
+    const payload = JSON.stringify(record, null, 2);
+    void writeFile(tmpPath, payload, 'utf-8')
+      .then(() => {
+        if (this.writeGeneration.get(jobId) !== generation) return;
+        return rename(tmpPath, filePath);
+      })
+      .catch(() => {
+        /* status write must not break execution */
+      });
   }
 
   /** Read status.json. Returns null if not found or corrupt. */
@@ -234,6 +275,7 @@ export class ProgressStore {
 
     this.eventCounters.delete(jobId);
     this.jobStartedAt.delete(jobId);
+    this.writeGeneration.delete(jobId);
     return eventId;
   }
 

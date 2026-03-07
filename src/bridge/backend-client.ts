@@ -455,6 +455,7 @@ export async function* streamWait(
   backendInfo: { port: number; token: string },
   lastEventId?: string,
   signal?: AbortSignal,
+  projectRoot?: string,
 ): AsyncGenerator<WaitStreamEvent> {
   const fetchTimeoutMs = Math.min(
     (timeoutSeconds ?? 600) * 1000 + WAIT_FETCH_MARGIN_MS,
@@ -473,7 +474,7 @@ export async function* streamWait(
         'X-Coral-Backend-Token': backendInfo.token,
         ...(lastEventId ? { 'Last-Event-ID': lastEventId } : {}),
       },
-      body: JSON.stringify({ jobIds, timeoutSeconds }),
+      body: JSON.stringify({ jobIds, timeoutSeconds, projectRoot }),
       signal: controller.signal,
     });
 

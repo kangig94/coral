@@ -452,6 +452,7 @@ describe('launchAtomWithRetry', () => {
       defaultProviderName: 'codex',
       executionSvc,
       ctx,
+      atoms: { architect: { effort: 'low' } },
       onProgress: vi.fn(),
       completedStepDetails: [],
     });
@@ -469,6 +470,16 @@ describe('launchAtomWithRetry', () => {
       kind: 'agent',
     });
     expect(executionSvc.coralDispatch).toHaveBeenCalledTimes(1);
+    expect(executionSvc.coralDispatch).toHaveBeenCalledWith(
+      'codex',
+      'architect',
+      expect.objectContaining({
+        prompt: 'do work',
+        cwd: ctx.projectRoot,
+        effort: 'low',
+      }),
+      ctx,
+    );
     expect(executionSvc.awaitLaunch).toHaveBeenCalledWith('job-queued', BOOTSTRAP_TIMEOUT_MS);
   });
 

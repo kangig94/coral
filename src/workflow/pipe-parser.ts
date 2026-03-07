@@ -1,7 +1,7 @@
 import { providerIdentPattern } from '../shared/mcp-utils.js';
 import type { PipeAtom, PipelineAST, PipeStep, PromptAtom } from './types.js';
 
-const IDENTIFIER_PATTERN = /^[a-z][a-z0-9-]*$/;
+const IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 type ScanVisitor = (char: string, index: number, inQuote: string | null) => boolean | void;
 
 /**
