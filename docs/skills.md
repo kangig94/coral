@@ -20,7 +20,7 @@ Cross-cutting methodology files live in `methods/`. Agents and skills reference 
 | Skill | Description |
 |---|---|
 | `/coral:codex` | Single entry point for all Codex interactions - routes to scanner/gap-finder/ralph/review intent, or manages sessions directly |
-| `/coral:analyze` | Deep analysis and investigation. Pass `--codex` to delegate to Codex CLI |
+| `/coral:analyze` | Deep analysis and investigation with HOW methods always applied. Pass `--codex` to delegate to Codex CLI |
 | `/coral:preplan` | Structured problem-definition conversation before planning. Aligns understanding with the user before triggering coral:plan |
 | `/coral:plan` | Planning with parallel architect/critic review. Pass `--deep` for methodology-driven synthesis, `--codex` for cross-model Codex reviews |
 | `/coral:ralph` | Persistent execution loop with verification (sonnet). Pass `--codex` to delegate to Codex CLI. Use `--red` to add adversarial tests after implementation. |

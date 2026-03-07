@@ -55,7 +55,7 @@ argument-hint: "[existing|new]"
   ### 1d. Analyze Project (existing only)
 
   ```
-  Skill({ skill: "coral:analyze", args: "--deep init-{project-name}:
+  Skill({ skill: "coral:analyze", args: "init-{project-name}:
     scan project structure, architecture, dependencies.
     Also assess documentation quality — documentation gaps,
     enhancements needed for existing docs, shallow sections
