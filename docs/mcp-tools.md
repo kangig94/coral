@@ -413,7 +413,8 @@ Deterministic multi-agent pipeline executor. Chains coral agents via a DSL expre
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `expression` | string | Yes | Pipeline DSL expression (min 1 char). See grammar below. |
-| `prompt` | string | Yes | Initial prompt fed to the first step (min 1 char). |
+| `init_prompt` | string | Yes | Initial prompt fed to the first step (min 1 char). |
+| `context` | string | No | Shared context prepended to every atom's prompt in every step. |
 | `provider` | string | No | Default provider for atoms without `@provider` suffix. `claude` (default) or `codex`. |
 | `atoms` | object | No | Per-atom config: `{ atomName: { effort?, instruction? } }`. See Atoms below. |
 
@@ -493,12 +494,12 @@ Use `wait({ jobs: [job] })` then `Read(result.content)` for the pipeline result.
 
 ```
 # Simple sequential: architect reviews, resolver synthesizes
-workflow({ expression: "architect -> resolver", prompt: "Review auth.ts" })
+workflow({ expression: "architect -> resolver", init_prompt: "Review auth.ts" })
 
 # Parallel review with synthesis
 workflow({
   expression: "(architect, critic) -> resolver",
-  prompt: "Analyze the login flow",
+  init_prompt: "Analyze the login flow",
   provider: "codex",
   atoms: { architect: { effort: "high" }, critic: { instruction: "Focus on edge cases." } }
 })
@@ -506,7 +507,7 @@ workflow({
 # Mixed providers: codex for analysis, claude for writing
 workflow({
   expression: "scanner@codex -> architect@claude",
-  prompt: "Map and review the API layer"
+  init_prompt: "Map and review the API layer"
 })
 ```
 

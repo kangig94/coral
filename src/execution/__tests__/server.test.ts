@@ -280,7 +280,7 @@ describe('execution backend server', () => {
       },
       body: JSON.stringify({
         name: 'workflow',
-        args: { expression: 'architect', prompt: 'hello' },
+        args: { expression: 'architect', init_prompt: 'hello' },
         context: { projectRoot: '/tmp/project' },
       }),
     });

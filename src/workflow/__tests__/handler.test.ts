@@ -30,7 +30,7 @@ describe('workflow handler', () => {
     const decision = await handleWorkflow(
       {
         expression: 'architect -> resolver',
-        prompt: 'hello',
+        init_prompt: 'hello',
       },
       executionSvc,
       ctx,
@@ -45,7 +45,7 @@ describe('workflow handler', () => {
       ],
       expect.objectContaining({
         expression: 'architect -> resolver',
-        prompt: 'hello',
+        init_prompt: 'hello',
         provider: 'claude',
       }),
       ctx,
@@ -59,7 +59,7 @@ describe('workflow handler', () => {
     const decision = await handleWorkflow(
       {
         expression: 'architect@missing-provider',
-        prompt: 'hello',
+        init_prompt: 'hello',
         provider: 'codex',
       },
       executionSvc,
@@ -93,7 +93,7 @@ describe('workflow handler', () => {
     const decision = await handleWorkflow(
       {
         expression: 'architect@nonexistent-provider',
-        prompt: 'test',
+        init_prompt: 'test',
         provider: 'codex',
       },
       executionSvc,
@@ -113,7 +113,7 @@ describe('workflow handler', () => {
     await expect(handleWorkflow(
       {
         expression: '(architect, architect)',
-        prompt: 'test',
+        init_prompt: 'test',
         provider: 'claude',
       },
       executionSvc,
@@ -130,7 +130,7 @@ describe('workflow handler', () => {
     await expect(handleWorkflow(
       {
         expression: 'architect',
-        prompt: 'test',
+        init_prompt: 'test',
         provider: 'claude',
         atoms: { 'ghost-agent': { effort: 'low' } },
       },
@@ -146,7 +146,7 @@ describe('workflow handler', () => {
     const executionSvc = createExecutionService();
 
     await expect(handleWorkflow(
-      { prompt: 'no expression' },
+      { init_prompt: 'no expression' },
       executionSvc,
       ctx,
     )).rejects.toThrow();
@@ -159,7 +159,7 @@ describe('workflow handler', () => {
     const decision = await handleWorkflow(
       {
         expression: 'architect@ghost1 -> resolver@ghost2',
-        prompt: 'test',
+        init_prompt: 'test',
         provider: 'codex',
       },
       executionSvc,

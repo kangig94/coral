@@ -9,7 +9,8 @@ export const atomConfigSchema = z.object({
 
 export const workflowInputSchema = z.object({
   expression: z.string().min(1, 'Expression required'),
-  prompt: z.string().min(1, 'Prompt required'),
+  init_prompt: z.string().min(1, 'Prompt required'),
+  context: z.string().optional(),
   provider: z
     .string()
     .regex(providerIdentPattern, 'Provider name must be lowercase letters, digits, or hyphens')

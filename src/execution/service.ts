@@ -755,12 +755,13 @@ export class ExecutionService {
 
     void executePipeline(
       ast,
-      input.prompt,
+      input.init_prompt,
       providerName,
       this,
       ctx,
       {
         atoms: input.atoms,
+        context: input.context,
         signal,
         staleTimeoutMs: input.stale_timeout_seconds * 1000,
         onProgress: (message) => {

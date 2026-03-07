@@ -32,6 +32,7 @@ type LaunchContext = {
   atomIndex: number;
   stepIndex: number;
   stepPrompt: string;
+  context?: string;
   defaultProviderName: string;
   executionSvc: WorkflowExecutionService;
   ctx: CallerContext;
@@ -209,6 +210,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     atomIndex,
     stepIndex,
     stepPrompt,
+    context: sharedContext,
     defaultProviderName,
     executionSvc,
     ctx,
@@ -234,14 +236,15 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
 
     config = readAtomConfig(stepIndex, atom.agent, atoms?.[atom.agent]);
     coralName = atom.agent;
-    atomPrompt = config.instruction ? `${stepPrompt}\n\n${config.instruction}` : stepPrompt;
+    atomPrompt = [sharedContext, stepPrompt, config.instruction].filter(Boolean).join('\n\n');
   } else {
     coralName = 'workflow-literal';
-    // First-step prompt literals use only the literal text. Later prompt literals
-    // prepend the literal before the previous step output so instruction comes first.
-    atomPrompt = stepIndex === 0 || stepPrompt.length === 0
-      ? atom.text
-      : `${atom.text}\n\n${stepPrompt}`;
+    // First-step prompt literals use the literal as the instruction body; shared
+    // context still prepends when present. Later prompt literals prepend the
+    // literal before the previous step output so instruction comes first.
+    atomPrompt = stepIndex === 0
+      ? (sharedContext ? `${sharedContext}\n\n${atom.text}` : atom.text)
+      : [sharedContext, atom.text, stepPrompt].filter(Boolean).join('\n\n');
   }
 
   if (signal?.aborted) throw readLaunchAbortError(completedStepDetails);
@@ -550,6 +553,7 @@ export async function executePipeline(
   ctx: CallerContext,
   options: {
     atoms?: WorkflowAtoms;
+    context?: string;
     signal?: AbortSignal;
     onProgress?: (message: string) => void;
     staleTimeoutMs?: number;
@@ -576,6 +580,7 @@ export async function executePipeline(
           atomIndex,
           stepIndex,
           stepPrompt,
+          context: options.context,
           defaultProviderName,
           executionSvc,
           ctx,

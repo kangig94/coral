@@ -137,6 +137,52 @@ describe('workflow pipe executor', () => {
     expect(prompts).toEqual(['seed', 'ARCH']);
   });
 
+  it('prepends shared context to every atom prompt across a two-step pipeline', async () => {
+    const dispatched: Array<{ coralName: string; prompt: string }> = [];
+    let callCount = 0;
+    const executionSvc = createExecutionService({
+      coralDispatch: vi.fn(async (_provider, coralName, input) => {
+        callCount += 1;
+        dispatched.push({ coralName, prompt: String(input.prompt) });
+        return running(`job-${callCount}`, `session-${callCount}`);
+      }),
+      waitStream: vi.fn((req: WaitRequest) => {
+        if (req.jobIds.includes('job-1') && req.jobIds.includes('job-2')) {
+          return emit([
+            terminal('job-1', 'session-1', { content: 'ARCH' }),
+            terminal('job-2', 'session-2', { content: 'LIT A' }),
+          ]);
+        }
+        return emit([
+          terminal('job-3', 'session-3', { content: 'FINAL' }),
+          terminal('job-4', 'session-4', { content: 'LIT B' }),
+        ]);
+      }),
+    });
+
+    await executePipeline(
+      parseExpression('(architect, "Use A") -> (resolver, "Use B")'),
+      'seed',
+      'codex',
+      executionSvc,
+      ctx,
+      { context: 'SHARED' },
+    );
+
+    expect(dispatched).toEqual([
+      { coralName: 'architect', prompt: 'SHARED\n\nseed' },
+      { coralName: 'workflow-literal', prompt: 'SHARED\n\nUse A' },
+      {
+        coralName: 'resolver',
+        prompt: 'SHARED\n\n<architect>\nARCH\n</architect>\n\n<step-result>\nLIT A\n</step-result>',
+      },
+      {
+        coralName: 'workflow-literal',
+        prompt: 'SHARED\n\nUse B\n\n<architect>\nARCH\n</architect>\n\n<step-result>\nLIT A\n</step-result>',
+      },
+    ]);
+  });
+
   it('formats parallel prompt literals into tagged output and preserves prompt step details', async () => {
     const prompts: string[] = [];
     let callCount = 0;

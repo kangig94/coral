@@ -105,7 +105,8 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     ```
     workflow({
       expression: "(architect, critic)" + (if --deep: " -> resolver"),
-      prompt: (if --deep: "--deep\n\n") + "Review plan: {plan file path}\nWorking directory: {work_dir}\n{context}\nSuccess Criteria (must be satisfied):\n{preplan Success Criteria items}",
+      context: (if --deep: "--deep\n\n") + "Review plan: {plan file path}\nWorking directory: {work_dir}\n{context, preplan constraints}\nSuccess Criteria (must be satisfied):\n{preplan Success Criteria items}",
+      init_prompt: "Review the plan.",
       provider: "{phase provider}"
     })
     ```

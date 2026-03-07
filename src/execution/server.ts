@@ -356,10 +356,11 @@ function getToolDescriptors(): Array<Record<string, unknown>> {
         type: 'object',
         properties: {
           expression: { type: 'string' },
-          prompt: { type: 'string' },
+          init_prompt: { type: 'string' },
+          context: { type: 'string' },
           provider: { type: 'string' },
         },
-        required: ['expression', 'prompt'],
+        required: ['expression', 'init_prompt'],
       },
     },
   ];

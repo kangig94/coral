@@ -5,17 +5,27 @@ describe('workflowInputSchema', () => {
   it('accepts minimal valid input and defaults provider to claude', () => {
     const parsed = workflowInputSchema.parse({
       expression: 'architect -> resolver',
-      prompt: 'hello',
+      init_prompt: 'hello',
     });
 
     expect(parsed.provider).toBe('claude');
     expect(parsed.stale_timeout_seconds).toBe(900);
   });
 
+  it('accepts optional context string', () => {
+    const parsed = workflowInputSchema.parse({
+      expression: 'architect -> resolver',
+      init_prompt: 'hello',
+      context: 'Shared briefing',
+    });
+
+    expect(parsed.context).toBe('Shared briefing');
+  });
+
   it('accepts full valid input with atoms', () => {
     const parsed = workflowInputSchema.parse({
       expression: '(architect, critic) -> resolver@claude',
-      prompt: 'analyze',
+      init_prompt: 'analyze',
       provider: 'claude',
       atoms: {
         architect: {
@@ -31,25 +41,25 @@ describe('workflowInputSchema', () => {
   });
 
   it('rejects missing expression', () => {
-    expect(() => workflowInputSchema.parse({ prompt: 'hello' })).toThrow();
+    expect(() => workflowInputSchema.parse({ init_prompt: 'hello' })).toThrow();
   });
 
-  it('rejects missing prompt', () => {
+  it('rejects missing init_prompt', () => {
     expect(() => workflowInputSchema.parse({ expression: 'architect' })).toThrow();
   });
 
   it('rejects empty expression', () => {
-    expect(() => workflowInputSchema.parse({ expression: '', prompt: 'hello' })).toThrow('Expression required');
+    expect(() => workflowInputSchema.parse({ expression: '', init_prompt: 'hello' })).toThrow('Expression required');
   });
 
-  it('rejects empty prompt', () => {
-    expect(() => workflowInputSchema.parse({ expression: 'architect', prompt: '' })).toThrow('Prompt required');
+  it('rejects empty init_prompt', () => {
+    expect(() => workflowInputSchema.parse({ expression: 'architect', init_prompt: '' })).toThrow('Prompt required');
   });
 
   it('accepts provider identifiers beyond built-in providers', () => {
     const parsed = workflowInputSchema.parse({
       expression: 'architect',
-      prompt: 'hello',
+      init_prompt: 'hello',
       provider: 'openai',
     });
     expect(parsed.provider).toBe('openai');
@@ -58,7 +68,7 @@ describe('workflowInputSchema', () => {
   it('rejects invalid provider identifier syntax', () => {
     expect(() => workflowInputSchema.parse({
       expression: 'architect',
-      prompt: 'hello',
+      init_prompt: 'hello',
       provider: 'OpenAI',
     })).toThrow();
   });
@@ -66,7 +76,7 @@ describe('workflowInputSchema', () => {
   it('rejects non-object atoms per atom', () => {
     expect(() => workflowInputSchema.parse({
       expression: 'architect',
-      prompt: 'hello',
+      init_prompt: 'hello',
       atoms: {
         architect: 'bad-shape',
       },
@@ -76,15 +86,31 @@ describe('workflowInputSchema', () => {
   it('rejects legacy top-level args key', () => {
     expect(() => workflowInputSchema.parse({
       expression: 'architect',
-      prompt: 'hello',
+      init_prompt: 'hello',
       args: {},
     })).toThrow(/Unrecognized key\(s\) in object: 'args'/);
+  });
+
+  it('rejects legacy top-level prompt key', () => {
+    const parsed = workflowInputSchema.safeParse({
+      expression: 'architect',
+      init_prompt: 'hello',
+      prompt: 'legacy hello',
+    });
+
+    expect(parsed.success).toBe(false);
+    if (parsed.success) throw new Error('expected parse failure');
+    expect(parsed.error.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        message: "Unrecognized key(s) in object: 'prompt'",
+      }),
+    ]));
   });
 
   it('accepts atoms instruction field', () => {
     const parsed = workflowInputSchema.parse({
       expression: 'architect',
-      prompt: 'hello',
+      init_prompt: 'hello',
       atoms: {
         architect: {
           instruction: 'Do a security pass.',
@@ -98,7 +124,7 @@ describe('workflowInputSchema', () => {
   it('accepts atoms effort field', () => {
     const parsed = workflowInputSchema.parse({
       expression: 'architect',
-      prompt: 'hello',
+      init_prompt: 'hello',
       atoms: {
         architect: {
           effort: 'xhigh',
@@ -112,7 +138,7 @@ describe('workflowInputSchema', () => {
   it('rejects unknown keys in atom config', () => {
     expect(() => workflowInputSchema.parse({
       expression: 'architect',
-      prompt: 'hello',
+      init_prompt: 'hello',
       atoms: {
         architect: {
           model: 'o4-mini',
@@ -128,7 +154,7 @@ describe('workflowInputSchema', () => {
   ])('rejects legacy atom key $key', ({ key, value }) => {
     expect(() => workflowInputSchema.parse({
       expression: 'architect',
-      prompt: 'hello',
+      init_prompt: 'hello',
       atoms: {
         architect: {
           [key]: value,
@@ -140,7 +166,7 @@ describe('workflowInputSchema', () => {
   it('rejects bypass in atoms via strict object validation', () => {
     expect(() => workflowInputSchema.parse({
       expression: 'architect',
-      prompt: 'hello',
+      init_prompt: 'hello',
       atoms: {
         architect: {
           bypass: true,
@@ -151,19 +177,19 @@ describe('workflowInputSchema', () => {
 
   it('rejects provider: null', () => {
     expect(() =>
-      workflowInputSchema.parse({ expression: 'a', prompt: 'hi', provider: null }),
+      workflowInputSchema.parse({ expression: 'a', init_prompt: 'hi', provider: null }),
     ).toThrow();
   });
 
   it('accepts atoms: {} empty object', () => {
-    const parsed = workflowInputSchema.parse({ expression: 'a', prompt: 'hi', atoms: {} });
+    const parsed = workflowInputSchema.parse({ expression: 'a', init_prompt: 'hi', atoms: {} });
     expect(parsed.atoms).toEqual({});
   });
 
   it('accepts stale_timeout_seconds set to zero (disable stale recovery)', () => {
     const parsed = workflowInputSchema.parse({
       expression: 'architect',
-      prompt: 'hello',
+      init_prompt: 'hello',
       stale_timeout_seconds: 0,
     });
     expect(parsed.stale_timeout_seconds).toBe(0);
@@ -171,49 +197,49 @@ describe('workflowInputSchema', () => {
 
   it('rejects atoms with array value for atom (not a record)', () => {
     expect(() =>
-      workflowInputSchema.parse({ expression: 'a', prompt: 'hi', atoms: { a: [1, 2, 3] } }),
+      workflowInputSchema.parse({ expression: 'a', init_prompt: 'hi', atoms: { a: [1, 2, 3] } }),
     ).toThrow();
   });
 });
 
 describe('provider identifier boundary values', () => {
   it('single lowercase letter is a valid provider identifier', () => {
-    const parsed = workflowInputSchema.parse({ expression: 'a', prompt: 'hi', provider: 'a' });
+    const parsed = workflowInputSchema.parse({ expression: 'a', init_prompt: 'hi', provider: 'a' });
     expect(parsed.provider).toBe('a');
   });
 
   it('provider starting with digit is rejected', () => {
     expect(() =>
-      workflowInputSchema.parse({ expression: 'a', prompt: 'hi', provider: '1abc' }),
+      workflowInputSchema.parse({ expression: 'a', init_prompt: 'hi', provider: '1abc' }),
     ).toThrow();
   });
 
   it('provider starting with hyphen is rejected', () => {
     expect(() =>
-      workflowInputSchema.parse({ expression: 'a', prompt: 'hi', provider: '-abc' }),
+      workflowInputSchema.parse({ expression: 'a', init_prompt: 'hi', provider: '-abc' }),
     ).toThrow();
   });
 
   it('provider with internal hyphens (a-b-c) is accepted', () => {
-    const parsed = workflowInputSchema.parse({ expression: 'a', prompt: 'hi', provider: 'a-b-c' });
+    const parsed = workflowInputSchema.parse({ expression: 'a', init_prompt: 'hi', provider: 'a-b-c' });
     expect(parsed.provider).toBe('a-b-c');
   });
 
   it('empty string provider is rejected', () => {
     expect(() =>
-      workflowInputSchema.parse({ expression: 'a', prompt: 'hi', provider: '' }),
+      workflowInputSchema.parse({ expression: 'a', init_prompt: 'hi', provider: '' }),
     ).toThrow();
   });
 
   it('provider with uppercase letter is rejected', () => {
     expect(() =>
-      workflowInputSchema.parse({ expression: 'a', prompt: 'hi', provider: 'Claude' }),
+      workflowInputSchema.parse({ expression: 'a', init_prompt: 'hi', provider: 'Claude' }),
     ).toThrow();
   });
 
   it('provider with underscore is rejected (providerIdentPattern excludes underscores)', () => {
     expect(() =>
-      workflowInputSchema.parse({ expression: 'a', prompt: 'hi', provider: 'my_provider' }),
+      workflowInputSchema.parse({ expression: 'a', init_prompt: 'hi', provider: 'my_provider' }),
     ).toThrow();
   });
 });
@@ -221,18 +247,18 @@ describe('provider identifier boundary values', () => {
 describe('stale_timeout_seconds validation', () => {
   it('rejects negative stale_timeout_seconds', () => {
     expect(() =>
-      workflowInputSchema.parse({ expression: 'architect', prompt: 'hello', stale_timeout_seconds: -1 }),
+      workflowInputSchema.parse({ expression: 'architect', init_prompt: 'hello', stale_timeout_seconds: -1 }),
     ).toThrow();
   });
 
   it('rejects stale_timeout_seconds supplied as a string', () => {
     expect(() =>
-      workflowInputSchema.parse({ expression: 'architect', prompt: 'hello', stale_timeout_seconds: '900' }),
+      workflowInputSchema.parse({ expression: 'architect', init_prompt: 'hello', stale_timeout_seconds: '900' }),
     ).toThrow();
   });
 
   it('accepts stale_timeout_seconds of exactly 1 (minimum positive value)', () => {
-    const parsed = workflowInputSchema.parse({ expression: 'architect', prompt: 'hello', stale_timeout_seconds: 1 });
+    const parsed = workflowInputSchema.parse({ expression: 'architect', init_prompt: 'hello', stale_timeout_seconds: 1 });
     expect(parsed.stale_timeout_seconds).toBe(1);
   });
 });
