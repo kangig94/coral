@@ -7,19 +7,18 @@ Hooks provide automatic context injection, agent routing, HUD auto-update, error
 Claude Code's hook system executes scripts on specific events. Coral uses hooks at two levels:
 
 **Plugin hooks** (`hooks/hooks.json`):
-1. **SessionStart** (`*`) - Injects CLAUDE.md behavioral guidelines, warm-starts the backend daemon, and auto-updates HUD script
+1. **SessionStart** (`*`) - Injects CLAUDE.md behavioral guidelines, warm-starts the backend daemon, auto-updates HUD script, and cleans stale flag files
 2. **SessionStart** (`compact`) - After context compaction, reminds about KB promotion
-3. **UserPromptSubmit** - Creates session-scoped KB flag when user types `/coral:ralph` or `/coral:bugfix`
-4. **PreToolUse** - Periodically reminds Claude to write memos for non-obvious discoveries
-5. **PreToolUse** (`Skill`) - Creates session-scoped KB flag when Claude calls Skill("coral:ralph"|"coral:bugfix")
-6. **PostToolUseFailure** (`*`) - On any non-zero tool exit, reminds Claude to check `.claude/coral/kb/` before debugging
-7. **PostToolUse** (`Bash`) - Detects silent failures in command output when exit codes are masked and injects the same KB lookup reminder context
-8. **Stop** - Enforces KB promotion for unprocessed memos
-9. **TeammateIdle** (`dc-*`) - Blocks idle when discuss agents have pending actions (bid/speak/vote)
+3. **UserPromptSubmit** - Creates session-scoped KB flag for `/coral:ralph`|`/coral:bugfix`, and periodically reminds about memo writing
+4. **PreToolUse** (`Skill`) - Creates session-scoped KB flag when Claude calls Skill("coral:ralph"|"coral:bugfix")
+5. **PostToolUseFailure** (`*`) - On any non-zero tool exit, reminds Claude to check `.claude/coral/kb/` before debugging
+6. **PostToolUse** (`Bash`) - Detects silent failures in command output when exit codes are masked and injects the same KB lookup reminder context
+7. **Stop** - Enforces KB promotion for unprocessed memos
+8. **TeammateIdle** (`dc-*`) - Blocks idle when discuss agents have pending actions (bid/speak/vote)
 
 ## Hook Configuration
 
-Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/kb-lookup-reminder.mjs`, `hooks/silent-failure-detector.mjs`, `hooks/kb-memo-reminder.mjs`, `hooks/kb-promote-reminder.mjs`, `hooks/discuss-idle-guard.mjs`, `hooks/backend-warm-start.mjs`, `hooks/hud-auto-update.mjs`.
+Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/kb-lookup-reminder.mjs`, `hooks/kb-memo-reminder.mjs`, `hooks/kb-promote-reminder.mjs`, `hooks/kb-stale-cleanup.mjs`, `hooks/discuss-idle-guard.mjs`, `hooks/backend-warm-start.mjs`, `hooks/hud-auto-update.mjs`.
 
 All hook scripts are **Node.js ESM** (`.mjs`). They read input JSON from stdin, write output JSON to stdout, and **fail-open** via `try/catch { process.exit(0) }` - a crash or timeout never blocks the user.
 
@@ -55,6 +54,14 @@ Script: `hooks/hud-auto-update.mjs`. Fires at session start (matcher: `*`, timeo
 
 **Fail-open**: Entire script wrapped in `try/catch {}`. Uninstalled HUD or missing plugin root results in silent exit.
 
+## SessionStart Hook (Stale Flag Cleanup)
+
+Script: `hooks/kb-stale-cleanup.mjs`. Fires at session start (matcher: `*`, timeout: 3s). Cleans up orphaned flag files older than 6 hours from `.claude/coral/tmp/`.
+
+Handles both `memo-reminded-{session_id}` and `kb-active-{session_id}` prefixes in a single `readdirSync` pass. Centralizes stale cleanup that was previously duplicated in `kb-memo-reminder.mjs` (PreToolUse) and `kb-promote-reminder.mjs` (Stop).
+
+**Fail-open**: Entire script wrapped in `try/catch {}`. Missing directory results in silent exit.
+
 ## SessionStart (Compact) Hook
 
 Fires after context compaction (matcher: `compact`).
@@ -69,29 +76,24 @@ The prior `SubagentStart` codex delegation hook has been removed. Codex delegati
 direct MCP tool dispatch (`codex({ op: "coral:<agent>", ... })`) and executor-side
 `ensureMultiAgent()` configuration.
 
-## PreToolUse Hook (Memo Reminder)
+## UserPromptSubmit Hook (Memo Reminder)
 
-Script: `hooks/kb-memo-reminder.mjs`. Injects `additionalContext` reminding Claude to write memos when discovering non-obvious lessons.
+Script: `hooks/kb-memo-reminder.mjs`. Injects `additionalContext` reminding Claude to write memos when discovering non-obvious lessons. Fires on every user message (not on every tool call).
 
-**Throttled (15 min)**: Reads `session_id` from stdin JSON, creates `.claude/coral/tmp/memo-reminded-<session_id>` flag file. Subsequent calls within 15 minutes exit silently; after 15 minutes, the flag refreshes and the reminder fires again. Also cleans up stale flags older than 24 hours.
+**Throttled (15 min)**: Reads `session_id` from stdin JSON, creates `.claude/coral/tmp/memo-reminded-<session_id>` flag file. Subsequent calls within 15 minutes exit silently; after 15 minutes, the flag refreshes and the reminder fires again. Stale flag cleanup is handled by `kb-stale-cleanup.mjs` at session start.
 
-## PostToolUseFailure Hook
+## PostToolUseFailure + PostToolUse Hook (KB Lookup Reminder)
 
-On any tool failure, reminds Claude to check `.claude/coral/kb/` before debugging from scratch. Script: `hooks/kb-lookup-reminder.mjs`. Matcher: `*` (all tools).
+Script: `hooks/kb-lookup-reminder.mjs`. Handles two events in one script:
 
-**Output**: `hookSpecificOutput.additionalContext` with KB file listing. Non-blocking — Claude receives the reminder as additional context.
+- **PostToolUseFailure** (`*`) — On any tool failure, immediately reminds Claude to check `.claude/coral/kb/`.
+- **PostToolUse** (`Bash`) — On successful Bash executions (exit 0), detects silent failures via two-stage filter: first checks for exit-code-masking constructs (`| tee`, `|| true`, `|| :`), then regex-matches output for failure patterns (`Failed to build`, `BUILD FAILED`, `Traceback`, `npm ERR!`, `^error[E...]`).
 
-**Fail-open**: If KB directory doesn't exist or has no `.md` files — silent exit 0.
+The two events are complementary — `PostToolUseFailure` covers non-zero exits, `PostToolUse` covers silent failures with zero exits. They never overlap on the same tool execution.
 
-## PostToolUse Hook (Silent Failure Detector)
+**Output**: `hookSpecificOutput.additionalContext` with KB topics listing. Non-blocking.
 
-On successful Bash tool executions (`PostToolUse` only fires when exit code is 0), detects failure signals in command output that indicate masked failures and injects the same KB lookup reminder flow. Script: `hooks/silent-failure-detector.mjs`. Matcher: `Bash`.
-
-**Two-stage filter**: First checks if the command contains an exit-code-masking construct (`| tee`, `|| true`, `|| :`). If no masking construct is present, the hook exits immediately — no output inspection needed, since unmasked failures trigger `PostToolUseFailure` directly. Only masked commands proceed to the second stage: regex matching against stdout/stderr for failure patterns (`Failed to build`, `BUILD FAILED`, `Traceback (most recent call last)`, `npm ERR!`, `^error[E...]`).
-
-**Relationship to PostToolUseFailure**: `PostToolUseFailure` covers non-zero exits. `PostToolUse` covers silent failures with zero exits. The two hooks are complementary and do not overlap on the same tool execution.
-
-**Fail-open**: Any parse/read error, no pattern match, or empty KB directory — silent exit 0.
+**Fail-open**: Missing KB directory, no `.md` files, no pattern match — silent exit 0.
 
 ## UserPromptSubmit Hook (KB Flag — User Slash Commands)
 
@@ -109,7 +111,7 @@ Creates the same session-scoped flag when Claude internally calls `Skill("coral:
 
 Script: `hooks/kb-promote-reminder.mjs`. Session-scoped via flag file.
 
-**Flag file pattern**: The UserPromptSubmit and PreToolUse(Skill) hooks create `.claude/coral/tmp/kb-active-{session_id}` for KB-producing skills. The Stop hook checks for its own session's flag — if absent, exits silently (normal conversation unaffected). Stale flags (>24h) from expired sessions are cleaned up automatically.
+**Flag file pattern**: The UserPromptSubmit and PreToolUse(Skill) hooks create `.claude/coral/tmp/kb-active-{session_id}` for KB-producing skills. The Stop hook checks for its own session's flag — if absent, exits silently (normal conversation unaffected). Stale flags (>6h) from expired sessions are cleaned up by `kb-stale-cleanup.mjs` at session start.
 
 When flag exists:
 1. Delete session's flag file

@@ -1,16 +1,15 @@
 #!/usr/bin/env node
 
 /**
- * PreToolUse hook — reminds Claude to write memos for non-obvious discoveries.
+ * UserPromptSubmit hook — reminds Claude to write memos for non-obvious discoveries.
  * Throttled: once per 15 minutes per session via flag file mtime check.
  * Fail-open: any error exits silently.
  */
 
-import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const THROTTLE_MIN = 15;
-const STALE_MS = 24 * 60 * 60_000;
 const FLAG_PREFIX = 'memo-reminded-';
 
 try {
@@ -29,19 +28,9 @@ try {
   mkdirSync(flagDir, { recursive: true });
   writeFileSync(flag, '');
 
-  // Clean up stale flag files from expired sessions
-  try {
-    const now = Date.now();
-    for (const f of readdirSync(flagDir)) {
-      if (!f.startsWith(FLAG_PREFIX) || f === `${FLAG_PREFIX}${sessionId}`) continue;
-      const path = join(flagDir, f);
-      if (now - statSync(path).mtimeMs > STALE_MS) unlinkSync(path);
-    }
-  } catch { /* fail-open */ }
-
   console.log(JSON.stringify({
     hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
+      hookEventName: 'UserPromptSubmit',
       additionalContext: 'Memo reminder: When you discover something non-obvious during this task (painful root cause, unexpected gotcha, clever solution), write immediately to .claude/coral/memo/<timestamp>-<topic>.md. Keep brief - one paragraph + context.',
     },
   }));

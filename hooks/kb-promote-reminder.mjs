@@ -9,11 +9,10 @@
  * Fail-open: any error exits silently.
  */
 
-import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const FLAG_PREFIX = 'kb-active-';
-const STALE_MS = 24 * 60 * 60_000;
 const KB_SKILL_RE = /\/(?:coral:)?ralph|\/(?:coral:)?bugfix/;
 
 try {
@@ -22,18 +21,6 @@ try {
   const sessionId = input.session_id;
   const projectDir = process.env.CLAUDE_PROJECT_DIR || '.';
   const flagDir = join(projectDir, '.claude', 'coral', 'tmp');
-
-  // Stale flag cleanup (>24h) — runs on every invocation to handle orphaned flags from crashed sessions
-  try {
-    if (existsSync(flagDir)) {
-      const now = Date.now();
-      for (const f of readdirSync(flagDir)) {
-        if (!f.startsWith(FLAG_PREFIX)) continue;
-        const path = join(flagDir, f);
-        if (now - statSync(path).mtimeMs > STALE_MS) unlinkSync(path);
-      }
-    }
-  } catch { /* fail-open */ }
 
   // UserPromptSubmit: user typed /coral:ralph or /coral:bugfix directly
   if (event === 'UserPromptSubmit') {
