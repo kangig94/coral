@@ -15,6 +15,7 @@ const RED = "\x1b[31m";
 const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 const CYAN = "\x1b[36m";
+const MAGENTA = "\x1b[35m";
 const CODEX_USER_AGENT = "codex_cli_rs";
 
 function getCodexClientId(idToken) {
@@ -701,7 +702,7 @@ async function renderCoralLine() {
     if (!resp.ok) return `coral ${DIM}○ offline${RESET}`;
     const data = await resp.json();
     const parts = [`coral ${GREEN}●${RESET}`];
-    if (data.activeJobs > 0) parts.push(`jobs:${YELLOW}${data.activeJobs}${RESET}`);
+    if (data.activeChildren > 0) parts.push(`${MAGENTA}⚙ ${data.activeChildren}${RESET}`);
     if (data.queueDepth > 0) parts.push(`queue:${data.queueDepth}`);
 
     const reefInfo = readReefInfo();
