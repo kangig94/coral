@@ -152,8 +152,8 @@ describe('detectCodexCli', () => {
     const first = await detectCodexCli();
     const second = await detectCodexCli();
 
-    expect(first.available && first.authState).toBe('unauthenticated');
-    expect(second.available && second.authState).toBe('unauthenticated');
+    expect(first).toMatchObject({ available: true, authState: 'unauthenticated' });
+    expect(second).toMatchObject({ available: true, authState: 'unauthenticated' });
     expect(whoamiCalls).toBe(2);
     expect(mockExecFile).toHaveBeenCalledTimes(3);
   });
@@ -193,8 +193,8 @@ describe('detectCodexCli', () => {
 
     const [a, b] = await Promise.all([detectCodexCli(), detectCodexCli()]);
 
-    expect(a.available && a.authState).toBe('unauthenticated');
-    expect(b.available && b.authState).toBe('unauthenticated');
+    expect(a).toMatchObject({ available: true, authState: 'unauthenticated' });
+    expect(b).toMatchObject({ available: true, authState: 'unauthenticated' });
     expect(versionCalls).toBe(1);
     expect(whoamiCalls).toBe(1);
   });

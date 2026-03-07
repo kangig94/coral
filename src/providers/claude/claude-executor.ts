@@ -1,4 +1,4 @@
-import { spawnCli } from '../../runner/engine.js';
+import { spawnCli } from '../../execution/engine.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 import { parseClaudeStreamJson, type ParsedClaudeStreamOutput } from './output-parser.js';
 import type { ClaudeExecFailure, ClaudeExecResult } from './types.js';
@@ -42,6 +42,16 @@ export async function executeClaudeResume(
   options: Omit<ClaudeExecOptions, 'sessionId'> = {},
 ): Promise<ClaudeExecResult> {
   const args = [...STREAM_JSON_ARGS, '--resume', sessionId];
+  appendSharedArgs(args, options);
+  return executeClaude(args, prompt, options);
+}
+
+export async function executeClaudeFork(
+  sessionId: string,
+  prompt: string,
+  options: Omit<ClaudeExecOptions, 'sessionId'> = {},
+): Promise<ClaudeExecResult> {
+  const args = [...STREAM_JSON_ARGS, '--resume', sessionId, '--fork-session'];
   appendSharedArgs(args, options);
   return executeClaude(args, prompt, options);
 }

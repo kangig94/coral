@@ -4,8 +4,7 @@ description: "Simplifies and refines code for clarity, consistency, and maintain
 argument-hint: "[--codex] <scope or prompt>"
 ---
 
-> **CORAL_AGENTS**: `Glob(pattern: "**/agents/", path: "~/.claude/plugins/cache/coral/")`
-> Pass `~` literally to the Glob tool — it expands to the home directory. Do not resolve it yourself.
+> **CORAL_AGENTS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/agents/")`
 
 # Code Simplification
 
@@ -73,20 +72,13 @@ Strip the `--codex` flag before passing the prompt to the execution path.
        - Default: run `<Execution>` directly on the target files.
        - `--codex`: call `codex({ op: "exec", ... })` with `<Execution>`, `<Constraints>`,
          `<Failure_Modes_To_Avoid>`, `<Output_Format>`, target file paths, and coding standards.
-         Pass `working_directory`, `effort: "xhigh"`.
-         Pass `bypass: true` only when the user explicitly requests bypass mode.
-         Then wait in a timeout loop:
-         `wait({ sessions: [session], timeout_seconds })`
-         until terminal status, then Read(`session_dir + "/result.md"`) for output.
+         Pass `working_directory`.
+         `wait({ jobs: [job], inline: true })` → read `result.content`.
        Parallel split:
        - Default: spawn each group as a parallel Task (`subagent_type: "general-purpose"`).
          Pass `<Execution>`, `<Constraints>`, the file group, and project coding standards.
-       - `--codex`: dispatch one `codex({ op: "exec", ... })` call per file group
-         (include group-specific scope/context), collect all `session`s, then wait for all sessions:
-         1. Call `wait({ sessions: pendingSessions, timeout_seconds })`
-         2. If `status: "timeout"`, continue
-         3. If `status: "completed"`, read `session_dir/result.md`, remove completed session
-         4. If `status: "error"`, read `session_dir/status.json`, remove failed session, continue
+       - `--codex`: dispatch one `codex({ op: "exec", ... })` call per file group,
+         collect all `job`s, then `wait({ jobs: pendingJobs, inline: true })` until all complete, read each `result.content`.
     5) Review each change for correctness AND justification.
        Use git diff as a before/after reference when the diff is manageable.
        Correctness:

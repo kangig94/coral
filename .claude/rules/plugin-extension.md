@@ -32,10 +32,9 @@ plugin files from project files. Three read patterns and one spawn pattern exist
 
 - Every file using these aliases must define them at the top (after frontmatter):
   ```
-  > **CORAL_AGENTS**: `Glob(pattern: "**/agents/", path: "~/.claude/plugins/cache/coral/")`
-  > **CORAL_SKILLS**: `Glob(pattern: "**/skills/", path: "~/.claude/plugins/cache/coral/")`
-  > **CORAL_METHODS**: `Glob(pattern: "**/methods/", path: "~/.claude/plugins/cache/coral/")`
-  > Pass `~` literally to the Glob tool — it expands to the home directory. Do not resolve it yourself.
+  > **CORAL_AGENTS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/agents/")`
+  > **CORAL_SKILLS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/skills/")`
+  > **CORAL_METHODS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/methods/")`
   ```
 - Never use bare `agents/xxx.md`, `skills/xxx/`, or `methods/xxx.md` — these resolve relative
   to the user's project directory, which breaks when the plugin is used outside its own repo.
@@ -69,7 +68,7 @@ Caller invokes codex MCP:
   -> server reads agents/<agent>.md
   -> server prepends agent content to prompt
   -> launchJob(handleSessionCreate/handleSessionSend)
-  -> wait loop reads result.md/status.json
+  -> wait({ inline: true }) → result.content
 ```
 
 `ensureMultiAgent()` runs in `codex-executor.ts` before Codex spawn. No SubagentStart hook is involved in Codex delegation.

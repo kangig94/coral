@@ -4,12 +4,9 @@ description: "Systematic bug diagnosis, planning, and fix execution."
 argument-hint: "[--codex] <bug description or error message>"
 ---
 
-> **CORAL_AGENTS**: `Glob(pattern: "**/agents/", path: "~/.claude/plugins/cache/coral/")`
-> Pass `~` literally to the Glob tool — it expands to the home directory. Do not resolve it yourself.
+> **CORAL_AGENTS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/agents/")`
 
 # Bug Debugging
-
-Before starting, run Bash(`mkdir -p .claude/coral/tmp && touch .claude/coral/tmp/kb-active`).
 
 Diagnose bugs, plan fixes, and execute - end-to-end.
 
@@ -26,13 +23,12 @@ Strip the `--codex` flag before passing the prompt to the execution path.
 ## Execution
 
 1. **Diagnose**:
-   - **Default**: Read `CORAL_AGENTS/debugger.md`. **You** execute it directly — follow
-     `<Investigation_Protocol>` steps with conversation context.
+   - **Default**: Read `CORAL_AGENTS/debugger.md`. **You** execute it directly with `--deep` —
+     follow `<Investigation_Protocol>` steps with conversation context.
      Present diagnosis in `<Output_Format>` structure.
-   - **`--codex`**: Call `codex({ op: "coral:debugger", prompt, working_directory, effort: "xhigh" })`.
-     Capture `{ session, session_dir }` from the exec response, then wait in a timeout loop (`wait({ sessions: [session], timeout_seconds })`).
-     On completion, read `session_dir/result.md` for findings.
-     On error, read `session_dir/status.json` and stop with the Codex error.
+   - **`--codex`**: Call `codex({ op: "coral:debugger", prompt: "--deep " + prompt, working_directory })`.
+     Capture `job` from the exec response, then `wait({ jobs: [job], inline: true })` → read `result.content` for findings.
+     On error, stop with the error message.
      Verify cited file:line references. Drop findings with incorrect references.
 
 2. **Plan fix**: Invoke `Skill({ skill: "coral:plan", args: "--no-handoff fix-{short-bug-description}" })`.
@@ -45,10 +41,6 @@ Strip the `--codex` flag before passing the prompt to the execution path.
 
 4. **Project validation**: If project instructions define workflow rules (e.g., review gates,
    post-implementation steps), follow them.
-
-## Sandbox bypass
-
-Pass `bypass: true` only when the user explicitly requests bypass mode. Otherwise, omit the field.
 
 ## Error Policy
 

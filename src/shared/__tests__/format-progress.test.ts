@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { formatToolProgress, truncate } from '../format-progress.js';
+import { formatToolProgress, shortPath, truncate } from '../format-progress.js';
 
-const cwdMainFile = `${process.cwd()}/src/main.ts`;
+const projectRoot = '/repo';
+const projectMainFile = '/repo/src/main.ts';
 
 function expectNoThrow(toolName: string, input: Record<string, unknown>): void {
   expect(() => formatToolProgress(toolName, input)).not.toThrow();
@@ -17,22 +18,36 @@ describe('truncate', () => {
   });
 });
 
-describe('formatToolProgress', () => {
-  it('formats Read with relative path when inside cwd', () => {
-    expect(formatToolProgress('Read', { file_path: cwdMainFile, offset: 12, limit: 8 }))
-      .toBe('Read(src/main.ts:12-20)');
-    expect(formatToolProgress('Read', { file_path: cwdMainFile, offset: 12 })).toBe('Read(src/main.ts:12+)');
-    expect(formatToolProgress('Read', { file_path: cwdMainFile })).toBe('Read(src/main.ts)');
+describe('shortPath', () => {
+  it('returns a relative path for absolute files inside projectRoot', () => {
+    expect(shortPath('/repo/src/main.ts', projectRoot)).toBe('src/main.ts');
   });
 
-  it('formats Read with absolute path when outside cwd', () => {
-    expect(formatToolProgress('Read', { file_path: '/tmp/src/main.ts' })).toBe('Read(/tmp/src/main.ts)');
+  it('returns an absolute path for absolute files outside projectRoot', () => {
+    expect(shortPath('/tmp/src/main.ts', projectRoot)).toBe('/tmp/src/main.ts');
+  });
+
+  it('resolves relative file paths against projectRoot', () => {
+    expect(shortPath('src/main.ts', projectRoot)).toBe('src/main.ts');
+  });
+});
+
+describe('formatToolProgress', () => {
+  it('formats Read with relative path when inside projectRoot', () => {
+    expect(formatToolProgress('Read', { file_path: projectMainFile, offset: 12, limit: 8 }, projectRoot))
+      .toBe('Read(src/main.ts:12-20)');
+    expect(formatToolProgress('Read', { file_path: projectMainFile, offset: 12 }, projectRoot)).toBe('Read(src/main.ts:12+)');
+    expect(formatToolProgress('Read', { file_path: projectMainFile }, projectRoot)).toBe('Read(src/main.ts)');
+  });
+
+  it('formats Read with absolute path when outside projectRoot', () => {
+    expect(formatToolProgress('Read', { file_path: '/tmp/src/main.ts' }, projectRoot)).toBe('Read(/tmp/src/main.ts)');
   });
 
   it('formats Edit and Write tools', () => {
-    expect(formatToolProgress('Edit', { file_path: cwdMainFile, old_string: 'before\nline', new_string: 'after\nline' }))
+    expect(formatToolProgress('Edit', { file_path: projectMainFile, old_string: 'before\nline', new_string: 'after\nline' }, projectRoot))
       .toBe('Edit(src/main.ts, "before" → "after")');
-    expect(formatToolProgress('Write', { file_path: cwdMainFile })).toBe('Write(src/main.ts)');
+    expect(formatToolProgress('Write', { file_path: projectMainFile }, projectRoot)).toBe('Write(src/main.ts)');
   });
 
   it('formats Bash/Grep/Glob/Agent tools', () => {

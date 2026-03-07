@@ -1,4 +1,4 @@
-# Coral
+# 🪸 Coral
 
 [한국어](README.ko.md)
 
@@ -193,7 +193,8 @@ Mistakes aren't repeated across sessions.
 
 | Variable | Default | Description |
 |---|---|---|
-| `CORAL_CODEX_MODEL` | `gpt-5.3-codex` | Default Codex CLI model |
+| `CORAL_CODEX_MODEL` | `gpt-5.4` | Default Codex CLI model |
+| `CORAL_MAX_CHILDREN` | `10` | Max concurrent CLI children (1–10) |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Max epochs before discussion auto-ends (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `0` | Days before completed discuss sessions are auto-pruned (0 = disabled) |
 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(unset)_ | **Required** for `/coral:discuss`. Set to `1`. |
@@ -209,7 +210,7 @@ Set in `.claude/settings.json` (persists across sessions):
 }
 ```
 
-Or via shell: `export CORAL_CODEX_MODEL=gpt-5.3-codex`
+Or via shell: `export CORAL_CODEX_MODEL=gpt-5.4`
 
 ## Documentation
 
@@ -234,8 +235,8 @@ Optional real-time HUD for Claude Code sessions:
 /coral:statusline install
 
 # after install:
-opus 4.6      │ 5h:39% (1:23) wk:36% (5.2d) │ ctx:58% │ 50m │ coral:analyze
-gpt-5.3-codex │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
+opus 4.6 │ 5h:39% (1:23) wk:36% (5.2d) │ ctx:58% │ $1.57 50m │ coral:analyze
+gpt-5.4  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
 ```
 
 - **Line 1 (always)**: model, Claude rate limits, context usage, session ID, last active skill

@@ -1,13 +1,14 @@
 {
   "name": "coral",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Claude Code plugin - structured agents with Codex CLI bridge",
   "type": "module",
   "scripts": {
     "build": "tsc && node scripts/build-server.mjs",
     "build:server": "node scripts/build-server.mjs",
     "dev": "tsc --watch",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",

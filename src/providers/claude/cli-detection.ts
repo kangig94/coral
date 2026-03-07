@@ -55,26 +55,26 @@ async function runProbe(): Promise<ClaudeCliInfo> {
   cachedCli = cli;
   if (!cli.available) return cli;
 
-  const auth = await queryAuthState();
   const version = cli.version;
-  let nextCli: ClaudeCliInfo;
-
+  const auth = await queryAuthState();
   if (auth.authState === 'authenticated') {
     confirmedAuth = true;
-    nextCli = { available: true, version, authState: 'authenticated' };
-  } else if (auth.authState === 'unauthenticated') {
-    nextCli = {
+    cachedCli = { available: true, version, authState: 'authenticated' };
+    return cachedCli;
+  }
+
+  if (auth.authState === 'unauthenticated') {
+    cachedCli = {
       available: true,
       version,
       authState: 'unauthenticated',
       authError: auth.authError,
     };
-  } else {
-    nextCli = { available: true, version, authState: 'unknown' };
+    return cachedCli;
   }
 
-  cachedCli = nextCli;
-  return nextCli;
+  cachedCli = { available: true, version, authState: 'unknown' };
+  return cachedCli;
 }
 
 function queryClaudeVersion(): Promise<ClaudeCliInfo> {
@@ -127,18 +127,19 @@ function parseAuthStatus(stdout: string): AuthProbeResult | null {
         : { authState: 'unauthenticated', authError: AUTH_ERROR_MESSAGE };
     }
 
-    const status = typeof parsed.status === 'string'
-      ? parsed.status
-      : typeof parsed.auth_status === 'string'
-        ? parsed.auth_status
-        : null;
-    if (status !== null) {
-      if (/authenticated|logged.?in|active/i.test(status)) {
-        return { authState: 'authenticated' };
-      }
-      if (/unauthenticated|logged.?out|not.?authenticated|missing|expired/i.test(status)) {
-        return { authState: 'unauthenticated', authError: AUTH_ERROR_MESSAGE };
-      }
+    let status: string | null = null;
+    if (typeof parsed.status === 'string') {
+      status = parsed.status;
+    } else if (typeof parsed.auth_status === 'string') {
+      status = parsed.auth_status;
+    }
+
+    if (status === null) return null;
+    if (/authenticated|logged.?in|active/i.test(status)) {
+      return { authState: 'authenticated' };
+    }
+    if (/unauthenticated|logged.?out|not.?authenticated|missing|expired/i.test(status)) {
+      return { authState: 'unauthenticated', authError: AUTH_ERROR_MESSAGE };
     }
   } catch {
     // ignore malformed auth-status JSON

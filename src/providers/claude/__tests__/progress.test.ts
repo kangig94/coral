@@ -24,12 +24,12 @@ function assistantToolEvent(name: string, input: Record<string, unknown> = {}): 
   return assistantEvent([toolUseBlock(name, input)]);
 }
 
-function expectNullMessage(event: ClaudeStreamEvent): void {
-  expect(extractClaudeProgressMessage(event)).toBeNull();
+function expectNullMessage(event: ClaudeStreamEvent, projectRoot?: string): void {
+  expect(extractClaudeProgressMessage(event, projectRoot)).toBeNull();
 }
 
-function expectNoThrow(event: ClaudeStreamEvent): void {
-  expect(() => extractClaudeProgressMessage(event)).not.toThrow();
+function expectNoThrow(event: ClaudeStreamEvent, projectRoot?: string): void {
+  expect(() => extractClaudeProgressMessage(event, projectRoot)).not.toThrow();
 }
 
 describe('extractClaudeProgressMessage', () => {
@@ -37,6 +37,12 @@ describe('extractClaudeProgressMessage', () => {
     const event = assistantToolEvent('Read', { file_path: '/repo/src/main.ts', offset: 10, limit: 20 });
 
     expect(extractClaudeProgressMessage(event)).toBe('Read(/repo/src/main.ts:10-30)');
+  });
+
+  it('formats Read tool_use relative to explicit projectRoot', () => {
+    const event = assistantToolEvent('Read', { file_path: '/repo/src/main.ts', offset: 10, limit: 20 });
+
+    expect(extractClaudeProgressMessage(event, '/repo')).toBe('Read(src/main.ts:10-30)');
   });
 
   it('formats Edit tool_use with contextual preview', () => {
@@ -47,6 +53,16 @@ describe('extractClaudeProgressMessage', () => {
     });
 
     expect(extractClaudeProgressMessage(event)).toBe('Edit(/repo/src/main.ts, "before" → "after")');
+  });
+
+  it('formats Edit tool_use relative to explicit projectRoot', () => {
+    const event = assistantToolEvent('Edit', {
+      file_path: '/repo/src/main.ts',
+      old_string: 'before\nextra',
+      new_string: 'after\nextra',
+    });
+
+    expect(extractClaudeProgressMessage(event, '/repo')).toBe('Edit(src/main.ts, "before" → "after")');
   });
 
   it('formats Bash tool_use using description fallback', () => {
@@ -210,7 +226,7 @@ describe('extractClaudeProgressMessage — adversarial', () => {
   });
 
   describe('Write tool routing', () => {
-    it('formats Write tool as Write(basename)', () => {
+    it('formats Write tool with file path', () => {
       const event = assistantToolEvent('Write', { file_path: '/deep/nested/path/output.ts', content: 'hello' });
       const msg = extractClaudeProgressMessage(event);
       expect(msg).toBe('Write(/deep/nested/path/output.ts)');

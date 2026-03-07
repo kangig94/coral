@@ -21,9 +21,6 @@ model: <opus|sonnet>
     |-----------|----------|
     | [trigger condition] | MANDATORY / RECOMMENDED / OPTIONAL |
   </Role>
-  <Why_This_Matters>
-    [What fails without this agent. Why manual/naive approach breaks.]
-  </Why_This_Matters>
   <Success_Criteria>
     - [Measurable criterion 1]
     - [Measurable criterion 2]
@@ -35,50 +32,32 @@ model: <opus|sonnet>
     |----|-------|
     | [correct behavior] | [incorrect behavior] |
   </Constraints>
-  <Investigation_Protocol>
-    1) [Step with sub-steps a, b, c]
-    2) [Step]
-  </Investigation_Protocol>
-  <Tool_Usage>
-    [Which tools and why. MCP tool names if delegating.]
-  </Tool_Usage>
   <Output_Format>
     ## Report Title
     ### Section
     | Column | Column |
     |--------|--------|
   </Output_Format>
-  <Failure_Modes_To_Avoid>
-    - [Mode]: [What goes wrong]. Instead: [correction].
-  </Failure_Modes_To_Avoid>
 </Agent_Prompt>
 ```
 
-### Required Sections
+### Required Sections (WHO / WHAT / GUARD / FORMAT)
 
 | Section | Description |
 |---------|-------------|
-| `Role` | Core responsibility + explicit NOT-responsible boundaries + When to Invoke table |
-| `Success_Criteria` | Measurable completion criteria |
-| `Constraints` | Iron law + DO/DON'T table |
-| `Investigation_Protocol` or `Protocol` | Numbered execution steps (analysis agents use Investigation_Protocol, orchestrators use Protocol) |
-| `Output_Format` | Structured output template with tables |
-| `Failure_Modes_To_Avoid` | Common mistakes with "Instead:" corrections |
+| `Role` | WHO — core responsibility + explicit NOT-responsible boundaries + When to Invoke table |
+| `Success_Criteria` | WHAT — measurable completion criteria |
+| `Constraints` | GUARD — iron law + DO/DON'T table. Compress failure modes here as one-liners. |
+| `Output_Format` | FORMAT — structured output template with tables |
 
 ### Optional Sections
 
-| Section | When to Include | Used By |
-|---------|-----------------|---------|
-| `Why_This_Matters` | Tier 0-1 required. Why this agent exists, what fails without it | review-orchestrator, mcp-guardian, init-project, ralph, debugger |
-| `Tool_Usage` | Agent uses specific tools or delegates to MCP | scanner, gap-finder, architect, critic, ralph, red-attacker |
-| `Examples` | Good/Bad execution pairs clarify protocol | scanner, gap-finder, architect, critic, ralph, init-project |
-| `Final_Checklist` | Pre-completion self-check prevents false done | scanner, gap-finder, architect, critic, ralph, planner |
-| `Execution_Policy` | Effort level, stop conditions, parallelism | scanner, gap-finder, architect, critic, ralph |
-| `Error_Handling` | Orchestrators with multiple failure scenarios | init-project, planner, discussant |
-| `Model_Selection` | Agent delegates to different models conditionally | red-attacker |
-| `Iteration_Cap` | Long-running loops need explicit bounds | ralph |
-| `Circuit_Breaker` | Prevents infinite retry on same failure | ralph |
-| `Rationalization_Prevention` | Excuse → reality table for anti-hallucination | ralph, critic |
+| Section | When to Include |
+|---------|-----------------|
+| `Investigation_Protocol` or `Protocol` | Agent has a multi-step procedure that LLMs wouldn't follow naturally (e.g., scanner's dual approach, discuss-lead's state machine) |
+| `Tool_Usage` | Agent uses MCP tools — document op names and parameters only. Omit for standard tools (Read, Write, Grep, etc.) |
+| `Input` | Agent receives structured input that must be parsed (e.g., persona-generator) |
+| `Error_Handling` | Agent interacts with APIs that return error states (e.g., discussant) |
 
 ### Frontmatter Options
 
@@ -87,5 +66,7 @@ model: <opus|sonnet>
 | `name` | yes | kebab-case agent name |
 | `description` | yes | One-line with "Use when... NOT for..." |
 | `model` | yes | `opus` (deep reasoning) or `sonnet` (protocol execution) |
-| `disallowedTools` | no | `Write, Edit` for read-only agents (review agents in `.claude/agents/`) |
+| `methods` | no | HOW methods list, e.g., `[HOW-REVIEW, HOW-PROVENANCE]` |
+| `deep` | no | `bool` — enables `--deep` flag for HOW method injection |
+| `disallowedTools` | no | `Write, Edit` for read-only agents |
 | `tools` | no | Restrict to specific MCP tools for specialized agent execution |

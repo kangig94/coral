@@ -1,16 +1,14 @@
-import type { SessionProvider } from '../runner/types.js';
-
 export type AgentAtom = {
   kind: 'agent';
   namespace?: string;
   agent: string;
-  provider?: SessionProvider;
+  provider?: string;
 };
 
 export type PromptAtom = {
   kind: 'prompt';
   text: string;
-  provider?: SessionProvider;
+  provider?: string;
 };
 
 export type PipeAtom = AgentAtom | PromptAtom;

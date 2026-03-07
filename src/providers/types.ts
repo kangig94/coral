@@ -1,7 +1,4 @@
-import type { OnEventCallback } from '../runner/job-manager.js';
-import type { SessionManager } from '../runner/session-manager.js';
-import type { CompletionMetadata } from '../runner/types.js';
-import type { McpResult } from '../shared/mcp-utils.js';
+import type { ProviderProgressEvent, ProviderRequest, ProviderResult } from '../types.js';
 
 /** MCP progress notification sender injected into provider handlers. */
 export type NotifyFn = (n: { method: string; params: Record<string, unknown> }) => Promise<void>;
@@ -13,32 +10,22 @@ export type ProviderTool = {
   inputSchema: Record<string, unknown>;
 };
 
-/**
- * Contract that every provider adapter must implement.
- * Register adapters via `registerProvider()` in `providers/registry.ts`.
- * `name` must equal `tool.name` and must not conflict with reserved names ("wait", "workflow").
- */
-export type ProviderAdapter = {
+/** Runtime context injected by the ExecutionService into Provider.execute(). */
+export interface ProviderRuntime {
+  signal: AbortSignal;
+  onEvent: (event: ProviderProgressEvent) => void;
+}
+
+/** Capability flags declared by a provider adapter. */
+export interface ProviderCapabilities {
+  resumable: boolean;
+  forkable: boolean;
+}
+
+export interface Provider {
   name: string;
-  tool: ProviderTool;
-  handleOp(
-    rawArgs: Record<string, unknown>,
-    mgr: SessionManager,
-    progressToken?: string | number,
-    notify?: NotifyFn,
-  ): Promise<McpResult>;
-  handleCoralOp(
-    coralName: string,
-    coralContent: string,
-    rawArgs: Record<string, unknown>,
-    mgr: SessionManager,
-    progressToken?: string | number,
-    notify?: NotifyFn,
-  ): Promise<McpResult>;
-  extractCompletion(result: McpResult): {
-    responseText: string;
-    metadata: CompletionMetadata;
-    sessionId?: string;
-  };
-  makeOnEvent(ctx: { progressFile: string }): OnEventCallback;
-};
+  capabilities: ProviderCapabilities;
+  execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult>;
+  /** Optional preflight check: auth/availability. Throw to reject launch before jobId is allocated. */
+  preflight?(): Promise<void>;
+}

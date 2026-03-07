@@ -55,26 +55,26 @@ async function runProbe(): Promise<CliInfo> {
   cachedCli = cli;
   if (!cli.available) return cli;
 
-  const auth = await queryAuthState();
   const version = cli.version;
-  let nextCli: CliInfo;
-
+  const auth = await queryAuthState();
   if (auth.authState === 'authenticated') {
     confirmedAuth = true;
-    nextCli = { available: true, version, authState: 'authenticated' };
-  } else if (auth.authState === 'unauthenticated') {
-    nextCli = {
+    cachedCli = { available: true, version, authState: 'authenticated' };
+    return cachedCli;
+  }
+
+  if (auth.authState === 'unauthenticated') {
+    cachedCli = {
       available: true,
       version,
       authState: 'unauthenticated',
       authError: auth.authError,
     };
-  } else {
-    nextCli = { available: true, version, authState: 'unknown' };
+    return cachedCli;
   }
 
-  cachedCli = nextCli;
-  return nextCli;
+  cachedCli = { available: true, version, authState: 'unknown' };
+  return cachedCli;
 }
 
 function queryCodexVersion(): Promise<CliInfo> {

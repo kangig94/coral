@@ -2,10 +2,10 @@
 
 Coral exposes two MCP servers, each with its own tool set:
 
-- **`ax` (Agent Execution)**: 4 tools (`codex`, `claude`, `wait`, `workflow`) for Codex/Claude CLI session management and pipeline orchestration. Prefix: `mcp__plugin_coral_ax__`
+- **`ax` (Agent Execution)**: 6 tools (`codex`, `claude`, `wait`, `abort`, `workflow`, `backend`) for Codex/Claude CLI session management, backend control, and pipeline orchestration. Prefix: `mcp__plugin_coral_ax__`
 - **`dc` (Discuss)**: 2 tools for moderated multi-agent discussions. Prefix: `mcp__plugin_coral_dc__`
 
-All tool inputs are validated at runtime with Zod schemas (`src/codex/schemas.ts`, `src/claude/schemas.ts`, `src/discuss/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
+All tool inputs are validated at runtime with Zod schemas (`src/providers/codex/schemas.ts`, `src/providers/claude/schemas.ts`, `src/discuss/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
 
 ---
 
@@ -19,7 +19,7 @@ Single entry point for all Codex execution. Use the required `op` discriminator.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `op` | string | Yes | `exec`, `list`, `fork`, `abort`, or `coral:<agent-name>` |
+| `op` | string | Yes | `exec`, `list`, `fork`, or `coral:<agent-name>` |
 
 ---
 
@@ -34,18 +34,15 @@ the same background session pipeline as `op: exec`.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `op` | string | Yes | Must match `coral:[a-z0-9][a-z0-9-]*` |
-| `session` | string | No | Existing coral session UUID to resume |
-| `name` | string | No | New session display name (when starting fresh) |
 | `prompt` | string | Yes | User prompt appended after agent content |
-| `model` | string | No | Model to use |
+| `session` | string | No | Existing coral session UUID to resume |
 | `working_directory` | string | No | Working directory |
-| `effort` | string | No | `low`, `medium`, `high`, `xhigh` |
-| `bypass` | boolean | No | Bypass sandbox/approvals only on explicit user request |
 
 ### Behavior Notes
 
 - Unknown agent files return an MCP error: `Agent file not found: agents/<agent>.md`
-- Agent content is prepended as-is (no frontmatter parsing/stripping)
+- Agent YAML frontmatter is parsed for metadata (`model`, `methods`, `deep`) then stripped before injection
+- `model` from frontmatter is used as the default model for the agent
 - Path traversal is blocked by op validation before filesystem reads
 
 ---
@@ -58,28 +55,33 @@ Start a new Codex session (omit `session`) or resume an existing one (pass `sess
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `session` | string | No | Coral session UUID from a prior `exec`/`fork` response. Omit to start a new session. |
-| `name` | string | No | Session display name (auto-generated as `session-{timestamp}` if omitted) |
 | `prompt` | string | Yes | Prompt to send to Codex (min 1 char) |
-| `model` | string | No | Model to use (default: `gpt-5.3-codex`, configurable via `CORAL_CODEX_MODEL`) |
+| `session` | string | No | Coral session UUID from a prior `exec`/`fork` response. Omit to start a new session. |
 | `working_directory` | string | No | Working directory |
-| `effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
-| `bypass` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when the user explicitly requests bypass mode. |
 
 ### Output
 
-Returns immediately. Codex runs in background.
+Returns immediately. Codex runs in background. Accepted launches return one of:
 
 ```json
 {
-  "session": "uuid",
-  "session_dir": "/tmp/coral-sessions/uuid",
-  "session_name": "my-review",
-  "status": "running"
+  "status": "running",
+  "job": "job-uuid",
+  "session": "session-uuid"
 }
 ```
 
-`session_dir` is the filesystem path to the session run directory. Use the top-level AX `wait` tool to poll for completion, then `Read` files from `session_dir`.
+```json
+{
+  "status": "queued",
+  "job": "job-uuid",
+  "session": "session-uuid"
+}
+```
+
+`status: "queued"` is a normal accepted launch outcome, not an error. The job will auto-execute when a launch slot frees up.
+
+`job` is the job ID used with `wait` and `abort`. `session` is the session ID for resume/fork continuity. Use the `wait` tool to stream progress, then `Read` the result from `/tmp/coral-jobs/<job>/result.md`.
 
 ---
 
@@ -99,7 +101,7 @@ No parameters (empty object). This envelope is strict.
     {
       "name": "my-review",
       "session": "uuid-1",
-      "model": "gpt-5.3-codex",
+      "model": "gpt-5.4",
       "created_at": "2026-02-18T08:30:00.000Z",
       "last_used_at": "2026-02-18T09:15:00.000Z",
       "working_directory": "/home/user/project",
@@ -127,77 +129,48 @@ Fork an existing session to continue the conversation in a new branch. Returns i
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `session` | string | Yes | Source session identifier (must exist in Coral registry) |
-| `name` | string | No | New session display name |
 | `prompt` | string | No | Additional prompt for the forked session |
-| `model` | string | No | Model to use |
 | `working_directory` | string | No | Working directory |
-| `effort` | string | No | Model reasoning effort: `low`, `medium`, `high`, `xhigh` |
-| `bypass` | boolean | No | Bypass Codex sandbox and approval checks (default: `false`). Only set to `true` when the user explicitly requests bypass mode. |
 
 ### Output
 
-Returns immediately. Same format as `exec`:
+Returns immediately. Same accepted format as `exec` (`status: "running"` or `status: "queued"`):
 
 ```json
 {
-  "session": "uuid",
-  "session_dir": "/tmp/coral-sessions/uuid",
-  "session_name": "forked-review",
-  "status": "running"
+  "status": "running",
+  "job": "job-uuid",
+  "session": "session-uuid"
 }
 ```
 
-Use `wait({ sessions: [session] })` then `Read(session_dir + "/result.md")` to get the fork response.
+`status: "queued"` means the fork request was accepted and will auto-execute when capacity is available.
 
----
-
-### op: abort
-
-Abort an active execution by session UUID.
-
-### Input Schema
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `session` | string (UUID) | Yes | Session UUID from a previous `exec`/`fork` response. Direct lookup in `activeJobs`. |
-
-### Output (JSON)
-
-```json
-{
-  "session": "uuid",
-  "session_name": "my-review",
-  "status": "abort_requested"
-}
-```
-
-Abort is best-effort: if the session already finished or does not exist in this process, abort returns an error.
+Use `wait({ jobs: [job] })` then `Read("/tmp/coral-jobs/<job>/result.md")` to get the fork response.
 
 ---
 
 ## Usage Pattern
 
 ```
-exec → { session, session_dir }
-wait({ sessions: [session] }) → { status, ... }
-if status == "completed":
-  Read(session_dir + "/result.md") → response text
-if status == "error":
-  Read(session_dir + "/status.json") → { error } for diagnostics
-if status == "timeout":
-  re-wait, or abort(session)
+exec → { status: "running" | "queued", job, session }
+wait({ jobs: [job] }) → { state, ... }
+if state == "completed":
+  Read("/tmp/coral-jobs/<job>/result.md") → response text
+if state == "running":
+  wait again with cursor, or abort({ jobs: [job] })
 ```
 
 ## Session Continuity
 
-`session_name` (from exec response) is the human-readable display label. `session` (from exec/fork response) is the UUID needed for continuity.
+`job` (from exec/fork response) is the job ID for `wait`/`abort` and result file access. `session` (from exec/fork response) is the session ID for resume/fork continuity.
 
 | Field | Source | Purpose |
 |-------|--------|---------|
-| `session_name` | exec/fork response | Display label shown to user |
-| `session` | exec/fork response | Pass to next `exec` for continuity |
+| `job` | exec/fork response | Pass to `wait`/`abort`, read results from `/tmp/coral-jobs/<job>/result.md` |
+| `session` | exec/fork response | Pass to next `exec`/`fork` for session continuity |
 
-Do NOT pass `session_name` as the `session` parameter on subsequent exec calls.
+Do NOT pass `job` as the `session` parameter on subsequent exec calls.
 
 ---
 
@@ -211,25 +184,21 @@ Single entry point for Claude CLI execution. Use the required `op` discriminator
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `op` | string | Yes | `exec`, `list`, `abort`, or `coral:<agent-name>` |
+| `op` | string | Yes | `exec`, `list`, `fork`, or `coral:<agent-name>` |
 
 ### Official Input Schema
 
 ```json
 {
   "name": "claude",
-  "description": "Execute a prompt with Claude CLI. Use op field to select exec/list/abort. For agent delegation, use op: \"coral:<agent-name>\" (e.g., coral:architect, coral:critic). Skills (coral:<skill>) are not supported — use the codex tool for skill delegation.",
+  "description": "Execute a prompt with Claude CLI. Use op field to select exec/list/fork. For agent delegation, use op: \"coral:<agent-name>\" (e.g., coral:architect, coral:critic).",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "op": { "type": "string", "description": "Operation: exec/list/abort, or coral:<agent-name> for agent delegation (skills not supported)" },
+      "op": { "type": "string", "description": "Operation: exec/list/fork, or coral:<agent-name> for agent delegation" },
       "prompt": { "type": "string", "description": "Prompt to send (exec required)" },
       "session": { "type": "string", "description": "Session ID for resume (exec with existing session)" },
-      "name": { "type": "string", "description": "Session name (exec optional)" },
-      "model": { "type": "string", "description": "Claude model to use (e.g., sonnet, opus, haiku)" },
-      "working_directory": { "type": "string", "description": "Working directory for execution" },
-      "effort": { "type": "string", "enum": ["low", "medium", "high", "xhigh"], "description": "Model reasoning effort level (xhigh maps to high on Claude CLI)" },
-      "system_prompt": { "type": "string", "description": "Custom system prompt (replaces default)" }
+      "working_directory": { "type": "string", "description": "Working directory for execution" }
     },
     "required": ["op"]
   }
@@ -238,33 +207,66 @@ Single entry point for Claude CLI execution. Use the required `op` discriminator
 
 ### op: exec
 
-Starts a new Claude CLI run (or resumes when `session` is provided). Returns immediately with a Coral session UUID:
+Starts a new Claude CLI run (or resumes when `session` is provided). Accepted launches return either:
 
 ```json
 {
-  "session": "uuid",
-  "session_dir": "/tmp/coral-sessions/uuid",
-  "session_name": "my-session",
-  "status": "running"
+  "status": "running",
+  "job": "job-uuid",
+  "session": "session-uuid"
 }
 ```
+
+```json
+{
+  "status": "queued",
+  "job": "job-uuid",
+  "session": "session-uuid"
+}
+```
+
+`status: "queued"` is a normal accepted launch outcome. Claude will auto-dispatch when capacity is available.
 
 Execution details:
 - Uses `claude -p --output-format json`
 - Prompt is sent via stdin (not argv)
-- Optional flags: `--model`, `--system-prompt`, `--effort`
+- System prompt is injected internally for `coral:*` ops via `--append-system-prompt`
 - Resume mode uses `--resume <session-id>`
 - `--no-session-persistence` is not used
-- `effort` accepts `low`, `medium`, `high`, `xhigh`; `xhigh` is mapped to `high` for Claude CLI
 
 ### op: coral:*
 
-- `coral:<agent>`: loads `agents/<agent>.md`, strips YAML frontmatter + `> **CORAL_...` directive lines, and injects into `--system-prompt`
+Delegate a Claude CLI call through an agent file. Same schema as the Codex `coral:*` op:
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `op` | string | Yes | Must match `coral:[a-z0-9][a-z0-9-]*` |
+| `prompt` | string | Yes | User prompt appended after agent content |
+| `session` | string | No | Existing coral session UUID to resume |
+| `working_directory` | string | No | Working directory |
+
+- `coral:<agent>`: loads `agents/<agent>.md`, parses frontmatter metadata, strips it, and injects into `--append-system-prompt`
 - `coral:<skill>`: returns `isError` (skills require Claude Code tool environment and are only supported through the `codex` tool)
 
-### op: list / abort
+### op: list
 
-Same lifecycle contract as Codex for provider-local operations: `list` returns registered Claude sessions, and `abort` targets active Claude sessions.
+Returns registered Claude sessions in the same session-list format as Codex.
+
+### op: fork
+
+Fork an existing Claude session into a new branch. Uses `claude -p --resume <thread-id> --fork-session --output-format stream-json`.
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `session` | string | Yes | Source session identifier (must exist in Coral registry) |
+| `prompt` | string | No | Additional prompt for the forked session |
+| `working_directory` | string | No | Working directory |
+
+### Output
+
+Accepted launches use the same response format as `exec`: `status: "running"` or `status: "queued"`, plus `job` and `session`. `status: "queued"` means the fork was accepted and will auto-execute when a slot frees up.
 
 ### Missing `session_id` Behavior
 
@@ -279,40 +281,124 @@ If CLI JSON output does not include `session_id`, the run is marked non-resumabl
 
 ## wait
 
-Provider-agnostic wait for background sessions from any AX adapter. Wait returns when the first requested session completes, errors, or timeout elapses.
+Provider-agnostic wait for background jobs from any AX adapter. Wait returns when the first requested job completes, errors, or timeout elapses.
 
 ### Input Schema
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `sessions` | string[] (UUID) | Yes | Session UUIDs to monitor (min 1). |
-| `timeout_seconds` | integer | No | Max wait time in seconds (1-1200, default 600). |
+| `jobs` | string[] | Yes | Job IDs to monitor (min 1, from exec/fork response). |
+| `timeout_seconds` | number | No | Max wait time in seconds (1-1200, default 600). |
+| `cursor` | string | No | Opaque stream cursor returned by the previous wait call (for incremental streaming). |
+| `inline` | boolean | No | Inline result text in `content` (default `false` — `content` is the result file path for selective `Read`). |
 
 ### Output — Completed or Error
 
+Default (`inline: false`):
 ```json
 {
-  "status": "completed",
-  "completed_session": "uuid",
-  "session_dir": "/tmp/coral-sessions/uuid",
-  "session_name": "my-review"
+  "state": "completed",
+  "completedJobId": "job-uuid",
+  "sessionId": "session-uuid",
+  "remainingJobIds": [],
+  "result": { "durationMs": 1234, "content": "/tmp/coral-jobs/job-uuid/result.md" }
 }
 ```
 
-### Output — Timeout
+With `inline: true`:
+```json
+{
+  "state": "completed",
+  "completedJobId": "job-uuid",
+  "sessionId": "session-uuid",
+  "remainingJobIds": [],
+  "result": { "content": "...", "durationMs": 1234 }
+}
+```
+
+Workflow jobs follow the same contract — `result.content` is always present:
+```json
+{
+  "state": "completed",
+  "completedJobId": "workflow-job",
+  "sessionId": "workflow-session",
+  "remainingJobIds": [],
+  "result": {
+    "notice": "Step 2, atom 'resolver' failed: primary failure",
+    "workflow": {
+      "steps": [
+        {
+          "agent": "architect",
+          "step": 1,
+          "atom": 1,
+          "provider": "codex",
+          "start": 3,
+          "end": 3
+        }
+      ]
+    },
+    "content": "/tmp/coral-jobs/workflow-job/result.md"
+  }
+}
+```
+
+### Queued Launches
+
+When all launch slots are busy, `exec`, `resume`, or `fork` may return:
 
 ```json
 {
-  "status": "timeout",
-  "running_sessions": ["uuid1"]
+  "status": "queued",
+  "job": "job-uuid",
+  "session": "session-uuid"
+}
+```
+
+This is a normal accepted launch outcome, not an error. The job auto-dispatches when capacity becomes available. While it waits, `wait()` emits `queued (position N)` progress notifications. If nothing completes before `timeout_seconds`, the `wait` tool still returns the normal timeout payload below.
+
+### Output — Running
+
+```json
+{
+  "state": "running",
+  "runningJobIds": ["job-uuid"]
 }
 ```
 
 ### Wait Semantics
 
-- **Any-semantics**: returns on the first completion in `sessions`.
-- **Cross-provider**: accepts mixed Codex/Claude session UUIDs in one call.
+- **Any-semantics**: returns on the first completion in `jobs`.
+- **Cross-provider**: accepts mixed Codex/Claude job IDs in one call.
 - **Progress notifications**: incremental updates are emitted through `notifications/progress`.
+- **Incremental streaming**: pass `cursor` from a previous wait response to resume from where the last call left off.
+- **Content field**: `result.content` is always present. `inline: false` (default) → file path. `inline: true` → actual text (workflow jobs read the full serialized step markdown from the artifact file).
+- **Selective read**: with `inline: false`, `Read(result.content)` loads the full artifact. Use `result.workflow.steps[N].start` and `end` to read only the step you need with `Read(result.content, start, limit)`.
+- **Workflow line semantics**: `start` and `end` bound the content block for each step (line numbers in the artifact file).
+
+---
+
+# Abort Tool (`ax`)
+
+## abort
+
+Provider-agnostic abort for active jobs. Works for codex, claude, and workflow jobs.
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `jobs` | string[] | Yes | Job IDs to abort (min 1). |
+
+### Output (JSON)
+
+```json
+{
+  "aborted": ["job-uuid-1"],
+  "notFound": ["job-uuid-2"]
+}
+```
+
+`notFound` lists jobs that already finished or were never active — not an error condition.
 
 ---
 
@@ -328,8 +414,8 @@ Deterministic multi-agent pipeline executor. Chains coral agents via a DSL expre
 |---|---|---|---|
 | `expression` | string | Yes | Pipeline DSL expression (min 1 char). See grammar below. |
 | `prompt` | string | Yes | Initial prompt fed to the first step (min 1 char). |
-| `provider` | string | No | Default provider for atoms without `@provider` suffix. `codex` (default) or `claude`. |
-| `args` | object | No | Per-atom argument overrides, keyed by atom name. See args routing below. |
+| `provider` | string | No | Default provider for atoms without `@provider` suffix. `claude` (default) or `codex`. |
+| `atoms` | object | No | Per-atom config: `{ atomName: { effort?, instruction? } }`. See Atoms below. |
 
 ### DSL Grammar
 
@@ -351,23 +437,15 @@ prompt_lit = ( "'" text "'" | '"' text '"' ) ( "@" provider )?
 
 Agent names: `[a-z][a-z0-9-]*`. Provider: `codex` or `claude`. Namespace: `[a-z][a-z0-9-]*` (v1 only allows `coral`). Prompt literals use single or double quotes; the `@provider` suffix is optional (defaults to the `provider` parameter).
 
-### Args Routing
+### Atoms
 
-`args` keys must match atom names in the expression. Each atom's args object is split into:
-
-**Execution params** (forwarded to dispatch payload):
-- `model` (string) — model override
-- `working_directory` (string) — working directory
+`atoms` keys must match atom names in the expression. Each atom config accepts:
 - `effort` (string) — `low`, `medium`, `high`, `xhigh`
+- `instruction` (string) — appended to the atom's prompt after pipeline data
 
-**Prompt context** (serialized into the atom's prompt):
-- `files` (string[]) — file paths read and injected as `<file path="...">content</file>`
-- `flags` (string[]) — injected as `Flags: --a --b` text
-- Any other key — injected as `Context:\n{JSON}` block
-
-`bypass` is rejected in v1 (coral agent handlers force bypass internally).
-
-Args keys apply to ALL occurrences of that atom name across steps (global matching).
+Unknown keys are rejected.
+Atoms config applies to ALL occurrences of that atom name across steps (global matching).
+Per-occurrence atom overrides are intentionally out of scope in v1; use distinct atom names when different per-step config is required.
 
 ### Output
 
@@ -375,14 +453,13 @@ Returns immediately (same as `codex`/`claude` exec). Pipeline runs in background
 
 ```json
 {
-  "session": "uuid",
-  "session_dir": "/tmp/coral-sessions/uuid",
-  "session_name": "workflow-1709500000000",
-  "status": "running"
+  "status": "running",
+  "job": "job-uuid",
+  "session": "session-uuid"
 }
 ```
 
-Use `wait({ sessions: [session] })` then `Read(session_dir + "/result.md")` for the pipeline result.
+Use `wait({ jobs: [job] })` then `Read(result.content)` for the pipeline result. Successful, failed, and aborted workflow waits include `result.workflow.steps` so callers can read only the relevant section without loading the full artifact.
 
 ### Step Output Format
 
@@ -423,7 +500,7 @@ workflow({
   expression: "(architect, critic) -> resolver",
   prompt: "Analyze the login flow",
   provider: "codex",
-  args: { architect: { model: "o4-mini" }, critic: { flags: ["--deep"] } }
+  atoms: { architect: { effort: "high" }, critic: { instruction: "Focus on edge cases." } }
 })
 
 # Mixed providers: codex for analysis, claude for writing
@@ -432,6 +509,65 @@ workflow({
   prompt: "Map and review the API layer"
 })
 ```
+
+---
+
+# Backend Tool (`ax`)
+
+## backend
+
+Bridge-local backend control tool. It is intercepted in the AX bridge and is never proxied through the backend `/tool` route.
+
+### Input Schema
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `op` | string | Yes | `status` or `shutdown`. |
+
+### op: status
+
+Returns the current backend health payload when the daemon is running:
+
+```json
+{
+  "status": "ok",
+  "version": "0.4.3",
+  "instanceId": "backend-instance",
+  "uptime": 12345,
+  "activeChildren": 0,
+  "activeJobs": 0,
+  "inflightRequests": 1
+}
+```
+
+If the bridge cannot confirm a live backend process, the tool returns an MCP error: `Backend is not running`.
+
+If the backend is already draining and still answers `/health`, the tool returns:
+
+```json
+{
+  "status": "shutting_down"
+}
+```
+
+### op: shutdown
+
+Requests graceful backend shutdown through `POST /admin/shutdown`.
+
+Successful shutdown requests return:
+
+```json
+{
+  "status": "shutting_down"
+}
+```
+
+Behavior notes:
+
+- Returns the same success payload when the backend is already draining.
+- Returns MCP error `not_running` when no live backend can be reached.
+- Returns MCP error `unauthorized` when `backend.json` contains a stale token.
+- Never auto-starts the backend for `status` or `shutdown`.
 
 ---
 

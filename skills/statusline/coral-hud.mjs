@@ -230,7 +230,15 @@ function getCacheTtlMs(cache) {
 
 function isFreshCacheEntry(cache, now = Date.now()) {
   if (cache.ts <= 0 || cache.ts > now) return false;
-  return now - cache.ts <= getCacheTtlMs(cache);
+  if (now - cache.ts > getCacheTtlMs(cache)) return false;
+  if (cache.data && !cache.error) {
+    for (const rt of [cache.data.fiveHourResetsAt, cache.data.weeklyResetsAt]) {
+      if (!rt) continue;
+      const resetMs = new Date(rt).getTime();
+      if (Number.isFinite(resetMs) && resetMs > cache.ts && resetMs <= now) return false;
+    }
+  }
+  return true;
 }
 
 function readCacheFile(path) {
@@ -678,7 +686,7 @@ async function main() {
 
   // Column alignment: model name + limits (up to second |)
   const claudeModel = renderModel(input);
-  const envModel = process.env.CORAL_CODEX_MODEL || "gpt-5.3-codex";
+  const envModel = process.env.CORAL_CODEX_MODEL || "gpt-5.4";
   let col1Claude, col1Codex, col2Claude, col2Codex;
 
   if (codexData.kind === "data") {

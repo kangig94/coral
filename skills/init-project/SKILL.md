@@ -4,8 +4,7 @@ description: Initialize project for AI-assisted development with rules, agents, 
 argument-hint: "[existing|new]"
 ---
 
-> **CORAL_SKILLS**: `Glob(pattern: "**/skills/", path: "~/.claude/plugins/cache/coral/")`
-> Pass `~` literally to the Glob tool — it expands to the home directory. Do not resolve it yourself.
+> **CORAL_SKILLS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/skills/")`
 
 # Project Initialization
 
@@ -13,12 +12,9 @@ argument-hint: "[existing|new]"
   You are the Init-Project orchestrator. Execute this protocol directly at depth 0.
   The analysis subagent and reviewers are spawned as subagents at depth 1.
 
-  You are responsible for: project analysis, domain identification, writing the plan, running the review loop, generating artifacts (following ralph protocol directly), and final reporting.
-  You are NOT responsible for: reviewing the plan (architect/critic do that).
+  Responsible for: project analysis, domain identification, writing the plan, running the review loop, generating artifacts (following ralph protocol directly), and final reporting.
+  Not responsible for: reviewing the plan (architect/critic do that).
 </Role>
-<Why_This_Matters>
-  A project setup that doesn't match the actual tech stack wastes time. Generating wrong agents, missing validation rules, or creating boilerplate docs that don't reference real code is worse than no setup. The analyze→plan→execute→verify pipeline ensures artifacts are tailored and verified before creation.
-</Why_This_Matters>
 <Protocol>
   ## Phase 1: Gather Context
 
@@ -58,34 +54,18 @@ argument-hint: "[existing|new]"
 
   ### 1d. Analyze Project (existing only)
 
-  Spawn an analysis subagent to run the cumulative analysis pipeline.
-  The subagent follows the analyze protocol (scanner → gap-finder), producing a
-  single analysis document.
+  ```
+  Skill({ skill: "coral:analyze", args: "init-{project-name}:
+    scan project structure, architecture, dependencies.
+    Also assess documentation quality — documentation gaps,
+    enhancements needed for existing docs, shallow sections
+    (e.g., file lists without layer diagrams, commands without
+    runnable examples, any section under 3 lines on non-trivial topics),
+    and stale path references.
+    Append under ## Documentation Assessment." })
+  ```
 
-    Agent("general-purpose", prompt="""
-      Follow the analysis protocol from CORAL_SKILLS/analyze/SKILL.md (Claude-native Execution).
-      Run Step 1 (scanner) — always needed for project understanding.
-      Skip Step 2 (gap-finder) and Step 3 (debugger) — requirement gaps are
-      handled during Phase 2 plan review, and there are no bugs to diagnose.
-
-      Target: {working_directory}
-      Context: {extracted context from 1b, reference material from 1c}
-      Topic: init-{project-name}
-
-      After the scanner protocol completes, also assess documentation quality:
-      - Gaps: docs not covered by domain references or scan results.
-        Ask: "What would a new team member struggle to understand from code alone?"
-      - Enhancements: existing docs with missing sections that scan results reveal.
-      - Shallow sections: ARCHITECTURE.md with file lists but no layer diagram,
-        DEV_GUIDE.md with command names but no exact runnable commands,
-        any section under 3 lines that covers a non-trivial topic.
-      - Stale references: cross-check doc paths against actual directory structure.
-
-      Append documentation assessment findings under ## Documentation Assessment
-      in the analysis file, after the Scan Report section.
-
-      Save to: .claude/coral/analysis/{date}-init-{project-name}.md
-    """)
+  Context from 1b and 1c is already in conversation — analyze inherits it.
 
   Wait for the analysis document. Read it to extract:
   - Tech stack and primary languages
@@ -135,7 +115,7 @@ argument-hint: "[existing|new]"
      in full. This is the primary input for planning — the tech stack, dependency graph,
      build/test config, existing docs state, and documentation gaps all come from this document.
      Do NOT write the plan from memory of Phase 1 — read the file.
-  2. **Follow planning protocol**: Invoke `Skill({ skill: "coral:plan", args: "--no-handoff init-{project-name}" })`.
+  2. **Follow planning protocol**: Invoke `Skill({ skill: "coral:plan", args: "--deep --no-handoff init-{project-name}" })`.
      - Plan name: `init-{project-name}`
      - Plan content requirements:
        * Structure: Requirements, Acceptance Criteria, Artifact Manifest, Risks, Verification Steps
@@ -183,7 +163,7 @@ argument-hint: "[existing|new]"
 
   ## Phase 3.5: Verify Artifacts
 
-  `Agent("coral:architect")` and `Agent("coral:critic")` in parallel to verify generated artifacts.
+  `Agent("coral:architect --deep")` and `Agent("coral:critic --deep")` in parallel to verify generated artifacts.
   Provide each with: plan file path, list of generated/enhanced files from Phase 3.
   Each outputs a findings table with severity (CRITICAL/HIGH/MEDIUM/LOW) and file:line references.
 
@@ -250,6 +230,7 @@ argument-hint: "[existing|new]"
   | Agents | `.claude/agents/{domain-specific}.md` | Per plan | `<Agent_Prompt>` XML structure |
   | Docs | `docs/ARCHITECTURE.md` | If generated | Layer diagram present |
   | Docs | `docs/DEV_GUIDE.md` | If generated | Exact build/test commands |
+  | Docs | `docs/{domain-specific}.md` | Per domain reference Recommended Docs | Architecture-level content, not catalogs |
   | KB | `.claude/coral/kb/` | Directory must exist | - |
   | Git | `.gitignore` contains Coral block | Must contain `# Coral` | - |
 
@@ -264,6 +245,7 @@ argument-hint: "[existing|new]"
   | Read merge-policy.md and writing-guide.md before generating | Decide merge policy ad-hoc |
   | Report everything (created + enhanced) | Hide enhanced files from the user |
   | Follow merge policy exactly | Overwrite existing user files |
+  | Execute phases in order (analyze→plan→execute→verify) | Skip to file generation without plan |
 </Constraints>
 <Error_Handling>
   | Scenario | Action |
@@ -275,38 +257,3 @@ argument-hint: "[existing|new]"
   | Template file not found | Report error for that artifact, continue with others |
   | File already exists | Enhance existing file (append missing sections, preserve existing content). Include in report as enhanced |
 </Error_Handling>
-<Examples>
-  <Good>
-  Phase 1 analysis subagent completed: .claude/coral/analysis/2026-02-23-init-myapp.md
-  Analysis detected: React (frontend) + FastAPI (backend) + Docker (infra).
-  Documentation Assessment found 3 gaps, 2 shallow sections.
-  Loaded 3 domain references. Extracted 8 required agents, 12 validation items.
-  Writing plan to .claude/coral/plans/init-myapp.md...
-  Spawning architect + critic in parallel for review...
-  Round 1: architect APPROVED WITH CONDITIONS, critic REVISE. Synthesizing...
-  Round 2: both APPROVED. Plan finalized.
-  Following ralph protocol directly: reading merge-policy.md + writing-guide.md...
-  Phase 3 complete: 12 files created, 2 enhanced (existing files).
-  </Good>
-  <Bad>
-  "Good. The .claude/ directory is mostly clean... Let me create the directory structure
-   first, then generate all files in parallel batches."
-  - WRONG: Used mkdir + Write directly. Skipped plan and review entirely.
-    Evidence: No plan file in .claude/coral/plans/. No reviewer Task calls in output.
-    Result: 4 standard rules files missing, no review.
-    Fix: Must write plan (Phase 2), run reviewer loop, then follow ralph protocol (Phase 3).
-  </Bad>
-</Examples>
-<Final_Checklist>
-  - Did I spawn the analysis subagent and wait for the analysis document (existing projects)?
-  - Did I pass the analysis file path to Phase 2 (existing projects)?
-  - Did I identify all relevant domains?
-  - Did I write the plan to a file (not just in memory)?
-  - Did I spawn reviewers in parallel and synthesize their feedback?
-  - Did the plan get reviewed (architect+critic, no CRITICAL/HIGH)?
-  - Did I read merge-policy.md and writing-guide.md before generating?
-  - Did I report all created and enhanced files?
-  - Did I follow merge policy (never overwrite existing files)?
-  - Did I verify generated artifacts against writing-guide standards (Phase 3.5)?
-  - Did I remediate any files that failed verification?
-</Final_Checklist>

@@ -1,26 +1,15 @@
 import { z } from 'zod';
 import {
-  modelSchema,
-  sessionNameSchema,
   promptSchema,
   sessionRefSchema,
   cwdSchema,
-  boolDefaultFalse,
-  effortSchema,
   coralOpSchema,
 } from '../../shared/schemas.js';
-
-const systemPromptSchema = z.string().optional();
 
 const sessionExecFields = {
   prompt: promptSchema,
   session: sessionRefSchema.optional(),
-  name: sessionNameSchema.optional(),
-  model: modelSchema,
   working_directory: cwdSchema,
-  effort: effortSchema,
-  system_prompt: systemPromptSchema,
-  bypass: boolDefaultFalse,
 };
 
 const execShape = z.object({
@@ -32,26 +21,30 @@ const listShape = z.object({
   op: z.literal('list'),
 }).strict();
 
-const abortShape = z.object({
-  op: z.literal('abort'),
-  session: z.string().uuid('Session must be a valid UUID'),
+const forkShape = z.object({
+  op: z.literal('fork'),
+  session: sessionRefSchema,
+  prompt: z.string().optional(),
+  working_directory: cwdSchema,
 });
 
 export const claudeOpSchema = z.discriminatedUnion('op', [
   execShape,
   listShape,
-  abortShape,
+  forkShape,
 ]);
 
 export type ClaudeOpInput = z.infer<typeof claudeOpSchema>;
 type ClaudeExecInput = Extract<ClaudeOpInput, { op: 'exec' }>;
 export type ClaudeSessionCreateInput = Omit<ClaudeExecInput, 'op' | 'session'>;
-export type ClaudeSessionSendInput = Omit<ClaudeExecInput, 'op' | 'name'> & { session: string };
-export type ClaudeSessionAbortInput = Omit<z.infer<typeof abortShape>, 'op'>;
+export type ClaudeSessionSendInput = Omit<ClaudeExecInput, 'op'> & { session: string };
+export type ClaudeSessionForkInput = Omit<Extract<ClaudeOpInput, { op: 'fork' }>, 'op'>;
 
 export const coralClaudeSchema = z.object({
   op: coralOpSchema,
-  ...sessionExecFields,
+  prompt: promptSchema,
+  session: sessionRefSchema.optional(),
+  working_directory: cwdSchema,
 });
 
 export type ClaudeCoralInput = z.infer<typeof coralClaudeSchema>;

@@ -78,7 +78,7 @@ Before debugging from scratch, check `{project}/.claude/coral/kb/` for relevant 
 On plan start, review domain-related kb files.
 
 ## Promotion - before commit, on task completion, or when a memo captures a reusable lesson
-Review all memos + MEMORY.md. Check existing kb entries first - discard duplicates,
+Review all memos. Check existing kb entries first - discard duplicates,
 update existing entries if the memo refines them, only create new files for genuinely absent knowledge.
 
 Promote to `{project}/.claude/coral/kb/<domain>-<topic>.md`:
@@ -91,7 +91,7 @@ Promote to `{project}/.claude/coral/kb/<domain>-<topic>.md`:
     ## Pattern
     Right vs wrong approach - code blocks or examples.
 
-Clean up promoted sources: delete processed memos, remove promoted entries from MEMORY.md.
+Clean up promoted sources: delete processed memos.
 
 ## Invalidation
 If a kb entry contradicts current code, update or delete it immediately.
