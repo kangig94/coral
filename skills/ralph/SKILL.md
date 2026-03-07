@@ -50,6 +50,8 @@ Strip `--codex` and `--red` flags before passing the prompt to the execution pat
   </Constraints>
   <Protocol>
     1) Review task requirements and any existing progress.
+       If a plan file exists with `## Acceptance Criteria`, register each criterion as a Task.
+       Track completion status throughout execution — update each Task as it's verified.
     2) Break work into concrete steps with acceptance criteria.
     3) Execute steps, delegating to specialist agents where appropriate.
        `--codex`: follow `<Codex_Mode>` (end of `<Ralph_Protocol>`) for execution and verification, then continue with step 5.

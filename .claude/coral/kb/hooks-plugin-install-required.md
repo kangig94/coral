@@ -1,33 +1,35 @@
-# Plugin Hook Registration — Install vs plugin-dir Mode
+# Plugin Hook Registration — hooks.json Only, Not plugin.json
 
 ## Rule
-For hooks to work in `--plugin-dir ./` development mode, `plugin.json` must explicitly declare `"hooks": "./hooks/hooks.json"`. Without this declaration, some hooks (e.g., SessionStart) may work by coincidence or not fire at all. Manually copying to the cache directory also does not register new hook events — a proper install is required.
+Plugin hooks are registered via `hooks/hooks.json` in the plugin directory. Do NOT add a `"hooks"` field to `plugin.json` — this causes `PreToolUse hook error` on every tool call in installed plugin mode. The Claude Code plugin system discovers `hooks/hooks.json` automatically from the plugin directory structure.
+
+For `--plugin-dir ./` development mode, hooks from `hooks/hooks.json` may not register for all events. Use `.claude/settings.local.json` to register hooks directly during development testing.
 
 ## Why
-Without the `"hooks"` field in `plugin.json`, hooks.json is ignored in `--plugin-dir` mode. You end up debugging code and hook logic while missing the root cause entirely.
+Adding `"hooks": "./hooks/hooks.json"` to `plugin.json` was attempted to fix `--plugin-dir` hook registration. It appeared to work in dev mode but caused `PreToolUse:Read hook error` (and similar) on every tool call when the plugin is installed normally. The `plugin.json` `hooks` field is not a supported plugin manifest key.
 
 ## Pattern
 ```json
-// WRONG: no hooks declaration in plugin.json — PreToolUse etc. not registered in --plugin-dir mode
-{
-  "skills": "./skills/",
-  "mcpServers": "./.mcp.json"
-}
-
-// RIGHT: hooks field explicitly declared
+// WRONG: hooks field in plugin.json — causes hook errors in installed mode
 {
   "skills": "./skills/",
   "hooks": "./hooks/hooks.json",
   "mcpServers": "./.mcp.json"
 }
+
+// RIGHT: hooks.json lives in hooks/ directory, discovered automatically
+// plugin.json has NO hooks field
+{
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}
 ```
 
-For quick hook logic verification during development, you can register hooks directly in `.claude/settings.local.json`:
+For dev-mode hook testing, use `.claude/settings.local.json` (gitignored):
 ```json
 {
   "hooks": {
-    "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "node ...", "timeout": 5 }] }]
+    "PreToolUse": [{ "matcher": "Skill", "hooks": [{ "type": "command", "command": "node hooks/kb-promote-reminder.mjs", "timeout": 5 }] }]
   }
 }
 ```
-Note: this file is gitignored, so final registration must go through `plugin.json` + `hooks/hooks.json`.
