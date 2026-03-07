@@ -312,18 +312,18 @@ describe('parseClaudeStreamJson — adversarial', () => {
       expect(result.sessionId).toBe('sess-insight');
     });
 
-    it('does not recurse beyond one previous message even if it also starts with Insight', () => {
-      const earlyInsight = '`★ Insight ─────────────────────────────────────`\nEarly observation.';
-      const mainReview = '`★ Insight ─────────────────────────────────────`\n## Summary\nDetailed review.';
-      const trailingInsight = '`★ Insight ─────────────────────────────────────`\nFinal note.';
+    it('walks back through consecutive Insight messages to find non-Insight content', () => {
+      const review = '## Findings\nAll good.';
+      const insight1 = '`★ Insight ─────────────────────────────────────`\nFirst insight.';
+      const insight2 = '`★ Insight ─────────────────────────────────────`\nSecond insight.';
       const output = ndjson(
-        { type: 'assistant', message: { content: [{ type: 'text', text: earlyInsight }] } },
-        { type: 'assistant', message: { content: [{ type: 'text', text: mainReview }] } },
-        { type: 'assistant', message: { content: [{ type: 'text', text: trailingInsight }] } },
-        { type: 'result', result: trailingInsight, session_id: 'sess-no-recurse', total_cost_usd: 0.03 },
+        { type: 'assistant', message: { content: [{ type: 'text', text: review }] } },
+        { type: 'assistant', message: { content: [{ type: 'text', text: insight1 }] } },
+        { type: 'assistant', message: { content: [{ type: 'text', text: insight2 }] } },
+        { type: 'result', result: insight2, session_id: 'sess-multi', total_cost_usd: 0.03 },
       );
       const result = parse(output);
-      expect(result.response).toBe(mainReview + '\n\n' + trailingInsight);
+      expect(result.response).toBe(review + '\n\n' + insight1 + '\n\n' + insight2);
     });
 
     it('does not modify result when it does not start with Insight marker', () => {

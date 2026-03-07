@@ -88,10 +88,12 @@ function parseNdjson(lines: string[]): ParsedClaudeStreamOutput {
   if (!hasValidLine) return PARSE_FAILURE_SENTINEL;
   if (!response && assistantMessages.length > 0) response = assistantMessages.join('');
 
-  // If the result event only captured a trailing Insight block (last assistant turn),
-  // prepend the previous assistant message to recover the full response.
+  // If the result event only captured trailing Insight block(s), walk backwards
+  // through assistant messages until we find a non-Insight message, then concat forward.
   if (response && response.trimStart().startsWith('`★ Insight') && assistantMessages.length >= 2) {
-    response = assistantMessages[assistantMessages.length - 2] + '\n\n' + response;
+    let i = assistantMessages.length - 2;
+    while (i > 0 && assistantMessages[i].trimStart().startsWith('`★ Insight')) i--;
+    response = assistantMessages.slice(i, -1).join('\n\n') + '\n\n' + response;
   }
 
   return {
