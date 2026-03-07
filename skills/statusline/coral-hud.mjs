@@ -45,6 +45,21 @@ async function readStdin() {
   }
 }
 
+// --- git ---
+
+function renderGitBranch(input) {
+  const cwd = input.cwd || input.workspace?.current_dir || input.workspace?.project_dir;
+  if (!cwd) return null;
+  try {
+    const opts = { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"], cwd, timeout: 2000 };
+    const branch = execSync("git branch --show-current", opts).trim()
+      || execSync("git rev-parse --short HEAD", opts).trim();
+    return branch ? `⎇ ${branch}` : null;
+  } catch {
+    return null;
+  }
+}
+
 // --- elements ---
 
 function renderModel(input) {
@@ -711,6 +726,7 @@ async function main() {
     col2Claude,
     renderContext(input),
     renderSession(input),
+    renderGitBranch(input),
     renderActivity(input),
   ].filter(Boolean);
 
