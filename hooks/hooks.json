@@ -21,7 +21,7 @@
           },
           {
             "type": "command",
-            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/kb-stale-cleanup.mjs\"",
+            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/stale-cleanup.mjs\"",
             "timeout": 3
           }
         ]

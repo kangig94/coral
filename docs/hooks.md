@@ -18,7 +18,7 @@ Claude Code's hook system executes scripts on specific events. Coral uses hooks 
 
 ## Hook Configuration
 
-Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/kb-lookup-reminder.mjs`, `hooks/kb-memo-reminder.mjs`, `hooks/kb-promote-reminder.mjs`, `hooks/ralph-loop.mjs`, `hooks/kb-stale-cleanup.mjs`, `hooks/discuss-idle-guard.mjs`, `hooks/backend-warm-start.mjs`, `hooks/hud-auto-update.mjs`.
+Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/kb-lookup-reminder.mjs`, `hooks/kb-memo-reminder.mjs`, `hooks/kb-promote-reminder.mjs`, `hooks/ralph-loop.mjs`, `hooks/stale-cleanup.mjs`, `hooks/discuss-idle-guard.mjs`, `hooks/backend-warm-start.mjs`, `hooks/hud-auto-update.mjs`.
 
 All hook scripts are **Node.js ESM** (`.mjs`). They read input JSON from stdin, write output JSON to stdout, and **fail-open** via `try/catch { process.exit(0) }` - a crash or timeout never blocks the user.
 
@@ -56,7 +56,7 @@ Script: `hooks/hud-auto-update.mjs`. Fires at session start (matcher: `*`, timeo
 
 ## SessionStart Hook (Stale Flag Cleanup)
 
-Script: `hooks/kb-stale-cleanup.mjs`. Fires at session start (matcher: `*`, timeout: 3s). Cleans up orphaned flag files older than 6 hours from `.claude/coral/tmp/`.
+Script: `hooks/stale-cleanup.mjs`. Fires at session start (matcher: `*`, timeout: 3s). Cleans up orphaned flag files older than 6 hours from `.claude/coral/tmp/`.
 
 Handles `memo-reminded-{session_id}`, `kb-active-{session_id}`, and `ralph-state-{session_id}.json` prefixes in a single `readdirSync` pass. Centralizes stale cleanup for session-scoped reminder and loop files.
 
@@ -80,7 +80,7 @@ direct MCP tool dispatch (`codex({ op: "coral:<agent>", ... })`) and executor-si
 
 Script: `hooks/kb-memo-reminder.mjs`. Injects `additionalContext` reminding Claude to write memos when discovering non-obvious lessons. Fires on every user message (not on every tool call).
 
-**Throttled (15 min)**: Reads `session_id` from stdin JSON, creates `.claude/coral/tmp/memo-reminded-<session_id>` flag file. Subsequent calls within 15 minutes exit silently; after 15 minutes, the flag refreshes and the reminder fires again. Stale flag cleanup is handled by `kb-stale-cleanup.mjs` at session start.
+**Throttled (15 min)**: Reads `session_id` from stdin JSON, creates `.claude/coral/tmp/memo-reminded-<session_id>` flag file. Subsequent calls within 15 minutes exit silently; after 15 minutes, the flag refreshes and the reminder fires again. Stale flag cleanup is handled by `stale-cleanup.mjs` at session start.
 
 ## PostToolUseFailure + PostToolUse Hook (KB Lookup Reminder)
 
@@ -111,7 +111,7 @@ Creates the same session-scoped flag when Claude internally calls `Skill("coral:
 
 Script: `hooks/kb-promote-reminder.mjs`. Session-scoped via flag file.
 
-**Flag file pattern**: The UserPromptSubmit and PreToolUse(Skill) hooks create `.claude/coral/tmp/kb-active-{session_id}` for KB-producing skills. The Stop hook checks for its own session's flag — if absent, exits silently (normal conversation unaffected). Stale flags (>6h) from expired sessions are cleaned up by `kb-stale-cleanup.mjs` at session start.
+**Flag file pattern**: The UserPromptSubmit and PreToolUse(Skill) hooks create `.claude/coral/tmp/kb-active-{session_id}` for KB-producing skills. The Stop hook checks for its own session's flag — if absent, exits silently (normal conversation unaffected). Stale flags (>6h) from expired sessions are cleaned up by `stale-cleanup.mjs` at session start.
 
 When flag exists:
 1. Delete session's flag file
