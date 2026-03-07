@@ -119,7 +119,7 @@ function readTranscriptTail(transcriptPath) {
   try {
     fd = openSync(transcriptPath, "r");
     const { size } = fstatSync(fd);
-    const readSize = Math.min(size, 500 * 1024);
+    const readSize = Math.min(size, 512 * 1024);
     const buf = Buffer.alloc(readSize);
     readSync(fd, buf, 0, readSize, size - readSize);
     const lines = buf.toString("utf-8").split("\n");
@@ -670,6 +670,54 @@ async function renderCodexData() {
   }
 }
 
+// --- coral backend ---
+
+const BACKEND_INFO_PATH = join(homedir(), ".claude", "coral", "backend.json");
+const REEF_INFO_PATH = join(homedir(), ".claude", "coral", "reef.json");
+
+function readReefInfo() {
+  try {
+    const info = JSON.parse(readFileSync(REEF_INFO_PATH, "utf-8"));
+    return info?.url ? info : null;
+  } catch {
+    return null;
+  }
+}
+
+async function renderCoralLine() {
+  let info;
+  try {
+    info = JSON.parse(readFileSync(BACKEND_INFO_PATH, "utf-8"));
+    if (!info?.port || !info?.token) return null;
+  } catch {
+    return null;
+  }
+
+  try {
+    const resp = await fetch(`http://127.0.0.1:${info.port}/health`, {
+      headers: { "x-coral-backend-token": info.token },
+      signal: AbortSignal.timeout(1000),
+    });
+    if (!resp.ok) return `coral ${DIM}○ offline${RESET}`;
+    const data = await resp.json();
+    const parts = [`coral ${GREEN}●${RESET}`];
+    if (data.activeJobs > 0) parts.push(`jobs:${YELLOW}${data.activeJobs}${RESET}`);
+    if (data.queueDepth > 0) parts.push(`queue:${data.queueDepth}`);
+
+    const reefInfo = readReefInfo();
+    if (reefInfo) {
+      try {
+        const reefResp = await fetch(`${reefInfo.url}/health`, { signal: AbortSignal.timeout(500) });
+        if (reefResp.ok) parts.push(`\x1b]8;;${reefInfo.url}\x07reef\x1b]8;;\x07`);
+      } catch {}
+    }
+
+    return parts.join(SEP);
+  } catch {
+    return `coral ${DIM}○ offline${RESET}`;
+  }
+}
+
 // --- main ---
 
 function visualLen(str) {
@@ -695,9 +743,10 @@ async function main() {
   }
 
   const safe = (p) => p.catch(() => null);
-  const [limits, rawCodexData] = await Promise.all([
+  const [limits, rawCodexData, coralLine] = await Promise.all([
     safe(renderLimits()),
     safe(renderCodexData()),
+    safe(renderCoralLine()),
   ]);
   const codexData = rawCodexData ?? { kind: "none" };
 
@@ -753,6 +802,9 @@ async function main() {
   } else if (codexData.kind === "error") {
     output += "\n" + codexData.message;
   }
+
+  // Line 3: Coral backend
+  if (coralLine) output += "\n" + coralLine;
 
   output = output
     .split("\n")
