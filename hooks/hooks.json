@@ -71,6 +71,11 @@
           },
           {
             "type": "command",
+            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/ralph-loop.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/kb-memo-reminder.mjs\"",
             "timeout": 5
           }
@@ -85,6 +90,11 @@
             "type": "command",
             "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/kb-promote-reminder.mjs\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/ralph-loop.mjs\"",
+            "timeout": 5
           }
         ]
       }
@@ -95,6 +105,11 @@
           {
             "type": "command",
             "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/kb-promote-reminder.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/ralph-loop.mjs\"",
             "timeout": 5
           }
         ]

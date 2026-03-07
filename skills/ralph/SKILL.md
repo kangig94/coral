@@ -1,7 +1,7 @@
 ---
 name: ralph
-description: Persistent execution loop with verification (sonnet) - best for implementing an existing plan
-argument-hint: "[--red] [--codex] [task description]"
+description: Persistent execution loop with verification (sonnet) - implements plans or iterates on prompts
+argument-hint: "[--red] [--codex] [--max-iterations N] [--completion-promise TEXT] [task description]"
 model: sonnet
 ---
 
@@ -19,8 +19,10 @@ Announce at start: "Using ralph to execute this task with verification loop."
 | `--codex` | Codex delegation (context from conversation) |
 | `--codex <prompt>` | Codex delegation |
 | `--red` | Enable adversarial testing (combinable with `--codex`) |
+| `--max-iterations N` | Set max loop iterations (prompt mode, default: 0 = unlimited) |
+| `--completion-promise TEXT` | Set completion promise text (prompt mode, default: "TASK COMPLETE") |
 
-Strip `--codex` and `--red` flags before passing the prompt to the execution path.
+Strip ALL flags (`--codex`, `--red`, `--max-iterations N`, `--completion-promise TEXT`) before passing the prompt to execution or state file.
 
 <Ralph_Protocol>
   <Role>
@@ -49,7 +51,26 @@ Strip `--codex` and `--red` flags before passing the prompt to the execution pat
     | Escalate to architect after 3 failed fix attempts | Try variations of the same fix |
   </Constraints>
   <Protocol>
-    1) Review task requirements and any existing progress.
+    1) Determine execution mode.
+       **Ralph loop state file**: If additionalContext mentions a ralph state file path, OR if `.claude/coral/tmp/ralph-state-*` glob finds a file:
+
+       a. **Plan mode precedence** (check first — deterministic):
+          If arguments contain a plan file path, OR `## Acceptance Criteria` exists in conversation context, OR this was invoked by plan/bugfix/init-project skill handoff → PLAN MODE.
+          Delete the state file: Bash("rm -f {statePath}"). Proceed with existing protocol below.
+
+       b. **LLM judgment** (only when plan precedence does not apply):
+          Read conversation context. Is this a concrete NEW task (prompt mode) or a reference to prior discussion (plan mode)?
+          - Plan mode indicators: user said "진행해줘"/"실행해줘"/"run it" referencing prior work
+          - Prompt mode indicators: user provided a concrete new task description as argument
+          If plan mode → delete state file → proceed below.
+          If prompt mode → parse and strip --max-iterations N and --completion-promise TEXT from arguments.
+            Write to state file via Bash: echo '{"prompt":"<cleaned task>","iteration":1,"maxIterations":<N>,"completionPromise":"<TEXT>"}' > {statePath}
+            (Use defaults: maxIterations=0, completionPromise="TASK COMPLETE" if flags not provided)
+            Execute the task. When done, output: <promise>{completionPromise}</promise>
+            The Stop hook handles loop continuation.
+
+       If no state file found → normal plan mode, proceed below.
+
        If a plan file exists with `## Acceptance Criteria`, register each criterion as a Task.
        Track completion status throughout execution — update each Task as it's verified.
     2) Break work into concrete steps with acceptance criteria.
@@ -75,6 +96,13 @@ Strip `--codex` and `--red` flags before passing the prompt to the execution pat
        c. Build: run project build command.
        d. Test: run test suite after build passes.
        e. Only declare done when all applicable checks pass.
+    7) Prompt mode completion:
+       Check if ralph state file still exists on disk (path from additionalContext, or glob .claude/coral/tmp/ralph-state-*).
+       If it exists and prompt field is non-empty:
+       After post-implementation sequence passes, output:
+       <promise>{completionPromise from state file, or "TASK COMPLETE"}</promise>
+
+       CRITICAL: ONLY output <promise> when ALL verification has passed. Never output a false promise to escape the loop.
   </Protocol>
   <Red_Attacker>
     Activated by `--red` flag. Extends post-implementation sequence between test (d) and done (e).
