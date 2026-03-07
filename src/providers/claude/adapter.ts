@@ -9,6 +9,7 @@ import {
 import { detectClaudeCli } from './cli-detection.js';
 import { extractClaudeProgressMessage } from './progress.js';
 import type { ProviderRequest, ProviderResult } from '../../types.js';
+import { mapProviderResultBase } from '../result-mapping.js';
 import { makeOnEvent, type Provider, type ProviderCapabilities, type ProviderRuntime } from '../types.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 
@@ -81,11 +82,8 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
           onEvent,
         });
         return {
-          content: result.response,
+          ...mapProviderResultBase(result),
           conversationRef: result.sessionId ?? undefined,
-          model: result.model,
-          durationMs: result.durationMs,
-          aborted: result.aborted || undefined,
           nonResumable: result.sessionId == null ? true : undefined,
           usage: result.costUsd != null ? { costUsd: result.costUsd } : undefined,
         };
@@ -106,11 +104,8 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
           onEvent,
         });
         return {
-          content: result.response,
+          ...mapProviderResultBase(result),
           conversationRef: result.sessionId ?? request.conversationRef,
-          model: result.model,
-          durationMs: result.durationMs,
-          aborted: result.aborted || undefined,
           nonResumable: result.sessionId == null ? true : undefined,
           usage: result.costUsd != null ? { costUsd: result.costUsd } : undefined,
         };
@@ -131,11 +126,8 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
           onEvent,
         });
         return {
-          content: result.response,
+          ...mapProviderResultBase(result),
           conversationRef: result.sessionId ?? undefined,
-          model: result.model,
-          durationMs: result.durationMs,
-          aborted: result.aborted || undefined,
           nonResumable: result.sessionId == null ? true : undefined,
           usage: result.costUsd != null ? { costUsd: result.costUsd } : undefined,
         };

@@ -51,6 +51,7 @@ type RouteToolCallFn = (
 ) => Promise<ToolRouteResponse>;
 
 type BackendServerOptions = {
+  progressStore?: ProgressStore;
   version?: string;
   instanceId?: string;
   token?: string;
@@ -501,12 +502,13 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const instanceId = options.instanceId ?? randomUUID();
   const token = options.token ?? randomBytes(32).toString('hex');
   const idleTimer = options.createIdleTimer?.() ?? new IdleTimer();
-  const progressStore = new ProgressStore();
+  const progressStore = options.progressStore ?? new ProgressStore();
   const now = options.now ?? (() => Date.now());
   const log = options.log ?? ((message: string) => {
     process.stderr.write(message);
   });
-  const createExecutionService = options.createExecutionService ?? ((ctx: CallerContext) => new DefaultExecutionService(ctx));
+  const createExecutionService = options.createExecutionService
+    ?? ((ctx: CallerContext) => new DefaultExecutionService(ctx, progressStore));
   const acquireLockFn = options.acquireLockFn ?? acquireLock;
   const writeBackendInfoFn = options.writeBackendInfoFn ?? writeBackendInfo;
   const removeBackendInfoIfOwnerFn = options.removeBackendInfoIfOwnerFn ?? removeBackendInfoIfOwner;
@@ -707,7 +709,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         instanceId,
         uptimeMs: now() - startedAt,
         activeChildren: activeChildren.size,
-        activeJobs: listLiveJobs(progressStore).length,
+        activeJobs: progressStore.liveJobCount(),
         queueDepth: queueDepth(),
         inflightRequests: idleTimer.inflightRequests,
       });
@@ -776,7 +778,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       idleTimer.startWatching(
         () => lifecycle === 'running'
           && activeChildren.size === 0
-          && listLiveJobs(progressStore).length === 0
+          && progressStore.liveJobCount() === 0
           && idleTimer.inflightRequests === 0,
         () => {
           void shutdown('idle').catch(() => {});

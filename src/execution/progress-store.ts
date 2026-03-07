@@ -55,6 +55,8 @@ export function formatElapsed(ms: number): string {
 export class ProgressStore {
   private readonly eventCounters = new Map<string, number>();
   private readonly jobStartedAt = new Map<string, number>();
+  private readonly statusCache = new Map<string, PersistedStatusRecord>();
+  private liveCount = 0;
 
   jobDir(jobId: string): string {
     return join(JOBS_DIR, jobId);
@@ -73,6 +75,14 @@ export class ProgressStore {
     const next = current + 1;
     this.eventCounters.set(jobId, next);
     return next;
+  }
+
+  private isLivePhase(phase: JobPhase): boolean {
+    return phase === 'queued' || phase === 'launching' || phase === 'running';
+  }
+
+  liveJobCount(): number {
+    return this.liveCount;
   }
 
   /** Create the job directory and write initial status.json. */
@@ -106,13 +116,26 @@ export class ProgressStore {
     const tmpPath = filePath + '.tmp';
     writeFileSync(tmpPath, JSON.stringify(record, null, 2), 'utf-8');
     renameSync(tmpPath, filePath);
+
+    const oldRecord = this.statusCache.get(jobId);
+    const wasLive = oldRecord ? this.isLivePhase(oldRecord.phase) : false;
+    const isLive = this.isLivePhase(record.phase);
+    if (!wasLive && isLive) this.liveCount++;
+    if (wasLive && !isLive) this.liveCount--;
+    this.statusCache.set(jobId, { ...record });
   }
 
   /** Read status.json. Returns null if not found or corrupt. */
   readStatus(jobId: string): PersistedStatusRecord | null {
+    const cached = this.statusCache.get(jobId);
+    if (cached) return { ...cached };
+
     try {
       const data = readFileSync(this.statusPath(jobId), 'utf-8');
-      return JSON.parse(data) as PersistedStatusRecord;
+      const record = JSON.parse(data) as PersistedStatusRecord;
+      this.statusCache.set(jobId, { ...record });
+      if (this.isLivePhase(record.phase)) this.liveCount++;
+      return { ...record };
     } catch {
       return null;
     }

@@ -1,9 +1,9 @@
-import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { readFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readBackendInfo } from './backend-info.js';
-import { isNoEntryError, isProcessAlive } from '../shared/mcp-utils.js';
+import { isNoEntryError, isProcessAlive, tryExclusiveWrite } from '../shared/mcp-utils.js';
 
 export const BACKEND_LOCK_PATH = join(homedir(), '.claude', 'coral', 'backend.lock');
 export const STARTUP_DEADLINE = 30_000;
@@ -70,20 +70,7 @@ function snapshotKey(snapshot: LockSnapshot): string {
 }
 
 function writeLockFile(record: LockRecord): boolean {
-  mkdirSync(dirname(BACKEND_LOCK_PATH), { recursive: true });
-
-  const payload = JSON.stringify(record);
-  try {
-    writeFileSync(BACKEND_LOCK_PATH, payload, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
-  } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
-    throw error;
-  }
-
-  if (process.platform !== 'win32') {
-    chmodSync(BACKEND_LOCK_PATH, 0o600);
-  }
-  return true;
+  return tryExclusiveWrite(BACKEND_LOCK_PATH, JSON.stringify(record));
 }
 
 async function isMatchingHealthyBackend(record: LockRecord): Promise<boolean> {

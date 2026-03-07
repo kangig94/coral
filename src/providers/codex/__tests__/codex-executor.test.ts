@@ -108,7 +108,7 @@ describe('executeOneShot', () => {
     );
     mockSpawn.mockReturnValue(createMockProcess(output, 0));
 
-    const result = await executeOneShot('test prompt', 'o4-mini', '/tmp');
+    const result = await executeOneShot('test prompt', { model: 'o4-mini', workingDirectory: '/tmp' });
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
@@ -166,7 +166,7 @@ describe('executeOneShot', () => {
     mockCliAvailable();
     mockAgentProcess();
 
-    await executeOneShot('test', 'o4-mini', '/tmp', 'xhigh');
+    await executeOneShot('test', { model: 'o4-mini', workingDirectory: '/tmp', effort: 'xhigh' });
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
@@ -187,7 +187,7 @@ describe('executeOneShot', () => {
     mockCliAvailable();
     mockAgentProcess();
 
-    await executeOneShot('test', 'o4-mini', '/tmp', undefined, true);
+    await executeOneShot('test', { model: 'o4-mini', workingDirectory: '/tmp', bypassSandbox: true });
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
@@ -200,7 +200,7 @@ describe('executeOneShot', () => {
     mockCliAvailable();
     mockAgentProcess();
 
-    await executeOneShot('test', 'o4-mini', '/tmp', undefined, false);
+    await executeOneShot('test', { model: 'o4-mini', workingDirectory: '/tmp', bypassSandbox: false });
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
@@ -214,13 +214,12 @@ describe('executeOneShot', () => {
 
     await executeOneShot(
       'test',
-      'o4-mini',
-      '/tmp',
-      undefined,
-      false,
-      undefined,
-      undefined,
-      { available: true, version: '1.0.0', authState: 'authenticated' },
+      {
+        model: 'o4-mini',
+        workingDirectory: '/tmp',
+        bypassSandbox: false,
+        preChecked: { available: true, version: '1.0.0', authState: 'authenticated' },
+      },
     );
 
     expect(mockDetect).not.toHaveBeenCalled();
@@ -238,7 +237,7 @@ describe('executeResume', () => {
     );
     mockSpawn.mockReturnValue(createMockProcess(output, 0));
 
-    const result = await executeResume('thread-abc', 'continue', 'gpt-4.1');
+    const result = await executeResume('thread-abc', 'continue', { model: 'gpt-4.1' });
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
@@ -255,7 +254,7 @@ describe('executeResume', () => {
     mockCliAvailable();
     mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
 
-    await executeResume('thread-abc', 'review', undefined, '/home/user/project');
+    await executeResume('thread-abc', 'review', { workingDirectory: '/home/user/project' });
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
@@ -281,7 +280,7 @@ describe('executeResume', () => {
     mockCliAvailable();
     mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
 
-    await executeResume('thread-abc', 'continue', 'gpt-4.1', undefined, undefined, true);
+    await executeResume('thread-abc', 'continue', { model: 'gpt-4.1', bypassSandbox: true });
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
@@ -315,7 +314,7 @@ describe('executeFork', () => {
     mockCliAvailable();
     mockAgentProcess('Custom');
 
-    await executeFork('t1', 'Do something new', 'o4-mini');
+    await executeFork('t1', 'Do something new', { model: 'o4-mini' });
 
     expect(mockSpawn).toHaveBeenCalled();
   });
@@ -328,10 +327,16 @@ describe('preChecked auth guard for executeResume', () => {
     const customError = 'Custom auth error for resume test';
     await expect(
       executeResume(
-        'thread-abc', 'continue', undefined, undefined, undefined, false,
-        undefined, undefined, {
-          available: true as const, version: '1.0.0',
-          authState: 'unauthenticated' as const, authError: customError,
+        'thread-abc',
+        'continue',
+        {
+          bypassSandbox: false,
+          preChecked: {
+            available: true as const,
+            version: '1.0.0',
+            authState: 'unauthenticated' as const,
+            authError: customError,
+          },
         },
       ),
     ).rejects.toThrow(customError);
@@ -344,8 +349,13 @@ describe('preChecked auth guard for executeResume', () => {
     mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
 
     const result = await executeResume(
-      'thread-abc', 'continue', 'o4-mini', undefined, undefined, false,
-      undefined, undefined, { available: true as const, version: '1.0.0', authState: 'unknown' as const },
+      'thread-abc',
+      'continue',
+      {
+        model: 'o4-mini',
+        bypassSandbox: false,
+        preChecked: { available: true as const, version: '1.0.0', authState: 'unknown' as const },
+      },
     );
 
     expect(mockSpawn).toHaveBeenCalled();
@@ -357,8 +367,13 @@ describe('preChecked auth guard for executeResume', () => {
     mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
 
     await executeResume(
-      'thread-abc', 'continue', 'o4-mini', undefined, undefined, false,
-      undefined, undefined, { available: true as const, version: '1.0.0', authState: 'authenticated' as const },
+      'thread-abc',
+      'continue',
+      {
+        model: 'o4-mini',
+        bypassSandbox: false,
+        preChecked: { available: true as const, version: '1.0.0', authState: 'authenticated' as const },
+      },
     );
 
     expect(mockSpawn).toHaveBeenCalled();
@@ -377,7 +392,7 @@ describe('preChecked auth guard for executeFork', () => {
 
   it('unauthenticated throws before spawn, detectCodexCli not called', async () => {
     await expect(
-      executeFork('thread-orig', undefined, undefined, undefined, undefined, false, undefined, undefined, unauthChecked),
+      executeFork('thread-orig', undefined, { bypassSandbox: false, preChecked: unauthChecked }),
     ).rejects.toThrow('Codex CLI is not authenticated');
 
     expect(mockSpawn).not.toHaveBeenCalled();
@@ -387,8 +402,9 @@ describe('preChecked auth guard for executeFork', () => {
   it('thrown message matches cli.authError verbatim', async () => {
     const customError = 'Fork-specific custom auth error';
     await expect(
-      executeFork('thread-orig', 'prompt', undefined, undefined, undefined, false, undefined, undefined, {
-        ...unauthChecked, authError: customError,
+      executeFork('thread-orig', 'prompt', {
+        bypassSandbox: false,
+        preChecked: { ...unauthChecked, authError: customError },
       }),
     ).rejects.toThrow(customError);
   });
@@ -397,8 +413,13 @@ describe('preChecked auth guard for executeFork', () => {
     mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
 
     const result = await executeFork(
-      'thread-orig', 'do something new', 'o4-mini', undefined, undefined, false,
-      undefined, undefined, { available: true as const, version: '1.0.0', authState: 'unknown' as const },
+      'thread-orig',
+      'do something new',
+      {
+        model: 'o4-mini',
+        bypassSandbox: false,
+        preChecked: { available: true as const, version: '1.0.0', authState: 'unknown' as const },
+      },
     );
 
     expect(mockSpawn).toHaveBeenCalled();
@@ -410,8 +431,13 @@ describe('preChecked auth guard for executeFork', () => {
     mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
 
     await executeFork(
-      'thread-orig', undefined, 'o4-mini', undefined, undefined, false,
-      undefined, undefined, { available: true as const, version: '1.0.0', authState: 'authenticated' as const },
+      'thread-orig',
+      undefined,
+      {
+        model: 'o4-mini',
+        bypassSandbox: false,
+        preChecked: { available: true as const, version: '1.0.0', authState: 'authenticated' as const },
+      },
     );
 
     expect(mockSpawn).toHaveBeenCalled();
@@ -518,7 +544,7 @@ describe('abort signal', () => {
     mockSpawn.mockReturnValue(proc);
 
     const controller = new AbortController();
-    const promise = executeOneShot('test', undefined, undefined, undefined, undefined, undefined, controller.signal);
+    const promise = executeOneShot('test', { signal: controller.signal });
 
     await Promise.resolve(); // let detectCodexCli resolve and spawnCodex attach listeners
 
@@ -538,7 +564,7 @@ describe('abort signal', () => {
     mockSpawn.mockReturnValue(proc);
 
     const controller = new AbortController();
-    const promise = executeOneShot('test', undefined, undefined, undefined, undefined, undefined, controller.signal);
+    const promise = executeOneShot('test', { signal: controller.signal });
 
     await Promise.resolve();
     controller.abort();
@@ -553,7 +579,7 @@ describe('abort signal', () => {
     mockSpawn.mockReturnValue(proc);
 
     const controller = new AbortController();
-    const promise = executeOneShot('test', undefined, undefined, undefined, undefined, undefined, controller.signal);
+    const promise = executeOneShot('test', { signal: controller.signal });
 
     await Promise.resolve();
     (proc.stdout as Readable).emit('data', Buffer.from('{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Done"}}\n'));
@@ -575,7 +601,7 @@ describe('abort signal', () => {
       mockSpawn.mockReturnValue(proc);
 
       const controller = new AbortController();
-      const promise = executeOneShot('test', undefined, undefined, undefined, undefined, undefined, controller.signal);
+      const promise = executeOneShot('test', { signal: controller.signal });
 
       await vi.advanceTimersByTimeAsync(0); // flush microtasks so spawnCodex attaches listeners
 

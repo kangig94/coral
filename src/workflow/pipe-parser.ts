@@ -2,89 +2,90 @@ import { providerIdentPattern } from '../shared/mcp-utils.js';
 import type { PipeAtom, PipelineAST, PipeStep, PromptAtom } from './types.js';
 
 const IDENTIFIER_PATTERN = /^[a-z][a-z0-9-]*$/;
+type ScanVisitor = (char: string, index: number, inQuote: string | null) => boolean | void;
+
+/**
+ * Iterate characters with quote-aware state tracking.
+ * The visitor receives every character, including quote delimiters and escape pairs.
+ * Return true from the visitor to stop early.
+ */
+function scanQuoteAware(text: string, visitor: ScanVisitor): string | null {
+  let inQuote: string | null = null;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (inQuote !== null && char === '\\' && text[index + 1] === inQuote) {
+      if (visitor(char, index, inQuote)) return inQuote;
+      index += 1;
+      if (visitor(text[index], index, inQuote)) return inQuote;
+      continue;
+    }
+
+    if ((char === '\'' || char === '"') && inQuote === null) {
+      inQuote = char;
+      if (visitor(char, index, inQuote)) return inQuote;
+      continue;
+    }
+
+    if (char === inQuote) {
+      if (visitor(char, index, inQuote)) return inQuote;
+      inQuote = null;
+      continue;
+    }
+
+    if (visitor(char, index, inQuote)) return inQuote;
+  }
+
+  return inQuote;
+}
 
 function isProvider(value: string): boolean {
   return providerIdentPattern.test(value);
 }
 
 function hasUnquotedParentheses(text: string): boolean {
-  let inQuote: string | null = null;
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    if (inQuote !== null && char === '\\' && text[i + 1] === inQuote) {
-      i += 1;
-      continue;
+  let found = false;
+
+  scanQuoteAware(text, (char, _index, inQuote) => {
+    if (inQuote === null && (char === '(' || char === ')')) {
+      found = true;
+      return true;
     }
-    if ((char === '\'' || char === '"') && inQuote === null) {
-      inQuote = char;
-      continue;
-    }
-    if (char === inQuote) {
-      inQuote = null;
-      continue;
-    }
-    if (inQuote !== null) continue;
-    if (char === '(' || char === ')') return true;
-  }
-  return false;
+  });
+
+  return found;
 }
 
 function splitByComma(text: string): string[] {
   const parts: string[] = [];
   let current = '';
-  let inQuote: string | null = null;
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    if (inQuote !== null && char === '\\' && text[i + 1] === inQuote) {
-      current += char + text[i + 1];
-      i += 1;
-      continue;
-    }
-    if ((char === '\'' || char === '"') && inQuote === null) {
-      inQuote = char;
-      current += char;
-      continue;
-    }
-    if (char === inQuote) {
-      inQuote = null;
-      current += char;
-      continue;
-    }
-    if (inQuote !== null) {
-      current += char;
-      continue;
-    }
-    if (char === ',') {
+
+  scanQuoteAware(text, (char, _index, inQuote) => {
+    if (inQuote === null && char === ',') {
       parts.push(current);
       current = '';
-      continue;
+      return;
     }
+
     current += char;
-  }
+  });
+
   parts.push(current);
   return parts.map((part) => part.trim());
 }
 
 function hasTopLevelComma(text: string): boolean {
-  let inQuote: string | null = null;
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    if (inQuote !== null && char === '\\' && text[i + 1] === inQuote) {
-      i += 1;
-      continue;
+  let found = false;
+
+  scanQuoteAware(text, (char, _index, inQuote) => {
+    if (inQuote === null && char === ',') {
+      found = true;
+      return true;
     }
-    if ((char === '\'' || char === '"') && inQuote === null) {
-      inQuote = char;
-      continue;
-    }
-    if (char === inQuote) {
-      inQuote = null;
-      continue;
-    }
-    if (inQuote !== null) continue;
-    if (char === ',') return true;
-  }
-  return false;
+  });
+
+  return found;
 }
 
 function parsePromptLiteral(atomText: string): PromptAtom {
@@ -210,55 +211,52 @@ function parseStep(rawStep: string): PipeStep {
 function splitSteps(expression: string): string[] {
   const steps: string[] = [];
   let depth = 0;
-  let inQuote: string | null = null;
   let current = '';
+  let pendingDash = false;
 
-  for (let index = 0; index < expression.length; index += 1) {
-    const char = expression[index];
-    if (inQuote !== null && char === '\\' && expression[index + 1] === inQuote) {
-      current += char + expression[index + 1];
-      index += 1;
-      continue;
+  const finalQuote = scanQuoteAware(expression, (char, _index, inQuote) => {
+    if (pendingDash) {
+      pendingDash = false;
+      if (inQuote === null && char === '>' && depth === 0) {
+        const step = current.trim();
+        if (!step) throw new Error('Expected step expression before "->"');
+        steps.push(step);
+        current = '';
+        return;
+      }
+      current += '-';
     }
-    if ((char === '\'' || char === '"') && inQuote === null) {
-      inQuote = char;
-      current += char;
-      continue;
-    }
-    if (char === inQuote) {
-      inQuote = null;
-      current += char;
-      continue;
-    }
+
     if (inQuote !== null) {
       current += char;
-      continue;
+      return;
     }
+
     if (char === '(') {
       if (depth > 0) throw new Error('Nested groups are not allowed');
       depth += 1;
       current += char;
-      continue;
+      return;
     }
+
     if (char === ')') {
       if (depth === 0) throw new Error('Unmatched ")" in expression');
       depth -= 1;
       current += char;
-      continue;
+      return;
     }
-    if (char === '-' && expression[index + 1] === '>' && depth === 0) {
-      const step = current.trim();
-      if (!step) throw new Error('Expected step expression before "->"');
-      steps.push(step);
-      current = '';
-      index += 1;
-      continue;
+
+    if (char === '-') {
+      pendingDash = true;
+      return;
     }
+
     current += char;
-  }
+  });
 
   if (depth !== 0) throw new Error('Unclosed "(" in expression');
-  if (inQuote !== null) throw new Error('Unclosed quote in expression');
+  if (finalQuote !== null) throw new Error('Unclosed quote in expression');
+  if (pendingDash) current += '-';
 
   const lastStep = current.trim();
   if (!lastStep) throw new Error('Expected step expression after "->"');

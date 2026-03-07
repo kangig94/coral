@@ -4,6 +4,7 @@ import { executeOneShot, executeResume, executeFork } from './codex-executor.js'
 import { detectCodexCli } from './cli-detection.js';
 import { extractProgressMessage } from './progress.js';
 import type { ProviderRequest, ProviderResult } from '../../types.js';
+import { mapProviderResultBase } from '../result-mapping.js';
 import { makeOnEvent, type Provider, type ProviderCapabilities, type ProviderRuntime } from '../types.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 
@@ -35,21 +36,17 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
   switch (request.action) {
     case 'exec': {
       // executeOneShot internally prepends CLAUDE.md to the prompt
-      const result = await executeOneShot(
-        prompt,
-        request.model,
-        request.cwd,
+      const result = await executeOneShot(prompt, {
+        model: request.model,
+        workingDirectory: request.cwd,
         effort,
-        request.bypassPermissions,
-        makeOnEvent(runtime, request.sessionId, extractProgressMessage, request.cwd),
-        runtime.signal,
-      );
+        bypassSandbox: request.bypassPermissions,
+        onEvent: makeOnEvent(runtime, request.sessionId, extractProgressMessage, request.cwd),
+        signal: runtime.signal,
+      });
       return {
-        content: result.response,
+        ...mapProviderResultBase(result),
         conversationRef: result.sessionId ?? undefined,
-        model: result.model,
-        durationMs: result.durationMs,
-        aborted: result.aborted || undefined,
         nonResumable: result.sessionId == null ? true : undefined,
         exitCode: result.exitCode,
         errors: result.errors.length > 0 ? result.errors : undefined,
@@ -58,22 +55,17 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
     }
     case 'resume': {
       if (!request.conversationRef) throw new Error('resume requires conversationRef');
-      const result = await executeResume(
-        request.conversationRef,
-        prompt,
-        request.model,
-        request.cwd,
+      const result = await executeResume(request.conversationRef, prompt, {
+        model: request.model,
+        workingDirectory: request.cwd,
         effort,
-        request.bypassPermissions,
-        makeOnEvent(runtime, request.sessionId, extractProgressMessage, request.cwd),
-        runtime.signal,
-      );
+        bypassSandbox: request.bypassPermissions,
+        onEvent: makeOnEvent(runtime, request.sessionId, extractProgressMessage, request.cwd),
+        signal: runtime.signal,
+      });
       return {
-        content: result.response,
+        ...mapProviderResultBase(result),
         conversationRef: result.sessionId ?? request.conversationRef,
-        model: result.model,
-        durationMs: result.durationMs,
-        aborted: result.aborted || undefined,
         exitCode: result.exitCode,
         errors: result.errors.length > 0 ? result.errors : undefined,
         warnings: result.warnings.length > 0 ? result.warnings : undefined,
@@ -81,22 +73,17 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
     }
     case 'fork': {
       if (!request.conversationRef) throw new Error('fork requires conversationRef');
-      const result = await executeFork(
-        request.conversationRef,
-        prompt,
-        request.model,
-        request.cwd,
+      const result = await executeFork(request.conversationRef, prompt, {
+        model: request.model,
+        workingDirectory: request.cwd,
         effort,
-        request.bypassPermissions,
-        makeOnEvent(runtime, request.sessionId, extractProgressMessage, request.cwd),
-        runtime.signal,
-      );
+        bypassSandbox: request.bypassPermissions,
+        onEvent: makeOnEvent(runtime, request.sessionId, extractProgressMessage, request.cwd),
+        signal: runtime.signal,
+      });
       return {
-        content: result.response,
+        ...mapProviderResultBase(result),
         conversationRef: result.sessionId ?? undefined,
-        model: result.model,
-        durationMs: result.durationMs,
-        aborted: result.aborted || undefined,
         nonResumable: result.sessionId == null ? true : undefined,
         exitCode: result.exitCode,
         errors: result.errors.length > 0 ? result.errors : undefined,

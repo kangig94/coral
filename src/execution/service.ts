@@ -155,10 +155,10 @@ export class ExecutionService {
   private readonly jobManager: JobManager;
   private readonly progressStore: ProgressStore;
 
-  constructor(ctx: CallerContext) {
+  constructor(ctx: CallerContext, progressStore?: ProgressStore) {
     this.sessionManager = new SessionManager(ctx.projectRoot);
     this.jobManager = new JobManager();
-    this.progressStore = new ProgressStore();
+    this.progressStore = progressStore ?? new ProgressStore();
   }
 
   private claimAndAdmitJob(

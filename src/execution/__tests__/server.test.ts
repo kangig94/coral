@@ -342,7 +342,7 @@ describe('execution backend server', () => {
     progressStore.initJob(jobId, 'workflow-session', 'codex', 'workflow');
     progressStore.updatePhase(jobId, 'running');
 
-    const backend = await startBackendServer();
+    const backend = await startBackendServer({ progressStore });
     const response = await fetch(`${backend.baseUrl}/wait/stream`, {
       method: 'POST',
       headers: {

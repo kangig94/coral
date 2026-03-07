@@ -1,3 +1,6 @@
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
+
 export type McpResult = { content: [{ type: 'text'; text: string }]; isError: boolean };
 
 export function isNoEntryError(error: unknown): error is NodeJS.ErrnoException {
@@ -43,4 +46,22 @@ type ResultLike<T extends Record<string, unknown>> =
 export function resultToMcp<T extends Record<string, unknown>>(result: ResultLike<T>): McpResult {
   if (result.ok) return jsonResult(result.value);
   return jsonResult({ error: result.error, ...(result.detail ?? {}) });
+}
+
+/**
+ * Attempt an exclusive-create write: creates parent directory, writes with O_EXCL,
+ * and sets mode 0o600 on non-Windows. Returns true on success, false if file already exists.
+ */
+export function tryExclusiveWrite(filePath: string, payload: string): boolean {
+  mkdirSync(dirname(filePath), { recursive: true });
+  try {
+    writeFileSync(filePath, payload, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw error;
+  }
+  if (process.platform !== 'win32') {
+    chmodSync(filePath, 0o600);
+  }
+  return true;
 }
