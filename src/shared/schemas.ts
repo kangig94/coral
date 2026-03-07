@@ -81,8 +81,8 @@ export const waitInputSchema = z.object({
   jobs: z.array(z.string().min(1)).min(1, 'At least one job ID required'),
   timeout_seconds: z.number().int().positive().optional(),
   cursor: z.string().optional(), // opaque serialized WaitCursor from Last-Event-ID
-  include_result: z.boolean().default(false), // include result.content in response (default: false to save context)
-});
+  inline: z.boolean().default(false), // inline: true → result.content is text; false → result.content is file path
+}).strict();
 
 export type WaitInput = z.infer<typeof waitInputSchema>;
 

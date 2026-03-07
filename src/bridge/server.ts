@@ -1,6 +1,7 @@
 declare const __PLUGIN_ROOT__: string;
 declare const __VERSION__: string;
 
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -17,8 +18,8 @@ const waitInputSchema = z.object({
   jobs: z.array(z.string()).min(1, 'At least one job required'),
   timeout_seconds: z.number().min(1).max(1200).optional(),
   cursor: z.string().min(1).optional(),
-  include_result: z.boolean().default(false),
-});
+  inline: z.boolean().default(false),
+}).strict();
 
 export type ToolDescriptor = {
   name: string;
@@ -44,7 +45,7 @@ function waitToolDescriptor(tool: ToolDescriptor): ToolDescriptor {
         jobs: { type: 'array', items: { type: 'string' }, description: 'Job IDs to monitor (from exec/fork response)' },
         timeout_seconds: { type: 'number', description: 'Max wait time in seconds (1-1200, default 600)' },
         cursor: { type: 'string', description: 'Opaque stream cursor returned by the previous wait call' },
-        include_result: { type: 'boolean', description: 'Include result text in response (default false — result.path provides the file to Read instead)' },
+        inline: { type: 'boolean', description: 'Inline result text in content (default false — content is the result file path for selective Read)' },
       },
       required: ['jobs'],
     },
@@ -127,13 +128,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
               sendProgress(notify, progressToken, ++progressCount, `queued (position ${event.queuePosition})`);
               continue;
             case 'terminal': {
-              const { content, ...resultMeta } = event.result;
+              const { content: rawContent, ...resultMeta } = event.result;
               const isWorkflow = event.result.workflow !== undefined;
-              const result = isWorkflow
-                ? { ...resultMeta, path: event.resultPath }
-                : parsed.include_result
-                  ? event.result
-                  : { ...resultMeta, path: event.resultPath };
+              const content = !parsed.inline
+                ? event.resultPath
+                : isWorkflow
+                  ? readFileSync(event.resultPath, 'utf-8')
+                  : rawContent;
+              const result = { ...resultMeta, content };
               return textResult(JSON.stringify({
                 state: 'completed',
                 completedJobId: event.completedJobId,

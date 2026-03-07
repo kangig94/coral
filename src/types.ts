@@ -91,12 +91,9 @@ export interface WorkflowStepMeta {
   agent: string;
   step: number;
   atom: number;
-  kind: 'agent' | 'prompt';
   provider: string;
-  tagName: string;
-  headingLine: number;
-  line: number;
-  endLine: number;
+  start: number;
+  end: number;
 }
 
 export interface WorkflowResultMeta {

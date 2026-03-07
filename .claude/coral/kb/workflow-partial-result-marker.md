@@ -21,15 +21,12 @@ results.set(atom.agent, event.result.content);
 ```typescript
 // RIGHT: explicit workflow marker, durable workflow job identity, plus stable atom identity
 type WorkflowStepMeta = {
+  agent: string;   // human label
   step: number;
   atom: number;
-  kind: 'agent' | 'prompt';
   provider: string;
-  agent: string;   // human label
-  tagName: string; // XML tag
-  headingLine: number;
-  line: number;
-  endLine: number;
+  start: number;   // first content line in result.md
+  end: number;     // last content line in result.md
 };
 
 type TerminalResult = {

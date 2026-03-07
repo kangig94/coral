@@ -98,7 +98,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
       provider: "{phase provider}"
     })
     ```
-    `wait({ jobs: [job], include_result: true })` → read `result.content`.
+    `wait({ jobs: [job], inline: true })` → read `result.content`.
 
     **4b. Post-Round Processing**
 
@@ -171,20 +171,13 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
     **If `--no-handoff`**: stop after showing the summary above. The caller controls the next step.
 
-    **Otherwise**: Pick one option as `(Recommended)` based on plan complexity:
-
-    | Complexity | Recommended |
-    |------------|-------------|
-    | Simple (1-2 files) | `coral:ralph` |
-    | Moderate (multi-file) | `coral:ralph --codex` |
-    | Complex (architecture, concurrency, math) | `coral:ralph --red --codex` |
-
+    **Otherwise**, ask the user how to implement.
     ```
     AskUserQuestion({
       question: "How would you like to implement?",
       options: ["coral:ralph", "coral:ralph --codex", "coral:ralph --red --codex", "Skip"]
     })
     ```
-    Append `(Recommended)` to the selected option. If not skipped: `Skill({ skill: "coral:ralph", args: "<plan summary + context> [selected flags]" })`
+    If not skipped: `Skill({ skill: "coral:ralph", args: "[selected flags] <plan summary + context>" })`
   </Output_Format>
 </Planning_Protocol>

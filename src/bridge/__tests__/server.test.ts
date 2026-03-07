@@ -7,6 +7,7 @@ const mockState = vi.hoisted(() => ({
   streamWait: vi.fn(),
   handleBackendToolCall: vi.fn(),
   buildToolList: vi.fn((tools: unknown) => tools ?? []),
+  readFileSync: vi.fn(),
   connect: vi.fn(async () => {}),
   close: vi.fn(async () => {}),
 }));
@@ -24,6 +25,10 @@ vi.mock('@modelcontextprotocol/sdk/server/index.js', () => ({
 
 vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => ({
   StdioServerTransport: class MockStdioServerTransport {},
+}));
+
+vi.mock('node:fs', () => ({
+  readFileSync: mockState.readFileSync,
 }));
 
 vi.mock('../backend-client.js', () => ({
@@ -55,9 +60,9 @@ async function loadCallToolHandler() {
   return handler;
 }
 
-async function invokeWait(argumentsValue: Record<string, unknown>) {
+async function invokeWaitRaw(argumentsValue: Record<string, unknown>) {
   const handler = await loadCallToolHandler();
-  const result = await handler(
+  return handler(
     {
       params: {
         name: 'wait',
@@ -69,8 +74,11 @@ async function invokeWait(argumentsValue: Record<string, unknown>) {
       _meta: {},
     },
   );
+}
 
-  return JSON.parse(result.content[0].text) as Record<string, unknown>;
+async function invokeWait(argumentsValue: Record<string, unknown>) {
+  const result = await invokeWaitRaw(argumentsValue);
+  return JSON.parse(result.content[0].text) as Record<string, any>;
 }
 
 describe('bridge wait handler', () => {
@@ -80,6 +88,7 @@ describe('bridge wait handler', () => {
     mockState.streamWait.mockReset();
     mockState.handleBackendToolCall.mockReset();
     mockState.buildToolList.mockClear();
+    mockState.readFileSync.mockReset();
     mockState.connect.mockClear();
     mockState.close.mockClear();
     mockState.ensureBackend.mockResolvedValue({ port: 4100, token: 'backend-token' });
@@ -91,7 +100,7 @@ describe('bridge wait handler', () => {
     mockState.handlers.clear();
   });
 
-  it('workflow wait responses always return metadata plus path and never inline content', async () => {
+  it('workflow wait responses return metadata plus content shaped by inline mode', async () => {
     mockState.streamWait
       .mockImplementationOnce(() => emit([
         {
@@ -108,12 +117,9 @@ describe('bridge wait handler', () => {
                   agent: 'architect',
                   step: 1,
                   atom: 1,
-                  kind: 'agent',
                   provider: 'codex',
-                  tagName: 'architect',
-                  headingLine: 1,
-                  line: 3,
-                  endLine: 3,
+                  start: 3,
+                  end: 3,
                 },
               ],
             },
@@ -149,18 +155,22 @@ describe('bridge wait handler', () => {
           },
         },
       ]));
+    mockState.readFileSync
+      .mockReturnValueOnce('# Step 1.1: architect\n\nARCH\n')
+      .mockReturnValueOnce('')
+      .mockReturnValueOnce('');
 
     const success = await invokeWait({
       jobs: ['workflow-success'],
-      include_result: true,
+      inline: true,
     });
     const failure = await invokeWait({
       jobs: ['workflow-failure'],
-      include_result: false,
+      inline: false,
     });
     const aborted = await invokeWait({
       jobs: ['workflow-abort'],
-      include_result: true,
+      inline: true,
     });
 
     expect(success).toEqual({
@@ -175,16 +185,13 @@ describe('bridge wait handler', () => {
               agent: 'architect',
               step: 1,
               atom: 1,
-              kind: 'agent',
               provider: 'codex',
-              tagName: 'architect',
-              headingLine: 1,
-              line: 3,
-              endLine: 3,
+              start: 3,
+              end: 3,
             },
           ],
         },
-        path: '/tmp/coral-jobs/workflow-success/result.md',
+        content: '# Step 1.1: architect\n\nARCH\n',
       },
     });
     expect(failure).toEqual({
@@ -195,7 +202,7 @@ describe('bridge wait handler', () => {
       result: {
         notice: 'failed',
         workflow: { steps: [] },
-        path: '/tmp/coral-jobs/workflow-failure/result.md',
+        content: '/tmp/coral-jobs/workflow-failure/result.md',
       },
     });
     expect(aborted).toEqual({
@@ -207,12 +214,76 @@ describe('bridge wait handler', () => {
         aborted: true,
         notice: 'aborted',
         workflow: { steps: [] },
-        path: '/tmp/coral-jobs/workflow-abort/result.md',
+        content: '',
       },
     });
   });
 
-  it('single-job wait behavior still respects include_result', async () => {
+  it('workflow inline: true reads from resultPath file, not terminal content', async () => {
+    mockState.readFileSync.mockReturnValueOnce('# Step 1.1: architect\n\nFILE CONTENT');
+    mockState.streamWait.mockImplementationOnce(() => emit([
+      {
+        type: 'terminal',
+        completedJobId: 'workflow-diverge',
+        sessionId: 'session-diverge',
+        remainingJobIds: [],
+        resultPath: '/tmp/coral-jobs/workflow-diverge/result.md',
+        result: {
+          content: 'FINAL',
+          workflow: {
+            steps: [
+              {
+                agent: 'architect',
+                step: 1,
+                atom: 1,
+                provider: 'codex',
+                start: 3,
+                end: 3,
+              },
+            ],
+          },
+        },
+      },
+    ]));
+
+    const result = await invokeWait({
+      jobs: ['workflow-diverge'],
+      inline: true,
+    });
+
+    expect(result).toMatchObject({
+      state: 'completed',
+      completedJobId: 'workflow-diverge',
+      sessionId: 'session-diverge',
+      remainingJobIds: [],
+    });
+    expect(result.result).toMatchObject({
+      workflow: {
+        steps: [
+          {
+            agent: 'architect',
+            step: 1,
+            atom: 1,
+            provider: 'codex',
+            start: 3,
+            end: 3,
+          },
+        ],
+      },
+    });
+    expect(result.result.content).toBe('# Step 1.1: architect\n\nFILE CONTENT');
+    expect(result.result.content).not.toBe('FINAL');
+    expect(mockState.readFileSync).toHaveBeenCalledWith('/tmp/coral-jobs/workflow-diverge/result.md', 'utf-8');
+  });
+
+  it('should reject legacy include_result parameter', async () => {
+    const result = await invokeWaitRaw({ jobs: ['job-1'], include_result: true } as any);
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('include_result');
+  });
+
+  it('single-job wait behavior still respects inline', async () => {
     mockState.streamWait
       .mockImplementationOnce(() => emit([
         {
@@ -243,11 +314,11 @@ describe('bridge wait handler', () => {
 
     const inline = await invokeWait({
       jobs: ['single-inline'],
-      include_result: true,
+      inline: true,
     });
     const pathOnly = await invokeWait({
       jobs: ['single-path'],
-      include_result: false,
+      inline: false,
     });
 
     expect(inline).toEqual({
@@ -267,7 +338,7 @@ describe('bridge wait handler', () => {
       remainingJobIds: [],
       result: {
         durationMs: 21,
-        path: '/tmp/coral-jobs/single-path/result.md',
+        content: '/tmp/coral-jobs/single-path/result.md',
       },
     });
   });

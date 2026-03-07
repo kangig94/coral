@@ -290,22 +290,22 @@ Provider-agnostic wait for background jobs from any AX adapter. Wait returns whe
 | `jobs` | string[] | Yes | Job IDs to monitor (min 1, from exec/fork response). |
 | `timeout_seconds` | number | No | Max wait time in seconds (1-1200, default 600). |
 | `cursor` | string | No | Opaque stream cursor returned by the previous wait call (for incremental streaming). |
-| `include_result` | boolean | No | Include result text in response (default `false`). When `false`, `result.path` provides the file to `Read` instead. |
+| `inline` | boolean | No | Inline result text in `content` (default `false` — `content` is the result file path for selective `Read`). |
 
 ### Output — Completed or Error
 
-Default (`include_result: false`):
+Default (`inline: false`):
 ```json
 {
   "state": "completed",
   "completedJobId": "job-uuid",
   "sessionId": "session-uuid",
   "remainingJobIds": [],
-  "result": { "durationMs": 1234, "path": "/tmp/coral-jobs/job-uuid/result.md" }
+  "result": { "durationMs": 1234, "content": "/tmp/coral-jobs/job-uuid/result.md" }
 }
 ```
 
-With `include_result: true`:
+With `inline: true`:
 ```json
 {
   "state": "completed",
@@ -316,7 +316,7 @@ With `include_result: true`:
 }
 ```
 
-Workflow jobs always return metadata plus `result.path`, even when `include_result: true`:
+Workflow jobs follow the same contract — `result.content` is always present:
 ```json
 {
   "state": "completed",
@@ -331,16 +331,13 @@ Workflow jobs always return metadata plus `result.path`, even when `include_resu
           "agent": "architect",
           "step": 1,
           "atom": 1,
-          "kind": "agent",
           "provider": "codex",
-          "tagName": "architect",
-          "headingLine": 1,
-          "line": 3,
-          "endLine": 3
+          "start": 3,
+          "end": 3
         }
       ]
     },
-    "path": "/tmp/coral-jobs/workflow-job/result.md"
+    "content": "/tmp/coral-jobs/workflow-job/result.md"
   }
 }
 ```
@@ -374,9 +371,9 @@ This is a normal accepted launch outcome, not an error. The job auto-dispatches 
 - **Cross-provider**: accepts mixed Codex/Claude job IDs in one call.
 - **Progress notifications**: incremental updates are emitted through `notifications/progress`.
 - **Incremental streaming**: pass `cursor` from a previous wait response to resume from where the last call left off.
-- **Context control**: `include_result: false` (default) omits `result.content` and provides `result.path` instead. `Read(result.path)` to selectively load results.
-- **Workflow exception**: workflow jobs never inline `result.content`; use `result.workflow.steps` plus `Read(result.path, offset, limit)` to read only the step you need.
-- **Workflow line semantics**: `headingLine` points to the markdown heading (`# Step ...`), while `line` and `endLine` bound only the content block for that step.
+- **Content field**: `result.content` is always present. `inline: false` (default) → file path. `inline: true` → actual text (workflow jobs read the full serialized step markdown from the artifact file).
+- **Selective read**: with `inline: false`, `Read(result.content)` loads the full artifact. Use `result.workflow.steps[N].start` and `end` to read only the step you need with `Read(result.content, start, limit)`.
+- **Workflow line semantics**: `start` and `end` bound the content block for each step (line numbers in the artifact file).
 
 ---
 
@@ -462,7 +459,7 @@ Returns immediately (same as `codex`/`claude` exec). Pipeline runs in background
 }
 ```
 
-Use `wait({ jobs: [job] })` then `Read("/tmp/coral-jobs/<job>/result.md")` for the pipeline result. Successful, failed, and aborted workflow waits include `result.workflow.steps` so callers can read only the relevant section without loading the full artifact.
+Use `wait({ jobs: [job] })` then `Read(result.content)` for the pipeline result. Successful, failed, and aborted workflow waits include `result.workflow.steps` so callers can read only the relevant section without loading the full artifact.
 
 ### Step Output Format
 
