@@ -14,7 +14,7 @@ import { join } from 'node:path';
 
 const FLAG_PREFIX = 'kb-active-';
 const STALE_MS = 24 * 60 * 60_000;
-const KB_SKILL_RE = /\/coral:ralph|\/coral:bugfix/;
+const KB_SKILL_RE = /\/(?:coral:)?ralph|\/(?:coral:)?bugfix/;
 
 try {
   const input = JSON.parse(await readStdin());
