@@ -19,7 +19,7 @@ Without this pattern, callers block expecting `{ response }` inline but receive 
 // After wait({ sessions: [session] }) returns status == "completed":
 Read(session_dir + "/result.md")   → response text (show this)
 // Use the same coral UUID for next exec call:
-codex({ op: "exec", session: "uuid", prompt, working_directory })
+codex({ op: "exec", session: "uuid", prompt, work_dir })
 
 // Skill presentation:
 // Show response from result.md, then append: `session: <session_name>`

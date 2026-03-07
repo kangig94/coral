@@ -251,7 +251,7 @@ describe('executeResume', () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it('passes working_directory as cwd to spawn', async () => {
+  it('passes work_dir as cwd to spawn', async () => {
     mockCliAvailable();
     mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
 
@@ -264,7 +264,7 @@ describe('executeResume', () => {
     );
   });
 
-  it('omits cwd when working_directory not provided', async () => {
+  it('omits cwd when work_dir not provided', async () => {
     mockCliAvailable();
     mockSpawn.mockReturnValue(createMockProcess(agentOk, 0));
 

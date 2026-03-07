@@ -13,14 +13,14 @@ describe('Phase 1 shared schemas', () => {
       op: 'exec',
       prompt: 'Analyze this change',
       session: 'session-1',
-      working_directory: '/tmp/work',
+      work_dir: '/tmp/work',
     });
 
     expect(parsed).toMatchObject({
       op: 'exec',
       prompt: 'Analyze this change',
       session: 'session-1',
-      working_directory: '/tmp/work',
+      work_dir: '/tmp/work',
     });
   });
 

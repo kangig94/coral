@@ -30,7 +30,7 @@ export const coralAgentSchema = z.object({
   op: coralOpSchema,
   prompt: promptSchema,
   session: sessionRefSchema.optional(),
-  working_directory: cwdSchema,
+  work_dir: cwdSchema,
 });
 
 export type CoralAgentInput = z.infer<typeof coralAgentSchema>;

@@ -72,7 +72,7 @@ Strip the `--codex` flag before passing the prompt to the execution path.
        - Default: run `<Execution>` directly on the target files.
        - `--codex`: call `codex({ op: "exec", ... })` with `<Execution>`, `<Constraints>`,
          `<Failure_Modes_To_Avoid>`, `<Output_Format>`, target file paths, and coding standards.
-         Pass `working_directory`.
+         Pass `work_dir`.
          `wait({ jobs: [job], inline: true })` → read `result.content`.
        Parallel split:
        - Default: spawn each group as a parallel Task (`subagent_type: "general-purpose"`).

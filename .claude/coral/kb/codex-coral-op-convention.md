@@ -12,7 +12,7 @@ This removes the extra LLM hop from the former proxy-agent pattern. Delegation b
 codex({
   op: "coral:architect",
   prompt: "Review this plan for missing failure modes.",
-  working_directory,
+  work_dir,
   effort: "xhigh",
 });
 

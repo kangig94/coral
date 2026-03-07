@@ -140,7 +140,7 @@ Structured problem-definition conversation with the user before planning begins.
     ```
     AskUserQuestion({
       question: "Proceed to coral:plan?",
-      options: ["Proceed (Recommended)", "Proceed --deep", "Proceed --codex", "Proceed --deep --codex"]
+      options: ["Proceed", "Proceed --deep", "Proceed --codex", "Proceed --deep --codex"]
     })
     ```
     Finalize `.claude/coral/plans/pre-{topic}.md`, then: `Skill({ skill: "coral:plan", args: "{topic} [selected flags]" })`

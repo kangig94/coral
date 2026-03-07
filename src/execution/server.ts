@@ -296,7 +296,7 @@ function getToolDescriptors(): Array<Record<string, unknown>> {
         op: { type: 'string' },
         prompt: { type: 'string' },
         session: { type: 'string' },
-        working_directory: { type: 'string' },
+        work_dir: { type: 'string' },
       },
       required: ['op'],
     },
@@ -404,7 +404,7 @@ async function routeToolCall(
   const sessionId = optionalString(request.args, 'session');
   const prompt = optionalString(request.args, 'prompt');
   const defaultCwd = request.context.projectRoot;
-  const cwd = optionalString(request.args, 'working_directory');
+  const cwd = optionalString(request.args, 'work_dir');
 
   if (op === 'list') {
     return { statusCode: 200, body: service.list(request.name) };

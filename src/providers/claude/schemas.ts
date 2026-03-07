@@ -25,7 +25,7 @@ export const coralClaudeSchema = z.object({
   op: coralOpSchema,
   prompt: promptSchema,
   session: sessionRefSchema.optional(),
-  working_directory: cwdSchema,
+  work_dir: cwdSchema,
 });
 
 export type ClaudeCoralInput = z.infer<typeof coralClaudeSchema>;

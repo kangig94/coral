@@ -11,7 +11,7 @@ When using the AX MCP tools, a single agent can dispatch many sessions in parall
 # Dispatch N sessions quickly from one agent (any mix of codex/claude)
 pending = set()
 for group in file_groups:
-    run = codex({ op: "exec", prompt: group, working_directory })
+    run = codex({ op: "exec", prompt: group, work_dir })
     pending.add(run.session)
 
 while pending:

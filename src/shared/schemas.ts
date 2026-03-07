@@ -44,7 +44,7 @@ export const sharedExecSchema = z.object({
   op: z.literal('exec'),
   prompt: promptSchema,
   session: sessionRefSchema.optional(),
-  working_directory: cwdSchema,
+  work_dir: cwdSchema,
 });
 
 /**
@@ -54,7 +54,7 @@ export const sharedResumeSchema = z.object({
   op: z.literal('resume'),
   session: sessionRefSchema,
   prompt: promptSchema,
-  working_directory: cwdSchema,
+  work_dir: cwdSchema,
 });
 
 /**
@@ -64,7 +64,7 @@ export const sharedForkSchema = z.object({
   op: z.literal('fork'),
   session: sessionRefSchema,
   prompt: z.string().optional(),
-  working_directory: cwdSchema,
+  work_dir: cwdSchema,
 });
 
 /**

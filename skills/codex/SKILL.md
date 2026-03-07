@@ -46,8 +46,8 @@ Note: routes 4b and 4c delegate to other skills that manage their own sessions.
 ## 4a. Review (parallel Codex ops)
 
 Dispatch TWO Codex jobs in parallel:
-- `codex({ op: "coral:architect", prompt, session, working_directory })`
-- `codex({ op: "coral:critic", prompt, session, working_directory })`
+- `codex({ op: "coral:architect", prompt, session, work_dir })`
+- `codex({ op: "coral:critic", prompt, session, work_dir })`
 
 Use `session` only when available from step 2. Omit it for fresh review sessions.
 `wait({ jobs: pendingJobs, inline: true })` until both complete, read each `result.content`.
@@ -73,8 +73,8 @@ Call MCP tool directly. Pass prompt **verbatim**. Never rephrase, filter, or ref
 
 | Condition | Action |
 |-----------|--------|
-| No session | `codex({ op: "exec", prompt, working_directory })` → `{ job, session }` |
-| Session exists | `codex({ op: "exec", session, prompt, working_directory })` → `{ job, session }` |
+| No session | `codex({ op: "exec", prompt, work_dir })` → `{ job, session }` |
+| Session exists | `codex({ op: "exec", session, prompt, work_dir })` → `{ job, session }` |
 
 `wait({ jobs: [job], inline: true })` → read `result.content`.
 Keep using the `session` UUID from the exec/fork response for continuity.

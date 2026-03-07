@@ -81,7 +81,7 @@ Strip `--codex` and `--red` flags before passing the prompt to the execution pat
 
     Spawn in background (`run_in_background: true`) immediately before step 6a.
     Cross-model diversity — use the opposite model from main execution:
-    - ralph=Claude → `codex({ op: "coral:red-attacker", prompt, working_directory })`
+    - ralph=Claude → `codex({ op: "coral:red-attacker", prompt, work_dir })`
     - ralph=Codex → `Agent("coral:red-attacker")`
 
     Prompt: changed files list + plan file path (if available).
@@ -132,7 +132,7 @@ Strip `--codex` and `--red` flags before passing the prompt to the execution pat
 
     Execution loop:
     1) `codex({ op: "exec", ... })` → `wait({ jobs: [job], inline: true })` → read `result.content`.
-       Pass `working_directory`. Reuse `session` UUID from exec response for continuity.
+       Pass `work_dir`. Reuse `session` UUID from exec response for continuity.
     2) Verify changes yourself: read changed files, compare against acceptance criteria.
        LSP/type-check only — NEVER run build or test during the loop.
     3) All criteria pass → Post-Completion Review. Not complete → step 1. Max 5 rounds → ask user.
