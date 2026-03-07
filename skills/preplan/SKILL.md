@@ -107,9 +107,12 @@ Structured problem-definition conversation with the user before planning begins.
     - Summarize the agreement file for the user — include all decisions, constraints,
       and open items the user needs to know, but omit verbose details they can
       look up in `.claude/coral/plans/pre-{topic}.md` if needed
-    - Ask via AskUserQuestion:
-      - question: "Proceed to coral:plan?"
-      - options: "Proceed (Recommended)", "Proceed --deep", "Proceed --codex", "Proceed --deep --codex"
+    ```
+    AskUserQuestion({
+      question: "Proceed to coral:plan?",
+      options: ["Proceed (Recommended)", "Proceed --deep", "Proceed --codex", "Proceed --deep --codex"]
+    })
+    ```
 
     Do NOT propose transition while any required item still has "unconfirmed" marker.
 
