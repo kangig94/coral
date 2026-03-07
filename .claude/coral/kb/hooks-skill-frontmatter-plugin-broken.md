@@ -29,4 +29,14 @@ FLAG=".claude/coral/tmp/kb-active-${session_id}"
 # See hooks/kb-promote-reminder.mjs for the session-scoped pattern.
 ```
 
+PreToolUse(Skill) hook input shape (verified):
+```json
+{ "tool_name": "Skill", "tool_input": { "skill": "coral:ralph", "args": "..." }, "session_id": "..." }
+```
+matcher: `"Skill"`, 필드: `input.tool_input.skill`
+
+**중요 제한**: PreToolUse(Skill)은 Claude가 코드에서 `Skill("coral:ralph")`를 호출할 때만 fire된다.
+사용자가 `/coral:ralph`를 직접 타이핑하면 CLI가 prompt injection으로 처리하므로 PreToolUse가 fire되지 않는다.
+plan → AskUserQuestion → ralph 선택 → Claude가 Skill() 호출하는 경우는 fire된다 ✓
+
 Verified against claude-code v2.1.50: all official plugins (hookify, ralph-wiggum, security-guidance) register hooks exclusively in hooks.json. Zero plugins use SKILL.md frontmatter hooks.

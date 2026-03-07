@@ -9,11 +9,13 @@ Claude Code's hook system executes scripts on specific events. Coral uses hooks 
 **Plugin hooks** (`hooks/hooks.json`):
 1. **SessionStart** (`*`) - Injects CLAUDE.md behavioral guidelines, warm-starts the backend daemon, and auto-updates HUD script
 2. **SessionStart** (`compact`) - After context compaction, reminds about KB promotion
-3. **PreToolUse** - Periodically reminds Claude to write memos for non-obvious discoveries
-4. **PostToolUseFailure** (`*`) - On any non-zero tool exit, reminds Claude to check `.claude/coral/kb/` before debugging
-5. **PostToolUse** (`Bash`) - Detects silent failures in command output when exit codes are masked and injects the same KB lookup reminder context
-6. **Stop** - Enforces KB promotion for unprocessed memos
-7. **TeammateIdle** (`dc-*`) - Blocks idle when discuss agents have pending actions (bid/speak/vote)
+3. **UserPromptSubmit** - Creates session-scoped KB flag when user types `/coral:ralph` or `/coral:bugfix`
+4. **PreToolUse** - Periodically reminds Claude to write memos for non-obvious discoveries
+5. **PreToolUse** (`Skill`) - Creates session-scoped KB flag when Claude calls Skill("coral:ralph"|"coral:bugfix")
+6. **PostToolUseFailure** (`*`) - On any non-zero tool exit, reminds Claude to check `.claude/coral/kb/` before debugging
+7. **PostToolUse** (`Bash`) - Detects silent failures in command output when exit codes are masked and injects the same KB lookup reminder context
+8. **Stop** - Enforces KB promotion for unprocessed memos
+9. **TeammateIdle** (`dc-*`) - Blocks idle when discuss agents have pending actions (bid/speak/vote)
 
 ## Hook Configuration
 
@@ -91,17 +93,23 @@ On successful Bash tool executions (`PostToolUse` only fires when exit code is 0
 
 **Fail-open**: Any parse/read error, no pattern match, or empty KB directory — silent exit 0.
 
-## PreToolUse Hook (Skill KB Flag)
+## UserPromptSubmit Hook (KB Flag — User Slash Commands)
+
+Script: `hooks/kb-promote-reminder.mjs`.
+
+Creates a session-scoped flag file `.claude/coral/tmp/kb-active-{session_id}` when the user types `/coral:ralph` or `/coral:bugfix` directly. User-typed slash commands are expanded by the CLI before reaching Claude, so they do not trigger PreToolUse — this hook covers that path.
+
+## PreToolUse Hook (Skill KB Flag — Claude-Initiated)
 
 Script: `hooks/kb-promote-reminder.mjs`. Matcher: `Skill`.
 
-Creates a session-scoped flag file `.claude/coral/tmp/kb-active-{session_id}` when `coral:ralph` or `coral:bugfix` is invoked. This moves the flag creation from SKILL.md Bash commands to a hook with access to `input.session_id`, enabling multi-session isolation.
+Creates the same session-scoped flag when Claude internally calls `Skill("coral:ralph")` or `Skill("coral:bugfix")` (e.g., when plan skill routes to ralph via AskUserQuestion). Input shape: `{ tool_name: "Skill", tool_input: { skill: "coral:ralph", args: "..." } }`.
 
 ## Stop Hook
 
 Script: `hooks/kb-promote-reminder.mjs`. Session-scoped via flag file.
 
-**Flag file pattern**: The PreToolUse(Skill) hook creates `.claude/coral/tmp/kb-active-{session_id}` for KB-producing skills. The Stop hook checks for its own session's flag — if absent, exits silently (normal conversation unaffected). Stale flags (>24h) from expired sessions are cleaned up automatically.
+**Flag file pattern**: The UserPromptSubmit and PreToolUse(Skill) hooks create `.claude/coral/tmp/kb-active-{session_id}` for KB-producing skills. The Stop hook checks for its own session's flag — if absent, exits silently (normal conversation unaffected). Stale flags (>24h) from expired sessions are cleaned up automatically.
 
 When flag exists:
 1. Delete session's flag file

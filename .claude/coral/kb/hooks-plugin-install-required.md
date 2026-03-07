@@ -1,20 +1,33 @@
-# Plugin Hook Registration Requires Formal Install
+# Plugin Hook Registration — Install vs plugin-dir Mode
 
 ## Rule
-Plugin hooks.json에 새 이벤트를 추가한 뒤 cache 디렉토리에 수동으로 파일을 복사하면 기존 hook은 동작하지만 새 hook 이벤트는 등록되지 않는다. 정식으로 plugin을 배포하고 설치해야 hooks.json 변경이 완전히 반영된다.
+`--plugin-dir ./` 개발 모드에서 hooks가 동작하려면 `plugin.json`에 `"hooks": "./hooks/hooks.json"` 필드가 명시적으로 선언되어야 한다. 선언 없이는 SessionStart 등 일부 hook만 우연히 동작하거나 전혀 동작하지 않는다. Cache 수동 복사도 새 hook 이벤트를 등록하지 않으므로 정식 설치가 필요하다.
 
 ## Why
-Cache에 직접 복사한 뒤 "hook이 안 먹힌다"고 오진하면 settings.json으로 우회하거나, 코드 버그를 의심하며 시간을 낭비하게 된다.
+`plugin.json`에 `"hooks"` 필드가 없으면 `--plugin-dir` 모드에서 hooks.json이 무시된다. 코드나 hook 로직을 의심하며 디버깅하다가 근본 원인을 놓친다.
 
 ## Pattern
-```
-# Wrong: cache에 수동 복사 후 테스트
-cp hooks/new-hook.sh ~/.claude/plugins/cache/my-plugin/0.1.0/hooks/
-cp hooks/hooks.json ~/.claude/plugins/cache/my-plugin/0.1.0/hooks/
-# → 새 이벤트 등록 안 됨
+```json
+// WRONG: plugin.json에 hooks 선언 없음 → --plugin-dir 모드에서 PreToolUse 등 미등록
+{
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}
 
-# Right: 정식 배포 후 설치
-npm run build
-# plugin 배포 + Claude Code에서 재설치
-# → hooks.json의 모든 이벤트 정상 등록
+// RIGHT: hooks 필드 명시
+{
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./.mcp.json"
+}
 ```
+
+개발 중 hooks 로직만 빠르게 검증할 때는 `.claude/settings.local.json`에 직접 등록하는 방법도 있다:
+```json
+{
+  "hooks": {
+    "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "node ...", "timeout": 5 }] }]
+  }
+}
+```
+단, 이 파일은 gitignore되므로 최종 등록은 `plugin.json` + `hooks/hooks.json`으로 해야 한다.

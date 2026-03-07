@@ -2,7 +2,8 @@
 
 /**
  * Multi-event hook for KB promotion workflow:
- * - PreToolUse(Skill): create session-scoped kb-active flag for KB-producing skills
+ * - UserPromptSubmit: create session-scoped kb-active flag for user-typed /coral:ralph|bugfix
+ * - PreToolUse(Skill): create session-scoped kb-active flag for Claude-initiated Skill() calls
  * - Stop: remind to promote memos if this session's flag exists
  * - SessionStart(compact): always check for unprocessed memos after compaction
  * Fail-open: any error exits silently.
@@ -13,6 +14,7 @@ import { join } from 'node:path';
 
 const FLAG_PREFIX = 'kb-active-';
 const STALE_MS = 24 * 60 * 60_000;
+const KB_SKILL_RE = /\/coral:ralph|\/coral:bugfix/;
 
 try {
   const input = JSON.parse(await readStdin());
@@ -21,7 +23,29 @@ try {
   const projectDir = process.env.CLAUDE_PROJECT_DIR || '.';
   const flagDir = join(projectDir, '.claude', 'coral', 'tmp');
 
-  // PreToolUse(Skill): create session-scoped flag for KB-producing skills
+  // Stale flag cleanup (>24h) — runs on every invocation to handle orphaned flags from crashed sessions
+  try {
+    if (existsSync(flagDir)) {
+      const now = Date.now();
+      for (const f of readdirSync(flagDir)) {
+        if (!f.startsWith(FLAG_PREFIX)) continue;
+        const path = join(flagDir, f);
+        if (now - statSync(path).mtimeMs > STALE_MS) unlinkSync(path);
+      }
+    }
+  } catch { /* fail-open */ }
+
+  // UserPromptSubmit: user typed /coral:ralph or /coral:bugfix directly
+  if (event === 'UserPromptSubmit') {
+    if (!sessionId) process.exit(0);
+    const msg = input.user_message || input.message || input.prompt || '';
+    if (!KB_SKILL_RE.test(msg)) process.exit(0);
+    mkdirSync(flagDir, { recursive: true });
+    writeFileSync(join(flagDir, `${FLAG_PREFIX}${sessionId}`), '');
+    process.exit(0);
+  }
+
+  // PreToolUse(Skill): Claude-initiated Skill("coral:ralph"|"coral:bugfix") calls
   if (event === 'PreToolUse') {
     if (!sessionId) process.exit(0);
     const skill = input.tool_input?.skill || '';
@@ -36,15 +60,6 @@ try {
     const flag = sessionId && join(flagDir, `${FLAG_PREFIX}${sessionId}`);
     if (!flag || !existsSync(flag)) process.exit(0);
     try { unlinkSync(flag); } catch { /* ignore */ }
-    // Clean stale flags from other expired sessions
-    try {
-      const now = Date.now();
-      for (const f of readdirSync(flagDir)) {
-        if (!f.startsWith(FLAG_PREFIX)) continue;
-        const path = join(flagDir, f);
-        if (now - statSync(path).mtimeMs > STALE_MS) unlinkSync(path);
-      }
-    } catch { /* fail-open */ }
   }
 
   // Check for unprocessed memos (Stop + SessionStart compact)
