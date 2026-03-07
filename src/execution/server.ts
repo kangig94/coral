@@ -355,11 +355,11 @@ function getToolDescriptors(): Array<Record<string, unknown>> {
       inputSchema: {
         type: 'object',
         properties: {
-          expression: { type: 'string' },
-          init_prompt: { type: 'string' },
-          context: { type: 'string' },
-          provider: { type: 'string' },
-          work_dir: { type: 'string' },
+          expression: { type: 'string', description: 'Pipeline DSL expression' },
+          init_prompt: { type: 'string', description: 'Initial prompt fed to the first step' },
+          context: { type: 'string', description: 'Shared context prepended to every atom prompt in every step' },
+          provider: { type: 'string', description: 'Default provider for atoms (claude or codex)' },
+          work_dir: { type: 'string', description: 'Working directory for spawned atoms' },
         },
         required: ['expression', 'init_prompt'],
       },

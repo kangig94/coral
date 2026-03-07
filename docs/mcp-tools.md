@@ -416,6 +416,7 @@ Deterministic multi-agent pipeline executor. Chains coral agents via a DSL expre
 | `init_prompt` | string | Yes | Initial prompt fed to the first step (min 1 char). |
 | `context` | string | No | Shared context prepended to every atom's prompt in every step. |
 | `provider` | string | No | Default provider for atoms without `@provider` suffix. `claude` (default) or `codex`. |
+| `work_dir` | string | No | Working directory for spawned atoms. Overrides the caller's project root. |
 | `atoms` | object | No | Per-atom config: `{ atomName: { effort?, instruction? } }`. See Atoms below. |
 
 ### DSL Grammar
