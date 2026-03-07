@@ -16,13 +16,12 @@ Announce at start: "Using ralph to execute this task with verification loop."
 | Argument | Mode |
 |----------|------|
 | `<prompt>` | Claude-native (default) |
-| `--codex` | Codex delegation (context from conversation) |
-| `--codex <prompt>` | Codex delegation |
+| `--codex` | Codex delegation |
 | `--red` | Enable adversarial testing (combinable with `--codex`) |
-| `--max-iterations N` | Set max loop iterations (prompt mode, default: 0 = unlimited) |
-| `--completion-promise TEXT` | Set completion promise text (prompt mode, default: "TASK COMPLETE") |
+| `--max-iterations N` | Max loop iterations (prompt mode, default: 0 = unlimited) |
+| `--completion-promise TEXT` | Completion promise text (prompt mode, default: "TASK COMPLETE") |
 
-Strip ALL flags (`--codex`, `--red`, `--max-iterations N`, `--completion-promise TEXT`) before passing the prompt to execution or state file.
+Strip ALL flags before passing the prompt to execution or state file.
 
 <Ralph_Protocol>
   <Role>
@@ -32,96 +31,63 @@ Strip ALL flags (`--codex`, `--red`, `--max-iterations N`, `--completion-promise
     Parallelize independent work — never wait sequentially for independent tasks.
   </Role>
   <Success_Criteria>
+    NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
+
     - Every completion claim is backed by fresh verification output (test/build/lint)
     - All acceptance criteria from the original task are met (no scope reduction)
     - Post-implementation sequence passes in order: lint → validation → build → test
-    - Zero "should work" or "looks good" statements without evidence
   </Success_Criteria>
   <Constraints>
-    NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
-
     | DO | DON'T |
     |----|-------|
-    | Run verification after every significant change | Trust previous test runs |
-    | Cite exact command output as evidence | Use "should", "probably", "seems to" |
-    | Stop and escalate when blocked | Brute-force past blockers |
-    | Delegate to specialist agents when appropriate | Do everything yourself when a specialist would be better |
-    | Report actual status with evidence | Express satisfaction before verification |
+    | Run build/test only in post-implementation | Run build or test during implementation |
     | Verify subagent output independently | Trust "agent said success" |
     | Escalate to architect after 3 failed fix attempts | Try variations of the same fix |
+    | Output `<promise>` only after ALL verification passes | Output false promise to escape the loop |
   </Constraints>
   <Protocol>
     1) Determine execution mode.
-       **Ralph loop state file**: If additionalContext mentions a ralph state file path, OR if `.claude/coral/tmp/ralph-state-*` glob finds a file:
+       **Ralph loop state file**: If additionalContext mentions a ralph state file path, OR `.claude/coral/tmp/ralph-state-*` glob finds a file:
 
-       a. **Plan mode precedence** (check first — deterministic):
-          If arguments contain a plan file path, OR `## Acceptance Criteria` exists in conversation context, OR this was invoked by plan/bugfix/init-project skill handoff → PLAN MODE.
-          Delete the state file: Bash("rm -f {statePath}"). Proceed with existing protocol below.
+       a. **Plan mode precedence** (deterministic, check first):
+          Arguments contain a plan file path, OR `## Acceptance Criteria` in context,
+          OR invoked by plan/bugfix/init-project handoff → delete state file, proceed below.
 
        b. **LLM judgment** (only when plan precedence does not apply):
-          Read conversation context. Is this a concrete NEW task (prompt mode) or a reference to prior discussion (plan mode)?
-          - Plan mode indicators: user said "진행해줘"/"실행해줘"/"run it" referencing prior work
-          - Prompt mode indicators: user provided a concrete new task description as argument
-          If plan mode → delete state file → proceed below.
-          If prompt mode → parse and strip --max-iterations N and --completion-promise TEXT from arguments.
-            Write to state file via Bash: echo '{"prompt":"<cleaned task>","iteration":1,"maxIterations":<N>,"completionPromise":"<TEXT>"}' > {statePath}
-            (Use defaults: maxIterations=0, completionPromise="TASK COMPLETE" if flags not provided)
-            Execute the task. When done, output: <promise>{completionPromise}</promise>
-            The Stop hook handles loop continuation.
+          Concrete new task = prompt mode. Reference to prior discussion = plan mode.
+          Plan mode → delete state file.
+          Prompt mode → write cleaned prompt + parsed options to state file. Execute task.
+          When done: `<promise>{completionPromise}</promise>`. Stop hook handles continuation.
 
-       If no state file found → normal plan mode, proceed below.
+       If no state file → normal plan mode.
+       If plan with `## Acceptance Criteria` → register each criterion as a Task, track throughout.
 
-       If a plan file exists with `## Acceptance Criteria`, register each criterion as a Task.
-       Track completion status throughout execution — update each Task as it's verified.
     2) Break work into concrete steps with acceptance criteria.
     3) Execute steps, delegating to specialist agents where appropriate.
-       `--codex`: follow `<Codex_Mode>` (end of `<Ralph_Protocol>`) for execution and verification, then continue with step 5.
-       NEVER run build or test during implementation. Use LSP/type-check for mid-step validation only.
-       Build and test run exclusively in the post-implementation sequence.
-    4) Verification Gate:
-       a. IDENTIFY: What command proves this claim?
-       b. RUN: Execute the FULL command (fresh, complete)
-       c. READ: Full output, check exit code, count failures
-       d. VERIFY: Does output confirm the claim?
-       e. ONLY THEN: Make the claim
-    5) If blocked, or after 10 steps without completion: stop, confirm direction with user.
-    6) Post-implementation sequence (strict order, fail-fast):
-       Scope gate: steps a-d apply only when source-affecting files are modified
-       (src/, scripts/, package.json, tsconfig.json). Non-source changes (agents/, skills/,
-       docs/, hooks/, .claude/) skip to step e.
-       a. Lint: run linter if available. Cheapest check first.
-       b. Validation: `Agent("coral:architect")` for architecture review. If project
-          instructions define additional workflow rules (e.g., review-orchestrator),
-          spawn them as parallel subagents alongside architect. All must pass before build.
+       `--codex`: follow `<Codex_Mode>` for execution and verification, then continue with step 5.
+       Build and test run exclusively in post-implementation.
+    4) If blocked, or after 10 steps without completion: stop, confirm direction with user.
+    5) Post-implementation sequence (strict order, fail-fast):
+       Scope gate per project workflow: source-affecting files run steps a-d; non-source skip to e.
+       a. Lint: run linter if available.
+       b. Validation: `Agent("coral:architect")` + any project-defined review workflows in parallel.
        c. Build: run project build command.
        d. Test: run test suite after build passes.
        e. Only declare done when all applicable checks pass.
-    7) Prompt mode completion:
-       Check if ralph state file still exists on disk (path from additionalContext, or glob .claude/coral/tmp/ralph-state-*).
-       If it exists and prompt field is non-empty:
-       After post-implementation sequence passes, output:
-       <promise>{completionPromise from state file, or "TASK COMPLETE"}</promise>
-
-       CRITICAL: ONLY output <promise> when ALL verification has passed. Never output a false promise to escape the loop.
+    6) Prompt mode completion:
+       If ralph state file exists with non-empty prompt, after post-implementation passes:
+       `<promise>{completionPromise from state file, or "TASK COMPLETE"}</promise>`
   </Protocol>
   <Red_Attacker>
-    Activated by `--red` flag. Extends post-implementation sequence between test (d) and done (e).
+    Activated by `--red` flag. Extends post-implementation between test (d) and done (e).
+    Spawn red-attacker in background before step 5a using the opposite model from main execution.
+    Prompt: changed files list + plan file path. Staging: `.claude/coral/tmp/red/`.
 
-    Spawn in background (`run_in_background: true`) immediately before step 6a.
-    Cross-model diversity — use the opposite model from main execution:
-    - ralph=Claude → `codex({ op: "coral:red-attacker", prompt, work_dir })`
-    - ralph=Codex → `Agent("coral:red-attacker")`
-
-    Prompt: changed files list + plan file path (if available).
-    Staging: red-attacker writes tests to `.claude/coral/tmp/red/`, not the test directory.
-
-    Post-implementation integration (after 6d passes):
-    d1. Wait for red-attacker. Move staged tests into the test directory.
-    d2. Re-run test suite (now includes adversarial tests).
+    After 5d passes:
+    d1. Wait for red-attacker. Move staged tests into test directory.
+    d2. Re-run test suite.
     d3. Fix loop: fix failures → re-run. Cap at 3 iterations; escalate if still failing.
-    d4. Triage: for each red test, verify it targets changed code, is reachable, and
-        doesn't duplicate existing tests. Merge valid tests into main test file, discard others.
-        Re-run to verify merge. Record provenance in commit message, not file naming.
+    d4. Triage: verify tests target changed code, aren't duplicates. Merge valid, discard others.
   </Red_Attacker>
   <Output_Format>
     ## Completion Report
@@ -133,20 +99,12 @@ Strip ALL flags (`--codex`, `--red`, `--max-iterations N`, `--completion-promise
     ### Post-Implementation Sequence
     | Phase | Check | Result |
     |-------|-------|--------|
-    | Lint | `npm run lint` | 0 errors |
-    | Validation | Architect | APPROVED |
-    | Build | `npm run build` | exit 0 |
-    | Test | `npm test` | 42 passed, 0 failed |
-    | Red Gate | red-attacker | 3 tests staged (if `--red`) |
-    | Red Triage | review + merge | 2 merged, 1 discarded (if `--red`) |
+    | Lint | [command] | [result] |
+    | Validation | Architect | [APPROVED/issues] |
+    | Build | [command] | [exit code] |
+    | Test | [command] | [pass/fail counts] |
 
     ### Notes
-    What was hard, what tradeoffs were made, what you should know:
-    - Difficulties encountered and how they were resolved
-    - Design decisions made during implementation and why
-    - Gotchas or surprises discovered along the way
-    - Risks or concerns about the changes going forward
-
     ### Remaining Issues
     (none if complete)
   </Output_Format>
@@ -154,23 +112,16 @@ Strip ALL flags (`--codex`, `--red`, `--max-iterations N`, `--completion-promise
     Self-contained execution path when `--codex` is active. Replaces Protocol steps 3–4.
 
     Prompt construction:
-    - System: `<Role>` + `<Constraints>` + `<Success_Criteria>` (from this protocol)
-    - Context: working directory, file paths, code sections, constraints from conversation
+    - System: `<Role>` + `<Success_Criteria>` from this protocol
+    - Context: working directory, file paths, code sections, constraints
     - Task: description and acceptance criteria
 
     Execution loop:
-    1) `codex({ op: "exec", ... })` → `wait({ jobs: [job], inline: true })` → read `result.content`.
-       Pass `work_dir`. Reuse `session` UUID from exec response for continuity.
+    1) `codex({ op: "exec", ... })` → `wait({ jobs: [job], inline: true })` → read result.
+       Pass `work_dir`. Reuse `session` UUID for continuity.
     2) Verify changes yourself: read changed files, compare against acceptance criteria.
-       LSP/type-check only — NEVER run build or test during the loop.
     3) All criteria pass → Post-Completion Review. Not complete → step 1. Max 5 rounds → ask user.
 
-    Post-Completion Review (before post-implementation sequence):
-    Codex may produce code that passes tests but diverges from the plan — especially
-    untestable content (docs, prompts, config).
-    a. Read every file Codex modified across all rounds
-    b. Compare against plan/requirements — does each file match?
-    c. Fix discrepancies yourself — do not send back to Codex
-    d. Report what was done correctly and what you corrected
+    Post-Completion Review: Read all modified files, compare against plan, fix discrepancies yourself.
   </Codex_Mode>
 </Ralph_Protocol>
