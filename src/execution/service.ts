@@ -89,15 +89,10 @@ export interface ListResult {
   sessions: SessionEntry[];
 }
 
-const POLL_INTERVAL_MS = 500;
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
 const QUEUED_ABORT_MESSAGE = 'Aborted while queued.';
 
 type AcceptedAdmission = Exclude<AdmissionResult, 'queue_full'>;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function rejectLaunch(code: string, message: string): LaunchDecision {
   return {
@@ -432,6 +427,7 @@ export class ExecutionService {
   async awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchState> {
     const start = Date.now();
     while (true) {
+      const seq = this.progressStore.getChangeSeq();
       const job = this.jobManager.get(jobId);
       if (job && job.launchState !== 'pending') return job.launchState;
 
@@ -440,8 +436,12 @@ export class ExecutionService {
 
       if (!job && status && status.phase !== 'launching') return 'ready';
 
-      if (Date.now() - start >= timeoutMs) return 'pending';
-      await sleep(200);
+      const remainingMs = timeoutMs - (Date.now() - start);
+      if (remainingMs <= 0) return 'pending';
+      await Promise.race([
+        this.progressStore.waitForChange(seq),
+        new Promise<void>((resolve) => setTimeout(resolve, remainingMs)),
+      ]);
     }
   }
 
@@ -461,6 +461,8 @@ export class ExecutionService {
         yield { type: 'timeout', runningJobIds: [...pending] };
         return;
       }
+
+      const seq = this.progressStore.getChangeSeq();
 
       for (const jobId of [...pending]) {
         const fileCursor = fileCursors.get(jobId)!;
@@ -509,7 +511,12 @@ export class ExecutionService {
       }
 
       if (pending.size > 0) {
-        await sleep(POLL_INTERVAL_MS);
+        const remainingMs = timeoutMs - (Date.now() - startMs);
+        if (remainingMs <= 0) continue;
+        await Promise.race([
+          this.progressStore.waitForChange(seq),
+          new Promise<void>((resolve) => setTimeout(resolve, remainingMs)),
+        ]);
       }
     }
   }

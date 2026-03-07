@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { detectClaudeCli, resetClaudeCliCache } from '../cli-detection.js';
+import { detectClaudeCli, resetClaudeCliCache } from '../../cli-detection.js';
 
 vi.mock('node:child_process', () => ({
   execFile: vi.fn(),

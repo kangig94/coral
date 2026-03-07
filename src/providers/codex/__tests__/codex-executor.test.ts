@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, wri
 import { join } from 'node:path';
 import { EventEmitter, Readable, Writable } from 'node:stream';
 
-vi.mock('../cli-detection.js', () => ({
+vi.mock('../../cli-detection.js', () => ({
   detectCodexCli: vi.fn(),
 }));
 
@@ -12,7 +12,7 @@ vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }));
 
-import { detectCodexCli } from '../cli-detection.js';
+import { detectCodexCli } from '../../cli-detection.js';
 import { spawn } from 'node:child_process';
 import { executeOneShot, executeResume, executeFork, killAllChildren, _test } from '../codex-executor.js';
 

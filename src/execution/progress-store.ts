@@ -57,6 +57,34 @@ export class ProgressStore {
   private readonly jobStartedAt = new Map<string, number>();
   private readonly statusCache = new Map<string, PersistedStatusRecord>();
   private liveCount = 0;
+  private changeSeq = 0;
+  private waiters: Array<() => void> = [];
+
+  /**
+   * Returns a snapshot of the change sequence counter.
+   * Pass this to `waitForChange()` to avoid missing notifications.
+   */
+  getChangeSeq(): number {
+    return this.changeSeq;
+  }
+
+  /**
+   * Waits until the change sequence advances past `sinceSeq`.
+   * Returns immediately if changes have already occurred since `sinceSeq`.
+   */
+  waitForChange(sinceSeq: number): Promise<void> {
+    if (this.changeSeq !== sinceSeq) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      this.waiters.push(resolve);
+    });
+  }
+
+  private notifyWaiters(): void {
+    this.changeSeq++;
+    const batch = this.waiters;
+    this.waiters = [];
+    for (const resolve of batch) resolve();
+  }
 
   jobDir(jobId: string): string {
     return join(JOBS_DIR, jobId);
@@ -123,6 +151,7 @@ export class ProgressStore {
     if (!wasLive && isLive) this.liveCount++;
     if (wasLive && !isLive) this.liveCount--;
     this.statusCache.set(jobId, { ...record });
+    this.notifyWaiters();
   }
 
   /** Read status.json. Returns null if not found or corrupt. */
@@ -175,6 +204,7 @@ export class ProgressStore {
     } catch {
       /* progress write must not break execution */
     }
+    this.notifyWaiters();
     return eventId;
   }
 

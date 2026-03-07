@@ -6,7 +6,7 @@ import {
   executeClaudeFork,
   ClaudeExecParseError,
 } from './claude-executor.js';
-import { detectClaudeCli } from './cli-detection.js';
+import { detectClaudeCli } from '../cli-detection.js';
 import { extractClaudeProgressMessage } from './progress.js';
 import type { ProviderRequest, ProviderResult } from '../../types.js';
 import { mapProviderResultBase } from '../result-mapping.js';

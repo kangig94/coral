@@ -10,7 +10,7 @@ import type { CodexExecResult } from './types.js';
 import { spawnCli, activeChildren, killAllChildren as killAllRunnerChildren } from '../../execution/engine.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 import { parseCodexJsonl } from './output-parser.js';
-import { detectCodexCli, type CliInfo } from './cli-detection.js';
+import { detectCodexCli, type CliInfo } from '../cli-detection.js';
 
 export interface CodexExecOptions {
   model?: string;

@@ -8,12 +8,12 @@ export type CliInfo =
   | { available: true; version: string; authState: 'unknown' }
   | { available: true; version: string; authState: 'unauthenticated'; authError: string };
 
-export type AuthProbeResult =
+type AuthProbeResult =
   | { authState: 'authenticated' }
   | { authState: 'unknown' }
   | { authState: 'unauthenticated'; authError: string };
 
-export type CliDetectorConfig = {
+type CliDetectorConfig = {
   binaryName: string;
   versionArgs: readonly string[];
   notFoundMessage: string;
@@ -24,7 +24,7 @@ export type CliDetectorConfig = {
   parseAuthOutput?: (stdout: string) => AuthProbeResult | null;
 };
 
-export function createCliDetector(config: CliDetectorConfig): {
+function createCliDetector(config: CliDetectorConfig): {
   detect: () => Promise<CliInfo>;
   resetCache: () => void;
 } {
@@ -136,3 +136,66 @@ export function createCliDetector(config: CliDetectorConfig): {
     });
   }
 }
+
+// ── Codex ──────────────────────────────────────
+
+const codexDetector = createCliDetector({
+  binaryName: 'codex',
+  versionArgs: ['--version'],
+  notFoundMessage: 'Codex CLI not found. Install it with: npm install -g @openai/codex',
+  authEnvVar: 'OPENAI_API_KEY',
+  authCommand: ['whoami'],
+  authErrorPattern: /not logged in|unauthorized|unauthenticated|no api key|missing.*api.*key|authentication required/i,
+  authErrorMessage: 'Codex CLI is not authenticated. Run "codex login" or set the OPENAI_API_KEY environment variable.',
+});
+
+export const detectCodexCli = codexDetector.detect;
+export const resetCodexCliCache = codexDetector.resetCache;
+
+// ── Claude ─────────────────────────────────────
+
+const CLAUDE_AUTH_ERROR_MESSAGE =
+  'Claude CLI is not authenticated. Run "claude auth login" or set the ANTHROPIC_API_KEY environment variable.';
+
+function parseClaudeAuthStatus(stdout: string): AuthProbeResult | null {
+  try {
+    const parsed = JSON.parse(stdout) as Record<string, unknown>;
+    if (typeof parsed.authenticated === 'boolean') {
+      return parsed.authenticated
+        ? { authState: 'authenticated' }
+        : { authState: 'unauthenticated', authError: CLAUDE_AUTH_ERROR_MESSAGE };
+    }
+
+    let status: string | null = null;
+    if (typeof parsed.status === 'string') {
+      status = parsed.status;
+    } else if (typeof parsed.auth_status === 'string') {
+      status = parsed.auth_status;
+    }
+
+    if (status === null) return null;
+    if (/authenticated|logged.?in|active/i.test(status)) {
+      return { authState: 'authenticated' };
+    }
+    if (/unauthenticated|logged.?out|not.?authenticated|missing|expired/i.test(status)) {
+      return { authState: 'unauthenticated', authError: CLAUDE_AUTH_ERROR_MESSAGE };
+    }
+  } catch {
+    // ignore malformed auth-status JSON
+  }
+  return null;
+}
+
+const claudeDetector = createCliDetector({
+  binaryName: 'claude',
+  versionArgs: ['--version'],
+  notFoundMessage: 'Claude CLI not found. Install it from the Claude Code distribution.',
+  authEnvVar: 'ANTHROPIC_API_KEY',
+  authCommand: ['auth', 'status', '--json'],
+  authErrorPattern: /not logged in|unauthorized|unauthenticated|authentication required|login required|no api key|missing.*api.*key/i,
+  authErrorMessage: CLAUDE_AUTH_ERROR_MESSAGE,
+  parseAuthOutput: parseClaudeAuthStatus,
+});
+
+export const detectClaudeCli = claudeDetector.detect;
+export const resetClaudeCliCache = claudeDetector.resetCache;

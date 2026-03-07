@@ -1,7 +1,7 @@
 /** Codex provider adapter for the execution service. */
 
 import { executeOneShot, executeResume, executeFork } from './codex-executor.js';
-import { detectCodexCli } from './cli-detection.js';
+import { detectCodexCli } from '../cli-detection.js';
 import { extractProgressMessage } from './progress.js';
 import type { ProviderRequest, ProviderResult } from '../../types.js';
 import { mapProviderResultBase } from '../result-mapping.js';
