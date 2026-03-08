@@ -129,6 +129,10 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
       ## Round N ({Round Label})
 
+      **If `--deep`**: use the resolver's Synthesis Report directly (Classification Table, Vyabhicharita, Constraint Collisions, Applied Changes, Deferred/Diverged items).
+
+      **Otherwise**: produce the summary yourself after synthesis:
+
       | # | Source | Finding | Severity | Level | Classification |
       |---|--------|---------|----------|-------|----------------|
       | 1 | Critic #1/#4 | Description | HIGH | FRAME | Adopt |
@@ -137,7 +141,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
       - Deduplicate overlapping findings (use "Both" as source)
       - Order by Severity (CRITICAL > HIGH > MEDIUM > LOW)
 
-      **Changes Applied**: [what was edited]
+      **Changes Applied**: [what was edited, with rationale for each change]
 
     **4d. Exit Condition**
     **If `--deep`**: Read `CORAL_METHODS/HOW-COMPLETE.md` and apply its additional completion criteria alongside the rules below.
