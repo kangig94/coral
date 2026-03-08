@@ -13,7 +13,6 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { EOL } from 'node:os';
 
 const DEFAULT_STATE = {
   prompt: '',
@@ -35,6 +34,7 @@ try {
     const statePath = createStateFile(projectDir, sessionId);
     writeJson({
       hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
         additionalContext: buildAdditionalContext(statePath),
       },
     });
@@ -48,6 +48,7 @@ try {
     const statePath = createStateFile(projectDir, sessionId);
     writeJson({
       hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
         additionalContext: buildAdditionalContext(statePath),
       },
     });
@@ -209,7 +210,7 @@ function normalizeWhitespace(text) {
 }
 
 function writeJson(value) {
-  process.stdout.write(JSON.stringify(value) + EOL);
+  console.log(JSON.stringify(value));
 }
 
 function readStdin() {

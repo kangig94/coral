@@ -46,6 +46,9 @@ Strip ALL flags before passing the prompt to execution or state file.
     | Output `<promise>` only after ALL verification passes | Output false promise to escape the loop |
   </Constraints>
   <Protocol>
+    ⛔ HARD GATE: Complete Step 1 BEFORE any file reads, searches, or analysis.
+    No tool calls except Glob/Read for state file until execution mode is determined.
+
     1) Determine execution mode.
        **Ralph loop state file**: If additionalContext mentions a ralph state file path, OR `.claude/coral/tmp/ralph-state-*` glob finds a file:
 
@@ -53,7 +56,7 @@ Strip ALL flags before passing the prompt to execution or state file.
           Arguments contain a plan file path, OR `## Acceptance Criteria` in context,
           OR invoked by plan/bugfix/init-project handoff → delete state file, proceed below.
 
-       b. **LLM judgment** (only when plan precedence does not apply):
+       b. **Otherwise**:
           Concrete new task = prompt mode. Reference to prior discussion = plan mode.
           Plan mode → delete state file.
           Prompt mode → write cleaned prompt + parsed options to state file. Execute task.
