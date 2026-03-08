@@ -163,7 +163,7 @@ argument-hint: "[existing|new]"
 
   ## Phase 3.5: Verify Artifacts
 
-  `Agent("coral:architect --deep")` and `Agent("coral:critic --deep")` in parallel to verify generated artifacts.
+  `Agent("coral:architect")` and `Agent("coral:critic")` in parallel to verify generated artifacts. Pass `--deep` in the prompt.
   Provide each with: plan file path, list of generated/enhanced files from Phase 3.
   Each outputs a findings table with severity (CRITICAL/HIGH/MEDIUM/LOW) and file:line references.
 
