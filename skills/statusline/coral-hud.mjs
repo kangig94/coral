@@ -739,12 +739,12 @@ async function renderCoralLine() {
       signal: AbortSignal.timeout(CORAL_HEALTH_TIMEOUT_MS),
     });
     if (!resp.ok) {
-      const line = `coral ${DIM}○ offline${RESET}`;
+      const line = `${DIM}coral${RESET}`;
       writeBackendSlot(line, false);
       return line;
     }
     const data = await resp.json();
-    const parts = [`coral ${GREEN}●${RESET}`];
+    const parts = [`\x1b[38;2;255;133;89mcoral${RESET}`];
     if (data.activeChildren > 0) parts.push(`${MAGENTA}⚙ ${data.activeChildren}${RESET}`);
     if (data.queueDepth > 0) parts.push(`queue:${data.queueDepth}`);
 
@@ -756,11 +756,11 @@ async function renderCoralLine() {
       } catch {}
     }
 
-    const line = parts.join(SEP);
+    const line = parts.join(" ");
     writeBackendSlot(line, true);
     return line;
   } catch {
-    const line = `coral ${DIM}○ offline${RESET}`;
+    const line = `${DIM}coral${RESET}`;
     writeBackendSlot(line, false);
     return line;
   } finally {

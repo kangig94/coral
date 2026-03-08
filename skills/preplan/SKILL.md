@@ -58,9 +58,9 @@ Structured problem-definition conversation with the user before planning begins.
     - Do the items tell a coherent story? (Problem → Criteria → Scope → Assumptions → Systems)
     - Are there contradictions between items? (e.g., scope excludes something that success criteria requires)
     - Is the problem statement actually the root problem, or a symptom?
-    - Would the Alt 2 (radical) option make you reconsider the problem statement itself?
-    - Even for confirmed items: is there a radical alternative so valuable that the user should know about it?
-      If yes, flag it in the presentation — the user may not have considered it.
+    - Do any radical alternatives make you reconsider the problem statement itself?
+    - Even for confirmed sub-items: is there a radical alternative so valuable that the user should know about it?
+      If yes, mark it unconfirmed and add the three-point spectrum — the user may not have considered it.
 
     Fix inconsistencies before presenting. This step is silent — no output to the user.
 
@@ -68,14 +68,23 @@ Structured problem-definition conversation with the user before planning begins.
 
     Present complete draft. The user's role is to **correct**, not to fill from scratch.
 
-    For each unconfirmed item, commit to the best choice and present it as the default,
-    then offer 2 alternatives inline:
-    - **Default**: narrowest scope that solves the problem without introducing unnecessary complexity.
-    - **Alt 1**: minimal — quickest path, least disruption, accepts known tradeoffs.
-    - **Alt 2**: radical — rethink the entire approach. Breaking changes, major refactors, or architectural rewrites that eliminate the root cause permanently. High upfront cost, but the codebase emerges fundamentally better. Propose this even if it feels disproportionate to the original ask.
+    For each unconfirmed **sub-item** (not the section as a whole), commit to the best choice.
+    Two kinds of unconfirmed:
+    - **Needs decision** (strongly preferred) — actively search for alternatives. Most unconfirmed items
+      have meaningful alternatives if you think harder. Mark `[unconfirmed]` with three alternatives:
+      - **default**: narrowest scope that solves the problem without introducing unnecessary complexity.
+      - **minimal**: quickest path, least disruption, accepts known tradeoffs.
+      - **radical**: rethink the entire approach. Breaking changes, major refactors, or architectural rewrites that eliminate the root cause permanently. High upfront cost, but the codebase emerges fundamentally better. Propose this even if it feels disproportionate to the original ask.
+    - **Needs verification** (rare) — purely factual, no meaningful alternatives possible
+      (e.g. "is this ESM or CJS?"). Mark `[unconfirmed]` with no nested list.
+      Use sparingly — default to providing alternatives unless the item is strictly factual.
 
-    Each represents a different point on the scope/investment spectrum, not minor variations of the same idea.
-    > **Success Criteria** [unconfirmed — picked A, alternatives: B, C]
+    Each alternative represents a different point on the scope/investment spectrum, not minor variations of the same idea.
+    Confirmed sub-items have no marker and no alternatives. Unconfirmed sub-items with alternatives show as nested list:
+    > - [ ] Response time under 200ms [unconfirmed]
+    >   - default: 200ms
+    >   - minimal: 500ms (accept higher latency)
+    >   - radical: 50ms with cache layer
     The user can accept (silence), pick an alternative, or propose their own.
 
     ### 4. Conversation Loop
@@ -89,8 +98,9 @@ Structured problem-definition conversation with the user before planning begins.
     as "unconfirmed" — the user cannot confirm what they don't know is uncertain.
     If ambiguous about a specific item, call it out and ask for clarification.
 
-    After each exchange, assess: are all 5 required items free of "unconfirmed" markers?
-    If yes — including after a previously confirmed item was changed and re-confirmed —
+    After each exchange, count remaining `[unconfirmed]` sub-items and show progress
+    (e.g. "3 unconfirmed items remaining"). When zero remain —
+    including after a previously unconfirmed item was resolved —
     **always** present the agreement summary and call `AskUserQuestion`:
     ```
     AskUserQuestion({
@@ -113,7 +123,7 @@ Structured problem-definition conversation with the user before planning begins.
     | DO | DON'T |
     |----|-------|
     | Fill items autonomously before asking | Ask item-by-item like a form |
-    | Commit to the best choice for unconfirmed items, offer 2 alternatives | Leave unconfirmed items blank or ask open-ended questions |
+    | Commit to the best choice per unconfirmed sub-item, offer minimal + radical alternatives | Leave unconfirmed items blank or offer alternatives per section |
     | Mark uncertain items as "unconfirmed" | Present guesses as confirmed facts |
     | Flag ambiguous items explicitly to the user | Assume the user noticed uncertainty |
     | Update agreement file on every change | Keep agreement only in conversation |
@@ -130,23 +140,28 @@ Structured problem-definition conversation with the user before planning begins.
     ```markdown
     # Pre-plan: {topic}
 
-    ## Problem Statement [confirmed]
-    [Current state vs desired state]
+    ## Problem Statement
+    - Current state: ...
+    - Desired state: ... [unconfirmed]
+      - default: X
+      - minimal: Y
+      - radical: Z
 
-    ## Success Criteria [unconfirmed]
+    ## Success Criteria
     - [ ] Criterion 1
-    - [ ] Criterion 2
+    - [ ] Criterion 2 [unconfirmed]
+      - default: ...
+      - minimal: ...
+      - radical: ...
+    - [ ] Criterion 3 [unconfirmed]  <!-- needs verification, no alternatives -->
 
-    ## Scope [confirmed]
-    **Included**: ...
-    **Excluded**: ...
-
-    ## Assumptions [confirmed]
-    - Assumption 1 [confirmed]
-    - Assumption 2 [unconfirmed]
-
-    ## Affected Systems [confirmed]
-    - `file:path` — reason
+    ## Scope
+    ...
+    ## Assumptions
+    ...
+    ## Affected Systems
+    ...
+    <!-- remaining sections use the same sub-item pattern -->
 
     ## Constraints
     [If applicable, else N/A]
@@ -159,7 +174,7 @@ Structured problem-definition conversation with the user before planning begins.
     e.g. user preferences, tangential observations, rejected alternatives and why.]
     ```
 
-    Markers: `[confirmed]`/`[unconfirmed]` on all required headings and individual sub-items. Optional items need no markers.
+    Markers: only `[unconfirmed]` is marked — no marker means confirmed. Unconfirmed sub-items that need a decision list three alternatives as nested items (default, minimal, radical). Unconfirmed sub-items that need verification have no nested list. Section headings carry no markers. Optional items need no markers.
 
     ### Transition Handoff
 
