@@ -52,11 +52,33 @@ Structured problem-definition conversation with the user before planning begins.
     **RECOMMENDED**: When filling Assumptions (#4), consider applying
     `CORAL_METHODS/HOW-ELICIT.md` Lens 3 (Assumption Surfacing).
 
-    ### 2. Present Draft
+    ### 2. Self-Review
+
+    Before presenting to the user, review the entire draft as a whole:
+    - Do the items tell a coherent story? (Problem → Criteria → Scope → Assumptions → Systems)
+    - Are there contradictions between items? (e.g., scope excludes something that success criteria requires)
+    - Is the problem statement actually the root problem, or a symptom?
+    - Would the Alt 2 (radical) option make you reconsider the problem statement itself?
+    - Even for confirmed items: is there a radical alternative so valuable that the user should know about it?
+      If yes, flag it in the presentation — the user may not have considered it.
+
+    Fix inconsistencies before presenting. This step is silent — no output to the user.
+
+    ### 3. Present Draft
 
     Present complete draft. The user's role is to **correct**, not to fill from scratch.
 
-    ### 3. Conversation Loop
+    For each unconfirmed item, commit to the best choice and present it as the default,
+    then offer 2 alternatives inline:
+    - **Default**: narrowest scope that solves the problem without introducing unnecessary complexity.
+    - **Alt 1**: minimal — quickest path, least disruption, accepts known tradeoffs.
+    - **Alt 2**: radical — rethink the entire approach. Breaking changes, major refactors, or architectural rewrites that eliminate the root cause permanently. High upfront cost, but the codebase emerges fundamentally better. Propose this even if it feels disproportionate to the original ask.
+
+    Each represents a different point on the scope/investment spectrum, not minor variations of the same idea.
+    > **Success Criteria** [unconfirmed — picked A, alternatives: B, C]
+    The user can accept (silence), pick an alternative, or propose their own.
+
+    ### 4. Conversation Loop
 
     Respond to user feedback:
     - Correction -> update item, update task, update agreement file
@@ -77,13 +99,13 @@ Structured problem-definition conversation with the user before planning begins.
     })
     ```
     If the user chooses "Continue discussion", stay in the loop.
-    Otherwise, proceed to step 4.
+    Otherwise, proceed to step 5.
 
-    ### 3a. Early Exit
+    ### 4a. Early Exit
 
     On user abort: save agreement as-is, exit protocol, proceed to implementation.
 
-    ### 4. Completion
+    ### 5. Completion
 
     All items confirmed and user approved transition.
   </Protocol>
@@ -91,6 +113,7 @@ Structured problem-definition conversation with the user before planning begins.
     | DO | DON'T |
     |----|-------|
     | Fill items autonomously before asking | Ask item-by-item like a form |
+    | Commit to the best choice for unconfirmed items, offer 2 alternatives | Leave unconfirmed items blank or ask open-ended questions |
     | Mark uncertain items as "unconfirmed" | Present guesses as confirmed facts |
     | Flag ambiguous items explicitly to the user | Assume the user noticed uncertainty |
     | Update agreement file on every change | Keep agreement only in conversation |
