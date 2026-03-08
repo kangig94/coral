@@ -5,7 +5,7 @@ const IDLE_TIMEOUT = 10 * 60 * 1000; // 10 minutes of inactivity
 const MAX_BUFFER = 10 * 1024 * 1024; // 10MB
 const SIGTERM_GRACE_MS = 5_000; // grace period before escalating to SIGKILL
 
-export const MAX_ACTIVE_CHILDREN = Math.min(Math.max(parsePositiveInt(process.env.CORAL_MAX_CHILDREN, 10), 1), 10);
+export const MAX_ACTIVE_SESSIONS = Math.min(Math.max(parsePositiveInt(process.env.CORAL_MAX_SESSIONS, 10), 1), 10);
 const MAX_QUEUE_SIZE = 20;
 
 export type LaunchPermit = { type: 'immediate' };
@@ -74,7 +74,7 @@ export function parsePositiveInt(raw: string | undefined, fallback: number): num
 }
 
 function hasLaunchCapacity(): boolean {
-  return activeLaunches.size < MAX_ACTIVE_CHILDREN;
+  return activeLaunches.size < MAX_ACTIVE_SESSIONS;
 }
 
 function queuedHandle(entry: QueuedLaunchEntry): QueuedHandle {
@@ -217,12 +217,12 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
 
   if (!usingReservedPermit) {
     const globalActive = activeLaunches.size;
-    if (queuedLaunches.length > 0 || globalActive >= MAX_ACTIVE_CHILDREN) {
+    if (queuedLaunches.length > 0 || globalActive >= MAX_ACTIVE_SESSIONS) {
       return Promise.reject(new CliBusyError({
         error: 'busy',
         provider: options.provider,
         globalActive,
-        globalLimit: MAX_ACTIVE_CHILDREN,
+        globalLimit: MAX_ACTIVE_SESSIONS,
       }));
     }
     internalPermitJobId = `spawncli-${randomUUID()}`;

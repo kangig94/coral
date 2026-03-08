@@ -38,12 +38,12 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
       **Preplan**: `.claude/coral/plans/pre-{topic}.md` (omit if no preplan exists)
       ## Requirements Summary
       ## Acceptance Criteria (testable, verifiable — register each as a Task during implementation)
+      ## Execution Order (dependency graph, batches, file mapping — written after review loop, see step 4e)
       ## Mathematical Specification (if applicable)
       ## Implementation Phases (with file:line references)
       ## Risks & Mitigations
       ## Verification Steps
 
-    Parenthetical annotations are instructions to the implementer who reads the plan file.
     The plan file is the single source of truth. All subsequent work edits this file directly.
 
     ### 2. Gather Context
@@ -78,6 +78,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     - `TaskCreate({ subject: "Phase 0 — Frame Gate" })`
     - `TaskCreate({ subject: "Phase 1 — Codex review" })` (only if `--codex`)
     - `TaskCreate({ subject: "Phase 2 — Claude review" })`
+    - `TaskCreate({ subject: "Execution Ordering" })`
 
     On phase start: `TaskUpdate({ taskId, status: "in_progress" })`.
     On each round: `TaskUpdate({ taskId, subject: "Phase N — {label} (round M/5)" })`.
@@ -141,10 +142,62 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     **4d. Exit Condition**
     **If `--deep`**: Read `CORAL_METHODS/HOW-COMPLETE.md` and apply its additional completion criteria alongside the rules below.
     Evaluate based on what reviewers RETURNED this round (not your post-edit assessment):
-    - **Continue**: Either reviewer returned CRITICAL or HIGH → go to 4a for re-verification.
+    - **Continue**: Either reviewer returned CRITICAL or HIGH → go to 4a for re-verification (plan was modified to address findings, but the modifications themselves may introduce new issues).
     - **Fix and pass**: No CRITICAL/HIGH but MEDIUM/LOW exist → fixes applied, exit.
     - **Clean pass**: No findings above LOW (and HOW-COMPLETE satisfied, if `--deep`) → proceed to next phase (or step 5 if last phase).
     - **Max rounds (5)**: Proceed to next phase (or `AskUserQuestion` — continue, finalize, or abort — if last phase).
+
+    ### 4e. Execution Order
+
+    `TaskUpdate({ taskId: executionOrderingTaskId, status: "in_progress" })`
+    After the review loop exits (Clean pass, Fix and pass, or Max rounds), write the **Execution Order** section in the plan file.
+
+    **Step 1 — Dependency Analysis**: For each AC, identify:
+    - **Files touched**: which files will be created or modified
+    - **Logical dependencies**: does this AC require another AC's output? (e.g., API endpoint needs DB schema first)
+
+    Build a dependency graph: AC_X depends on AC_Y if they modify the same file, or AC_X logically requires AC_Y's result.
+
+    **Step 2 — Batch Grouping**: Topological sort the DAG into ordered batches:
+    - **Batch 1**: all ACs with no dependencies (roots of DAG)
+    - **Batch N**: ACs whose dependencies are all satisfied by prior batches
+    - Within each batch, all ACs are independent and can execute in parallel.
+
+    Write the result to the plan file:
+
+    ```
+    ## Execution Order
+
+    ### Dependency Graph
+    AC1 ─→ AC3
+     │
+     └──→ AC2 ─→ AC5
+    AC4 (independent)
+
+    ### Batches
+    | Batch | ACs | Dependencies | Parallel |
+    |-------|-----|--------------|----------|
+    | 1 | AC1, AC4 | — | 2 |
+    | 2 | AC2, AC3 | AC1 | 2 |
+    | 3 | AC5 | AC2 | 1 |
+
+    ### File Mapping
+    | AC | Files |
+    |----|-------|
+    | AC1 | `src/schema.ts` |
+    | AC2 | `src/api.ts`, `src/schema.ts` |
+    | AC3 | `src/frontend/form.tsx` |
+    | AC4 | `tests/unit.test.ts` |
+    | AC5 | `docs/api.md` |
+    ```
+
+    Rules:
+    - Every AC must appear in exactly one batch. No AC may be omitted.
+    - ACs with no dependencies go in Batch 1.
+    - File Mapping enables conflict detection — ACs in the same batch must NOT share files.
+      If two independent ACs touch the same file, they must be sequenced (place one in a later batch).
+
+    `TaskUpdate({ taskId: executionOrderingTaskId, status: "completed" })`
 
     ### 5. Completion
     Delete all Phase Tasks created in step 4.
@@ -187,12 +240,23 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
     **If `--no-handoff`**: stop after showing the summary above. The caller controls the next step.
 
-    **Otherwise**, ask the user how to implement.
+    **Otherwise**, ask the user how to implement:
     ```
-    AskUserQuestion({
-      question: "How would you like to implement?",
-      options: ["coral:ralph", "coral:ralph --codex", "coral:ralph --red --codex", "Skip"]
-    })
+    AskUserQuestion({ questions: [
+      { question: "How would you like to implement?", header: "Mode",
+        options: [
+          { label: "ralph", description: "Claude-native sequential" },
+          { label: "ralph --codex", description: "Codex delegation" },
+          { label: "ralph --team", description: "Parallel via Agent Teams" },
+          { label: "ralph --team --codex", description: "Parallel + Codex workers" },
+          { label: "Skip", description: "No implementation" }
+        ], multiSelect: false },
+      { question: "Enable adversarial testing?", header: "Red",
+        options: [
+          { label: "Skip (Recommended)", description: "No adversarial tests" },
+          { label: "--red", description: "Spawn red-attacker (opposite model)" }
+        ], multiSelect: false }
+    ]})
     ```
     If not skipped: `Skill({ skill: "coral:ralph", args: "[selected flags] <plan summary + context>" })`
   </Output_Format>

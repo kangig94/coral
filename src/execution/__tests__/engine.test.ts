@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 type EngineModule = typeof import('../engine.js');
 
-const ORIGINAL_MAX_CHILDREN = process.env.CORAL_MAX_CHILDREN;
+const ORIGINAL_MAX_CHILDREN = process.env.CORAL_MAX_SESSIONS;
 
-function restoreEnv(name: 'CORAL_MAX_CHILDREN', value: string | undefined): void {
+function restoreEnv(name: 'CORAL_MAX_SESSIONS', value: string | undefined): void {
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;
 }
@@ -18,18 +18,18 @@ describe('engine admission queue', () => {
   let engine: EngineModule;
 
   beforeEach(async () => {
-    process.env.CORAL_MAX_CHILDREN = '1';
+    process.env.CORAL_MAX_SESSIONS = '1';
     engine = await loadEngine();
   });
 
   afterEach(() => {
-    restoreEnv('CORAL_MAX_CHILDREN', ORIGINAL_MAX_CHILDREN);
+    restoreEnv('CORAL_MAX_SESSIONS', ORIGINAL_MAX_CHILDREN);
     vi.restoreAllMocks();
     vi.resetModules();
   });
 
   it('returns an immediate permit when capacity is available', () => {
-    expect(engine.MAX_ACTIVE_CHILDREN).toBe(1);
+    expect(engine.MAX_ACTIVE_SESSIONS).toBe(1);
     expect(engine.requestLaunch('job-1', 'codex')).toEqual({ type: 'immediate' });
     expect(engine.queueDepth()).toBe(0);
     expect(engine.queuePosition('job-1')).toBeNull();

@@ -23,7 +23,7 @@ Cross-cutting methodology files live in `methods/`. Agents and skills reference 
 | `/coral:analyze` | Deep analysis and investigation with HOW methods always applied. Pass `--codex` to delegate to Codex CLI |
 | `/coral:preplan` | Structured problem-definition conversation before planning. Aligns understanding with the user before triggering coral:plan |
 | `/coral:plan` | Planning with parallel architect/critic review. Pass `--deep` for methodology-driven synthesis, `--codex` for cross-model Codex reviews |
-| `/coral:ralph` | Persistent execution loop with verification (sonnet). Pass `--codex` to delegate to Codex CLI. Use `--red` to add adversarial tests after implementation. |
+| `/coral:ralph` | Persistent execution loop with verification (sonnet). Flags: `--codex` (Codex delegation), `--team` (parallel AC execution via Agent Teams), `--red` (adversarial tests). All flags are combinable. |
 | `/coral:code-simplify` | Simplify and refine code for clarity, consistency, and maintainability |
 | `/coral:bugfix` | Systematic bug diagnosis, planning, and fix execution |
 | `/coral:init-project` | Project initialization orchestrator - generates `.claude/` structure, agents, rules, docs |
@@ -33,16 +33,20 @@ Cross-cutting methodology files live in `methods/`. Agents and skills reference 
 
 ## --red Flag (Adversarial Testing)
 
-`/coral:ralph --red <task>` adds a red-team test generation phase after implementation:
+`/coral:ralph --red <task>` spawns a red-attacker **before implementation begins**, running adversarial test generation in parallel with the main work:
 
-1. `coral:red-attacker` spawns in the **background** immediately before lint
-2. Foreground continues: lint → parallel validation → build
-3. After build: wait for red-attacker to finish, then run the full test suite (including adversarial tests)
-4. If adversarial tests fail: fix loop runs (max 3 iterations), then escalates
+1. Red-attacker spawns at step 2 (plan mode) or step 3 start (prompt mode) with plan file + AC as input
+2. Implementation proceeds in parallel — red-attacker works independently in `.claude/coral/tmp/red/`
+3. Post-implementation: wait for red-attacker, move staged tests into test directory, run full suite
+4. Fix loop: fix failures → re-run (max 3 iterations), then escalate
 
-**Ensemble diversity**: ralph automatically uses the opposite model for red-attacker. `/coral:ralph --red` (Claude implements) → red-attacker runs via `codex({ op: "coral:red-attacker" })` (Codex tests). `/coral:ralph --red --codex` (Codex implements) → red-attacker runs via `Agent("coral:red-attacker")` (Claude tests). Different models have different blind spots.
+**Spawn method** (opposite model from main execution):
+- `--red` (Claude implements) → `codex({ op: "coral:red-attacker" })` (Codex tests)
+- `--red --codex` (Codex implements) → `Agent("coral:red-attacker")` (Claude tests)
+- `--red --team` → red-attacker joins as teammate in the worker team (Codex via `<Codex_Mode>`)
+- `--red --team --codex` → red-attacker joins as teammate (Claude, since workers use Codex)
 
-**Test file lifecycle**: red-attacker writes to the project's test directory as `red-<target>.<ext>` (e.g., `red-auth.test.ts`, `test_red_session.py`). After tests pass, ralph triages each red test — passing tests are merged into the main test file and the `red-` file is deleted; failing triage tests are discarded. Adversarial test provenance is recorded in the commit message, not in file naming.
+**Test file lifecycle**: red-attacker writes as `red-<target>.<ext>` (e.g., `red-auth.test.ts`). After tests pass, ralph triages — valid tests are merged into main test files and `red-` files are deleted; failing triage tests are discarded.
 
 ## /coral:codex - Session Commands
 

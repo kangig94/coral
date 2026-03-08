@@ -97,7 +97,7 @@ Connection info at `~/.claude/coral/backend.json`. Stores `{ pid, port, token, v
 Owns process lifecycle and backpressure:
 - `spawnCli(options)` for Codex/Claude subprocesses with idle timeout, bounded output buffering (`MAX_BUFFER` 10MB), and line-based event callback
 - graceful kill (`SIGTERM` then `SIGKILL` after 5s grace)
-- launch cap: `MAX_ACTIVE_CHILDREN` (global, default 10 via `CORAL_MAX_CHILDREN`). Excess launches enter a FIFO job queue (`MAX_QUEUE_SIZE` 20) and auto-dispatch when capacity frees
+- launch cap: `MAX_ACTIVE_SESSIONS` (global, default 10 via `CORAL_MAX_SESSIONS`). Excess launches enter a FIFO job queue (`MAX_QUEUE_SIZE` 20) and auto-dispatch when capacity frees
 - `killAllChildren()` for shutdown
 - `activeChildren` set for tracking live child processes
 

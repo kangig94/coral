@@ -1,7 +1,7 @@
 ---
 name: ralph
 description: Persistent execution loop with verification (sonnet) - implements plans or iterates on prompts
-argument-hint: "[--red] [--codex] [--max-iterations N] [--completion-promise TEXT] [task description]"
+argument-hint: "[--red] [--codex] [--team] [task description]"
 model: sonnet
 ---
 
@@ -17,9 +17,8 @@ Announce at start: "Using ralph to execute this task with verification loop."
 |----------|------|
 | `<prompt>` | Claude-native (default) |
 | `--codex` | Codex delegation |
-| `--red` | Enable adversarial testing (combinable with `--codex`) |
-| `--max-iterations N` | Max loop iterations (prompt mode, default: 0 = unlimited) |
-| `--completion-promise TEXT` | Completion promise text (prompt mode, default: "TASK COMPLETE") |
+| `--red` | Enable adversarial testing |
+| `--team` | Parallel AC execution via Agent Teams (plan mode only) |
 
 Strip ALL flags before passing the prompt to execution or state file.
 
@@ -50,24 +49,24 @@ Strip ALL flags before passing the prompt to execution or state file.
     No tool calls except Glob/Read for state file until execution mode is determined.
 
     1) Determine execution mode.
-       **Ralph loop state file**: If additionalContext mentions a ralph state file path, OR `.claude/coral/tmp/ralph-state-*` glob finds a file:
+       **Plan mode**: plan file path in context, `## Acceptance Criteria` present, or invoked by plan/bugfix/init-project handoff.
+       → Delete ralph state file. Register each AC as a Task.
+       **Prompt mode**: everything else.
+       → State file persists for loop continuation. When done: `<promise>{completionPromise}</promise>`.
 
-       a. **Plan mode precedence** (deterministic, check first):
-          Arguments contain a plan file path, OR `## Acceptance Criteria` in context,
-          OR invoked by plan/bugfix/init-project handoff → delete state file, proceed below.
+       **`--team` pre-flight** (when `--team` is present, append to step 1 before proceeding):
+       1. Verify `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` env var is set to `1`. If not set, inform user and fall back to sequential execution.
+       2. Verify plan mode (not prompt mode). If prompt mode, error: "Cannot use --team in prompt mode. --team requires a plan with Acceptance Criteria."
 
-       b. **Otherwise**:
-          Concrete new task = prompt mode. Reference to prior discussion = plan mode.
-          Plan mode → delete state file.
-          Prompt mode → write cleaned prompt + parsed options to state file. Execute task.
-          When done: `<promise>{completionPromise}</promise>`. Stop hook handles continuation.
-
-       If no state file → normal plan mode.
-       If plan with `## Acceptance Criteria` → register each criterion as a Task, track throughout.
-
-    2) Break work into concrete steps with acceptance criteria.
+    2) **Plan mode only**: Read the plan's **Execution Order** section for dependency graph, batches, and file mapping.
+       If `--red`: spawn red-attacker now (see `<Red_Attacker>`).
+       Prompt mode skips this step.
     3) Execute steps, delegating to specialist agents where appropriate.
        `--codex`: follow `<Codex_Mode>` for execution and verification, then continue with step 5.
+       `--team`: follow `<Team_Mode>` for parallel AC execution, then continue with step 5.
+       `--team --codex`: follow `<Team_Mode>`, include `<Codex_Mode>` in each worker's prompt.
+       Default (Claude-native): execute sequentially, using Execution Order to guide step ordering.
+       If prompt mode with `--red`: spawn red-attacker at start of this step (see `<Red_Attacker>`).
        Build and test run exclusively in post-implementation.
     4) If blocked, or after 10 steps without completion: stop, confirm direction with user.
     5) Post-implementation sequence (strict order, fail-fast):
@@ -82,12 +81,21 @@ Strip ALL flags before passing the prompt to execution or state file.
        `<promise>{completionPromise from state file, or "TASK COMPLETE"}</promise>`
   </Protocol>
   <Red_Attacker>
-    Activated by `--red` flag. Extends post-implementation between test (d) and done (e).
-    Spawn red-attacker in background before step 5a using the opposite model from main execution.
-    Prompt: changed files list + plan file path. Staging: `.claude/coral/tmp/red/`.
+    Activated by `--red` flag.
 
-    After 5d passes:
-    d1. Wait for red-attacker. Move staged tests into test directory.
+    **Spawn timing**: at step 2 (plan mode) or step 3 start (prompt mode), before implementation begins.
+
+    **Spawn method** (opposite model from main execution):
+    - `--codex` (with or without `--team`): `Agent("coral:red-attacker")` — Claude runs red while Codex implements.
+    - Default (no `--codex`): `codex({ op: "coral:red-attacker", ... })` — Codex runs red while Claude implements.
+    - `--team`: spawn as teammate in `ralph-workers` team instead of background agent.
+      If no `--codex` (teammate runs Claude): include `<Codex_Mode>` in prompt so red-attacker delegates to Codex.
+
+    Prompt: plan file path + acceptance criteria. Staging: `.claude/coral/tmp/red/`.
+    Red-attacker generates adversarial tests while implementation proceeds in parallel.
+
+    **Collection** (extends post-implementation between test (d) and done (e)):
+    d1. Wait for red-attacker if not yet complete. Move staged tests into test directory.
     d2. Re-run test suite.
     d3. Fix loop: fix failures → re-run. Cap at 3 iterations; escalate if still failing.
     d4. Triage: verify tests target changed code, aren't duplicates. Merge valid, discard others.
@@ -127,4 +135,29 @@ Strip ALL flags before passing the prompt to execution or state file.
 
     Post-Completion Review: Read all modified files, compare against plan, fix discrepancies yourself.
   </Codex_Mode>
+  <Team_Mode>
+    Self-contained execution path when `--team` is active. Replaces Protocol steps 3–4.
+    Requires plan mode with Acceptance Criteria.
+
+    **Setup**:
+    1. `TeamCreate({ team_name: "ralph-workers" })`
+    2. Spawn N persistent workers (N = max parallel count from any batch in Execution Order).
+       Each worker's initial prompt includes: `<Constraints>` from this protocol, assigned AC scope only, and wait for SendMessage assignments.
+       If `--codex`: also include `<Codex_Mode>` instructions so workers delegate to Codex.
+    3. If `--red`: spawn red-attacker as teammate (see `<Red_Attacker>` for method and prompt).
+
+    **Batch loop** — for each batch in the Execution Order (sequentially):
+
+    1. **Assign**: SendMessage to each worker with their AC assignment for this batch.
+       If batch has fewer ACs than workers, idle workers wait.
+    2. **Collect**: Workers SendMessage completion reports to team-lead.
+       Read modified files to verify each AC.
+    3. If a worker fails and downstream batches depend on the failed AC → AskUserQuestion.
+       If no downstream dependency → continue, mark AC incomplete.
+
+    **Teardown**: After all batches complete:
+    1. Verify no conflicting changes across workers.
+    2. Send `shutdown_request` to all teammates, wait for `shutdown_response`.
+    3. `TeamDelete({ team_name: "ralph-workers" })`, then hand off to step 5.
+  </Team_Mode>
 </Ralph_Protocol>
