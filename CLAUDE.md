@@ -73,11 +73,18 @@ When you discover something non-obvious (painful root cause, unexpected gotcha,
 Keep brief - one paragraph + context.
 If Explanatory/Learning output style is active, also memo any Insights worth preserving.
 
+**Never write directly to `kb/` during work.** Always write to `memo/` first.
+This applies to all execution contexts including subagents and delegated tasks.
+
 ## Lookup - on error
 Before debugging from scratch, check `{project}/.claude/coral/kb/` for relevant entries.
 On plan start, review domain-related kb files.
 
-## Promotion - before commit, on task completion, or when a memo captures a reusable lesson
+## Promotion - orchestrator only, after all work completes
+Only the top-level orchestrator (the main session driving the task) promotes memos to kb.
+Subagents and delegated tasks must never promote — they only write memos.
+
+Promotion triggers: before commit, on task completion, or when a memo captures a reusable lesson.
 Review all memos. Check existing kb entries first - discard duplicates,
 update existing entries if the memo refines them, only create new files for genuinely absent knowledge.
 
