@@ -24,4 +24,8 @@ Fix: avoid `run_in_background: true` for agents that need MCP tools.
 `CLAUDE_PLUGIN_ROOT`, `CLAUDE_CONFIG_DIR`, and other env vars are not propagated to tmux split-pane child processes.
 Fix: set `default-command "bash --norc --noprofile"` in `tmux.conf`, or explicitly export env vars in shell init.
 
+**Failure Mode 5 — Teammate-to-team-lead SendMessage delivery fails**:
+Teammate SendMessage({ recipient: 'team-lead', ... }) is not delivered to the orchestrating team-lead agent, even when teammate-to-teammate SendMessage works. Team-lead never receives the message. Observed when teammates (architect, critic, resolver) send findings reports to team-lead.
+Fix: have teammates write findings to a file instead of SendMessage; orchestrator reads the file. Or have teammates SendMessage to each other (peer-to-peer works). Do NOT rely on SendMessage to 'team-lead' as the sole completion/result delivery mechanism.
+
 **Universal fallback**: `--teammate-mode in-process` bypasses all tmux-related issues.
