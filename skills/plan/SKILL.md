@@ -1,6 +1,6 @@
 ---
 name: plan
-description: "Planning with parallel architect/critic review. Pass --deep for methodology-driven synthesis, --codex for cross-model reviews."
+description: "Use when a task needs structured planning before implementation. Supports --deep and --codex flags."
 argument-hint: "[--deep] [--codex] [task description]"
 ---
 

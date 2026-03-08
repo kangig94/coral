@@ -1,6 +1,6 @@
 ---
 name: bugfix
-description: "Systematic bug diagnosis, planning, and fix execution."
+description: "Use when encountering a bug, error, or unexpected behavior that needs diagnosis and fix."
 argument-hint: "[--codex] <bug description or error message>"
 ---
 

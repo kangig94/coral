@@ -1,6 +1,6 @@
 ---
 name: ralph
-description: Persistent execution loop with verification (sonnet) - implements plans or iterates on prompts
+description: "Use when implementing a plan or executing a prompt that requires verified completion."
 argument-hint: "[--red] [--codex] [--team] [task description]"
 model: sonnet
 ---

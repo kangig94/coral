@@ -1,6 +1,6 @@
 ---
 name: init-project
-description: Initialize project for AI-assisted development with rules, agents, CLAUDE.md, and docs
+description: "Use when setting up a new or existing project for AI-assisted development."
 argument-hint: "[existing|new]"
 ---
 

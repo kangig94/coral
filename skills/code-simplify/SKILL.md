@@ -1,6 +1,6 @@
 ---
 name: code-simplify
-description: "Simplifies and refines code for clarity, consistency, and maintainability while preserving all functionality. Focuses on recently modified code unless instructed otherwise."
+description: "Use when code needs simplification — recently modified code by default, or a specified scope."
 argument-hint: "[--codex] <scope or prompt>"
 ---
 

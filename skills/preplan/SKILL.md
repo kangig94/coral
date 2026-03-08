@@ -1,6 +1,6 @@
 ---
 name: preplan
-description: "Structured problem-definition conversation before planning. Aligns understanding with the user before triggering coral:plan."
+description: "Use when a problem needs clarification and agreement before planning begins."
 argument-hint: "<issue or topic>"
 ---
 
