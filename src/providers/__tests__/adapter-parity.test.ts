@@ -39,7 +39,7 @@ import {
   executeClaudeResume,
 } from '../claude/claude-executor.js';
 import { codexProvider } from '../codex/adapter.js';
-import { claudeProvider } from '../claude/adapter.js';
+import { claudeProvider, OUTPUT_STYLE_OVERRIDE } from '../claude/adapter.js';
 
 const mockExecuteOneShot = vi.mocked(executeOneShot);
 const mockExecuteResume = vi.mocked(executeResume);
@@ -309,7 +309,7 @@ describe('claude provider adapter', () => {
     expect(mockExecuteClaudeOneShot).toHaveBeenCalledWith('Run checks', {
       model: 'sonnet',
       workingDirectory: '/repo',
-      systemPrompt: 'You are the architect agent\n\nHonor repository policy',
+      systemPrompt: `You are the architect agent\n\nHonor repository policy\n\n${OUTPUT_STYLE_OVERRIDE}`,
       effort: 'medium',
       bypassPermissions: true,
       signal,
@@ -331,7 +331,7 @@ describe('claude provider adapter', () => {
       {
         model: 'sonnet',
         workingDirectory: undefined,
-        systemPrompt: 'System stays separate',
+        systemPrompt: `System stays separate\n\n${OUTPUT_STYLE_OVERRIDE}`,
         effort: undefined,
         bypassPermissions: false,
         signal,
@@ -350,7 +350,7 @@ describe('claude provider adapter', () => {
     expect(mockExecuteClaudeOneShot).toHaveBeenCalledWith('Run checks', {
       model: undefined,
       workingDirectory: undefined,
-      systemPrompt: 'Just the system prompt',
+      systemPrompt: `Just the system prompt\n\n${OUTPUT_STYLE_OVERRIDE}`,
       effort: undefined,
       bypassPermissions: false,
       signal,
@@ -371,7 +371,7 @@ describe('claude provider adapter', () => {
     expect(mockExecuteClaudeResume).toHaveBeenCalledWith('claude-thread-123', 'Continue', {
       model: undefined,
       workingDirectory: undefined,
-      systemPrompt: 'Restore persona',
+      systemPrompt: `Restore persona\n\n${OUTPUT_STYLE_OVERRIDE}`,
       effort: undefined,
       bypassPermissions: false,
       signal,
@@ -615,7 +615,7 @@ describe('claude adapter: ClaudeExecParseError handling', () => {
 });
 
 describe('claude adapter: systemPrompt edge cases', () => {
-  it('with no instruction and no systemPrompt passes undefined systemPrompt', async () => {
+  it('with no instruction and no systemPrompt still includes output-style override', async () => {
     const { runtime, signal } = makeRuntime();
 
     await claudeProvider.execute(makeRequest({ prompt: 'bare prompt' }), runtime);
@@ -623,7 +623,7 @@ describe('claude adapter: systemPrompt edge cases', () => {
     expect(mockExecuteClaudeOneShot).toHaveBeenCalledWith('bare prompt', {
       model: undefined,
       workingDirectory: undefined,
-      systemPrompt: undefined,
+      systemPrompt: OUTPUT_STYLE_OVERRIDE,
       effort: undefined,
       bypassPermissions: false,
       signal,
@@ -631,7 +631,7 @@ describe('claude adapter: systemPrompt edge cases', () => {
     });
   });
 
-  it('prompt-channel instruction without systemPrompt leaves systemPrompt undefined', async () => {
+  it('prompt-channel instruction without systemPrompt still includes output-style override', async () => {
     const { runtime, signal } = makeRuntime();
 
     await claudeProvider.execute(makeRequest({
@@ -641,7 +641,7 @@ describe('claude adapter: systemPrompt edge cases', () => {
     expect(mockExecuteClaudeOneShot).toHaveBeenCalledWith(
       'Prepend me\n\n---\n\nRun checks',
       expect.objectContaining({
-        systemPrompt: undefined,
+        systemPrompt: OUTPUT_STYLE_OVERRIDE,
         signal,
       }),
     );
