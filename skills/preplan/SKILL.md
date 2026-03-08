@@ -52,7 +52,19 @@ Structured problem-definition conversation with the user before planning begins.
     **RECOMMENDED**: When filling Assumptions (#4), consider applying
     `CORAL_METHODS/HOW-ELICIT.md` Lens 3 (Assumption Surfacing).
 
-    ### 2. Present Draft
+    ### 2. Self-Review
+
+    Before presenting to the user, review the entire draft as a whole:
+    - Do the items tell a coherent story? (Problem → Criteria → Scope → Assumptions → Systems)
+    - Are there contradictions between items? (e.g., scope excludes something that success criteria requires)
+    - Is the problem statement actually the root problem, or a symptom?
+    - Would the Alt 2 (radical) option make you reconsider the problem statement itself?
+    - Even for confirmed items: is there a radical alternative so valuable that the user should know about it?
+      If yes, flag it in the presentation — the user may not have considered it.
+
+    Fix inconsistencies before presenting. This step is silent — no output to the user.
+
+    ### 3. Present Draft
 
     Present complete draft. The user's role is to **correct**, not to fill from scratch.
 
@@ -66,7 +78,7 @@ Structured problem-definition conversation with the user before planning begins.
     > **Success Criteria** [unconfirmed — picked A, alternatives: B, C]
     The user can accept (silence), pick an alternative, or propose their own.
 
-    ### 3. Conversation Loop
+    ### 4. Conversation Loop
 
     Respond to user feedback:
     - Correction -> update item, update task, update agreement file
@@ -87,13 +99,13 @@ Structured problem-definition conversation with the user before planning begins.
     })
     ```
     If the user chooses "Continue discussion", stay in the loop.
-    Otherwise, proceed to step 4.
+    Otherwise, proceed to step 5.
 
-    ### 3a. Early Exit
+    ### 4a. Early Exit
 
     On user abort: save agreement as-is, exit protocol, proceed to implementation.
 
-    ### 4. Completion
+    ### 5. Completion
 
     All items confirmed and user approved transition.
   </Protocol>
