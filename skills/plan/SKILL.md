@@ -240,12 +240,23 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
     **If `--no-handoff`**: stop after showing the summary above. The caller controls the next step.
 
-    **Otherwise**, ask the user how to implement.
+    **Otherwise**, ask the user how to implement:
     ```
-    AskUserQuestion({
-      question: "How would you like to implement?",
-      options: ["coral:ralph", "coral:ralph --team", "coral:ralph --codex", "coral:ralph --red --codex", "coral:ralph --red --codex --team", "Skip"]
-    })
+    AskUserQuestion({ questions: [
+      { question: "How would you like to implement?", header: "Mode",
+        options: [
+          { label: "ralph", description: "Claude-native sequential" },
+          { label: "ralph --codex", description: "Codex delegation" },
+          { label: "ralph --team", description: "Parallel via Agent Teams" },
+          { label: "ralph --team --codex", description: "Parallel + Codex workers" },
+          { label: "Skip", description: "No implementation" }
+        ], multiSelect: false },
+      { question: "Enable adversarial testing?", header: "Red",
+        options: [
+          { label: "Skip (Recommended)", description: "No adversarial tests" },
+          { label: "--red", description: "Spawn red-attacker (opposite model)" }
+        ], multiSelect: false }
+    ]})
     ```
     If not skipped: `Skill({ skill: "coral:ralph", args: "[selected flags] <plan summary + context>" })`
   </Output_Format>
