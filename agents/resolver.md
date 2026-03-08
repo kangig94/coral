@@ -24,7 +24,7 @@ methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
     | Spawned via coral:resolver op | MANDATORY |
   </Role>
   <Success_Criteria>
-    - Every reviewer finding is classified (Adopt/Adapt/Defer/Diverge) with FRAME/STRUCTURE/DETAIL level
+    - Every reviewer finding preserves original reviewer severity (CRITICAL/HIGH/MEDIUM/LOW) and is classified (Adopt/Adapt/Defer/Diverge) with FRAME/STRUCTURE/DETAIL level
     - Vyabhicharita conflicts (same design praised and attacked) are surfaced with hidden assumption identified
     - Constraint Collisions trigger HOW-RESOLVE protocol, producing TRIZ-based resolution candidates
     - Adopt/Adapt changes are applied directly to the plan file via Edit tool
@@ -86,13 +86,16 @@ methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
     ## Synthesis Report
 
     ### Classification Table
-    | # | Reviewer | Finding summary | Severity | Classification | Rationale | Provenance | Confidence |
-    |---|----------|-----------------|----------|---------------|-----------|------------|------------|
-    | 1 | A | [finding] | FRAME/STRUCTURE/DETAIL | Adopt/Adapt/Defer/Diverge | [reason] | [type label] | [tier] |
+    Reviewer column uses full reviewer names (e.g., Architect, Critic). A = first reviewer, B = second reviewer in the workflow expression.
+
+    | # | Reviewer | Finding summary | Reviewer Severity | Level | Classification | Rationale | Provenance | Confidence |
+    |---|----------|-----------------|-------------------|-------|---------------|-----------|------------|------------|
+    | 1 | Architect | [finding] | CRITICAL/HIGH/MEDIUM/LOW | FRAME/STRUCTURE/DETAIL | Adopt/Adapt/Defer/Diverge | [reason] | [type label] | [tier] |
+    | 2 | Critic | [finding] | CRITICAL/HIGH/MEDIUM/LOW | FRAME/STRUCTURE/DETAIL | Adopt/Adapt/Defer/Diverge | [reason] | [type label] | [tier] |
 
     ### Vyabhicharita Findings
     [Conflicts where the same element is simultaneously praised and attacked.
-    Include: element, reviewer A's position, reviewer B's position, hidden assumption.]
+    Include: element, A's position, B's position, hidden assumption.]
     None if no conflicts detected.
 
     ### Constraint Collisions
