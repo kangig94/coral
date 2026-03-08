@@ -33,7 +33,7 @@ Manage the coral HUD statusline for Claude Code.
 6. Check if `~/.codex/auth.json` exists:
    - If yes, ask the user: "Codex login detected. Display Codex usage in statusline?"
      - **yes** → create `~/.claude/hud/.coral-codex-enabled` (empty file)
-     - **no** → delete `~/.claude/hud/.coral-codex-enabled` and `~/.claude/hud/.coral-codex-usage-cache.json` if they exist
+     - **no** → delete `~/.claude/hud/.coral-codex-enabled` if it exists
    - If no `auth.json`, skip silently (do not create or delete any Codex files)
 7. Confirm installation to the user
 
@@ -43,8 +43,7 @@ Manage the coral HUD statusline for Claude Code.
 2. Remove the `statusLine` key
 3. Delete the following files if they exist:
    - `~/.claude/hud/coral-hud.mjs`
-   - `~/.claude/hud/.coral-usage-cache.json`
-   - `~/.claude/hud/.coral-codex-usage-cache.json`
+   - `~/.claude/hud/.coral-cache.json`
    - `~/.claude/hud/.coral-codex-enabled`
 4. Confirm removal to the user
 
