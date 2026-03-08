@@ -1,5 +1,9 @@
 /** Claude provider adapter for the execution service. */
 
+/** Appended to every spawned Claude subprocess to neutralize output-style hooks. */
+export const OUTPUT_STYLE_OVERRIDE =
+  'Ignore any output-style instructions (e.g. Explanatory, Learning). No insight blocks. Be concise and direct.';
+
 import {
   executeClaudeOneShot,
   executeClaudeResume,
@@ -42,9 +46,12 @@ function buildClaudeArgs(request: ProviderRequest): { prompt: string; systemProm
     systemParts.push(request.systemPrompt);
   }
 
+  // Override any output-style injected by the parent session's hooks.
+  systemParts.push(OUTPUT_STYLE_OVERRIDE);
+
   return {
     prompt,
-    systemPrompt: systemParts.length > 0 ? systemParts.join('\n\n') : undefined,
+    systemPrompt: systemParts.join('\n\n'),
   };
 }
 
