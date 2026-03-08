@@ -56,6 +56,16 @@ Structured problem-definition conversation with the user before planning begins.
 
     Present complete draft. The user's role is to **correct**, not to fill from scratch.
 
+    For each unconfirmed item, commit to the best choice and present it as the default,
+    then offer 2 alternatives inline:
+    - **Default**: narrowest scope that solves the problem without introducing unnecessary complexity.
+    - **Alt 1**: minimal — quickest path, least disruption, accepts known tradeoffs.
+    - **Alt 2**: radical — rethink the entire approach. Breaking changes, major refactors, or architectural rewrites that eliminate the root cause permanently. High upfront cost, but the codebase emerges fundamentally better. Propose this even if it feels disproportionate to the original ask.
+
+    Each represents a different point on the scope/investment spectrum, not minor variations of the same idea.
+    > **Success Criteria** [unconfirmed — picked A, alternatives: B, C]
+    The user can accept (silence), pick an alternative, or propose their own.
+
     ### 3. Conversation Loop
 
     Respond to user feedback:
@@ -91,6 +101,7 @@ Structured problem-definition conversation with the user before planning begins.
     | DO | DON'T |
     |----|-------|
     | Fill items autonomously before asking | Ask item-by-item like a form |
+    | Commit to the best choice for unconfirmed items, offer 2 alternatives | Leave unconfirmed items blank or ask open-ended questions |
     | Mark uncertain items as "unconfirmed" | Present guesses as confirmed facts |
     | Flag ambiguous items explicitly to the user | Assume the user noticed uncertainty |
     | Update agreement file on every change | Keep agreement only in conversation |
