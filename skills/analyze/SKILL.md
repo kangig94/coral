@@ -58,7 +58,7 @@ argument-hint: "[--codex] [investigation target or question]"
   Read the agent's `methods:` frontmatter, then read each listed HOW file
   from `CORAL_METHODS/` (e.g., `HOW-FALSIFY.md`). Apply HOW methods during that step's execution.
 
-  **Codex (`--codex`)**: call `codex({ op: "coral:<role_name> --deep", ... })` with scope,
+  **Codex (`--codex`)**: call `codex({ op: "coral:<role_name>", prompt: "--deep " + prompt, ... })` with scope,
   `work_dir`, and analysis file content so far.
   Run one step at a time — do NOT launch steps in parallel. Each step's output informs
   the next step's scope and "Needed when" evaluation.

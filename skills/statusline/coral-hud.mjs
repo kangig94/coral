@@ -215,8 +215,7 @@ function renderActivity(input) {
 // --- cache ---
 
 const CACHE_DIR = join(homedir(), ".claude", "hud");
-const CACHE_FILE = join(CACHE_DIR, ".coral-usage-cache.json");
-const CODEX_CACHE_FILE = join(CACHE_DIR, ".coral-codex-usage-cache.json");
+const CACHE_FILE = join(CACHE_DIR, ".coral-cache.json");
 const CODEX_FLAG_FILE = join(CACHE_DIR, ".coral-codex-enabled");
 const CACHE_TTL_MS = 180_000;
 const CACHE_FAIL_TTL_MS = 30_000;
@@ -224,18 +223,32 @@ const RATE_LIMIT_BASE_MS = 120_000;
 const RATE_LIMIT_MAX_MS = 600_000;
 const API_TIMEOUT_MS = 5_000;
 const LOCK_STALE_MS = 10_000;
+const CORAL_ONLINE_TTL_MS = 5_000;
+const CORAL_OFFLINE_TTL_MS = 2_000;
+const CORAL_HEALTH_TIMEOUT_MS = 200;
+
+function readFullCache() {
+  try {
+    return JSON.parse(readFileSync(CACHE_FILE, "utf-8"));
+  } catch {
+    return {};
+  }
+}
+
+function writeFullCache(all) {
+  try {
+    mkdirSync(CACHE_DIR, { recursive: true });
+    writeFileSync(CACHE_FILE, JSON.stringify(all), { mode: 0o600 });
+  } catch {}
+}
 
 function normalizeCacheEntry(raw) {
-  const error = Boolean(raw?.error);
-  const rateLimit = Number.isInteger(raw?.rateLimit) ? raw.rateLimit : 0;
-  const derivedErrorKind = error ? (rateLimit > 0 ? "rateLimit" : "generic") : null;
-  const hasErrorKind = raw && typeof raw === "object" && "errorKind" in raw;
   return {
     ts: Number.isFinite(raw?.ts) ? raw.ts : 0,
     data: raw?.data ?? null,
-    error,
-    rateLimit,
-    errorKind: hasErrorKind ? raw.errorKind : derivedErrorKind,
+    error: Boolean(raw?.error),
+    rateLimit: Number.isInteger(raw?.rateLimit) ? raw.rateLimit : 0,
+    errorKind: raw?.errorKind ?? null,
   };
 }
 
@@ -259,19 +272,28 @@ function isFreshCacheEntry(cache, now = Date.now()) {
   return true;
 }
 
-function readCacheFile(path) {
-  try {
-    const cache = normalizeCacheEntry(JSON.parse(readFileSync(path, "utf-8")));
-    return isFreshCacheEntry(cache) ? cache : null;
-  } catch {
-    return null;
-  }
+function readCacheSlot(key) {
+  const entry = readFullCache()[key];
+  if (!entry) return null;
+  const cache = normalizeCacheEntry(entry);
+  return isFreshCacheEntry(cache) ? cache : null;
 }
 
-function readBackoffState(path) {
+function writeCacheSlot(key, data, error = false, rateLimit = 0, errorKind = null) {
+  const all = readFullCache();
+  let nextData = data;
+  if (error && nextData == null) {
+    const existing = normalizeCacheEntry(all[key]);
+    if (existing.data != null) nextData = existing.data;
+  }
+  all[key] = { ts: Date.now(), data: nextData, error, rateLimit, errorKind };
+  writeFullCache(all);
+}
+
+function readBackoffState(key) {
   try {
     const now = Date.now();
-    const cache = normalizeCacheEntry(JSON.parse(readFileSync(path, "utf-8")));
+    const cache = normalizeCacheEntry(readFullCache()[key]);
     if (!cache.error || cache.rateLimit <= 0) return 0;
     if (cache.ts <= 0 || cache.ts > now) return 0;
     if (now - cache.ts > RATE_LIMIT_MAX_MS) return 0;
@@ -281,23 +303,18 @@ function readBackoffState(path) {
   }
 }
 
-function writeCacheFile(path, data, error = false, rateLimit = 0, errorKind = null) {
+function readStaleCacheData(key) {
   try {
-    mkdirSync(CACHE_DIR, { recursive: true });
-    let nextData = data;
-    if (error && nextData == null) {
-      try {
-        const existing = normalizeCacheEntry(JSON.parse(readFileSync(path, "utf-8")));
-        if (existing.data != null) nextData = existing.data;
-      } catch {}
-    }
-    const payload = { ts: Date.now(), data: nextData, error, rateLimit, errorKind };
-    writeFileSync(path, JSON.stringify(payload), { mode: 0o600 });
-  } catch {}
+    const cache = normalizeCacheEntry(readFullCache()[key]);
+    if (cache.data) return formatLimits(cache.data);
+    return null;
+  } catch {
+    return null;
+  }
 }
 
-function acquireFetchLock(cachePath) {
-  const lockPath = cachePath + ".lock";
+function acquireFetchLock(key) {
+  const lockPath = join(CACHE_DIR, `.coral-${key}.lock`);
   try {
     const raw = readFileSync(lockPath, "utf-8");
     const lockData = JSON.parse(raw);
@@ -316,14 +333,23 @@ function releaseFetchLock(lockPath) {
   try { unlinkSync(lockPath); } catch {}
 }
 
-function readStaleCacheData(cachePath) {
+function readBackendSlot() {
   try {
-    const cache = normalizeCacheEntry(JSON.parse(readFileSync(cachePath, "utf-8")));
-    if (cache.data) return formatLimits(cache.data);
-    return null;
+    const raw = readFullCache().backend;
+    if (!raw || !Number.isFinite(raw.ts)) return null;
+    const age = Date.now() - raw.ts;
+    const ttl = raw.online ? CORAL_ONLINE_TTL_MS : CORAL_OFFLINE_TTL_MS;
+    if (age > ttl) return null;
+    return raw;
   } catch {
     return null;
   }
+}
+
+function writeBackendSlot(line, online) {
+  const all = readFullCache();
+  all.backend = { ts: Date.now(), line, online };
+  writeFullCache(all);
 }
 
 // --- Claude rate limits ---
@@ -431,7 +457,7 @@ function formatErrorIndicator(cache) {
 }
 
 async function renderLimits() {
-  const cached = readCacheFile(CACHE_FILE);
+  const cached = readCacheSlot("claude");
   if (cached) {
     if (cached.error) {
       if (cached.data) return formatLimits(cached.data);
@@ -440,8 +466,8 @@ async function renderLimits() {
     return formatLimits(cached.data);
   }
 
-  const lock = acquireFetchLock(CACHE_FILE);
-  if (!lock) return readStaleCacheData(CACHE_FILE);
+  const lock = acquireFetchLock("claude");
+  if (!lock) return readStaleCacheData("claude");
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
@@ -451,16 +477,16 @@ async function renderLimits() {
 
     const resp = await fetchUsage(token, controller.signal);
     if (resp?.unauthorized) {
-      writeCacheFile(CACHE_FILE, null, true, 0, "auth");
+      writeCacheSlot("claude", null, true, 0, "auth");
       return formatErrorIndicator({ error: true, errorKind: "auth", ts: Date.now(), rateLimit: 0 });
     }
     if (resp?.rateLimited) {
-      const newRL = readBackoffState(CACHE_FILE) + 1;
-      writeCacheFile(CACHE_FILE, null, true, newRL, "rateLimit");
+      const newRL = readBackoffState("claude") + 1;
+      writeCacheSlot("claude", null, true, newRL, "rateLimit");
       return formatErrorIndicator({ error: true, errorKind: "rateLimit", ts: Date.now(), rateLimit: newRL });
     }
     if (!resp) {
-      writeCacheFile(CACHE_FILE, null, true, 0, "generic");
+      writeCacheSlot("claude", null, true, 0, "generic");
       return formatErrorIndicator({ error: true, errorKind: "generic", ts: Date.now(), rateLimit: 0 });
     }
 
@@ -470,7 +496,7 @@ async function renderLimits() {
       fiveHourResetsAt: resp.five_hour?.resets_at || null,
       weeklyResetsAt: resp.seven_day?.resets_at || null,
     };
-    writeCacheFile(CACHE_FILE, data);
+    writeCacheSlot("claude", data);
     return formatLimits(data);
   } finally {
     clearTimeout(timer);
@@ -590,7 +616,7 @@ async function fetchCodexUsage(accessToken, accountId, signal) {
 async function renderCodexData() {
   if (!existsSync(CODEX_FLAG_FILE)) return { kind: "none" };
 
-  const cached = readCacheFile(CODEX_CACHE_FILE);
+  const cached = readCacheSlot("codex");
   if (cached) {
     if (cached.error) {
       if (cached.data) return { kind: "data", ...cached.data };
@@ -599,10 +625,10 @@ async function renderCodexData() {
     return { kind: "data", ...cached.data };
   }
 
-  const lock = acquireFetchLock(CODEX_CACHE_FILE);
+  const lock = acquireFetchLock("codex");
   if (!lock) {
     try {
-      const prev = normalizeCacheEntry(JSON.parse(readFileSync(CODEX_CACHE_FILE, "utf-8")));
+      const prev = normalizeCacheEntry(readFullCache().codex);
       if (prev.data) return { kind: "data", ...prev.data };
     } catch {}
     return { kind: "none" };
@@ -621,7 +647,7 @@ async function renderCodexData() {
     if (result?.unauthorized) {
       const refreshed = await refreshCodexToken(creds.refreshToken, creds.clientId, controller.signal);
       if (!refreshed) {
-        writeCacheFile(CODEX_CACHE_FILE, null, true, 0, "generic");
+        writeCacheSlot("codex", null, true, 0, "generic");
         return {
           kind: "error",
           message: formatErrorIndicator({ error: true, errorKind: "generic", ts: Date.now(), rateLimit: 0 }),
@@ -633,7 +659,7 @@ async function renderCodexData() {
     }
 
     if (result?.unauthorized) {
-      writeCacheFile(CODEX_CACHE_FILE, null, true, 0, "auth");
+      writeCacheSlot("codex", null, true, 0, "auth");
       return {
         kind: "error",
         message: formatErrorIndicator({ error: true, errorKind: "auth", ts: Date.now(), rateLimit: 0 }),
@@ -641,8 +667,8 @@ async function renderCodexData() {
     }
 
     if (result?.rateLimited) {
-      const newRL = readBackoffState(CODEX_CACHE_FILE) + 1;
-      writeCacheFile(CODEX_CACHE_FILE, null, true, newRL, "rateLimit");
+      const newRL = readBackoffState("codex") + 1;
+      writeCacheSlot("codex", null, true, newRL, "rateLimit");
       return {
         kind: "error",
         message: formatErrorIndicator({ error: true, errorKind: "rateLimit", ts: Date.now(), rateLimit: newRL }),
@@ -650,17 +676,17 @@ async function renderCodexData() {
     }
 
     if (result && !result.unauthorized && !result.rateLimited) {
-      writeCacheFile(CODEX_CACHE_FILE, result);
+      writeCacheSlot("codex", result);
       return { kind: "data", ...result };
     }
 
-    writeCacheFile(CODEX_CACHE_FILE, null, true, 0, "generic");
+    writeCacheSlot("codex", null, true, 0, "generic");
     return {
       kind: "error",
       message: formatErrorIndicator({ error: true, errorKind: "generic", ts: Date.now(), rateLimit: 0 }),
     };
   } catch {
-    writeCacheFile(CODEX_CACHE_FILE, null, true, 0, "generic");
+    writeCacheSlot("codex", null, true, 0, "generic");
     return {
       kind: "error",
       message: formatErrorIndicator({ error: true, errorKind: "generic", ts: Date.now(), rateLimit: 0 }),
@@ -686,6 +712,9 @@ function readReefInfo() {
 }
 
 async function renderCoralLine() {
+  const cached = readBackendSlot();
+  if (cached) return cached.line;
+
   let info;
   try {
     info = JSON.parse(readFileSync(BACKEND_INFO_PATH, "utf-8"));
@@ -694,12 +723,26 @@ async function renderCoralLine() {
     return null;
   }
 
+  const lock = acquireFetchLock("backend");
+  if (!lock) {
+    try {
+      const stale = readFullCache().backend;
+      return stale?.line ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   try {
     const resp = await fetch(`http://127.0.0.1:${info.port}/health`, {
       headers: { "x-coral-backend-token": info.token },
-      signal: AbortSignal.timeout(1000),
+      signal: AbortSignal.timeout(CORAL_HEALTH_TIMEOUT_MS),
     });
-    if (!resp.ok) return `coral ${DIM}○ offline${RESET}`;
+    if (!resp.ok) {
+      const line = `coral ${DIM}○ offline${RESET}`;
+      writeBackendSlot(line, false);
+      return line;
+    }
     const data = await resp.json();
     const parts = [`coral ${GREEN}●${RESET}`];
     if (data.activeChildren > 0) parts.push(`${MAGENTA}⚙ ${data.activeChildren}${RESET}`);
@@ -708,14 +751,20 @@ async function renderCoralLine() {
     const reefInfo = readReefInfo();
     if (reefInfo) {
       try {
-        const reefResp = await fetch(`${reefInfo.url}/health`, { signal: AbortSignal.timeout(500) });
+        const reefResp = await fetch(`${reefInfo.url}/health`, { signal: AbortSignal.timeout(CORAL_HEALTH_TIMEOUT_MS) });
         if (reefResp.ok) parts.push(`\x1b]8;;${reefInfo.url}\x07reef\x1b]8;;\x07`);
       } catch {}
     }
 
-    return parts.join(SEP);
+    const line = parts.join(SEP);
+    writeBackendSlot(line, true);
+    return line;
   } catch {
-    return `coral ${DIM}○ offline${RESET}`;
+    const line = `coral ${DIM}○ offline${RESET}`;
+    writeBackendSlot(line, false);
+    return line;
+  } finally {
+    releaseFetchLock(lock);
   }
 }
 
