@@ -1,6 +1,6 @@
 ---
 name: analyze
-description: "Deep analysis - project scanning, requirement gaps, root cause investigation. HOW methods always applied. Pass --codex to delegate to Codex CLI."
+description: "Use when deep investigation is needed — project structure, requirement gaps, or root cause diagnosis. Supports --codex."
 argument-hint: "[--codex] [investigation target or question]"
 ---
 

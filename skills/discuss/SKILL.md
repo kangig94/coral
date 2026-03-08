@@ -1,6 +1,6 @@
 ---
 name: discuss
-description: Moderated multi-agent discussion via Agent Teams
+description: "Use when a topic benefits from multiple perspectives debating before a decision."
 argument-hint: "[--user] [topic] [--hints axis1:pos1,pos2 axis2:pos1,pos2]"
 ---
 
