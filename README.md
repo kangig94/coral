@@ -194,7 +194,7 @@ Mistakes aren't repeated across sessions.
 | Variable | Default | Description |
 |---|---|---|
 | `CORAL_CODEX_MODEL` | `gpt-5.4` | Default Codex CLI model |
-| `CORAL_MAX_CHILDREN` | `10` | Max concurrent CLI children (1–10) |
+| `CORAL_MAX_SESSIONS` | `10` | Max concurrent CLI sessions (1–10) |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Max epochs before discussion auto-ends (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `0` | Days before completed discuss sessions are auto-pruned (0 = disabled) |
 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(unset)_ | **Required** for `/coral:discuss`. Set to `1`. |
