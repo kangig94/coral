@@ -13,7 +13,7 @@ Frontmatter hooks appear to only work for project-level skills (`.claude/skills/
 name: ralph
 hooks:
   Stop:
-    - command: "./hooks/kb-promote-reminder.sh"
+    - command: "./hooks/kb-promote-gate.sh"
 ---
 
 # RIGHT: Register in hooks/hooks.json with script-level scoping
@@ -26,7 +26,7 @@ FLAG=".claude/coral/tmp/kb-active-${session_id}"
 
 # Flag created by a PreToolUse(Skill) hook — NOT by SKILL.md Bash.
 # The hook has access to input.session_id for multi-session isolation.
-# See hooks/kb-promote-reminder.mjs for the session-scoped pattern.
+# See hooks/kb-promote-gate.mjs for the session-scoped pattern.
 ```
 
 PreToolUse(Skill) hook input shape (verified):

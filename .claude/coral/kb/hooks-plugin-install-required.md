@@ -29,7 +29,7 @@ For dev-mode hook testing, use `.claude/settings.local.json` (gitignored):
 ```json
 {
   "hooks": {
-    "PreToolUse": [{ "matcher": "Skill", "hooks": [{ "type": "command", "command": "node hooks/kb-promote-reminder.mjs", "timeout": 5 }] }]
+    "PreToolUse": [{ "matcher": "Skill", "hooks": [{ "type": "command", "command": "node hooks/kb-promote-gate.mjs", "timeout": 5 }] }]
   }
 }
 ```

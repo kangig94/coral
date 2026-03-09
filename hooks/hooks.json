@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; cat \"${CLAUDE_PLUGIN_ROOT}/CLAUDE.md\"",
+            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.mjs\"",
             "timeout": 3
           },
           {
@@ -31,8 +31,24 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/kb-promote-reminder.mjs\"",
+            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/kb-promote-gate.mjs\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/post-compact.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/pre-compact.mjs\"",
+            "timeout": 3
           }
         ]
       }
@@ -66,7 +82,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/kb-promote-reminder.mjs\"",
+            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/kb-promote-gate.mjs\"",
             "timeout": 5
           },
           {
@@ -88,7 +104,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/kb-promote-reminder.mjs\"",
+            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/kb-promote-gate.mjs\"",
             "timeout": 5
           },
           {
@@ -104,7 +120,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/kb-promote-reminder.mjs\"",
+            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/kb-promote-gate.mjs\"",
             "timeout": 5
           },
           {

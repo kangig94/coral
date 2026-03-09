@@ -18,7 +18,7 @@ Claude Code's hook system executes scripts on specific events. Coral uses hooks 
 
 ## Hook Configuration
 
-Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/kb-lookup-reminder.mjs`, `hooks/kb-memo-reminder.mjs`, `hooks/kb-promote-reminder.mjs`, `hooks/ralph-loop.mjs`, `hooks/stale-cleanup.mjs`, `hooks/discuss-idle-guard.mjs`, `hooks/backend-warm-start.mjs`, `hooks/hud-auto-update.mjs`.
+Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/kb-lookup-reminder.mjs`, `hooks/kb-memo-reminder.mjs`, `hooks/kb-promote-gate.mjs`, `hooks/ralph-loop.mjs`, `hooks/stale-cleanup.mjs`, `hooks/discuss-idle-guard.mjs`, `hooks/backend-warm-start.mjs`, `hooks/hud-auto-update.mjs`.
 
 All hook scripts are **Node.js ESM** (`.mjs`). They read input JSON from stdin, write output JSON to stdout, and **fail-open** via `try/catch { process.exit(0) }` - a crash or timeout never blocks the user.
 
@@ -66,7 +66,7 @@ Handles `memo-reminded-{session_id}`, `kb-active-{session_id}`, and `ralph-state
 
 Fires after context compaction (matcher: `compact`).
 
-**Script: `hooks/kb-promote-reminder.mjs`** — Checks for unprocessed memos in `.claude/coral/memo/`. Injects `hookSpecificOutput` with `additionalContext` reminding about KB promotion.
+**Script: `hooks/kb-promote-gate.mjs`** — Checks for unprocessed memos in `.claude/coral/memo/`. Injects `hookSpecificOutput` with `additionalContext` reminding about KB promotion.
 
 **Purpose**: After compaction the model loses prior context. This hook restores KB promotion reminders so work continues seamlessly.
 
@@ -97,19 +97,19 @@ The two events are complementary — `PostToolUseFailure` covers non-zero exits,
 
 ## UserPromptSubmit Hook (KB Flag — User Slash Commands)
 
-Script: `hooks/kb-promote-reminder.mjs`.
+Script: `hooks/kb-promote-gate.mjs`.
 
 Creates a session-scoped flag file `.claude/coral/tmp/kb-active-{session_id}` when the user types `/coral:ralph` or `/coral:bugfix` directly. User-typed slash commands are expanded by the CLI before reaching Claude, so they do not trigger PreToolUse — this hook covers that path.
 
 ## PreToolUse Hook (Skill KB Flag — Claude-Initiated)
 
-Script: `hooks/kb-promote-reminder.mjs`. Matcher: `Skill`.
+Script: `hooks/kb-promote-gate.mjs`. Matcher: `Skill`.
 
 Creates the same session-scoped flag when Claude internally calls `Skill("coral:ralph")` or `Skill("coral:bugfix")` (e.g., when plan skill routes to ralph via AskUserQuestion). Input shape: `{ tool_name: "Skill", tool_input: { skill: "coral:ralph", args: "..." } }`.
 
 ## Stop Hook
 
-Script: `hooks/kb-promote-reminder.mjs`. Session-scoped via flag file.
+Script: `hooks/kb-promote-gate.mjs`. Session-scoped via flag file.
 
 **Flag file pattern**: The UserPromptSubmit and PreToolUse(Skill) hooks create `.claude/coral/tmp/kb-active-{session_id}` for KB-producing skills. The Stop hook checks for its own session's flag — if absent, exits silently (normal conversation unaffected). Stale flags (>6h) from expired sessions are cleaned up by `stale-cleanup.mjs` at session start.
 
@@ -156,7 +156,7 @@ Stop hook flow:
 4. Promise detection: check `last_assistant_message` first, then `transcript_path` fallback, for `<promise>...</promise>` matching `completionPromise`
 5. Block: increment `iteration`, atomically rewrite the state file, then return `decision: "block"` with the stored prompt as `reason`
 
-This coexists with `kb-promote-reminder.mjs` on Stop. Multiple Stop hooks can each return `decision: "block"` without conflict, so KB promotion enforcement and ralph prompt looping both remain active.
+This coexists with `kb-promote-gate.mjs` on Stop. Multiple Stop hooks can each return `decision: "block"` without conflict, so KB promotion enforcement and ralph prompt looping both remain active.
 
 ## Node.js ESM Conventions
 

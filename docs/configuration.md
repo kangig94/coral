@@ -126,7 +126,7 @@ hooks/hooks.json            -> Claude Code configures all 9 hooks
 hooks/kb-lookup-reminder.mjs  -> PostToolUseFailure KB hint script
 hooks/silent-failure-detector.mjs -> PostToolUse silent-failure KB hint script
 hooks/kb-memo-reminder.mjs    -> PreToolUse memo reminder script
-hooks/kb-promote-reminder.mjs -> Stop/Compact promotion script
+hooks/kb-promote-gate.mjs -> Stop/Compact promotion script
 hooks/discuss-idle-guard.mjs  -> TeammateIdle bid/speak/vote enforcer
 hooks/backend-warm-start.mjs  -> SessionStart backend warm-start hook
 hooks/hud-auto-update.mjs    -> SessionStart HUD auto-update hook
