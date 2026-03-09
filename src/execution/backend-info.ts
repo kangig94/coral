@@ -1,9 +1,9 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
+import { BACKEND_INFO_PATH } from '../client/paths.js';
 import { isNoEntryError } from '../shared/mcp-utils.js';
 
-export const BACKEND_INFO_PATH = join(homedir(), '.claude', 'coral', 'backend.json');
+export { BACKEND_INFO_PATH } from '../client/paths.js';
 
 export type BackendInfo = {
   pid: number;

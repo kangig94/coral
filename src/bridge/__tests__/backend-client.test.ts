@@ -45,6 +45,15 @@ vi.mock('../../execution/backend-lock.js', () => ({
   BACKEND_LOCK_PATH: backendLockPath(),
 }));
 
+vi.mock('../../client/paths.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../client/paths.js')>();
+  return {
+    ...original,
+    get BACKEND_INFO_PATH() { return backendInfoPath(); },
+    get BACKEND_LOCK_PATH() { return backendLockPath(); },
+  };
+});
+
 vi.mock('node:child_process', () => ({
   spawn: spawnMock,
 }));
