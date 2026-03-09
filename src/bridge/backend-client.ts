@@ -17,6 +17,19 @@ const REPLACEMENT_TIMEOUT_MS = 45_000;
 const TOOL_TIMEOUT_MS = 300_000;
 const MAX_WAIT_FETCH_TIMEOUT_MS = 30 * 60 * 1000;
 const WAIT_FETCH_MARGIN_MS = 30_000;
+const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
+
+function currentBundleHash(): string {
+  try {
+    const raw = readFileSync(join(pluginRoot, 'bridge', 'manifest.json'), 'utf-8');
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && typeof (parsed as Record<string, unknown>).bundleHash === 'string') {
+      return (parsed as Record<string, unknown>).bundleHash as string;
+    }
+  } catch { /* fall through */ }
+  return 'unknown';
+}
+
 function currentVersion(): string {
   try {
     const pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf-8'));
@@ -26,18 +39,19 @@ function currentVersion(): string {
   }
 }
 const fallbackVersion = typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0';
-const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
 const BACKEND_BIN = join(pluginRoot, 'bridge', 'coral-backend.cjs');
 
 type BackendHealth = {
   status: 'ok';
   version: string;
+  bundleHash: string;
   instanceId: string;
 };
 
 export type BackendStatus = {
   status: 'ok';
   version: string;
+  bundleHash: string;
   instanceId: string;
   uptimeMs: number;
   activeChildren: number;
@@ -74,6 +88,7 @@ function isBackendHealth(value: unknown): value is BackendHealth {
   return isRecord(value)
     && value.status === 'ok'
     && typeof value.version === 'string'
+    && typeof value.bundleHash === 'string'
     && typeof value.instanceId === 'string';
 }
 
@@ -81,6 +96,7 @@ function isBackendStatus(value: unknown): value is Extract<BackendStatus, { stat
   return isRecord(value)
     && value.status === 'ok'
     && typeof value.version === 'string'
+    && typeof value.bundleHash === 'string'
     && typeof value.instanceId === 'string'
     && Number.isFinite(value.uptimeMs)
     && Number.isInteger(value.activeChildren)
@@ -117,7 +133,7 @@ async function readHealthyBackendInfo(info = readBackendInfo()): Promise<Backend
   if (!info) return null;
   const health = await fetchBackendHealth(info);
   if (!health) return null;
-  if (health.version !== info.version || health.instanceId !== info.instanceId) return null;
+  if (health.bundleHash !== info.bundleHash || health.instanceId !== info.instanceId) return null;
   return info;
 }
 
@@ -207,6 +223,7 @@ function tryAcquireReplacementLock(): ReplacementLock | null {
     instanceId: `proxy-replacement-${process.pid}-${Date.now()}`,
     pid: process.pid,
     version: currentVersion(),
+    bundleHash: currentBundleHash(),
     startedAt: Date.now(),
   });
   if (!tryExclusiveWrite(BACKEND_LOCK_PATH, payload)) return null;
@@ -248,13 +265,14 @@ function spawnBackend(): void {
 
 async function waitForReplacementBackend(
   oldInstanceId: string | null,
+  expectedHash: string,
   deadline: number,
 ): Promise<BackendInfo> {
   while (Date.now() < deadline) {
     const info = await readHealthyBackendInfo();
     if (
       info
-      && info.version === currentVersion()
+      && info.bundleHash === expectedHash
       && (oldInstanceId === null || info.instanceId !== oldInstanceId)
     ) {
       return info;
@@ -365,7 +383,8 @@ async function parseJsonResponse(response: Response): Promise<unknown> {
 export async function ensureBackend(): Promise<BackendHandle> {
   const existingInfo = readBackendInfo();
   const existingHealthy = await readHealthyBackendInfo(existingInfo);
-  if (existingHealthy && existingHealthy.version === currentVersion()) {
+  const expectedHash = currentBundleHash();
+  if (existingHealthy && existingHealthy.bundleHash === expectedHash) {
     return summarizeBackend(existingHealthy);
   }
 
@@ -382,7 +401,7 @@ export async function ensureBackend(): Promise<BackendHandle> {
     const healthy = await readHealthyBackendInfo();
     if (
       healthy
-      && healthy.version === currentVersion()
+      && healthy.bundleHash === expectedHash
       && (replacedInstanceId === null || healthy.instanceId !== replacedInstanceId)
     ) {
       return summarizeBackend(healthy);
@@ -390,7 +409,7 @@ export async function ensureBackend(): Promise<BackendHandle> {
 
     if (
       healthy
-      && healthy.version !== currentVersion()
+      && healthy.bundleHash !== expectedHash
       && shutdownRequestedFor !== healthy.instanceId
     ) {
       shutdownRequestedFor = healthy.instanceId;
@@ -407,7 +426,7 @@ export async function ensureBackend(): Promise<BackendHandle> {
 
       spawnBackend();
       const replacementDeadline = Math.min(startupDeadline, Date.now() + REPLACEMENT_TIMEOUT_MS);
-      return summarizeBackend(await waitForReplacementBackend(replacedInstanceId, replacementDeadline));
+      return summarizeBackend(await waitForReplacementBackend(replacedInstanceId, expectedHash, replacementDeadline));
     }
 
     await delay(STARTUP_POLL_MS);

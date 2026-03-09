@@ -7,6 +7,17 @@ import type { WaitStreamEvent } from '../../types.js';
 let tmpDir = '';
 const PKG_VERSION = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf-8')).version as string;
 
+function readTestBundleHash(): string {
+  try {
+    const raw = readFileSync(join(process.cwd(), 'bridge', 'manifest.json'), 'utf-8');
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return typeof parsed.bundleHash === 'string' ? parsed.bundleHash : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+const BUNDLE_HASH = readTestBundleHash();
+
 const {
   readBackendInfoMock,
   spawnMock,
@@ -45,6 +56,7 @@ function makeInfo(overrides: Partial<{
   port: number;
   token: string;
   version: string;
+  bundleHash: string;
   instanceId: string;
   startedAt: number;
 }> = {}) {
@@ -53,6 +65,7 @@ function makeInfo(overrides: Partial<{
     port: 4100,
     token: 'backend-token',
     version: PKG_VERSION,
+    bundleHash: BUNDLE_HASH,
     instanceId: 'backend-instance',
     startedAt: 1_700_000_000_000,
     ...overrides,
@@ -73,6 +86,7 @@ async function loadBackendClientModule(): Promise<BridgeBackendClientModule> {
 
 function makeBackendStatus(overrides: Partial<{
   version: string;
+  bundleHash: string;
   instanceId: string;
   uptimeMs: number;
   activeChildren: number;
@@ -82,6 +96,7 @@ function makeBackendStatus(overrides: Partial<{
   return {
     status: 'ok' as const,
     version: PKG_VERSION,
+    bundleHash: BUNDLE_HASH,
     instanceId: 'backend-instance',
     uptimeMs: 12_345,
     activeChildren: 2,
@@ -254,7 +269,7 @@ describe('bridge backend-client', () => {
     await expect(client.shutdownBackend()).resolves.toEqual({ ok: false, reason: 'not_running' });
   });
 
-  it('reuses a healthy backend with the current version without spawning', async () => {
+  it('reuses a healthy backend with the current bundle hash without spawning', async () => {
     const client = await loadBackendClientModule();
     const info = makeInfo();
 
@@ -262,6 +277,7 @@ describe('bridge backend-client', () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({
       status: 'ok',
       version: info.version,
+      bundleHash: info.bundleHash,
       instanceId: info.instanceId,
     }));
 
@@ -285,6 +301,7 @@ describe('bridge backend-client', () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({
       status: 'ok',
       version: started.version,
+      bundleHash: started.bundleHash,
       instanceId: started.instanceId,
     }));
 
@@ -306,6 +323,7 @@ describe('bridge backend-client', () => {
       .mockResolvedValueOnce(jsonResponse({
         status: 'ok',
         version: info.version,
+        bundleHash: info.bundleHash,
         instanceId: info.instanceId,
       }))
       .mockResolvedValueOnce(jsonResponse({ status: 'running', job: 'job-1', session: 'session-1' }));

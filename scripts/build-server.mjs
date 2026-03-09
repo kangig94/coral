@@ -1,4 +1,5 @@
 import * as esbuild from 'esbuild';
+import { createHash } from 'crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'fs';
 
 mkdirSync('bridge', { recursive: true });
@@ -51,3 +52,10 @@ await esbuild.build({
   define: { ...sharedOpts.define, '__IS_CORAL_BACKEND_MAIN__': 'true' },
 });
 console.log('Built bridge/coral-backend.cjs');
+
+// Write bundle manifest with content hash for version-independent change detection
+const backendHash = createHash('sha256')
+  .update(readFileSync('bridge/coral-backend.cjs'))
+  .digest('hex')
+  .slice(0, 16);
+writeFileSync('bridge/manifest.json', JSON.stringify({ bundleHash: backendHash }) + '\n');

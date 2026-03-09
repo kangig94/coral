@@ -4,7 +4,7 @@ declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { readdirSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { isNoEntryError, isRecord, formatError } from '../shared/mcp-utils.js';
 import { sharedExecSchema, sharedForkSchema, sharedResumeSchema } from '../shared/schemas.js';
@@ -55,13 +55,14 @@ type RouteToolCallFn = (
 type BackendServerOptions = {
   progressStore?: ProgressStore;
   version?: string;
+  bundleHash?: string;
   instanceId?: string;
   token?: string;
   now?: () => number;
   log?: (message: string) => void;
   createIdleTimer?: () => IdleTimer;
   createExecutionService?: (ctx: CallerContext) => ExecutionServiceLike;
-  acquireLockFn?: typeof acquireLock;
+  acquireLockFn?: (instanceId: string, version: string, bundleHash: string) => Promise<void>;
   writeBackendInfoFn?: typeof writeBackendInfo;
   removeBackendInfoIfOwnerFn?: typeof removeBackendInfoIfOwner;
   removeLockIfOwnerFn?: typeof removeLockIfOwner;
@@ -78,6 +79,7 @@ export type BackendServerInfo = {
   port: number;
   token: string;
   version: string;
+  bundleHash: string;
   instanceId: string;
   startedAt: number;
 };
@@ -539,8 +541,20 @@ async function listen(server: Server): Promise<number> {
   });
 }
 
+function readBundleHash(): string {
+  try {
+    const raw = readFileSync(join(defaultPluginRoot, 'bridge', 'manifest.json'), 'utf-8');
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && typeof (parsed as Record<string, unknown>).bundleHash === 'string') {
+      return (parsed as Record<string, unknown>).bundleHash as string;
+    }
+  } catch { /* fall through */ }
+  return 'unknown';
+}
+
 export function createBackendServer(options: BackendServerOptions = {}): BackendServerController {
   const version = options.version ?? (typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0');
+  const bundleHash = options.bundleHash ?? readBundleHash();
   const instanceId = options.instanceId ?? randomUUID();
   const token = options.token ?? randomBytes(32).toString('hex');
   const idleTimer = options.createIdleTimer?.() ?? new IdleTimer();
@@ -753,6 +767,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       sendJson(res, 200, {
         status: 'ok',
         version,
+        bundleHash,
         instanceId,
         uptimeMs: now() - startedAt,
         activeChildren: activeChildren.size,
@@ -807,7 +822,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     }
 
     try {
-      await acquireLockFn(instanceId, version);
+      await acquireLockFn(instanceId, version, bundleHash);
       recoverOrphanedJobsFn();
       const port = await listen(server);
       startedAt = now();
@@ -816,6 +831,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         port,
         token,
         version,
+        bundleHash,
         instanceId,
         startedAt,
       });
@@ -836,6 +852,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         port,
         token,
         version,
+        bundleHash,
         instanceId,
         startedAt,
       };

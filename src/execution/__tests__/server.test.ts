@@ -148,6 +148,7 @@ describe('execution backend server', () => {
       instanceId: 'execution-backend-instance-1',
       token: 'test-token',
       version: '9.9.9',
+      bundleHash: 'testhash1234',
       log: () => {},
       ...overrides,
     });
@@ -174,6 +175,7 @@ describe('execution backend server', () => {
     expect(body).toMatchObject({
       status: 'ok',
       version: '9.9.9',
+      bundleHash: 'testhash1234',
       instanceId: 'execution-backend-instance-1',
       activeChildren: 0,
       activeJobs: 0,
