@@ -16,6 +16,7 @@ import type { ProviderRequest, ProviderResult } from '../../types.js';
 import { mapProviderResultBase } from '../result-mapping.js';
 import { makeOnEvent, type Provider, type ProviderRuntime } from '../types.js';
 import type { EffortLevel } from '../../shared/schemas.js';
+import type { ClaudeExecResult } from './types.js';
 
 async function preflight(): Promise<void> {
   const cli = await detectClaudeCli();
@@ -55,6 +56,15 @@ function buildClaudeArgs(request: ProviderRequest): { prompt: string; systemProm
   };
 }
 
+function mapResult(result: ClaudeExecResult, fallbackConversationRef?: string): ProviderResult {
+  return {
+    ...mapProviderResultBase(result),
+    conversationRef: result.sessionId ?? fallbackConversationRef,
+    nonResumable: result.sessionId == null ? true : undefined,
+    usage: result.costUsd != null ? { costUsd: result.costUsd } : undefined,
+  };
+}
+
 function parseError(error: unknown, fallbackModel: string): ProviderResult {
   if (error instanceof ClaudeExecParseError) {
     return {
@@ -86,12 +96,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
           signal: runtime.signal,
           onEvent,
         });
-        return {
-          ...mapProviderResultBase(result),
-          conversationRef: result.sessionId ?? undefined,
-          nonResumable: result.sessionId == null ? true : undefined,
-          usage: result.costUsd != null ? { costUsd: result.costUsd } : undefined,
-        };
+        return mapResult(result);
       } catch (error) {
         return parseError(error, request.model ?? 'unknown');
       }
@@ -108,12 +113,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
           signal: runtime.signal,
           onEvent,
         });
-        return {
-          ...mapProviderResultBase(result),
-          conversationRef: result.sessionId ?? request.conversationRef,
-          nonResumable: result.sessionId == null ? true : undefined,
-          usage: result.costUsd != null ? { costUsd: result.costUsd } : undefined,
-        };
+        return mapResult(result, request.conversationRef);
       } catch (error) {
         return parseError(error, request.model ?? 'unknown');
       }
@@ -130,12 +130,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
           signal: runtime.signal,
           onEvent,
         });
-        return {
-          ...mapProviderResultBase(result),
-          conversationRef: result.sessionId ?? undefined,
-          nonResumable: result.sessionId == null ? true : undefined,
-          usage: result.costUsd != null ? { costUsd: result.costUsd } : undefined,
-        };
+        return mapResult(result);
       } catch (error) {
         return parseError(error, request.model ?? 'unknown');
       }

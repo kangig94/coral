@@ -220,11 +220,10 @@ export class SessionManager {
   }
 
   /**
-   * Claim the session for a new job. Enforces single-active-job invariant.
-   * Returns false if session is already running (activeJobId is set).
-   * @deprecated Use claimForJobAtomic() instead.
+   * Claim the session synchronously (no lock). For test and startup-only paths
+   * where concurrent access is not a concern.
    */
-  claimForJob(sessionId: string, jobId: string): boolean {
+  claimForJobSync(sessionId: string, jobId: string): boolean {
     const entry = this.readEntry(sessionId);
     if (!entry || entry.activeJobId) return false;
     entry.activeJobId = jobId;

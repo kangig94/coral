@@ -490,8 +490,8 @@ describe('execution backend server', () => {
     const sessionA = new SessionManager(projectA).allocate('codex', 'alpha', 'gpt-5', projectA);
     const sessionB = new SessionManager(projectB).allocate('codex', 'beta', 'gpt-5', projectB);
 
-    new SessionManager(projectA).claimForJob(sessionA.sessionId, 'missing-job-a');
-    new SessionManager(projectB).claimForJob(sessionB.sessionId, 'missing-job-b');
+    new SessionManager(projectA).claimForJobSync(sessionA.sessionId, 'missing-job-a');
+    new SessionManager(projectB).claimForJobSync(sessionB.sessionId, 'missing-job-b');
 
     await startBackendServer();
 
@@ -517,7 +517,7 @@ describe('execution backend server', () => {
     createdJobIds.add(jobId);
     progressStore.initJob(jobId, session.sessionId, 'codex', projectRoot);
     progressStore.updatePhase(jobId, 'completed');
-    new SessionManager(projectRoot).claimForJob(session.sessionId, jobId);
+    new SessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
 
     await startBackendServer({ progressStore });
 
@@ -536,7 +536,7 @@ describe('execution backend server', () => {
     createdJobIds.add(jobId);
     progressStore.initJob(jobId, session.sessionId, 'codex', projectRoot, 'workflow');
     progressStore.updatePhase(jobId, 'running');
-    new SessionManager(projectRoot).claimForJob(session.sessionId, jobId);
+    new SessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
 
     const backend = await startBackendServer({ progressStore });
     const response = await fetch(`${backend.baseUrl}/wait/stream`, {

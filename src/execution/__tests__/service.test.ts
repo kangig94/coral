@@ -293,7 +293,7 @@ describe('ExecutionService', () => {
     mockState.getNewProvider.mockReturnValue(provider);
     const mgr = new SessionManager(ctx.projectRoot);
     const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
-    mgr.claimForJob(entry.sessionId, 'job-1');
+    mgr.claimForJobSync(entry.sessionId, 'job-1');
     const service = new ExecutionService(ctx);
 
     const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);
@@ -328,7 +328,7 @@ describe('ExecutionService', () => {
     const jobDirsBefore = listJobDirs();
 
     const decisionPromise = service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);
-    expect(mgr.claimForJob(entry.sessionId, 'job-race')).toBe(true);
+    expect(mgr.claimForJobSync(entry.sessionId, 'job-race')).toBe(true);
     gate.resolve();
 
     const decision = await decisionPromise;
@@ -1089,7 +1089,7 @@ describe('ExecutionService', () => {
       const jobId = `workflow-order-${phase}-${randomUUID()}`;
       trackJob(jobId);
       progressStore.initJob(jobId, session.sessionId, 'codex', ctx.projectRoot, 'workflow');
-      expect(sessionManager.claimForJob(session.sessionId, jobId)).toBe(true);
+      expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
 
       const order: string[] = [];
       const originalWriteWorkflowResult = progressStore.writeWorkflowResultMdOrThrow.bind(progressStore);
@@ -1144,7 +1144,7 @@ describe('ExecutionService', () => {
     const markdown = '# fallback\n';
     trackJob(jobId);
     progressStore.initJob(jobId, session.sessionId, 'codex', ctx.projectRoot, 'workflow');
-    expect(sessionManager.claimForJob(session.sessionId, jobId)).toBe(true);
+    expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
 
     const order: string[] = [];
     const originalWriteWorkflowResult = progressStore.writeWorkflowResultMdOrThrow.bind(progressStore);
@@ -1359,7 +1359,7 @@ describe('ExecutionService adversarial', () => {
 
       const service = new ExecutionService(ctx);
       const decisionPromise = service.fork('codex', { sessionId: source.sessionId, prompt: 'branch' }, ctx);
-      expect(mgr.claimForJob(source.sessionId, 'job-race')).toBe(true);
+      expect(mgr.claimForJobSync(source.sessionId, 'job-race')).toBe(true);
       gate.resolve();
 
       const decision = await decisionPromise;

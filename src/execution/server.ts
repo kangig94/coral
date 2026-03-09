@@ -6,7 +6,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { isNoEntryError, isRecord, formatError } from '../shared/mcp-utils.js';
+import { isNoEntryError, isRecord, formatError, readBundleHash } from '../shared/mcp-utils.js';
 import { sharedExecSchema, sharedForkSchema, sharedResumeSchema } from '../shared/schemas.js';
 import type { ExecutionService } from './service.js';
 import { activeChildren, killAllChildren, queueDepth } from './engine.js';
@@ -608,20 +608,9 @@ async function listen(server: Server): Promise<number> {
   });
 }
 
-function readBundleHash(): string {
-  try {
-    const raw = readFileSync(join(defaultPluginRoot, 'bridge', 'manifest.json'), 'utf-8');
-    const parsed: unknown = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object' && typeof (parsed as Record<string, unknown>).bundleHash === 'string') {
-      return (parsed as Record<string, unknown>).bundleHash as string;
-    }
-  } catch { /* fall through */ }
-  return 'unknown';
-}
-
 export function createBackendServer(options: BackendServerOptions = {}): BackendServerController {
   const version = options.version ?? (typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0');
-  const bundleHash = options.bundleHash ?? readBundleHash();
+  const bundleHash = options.bundleHash ?? readBundleHash(defaultPluginRoot);
   const instanceId = options.instanceId ?? randomUUID();
   const token = options.token ?? randomBytes(32).toString('hex');
   const idleTimer = options.createIdleTimer?.() ?? new IdleTimer();

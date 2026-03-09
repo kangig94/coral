@@ -389,18 +389,6 @@ export class ExecutionService {
     const preflightError = await runProviderPreflight(provider);
     if (preflightError) return rejectLaunch('preflight_failed', preflightError);
 
-    const latestSourceSession = this.sessionManager.get(providerName, input.sessionId);
-    if (!latestSourceSession) return rejectLaunch(
-      'session_not_found',
-      `Session not found: ${input.sessionId}. Use exec to start a new session.`,
-    );
-    if (latestSourceSession.activeJobId) {
-      return rejectLaunch(
-        'session_busy',
-        `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`,
-      );
-    }
-
     const sourceBusyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
     const sourceClaimId = randomUUID();
 
@@ -415,8 +403,8 @@ export class ExecutionService {
 
     try {
       const name = input.name ?? `fork-${Date.now()}`;
-      const model = input.model ?? latestSourceSession.model;
-      const cwd = input.cwd ?? latestSourceSession.cwd;
+      const model = input.model ?? sourceSession.model;
+      const cwd = input.cwd ?? sourceSession.cwd;
       const newSession = this.sessionManager.allocate(providerName, name, model, cwd);
       const admitted = await this.claimAndAdmitJob(
         newSession,
@@ -432,7 +420,7 @@ export class ExecutionService {
         sessionId: newSession.sessionId,
         name: input.name,
         prompt: input.prompt ?? '',
-        conversationRef: latestSourceSession.conversationRef,
+        conversationRef: sourceSession.conversationRef,
         model: input.model,
         cwd,
         effort: input.effort,

@@ -28,8 +28,6 @@ const STATUS_FILE = 'status.json';
 const PROGRESS_FILE = 'progress.jsonl';
 const READ_CHUNK = 8 * 1024;
 
-// Allocated per-call in readNewLines to avoid shared mutable state
-
 export type ReplayCursor = { lastOffset: number; remainder: string };
 
 export function jobResultPath(jobId: string): string {
@@ -58,6 +56,7 @@ export class ProgressStore {
   private readonly jobStartedAt = new Map<string, number>();
   private readonly statusCache = new Map<string, PersistedStatusRecord>();
   private readonly writeGeneration = new Map<string, number>();
+  private readonly readBuf = Buffer.alloc(READ_CHUNK);
   private liveCount = 0;
   private changeSeq = 0;
   private waiters: Array<() => void> = [];
@@ -284,8 +283,7 @@ export class ProgressStore {
     return eventId;
   }
 
-  markTerminalStatus(jobId: string, sessionId: string, result: TerminalResult, phase: JobPhase): void {
-    void sessionId;
+  markTerminalStatus(jobId: string, _sessionId: string, result: TerminalResult, phase: JobPhase): void {
     const didUpdateStatus = this.updateTerminalStatus(jobId, result, phase);
     this.clearTerminalState(jobId);
     if (!didUpdateStatus) {
@@ -363,7 +361,7 @@ export class ProgressStore {
     }
     try {
       const chunks: string[] = [];
-      const buf = Buffer.alloc(READ_CHUNK);
+      const buf = this.readBuf;
       let nextOffset = cursor.lastOffset;
       while (true) {
         const bytesRead = readSync(fd, buf, 0, READ_CHUNK, nextOffset);

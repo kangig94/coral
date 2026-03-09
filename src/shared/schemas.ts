@@ -99,3 +99,13 @@ export const abortInputSchema = z.object({
 });
 
 export type AbortInput = z.infer<typeof abortInputSchema>;
+
+/**
+ * Shared provider op union used by both codex and claude schemas.
+ * Each provider re-exports with its own type alias.
+ */
+export const providerOpSchema = z.discriminatedUnion('op', [
+  sharedExecSchema,
+  sharedListSchema,
+  sharedForkSchema,
+]);

@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BACKEND_INFO_PATH, readBackendInfo, type BackendInfo } from '../execution/backend-info.js';
 import { BACKEND_LOCK_PATH } from '../execution/backend-lock.js';
-import { isNoEntryError, isProcessAlive, isRecord, tryExclusiveWrite } from '../shared/mcp-utils.js';
+import { isNoEntryError, isProcessAlive, isRecord, readBundleHash, tryExclusiveWrite } from '../shared/mcp-utils.js';
 import type { WaitStreamEvent } from '../types.js';
 
 const STARTUP_POLL_MS = 200;
@@ -20,25 +20,10 @@ const WAIT_FETCH_MARGIN_MS = 30_000;
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
 
 function currentBundleHash(): string {
-  try {
-    const raw = readFileSync(join(pluginRoot, 'bridge', 'manifest.json'), 'utf-8');
-    const parsed: unknown = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object' && typeof (parsed as Record<string, unknown>).bundleHash === 'string') {
-      return (parsed as Record<string, unknown>).bundleHash as string;
-    }
-  } catch { /* fall through */ }
-  return 'unknown';
+  return readBundleHash(pluginRoot);
 }
 
-function currentVersion(): string {
-  try {
-    const pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf-8'));
-    return typeof pkg.version === 'string' ? pkg.version : fallbackVersion;
-  } catch {
-    return fallbackVersion;
-  }
-}
-const fallbackVersion = typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0';
+const currentVersion = typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0';
 const BACKEND_BIN = join(pluginRoot, 'bridge', 'coral-backend.cjs');
 
 type BackendHealth = {
@@ -222,7 +207,7 @@ function tryAcquireReplacementLock(): ReplacementLock | null {
   const payload = JSON.stringify({
     instanceId: `proxy-replacement-${process.pid}-${Date.now()}`,
     pid: process.pid,
-    version: currentVersion(),
+    version: currentVersion,
     bundleHash: currentBundleHash(),
     startedAt: Date.now(),
   });

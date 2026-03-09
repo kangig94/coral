@@ -1,5 +1,5 @@
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 export type McpResult = { content: [{ type: 'text'; text: string }]; isError: boolean };
 
@@ -41,6 +41,26 @@ export function isProcessAlive(pid: number): boolean {
 
 export function formatError(error: unknown): string {
   return error instanceof Error ? error.stack ?? error.message : String(error);
+}
+
+let cachedBundleHash: string | undefined;
+
+/**
+ * Read the bundle hash from bridge/manifest.json, caching the result.
+ * The hash doesn't change during process lifetime.
+ */
+export function readBundleHash(pluginRoot: string): string {
+  if (cachedBundleHash !== undefined) return cachedBundleHash;
+  try {
+    const raw = readFileSync(join(pluginRoot, 'bridge', 'manifest.json'), 'utf-8');
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && typeof (parsed as Record<string, unknown>).bundleHash === 'string') {
+      cachedBundleHash = (parsed as Record<string, unknown>).bundleHash as string;
+      return cachedBundleHash;
+    }
+  } catch { /* fall through */ }
+  cachedBundleHash = 'unknown';
+  return cachedBundleHash;
 }
 
 /**

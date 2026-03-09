@@ -50,12 +50,12 @@ describe('execution SessionManager', () => {
     });
   });
 
-  it('claimForJob returns false when session already has activeJobId', () => {
+  it('claimForJobSync returns false when session already has activeJobId', () => {
     const { mgr, workDir } = setup('claim-active');
     const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
 
-    expect(mgr.claimForJob(entry.sessionId, 'job-1')).toBe(true);
-    expect(mgr.claimForJob(entry.sessionId, 'job-2')).toBe(false);
+    expect(mgr.claimForJobSync(entry.sessionId, 'job-1')).toBe(true);
+    expect(mgr.claimForJobSync(entry.sessionId, 'job-2')).toBe(false);
   });
 
   it('claimForJobAtomic allows only one concurrent claimant', async () => {
@@ -102,7 +102,7 @@ describe('execution SessionManager', () => {
   it('releaseJob clears activeJobId and sets lastJobId', () => {
     const { mgr, workDir } = setup('release-job');
     const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
-    mgr.claimForJob(entry.sessionId, 'job-1');
+    mgr.claimForJobSync(entry.sessionId, 'job-1');
 
     mgr.releaseJob(entry.sessionId, 'job-1');
 
@@ -147,7 +147,7 @@ describe('execution SessionManager', () => {
     expect(entry.version).toBe(1);
     expect(mgr.get('codex', entry.sessionId)?.version).toBe(1);
 
-    expect(mgr.claimForJob(entry.sessionId, 'job-1')).toBe(true);
+    expect(mgr.claimForJobSync(entry.sessionId, 'job-1')).toBe(true);
     expect(mgr.get('codex', entry.sessionId)?.version).toBe(2);
 
     mgr.releaseJob(entry.sessionId, 'job-1');
@@ -193,10 +193,10 @@ describe('SessionManager adversarial', () => {
     return { mgr: new SessionManager(workDir), workDir };
   }
 
-  it('claimForJob returns false for a session that does not exist', () => {
+  it('claimForJobSync returns false for a session that does not exist', () => {
     const { mgr } = setup('claim-missing');
 
-    const result = mgr.claimForJob('non-existent-session-id', 'job-99');
+    const result = mgr.claimForJobSync('non-existent-session-id', 'job-99');
 
     expect(result).toBe(false);
   });
@@ -204,7 +204,7 @@ describe('SessionManager adversarial', () => {
   it('releaseJob is a no-op when the stored activeJobId does not match the given jobId', () => {
     const { mgr, workDir } = setup('release-mismatch');
     const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
-    mgr.claimForJob(entry.sessionId, 'job-correct');
+    mgr.claimForJobSync(entry.sessionId, 'job-correct');
 
     mgr.releaseJob(entry.sessionId, 'job-WRONG');
 
