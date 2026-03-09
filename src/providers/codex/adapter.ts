@@ -8,6 +8,9 @@ import { mapProviderResultBase } from '../result-mapping.js';
 import { makeOnEvent, type Provider, type ProviderRuntime } from '../types.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 
+/** Raw result type returned by Codex executors. */
+type CodexRawResult = Awaited<ReturnType<typeof executeOneShot>>;
+
 let lastValidatedCli: (CliInfo & { available: true }) | undefined;
 
 async function preflight(): Promise<void> {
@@ -22,6 +25,17 @@ async function preflight(): Promise<void> {
  * Both channels map to prompt prepend (Codex has no system prompt flag).
  * For exec, executeOneShot will additionally wrap the result with CLAUDE.md.
  */
+function mapResult(result: CodexRawResult, fallbackConversationRef?: string): ProviderResult {
+  return {
+    ...mapProviderResultBase(result),
+    conversationRef: result.sessionId ?? fallbackConversationRef,
+    nonResumable: result.sessionId == null ? true : undefined,
+    exitCode: result.exitCode,
+    errors: result.errors.length > 0 ? result.errors : undefined,
+    warnings: result.warnings.length > 0 ? result.warnings : undefined,
+  };
+}
+
 function buildPrompt(request: ProviderRequest): string {
   const parts: string[] = [];
   if (request.instruction) parts.push(request.instruction.content);
@@ -46,14 +60,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
         signal: runtime.signal,
         preChecked: lastValidatedCli!,
       });
-      return {
-        ...mapProviderResultBase(result),
-        conversationRef: result.sessionId ?? undefined,
-        nonResumable: result.sessionId == null ? true : undefined,
-        exitCode: result.exitCode,
-        errors: result.errors.length > 0 ? result.errors : undefined,
-        warnings: result.warnings.length > 0 ? result.warnings : undefined,
-      };
+      return mapResult(result);
     }
     case 'resume': {
       if (!request.conversationRef) throw new Error('resume requires conversationRef');
@@ -66,13 +73,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
         signal: runtime.signal,
         preChecked: lastValidatedCli!,
       });
-      return {
-        ...mapProviderResultBase(result),
-        conversationRef: result.sessionId ?? request.conversationRef,
-        exitCode: result.exitCode,
-        errors: result.errors.length > 0 ? result.errors : undefined,
-        warnings: result.warnings.length > 0 ? result.warnings : undefined,
-      };
+      return mapResult(result, request.conversationRef);
     }
     case 'fork': {
       if (!request.conversationRef) throw new Error('fork requires conversationRef');
@@ -85,14 +86,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
         signal: runtime.signal,
         preChecked: lastValidatedCli!,
       });
-      return {
-        ...mapProviderResultBase(result),
-        conversationRef: result.sessionId ?? undefined,
-        nonResumable: result.sessionId == null ? true : undefined,
-        exitCode: result.exitCode,
-        errors: result.errors.length > 0 ? result.errors : undefined,
-        warnings: result.warnings.length > 0 ? result.warnings : undefined,
-      };
+      return mapResult(result);
     }
   }
 

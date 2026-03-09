@@ -48,6 +48,10 @@ async function* emit(events: unknown[]): AsyncGenerator<any> {
   }
 }
 
+async function* fail(error: unknown): AsyncGenerator<any> {
+  throw error;
+}
+
 async function loadCallToolHandler() {
   vi.resetModules();
   mockState.handlers.clear();
@@ -60,12 +64,12 @@ async function loadCallToolHandler() {
   return handler;
 }
 
-async function invokeWaitRaw(argumentsValue: Record<string, unknown>) {
+async function invokeToolRaw(name: string, argumentsValue: Record<string, unknown>) {
   const handler = await loadCallToolHandler();
   return handler(
     {
       params: {
-        name: 'wait',
+        name,
         arguments: argumentsValue,
       },
     },
@@ -74,6 +78,10 @@ async function invokeWaitRaw(argumentsValue: Record<string, unknown>) {
       _meta: {},
     },
   );
+}
+
+async function invokeWaitRaw(argumentsValue: Record<string, unknown>) {
+  return invokeToolRaw('wait', argumentsValue);
 }
 
 async function invokeWait(argumentsValue: Record<string, unknown>) {
@@ -276,6 +284,94 @@ describe('bridge wait handler', () => {
     expect(mockState.readFileSync).toHaveBeenCalledWith('/tmp/coral-jobs/workflow-diverge/result.md', 'utf-8');
   });
 
+  it('returns ordinary wait timeouts in-band with isError false', async () => {
+    mockState.streamWait.mockImplementationOnce(() => emit([
+      {
+        type: 'timeout',
+        runningJobIds: ['job-1'],
+      },
+    ]));
+
+    const result = await invokeWaitRaw({ jobs: ['job-1'] });
+
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      state: 'running',
+      runningJobIds: ['job-1'],
+    });
+  });
+
+  it('keeps terminal job failures in-band with isError false', async () => {
+    mockState.streamWait.mockImplementationOnce(() => emit([
+      {
+        type: 'terminal',
+        completedJobId: 'job-failed',
+        sessionId: 'session-failed',
+        remainingJobIds: [],
+        resultPath: '/tmp/coral-jobs/job-failed/result.md',
+        result: {
+          content: 'provider failure output',
+          failed: true,
+          exitCode: 1,
+        },
+      },
+    ]));
+
+    const result = await invokeWaitRaw({
+      jobs: ['job-failed'],
+      inline: true,
+    });
+
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      state: 'completed',
+      completedJobId: 'job-failed',
+      sessionId: 'session-failed',
+      remainingJobIds: [],
+      result: {
+        content: 'provider failure output',
+        failed: true,
+        exitCode: 1,
+      },
+    });
+  });
+
+  it('returns invalid job ids as mcp errors on backend 404', async () => {
+    mockState.streamWait.mockImplementationOnce(() => fail(new Error('Backend request failed: 404 Not Found')));
+
+    const result = await invokeWaitRaw({ jobs: ['missing-job'] });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      error: 'jobs_not_found',
+      message: 'Requested jobs were not found',
+    });
+  });
+
+  it('returns scope mismatches as mcp errors on backend 403', async () => {
+    mockState.streamWait.mockImplementationOnce(() => fail(new Error('Backend request failed: 403 Forbidden')));
+
+    const result = await invokeWaitRaw({ jobs: ['foreign-job'] });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      error: 'scope_mismatch',
+      message: 'Requested jobs are outside the current project scope',
+    });
+  });
+
+  it('returns wait transport failures as mcp errors', async () => {
+    mockState.streamWait.mockImplementationOnce(() => fail(new Error('Invalid terminal wait stream event')));
+
+    const result = await invokeWaitRaw({ jobs: ['job-1'] });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      error: 'wait_transport_failure',
+      message: 'Invalid terminal wait stream event',
+    });
+  });
+
   it('should reject legacy include_result parameter', async () => {
     const result = await invokeWaitRaw({ jobs: ['job-1'], include_result: true } as any);
 
@@ -341,5 +437,39 @@ describe('bridge wait handler', () => {
         content: '/tmp/coral-jobs/single-path/result.md',
       },
     });
+  });
+
+  it('passes process.cwd() into streamWait as projectRoot', async () => {
+    mockState.streamWait.mockImplementationOnce(() => emit([
+      {
+        type: 'terminal',
+        completedJobId: 'job-1',
+        sessionId: 'session-1',
+        remainingJobIds: [],
+        resultPath: '/tmp/coral-jobs/job-1/result.md',
+        result: { content: 'done' },
+      },
+    ]));
+
+    await invokeWait({ jobs: ['job-1'] });
+
+    expect(mockState.streamWait).toHaveBeenCalledTimes(1);
+    expect(mockState.streamWait.mock.calls[0]?.[5]).toBe(process.cwd());
+  });
+
+  it('passes process.cwd() into proxyToolCall as projectRoot', async () => {
+    mockState.proxyToolCall.mockResolvedValueOnce({
+      status: 'running',
+      job: 'job-1',
+      session: 'session-1',
+    });
+
+    await invokeToolRaw('codex', { op: 'exec', prompt: 'hello' });
+
+    expect(mockState.proxyToolCall).toHaveBeenCalledWith(
+      'codex',
+      { op: 'exec', prompt: 'hello' },
+      expect.objectContaining({ projectRoot: process.cwd() }),
+    );
   });
 });

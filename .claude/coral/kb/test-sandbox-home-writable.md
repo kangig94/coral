@@ -1,7 +1,7 @@
 # Sandbox HOME must be writable for CLI tests
 
 ## Rule
-Run `HOME=/tmp npm test` in sandboxed environments. Both SessionManager (`~/.claude/coral/sessions/`) and Claude CLI (`~/.claude/`) require writable HOME; sandbox restrictions cause false test failures.
+Run `HOME=/tmp npm test` in sandboxed environments. Both SessionManager (`~/.claude/coral/execution/sessions/`) and Claude CLI (`~/.claude/`) require writable HOME; sandbox restrictions cause false test failures.
 
 ## Why
 Tests pass locally but fail in sandboxed agents/CI because file writes to `$HOME/.claude/` are denied. These appear as real regressions but are environment artifacts. Additionally, Claude CLI `--resume` requires `~/.claude` to persist session state — if HOME is not writable, `--resume` fails with "No conversation found" even when the initial call returned a valid `session_id`.

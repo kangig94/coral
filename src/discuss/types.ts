@@ -54,7 +54,7 @@ export type DiscussState = {
   created_at: string;
   last_activity_at: string;
   last_speech_step: number;
-  hold_count: number;
+  pending_since_ts: number | null;
   bid_release_step: number;
   end_reason_content: string | null;
   transcript: TranscriptEntry[];
@@ -105,7 +105,7 @@ export type DiscussCreateInput = {
 
 export type StepPhase =
   | { status: 'setup'; phase: 'not_ready' }
-  | { status: 'bidding'; phase: 'bidding'; pending_bidders: string[]; hold_count: number }
+  | { status: 'bidding'; phase: 'bidding'; pending_bidders: string[]; pending_since_ts: number | null }
   | { status: 'bidding'; phase: 'resolved'; winner: string }
   | { status: 'bidding'; phase: 'epoch_transition'; epoch: number }
   | { status: 'bidding'; phase: 'ended'; reason: EndReason }
@@ -113,6 +113,7 @@ export type StepPhase =
   | { status: 'speaking'; phase: 'speech_done'; speaker: string; content: string }
   | { status: 'speaking'; phase: 'speech_pending'; elapsed: number }
   | { status: 'speaking'; phase: 'speech_timeout'; speaker: string }
+  | { status: 'error'; phase: 'state_corrupt'; message: string }
   | { status: 'ended'; phase: 'ended'; reason: EndReason };
 
 export type PersonaSeedInput = {

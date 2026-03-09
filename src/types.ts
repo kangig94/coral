@@ -125,7 +125,7 @@ export interface PersistedStatusRecord {
   jobId: string;
   sessionId: string;
   provider: string;
-  projectRoot?: string;
+  projectRoot: string;
   jobKind?: JobKind;
   phase: JobPhase;
   launch: {

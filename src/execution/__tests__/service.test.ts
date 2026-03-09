@@ -16,7 +16,9 @@ import { parseExpression } from '../../workflow/pipe-parser.js';
 import {
   MAX_ACTIVE_SESSIONS,
   cancelQueued,
+  getActiveJobIds,
   killAllChildren,
+  queueDepth,
   releaseLaunch,
 } from '../engine.js';
 import { AbortRegistry } from '../abort-registry.js';
@@ -53,6 +55,7 @@ vi.mock('../../coral/resolver.js', async () => {
 type ServiceInternals = {
   abortRegistry: AbortRegistry;
   progressStore: ProgressStore;
+  sessionManager: SessionManager;
 };
 
 const createdJobIds = new Set<string>();
@@ -87,6 +90,20 @@ function trackAllJobDirs(): void {
   } catch {
     /* best effort */
   }
+}
+
+function createDeferred<T = void>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 function makeProvider(options?: {
@@ -276,7 +293,7 @@ describe('ExecutionService', () => {
     mockState.getNewProvider.mockReturnValue(provider);
     const mgr = new SessionManager(ctx.projectRoot);
     const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
-    mgr.claimForJob(entry.sessionId, 'job-1');
+    mgr.claimForJobSync(entry.sessionId, 'job-1');
     const service = new ExecutionService(ctx);
 
     const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);
@@ -289,6 +306,40 @@ describe('ExecutionService', () => {
     if (decision.status === 'rejected') {
       expect(decision.message).toContain(`Session ${entry.sessionId} already has an active job`);
     }
+  });
+
+  it('resume rolls back queued admission when the session becomes busy during preflight', async () => {
+    const never = new Promise<ProviderResult>(() => {});
+    const blockingProvider = makeProvider({ execute: () => never });
+    mockState.getNewProvider.mockReturnValue(blockingProvider.provider);
+    const service = new ExecutionService(ctx);
+    await occupyProviderSlots(service, ctx, 'codex');
+
+    const gate = createDeferred<void>();
+    const racingProvider = makeProvider({
+      preflight: async () => {
+        await gate.promise;
+      },
+    });
+    mockState.getNewProvider.mockReturnValue(racingProvider.provider);
+
+    const mgr = new SessionManager(ctx.projectRoot);
+    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
+    const jobDirsBefore = listJobDirs();
+
+    const decisionPromise = service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);
+    expect(mgr.claimForJobSync(entry.sessionId, 'job-race')).toBe(true);
+    gate.resolve();
+
+    const decision = await decisionPromise;
+
+    expect(decision.status).toBe('rejected');
+    if (decision.status !== 'rejected') throw new Error('expected rejected');
+    expect(decision.code).toBe('session_busy');
+    expect(decision.message).toContain(`Session ${entry.sessionId} already has an active job`);
+    expect(queueDepth()).toBe(0);
+    expect(listJobDirs()).toEqual(jobDirsBefore);
+    expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBe('job-race');
   });
 
   it('fork allocates a new session id', async () => {
@@ -370,7 +421,7 @@ describe('ExecutionService', () => {
     const service = new ExecutionService(ctx);
     const { progressStore } = getInternals(service);
     const jobId = `test-await-launch-${Date.now()}`;
-    progressStore.initJob(jobId, 'test-session', 'codex');
+    progressStore.initJob(jobId, 'test-session', 'codex', ctx.projectRoot);
 
     setTimeout(() => {
       progressStore.updateLaunchState(jobId, 'ready');
@@ -416,6 +467,7 @@ describe('ExecutionService', () => {
       jobId: 'job-1',
       sessionId: 'session-1',
       provider: 'codex',
+      projectRoot: ctx.projectRoot,
       phase: 'running',
       launch: {
         state: 'ready',
@@ -466,6 +518,86 @@ describe('ExecutionService', () => {
         result: { content: 'done' },
       },
     ]);
+  });
+
+  it('waitStream yields terminal from status when no terminal event is replayed', async () => {
+    const service = new ExecutionService(ctx);
+    const { progressStore } = getInternals(service);
+    vi.spyOn(progressStore, 'readStatus').mockReturnValue({
+      jobId: 'job-1',
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: ctx.projectRoot,
+      phase: 'completed',
+      launch: {
+        state: 'ready',
+        updatedAt: '2026-03-06T00:00:00.000Z',
+      },
+      result: { content: 'done' },
+    });
+    vi.spyOn(progressStore, 'replayFrom').mockReturnValue([]);
+
+    const events: WaitStreamEvent[] = [];
+    for await (const event of service.waitStream({ jobIds: ['job-1'], timeoutSeconds: 1 })) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      {
+        type: 'terminal',
+        completedJobId: 'job-1',
+        sessionId: 'session-1',
+        remainingJobIds: [],
+        resultPath: `${JOBS_DIR}/job-1/result.md`,
+        result: { content: 'done' },
+      },
+    ]);
+  });
+
+  it('waitStream re-reads terminal status after replay before waiting for more changes', async () => {
+    const service = new ExecutionService(ctx);
+    const { progressStore } = getInternals(service);
+    const runningStatus: PersistedStatusRecord = {
+      jobId: 'job-1',
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: ctx.projectRoot,
+      phase: 'running',
+      launch: {
+        state: 'ready',
+        updatedAt: '2026-03-06T00:00:00.000Z',
+      },
+    };
+    const terminalStatus: PersistedStatusRecord = {
+      ...runningStatus,
+      phase: 'completed',
+      result: { content: 'done' },
+    };
+
+    vi.spyOn(progressStore, 'readStatus')
+      .mockImplementationOnce(() => runningStatus)
+      .mockImplementation(() => terminalStatus);
+    vi.spyOn(progressStore, 'replayFrom').mockReturnValue([]);
+    const waitForChange = vi.spyOn(progressStore, 'waitForChange').mockImplementation(() => {
+      throw new Error('waitForChange should not be called once terminal status is visible');
+    });
+
+    const events: WaitStreamEvent[] = [];
+    for await (const event of service.waitStream({ jobIds: ['job-1'], timeoutSeconds: 600 })) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      {
+        type: 'terminal',
+        completedJobId: 'job-1',
+        sessionId: 'session-1',
+        remainingJobIds: [],
+        resultPath: `${JOBS_DIR}/job-1/result.md`,
+        result: { content: 'done' },
+      },
+    ]);
+    expect(waitForChange).not.toHaveBeenCalled();
   });
 
   it('waitStream emits a queued event before replaying queued progress records', async () => {
@@ -587,6 +719,98 @@ describe('ExecutionService', () => {
       result: terminal.result,
     });
     expect(session?.state).toBe('non_resumable');
+  });
+
+  it('keeps workflow session provenance on projectRoot while launching atoms in workDir', async () => {
+    const seenCwds: string[] = [];
+    const { provider } = makeProvider({
+      execute: async (request) => {
+        if (!request.cwd) throw new Error('expected workflow atom cwd');
+        seenCwds.push(request.cwd);
+        if (request.name?.startsWith('architect')) {
+          return { content: 'ARCH' };
+        }
+        return { content: 'FINAL' };
+      },
+    });
+    mockState.getNewProvider.mockReturnValue(provider);
+    mockState.resolveCoralContent.mockImplementation((name: string) => ({
+      type: 'agent',
+      content: `Injected ${name} content`,
+      path: `/tmp/${name}.md`,
+    }));
+
+    const service = new ExecutionService(ctx);
+    const workDir = join(mockState.tmpHome, 'child-workdir');
+    mkdirSync(workDir, { recursive: true });
+
+    const decision = await service.executeWorkflow(
+      'codex',
+      parseExpression('architect -> resolver'),
+      {
+        expression: 'architect -> resolver',
+        init_prompt: 'seed',
+        provider: 'codex',
+        stale_timeout_seconds: 0,
+      },
+      ctx,
+      workDir,
+    );
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running');
+    trackAllJobDirs();
+
+    await waitForTerminalEvent(service, decision.job);
+
+    const workflowSession = new SessionManager(ctx.projectRoot).get('codex', decision.session);
+    const workDirSession = new SessionManager(workDir).get('codex', decision.session);
+
+    expect(seenCwds).toEqual([workDir, workDir]);
+    expect(workflowSession?.cwd).toBe(ctx.projectRoot);
+    expect(workDirSession).toBeNull();
+  });
+
+  it('executeWorkflow bypasses launch admission when provider slots are full', async () => {
+    const never = new Promise<ProviderResult>(() => {});
+    const { provider } = makeProvider({ execute: () => never });
+    mockState.getNewProvider.mockReturnValue(provider);
+    mockState.resolveCoralContent.mockImplementation((name: string) => ({
+      type: 'agent',
+      content: `Injected ${name} content`,
+      path: `/tmp/${name}.md`,
+    }));
+
+    const service = new ExecutionService(ctx);
+    for (const jobId of getActiveJobIds()) {
+      releaseLaunch(jobId);
+    }
+    expect(queueDepth()).toBe(0);
+    const activeJobIds = await occupyProviderSlots(service, ctx, 'codex');
+
+    const decision = await service.executeWorkflow(
+      'codex',
+      parseExpression('architect'),
+      {
+        expression: 'architect',
+        init_prompt: 'seed',
+        provider: 'codex',
+        stale_timeout_seconds: 0,
+      },
+      ctx,
+    );
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running');
+    trackJob(decision.job);
+    expect(getActiveJobIds()).toEqual(activeJobIds);
+    const { progressStore } = getInternals(service);
+    expect(progressStore.readStatus(decision.job)).toMatchObject({
+      jobId: decision.job,
+      sessionId: decision.session,
+      jobKind: 'workflow',
+      phase: 'running',
+    });
   });
 
   it('persists partial workflow results on failure and marks the workflow session non_resumable', async () => {
@@ -721,6 +945,251 @@ describe('ExecutionService', () => {
     });
     expect(session?.state).toBe('non_resumable');
   });
+
+  it('start falls back to status-only terminal persistence when appendTerminal throws', async () => {
+    const { provider } = makeProvider();
+    mockState.getNewProvider.mockReturnValue(provider);
+
+    const service = new ExecutionService(ctx);
+    const { progressStore } = getInternals(service);
+    const appendTerminal = vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
+      throw new Error('disk full');
+    });
+    const markTerminalStatus = vi.spyOn(progressStore, 'markTerminalStatus');
+
+    const decision = await service.start('codex', { prompt: 'hello' }, ctx);
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running');
+    trackJob(decision.job);
+
+    const terminal = await waitForTerminalEvent(service, decision.job);
+    const status = progressStore.readStatus(decision.job);
+
+    expect(appendTerminal).toHaveBeenCalled();
+    expect(markTerminalStatus).toHaveBeenCalledWith(
+      decision.job,
+      decision.session,
+      expect.objectContaining({ content: 'ok' }),
+      'completed',
+    );
+    expect(terminal.result).toEqual({ content: 'ok' });
+    expect(status).toMatchObject({
+      phase: 'completed',
+      result: { content: 'ok' },
+    });
+  });
+
+  it('finishQueuedAbort falls back to status-only terminal persistence when appendTerminal throws', () => {
+    const service = new ExecutionService(ctx);
+    const { progressStore } = getInternals(service);
+    const jobId = `queued-abort-${randomUUID()}`;
+    trackJob(jobId);
+    progressStore.initJob(jobId, 'session-1', 'codex', ctx.projectRoot);
+    vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
+      throw new Error('disk full');
+    });
+    const markTerminalStatus = vi.spyOn(progressStore, 'markTerminalStatus');
+
+    (
+      service as unknown as {
+        finishQueuedAbort(jobId: string, sessionId: string, message: string): void;
+      }
+    ).finishQueuedAbort(jobId, 'session-1', 'Aborted while queued.');
+
+    expect(markTerminalStatus).toHaveBeenCalledWith(
+      jobId,
+      'session-1',
+      { content: '', aborted: true, notice: 'Aborted while queued.' },
+      'aborted',
+    );
+    expect(progressStore.readStatus(jobId)).toMatchObject({ phase: 'aborted' });
+  });
+
+  it('failJob falls back to status-only terminal persistence when appendTerminal throws', () => {
+    const service = new ExecutionService(ctx);
+    const { progressStore } = getInternals(service);
+    const jobId = `fail-job-${randomUUID()}`;
+    trackJob(jobId);
+    progressStore.initJob(jobId, 'session-1', 'codex', ctx.projectRoot);
+    vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
+      throw new Error('disk full');
+    });
+    const markTerminalStatus = vi.spyOn(progressStore, 'markTerminalStatus');
+
+    (
+      service as unknown as {
+        failJob(jobId: string, sessionId: string, launchState: string, message: string): void;
+      }
+    ).failJob(jobId, 'session-1', 'error', 'provider failed');
+
+    expect(markTerminalStatus).toHaveBeenCalledWith(
+      jobId,
+      'session-1',
+      { content: '', notice: 'provider failed' },
+      'error',
+    );
+    expect(progressStore.readStatus(jobId)).toMatchObject({ phase: 'error' });
+  });
+
+  it('finishWorkflowJob falls back to status-only terminal persistence when appendTerminal throws', () => {
+    const service = new ExecutionService(ctx);
+    const { progressStore } = getInternals(service);
+    const jobId = `workflow-terminal-${randomUUID()}`;
+    trackJob(jobId);
+    progressStore.initJob(jobId, 'session-1', 'codex', ctx.projectRoot);
+    vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
+      throw new Error('disk full');
+    });
+    const markTerminalStatus = vi.spyOn(progressStore, 'markTerminalStatus');
+    const result = { content: 'done', workflow: { steps: [] } };
+
+    (
+      service as unknown as {
+        finishWorkflowJob(
+          sessionId: string,
+          jobId: string,
+          phase: 'completed' | 'error' | 'aborted',
+          result: { content: string; workflow: { steps: unknown[] } },
+          markdown: string,
+        ): void;
+      }
+    ).finishWorkflowJob('session-1', jobId, 'completed', result, '# workflow\n');
+
+    expect(markTerminalStatus).toHaveBeenCalledWith(jobId, 'session-1', result, 'completed');
+    expect(progressStore.readStatus(jobId)).toMatchObject({
+      phase: 'completed',
+      result,
+    });
+    expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe('# workflow\n');
+  });
+
+  it.each([
+    {
+      phase: 'completed' as const,
+      result: { content: 'done', workflow: { steps: [] } },
+      markdown: '# completed\n',
+    },
+    {
+      phase: 'error' as const,
+      result: { content: '', notice: 'failed', workflow: { steps: [] } },
+      markdown: '# failed\n',
+    },
+    {
+      phase: 'aborted' as const,
+      result: { content: '', aborted: true, notice: 'aborted', workflow: { steps: [] } },
+      markdown: '# aborted\n',
+    },
+  ])(
+    'finishWorkflowJob writes result.md before %s terminal persistence and marks the session non_resumable afterward',
+    ({ phase, result, markdown }) => {
+      const service = new ExecutionService(ctx);
+      const { progressStore, sessionManager } = getInternals(service);
+      const session = sessionManager.allocate('codex', `workflow-${phase}`, 'workflow', ctx.projectRoot);
+      const jobId = `workflow-order-${phase}-${randomUUID()}`;
+      trackJob(jobId);
+      progressStore.initJob(jobId, session.sessionId, 'codex', ctx.projectRoot, 'workflow');
+      expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
+
+      const order: string[] = [];
+      const originalWriteWorkflowResult = progressStore.writeWorkflowResultMdOrThrow.bind(progressStore);
+      const originalAppendTerminal = progressStore.appendTerminal.bind(progressStore);
+      const originalSetNonResumable = sessionManager.setNonResumable.bind(sessionManager);
+
+      vi.spyOn(progressStore, 'writeWorkflowResultMdOrThrow').mockImplementation((targetJobId, persistedMarkdown) => {
+        order.push('artifact');
+        return originalWriteWorkflowResult(targetJobId, persistedMarkdown);
+      });
+      vi.spyOn(progressStore, 'appendTerminal').mockImplementation((targetJobId, targetSessionId, terminalResult, terminalPhase) => {
+        order.push('terminal');
+        expect(existsSync(jobResultPath(targetJobId))).toBe(true);
+        expect(readFileSync(jobResultPath(targetJobId), 'utf-8')).toBe(markdown);
+        expect(new SessionManager(ctx.projectRoot).get('codex', targetSessionId)?.state).toBe('pending');
+        return originalAppendTerminal(targetJobId, targetSessionId, terminalResult, terminalPhase);
+      });
+      vi.spyOn(sessionManager, 'setNonResumable').mockImplementation((targetSessionId) => {
+        order.push('non_resumable');
+        expect(progressStore.readStatus(jobId)).toMatchObject({
+          phase,
+          result,
+        });
+        return originalSetNonResumable(targetSessionId);
+      });
+
+      (
+        service as unknown as {
+          finishWorkflowJob(
+            sessionId: string,
+            jobId: string,
+            terminalPhase: 'completed' | 'error' | 'aborted',
+            terminalResult: typeof result,
+            persistedMarkdown: string,
+          ): void;
+        }
+      ).finishWorkflowJob(session.sessionId, jobId, phase, result, markdown);
+
+      expect(order).toEqual(['artifact', 'terminal', 'non_resumable']);
+      expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(markdown);
+      expect(sessionManager.get('codex', session.sessionId)?.state).toBe('non_resumable');
+    },
+  );
+
+  it('finishWorkflowJob writes result.md before status-only terminal fallback and marks the session non_resumable afterward', () => {
+    const service = new ExecutionService(ctx);
+    const { progressStore, sessionManager } = getInternals(service);
+    const session = sessionManager.allocate('codex', 'workflow-fallback', 'workflow', ctx.projectRoot);
+    const jobId = `workflow-fallback-order-${randomUUID()}`;
+    const phase = 'aborted' as const;
+    const result = { content: '', aborted: true, notice: 'aborted', workflow: { steps: [] } };
+    const markdown = '# fallback\n';
+    trackJob(jobId);
+    progressStore.initJob(jobId, session.sessionId, 'codex', ctx.projectRoot, 'workflow');
+    expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
+
+    const order: string[] = [];
+    const originalWriteWorkflowResult = progressStore.writeWorkflowResultMdOrThrow.bind(progressStore);
+    const originalMarkTerminalStatus = progressStore.markTerminalStatus.bind(progressStore);
+    const originalSetNonResumable = sessionManager.setNonResumable.bind(sessionManager);
+
+    vi.spyOn(progressStore, 'writeWorkflowResultMdOrThrow').mockImplementation((targetJobId, persistedMarkdown) => {
+      order.push('artifact');
+      return originalWriteWorkflowResult(targetJobId, persistedMarkdown);
+    });
+    vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
+      throw new Error('disk full');
+    });
+    vi.spyOn(progressStore, 'markTerminalStatus').mockImplementation((targetJobId, targetSessionId, terminalResult, terminalPhase) => {
+      order.push('terminal');
+      expect(existsSync(jobResultPath(targetJobId))).toBe(true);
+      expect(readFileSync(jobResultPath(targetJobId), 'utf-8')).toBe(markdown);
+      expect(new SessionManager(ctx.projectRoot).get('codex', targetSessionId)?.state).toBe('pending');
+      return originalMarkTerminalStatus(targetJobId, targetSessionId, terminalResult, terminalPhase);
+    });
+    vi.spyOn(sessionManager, 'setNonResumable').mockImplementation((targetSessionId) => {
+      order.push('non_resumable');
+      expect(progressStore.readStatus(jobId)).toMatchObject({
+        phase,
+        result,
+      });
+      return originalSetNonResumable(targetSessionId);
+    });
+
+    (
+      service as unknown as {
+        finishWorkflowJob(
+          sessionId: string,
+          jobId: string,
+          terminalPhase: 'completed' | 'error' | 'aborted',
+          terminalResult: typeof result,
+          persistedMarkdown: string,
+        ): void;
+      }
+    ).finishWorkflowJob(session.sessionId, jobId, phase, result, markdown);
+
+    expect(order).toEqual(['artifact', 'terminal', 'non_resumable']);
+    expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(markdown);
+    expect(sessionManager.get('codex', session.sessionId)?.state).toBe('non_resumable');
+  });
 });
 
 describe('ExecutionService adversarial', () => {
@@ -798,6 +1267,45 @@ describe('ExecutionService adversarial', () => {
       expect(decision.code).toBe('unknown_provider');
       expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBeUndefined();
     });
+
+    it('allows exactly one concurrent resume and rejects the stale loser with session_busy', async () => {
+      const gate = createDeferred<void>();
+      const never = new Promise<ProviderResult>(() => {});
+      const { provider } = makeProvider({
+        preflight: async () => {
+          await gate.promise;
+        },
+        execute: async () => never,
+      });
+      mockState.getNewProvider.mockReturnValue(provider);
+
+      const mgr = new SessionManager(ctx.projectRoot);
+      const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
+      const jobDirsBefore = listJobDirs();
+      const service = new ExecutionService(ctx);
+
+      const firstResume = service.resume('codex', { sessionId: entry.sessionId, prompt: 'one' }, ctx);
+      const secondResume = service.resume('codex', { sessionId: entry.sessionId, prompt: 'two' }, ctx);
+      gate.resolve();
+
+      const decisions = await Promise.all([firstResume, secondResume]);
+      const running = decisions.filter((decision) => decision.status === 'running');
+      const rejected = decisions.filter((decision) => decision.status === 'rejected');
+
+      expect(running).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+
+      const winner = running[0];
+      if (!winner || winner.status !== 'running') throw new Error('expected running winner');
+      trackJob(winner.job);
+
+      const loser = rejected[0];
+      if (!loser || loser.status !== 'rejected') throw new Error('expected rejected loser');
+      expect(loser.code).toBe('session_busy');
+      expect(loser.message).toContain(`Session ${entry.sessionId} already has an active job`);
+      expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBe(winner.job);
+      expect([...listJobDirs()].filter((jobId) => !jobDirsBefore.has(jobId))).toHaveLength(1);
+    });
   });
 
   describe('ExecutionService.fork() adversarial', () => {
@@ -833,6 +1341,78 @@ describe('ExecutionService adversarial', () => {
       if (decision.status !== 'rejected') throw new Error('expected rejected');
       expect(decision.code).toBe('unknown_provider');
       expect(mgr.list('codex').length).toBe(sessionsBefore);
+    });
+
+    it('rejects when the source session becomes busy during preflight without allocating a new fork session', async () => {
+      const gate = createDeferred<void>();
+      const { provider } = makeProvider({
+        preflight: async () => {
+          await gate.promise;
+        },
+      });
+      mockState.getNewProvider.mockReturnValue(provider);
+
+      const mgr = new SessionManager(ctx.projectRoot);
+      const source = mgr.allocate('codex', 'source', 'gpt-5', ctx.projectRoot);
+      const sessionsBefore = mgr.list('codex').length;
+      const jobDirsBefore = listJobDirs();
+
+      const service = new ExecutionService(ctx);
+      const decisionPromise = service.fork('codex', { sessionId: source.sessionId, prompt: 'branch' }, ctx);
+      expect(mgr.claimForJobSync(source.sessionId, 'job-race')).toBe(true);
+      gate.resolve();
+
+      const decision = await decisionPromise;
+
+      expect(decision.status).toBe('rejected');
+      if (decision.status !== 'rejected') throw new Error('expected rejected');
+      expect(decision.code).toBe('session_busy');
+      expect(decision.message).toContain(`Session ${source.sessionId} already has an active job`);
+      expect(mgr.list('codex').length).toBe(sessionsBefore);
+      expect(listJobDirs()).toEqual(jobDirsBefore);
+    });
+
+    it('allows exactly one concurrent fork and rejects the stale loser with session_busy', async () => {
+      const gate = createDeferred<void>();
+      const never = new Promise<ProviderResult>(() => {});
+      const { provider } = makeProvider({
+        preflight: async () => {
+          await gate.promise;
+        },
+        execute: async () => never,
+      });
+      mockState.getNewProvider.mockReturnValue(provider);
+
+      const mgr = new SessionManager(ctx.projectRoot);
+      const source = mgr.allocate('codex', 'source', 'gpt-5', ctx.projectRoot);
+      const sessionsBefore = mgr.list('codex').length;
+      const sourceVersionBefore = mgr.get('codex', source.sessionId)?.version;
+      const jobDirsBefore = listJobDirs();
+      const service = new ExecutionService(ctx);
+
+      const firstFork = service.fork('codex', { sessionId: source.sessionId, prompt: 'branch-one' }, ctx);
+      const secondFork = service.fork('codex', { sessionId: source.sessionId, prompt: 'branch-two' }, ctx);
+      gate.resolve();
+
+      const decisions = await Promise.all([firstFork, secondFork]);
+      const running = decisions.filter((decision) => decision.status === 'running');
+      const rejected = decisions.filter((decision) => decision.status === 'rejected');
+
+      expect(running).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+
+      const winner = running[0];
+      if (!winner || winner.status !== 'running') throw new Error('expected running winner');
+      trackJob(winner.job);
+
+      const loser = rejected[0];
+      if (!loser || loser.status !== 'rejected') throw new Error('expected rejected loser');
+      expect(loser.code).toBe('session_busy');
+      expect(loser.message).toContain(`Session ${source.sessionId} already has an active job`);
+      expect(mgr.list('codex')).toHaveLength(sessionsBefore + 1);
+      expect(mgr.get('codex', source.sessionId)?.activeJobId).toBeUndefined();
+      expect(mgr.get('codex', source.sessionId)?.version).toBeGreaterThan(sourceVersionBefore ?? 0);
+      expect([...listJobDirs()].filter((jobId) => !jobDirsBefore.has(jobId))).toHaveLength(1);
     });
 
     it('rejects with session_not_found for a non-existent source session', async () => {
@@ -887,10 +1467,24 @@ describe('ExecutionService adversarial', () => {
       vi.spyOn(progressStore, 'readStatus').mockImplementation((...args: unknown[]) => {
         const jobId = args[0] as string;
         if (jobId === jobIdA) {
-          return { jobId: jobIdA, sessionId: 'session-a', provider: 'codex', phase: 'running', launch: { state: 'ready', updatedAt: '' } };
+          return {
+            jobId: jobIdA,
+            sessionId: 'session-a',
+            provider: 'codex',
+            projectRoot: ctx.projectRoot,
+            phase: 'running',
+            launch: { state: 'ready', updatedAt: '' },
+          };
         }
         if (jobId === jobIdB) {
-          return { jobId: jobIdB, sessionId: 'session-b', provider: 'codex', phase: 'running', launch: { state: 'ready', updatedAt: '' } };
+          return {
+            jobId: jobIdB,
+            sessionId: 'session-b',
+            provider: 'codex',
+            projectRoot: ctx.projectRoot,
+            phase: 'running',
+            launch: { state: 'ready', updatedAt: '' },
+          };
         }
         return null;
       });
@@ -922,7 +1516,14 @@ describe('ExecutionService adversarial', () => {
       vi.spyOn(progressStore, 'readStatus').mockImplementation((...args: unknown[]) => {
         const jid = args[0] as string;
         if (jid !== jobId) return null;
-        return { jobId, sessionId: 'session-1', provider: 'codex', phase: 'running', launch: { state: 'ready', updatedAt: '' } };
+        return {
+          jobId,
+          sessionId: 'session-1',
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          phase: 'running',
+          launch: { state: 'ready', updatedAt: '' },
+        };
       });
       vi.spyOn(progressStore, 'replayFrom').mockImplementation((...args: unknown[]) => {
         const [jid, fromEventId] = args as [string, number];

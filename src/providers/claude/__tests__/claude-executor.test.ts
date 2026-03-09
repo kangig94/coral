@@ -215,4 +215,19 @@ describe('claude-executor', () => {
       parseError: 'Fully unparseable stream-json output',
     }));
   });
+
+  it('throws structured ClaudeExecParseError when stdout is empty', async () => {
+    mockCliResult('', { stderr: 'stderr text', code: 0 });
+
+    const error = await executeClaudeOneShot('empty output').catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ClaudeExecParseError);
+    if (!(error instanceof ClaudeExecParseError)) return;
+    expect(error.failure).toEqual(expect.objectContaining({
+      exitCode: 0,
+      stdout: '',
+      stderr: 'stderr text',
+      parseError: 'Fully unparseable stream-json output',
+    }));
+  });
 });

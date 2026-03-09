@@ -180,7 +180,7 @@ function resetBids(state: DiscussState): DiscussState {
     current_bids,
     current_thoughts: {},
     pending_bidders,
-    hold_count: 0,
+    pending_since_ts: null,
   };
 }
 
@@ -241,7 +241,7 @@ export function initSession(
     created_at: now,
     last_activity_at: now,
     last_speech_step: 0,
-    hold_count: 0,
+    pending_since_ts: null,
     bid_release_step: 0,
     end_reason_content: null,
     transcript: [],
@@ -506,7 +506,7 @@ export function applyExpel(
   now: string,
 ): Result<{ state: DiscussState; hint: string }> {
   const isRespawn = state.epoch === 1 && state.step === 1;
-  let nextState: DiscussState = { ...state, last_activity_at: now, hold_count: 0 };
+  let nextState: DiscussState = { ...state, last_activity_at: now, pending_since_ts: null };
   const removedPendingBidders = new Set<string>();
 
   for (const agent of pendingAgents) {
@@ -542,10 +542,6 @@ export function applyExpel(
       ...nextState,
       pending_bidders: nextState.pending_bidders.filter((name) => !removedPendingBidders.has(name)),
     };
-  }
-
-  if (!isRespawn) {
-    nextState = resetBids(nextState);
   }
   const hint = isRespawn
     ? `Shutdown and respawn: ${pendingAgents.join(', ')}.`

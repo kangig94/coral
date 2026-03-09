@@ -35,6 +35,7 @@ describe('bridge backend-tool', () => {
     const status = {
       status: 'ok' as const,
       version: '0.1.0',
+      bundleHash: 'abc123',
       instanceId: 'backend-instance',
       uptimeMs: 10,
       activeChildren: 1,

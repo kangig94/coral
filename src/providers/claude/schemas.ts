@@ -1,19 +1,13 @@
 import { z } from 'zod';
 import {
-  sharedExecSchema,
-  sharedListSchema,
-  sharedForkSchema,
+  providerOpSchema,
   coralOpSchema,
   promptSchema,
   sessionRefSchema,
   cwdSchema,
 } from '../../shared/schemas.js';
 
-export const claudeOpSchema = z.discriminatedUnion('op', [
-  sharedExecSchema,
-  sharedListSchema,
-  sharedForkSchema,
-]);
+export const claudeOpSchema = providerOpSchema;
 
 export type ClaudeOpInput = z.infer<typeof claudeOpSchema>;
 type ClaudeExecInput = Extract<ClaudeOpInput, { op: 'exec' }>;

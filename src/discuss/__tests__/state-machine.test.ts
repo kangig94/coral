@@ -137,7 +137,7 @@ describe('initSession', () => {
     expect(state.status).toBe('setup');
     expect(state.step).toBe(1);
     expect(state.epoch).toBe(1);
-    expect(state.hold_count).toBe(0);
+    expect(state.pending_since_ts).toBeNull();
     expect(state.bid_release_step).toBe(0);
     expect(state.end_reason_content).toBeNull();
     expect(state.agents['alice'].banned).toBe(false);
@@ -411,12 +411,34 @@ describe('applyExpel', () => {
       epoch: 2,
       current_speaker: null,
       speaker_type: null,
-      hold_count: 0,
+      pending_since_ts: 123,
     };
     const expelled = unwrapOk(applyExpel(state, ['alice'], NOW));
     expect(expelled.state.agents.alice.banned).toBe(true);
     expect(expelled.state.agents.alice.quota_remaining).toBe(0);
+    expect(expelled.state.pending_since_ts).toBeNull();
     expect(expelled.hint).toContain('Banned');
+  });
+
+  it('should preserve healthy submitted bids when expelling pending agents after respawn window', () => {
+    const withAliceBid = unwrapOk(applyBid(startSession(), 'alice', 80, 'alice thought', NOW));
+    const state = {
+      ...withAliceBid,
+      step: 3,
+      epoch: 2,
+      bid_release_step: 2,
+      pending_since_ts: Date.now(),
+    };
+
+    const expelled = unwrapOk(applyExpel(state, ['bob'], NOW));
+
+    expect(expelled.state.agents.bob.banned).toBe(true);
+    expect(expelled.state.pending_bidders).toEqual([]);
+    expect(expelled.state.current_bids.alice).toBe(80);
+    expect(expelled.state.current_thoughts.alice).toBe('alice thought');
+    expect(expelled.state.current_bids.bob).toBeNull();
+    expect(expelled.state.bid_release_step).toBe(2);
+    expect(expelled.state.pending_since_ts).toBeNull();
   });
 });
 

@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { writeStateAtomic } from '../lock.js';
 import {
   waitForCondition,
   INFINITE_POLL,
@@ -51,7 +52,7 @@ function makeState(overrides: Partial<DiscussState> = {}): DiscussState {
     created_at: '2026-01-01T00:00:00Z',
     last_activity_at: '2026-01-01T00:00:00Z',
     last_speech_step: 0,
-    hold_count: 0,
+    pending_since_ts: null,
     bid_release_step: 0,
     end_reason_content: null,
     transcript: [],
@@ -66,7 +67,32 @@ function getStatePath(): string {
 }
 
 function writeState(state: DiscussState): void {
-  writeFileSync(getStatePath(), JSON.stringify(state));
+  writeStateAtomic(getStatePath(), { ...state });
+}
+
+function writeRawState(raw: string): void {
+  const statePath = getStatePath();
+  const tmpPath = `${statePath}.tmp`;
+  writeFileSync(tmpPath, raw, 'utf8');
+  renameSync(tmpPath, statePath);
+}
+
+async function importWaitModuleWithMaxReadErrors(maxReadErrors: string) {
+  const previous = process.env.CORAL_DISCUSS_MAX_READ_ERRORS;
+  process.env.CORAL_DISCUSS_MAX_READ_ERRORS = maxReadErrors;
+  vi.resetModules();
+  const waitModule = await import('../wait.js');
+  return {
+    waitModule,
+    restore(): void {
+      if (previous === undefined) {
+        delete process.env.CORAL_DISCUSS_MAX_READ_ERRORS;
+      } else {
+        process.env.CORAL_DISCUSS_MAX_READ_ERRORS = previous;
+      }
+      vi.resetModules();
+    },
+  };
 }
 
 const isEnded = (s: DiscussState) => s.status === 'ended';
@@ -115,17 +141,64 @@ describe('waitForCondition', () => {
     expect(result.elapsed_ms).toBeGreaterThanOrEqual(100);
   });
 
-  it('should return error=state_unavailable when file never exists', async () => {
-    const result = await waitForCondition(getStatePath(), isEnded, 100, INTERVAL);
+  it('should return error=state_unavailable when timeout expires before read failures hit threshold', async () => {
+    const imported = await importWaitModuleWithMaxReadErrors('99');
+    try {
+      const result = await imported.waitModule.waitForCondition(getStatePath(), isEnded, 100, INTERVAL);
+      expect(result.fulfilled).toBe(false);
+      expect(result.error).toBe('state_unavailable');
+    } finally {
+      imported.restore();
+    }
+  });
+
+  it('should return state_corrupt after max consecutive unreadable reads', async () => {
+    writeState(makeState({ status: 'bidding' }));
+    const path = getStatePath();
+
+    setTimeout(() => writeRawState('not-json'), INTERVAL + 5);
+    setTimeout(() => writeRawState('not-json'), INTERVAL * 2 + 10);
+    setTimeout(() => writeRawState('not-json'), INTERVAL * 3 + 15);
+
+    const result = await waitForCondition(path, isEnded, 2000, INTERVAL);
     expect(result.fulfilled).toBe(false);
-    expect(result.error).toBe('state_unavailable');
+    expect(result.state).toBeNull();
+    expect(result.error).toBe('state_corrupt');
+  });
+
+  it('should reset consecutive read failures after a successful read', async () => {
+    const imported = await importWaitModuleWithMaxReadErrors('2');
+    try {
+      writeState(makeState({ status: 'bidding' }));
+      const path = getStatePath();
+      const pending = imported.waitModule.waitForCondition(path, isEnded, 2000, INTERVAL);
+
+      setTimeout(() => writeRawState('not-json'), INTERVAL + 5);
+      setTimeout(() => writeState(makeState({ status: 'bidding' })), INTERVAL * 2 + 10);
+      setTimeout(() => writeRawState('not-json'), INTERVAL * 3 + 15);
+
+      const beforeThirdFailure = await Promise.race([
+        pending.then(() => 'resolved'),
+        new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), INTERVAL * 4 + 20)),
+      ]);
+      expect(beforeThirdFailure).toBe('pending');
+
+      setTimeout(() => writeRawState('not-json'), INTERVAL * 5 + 25);
+
+      const result = await pending;
+      expect(result.fulfilled).toBe(false);
+      expect(result.state).toBeNull();
+      expect(result.error).toBe('state_corrupt');
+    } finally {
+      imported.restore();
+    }
   });
 
   it('should survive transient corrupt reads and recover on valid state', async () => {
     writeState(makeState({ status: 'bidding' }));
     const path = getStatePath();
 
-    setTimeout(() => writeFileSync(path, '{"partial":'), INTERVAL + 5);
+    setTimeout(() => writeRawState('{"partial":'), INTERVAL + 5);
     setTimeout(() => writeState(makeState({ status: 'ended' })), INTERVAL * 3 + 5);
 
     const result = await waitForCondition(path, isEnded, 2000, INTERVAL);
@@ -133,15 +206,30 @@ describe('waitForCondition', () => {
     expect(result.state!.status).toBe('ended');
   });
 
-  it('should keep lastKnownGood after permanent corrupt read', async () => {
+  it('should keep lastKnownGood after single corrupt read below threshold', async () => {
     writeState(makeState({ status: 'bidding' }));
     const path = getStatePath();
-    setTimeout(() => writeFileSync(path, 'not-json'), INTERVAL + 5);
+    setTimeout(() => writeRawState('not-json'), INTERVAL + 5);
 
-    const result = await waitForCondition(path, isEnded, 150, INTERVAL);
+    const result = await waitForCondition(path, isEnded, 300, INTERVAL);
     expect(result.fulfilled).toBe(false);
     expect(result.error).toBeNull();
     expect(result.state!.status).toBe('bidding');
+  });
+
+  it('should fall back to polling when directory watch setup fails', async () => {
+    const missingDir = join(tmpDir, 'missing');
+    const path = join(missingDir, 'state.json');
+
+    setTimeout(() => {
+      mkdirSync(missingDir, { recursive: true });
+      writeStateAtomic(path, { ...makeState({ status: 'ended' }) });
+    }, 5);
+
+    const result = await waitForCondition(path, isEnded, 2000, INTERVAL);
+    expect(result.fulfilled).toBe(true);
+    expect(result.error).toBeNull();
+    expect(result.state!.status).toBe('ended');
   });
 });
 
@@ -184,7 +272,7 @@ function makeConditionState(overrides: Partial<DiscussState> = {}): DiscussState
     created_at: '2026-01-01T00:00:00Z',
     last_activity_at: '2026-01-01T00:00:00Z',
     last_speech_step: 0,
-    hold_count: 0,
+    pending_since_ts: null,
     bid_release_step: 0,
     end_reason_content: null,
     transcript: [],
@@ -366,7 +454,7 @@ describe('applyExpel -> noEligibleParticipants integration', () => {
     const baseState = makeConditionState();
     const state = makeConditionState({
       step: 2,
-      hold_count: 2,
+      pending_since_ts: 123,
       pending_bidders: ['alice'],
       agents: {
         alice: { ...baseState.agents.alice, banned: false, quota_remaining: 1, fallback_used: false },
@@ -383,7 +471,7 @@ describe('applyExpel -> noEligibleParticipants integration', () => {
     const baseState = makeConditionState();
     const state = makeConditionState({
       step: 2,
-      hold_count: 2,
+      pending_since_ts: 123,
       pending_bidders: ['alice'],
       agents: {
         alice: { ...baseState.agents.alice, banned: false, quota_remaining: 1, fallback_used: false },
@@ -430,7 +518,7 @@ function makeBaseState(overrides: Partial<DiscussState> = {}): DiscussState {
     created_at: '2026-01-01T00:00:00Z',
     last_activity_at: '2026-01-01T00:00:00Z',
     last_speech_step: 0,
-    hold_count: 0,
+    pending_since_ts: null,
     bid_release_step: 0,
     end_reason_content: null,
     transcript: [],

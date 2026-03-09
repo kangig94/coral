@@ -1,12 +1,25 @@
-# applyExpel resetBids Cascade Bug (Known, Unfixed)
-
+# applyExpel Non-Respawn Preserves Submitted Bids
+Promoted: 2026-03-09 | Updated: 2026-03-09
 ## Rule
-In the non-respawn path of `applyExpel` (`state-machine.ts`), `resetBids` is called after banning agents. This wipes already-submitted bids from non-banned agents and re-adds them to `pending_bidders`, but does NOT update `bid_release_step`. Those agents are stuck in `waitForCondition(bidReleased(name, bidStep))` because their predicate never becomes true. On the next `hold_count >= 2` check, these trapped agents get expelled too, cascading to session termination.
-
+In the non-respawn path of `applyExpel` (`state-machine.ts`), do not call `resetBids()`. Expel handling should only ban the missing required agents, remove them from `pending_bidders`, and clear `pending_since_ts`. Already-submitted bids and thoughts from healthy agents must remain intact, and `bid_release_step` must stay unchanged. The respawn path is the exception: it still fills zero-bids for pending agents in epoch 1 step 1.
 ## Why
-Without this knowledge, debugging a "all agents expelled" session failure will lead to chasing the wrong root cause (e.g., agents being slow, hook failures) instead of recognizing the `resetBids` cascade as the structural issue.
-
+`resetBids()` rebuilds the whole bidding round for a fresh cycle. If it runs during a partial non-respawn expel, healthy agents lose their submitted bids while the release step still reflects the original round. That mismatch strands waiters behind an unobservable release condition and can cascade into more expulsions.
 ## Pattern
-**Current (buggy)**: `applyExpel` non-respawn path calls `resetBids(nextState)` at line 548, wiping bids from agents that already submitted them.
+```ts
+// Right: preserve the current round and only remove expelled agents.
+if (removedPendingBidders.size > 0) {
+  nextState = {
+    ...nextState,
+    pending_bidders: nextState.pending_bidders.filter(
+      (name) => !removedPendingBidders.has(name),
+    ),
+  };
+}
+```
 
-**Fix direction**: Remove `resetBids` from the non-respawn `applyExpel` path. Banned agents are already excluded by `collectSubmittedBids` and removed from `pending_bidders`. Remaining agents' bids should be preserved. Alternatively, update `bid_release_step` after `resetBids` to unblock waiting agents.
+```ts
+// Wrong: reset the whole round after a partial expel.
+if (!isRespawn) {
+  nextState = resetBids(nextState);
+}
+```

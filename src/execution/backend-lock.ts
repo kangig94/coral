@@ -15,6 +15,7 @@ export type LockRecord = {
   instanceId: string;
   pid: number;
   version: string;
+  bundleHash: string;
   startedAt: number;
 };
 
@@ -39,7 +40,10 @@ function isLockRecord(value: unknown): value is LockRecord {
     && (record.pid as number) > 0
     && typeof record.version === 'string'
     && record.version.length > 0
+    && typeof record.bundleHash === 'string'
+    && record.bundleHash.length > 0
     && Number.isFinite(record.startedAt)
+
     && (record.startedAt as number) > 0;
 }
 
@@ -76,7 +80,7 @@ function writeLockFile(record: LockRecord): boolean {
 async function isMatchingHealthyBackend(record: LockRecord): Promise<boolean> {
   const info = readBackendInfo();
   if (!info) return false;
-  if (info.instanceId !== record.instanceId || info.pid !== record.pid || info.version !== record.version) {
+  if (info.instanceId !== record.instanceId || info.pid !== record.pid || info.bundleHash !== record.bundleHash) {
     return false;
   }
 
@@ -97,7 +101,7 @@ async function isMatchingHealthyBackend(record: LockRecord): Promise<boolean> {
 
     const payload = body as Record<string, unknown>;
     return payload.status === 'ok'
-      && payload.version === record.version
+      && payload.bundleHash === record.bundleHash
       && payload.instanceId === record.instanceId;
   } catch {
     return false;
@@ -120,11 +124,12 @@ function removeLockIfSnapshotMatches(snapshot: LockSnapshot): boolean {
   }
 }
 
-export async function acquireLock(instanceId: string, version: string): Promise<void> {
+export async function acquireLock(instanceId: string, version: string, bundleHash: string): Promise<void> {
   const record: LockRecord = {
     instanceId,
     pid: process.pid,
     version,
+    bundleHash,
     startedAt: Date.now(),
   };
 

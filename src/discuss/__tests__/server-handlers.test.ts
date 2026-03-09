@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionStore } from '../session-store.js';
 import { handleToolCall, tools } from '../server-handlers.js';
 import { applyBid, applyEnd, resolveWinner, startBidding, DEFAULT_BID_THRESHOLD } from '../state-machine.js';
 import { _setDefaultPollMs } from '../wait.js';
-import { resultToMcp, type McpResult } from '../../shared/mcp-utils.js';
-import type { DiscussState, Result } from '../types.js';
+import type { McpResult } from '../../shared/mcp-utils.js';
+import type { DiscussState } from '../types.js';
 
 const T = 0.1;
 const sec = (s: number): number => Math.max(1, Math.round(s * T));
@@ -118,6 +118,22 @@ async function overwriteState(sid: string, mutate: (state: DiscussState) => Disc
   await store.withLock(sessionDir, async () => {
     store.save(sessionDir, mutate(store.load(sessionDir)));
   });
+}
+
+function writeRawSessionState(sid: string, raw: string): void {
+  const statePath = store.statePath(requireSessionDir(sid));
+  const tmpPath = `${statePath}.tmp`;
+  writeFileSync(tmpPath, raw, 'utf8');
+  renameSync(tmpPath, statePath);
+}
+
+async function corruptStateRepeatedly(sid: string, count = 3, spacingMs = 20): Promise<void> {
+  for (let attempt = 0; attempt < count; attempt += 1) {
+    writeRawSessionState(sid, 'not-json');
+    if (attempt < count - 1) {
+      await sleep(spacingMs);
+    }
+  }
 }
 
 async function makeSpeakingState(sid: string, aliceScore = 80, bobScore = 20): Promise<'alice' | 'bob'> {
@@ -310,6 +326,60 @@ describe('discuss tool: bid / speak', () => {
     const loserBid = await (loser === 'alice' ? aliceBid : bobBid);
     expect(parseResult(loserBid).action).toBe('listen');
   });
+
+  it('should surface state_corrupt while waiting for setup to complete', async () => {
+    const created = await handleToolCall(
+      'discuss_lead',
+      { op: '_2_create', topic: 'Test', agents: AGENTS },
+      store,
+    );
+    const sid = (parseResult(created) as { session_id: string }).session_id;
+
+    const bidPromise = handleToolCall(
+      'discuss',
+      { op: 'bid', session: sid, agent_name: 'alice', score: 75, thought: 'waiting for setup' },
+      store,
+    );
+    await sleep(20);
+    await corruptStateRepeatedly(sid);
+
+    const data = parseResult(await bidPromise);
+    expect(data.error).toBe('state_corrupt');
+    expect(data.message).toBe('Discuss state unreadable');
+  });
+
+  it('should surface state_corrupt while waiting for speaking to finish', async () => {
+    const sid = await createSession();
+    await makeSpeakingState(sid);
+
+    const bidPromise = handleToolCall(
+      'discuss',
+      { op: 'bid', session: sid, agent_name: 'alice', score: 75, thought: 'waiting for speaking' },
+      store,
+    );
+    await sleep(20);
+    await corruptStateRepeatedly(sid);
+
+    const data = parseResult(await bidPromise);
+    expect(data.error).toBe('state_corrupt');
+    expect(data.message).toBe('Discuss state unreadable');
+  });
+
+  it('should surface state_corrupt while waiting for bid release', async () => {
+    const sid = await createSession();
+
+    const bidPromise = handleToolCall(
+      'discuss',
+      { op: 'bid', session: sid, agent_name: 'alice', score: 75, thought: 'waiting for release' },
+      store,
+    );
+    await sleep(20);
+    await corruptStateRepeatedly(sid);
+
+    const data = parseResult(await bidPromise);
+    expect(data.error).toBe('state_corrupt');
+    expect(data.message).toBe('Discuss state unreadable');
+  });
 });
 
 describe('discuss_lead tool: _1_seed', () => {
@@ -378,12 +448,12 @@ describe('discuss_lead tool: _3_step (moderation loop)', () => {
     expect(data.winner).toBe('alice');
   });
 
-  it('should expel pending bidders after hold_count >= 2 in later rounds (step > 1)', async () => {
+  it('should expel pending bidders after the pending TTL elapses in later rounds (step > 1)', async () => {
     const sid = await createSession();
     await overwriteState(sid, (state) => ({
       ...state,
       step: 2,
-      hold_count: 1,
+      pending_since_ts: Date.now() - 5000,
       pending_bidders: ['bob'],
       current_bids: { ...state.current_bids, alice: 50 },
     }));
@@ -415,6 +485,24 @@ describe('discuss_lead tool: _3_step (moderation loop)', () => {
     expect(parseResult(winnerSpeak)).toHaveProperty('status', 'bidding');
     const loserBid = await (loser === 'alice' ? aliceBid : bobBid);
     expect(parseResult(loserBid).action).toBe('listen');
+  });
+
+  it('should surface state_corrupt while waiting for speech delivery', async () => {
+    const sid = await createSession();
+    await makeSpeakingState(sid);
+
+    const stepPromise = handleToolCall(
+      'discuss_lead',
+      { op: '_3_step', session: sid, timeout_seconds: sec(5) },
+      store,
+    );
+    await sleep(20);
+    await corruptStateRepeatedly(sid);
+
+    const data = parseResult(await stepPromise);
+    expect(data.status).toBe('error');
+    expect(data.phase).toBe('state_corrupt');
+    expect(data.message).toBe('Consecutive state read failures');
   });
 
   it('should short-circuit when session already ended', async () => {
@@ -459,7 +547,7 @@ describe('discuss_lead tool: _3_step (moderation loop)', () => {
     await overwriteState(sid, (state) => ({
       ...state,
       step: 2,
-      hold_count: 1,
+      pending_since_ts: Date.now() - 5000,
       pending_bidders: ['alice'],
       agents: {
         ...state.agents,
@@ -473,6 +561,23 @@ describe('discuss_lead tool: _3_step (moderation loop)', () => {
     expect(data.status).toBe('bidding');
     expect(data.phase).toBe('ended');
     expect(data.reason).toBe('no_participants');
+  });
+
+  it('should surface state_corrupt while waiting for bids to arrive', async () => {
+    const sid = await createSession();
+
+    const stepPromise = handleToolCall(
+      'discuss_lead',
+      { op: '_3_step', session: sid, timeout_seconds: sec(5) },
+      store,
+    );
+    await sleep(20);
+    await corruptStateRepeatedly(sid);
+
+    const data = parseResult(await stepPromise);
+    expect(data.status).toBe('error');
+    expect(data.phase).toBe('state_corrupt');
+    expect(data.message).toBe('Consecutive state read failures');
   });
 
   it('should surface expected_speech_entry when speaking wait transitions to bidding without speech transcript entry', async () => {
@@ -498,6 +603,7 @@ describe('discuss_lead tool: _3_step (moderation loop)', () => {
     });
 
     const result = await stepPromise;
+    expect(result.isError).toBe(false);
     const data = parseResult(result);
     expect(data.error).toBe('expected_speech_entry');
   });
@@ -526,6 +632,7 @@ describe('discuss_lead tool: _3_step (moderation loop)', () => {
     });
 
     const result = await stepPromise;
+    expect(result.isError).toBe(false);
     const data = parseResult(result);
     expect(data.error).toBe('speech_not_done');
   });
@@ -588,6 +695,7 @@ describe('discuss_lead tool: _3_step (moderation loop)', () => {
     });
 
     const result = await stepPromise;
+    expect(result.isError).toBe(false);
     const data = parseResult(result);
     expect(data.error).toBe('bids_not_complete');
     expect(Array.isArray(data.pending_bidders)).toBe(true);
@@ -642,6 +750,7 @@ describe('discuss_lead tool: transcript/state/epoch/end', () => {
     // Simulate epoch transition: set epoch_summary_written to null (summary is due)
     await overwriteState(sid, (state) => ({ ...state, epoch_summary_written: null }));
     const r = await handleToolCall('discuss_lead', { op: '_5_epoch', session: sid, summary: 'Key points.' }, store);
+    expect(r.isError).toBe(false);
     const data = parseResult(r);
     expect(data).toHaveProperty('recorded', true);
   });
@@ -653,11 +762,14 @@ describe('discuss_lead tool: transcript/state/epoch/end', () => {
     expect(data).toHaveProperty('session_id', sid);
     expect(data).toHaveProperty('status');
     expect(data).toHaveProperty('agents');
+    expect(data).toHaveProperty('pending_since_ts', null);
+    expect(data).not.toHaveProperty('hold_count');
   });
 
   it('should end normally', async () => {
     const sid = await createSession();
     const r = await handleToolCall('discuss_lead', { op: '_7_end', session: sid }, store);
+    expect(r.isError).toBe(false);
     const data = parseResult(r);
     expect(data).toHaveProperty('status', 'ended');
     const endedState = store.load(requireSessionDir(sid));
@@ -674,6 +786,7 @@ describe('discuss_lead tool: transcript/state/epoch/end', () => {
     const sid = await createSession();
     await handleToolCall('discuss_lead', { op: '_7_end', session: sid }, store);
     const result = await handleToolCall('discuss_lead', { op: '_8_synthesize', session: sid, synthesis: 'Final synthesis.' }, store);
+    expect(result.isError).toBe(false);
     expect(parseResult(result)).toHaveProperty('status', 'ended');
     expectSingleSynthesis(store.load(requireSessionDir(sid)), 'Final synthesis.');
   });
@@ -681,6 +794,7 @@ describe('discuss_lead tool: transcript/state/epoch/end', () => {
   it('should reject _8_synthesize when session is not ended', async () => {
     const sid = await createSession();
     const result = await handleToolCall('discuss_lead', { op: '_8_synthesize', session: sid, synthesis: 'Too early.' }, store);
+    expect(result.isError).toBe(false);
     const data = parseResult(result);
     expect(data.error).toBe('not_ended');
   });
@@ -725,12 +839,12 @@ describe('_2_create observer-only guard', () => {
 
 // adversarial tests (red-attacker provenance)
 describe('stepBidding endNoParticipants state correctness', () => {
-  it('saves ended state with hold_count incremented (next, not pre-increment) when no participants before expel', async () => {
+  it('saves ended state with pending_since_ts initialized when no participants before expel', async () => {
     const sid = await createSession();
 
     await overwriteState(sid, (state) => ({
       ...state,
-      hold_count: 0,
+      pending_since_ts: null,
       agents: {
         ...state.agents,
         alice: { ...state.agents.alice, banned: true, quota_remaining: 0, fallback_used: true },
@@ -743,17 +857,16 @@ describe('stepBidding endNoParticipants state correctness', () => {
     const sessionDir = requireSessionDir(sid);
     const savedState = store.load(sessionDir);
     expect(savedState.status).toBe('ended');
-    // stepBidding increments hold_count to produce `next` before calling noEligibleParticipants
-    expect(savedState.hold_count).toBe(1);
+    expect(typeof savedState.pending_since_ts).toBe('number');
   });
 
-  it('saves ended state using expel.value.state (hold_count reset) when expel triggers no_participants', async () => {
+  it('saves ended state using expel.value.state (pending_since_ts reset) when expel triggers no_participants', async () => {
     const sid = await createSession();
 
     await overwriteState(sid, (state) => ({
       ...state,
       step: 2,
-      hold_count: 1,
+      pending_since_ts: Date.now() - 5000,
       pending_bidders: ['alice'],
       agents: {
         ...state.agents,
@@ -771,8 +884,41 @@ describe('stepBidding endNoParticipants state correctness', () => {
     const sessionDir = requireSessionDir(sid);
     const savedState = store.load(sessionDir);
     expect(savedState.status).toBe('ended');
-    // applyExpel resets hold_count to 0 via resetBids; endNoParticipants saves expel.value.state
-    expect(savedState.hold_count).toBe(0);
+    expect(savedState.pending_since_ts).toBeNull();
+  });
+});
+
+describe('stepBidding pending TTL stability', () => {
+  it('keeps pending_since_ts across duplicate _3_step timeouts so the next call can expel', async () => {
+    const sid = await createSession();
+    const pendingSinceTs = Date.now() - 1500;
+
+    await overwriteState(sid, (state) => ({
+      ...state,
+      step: 2,
+      pending_since_ts: pendingSinceTs,
+      pending_bidders: ['bob'],
+      current_bids: { ...state.current_bids, alice: 50 },
+    }));
+
+    const first = await handleToolCall(
+      'discuss_lead',
+      { op: '_3_step', session: sid, timeout_seconds: 1 },
+      store,
+    );
+    const firstData = parseResult(first);
+    expect(firstData.status).toBe('bidding');
+    expect(firstData.phase).toBe('bidding');
+    expect(firstData.pending_since_ts).toBe(pendingSinceTs);
+
+    const second = await handleToolCall(
+      'discuss_lead',
+      { op: '_3_step', session: sid, timeout_seconds: 1 },
+      store,
+    );
+    const secondData = parseResult(second);
+    expect(secondData.status).toBe('bidding');
+    expect(secondData.phase).toBe('expelled');
   });
 });
 
@@ -907,52 +1053,6 @@ describe('timestamp freshness', () => {
     const afterState = store.load(sessionDir);
     expect(afterState.status).toBe('ended');
     expect(new Date(afterState.last_activity_at).getTime()).toBeGreaterThanOrEqual(beforeTs);
-  });
-});
-
-describe('resultToMcp', () => {
-  it('should return JSON with value fields for ok result', () => {
-    const result: Result<{ status: string }> = { ok: true, value: { status: 'bidding' } };
-    const mcp = resultToMcp(result);
-    expect(mcp.isError).toBe(false);
-    const parsed = parseResult(mcp);
-    expect(parsed.status).toBe('bidding');
-  });
-
-  it('should return JSON with error field for error result', () => {
-    const result: Result<never> = { ok: false, error: 'agent_not_found' };
-    const mcp = resultToMcp(result);
-    expect(mcp.isError).toBe(false);
-    const parsed = parseResult(mcp);
-    expect(parsed.error).toBe('agent_not_found');
-  });
-
-  it('should spread detail fields into the response for error result with detail', () => {
-    const result: Result<never> = {
-      ok: false,
-      error: 'invalid_status',
-      detail: { current: 'speaking', expected: 'bidding' },
-    };
-    const mcp = resultToMcp(result);
-    const parsed = parseResult(mcp);
-    expect(parsed.error).toBe('invalid_status');
-    expect(parsed.current).toBe('speaking');
-    expect(parsed.expected).toBe('bidding');
-  });
-
-  it('should handle error result with no detail field (detail is optional)', () => {
-    const result: Result<never> = { ok: false, error: 'not_bidding' };
-    expect(() => resultToMcp(result)).not.toThrow();
-    const mcp = resultToMcp(result);
-    const parsed = parseResult(mcp);
-    expect(parsed.error).toBe('not_bidding');
-  });
-
-  it('should produce content array with exactly one text entry', () => {
-    const mcp = resultToMcp({ ok: true, value: { x: 1 } });
-    expect(mcp.content).toHaveLength(1);
-    expect(mcp.content[0].type).toBe('text');
-    expect(typeof mcp.content[0].text).toBe('string');
   });
 });
 

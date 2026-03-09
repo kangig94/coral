@@ -100,6 +100,9 @@ async function executeCodex(
   }
 
   const parsed = parseCodexJsonl(stdout);
+  if (parsed.isError && !aborted) {
+    throw new Error('Codex produced no meaningful output (no assistant content, no errors)');
+  }
 
   return {
     response: parsed.response,

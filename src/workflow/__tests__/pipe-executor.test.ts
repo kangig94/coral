@@ -284,12 +284,22 @@ describe('workflow pipe executor', () => {
         {
           staleTimeoutMs: 1,
           pollIntervalMs: 1,
+          workDir: '/tmp/coral-workflow-cwd',
           onProgress: vi.fn(),
         },
       );
 
       expect(executionSvc.abort).toHaveBeenCalledWith(['job-codex']);
       expect(executionSvc.resume).toHaveBeenCalledTimes(1);
+      expect(executionSvc.resume).toHaveBeenCalledWith(
+        'codex',
+        {
+          sessionId: 'session-codex',
+          prompt: 'Your previous execution timed out due to inactivity. Continue where you left off.',
+          cwd: '/tmp/coral-workflow-cwd',
+        },
+        ctx,
+      );
       expect([...results.entries()]).toEqual([
         ['0:0', 'CODEX DONE'],
         ['0:1', 'CLAUDE DONE'],
@@ -526,6 +536,33 @@ describe('launchAtomWithRetry', () => {
       ctx,
     );
     expect(executionSvc.awaitLaunch).toHaveBeenCalledWith('job-queued', BOOTSTRAP_TIMEOUT_MS);
+  });
+
+  it('uses an explicit workDir for atom launches', async () => {
+    const executionSvc = createExecutionService();
+    const [atom] = parseExpression('architect')[0];
+
+    await launchAtomWithRetry({
+      atom,
+      atomIndex: 0,
+      stepIndex: 0,
+      stepPrompt: 'do work',
+      workDir: '/tmp/coral-workflow-cwd',
+      defaultProviderName: 'codex',
+      executionSvc,
+      ctx,
+      onProgress: vi.fn(),
+      completedStepDetails: [],
+    });
+
+    expect(executionSvc.coralDispatch).toHaveBeenCalledWith(
+      'codex',
+      'architect',
+      expect.objectContaining({
+        cwd: '/tmp/coral-workflow-cwd',
+      }),
+      ctx,
+    );
   });
 
   it('throws with step/atom context when coralDispatch returns rejected status', async () => {

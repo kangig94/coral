@@ -83,6 +83,8 @@ async function executeClaude(
   });
 
   const parsed = parseClaudeStreamJson(stdout);
+  // The Claude parser signals parse failure via a sentinel result; preserve that
+  // executor-level rejection so empty/unparseable streams never look successful.
   if (parsed.isError && !parsed.response) {
     throw new ClaudeExecParseError({
       exitCode: code,

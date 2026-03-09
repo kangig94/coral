@@ -10,6 +10,7 @@ export type BackendInfo = {
   port: number;
   token: string;
   version: string;
+  bundleHash: string;
   instanceId: string;
   startedAt: number;
 };
@@ -25,6 +26,8 @@ function isBackendInfo(value: unknown): value is BackendInfo {
     && record.token.length > 0
     && typeof record.version === 'string'
     && record.version.length > 0
+    && typeof record.bundleHash === 'string'
+    && record.bundleHash.length > 0
     && typeof record.instanceId === 'string'
     && record.instanceId.length > 0
     && Number.isFinite(record.startedAt)

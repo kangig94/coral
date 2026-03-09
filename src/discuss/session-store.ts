@@ -57,16 +57,40 @@ export class SessionStore {
   }
 
   load(fullSessionPath: string): DiscussState {
-    const raw = JSON.parse(fs.readFileSync(this.statePath(fullSessionPath), 'utf8')) as DiscussState & {
-      transcript_rendered?: number;
-    };
-    this.renderCursors.set(fullSessionPath, raw.transcript_rendered ?? raw.transcript.length);
-    const { transcript_rendered: _transcript_rendered, ...state } = raw;
-    // normalize pre-observer sessions that lack new fields
-    for (const agent of Object.values(state.agents)) {
-      agent.participation ??= 'required';
+    const raw = JSON.parse(fs.readFileSync(this.statePath(fullSessionPath), 'utf8')) as Record<string, unknown> | null;
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new Error(`Invalid discuss state shape in ${fullSessionPath}: expected object`);
     }
-    state.min_bid_delay_ms ??= 0;
+
+    if (typeof raw.session_id !== 'string' || typeof raw.topic !== 'string' || typeof raw.status !== 'string') {
+      throw new Error(`Invalid discuss state shape in ${fullSessionPath}: missing required fields`);
+    }
+
+    if (raw.agents === null || typeof raw.agents !== 'object' || Array.isArray(raw.agents)) {
+      throw new Error(`Invalid discuss state shape in ${fullSessionPath}: missing agents`);
+    }
+
+    if (!Array.isArray(raw.transcript)) {
+      throw new Error(`Invalid discuss state shape in ${fullSessionPath}: missing transcript`);
+    }
+
+    for (const [name, agent] of Object.entries(raw.agents)) {
+      if (agent === null || typeof agent !== 'object' || Array.isArray(agent)) {
+        throw new Error(`Invalid agent shape for '${name}' in ${fullSessionPath}: expected object`);
+      }
+      const a = agent as Record<string, unknown>;
+      if (typeof a.participation !== 'string') {
+        throw new Error(`Invalid agent shape for '${name}' in ${fullSessionPath}: missing participation field`);
+      }
+    }
+
+    if (typeof raw.min_bid_delay_ms !== 'number') {
+      throw new Error(`Invalid discuss state shape in ${fullSessionPath}: missing min_bid_delay_ms`);
+    }
+
+    const stateWithCursor = raw as DiscussState & { transcript_rendered?: number };
+    this.renderCursors.set(fullSessionPath, stateWithCursor.transcript_rendered ?? stateWithCursor.transcript.length);
+    const { transcript_rendered: _transcript_rendered, ...state } = stateWithCursor;
     return state;
   }
 

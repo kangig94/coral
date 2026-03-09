@@ -88,7 +88,7 @@ Connection info at `~/.claude/coral/backend.json`. Stores `{ pid, port, token, v
 
 ### src/execution/session-manager.ts - Persisted Session Registry
 
-`SessionManager`: persisted session registry under `~/.claude/coral/execution/sessions/<project-hash>/`. Provider-aware methods: `allocate(provider, name, model, cwd)`, `get(provider, sessionId)`, `list(provider)`, `setConversationRef(sessionId, ref)`, `setNonResumable(sessionId)`, `claimForJob(sessionId, jobId)` (single-active-job invariant), `releaseJob(sessionId, jobId)`. Atomic writes (`.tmp` + rename). Includes migration from old runner session format. See `src/execution/session-manager.ts`.
+`SessionManager`: persisted session registry under `~/.claude/coral/execution/sessions/<project-hash>/`. Provider-aware methods: `allocate(provider, name, model, cwd)`, `get(provider, sessionId)`, `list(provider)`, `setConversationRef(sessionId, ref)`, `setNonResumable(sessionId)`, `claimForJobSync(sessionId, jobId)` / `claimForJobAtomic(sessionId, jobId)` (single-active-job invariant), `releaseJob(sessionId, jobId)`. Atomic writes (`.tmp` + rename). Includes migration from old runner session format. See `src/execution/session-manager.ts`.
 
 ---
 

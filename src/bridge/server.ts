@@ -8,7 +8,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { ensureBackend, proxyToolCall, streamWait } from './backend-client.js';
 import { buildToolList, handleBackendToolCall } from './backend-tool.js';
-import { isRecord, textResult } from '../shared/mcp-utils.js';
+import { isRecord, jsonResult, mcpError, textResult } from '../shared/mcp-utils.js';
 import { waitInputSchema } from '../shared/schemas.js';
 
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
@@ -80,6 +80,45 @@ function sendProgress(
   }).catch(() => {});
 }
 
+function parseBackendWaitStatus(error: Error): number | null {
+  const match = error.message.match(/^Backend request failed: (\d{3})(?:\b| )/);
+  if (!match) return null;
+  return Number.parseInt(match[1], 10);
+}
+
+function waitFailureResult(error: unknown): ReturnType<typeof mcpError> {
+  if (error instanceof Error) {
+    const status = parseBackendWaitStatus(error);
+    if (status === 403) {
+      return mcpError({
+        error: 'scope_mismatch',
+        message: 'Requested jobs are outside the current project scope',
+      });
+    }
+    if (status === 404) {
+      return mcpError({
+        error: 'jobs_not_found',
+        message: 'Requested jobs were not found',
+      });
+    }
+    if (status === 400) {
+      return mcpError({
+        error: 'invalid_request',
+        message: error.message,
+      });
+    }
+    return mcpError({
+      error: 'wait_transport_failure',
+      message: error.message,
+    });
+  }
+
+  return mcpError({
+    error: 'wait_transport_failure',
+    message: String(error),
+  });
+}
+
 const server = new Server(
   { name: 'coral', version },
   { capabilities: { tools: {} } },
@@ -130,31 +169,34 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
                   ? readFileSync(event.resultPath, 'utf-8')
                   : rawContent;
               const result = { ...resultMeta, content };
-              return textResult(JSON.stringify({
+              return jsonResult({
                 state: 'completed',
                 completedJobId: event.completedJobId,
                 sessionId: event.sessionId,
                 remainingJobIds: event.remainingJobIds,
                 result,
-              }));
+              });
             }
             case 'timeout':
-              return textResult(JSON.stringify({
+              return jsonResult({
                 state: 'running',
                 runningJobIds: event.runningJobIds,
-              }));
+              });
           }
         }
 
-        return textResult('wait stream ended without a terminal event', true);
+        return mcpError({
+          error: 'wait_transport_failure',
+          message: 'wait stream ended without a terminal event',
+        });
       } catch (waitError) {
-        if (waitError instanceof Error && waitError.name === 'AbortError') {
-          return textResult(JSON.stringify({
+        if (waitError instanceof Error && waitError.name === 'AbortError' && extra.signal.aborted) {
+          return jsonResult({
             state: 'running',
             runningJobIds: parsed.jobs,
-          }));
+          });
         }
-        throw waitError;
+        return waitFailureResult(waitError);
       }
     }
 

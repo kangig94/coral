@@ -110,9 +110,5 @@ export async function handleWorkflow(
     return unknownProviderDecision(unknownProviders);
   }
 
-  const effectiveCtx = input.work_dir
-    ? { ...ctx, projectRoot: input.work_dir }
-    : ctx;
-
-  return executionSvc.executeWorkflow(input.provider, ast, input, effectiveCtx);
+  return executionSvc.executeWorkflow(input.provider, ast, input, ctx, input.work_dir);
 }

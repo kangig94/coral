@@ -6,20 +6,14 @@
 
 import { z } from 'zod';
 import {
-  sharedExecSchema,
-  sharedListSchema,
-  sharedForkSchema,
+  providerOpSchema,
   coralOpSchema,
   promptSchema,
   sessionRefSchema,
   cwdSchema,
 } from '../../shared/schemas.js';
 
-export const codexOpSchema = z.discriminatedUnion('op', [
-  sharedExecSchema,
-  sharedListSchema,
-  sharedForkSchema,
-]);
+export const codexOpSchema = providerOpSchema;
 
 export type CodexOpInput = z.infer<typeof codexOpSchema>;
 export type CodexSessionCreateInput = Omit<Extract<CodexOpInput, { op: 'exec' }>, 'op' | 'session'>;

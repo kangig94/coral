@@ -1,4 +1,4 @@
-import { jsonResult, resultToMcp, type McpResult } from '../../shared/mcp-utils.js';
+import { jsonResult, type McpResult } from '../../shared/mcp-utils.js';
 import type { EndReason, DiscussState, Result } from '../types.js';
 import type { DiscussLeadOpInput } from '../schemas.js';
 import type { SessionStore } from '../session-store.js';
@@ -83,6 +83,9 @@ async function stepSpeaking(
     (s) => speechDelivered(s) || s.status === 'ended',
     ctx.timeoutMs,
   );
+  if (waited.error === 'state_corrupt') {
+    return jsonResult({ status: 'error', phase: 'state_corrupt', message: 'Consecutive state read failures' });
+  }
   if (!waited.fulfilled) {
     return jsonResult({
       status: 'speaking',
@@ -117,7 +120,7 @@ async function stepSpeaking(
     store.save(ctx.sessionDir, timed.value);
     return { ok: true, value: { kind: 'speech_timeout', speaker: current.current_speaker } };
   });
-  if (!speechState.ok) return resultToMcp(speechState);
+  if (!speechState.ok) return jsonResult({ error: speechState.error, ...(speechState.detail ?? {}) });
 
   switch (speechState.value.kind) {
     case 'speech_timeout':
@@ -148,13 +151,20 @@ async function stepBidding(ctx: StepContext, store: SessionStore): Promise<McpRe
       return { ok: false, error: 'invalid_status', detail: { current: current.status } };
     }
 
-    const next = { ...current, hold_count: current.hold_count + 1 };
+    const nowMs = Date.now();
+    const next = {
+      ...current,
+      pending_since_ts: current.pending_since_ts ?? nowMs,
+    };
     if (noEligibleParticipants(current)) {
       return endNoParticipants(next, ctx.sessionDir, nowIsoString(), store);
     }
 
     const isFirstRound = next.epoch === 1 && next.step === 1;
-    if (!isFirstRound && next.hold_count >= 2 && next.pending_bidders.length > 0) {
+    const expelTtlMs = Number(process.env.CORAL_DISCUSS_EXPEL_TTL_MS) || (ctx.timeoutMs * 2);
+    const pendingTooLong =
+      next.pending_since_ts !== null && (nowMs - next.pending_since_ts) >= expelTtlMs;
+    if (!isFirstRound && pendingTooLong && next.pending_bidders.length > 0) {
       const expel = applyExpel(next, next.pending_bidders, nowIsoString());
       if (!expel.ok) return { ok: false, error: expel.error, detail: expel.detail };
       if (noEligibleParticipants(expel.value.state)) {
@@ -170,7 +180,7 @@ async function stepBidding(ctx: StepContext, store: SessionStore): Promise<McpRe
     store.save(ctx.sessionDir, next);
     return { ok: true, value: { kind: 'wait', state: next } };
   });
-  if (!beforeResolve.ok) return resultToMcp(beforeResolve);
+  if (!beforeResolve.ok) return jsonResult({ error: beforeResolve.error, ...(beforeResolve.detail ?? {}) });
 
   switch (beforeResolve.value.kind) {
     case 'ended':
@@ -191,6 +201,9 @@ async function stepBidding(ctx: StepContext, store: SessionStore): Promise<McpRe
     (s) => allBidsIn(s) || s.status === 'ended',
     ctx.timeoutMs,
   );
+  if (waited.error === 'state_corrupt') {
+    return jsonResult({ status: 'error', phase: 'state_corrupt', message: 'Consecutive state read failures' });
+  }
   if (!waited.fulfilled) {
     const state = waited.state;
     if (!state || state.status === 'ended') {
@@ -200,7 +213,7 @@ async function stepBidding(ctx: StepContext, store: SessionStore): Promise<McpRe
       status: 'bidding',
       phase: 'bidding',
       pending_bidders: state.pending_bidders,
-      hold_count: state.hold_count,
+      pending_since_ts: state.pending_since_ts,
     });
   }
 
@@ -212,7 +225,10 @@ async function stepBidding(ctx: StepContext, store: SessionStore): Promise<McpRe
     Object.entries(s.agents).every(([name, agent]) => agent.banned || s.current_bids[name] != null);
 
   if (waited.state.min_bid_delay_ms > 0) {
-    await waitForCondition(ctx.statePath, allAgentsBid, waited.state.min_bid_delay_ms);
+    const delayed = await waitForCondition(ctx.statePath, allAgentsBid, waited.state.min_bid_delay_ms);
+    if (!delayed.fulfilled && delayed.error === 'state_corrupt') {
+      return jsonResult({ status: 'error', phase: 'state_corrupt', message: 'Consecutive state read failures' });
+    }
   }
 
   const resolved = await store.withLock<Result<ResolvePhase>>(ctx.sessionDir, async () => {
@@ -250,7 +266,7 @@ async function stepBidding(ctx: StepContext, store: SessionStore): Promise<McpRe
     store.save(ctx.sessionDir, endedState.value);
     return { ok: true, value: { kind: 'ended', reason: decision.reason } };
   });
-  if (!resolved.ok) return resultToMcp(resolved);
+  if (!resolved.ok) return jsonResult({ error: resolved.error, ...(resolved.detail ?? {}) });
 
   switch (resolved.value.kind) {
     case 'resolved':
@@ -276,7 +292,7 @@ export async function handleStep(
   };
 
   const state = await bootstrapFromSetup(ctx, store);
-  if (!state.ok) return resultToMcp(state);
+  if (!state.ok) return jsonResult({ error: state.error, ...(state.detail ?? {}) });
 
   switch (state.value.status) {
     case 'ended':
