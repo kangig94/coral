@@ -58,9 +58,9 @@ Structured problem-definition conversation with the user before planning begins.
     - Do the items tell a coherent story? (Problem → Criteria → Scope → Assumptions → Systems)
     - Are there contradictions between items? (e.g., scope excludes something that success criteria requires)
     - Is the problem statement actually the root problem, or a symptom?
-    - Do any radical alternatives make you reconsider the problem statement itself?
-    - Even for confirmed sub-items: is there a radical alternative so valuable that the user should know about it?
-      If yes, mark it unconfirmed and add the three-point spectrum — the user may not have considered it.
+    - Do any elegant alternatives make you reconsider the problem statement itself?
+    - Even for confirmed sub-items: does a genuine structural deficiency exist that only an elegant alternative can address?
+      If yes, mark it unconfirmed and add the three-point spectrum. If it merely reflects taste or preference, omit it.
 
     Fix inconsistencies before presenting. This step is silent — no output to the user.
 
@@ -74,7 +74,7 @@ Structured problem-definition conversation with the user before planning begins.
       have meaningful alternatives if you think harder. Mark `[unconfirmed]` with three alternatives:
       - **default**: narrowest scope that solves the problem without introducing unnecessary complexity.
       - **minimal**: quickest path, least disruption, accepts known tradeoffs.
-      - **radical**: rethink the entire approach. Breaking changes, major refactors, or architectural rewrites that eliminate the root cause permanently. High upfront cost, but the codebase emerges fundamentally better. Propose this even if it feels disproportionate to the original ask.
+      - **elegant**: the structurally superior solution, regardless of cost. Breaking changes, major refactors, and migration pain are all permitted. Only propose when a genuine architectural deficiency exists that default/minimal cannot address — e.g., dependency violations, god classes, naming that actively misleads. The change must make the codebase fundamentally better, not just different. If you cannot articulate what structural problem it solves that the default does not, it is taste — omit it.
     - **Needs verification** (rare) — purely factual, no meaningful alternatives possible
       (e.g. "is this ESM or CJS?"). Mark `[unconfirmed]` with no nested list.
       Use sparingly — default to providing alternatives unless the item is strictly factual.
@@ -84,7 +84,7 @@ Structured problem-definition conversation with the user before planning begins.
     > - [ ] Response time under 200ms [unconfirmed]
     >   - default: 200ms
     >   - minimal: 500ms (accept higher latency)
-    >   - radical: 50ms with cache layer
+    >   - elegant: 50ms with cache layer
     The user can accept (silence), pick an alternative, or propose their own.
 
     ### 4. Conversation Loop
@@ -123,7 +123,7 @@ Structured problem-definition conversation with the user before planning begins.
     | DO | DON'T |
     |----|-------|
     | Fill items autonomously before asking | Ask item-by-item like a form |
-    | Commit to the best choice per unconfirmed sub-item, offer minimal + radical alternatives | Leave unconfirmed items blank or offer alternatives per section |
+    | Commit to the best choice per unconfirmed sub-item, offer minimal + elegant alternatives | Leave unconfirmed items blank or offer alternatives per section |
     | Mark uncertain items as "unconfirmed" | Present guesses as confirmed facts |
     | Flag ambiguous items explicitly to the user | Assume the user noticed uncertainty |
     | Update agreement file on every change | Keep agreement only in conversation |
@@ -145,14 +145,14 @@ Structured problem-definition conversation with the user before planning begins.
     - Desired state: ... [unconfirmed]
       - default: X
       - minimal: Y
-      - radical: Z
+      - elegant: Z
 
     ## Success Criteria
     - [ ] Criterion 1
     - [ ] Criterion 2 [unconfirmed]
       - default: ...
       - minimal: ...
-      - radical: ...
+      - elegant: ...
     - [ ] Criterion 3 [unconfirmed]  <!-- needs verification, no alternatives -->
 
     ## Scope
@@ -174,7 +174,7 @@ Structured problem-definition conversation with the user before planning begins.
     e.g. user preferences, tangential observations, rejected alternatives and why.]
     ```
 
-    Markers: only `[unconfirmed]` is marked — no marker means confirmed. Unconfirmed sub-items that need a decision list three alternatives as nested items (default, minimal, radical). Unconfirmed sub-items that need verification have no nested list. Section headings carry no markers. Optional items need no markers.
+    Markers: only `[unconfirmed]` is marked — no marker means confirmed. Unconfirmed sub-items that need a decision list three alternatives as nested items (default, minimal, elegant). Unconfirmed sub-items that need verification have no nested list. Section headings carry no markers. Optional items need no markers.
 
     ### Transition Handoff
 
