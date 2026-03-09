@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { PersistedStatusRecord, TerminalResult } from '../../types.js';
+import { eventBus } from '../event-bus.js';
 import { JOBS_DIR, ProgressStore, createReplayCursor, formatElapsed } from '../progress-store.js';
 
 const jobIdsToClean = new Set<string>();
@@ -27,6 +28,7 @@ afterEach(() => {
   }
   jobIdsToClean.clear();
   renameCalls.length = 0;
+  eventBus.removeAllListeners();
   vi.restoreAllMocks();
 });
 
@@ -60,6 +62,44 @@ describe('execution ProgressStore', () => {
 
     expect(first).toBe(1);
     expect(second).toBe(2);
+  });
+
+  it('emits event bus job lifecycle events', () => {
+    const store = new ProgressStore();
+    const jobId = `progress-bus-${randomUUID()}`;
+    const result = { content: 'done' } satisfies TerminalResult;
+    const created = vi.fn();
+    const phaseChanged = vi.fn();
+    const progress = vi.fn();
+    const completed = vi.fn();
+    jobIdsToClean.add(jobId);
+
+    eventBus.on('job:created', created);
+    eventBus.on('job:phase_changed', phaseChanged);
+    eventBus.on('job:progress', progress);
+    eventBus.on('job:completed', completed);
+
+    store.initJob(jobId, 'session-1', 'codex', projectRoot);
+    store.updatePhase(jobId, 'running');
+    const eventId = store.appendProgress(jobId, 'session-1', 'working');
+    store.appendTerminal(jobId, 'session-1', result, 'completed');
+
+    expect(created).toHaveBeenCalledWith({
+      jobId,
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot,
+    });
+    expect(phaseChanged.mock.calls).toEqual([
+      [{ jobId, phase: 'running', previousPhase: 'launching' }],
+      [{ jobId, phase: 'completed', previousPhase: 'running' }],
+    ]);
+    expect(progress).toHaveBeenCalledWith({
+      jobId,
+      eventId,
+      message: expect.stringContaining('working'),
+    });
+    expect(completed).toHaveBeenCalledWith({ jobId, result });
   });
 
   it('replayFrom returns only events with eventId greater than fromEventId', () => {
@@ -213,6 +253,20 @@ describe('execution ProgressStore', () => {
     expect(internals.eventCounters.has(jobId)).toBe(false);
     expect(internals.jobStartedAt.has(jobId)).toBe(false);
     expect(internals.writeGeneration.has(jobId)).toBe(false);
+  });
+
+  it('markTerminalStatus emits job:completed', () => {
+    const store = new ProgressStore();
+    const jobId = `progress-terminal-event-${randomUUID()}`;
+    const result = { content: 'done' } satisfies TerminalResult;
+    const completed = vi.fn();
+    jobIdsToClean.add(jobId);
+    eventBus.on('job:completed', completed);
+
+    store.initJob(jobId, 'session-1', 'codex', projectRoot);
+    store.markTerminalStatus(jobId, 'session-1', result, 'completed');
+
+    expect(completed).toHaveBeenCalledWith({ jobId, result });
   });
 
   it('consecutive replayFrom calls on the same cursor only return newly appended events', () => {

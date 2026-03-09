@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { request as httpRequest, type IncomingMessage as ClientIncomingMessage } from 'node:http';
+import { basename, join } from 'node:path';
 import type { WaitStreamEvent } from '../../types.js';
 import { JOBS_DIR, ProgressStore, jobResultPath } from '../progress-store.js';
 import { SessionManager } from '../session-manager.js';
@@ -75,6 +76,23 @@ function createFakeExecutionService(overrides: Partial<FakeExecutionService> = {
   };
 }
 
+function createFakeIdleTimer() {
+  let inflight = 0;
+  return {
+    beginRequest: vi.fn(() => {
+      inflight += 1;
+    }),
+    endRequest: vi.fn(() => {
+      if (inflight > 0) inflight -= 1;
+    }),
+    get inflightRequests() {
+      return inflight;
+    },
+    startWatching: vi.fn(),
+    stopWatching: vi.fn(),
+  };
+}
+
 async function closeHttpServer(server: import('node:http').Server): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     if (!server.listening) {
@@ -97,6 +115,69 @@ async function waitForCondition(check: () => boolean, timeoutMs = 2_000): Promis
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error('Timed out waiting for condition');
+}
+
+async function openHttpStream(url: string, headers: Record<string, string>): Promise<{
+  response: ClientIncomingMessage;
+  waitForText: (check: (text: string) => boolean, timeoutMs?: number) => Promise<string>;
+  close: () => void;
+}> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(url, { headers });
+    req.once('error', reject);
+    req.once('response', (response) => {
+      let text = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk: string) => {
+        text += chunk;
+      });
+
+      const waitForText = (check: (current: string) => boolean, timeoutMs = 2_000): Promise<string> => {
+        if (check(text)) return Promise.resolve(text);
+
+        return new Promise<string>((resolveText, rejectText) => {
+          const timeout = setTimeout(() => {
+            cleanup();
+            rejectText(new Error('Timed out reading stream'));
+          }, timeoutMs);
+
+          const onData = () => {
+            if (!check(text)) return;
+            cleanup();
+            resolveText(text);
+          };
+          const onEnd = () => {
+            cleanup();
+            rejectText(new Error('Stream ended before expected data arrived'));
+          };
+          const onError = (error: Error) => {
+            cleanup();
+            rejectText(error);
+          };
+          const cleanup = () => {
+            clearTimeout(timeout);
+            response.off('data', onData);
+            response.off('end', onEnd);
+            response.off('error', onError);
+          };
+
+          response.on('data', onData);
+          response.once('end', onEnd);
+          response.once('error', onError);
+        });
+      };
+
+      resolve({
+        response,
+        waitForText,
+        close: () => {
+          req.destroy();
+          response.destroy();
+        },
+      });
+    });
+    req.end();
+  });
 }
 
 async function loadExecutionModules(): Promise<{
@@ -395,6 +476,167 @@ describe('execution backend server', () => {
       cursor: { jobs: {} },
       projectRoot: '/tmp/project',
     });
+  });
+
+  it('streams passive dashboard SSE events and applies the optional job filter', async () => {
+    const fakeIdleTimer = createFakeIdleTimer();
+    const backend = await startBackendServer({
+      createIdleTimer: () => fakeIdleTimer as never,
+    });
+    const { eventBus } = await import('../event-bus.js');
+
+    const stream = await openHttpStream(`${backend.baseUrl}/events/stream?filter=job:job-1`, {
+      'X-Coral-Backend-Token': backend.token,
+    });
+
+    expect(stream.response.statusCode).toBe(200);
+    expect(String(stream.response.headers['content-type'])).toContain('text/event-stream');
+    expect(String(stream.response.headers['cache-control'])).toBe('no-cache');
+    expect(String(stream.response.headers.connection)).toBe('keep-alive');
+
+    try {
+      const readyChunk = await stream.waitForText((text) => text.includes('event: ready'));
+      expect(readyChunk).toContain('event: ready');
+      expect(readyChunk).toContain('"streamId":"');
+
+      eventBus.emit('job:created', {
+        jobId: 'job-1',
+        sessionId: 'session-1',
+        provider: 'codex',
+        projectRoot: '/tmp/project',
+      });
+      eventBus.emit('job:created', {
+        jobId: 'job-2',
+        sessionId: 'session-2',
+        provider: 'codex',
+        projectRoot: '/tmp/project',
+      });
+      eventBus.emit('session:updated', {
+        sessionId: 'session-1',
+        shardHash: 'abc123',
+        version: 2,
+        projectRoot: '/tmp/project',
+      });
+
+      const eventChunk = await stream.waitForText(
+        (text) => text.includes('event: job:created') && text.includes('event: session:updated'),
+      );
+
+      expect(eventChunk).toContain('"jobId":"job-1"');
+      expect(eventChunk).not.toContain('"jobId":"job-2"');
+      expect(eventChunk).toContain('"sessionId":"session-1"');
+      expect(fakeIdleTimer.beginRequest).not.toHaveBeenCalled();
+      expect(fakeIdleTimer.endRequest).not.toHaveBeenCalled();
+    } finally {
+      stream.close();
+    }
+  });
+
+  it('lists jobs and returns replayed job detail', async () => {
+    const progressStore = new ProgressStore();
+    createdJobIds.add('job-1');
+    createdJobIds.add('job-2');
+    progressStore.initJob('job-1', 'session-1', 'codex', '/tmp/project');
+    progressStore.appendProgress('job-1', 'session-1', 'working');
+    progressStore.appendTerminal('job-1', 'session-1', { content: 'done' }, 'completed');
+    progressStore.initJob('job-2', 'session-2', 'claude', '/tmp/project');
+
+    const backend = await startBackendServer({
+      progressStore,
+      recoverOrphanedJobsFn: () => {},
+    });
+
+    const jobsResponse = await fetch(`${backend.baseUrl}/api/jobs`, {
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+    const jobsBody = await jobsResponse.json() as {
+      jobs: Array<{ jobId: string; status: Record<string, unknown> }>;
+    };
+
+    expect(jobsResponse.status).toBe(200);
+    expect(jobsBody.jobs).toEqual(expect.arrayContaining([
+      {
+        jobId: 'job-1',
+        status: expect.objectContaining({
+          jobId: 'job-1',
+          sessionId: 'session-1',
+          provider: 'codex',
+          phase: 'completed',
+        }),
+      },
+      {
+        jobId: 'job-2',
+        status: expect.objectContaining({
+          jobId: 'job-2',
+          sessionId: 'session-2',
+          provider: 'claude',
+          phase: 'launching',
+        }),
+      },
+    ]));
+
+    const detailResponse = await fetch(`${backend.baseUrl}/api/jobs/job-1`, {
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+    const detailBody = await detailResponse.json() as {
+      status: Record<string, unknown>;
+      events: Array<Record<string, unknown>>;
+    };
+
+    expect(detailResponse.status).toBe(200);
+    expect(detailBody.status).toMatchObject({
+      jobId: 'job-1',
+      phase: 'completed',
+      result: { content: 'done' },
+    });
+    expect(detailBody.events).toHaveLength(2);
+    expect(detailBody.events[0]).toMatchObject({
+      eventId: 1,
+      type: 'progress',
+    });
+    expect(String(detailBody.events[0].message)).toContain('working');
+    expect(detailBody.events[1]).toMatchObject({
+      eventId: 2,
+      type: 'terminal',
+      result: { content: 'done' },
+    });
+
+    const missingResponse = await fetch(`${backend.baseUrl}/api/jobs/missing-job`, {
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+
+    expect(missingResponse.status).toBe(404);
+    expect(await missingResponse.json()).toEqual({ error: 'job_not_found' });
+  });
+
+  it('lists persisted sessions by shard and skips corrupt entries', async () => {
+    const projectRoot = createProjectRoot('session-project');
+    const session = new SessionManager(projectRoot).allocate('codex', 'alpha', 'gpt-5', projectRoot);
+    const [shardDir] = SessionManager.listShards();
+    writeFileSync(join(shardDir, 'corrupt.json'), '{not-json', 'utf-8');
+
+    const backend = await startBackendServer();
+    const response = await fetch(`${backend.baseUrl}/api/sessions`, {
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+    const body = await response.json() as {
+      sessions: Array<{ shardHash: string; sessions: Array<Record<string, unknown>> }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.sessions).toEqual([
+      {
+        shardHash: basename(shardDir),
+        sessions: [
+          expect.objectContaining({
+            sessionId: session.sessionId,
+            provider: 'codex',
+            state: 'pending',
+            version: 1,
+          }),
+        ],
+      },
+    ]);
   });
 
   it('returns 400 when /wait/stream omits or empties projectRoot', async () => {

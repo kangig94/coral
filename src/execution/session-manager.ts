@@ -1,9 +1,10 @@
 import { readFileSync, statSync, writeFileSync, mkdirSync, readdirSync, renameSync, rmdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { homedir } from 'node:os';
+import { basename, join, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { SESSION_BASE, syncHomePaths } from '../client/paths.js';
 import type { SessionState } from '../types.js';
 import { isNoEntryError, providerIdentPattern } from '../shared/mcp-utils.js';
+import { eventBus } from './event-bus.js';
 
 export interface SessionEntry {
   sessionId: string;
@@ -49,7 +50,8 @@ export class SessionManager {
   private readonly cache = new Map<string, CachedSession>();
 
   constructor(workingDirectory: string) {
-    this.sessionDir = join(homedir(), '.claude', 'coral', 'execution', 'sessions', projectHash(workingDirectory));
+    syncHomePaths();
+    this.sessionDir = join(SESSION_BASE, projectHash(workingDirectory));
     mkdirSync(this.sessionDir, { recursive: true });
   }
 
@@ -61,7 +63,8 @@ export class SessionManager {
   }
 
   static listShards(): string[] {
-    const sessionsRoot = join(homedir(), '.claude', 'coral', 'execution', 'sessions');
+    syncHomePaths();
+    const sessionsRoot = SESSION_BASE;
     try {
       return readdirSync(sessionsRoot, { withFileTypes: true })
         .filter((entry) => entry.isDirectory())
@@ -165,6 +168,12 @@ export class SessionManager {
     writeFileSync(tmpPath, JSON.stringify(entry, null, 2), 'utf-8');
     renameSync(tmpPath, filePath);
     this.populateCache(entry.sessionId, entry);
+    const shardHash = basename(this.sessionDir);
+    eventBus.emit('session:updated', {
+      sessionId: entry.sessionId,
+      shardHash,
+      version: entry.version,
+    });
   }
 
   /** Allocate a new sessionId and persist as 'pending'. Returns the new entry. */

@@ -1,6 +1,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { discussEventLogPath } from '../client/paths.js';
 import { textResult, type McpResult } from '../shared/mcp-utils.js';
+import { appendEvents, type DiscussMachineEvent, type WatermarkMeta } from './event-log.js';
 import { renderEntries, renderHeader } from './transcript.js';
 import { randomSuffix, formatDateId, topicSlug } from './util/string.js';
 import type { AgentState, DiscussState } from './types.js';
@@ -88,9 +90,9 @@ export class SessionStore {
       throw new Error(`Invalid discuss state shape in ${fullSessionPath}: missing min_bid_delay_ms`);
     }
 
-    const stateWithCursor = raw as DiscussState & { transcript_rendered?: number };
+    const stateWithCursor = raw as DiscussState & { transcript_rendered?: number; _watermark?: WatermarkMeta };
     this.renderCursors.set(fullSessionPath, stateWithCursor.transcript_rendered ?? stateWithCursor.transcript.length);
-    const { transcript_rendered: _transcript_rendered, ...state } = stateWithCursor;
+    const { transcript_rendered: _transcript_rendered, _watermark: _watermark, ...state } = stateWithCursor;
     return state;
   }
 
@@ -106,6 +108,29 @@ export class SessionStore {
     const toWrite = { ...state, transcript_rendered: nextCursor };
     writeStateAtomic(this.statePath(fullSessionPath), toWrite);
     this.renderCursors.set(fullSessionPath, nextCursor);
+  }
+
+  persistMutation(
+    fullSessionPath: string,
+    state: DiscussState,
+    machineEvents: DiscussMachineEvent[],
+    watermark: WatermarkMeta,
+  ): void {
+    const cursor = this.renderCursors.get(fullSessionPath) ?? 0;
+    const newEntries = state.transcript.slice(cursor);
+    if (newEntries.length > 0) {
+      const md = renderEntries(newEntries, state.agents);
+      fs.appendFileSync(path.join(fullSessionPath, 'transcript.md'), md, 'utf8');
+    }
+
+    const nextCursor = state.transcript.length;
+    const toWrite = { ...state, transcript_rendered: nextCursor, _watermark: watermark };
+    writeStateAtomic(this.statePath(fullSessionPath), toWrite);
+    this.renderCursors.set(fullSessionPath, nextCursor);
+
+    if (machineEvents.length > 0) {
+      appendEvents(discussEventLogPath(fullSessionPath), machineEvents);
+    }
   }
 
   initTranscript(fullSessionPath: string, topic: string, agents: Record<string, AgentState>): void {

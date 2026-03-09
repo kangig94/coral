@@ -5,18 +5,21 @@ declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
-import { isNoEntryError, isRecord, formatError, readBundleHash } from '../shared/mcp-utils.js';
+import { basename, join } from 'node:path';
+import { isNoEntryError, isRecord, formatError, providerIdentPattern, readBundleHash } from '../shared/mcp-utils.js';
 import { sharedExecSchema, sharedForkSchema, sharedResumeSchema } from '../shared/schemas.js';
 import type { ExecutionService } from './service.js';
 import { activeChildren, killAllChildren, queueDepth } from './engine.js';
 import { writeBackendInfo, removeBackendInfoIfOwner } from './backend-info.js';
 import { acquireLock, BackendAlreadyRunningError, removeLockIfOwner } from './backend-lock.js';
 import type { AbortResult } from './abort-registry.js';
+import { DiscussBridge, type DiscussMachineEvent } from './discuss-bridge.js';
+import { eventBus, type EventBusEvents } from './event-bus.js';
 import { IdleTimer } from './idle-timer.js';
-import { ProgressStore, JOBS_DIR } from './progress-store.js';
+import { createReplayCursor, ProgressStore, JOBS_DIR } from './progress-store.js';
 import type { CallerContext, ToolRequest } from './request-context.js';
-import { SessionManager } from './session-manager.js';
+import { SessionManager, type SessionEntry } from './session-manager.js';
+import { readSessionEntryLenient, type LenientSessionEntry } from '../client/readers.js';
 import { getAllNewProviders, getNewProvider } from '../providers/registry.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import {
@@ -25,6 +28,7 @@ import {
 import { handleWorkflow } from '../workflow/handler.js';
 import type {
   JobPhase,
+  PersistedProgressRecord,
   PersistedStatusRecord,
   TerminalResult,
   WaitCursor,
@@ -572,7 +576,7 @@ async function routeToolCall(
 
 function writeSseEvent(
   res: ServerResponse,
-  event: 'progress' | 'terminal' | 'timeout' | 'queued',
+  event: string,
   data: unknown,
   cursorId?: string,
 ): void {
@@ -625,6 +629,8 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
 
   const services = new Map<string, ExecutionServiceLike>();
   const streamResponses = new Set<ServerResponse>();
+  const discussBridges = new Map<string, DiscussBridge>();
+  let discussPollTimer: NodeJS.Timeout | null = null;
 
   let startedAt = now();
   let lifecycle: LifecycleState = 'starting';
@@ -678,6 +684,56 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     return { valid, missing, mismatch };
   }
 
+  function listAllJobs(store: ProgressStore): Array<{ jobId: string; status: PersistedStatusRecord }> {
+    const results: Array<{ jobId: string; status: PersistedStatusRecord }> = [];
+    for (const jobId of readJobIds()) {
+      const status = store.readStatus(jobId);
+      if (status) {
+        results.push({ jobId, status });
+      }
+    }
+    return results;
+  }
+
+  function getJobDetail(
+    store: ProgressStore,
+    jobId: string,
+  ): { status: PersistedStatusRecord; events: PersistedProgressRecord[] } | null {
+    const status = store.readStatus(jobId);
+    if (!status) return null;
+    const cursor = createReplayCursor();
+    const events = store.replayFrom(jobId, 0, cursor);
+    return { status, events };
+  }
+
+  function listAllSessions(): Array<{ shardHash: string; sessions: LenientSessionEntry[] }> {
+    const results: Array<{ shardHash: string; sessions: LenientSessionEntry[] }> = [];
+    for (const shardDir of SessionManager.listShards()) {
+      const entries = listShardSessions(shardDir);
+      if (entries.length > 0) {
+        results.push({ shardHash: basename(shardDir), sessions: entries });
+      }
+    }
+    return results;
+  }
+
+  function listShardSessions(shardDir: string): LenientSessionEntry[] {
+    let files: string[];
+    try {
+      files = readdirSync(shardDir).filter((file) => file.endsWith('.json') && !file.endsWith('.lock'));
+    } catch {
+      return [];
+    }
+
+    const entries: LenientSessionEntry[] = [];
+    for (const file of files) {
+      const entry = readSessionEntryLenient(join(shardDir, file));
+      if (entry) entries.push(entry);
+    }
+
+    return entries;
+  }
+
   const server = createServer((req, res) => {
     void handleRequest(req, res).catch((error) => {
       log(`Backend request error: ${formatError(error)}\n`);
@@ -702,6 +758,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       const serverClosed = closeServerFn(server);
       await waitForInflightDrain(idleTimer, SHUTDOWN_DRAIN_TIMEOUT_MS);
       server.closeAllConnections?.();
+      stopDiscussPoll();
       for (const stream of streamResponses) {
         stream.end();
       }
@@ -813,7 +870,131 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     }
   }
 
+  function getDiscussBridge(projectRoot: string): DiscussBridge {
+    const existing = discussBridges.get(projectRoot);
+    if (existing) return existing;
+    const bridge = new DiscussBridge(projectRoot);
+    bridge.rescan();
+    discussBridges.set(projectRoot, bridge);
+    return bridge;
+  }
+
+  function startDiscussPoll(): void {
+    if (discussPollTimer) return;
+    discussPollTimer = setInterval(() => {
+      if (streamResponses.size === 0) return;
+      for (const bridge of discussBridges.values()) {
+        bridge.rescan();
+        const events = bridge.poll();
+        for (const event of events) {
+          for (const stream of streamResponses) {
+            writeSseEvent(stream, 'discuss:event', event);
+          }
+        }
+      }
+    }, 2_000);
+    discussPollTimer.unref?.();
+  }
+
+  function stopDiscussPoll(): void {
+    if (discussPollTimer) {
+      clearInterval(discussPollTimer);
+      discussPollTimer = null;
+    }
+    for (const bridge of discussBridges.values()) {
+      bridge.close();
+    }
+    discussBridges.clear();
+  }
+
+  async function handleEventStream(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const streamId = randomUUID();
+    const filterJobId = parseEventStreamFilter(req.url ?? '');
+
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+
+    streamResponses.add(res);
+    startDiscussPoll();
+    writeSseEvent(res, 'ready', { streamId, startedAt: new Date().toISOString() });
+
+    let closed = false;
+    const matchesFilter = (jobId: string): boolean => !filterJobId || jobId === filterJobId;
+
+    const onJobCreated = (payload: EventBusEvents['job:created']): void => {
+      if (closed || !matchesFilter(payload.jobId)) return;
+      if (payload.projectRoot) getDiscussBridge(payload.projectRoot);
+      writeSseEvent(res, 'job:created', payload);
+    };
+    const onPhaseChanged = (payload: EventBusEvents['job:phase_changed']): void => {
+      if (closed || !matchesFilter(payload.jobId)) return;
+      writeSseEvent(res, 'job:phase_changed', payload);
+    };
+    const onProgress = (payload: EventBusEvents['job:progress']): void => {
+      if (closed || !matchesFilter(payload.jobId)) return;
+      writeSseEvent(res, 'job:progress', payload);
+    };
+    const onCompleted = (payload: EventBusEvents['job:completed']): void => {
+      if (closed || !matchesFilter(payload.jobId)) return;
+      writeSseEvent(res, 'job:completed', payload);
+    };
+    const onSessionUpdated = (payload: EventBusEvents['session:updated']): void => {
+      if (closed) return;
+      writeSseEvent(res, 'session:updated', payload);
+    };
+
+    const onClose = () => {
+      if (closed) return;
+      closed = true;
+      streamResponses.delete(res);
+      res.off('close', onClose);
+      eventBus.off('job:created', onJobCreated);
+      eventBus.off('job:phase_changed', onPhaseChanged);
+      eventBus.off('job:progress', onProgress);
+      eventBus.off('job:completed', onCompleted);
+      eventBus.off('session:updated', onSessionUpdated);
+    };
+    res.once('close', onClose);
+
+    eventBus.on('job:created', onJobCreated);
+    eventBus.on('job:phase_changed', onPhaseChanged);
+    eventBus.on('job:progress', onProgress);
+    eventBus.on('job:completed', onCompleted);
+    eventBus.on('session:updated', onSessionUpdated);
+
+    await new Promise<void>((resolve) => {
+      if (closed) {
+        resolve();
+        return;
+      }
+      res.once('close', resolve);
+    });
+  }
+
+  function parseEventStreamFilter(url: string): string | null {
+    const qIndex = url.indexOf('?');
+    if (qIndex === -1) return null;
+    const params = new URLSearchParams(url.slice(qIndex));
+    const filter = params.get('filter');
+    if (!filter) return null;
+    const jobMatch = filter.match(/^job:(.+)$/);
+    return jobMatch?.[1] ?? null;
+  }
+
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', 'X-Coral-Backend-Token, Content-Type');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
     const authHeader = req.headers['x-coral-backend-token'];
     if (typeof authHeader !== 'string' || authHeader !== token) {
       req.resume();
@@ -824,6 +1005,12 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     if (lifecycle !== 'running') {
       req.resume();
       sendJson(res, 503, { error: 'backend_shutting_down' });
+      return;
+    }
+
+    if (req.method === 'GET' && req.url?.startsWith('/events/stream')) {
+      req.resume();
+      await handleEventStream(req, res);
       return;
     }
 
@@ -884,6 +1071,30 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         void shutdown('admin').catch(() => {});
       });
       sendJson(res, 200, { status: 'shutting_down' });
+      return;
+    }
+
+    if (req.method === 'GET' && req.url === '/api/jobs') {
+      req.resume();
+      sendJson(res, 200, { jobs: listAllJobs(progressStore) });
+      return;
+    }
+
+    const jobDetailMatch = req.method === 'GET' && req.url?.match(/^\/api\/jobs\/([^/]+)$/);
+    if (jobDetailMatch) {
+      req.resume();
+      const detail = getJobDetail(progressStore, jobDetailMatch[1]);
+      if (!detail) {
+        sendJson(res, 404, { error: 'job_not_found' });
+        return;
+      }
+      sendJson(res, 200, detail);
+      return;
+    }
+
+    if (req.method === 'GET' && req.url === '/api/sessions') {
+      req.resume();
+      sendJson(res, 200, { sessions: listAllSessions() });
       return;
     }
 

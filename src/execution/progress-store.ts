@@ -10,8 +10,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { writeFile, rename } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { JOBS_DIR } from '../client/paths.js';
 import type {
   JobKind,
   JobPhase,
@@ -21,8 +21,9 @@ import type {
   TerminalResult,
 } from '../types.js';
 import { isNoEntryError } from '../shared/mcp-utils.js';
+import { eventBus } from './event-bus.js';
 
-export const JOBS_DIR = join(tmpdir(), 'coral-jobs');
+export { JOBS_DIR } from '../client/paths.js';
 
 const STATUS_FILE = 'status.json';
 const PROGRESS_FILE = 'progress.jsonl';
@@ -128,6 +129,9 @@ export class ProgressStore {
     if (wasLive && !isLive) this.liveCount--;
     this.statusCache.set(jobId, { ...record });
     this.notifyWaiters();
+    if (oldRecord && oldRecord.phase !== record.phase) {
+      eventBus.emit('job:phase_changed', { jobId, phase: record.phase, previousPhase: oldRecord.phase });
+    }
   }
 
   private persistStatusSync(jobId: string, record: PersistedStatusRecord): void {
@@ -163,6 +167,7 @@ export class ProgressStore {
     this.persistStatusSync(jobId, record);
     this.applyStatusRecord(jobId, record);
     writeFileSync(this.progressPath(jobId), '');
+    eventBus.emit('job:created', { jobId, sessionId, provider, projectRoot });
     this.jobStartedAt.set(jobId, Date.now());
   }
 
@@ -262,6 +267,7 @@ export class ProgressStore {
       /* progress write must not break execution */
     }
     this.notifyWaiters();
+    eventBus.emit('job:progress', { jobId, eventId, message: stamped });
     return eventId;
   }
 
@@ -280,6 +286,7 @@ export class ProgressStore {
 
     this.updateTerminalStatus(jobId, result, phase);
     this.clearTerminalState(jobId);
+    eventBus.emit('job:completed', { jobId, result });
     return eventId;
   }
 
@@ -289,6 +296,7 @@ export class ProgressStore {
     if (!didUpdateStatus) {
       this.notifyWaiters();
     }
+    eventBus.emit('job:completed', { jobId, result });
   }
 
   private updateTerminalStatus(jobId: string, result: TerminalResult, phase: JobPhase): boolean {
