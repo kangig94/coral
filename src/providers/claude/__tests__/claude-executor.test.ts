@@ -13,6 +13,8 @@ import {
 
 const mockSpawnCli = vi.mocked(spawnCli);
 const baseArgs = ['-p', '--verbose', '--output-format', 'stream-json'];
+const defaultEffort = process.env.CORAL_CLAUDE_EFFORT ?? process.env.CORAL_EFFORT ?? 'high';
+const defaultEffortArgs = ['--effort', defaultEffort === 'xhigh' ? 'high' : defaultEffort];
 
 function mockCliResult(
   stdout: string,
@@ -58,6 +60,7 @@ describe('claude-executor', () => {
         'You are precise',
         '--model',
         'claude-3-5-sonnet',
+        ...defaultEffortArgs,
         '--session-id',
         'bootstrap-id',
       ],
@@ -96,6 +99,7 @@ describe('claude-executor', () => {
         'Resume mode',
         '--model',
         'claude-sonnet',
+        ...defaultEffortArgs,
       ],
       prompt: 'Continue',
       cwd: '/tmp/project',
@@ -144,6 +148,7 @@ describe('claude-executor', () => {
       args: [
         ...baseArgs,
         '--dangerously-skip-permissions',
+        ...defaultEffortArgs,
       ],
     }));
   });
@@ -159,6 +164,7 @@ describe('claude-executor', () => {
         '--resume',
         'sess-6',
         '--dangerously-skip-permissions',
+        ...defaultEffortArgs,
       ],
     }));
   });

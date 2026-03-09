@@ -1,9 +1,8 @@
 import { z } from 'zod';
 import { providerIdentPattern } from '../shared/mcp-utils.js';
-import { cwdSchema, effortSchema } from '../shared/schemas.js';
+import { cwdSchema } from '../shared/schemas.js';
 
 export const atomConfigSchema = z.object({
-  effort: effortSchema,
   instruction: z.string().optional(),
 }).strict();
 

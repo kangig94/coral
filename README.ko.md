@@ -188,6 +188,7 @@ Claude가 놓치기 쉬운 것을 발견하면 (근본 원인, 주의사항, 기
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
 | `CORAL_CODEX_MODEL` | `gpt-5.4` | Codex CLI 기본 모델 |
+| `CORAL_CODEX_EFFORT` | `xhigh` | Codex 추론 노력도 (`low`, `medium`, `high`, `xhigh`) |
 | `CORAL_MAX_SESSIONS` | `10` | 최대 동시 CLI 세션 수 (1–10) |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | 토론 자동 종료 전 최대 에포크 (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `0` | 완료된 토론 세션 자동 정리 기한 (일, 0 = 비활성화) |

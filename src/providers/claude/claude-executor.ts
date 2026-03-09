@@ -24,6 +24,8 @@ export class ClaudeExecParseError extends Error {
   }
 }
 
+const DEFAULT_EFFORT = (process.env.CORAL_CLAUDE_EFFORT ?? process.env.CORAL_EFFORT ?? 'high') as NonNullable<EffortLevel>;
+
 const STREAM_JSON_ARGS = ['-p', '--verbose', '--output-format', 'stream-json'];
 
 export async function executeClaudeOneShot(
@@ -60,7 +62,8 @@ function appendSharedArgs(args: string[], options: ClaudeExecOptions): void {
   if (options.bypassPermissions) args.push('--dangerously-skip-permissions');
   if (options.systemPrompt) args.push('--append-system-prompt', options.systemPrompt);
   if (options.model) args.push('--model', options.model);
-  if (options.effort) args.push('--effort', options.effort === 'xhigh' ? 'high' : options.effort);
+  const effort = options.effort ?? DEFAULT_EFFORT;
+  args.push('--effort', effort === 'xhigh' ? 'high' : effort);
 }
 
 async function executeClaude(

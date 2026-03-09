@@ -132,7 +132,7 @@ describe('workflow handler', () => {
         expression: 'architect',
         init_prompt: 'test',
         provider: 'claude',
-        atoms: { 'ghost-agent': { effort: 'low' } },
+        atoms: { 'ghost-agent': { instruction: 'focus' } },
       },
       executionSvc,
       ctx,

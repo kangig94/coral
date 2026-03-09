@@ -498,7 +498,7 @@ describe('launchAtomWithRetry', () => {
       defaultProviderName: 'codex',
       executionSvc,
       ctx,
-      atoms: { architect: { effort: 'low' } },
+      atoms: { architect: { instruction: 'focus on security' } },
       onProgress: vi.fn(),
       completedStepDetails: [],
     });
@@ -520,9 +520,8 @@ describe('launchAtomWithRetry', () => {
       'codex',
       'architect',
       expect.objectContaining({
-        prompt: 'do work',
+        prompt: expect.stringContaining('focus on security'),
         cwd: ctx.projectRoot,
-        effort: 'low',
       }),
       ctx,
     );

@@ -93,6 +93,8 @@ const BYPASS_FLAGS = [
   'web_search=live',
 ];
 
+const DEFAULT_EFFORT_FLAGS = ['-c', `model_reasoning_effort=${process.env.CORAL_CODEX_EFFORT ?? process.env.CORAL_EFFORT ?? 'xhigh'}`];
+
 type MockProcess = ChildProcess & { stdinWrites: string[] };
 
 function createMockProcess(stdout: string, code: number): MockProcess {
@@ -171,7 +173,7 @@ describe('executeOneShot', () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
-      ['exec', '-m', 'gpt-5.4', ...FULL_AUTO_FLAGS],
+      ['exec', '-m', 'gpt-5.4', ...FULL_AUTO_FLAGS, ...DEFAULT_EFFORT_FLAGS],
       expect.objectContaining({ cwd: '/tmp' }),
     );
     expect(result.response).toBe('Hello');
@@ -245,7 +247,7 @@ describe('executeOneShot', () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
-      ['exec', '-m', 'gpt-5.4', ...BYPASS_FLAGS],
+      ['exec', '-m', 'gpt-5.4', ...BYPASS_FLAGS, ...DEFAULT_EFFORT_FLAGS],
       expect.objectContaining({ cwd: '/tmp' }),
     );
   });
@@ -258,7 +260,7 @@ describe('executeOneShot', () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
-      ['exec', '-m', 'gpt-5.4', ...FULL_AUTO_FLAGS],
+      ['exec', '-m', 'gpt-5.4', ...FULL_AUTO_FLAGS, ...DEFAULT_EFFORT_FLAGS],
       expect.objectContaining({ cwd: '/tmp' }),
     );
   });
@@ -294,7 +296,7 @@ describe('executeResume', () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
-      ['exec', 'resume', 'thread-abc', '-m', 'gpt-5.4', ...FULL_AUTO_FLAGS],
+      ['exec', 'resume', 'thread-abc', '-m', 'gpt-5.4', ...FULL_AUTO_FLAGS, ...DEFAULT_EFFORT_FLAGS],
       expect.any(Object),
     );
     expect(result.response).toBe('Resumed');
@@ -337,7 +339,7 @@ describe('executeResume', () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
-      ['exec', 'resume', 'thread-abc', '-m', 'gpt-5.4', ...BYPASS_FLAGS],
+      ['exec', 'resume', 'thread-abc', '-m', 'gpt-5.4', ...BYPASS_FLAGS, ...DEFAULT_EFFORT_FLAGS],
       expect.any(Object),
     );
   });

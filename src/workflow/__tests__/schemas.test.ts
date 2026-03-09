@@ -29,14 +29,12 @@ describe('workflowInputSchema', () => {
       provider: 'claude',
       atoms: {
         architect: {
-          effort: 'high',
           instruction: 'Review the auth flow with extra attention to edge cases.',
         },
       },
     });
 
     expect(parsed.provider).toBe('claude');
-    expect(parsed.atoms?.architect?.effort).toBe('high');
     expect(parsed.atoms?.architect?.instruction).toContain('auth flow');
   });
 
@@ -121,8 +119,8 @@ describe('workflowInputSchema', () => {
     expect(parsed.atoms?.architect?.instruction).toBe('Do a security pass.');
   });
 
-  it('accepts atoms effort field', () => {
-    const parsed = workflowInputSchema.parse({
+  it('rejects effort field in atom config (removed from MCP surface)', () => {
+    expect(() => workflowInputSchema.parse({
       expression: 'architect',
       init_prompt: 'hello',
       atoms: {
@@ -130,9 +128,7 @@ describe('workflowInputSchema', () => {
           effort: 'xhigh',
         },
       },
-    });
-
-    expect(parsed.atoms?.architect?.effort).toBe('xhigh');
+    })).toThrow();
   });
 
   it('rejects unknown keys in atom config', () => {

@@ -7,6 +7,9 @@ Environment variables, config files, and the plugin manifest.
 | Variable | Default | Description |
 |---|---|---|
 | `CORAL_CODEX_MODEL` | `gpt-5.4` | Default Codex model for new sessions |
+| `CORAL_CODEX_EFFORT` | `xhigh` | Codex reasoning effort (`low`, `medium`, `high`, `xhigh`) |
+| `CORAL_CLAUDE_EFFORT` | `high` | Claude reasoning effort (`low`, `medium`, `high`, `xhigh`→`high`) |
+| `CORAL_EFFORT` | _(none)_ | Global effort override — if set, applies to any provider without its own `CORAL_<PROVIDER>_EFFORT` |
 | `CORAL_MAX_SESSIONS` | `10` | Max concurrent CLI sessions (range: 1–10) |
 | `CORAL_DISCUSS_BID_THRESHOLD` | `30` | Minimum bid score (1–100) for floor eligibility. Stored per-session at creation time. |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Maximum epochs before discussion ends automatically (1–10). Stored per-session at creation time. |
@@ -19,6 +22,7 @@ Environment variables, config files, and the plugin manifest.
 
 ```bash
 export CORAL_CODEX_MODEL=gpt-5.4
+export CORAL_CODEX_EFFORT=high
 export CORAL_DISCUSS_BID_THRESHOLD=50
 export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
 ```

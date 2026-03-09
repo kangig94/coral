@@ -438,7 +438,7 @@ async function routeToolCall(
         prompt: parsed.data.prompt,
         cwd: parsed.data.work_dir,
         model: parsed.data.model,
-        effort: parsed.data.effort,
+
         bypassPermissions: parsed.data.bypass_permissions ?? false,
         systemPrompt: parsed.data.system_prompt,
       }, request.context),
@@ -455,7 +455,7 @@ async function routeToolCall(
         prompt: parsed.data.prompt,
         cwd: parsed.data.work_dir,
         model: parsed.data.model,
-        effort: parsed.data.effort,
+
         bypassPermissions: parsed.data.bypass_permissions ?? false,
         systemPrompt: parsed.data.system_prompt,
       }, request.context),
@@ -474,7 +474,7 @@ async function routeToolCall(
           prompt: parsed.data.prompt,
           cwd: parsed.data.work_dir,
           model: parsed.data.model,
-          effort: parsed.data.effort,
+  
           bypassPermissions: parsed.data.bypass_permissions ?? false,
           systemPrompt: parsed.data.system_prompt,
         }, request.context),
@@ -487,7 +487,7 @@ async function routeToolCall(
         prompt: parsed.data.prompt,
         cwd: parsed.data.work_dir ?? defaultCwd,
         model: parsed.data.model,
-        effort: parsed.data.effort,
+
         bypassPermissions: parsed.data.bypass_permissions ?? false,
         systemPrompt: parsed.data.system_prompt,
       }, request.context),
