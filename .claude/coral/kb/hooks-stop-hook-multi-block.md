@@ -9,7 +9,7 @@ Designing a new Stop hook alongside an existing one might seem to require coordi
 ## Pattern
 ```
 # RIGHT: Two independent Stop hooks, both block
-hooks/kb-promote-reminder.mjs → { decision: "block", reason: "Review memos for KB promotion" }
+hooks/kb-promote-gate.mjs → { decision: "block", reason: "Review memos for KB promotion" }
 hooks/ralph-loop.mjs          → { decision: "block", reason: "<the stored ralph prompt>" }
 # Claude receives both reasons as separate prompt injections — both work
 
@@ -17,4 +17,4 @@ hooks/ralph-loop.mjs          → { decision: "block", reason: "<the stored ralp
 # Unnecessary. Combine only if the hooks share state or have ordering dependencies.
 ```
 
-Confirmed working: `kb-promote-reminder.mjs` (KB promotion enforcement) and `ralph-loop.mjs` (prompt re-injection) coexist on the Stop event in hooks.json with no coordination.
+Confirmed working: `kb-promote-gate.mjs` (KB promotion enforcement) and `ralph-loop.mjs` (prompt re-injection) coexist on the Stop event in hooks.json with no coordination.

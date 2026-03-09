@@ -1,0 +1,545 @@
+import { spawnSync } from 'node:child_process';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { afterEach, describe, expect, it } from 'vitest';
+
+const SESSION_START_HOOK = join(process.cwd(), 'hooks', 'session-start.mjs');
+const PRE_COMPACT_HOOK = join(process.cwd(), 'hooks', 'pre-compact.mjs');
+const POST_COMPACT_HOOK = join(process.cwd(), 'hooks', 'post-compact.mjs');
+
+const createdRoots: string[] = [];
+
+interface HookRunResult {
+  stdout: string;
+  stderr: string;
+  status: number;
+}
+
+interface HookOutput {
+  hookSpecificOutput: {
+    hookEventName: string;
+    additionalContext: string;
+  };
+}
+
+interface JobStatus {
+  jobId: string;
+  phase: string;
+  projectRoot: string;
+  provider: string;
+  sessionId: string;
+  jobKind?: string;
+  result?: {
+    workflow?: unknown;
+  };
+}
+
+interface SnapshotJob {
+  jobId: string;
+  phase: string;
+  provider: string;
+  sessionId: string;
+  jobKind?: string;
+}
+
+interface SnapshotRecord {
+  capturedAtMs: number;
+  projectRoot: string;
+  sourceSessionId: string | null;
+  jobs: SnapshotJob[];
+}
+
+interface HookFixture {
+  root: string;
+  tmpRoot: string;
+  jobsDir: string;
+  pluginRoot: string;
+  projectRoot: string;
+  snapshotDir: string;
+}
+
+afterEach(() => {
+  for (const root of createdRoots.splice(0)) {
+    try {
+      rmSync(root, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup
+    }
+  }
+});
+
+function createFixture(): HookFixture {
+  const root = mkdtempSync(join(tmpdir(), 'coral-hooks-'));
+  const fixture = {
+    root,
+    tmpRoot: join(root, 'tmp-root'),
+    jobsDir: join(root, 'tmp-root', 'coral-jobs'),
+    pluginRoot: join(root, 'plugin-root'),
+    projectRoot: join(root, 'project-root'),
+    snapshotDir: join(root, 'project-root', '.claude', 'coral', 'tmp'),
+  };
+
+  createdRoots.push(root);
+  mkdirSync(fixture.tmpRoot, { recursive: true });
+  return fixture;
+}
+
+function runHook(
+  hookPath: string,
+  stdinJson: object,
+  envOverrides: Record<string, string | undefined> = {},
+): HookRunResult {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+
+  for (const [key, value] of Object.entries(envOverrides)) {
+    if (value === undefined) {
+      delete env[key];
+      continue;
+    }
+
+    env[key] = value;
+  }
+
+  const result = spawnSync('node', [hookPath], {
+    input: JSON.stringify(stdinJson),
+    encoding: 'utf-8',
+    env,
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  return {
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+    status: result.status ?? 0,
+  };
+}
+
+function parseHookOutput(stdout: string): HookOutput | null {
+  const trimmed = stdout.trim();
+  if (trimmed === '') return null;
+
+  try {
+    const parsed = JSON.parse(trimmed) as Partial<HookOutput>;
+    if (
+      parsed.hookSpecificOutput == null
+      || typeof parsed.hookSpecificOutput.hookEventName !== 'string'
+      || typeof parsed.hookSpecificOutput.additionalContext !== 'string'
+    ) {
+      return null;
+    }
+
+    return parsed as HookOutput;
+  } catch {
+    return null;
+  }
+}
+
+function expectHookOutput(result: HookRunResult): HookOutput {
+  const output = parseHookOutput(result.stdout);
+  if (output == null) {
+    throw new Error(`Expected hookSpecificOutput JSON, received stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`);
+  }
+
+  return output;
+}
+
+function writeClaudeMd(pluginRoot: string, content: string): void {
+  mkdirSync(pluginRoot, { recursive: true });
+  writeFileSync(join(pluginRoot, 'CLAUDE.md'), content, 'utf-8');
+}
+
+function writeStatus(jobsDir: string, status: JobStatus): void {
+  const jobDir = join(jobsDir, status.jobId);
+  mkdirSync(jobDir, { recursive: true });
+  writeFileSync(join(jobDir, 'status.json'), JSON.stringify(status), 'utf-8');
+}
+
+function writeCorruptStatus(jobsDir: string, jobId: string, raw: string): void {
+  const jobDir = join(jobsDir, jobId);
+  mkdirSync(jobDir, { recursive: true });
+  writeFileSync(join(jobDir, 'status.json'), raw, 'utf-8');
+}
+
+function writeResultArtifact(jobsDir: string, jobId: string, content = '# result'): void {
+  const jobDir = join(jobsDir, jobId);
+  mkdirSync(jobDir, { recursive: true });
+  writeFileSync(join(jobDir, 'result.md'), content, 'utf-8');
+}
+
+function writeSnapshot(snapshotDir: string, snapshot: SnapshotRecord, suffix = 'fixture'): string {
+  mkdirSync(snapshotDir, { recursive: true });
+
+  const snapshotPath = join(
+    snapshotDir,
+    `active-jobs-${snapshot.capturedAtMs}-${suffix}.json`,
+  );
+
+  writeFileSync(snapshotPath, JSON.stringify(snapshot), 'utf-8');
+  return snapshotPath;
+}
+
+function listSnapshots(snapshotDir: string): string[] {
+  if (!existsSync(snapshotDir)) return [];
+
+  return readdirSync(snapshotDir)
+    .filter((fileName) => fileName.startsWith('active-jobs-') && fileName.endsWith('.json'))
+    .map((fileName) => join(snapshotDir, fileName))
+    .sort((left, right) => left.localeCompare(right));
+}
+
+describe('session-start.mjs', () => {
+  it('outputs CLAUDE.md with session_id when both provided', () => {
+    const fixture = createFixture();
+    const claudeMd = 'Project instructions\nSecond line';
+    writeClaudeMd(fixture.pluginRoot, claudeMd);
+
+    const result = runHook(
+      SESSION_START_HOOK,
+      { session_id: 'sess-123' },
+      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
+    );
+
+    expect(result.status).toBe(0);
+
+    const output = expectHookOutput(result);
+    expect(output.hookSpecificOutput.hookEventName).toBe('SessionStart');
+    expect(output.hookSpecificOutput.additionalContext.startsWith('SessionStart:session_id=sess-123\n\n')).toBe(true);
+    expect(output.hookSpecificOutput.additionalContext).toContain(claudeMd);
+  });
+
+  it('outputs CLAUDE.md only when no session_id', () => {
+    const fixture = createFixture();
+    const claudeMd = 'Only CLAUDE content';
+    writeClaudeMd(fixture.pluginRoot, claudeMd);
+
+    const result = runHook(
+      SESSION_START_HOOK,
+      {},
+      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
+    );
+
+    expect(result.status).toBe(0);
+
+    const output = expectHookOutput(result);
+    expect(output.hookSpecificOutput.additionalContext.startsWith('SessionStart:')).toBe(false);
+    expect(output.hookSpecificOutput.additionalContext).toBe(claudeMd);
+  });
+
+  it('exits cleanly when CLAUDE_PLUGIN_ROOT unset', () => {
+    const result = runHook(
+      SESSION_START_HOOK,
+      {},
+      { CLAUDE_PLUGIN_ROOT: undefined },
+    );
+
+    expect(result.status).toBe(0);
+    expect(parseHookOutput(result.stdout)).toBeNull();
+  });
+});
+
+describe('pre-compact.mjs', () => {
+  it('writes snapshot when active jobs exist for this project', () => {
+    const fixture = createFixture();
+    const liveJob: JobStatus = {
+      jobId: 'test-job-live',
+      phase: 'running',
+      projectRoot: fixture.projectRoot,
+      provider: 'codex',
+      sessionId: 'sess-1',
+    };
+    writeStatus(fixture.jobsDir, liveJob);
+
+    const result = runHook(
+      PRE_COMPACT_HOOK,
+      { session_id: 'sess-1', cwd: fixture.projectRoot },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+
+    const snapshots = listSnapshots(fixture.snapshotDir);
+    expect(snapshots).toHaveLength(1);
+
+    const snapshot = JSON.parse(readFileSync(snapshots[0], 'utf-8')) as SnapshotRecord;
+    expect(snapshot.projectRoot).toBe(fixture.projectRoot);
+    expect(snapshot.jobs).toHaveLength(1);
+    expect(snapshot.jobs[0]).toMatchObject({
+      jobId: 'test-job-live',
+      phase: 'running',
+      provider: 'codex',
+      sessionId: 'sess-1',
+    });
+  });
+
+  it('does not write snapshot when no matching jobs', () => {
+    const fixture = createFixture();
+    writeStatus(fixture.jobsDir, {
+      jobId: 'test-job-completed',
+      phase: 'completed',
+      projectRoot: fixture.projectRoot,
+      provider: 'codex',
+      sessionId: 'sess-1',
+    });
+
+    const result = runHook(
+      PRE_COMPACT_HOOK,
+      { session_id: 'sess-1', cwd: fixture.projectRoot },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(listSnapshots(fixture.snapshotDir)).toHaveLength(0);
+  });
+
+  it('skips corrupt job dirs (fail isolation)', () => {
+    const fixture = createFixture();
+    writeCorruptStatus(fixture.jobsDir, 'test-job-corrupt', '{ not valid json }');
+    writeStatus(fixture.jobsDir, {
+      jobId: 'test-job-valid',
+      phase: 'running',
+      projectRoot: fixture.projectRoot,
+      provider: 'codex',
+      sessionId: 'sess-2',
+    });
+
+    const result = runHook(
+      PRE_COMPACT_HOOK,
+      { session_id: 'sess-2', cwd: fixture.projectRoot },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+
+    const snapshots = listSnapshots(fixture.snapshotDir);
+    expect(snapshots).toHaveLength(1);
+
+    const snapshot = JSON.parse(readFileSync(snapshots[0], 'utf-8')) as SnapshotRecord;
+    expect(snapshot.jobs).toHaveLength(1);
+    expect(snapshot.jobs[0]?.jobId).toBe('test-job-valid');
+  });
+
+  it('exits silently when no JOBS_DIR', () => {
+    const fixture = createFixture();
+
+    const result = runHook(
+      PRE_COMPACT_HOOK,
+      { session_id: 'sess-3', cwd: fixture.projectRoot },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+    expect(listSnapshots(fixture.snapshotDir)).toHaveLength(0);
+  });
+});
+
+describe('post-compact.mjs', () => {
+  it('outputs pending jobs with wait() action', () => {
+    const fixture = createFixture();
+    const snapshot: SnapshotRecord = {
+      capturedAtMs: Date.now(),
+      projectRoot: fixture.projectRoot,
+      sourceSessionId: 'sess-1',
+      jobs: [
+        { jobId: 'test-job-pending-a', phase: 'running', provider: 'codex', sessionId: 'sess-a' },
+        { jobId: 'test-job-pending-b', phase: 'queued', provider: 'codex', sessionId: 'sess-b' },
+      ],
+    };
+    writeSnapshot(fixture.snapshotDir, snapshot, 'pending');
+    writeStatus(fixture.jobsDir, {
+      jobId: 'test-job-pending-a',
+      phase: 'running',
+      projectRoot: fixture.projectRoot,
+      provider: 'codex',
+      sessionId: 'sess-a',
+    });
+    writeStatus(fixture.jobsDir, {
+      jobId: 'test-job-pending-b',
+      phase: 'queued',
+      projectRoot: fixture.projectRoot,
+      provider: 'codex',
+      sessionId: 'sess-b',
+    });
+
+    const result = runHook(
+      POST_COMPACT_HOOK,
+      { cwd: fixture.projectRoot },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+
+    const output = expectHookOutput(result);
+    expect(output.hookSpecificOutput.hookEventName).toBe('SessionStart');
+    expect(output.hookSpecificOutput.additionalContext).toContain('Pending:');
+    expect(output.hookSpecificOutput.additionalContext).toContain('Call wait({ jobs: [');
+    expect(output.hookSpecificOutput.additionalContext).toContain('test-job-pending-a');
+    expect(output.hookSpecificOutput.additionalContext).toContain('test-job-pending-b');
+  });
+
+  it('outputs terminal guidance for completed provider job with no artifact', () => {
+    const fixture = createFixture();
+    writeSnapshot(fixture.snapshotDir, {
+      capturedAtMs: Date.now(),
+      projectRoot: fixture.projectRoot,
+      sourceSessionId: 'sess-1',
+      jobs: [
+        { jobId: 'test-job-complete-no-artifact', phase: 'running', provider: 'codex', sessionId: 'sess-1' },
+      ],
+    }, 'provider-terminal');
+    writeStatus(fixture.jobsDir, {
+      jobId: 'test-job-complete-no-artifact',
+      phase: 'completed',
+      projectRoot: fixture.projectRoot,
+      provider: 'codex',
+      sessionId: 'sess-1',
+    });
+
+    const result = runHook(
+      POST_COMPACT_HOOK,
+      { cwd: fixture.projectRoot },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+
+    const output = expectHookOutput(result);
+    expect(output.hookSpecificOutput.additionalContext).toContain('Completed during compaction:');
+    expect(output.hookSpecificOutput.additionalContext).toContain('wait({ jobs: [');
+    expect(output.hookSpecificOutput.additionalContext).toContain('inline: true');
+  });
+
+  it('outputs Read path for completed job with result.md', () => {
+    const fixture = createFixture();
+    writeSnapshot(fixture.snapshotDir, {
+      capturedAtMs: Date.now(),
+      projectRoot: fixture.projectRoot,
+      sourceSessionId: 'sess-1',
+      jobs: [
+        { jobId: 'test-job-with-result', phase: 'running', provider: 'codex', sessionId: 'sess-1' },
+      ],
+    }, 'artifact');
+    writeStatus(fixture.jobsDir, {
+      jobId: 'test-job-with-result',
+      phase: 'completed',
+      projectRoot: fixture.projectRoot,
+      provider: 'codex',
+      sessionId: 'sess-1',
+    });
+    writeResultArtifact(fixture.jobsDir, 'test-job-with-result');
+
+    const result = runHook(
+      POST_COMPACT_HOOK,
+      { cwd: fixture.projectRoot },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+
+    const output = expectHookOutput(result);
+    expect(output.hookSpecificOutput.additionalContext).toContain('Read ');
+    expect(output.hookSpecificOutput.additionalContext).toContain('result.md');
+    expect(output.hookSpecificOutput.additionalContext).not.toContain('inline: true');
+  });
+
+  it('outputs missing bucket for ENOENT job', () => {
+    const fixture = createFixture();
+    writeSnapshot(fixture.snapshotDir, {
+      capturedAtMs: Date.now(),
+      projectRoot: fixture.projectRoot,
+      sourceSessionId: 'sess-1',
+      jobs: [
+        { jobId: 'test-job-missing', phase: 'running', provider: 'codex', sessionId: 'sess-1' },
+      ],
+    }, 'missing');
+
+    const result = runHook(
+      POST_COMPACT_HOOK,
+      { cwd: fixture.projectRoot },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+
+    const output = expectHookOutput(result);
+    expect(output.hookSpecificOutput.additionalContext).toContain('Status unavailable:');
+    expect(output.hookSpecificOutput.additionalContext).toContain('missing');
+  });
+
+  it('deletes stale snapshots (>10min old)', () => {
+    const fixture = createFixture();
+    const staleSnapshotPath = writeSnapshot(fixture.snapshotDir, {
+      capturedAtMs: Date.now() - 15 * 60_000,
+      projectRoot: fixture.projectRoot,
+      sourceSessionId: 'sess-1',
+      jobs: [
+        { jobId: 'test-job-stale', phase: 'running', provider: 'codex', sessionId: 'sess-1' },
+      ],
+    }, 'stale');
+
+    const result = runHook(
+      POST_COMPACT_HOOK,
+      { cwd: fixture.projectRoot },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+    expect(existsSync(staleSnapshotPath)).toBe(false);
+  });
+
+  it('exits silently when no snapshots', () => {
+    const fixture = createFixture();
+
+    const result = runHook(
+      POST_COMPACT_HOOK,
+      { cwd: fixture.projectRoot },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+  });
+});

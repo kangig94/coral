@@ -10,7 +10,7 @@ import type {
   ProviderResult,
   WaitStreamEvent,
 } from '../../types.js';
-import { CORAL_DEFAULT_EFFORT } from '../../shared/schemas.js';
+
 import type { Provider } from '../../providers/types.js';
 import { parseExpression } from '../../workflow/pipe-parser.js';
 import {
@@ -401,7 +401,7 @@ describe('ExecutionService', () => {
       action: 'exec',
       prompt: 'hello',
       bypassPermissions: true,
-      effort: CORAL_DEFAULT_EFFORT,
+
       instruction: {
         content: 'Injected coral content',
         channel: 'system',

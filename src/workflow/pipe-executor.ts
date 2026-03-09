@@ -3,7 +3,6 @@ import { readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { CallerContext, ExecutionService } from '../execution/service.js';
 import type { LaunchDecision, TerminalResult, WaitCursor } from '../types.js';
-import type { EffortLevel } from '../shared/schemas.js';
 import type { PipeAtom, PipelineAST } from './types.js';
 
 export const BOOTSTRAP_TIMEOUT_MS = 2_000;
@@ -13,7 +12,7 @@ const DEFAULT_WAIT_POLL_INTERVAL_MS = 500;
 const MAX_STALE_RECOVERY_RETRIES = 2;
 const STALE_RESUME_PROMPT = 'Your previous execution timed out due to inactivity. Continue where you left off.';
 
-type WorkflowAtoms = Record<string, { effort?: EffortLevel; instruction?: string }>;
+type WorkflowAtoms = Record<string, { instruction?: string }>;
 
 export type StepDetail = {
   stepIndex: number;
@@ -116,12 +115,12 @@ function readAtomConfig(
   stepIndex: number,
   atomName: string,
   rawConfig: unknown,
-): { effort?: EffortLevel; instruction?: string } {
+): { instruction?: string } {
   if (rawConfig == null) return {};
   if (typeof rawConfig !== 'object' || Array.isArray(rawConfig)) {
     throw new Error(`Step ${stepIndex + 1}, atom '${atomName}' atoms config must be an object`);
   }
-  return rawConfig as { effort?: EffortLevel; instruction?: string };
+  return rawConfig as { instruction?: string };
 }
 
 function atomTagName(atom: PipeAtom): string {
@@ -245,7 +244,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
 
   let coralName: string;
   let atomPrompt: string;
-  let config: { effort?: EffortLevel; instruction?: string } = {};
+  let config: { instruction?: string } = {};
 
   if (atom.kind === 'agent') {
     const namespace = atom.namespace ?? 'coral';
@@ -274,7 +273,6 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     {
       prompt: atomPrompt,
       cwd: ctx.projectRoot,
-      effort: config.effort,
     },
     ctx,
   );

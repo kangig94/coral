@@ -23,6 +23,7 @@ export interface CodexExecOptions {
 }
 
 const DEFAULT_MODEL = process.env.CORAL_CODEX_MODEL ?? 'gpt-5.4';
+const DEFAULT_EFFORT = (process.env.CORAL_CODEX_EFFORT ?? process.env.CORAL_EFFORT ?? 'xhigh') as NonNullable<EffortLevel>;
 
 function getModel(_model?: string): string {
   return DEFAULT_MODEL;
@@ -153,9 +154,9 @@ function baseFlags(bypassSandbox: boolean): string[] {
   return flags;
 }
 
-/** Build optional CLI flags for effort. */
+/** Build CLI flags for effort, falling back to DEFAULT_EFFORT. */
 function extraFlags(effort?: EffortLevel): string[] {
-  return effort ? ['-c', `model_reasoning_effort=${effort}`] : [];
+  return ['-c', `model_reasoning_effort=${effort ?? DEFAULT_EFFORT}`];
 }
 
 /** One-shot execution: codex exec -m MODEL --json --full-auto */

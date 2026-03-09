@@ -17,11 +17,7 @@ export const sessionRefSchema = z.string().min(1, 'Session reference is required
 
 export const cwdSchema = z.string().optional();
 
-export const effortSchema = z.enum(['low', 'medium', 'high', 'xhigh']).optional();
-
-export type EffortLevel = z.infer<typeof effortSchema>;
-
-export const CORAL_DEFAULT_EFFORT = 'xhigh' as const;
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh';
 
 export const coralOpSchema = z
   .string()
@@ -46,7 +42,6 @@ export const sharedExecSchema = z.object({
   session: sessionRefSchema.optional(),
   work_dir: cwdSchema,
   model: modelSchema,
-  effort: effortSchema,
   bypass_permissions: z.boolean().optional(),
   system_prompt: z.string().optional(),
 });
@@ -60,7 +55,6 @@ export const sharedResumeSchema = z.object({
   prompt: promptSchema,
   work_dir: cwdSchema,
   model: modelSchema,
-  effort: effortSchema,
   bypass_permissions: z.boolean().optional(),
   system_prompt: z.string().optional(),
 });
@@ -74,7 +68,6 @@ export const sharedForkSchema = z.object({
   prompt: z.string().optional(),
   work_dir: cwdSchema,
   model: modelSchema,
-  effort: effortSchema,
   bypass_permissions: z.boolean().optional(),
   system_prompt: z.string().optional(),
 });

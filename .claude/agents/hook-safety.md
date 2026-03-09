@@ -165,7 +165,7 @@ disallowedTools: Write, Edit
     | `hooks/hud-auto-update.mjs` | SessionStart HUD auto-update hook |
     | `hooks/kb-lookup-reminder.mjs` | PostToolUseFailure hook — KB directory scan |
     | `hooks/kb-memo-reminder.mjs` | PreToolUse hook — memo reminder |
-    | `hooks/kb-promote-reminder.mjs` | Stop/PreCompact hook — KB promotion reminder |
+    | `hooks/kb-promote-gate.mjs` | Stop/PreCompact hook — KB promotion reminder |
     | `hooks/hooks.json` | Hook configuration — matchers, timeouts, command paths |
     | `docs/hooks.md` | Hook behavior documentation |
   </Tool_Usage>

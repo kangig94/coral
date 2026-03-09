@@ -13,7 +13,7 @@ import type {
 } from '../types.js';
 import { resolveCoralContent, stripAgentMetadata, parseAgentMeta } from '../coral/resolver.js';
 import { getNewProvider } from '../providers/registry.js';
-import { CORAL_DEFAULT_EFFORT, type EffortLevel } from '../shared/schemas.js';
+import type { EffortLevel } from '../shared/schemas.js';
 import type { Provider, ProviderRuntime } from '../providers/types.js';
 import {
   executePipeline,
@@ -48,6 +48,7 @@ export interface ExecInput {
   name?: string;
   model?: string;
   cwd?: string;
+  /** Set only by coralDispatch (agent metadata). MCP input never populates this. */
   effort?: string;
   bypassPermissions?: boolean;
   systemPrompt?: string;
@@ -60,6 +61,7 @@ export interface ResumeInput {
   name?: string;
   model?: string;
   cwd?: string;
+  /** Set only by coralDispatch (agent metadata). MCP input never populates this. */
   effort?: string;
   bypassPermissions?: boolean;
   systemPrompt?: string;
@@ -72,6 +74,7 @@ export interface ForkInput {
   prompt?: string;
   model?: string;
   cwd?: string;
+  /** Set only by coralDispatch (agent metadata). MCP input never populates this. */
   effort?: string;
   bypassPermissions?: boolean;
   systemPrompt?: string;
@@ -357,7 +360,7 @@ export class ExecutionService {
     const instruction = buildCoralInstruction(stripped);
 
     const model = meta.model;
-    const effort = input.effort ?? CORAL_DEFAULT_EFFORT;
+    const effort = input.effort;
     const cwd = input.cwd ?? ctx.projectRoot;
 
     if (input.sessionId) {

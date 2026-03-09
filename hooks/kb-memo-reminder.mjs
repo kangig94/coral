@@ -2,14 +2,14 @@
 
 /**
  * UserPromptSubmit hook — reminds Claude to write memos for non-obvious discoveries.
- * Throttled: once per 15 minutes per session via flag file mtime check.
+ * Throttled: once per 30 minutes per session via flag file mtime check.
  * Fail-open: any error exits silently.
  */
 
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const THROTTLE_MIN = 15;
+const THROTTLE_MIN = 30;
 const FLAG_PREFIX = 'memo-reminded-';
 
 try {

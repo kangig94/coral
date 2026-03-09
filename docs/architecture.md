@@ -468,7 +468,7 @@ coral/
 │   ├── kb-lookup-reminder.mjs   # PostToolUseFailure KB hint
 │   ├── silent-failure-detector.mjs # PostToolUse silent-failure detector
 │   ├── kb-memo-reminder.mjs     # PreToolUse memo hint
-│   ├── kb-promote-reminder.mjs  # Stop/Compact promotion hint
+│   ├── kb-promote-gate.mjs  # Stop/Compact promotion hint
 │   ├── discuss-idle-guard.mjs   # TeammateIdle bid/speak/vote enforcer
 │   └── hud-auto-update.mjs     # SessionStart HUD auto-update
 ├── scripts/

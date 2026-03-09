@@ -15,7 +15,6 @@ describe('Phase 1 shared schemas', () => {
       session: 'session-1',
       work_dir: '/tmp/work',
       model: 'o4-mini',
-      effort: 'high',
       bypass_permissions: true,
       system_prompt: 'Follow the policy',
     });
@@ -26,7 +25,6 @@ describe('Phase 1 shared schemas', () => {
       session: 'session-1',
       work_dir: '/tmp/work',
       model: 'o4-mini',
-      effort: 'high',
       bypass_permissions: true,
       system_prompt: 'Follow the policy',
     });
