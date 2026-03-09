@@ -1,16 +1,15 @@
 import type { ProviderProgressEvent, ProviderRequest, ProviderResult } from '../types.js';
 
 /** Build an onEvent callback that parses JSON lines and emits ProviderProgressEvents. */
-export function makeOnEvent(
+export function makeOnEvent<TEvent>(
   runtime: ProviderRuntime,
   jobId: string,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  extractor: (event: any, projectRoot?: string) => string | null,
+  extractor: (event: TEvent, projectRoot?: string) => string | null,
   projectRoot?: string,
 ): (line: string) => void {
   return (line: string) => {
     try {
-      const event: unknown = JSON.parse(line);
+      const event = JSON.parse(line) as TEvent;
       const message = extractor(event, projectRoot);
       if (!message) return;
       const progressEvent: ProviderProgressEvent = { jobId, message, ts: new Date().toISOString() };

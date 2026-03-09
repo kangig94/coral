@@ -30,6 +30,13 @@ export const providerNameSchema = z
   .string()
   .regex(providerIdentPattern, 'Provider name must be lowercase letters, digits, or hyphens');
 
+const sharedProviderFieldsShape = {
+  work_dir: cwdSchema,
+  model: modelSchema,
+  bypass_permissions: z.boolean().optional(),
+  system_prompt: z.string().optional(),
+};
+
 // ── Provider-neutral op schemas (Phase 1 additions) ──────────────────────────
 
 /**
@@ -40,10 +47,7 @@ export const sharedExecSchema = z.object({
   op: z.literal('exec'),
   prompt: promptSchema,
   session: sessionRefSchema.optional(),
-  work_dir: cwdSchema,
-  model: modelSchema,
-  bypass_permissions: z.boolean().optional(),
-  system_prompt: z.string().optional(),
+  ...sharedProviderFieldsShape,
 });
 
 /**
@@ -53,10 +57,7 @@ export const sharedResumeSchema = z.object({
   op: z.literal('resume'),
   session: sessionRefSchema,
   prompt: promptSchema,
-  work_dir: cwdSchema,
-  model: modelSchema,
-  bypass_permissions: z.boolean().optional(),
-  system_prompt: z.string().optional(),
+  ...sharedProviderFieldsShape,
 });
 
 /**
@@ -66,10 +67,7 @@ export const sharedForkSchema = z.object({
   op: z.literal('fork'),
   session: sessionRefSchema,
   prompt: z.string().optional(),
-  work_dir: cwdSchema,
-  model: modelSchema,
-  bypass_permissions: z.boolean().optional(),
-  system_prompt: z.string().optional(),
+  ...sharedProviderFieldsShape,
 });
 
 /**

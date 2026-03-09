@@ -101,24 +101,35 @@ function isShuttingDownError(value: unknown): value is { error: 'backend_shuttin
   return isRecord(value) && value.error === 'backend_shutting_down';
 }
 
-async function fetchBackendHealth(info: BackendInfo): Promise<BackendHealth | null> {
+async function withAbortTimeout<T>(
+  timeoutMs: number,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(`http://127.0.0.1:${info.port}/health`, {
-      method: 'GET',
-      headers: { 'X-Coral-Backend-Token': info.token },
-      signal: controller.signal,
-    });
-    if (!response.ok) return null;
-
-    const body: unknown = await response.json();
-    return isBackendHealth(body) ? body : null;
-  } catch {
-    return null;
+    return await run(controller.signal);
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+async function fetchBackendHealth(info: BackendInfo): Promise<BackendHealth | null> {
+  try {
+    return await withAbortTimeout(HEALTH_TIMEOUT_MS, async (signal) => {
+      const response = await fetch(`http://127.0.0.1:${info.port}/health`, {
+        method: 'GET',
+        headers: { 'X-Coral-Backend-Token': info.token },
+        signal,
+      });
+      if (!response.ok) return null;
+
+      const body: unknown = await response.json();
+      return isBackendHealth(body) ? body : null;
+    });
+  } catch {
+    return null;
   }
 }
 
@@ -131,19 +142,14 @@ async function readHealthyBackendInfo(info = readBackendInfo()): Promise<Backend
 }
 
 async function requestBackendShutdown(info: BackendInfo): Promise<void> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
-
   try {
-    await fetch(`http://127.0.0.1:${info.port}/admin/shutdown`, {
+    await withAbortTimeout(HEALTH_TIMEOUT_MS, (signal) => fetch(`http://127.0.0.1:${info.port}/admin/shutdown`, {
       method: 'POST',
       headers: { 'X-Coral-Backend-Token': info.token },
-      signal: controller.signal,
-    });
+      signal,
+    }));
   } catch {
     /* best effort */
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
@@ -151,17 +157,19 @@ export async function getBackendStatus(): Promise<BackendStatus | null> {
   const info = readBackendInfo();
   if (!info || !isProcessAlive(info.pid)) return null;
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
-
   try {
-    const response = await fetch(`http://127.0.0.1:${info.port}/health`, {
-      method: 'GET',
-      headers: { 'X-Coral-Backend-Token': info.token },
-      signal: controller.signal,
-    });
+    const { body, response } = await withAbortTimeout(HEALTH_TIMEOUT_MS, async (signal) => {
+      const response = await fetch(`http://127.0.0.1:${info.port}/health`, {
+        method: 'GET',
+        headers: { 'X-Coral-Backend-Token': info.token },
+        signal,
+      });
 
-    const body = await parseJsonResponse(response);
+      return {
+        response,
+        body: await parseJsonResponse(response),
+      };
+    });
     if (response.status === 200) {
       return isBackendStatus(body) ? body : null;
     }
@@ -172,8 +180,6 @@ export async function getBackendStatus(): Promise<BackendStatus | null> {
     return null;
   } catch {
     return null;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
@@ -183,17 +189,19 @@ export async function shutdownBackend(): Promise<ShutdownResult> {
     return { ok: false, reason: 'not_running' };
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
-
   try {
-    const response = await fetch(`http://127.0.0.1:${info.port}/admin/shutdown`, {
-      method: 'POST',
-      headers: { 'X-Coral-Backend-Token': info.token },
-      signal: controller.signal,
-    });
+    const { body, response } = await withAbortTimeout(HEALTH_TIMEOUT_MS, async (signal) => {
+      const response = await fetch(`http://127.0.0.1:${info.port}/admin/shutdown`, {
+        method: 'POST',
+        headers: { 'X-Coral-Backend-Token': info.token },
+        signal,
+      });
 
-    const body = await parseJsonResponse(response);
+      return {
+        response,
+        body: await parseJsonResponse(response),
+      };
+    });
     if (response.status === 200 && isRecord(body) && body.status === 'shutting_down') {
       return { ok: true };
     }
@@ -206,8 +214,6 @@ export async function shutdownBackend(): Promise<ShutdownResult> {
     return { ok: false, reason: `${response.status} ${response.statusText}` };
   } catch {
     return { ok: false, reason: 'not_running' };
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
@@ -442,30 +448,28 @@ export async function proxyToolCall(
       pluginRoot: ctx.pluginRoot,
     },
   });
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), TOOL_TIMEOUT_MS);
 
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/tool`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Coral-Backend-Token': token,
-      },
-      body,
-      signal: controller.signal,
+    return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
+      const response = await fetch(`http://127.0.0.1:${port}/tool`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Coral-Backend-Token': token,
+        },
+        body,
+        signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(describeHttpError(response.status, response.statusText));
+      }
+
+      return parseJsonResponse(response);
     });
-
-    if (!response.ok) {
-      throw new Error(describeHttpError(response.status, response.statusText));
-    }
-
-    return await parseJsonResponse(response);
   } catch (error) {
     if (error instanceof Error) throw error;
     throw new Error(`Backend communication error: ${String(error)}`);
-  } finally {
-    clearTimeout(timeout);
   }
 }
 

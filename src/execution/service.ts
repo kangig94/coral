@@ -4,6 +4,7 @@ import type {
   JobPhase,
   LaunchDecision,
   LaunchState,
+  PersistedStatusRecord,
   ProviderInstruction,
   ProviderProgressEvent,
   ProviderRequest,
@@ -102,6 +103,14 @@ type ClaimJobOptions = {
   initialPhase?: Extract<JobPhase, 'queued' | 'launching'>;
   jobKind?: JobKind;
 };
+
+function isTerminalPhase(phase: JobPhase): phase is Extract<JobPhase, 'completed' | 'error' | 'aborted'> {
+  return phase === 'completed' || phase === 'error' || phase === 'aborted';
+}
+
+function canAdvanceLaunchState(status: PersistedStatusRecord | null): status is PersistedStatusRecord {
+  return status !== null && !isTerminalPhase(status.phase) && status.launch.state !== 'ready';
+}
 
 function rejectLaunch(code: string, message: string): LaunchDecision {
   return {
@@ -204,24 +213,6 @@ export class ExecutionService {
     }
   }
 
-  private async claimSessionFreshness(sessionId: string, jobId: string, expectedVersion: number): Promise<void> {
-    const claimed = await this.sessionManager.claimForJobAtomic(sessionId, jobId, expectedVersion);
-    if (!claimed) {
-      throw new SessionClaimError();
-    }
-  }
-
-  private rollbackAdmission(jobId: string, admission: AcceptedAdmission): void {
-    if (admission.type === 'queued') {
-      const waitForPermit = admission.waitForPermit();
-      admission.cancel();
-      void waitForPermit.catch(() => {});
-      return;
-    }
-
-    releaseLaunch(jobId);
-  }
-
   private async claimAndAdmitJob(
     session: SessionEntry,
     providerName: string,
@@ -240,7 +231,14 @@ export class ExecutionService {
     try {
       await this.claimJobAtomic(session, jobId, providerName, projectRoot, { expectedVersion, initialPhase });
     } catch (error: unknown) {
-      this.rollbackAdmission(jobId, admission);
+      if (admission.type === 'queued') {
+        const waitForPermit = admission.waitForPermit();
+        admission.cancel();
+        void waitForPermit.catch(() => {});
+      } else {
+        releaseLaunch(jobId);
+      }
+
       if (error instanceof SessionClaimError) {
         return rejectLaunch('session_busy', sessionBusyMessage);
       }
@@ -259,14 +257,13 @@ export class ExecutionService {
   ): LaunchDecision {
     this.abortRegistry.register(jobId);
 
+    const decisionStatus = admission.type === 'queued' ? 'queued' : 'running';
     if (admission.type === 'queued') {
       this.markJobQueued(jobId, sessionId, admission.queuePosition);
-      this.runAsync(provider, sessionId, jobId, request, admission);
-      return { status: 'queued', job: jobId, session: sessionId };
     }
 
     this.runAsync(provider, sessionId, jobId, request, admission);
-    return { status: 'running', job: jobId, session: sessionId };
+    return { status: decisionStatus, job: jobId, session: sessionId };
   }
 
   async start(providerName: string, input: ExecInput, ctx: CallerContext): Promise<LaunchDecision> {
@@ -316,6 +313,7 @@ export class ExecutionService {
     const provider = getNewProvider(providerName);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
+    const busyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
     const session = this.sessionManager.get(providerName, input.sessionId);
     if (!session) return rejectLaunch(
       'session_not_found',
@@ -328,10 +326,7 @@ export class ExecutionService {
       );
     }
     if (session.activeJobId) {
-      return rejectLaunch(
-        'session_busy',
-        `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`,
-      );
+      return rejectLaunch('session_busy', busyMessage);
     }
     const expectedVersion = session.version;
 
@@ -342,7 +337,7 @@ export class ExecutionService {
       session,
       providerName,
       ctx.projectRoot,
-      `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`,
+      busyMessage,
       expectedVersion,
     );
     if ('status' in admitted) return admitted;
@@ -373,32 +368,28 @@ export class ExecutionService {
     const provider = getNewProvider(providerName);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
+    const sourceBusyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
     const sourceSession = this.sessionManager.get(providerName, input.sessionId);
     if (!sourceSession) return rejectLaunch(
       'session_not_found',
       `Session not found: ${input.sessionId}. Use exec to start a new session.`,
     );
     if (sourceSession.activeJobId) {
-      return rejectLaunch(
-        'session_busy',
-        `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`,
-      );
+      return rejectLaunch('session_busy', sourceBusyMessage);
     }
     const sourceExpectedVersion = sourceSession.version;
 
     const preflightError = await runProviderPreflight(provider);
     if (preflightError) return rejectLaunch('preflight_failed', preflightError);
 
-    const sourceBusyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
     const sourceClaimId = randomUUID();
-
-    try {
-      await this.claimSessionFreshness(sourceSession.sessionId, sourceClaimId, sourceExpectedVersion);
-    } catch (error: unknown) {
-      if (error instanceof SessionClaimError) {
-        return rejectLaunch('session_busy', sourceBusyMessage);
-      }
-      throw error;
+    const sourceClaimed = await this.sessionManager.claimForJobAtomic(
+      sourceSession.sessionId,
+      sourceClaimId,
+      sourceExpectedVersion,
+    );
+    if (!sourceClaimed) {
+      return rejectLaunch('session_busy', sourceBusyMessage);
     }
 
     try {
@@ -642,11 +633,7 @@ export class ExecutionService {
         if (
           pending.has(jobId)
           && currentStatus
-          && (
-            currentStatus.phase === 'completed'
-            || currentStatus.phase === 'error'
-            || currentStatus.phase === 'aborted'
-          )
+          && isTerminalPhase(currentStatus.phase)
         ) {
           const remainingJobIds = jobIds.filter((id) => id !== jobId && pending.has(id));
           yield {
@@ -688,13 +675,7 @@ export class ExecutionService {
 
     const onEvent = (event: ProviderProgressEvent): void => {
       const currentStatus = this.progressStore.readStatus(jobId);
-      if (
-        currentStatus
-        && currentStatus.phase !== 'completed'
-        && currentStatus.phase !== 'error'
-        && currentStatus.phase !== 'aborted'
-        && currentStatus.launch.state !== 'ready'
-      ) {
+      if (canAdvanceLaunchState(currentStatus)) {
         this.markJobRunning(jobId);
       }
       this.progressStore.appendProgress(jobId, sessionId, event.message);
@@ -720,14 +701,7 @@ export class ExecutionService {
         const runtime: ProviderRuntime = { signal, onEvent };
         const result = await provider.execute(request, runtime);
 
-        const currentStatus = this.progressStore.readStatus(jobId);
-        if (
-          currentStatus
-          && currentStatus.phase !== 'completed'
-          && currentStatus.phase !== 'error'
-          && currentStatus.phase !== 'aborted'
-          && currentStatus.launch.state !== 'ready'
-        ) {
+        if (canAdvanceLaunchState(this.progressStore.readStatus(jobId))) {
           this.markJobReady(jobId);
         }
 
@@ -756,7 +730,7 @@ export class ExecutionService {
         this.sessionManager.releaseJob(sessionId, jobId);
       } catch (err: unknown) {
         const currentStatus = this.progressStore.readStatus(jobId);
-        if (!currentStatus || currentStatus.phase === 'completed' || currentStatus.phase === 'error' || currentStatus.phase === 'aborted') {
+        if (!currentStatus || isTerminalPhase(currentStatus.phase)) {
           return;
         }
 

@@ -54,8 +54,8 @@ export function readBundleHash(pluginRoot: string): string {
   try {
     const raw = readFileSync(join(pluginRoot, 'bridge', 'manifest.json'), 'utf-8');
     const parsed: unknown = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object' && typeof (parsed as Record<string, unknown>).bundleHash === 'string') {
-      cachedBundleHash = (parsed as Record<string, unknown>).bundleHash as string;
+    if (isRecord(parsed) && typeof parsed.bundleHash === 'string') {
+      cachedBundleHash = parsed.bundleHash;
       return cachedBundleHash;
     }
   } catch { /* fall through */ }

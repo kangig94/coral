@@ -509,7 +509,6 @@ describe('launchAtomWithRetry', () => {
       executionSvc,
       ctx,
       atoms: { architect: { instruction: 'focus on security' } },
-      onProgress: vi.fn(),
       completedStepDetails: [],
     });
 
@@ -551,7 +550,6 @@ describe('launchAtomWithRetry', () => {
       defaultProviderName: 'codex',
       executionSvc,
       ctx,
-      onProgress: vi.fn(),
       completedStepDetails: [],
     });
 
@@ -585,7 +583,6 @@ describe('launchAtomWithRetry', () => {
       defaultProviderName: 'codex',
       executionSvc,
       ctx,
-      onProgress: vi.fn(),
       completedStepDetails: [],
     })).rejects.toThrow("Step 1, atom 'architect' launch failed: Unknown provider: ghost");
   });
@@ -602,7 +599,6 @@ describe('launchAtomWithRetry', () => {
       defaultProviderName: 'codex',
       executionSvc,
       ctx,
-      onProgress: vi.fn(),
       completedStepDetails: [],
     })).rejects.toThrow('unsupported namespace "custom-ns"');
 

@@ -99,7 +99,14 @@ function baseClaudeResult(overrides: Partial<{
   durationMs: number;
   costUsd: number | null;
   aborted: boolean;
-}> = {}) {
+}> = {}): {
+  response: string;
+  sessionId: string | null;
+  model: string;
+  durationMs: number;
+  costUsd: number | null;
+  aborted: boolean;
+} {
   return {
     response: 'ok',
     sessionId: 'claude-thread',
@@ -108,8 +115,7 @@ function baseClaudeResult(overrides: Partial<{
     costUsd: 0,
     aborted: false,
     ...overrides,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any;
+  };
 }
 
 // Global setup for adversarial describes below. The describe-level beforeEach in the

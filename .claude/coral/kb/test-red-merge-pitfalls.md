@@ -1,10 +1,11 @@
 # Red Test Merge Pitfalls
+Promoted: 2026-03-09 | Updated: 2026-03-09
 
 ## Rule
-When merging red-attacker tests into existing test files, three patterns cause failures that only surface at build time (not `npm test`): (1) existing tests using `toEqual` on exact error messages that now include recovery hints must be updated to `toMatchObject` + `toContain`; (2) `vi.spyOn().mockImplementation((typed: string) => ...)` fails tsc because `mockImplementation` expects `(...args: unknown[]) => void` — use `(...args: unknown[]) => { const x = args[0] as string; ... }`; (3) `ClaudeExecResult.costUsd` is typed `number` (not nullable) so test helpers simulating null must cast with `as any`.
+When merging red-attacker tests into existing files, the build-only failures that still matter are exact string assertions against expanded recovery messages and overly specific Vitest mock callback parameter types. Do not rely on the older `ClaudeExecResult.costUsd` non-nullability workaround; that contract is now nullable and no longer requires `as any`.
 
 ## Why
-Vitest uses esbuild (no type-checking), so red tests pass `npm test` even with type errors. `tsc` in the build catches them. Recovery hint strings appended to rejection messages break existing exact-equality assertions silently — `toEqual` compares the full string.
+Vitest uses esbuild and skips full type-checking, so these mistakes can pass `npm test` and fail later under `tsc`. Exact `toEqual` assertions also break silently once rejection messages gain recovery-hint suffixes.
 
 ## Pattern
 ```typescript
@@ -25,10 +26,4 @@ vi.spyOn(store, 'readStatus').mockImplementation((...args: unknown[]) => {
   const jobId = args[0] as string;
   ...
 });
-
-// WRONG — ClaudeExecResult.costUsd is number, not number|null
-mockExecuteClaudeOneShot.mockResolvedValueOnce({ costUsd: null });
-
-// RIGHT — cast to bypass non-nullable type
-mockExecuteClaudeOneShot.mockResolvedValueOnce({ ...baseResult(), costUsd: null } as any);
 ```

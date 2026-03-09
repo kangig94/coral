@@ -58,25 +58,24 @@ function createCliDetector(config: CliDetectorConfig): {
     cachedCli = cli;
     if (!cli.available) return cli;
 
+    const availableCli = { available: true as const, version: cli.version };
     const auth = await queryAuthState();
-    if (auth.authState === 'authenticated') {
-      confirmedAuth = true;
-      cachedCli = { available: true, version: cli.version, authState: 'authenticated' };
-      return cachedCli;
+    switch (auth.authState) {
+      case 'authenticated':
+        confirmedAuth = true;
+        cachedCli = { ...availableCli, authState: 'authenticated' };
+        return cachedCli;
+      case 'unauthenticated':
+        cachedCli = {
+          ...availableCli,
+          authState: 'unauthenticated',
+          authError: auth.authError,
+        };
+        return cachedCli;
+      case 'unknown':
+        cachedCli = { ...availableCli, authState: 'unknown' };
+        return cachedCli;
     }
-
-    if (auth.authState === 'unauthenticated') {
-      cachedCli = {
-        available: true,
-        version: cli.version,
-        authState: 'unauthenticated',
-        authError: auth.authError,
-      };
-      return cachedCli;
-    }
-
-    cachedCli = { available: true, version: cli.version, authState: 'unknown' };
-    return cachedCli;
   }
 
   function queryCliVersion(): Promise<CliInfo> {
