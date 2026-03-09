@@ -20,12 +20,7 @@ async function preflight(): Promise<void> {
   lastValidatedCli = cli;
 }
 
-/**
- * Build the final prompt for Codex by prepending any instruction/systemPrompt.
- * Both channels map to prompt prepend (Codex has no system prompt flag).
- * For exec, executeOneShot will additionally wrap the result with CLAUDE.md.
- */
-function mapResult(result: CodexRawResult, fallbackConversationRef?: string): ProviderResult {
+function toProviderResult(result: CodexRawResult, fallbackConversationRef?: string): ProviderResult {
   return {
     ...mapProviderResultBase(result),
     conversationRef: result.sessionId ?? fallbackConversationRef,
@@ -36,6 +31,11 @@ function mapResult(result: CodexRawResult, fallbackConversationRef?: string): Pr
   };
 }
 
+/**
+ * Build the final prompt for Codex by prepending any instruction/systemPrompt.
+ * Both channels map to prompt prepend (Codex has no system prompt flag).
+ * For exec, executeOneShot will additionally wrap the result with CLAUDE.md.
+ */
 function buildPrompt(request: ProviderRequest): string {
   const parts: string[] = [];
   if (request.instruction) parts.push(request.instruction.content);
@@ -44,49 +44,39 @@ function buildPrompt(request: ProviderRequest): string {
   return parts.join('\n\n---\n\n');
 }
 
+function requireConversationRef(request: ProviderRequest, action: 'resume' | 'fork'): string {
+  if (!request.conversationRef) throw new Error(`${action} requires conversationRef`);
+  return request.conversationRef;
+}
+
 async function execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult> {
   const prompt = buildPrompt(request);
   const effort = request.effort as EffortLevel | undefined;
+  const options = {
+    model: request.model,
+    workingDirectory: request.cwd,
+    effort,
+    bypassSandbox: request.bypassPermissions,
+    onEvent: makeOnEvent(runtime, request.sessionId, extractProgressMessage, request.cwd),
+    signal: runtime.signal,
+    preChecked: lastValidatedCli!,
+  };
 
   switch (request.action) {
     case 'exec': {
       // executeOneShot internally prepends CLAUDE.md to the prompt
-      const result = await executeOneShot(prompt, {
-        model: request.model,
-        workingDirectory: request.cwd,
-        effort,
-        bypassSandbox: request.bypassPermissions,
-        onEvent: makeOnEvent(runtime, request.sessionId, extractProgressMessage, request.cwd),
-        signal: runtime.signal,
-        preChecked: lastValidatedCli!,
-      });
-      return mapResult(result);
+      const result = await executeOneShot(prompt, options);
+      return toProviderResult(result);
     }
     case 'resume': {
-      if (!request.conversationRef) throw new Error('resume requires conversationRef');
-      const result = await executeResume(request.conversationRef, prompt, {
-        model: request.model,
-        workingDirectory: request.cwd,
-        effort,
-        bypassSandbox: request.bypassPermissions,
-        onEvent: makeOnEvent(runtime, request.sessionId, extractProgressMessage, request.cwd),
-        signal: runtime.signal,
-        preChecked: lastValidatedCli!,
-      });
-      return mapResult(result, request.conversationRef);
+      const conversationRef = requireConversationRef(request, 'resume');
+      const result = await executeResume(conversationRef, prompt, options);
+      return toProviderResult(result, conversationRef);
     }
     case 'fork': {
-      if (!request.conversationRef) throw new Error('fork requires conversationRef');
-      const result = await executeFork(request.conversationRef, prompt, {
-        model: request.model,
-        workingDirectory: request.cwd,
-        effort,
-        bypassSandbox: request.bypassPermissions,
-        onEvent: makeOnEvent(runtime, request.sessionId, extractProgressMessage, request.cwd),
-        signal: runtime.signal,
-        preChecked: lastValidatedCli!,
-      });
-      return mapResult(result);
+      const conversationRef = requireConversationRef(request, 'fork');
+      const result = await executeFork(conversationRef, prompt, options);
+      return toProviderResult(result);
     }
   }
 

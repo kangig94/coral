@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { CodexExecResult } from './types.js';
-import { spawnCli, activeChildren, killAllChildren as killAllRunnerChildren } from '../../execution/engine.js';
+import { spawnCli, killAllChildren as killAllRunnerChildren } from '../../execution/engine.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 import { parseCodexJsonl } from './output-parser.js';
 import type { CliInfo } from '../cli-detection.js';
@@ -25,7 +25,7 @@ export interface CodexExecOptions {
 const DEFAULT_MODEL = process.env.CORAL_CODEX_MODEL ?? 'gpt-5.4';
 const DEFAULT_EFFORT = (process.env.CORAL_CODEX_EFFORT ?? process.env.CORAL_EFFORT ?? 'xhigh') as NonNullable<EffortLevel>;
 
-function getModel(_model?: string): string {
+function getDefaultModel(): string {
   return DEFAULT_MODEL;
 }
 
@@ -56,17 +56,13 @@ function ensureMultiAgent(): void {
     if (!existsSync(configPath)) {
       mkdirSync(codexDir, { recursive: true });
       writeFileSync(configPath, MULTI_AGENT_CONFIG);
-      multiAgentEnsured = true;
-      return;
+    } else {
+      const content = readFileSync(configPath, 'utf8');
+      if (!/multi_agent\s*=\s*true/.test(content)) {
+        writeFileSync(configPath, withMultiAgentEnabled(content));
+      }
     }
 
-    const content = readFileSync(configPath, 'utf8');
-    if (/multi_agent\s*=\s*true/.test(content)) {
-      multiAgentEnsured = true;
-      return;
-    }
-
-    writeFileSync(configPath, withMultiAgentEnabled(content));
     multiAgentEnsured = true;
   } catch {
     // Fail-open parity with hook: do not throw, allow retry on next exec call.
@@ -157,8 +153,8 @@ function baseFlags(bypassSandbox: boolean): string[] {
   return flags;
 }
 
-/** Build CLI flags for effort, falling back to DEFAULT_EFFORT. */
-function extraFlags(effort?: EffortLevel): string[] {
+/** Build CLI flags for reasoning effort, falling back to DEFAULT_EFFORT. */
+function reasoningEffortFlags(effort?: EffortLevel): string[] {
   return ['-c', `model_reasoning_effort=${effort ?? DEFAULT_EFFORT}`];
 }
 
@@ -167,9 +163,9 @@ export async function executeOneShot(
   prompt: string,
   opts: CodexExecOptions,
 ): Promise<CodexExecResult> {
-  const resolvedModel = getModel(opts.model);
+  const resolvedModel = getDefaultModel();
   return executeCodex(
-    ['exec', '-m', resolvedModel, ...baseFlags(opts.bypassSandbox ?? false), ...extraFlags(opts.effort)],
+    ['exec', '-m', resolvedModel, ...baseFlags(opts.bypassSandbox ?? false), ...reasoningEffortFlags(opts.effort)],
     prependClaudeMd(prompt),
     resolvedModel,
     opts,
@@ -182,9 +178,9 @@ export async function executeResume(
   prompt: string,
   opts: CodexExecOptions,
 ): Promise<CodexExecResult> {
-  const resolvedModel = getModel(opts.model);
+  const resolvedModel = getDefaultModel();
   return executeCodex(
-    ['exec', 'resume', threadId, '-m', resolvedModel, ...baseFlags(opts.bypassSandbox ?? false), ...extraFlags(opts.effort)],
+    ['exec', 'resume', threadId, '-m', resolvedModel, ...baseFlags(opts.bypassSandbox ?? false), ...reasoningEffortFlags(opts.effort)],
     prompt,
     resolvedModel,
     opts,

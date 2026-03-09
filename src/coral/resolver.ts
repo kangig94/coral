@@ -3,7 +3,7 @@ import { join, resolve, sep } from 'node:path';
 import { isNoEntryError } from '../shared/mcp-utils.js';
 
 declare const __PLUGIN_ROOT__: string;
-let pluginRoot = typeof __PLUGIN_ROOT__ === 'string'
+const pluginRoot = typeof __PLUGIN_ROOT__ === 'string'
   ? __PLUGIN_ROOT__
   : join(__dirname, '..');
 

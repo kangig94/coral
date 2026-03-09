@@ -211,16 +211,6 @@ function runOnResponseDone(res: ServerResponse, fn: () => void): void {
   res.once('close', run);
 }
 
-function trackRequest(idleTimer: IdleTimer, res: ServerResponse): void {
-  runOnResponseDone(res, () => {
-    idleTimer.endRequest();
-  });
-}
-
-function runAfterResponse(res: ServerResponse, fn: () => void): void {
-  runOnResponseDone(res, fn);
-}
-
 function closeServer(server: Server): Promise<void> {
   return new Promise((resolve, reject) => {
     if (!server.listening) {
@@ -837,15 +827,15 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       return;
     }
 
+    idleTimer.beginRequest();
+    runOnResponseDone(res, () => {
+      idleTimer.endRequest();
+    });
+
     if (req.method === 'POST' && req.url === '/wait/stream') {
-      idleTimer.beginRequest();
-      trackRequest(idleTimer, res);
       await handleWaitStream(req, res);
       return;
     }
-
-    idleTimer.beginRequest();
-    trackRequest(idleTimer, res);
 
     if (req.method === 'GET' && req.url === '/health') {
       sendJson(res, 200, {
@@ -890,7 +880,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
 
     if (req.method === 'POST' && req.url === '/admin/shutdown') {
       req.resume();
-      runAfterResponse(res, () => {
+      runOnResponseDone(res, () => {
         void shutdown('admin').catch(() => {});
       });
       sendJson(res, 200, { status: 'shutting_down' });

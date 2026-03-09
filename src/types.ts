@@ -39,6 +39,13 @@ export interface ProviderInstruction {
   channel: 'prompt' | 'system';
 }
 
+export interface UsageSummary {
+  inputTokens?: number;
+  outputTokens?: number;
+  /** costUsd restructures the flat cost_usd / costUsd fields from current Claude results. */
+  costUsd?: number;
+}
+
 /** Request from the Execution Service to a Provider adapter. */
 export interface ProviderRequest {
   action: ProviderAction;
@@ -73,8 +80,7 @@ export interface ProviderResult {
   notice?: string;
   errors?: unknown[];
   warnings?: string[];
-  /** costUsd restructures the flat cost_usd / costUsd fields from current Claude results. */
-  usage?: { inputTokens?: number; outputTokens?: number; costUsd?: number };
+  usage?: UsageSummary;
 }
 
 /**
@@ -111,7 +117,7 @@ export interface TerminalResult {
   notice?: string;
   errors?: unknown[];
   warnings?: string[];
-  usage?: { inputTokens?: number; outputTokens?: number; costUsd?: number };
+  usage?: UsageSummary;
   workflow?: WorkflowResultMeta;
 }
 

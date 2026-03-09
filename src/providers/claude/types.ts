@@ -3,7 +3,7 @@ export type ClaudeExecResult = {
   sessionId: string | null;
   model: string;
   durationMs: number;
-  costUsd: number;
+  costUsd: number | null;
   aborted: boolean;
 };
 

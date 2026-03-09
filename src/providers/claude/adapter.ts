@@ -79,62 +79,39 @@ function parseError(error: unknown, fallbackModel: string): ProviderResult {
   throw error;
 }
 
+function requireConversationRef(request: ProviderRequest, action: 'resume' | 'fork'): string {
+  if (!request.conversationRef) throw new Error(`${action} requires conversationRef`);
+  return request.conversationRef;
+}
+
 async function execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult> {
   const { prompt, systemPrompt } = buildClaudeArgs(request);
   const effort = request.effort as EffortLevel | undefined;
-  const onEvent = makeOnEvent(runtime, request.sessionId, extractClaudeProgressMessage, request.cwd);
+  const options = {
+    model: request.model,
+    workingDirectory: request.cwd,
+    systemPrompt,
+    effort,
+    bypassPermissions: request.bypassPermissions,
+    signal: runtime.signal,
+    onEvent: makeOnEvent(runtime, request.sessionId, extractClaudeProgressMessage, request.cwd),
+  };
 
-  switch (request.action) {
-    case 'exec': {
-      try {
-        const result = await executeClaudeOneShot(prompt, {
-          model: request.model,
-          workingDirectory: request.cwd,
-          systemPrompt,
-          effort,
-          bypassPermissions: request.bypassPermissions,
-          signal: runtime.signal,
-          onEvent,
-        });
-        return mapResult(result);
-      } catch (error) {
-        return parseError(error, request.model ?? 'unknown');
+  try {
+    switch (request.action) {
+      case 'exec':
+        return mapResult(await executeClaudeOneShot(prompt, options));
+      case 'resume': {
+        const conversationRef = requireConversationRef(request, 'resume');
+        return mapResult(await executeClaudeResume(conversationRef, prompt, options), conversationRef);
+      }
+      case 'fork': {
+        const conversationRef = requireConversationRef(request, 'fork');
+        return mapResult(await executeClaudeFork(conversationRef, prompt, options));
       }
     }
-    case 'resume': {
-      if (!request.conversationRef) throw new Error('resume requires conversationRef');
-      try {
-        const result = await executeClaudeResume(request.conversationRef, prompt, {
-          model: request.model,
-          workingDirectory: request.cwd,
-          systemPrompt,
-          effort,
-          bypassPermissions: request.bypassPermissions,
-          signal: runtime.signal,
-          onEvent,
-        });
-        return mapResult(result, request.conversationRef);
-      } catch (error) {
-        return parseError(error, request.model ?? 'unknown');
-      }
-    }
-    case 'fork': {
-      if (!request.conversationRef) throw new Error('fork requires conversationRef');
-      try {
-        const result = await executeClaudeFork(request.conversationRef, prompt, {
-          model: request.model,
-          workingDirectory: request.cwd,
-          systemPrompt,
-          effort,
-          bypassPermissions: request.bypassPermissions,
-          signal: runtime.signal,
-          onEvent,
-        });
-        return mapResult(result);
-      } catch (error) {
-        return parseError(error, request.model ?? 'unknown');
-      }
-    }
+  } catch (error) {
+    return parseError(error, request.model ?? 'unknown');
   }
 
   const exhaustive: never = request.action;

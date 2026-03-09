@@ -1,7 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { McpResult } from '../../shared/mcp-utils.js';
+
+type RegisteredHandler = (...args: unknown[]) => Promise<unknown>;
+
+type CallToolHandler = (
+  request: {
+    params: {
+      name: string;
+      arguments: Record<string, unknown>;
+    };
+  },
+  extra: {
+    signal: AbortSignal;
+    _meta: Record<string, unknown>;
+    sendNotification?: (notification: unknown) => Promise<void>;
+  },
+) => Promise<McpResult>;
 
 const mockState = vi.hoisted(() => ({
-  handlers: new Map<unknown, (...args: any[]) => any>(),
+  handlers: new Map<unknown, RegisteredHandler>(),
   ensureBackend: vi.fn(),
   proxyToolCall: vi.fn(),
   streamWait: vi.fn(),
@@ -14,7 +31,7 @@ const mockState = vi.hoisted(() => ({
 
 vi.mock('@modelcontextprotocol/sdk/server/index.js', () => ({
   Server: class MockServer {
-    setRequestHandler(schema: unknown, handler: (...args: any[]) => any) {
+    setRequestHandler(schema: unknown, handler: RegisteredHandler) {
       mockState.handlers.set(schema, handler);
     }
 
@@ -42,29 +59,29 @@ vi.mock('../backend-tool.js', () => ({
   handleBackendToolCall: mockState.handleBackendToolCall,
 }));
 
-async function* emit(events: unknown[]): AsyncGenerator<any> {
+async function* emit(events: readonly unknown[]): AsyncGenerator<unknown> {
   for (const event of events) {
     yield event;
   }
 }
 
-async function* fail(error: unknown): AsyncGenerator<any> {
+async function* fail(error: unknown): AsyncGenerator<never> {
   throw error;
 }
 
-async function loadCallToolHandler() {
+async function loadCallToolHandler(): Promise<CallToolHandler> {
   vi.resetModules();
   mockState.handlers.clear();
   await import('../server.js');
   const { CallToolRequestSchema } = await import('@modelcontextprotocol/sdk/types.js');
-  const handler = mockState.handlers.get(CallToolRequestSchema);
+  const handler = mockState.handlers.get(CallToolRequestSchema) as CallToolHandler | undefined;
   if (!handler) {
     throw new Error('CallTool handler was not registered');
   }
   return handler;
 }
 
-async function invokeToolRaw(name: string, argumentsValue: Record<string, unknown>) {
+async function invokeToolRaw(name: string, argumentsValue: Record<string, unknown>): Promise<McpResult> {
   const handler = await loadCallToolHandler();
   return handler(
     {
@@ -86,7 +103,7 @@ async function invokeWaitRaw(argumentsValue: Record<string, unknown>) {
 
 async function invokeWait(argumentsValue: Record<string, unknown>) {
   const result = await invokeWaitRaw(argumentsValue);
-  return JSON.parse(result.content[0].text) as Record<string, any>;
+  return JSON.parse(result.content[0].text) as Record<string, unknown>;
 }
 
 describe('bridge wait handler', () => {
@@ -258,6 +275,7 @@ describe('bridge wait handler', () => {
       jobs: ['workflow-diverge'],
       inline: true,
     });
+    const terminalResult = result.result as Record<string, unknown>;
 
     expect(result).toMatchObject({
       state: 'completed',
@@ -265,7 +283,7 @@ describe('bridge wait handler', () => {
       sessionId: 'session-diverge',
       remainingJobIds: [],
     });
-    expect(result.result).toMatchObject({
+    expect(terminalResult).toMatchObject({
       workflow: {
         steps: [
           {
@@ -279,8 +297,8 @@ describe('bridge wait handler', () => {
         ],
       },
     });
-    expect(result.result.content).toBe('# Step 1.1: architect\n\nFILE CONTENT');
-    expect(result.result.content).not.toBe('FINAL');
+    expect(terminalResult.content).toBe('# Step 1.1: architect\n\nFILE CONTENT');
+    expect(terminalResult.content).not.toBe('FINAL');
     expect(mockState.readFileSync).toHaveBeenCalledWith('/tmp/coral-jobs/workflow-diverge/result.md', 'utf-8');
   });
 
@@ -373,7 +391,7 @@ describe('bridge wait handler', () => {
   });
 
   it('should reject legacy include_result parameter', async () => {
-    const result = await invokeWaitRaw({ jobs: ['job-1'], include_result: true } as any);
+    const result = await invokeWaitRaw({ jobs: ['job-1'], include_result: true });
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('include_result');

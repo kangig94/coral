@@ -99,16 +99,16 @@ export async function handleWorkflow(
   ctx: CallerContext,
 ): Promise<LaunchDecision> {
   const input = workflowInputSchema.parse(rawArgs);
-  const ast = normalizeAst(parseExpression(input.expression), input.provider);
+  const normalizedAst = normalizeAst(parseExpression(input.expression), input.provider);
 
-  if (input.atoms) validateAtomConfigKeys(input.atoms, ast);
-  validateNamespaces(ast);
-  validateParallelDuplicates(ast);
+  if (input.atoms) validateAtomConfigKeys(input.atoms, normalizedAst);
+  validateNamespaces(normalizedAst);
+  validateParallelDuplicates(normalizedAst);
 
-  const unknownProviders = findUnknownProviders(ast, input.provider);
+  const unknownProviders = findUnknownProviders(normalizedAst, input.provider);
   if (unknownProviders.length > 0) {
     return unknownProviderDecision(unknownProviders);
   }
 
-  return executionSvc.executeWorkflow(input.provider, ast, input, ctx, input.work_dir);
+  return executionSvc.executeWorkflow(input.provider, normalizedAst, input, ctx, input.work_dir);
 }

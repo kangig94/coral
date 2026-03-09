@@ -24,14 +24,12 @@ export const backendToolDescriptor: ToolDescriptor = {
 };
 
 export async function handleBackendToolCall(args: Record<string, unknown>): Promise<McpResult> {
-  let parsed: z.infer<typeof backendInputSchema>;
-  try {
-    parsed = backendInputSchema.parse(args);
-  } catch (error) {
-    return textResult(error instanceof Error ? error.message : String(error), true);
+  const parsed = backendInputSchema.safeParse(args);
+  if (!parsed.success) {
+    return textResult(parsed.error.message, true);
   }
 
-  if (parsed.op === 'status') {
+  if (parsed.data.op === 'status') {
     const status = await getBackendStatus();
     if (!status) {
       return textResult('Backend is not running', true);
