@@ -46,7 +46,7 @@ type LaunchContext = {
 
 export type WorkflowExecutionService = Pick<
   ExecutionService,
-  'coralDispatch' | 'resume' | 'abort' | 'awaitLaunch' | 'waitStream'
+  'coralDispatch' | 'resume' | 'abort' | 'awaitLaunch' | 'waitStream' | 'getConversationRef'
 >;
 
 export type LaunchedAtom = {
@@ -486,7 +486,8 @@ export async function waitForAtoms(
 
         results.set(atom.atomKey, event.result.content);
         if (atom.providerName === 'claude' && options.claudeSessionIds) {
-          options.claudeSessionIds.push(atom.sessionId);
+          const ref = executionSvc.getConversationRef('claude', atom.sessionId);
+          if (ref) options.claudeSessionIds.push(ref);
         }
         continue;
       }
