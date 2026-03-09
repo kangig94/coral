@@ -8,6 +8,7 @@ describe('parseCodexJsonl', () => {
     expect(result.sessionId).toBe('abc-123');
     expect(result.errors).toEqual([]);
     expect(result.warnings).toEqual([]);
+    expect(result.isError).toBe(true);
   });
 
   it('extracts text from item.completed with agent_message', () => {
@@ -20,6 +21,7 @@ describe('parseCodexJsonl', () => {
     expect(result.sessionId).toBe('t1');
     expect(result.errors).toEqual([]);
     expect(result.warnings).toEqual([]);
+    expect(result.isError).toBe(false);
   });
 
   it('extracts error from turn.failed event', () => {
@@ -27,6 +29,7 @@ describe('parseCodexJsonl', () => {
     const result = parseCodexJsonl(output);
     expect(result.response).toBe('');
     expect(result.errors).toEqual(['Rate limit exceeded']);
+    expect(result.isError).toBe(false);
   });
 
   it('extracts error from top-level error event', () => {
@@ -34,6 +37,7 @@ describe('parseCodexJsonl', () => {
     const result = parseCodexJsonl(output);
     expect(result.response).toBe('');
     expect(result.errors).toEqual(['Connection lost']);
+    expect(result.isError).toBe(false);
   });
 
   it('returns empty response for empty output', () => {
@@ -42,6 +46,7 @@ describe('parseCodexJsonl', () => {
     expect(result.sessionId).toBeNull();
     expect(result.errors).toEqual([]);
     expect(result.warnings).toEqual([]);
+    expect(result.isError).toBe(true);
   });
 
   it('skips non-JSON lines', () => {
@@ -99,6 +104,7 @@ describe('parseCodexJsonl', () => {
     expect(result.response).toBe('');
     expect(result.errors).toEqual([]);
     expect(result.warnings).toEqual([]);
+    expect(result.isError).toBe(true);
   });
 
   it('extracts warning from item.completed with error type', () => {
@@ -110,6 +116,7 @@ describe('parseCodexJsonl', () => {
     expect(result.response).toBe('Done');
     expect(result.warnings).toEqual(['Deprecated API usage']);
     expect(result.errors).toEqual([]);
+    expect(result.isError).toBe(false);
   });
 
   it('deduplicates error + turn.failed with same message', () => {
@@ -212,5 +219,6 @@ describe('parseCodexJsonl', () => {
     expect(result.response).toBe('');
     expect(result.errors).toEqual([]);
     expect(result.warnings).toEqual(['Deprecated API usage']);
+    expect(result.isError).toBe(true);
   });
 });

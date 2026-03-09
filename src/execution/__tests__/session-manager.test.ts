@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -38,6 +38,7 @@ describe('execution SessionManager', () => {
     const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
 
     expect(entry.state).toBe('pending');
+    expect(entry.version).toBe(1);
     expect(mgr.get('codex', entry.sessionId)).toMatchObject({
       sessionId: entry.sessionId,
       provider: 'codex',
@@ -45,6 +46,7 @@ describe('execution SessionManager', () => {
       state: 'pending',
       model: 'gpt-5',
       cwd: workDir,
+      version: 1,
     });
   });
 
@@ -54,6 +56,47 @@ describe('execution SessionManager', () => {
 
     expect(mgr.claimForJob(entry.sessionId, 'job-1')).toBe(true);
     expect(mgr.claimForJob(entry.sessionId, 'job-2')).toBe(false);
+  });
+
+  it('claimForJobAtomic allows only one concurrent claimant', async () => {
+    const { mgr, workDir } = setup('claim-atomic');
+    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+
+    const results = await Promise.all([
+      mgr.claimForJobAtomic(entry.sessionId, 'job-1'),
+      mgr.claimForJobAtomic(entry.sessionId, 'job-2'),
+    ]);
+
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(mgr.get('codex', entry.sessionId)?.activeJobId).toMatch(/^job-[12]$/);
+  });
+
+  it('claimForJobAtomic respects expectedVersion', async () => {
+    const { mgr, workDir } = setup('claim-expected-version');
+    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+
+    await expect(mgr.claimForJobAtomic(entry.sessionId, 'job-1', entry.version + 1)).resolves.toBe(false);
+    expect(mgr.get('codex', entry.sessionId)?.version).toBe(entry.version);
+
+    await expect(mgr.claimForJobAtomic(entry.sessionId, 'job-1', entry.version)).resolves.toBe(true);
+    expect(mgr.get('codex', entry.sessionId)).toMatchObject({
+      activeJobId: 'job-1',
+      version: entry.version + 1,
+    });
+  });
+
+  it('claimForJobAtomic removes a stale lock before claiming', async () => {
+    const { mgr, workDir } = setup('claim-stale-lock');
+    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const sessionDir = resolveSessionDir(tmpHome);
+    const lockDir = join(sessionDir, `${entry.sessionId}.lock`);
+    const staleAt = new Date(Date.now() - 31_000);
+
+    mkdirSync(lockDir);
+    utimesSync(lockDir, staleAt, staleAt);
+
+    await expect(mgr.claimForJobAtomic(entry.sessionId, 'job-1')).resolves.toBe(true);
+    expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBe('job-1');
   });
 
   it('releaseJob clears activeJobId and sets lastJobId', () => {
@@ -95,6 +138,35 @@ describe('execution SessionManager', () => {
     mgr.setNonResumable(entry.sessionId);
 
     expect(mgr.get('codex', entry.sessionId)?.state).toBe('non_resumable');
+  });
+
+  it('increments version on each write', () => {
+    const { mgr, workDir } = setup('version-increments');
+    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+
+    expect(entry.version).toBe(1);
+    expect(mgr.get('codex', entry.sessionId)?.version).toBe(1);
+
+    expect(mgr.claimForJob(entry.sessionId, 'job-1')).toBe(true);
+    expect(mgr.get('codex', entry.sessionId)?.version).toBe(2);
+
+    mgr.releaseJob(entry.sessionId, 'job-1');
+    expect(mgr.get('codex', entry.sessionId)?.version).toBe(3);
+  });
+
+  it('openShard reads an existing shard and listShards enumerates it', () => {
+    const { mgr, workDir } = setup('open-shard');
+    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const shardDir = resolveSessionDir(tmpHome);
+
+    expect(SessionManager.listShards()).toContain(shardDir);
+
+    const shardMgr = SessionManager.openShard(shardDir);
+    expect(shardMgr.get('codex', entry.sessionId)).toMatchObject({
+      sessionId: entry.sessionId,
+      provider: 'codex',
+      name: 'alpha',
+    });
   });
 });
 
@@ -155,8 +227,8 @@ describe('SessionManager adversarial', () => {
     expect(claudeSessions).toHaveLength(1);
   });
 
-  it('migrates old-format session file (id/threadId/workingDirectory) on first read', () => {
-    const { mgr, workDir } = setup('migrate-old');
+  it('returns null for an old-format session file without version and does not migrate it', () => {
+    const { mgr, workDir } = setup('reject-old-shape');
     mgr.allocate('codex', 'sentinel', 'gpt-5', workDir);
 
     const sessionDir = resolveSessionDir(tmpHome);
@@ -176,14 +248,8 @@ describe('SessionManager adversarial', () => {
 
     const result = mgr.get('codex', oldSessionId);
 
-    expect(result).not.toBeNull();
-    expect(result?.sessionId).toBe(oldSessionId);
-    expect(result?.conversationRef).toBe('thread-xyz');
-    expect(result?.cwd).toBe('/old/cwd');
-    expect(result?.state).toBe('ready');
-
-    const reread = mgr.get('codex', oldSessionId);
-    expect(reread?.sessionId).toBe(oldSessionId);
+    expect(result).toBeNull();
+    expect(JSON.parse(readFileSync(join(sessionDir, `${oldSessionId}.json`), 'utf-8'))).toEqual(oldEntry);
   });
 
   it('get() returns null for a corrupt (non-JSON) session file without throwing', () => {

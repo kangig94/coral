@@ -232,13 +232,13 @@ describe('cleanupExpiredSessions', () => {
   });
 });
 
-describe('backward-compatibility normalization (red-attacker provenance)', () => {
-  function writeLegacyState(sessionPath: string, transform: (state: Record<string, unknown>) => void): void {
+describe('load shape validation', () => {
+  function writeMalformedState(sessionPath: string, transform: (state: Record<string, unknown>) => void): void {
     const state = initSession({
-      topic: 'Legacy',
+      topic: 'Malformed',
       agents: [
-        { name: 'alice', persona: '# Alice — Analyst\nLegacy persona.', participation: 'required' as const },
-        { name: 'bob', persona: '# Bob — Critic\nLegacy persona.', participation: 'required' as const },
+        { name: 'alice', persona: '# Alice — Analyst\nMalformed persona.', participation: 'required' as const },
+        { name: 'bob', persona: '# Bob — Critic\nMalformed persona.', participation: 'required' as const },
       ],
       min_bid_delay_ms: 0,
     }, new Date().toISOString());
@@ -247,26 +247,40 @@ describe('backward-compatibility normalization (red-attacker provenance)', () =>
     writeFileSync(join(sessionPath, 'state.json'), JSON.stringify(legacy, null, 2), 'utf8');
   }
 
-  it('should default missing participation values to required', () => {
-    const { fullPath } = store.createSessionDir('Legacy Participants');
-    writeLegacyState(fullPath, (legacy) => {
+  it('should throw when required top-level fields are missing', () => {
+    const { fullPath } = store.createSessionDir('Missing Topic');
+    writeMalformedState(fullPath, (legacy) => {
+      delete legacy.topic;
+    });
+
+    expect(() => store.load(fullPath)).toThrowError(
+      `Invalid discuss state shape in ${fullPath}: missing required fields`,
+    );
+  });
+
+  it('should throw when participation values are missing', () => {
+    const { fullPath } = store.createSessionDir('Missing Participation');
+    writeMalformedState(fullPath, (legacy) => {
       const agents = legacy.agents as Record<string, { participation?: unknown }>;
       for (const agent of Object.values(agents)) {
         delete agent.participation;
       }
     });
-    const loaded = store.load(fullPath);
-    expect(loaded.agents['alice']?.participation).toBe('required');
-    expect(loaded.agents['bob']?.participation).toBe('required');
+
+    expect(() => store.load(fullPath)).toThrowError(
+      `Invalid agent shape for 'alice' in ${fullPath}: missing participation field`,
+    );
   });
 
-  it('should default missing min_bid_delay_ms to 0', () => {
-    const { fullPath } = store.createSessionDir('Legacy Bid Delay');
-    writeLegacyState(fullPath, (legacy) => {
+  it('should throw when min_bid_delay_ms is missing', () => {
+    const { fullPath } = store.createSessionDir('Missing Bid Delay');
+    writeMalformedState(fullPath, (legacy) => {
       delete (legacy as Record<string, unknown>).min_bid_delay_ms;
     });
-    const loaded = store.load(fullPath);
-    expect(loaded.min_bid_delay_ms).toBe(0);
+
+    expect(() => store.load(fullPath)).toThrowError(
+      `Invalid discuss state shape in ${fullPath}: missing min_bid_delay_ms`,
+    );
   });
 });
 

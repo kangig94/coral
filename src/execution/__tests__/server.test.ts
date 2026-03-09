@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:f
 import { join } from 'node:path';
 import type { WaitStreamEvent } from '../../types.js';
 import { JOBS_DIR, ProgressStore, jobResultPath } from '../progress-store.js';
+import { SessionManager } from '../session-manager.js';
 import type { BackendServerController } from '../server.js';
 
 const mockState = vi.hoisted(() => ({
@@ -163,6 +164,12 @@ describe('execution backend server', () => {
     };
   }
 
+  function createProjectRoot(name: string): string {
+    const projectRoot = join(mockState.tmpHome, name);
+    mkdirSync(projectRoot, { recursive: true });
+    return projectRoot;
+  }
+
   it('returns 200 from /health with execution metadata', async () => {
     const backend = await startBackendServer();
 
@@ -268,6 +275,53 @@ describe('execution backend server', () => {
     expect(await response.json()).toEqual({ aborted: [], notFound: ['job-1'] });
   });
 
+  it('returns 403 for abort tool calls that include cross-project jobs', async () => {
+    const fakeService = createFakeExecutionService();
+    const progressStore = new ProgressStore();
+    createdJobIds.add('job-1');
+    createdJobIds.add('job-foreign');
+    progressStore.initJob('job-1', 'session-1', 'codex', '/tmp/project');
+    progressStore.initJob('job-foreign', 'session-foreign', 'codex', '/tmp/other-project');
+
+    const backend = await startBackendServer({
+      createExecutionService: () => fakeService as never,
+      progressStore,
+    });
+
+    await fetch(`${backend.baseUrl}/tool`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        name: 'codex',
+        args: { op: 'list' },
+        context: { projectRoot: '/tmp/project' },
+      }),
+    });
+
+    const response = await fetch(`${backend.baseUrl}/tool`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        name: 'abort',
+        args: { jobs: ['job-1', 'job-foreign'] },
+        context: { projectRoot: '/tmp/project' },
+      }),
+    });
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: 'scope_mismatch',
+      jobs: ['job-foreign'],
+    });
+    expect(fakeService.abort).not.toHaveBeenCalled();
+  });
+
   it('routes workflow tool calls through handleWorkflow', async () => {
     const fakeService = createFakeExecutionService();
     const backend = await startBackendServer({
@@ -296,10 +350,14 @@ describe('execution backend server', () => {
     expect(fakeService.executeWorkflow).toHaveBeenCalledTimes(1);
   });
 
-  it('streams SSE wait events and closes after terminal completion', async () => {
+  it('streams SSE wait events and closes after terminal completion for found/missing mixes', async () => {
     const fakeService = createFakeExecutionService();
+    const progressStore = new ProgressStore();
+    createdJobIds.add('job-1');
+    progressStore.initJob('job-1', 'session-1', 'codex', '/tmp/project');
     const backend = await startBackendServer({
       createExecutionService: () => fakeService as never,
+      progressStore,
     });
 
     const response = await fetch(`${backend.baseUrl}/wait/stream`, {
@@ -309,8 +367,9 @@ describe('execution backend server', () => {
         'X-Coral-Backend-Token': backend.token,
       },
       body: JSON.stringify({
-        jobIds: ['job-1'],
+        jobIds: ['job-1', 'missing-job'],
         timeoutSeconds: 1,
+        projectRoot: '/tmp/project',
       }),
     });
     const body = await response.text();
@@ -331,18 +390,153 @@ describe('execution backend server', () => {
       jobs: { 'job-1': 7 },
     });
     expect(fakeService.waitStream).toHaveBeenCalledWith({
-      jobIds: ['job-1'],
+      jobIds: ['job-1', 'missing-job'],
       timeoutSeconds: 1,
       cursor: { jobs: {} },
+      projectRoot: '/tmp/project',
     });
   });
 
-  it('recovers orphaned workflow jobs with an empty artifact and workflow marker', async () => {
+  it('returns 400 when /wait/stream omits or empties projectRoot', async () => {
+    const backend = await startBackendServer();
+
+    const missingResponse = await fetch(`${backend.baseUrl}/wait/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        jobIds: ['job-1'],
+        timeoutSeconds: 1,
+      }),
+    });
+
+    const emptyResponse = await fetch(`${backend.baseUrl}/wait/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        jobIds: ['job-1'],
+        timeoutSeconds: 1,
+        projectRoot: '',
+      }),
+    });
+
+    expect(missingResponse.status).toBe(400);
+    expect(await missingResponse.json()).toEqual({ error: 'invalid_request' });
+    expect(emptyResponse.status).toBe(400);
+    expect(await emptyResponse.json()).toEqual({ error: 'invalid_request' });
+  });
+
+  it('returns 403 before streaming when /wait/stream includes cross-project jobs', async () => {
+    const fakeService = createFakeExecutionService();
+    const progressStore = new ProgressStore();
+    createdJobIds.add('job-foreign');
+    progressStore.initJob('job-foreign', 'session-foreign', 'codex', '/tmp/other-project');
+
+    const backend = await startBackendServer({
+      createExecutionService: () => fakeService as never,
+      progressStore,
+    });
+
+    const response = await fetch(`${backend.baseUrl}/wait/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        jobIds: ['job-foreign'],
+        timeoutSeconds: 1,
+        projectRoot: '/tmp/project',
+      }),
+    });
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: 'scope_mismatch' });
+    expect(fakeService.waitStream).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when /wait/stream receives only missing jobs', async () => {
+    const fakeService = createFakeExecutionService();
+    const backend = await startBackendServer({
+      createExecutionService: () => fakeService as never,
+    });
+
+    const response = await fetch(`${backend.baseUrl}/wait/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        jobIds: ['missing-job'],
+        timeoutSeconds: 1,
+        projectRoot: '/tmp/project',
+      }),
+    });
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: 'jobs_not_found' });
+    expect(fakeService.waitStream).not.toHaveBeenCalled();
+  });
+
+  it('clears orphaned session claims across shards when the job dir is missing', async () => {
+    const projectA = createProjectRoot('project-a');
+    const projectB = createProjectRoot('project-b');
+    const sessionA = new SessionManager(projectA).allocate('codex', 'alpha', 'gpt-5', projectA);
+    const sessionB = new SessionManager(projectB).allocate('codex', 'beta', 'gpt-5', projectB);
+
+    new SessionManager(projectA).claimForJob(sessionA.sessionId, 'missing-job-a');
+    new SessionManager(projectB).claimForJob(sessionB.sessionId, 'missing-job-b');
+
+    await startBackendServer();
+
+    expect(new SessionManager(projectA).get('codex', sessionA.sessionId)).toMatchObject({
+      sessionId: sessionA.sessionId,
+      lastJobId: 'missing-job-a',
+    });
+    expect(new SessionManager(projectA).get('codex', sessionA.sessionId)?.activeJobId).toBeUndefined();
+
+    expect(new SessionManager(projectB).get('codex', sessionB.sessionId)).toMatchObject({
+      sessionId: sessionB.sessionId,
+      lastJobId: 'missing-job-b',
+    });
+    expect(new SessionManager(projectB).get('codex', sessionB.sessionId)?.activeJobId).toBeUndefined();
+  });
+
+  it('leaves active session claims in place when the referenced job dir exists', async () => {
+    const progressStore = new ProgressStore();
+    const projectRoot = createProjectRoot('project-existing-job');
+    const session = new SessionManager(projectRoot).allocate('codex', 'alpha', 'gpt-5', projectRoot);
+    const jobId = 'completed-job';
+
+    createdJobIds.add(jobId);
+    progressStore.initJob(jobId, session.sessionId, 'codex', projectRoot);
+    progressStore.updatePhase(jobId, 'completed');
+    new SessionManager(projectRoot).claimForJob(session.sessionId, jobId);
+
+    await startBackendServer({ progressStore });
+
+    expect(new SessionManager(projectRoot).get('codex', session.sessionId)).toMatchObject({
+      sessionId: session.sessionId,
+      activeJobId: jobId,
+    });
+  });
+
+  it('recovers orphaned workflow jobs with an empty artifact, workflow marker, and released session claim', async () => {
     const progressStore = new ProgressStore();
     const jobId = 'workflow-orphan-job';
+    const projectRoot = createProjectRoot('workflow-project');
+    const session = new SessionManager(projectRoot).allocate('codex', 'workflow-session', 'gpt-5', projectRoot);
+
     createdJobIds.add(jobId);
-    progressStore.initJob(jobId, 'workflow-session', 'codex', undefined, 'workflow');
+    progressStore.initJob(jobId, session.sessionId, 'codex', projectRoot, 'workflow');
     progressStore.updatePhase(jobId, 'running');
+    new SessionManager(projectRoot).claimForJob(session.sessionId, jobId);
 
     const backend = await startBackendServer({ progressStore });
     const response = await fetch(`${backend.baseUrl}/wait/stream`, {
@@ -354,10 +548,12 @@ describe('execution backend server', () => {
       body: JSON.stringify({
         jobIds: [jobId],
         timeoutSeconds: 1,
+        projectRoot,
       }),
     });
     const body = await response.text();
     const status = progressStore.readStatus(jobId);
+    const recoveredSession = new SessionManager(projectRoot).get('codex', session.sessionId);
 
     expect(response.status).toBe(200);
     expect(body).toContain('event: terminal');
@@ -373,6 +569,8 @@ describe('execution backend server', () => {
         workflow: { steps: [] },
       },
     });
+    expect(recoveredSession?.activeJobId).toBeUndefined();
+    expect(recoveredSession?.lastJobId).toBe(jobId);
   });
 
   it('returns 200 from /admin/shutdown and transitions to draining', async () => {

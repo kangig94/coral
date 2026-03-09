@@ -10,6 +10,7 @@ export interface ParsedCodexOutput {
   sessionId: string | null;
   errors: string[];
   warnings: string[];
+  isError: boolean;
 }
 
 /**
@@ -74,10 +75,13 @@ export function parseCodexJsonl(output: string): ParsedCodexOutput {
     }
   }
 
+  const response = messages.join('\n');
+
   return {
-    response: messages.join('\n'),
+    response,
     sessionId,
     errors,
     warnings,
+    isError: !response && errors.length === 0,
   };
 }

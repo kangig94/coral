@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as fs from 'node:fs';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
@@ -6,6 +7,7 @@ import type { PersistedStatusRecord, TerminalResult } from '../../types.js';
 import { JOBS_DIR, ProgressStore, createReplayCursor, formatElapsed } from '../progress-store.js';
 
 const jobIdsToClean = new Set<string>();
+const projectRoot = '/tmp/project';
 const renameCalls = vi.hoisted(() => [] as Array<[unknown, unknown]>);
 
 vi.mock('node:fs', async () => {
@@ -34,13 +36,14 @@ describe('execution ProgressStore', () => {
     const jobId = `progress-init-${randomUUID()}`;
     jobIdsToClean.add(jobId);
 
-    store.initJob(jobId, 'session-1', 'codex');
+    store.initJob(jobId, 'session-1', 'codex', projectRoot);
 
     expect(existsSync(store.jobDir(jobId))).toBe(true);
     expect(store.readStatus(jobId)).toMatchObject({
       jobId,
       sessionId: 'session-1',
       provider: 'codex',
+      projectRoot,
       phase: 'launching',
       launch: { state: 'pending' },
     });
@@ -50,7 +53,7 @@ describe('execution ProgressStore', () => {
     const store = new ProgressStore();
     const jobId = `progress-events-${randomUUID()}`;
     jobIdsToClean.add(jobId);
-    store.initJob(jobId, 'session-1', 'codex');
+    store.initJob(jobId, 'session-1', 'codex', projectRoot);
 
     const first = store.appendProgress(jobId, 'session-1', 'first');
     const second = store.appendProgress(jobId, 'session-1', 'second');
@@ -63,7 +66,7 @@ describe('execution ProgressStore', () => {
     const store = new ProgressStore();
     const jobId = `progress-replay-${randomUUID()}`;
     jobIdsToClean.add(jobId);
-    store.initJob(jobId, 'session-1', 'codex');
+    store.initJob(jobId, 'session-1', 'codex', projectRoot);
     store.appendProgress(jobId, 'session-1', 'first');
     store.appendProgress(jobId, 'session-1', 'second');
     store.appendProgress(jobId, 'session-1', 'third');
@@ -79,7 +82,7 @@ describe('execution ProgressStore', () => {
     const jobId = `progress-terminal-${randomUUID()}`;
     const result = { content: 'done', exitCode: 0 } satisfies TerminalResult;
     jobIdsToClean.add(jobId);
-    store.initJob(jobId, 'session-1', 'codex');
+    store.initJob(jobId, 'session-1', 'codex', projectRoot);
 
     store.appendTerminal(jobId, 'session-1', result, 'completed');
 
@@ -89,11 +92,26 @@ describe('execution ProgressStore', () => {
     });
   });
 
+  it('appendTerminal throws when progress.jsonl append fails', () => {
+    const store = new ProgressStore();
+    const jobId = `progress-terminal-throw-${randomUUID()}`;
+    jobIdsToClean.add(jobId);
+    store.initJob(jobId, 'session-1', 'codex', projectRoot);
+    vi.spyOn(fs, 'appendFileSync').mockImplementation(() => {
+      throw new Error('disk full');
+    });
+
+    expect(() => {
+      store.appendTerminal(jobId, 'session-1', { content: 'done' }, 'completed');
+    }).toThrow('disk full');
+    expect(store.readStatus(jobId)).toMatchObject({ phase: 'launching' });
+  });
+
   it('writeStatus non-terminal updates cache immediately (async disk write)', () => {
     const store = new ProgressStore();
     const jobId = `progress-atomic-nonterminal-${randomUUID()}`;
     jobIdsToClean.add(jobId);
-    store.initJob(jobId, 'session-1', 'codex');
+    store.initJob(jobId, 'session-1', 'codex', projectRoot);
 
     renameCalls.length = 0;
 
@@ -101,6 +119,7 @@ describe('execution ProgressStore', () => {
       jobId,
       sessionId: 'session-1',
       provider: 'codex',
+      projectRoot,
       phase: 'running',
       launch: { state: 'ready', updatedAt: '2026-03-06T00:00:00.000Z' },
     } satisfies PersistedStatusRecord;
@@ -117,7 +136,7 @@ describe('execution ProgressStore', () => {
     const store = new ProgressStore();
     const jobId = `progress-atomic-terminal-${randomUUID()}`;
     jobIdsToClean.add(jobId);
-    store.initJob(jobId, 'session-1', 'codex');
+    store.initJob(jobId, 'session-1', 'codex', projectRoot);
 
     renameCalls.length = 0;
 
@@ -125,6 +144,7 @@ describe('execution ProgressStore', () => {
       jobId,
       sessionId: 'session-1',
       provider: 'codex',
+      projectRoot,
       phase: 'completed',
       launch: { state: 'ready', updatedAt: '2026-03-06T00:00:00.000Z' },
       result: { content: 'done' },
@@ -144,7 +164,7 @@ describe('execution ProgressStore', () => {
     const store = new ProgressStore();
     const jobId = `progress-terminal-only-${randomUUID()}`;
     jobIdsToClean.add(jobId);
-    store.initJob(jobId, 'session-1', 'codex');
+    store.initJob(jobId, 'session-1', 'codex', projectRoot);
     store.appendTerminal(jobId, 'session-1', { content: 'result text' }, 'completed');
 
     const events = store.replayFrom(jobId, 0, createReplayCursor());
@@ -166,11 +186,40 @@ describe('execution ProgressStore', () => {
     }).not.toThrow();
   });
 
+  it('markTerminalStatus updates status only, cleans terminal state, and notifies waiters', async () => {
+    const store = new ProgressStore();
+    const jobId = `progress-terminal-fallback-${randomUUID()}`;
+    jobIdsToClean.add(jobId);
+    store.initJob(jobId, 'session-1', 'codex', projectRoot);
+    store.appendProgress(jobId, 'session-1', 'before terminal');
+    const progressPath = join(store.jobDir(jobId), 'progress.jsonl');
+    const before = readFileSync(progressPath, 'utf-8');
+    const seq = store.getChangeSeq();
+
+    store.markTerminalStatus(jobId, 'session-1', { content: 'done' }, 'completed');
+
+    await expect(store.waitForChange(seq)).resolves.toBeUndefined();
+    expect(readFileSync(progressPath, 'utf-8')).toBe(before);
+    expect(store.readStatus(jobId)).toMatchObject({
+      phase: 'completed',
+      result: { content: 'done' },
+    });
+
+    const internals = store as unknown as {
+      eventCounters: Map<string, number>;
+      jobStartedAt: Map<string, number>;
+      writeGeneration: Map<string, number>;
+    };
+    expect(internals.eventCounters.has(jobId)).toBe(false);
+    expect(internals.jobStartedAt.has(jobId)).toBe(false);
+    expect(internals.writeGeneration.has(jobId)).toBe(false);
+  });
+
   it('consecutive replayFrom calls on the same cursor only return newly appended events', () => {
     const store = new ProgressStore();
     const jobId = `progress-cursor-advance-${randomUUID()}`;
     jobIdsToClean.add(jobId);
-    store.initJob(jobId, 'session-1', 'codex');
+    store.initJob(jobId, 'session-1', 'codex', projectRoot);
     store.appendProgress(jobId, 'session-1', 'first');
     store.appendProgress(jobId, 'session-1', 'second');
 
@@ -183,6 +232,17 @@ describe('execution ProgressStore', () => {
     const batch2 = store.replayFrom(jobId, 2, cursor);
     expect(batch2.map((e) => e.message)).toEqual(['[ 0m  0s] third']);
     expect(batch2.map((e) => e.eventId)).toEqual([3]);
+  });
+
+  it('scopedLookup distinguishes found, missing, and mismatch', () => {
+    const store = new ProgressStore();
+    const jobId = `progress-scope-${randomUUID()}`;
+    jobIdsToClean.add(jobId);
+    store.initJob(jobId, 'session-1', 'codex', projectRoot);
+
+    expect(store.scopedLookup(jobId, projectRoot)).toBe('found');
+    expect(store.scopedLookup(jobId, '/tmp/other-project')).toBe('mismatch');
+    expect(store.scopedLookup(`missing-${randomUUID()}`, projectRoot)).toBe('missing');
   });
 });
 

@@ -35,6 +35,7 @@ type LaunchContext = {
   stepIndex: number;
   stepPrompt: string;
   context?: string;
+  workDir?: string;
   defaultProviderName: string;
   executionSvc: WorkflowExecutionService;
   ctx: CallerContext;
@@ -229,6 +230,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     stepIndex,
     stepPrompt,
     context: sharedContext,
+    workDir,
     defaultProviderName,
     executionSvc,
     ctx,
@@ -272,7 +274,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     coralName,
     {
       prompt: atomPrompt,
-      cwd: ctx.projectRoot,
+      cwd: workDir ?? ctx.projectRoot,
     },
     ctx,
   );
@@ -312,6 +314,7 @@ async function recoverStaleAtom(
   options: {
     signal?: AbortSignal;
     staleTimeoutMs: number;
+    workDir?: string;
     onProgress: (message: string) => void;
     buildPartialStepDetails: () => StepDetail[];
   },
@@ -348,7 +351,7 @@ async function recoverStaleAtom(
       {
         sessionId: atom.sessionId,
         prompt: STALE_RESUME_PROMPT,
-        cwd: ctx.projectRoot,
+        cwd: options.workDir ?? ctx.projectRoot,
       },
       ctx,
     );
@@ -400,6 +403,7 @@ export async function waitForAtoms(
     signal?: AbortSignal;
     staleTimeoutMs: number;
     pollIntervalMs: number;
+    workDir?: string;
     onProgress: (message: string) => void;
     completedStepDetails?: StepDetail[];
     claudeSessionIds?: string[];
@@ -505,6 +509,7 @@ export async function waitForAtoms(
         {
           signal: options.signal,
           staleTimeoutMs: options.staleTimeoutMs,
+          workDir: options.workDir,
           onProgress: options.onProgress,
           buildPartialStepDetails,
         },
@@ -531,6 +536,7 @@ async function drainLaunchedAtoms(
     signal?: AbortSignal;
     staleTimeoutMs: number;
     pollIntervalMs: number;
+    workDir?: string;
     onProgress: (message: string) => void;
   },
 ): Promise<StepDetail[]> {
@@ -543,6 +549,7 @@ async function drainLaunchedAtoms(
       signal: options.signal,
       staleTimeoutMs: options.staleTimeoutMs,
       pollIntervalMs: options.pollIntervalMs,
+      workDir: options.workDir,
       onProgress: options.onProgress,
       completedStepDetails: [],
     });
@@ -576,6 +583,7 @@ export async function executePipeline(
   options: {
     atoms?: WorkflowAtoms;
     context?: string;
+    workDir?: string;
     signal?: AbortSignal;
     onProgress?: (message: string) => void;
     staleTimeoutMs?: number;
@@ -604,6 +612,7 @@ export async function executePipeline(
           stepIndex,
           stepPrompt,
           context: options.context,
+          workDir: options.workDir,
           defaultProviderName,
           executionSvc,
           ctx,
@@ -625,6 +634,7 @@ export async function executePipeline(
         signal: options.signal,
         staleTimeoutMs,
         pollIntervalMs,
+        workDir: options.workDir,
         onProgress,
       });
       const baseStepDetails = launchError instanceof WorkflowExecutionError
@@ -640,6 +650,7 @@ export async function executePipeline(
         signal: options.signal,
         staleTimeoutMs,
         pollIntervalMs,
+        workDir: options.workDir,
         onProgress,
         completedStepDetails: stepDetails,
         claudeSessionIds,

@@ -143,7 +143,7 @@ export class ProgressStore {
     jobId: string,
     sessionId: string,
     provider: string,
-    projectRoot?: string,
+    projectRoot: string,
     jobKind?: JobKind,
     initialPhase: JobPhase = 'launching',
   ): void {
@@ -153,12 +153,10 @@ export class ProgressStore {
       jobId,
       sessionId,
       provider,
+      projectRoot,
       phase: initialPhase,
       launch: { state: 'pending', updatedAt: new Date().toISOString() },
     };
-    if (projectRoot !== undefined) {
-      record.projectRoot = projectRoot;
-    }
     if (jobKind !== undefined) {
       record.jobKind = jobKind;
     }
@@ -167,6 +165,18 @@ export class ProgressStore {
     this.applyStatusRecord(jobId, record);
     writeFileSync(this.progressPath(jobId), '');
     this.jobStartedAt.set(jobId, Date.now());
+  }
+
+  rollbackJob(jobId: string): void {
+    const record = this.statusCache.get(jobId);
+    if (record && this.isLivePhase(record.phase)) {
+      this.liveCount--;
+    }
+    this.statusCache.delete(jobId);
+    this.eventCounters.delete(jobId);
+    this.jobStartedAt.delete(jobId);
+    this.writeGeneration.delete(jobId);
+    rmSync(this.jobDir(jobId), { recursive: true, force: true });
   }
 
   /** Atomically write status.json. */
@@ -209,6 +219,13 @@ export class ProgressStore {
     } catch {
       return null;
     }
+  }
+
+  scopedLookup(jobId: string, projectRoot: string): 'found' | 'missing' | 'mismatch' {
+    const status = this.readStatus(jobId);
+    if (!status) return 'missing';
+    if (status.projectRoot !== projectRoot) return 'mismatch';
+    return 'found';
   }
 
   /** Update launch state in status.json (read-modify-write atomically). */
@@ -260,23 +277,35 @@ export class ProgressStore {
       ts: new Date().toISOString(),
       result,
     };
-    try {
-      appendFileSync(this.progressPath(jobId), JSON.stringify(entry) + '\n');
-    } catch {
-      /* progress write must not break execution */
-    }
+    appendFileSync(this.progressPath(jobId), JSON.stringify(entry) + '\n');
 
+    this.updateTerminalStatus(jobId, result, phase);
+    this.clearTerminalState(jobId);
+    return eventId;
+  }
+
+  markTerminalStatus(jobId: string, sessionId: string, result: TerminalResult, phase: JobPhase): void {
+    void sessionId;
+    const didUpdateStatus = this.updateTerminalStatus(jobId, result, phase);
+    this.clearTerminalState(jobId);
+    if (!didUpdateStatus) {
+      this.notifyWaiters();
+    }
+  }
+
+  private updateTerminalStatus(jobId: string, result: TerminalResult, phase: JobPhase): boolean {
     const record = this.readStatus(jobId);
-    if (record) {
-      record.phase = phase;
-      record.result = result;
-      this.writeStatus(jobId, record);
-    }
+    if (!record) return false;
+    record.phase = phase;
+    record.result = result;
+    this.writeStatus(jobId, record);
+    return true;
+  }
 
+  private clearTerminalState(jobId: string): void {
     this.eventCounters.delete(jobId);
     this.jobStartedAt.delete(jobId);
     this.writeGeneration.delete(jobId);
-    return eventId;
   }
 
   /** Write result.md as a debugging/recovery artifact. */

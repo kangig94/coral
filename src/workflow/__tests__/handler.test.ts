@@ -49,7 +49,37 @@ describe('workflow handler', () => {
         provider: 'claude',
       }),
       ctx,
+      undefined,
     );
+  });
+
+  it('passes work_dir separately without mutating projectRoot', async () => {
+    const { handleWorkflow } = await loadWorkflowHandler();
+    const executionSvc = createExecutionService();
+
+    await handleWorkflow(
+      {
+        expression: 'architect',
+        init_prompt: 'hello',
+        work_dir: '/tmp/coral-workflow-cwd',
+      },
+      executionSvc,
+      ctx,
+    );
+
+    expect(executionSvc.executeWorkflow).toHaveBeenCalledWith(
+      'claude',
+      [[{ kind: 'agent', namespace: 'coral', agent: 'architect', provider: 'claude' }]],
+      expect.objectContaining({
+        expression: 'architect',
+        init_prompt: 'hello',
+        work_dir: '/tmp/coral-workflow-cwd',
+        provider: 'claude',
+      }),
+      ctx,
+      '/tmp/coral-workflow-cwd',
+    );
+    expect(ctx.projectRoot).toBe('/tmp/coral-workflow-project');
   });
 
   it('returns a rejected LaunchDecision when a provider is unknown', async () => {

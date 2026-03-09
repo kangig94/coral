@@ -1,4 +1,4 @@
-import { jsonResult, resultToMcp, type McpResult } from '../../shared/mcp-utils.js';
+import { jsonResult, type McpResult } from '../../shared/mcp-utils.js';
 import type { DiscussState, Result } from '../types.js';
 import type { DiscussAgentOpInput } from '../schemas.js';
 import type { SessionStore } from '../session-store.js';
@@ -73,7 +73,7 @@ async function handleBid(
     });
 
     if (!pre.ok) {
-      return resultToMcp(pre);
+      return jsonResult({ error: pre.error, ...(pre.detail ?? {}) });
     }
 
     const phase = pre.value.kind;
@@ -88,6 +88,9 @@ async function handleBid(
         });
       case 'setup': {
         const waited = await waitForCondition(statePath, setupComplete, INFINITE_POLL);
+        if (!waited.fulfilled && waited.error === 'state_corrupt') {
+          return jsonResult({ error: 'state_corrupt', message: 'Discuss state unreadable' });
+        }
         if (!waited.fulfilled) return jsonResult({ error: waited.error ?? 'setup_wait_failed' });
         continue;
       }
@@ -97,6 +100,9 @@ async function handleBid(
           (s) => s.status === 'bidding' || s.status === 'ended',
           INFINITE_POLL,
         );
+        if (!waited.fulfilled && waited.error === 'state_corrupt') {
+          return jsonResult({ error: 'state_corrupt', message: 'Discuss state unreadable' });
+        }
         if (!waited.fulfilled) return jsonResult({ error: waited.error ?? 'speaking_wait_failed' });
         continue;
       }
@@ -119,7 +125,7 @@ async function handleBid(
           if (bidStepResult.error === 'not_bidding') {
             continue;
           }
-          return resultToMcp(bidStepResult);
+          return jsonResult({ error: bidStepResult.error, ...(bidStepResult.detail ?? {}) });
         }
 
         const bidStep = bidStepResult.value.step;
@@ -128,6 +134,9 @@ async function handleBid(
           (s) => isWinner(resolved)(s) || bidReleased(resolved, bidStep)(s),
           INFINITE_POLL,
         );
+        if (!released.fulfilled && released.error === 'state_corrupt') {
+          return jsonResult({ error: 'state_corrupt', message: 'Discuss state unreadable' });
+        }
         if (!released.fulfilled || !released.state) {
           return jsonResult({ error: released.error ?? 'bid_wait_failed' });
         }
@@ -163,8 +172,8 @@ async function handleSpeak(
       },
     };
   });
-
-  return resultToMcp(applied);
+  if (!applied.ok) return jsonResult({ error: applied.error, ...(applied.detail ?? {}) });
+  return jsonResult(applied.value);
 }
 
 export async function handleAgentOp(input: DiscussAgentOpInput, store: SessionStore): Promise<McpResult> {

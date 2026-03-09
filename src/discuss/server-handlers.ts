@@ -1,4 +1,4 @@
-import { textResult, jsonResult, resultToMcp, type McpResult } from '../shared/mcp-utils.js';
+import { textResult, jsonResult, type McpResult } from '../shared/mcp-utils.js';
 import { z } from 'zod';
 import { SessionStore } from './session-store.js';
 import {
@@ -79,7 +79,8 @@ async function applyStatusChange(
     return { ok: true, value: { status: result.value.status } };
   });
 
-  return resultToMcp(updated);
+  if (!updated.ok) return jsonResult({ error: updated.error, ...(updated.detail ?? {}) });
+  return jsonResult(updated.value);
 }
 
 export const tools = [
@@ -247,7 +248,8 @@ async function handleEpoch(
     return { ok: true, value: { recorded: true, epoch: state.epoch } };
   });
 
-  return resultToMcp(applied);
+  if (!applied.ok) return jsonResult({ error: applied.error, ...(applied.detail ?? {}) });
+  return jsonResult(applied.value);
 }
 
 async function handleState(
@@ -269,7 +271,7 @@ async function handleState(
     speaker_type: state.speaker_type,
     cold_start: state.cold_start,
     bid_threshold: state.bid_threshold,
-    hold_count: state.hold_count,
+    pending_since_ts: state.pending_since_ts,
     agents: Object.fromEntries(
       Object.entries(state.agents).map(([name, agent]) => [
         name,

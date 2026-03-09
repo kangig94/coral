@@ -44,11 +44,19 @@ type ToolRouteResponse = {
   body: unknown;
 };
 
+type ParsedWaitRequest = WaitRequest & { projectRoot: string };
+type ScopeCheckResult = {
+  valid: string[];
+  missing: string[];
+  mismatch: string[];
+};
+
 type RouteToolCallFn = (
   request: ToolRequest,
   helpers: {
     getExecutionService: (ctx: CallerContext) => ExecutionServiceLike;
     abortJobs: (jobIds: string[]) => AbortResult;
+    scopeCheckJobs: (jobIds: string[], projectRoot: string) => ScopeCheckResult;
   },
 ) => Promise<ToolRouteResponse>;
 
@@ -157,9 +165,10 @@ function isWaitCursor(value: unknown): value is WaitCursor {
   return Object.values(value.jobs).every((eventId) => Number.isInteger(eventId) && (eventId as number) >= 0);
 }
 
-function parseWaitRequest(body: unknown): WaitRequest | null {
+function parseWaitRequest(body: unknown): ParsedWaitRequest | null {
   if (!isRecord(body)) return null;
   if (!isStringArray(body.jobIds)) return null;
+  if (typeof body.projectRoot !== 'string' || body.projectRoot.length === 0) return null;
   if ('timeoutSeconds' in body && body.timeoutSeconds !== undefined && typeof body.timeoutSeconds !== 'number') {
     return null;
   }
@@ -170,7 +179,7 @@ function parseWaitRequest(body: unknown): WaitRequest | null {
     jobIds: body.jobIds,
     timeoutSeconds: typeof body.timeoutSeconds === 'number' ? body.timeoutSeconds : undefined,
     cursor: isWaitCursor(body.cursor) ? body.cursor : undefined,
-    projectRoot: typeof body.projectRoot === 'string' && body.projectRoot.length > 0 ? body.projectRoot : undefined,
+    projectRoot: body.projectRoot,
   };
 }
 
@@ -262,6 +271,38 @@ function listLiveJobs(progressStore: ProgressStore): PersistedStatusRecord[] {
       status !== null && (status.phase === 'queued' || status.phase === 'launching' || status.phase === 'running'));
 }
 
+function hasJobDir(progressStore: ProgressStore, jobId: string): boolean {
+  try {
+    readdirSync(progressStore.jobDir(jobId));
+    return true;
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return false;
+    throw error;
+  }
+}
+
+function readSessionRefs(shardDir: string): Array<{ sessionId: string; provider: string }> {
+  try {
+    return readdirSync(shardDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+      .flatMap((entry) => {
+        try {
+          const raw = readFileSync(join(shardDir, entry.name), 'utf-8');
+          const parsed: unknown = JSON.parse(raw);
+          if (!isRecord(parsed)) return [];
+          if (typeof parsed.sessionId !== 'string' || typeof parsed.provider !== 'string') return [];
+          return [{ sessionId: parsed.sessionId, provider: parsed.provider }];
+        } catch (error: unknown) {
+          if (isNoEntryError(error) || error instanceof SyntaxError) return [];
+          throw error;
+        }
+      });
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return [];
+    throw error;
+  }
+}
+
 function markJobAsError(
   progressStore: ProgressStore,
   status: PersistedStatusRecord,
@@ -279,17 +320,38 @@ function markJobAsError(
       log(`Failed to write workflow result for ${status.jobId}: ${formatError(err)}\n`);
     }
   }
-  progressStore.appendTerminal(status.jobId, status.sessionId, terminalResult, 'error');
+  try {
+    progressStore.appendTerminal(status.jobId, status.sessionId, terminalResult, 'error');
+  } catch {
+    progressStore.markTerminalStatus(status.jobId, status.sessionId, terminalResult, 'error');
+  }
 }
 
 function recoverOrphanedJobs(progressStore: ProgressStore, log: (message: string) => void): void {
+  for (const shardDir of SessionManager.listShards()) {
+    try {
+      const sessionManager = SessionManager.openShard(shardDir);
+      for (const sessionRef of readSessionRefs(shardDir)) {
+        try {
+          const session = sessionManager.get(sessionRef.provider, sessionRef.sessionId);
+          if (!session?.activeJobId) continue;
+          if (hasJobDir(progressStore, session.activeJobId)) continue;
+          sessionManager.releaseJob(session.sessionId, session.activeJobId);
+          log(`Recovered orphaned session claim: ${session.sessionId}\n`);
+        } catch (err) {
+          log(`Failed to recover orphaned session ${sessionRef.sessionId}: ${formatError(err)}\n`);
+        }
+      }
+    } catch (err) {
+      log(`Failed to scan session shard ${shardDir}: ${formatError(err)}\n`);
+    }
+  }
+
   for (const status of listLiveJobs(progressStore)) {
     try {
       markJobAsError(progressStore, status, ORPHANED_JOB_NOTICE, log);
-      if (status.projectRoot) {
-        const sessionManager = new SessionManager(status.projectRoot);
-        sessionManager.releaseJob(status.sessionId, status.jobId);
-      }
+      const sessionManager = new SessionManager(status.projectRoot);
+      sessionManager.releaseJob(status.sessionId, status.jobId);
       log(`Recovered orphaned job: ${status.jobId}\n`);
     } catch (err) {
       log(`Failed to recover orphaned job ${status.jobId}: ${formatError(err)}\n`);
@@ -384,6 +446,7 @@ async function routeToolCall(
   helpers: {
     getExecutionService: (ctx: CallerContext) => ExecutionServiceLike;
     abortJobs: (jobIds: string[]) => AbortResult;
+    scopeCheckJobs: (jobIds: string[], projectRoot: string) => ScopeCheckResult;
   },
 ): Promise<ToolRouteResponse> {
   registerBuiltInProviders();
@@ -392,7 +455,11 @@ async function routeToolCall(
     if (!isStringArray(request.args.jobs)) {
       return { statusCode: 400, body: { error: 'invalid_request' } };
     }
-    return { statusCode: 200, body: helpers.abortJobs(request.args.jobs) };
+    const scopeCheck = helpers.scopeCheckJobs(request.args.jobs, request.context.projectRoot);
+    if (scopeCheck.mismatch.length > 0) {
+      return { statusCode: 403, body: { error: 'scope_mismatch', jobs: scopeCheck.mismatch } };
+    }
+    return { statusCode: 200, body: helpers.abortJobs(scopeCheck.valid) };
   }
 
   if (request.name === 'wait') {
@@ -579,7 +646,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
 
   const services = new Map<string, ExecutionServiceLike>();
   const streamResponses = new Set<ServerResponse>();
-  const defaultContext: CallerContext = { projectRoot: process.cwd(), pluginRoot: defaultPluginRoot };
 
   let startedAt = now();
   let lifecycle: LifecycleState = 'starting';
@@ -610,6 +676,27 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     }
 
     return { aborted, notFound: [...pending] };
+  }
+
+  function scopeCheckJobs(jobIds: string[], projectRoot: string): ScopeCheckResult {
+    const valid: string[] = [];
+    const missing: string[] = [];
+    const mismatch: string[] = [];
+
+    for (const jobId of jobIds) {
+      const lookup = progressStore.scopedLookup(jobId, projectRoot);
+      if (lookup === 'mismatch') {
+        mismatch.push(jobId);
+        continue;
+      }
+
+      valid.push(jobId);
+      if (lookup === 'missing') {
+        missing.push(jobId);
+      }
+    }
+
+    return { valid, missing, mismatch };
   }
 
   const server = createServer((req, res) => {
@@ -678,6 +765,16 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       return;
     }
 
+    const scopeCheck = scopeCheckJobs(parsed.jobIds, parsed.projectRoot);
+    if (scopeCheck.mismatch.length > 0) {
+      sendJson(res, 403, { error: 'scope_mismatch' });
+      return;
+    }
+    if (scopeCheck.missing.length === parsed.jobIds.length) {
+      sendJson(res, 404, { error: 'jobs_not_found' });
+      return;
+    }
+
     const inputCursor: WaitCursor = {
       jobs: { ...(headerCursor ?? parsed.cursor ?? { jobs: {} }).jobs },
     };
@@ -688,9 +785,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       ...parsed,
       cursor: inputCursor,
     };
-    const ctx: CallerContext = parsed.projectRoot
-      ? { projectRoot: parsed.projectRoot, pluginRoot: defaultPluginRoot }
-      : defaultContext;
+    const ctx: CallerContext = { projectRoot: parsed.projectRoot, pluginRoot: defaultPluginRoot };
 
     res.statusCode = 200;
     res.setHeader('Content-Type', 'text/event-stream');
@@ -798,6 +893,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       const result = await routeToolCallFn(request, {
         getExecutionService,
         abortJobs,
+        scopeCheckJobs,
       });
       sendJson(res, result.statusCode, result.body);
       return;

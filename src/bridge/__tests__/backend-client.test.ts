@@ -348,7 +348,7 @@ describe('bridge backend-client', () => {
     }));
   });
 
-  it('streamWait parses SSE progress and terminal events', async () => {
+  it('streamWait sends projectRoot and parses SSE progress and terminal events', async () => {
     const client = await loadBackendClientModule();
     fetchMock.mockResolvedValueOnce(new Response([
       'event: progress',
@@ -370,6 +370,8 @@ describe('bridge backend-client', () => {
       5,
       { port: 4100, token: 'backend-token' },
       'cursor-1',
+      undefined,
+      '/tmp/project',
     )) {
       events.push(event);
     }
@@ -398,7 +400,7 @@ describe('bridge backend-client', () => {
         'X-Coral-Backend-Token': 'backend-token',
         'Last-Event-ID': 'cursor-1',
       }),
-      body: JSON.stringify({ jobIds: ['job-1'], timeoutSeconds: 5 }),
+      body: JSON.stringify({ jobIds: ['job-1'], timeoutSeconds: 5, projectRoot: '/tmp/project' }),
     }));
   });
 });

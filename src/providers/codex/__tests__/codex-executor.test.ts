@@ -218,6 +218,19 @@ describe('executeOneShot', () => {
     expect(result.errors).toEqual(['Rate limit']);
   });
 
+  it('throws when codex exits successfully but produces no meaningful output', async () => {
+    mockCliAvailable();
+    const output = jsonl(
+      '{"type":"thread.started","thread_id":"t-empty"}',
+      '{"type":"item.completed","item":{"id":"w1","type":"error","message":"Deprecated API usage"}}',
+    );
+    mockSpawn.mockReturnValue(createMockProcess(output, 0));
+
+    await expect(executeOneShot('test', withAuthenticatedCli())).rejects.toThrow(
+      'Codex produced no meaningful output (no assistant content, no errors)',
+    );
+  });
+
   it('appends -c model_reasoning_effort when effort is set', async () => {
     mockCliAvailable();
     mockAgentProcess();

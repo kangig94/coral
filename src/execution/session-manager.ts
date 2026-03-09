@@ -1,4 +1,4 @@
-import { readFileSync, statSync, writeFileSync, mkdirSync, readdirSync, renameSync } from 'node:fs';
+import { readFileSync, statSync, writeFileSync, mkdirSync, readdirSync, renameSync, rmdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
@@ -17,6 +17,7 @@ export interface SessionEntry {
   cwd: string;
   createdAt: string;
   lastUsedAt: string;
+  version: number;
 }
 
 type CachedSession = {
@@ -39,24 +40,8 @@ function isValidEntry(value: unknown): value is SessionEntry {
     && (v.state === 'pending' || v.state === 'ready' || v.state === 'non_resumable')
     && typeof v.model === 'string'
     && typeof v.cwd === 'string'
+    && typeof v.version === 'number'
     && providerIdentPattern.test(v.provider);
-}
-
-/** Migrate old runner session format to new format if possible. Returns null if migration fails. */
-function migrateOldEntry(value: Record<string, unknown>): SessionEntry | null {
-  if (typeof value.id !== 'string' || typeof value.provider !== 'string') return null;
-  if (!providerIdentPattern.test(value.provider)) return null;
-  return {
-    sessionId: value.id,
-    provider: value.provider as string,
-    name: typeof value.name === 'string' ? value.name : value.id,
-    state: 'ready',
-    conversationRef: typeof value.threadId === 'string' ? value.threadId : undefined,
-    model: typeof value.model === 'string' ? value.model : 'unknown',
-    cwd: typeof value.workingDirectory === 'string' ? value.workingDirectory : '',
-    createdAt: typeof value.createdAt === 'string' ? value.createdAt : new Date().toISOString(),
-    lastUsedAt: typeof value.lastUsedAt === 'string' ? value.lastUsedAt : new Date().toISOString(),
-  };
 }
 
 export class SessionManager {
@@ -68,8 +53,60 @@ export class SessionManager {
     mkdirSync(this.sessionDir, { recursive: true });
   }
 
+  static openShard(shardDir: string): SessionManager {
+    const manager = Object.create(SessionManager.prototype) as SessionManager;
+    (manager as unknown as { sessionDir: string }).sessionDir = shardDir;
+    (manager as unknown as { cache: Map<string, CachedSession> }).cache = new Map();
+    return manager;
+  }
+
+  static listShards(): string[] {
+    const sessionsRoot = join(homedir(), '.claude', 'coral', 'execution', 'sessions');
+    try {
+      return readdirSync(sessionsRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => join(sessionsRoot, entry.name));
+    } catch {
+      return [];
+    }
+  }
+
   private sessionPath(sessionId: string): string {
     return join(this.sessionDir, `${sessionId}.json`);
+  }
+
+  private lockPath(sessionId: string): string {
+    return join(this.sessionDir, `${sessionId}.lock`);
+  }
+
+  private async acquireSessionLock(sessionId: string, timeoutMs = 5000): Promise<() => void> {
+    const lockDir = this.lockPath(sessionId);
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+      try {
+        mkdirSync(lockDir);
+        return () => {
+          try {
+            rmdirSync(lockDir);
+          } catch {}
+        };
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        try {
+          const stats = statSync(lockDir);
+          if (Date.now() - stats.mtimeMs > 30000) {
+            try {
+              rmdirSync(lockDir);
+            } catch {}
+            continue;
+          }
+        } catch {}
+        await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 50));
+      }
+    }
+
+    throw new Error(`Session lock timeout: ${sessionId}`);
   }
 
   private getFileStats(sessionId: string): { mtimeMs: number; size: number } | null {
@@ -109,13 +146,6 @@ export class SessionManager {
         this.populateCache(sessionId, parsed);
         return { ...parsed };
       }
-      if (parsed && typeof parsed === 'object') {
-        const migrated = migrateOldEntry(parsed as Record<string, unknown>);
-        if (migrated) {
-          this.writeEntry(migrated);
-          return { ...migrated };
-        }
-      }
       process.stderr.write(`Warning: Session file ${sessionId}.json has unexpected shape, skipping\n`);
       return null;
     } catch (error: unknown) {
@@ -131,6 +161,7 @@ export class SessionManager {
   private writeEntry(entry: SessionEntry): void {
     const filePath = this.sessionPath(entry.sessionId);
     const tmpPath = filePath + '.tmp';
+    entry.version = (entry.version ?? 0) + 1;
     writeFileSync(tmpPath, JSON.stringify(entry, null, 2), 'utf-8');
     renameSync(tmpPath, filePath);
     this.populateCache(entry.sessionId, entry);
@@ -148,6 +179,7 @@ export class SessionManager {
       cwd,
       createdAt: now,
       lastUsedAt: now,
+      version: 0,
     };
     this.writeEntry(entry);
     return entry;
@@ -172,9 +204,25 @@ export class SessionManager {
     this.writeEntry(entry);
   }
 
+  async claimForJobAtomic(sessionId: string, jobId: string, expectedVersion?: number): Promise<boolean> {
+    const release = await this.acquireSessionLock(sessionId);
+    try {
+      const entry = this.readEntry(sessionId);
+      if (!entry || entry.activeJobId) return false;
+      if (expectedVersion !== undefined && entry.version !== expectedVersion) return false;
+      entry.activeJobId = jobId;
+      entry.lastUsedAt = new Date().toISOString();
+      this.writeEntry(entry);
+      return true;
+    } finally {
+      release();
+    }
+  }
+
   /**
    * Claim the session for a new job. Enforces single-active-job invariant.
    * Returns false if session is already running (activeJobId is set).
+   * @deprecated Use claimForJobAtomic() instead.
    */
   claimForJob(sessionId: string, jobId: string): boolean {
     const entry = this.readEntry(sessionId);

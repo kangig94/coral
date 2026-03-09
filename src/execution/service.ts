@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type {
+  JobKind,
   JobPhase,
   LaunchDecision,
   LaunchState,
@@ -96,6 +97,11 @@ const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
 const QUEUED_ABORT_MESSAGE = 'Aborted while queued.';
 
 type AcceptedAdmission = Exclude<AdmissionResult, 'queue_full'>;
+type ClaimJobOptions = {
+  expectedVersion?: number;
+  initialPhase?: Extract<JobPhase, 'queued' | 'launching'>;
+  jobKind?: JobKind;
+};
 
 function rejectLaunch(code: string, message: string): LaunchDecision {
   return {
@@ -148,6 +154,13 @@ async function runProviderPreflight(provider: Provider): Promise<string | null> 
   }
 }
 
+class SessionClaimError extends Error {
+  constructor() {
+    super('Session claim failed');
+    this.name = 'SessionClaimError';
+  }
+}
+
 export class ExecutionService {
   private readonly sessionManager: SessionManager;
   private readonly abortRegistry: AbortRegistry;
@@ -159,21 +172,79 @@ export class ExecutionService {
     this.progressStore = progressStore ?? new ProgressStore();
   }
 
-  private claimAndAdmitJob(
-    sessionId: string,
+  private async claimJobAtomic(
+    session: SessionEntry,
+    jobId: string,
     providerName: string,
-    sessionBusyMessage: string,
-  ): { jobId: string; admission: AcceptedAdmission } | LaunchDecision {
-    const jobId = randomUUID();
+    projectRoot: string,
+    options: ClaimJobOptions = {},
+  ): Promise<SessionEntry> {
+    this.progressStore.initJob(
+      jobId,
+      session.sessionId,
+      providerName,
+      projectRoot,
+      options.jobKind,
+      options.initialPhase ?? 'launching',
+    );
 
-    if (!this.sessionManager.claimForJob(sessionId, jobId)) {
-      return rejectLaunch('session_busy', sessionBusyMessage);
+    try {
+      const claimed = await this.sessionManager.claimForJobAtomic(
+        session.sessionId,
+        jobId,
+        options.expectedVersion ?? session.version,
+      );
+      if (!claimed) {
+        throw new SessionClaimError();
+      }
+      return session;
+    } catch (error: unknown) {
+      this.progressStore.rollbackJob(jobId);
+      throw error;
+    }
+  }
+
+  private async claimSessionFreshness(sessionId: string, jobId: string, expectedVersion: number): Promise<void> {
+    const claimed = await this.sessionManager.claimForJobAtomic(sessionId, jobId, expectedVersion);
+    if (!claimed) {
+      throw new SessionClaimError();
+    }
+  }
+
+  private rollbackAdmission(jobId: string, admission: AcceptedAdmission): void {
+    if (admission.type === 'queued') {
+      const waitForPermit = admission.waitForPermit();
+      admission.cancel();
+      void waitForPermit.catch(() => {});
+      return;
     }
 
+    releaseLaunch(jobId);
+  }
+
+  private async claimAndAdmitJob(
+    session: SessionEntry,
+    providerName: string,
+    projectRoot: string,
+    sessionBusyMessage: string,
+    expectedVersion: number = session.version,
+  ): Promise<{ jobId: string; admission: AcceptedAdmission } | LaunchDecision> {
+    const jobId = randomUUID();
     const admission = requestLaunch(jobId, providerName);
     if (admission === 'queue_full') {
-      this.sessionManager.releaseJob(sessionId, jobId);
       return rejectLaunch('busy', QUEUE_FULL_MESSAGE);
+    }
+
+    const initialPhase: Extract<JobPhase, 'queued' | 'launching'> = admission.type === 'queued' ? 'queued' : 'launching';
+
+    try {
+      await this.claimJobAtomic(session, jobId, providerName, projectRoot, { expectedVersion, initialPhase });
+    } catch (error: unknown) {
+      this.rollbackAdmission(jobId, admission);
+      if (error instanceof SessionClaimError) {
+        return rejectLaunch('session_busy', sessionBusyMessage);
+      }
+      throw error;
     }
 
     return { jobId, admission };
@@ -183,14 +254,10 @@ export class ExecutionService {
     provider: Provider,
     sessionId: string,
     jobId: string,
-    providerName: string,
     request: ProviderRequest,
     admission: AcceptedAdmission,
-    projectRoot: string,
   ): LaunchDecision {
-    const initialPhase: Extract<JobPhase, 'queued' | 'launching'> = admission.type === 'queued' ? 'queued' : 'launching';
     this.abortRegistry.register(jobId);
-    this.progressStore.initJob(jobId, sessionId, providerName, projectRoot, undefined, initialPhase);
 
     if (admission.type === 'queued') {
       this.markJobQueued(jobId, sessionId, admission.queuePosition);
@@ -214,7 +281,13 @@ export class ExecutionService {
     const model = input.model ?? 'unknown';
 
     const session = this.sessionManager.allocate(providerName, name, model, cwd);
-    const admitted = this.claimAndAdmitJob(session.sessionId, providerName, 'Session is already running a job');
+    const admitted = await this.claimAndAdmitJob(
+      session,
+      providerName,
+      ctx.projectRoot,
+      'Session is already running a job',
+      session.version,
+    );
     if ('status' in admitted) return admitted;
 
     const request: ProviderRequest = {
@@ -234,10 +307,8 @@ export class ExecutionService {
       provider,
       session.sessionId,
       admitted.jobId,
-      providerName,
       request,
       admitted.admission,
-      ctx.projectRoot,
     );
   }
 
@@ -262,11 +333,18 @@ export class ExecutionService {
         `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`,
       );
     }
+    const expectedVersion = session.version;
 
     const preflightError = await runProviderPreflight(provider);
     if (preflightError) return rejectLaunch('preflight_failed', preflightError);
 
-    const admitted = this.claimAndAdmitJob(session.sessionId, providerName, 'Session is already running a job');
+    const admitted = await this.claimAndAdmitJob(
+      session,
+      providerName,
+      ctx.projectRoot,
+      `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`,
+      expectedVersion,
+    );
     if ('status' in admitted) return admitted;
 
     const request: ProviderRequest = {
@@ -286,10 +364,8 @@ export class ExecutionService {
       provider,
       session.sessionId,
       admitted.jobId,
-      providerName,
       request,
       admitted.admission,
-      ctx.projectRoot,
     );
   }
 
@@ -308,44 +384,73 @@ export class ExecutionService {
         `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`,
       );
     }
+    const sourceExpectedVersion = sourceSession.version;
 
     const preflightError = await runProviderPreflight(provider);
     if (preflightError) return rejectLaunch('preflight_failed', preflightError);
 
-    const name = input.name ?? `fork-${Date.now()}`;
-    const model = input.model ?? sourceSession.model;
-    const cwd = input.cwd ?? sourceSession.cwd;
-    const newSession = this.sessionManager.allocate(providerName, name, model, cwd);
-    const admitted = this.claimAndAdmitJob(
-      newSession.sessionId,
-      providerName,
-      'New fork session already has an active job',
+    const latestSourceSession = this.sessionManager.get(providerName, input.sessionId);
+    if (!latestSourceSession) return rejectLaunch(
+      'session_not_found',
+      `Session not found: ${input.sessionId}. Use exec to start a new session.`,
     );
-    if ('status' in admitted) return admitted;
+    if (latestSourceSession.activeJobId) {
+      return rejectLaunch(
+        'session_busy',
+        `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`,
+      );
+    }
 
-    const request: ProviderRequest = {
-      action: 'fork',
-      sessionId: newSession.sessionId,
-      name: input.name,
-      prompt: input.prompt ?? '',
-      conversationRef: sourceSession.conversationRef,
-      model: input.model,
-      cwd,
-      effort: input.effort,
-      bypassPermissions: input.bypassPermissions ?? false,
-      systemPrompt: input.systemPrompt,
-      instruction: input.instruction,
-    };
+    const sourceBusyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
+    const sourceClaimId = randomUUID();
 
-    return this.launchProviderJob(
-      provider,
-      newSession.sessionId,
-      admitted.jobId,
-      providerName,
-      request,
-      admitted.admission,
-      ctx.projectRoot,
-    );
+    try {
+      await this.claimSessionFreshness(sourceSession.sessionId, sourceClaimId, sourceExpectedVersion);
+    } catch (error: unknown) {
+      if (error instanceof SessionClaimError) {
+        return rejectLaunch('session_busy', sourceBusyMessage);
+      }
+      throw error;
+    }
+
+    try {
+      const name = input.name ?? `fork-${Date.now()}`;
+      const model = input.model ?? latestSourceSession.model;
+      const cwd = input.cwd ?? latestSourceSession.cwd;
+      const newSession = this.sessionManager.allocate(providerName, name, model, cwd);
+      const admitted = await this.claimAndAdmitJob(
+        newSession,
+        providerName,
+        ctx.projectRoot,
+        'New fork session already has an active job',
+        newSession.version,
+      );
+      if ('status' in admitted) return admitted;
+
+      const request: ProviderRequest = {
+        action: 'fork',
+        sessionId: newSession.sessionId,
+        name: input.name,
+        prompt: input.prompt ?? '',
+        conversationRef: latestSourceSession.conversationRef,
+        model: input.model,
+        cwd,
+        effort: input.effort,
+        bypassPermissions: input.bypassPermissions ?? false,
+        systemPrompt: input.systemPrompt,
+        instruction: input.instruction,
+      };
+
+      return this.launchProviderJob(
+        provider,
+        newSession.sessionId,
+        admitted.jobId,
+        request,
+        admitted.admission,
+      );
+    } finally {
+      this.sessionManager.releaseJob(sourceSession.sessionId, sourceClaimId);
+    }
   }
 
   async coralDispatch(
@@ -400,6 +505,7 @@ export class ExecutionService {
     ast: PipelineAST,
     input: WorkflowInput,
     ctx: CallerContext,
+    workDir?: string,
   ): Promise<LaunchDecision> {
     if (!getNewProvider(providerName)) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
@@ -408,14 +514,22 @@ export class ExecutionService {
     // does not occupy a child-process slot — only the individual atoms it launches do.
     const jobId = this.abortRegistry.register();
 
-    if (!this.sessionManager.claimForJob(session.sessionId, jobId)) {
-      return rejectLaunch('session_busy', 'Session is already running a job');
+    try {
+      await this.claimJobAtomic(session, jobId, providerName, ctx.projectRoot, {
+        expectedVersion: session.version,
+        jobKind: 'workflow',
+      });
+    } catch (error: unknown) {
+      this.abortRegistry.remove(jobId);
+      if (error instanceof SessionClaimError) {
+        return rejectLaunch('session_busy', 'Session is already running a job');
+      }
+      throw error;
     }
 
-    this.progressStore.initJob(jobId, session.sessionId, providerName, ctx.projectRoot, 'workflow');
     this.markJobRunning(jobId);
 
-    this.runWorkflowAsync(session.sessionId, jobId, providerName, ast, input, ctx);
+    this.runWorkflowAsync(session.sessionId, jobId, providerName, ast, input, ctx, workDir);
     return { status: 'running', job: jobId, session: session.sessionId };
   }
 
@@ -535,6 +649,28 @@ export class ExecutionService {
             break;
           }
         }
+
+        const currentStatus = this.progressStore.readStatus(jobId);
+        if (
+          pending.has(jobId)
+          && currentStatus
+          && (
+            currentStatus.phase === 'completed'
+            || currentStatus.phase === 'error'
+            || currentStatus.phase === 'aborted'
+          )
+        ) {
+          const remainingJobIds = jobIds.filter((id) => id !== jobId && pending.has(id));
+          yield {
+            type: 'terminal',
+            completedJobId: jobId,
+            sessionId: currentStatus.sessionId,
+            remainingJobIds,
+            resultPath: jobResultPath(jobId),
+            result: currentStatus.result ?? { content: '' },
+          };
+          pending.delete(jobId);
+        }
       }
 
       if (pending.size > 0) {
@@ -620,7 +756,7 @@ export class ExecutionService {
           usage: result.usage,
         };
 
-        this.progressStore.appendTerminal(jobId, sessionId, terminalResult, phase);
+        this.writeTerminalResult(jobId, sessionId, terminalResult, phase);
         this.progressStore.writeResultMd(jobId, result.content);
         this.abortRegistry.remove(jobId);
 
@@ -701,7 +837,7 @@ export class ExecutionService {
 
   private finishQueuedAbort(jobId: string, sessionId: string, message: string): void {
     this.progressStore.updateLaunchState(jobId, 'error', message);
-    this.progressStore.appendTerminal(jobId, sessionId, { content: '', aborted: true, notice: message }, 'aborted');
+    this.writeTerminalResult(jobId, sessionId, { content: '', aborted: true, notice: message }, 'aborted');
     this.abortRegistry.remove(jobId);
     this.sessionManager.releaseJob(sessionId, jobId);
   }
@@ -717,7 +853,7 @@ export class ExecutionService {
 
   private failJob(jobId: string, sessionId: string, launchState: LaunchState, message: string): void {
     this.progressStore.updateLaunchState(jobId, launchState, message);
-    this.progressStore.appendTerminal(jobId, sessionId, { content: '', notice: message }, 'error');
+    this.writeTerminalResult(jobId, sessionId, { content: '', notice: message }, 'error');
     this.abortRegistry.remove(jobId);
     this.sessionManager.releaseJob(sessionId, jobId);
   }
@@ -729,11 +865,29 @@ export class ExecutionService {
     result: TerminalResult,
     markdown: string,
   ): void {
-    this.progressStore.writeWorkflowResultMdOrThrow(jobId, markdown);
-    this.progressStore.appendTerminal(jobId, sessionId, result, phase);
-    this.sessionManager.setNonResumable(sessionId);
+    this.persistWorkflowTerminalState(sessionId, jobId, phase, result, markdown);
     this.abortRegistry.remove(jobId);
     this.sessionManager.releaseJob(sessionId, jobId);
+  }
+
+  private persistWorkflowTerminalState(
+    sessionId: string,
+    jobId: string,
+    phase: Extract<JobPhase, 'completed' | 'error' | 'aborted'>,
+    result: TerminalResult,
+    markdown: string,
+  ): void {
+    this.progressStore.writeWorkflowResultMdOrThrow(jobId, markdown);
+    this.writeTerminalResult(jobId, sessionId, result, phase);
+    this.sessionManager.setNonResumable(sessionId);
+  }
+
+  private writeTerminalResult(jobId: string, sessionId: string, result: TerminalResult, phase: JobPhase): void {
+    try {
+      this.progressStore.appendTerminal(jobId, sessionId, result, phase);
+    } catch {
+      this.progressStore.markTerminalStatus(jobId, sessionId, result, phase);
+    }
   }
 
   private finishWorkflowWithEmptyArtifact(
@@ -756,6 +910,7 @@ export class ExecutionService {
     ast: PipelineAST,
     input: WorkflowInput,
     ctx: CallerContext,
+    workDir?: string,
   ): void {
     const signal = this.abortRegistry.getSignal(jobId);
     if (!signal) return;
@@ -769,6 +924,7 @@ export class ExecutionService {
       {
         atoms: input.atoms,
         context: input.context,
+        workDir,
         signal,
         staleTimeoutMs: input.stale_timeout_seconds * 1000,
         onProgress: (message) => {
