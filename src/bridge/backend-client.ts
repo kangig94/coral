@@ -23,7 +23,15 @@ function currentBundleHash(): string {
   return readBundleHash(pluginRoot);
 }
 
-const currentVersion = typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0';
+function currentVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf-8'));
+    return typeof pkg.version === 'string' ? pkg.version : fallbackVersion;
+  } catch {
+    return fallbackVersion;
+  }
+}
+const fallbackVersion = typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0';
 const BACKEND_BIN = join(pluginRoot, 'bridge', 'coral-backend.cjs');
 
 type BackendHealth = {
@@ -207,7 +215,7 @@ function tryAcquireReplacementLock(): ReplacementLock | null {
   const payload = JSON.stringify({
     instanceId: `proxy-replacement-${process.pid}-${Date.now()}`,
     pid: process.pid,
-    version: currentVersion,
+    version: currentVersion(),
     bundleHash: currentBundleHash(),
     startedAt: Date.now(),
   });
