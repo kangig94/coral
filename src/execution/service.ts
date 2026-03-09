@@ -423,6 +423,10 @@ export class ExecutionService {
     return { sessions: this.sessionManager.list(providerName) };
   }
 
+  getConversationRef(providerName: string, sessionId: string): string | undefined {
+    return this.sessionManager.get(providerName, sessionId)?.conversationRef;
+  }
+
   abort(jobIds: string[]): AbortResult {
     const aborted: string[] = [];
     const notFound: string[] = [];
