@@ -48,6 +48,10 @@ export function formatToolProgress(name: string, input: Record<string, unknown>,
       const desc = typeof input.description === 'string' ? input.description : '';
       return `Agent(${truncate(desc)})`;
     }
+    case 'WebSearch':
+      return `WebSearch(${truncate(typeof input.query === 'string' ? input.query : '')})`;
+    case 'WebFetch':
+      return `WebFetch(${truncate(typeof input.url === 'string' ? input.url : '')})`;
     default:
       return `Using: ${name}`;
   }
