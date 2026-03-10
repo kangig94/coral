@@ -46,7 +46,7 @@ function waitToolDescriptor(tool: ToolDescriptor): ToolDescriptor {
 }
 
 async function fetchTools(): Promise<ToolDescriptor[]> {
-  const { port, host, token } = await ensureBackend();
+  const { port, host, token } = await ensureBackend(pluginRoot);
   const response = await fetch(`http://${host}:${port}/tools`, {
     headers: { 'X-Coral-Backend-Token': token },
   });
@@ -141,7 +141,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   try {
     if (name === 'wait') {
       const parsed = waitInputSchema.parse(rawArgs);
-      const backendInfo = await ensureBackend();
+      const backendInfo = await ensureBackend(pluginRoot);
 
       try {
         let progressCount = 0;
