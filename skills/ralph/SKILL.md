@@ -51,10 +51,12 @@ Strip ALL flags before passing the prompt to execution or state file.
     ### Step 1 — Mode Detection
 
     **Plan mode**: plan file path in context, `## Acceptance Criteria` present, or invoked by plan/bugfix/init-project handoff.
-    → Delete ralph state file. Register each AC as a Task.
+    → Write `"implement {plan file path} — all ACs must pass"` to state file prompt. Register each AC as a Task.
 
     **Prompt mode**: everything else.
-    → State file persists for loop continuation. When done: `<promise>{completionPromise}</promise>`.
+    → Write cleaned prompt to state file.
+
+    Both modes: state file persists for loop continuation. When done: `<promise>{completionPromise}</promise>`.
 
     **`--team` pre-flight** (only when `--team` is present):
     1. Verify `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` env var is set to `1`. If not, fall back to sequential.
@@ -97,10 +99,7 @@ Strip ALL flags before passing the prompt to execution or state file.
 
     ### Step 5 — Completion
 
-    **Prompt mode**: If ralph state file exists with non-empty prompt:
-    `<promise>{completionPromise from state file, or "TASK COMPLETE"}</promise>`
-
-    **Plan mode**: Output Completion Report (see `<Output_Format>`).
+    Output Completion Report (see `<Output_Format>`).
   </Protocol>
   <Exec_Default>
     Claude-native sequential execution.
@@ -186,5 +185,7 @@ Strip ALL flags before passing the prompt to execution or state file.
     ### Notes
     ### Remaining Issues
     (none if complete)
+
+    <promise>TASK COMPLETE</promise>
   </Output_Format>
 </Ralph_Protocol>
