@@ -19,6 +19,7 @@ export type BackendInfo = {
 function isBackendInfo(value: unknown): value is BackendInfo {
   if (!value || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
+  if (record.host === undefined) record.host = '127.0.0.1';
   return Number.isInteger(record.pid)
     && (record.pid as number) > 0
     && Number.isInteger(record.port)
