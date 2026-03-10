@@ -1,7 +1,9 @@
 import { jsonResult, type McpResult } from '../../shared/mcp-utils.js';
+import { discussEventLogPath } from '../../client/paths.js';
 import type { DiscussState, Result } from '../types.js';
 import type { DiscussAgentOpInput } from '../schemas.js';
 import type { SessionStore } from '../session-store.js';
+import { prepareMutation, type DiscussMachineEvent } from '../event-log.js';
 import { applyBid, applySpeech, resolveAgentName } from '../state-machine.js';
 import { isWinner, bidReleased, setupComplete, waitForCondition, INFINITE_POLL } from '../wait.js';
 import { formatAgentView } from '../transcript.js';
@@ -117,7 +119,18 @@ async function handleBid(
           if (!result.ok) {
             return { ok: false, error: result.error, detail: result.detail };
           }
-          store.save(sessionDir, result.value);
+          const eventLogPath = discussEventLogPath(sessionDir);
+          const { nextSeq, watermark } = prepareMutation(eventLogPath, 1);
+          const bidEvent: DiscussMachineEvent = {
+            sessionId: result.value.session_id,
+            topic: result.value.topic,
+            projectRoot: store.projectRoot,
+            seq: nextSeq,
+            kind: 'bid_recorded',
+            ts: nowIsoString(),
+            payload: { agent: resolved, step: result.value.step },
+          };
+          store.persistMutation(sessionDir, result.value, [bidEvent], watermark);
           return { ok: true, value: { step: result.value.step } };
         });
 
@@ -163,7 +176,18 @@ async function handleSpeak(
     if (!result.ok) {
       return { ok: false, error: result.error, detail: result.detail };
     }
-    store.save(sessionDir, result.value);
+    const eventLogPath = discussEventLogPath(sessionDir);
+    const { nextSeq, watermark } = prepareMutation(eventLogPath, 1);
+    const speechEvent: DiscussMachineEvent = {
+      sessionId: result.value.session_id,
+      topic: result.value.topic,
+      projectRoot: store.projectRoot,
+      seq: nextSeq,
+      kind: 'speech_recorded',
+      ts: nowIsoString(),
+      payload: { agent: resolved, step: result.value.step, contentLength: input.content.length },
+    };
+    store.persistMutation(sessionDir, result.value, [speechEvent], watermark);
     return {
       ok: true,
       value: {

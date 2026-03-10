@@ -16,6 +16,7 @@ export interface SessionEntry {
   conversationRef?: string;
   model: string;
   cwd: string;
+  projectRoot?: string;
   createdAt: string;
   lastUsedAt: string;
   version: number;
@@ -42,7 +43,8 @@ function isValidEntry(value: unknown): value is SessionEntry {
     && typeof v.model === 'string'
     && typeof v.cwd === 'string'
     && typeof v.version === 'number'
-    && providerIdentPattern.test(v.provider);
+    && providerIdentPattern.test(v.provider)
+    && (v.projectRoot === undefined || typeof v.projectRoot === 'string');
 }
 
 export class SessionManager {
@@ -173,11 +175,12 @@ export class SessionManager {
       sessionId: entry.sessionId,
       shardHash,
       version: entry.version,
+      ...(entry.projectRoot !== undefined ? { projectRoot: entry.projectRoot } : {}),
     });
   }
 
   /** Allocate a new sessionId and persist as 'pending'. Returns the new entry. */
-  allocate(provider: string, name: string, model: string, cwd: string): SessionEntry {
+  allocate(provider: string, name: string, model: string, cwd: string, projectRoot?: string): SessionEntry {
     const now = new Date().toISOString();
     const entry: SessionEntry = {
       sessionId: randomUUID(),
@@ -186,6 +189,7 @@ export class SessionManager {
       state: 'pending',
       model,
       cwd,
+      ...(projectRoot !== undefined ? { projectRoot } : {}),
       createdAt: now,
       lastUsedAt: now,
       version: 0,

@@ -9,11 +9,13 @@ import type { AgentState, DiscussState } from './types.js';
 import { writeStateAtomic, SessionLock } from './lock.js';
 
 export class SessionStore {
+  readonly projectRoot: string;
   private readonly discussDir: string;
   private lock = new SessionLock();
   private renderCursors = new Map<string, number>();
 
   constructor(projectRoot: string) {
+    this.projectRoot = projectRoot;
     this.discussDir = path.join(projectRoot, '.claude', 'coral', 'discuss');
     fs.mkdirSync(this.discussDir, { recursive: true });
   }
@@ -96,6 +98,9 @@ export class SessionStore {
     return state;
   }
 
+  /**
+   * @internal For test use only. Production code must use persistMutation().
+   */
   save(fullSessionPath: string, state: DiscussState): void {
     const cursor = this.renderCursors.get(fullSessionPath) ?? 0;
     const newEntries = state.transcript.slice(cursor);

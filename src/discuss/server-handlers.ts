@@ -22,6 +22,8 @@ import type { DiscussState, Result } from './types.js';
 import { handleAgentOp } from './handlers/bid.js';
 import { handleStep } from './handlers/step.js';
 import { nowIsoString } from './util/time.js';
+import { prepareMutation, type DiscussMachineEvent } from './event-log.js';
+import { discussEventLogPath } from '../client/paths.js';
 
 type ToolParseResult<T> = { ok: true; value: T } | { ok: false; value: McpResult };
 
@@ -59,28 +61,6 @@ function formatTranscriptForMode(
     default:
       return formatRecent(state.transcript, input.last_n ?? 5, state.agents);
   }
-}
-
-async function applyStatusChange(
-  sessionId: string,
-  store: SessionStore,
-  apply: (state: DiscussState) => Result<DiscussState>,
-): Promise<McpResult> {
-  const sessionDir = store.resolveOrError(sessionId);
-  if (typeof sessionDir !== 'string') return sessionDir;
-
-  const updated = await store.withLock<Result<{ status: string }>>(sessionDir, async () => {
-    const state = store.load(sessionDir);
-    const result = apply(state);
-    if (!result.ok) return result;
-    if (result.value !== state) {
-      store.save(sessionDir, result.value);
-    }
-    return { ok: true, value: { status: result.value.status } };
-  });
-
-  if (!updated.ok) return jsonResult({ error: updated.error, ...(updated.detail ?? {}) });
-  return jsonResult(updated.value);
 }
 
 export const tools = [
@@ -206,7 +186,18 @@ async function handleCreate(
 
   await store.withLock(fullPath, async () => {
     store.initTranscript(fullPath, input.topic, state.agents);
-    store.save(fullPath, state);
+    const eventLogPath = discussEventLogPath(fullPath);
+    const { nextSeq, watermark } = prepareMutation(eventLogPath, 1);
+    const createdEvent: DiscussMachineEvent = {
+      sessionId: state.session_id,
+      topic: state.topic,
+      projectRoot: store.projectRoot,
+      seq: nextSeq,
+      kind: 'created',
+      ts: nowIsoString(),
+      payload: { agents: Object.keys(state.agents), topic: state.topic },
+    };
+    store.persistMutation(fullPath, state, [createdEvent], watermark);
   });
 
   return jsonResult({
@@ -244,7 +235,18 @@ async function handleEpoch(
     const state = store.load(sessionDir);
     const result = applyEpochSummary(state, input.summary, nowIsoString());
     if (!result.ok) return result;
-    store.save(sessionDir, result.value);
+    const eventLogPath = discussEventLogPath(sessionDir);
+    const { nextSeq, watermark } = prepareMutation(eventLogPath, 1);
+    const epochEvent: DiscussMachineEvent = {
+      sessionId: result.value.session_id,
+      topic: result.value.topic,
+      projectRoot: store.projectRoot,
+      seq: nextSeq,
+      kind: 'epoch_summary_recorded',
+      ts: nowIsoString(),
+      payload: { epoch: state.epoch },
+    };
+    store.persistMutation(sessionDir, result.value, [epochEvent], watermark);
     return { ok: true, value: { recorded: true, epoch: state.epoch } };
   });
 
@@ -299,23 +301,53 @@ async function handleEnd(
     return textResult('reason is required when force=true', true);
   }
 
-  return applyStatusChange(input.session, store, (state) =>
-    applyEnd(
-      state,
-      {
-        force: input.force,
-        reason: input.reason,
-      },
-      nowIsoString(),
-    ),
-  );
+  const sessionDir = store.resolveOrError(input.session);
+  if (typeof sessionDir !== 'string') return sessionDir;
+
+  const updated = await store.withLock<Result<{ status: string }>>(sessionDir, async () => {
+    const state = store.load(sessionDir);
+    const result = applyEnd(state, { force: input.force, reason: input.reason }, nowIsoString());
+    if (!result.ok) return result;
+    const eventLogPath = discussEventLogPath(sessionDir);
+    const { nextSeq, watermark } = prepareMutation(eventLogPath, 1);
+    const endEvent: DiscussMachineEvent = {
+      sessionId: result.value.session_id,
+      topic: result.value.topic,
+      projectRoot: store.projectRoot,
+      seq: nextSeq,
+      kind: 'session_ended',
+      ts: nowIsoString(),
+      payload: { reason: input.reason ?? 'ended' },
+    };
+    store.persistMutation(sessionDir, result.value, [endEvent], watermark);
+    return { ok: true, value: { status: result.value.status } };
+  });
+
+  if (!updated.ok) return jsonResult({ error: updated.error, ...(updated.detail ?? {}) });
+  return jsonResult(updated.value);
 }
 
 async function handleSynthesize(
   input: Extract<DiscussLeadOpInput, { op: '_8_synthesize' }>,
   store: SessionStore,
 ): Promise<McpResult> {
-  return applyStatusChange(input.session, store, (state) => applySynthesis(state, input.synthesis, nowIsoString()));
+  const sessionDir = store.resolveOrError(input.session);
+  if (typeof sessionDir !== 'string') return sessionDir;
+
+  const updated = await store.withLock<Result<{ status: string }>>(sessionDir, async () => {
+    const state = store.load(sessionDir);
+    const result = applySynthesis(state, input.synthesis, nowIsoString());
+    if (!result.ok) return result;
+    if (result.value !== state) {
+      const eventLogPath = discussEventLogPath(sessionDir);
+      const { watermark } = prepareMutation(eventLogPath, 0);
+      store.persistMutation(sessionDir, result.value, [], watermark);
+    }
+    return { ok: true, value: { status: result.value.status } };
+  });
+
+  if (!updated.ok) return jsonResult({ error: updated.error, ...(updated.detail ?? {}) });
+  return jsonResult(updated.value);
 }
 
 async function handleDiscussLeadOp(input: DiscussLeadOpInput, store: SessionStore): Promise<McpResult> {
