@@ -127,7 +127,7 @@ function writeRawSessionState(sid: string, raw: string): void {
   renameSync(tmpPath, statePath);
 }
 
-async function corruptStateRepeatedly(sid: string, count = 3, spacingMs = 20): Promise<void> {
+async function corruptStateRepeatedly(sid: string, count = 3, spacingMs = 60): Promise<void> {
   for (let attempt = 0; attempt < count; attempt += 1) {
     writeRawSessionState(sid, 'not-json');
     if (attempt < count - 1) {

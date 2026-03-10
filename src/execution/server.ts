@@ -19,7 +19,8 @@ import { IdleTimer } from './idle-timer.js';
 import { createReplayCursor, ProgressStore, JOBS_DIR } from './progress-store.js';
 import type { CallerContext, ToolRequest } from './request-context.js';
 import { SessionManager, type SessionEntry } from './session-manager.js';
-import { readSessionEntryLenient, type LenientSessionEntry } from '../client/readers.js';
+import { readSessionEntryLenient, readDiscussState, type LenientSessionEntry } from '../client/readers.js';
+import { discussBaseDir } from '../client/paths.js';
 import { getAllNewProviders, getNewProvider } from '../providers/registry.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import {
@@ -89,6 +90,7 @@ type BackendServerOptions = {
 
 export type BackendServerInfo = {
   port: number;
+  host: string;
   token: string;
   version: string;
   bundleHash: string;
@@ -587,17 +589,25 @@ function writeSseEvent(
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
-async function listen(server: Server): Promise<number> {
+function resolveClientHost(bindHost: string): string {
+  const override = process.env.CORAL_BACKEND_ADVERTISE_HOST;
+  if (override) return override;
+  if (bindHost === '0.0.0.0') return '127.0.0.1';
+  if (bindHost === '::') return '::1';
+  return bindHost;
+}
+
+async function listen(server: Server, bindHost: string): Promise<{ port: number; host: string }> {
   return new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
+    server.listen(0, bindHost, () => {
       server.off('error', reject);
       const address = server.address();
       if (!address || typeof address === 'string') {
         reject(new Error('Backend server failed to bind to a TCP port'));
         return;
       }
-      resolve(address.port);
+      resolve({ port: address.port, host: resolveClientHost(bindHost) });
     });
   });
 }
@@ -732,6 +742,64 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     }
 
     return entries;
+  }
+
+  type DiscussSessionSummary = {
+    sessionId: string;
+    projectRoot: string;
+    topic: string;
+    status: string;
+    createdAt: string;
+    agentCount: number;
+  };
+
+  function listDiscussSessions(): DiscussSessionSummary[] {
+    const projectRoots = new Set<string>(discussBridges.keys());
+    for (const { sessions } of listAllSessions()) {
+      for (const s of sessions) {
+        if (s.projectRoot) projectRoots.add(s.projectRoot);
+      }
+    }
+
+    const results: DiscussSessionSummary[] = [];
+    for (const projectRoot of projectRoots) {
+      const baseDir = discussBaseDir(projectRoot);
+      let entries: { name: string; isDirectory(): boolean }[];
+      try {
+        entries = readdirSync(baseDir, { withFileTypes: true });
+      } catch (error: unknown) {
+        if (isNoEntryError(error)) continue;
+        throw error;
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const state = readDiscussState(join(baseDir, entry.name, 'state.json'));
+        if (!state) continue;
+        results.push({
+          sessionId: state.session_id,
+          projectRoot,
+          topic: state.topic,
+          status: state.status,
+          createdAt: state.created_at,
+          agentCount: Object.keys(state.agents).length,
+        });
+      }
+    }
+    return results;
+  }
+
+  function resolveDiscussDir(projectRoot: string, sessionId: string): string | null {
+    const baseDir = discussBaseDir(projectRoot);
+    let entries: string[];
+    try {
+      entries = readdirSync(baseDir);
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) return null;
+      throw error;
+    }
+    if (entries.includes(sessionId)) return join(baseDir, sessionId);
+    const match = entries.find((e) => e.startsWith(`${sessionId}-`));
+    return match ? join(baseDir, match) : null;
   }
 
   const server = createServer((req, res) => {
@@ -1106,12 +1174,40 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         sendJson(res, 200, detail);
         return;
       }
-    }
 
-    if (req.method === 'GET' && req.url === '/api/sessions') {
-      req.resume();
-      sendJson(res, 200, { sessions: listAllSessions() });
-      return;
+      if (pathname === '/api/sessions') {
+        req.resume();
+        sendJson(res, 200, { sessions: listAllSessions() });
+        return;
+      }
+
+      if (pathname === '/api/discuss') {
+        req.resume();
+        sendJson(res, 200, { sessions: listDiscussSessions() });
+        return;
+      }
+
+      if (pathname === '/api/discuss/detail') {
+        req.resume();
+        const projectRoot = parsedUrl.searchParams.get('projectRoot');
+        const sessionId = parsedUrl.searchParams.get('sessionId');
+        if (!projectRoot || !sessionId) {
+          sendJson(res, 400, { error: 'missing_params', message: 'projectRoot and sessionId are required' });
+          return;
+        }
+        const sessionDir = resolveDiscussDir(projectRoot, sessionId);
+        if (!sessionDir) {
+          sendJson(res, 404, { error: 'session_not_found' });
+          return;
+        }
+        const state = readDiscussState(join(sessionDir, 'state.json'));
+        if (!state) {
+          sendJson(res, 404, { error: 'session_not_found' });
+          return;
+        }
+        sendJson(res, 200, { session: state });
+        return;
+      }
     }
 
     req.resume();
@@ -1126,11 +1222,13 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     try {
       await acquireLockFn(instanceId, version, bundleHash);
       recoverOrphanedJobsFn();
-      const port = await listen(server);
+      const bindHost = process.env.CORAL_BACKEND_BIND ?? '127.0.0.1';
+      const { port, host } = await listen(server, bindHost);
       startedAt = now();
       writeBackendInfoFn({
         pid: process.pid,
         port,
+        host,
         token,
         version,
         bundleHash,
@@ -1152,6 +1250,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
 
       return {
         port,
+        host,
         token,
         version,
         bundleHash,
@@ -1203,7 +1302,7 @@ async function main(): Promise<void> {
 
   try {
     const info = await backend.start();
-    process.stderr.write(`Coral backend running on 127.0.0.1:${info.port}\n`);
+    process.stderr.write(`Coral backend running on ${info.host}:${info.port}\n`);
   } catch (error: unknown) {
     if (error instanceof BackendAlreadyRunningError) {
       process.stderr.write(`${error.message}\n`);

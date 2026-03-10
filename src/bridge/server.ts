@@ -46,8 +46,8 @@ function waitToolDescriptor(tool: ToolDescriptor): ToolDescriptor {
 }
 
 async function fetchTools(): Promise<ToolDescriptor[]> {
-  const { port, token } = await ensureBackend();
-  const response = await fetch(`http://127.0.0.1:${port}/tools`, {
+  const { port, host, token } = await ensureBackend();
+  const response = await fetch(`http://${host}:${port}/tools`, {
     headers: { 'X-Coral-Backend-Token': token },
   });
   if (!response.ok) {
