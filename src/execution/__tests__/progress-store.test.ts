@@ -147,7 +147,7 @@ describe('execution ProgressStore', () => {
     expect(store.readStatus(jobId)).toMatchObject({ phase: 'launching' });
   });
 
-  it('writeStatus non-terminal updates cache immediately (async disk write)', () => {
+  it('writeStatus non-terminal writes sync (same as terminal)', () => {
     const store = new ProgressStore();
     const jobId = `progress-atomic-nonterminal-${randomUUID()}`;
     jobIdsToClean.add(jobId);
@@ -166,10 +166,9 @@ describe('execution ProgressStore', () => {
 
     store.writeStatus(jobId, record);
 
-    // Cache is updated immediately — readStatus returns new record synchronously
     expect(store.readStatus(jobId)).toMatchObject({ phase: 'running', launch: { state: 'ready' } });
-    // Non-terminal disk write is async — renameSync is NOT called synchronously
-    expect(renameCalls).toHaveLength(0);
+    // All writes are now sync — renameSync is called immediately
+    expect(renameCalls.length).toBeGreaterThan(0);
   });
 
   it('writeStatus terminal is atomic (sync renameSync before cache)', () => {
@@ -248,11 +247,9 @@ describe('execution ProgressStore', () => {
     const internals = store as unknown as {
       eventCounters: Map<string, number>;
       jobStartedAt: Map<string, number>;
-      writeGeneration: Map<string, number>;
     };
     expect(internals.eventCounters.has(jobId)).toBe(false);
     expect(internals.jobStartedAt.has(jobId)).toBe(false);
-    expect(internals.writeGeneration.has(jobId)).toBe(false);
   });
 
   it('markTerminalStatus emits job:completed', () => {
