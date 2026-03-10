@@ -289,6 +289,11 @@ describe('execution backend server', () => {
     expect(body.some((tool) => tool.name === 'wait')).toBe(true);
     expect(body.some((tool) => tool.name === 'abort')).toBe(true);
     expect(body.some((tool) => tool.name === 'workflow')).toBe(true);
+    expect(body.some((tool) => tool.name === 'discuss_seed')).toBe(true);
+    expect(body.some((tool) => tool.name === 'discuss_start')).toBe(true);
+    expect(body.some((tool) => tool.name === 'discuss_abort')).toBe(true);
+    expect(body.some((tool) => tool.name === 'discuss_watch')).toBe(true);
+    expect(body.some((tool) => tool.name === 'discuss_participate')).toBe(true);
   });
 
   it('returns 404 for unknown /tool requests', async () => {

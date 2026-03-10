@@ -8,7 +8,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { ensureBackend, proxyToolCall, streamWait } from './backend-client.js';
 import { buildToolList, handleBackendToolCall } from './backend-tool.js';
-import { isRecord, jsonResult, mcpError, textResult } from '../shared/mcp-utils.js';
+import { isRecord, jsonResult, mcpError, textResult, type McpResult } from '../shared/mcp-utils.js';
 import { waitInputSchema } from '../shared/schemas.js';
 
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
@@ -119,6 +119,16 @@ function waitFailureResult(error: unknown): ReturnType<typeof mcpError> {
   });
 }
 
+function isMcpTextResult(value: unknown): value is McpResult {
+  return isRecord(value)
+    && typeof value.isError === 'boolean'
+    && Array.isArray(value.content)
+    && value.content.every((entry) =>
+      isRecord(entry)
+      && entry.type === 'text'
+      && typeof entry.text === 'string');
+}
+
 const server = new Server(
   { name: 'coral', version },
   { capabilities: { tools: {} } },
@@ -208,6 +218,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       projectRoot: process.cwd(),
       pluginRoot,
     });
+
+    if (isMcpTextResult(response)) {
+      return response;
+    }
 
     if (isRecord(response) && response.status === 'rejected') {
       return textResult(

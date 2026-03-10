@@ -18,7 +18,7 @@ Claude Code's hook system executes scripts on specific events. Coral uses hooks 
 
 ## Hook Configuration
 
-Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/kb-lookup-reminder.mjs`, `hooks/kb-memo-reminder.mjs`, `hooks/kb-promote-gate.mjs`, `hooks/ralph-loop.mjs`, `hooks/stale-cleanup.mjs`, `hooks/discuss-idle-guard.mjs`, `hooks/backend-warm-start.mjs`, `hooks/hud-auto-update.mjs`.
+Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/kb-lookup-reminder.mjs`, `hooks/kb-memo-reminder.mjs`, `hooks/kb-promote-gate.mjs`, `hooks/ralph-loop.mjs`, `hooks/stale-cleanup.mjs`, `hooks/backend-warm-start.mjs`, `hooks/hud-auto-update.mjs`.
 
 All hook scripts are **Node.js ESM** (`.mjs`). They read input JSON from stdin, write output JSON to stdout, and **fail-open** via `try/catch { process.exit(0) }` - a crash or timeout never blocks the user.
 
@@ -118,19 +118,6 @@ When flag exists:
 2. `decision: "block"` prevents Claude from stopping
 3. `reason` instructs Claude to review memos for KB promotion (even if no memos exist, the block fires to ensure the KB review step runs)
 
-## TeammateIdle Hook (Discuss Idle Guard)
-
-Script: `hooks/discuss-idle-guard.mjs`. Fires when a teammate goes idle (matcher: agent names matching `dc-*`).
-
-Reads the discuss session's `state.json` and checks whether the idle agent has a pending action:
-- Has a pending bid to submit → block idle (exit 2)
-- Is the current speaker with no speech delivered → block idle (exit 2)
-- Has a pending vote to cast → block idle (exit 2)
-- No pending action → allow idle (exit 0)
-
-**Purpose**: Prevents discuss agents from going idle mid-protocol. If a discussant agent becomes idle before submitting a bid, delivering a speech, or casting a vote, the hook blocks the idle and the agent receives a reminder to complete its action.
-
-**Fail-open**: Any read error or missing session file → silent exit 0 (allow idle).
 
 ## Ralph Loop Hook (ralph-loop.mjs)
 

@@ -130,17 +130,6 @@
           }
         ]
       }
-    ],
-    "TeammateIdle": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/discuss-idle-guard.mjs\"",
-            "timeout": 5
-          }
-        ]
-      }
     ]
   }
 }

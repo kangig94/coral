@@ -1,6 +1,8 @@
 # Discuss - Moderated Multi-Agent Discussion
 
-A structured, turn-based discussion system where multiple AI agents debate a topic with unique personas, managed by an automated moderator. Built on Claude Code Agent Teams and the `dc` MCP server.
+> **Note**: This document describes the legacy Agent Teams-based discuss architecture. The current implementation uses backend-direct control: the `DiscussManager` in `src/execution/discuss-manager.ts` owns the discussion loop, and participants are launched via `ExecutionService` (pool: 'discuss'). The `dc` MCP server and Agent Teams (`discuss-lead`, `discussant`) have been removed. New entry points are the `discuss_seed`, `discuss_start`, `discuss_watch`, `discuss_participate`, and `discuss_abort` backend tools. The state machine (`src/discuss/state-machine.ts`) and invariants described below remain accurate.
+
+A structured, turn-based discussion system where multiple AI agents debate a topic with unique personas, managed by the backend's `DiscussManager`.
 
 ## How It Works
 

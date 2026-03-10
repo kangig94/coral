@@ -6,7 +6,16 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFileSync, readdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { isNoEntryError, isRecord, formatError, providerIdentPattern, readBundleHash } from '../shared/mcp-utils.js';
+import { z } from 'zod';
+import {
+  formatError,
+  isNoEntryError,
+  isRecord,
+  providerIdentPattern,
+  readBundleHash,
+  textResult,
+  type McpResult,
+} from '../shared/mcp-utils.js';
 import { sharedExecSchema, sharedForkSchema, sharedResumeSchema } from '../shared/schemas.js';
 import type { ExecutionService } from './service.js';
 import { activeChildren, killAllChildren, queueDepth } from './engine.js';
@@ -19,10 +28,13 @@ import { IdleTimer } from './idle-timer.js';
 import { createReplayCursor, ProgressStore, JOBS_DIR } from './progress-store.js';
 import type { CallerContext, ToolRequest } from './request-context.js';
 import { SessionManager, type SessionEntry } from './session-manager.js';
+import { DiscussManagerRegistry, type DiscussManager } from './discuss-manager.js';
 import { readSessionEntryLenient, readDiscussState, type LenientSessionEntry } from '../client/readers.js';
 import { discussBaseDir } from '../client/paths.js';
 import { getAllNewProviders, getNewProvider } from '../providers/registry.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
+import { seedPersonas } from '../discuss/persona-seed.js';
+import { applyBid, applySpeech } from '../discuss/state-machine.js';
 import {
   ExecutionService as DefaultExecutionService,
 } from './service.js';
@@ -36,12 +48,14 @@ import type {
   WaitRequest,
   WaitStreamEvent,
 } from '../types.js';
+import type { BidResult, DiscussState, SpeechResult, TranscriptEntry } from '../discuss/types.js';
+import { nowIsoString } from '../discuss/util/time.js';
 
 export type LifecycleState = 'starting' | 'running' | 'draining' | 'stopped';
 
 type ExecutionServiceLike = Pick<
   ExecutionService,
-  'start' | 'resume' | 'fork' | 'coralDispatch' | 'executeWorkflow' | 'list' | 'abort' | 'waitStream'
+  'start' | 'resume' | 'fork' | 'coralDispatch' | 'executeWorkflow' | 'list' | 'abort' | 'waitStream' | 'waitStreamOnce'
 >;
 
 type ToolRouteResponse = {
@@ -60,6 +74,7 @@ type RouteToolCallFn = (
   request: ToolRequest,
   helpers: {
     getExecutionService: (ctx: CallerContext) => ExecutionServiceLike;
+    getDiscussManager: (ctx: CallerContext) => DiscussManager;
     abortJobs: (jobIds: string[]) => AbortResult;
     scopeCheckJobs: (jobIds: string[], projectRoot: string) => ScopeCheckResult;
   },
@@ -86,6 +101,7 @@ type BackendServerOptions = {
   killAllChildrenFn?: () => void;
   onStopped?: () => void;
   onFatalShutdownError?: (error: unknown) => void;
+  discussRegistry?: DiscussManagerRegistry;
 };
 
 export type BackendServerInfo = {
@@ -111,6 +127,88 @@ const SHUTDOWN_POLL_MS = 50;
 const ORPHANED_JOB_NOTICE = 'Unclean shutdown - orphaned job';
 const CORAL_OP_PREFIX = 'coral:';
 const defaultPluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
+const globalDiscussRegistry = new DiscussManagerRegistry();
+
+const ControversyAxisSchema = z.object({
+  axis: z.string(),
+  positions: z.array(z.string()),
+});
+const DemographicsSchema = z.object({
+  origin_weights: z.record(z.number()),
+  outlier_ratio: z.number().optional(),
+});
+const discussSeedSchema = z.object({
+  controversy_axes: z.array(ControversyAxisSchema),
+  n: z.number().int().min(1).max(20),
+  demographics: DemographicsSchema.optional(),
+  seed: z.number().int(),
+});
+const AgentInputSchema = z.object({
+  name: z.string(),
+  persona: z.string(),
+  participation: z.enum(['required', 'observer']).optional(),
+  provider: z.string().optional(),
+  model: z.string().optional(),
+});
+const discussStartSchema = z.object({
+  topic: z.string().min(1),
+  agents: z.array(AgentInputSchema).min(2),
+  config: z.object({
+    min_bid_delay_ms: z.number().int().min(0).optional(),
+  }).optional(),
+});
+const discussSessionSchema = z.object({
+  session: z.string().min(1),
+});
+const discussParticipateBidSchema = z.object({
+  session: z.string().min(1),
+  agent_name: z.string().min(1),
+  score: z.number().int().min(0).max(100),
+  thought: z.string(),
+  content: z.undefined().optional(),
+});
+const discussParticipateSpeechSchema = z.object({
+  session: z.string().min(1),
+  agent_name: z.string().min(1),
+  content: z.string(),
+  score: z.undefined().optional(),
+  thought: z.undefined().optional(),
+});
+const discussParticipateSchema = z.union([
+  discussParticipateBidSchema,
+  discussParticipateSpeechSchema,
+]);
+
+function jsonTextResult(data: unknown, isError = false): McpResult {
+  return textResult(JSON.stringify(data), isError);
+}
+
+function toolValidationError(error: z.ZodError): ToolRouteResponse {
+  return {
+    statusCode: 200,
+    body: jsonTextResult({
+      error: 'invalid_request',
+      message: error.message,
+    }, true),
+  };
+}
+
+function toolError(error: string, detail?: Record<string, unknown>): ToolRouteResponse {
+  return {
+    statusCode: 200,
+    body: jsonTextResult({
+      error,
+      ...(detail === undefined ? {} : detail),
+    }, true),
+  };
+}
+
+function toolSuccess(data: unknown): ToolRouteResponse {
+  return {
+    statusCode: 200,
+    body: jsonTextResult(data),
+  };
+}
 
 function sendJson(res: ServerResponse, statusCode: number, body: unknown): void {
   const payload = JSON.stringify(body);
@@ -386,6 +484,113 @@ function getToolDescriptors(): Array<Record<string, unknown>> {
   return [
     ...providerTools,
     {
+      name: 'discuss_seed',
+      description: 'Generate seeded discussion personas from controversy axes.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          controversy_axes: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                axis: { type: 'string' },
+                positions: { type: 'array', items: { type: 'string' } },
+              },
+              required: ['axis', 'positions'],
+            },
+          },
+          n: { type: 'integer', minimum: 1, maximum: 20 },
+          demographics: {
+            type: 'object',
+            properties: {
+              origin_weights: {
+                type: 'object',
+                additionalProperties: { type: 'number' },
+              },
+              outlier_ratio: { type: 'number' },
+            },
+            required: ['origin_weights'],
+          },
+          seed: { type: 'integer' },
+        },
+        required: ['controversy_axes', 'n', 'seed'],
+      },
+    },
+    {
+      name: 'discuss_start',
+      description: 'Start a backend-managed discussion session.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          topic: { type: 'string', minLength: 1 },
+          agents: {
+            type: 'array',
+            minItems: 2,
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                persona: { type: 'string' },
+                participation: { type: 'string', enum: ['required', 'observer'] },
+                provider: { type: 'string' },
+                model: { type: 'string' },
+              },
+              required: ['name', 'persona'],
+            },
+          },
+          config: {
+            type: 'object',
+            properties: {
+              min_bid_delay_ms: { type: 'integer', minimum: 0 },
+            },
+          },
+        },
+        required: ['topic', 'agents'],
+      },
+    },
+    {
+      name: 'discuss_abort',
+      description: 'Abort a live discussion session.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          session: { type: 'string' },
+        },
+        required: ['session'],
+      },
+    },
+    {
+      name: 'discuss_watch',
+      description: 'Poll the current watch-log snapshot for a discussion session.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          session: { type: 'string' },
+        },
+        required: ['session'],
+      },
+    },
+    {
+      name: 'discuss_participate',
+      description: 'Submit a bid or speech for an active discussion participant.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          session: { type: 'string' },
+          agent_name: { type: 'string' },
+          score: { type: 'integer', minimum: 0, maximum: 100 },
+          thought: { type: 'string' },
+          content: { type: 'string' },
+        },
+        required: ['session', 'agent_name'],
+        oneOf: [
+          { required: ['session', 'agent_name', 'score', 'thought'] },
+          { required: ['session', 'agent_name', 'content'] },
+        ],
+      },
+    },
+    {
       name: 'wait',
       description: 'Stream job progress and completion events over POST /wait/stream.',
       inputSchema: {
@@ -437,10 +642,11 @@ function optionalString(args: Record<string, unknown>, key: string): string | un
   return typeof value === 'string' ? value : undefined;
 }
 
-async function routeToolCall(
+export async function routeToolCall(
   request: ToolRequest,
   helpers: {
     getExecutionService: (ctx: CallerContext) => ExecutionServiceLike;
+    getDiscussManager: (ctx: CallerContext) => DiscussManager;
     abortJobs: (jobIds: string[]) => AbortResult;
     scopeCheckJobs: (jobIds: string[], projectRoot: string) => ScopeCheckResult;
   },
@@ -469,6 +675,159 @@ async function routeToolCall(
     const svc = helpers.getExecutionService(request.context);
     const decision = await handleWorkflow(request.args, svc, request.context);
     return { statusCode: 200, body: decision };
+  }
+
+  if (request.name === 'discuss_seed') {
+    const parsed = discussSeedSchema.safeParse(request.args);
+    if (!parsed.success) {
+      return toolValidationError(parsed.error);
+    }
+
+    const seeded = seedPersonas(parsed.data);
+    if (!seeded.ok) {
+      return toolError(seeded.error, seeded.detail);
+    }
+    return toolSuccess(seeded.value);
+  }
+
+  if (request.name === 'discuss_start') {
+    const parsed = discussStartSchema.safeParse(request.args);
+    if (!parsed.success) {
+      return toolValidationError(parsed.error);
+    }
+
+    const sessionId = randomUUID();
+    try {
+      const manager = helpers.getDiscussManager(request.context);
+      await manager.start(
+        sessionId,
+        parsed.data.topic,
+        parsed.data.agents,
+        parsed.data.config ?? {},
+        request.context,
+      );
+      return toolSuccess({ session: sessionId });
+    } catch (error: unknown) {
+      return toolError('start_failed', {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  if (request.name === 'discuss_abort') {
+    const parsed = discussSessionSchema.safeParse(request.args);
+    if (!parsed.success) {
+      return toolValidationError(parsed.error);
+    }
+
+    const session = helpers.getDiscussManager(request.context).getSession(parsed.data.session);
+    if (!session) {
+      return toolError('session_not_found', { session: parsed.data.session });
+    }
+
+    session.controller.abort();
+    helpers.getDiscussManager(request.context).removeSession(parsed.data.session);
+    return toolSuccess({ ok: true, session: parsed.data.session });
+  }
+
+  if (request.name === 'discuss_watch') {
+    const parsed = discussSessionSchema.safeParse(request.args);
+    if (!parsed.success) {
+      return toolValidationError(parsed.error);
+    }
+
+    const session = helpers.getDiscussManager(request.context).getSession(parsed.data.session);
+    if (!session) {
+      return toolError('session_not_found', { session: parsed.data.session });
+    }
+
+    return toolSuccess({
+      session: parsed.data.session,
+      status: session.state.status,
+      topic: session.state.topic,
+      epoch: session.state.epoch,
+      step: session.state.step,
+      events: session.watchLog.map((event) => ({
+        type: event.type,
+        data: { ...event.data },
+        ts: event.ts,
+      })),
+    });
+  }
+
+  if (request.name === 'discuss_participate') {
+    const parsed = discussParticipateSchema.safeParse(request.args);
+    if (!parsed.success) {
+      return toolValidationError(parsed.error);
+    }
+
+    const manager = helpers.getDiscussManager(request.context);
+    const session = manager.getSession(parsed.data.session);
+    if (!session) {
+      return toolError('session_not_found', { session: parsed.data.session });
+    }
+
+    if (session.state.status === 'ended') {
+      const ended: BidResult | SpeechResult = {
+        action: 'session_ended',
+        reason: session.state.end_reason_content ?? undefined,
+        content: session.state.end_reason_content ?? undefined,
+      };
+      return toolSuccess(ended);
+    }
+
+    if (typeof parsed.data.content === 'string') {
+      if (session.state.current_speaker !== parsed.data.agent_name) {
+        const result: SpeechResult = {
+          action: 'not_your_turn',
+          current_speaker: session.state.current_speaker,
+        };
+        return toolSuccess(result);
+      }
+
+      const applied = applySpeech(
+        session.state,
+        parsed.data.agent_name,
+        parsed.data.content,
+        nowIsoString(),
+      );
+      if (!applied.ok) {
+        return toolError(applied.error, applied.detail);
+      }
+
+      session.state = applied.value;
+      manager.emitWatch(parsed.data.session, {
+        type: 'speech_done',
+        data: {
+          speaker: parsed.data.agent_name,
+          content: parsed.data.content,
+        },
+        ts: Date.now(),
+      });
+      manager.resumeLoop(parsed.data.session, request.context);
+
+      const result: SpeechResult = { action: 'speech_recorded' };
+      return toolSuccess(result);
+    }
+
+    const applied = applyBid(
+      session.state,
+      parsed.data.agent_name,
+      parsed.data.score,
+      parsed.data.thought,
+      nowIsoString(),
+    );
+    if (!applied.ok) {
+      return toolError(applied.error, applied.detail);
+    }
+
+    session.state = applied.value;
+    const result: BidResult = {
+      action: 'listen',
+      speaker: null,
+      content: 'Bid recorded.',
+    };
+    return toolSuccess(result);
   }
 
   if (!getNewProvider(request.name)) {
@@ -620,6 +979,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const instanceId = options.instanceId ?? randomUUID();
   const token = options.token ?? randomBytes(32).toString('hex');
   const idleTimer = options.createIdleTimer?.() ?? new IdleTimer();
+  const discussRegistry = options.discussRegistry ?? globalDiscussRegistry;
   const progressStore = options.progressStore ?? new ProgressStore();
   const now = options.now ?? (() => Date.now());
   const log = options.log ?? ((message: string) => {
@@ -653,6 +1013,10 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     const created = createExecutionService(ctx);
     services.set(key, created);
     return created;
+  }
+
+  function getDiscussManager(ctx: CallerContext): DiscussManager {
+    return discussRegistry.getOrCreate(ctx.projectRoot, getExecutionService(ctx) as ExecutionService);
   }
 
   function abortJobs(jobIds: string[]): AbortResult {
@@ -743,6 +1107,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     return entries;
   }
 
+  type DiscussAuthority = 'live' | 'persisted_non_authoritative';
   type DiscussSessionSummary = {
     sessionId: string;
     projectRoot: string;
@@ -750,18 +1115,47 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     status: string;
     createdAt: string;
     agentCount: number;
+    authority: DiscussAuthority;
   };
 
-  function listDiscussSessions(): DiscussSessionSummary[] {
+  function summarizeDiscussSession(
+    state: DiscussState,
+    projectRoot: string,
+    authority: DiscussAuthority,
+  ): DiscussSessionSummary {
+    return {
+      sessionId: state.session_id,
+      projectRoot,
+      topic: state.topic,
+      status: state.status,
+      createdAt: state.created_at,
+      agentCount: Object.keys(state.agents).length,
+      authority,
+    };
+  }
+
+  function knownDiscussProjectRoots(): Set<string> {
     const projectRoots = new Set<string>();
+    for (const liveSession of discussRegistry.listLiveSessions()) {
+      projectRoots.add(liveSession.projectRoot);
+    }
     for (const { sessions } of listAllSessions()) {
       for (const s of sessions) {
         if (s.projectRoot) projectRoots.add(s.projectRoot);
       }
     }
+    return projectRoots;
+  }
 
-    const results: DiscussSessionSummary[] = [];
-    for (const projectRoot of projectRoots) {
+  function listDiscussSessions(): DiscussSessionSummary[] {
+    const results = new Map<string, DiscussSessionSummary>();
+
+    for (const liveSession of discussRegistry.listLiveSessions()) {
+      const summary = summarizeDiscussSession(liveSession.session.state, liveSession.projectRoot, 'live');
+      results.set(`${summary.projectRoot}\u0000${summary.sessionId}`, summary);
+    }
+
+    for (const projectRoot of knownDiscussProjectRoots()) {
       const baseDir = discussBaseDir(projectRoot);
       let entries: { name: string; isDirectory(): boolean }[];
       try {
@@ -774,17 +1168,103 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         if (!entry.isDirectory()) continue;
         const state = readDiscussState(join(baseDir, entry.name, 'state.json'));
         if (!state) continue;
-        results.push({
-          sessionId: state.session_id,
-          projectRoot,
-          topic: state.topic,
-          status: state.status,
-          createdAt: state.created_at,
-          agentCount: Object.keys(state.agents).length,
-        });
+        const key = `${projectRoot}\u0000${state.session_id}`;
+        if (results.has(key)) continue;
+        results.set(key, summarizeDiscussSession(state, projectRoot, 'persisted_non_authoritative'));
       }
     }
-    return results;
+
+    return [...results.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  function redactDiscussTranscriptEntry(entry: TranscriptEntry): Record<string, unknown> {
+    switch (entry.type) {
+      case 'bids':
+        return {
+          type: entry.type,
+          step: entry.step,
+          epoch: entry.epoch,
+          ts: entry.ts,
+          winner: entry.winner,
+          resolve_type: entry.resolve_type,
+        };
+      case 'speech':
+        return {
+          type: entry.type,
+          step: entry.step,
+          epoch: entry.epoch,
+          ts: entry.ts,
+          agent: entry.agent,
+          display_name: entry.display_name,
+          content: entry.content,
+        };
+      case 'follow_up':
+        return {
+          type: entry.type,
+          epoch: entry.epoch,
+          ts: entry.ts,
+          agent: entry.agent,
+          question: entry.question,
+          answer: entry.answer,
+        };
+      case 'epoch_summary':
+        return {
+          type: entry.type,
+          epoch: entry.epoch,
+          ts: entry.ts,
+          summary: entry.summary,
+        };
+      case 'session_event':
+        return {
+          type: entry.type,
+          epoch: entry.epoch,
+          ts: entry.ts,
+          event: entry.event,
+          detail: entry.detail,
+        };
+    }
+  }
+
+  function redactDiscussState(
+    state: DiscussState,
+    projectRoot: string,
+    authority: DiscussAuthority,
+  ): {
+    authority: DiscussAuthority;
+    session: Record<string, unknown>;
+  } {
+    return {
+      authority,
+      session: {
+        sessionId: state.session_id,
+        projectRoot,
+        topic: state.topic,
+        status: state.status,
+        step: state.step,
+        epoch: state.epoch,
+        maxEpochs: state.max_epochs,
+        quotaPerEpoch: state.quota_per_epoch,
+        coldStart: state.cold_start,
+        currentSpeaker: state.current_speaker,
+        speakerType: state.speaker_type,
+        epochSummaryWritten: state.epoch_summary_written,
+        createdAt: state.created_at,
+        lastActivityAt: state.last_activity_at,
+        lastSpeechStep: state.last_speech_step,
+        bidReleaseStep: state.bid_release_step,
+        endReasonContent: state.end_reason_content,
+        bidThreshold: state.bid_threshold,
+        minBidDelayMs: state.min_bid_delay_ms,
+        agents: Object.entries(state.agents).map(([name, agent]) => ({
+          name,
+          displayName: agent.display_name,
+          participation: agent.participation,
+          totalSpeaks: agent.total_speaks,
+          banned: agent.banned,
+        })),
+        transcript: state.transcript.map((entry) => redactDiscussTranscriptEntry(entry)),
+      },
+    };
   }
 
   function resolveDiscussDir(projectRoot: string, sessionId: string): string | null {
@@ -799,6 +1279,35 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     if (entries.includes(sessionId)) return join(baseDir, sessionId);
     const match = entries.find((e) => e.startsWith(`${sessionId}-`));
     return match ? join(baseDir, match) : null;
+  }
+
+  function liveDiscussDetail(projectRoot: string, sessionId: string): {
+    authority: DiscussAuthority;
+    session: Record<string, unknown>;
+  } | null {
+    const manager = discussRegistry.get(projectRoot);
+    const session = manager?.getSession(sessionId);
+    if (!session) {
+      return null;
+    }
+    return redactDiscussState(session.state, projectRoot, 'live');
+  }
+
+  function persistedDiscussDetail(projectRoot: string, sessionId: string): {
+    authority: DiscussAuthority;
+    session: Record<string, unknown>;
+  } | null {
+    const sessionDir = resolveDiscussDir(projectRoot, sessionId);
+    if (!sessionDir) {
+      return null;
+    }
+
+    const state = readDiscussState(join(sessionDir, 'state.json'));
+    if (!state) {
+      return null;
+    }
+
+    return redactDiscussState(state, projectRoot, 'persisted_non_authoritative');
   }
 
   const server = createServer((req, res) => {
@@ -1086,6 +1595,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       }
       const result = await routeToolCallFn(request, {
         getExecutionService,
+        getDiscussManager,
         abortJobs,
         scopeCheckJobs,
       });
@@ -1149,17 +1659,12 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
           sendJson(res, 400, { error: 'missing_params', message: 'projectRoot and sessionId are required' });
           return;
         }
-        const sessionDir = resolveDiscussDir(projectRoot, sessionId);
-        if (!sessionDir) {
+        const detail = liveDiscussDetail(projectRoot, sessionId) ?? persistedDiscussDetail(projectRoot, sessionId);
+        if (!detail) {
           sendJson(res, 404, { error: 'session_not_found' });
           return;
         }
-        const state = readDiscussState(join(sessionDir, 'state.json'));
-        if (!state) {
-          sendJson(res, 404, { error: 'session_not_found' });
-          return;
-        }
-        sendJson(res, 200, { session: state });
+        sendJson(res, 200, detail);
         return;
       }
     }
@@ -1196,7 +1701,8 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         () => lifecycle === 'running'
           && activeChildren.size === 0
           && progressStore.liveJobCount() === 0
-          && idleTimer.inflightRequests === 0,
+          && idleTimer.inflightRequests === 0
+          && !discussRegistry.hasLiveSessions(),
         () => {
           void shutdown('idle').catch(() => {});
         },
