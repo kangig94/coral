@@ -46,8 +46,8 @@ function waitToolDescriptor(tool: ToolDescriptor): ToolDescriptor {
 }
 
 async function fetchTools(): Promise<ToolDescriptor[]> {
-  const { port, host, token } = await ensureBackend();
-  const response = await fetch(`http://${host}:${port}/tools`, {
+  const { port, token } = await ensureBackend();
+  const response = await fetch(`http://127.0.0.1:${port}/tools`, {
     headers: { 'X-Coral-Backend-Token': token },
   });
   if (!response.ok) {
@@ -170,7 +170,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
                   : rawContent;
               const result = { ...resultMeta, content };
               return jsonResult({
-                state: 'ended',
+                state: 'completed',
                 completedJobId: event.completedJobId,
                 sessionId: event.sessionId,
                 remainingJobIds: event.remainingJobIds,

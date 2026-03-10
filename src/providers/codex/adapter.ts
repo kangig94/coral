@@ -38,9 +38,7 @@ function toProviderResult(result: CodexRawResult, fallbackConversationRef?: stri
  */
 function buildPrompt(request: ProviderRequest): string {
   const parts: string[] = [];
-  // Skip instruction on resume: Codex prepends to prompt (persisted in history),
-  // unlike Claude which uses --append-system-prompt (re-injected each call).
-  if (request.instruction && request.action !== 'resume') parts.push(request.instruction.content);
+  if (request.instruction) parts.push(request.instruction.content);
   if (request.systemPrompt) parts.push(request.systemPrompt);
   parts.push(request.prompt);
   return parts.join('\n\n---\n\n');

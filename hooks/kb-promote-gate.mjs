@@ -61,11 +61,8 @@ try {
     console.log(JSON.stringify({
       decision: 'block',
       reason: memos.length > 0
-        ? `Review each memo — promote to .claude/coral/kb/ only if useful across sessions. Delete all processed memos regardless of promotion. Also, ${sessionKb} Memos: ${list}`
-        : `No memos to process, but ${sessionKb}`,
-      systemMessage: memos.length > 0
-        ? `📋 KB: promoting ${memos.length} memo(s)`
-        : '📋 KB: checking session knowledge',
+        ? `Not an error. Review each memo — promote to .claude/coral/kb/ only if useful across sessions. Delete all processed memos regardless of promotion. Also, ${sessionKb} Memos: ${list}`
+        : `Not an error. No memos to process, but ${sessionKb}`,
     }));
   } else {
     console.log(JSON.stringify({

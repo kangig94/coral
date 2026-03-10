@@ -44,7 +44,7 @@ const sharedProviderFieldsShape = {
  * Providers extend this with extras (e.g. system_prompt for Claude).
  */
 export const sharedExecSchema = z.object({
-  op: z.enum(['exec', 'bypass_exec']),
+  op: z.literal('exec'),
   prompt: promptSchema,
   session: sessionRefSchema.optional(),
   ...sharedProviderFieldsShape,

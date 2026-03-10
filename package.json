@@ -3,16 +3,6 @@
   "version": "0.4.7",
   "description": "Claude Code plugin - structured agents with Codex CLI bridge",
   "type": "module",
-  "exports": {
-    "./client": "./dist/client/index.js"
-  },
-  "files": [
-    "dist/",
-    "bridge/coral-backend.cjs",
-    "bridge/coral-ax.cjs",
-    "bridge/coral-discuss.cjs",
-    "bridge/manifest.json"
-  ],
   "scripts": {
     "build": "tsc && node scripts/build-server.mjs",
     "build:server": "node scripts/build-server.mjs",

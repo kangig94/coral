@@ -91,8 +91,8 @@ try {
   atomicWriteJson(statePath, nextState);
   writeJson({
     decision: 'block',
-    reason: `${state.prompt}\n\nIf already complete, output <promise>${state.completionPromise}</promise> immediately. If not complete, continue from where you left off.`,
-    systemMessage: `🔄 Ralph iteration ${nextState.iteration}`,
+    reason: state.prompt,
+    systemMessage: `🔄 Ralph iteration ${nextState.iteration} | To stop: output <promise>${state.completionPromise}</promise> (ONLY when truly done)`,
   });
 } catch {
   process.exit(0);
