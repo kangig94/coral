@@ -432,6 +432,69 @@ describe('execution backend server', () => {
     expect(fakeService.executeWorkflow).toHaveBeenCalledTimes(1);
   });
 
+  it('routes bypass_exec with bypassPermissions true', async () => {
+    const fakeService = createFakeExecutionService({
+      start: vi.fn(async () => ({ status: 'running', job: 'bypass-job', session: 'bypass-session' })),
+    });
+    const backend = await startBackendServer({
+      createExecutionService: () => fakeService as never,
+    });
+
+    const response = await fetch(`${backend.baseUrl}/tool`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        name: 'codex',
+        args: { op: 'bypass_exec', prompt: 'do something' },
+        context: { projectRoot: '/tmp/project' },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      status: 'running',
+      job: 'bypass-job',
+      session: 'bypass-session',
+    });
+    expect(fakeService.start).toHaveBeenCalledWith(
+      'codex',
+      expect.objectContaining({ bypassPermissions: true }),
+      expect.any(Object),
+    );
+  });
+
+  it('routes exec with bypassPermissions false by default', async () => {
+    const fakeService = createFakeExecutionService({
+      start: vi.fn(async () => ({ status: 'running', job: 'exec-job', session: 'exec-session' })),
+    });
+    const backend = await startBackendServer({
+      createExecutionService: () => fakeService as never,
+    });
+
+    const response = await fetch(`${backend.baseUrl}/tool`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        name: 'codex',
+        args: { op: 'exec', prompt: 'do something' },
+        context: { projectRoot: '/tmp/project' },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(fakeService.start).toHaveBeenCalledWith(
+      'codex',
+      expect.objectContaining({ bypassPermissions: false }),
+      expect.any(Object),
+    );
+  });
+
   it('streams SSE wait events and closes after terminal completion for found/missing mixes', async () => {
     const fakeService = createFakeExecutionService();
     const progressStore = new ProgressStore();

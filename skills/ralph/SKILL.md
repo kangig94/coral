@@ -125,8 +125,8 @@ Strip ALL flags before passing the prompt to execution or state file.
     - Task: description and acceptance criteria
 
     **Execution loop** (max 5 rounds, then ask user):
-    1. `codex({ op: "exec", ... })` → `wait({ jobs: [job], inline: true })` → read result.
-       Pass `work_dir`. Reuse `session` UUID for continuity.
+    1. `codex({ op: "bypass_exec", prompt: "<task + file paths + constraints>", work_dir: "<project root>" })`
+       → `wait({ jobs: [job], inline: true })` → read result.
     2. Verify changes yourself: read changed files, compare against acceptance criteria.
     3. All criteria pass → read all modified files, compare against plan, fix discrepancies yourself. Then continue to Step 4.
        Not all criteria pass → loop to 1.
@@ -145,7 +145,7 @@ Strip ALL flags before passing the prompt to execution or state file.
        **If `--codex`**: each worker's prompt must ALSO include these Codex execution instructions:
        ```
        For each assigned AC, delegate implementation to Codex:
-       1. codex({ op: "exec", prompt: "<AC description + file paths + constraints>", work_dir: "<project root>" })
+       1. codex({ op: "bypass_exec", prompt: "<AC description + file paths + constraints>", work_dir: "<project root>" })
           → wait({ jobs: [job], inline: true }) → read result.
           Reuse session UUID for continuity across rounds.
        2. Verify changes yourself: read changed files, compare against AC.

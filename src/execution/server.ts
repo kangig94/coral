@@ -527,9 +527,11 @@ async function routeToolCall(
     };
   }
 
-  if (op === 'exec') {
+  if (op === 'exec' || op === 'bypass_exec') {
     const parsed = sharedExecSchema.safeParse(request.args);
     if (!parsed.success) return { statusCode: 400, body: { error: 'invalid_request' } };
+
+    const bypassPermissions = op === 'bypass_exec' || (parsed.data.bypass_permissions ?? false);
 
     if (parsed.data.session) {
       return {
@@ -539,8 +541,8 @@ async function routeToolCall(
           prompt: parsed.data.prompt,
           cwd: parsed.data.work_dir,
           model: parsed.data.model,
-  
-          bypassPermissions: parsed.data.bypass_permissions ?? false,
+
+          bypassPermissions,
           systemPrompt: parsed.data.system_prompt,
         }, request.context),
       };
@@ -553,7 +555,7 @@ async function routeToolCall(
         cwd: parsed.data.work_dir ?? defaultCwd,
         model: parsed.data.model,
 
-        bypassPermissions: parsed.data.bypass_permissions ?? false,
+        bypassPermissions,
         systemPrompt: parsed.data.system_prompt,
       }, request.context),
     };
