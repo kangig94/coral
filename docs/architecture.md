@@ -284,22 +284,16 @@ User → /codex skill analyzes intent
 
 ```
 User → /coral:discuss "AI ethics in healthcare"
-     → Skill reads agents/discuss-lead.md (protocol injection)
-     → Moderator: calls discuss_lead({ op: "_1_seed", ... }) → persona assignments
-     → Spawns persona-generator agents in parallel (Task tool)
-     → discuss_lead({ op: "_2_create", topic, agents }) → session_id, session_dir
-     → TeamCreate "coral-dc-{session_id}"
-     → Spawns discussant teammates (dc-{agent_name})
-     → Discussion Loop:
-        → discuss_lead({ op: "_3_step", session, timeout_seconds }) → blocks until all bids in
-          → resolved: winner announced → discuss_lead(_3_step) again → blocks until speech_done
-          → epoch_transition: moderator calls discuss_lead({ op: "_5_epoch", summary })
-          → ended: loop exits
-        → Discuss agents call discuss({ op: "bid", score }) each round
-        → Winner calls discuss({ op: "speak", content })
-     → final transcript via discuss_lead({ op: "_4_transcript", mode: "full" })
-     → discuss_lead({ op: "_7_end", session }) → discuss_lead({ op: "_8_synthesize", session, synthesis })
-     → Present synthesis to user, shutdown teammates
+     → Skill calls discuss_seed({ controversy_axes, n, seed }) → persona assignments
+     → Spawns persona-generator agents in parallel (Task tool) → full personas
+     → Skill calls discuss_start({ topic, agents }) → session_id
+     → Backend DiscussManager owns discussion loop:
+        → Bids collected in parallel via ExecutionService (pool: 'discuss')
+        → resolveWinner → winner collects speech → next bid cycle
+        → Epoch evaluation: convergence check, must_answer follow-ups, synthesis
+        → Session ends when converged or max_epochs reached
+     → User/observer: discuss_watch (poll events), discuss_participate (bid/speak)
+     → discuss_abort to terminate early
 ```
 
 ### 5. Workflow Pipeline Execution
@@ -469,7 +463,6 @@ coral/
 │   ├── silent-failure-detector.mjs # PostToolUse silent-failure detector
 │   ├── kb-memo-reminder.mjs     # PreToolUse memo hint
 │   ├── kb-promote-gate.mjs  # Stop/Compact promotion hint
-│   ├── discuss-idle-guard.mjs   # TeammateIdle bid/speak/vote enforcer
 │   └── hud-auto-update.mjs     # SessionStart HUD auto-update
 ├── scripts/
 │   └── build-server.mjs         # esbuild bundling + version sync

@@ -8,6 +8,7 @@ import { readFileSync, existsSync, writeFileSync, mkdirSync, openSync, fstatSync
 import { join } from "path";
 import { homedir } from "os";
 import { execSync } from "child_process";
+import https from "node:https";
 const SEP = " \u2502 ";
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
@@ -17,6 +18,30 @@ const RESET = "\x1b[0m";
 const CYAN = "\x1b[36m";
 const MAGENTA = "\x1b[35m";
 const CODEX_USER_AGENT = "codex_cli_rs";
+
+const SYSTEM_CA_PATH = "/etc/ssl/certs/ca-certificates.crt";
+let _systemCa;
+function getSystemCa() {
+  if (_systemCa !== undefined) return _systemCa;
+  try { _systemCa = readFileSync(SYSTEM_CA_PATH, "utf-8"); } catch { _systemCa = null; }
+  return _systemCa;
+}
+
+function httpsRequest(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const ca = getSystemCa();
+    const req = https.request(u, { ...options, ...(ca ? { ca } : {}) }, (res) => {
+      let body = "";
+      res.on("data", (c) => { body += c; });
+      res.on("end", () => resolve({ status: res.statusCode, body }));
+    });
+    req.on("error", reject);
+    if (options.signal) options.signal.addEventListener("abort", () => req.destroy(), { once: true });
+    if (options.body) req.write(options.body);
+    req.end();
+  });
+}
 
 function getCodexClientId(idToken) {
   try {
@@ -534,19 +559,20 @@ function writeBackCodexCredentials(creds, refreshed) {
 
 async function refreshCodexToken(refreshTok, clientId, signal) {
   try {
-    const resp = await fetch("https://auth.openai.com/oauth/token", {
+    const body = new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: clientId,
+      refresh_token: refreshTok,
+      scope: "openid profile email",
+    }).toString();
+    const resp = await httpsRequest("https://auth.openai.com/oauth/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "refresh_token",
-        client_id: clientId,
-        refresh_token: refreshTok,
-        scope: "openid profile email",
-      }),
+      body,
       signal,
     });
-    if (!resp.ok) return null;
-    const data = await resp.json();
+    if (resp.status !== 200) return null;
+    const data = JSON.parse(resp.body);
     const accessToken = data.access_token;
     if (!accessToken) return null;
     return { accessToken, refreshToken: data.refresh_token || null };
@@ -574,7 +600,7 @@ function parseLimitsFromRl(rl) {
 
 async function fetchCodexUsage(accessToken, accountId, signal) {
   try {
-    const resp = await fetch("https://chatgpt.com/backend-api/wham/usage", {
+    const resp = await httpsRequest("https://chatgpt.com/backend-api/wham/usage", {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         "chatgpt-account-id": accountId,
@@ -585,8 +611,8 @@ async function fetchCodexUsage(accessToken, accountId, signal) {
     });
     if (resp.status === 401) return { unauthorized: true };
     if (resp.status === 429) return { rateLimited: true };
-    if (!resp.ok) return null;
-    const body = await resp.json();
+    if (resp.status !== 200) return null;
+    const body = JSON.parse(resp.body);
 
     const codex = parseLimitsFromRl(body.rate_limit);
 

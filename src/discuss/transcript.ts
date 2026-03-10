@@ -120,6 +120,13 @@ export function renderEntry(e: TranscriptEntry, agents: Record<string, AgentStat
       const wrapped = wrapText(e.content);
       return `\n### ${ts} ${e.display_name} (${e.agent})\n${wrapped}\n`;
     }
+    case 'follow_up': {
+      const ts = formatTimestamp(e.ts);
+      const agentLabel = agents[e.agent]?.display_name ?? e.agent;
+      const wrappedQuestion = wrapText(e.question);
+      const wrappedAnswer = wrapText(e.answer);
+      return `\n### ${ts} Follow-up to ${agentLabel} (${e.agent})\nQ: ${wrappedQuestion}\nA: ${wrappedAnswer}\n`;
+    }
     case 'epoch_summary': {
       const ts = formatTimestamp(e.ts);
       const wrapped = wrapText(e.summary);

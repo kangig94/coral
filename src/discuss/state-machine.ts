@@ -186,7 +186,11 @@ function resetBids(state: DiscussState): DiscussState {
 
 function coldStartPick(state: DiscussState): string | null {
   const eligible = Object.entries(state.agents)
-    .filter(([, a]) => !a.banned && a.quota_remaining > 0 && a.participation === 'required')
+    .filter(([name, agent]) =>
+      !agent.banned
+      && agent.quota_remaining > 0
+      && typeof state.current_bids[name] === 'number',
+    )
     .sort(([aName, a], [bName, b]) => {
       if (a.total_speaks !== b.total_speaks) return a.total_speaks - b.total_speaks;
       const aScore = state.current_bids[aName] ?? 0;
@@ -407,7 +411,7 @@ export function applySpeech(
     return {
       ok: false,
       error: 'invalid_status',
-      detail: { current: state.status, hint: 'Not your turn. Call discuss_lead(_3_step) to move to bidding.' },
+      detail: { current: state.status, hint: 'Not your turn. Session is not in speaking status.' },
     };
   }
 
@@ -567,7 +571,7 @@ export function applyEpochSummary(
       error: 'epoch_summary_not_due',
       detail: {
         epoch: state.epoch,
-        hint: 'No epoch transition has occurred. Continue the discussion loop with _3_step.',
+        hint: 'No epoch transition has occurred. Continue the discussion loop.',
       },
     };
   }
@@ -586,18 +590,23 @@ export function applyEpochSummary(
 
 export function applyEnd(
   state: DiscussState,
-  opts: { force?: boolean; reason?: string },
+  opts: { force?: boolean; reason?: string; endReason?: Exclude<EndReason, 'already_ended'> },
   now: string,
 ): Result<DiscussState> {
   if (state.status === 'ended') {
     return { ok: true, value: state };
   }
 
-  const { force = false, reason } = opts;
+  const { force = false, reason, endReason } = opts;
   if (state.status === 'speaking' && !force) {
     return { ok: false, error: 'requires_force', detail: { hint: 'set force=true with reason to end during active speech' } };
   }
 
+  const endReasonContent = endReason !== undefined
+    ? endContent(endReason)
+    : force
+      ? (reason ?? state.end_reason_content)
+      : state.end_reason_content;
   const endedState: DiscussState = {
     ...state,
     status: 'ended',
@@ -605,6 +614,7 @@ export function applyEnd(
     speaker_type: null,
     bid_release_step: state.step,
     last_activity_at: now,
+    end_reason_content: endReasonContent,
   };
 
   if (state.status !== 'speaking') {
@@ -616,7 +626,7 @@ export function applyEnd(
     epoch: state.epoch,
     ts: now,
     event: 'force_end',
-    detail: `Force-ended during speech by ${state.current_speaker}. Reason: ${reason}`,
+    detail: `Force-ended during speech by ${state.current_speaker}. Reason: ${reason ?? endReasonContent}`,
   };
 
   return { ok: true, value: appendEntry(endedState, forceEndEntry, now) };

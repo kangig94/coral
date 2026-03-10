@@ -1,9 +1,10 @@
 # MCP Tools
 
-Coral exposes two MCP servers, each with its own tool set:
+Coral exposes one MCP server plus a backend HTTP server:
 
-- **`ax` (Agent Execution)**: 6 tools (`codex`, `claude`, `wait`, `abort`, `workflow`, `backend`) for Codex/Claude CLI session management, backend control, and pipeline orchestration. Prefix: `mcp__plugin_coral_ax__`
-- **`dc` (Discuss)**: 2 tools for moderated multi-agent discussions. Prefix: `mcp__plugin_coral_dc__`
+- **`ax` (Agent Execution)**: tools (`codex`, `claude`, `wait`, `abort`, `workflow`, `backend`, plus discuss tools) for Codex/Claude CLI session management, backend control, pipeline orchestration, and discuss session control. Prefix: `mcp__plugin_coral_ax__`
+
+> **Note**: The `dc` MCP server and Agent Teams-based discuss tools (`discuss`, `discuss_lead`) have been removed. Discuss sessions are now controlled via backend tools (`discuss_seed`, `discuss_start`, `discuss_watch`, `discuss_participate`, `discuss_abort`) exposed through the `ax` bridge. The doc sections below on `discuss_lead` ops describe the legacy architecture.
 
 All tool inputs are validated at runtime with Zod schemas (`src/providers/codex/schemas.ts`, `src/providers/claude/schemas.ts`, `src/discuss/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
 

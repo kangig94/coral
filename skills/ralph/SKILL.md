@@ -51,7 +51,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
     ### Step 1 — Mode Detection
 
     **Plan mode**: plan file path in context, `## Acceptance Criteria` present, or invoked by plan/bugfix/init-project handoff.
-    → Write `"{flags} implement {plan file path} — all ACs must pass"` to state file prompt. Register each AC as a Task.
+    → Write `"{flags} implement {plan file path} — all ACs must pass"` to state file prompt.
 
     **Prompt mode**: everything else.
     → Write `"{flags} {cleaned prompt}"` to state file.
@@ -69,7 +69,14 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
 
     ### Step 3 — Execute
 
-    Dispatch by flags to ONE execution path (read only that section, ignore others):
+    **Task Registration** (both modes, before dispatch):
+    Break work into discrete units and register each via `TaskCreate`:
+    - **Plan mode**: one Task per Acceptance Criterion from the plan.
+    - **Prompt mode**: analyze the prompt, identify individual implementation items, and register each as a Task.
+
+    Track progress by updating Task status as work proceeds. This enables resumability and gives visibility into what remains.
+
+    **Dispatch** by flags to ONE execution path (read only that section, ignore others):
 
     | Flags | Section |
     |-------|---------|
@@ -120,8 +127,9 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
 
     **Prompt construction** for each Codex call:
     - System: Ralph's `<Role>` and `<Success_Criteria>`
+    - Plan: plan file path as reference (Codex should read it for broader context, not implement the entire plan)
     - Context: working directory, file paths, code sections, constraints
-    - Task: description and acceptance criteria
+    - Task: description and acceptance criteria for this batch only
 
     **Execution loop** (max 5 rounds, then ask user):
     1. `codex({ op: "bypass_exec", prompt: "<task + file paths + constraints>", work_dir: "<project root>" })`
@@ -139,12 +147,14 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
     2. Spawn N persistent workers (N = max parallel count from any batch in Execution Order).
        Each worker's initial prompt includes:
        - Ralph's `<Constraints>`
+       - Plan file path as reference (read for broader context, implement only assigned ACs)
        - Their assigned AC scope only
        - Instruction to wait for SendMessage assignments
 
        **If `--codex`**: each worker's prompt must ALSO include these Codex execution instructions:
        ```
-       For each assigned AC, delegate implementation to Codex:
+       For each assigned AC, delegate implementation to Codex.
+       Include the plan file path in the prompt so Codex can read it for context.
        1. codex({ op: "bypass_exec", prompt: "<AC description + file paths + constraints>", work_dir: "<project root>" })
           → wait({ jobs: [job], inline: true }) → read result.
           Do NOT pass `session`.

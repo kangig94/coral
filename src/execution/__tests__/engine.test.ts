@@ -3,8 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 type EngineModule = typeof import('../engine.js');
 
 const ORIGINAL_MAX_CHILDREN = process.env.CORAL_MAX_SESSIONS;
+const ORIGINAL_DISCUSS_MAX_CHILDREN = process.env.CORAL_DISCUSS_MAX_SESSIONS;
 
-function restoreEnv(name: 'CORAL_MAX_SESSIONS', value: string | undefined): void {
+function restoreEnv(name: 'CORAL_MAX_SESSIONS' | 'CORAL_DISCUSS_MAX_SESSIONS', value: string | undefined): void {
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;
 }
@@ -19,11 +20,13 @@ describe('engine admission queue', () => {
 
   beforeEach(async () => {
     process.env.CORAL_MAX_SESSIONS = '1';
+    process.env.CORAL_DISCUSS_MAX_SESSIONS = '1';
     engine = await loadEngine();
   });
 
   afterEach(() => {
     restoreEnv('CORAL_MAX_SESSIONS', ORIGINAL_MAX_CHILDREN);
+    restoreEnv('CORAL_DISCUSS_MAX_SESSIONS', ORIGINAL_DISCUSS_MAX_CHILDREN);
     vi.restoreAllMocks();
     vi.resetModules();
   });
@@ -47,6 +50,62 @@ describe('engine admission queue', () => {
     });
     expect(engine.queueDepth()).toBe(1);
     expect(engine.queuePosition('job-2')).toBe(1);
+  });
+
+  it('tracks default and discuss pool admission independently', async () => {
+    expect(engine.MAX_ACTIVE_SESSIONS).toBe(1);
+    expect(engine.DISCUSS_MAX_ACTIVE_SESSIONS).toBe(1);
+    expect(engine.requestLaunch('default-1', 'codex')).toEqual({ type: 'immediate' });
+    expect(engine.requestLaunch('discuss-1', 'codex', 'discuss')).toEqual({ type: 'immediate' });
+
+    const queuedDefault = engine.requestLaunch('default-2', 'codex');
+    const queuedDiscuss = engine.requestLaunch('discuss-2', 'codex', 'discuss');
+
+    expect(queuedDefault).toMatchObject({ type: 'queued', queuePosition: 1 });
+    expect(queuedDiscuss).toMatchObject({ type: 'queued', queuePosition: 1 });
+    expect(engine.getActiveJobIds()).toEqual(['default-1']);
+    expect(engine.getActiveJobIds('discuss')).toEqual(['discuss-1']);
+    expect(engine.queueDepth()).toBe(1);
+    expect(engine.queueDepth('discuss')).toBe(1);
+
+    if (queuedDefault === 'queue_full' || queuedDefault.type !== 'queued') throw new Error('expected queued default job');
+    if (queuedDiscuss === 'queue_full' || queuedDiscuss.type !== 'queued') throw new Error('expected queued discuss job');
+
+    const defaultPermit = queuedDefault.waitForPermit();
+    const discussPermit = queuedDiscuss.waitForPermit();
+
+    engine.releaseLaunch('default-1');
+    await defaultPermit;
+    expect(engine.queueDepth()).toBe(0);
+    expect(engine.queueDepth('discuss')).toBe(1);
+    expect(engine.queuePosition('discuss-2', 'discuss')).toBe(1);
+
+    engine.releaseLaunch('discuss-1', 'discuss');
+    await discussPermit;
+    expect(engine.queueDepth('discuss')).toBe(0);
+    expect(engine.getActiveJobIds()).toEqual(['default-2']);
+    expect(engine.getActiveJobIds('discuss')).toEqual(['discuss-2']);
+  });
+
+  it('consumes signal-bound permits from the stored pool', async () => {
+    expect(engine.requestLaunch('default-1', 'codex')).toEqual({ type: 'immediate' });
+    expect(engine.requestLaunch('discuss-1', 'codex', 'discuss')).toEqual({ type: 'immediate' });
+
+    const controller = new AbortController();
+    engine.bindLaunchPermit('discuss-1', controller.signal, 'discuss');
+
+    await expect(engine.spawnCli({
+      provider: 'codex',
+      command: process.execPath,
+      args: ['-e', 'process.exit(0)'],
+      signal: controller.signal,
+    })).resolves.toMatchObject({
+      code: 0,
+      aborted: false,
+    });
+
+    engine.releaseLaunch('default-1');
+    engine.releaseLaunch('discuss-1', 'discuss');
   });
 
   it('returns queue_full when the internal queue limit (20) is reached', async () => {

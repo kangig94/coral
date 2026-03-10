@@ -121,27 +121,9 @@ Follows HOW-SYNTHESIZE.md (always) and HOW-RESOLVE.md (on Constraint Collision).
 
 ## Discuss Agents
 
-Agents for the moderated multi-agent discussion system. These agents coordinate via the `dc` MCP server (`discuss` and `discuss_lead` tools) and Agent Teams.
+The discuss system uses backend-direct control. Agents run as provider sessions managed by the backend's `DiscussManager`, not as Agent Teams or MCP clients. The skill layer (`/coral:discuss`) seeds personas and starts the discussion via backend tools.
 
-### discuss-lead (Discussion Moderator)
-
-`agents/discuss-lead.md` - opus
-
-**Role**: Orchestrates multi-agent discussions through structured turn-taking. Manages session setup, team creation, bidding coordination, turn resolution, epoch transitions (auto-triggered by server), and termination handoff. Never speaks on substance - only process control.
-
-**Protocol**: Setup (persona seeding via `discuss_lead({ op: "_1_seed", ... })` → persona generation → `discuss_lead({ op: "_2_create", ... })` → team + teammates) → Discussion Loop (broadcast → `discuss_lead({ op: "_3_step", ... })` blocks until all bids resolved → winner branch → `discuss_lead({ op: "_3_step", ... })` blocks until speech done → repeat) → Finalization (full transcript via `discuss_lead({ op: "_4_transcript", ... })` → `discuss_lead({ op: "_7_end", ... })` → `discuss_lead({ op: "_8_synthesize", ... })` → present to user → cleanup).
-
-> Note: discuss-lead does NOT have `disallowedTools` - it needs Task (spawn agents), SendMessage (broadcast), TeamCreate/TeamDelete, and all discuss MCP tools.
-
----
-
-### discussant (Discussion Participant)
-
-`agents/discussant.md` - sonnet
-
-**Role**: Participates in discussions with a unique persona provided at spawn time. Submits bids via `discuss({ op: "bid", ... })`, reads transcript before speaking, delivers speeches via `discuss({ op: "speak", ... })`, and notifies the team lead after each speech. Uses sonnet - the discussion protocol is well-defined, opus-level reasoning is unnecessary.
-
----
+### persona-generator (Persona Creator)
 
 ### persona-generator (Persona Creator)
 

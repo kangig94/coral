@@ -30,19 +30,18 @@ Split args on the **first comma**:
 
 ## Bid Mode Flow
 
-1. Call `discuss({ op: 'bid', session, agent_name: 'user', score, thought })`
-2. On `action: 'speak'` → "You won the floor! Type `/bid <your speech>` to deliver your speech."
-3. On `action: 'listen'` → show the speaker and speech content summary
-4. On `action: 'session_ended'` → "Discussion ended." Clean up `active-user-session.json`.
+1. Call `discuss_participate({ session, agent_name: 'user', score, thought })`
+2. On `action: 'listen'` → "Bid recorded. Wait for the discuss watch output to show whether you won the floor."
+3. On `action: 'session_ended'` → "Discussion ended." Clean up `active-user-session.json`.
 
 ## Speech Mode Flow
 
-1. Call `discuss_lead({ op: '_6_state', session })` → verify `current_speaker === 'user'`
-2. If not user's turn → "It's not your turn yet. Wait to win the floor, then use `/bid <speech>`."
-3. Call `discuss({ op: 'speak', session, agent_name: 'user', content })`
-4. "Speech recorded. Waiting for next round..."
+1. Call `discuss_participate({ session, agent_name: 'user', content })`
+2. On `action: 'speech_recorded'` → "Speech recorded. Waiting for next round..."
+3. On `action: 'not_your_turn'` → "It's not your turn yet. Wait to win the floor, then use `/bid <speech>`."
+4. On `action: 'session_ended'` → "Discussion ended." Clean up `active-user-session.json`.
 
 ## Error Policy
 
 - Session ended mid-bid → "Discussion ended." Clean up `active-user-session.json`.
-- speak() error → "Speech timed out or already recorded. Wait for discuss-lead guidance."
+- speak() error → "Speech was not recorded. Wait for the next watch update, then try again if needed."

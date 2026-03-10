@@ -34,6 +34,7 @@ import {
   requestLaunch,
   releaseLaunch,
   type AdmissionResult,
+  type LaunchPool,
   type QueuedHandle,
 } from './engine.js';
 import { AbortRegistry, type AbortResult } from './abort-registry.js';
@@ -49,6 +50,7 @@ export interface ExecInput {
   prompt: string;
   name?: string;
   model?: string;
+  pool?: LaunchPool;
   cwd?: string;
   /** Set only by coralDispatch (agent metadata). MCP input never populates this. */
   effort?: string;
@@ -62,6 +64,7 @@ export interface ResumeInput {
   prompt: string;
   name?: string;
   model?: string;
+  pool?: LaunchPool;
   cwd?: string;
   /** Set only by coralDispatch (agent metadata). MCP input never populates this. */
   effort?: string;
@@ -174,6 +177,7 @@ export class ExecutionService {
   private readonly sessionManager: SessionManager;
   private readonly abortRegistry: AbortRegistry;
   private readonly progressStore: ProgressStore;
+  private readonly jobPools = new Map<string, LaunchPool>();
 
   constructor(ctx: CallerContext, progressStore?: ProgressStore) {
     this.sessionManager = new SessionManager(ctx.projectRoot);
@@ -219,10 +223,13 @@ export class ExecutionService {
     projectRoot: string,
     sessionBusyMessage: string,
     expectedVersion: number = session.version,
+    pool: LaunchPool = 'default',
   ): Promise<{ jobId: string; admission: AcceptedAdmission } | LaunchDecision> {
     const jobId = randomUUID();
-    const admission = requestLaunch(jobId, providerName);
+    this.jobPools.set(jobId, pool);
+    const admission = requestLaunch(jobId, providerName, pool);
     if (admission === 'queue_full') {
+      this.jobPools.delete(jobId);
       return rejectLaunch('busy', QUEUE_FULL_MESSAGE);
     }
 
@@ -236,8 +243,9 @@ export class ExecutionService {
         admission.cancel();
         void waitForPermit.catch(() => {});
       } else {
-        releaseLaunch(jobId);
+        releaseLaunch(jobId, pool);
       }
+      this.jobPools.delete(jobId);
 
       if (error instanceof SessionClaimError) {
         return rejectLaunch('session_busy', sessionBusyMessage);
@@ -254,6 +262,7 @@ export class ExecutionService {
     jobId: string,
     request: ProviderRequest,
     admission: AcceptedAdmission,
+    pool: LaunchPool = 'default',
   ): LaunchDecision {
     this.abortRegistry.register(jobId);
 
@@ -262,7 +271,7 @@ export class ExecutionService {
       this.markJobQueued(jobId, sessionId, admission.queuePosition);
     }
 
-    this.runAsync(provider, sessionId, jobId, request, admission);
+    this.runAsync(provider, sessionId, jobId, request, admission, pool);
     return { status: decisionStatus, job: jobId, session: sessionId };
   }
 
@@ -276,6 +285,7 @@ export class ExecutionService {
     const cwd = input.cwd ?? ctx.projectRoot;
     const name = input.name ?? `session-${Date.now()}`;
     const model = input.model ?? 'unknown';
+    const pool = input.pool ?? 'default';
 
     const session = this.sessionManager.allocate(providerName, name, model, cwd, ctx.projectRoot);
     const admitted = await this.claimAndAdmitJob(
@@ -284,6 +294,7 @@ export class ExecutionService {
       ctx.projectRoot,
       'Session is already running a job',
       session.version,
+      pool,
     );
     if ('status' in admitted) return admitted;
 
@@ -306,6 +317,7 @@ export class ExecutionService {
       admitted.jobId,
       request,
       admitted.admission,
+      pool,
     );
   }
 
@@ -329,6 +341,7 @@ export class ExecutionService {
       return rejectLaunch('session_busy', busyMessage);
     }
     const expectedVersion = session.version;
+    const pool = input.pool ?? 'default';
 
     const preflightError = await runProviderPreflight(provider);
     if (preflightError) return rejectLaunch('preflight_failed', preflightError);
@@ -339,6 +352,7 @@ export class ExecutionService {
       ctx.projectRoot,
       busyMessage,
       expectedVersion,
+      pool,
     );
     if ('status' in admitted) return admitted;
 
@@ -361,6 +375,7 @@ export class ExecutionService {
       admitted.jobId,
       request,
       admitted.admission,
+      pool,
     );
   }
 
@@ -591,14 +606,15 @@ export class ExecutionService {
         if (!status) continue;
 
         const sessionId = status.sessionId;
+        const pool = this.jobPools.get(jobId) ?? 'default';
         if (status.phase === 'queued' && !emittedQueued.has(jobId)) {
           emittedQueued.add(jobId);
           yield {
             type: 'queued',
             jobId,
             sessionId,
-            queuePosition: queuePosition(jobId) ?? 0,
-            runningJobIds: getActiveJobIds(),
+            queuePosition: queuePosition(jobId, pool) ?? 0,
+            runningJobIds: getActiveJobIds(pool),
           };
         }
         const events = this.progressStore.replayFrom(jobId, fromEventId, fileCursor);
@@ -659,17 +675,39 @@ export class ExecutionService {
     }
   }
 
+  async waitStreamOnce(jobId: string, timeoutMs?: number): Promise<{ content: string; nonResumable: boolean }> {
+    const request: WaitRequest = { jobIds: [jobId] };
+    if (timeoutMs !== undefined) {
+      request.timeoutSeconds = timeoutMs / 1000;
+    }
+
+    for await (const event of this.waitStream(request)) {
+      if (event.type === 'terminal' && event.completedJobId === jobId) {
+        return {
+          content: event.result.content,
+          nonResumable: event.result.nonResumable ?? false,
+        };
+      }
+      if (event.type === 'timeout') {
+        throw new Error('Job timed out waiting for terminal result');
+      }
+    }
+
+    throw new Error(`Job ${jobId} ended without a terminal result`);
+  }
+
   private runAsync(
     provider: Provider,
     sessionId: string,
     jobId: string,
     request: ProviderRequest,
     admission: AcceptedAdmission,
+    pool: LaunchPool,
   ): void {
     const signal = this.abortRegistry.getSignal(jobId);
     if (!signal) {
       if (admission.type === 'queued') admission.cancel();
-      else releaseLaunch(jobId);
+      else releaseLaunch(jobId, pool);
       return;
     }
 
@@ -697,7 +735,7 @@ export class ExecutionService {
           this.progressStore.appendProgress(jobId, sessionId, 'dequeued, launching');
         }
 
-        bindLaunchPermit(jobId, signal);
+        bindLaunchPermit(jobId, signal, pool);
         const runtime: ProviderRuntime = { signal, onEvent };
         const result = await provider.execute(request, runtime);
 
@@ -721,6 +759,7 @@ export class ExecutionService {
         this.writeTerminalResult(jobId, sessionId, terminalResult, phase);
         this.progressStore.writeResultMd(jobId, result.content);
         this.abortRegistry.remove(jobId);
+        this.jobPools.delete(jobId);
 
         if (result.conversationRef) {
           this.sessionManager.setConversationRef(sessionId, result.conversationRef);
@@ -742,7 +781,7 @@ export class ExecutionService {
         const message = err instanceof Error ? err.message : String(err);
         this.failJob(jobId, sessionId, 'error', message);
       } finally {
-        if (permitAcquired) releaseLaunch(jobId);
+        if (permitAcquired) releaseLaunch(jobId, pool);
       }
     })();
   }
@@ -801,6 +840,7 @@ export class ExecutionService {
     this.progressStore.updateLaunchState(jobId, 'error', message);
     this.writeTerminalResult(jobId, sessionId, { content: '', aborted: true, notice: message }, 'aborted');
     this.abortRegistry.remove(jobId);
+    this.jobPools.delete(jobId);
     this.sessionManager.releaseJob(sessionId, jobId);
   }
 
@@ -817,6 +857,7 @@ export class ExecutionService {
     this.progressStore.updateLaunchState(jobId, launchState, message);
     this.writeTerminalResult(jobId, sessionId, { content: '', notice: message }, 'error');
     this.abortRegistry.remove(jobId);
+    this.jobPools.delete(jobId);
     this.sessionManager.releaseJob(sessionId, jobId);
   }
 

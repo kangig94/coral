@@ -22,6 +22,7 @@ export type TranscriptEntry =
     resolve_type: TranscriptResolveType;
   } & TranscriptStepMetadata)
   | ({ type: 'speech'; agent: string; display_name: string; content: string; } & TranscriptStepMetadata)
+  | ({ type: 'follow_up'; agent: string; question: string; answer: string; } & TranscriptEpochMetadata)
   | ({ type: 'epoch_summary'; summary: string; } & TranscriptEpochMetadata)
   | ({ type: 'session_event'; event: 'force_end' | 'synthesis'; detail: string; } & TranscriptEpochMetadata);
 
@@ -84,6 +85,11 @@ export type BidResult =
   | { action: 'speak' }
   | { action: 'listen'; speaker: string; content: string }
   | { action: 'listen'; speaker: null; content: string }
+  | { action: 'session_ended'; reason?: string; content?: string };
+
+export type SpeechResult =
+  | { action: 'speech_recorded' }
+  | { action: 'not_your_turn'; current_speaker: string | null }
   | { action: 'session_ended'; reason?: string; content?: string };
 
 export type EndReason =

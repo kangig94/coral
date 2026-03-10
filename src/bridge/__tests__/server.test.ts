@@ -490,4 +490,24 @@ describe('bridge wait handler', () => {
       expect.objectContaining({ projectRoot: process.cwd() }),
     );
   });
+
+  it('passes through backend MCP-shaped tool results unchanged', async () => {
+    mockState.proxyToolCall.mockResolvedValueOnce({
+      content: [{ type: 'text', text: JSON.stringify({ session: 'discuss-1' }) }],
+      isError: false,
+    });
+
+    const result = await invokeToolRaw('discuss_start', {
+      topic: 'topic',
+      agents: [
+        { name: 'alpha', persona: '# Alpha' },
+        { name: 'beta', persona: '# Beta' },
+      ],
+    });
+
+    expect(result).toEqual({
+      content: [{ type: 'text', text: JSON.stringify({ session: 'discuss-1' }) }],
+      isError: false,
+    });
+  });
 });

@@ -6,6 +6,8 @@ const MAX_BUFFER = 10 * 1024 * 1024; // 10MB
 const SIGTERM_GRACE_MS = 5_000; // grace period before escalating to SIGKILL
 
 export const MAX_ACTIVE_SESSIONS = Math.min(Math.max(parsePositiveInt(process.env.CORAL_MAX_SESSIONS, 10), 1), 10);
+export type LaunchPool = 'default' | 'discuss';
+export const DISCUSS_MAX_ACTIVE_SESSIONS = Math.min(Math.max(parsePositiveInt(process.env.CORAL_DISCUSS_MAX_SESSIONS, 5), 1), 10);
 const MAX_QUEUE_SIZE = 20;
 
 export type LaunchPermit = { type: 'immediate' };
@@ -41,9 +43,11 @@ type QueuedLaunchEntry = {
 
 export const activeChildren = new Set<ActiveChild>();
 
-const activeLaunches = new Map<string, string>();
-const queuedLaunches: QueuedLaunchEntry[] = [];
-const signalLaunchPermits = new WeakMap<AbortSignal, string>();
+const activeLaunchesDefault = new Map<string, string>();
+const activeLaunchesDiscuss = new Map<string, string>();
+const queuedLaunchesDefault: QueuedLaunchEntry[] = [];
+const queuedLaunchesDiscuss: QueuedLaunchEntry[] = [];
+const signalLaunchPermits = new WeakMap<AbortSignal, { jobId: string; pool: LaunchPool }>();
 const IMMEDIATE_PERMIT: LaunchPermit = { type: 'immediate' };
 const QUEUE_CANCELED_MESSAGE = 'Launch canceled while queued';
 const QUEUE_DRAINED_MESSAGE = 'Launch canceled while queue was drained';
@@ -73,59 +77,80 @@ export function parsePositiveInt(raw: string | undefined, fallback: number): num
   return parsed;
 }
 
-function hasLaunchCapacity(): boolean {
-  return activeLaunches.size < MAX_ACTIVE_SESSIONS;
+function getActiveMap(pool: LaunchPool): Map<string, string> {
+  return pool === 'discuss' ? activeLaunchesDiscuss : activeLaunchesDefault;
 }
 
-function queuedHandle(entry: QueuedLaunchEntry): QueuedHandle {
+function getQueue(pool: LaunchPool): QueuedLaunchEntry[] {
+  return pool === 'discuss' ? queuedLaunchesDiscuss : queuedLaunchesDefault;
+}
+
+function getActiveLimit(pool: LaunchPool): number {
+  return pool === 'discuss' ? DISCUSS_MAX_ACTIVE_SESSIONS : MAX_ACTIVE_SESSIONS;
+}
+
+function hasLaunchCapacity(pool: LaunchPool): boolean {
+  return getActiveMap(pool).size < getActiveLimit(pool);
+}
+
+function queuedHandle(entry: QueuedLaunchEntry, pool: LaunchPool): QueuedHandle {
+  const queue = getQueue(pool);
   return {
     type: 'queued',
-    queuePosition: queuePosition(entry.jobId) ?? queuedLaunches.length,
+    queuePosition: queuePosition(entry.jobId, pool) ?? queue.length,
     waitForPermit: () => entry.promise,
     cancel: () => {
-      cancelQueued(entry.jobId);
+      cancelQueued(entry.jobId, pool);
     },
   };
 }
 
-function findQueuedLaunch(jobId: string): QueuedLaunchEntry | null {
-  for (const entry of queuedLaunches) {
+function findQueuedLaunch(jobId: string, pool: LaunchPool): QueuedLaunchEntry | null {
+  for (const entry of getQueue(pool)) {
     if (entry.jobId === jobId) return entry;
   }
   return null;
 }
 
-function admitQueueHead(): void {
-  const head = queuedLaunches[0];
+function admitQueueHead(pool: LaunchPool): void {
+  const queue = getQueue(pool);
+  const head = queue[0];
   if (!head) return;
-  if (!hasLaunchCapacity()) return;
-  queuedLaunches.shift();
-  activeLaunches.set(head.jobId, head.provider);
+  if (!hasLaunchCapacity(pool)) return;
+  queue.shift();
+  getActiveMap(pool).set(head.jobId, head.provider);
   head.resolve();
 }
 
-function drainQueuedLaunches(message: string): void {
-  const drained = queuedLaunches.splice(0, queuedLaunches.length);
+function drainQueuedLaunchPool(queue: QueuedLaunchEntry[], message: string): void {
+  const drained = queue.splice(0, queue.length);
   const error = new Error(message);
   for (const entry of drained) {
     entry.reject(error);
   }
 }
 
-function consumeSignalPermit(signal: AbortSignal, provider: string): boolean {
-  const jobId = signalLaunchPermits.get(signal);
-  if (!jobId) return false;
-  signalLaunchPermits.delete(signal);
-  return activeLaunches.get(jobId) === provider;
+function drainQueuedLaunches(message: string): void {
+  drainQueuedLaunchPool(queuedLaunchesDefault, message);
+  drainQueuedLaunchPool(queuedLaunchesDiscuss, message);
 }
 
-export function requestLaunch(jobId: string, provider: string): AdmissionResult {
+function consumeSignalPermit(signal: AbortSignal, provider: string): boolean {
+  const permit = signalLaunchPermits.get(signal);
+  if (!permit) return false;
+  signalLaunchPermits.delete(signal);
+  return getActiveMap(permit.pool).get(permit.jobId) === provider;
+}
+
+export function requestLaunch(jobId: string, provider: string, pool: LaunchPool = 'default'): AdmissionResult {
+  const activeLaunches = getActiveMap(pool);
+  const queuedLaunches = getQueue(pool);
   if (activeLaunches.has(jobId)) return IMMEDIATE_PERMIT;
 
-  const existingQueued = findQueuedLaunch(jobId);
-  if (existingQueued) return queuedHandle(existingQueued);
+  const existingQueued = findQueuedLaunch(jobId, pool);
+  if (existingQueued) return queuedHandle(existingQueued, pool);
 
-  if (queuedLaunches.length === 0 && hasLaunchCapacity()) {
+  if (queuedLaunches.length === 0 && hasLaunchCapacity(pool)) {
     activeLaunches.set(jobId, provider);
     return IMMEDIATE_PERMIT;
   }
@@ -141,38 +166,40 @@ export function requestLaunch(jobId: string, provider: string): AdmissionResult 
 
   const entry: QueuedLaunchEntry = { jobId, provider, promise, resolve, reject };
   queuedLaunches.push(entry);
-  return queuedHandle(entry);
+  return queuedHandle(entry, pool);
 }
 
-export function releaseLaunch(jobId: string): void {
+export function releaseLaunch(jobId: string, pool: LaunchPool = 'default'): void {
+  const activeLaunches = getActiveMap(pool);
   if (!activeLaunches.delete(jobId)) return;
-  admitQueueHead();
+  admitQueueHead(pool);
 }
 
-export function cancelQueued(jobId: string): boolean {
+export function cancelQueued(jobId: string, pool: LaunchPool = 'default'): boolean {
+  const queuedLaunches = getQueue(pool);
   const index = queuedLaunches.findIndex((entry) => entry.jobId === jobId);
   if (index === -1) return false;
   const [entry] = queuedLaunches.splice(index, 1);
   entry.reject(new Error(QUEUE_CANCELED_MESSAGE));
-  admitQueueHead();
+  admitQueueHead(pool);
   return true;
 }
 
-export function queueDepth(): number {
-  return queuedLaunches.length;
+export function queueDepth(pool: LaunchPool = 'default'): number {
+  return getQueue(pool).length;
 }
 
-export function queuePosition(jobId: string): number | null {
-  const index = queuedLaunches.findIndex((entry) => entry.jobId === jobId);
+export function queuePosition(jobId: string, pool: LaunchPool = 'default'): number | null {
+  const index = getQueue(pool).findIndex((entry) => entry.jobId === jobId);
   return index === -1 ? null : index + 1;
 }
 
-export function getActiveJobIds(): string[] {
-  return [...activeLaunches.keys()];
+export function getActiveJobIds(pool: LaunchPool = 'default'): string[] {
+  return [...getActiveMap(pool).keys()];
 }
 
-export function bindLaunchPermit(jobId: string, signal: AbortSignal): void {
-  signalLaunchPermits.set(signal, jobId);
+export function bindLaunchPermit(jobId: string, signal: AbortSignal, pool: LaunchPool = 'default'): void {
+  signalLaunchPermits.set(signal, { jobId, pool });
 }
 
 function safeKill(child: ChildProcess, signal: NodeJS.Signals): void {
@@ -209,20 +236,25 @@ export type SpawnCliOptions = {
   onEvent?: (line: string) => void;
   signal?: AbortSignal;
   permitGranted?: boolean;
+  pool?: LaunchPool;
 };
 
 export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
+  const pool = options.pool ?? 'default';
   const usingReservedPermit = options.permitGranted || (options.signal ? consumeSignalPermit(options.signal, options.provider) : false);
   let internalPermitJobId: string | null = null;
 
   if (!usingReservedPermit) {
+    const activeLaunches = getActiveMap(pool);
+    const queuedLaunches = getQueue(pool);
     const globalActive = activeLaunches.size;
-    if (queuedLaunches.length > 0 || globalActive >= MAX_ACTIVE_SESSIONS) {
+    const globalLimit = getActiveLimit(pool);
+    if (queuedLaunches.length > 0 || globalActive >= globalLimit) {
       return Promise.reject(new CliBusyError({
         error: 'busy',
         provider: options.provider,
         globalActive,
-        globalLimit: MAX_ACTIVE_SESSIONS,
+        globalLimit,
       }));
     }
     internalPermitJobId = `spawncli-${randomUUID()}`;
@@ -254,7 +286,7 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
       gracefulKill(child);
       activeChildren.delete(entry);
       if (internalPermitJobId) {
-        releaseLaunch(internalPermitJobId);
+        releaseLaunch(internalPermitJobId, pool);
         internalPermitJobId = null;
       }
       reject(new Error(`${options.command} killed after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`));
@@ -266,7 +298,7 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
       clearTimeout(idleTimer);
       activeChildren.delete(entry);
       if (internalPermitJobId) {
-        releaseLaunch(internalPermitJobId);
+        releaseLaunch(internalPermitJobId, pool);
         internalPermitJobId = null;
       }
       return true;

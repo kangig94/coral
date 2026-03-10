@@ -3,10 +3,6 @@
     "ax": {
       "command": "node",
       "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-ax.cjs"]
-    },
-    "dc": {
-      "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-discuss.cjs"]
     }
   }
 }

@@ -163,7 +163,7 @@ export async function executeOneShot(
   prompt: string,
   opts: CodexExecOptions,
 ): Promise<CodexExecResult> {
-  const resolvedModel = getDefaultModel();
+  const resolvedModel = opts.model ?? getDefaultModel();
   return executeCodex(
     ['exec', '-m', resolvedModel, ...baseFlags(opts.bypassSandbox ?? false), ...reasoningEffortFlags(opts.effort)],
     prependClaudeMd(prompt),
@@ -178,7 +178,7 @@ export async function executeResume(
   prompt: string,
   opts: CodexExecOptions,
 ): Promise<CodexExecResult> {
-  const resolvedModel = getDefaultModel();
+  const resolvedModel = opts.model ?? getDefaultModel();
   return executeCodex(
     ['exec', 'resume', threadId, '-m', resolvedModel, ...baseFlags(opts.bypassSandbox ?? false), ...reasoningEffortFlags(opts.effort)],
     prompt,
