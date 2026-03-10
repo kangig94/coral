@@ -1,14 +1,13 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { BACKEND_INFO_PATH } from '../client/paths.js';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { isNoEntryError } from '../shared/mcp-utils.js';
 
-export { BACKEND_INFO_PATH } from '../client/paths.js';
+export const BACKEND_INFO_PATH = join(homedir(), '.claude', 'coral', 'backend.json');
 
 export type BackendInfo = {
   pid: number;
   port: number;
-  host: string;
   token: string;
   version: string;
   bundleHash: string;
@@ -23,8 +22,6 @@ function isBackendInfo(value: unknown): value is BackendInfo {
     && (record.pid as number) > 0
     && Number.isInteger(record.port)
     && (record.port as number) > 0
-    && typeof record.host === 'string'
-    && record.host.length > 0
     && typeof record.token === 'string'
     && record.token.length > 0
     && typeof record.version === 'string'

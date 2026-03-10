@@ -1,10 +1,11 @@
 import { readFileSync, unlinkSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { BACKEND_LOCK_PATH } from '../client/paths.js';
 import { readBackendInfo } from './backend-info.js';
 import { isNoEntryError, isProcessAlive, tryExclusiveWrite } from '../shared/mcp-utils.js';
 
-export { BACKEND_LOCK_PATH } from '../client/paths.js';
+export const BACKEND_LOCK_PATH = join(homedir(), '.claude', 'coral', 'backend.lock');
 export const STARTUP_DEADLINE = 30_000;
 
 const RETRY_DELAY_MS = 200;
@@ -87,7 +88,7 @@ async function isMatchingHealthyBackend(record: LockRecord): Promise<boolean> {
   const timeout = setTimeout(() => controller.abort(), HEALTHCHECK_TIMEOUT_MS);
 
   try {
-    const response = await fetch(`http://${info.host}:${info.port}/health`, {
+    const response = await fetch(`http://127.0.0.1:${info.port}/health`, {
       method: 'GET',
       headers: { 'X-Coral-Backend-Token': info.token },
       signal: controller.signal,
