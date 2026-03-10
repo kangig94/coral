@@ -589,12 +589,12 @@ function writeSseEvent(
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
+/** Returns a URL-ready host: IPv6 addresses are wrapped in brackets. */
 function resolveClientHost(bindHost: string): string {
   const override = process.env.CORAL_BACKEND_ADVERTISE_HOST;
-  if (override) return override;
-  if (bindHost === '0.0.0.0') return '127.0.0.1';
-  if (bindHost === '::') return '::1';
-  return bindHost;
+  const host = override
+    ?? (bindHost === '0.0.0.0' ? '127.0.0.1' : bindHost === '::' ? '::1' : bindHost);
+  return host.includes(':') ? `[${host}]` : host;
 }
 
 async function listen(server: Server, bindHost: string): Promise<{ port: number; host: string }> {
