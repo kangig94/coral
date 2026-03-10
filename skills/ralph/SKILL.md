@@ -20,7 +20,7 @@ Announce at start: "Using ralph to execute this task with verification loop."
 | `--red` | Adversarial testing (spawns red-attacker in parallel) |
 | `--team` | Parallel AC execution via Agent Teams (plan mode only) |
 
-Strip ALL flags before passing the prompt to execution or state file.
+Strip flags before passing the prompt to execution. Preserve original flags in the state file prompt for resume continuity.
 
 <Ralph_Protocol>
   <Role>
@@ -51,10 +51,10 @@ Strip ALL flags before passing the prompt to execution or state file.
     ### Step 1 — Mode Detection
 
     **Plan mode**: plan file path in context, `## Acceptance Criteria` present, or invoked by plan/bugfix/init-project handoff.
-    → Write `"implement {plan file path} — all ACs must pass"` to state file prompt. Register each AC as a Task.
+    → Write `"{flags} implement {plan file path} — all ACs must pass"` to state file prompt. Register each AC as a Task.
 
     **Prompt mode**: everything else.
-    → Write cleaned prompt to state file.
+    → Write `"{flags} {cleaned prompt}"` to state file.
 
     Both modes: state file persists for loop continuation. When done: `<promise>{completionPromise}</promise>`.
 
