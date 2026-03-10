@@ -52,6 +52,45 @@ describe('execution SessionManager', () => {
     });
   });
 
+  it('allocate persists projectRoot when provided', () => {
+    const { mgr, workDir } = setup('alloc-with-root');
+
+    const entry = mgr.allocate('codex', 'beta', 'gpt-5', workDir, '/my/project');
+
+    expect(entry.projectRoot).toBe('/my/project');
+    expect(mgr.get('codex', entry.sessionId)?.projectRoot).toBe('/my/project');
+  });
+
+  it('allocate omits projectRoot when not provided', () => {
+    const { mgr, workDir } = setup('alloc-no-root');
+
+    const entry = mgr.allocate('codex', 'gamma', 'gpt-5', workDir);
+
+    expect(entry.projectRoot).toBeUndefined();
+  });
+
+  it('session:updated payload includes projectRoot when present', () => {
+    const { mgr, workDir } = setup('emit-root');
+    const emitted: unknown[] = [];
+    eventBus.on('session:updated', (payload) => emitted.push(payload));
+
+    mgr.allocate('codex', 'delta', 'gpt-5', workDir, '/proj/root');
+
+    expect(emitted).toHaveLength(1);
+    expect((emitted[0] as { projectRoot?: string }).projectRoot).toBe('/proj/root');
+  });
+
+  it('session:updated payload omits projectRoot when not set', () => {
+    const { mgr, workDir } = setup('emit-no-root');
+    const emitted: unknown[] = [];
+    eventBus.on('session:updated', (payload) => emitted.push(payload));
+
+    mgr.allocate('codex', 'epsilon', 'gpt-5', workDir);
+
+    expect(emitted).toHaveLength(1);
+    expect((emitted[0] as { projectRoot?: string }).projectRoot).toBeUndefined();
+  });
+
   it('emits session:updated with shard hash and version on writes', () => {
     const { mgr, workDir } = setup('session-updated-event');
     const updated = vi.fn();

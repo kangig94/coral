@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { discussEventLogPath } from '../../client/paths.js';
+import { prepareMutation } from '../event-log.js';
 import { SessionStore } from '../session-store.js';
 import { initSession } from '../state-machine.js';
 import { renderHeader } from '../transcript.js';
@@ -463,5 +465,96 @@ describe('resolveOrError MCP result shape', () => {
     const result = store.resolveOrError(sessionId);
     expect(typeof result).toBe('string');
     expect(result).toBe(fullPath);
+  });
+});
+
+describe('persistMutation event log', () => {
+  it('writes events to events.jsonl and increments seq monotonically', () => {
+    const { fullPath } = store.createSessionDir('Lifecycle Topic');
+    const state = initSession(
+      { topic: 'Lifecycle Topic', agents: AGENTS, min_bid_delay_ms: 0 },
+      new Date().toISOString(),
+    );
+    state.session_id = 'test-session';
+    store.initTranscript(fullPath, 'Lifecycle Topic', state.agents);
+
+    const eventLogPath = discussEventLogPath(fullPath);
+    const { nextSeq: seq1, watermark: wm1 } = prepareMutation(eventLogPath, 1);
+    store.persistMutation(fullPath, state, [{
+      sessionId: state.session_id,
+      topic: state.topic,
+      projectRoot: tmpDir,
+      seq: seq1,
+      kind: 'created',
+      ts: new Date().toISOString(),
+      payload: { agents: ['alice', 'bob'] },
+    }], wm1);
+
+    const { nextSeq: seq2, watermark: wm2 } = prepareMutation(eventLogPath, 1);
+    store.persistMutation(fullPath, state, [{
+      sessionId: state.session_id,
+      topic: state.topic,
+      projectRoot: tmpDir,
+      seq: seq2,
+      kind: 'bidding_started',
+      ts: new Date().toISOString(),
+      payload: { epoch: 1, step: 1 },
+    }], wm2);
+
+    const lines = readFileSync(eventLogPath, 'utf8').trim().split('\n');
+    expect(lines).toHaveLength(2);
+
+    const [e1, e2] = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(e1.seq).toBe(1);
+    expect(e2.seq).toBe(2);
+    expect(e1.kind).toBe('created');
+    expect(e2.kind).toBe('bidding_started');
+  });
+
+  it('bid_recorded payload does not contain score or thought', () => {
+    const { fullPath } = store.createSessionDir('Bid Test');
+    const state = initSession(
+      { topic: 'Bid Test', agents: AGENTS, min_bid_delay_ms: 0 },
+      new Date().toISOString(),
+    );
+    state.session_id = 'bid-test';
+    store.initTranscript(fullPath, 'Bid Test', state.agents);
+
+    const eventLogPath = discussEventLogPath(fullPath);
+    const { nextSeq, watermark } = prepareMutation(eventLogPath, 1);
+
+    store.persistMutation(fullPath, state, [{
+      sessionId: state.session_id,
+      topic: state.topic,
+      projectRoot: tmpDir,
+      seq: nextSeq,
+      kind: 'bid_recorded',
+      ts: new Date().toISOString(),
+      payload: { agent: 'alice', step: 1 },
+    }], watermark);
+
+    const line = JSON.parse(readFileSync(eventLogPath, 'utf8').trim()) as {
+      payload: Record<string, unknown>;
+    };
+    expect(line.payload).not.toHaveProperty('score');
+    expect(line.payload).not.toHaveProperty('thought');
+    expect(line.payload.agent).toBe('alice');
+  });
+
+  it('synthesis does not append a machine event to events.jsonl', () => {
+    const { fullPath } = store.createSessionDir('Synth Test');
+    const state = initSession(
+      { topic: 'Synth Test', agents: AGENTS, min_bid_delay_ms: 0 },
+      new Date().toISOString(),
+    );
+    state.session_id = 'synth-test';
+    store.initTranscript(fullPath, 'Synth Test', state.agents);
+
+    const eventLogPath = discussEventLogPath(fullPath);
+    const { watermark } = prepareMutation(eventLogPath, 0);
+
+    store.persistMutation(fullPath, state, [], watermark);
+
+    expect(existsSync(eventLogPath)).toBe(false);
   });
 });

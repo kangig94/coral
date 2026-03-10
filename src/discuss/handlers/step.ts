@@ -1,7 +1,9 @@
 import { jsonResult, type McpResult } from '../../shared/mcp-utils.js';
+import { discussEventLogPath } from '../../client/paths.js';
 import type { EndReason, DiscussState, Result } from '../types.js';
 import type { DiscussLeadOpInput } from '../schemas.js';
 import type { SessionStore } from '../session-store.js';
+import { prepareMutation, type DiscussMachineEvent } from '../event-log.js';
 import {
   startBidding,
   resolveWinner,
@@ -48,6 +50,7 @@ function endNoParticipants(
   sessionDir: string,
   now: string,
   store: SessionStore,
+  expelledAgents?: string[],
 ): Result<BiddingPre> {
   const endedState = applyEnd(
     {
@@ -58,8 +61,33 @@ function endNoParticipants(
     now,
   );
   if (!endedState.ok) return { ok: false, error: endedState.error, detail: endedState.detail };
-  store.save(sessionDir, endedState.value);
-  return { ok: true, value: { kind: 'ended', reason: 'no_participants', state: endedState.value } };
+  const state = endedState.value;
+  const eventLogPath = discussEventLogPath(sessionDir);
+  const eventCount = expelledAgents ? 2 : 1;
+  const { nextSeq, watermark } = prepareMutation(eventLogPath, eventCount);
+  const events: DiscussMachineEvent[] = [];
+  if (expelledAgents) {
+    events.push({
+      sessionId: state.session_id,
+      topic: state.topic,
+      projectRoot: store.projectRoot,
+      seq: nextSeq,
+      kind: 'agents_expelled',
+      ts: now,
+      payload: { agents: expelledAgents, mode: 'ban' },
+    });
+  }
+  events.push({
+    sessionId: state.session_id,
+    topic: state.topic,
+    projectRoot: store.projectRoot,
+    seq: expelledAgents ? nextSeq + 1 : nextSeq,
+    kind: 'session_ended',
+    ts: now,
+    payload: { reason: 'no_participants' },
+  });
+  store.persistMutation(sessionDir, state, events, watermark);
+  return { ok: true, value: { kind: 'ended', reason: 'no_participants', state } };
 }
 
 async function bootstrapFromSetup(ctx: StepContext, store: SessionStore): Promise<Result<DiscussState>> {
@@ -68,7 +96,17 @@ async function bootstrapFromSetup(ctx: StepContext, store: SessionStore): Promis
     if (state.status !== 'setup') return { ok: true, value: state };
     const started = startBidding(state, nowIsoString());
     if (!started.ok) return { ok: false, error: 'not_ready', detail: { current: state.status } };
-    store.save(ctx.sessionDir, started.value);
+    const eventLogPath = discussEventLogPath(ctx.sessionDir);
+    const { nextSeq, watermark } = prepareMutation(eventLogPath, 1);
+    store.persistMutation(ctx.sessionDir, started.value, [{
+      sessionId: started.value.session_id,
+      topic: started.value.topic,
+      projectRoot: store.projectRoot,
+      seq: nextSeq,
+      kind: 'bidding_started',
+      ts: nowIsoString(),
+      payload: { epoch: started.value.epoch, step: started.value.step },
+    }], watermark);
     return { ok: true, value: started.value };
   });
 }
@@ -117,7 +155,18 @@ async function stepSpeaking(
 
     const timed = applySpeechTimeout(current, nowIsoString());
     if (!timed.ok) return { ok: false, error: timed.error, detail: timed.detail };
-    store.save(ctx.sessionDir, timed.value);
+    const speaker = current.current_speaker ?? '';
+    const speechTimeoutLogPath = discussEventLogPath(ctx.sessionDir);
+    const { nextSeq: speechTimeoutSeq, watermark: speechTimeoutWm } = prepareMutation(speechTimeoutLogPath, 1);
+    store.persistMutation(ctx.sessionDir, timed.value, [{
+      sessionId: timed.value.session_id,
+      topic: timed.value.topic,
+      projectRoot: store.projectRoot,
+      seq: speechTimeoutSeq,
+      kind: 'speech_timeout',
+      ts: nowIsoString(),
+      payload: { speaker },
+    }], speechTimeoutWm);
     return { ok: true, value: { kind: 'speech_timeout', speaker: current.current_speaker } };
   });
   if (!speechState.ok) return jsonResult({ error: speechState.error, ...(speechState.detail ?? {}) });
@@ -168,16 +217,28 @@ async function stepBidding(ctx: StepContext, store: SessionStore): Promise<McpRe
       const expel = applyExpel(next, next.pending_bidders, nowIsoString());
       if (!expel.ok) return { ok: false, error: expel.error, detail: expel.detail };
       if (noEligibleParticipants(expel.value.state)) {
-        return endNoParticipants(expel.value.state, ctx.sessionDir, nowIsoString(), store);
+        return endNoParticipants(expel.value.state, ctx.sessionDir, nowIsoString(), store, next.pending_bidders);
       }
-      store.save(ctx.sessionDir, expel.value.state);
+      const expelLogPath = discussEventLogPath(ctx.sessionDir);
+      const { nextSeq: expelSeq, watermark: expelWm } = prepareMutation(expelLogPath, 1);
+      store.persistMutation(ctx.sessionDir, expel.value.state, [{
+        sessionId: expel.value.state.session_id,
+        topic: expel.value.state.topic,
+        projectRoot: store.projectRoot,
+        seq: expelSeq,
+        kind: 'agents_expelled',
+        ts: nowIsoString(),
+        payload: { agents: next.pending_bidders, mode: 'ban' },
+      }], expelWm);
       return {
         ok: true,
         value: { kind: 'expelled', state: expel.value.state, agents: next.pending_bidders, hint: expel.value.hint },
       };
     }
 
-    store.save(ctx.sessionDir, next);
+    const pendingLogPath = discussEventLogPath(ctx.sessionDir);
+    const { watermark: pendingWm } = prepareMutation(pendingLogPath, 0);
+    store.persistMutation(ctx.sessionDir, next, [], pendingWm);
     return { ok: true, value: { kind: 'wait', state: next } };
   });
   if (!beforeResolve.ok) return jsonResult({ error: beforeResolve.error, ...(beforeResolve.detail ?? {}) });
@@ -245,12 +306,32 @@ async function stepBidding(ctx: StepContext, store: SessionStore): Promise<McpRe
     const [nextState, decision] = winnerResult.value;
 
     if ('speaker_type' in decision) {
-      store.save(ctx.sessionDir, nextState);
+      const resolvedLogPath = discussEventLogPath(ctx.sessionDir);
+      const { nextSeq: resolvedSeq, watermark: resolvedWm } = prepareMutation(resolvedLogPath, 1);
+      store.persistMutation(ctx.sessionDir, nextState, [{
+        sessionId: nextState.session_id,
+        topic: nextState.topic,
+        projectRoot: store.projectRoot,
+        seq: resolvedSeq,
+        kind: 'round_resolved',
+        ts: nowIsoString(),
+        payload: { winner: decision.winner },
+      }], resolvedWm);
       return { ok: true, value: { kind: 'resolved', winner: decision.winner } };
     }
 
     if (decision.reason === 'epoch_transition') {
-      store.save(ctx.sessionDir, nextState);
+      const epochLogPath = discussEventLogPath(ctx.sessionDir);
+      const { nextSeq: epochSeq, watermark: epochWm } = prepareMutation(epochLogPath, 1);
+      store.persistMutation(ctx.sessionDir, nextState, [{
+        sessionId: nextState.session_id,
+        topic: nextState.topic,
+        projectRoot: store.projectRoot,
+        seq: epochSeq,
+        kind: 'round_resolved',
+        ts: nowIsoString(),
+        payload: { epoch: nextState.epoch },
+      }], epochWm);
       return { ok: true, value: { kind: 'epoch_transition', epoch: nextState.epoch } };
     }
 
@@ -263,7 +344,17 @@ async function stepBidding(ctx: StepContext, store: SessionStore): Promise<McpRe
       nowIsoString(),
     );
     if (!endedState.ok) return { ok: false, error: endedState.error, detail: endedState.detail };
-    store.save(ctx.sessionDir, endedState.value);
+    const endAfterResolveLogPath = discussEventLogPath(ctx.sessionDir);
+    const { nextSeq: endAfterResolveSeq, watermark: endAfterResolveWm } = prepareMutation(endAfterResolveLogPath, 1);
+    store.persistMutation(ctx.sessionDir, endedState.value, [{
+      sessionId: endedState.value.session_id,
+      topic: endedState.value.topic,
+      projectRoot: store.projectRoot,
+      seq: endAfterResolveSeq,
+      kind: 'session_ended',
+      ts: nowIsoString(),
+      payload: { reason: decision.reason },
+    }], endAfterResolveWm);
     return { ok: true, value: { kind: 'ended', reason: decision.reason } };
   });
   if (!resolved.ok) return jsonResult({ error: resolved.error, ...(resolved.detail ?? {}) });

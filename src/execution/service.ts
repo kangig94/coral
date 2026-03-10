@@ -277,7 +277,7 @@ export class ExecutionService {
     const name = input.name ?? `session-${Date.now()}`;
     const model = input.model ?? 'unknown';
 
-    const session = this.sessionManager.allocate(providerName, name, model, cwd);
+    const session = this.sessionManager.allocate(providerName, name, model, cwd, ctx.projectRoot);
     const admitted = await this.claimAndAdmitJob(
       session,
       providerName,
@@ -396,7 +396,7 @@ export class ExecutionService {
       const name = input.name ?? `fork-${Date.now()}`;
       const model = input.model ?? sourceSession.model;
       const cwd = input.cwd ?? sourceSession.cwd;
-      const newSession = this.sessionManager.allocate(providerName, name, model, cwd);
+      const newSession = this.sessionManager.allocate(providerName, name, model, cwd, ctx.projectRoot);
       const admitted = await this.claimAndAdmitJob(
         newSession,
         providerName,
@@ -488,7 +488,7 @@ export class ExecutionService {
   ): Promise<LaunchDecision> {
     if (!getNewProvider(providerName)) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
-    const session = this.sessionManager.allocate(providerName, `workflow-${Date.now()}`, 'workflow', ctx.projectRoot);
+    const session = this.sessionManager.allocate(providerName, `workflow-${Date.now()}`, 'workflow', ctx.projectRoot, ctx.projectRoot);
     // Workflow jobs bypass the admission queue: the workflow coordinator itself
     // does not occupy a child-process slot — only the individual atoms it launches do.
     const jobId = this.abortRegistry.register();

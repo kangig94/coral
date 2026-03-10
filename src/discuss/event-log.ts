@@ -86,3 +86,22 @@ export function readMaxSeq(eventLogPath: string): number {
 
   return maxSeq;
 }
+
+/**
+ * Read the event log once and return both the next sequence number and
+ * watermark metadata for the current mutation batch. Callers must determine
+ * eventCount before calling so that readMaxSeq() is invoked exactly once.
+ *
+ * For empty batches (eventCount === 0), pendingSeqStart and pendingSeqEnd
+ * are null — the watermark records only that no durable events were emitted.
+ */
+export function prepareMutation(eventLogPath: string, eventCount: number): { nextSeq: number; watermark: WatermarkMeta } {
+  const lastDurableSeq = readMaxSeq(eventLogPath);
+  const nextSeq = lastDurableSeq + 1;
+  const watermark: WatermarkMeta = {
+    lastDurableSeq,
+    pendingSeqStart: eventCount > 0 ? nextSeq : null,
+    pendingSeqEnd: eventCount > 0 ? lastDurableSeq + eventCount : null,
+  };
+  return { nextSeq, watermark };
+}

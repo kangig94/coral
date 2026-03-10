@@ -918,6 +918,11 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     res.flushHeaders?.();
 
     streamResponses.add(res);
+    for (const shard of listAllSessions()) {
+      for (const entry of shard.sessions) {
+        if (entry.projectRoot) getDiscussBridge(entry.projectRoot);
+      }
+    }
     startDiscussPoll();
     writeSseEvent(res, 'ready', { streamId, startedAt: new Date().toISOString() });
 
@@ -943,6 +948,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     };
     const onSessionUpdated = (payload: EventBusEvents['session:updated']): void => {
       if (closed) return;
+      if (payload.projectRoot) getDiscussBridge(payload.projectRoot);
       writeSseEvent(res, 'session:updated', payload);
     };
 
@@ -1074,22 +1080,32 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       return;
     }
 
-    if (req.method === 'GET' && req.url === '/api/jobs') {
-      req.resume();
-      sendJson(res, 200, { jobs: listAllJobs(progressStore) });
-      return;
-    }
+    if (req.method === 'GET' && req.url) {
+      const parsedUrl = new URL(req.url, 'http://localhost');
+      const pathname = parsedUrl.pathname;
 
-    const jobDetailMatch = req.method === 'GET' && req.url?.match(/^\/api\/jobs\/([^/]+)$/);
-    if (jobDetailMatch) {
-      req.resume();
-      const detail = getJobDetail(progressStore, jobDetailMatch[1]);
-      if (!detail) {
-        sendJson(res, 404, { error: 'job_not_found' });
+      if (pathname === '/api/jobs') {
+        req.resume();
+        const phase = parsedUrl.searchParams.get('phase');
+        let jobs = listAllJobs(progressStore);
+        if (phase !== null) {
+          jobs = jobs.filter((j) => j.status?.phase === phase);
+        }
+        sendJson(res, 200, { jobs });
         return;
       }
-      sendJson(res, 200, detail);
-      return;
+
+      const jobDetailMatch = pathname.match(/^\/api\/jobs\/([^/]+)$/);
+      if (jobDetailMatch) {
+        req.resume();
+        const detail = getJobDetail(progressStore, jobDetailMatch[1]);
+        if (!detail) {
+          sendJson(res, 404, { error: 'job_not_found' });
+          return;
+        }
+        sendJson(res, 200, detail);
+        return;
+      }
     }
 
     if (req.method === 'GET' && req.url === '/api/sessions') {
