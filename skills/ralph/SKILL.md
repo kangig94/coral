@@ -126,6 +126,7 @@ Strip ALL flags before passing the prompt to execution or state file.
     **Execution loop** (max 5 rounds, then ask user):
     1. `codex({ op: "bypass_exec", prompt: "<task + file paths + constraints>", work_dir: "<project root>" })`
        → `wait({ jobs: [job], inline: true })` → read result.
+       Do NOT pass `session`.
     2. Verify changes yourself: read changed files, compare against acceptance criteria.
     3. All criteria pass → read all modified files, compare against plan, fix discrepancies yourself. Then continue to Step 4.
        Not all criteria pass → loop to 1.
@@ -146,7 +147,7 @@ Strip ALL flags before passing the prompt to execution or state file.
        For each assigned AC, delegate implementation to Codex:
        1. codex({ op: "bypass_exec", prompt: "<AC description + file paths + constraints>", work_dir: "<project root>" })
           → wait({ jobs: [job], inline: true }) → read result.
-          Reuse session UUID for continuity across rounds.
+          Do NOT pass `session`.
        2. Verify changes yourself: read changed files, compare against AC.
        3. If AC not met → re-run codex (max 5 rounds). If met → report completion.
        ```
