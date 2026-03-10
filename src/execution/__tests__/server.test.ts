@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { request as httpRequest, type IncomingMessage as ClientIncomingMessage } from 'node:http';
 import { basename, join } from 'node:path';
 import type { WaitStreamEvent } from '../../types.js';
-import { discussBaseDir, discussEventLogPath } from '../../client/paths.js';
+
 import { JOBS_DIR, ProgressStore, jobResultPath } from '../progress-store.js';
 import { SessionManager } from '../session-manager.js';
 import type { BackendServerController } from '../server.js';
@@ -1013,53 +1013,4 @@ describe('execution backend server', () => {
     expect(await response.json()).toEqual({ error: 'unauthorized' });
   });
 
-  it('bootstraps discuss bridge via session:updated and emits discuss:event without job:created', async () => {
-    const projectRoot = createProjectRoot('discuss-bridge-ac8');
-    const sessionId = '20260310-000001-abcd';
-    const sessionDir = join(discussBaseDir(projectRoot), `${sessionId}-ac8-topic`);
-    mkdirSync(sessionDir, { recursive: true });
-
-    const backend = await startBackendServer();
-    const { eventBus } = await import('../event-bus.js');
-
-    const stream = await openHttpStream(`${backend.baseUrl}/events/stream`, {
-      'X-Coral-Backend-Token': backend.token,
-    });
-
-    try {
-      await stream.waitForText((text) => text.includes('event: ready'));
-
-      // Bootstrap bridge via session:updated — no job:created required (AC8)
-      eventBus.emit('session:updated', {
-        sessionId: 'session-discuss-ac8',
-        shardHash: 'ac8hash',
-        version: 1,
-        projectRoot,
-      });
-
-      // Write the event after bootstrap so the initial rescan sees no events;
-      // the 2s poll timer picks it up on the next cycle.
-      const event = {
-        sessionId,
-        topic: 'ac8-topic',
-        projectRoot,
-        seq: 1,
-        kind: 'speech_recorded',
-        ts: '2026-03-10T00:00:01.000Z',
-        payload: { agent: 'alpha', step: 1, contentLength: 42 },
-      };
-      writeFileSync(discussEventLogPath(sessionDir), `${JSON.stringify(event)}\n`, 'utf8');
-
-      const received = await stream.waitForText(
-        (text) => text.includes('event: discuss:event'),
-        5_000,
-      );
-
-      expect(received).toContain('"sessionId":"20260310-000001-abcd"');
-      expect(received).toContain('"kind":"speech_recorded"');
-      expect(received).toContain('"seq":1');
-    } finally {
-      stream.close();
-    }
-  }, 10_000);
 });

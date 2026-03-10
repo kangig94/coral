@@ -13,7 +13,7 @@ import { activeChildren, killAllChildren, queueDepth } from './engine.js';
 import { writeBackendInfo, removeBackendInfoIfOwner } from './backend-info.js';
 import { acquireLock, BackendAlreadyRunningError, removeLockIfOwner } from './backend-lock.js';
 import type { AbortResult } from './abort-registry.js';
-import { DiscussBridge, type DiscussMachineEvent } from './discuss-bridge.js';
+
 import { eventBus, type EventBusEvents } from './event-bus.js';
 import { IdleTimer } from './idle-timer.js';
 import { createReplayCursor, ProgressStore, JOBS_DIR } from './progress-store.js';
@@ -641,9 +641,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
 
   const services = new Map<string, ExecutionServiceLike>();
   const streamResponses = new Set<ServerResponse>();
-  const discussBridges = new Map<string, DiscussBridge>();
-  let discussPollTimer: NodeJS.Timeout | null = null;
-
   let startedAt = now();
   let lifecycle: LifecycleState = 'starting';
   let shutdownPromise: Promise<void> | null = null;
@@ -756,7 +753,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   };
 
   function listDiscussSessions(): DiscussSessionSummary[] {
-    const projectRoots = new Set<string>(discussBridges.keys());
+    const projectRoots = new Set<string>();
     for (const { sessions } of listAllSessions()) {
       for (const s of sessions) {
         if (s.projectRoot) projectRoots.add(s.projectRoot);
@@ -828,7 +825,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       const serverClosed = closeServerFn(server);
       await waitForInflightDrain(idleTimer, SHUTDOWN_DRAIN_TIMEOUT_MS);
       server.closeAllConnections?.();
-      stopDiscussPoll();
       for (const stream of streamResponses) {
         stream.end();
       }
@@ -940,42 +936,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     }
   }
 
-  function getDiscussBridge(projectRoot: string): DiscussBridge {
-    const existing = discussBridges.get(projectRoot);
-    if (existing) return existing;
-    const bridge = new DiscussBridge(projectRoot);
-    bridge.rescan();
-    discussBridges.set(projectRoot, bridge);
-    return bridge;
-  }
-
-  function startDiscussPoll(): void {
-    if (discussPollTimer) return;
-    discussPollTimer = setInterval(() => {
-      if (streamResponses.size === 0) return;
-      for (const bridge of discussBridges.values()) {
-        bridge.rescan();
-        const events = bridge.poll();
-        for (const event of events) {
-          for (const stream of streamResponses) {
-            writeSseEvent(stream, 'discuss:event', event);
-          }
-        }
-      }
-    }, 2_000);
-    discussPollTimer.unref?.();
-  }
-
-  function stopDiscussPoll(): void {
-    if (discussPollTimer) {
-      clearInterval(discussPollTimer);
-      discussPollTimer = null;
-    }
-    for (const bridge of discussBridges.values()) {
-      bridge.close();
-    }
-    discussBridges.clear();
-  }
 
   async function handleEventStream(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const streamId = randomUUID();
@@ -988,12 +948,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     res.flushHeaders?.();
 
     streamResponses.add(res);
-    for (const shard of listAllSessions()) {
-      for (const entry of shard.sessions) {
-        if (entry.projectRoot) getDiscussBridge(entry.projectRoot);
-      }
-    }
-    startDiscussPoll();
     writeSseEvent(res, 'ready', { streamId, startedAt: new Date().toISOString() });
 
     let closed = false;
@@ -1001,7 +955,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
 
     const onJobCreated = (payload: EventBusEvents['job:created']): void => {
       if (closed || !matchesFilter(payload.jobId)) return;
-      if (payload.projectRoot) getDiscussBridge(payload.projectRoot);
       writeSseEvent(res, 'job:created', payload);
     };
     const onPhaseChanged = (payload: EventBusEvents['job:phase_changed']): void => {
@@ -1018,7 +971,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     };
     const onSessionUpdated = (payload: EventBusEvents['session:updated']): void => {
       if (closed) return;
-      if (payload.projectRoot) getDiscussBridge(payload.projectRoot);
       writeSseEvent(res, 'session:updated', payload);
     };
 
