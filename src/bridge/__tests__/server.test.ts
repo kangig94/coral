@@ -199,7 +199,7 @@ describe('bridge wait handler', () => {
     });
 
     expect(success).toEqual({
-      state: 'completed',
+      state: 'ended',
       completedJobId: 'workflow-success',
       sessionId: 'session-1',
       remainingJobIds: [],
@@ -220,7 +220,7 @@ describe('bridge wait handler', () => {
       },
     });
     expect(failure).toEqual({
-      state: 'completed',
+      state: 'ended',
       completedJobId: 'workflow-failure',
       sessionId: 'session-2',
       remainingJobIds: [],
@@ -231,7 +231,7 @@ describe('bridge wait handler', () => {
       },
     });
     expect(aborted).toEqual({
-      state: 'completed',
+      state: 'ended',
       completedJobId: 'workflow-abort',
       sessionId: 'session-3',
       remainingJobIds: [],
@@ -278,7 +278,7 @@ describe('bridge wait handler', () => {
     const terminalResult = result.result as Record<string, unknown>;
 
     expect(result).toMatchObject({
-      state: 'completed',
+      state: 'ended',
       completedJobId: 'workflow-diverge',
       sessionId: 'session-diverge',
       remainingJobIds: [],
@@ -342,7 +342,7 @@ describe('bridge wait handler', () => {
 
     expect(result.isError).toBe(false);
     expect(JSON.parse(result.content[0].text)).toEqual({
-      state: 'completed',
+      state: 'ended',
       completedJobId: 'job-failed',
       sessionId: 'session-failed',
       remainingJobIds: [],
@@ -436,7 +436,7 @@ describe('bridge wait handler', () => {
     });
 
     expect(inline).toEqual({
-      state: 'completed',
+      state: 'ended',
       completedJobId: 'single-inline',
       sessionId: 'session-a',
       remainingJobIds: [],
@@ -446,7 +446,7 @@ describe('bridge wait handler', () => {
       },
     });
     expect(pathOnly).toEqual({
-      state: 'completed',
+      state: 'ended',
       completedJobId: 'single-path',
       sessionId: 'session-b',
       remainingJobIds: [],

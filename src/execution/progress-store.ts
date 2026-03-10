@@ -9,9 +9,8 @@ import {
   renameSync,
   writeFileSync,
 } from 'node:fs';
-import { writeFile, rename } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { JOBS_DIR } from '../client/paths.js';
 import type {
   JobKind,
   JobPhase,
@@ -21,8 +20,9 @@ import type {
   TerminalResult,
 } from '../types.js';
 import { isNoEntryError } from '../shared/mcp-utils.js';
+import { eventBus } from './event-bus.js';
 
-export const JOBS_DIR = join(tmpdir(), 'coral-jobs');
+export { JOBS_DIR } from '../client/paths.js';
 
 const STATUS_FILE = 'status.json';
 const PROGRESS_FILE = 'progress.jsonl';
@@ -55,7 +55,6 @@ export class ProgressStore {
   private readonly eventCounters = new Map<string, number>();
   private readonly jobStartedAt = new Map<string, number>();
   private readonly statusCache = new Map<string, PersistedStatusRecord>();
-  private readonly writeGeneration = new Map<string, number>();
   private readonly readBuf = Buffer.alloc(READ_CHUNK);
   private liveCount = 0;
   private changeSeq = 0;
@@ -114,12 +113,6 @@ export class ProgressStore {
     return this.liveCount;
   }
 
-  private nextWriteGeneration(jobId: string): number {
-    const next = (this.writeGeneration.get(jobId) ?? 0) + 1;
-    this.writeGeneration.set(jobId, next);
-    return next;
-  }
-
   private applyStatusRecord(jobId: string, record: PersistedStatusRecord): void {
     const oldRecord = this.statusCache.get(jobId);
     const wasLive = oldRecord ? this.isLivePhase(oldRecord.phase) : false;
@@ -128,6 +121,9 @@ export class ProgressStore {
     if (wasLive && !isLive) this.liveCount--;
     this.statusCache.set(jobId, { ...record });
     this.notifyWaiters();
+    if (oldRecord && oldRecord.phase !== record.phase) {
+      eventBus.emit('job:phase_changed', { jobId, phase: record.phase, previousPhase: oldRecord.phase });
+    }
   }
 
   private persistStatusSync(jobId: string, record: PersistedStatusRecord): void {
@@ -159,10 +155,10 @@ export class ProgressStore {
     if (jobKind !== undefined) {
       record.jobKind = jobKind;
     }
-    this.nextWriteGeneration(jobId);
     this.persistStatusSync(jobId, record);
     this.applyStatusRecord(jobId, record);
     writeFileSync(this.progressPath(jobId), '');
+    eventBus.emit('job:created', { jobId, sessionId, provider, projectRoot });
     this.jobStartedAt.set(jobId, Date.now());
   }
 
@@ -174,34 +170,13 @@ export class ProgressStore {
     this.statusCache.delete(jobId);
     this.eventCounters.delete(jobId);
     this.jobStartedAt.delete(jobId);
-    this.writeGeneration.delete(jobId);
     rmSync(this.jobDir(jobId), { recursive: true, force: true });
   }
 
-  /** Atomically write status.json. */
+  /** Atomically write status.json (sync to avoid race between consecutive writes). */
   writeStatus(jobId: string, record: PersistedStatusRecord): void {
-    const generation = this.nextWriteGeneration(jobId);
-    const isTerminal = record.phase === 'completed' || record.phase === 'error' || record.phase === 'aborted';
-
-    if (isTerminal) {
-      this.persistStatusSync(jobId, record);
-      this.applyStatusRecord(jobId, record);
-      return;
-    }
-
+    this.persistStatusSync(jobId, record);
     this.applyStatusRecord(jobId, record);
-
-    const filePath = this.statusPath(jobId);
-    const tmpPath = filePath + '.tmp';
-    const payload = JSON.stringify(record, null, 2);
-    void writeFile(tmpPath, payload, 'utf-8')
-      .then(() => {
-        if (this.writeGeneration.get(jobId) !== generation) return;
-        return rename(tmpPath, filePath);
-      })
-      .catch(() => {
-        /* status write must not break execution */
-      });
   }
 
   /** Read status.json. Returns null if not found or corrupt. */
@@ -262,6 +237,7 @@ export class ProgressStore {
       /* progress write must not break execution */
     }
     this.notifyWaiters();
+    eventBus.emit('job:progress', { jobId, eventId, message: stamped });
     return eventId;
   }
 
@@ -280,6 +256,7 @@ export class ProgressStore {
 
     this.updateTerminalStatus(jobId, result, phase);
     this.clearTerminalState(jobId);
+    eventBus.emit('job:completed', { jobId, result });
     return eventId;
   }
 
@@ -289,6 +266,7 @@ export class ProgressStore {
     if (!didUpdateStatus) {
       this.notifyWaiters();
     }
+    eventBus.emit('job:completed', { jobId, result });
   }
 
   private updateTerminalStatus(jobId: string, result: TerminalResult, phase: JobPhase): boolean {
@@ -303,7 +281,6 @@ export class ProgressStore {
   private clearTerminalState(jobId: string): void {
     this.eventCounters.delete(jobId);
     this.jobStartedAt.delete(jobId);
-    this.writeGeneration.delete(jobId);
   }
 
   /** Write result.md as a debugging/recovery artifact. */

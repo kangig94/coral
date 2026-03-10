@@ -155,7 +155,7 @@ Use `wait({ jobs: [job] })` then `Read("/tmp/coral-jobs/<job>/result.md")` to ge
 ```
 exec → { status: "running" | "queued", job, session }
 wait({ jobs: [job] }) → { state, ... }
-if state == "completed":
+if state == "ended":
   Read("/tmp/coral-jobs/<job>/result.md") → response text
 if state == "running":
   wait again with cursor, or abort({ jobs: [job] })
@@ -292,12 +292,14 @@ Provider-agnostic wait for background jobs from any AX adapter. Wait returns whe
 | `cursor` | string | No | Opaque stream cursor returned by the previous wait call (for incremental streaming). |
 | `inline` | boolean | No | Inline result text in `content` (default `false` — `content` is the result file path for selective `Read`). |
 
-### Output — Completed or Error
+### Output — Ended
+
+`state: "ended"` means the waited job terminated — this includes normal completion, errors, and aborts. Inspect `result` fields (`notice`, `failed`, `aborted`, `exitCode`) to distinguish outcomes.
 
 Default (`inline: false`):
 ```json
 {
-  "state": "completed",
+  "state": "ended",
   "completedJobId": "job-uuid",
   "sessionId": "session-uuid",
   "remainingJobIds": [],
@@ -308,7 +310,7 @@ Default (`inline: false`):
 With `inline: true`:
 ```json
 {
-  "state": "completed",
+  "state": "ended",
   "completedJobId": "job-uuid",
   "sessionId": "session-uuid",
   "remainingJobIds": [],
@@ -319,7 +321,7 @@ With `inline: true`:
 Workflow jobs follow the same contract — `result.content` is always present:
 ```json
 {
-  "state": "completed",
+  "state": "ended",
   "completedJobId": "workflow-job",
   "sessionId": "workflow-session",
   "remainingJobIds": [],

@@ -1,45 +1,16 @@
 declare const __PLUGIN_ROOT__: string;
-declare const __VERSION__: string;
 
-import { readFileSync, unlinkSync } from 'node:fs';
-import { spawn } from 'node:child_process';
-import { join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
-import { BACKEND_INFO_PATH, readBackendInfo, type BackendInfo } from '../execution/backend-info.js';
-import { BACKEND_LOCK_PATH } from '../execution/backend-lock.js';
-import { isNoEntryError, isProcessAlive, isRecord, readBundleHash, tryExclusiveWrite } from '../shared/mcp-utils.js';
+import { ensureBackend, withAbortTimeout, type BackendHandle } from '../client/backend-lifecycle.js';
+import { readBackendInfo } from '../execution/backend-info.js';
+import { isProcessAlive, isRecord } from '../shared/mcp-utils.js';
 import type { WaitStreamEvent } from '../types.js';
 
-const STARTUP_POLL_MS = 200;
-const STARTUP_TIMEOUT_MS = 60_000;
 const HEALTH_TIMEOUT_MS = 3_000;
-const REPLACEMENT_TIMEOUT_MS = 45_000;
 const TOOL_TIMEOUT_MS = 300_000;
 const MAX_WAIT_FETCH_TIMEOUT_MS = 30 * 60 * 1000;
 const WAIT_FETCH_MARGIN_MS = 30_000;
-const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
 
-function currentBundleHash(): string {
-  return readBundleHash(pluginRoot);
-}
-
-function currentVersion(): string {
-  try {
-    const pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf-8'));
-    return typeof pkg.version === 'string' ? pkg.version : fallbackVersion;
-  } catch {
-    return fallbackVersion;
-  }
-}
-const fallbackVersion = typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0';
-const BACKEND_BIN = join(pluginRoot, 'bridge', 'coral-backend.cjs');
-
-type BackendHealth = {
-  status: 'ok';
-  version: string;
-  bundleHash: string;
-  instanceId: string;
-};
+export { ensureBackend } from '../client/backend-lifecycle.js';
 
 export type BackendStatus = {
   status: 'ok';
@@ -58,32 +29,10 @@ export type ShutdownResult =
   | { ok: true; alreadyDraining?: true }
   | { ok: false; reason: string };
 
-type ReplacementLock = {
-  payload: string;
-};
-
-type BackendHandle = {
-  port: number;
-  token: string;
-  instanceId: string;
-};
-
 type SseEventBlock = {
   event?: string;
   data: string;
 };
-
-function summarizeBackend(info: BackendInfo): BackendHandle {
-  return { port: info.port, token: info.token, instanceId: info.instanceId };
-}
-
-function isBackendHealth(value: unknown): value is BackendHealth {
-  return isRecord(value)
-    && value.status === 'ok'
-    && typeof value.version === 'string'
-    && typeof value.bundleHash === 'string'
-    && typeof value.instanceId === 'string';
-}
 
 function isBackendStatus(value: unknown): value is Extract<BackendStatus, { status: 'ok' }> {
   return isRecord(value)
@@ -101,65 +50,13 @@ function isShuttingDownError(value: unknown): value is { error: 'backend_shuttin
   return isRecord(value) && value.error === 'backend_shutting_down';
 }
 
-async function withAbortTimeout<T>(
-  timeoutMs: number,
-  run: (signal: AbortSignal) => Promise<T>,
-): Promise<T> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    return await run(controller.signal);
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function fetchBackendHealth(info: BackendInfo): Promise<BackendHealth | null> {
-  try {
-    return await withAbortTimeout(HEALTH_TIMEOUT_MS, async (signal) => {
-      const response = await fetch(`http://127.0.0.1:${info.port}/health`, {
-        method: 'GET',
-        headers: { 'X-Coral-Backend-Token': info.token },
-        signal,
-      });
-      if (!response.ok) return null;
-
-      const body: unknown = await response.json();
-      return isBackendHealth(body) ? body : null;
-    });
-  } catch {
-    return null;
-  }
-}
-
-async function readHealthyBackendInfo(info = readBackendInfo()): Promise<BackendInfo | null> {
-  if (!info) return null;
-  const health = await fetchBackendHealth(info);
-  if (!health) return null;
-  if (health.bundleHash !== info.bundleHash || health.instanceId !== info.instanceId) return null;
-  return info;
-}
-
-async function requestBackendShutdown(info: BackendInfo): Promise<void> {
-  try {
-    await withAbortTimeout(HEALTH_TIMEOUT_MS, (signal) => fetch(`http://127.0.0.1:${info.port}/admin/shutdown`, {
-      method: 'POST',
-      headers: { 'X-Coral-Backend-Token': info.token },
-      signal,
-    }));
-  } catch {
-    /* best effort */
-  }
-}
-
 export async function getBackendStatus(): Promise<BackendStatus | null> {
   const info = readBackendInfo();
   if (!info || !isProcessAlive(info.pid)) return null;
 
   try {
     const { body, response } = await withAbortTimeout(HEALTH_TIMEOUT_MS, async (signal) => {
-      const response = await fetch(`http://127.0.0.1:${info.port}/health`, {
+      const response = await fetch(`http://${info.host}:${info.port}/health`, {
         method: 'GET',
         headers: { 'X-Coral-Backend-Token': info.token },
         signal,
@@ -191,7 +88,7 @@ export async function shutdownBackend(): Promise<ShutdownResult> {
 
   try {
     const { body, response } = await withAbortTimeout(HEALTH_TIMEOUT_MS, async (signal) => {
-      const response = await fetch(`http://127.0.0.1:${info.port}/admin/shutdown`, {
+      const response = await fetch(`http://${info.host}:${info.port}/admin/shutdown`, {
         method: 'POST',
         headers: { 'X-Coral-Backend-Token': info.token },
         signal,
@@ -215,71 +112,6 @@ export async function shutdownBackend(): Promise<ShutdownResult> {
   } catch {
     return { ok: false, reason: 'not_running' };
   }
-}
-
-function tryAcquireReplacementLock(): ReplacementLock | null {
-  const payload = JSON.stringify({
-    instanceId: `proxy-replacement-${process.pid}-${Date.now()}`,
-    pid: process.pid,
-    version: currentVersion(),
-    bundleHash: currentBundleHash(),
-    startedAt: Date.now(),
-  });
-  if (!tryExclusiveWrite(BACKEND_LOCK_PATH, payload)) return null;
-  return { payload };
-}
-
-function releaseReplacementLock(lock: ReplacementLock): void {
-  try {
-    if (readFileSync(BACKEND_LOCK_PATH, 'utf-8') !== lock.payload) return;
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) return;
-    throw error;
-  }
-
-  try {
-    unlinkSync(BACKEND_LOCK_PATH);
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) return;
-    throw error;
-  }
-}
-
-function removeStaleBackendInfo(): void {
-  try {
-    unlinkSync(BACKEND_INFO_PATH);
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) return;
-    throw error;
-  }
-}
-
-function spawnBackend(): void {
-  const child = spawn(process.execPath, [BACKEND_BIN], {
-    detached: true,
-    stdio: ['ignore', 'ignore', 'ignore'],
-  });
-  child.unref();
-}
-
-async function waitForReplacementBackend(
-  oldInstanceId: string | null,
-  expectedHash: string,
-  deadline: number,
-): Promise<BackendInfo> {
-  while (Date.now() < deadline) {
-    const info = await readHealthyBackendInfo();
-    if (
-      info
-      && info.bundleHash === expectedHash
-      && (oldInstanceId === null || info.instanceId !== oldInstanceId)
-    ) {
-      return info;
-    }
-    await delay(STARTUP_POLL_MS);
-  }
-
-  throw new Error('Timed out waiting for Coral backend startup');
 }
 
 function parseWaitStreamEvent(eventType: string | undefined, rawData: string): WaitStreamEvent | null {
@@ -379,67 +211,14 @@ async function parseJsonResponse(response: Response): Promise<unknown> {
   }
 }
 
-export async function ensureBackend(): Promise<BackendHandle> {
-  const existingInfo = readBackendInfo();
-  const existingHealthy = await readHealthyBackendInfo(existingInfo);
-  const expectedHash = currentBundleHash();
-  if (existingHealthy && existingHealthy.bundleHash === expectedHash) {
-    return summarizeBackend(existingHealthy);
-  }
-
-  let replacedInstanceId: string | null = null;
-  let shutdownRequestedFor: string | null = null;
-  if (existingHealthy) {
-    replacedInstanceId = existingHealthy.instanceId;
-    shutdownRequestedFor = existingHealthy.instanceId;
-    await requestBackendShutdown(existingHealthy);
-  }
-
-  const startupDeadline = Date.now() + STARTUP_TIMEOUT_MS;
-  while (Date.now() < startupDeadline) {
-    const healthy = await readHealthyBackendInfo();
-    if (
-      healthy
-      && healthy.bundleHash === expectedHash
-      && (replacedInstanceId === null || healthy.instanceId !== replacedInstanceId)
-    ) {
-      return summarizeBackend(healthy);
-    }
-
-    if (
-      healthy
-      && healthy.bundleHash !== expectedHash
-      && shutdownRequestedFor !== healthy.instanceId
-    ) {
-      shutdownRequestedFor = healthy.instanceId;
-      await requestBackendShutdown(healthy);
-    }
-
-    const replacementLock = tryAcquireReplacementLock();
-    if (replacementLock) {
-      try {
-        removeStaleBackendInfo();
-      } finally {
-        releaseReplacementLock(replacementLock);
-      }
-
-      spawnBackend();
-      const replacementDeadline = Math.min(startupDeadline, Date.now() + REPLACEMENT_TIMEOUT_MS);
-      return summarizeBackend(await waitForReplacementBackend(replacedInstanceId, expectedHash, replacementDeadline));
-    }
-
-    await delay(STARTUP_POLL_MS);
-  }
-
-  throw new Error('Timed out waiting for Coral backend startup');
-}
-
 export async function proxyToolCall(
   name: string,
   args: Record<string, unknown>,
   ctx: { projectRoot: string; pluginRoot: string },
 ): Promise<unknown> {
-  const { port, token } = await ensureBackend();
+  const { port, host, token }: BackendHandle = await ensureBackend(
+    typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : undefined,
+  );
   const body = JSON.stringify({
     name,
     args,
@@ -451,7 +230,7 @@ export async function proxyToolCall(
 
   try {
     return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
-      const response = await fetch(`http://127.0.0.1:${port}/tool`, {
+      const response = await fetch(`http://${host}:${port}/tool`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -476,7 +255,7 @@ export async function proxyToolCall(
 export async function* streamWait(
   jobIds: string[],
   timeoutSeconds: number | undefined,
-  backendInfo: { port: number; token: string },
+  backendInfo: { host: string; port: number; token: string },
   lastEventId?: string,
   signal?: AbortSignal,
   projectRoot?: string,
@@ -491,7 +270,7 @@ export async function* streamWait(
   signal?.addEventListener('abort', onExternalAbort);
 
   try {
-    const response = await fetch(`http://127.0.0.1:${backendInfo.port}/wait/stream`, {
+    const response = await fetch(`http://${backendInfo.host}:${backendInfo.port}/wait/stream`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

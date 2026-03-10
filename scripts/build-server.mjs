@@ -40,13 +40,6 @@ console.log('Built bridge/coral-ax.cjs');
 
 await esbuild.build({
   ...sharedOpts,
-  entryPoints: ['src/discuss/server.ts'],
-  outfile: 'bridge/coral-discuss.cjs',
-});
-console.log('Built bridge/coral-discuss.cjs');
-
-await esbuild.build({
-  ...sharedOpts,
   entryPoints: ['src/execution/server.ts'],
   outfile: 'bridge/coral-backend.cjs',
   define: { ...sharedOpts.define, '__IS_CORAL_BACKEND_MAIN__': 'true' },
