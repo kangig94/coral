@@ -20,7 +20,7 @@ Announce at start: "Using ralph to execute this task with verification loop."
 | `--red` | Adversarial testing (spawns red-attacker in parallel) |
 | `--team` | Parallel AC execution via Agent Teams (plan mode only) |
 
-Strip ALL flags before passing the prompt to execution or state file.
+Strip flags before passing the prompt to execution. Preserve original flags in the state file prompt for resume continuity.
 
 <Ralph_Protocol>
   <Role>
@@ -51,10 +51,12 @@ Strip ALL flags before passing the prompt to execution or state file.
     ### Step 1 — Mode Detection
 
     **Plan mode**: plan file path in context, `## Acceptance Criteria` present, or invoked by plan/bugfix/init-project handoff.
-    → Delete ralph state file. Register each AC as a Task.
+    → Write `"{flags} implement {plan file path} — all ACs must pass"` to state file prompt. Register each AC as a Task.
 
     **Prompt mode**: everything else.
-    → State file persists for loop continuation. When done: `<promise>{completionPromise}</promise>`.
+    → Write `"{flags} {cleaned prompt}"` to state file.
+
+    Both modes: state file persists for loop continuation. When done: `<promise>{completionPromise}</promise>`.
 
     **`--team` pre-flight** (only when `--team` is present):
     1. Verify `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` env var is set to `1`. If not, fall back to sequential.
@@ -97,10 +99,7 @@ Strip ALL flags before passing the prompt to execution or state file.
 
     ### Step 5 — Completion
 
-    **Prompt mode**: If ralph state file exists with non-empty prompt:
-    `<promise>{completionPromise from state file, or "TASK COMPLETE"}</promise>`
-
-    **Plan mode**: Output Completion Report (see `<Output_Format>`).
+    Output Completion Report (see `<Output_Format>`).
   </Protocol>
   <Exec_Default>
     Claude-native sequential execution.
@@ -125,8 +124,9 @@ Strip ALL flags before passing the prompt to execution or state file.
     - Task: description and acceptance criteria
 
     **Execution loop** (max 5 rounds, then ask user):
-    1. `codex({ op: "exec", ... })` → `wait({ jobs: [job], inline: true })` → read result.
-       Pass `work_dir`. Reuse `session` UUID for continuity.
+    1. `codex({ op: "bypass_exec", prompt: "<task + file paths + constraints>", work_dir: "<project root>" })`
+       → `wait({ jobs: [job], inline: true })` → read result.
+       Do NOT pass `session`.
     2. Verify changes yourself: read changed files, compare against acceptance criteria.
     3. All criteria pass → read all modified files, compare against plan, fix discrepancies yourself. Then continue to Step 4.
        Not all criteria pass → loop to 1.
@@ -145,9 +145,9 @@ Strip ALL flags before passing the prompt to execution or state file.
        **If `--codex`**: each worker's prompt must ALSO include these Codex execution instructions:
        ```
        For each assigned AC, delegate implementation to Codex:
-       1. codex({ op: "exec", prompt: "<AC description + file paths + constraints>", work_dir: "<project root>" })
+       1. codex({ op: "bypass_exec", prompt: "<AC description + file paths + constraints>", work_dir: "<project root>" })
           → wait({ jobs: [job], inline: true }) → read result.
-          Reuse session UUID for continuity across rounds.
+          Do NOT pass `session`.
        2. Verify changes yourself: read changed files, compare against AC.
        3. If AC not met → re-run codex (max 5 rounds). If met → report completion.
        ```
@@ -186,5 +186,7 @@ Strip ALL flags before passing the prompt to execution or state file.
     ### Notes
     ### Remaining Issues
     (none if complete)
+
+    <promise>TASK COMPLETE</promise>
   </Output_Format>
 </Ralph_Protocol>

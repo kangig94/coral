@@ -45,6 +45,15 @@ vi.mock('../../execution/backend-lock.js', () => ({
   BACKEND_LOCK_PATH: backendLockPath(),
 }));
 
+vi.mock('../../client/paths.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../client/paths.js')>();
+  return {
+    ...original,
+    get BACKEND_INFO_PATH() { return backendInfoPath(); },
+    get BACKEND_LOCK_PATH() { return backendLockPath(); },
+  };
+});
+
 vi.mock('node:child_process', () => ({
   spawn: spawnMock,
 }));
@@ -63,6 +72,7 @@ function makeInfo(overrides: Partial<{
   return {
     pid: 1234,
     port: 4100,
+    host: '127.0.0.1',
     token: 'backend-token',
     version: PKG_VERSION,
     bundleHash: BUNDLE_HASH,
@@ -283,6 +293,7 @@ describe('bridge backend-client', () => {
 
     await expect(client.ensureBackend()).resolves.toEqual({
       port: info.port,
+      host: info.host,
       token: info.token,
       instanceId: info.instanceId,
     });
@@ -307,6 +318,7 @@ describe('bridge backend-client', () => {
 
     await expect(client.ensureBackend()).resolves.toEqual({
       port: started.port,
+      host: started.host,
       token: started.token,
       instanceId: started.instanceId,
     });
@@ -368,7 +380,7 @@ describe('bridge backend-client', () => {
     for await (const event of client.streamWait(
       ['job-1'],
       5,
-      { port: 4100, token: 'backend-token' },
+      { host: '127.0.0.1', port: 4100, token: 'backend-token' },
       'cursor-1',
       undefined,
       '/tmp/project',

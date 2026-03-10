@@ -1,9 +1,10 @@
 import { readFileSync, statSync, writeFileSync, mkdirSync, readdirSync, renameSync, rmdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { homedir } from 'node:os';
+import { basename, join, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { SESSION_BASE, syncHomePaths } from '../client/paths.js';
 import type { SessionState } from '../types.js';
 import { isNoEntryError, providerIdentPattern } from '../shared/mcp-utils.js';
+import { eventBus } from './event-bus.js';
 
 export interface SessionEntry {
   sessionId: string;
@@ -15,6 +16,7 @@ export interface SessionEntry {
   conversationRef?: string;
   model: string;
   cwd: string;
+  projectRoot?: string;
   createdAt: string;
   lastUsedAt: string;
   version: number;
@@ -41,7 +43,8 @@ function isValidEntry(value: unknown): value is SessionEntry {
     && typeof v.model === 'string'
     && typeof v.cwd === 'string'
     && typeof v.version === 'number'
-    && providerIdentPattern.test(v.provider);
+    && providerIdentPattern.test(v.provider)
+    && (v.projectRoot === undefined || typeof v.projectRoot === 'string');
 }
 
 export class SessionManager {
@@ -49,7 +52,8 @@ export class SessionManager {
   private readonly cache = new Map<string, CachedSession>();
 
   constructor(workingDirectory: string) {
-    this.sessionDir = join(homedir(), '.claude', 'coral', 'execution', 'sessions', projectHash(workingDirectory));
+    syncHomePaths();
+    this.sessionDir = join(SESSION_BASE, projectHash(workingDirectory));
     mkdirSync(this.sessionDir, { recursive: true });
   }
 
@@ -61,7 +65,8 @@ export class SessionManager {
   }
 
   static listShards(): string[] {
-    const sessionsRoot = join(homedir(), '.claude', 'coral', 'execution', 'sessions');
+    syncHomePaths();
+    const sessionsRoot = SESSION_BASE;
     try {
       return readdirSync(sessionsRoot, { withFileTypes: true })
         .filter((entry) => entry.isDirectory())
@@ -165,10 +170,17 @@ export class SessionManager {
     writeFileSync(tmpPath, JSON.stringify(entry, null, 2), 'utf-8');
     renameSync(tmpPath, filePath);
     this.populateCache(entry.sessionId, entry);
+    const shardHash = basename(this.sessionDir);
+    eventBus.emit('session:updated', {
+      sessionId: entry.sessionId,
+      shardHash,
+      version: entry.version,
+      ...(entry.projectRoot !== undefined ? { projectRoot: entry.projectRoot } : {}),
+    });
   }
 
   /** Allocate a new sessionId and persist as 'pending'. Returns the new entry. */
-  allocate(provider: string, name: string, model: string, cwd: string): SessionEntry {
+  allocate(provider: string, name: string, model: string, cwd: string, projectRoot?: string): SessionEntry {
     const now = new Date().toISOString();
     const entry: SessionEntry = {
       sessionId: randomUUID(),
@@ -177,6 +189,7 @@ export class SessionManager {
       state: 'pending',
       model,
       cwd,
+      ...(projectRoot !== undefined ? { projectRoot } : {}),
       createdAt: now,
       lastUsedAt: now,
       version: 0,

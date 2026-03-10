@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 
@@ -15,6 +15,7 @@ vi.mock('node:os', async () => {
 });
 
 import { SessionManager } from '../session-manager.js';
+import { eventBus } from '../event-bus.js';
 
 describe('execution SessionManager', () => {
   beforeEach(() => {
@@ -23,6 +24,7 @@ describe('execution SessionManager', () => {
 
   afterEach(() => {
     rmSync(tmpHome, { recursive: true, force: true });
+    eventBus.removeAllListeners();
     vi.restoreAllMocks();
   });
 
@@ -47,6 +49,68 @@ describe('execution SessionManager', () => {
       model: 'gpt-5',
       cwd: workDir,
       version: 1,
+    });
+  });
+
+  it('allocate persists projectRoot when provided', () => {
+    const { mgr, workDir } = setup('alloc-with-root');
+
+    const entry = mgr.allocate('codex', 'beta', 'gpt-5', workDir, '/my/project');
+
+    expect(entry.projectRoot).toBe('/my/project');
+    expect(mgr.get('codex', entry.sessionId)?.projectRoot).toBe('/my/project');
+  });
+
+  it('allocate omits projectRoot when not provided', () => {
+    const { mgr, workDir } = setup('alloc-no-root');
+
+    const entry = mgr.allocate('codex', 'gamma', 'gpt-5', workDir);
+
+    expect(entry.projectRoot).toBeUndefined();
+  });
+
+  it('session:updated payload includes projectRoot when present', () => {
+    const { mgr, workDir } = setup('emit-root');
+    const emitted: unknown[] = [];
+    eventBus.on('session:updated', (payload) => emitted.push(payload));
+
+    mgr.allocate('codex', 'delta', 'gpt-5', workDir, '/proj/root');
+
+    expect(emitted).toHaveLength(1);
+    expect((emitted[0] as { projectRoot?: string }).projectRoot).toBe('/proj/root');
+  });
+
+  it('session:updated payload omits projectRoot when not set', () => {
+    const { mgr, workDir } = setup('emit-no-root');
+    const emitted: unknown[] = [];
+    eventBus.on('session:updated', (payload) => emitted.push(payload));
+
+    mgr.allocate('codex', 'epsilon', 'gpt-5', workDir);
+
+    expect(emitted).toHaveLength(1);
+    expect((emitted[0] as { projectRoot?: string }).projectRoot).toBeUndefined();
+  });
+
+  it('emits session:updated with shard hash and version on writes', () => {
+    const { mgr, workDir } = setup('session-updated-event');
+    const updated = vi.fn();
+    eventBus.on('session:updated', updated);
+
+    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const shardHash = basename(resolveSessionDir(tmpHome));
+
+    expect(updated).toHaveBeenCalledWith({
+      sessionId: entry.sessionId,
+      shardHash,
+      version: 1,
+    });
+
+    mgr.setConversationRef(entry.sessionId, 'thread-1');
+
+    expect(updated).toHaveBeenLastCalledWith({
+      sessionId: entry.sessionId,
+      shardHash,
+      version: 2,
     });
   });
 
@@ -184,6 +248,7 @@ describe('SessionManager adversarial', () => {
 
   afterEach(() => {
     rmSync(tmpHome, { recursive: true, force: true });
+    eventBus.removeAllListeners();
     vi.restoreAllMocks();
   });
 
