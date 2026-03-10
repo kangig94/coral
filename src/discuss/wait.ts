@@ -3,6 +3,8 @@ import { basename, dirname } from 'node:path';
 import type { DiscussState } from './types.js';
 import { sleep } from './util/time.js';
 
+type ReadResult = { state: DiscussState | null; mtimeMs: number };
+
 export const INFINITE_POLL = 0;
 const MAX_READ_ERRORS = Number(process.env.CORAL_DISCUSS_MAX_READ_ERRORS) || 3;
 
@@ -23,13 +25,20 @@ export async function waitForCondition(
   const deadline = timeoutMs > 0 ? startAt + timeoutMs : Number.POSITIVE_INFINITY;
   let lastKnownGood: DiscussState | null = null;
   let consecutiveReadErrors = 0;
+  let lastCorruptMtimeMs = 0;
   const dir = dirname(statePath);
   const file = basename(statePath);
   let watcher: FSWatcher | null = null;
   let notify: (() => void) | null = null;
-  const onStateRead = (state: DiscussState | null, elapsedMs: number): WaitResult | null => {
+  const onStateRead = ({ state, mtimeMs }: ReadResult, elapsedMs: number, polling = false): WaitResult | null => {
     if (!state) {
-      consecutiveReadErrors += 1;
+      // In polling mode (no watcher), guard against repeated reads of the same corrupt
+      // file — e.g. when inotify is unavailable (ENOSPC), the same version gets polled
+      // every intervalMs and must not inflate the error count.
+      if (!polling || mtimeMs !== lastCorruptMtimeMs) {
+        consecutiveReadErrors += 1;
+        lastCorruptMtimeMs = mtimeMs;
+      }
       if (consecutiveReadErrors >= MAX_READ_ERRORS) {
         return { fulfilled: false, elapsed_ms: elapsedMs, state: null, error: 'state_corrupt' };
       }
@@ -37,6 +46,7 @@ export async function waitForCondition(
     }
 
     consecutiveReadErrors = 0;
+    lastCorruptMtimeMs = 0;
     lastKnownGood = state;
     if (predicate(state)) {
       return { fulfilled: true, elapsed_ms: elapsedMs, state, error: null };
@@ -51,7 +61,13 @@ export async function waitForCondition(
   try {
     const activeWatcher = watch(dir, (_eventType, filename) => {
       const changedFile = typeof filename === 'string' ? filename : null;
-      if (changedFile === file) notify?.();
+      if (changedFile !== file) return;
+      // Clear notify before calling to prevent duplicate fires from rapid event bursts.
+      // If multiple inotify events fire for the same rename, only the first
+      // triggers a read; subsequent events see notify=null and are no-ops.
+      const n = notify;
+      notify = null;
+      n?.();
     });
     activeWatcher.on('error', () => {
       activeWatcher.close();
@@ -95,8 +111,8 @@ export async function waitForCondition(
         await sleep(Math.min(intervalMs, remainingMs));
       }
 
-      const state = await readState(statePath);
-      const stateResult = onStateRead(state, Date.now() - startAt);
+      const read = await readState(statePath);
+      const stateResult = onStateRead(read, Date.now() - startAt, !watcher);
       if (stateResult) return stateResult;
     }
   } finally {
@@ -130,10 +146,16 @@ export const noEligibleParticipants = (state: DiscussState): boolean =>
     || (agent.quota_remaining === 0 && agent.fallback_used),
   );
 
-async function readState(statePath: string): Promise<DiscussState | null> {
+async function readState(statePath: string): Promise<ReadResult> {
+  let mtimeMs = 0;
   try {
-    return JSON.parse(await fsPromises.readFile(statePath, 'utf8')) as DiscussState;
+    const [content, stat] = await Promise.all([
+      fsPromises.readFile(statePath, 'utf8'),
+      fsPromises.stat(statePath),
+    ]);
+    mtimeMs = stat.mtimeMs;
+    return { state: JSON.parse(content) as DiscussState, mtimeMs };
   } catch {
-    return null;
+    return { state: null, mtimeMs };
   }
 }

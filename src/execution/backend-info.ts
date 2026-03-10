@@ -8,6 +8,7 @@ export { BACKEND_INFO_PATH } from '../client/paths.js';
 export type BackendInfo = {
   pid: number;
   port: number;
+  host: string;
   token: string;
   version: string;
   bundleHash: string;
@@ -22,6 +23,8 @@ function isBackendInfo(value: unknown): value is BackendInfo {
     && (record.pid as number) > 0
     && Number.isInteger(record.port)
     && (record.port as number) > 0
+    && typeof record.host === 'string'
+    && record.host.length > 0
     && typeof record.token === 'string'
     && record.token.length > 0
     && typeof record.version === 'string'

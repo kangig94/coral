@@ -87,7 +87,7 @@ async function isMatchingHealthyBackend(record: LockRecord): Promise<boolean> {
   const timeout = setTimeout(() => controller.abort(), HEALTHCHECK_TIMEOUT_MS);
 
   try {
-    const response = await fetch(`http://127.0.0.1:${info.port}/health`, {
+    const response = await fetch(`http://${info.host}:${info.port}/health`, {
       method: 'GET',
       headers: { 'X-Coral-Backend-Token': info.token },
       signal: controller.signal,

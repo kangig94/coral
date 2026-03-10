@@ -27,12 +27,13 @@ type ReplacementLock = {
 
 export type BackendHandle = {
   port: number;
+  host: string;
   token: string;
   instanceId: string;
 };
 
 function summarizeBackend(info: BackendInfo): BackendHandle {
-  return { port: info.port, token: info.token, instanceId: info.instanceId };
+  return { port: info.port, host: info.host, token: info.token, instanceId: info.instanceId };
 }
 
 function isBackendHealth(value: unknown): value is BackendHealth {
@@ -75,7 +76,7 @@ export async function withAbortTimeout<T>(
 async function fetchBackendHealth(info: BackendInfo): Promise<BackendHealth | null> {
   try {
     return await withAbortTimeout(HEALTH_TIMEOUT_MS, async (signal) => {
-      const response = await fetch(`http://127.0.0.1:${info.port}/health`, {
+      const response = await fetch(`http://${info.host}:${info.port}/health`, {
         method: 'GET',
         headers: { 'X-Coral-Backend-Token': info.token },
         signal,
@@ -100,7 +101,7 @@ async function readHealthyBackendInfo(info = readBackendInfo()): Promise<Backend
 
 async function requestBackendShutdown(info: BackendInfo): Promise<void> {
   try {
-    await withAbortTimeout(HEALTH_TIMEOUT_MS, (signal) => fetch(`http://127.0.0.1:${info.port}/admin/shutdown`, {
+    await withAbortTimeout(HEALTH_TIMEOUT_MS, (signal) => fetch(`http://${info.host}:${info.port}/admin/shutdown`, {
       method: 'POST',
       headers: { 'X-Coral-Backend-Token': info.token },
       signal,

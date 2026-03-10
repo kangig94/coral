@@ -262,7 +262,7 @@ export class BackendClient {
       throw new Error('projectRoot is required for wait');
     }
 
-    const { port, token } = await this.ensureBackendHandle();
+    const { port, host, token } = await this.ensureBackendHandle();
     const fetchTimeoutMs = Math.min(
       (timeoutSeconds ?? 600) * 1000 + WAIT_FETCH_MARGIN_MS,
       MAX_WAIT_FETCH_TIMEOUT_MS,
@@ -273,7 +273,7 @@ export class BackendClient {
     signal?.addEventListener('abort', onExternalAbort);
 
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/wait/stream`, {
+      const response = await fetch(`http://${host}:${port}/wait/stream`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -336,10 +336,10 @@ export class BackendClient {
    * Returns backend health metadata when the daemon responds with a valid payload.
    */
   async health(): Promise<BackendHealth | null> {
-    const { port, token } = await this.ensureBackendHandle();
+    const { port, host, token } = await this.ensureBackendHandle();
 
     try {
-      const response = await withAbortTimeout(HEALTH_TIMEOUT_MS, (signal) => fetch(`http://127.0.0.1:${port}/health`, {
+      const response = await withAbortTimeout(HEALTH_TIMEOUT_MS, (signal) => fetch(`http://${host}:${port}/health`, {
         method: 'GET',
         headers: { 'X-Coral-Backend-Token': token },
         signal,
@@ -360,10 +360,10 @@ export class BackendClient {
    * Requests backend shutdown.
    */
   async shutdown(): Promise<{ ok: boolean }> {
-    const { port, token } = await this.ensureBackendHandle();
+    const { port, host, token } = await this.ensureBackendHandle();
 
     try {
-      const response = await withAbortTimeout(HEALTH_TIMEOUT_MS, (signal) => fetch(`http://127.0.0.1:${port}/admin/shutdown`, {
+      const response = await withAbortTimeout(HEALTH_TIMEOUT_MS, (signal) => fetch(`http://${host}:${port}/admin/shutdown`, {
         method: 'POST',
         headers: { 'X-Coral-Backend-Token': token },
         signal,
@@ -379,11 +379,11 @@ export class BackendClient {
    * Lists the tool descriptors currently served by the backend.
    */
   async listTools(): Promise<unknown> {
-    const { port, token } = await this.ensureBackendHandle();
+    const { port, host, token } = await this.ensureBackendHandle();
 
     try {
       return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
-        const response = await fetch(`http://127.0.0.1:${port}/tools`, {
+        const response = await fetch(`http://${host}:${port}/tools`, {
           method: 'GET',
           headers: { 'X-Coral-Backend-Token': token },
           signal,
@@ -418,7 +418,7 @@ export class BackendClient {
     args: Record<string, unknown>,
     ctx: CallerContext,
   ): Promise<unknown> {
-    const { port, token } = await this.ensureBackendHandle();
+    const { port, host, token } = await this.ensureBackendHandle();
     const body = JSON.stringify({
       name,
       args,
@@ -430,7 +430,7 @@ export class BackendClient {
 
     try {
       return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
-        const response = await fetch(`http://127.0.0.1:${port}/tool`, {
+        const response = await fetch(`http://${host}:${port}/tool`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

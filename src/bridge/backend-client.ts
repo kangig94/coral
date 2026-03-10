@@ -56,7 +56,7 @@ export async function getBackendStatus(): Promise<BackendStatus | null> {
 
   try {
     const { body, response } = await withAbortTimeout(HEALTH_TIMEOUT_MS, async (signal) => {
-      const response = await fetch(`http://127.0.0.1:${info.port}/health`, {
+      const response = await fetch(`http://${info.host}:${info.port}/health`, {
         method: 'GET',
         headers: { 'X-Coral-Backend-Token': info.token },
         signal,
@@ -88,7 +88,7 @@ export async function shutdownBackend(): Promise<ShutdownResult> {
 
   try {
     const { body, response } = await withAbortTimeout(HEALTH_TIMEOUT_MS, async (signal) => {
-      const response = await fetch(`http://127.0.0.1:${info.port}/admin/shutdown`, {
+      const response = await fetch(`http://${info.host}:${info.port}/admin/shutdown`, {
         method: 'POST',
         headers: { 'X-Coral-Backend-Token': info.token },
         signal,
@@ -216,7 +216,7 @@ export async function proxyToolCall(
   args: Record<string, unknown>,
   ctx: { projectRoot: string; pluginRoot: string },
 ): Promise<unknown> {
-  const { port, token }: BackendHandle = await ensureBackend(
+  const { port, host, token }: BackendHandle = await ensureBackend(
     typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : undefined,
   );
   const body = JSON.stringify({
@@ -230,7 +230,7 @@ export async function proxyToolCall(
 
   try {
     return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
-      const response = await fetch(`http://127.0.0.1:${port}/tool`, {
+      const response = await fetch(`http://${host}:${port}/tool`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -255,7 +255,7 @@ export async function proxyToolCall(
 export async function* streamWait(
   jobIds: string[],
   timeoutSeconds: number | undefined,
-  backendInfo: { port: number; token: string },
+  backendInfo: { host: string; port: number; token: string },
   lastEventId?: string,
   signal?: AbortSignal,
   projectRoot?: string,
@@ -270,7 +270,7 @@ export async function* streamWait(
   signal?.addEventListener('abort', onExternalAbort);
 
   try {
-    const response = await fetch(`http://127.0.0.1:${backendInfo.port}/wait/stream`, {
+    const response = await fetch(`http://${backendInfo.host}:${backendInfo.port}/wait/stream`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
