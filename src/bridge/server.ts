@@ -170,7 +170,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
                   : rawContent;
               const result = { ...resultMeta, content };
               return jsonResult({
-                state: 'completed',
+                state: 'ended',
                 completedJobId: event.completedJobId,
                 sessionId: event.sessionId,
                 remainingJobIds: event.remainingJobIds,
