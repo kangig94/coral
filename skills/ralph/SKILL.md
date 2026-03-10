@@ -51,7 +51,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
     ### Step 1 — Mode Detection
 
     **Plan mode**: plan file path in context, `## Acceptance Criteria` present, or invoked by plan/bugfix/init-project handoff.
-    → Write `"{flags} implement {plan file path} — all ACs must pass"` to state file prompt. Register each AC as a Task.
+    → Write `"{flags} implement {plan file path} — all ACs must pass"` to state file prompt.
 
     **Prompt mode**: everything else.
     → Write `"{flags} {cleaned prompt}"` to state file.
@@ -69,7 +69,14 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
 
     ### Step 3 — Execute
 
-    Dispatch by flags to ONE execution path (read only that section, ignore others):
+    **Task Registration** (both modes, before dispatch):
+    Break work into discrete units and register each via `TaskCreate`:
+    - **Plan mode**: one Task per Acceptance Criterion from the plan.
+    - **Prompt mode**: analyze the prompt, identify individual implementation items, and register each as a Task.
+
+    Track progress by updating Task status as work proceeds. This enables resumability and gives visibility into what remains.
+
+    **Dispatch** by flags to ONE execution path (read only that section, ignore others):
 
     | Flags | Section |
     |-------|---------|
