@@ -23,6 +23,10 @@ import {
   discussSessionDir,
   discussStatePath,
 } from '../client/paths.js';
+import {
+  buildDiscussSummary,
+  type DiscussSummaryDto,
+} from '../client/discuss.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../discuss/events.js';
 import {
   makeEmptySnapshot,
@@ -34,14 +38,9 @@ const sessionAppendLocks = new Map<string, Promise<void>>();
 const projectDiscoveryLocks = new Map<string, Promise<void>>();
 const discussProjectRootRegistryLocks = new Map<string, Promise<void>>();
 
-export interface DiscussSummaryDto {
-  sessionId: string;
-  projectRoot: string;
-  topic: string;
-  status: string;
-  createdAt: string;
-  agentCount: number;
-}
+type DiscussSessionStoreOptions = {
+  onCommit?: (snapshot: PersistedDiscussSnapshot, events: DiscussDomainEvent[]) => void;
+};
 
 export class DiscussStaleWriteError extends Error {
   readonly expectedSeq: number;
@@ -155,9 +154,11 @@ function toDiscoverySession(
 
 export class DiscussSessionStore {
   private readonly projectRoot: string;
+  private readonly onCommit?: DiscussSessionStoreOptions['onCommit'];
 
-  constructor(projectRoot: string) {
+  constructor(projectRoot: string, options: DiscussSessionStoreOptions = {}) {
     this.projectRoot = projectRoot;
+    this.onCommit = options.onCommit;
   }
 
   load(sessionId: string): PersistedDiscussSnapshot | null {
@@ -239,6 +240,7 @@ export class DiscussSessionStore {
           },
         );
 
+        this.onCommit?.(nextSnapshot, events);
         return nextSnapshot;
       },
     );
@@ -251,14 +253,7 @@ export class DiscussSessionStore {
       if (!snapshot) {
         continue;
       }
-      summaries.push({
-        sessionId: snapshot.sessionId,
-        projectRoot: snapshot.projectRoot,
-        topic: snapshot.state.topic,
-        status: snapshot.state.status,
-        createdAt: snapshot.state.created_at,
-        agentCount: Object.keys(snapshot.state.agents).length,
-      });
+      summaries.push(buildDiscussSummary(snapshot, 'persisted'));
     }
 
     return summaries.sort((left, right) => right.createdAt.localeCompare(left.createdAt));

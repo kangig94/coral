@@ -178,6 +178,60 @@ describe('execution discuss tools', () => {
     harness.cleanup();
   });
 
+  it('discuss_watch preserves immediate epoch_transition ordering from committed batches', async () => {
+    const harness = createDiscussHarness();
+    const registry = new DiscussManagerRegistry();
+    const manager = registry.getOrCreate(harness.projectRoot, harness.service);
+    const stores = new Map([[harness.projectRoot, harness.store]]);
+    await persistSession({ ...harness, manager }, {
+      sessionId: 'discuss-epoch',
+      recover: true,
+      buildTail: (snapshot) => [
+        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.round.closed', '2026-03-10T00:02:00.000Z', {
+          allBids: { alpha: 4, beta: 3 },
+          effectiveBids: { alpha: 4, beta: 3 },
+          thoughts: { alpha: 'spent', beta: 'spent' },
+          outcome: { no_winner: true as const, reason: 'epoch_transition' as const },
+          stateMutations: {
+            epoch: 2,
+            cold_start: false,
+            fallback_used: { alpha: true, beta: true },
+            quota_remaining: { alpha: 0, beta: 0 },
+          },
+        }),
+        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'session.ended', '2026-03-10T00:02:01.000Z', {
+          force: true,
+          reason: 'abort',
+        }),
+      ],
+    });
+
+    const result = await routeToolCall({
+      name: 'discuss_watch',
+      args: { session: 'discuss-epoch' },
+      context: harness.ctx,
+    }, createHelpers(registry, stores, harness.service));
+
+    const parsed = parseMcpBody<{
+      events: Array<Record<string, unknown>>;
+    }>(result);
+
+    expect(parsed.events).toEqual([
+      {
+        type: 'epoch_transition',
+        data: { epoch: 2 },
+        ts: Date.parse('2026-03-10T00:02:00.000Z'),
+      },
+      {
+        type: 'session_ended',
+        data: { reason: 'force_end', detail: 'abort' },
+        ts: Date.parse('2026-03-10T00:02:01.000Z'),
+      },
+    ]);
+
+    harness.cleanup();
+  });
+
   it('discuss_participate records a manual observer bid through the store-backed manager', async () => {
     const harness = createDiscussHarness();
     const registry = new DiscussManagerRegistry();

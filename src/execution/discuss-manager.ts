@@ -44,9 +44,9 @@ import {
 import {
   DiscussSessionStore,
   DiscussStaleWriteError,
-  type DiscussSummaryDto,
 } from './discuss-session-store.js';
 import type { ExecutionService } from './service.js';
+import { buildWatchEvents } from '../discuss/projections.js';
 
 export type AgentConfig = {
   name: string;
@@ -275,69 +275,6 @@ function applyEventsLocally(
   events: DiscussDomainEvent[],
 ): PersistedDiscussSnapshot {
   return events.reduce((current, event) => reduceDiscussEvent(current, event), snapshot);
-}
-
-function toWatchEvents(events: DiscussDomainEvent[]): WatchEvent[] {
-  const watchEvents: WatchEvent[] = [];
-
-  for (const event of events) {
-    const parsedTs = Date.parse(event.ts);
-    const ts = Number.isFinite(parsedTs) ? parsedTs : Date.now();
-
-    switch (event.kind) {
-      case 'bid.round.closed':
-        if ('winner' in event.payload.outcome) {
-          watchEvents.push({
-            type: 'bid_resolved',
-            data: {
-              winner: event.payload.outcome.winner,
-              speaker_type: event.payload.outcome.speaker_type,
-            },
-            ts,
-          });
-        } else if (event.payload.outcome.reason === 'epoch_transition') {
-          watchEvents.push({
-            type: 'epoch_transition',
-            data: {
-              epoch: event.payload.stateMutations.epoch ?? null,
-            },
-            ts,
-          });
-        }
-        break;
-
-      case 'speech.recorded':
-        watchEvents.push({
-          type: 'speech_done',
-          data: {
-            speaker: event.payload.agent,
-            content: event.payload.content,
-          },
-          ts,
-        });
-        break;
-
-      case 'session.ended':
-        watchEvents.push({
-          type: 'session_ended',
-          data: event.payload.force
-            ? {
-              reason: 'force_end',
-              detail: event.payload.reason ?? event.payload.endReasonContent ?? null,
-            }
-            : {
-              reason: event.payload.endReason ?? null,
-            },
-          ts,
-        });
-        break;
-
-      default:
-        break;
-    }
-  }
-
-  return watchEvents;
 }
 
 function normalizeModel(model: string | undefined): string | undefined {
@@ -675,7 +612,7 @@ export class DiscussManager {
   }
 
   private loadWatchHistory(sessionId: string): WatchEvent[] {
-    return toWatchEvents(this.readSessionEvents(sessionId));
+    return buildWatchEvents(this.readSessionEvents(sessionId));
   }
 
   private isAbortEnded(sessionId: string): boolean {
@@ -711,7 +648,7 @@ export class DiscussManager {
     }
 
     session.snapshot = snapshot;
-    const watchEvents = toWatchEvents(events);
+    const watchEvents = buildWatchEvents(events);
     if (watchEvents.length === 0) {
       return;
     }

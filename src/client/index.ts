@@ -38,6 +38,22 @@ export type {
   DiscussDiscoveryData,
 } from './readers.js';
 
+// ./discuss.js
+export { buildDiscussDetail, buildDiscussSummary } from './discuss.js';
+export type {
+  DiscussAuthority,
+  DiscussAuditDetailResponse,
+  DiscussAuditSessionDto,
+  DiscussAuditTranscriptEntryDto,
+  DiscussControlBidsTranscriptEntryDto,
+  DiscussControlDetailResponse,
+  DiscussControlSessionDto,
+  DiscussControlTranscriptEntryDto,
+  DiscussDetailResponse,
+  DiscussSummaryDto,
+  DiscussView,
+} from './discuss.js';
+
 // ./backend-lifecycle.js
 export { ensureBackend, withAbortTimeout } from './backend-lifecycle.js';
 export type { BackendHandle } from './backend-lifecycle.js';

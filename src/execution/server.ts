@@ -35,8 +35,15 @@ import {
 } from './discuss-manager.js';
 import {
   DiscussSessionStore,
-  type DiscussSummaryDto,
 } from './discuss-session-store.js';
+import {
+  buildDiscussDetail,
+  buildDiscussSummary,
+  type DiscussAuthority,
+  type DiscussDetailResponse,
+  type DiscussSummaryDto,
+  type DiscussView,
+} from '../client/discuss.js';
 import {
   readDiscussProjectRoots,
   readSessionEntryLenient,
@@ -58,7 +65,6 @@ import type {
   WaitRequest,
   WaitStreamEvent,
 } from '../types.js';
-import type { DiscussState, TranscriptEntry } from '../discuss/types.js';
 
 export type LifecycleState = 'starting' | 'running' | 'draining' | 'stopped';
 
@@ -977,16 +983,26 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   function getDiscussStore(projectRoot: string): DiscussSessionStore {
     const existing = discussStores.get(projectRoot);
     if (existing) return existing;
-    const created = new DiscussSessionStore(projectRoot);
+    const created = new DiscussSessionStore(projectRoot, {
+      onCommit: (snapshot) => {
+        eventBus.emit('discuss:updated', {
+          projectRoot: snapshot.projectRoot,
+          sessionId: snapshot.sessionId,
+          lastSeq: snapshot.lastAppliedSeq,
+          status: snapshot.state.status,
+        });
+      },
+    });
     discussStores.set(projectRoot, created);
     return created;
   }
 
   function getDiscussManager(ctx: CallerContext): DiscussManager {
-    getDiscussStore(ctx.projectRoot);
+    const store = getDiscussStore(ctx.projectRoot);
     return discussRegistry.getOrCreate(
       ctx.projectRoot,
       getExecutionService(ctx) as ExecutionService,
+      store,
     );
   }
 
@@ -1078,48 +1094,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     return entries;
   }
 
-  type DiscussAuthority = 'live' | 'persisted_non_authoritative';
-  type DiscussSessionSummary = {
-    sessionId: string;
-    projectRoot: string;
-    topic: string;
-    status: string;
-    createdAt: string;
-    agentCount: number;
-    authority: DiscussAuthority;
-  };
-
-  function summarizeDiscussSession(
-    state: DiscussState,
-    projectRoot: string,
-    authority: DiscussAuthority,
-  ): DiscussSessionSummary {
-    return {
-      sessionId: state.session_id,
-      projectRoot,
-      topic: state.topic,
-      status: state.status,
-      createdAt: state.created_at,
-      agentCount: Object.keys(state.agents).length,
-      authority,
-    };
-  }
-
-  function summarizePersistedDiscussSession(
-    summary: DiscussSummaryDto,
-    authority: DiscussAuthority,
-  ): DiscussSessionSummary {
-    return {
-      sessionId: summary.sessionId,
-      projectRoot: summary.projectRoot,
-      topic: summary.topic,
-      status: summary.status,
-      createdAt: summary.createdAt,
-      agentCount: summary.agentCount,
-      authority,
-    };
-  }
-
   function knownDiscussProjectRoots(): Set<string> {
     const projectRoots = new Set<string>();
     for (const projectRoot of readDiscussProjectRoots()) {
@@ -1136,137 +1110,59 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     return projectRoots;
   }
 
-  function listDiscussSessions(): DiscussSessionSummary[] {
-    const results = new Map<string, DiscussSessionSummary>();
-
-    for (const liveSession of discussRegistry.listLiveSessions()) {
-      const summary = summarizeDiscussSession(liveSession.session.snapshot.state, liveSession.projectRoot, 'live');
-      results.set(`${summary.projectRoot}\u0000${summary.sessionId}`, summary);
-    }
+  function listDiscussSessions(): DiscussSummaryDto[] {
+    const results = new Map<string, DiscussSummaryDto>();
 
     for (const projectRoot of knownDiscussProjectRoots()) {
       for (const summary of getDiscussStore(projectRoot).listSummaries()) {
         const key = `${projectRoot}\u0000${summary.sessionId}`;
-        if (results.has(key)) continue;
-        results.set(key, summarizePersistedDiscussSession(summary, 'persisted_non_authoritative'));
+        results.set(key, summary);
       }
+    }
+
+    for (const liveSession of discussRegistry.listLiveSessions()) {
+      const snapshot = getDiscussStore(liveSession.projectRoot).load(liveSession.sessionId)
+        ?? liveSession.session.snapshot;
+      const summary = buildDiscussSummary(snapshot, 'live');
+      results.set(`${summary.projectRoot}\u0000${summary.sessionId}`, summary);
     }
 
     return [...results.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
-  function redactDiscussTranscriptEntry(entry: TranscriptEntry): Record<string, unknown> {
-    switch (entry.type) {
-      case 'bids':
-        return {
-          type: entry.type,
-          step: entry.step,
-          epoch: entry.epoch,
-          ts: entry.ts,
-          winner: entry.winner,
-          resolve_type: entry.resolve_type,
-        };
-      case 'speech':
-        return {
-          type: entry.type,
-          step: entry.step,
-          epoch: entry.epoch,
-          ts: entry.ts,
-          agent: entry.agent,
-          display_name: entry.display_name,
-          content: entry.content,
-        };
-      case 'follow_up':
-        return {
-          type: entry.type,
-          epoch: entry.epoch,
-          ts: entry.ts,
-          agent: entry.agent,
-          question: entry.question,
-          answer: entry.answer,
-        };
-      case 'epoch_summary':
-        return {
-          type: entry.type,
-          epoch: entry.epoch,
-          ts: entry.ts,
-          summary: entry.summary,
-        };
-      case 'session_event':
-        return {
-          type: entry.type,
-          epoch: entry.epoch,
-          ts: entry.ts,
-          event: entry.event,
-          detail: entry.detail,
-        };
-    }
+  function isLiveDiscussSession(projectRoot: string, sessionId: string): boolean {
+    return discussRegistry.get(projectRoot)?.getSession(sessionId) !== undefined;
   }
 
-  function redactDiscussState(
-    state: DiscussState,
+  function parseDiscussView(raw: string | null): DiscussView | null {
+    if (raw === null || raw === 'control') {
+      return 'control';
+    }
+    if (raw === 'audit') {
+      return 'audit';
+    }
+    return null;
+  }
+
+  function loadDiscussDetail(
     projectRoot: string,
-    authority: DiscussAuthority,
-  ): {
-    authority: DiscussAuthority;
-    session: Record<string, unknown>;
-  } {
-    return {
-      authority,
-      session: {
-        sessionId: state.session_id,
-        projectRoot,
-        topic: state.topic,
-        status: state.status,
-        step: state.step,
-        epoch: state.epoch,
-        maxEpochs: state.max_epochs,
-        quotaPerEpoch: state.quota_per_epoch,
-        coldStart: state.cold_start,
-        currentSpeaker: state.current_speaker,
-        speakerType: state.speaker_type,
-        epochSummaryWritten: state.epoch_summary_written,
-        createdAt: state.created_at,
-        lastActivityAt: state.last_activity_at,
-        lastSpeechStep: state.last_speech_step,
-        bidReleaseStep: state.bid_release_step,
-        endReasonContent: state.end_reason_content,
-        bidThreshold: state.bid_threshold,
-        minBidDelayMs: state.min_bid_delay_ms,
-        agents: Object.entries(state.agents).map(([name, agent]) => ({
-          name,
-          displayName: agent.display_name,
-          participation: agent.participation,
-          totalSpeaks: agent.total_speaks,
-          banned: agent.banned,
-        })),
-        transcript: state.transcript.map((entry) => redactDiscussTranscriptEntry(entry)),
-      },
-    };
-  }
-
-  function liveDiscussDetail(projectRoot: string, sessionId: string): {
-    authority: DiscussAuthority;
-    session: Record<string, unknown>;
-  } | null {
-    const manager = discussRegistry.get(projectRoot);
-    const session = manager?.getSession(sessionId);
-    if (!session) {
-      return null;
-    }
-    return redactDiscussState(session.snapshot.state, projectRoot, 'live');
-  }
-
-  function persistedDiscussDetail(projectRoot: string, sessionId: string): {
-    authority: DiscussAuthority;
-    session: Record<string, unknown>;
-  } | null {
+    sessionId: string,
+    view: DiscussView,
+  ): DiscussDetailResponse | 'audit_requires_ended_session' | null {
     const snapshot = getDiscussStore(projectRoot).load(sessionId);
     if (!snapshot) {
       return null;
     }
+    if (view === 'audit' && snapshot.state.status !== 'ended') {
+      return 'audit_requires_ended_session';
+    }
 
-    return redactDiscussState(snapshot.state, projectRoot, 'persisted_non_authoritative');
+    const authority: DiscussAuthority = isLiveDiscussSession(projectRoot, sessionId)
+      ? 'live'
+      : 'persisted';
+    return view === 'audit'
+      ? buildDiscussDetail(snapshot, 'audit', authority)
+      : buildDiscussDetail(snapshot, 'control', authority);
   }
 
   const server = createServer((req, res) => {
@@ -1441,6 +1337,10 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       if (closed) return;
       writeSseEvent(res, 'session:updated', payload);
     };
+    const onDiscussUpdated = (payload: EventBusEvents['discuss:updated']): void => {
+      if (closed) return;
+      writeSseEvent(res, 'discuss:updated', payload);
+    };
 
     const onClose = () => {
       if (closed) return;
@@ -1452,6 +1352,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       eventBus.off('job:progress', onProgress);
       eventBus.off('job:completed', onCompleted);
       eventBus.off('session:updated', onSessionUpdated);
+      eventBus.off('discuss:updated', onDiscussUpdated);
     };
     res.once('close', onClose);
 
@@ -1460,6 +1361,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     eventBus.on('job:progress', onProgress);
     eventBus.on('job:completed', onCompleted);
     eventBus.on('session:updated', onSessionUpdated);
+    eventBus.on('discuss:updated', onDiscussUpdated);
 
     await new Promise<void>((resolve) => {
       if (closed) {
@@ -1618,9 +1520,18 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
           sendJson(res, 400, { error: 'missing_params', message: 'projectRoot and sessionId are required' });
           return;
         }
-        const detail = liveDiscussDetail(projectRoot, sessionId) ?? persistedDiscussDetail(projectRoot, sessionId);
+        const view = parseDiscussView(parsedUrl.searchParams.get('view'));
+        if (!view) {
+          sendJson(res, 400, { error: 'invalid_view', message: 'view must be control or audit' });
+          return;
+        }
+        const detail = loadDiscussDetail(projectRoot, sessionId, view);
         if (!detail) {
           sendJson(res, 404, { error: 'session_not_found' });
+          return;
+        }
+        if (detail === 'audit_requires_ended_session') {
+          sendJson(res, 409, { error: 'audit_requires_ended_session' });
           return;
         }
         sendJson(res, 200, detail);

@@ -16,6 +16,7 @@ export type EventBusEvents = {
     };
   };
   'session:updated': { sessionId: string; shardHash: string; version: number; projectRoot?: string };
+  'discuss:updated': { projectRoot: string; sessionId: string; lastSeq: number; status: string };
 };
 
 /** Typed EventEmitter wrapper for execution-layer state changes. */

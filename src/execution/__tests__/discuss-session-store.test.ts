@@ -172,6 +172,7 @@ describe('DiscussSessionStore', () => {
         status: 'bidding',
         createdAt: '2026-03-11T00:00:00.000Z',
         agentCount: 2,
+        authority: 'persisted',
       },
     ]);
     expect(JSON.parse(readFileSync(DISCUSS_PROJECT_ROOTS_PATH, 'utf8'))).toEqual({
