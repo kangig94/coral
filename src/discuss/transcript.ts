@@ -166,7 +166,7 @@ export function renderHeader(topic: string, agents?: Record<string, AgentState>)
 /**
  * Agent-facing full transcript: bids entries filtered to speaker name only (information veil).
  * Agents cannot infer bid scores, quota state, or resolution mechanism from this view.
- * Full audit data (scores, quotas) is preserved in transcript.md for human review.
+ * Full audit data (scores, quotas) is preserved in the persisted transcript and audit views.
  */
 export function formatAgentView(entries: TranscriptEntry[], agents: Record<string, AgentState>): string {
   let agentView = '';

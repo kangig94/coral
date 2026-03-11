@@ -1,17 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
+import type {
+  DiscussDomainEvent,
+  PersistedDiscussSnapshot,
+  SessionCreatedEvent,
+} from '../events.js';
+import { replayDiscussEvents } from '../reducer.js';
 import {
-  applyBid,
+  decideBid,
   decideBidRoundClose,
   decideEnd,
   decideEpochSummary,
   decideSessionCreate,
   decideSpeech,
-  initSession,
-  startBidding,
 } from '../state-machine.js';
-import type { DiscussDomainEvent, SessionCreatedEvent } from '../events.js';
-import type { Result } from '../types.js';
+import type { DiscussCreateInput, Result } from '../types.js';
 
 const NOW = '2026-03-11T00:00:00.000Z';
 const SESSION_ID = 'session-123';
@@ -25,24 +28,69 @@ function unwrap<T>(result: Result<T>): T {
   throw new Error(result.error);
 }
 
-function createBiddingState() {
-  return unwrap(startBidding(initSession({
-    topic: 'Should the city pedestrianize the downtown core?',
-    agents: [
-      { name: 'alpha', persona: 'Alpha', participation: 'required' },
-      { name: 'beta', persona: 'Beta', participation: 'observer' },
-    ],
-    min_bid_delay_ms: 0,
-  }, NOW), NOW));
+function nextSeq(snapshot: PersistedDiscussSnapshot): number {
+  return snapshot.lastAppliedSeq + 1;
+}
+
+function createBiddingSnapshot(): PersistedDiscussSnapshot {
+  return replayDiscussEvents(unwrap(decideSessionCreate(
+    {
+      topic: 'Should the city pedestrianize the downtown core?',
+      agents: [
+        { name: 'alpha', persona: 'Alpha', participation: 'required' },
+        { name: 'beta', persona: 'Beta', participation: 'observer' },
+      ],
+      min_bid_delay_ms: 0,
+    },
+    SESSION_ID,
+    PROJECT_ROOT,
+    'Should the city pedestrianize the downtown core?',
+    1,
+    NOW,
+  )));
+}
+
+function appendDecision(
+  snapshot: PersistedDiscussSnapshot,
+  result: Result<DiscussDomainEvent[]>,
+): PersistedDiscussSnapshot {
+  return replayDiscussEvents(unwrap(result), snapshot);
 }
 
 describe('state-machine deciders', () => {
   it('allows an observer with a submitted bid to win cold start', () => {
-    let state = createBiddingState();
-    state = unwrap(applyBid(state, 'alpha', 10, 'I can go later.', NOW));
-    state = unwrap(applyBid(state, 'beta', 20, 'I should break the tie now.', NOW));
+    let snapshot = createBiddingSnapshot();
+    snapshot = appendDecision(snapshot, decideBid(
+      snapshot.state,
+      'alpha',
+      10,
+      'I can go later.',
+      SESSION_ID,
+      PROJECT_ROOT,
+      snapshot.state.topic,
+      nextSeq(snapshot),
+      NOW,
+    ));
+    snapshot = appendDecision(snapshot, decideBid(
+      snapshot.state,
+      'beta',
+      20,
+      'I should break the tie now.',
+      SESSION_ID,
+      PROJECT_ROOT,
+      snapshot.state.topic,
+      nextSeq(snapshot),
+      NOW,
+    ));
 
-    const decided = decideBidRoundClose(state, SESSION_ID, PROJECT_ROOT, state.topic, 9, NOW);
+    const decided = decideBidRoundClose(
+      snapshot.state,
+      SESSION_ID,
+      PROJECT_ROOT,
+      snapshot.state.topic,
+      nextSeq(snapshot),
+      NOW,
+    );
 
     expect(decided.ok).toBe(true);
     if (!decided.ok) return;
@@ -56,17 +104,37 @@ describe('state-machine deciders', () => {
   });
 
   it('does not let an observer without a bid win cold start', () => {
-    let state = createBiddingState();
-    state = {
-      ...state,
-      agents: {
-        ...state.agents,
-        alpha: { ...state.agents.alpha, total_speaks: 1 },
+    let snapshot = createBiddingSnapshot();
+    snapshot = {
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        agents: {
+          ...snapshot.state.agents,
+          alpha: { ...snapshot.state.agents.alpha, total_speaks: 1 },
+        },
       },
     };
-    state = unwrap(applyBid(state, 'alpha', 10, 'I should handle this round.', NOW));
+    snapshot = appendDecision(snapshot, decideBid(
+      snapshot.state,
+      'alpha',
+      10,
+      'I should handle this round.',
+      SESSION_ID,
+      PROJECT_ROOT,
+      snapshot.state.topic,
+      nextSeq(snapshot),
+      NOW,
+    ));
 
-    const decided = decideBidRoundClose(state, SESSION_ID, PROJECT_ROOT, state.topic, 9, NOW);
+    const decided = decideBidRoundClose(
+      snapshot.state,
+      SESSION_ID,
+      PROJECT_ROOT,
+      snapshot.state.topic,
+      nextSeq(snapshot),
+      NOW,
+    );
 
     expect(decided.ok).toBe(true);
     if (!decided.ok) return;
@@ -81,7 +149,7 @@ describe('state-machine deciders', () => {
 
   it('returns the cleaned speaking-status hint from decideSpeech', () => {
     const result = decideSpeech(
-      createBiddingState(),
+      createBiddingSnapshot().state,
       'alpha',
       'Not yet.',
       SESSION_ID,
@@ -103,7 +171,7 @@ describe('state-machine deciders', () => {
 
   it('returns the cleaned loop hint from decideEpochSummary', () => {
     const result = decideEpochSummary(
-      createBiddingState(),
+      createBiddingSnapshot().state,
       'Still discussing.',
       SESSION_ID,
       PROJECT_ROOT,
@@ -123,12 +191,14 @@ describe('state-machine deciders', () => {
   });
 
   it('uses caller-supplied ownership metadata and contiguous seqs for emitted batches', () => {
+    const input: DiscussCreateInput = {
+      topic: 'Topic',
+      agents: [{ name: 'alpha', persona: 'Alpha', participation: 'required' }],
+      min_bid_delay_ms: 50,
+    };
+
     const events = unwrap(decideSessionCreate(
-      {
-        topic: 'Topic',
-        agents: [{ name: 'alpha', persona: 'Alpha', participation: 'required' }],
-        min_bid_delay_ms: 50,
-      },
+      input,
       SESSION_ID,
       PROJECT_ROOT,
       'Topic',
@@ -157,40 +227,63 @@ describe('state-machine deciders', () => {
   });
 
   it('emits a terminal round-close batch with matching ownership metadata', () => {
-    let state = createBiddingState();
-    state = {
-      ...state,
-      cold_start: false,
-      agents: {
-        alpha: { ...state.agents.alpha, participation: 'required' },
-        beta: { ...state.agents.beta, participation: 'required' },
+    let snapshot = createBiddingSnapshot();
+    snapshot = {
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        cold_start: false,
+        agents: {
+          alpha: { ...snapshot.state.agents.alpha, participation: 'required' },
+          beta: { ...snapshot.state.agents.beta, participation: 'required' },
+        },
+        pending_bidders: ['alpha', 'beta'],
       },
-      pending_bidders: ['alpha', 'beta'],
     };
-    state = unwrap(applyBid(state, 'alpha', 10, 'Low urgency.', NOW));
-    state = unwrap(applyBid(state, 'beta', 20, 'Still low urgency.', NOW));
-
-    const events = unwrap(decideBidRoundClose(
-      state,
+    snapshot = appendDecision(snapshot, decideBid(
+      snapshot.state,
+      'alpha',
+      10,
+      'Low urgency.',
       SESSION_ID,
       PROJECT_ROOT,
-      state.topic,
+      snapshot.state.topic,
+      nextSeq(snapshot),
+      NOW,
+    ));
+    snapshot = appendDecision(snapshot, decideBid(
+      snapshot.state,
+      'beta',
       20,
+      'Still low urgency.',
+      SESSION_ID,
+      PROJECT_ROOT,
+      snapshot.state.topic,
+      nextSeq(snapshot),
+      NOW,
+    ));
+
+    const events = unwrap(decideBidRoundClose(
+      snapshot.state,
+      SESSION_ID,
+      PROJECT_ROOT,
+      snapshot.state.topic,
+      nextSeq(snapshot),
       NOW,
     ));
 
     expect(events.map((event) => event.kind)).toEqual(['bid.round.closed', 'session.ended']);
-    expect(events.map((event) => event.seq)).toEqual([20, 21]);
+    expect(events.map((event) => event.seq)).toEqual([5, 6]);
     expect(events.every((event: DiscussDomainEvent) =>
       event.sessionId === SESSION_ID
       && event.projectRoot === PROJECT_ROOT
-      && event.topic === state.topic
+      && event.topic === snapshot.state.topic
       && event.ts === NOW)).toBe(true);
   });
 
   it('returns an empty batch when decideEnd is called on an already-ended state', () => {
     const endedState = {
-      ...createBiddingState(),
+      ...createBiddingSnapshot().state,
       status: 'ended' as const,
     };
 

@@ -12,29 +12,31 @@
 │  │ (CLAUDE.md   │  │  management)  │  │  ralph, analyze, ...           │  │
 │  │  injection,  │  │               │  └───────────────┬────────────────┘  │
 │  │  backend     │  └───────┬───────┘                  │                   │
-│  │  warm-start) │          │                ┌─────────┴─────────┐         │
-│  └──────────────┘          │                ▼                   ▼         │
-│                            ▼                                              │
-│  ┌────────────────────────────────┐  ┌─────────────────────────────────┐  │
-│  │  MCP Server "ax"               │  │  MCP Server "dc"                │  │
-│  │  (bridge/coral-ax.cjs)         │  │  (bridge/coral-discuss.cjs)     │  │
-│  │                                │  │                                 │  │
-│  │  Tools: codex + claude + wait  │  │  Tools: discuss (2 ops)         │  │
-│  │         + abort + workflow     │  │    + discuss_lead (7 ops)       │  │
-│  │  codex: exec/list/fork         │  │                                 │  │
-│  │   + coral:<name>               │  │                                 │  │
-│  │  claude: exec/list/fork        │  │                                 │  │
-│  │   + coral:<agent>              │  │                                 │  │
-│  │  wait: provider-agnostic       │  │                                 │  │
-│  │  abort: provider-agnostic      │  │                                 │  │
-│  │  workflow: pipeline executor   │  │                                 │  │
-│  │                                │  │                                 │  │
-│  │  ┌──────────────────────────┐  │  │  Session: {project}/.claude/    │  │
-│  │  │ Thin MCP stdio proxy     │  │  │           coral/discuss/        │  │
-│  │  │ HTTP → backend daemon    │  │  └─────────────────────────────────┘  │
-│  │  └───────────┬──────────────┘  │                                       │
-│  └──────────────┼─────────────────┘                                       │
-│                 │                                                         │
+│  │  warm-start) │          │                ┌─────────┴──────────┐        │
+│  └──────────────┘          │                ▼                    │        │
+│                            ▼                                     │        │
+│  ┌─────────────────────────────────────────────────────────────┐ │        │
+│  │ MCP Server "ax" (bridge/coral-ax.cjs)                      │ │        │
+│  │                                                             │ │        │
+│  │ Tools: codex + claude + discuss_* + wait + abort +         │ │        │
+│  │        workflow + backend                                   │ │        │
+│  │ codex/claude: exec/list/fork + coral:<name> dispatch       │ │        │
+│  │ discuss_*: backend-managed discuss lifecycle tools          │ │        │
+│  │ wait/abort/workflow/backend: proxy or bridge-local helpers  │ │        │
+│  │                                                             │ │        │
+│  │ Thin MCP stdio proxy -> HTTP backend daemon                 │ │        │
+│  └──────────────────────────────┬──────────────────────────────┘ │        │
+│                                 │                                │        │
+│  Persisted discuss data: {project}/.claude/coral/discuss/        │        │
+│    discovery.json + <session-id>/{event-log.jsonl,state.json}    │        │
+│                                 │                                │        │
+│                                 │                                │        │
+│                                 │                                │        │
+│                                 │                                │        │
+│                                 │                                │        │
+│                                 │                                │        │
+│                                 │                                │        │
+│                                 │                                │        │
 └─────────────────┼─────────────────────────────────────────────────────────┘
                   │ HTTP (127.0.0.1, ephemeral port)
                   ▼
@@ -47,11 +49,14 @@
 │  ├── Idle auto-shutdown (CORAL_BACKEND_IDLE_MS, default 6h)               │
 │  ├── Job storage       (/tmp/coral-jobs/<jobId>/)                         │
 │  ├── Session storage   (~/.claude/coral/sessions/)                        │
+│  ├── Discuss storage   {project}/.claude/coral/discuss/                   │
 │  └── Routes:                                                              │
 │      GET  /health         → version, instanceId, uptime                   │
 │      GET  /tools          → tool descriptors for MCP ListTools            │
 │      POST /tool           → routeToolCall() → ExecutionService            │
 │      POST /wait/stream    → SSE progress/terminal/timeout events          │
+│      GET  /api/discuss    → persisted/live discuss summaries              │
+│      GET  /api/discuss/detail → projected control or audit detail         │
 │      POST /admin/shutdown → graceful drain + exit                         │
 │                                                                           │
 │  ExecutionService → Provider.execute() → CLI spawn                        │
@@ -287,13 +292,15 @@ User → /coral:discuss "AI ethics in healthcare"
      → Skill calls discuss_seed({ controversy_axes, n, seed }) → persona assignments
      → Spawns persona-generator agents in parallel (Task tool) → full personas
      → Skill calls discuss_start({ topic, agents }) → session_id
-     → Backend DiscussManager owns discussion loop:
-        → Bids collected in parallel via ExecutionService (pool: 'discuss')
-        → resolveWinner → winner collects speech → next bid cycle
-        → Epoch evaluation: convergence check, must_answer follow-ups, synthesis
-        → Session ends when converged or max_epochs reached
+     → execution/server.ts appends session.created + bidding.opened
+     → Backend DiscussManager owns the persisted control loop:
+        → loads latest snapshot from DiscussSessionStore
+        → launches provider turns via ExecutionService (pool: 'discuss')
+        → commits bid/speech/follow-up/synthesis event batches
+        → eventBus emits discuss:updated after every committed batch
      → User/observer: discuss_watch (poll events), discuss_participate (bid/speak)
-     → discuss_abort to terminate early
+     → /api/discuss + /api/discuss/detail read projected snapshots
+     → discuss_abort appends a durable terminal event
 ```
 
 ### 5. Workflow Pipeline Execution
@@ -355,13 +362,13 @@ Each file is a single `SessionEntry`. Corrupt files are skipped with a warning; 
 
 ```
 {project}/.claude/coral/discuss/
-└── 260221-1430-a1b2-ai-ethics/      # {YYMMDD}-{HHMM}-{rand4}-{topic-slug}
-    ├── state.json          # Atomic writes via .tmp + rename
-    ├── state.lock/         # Cross-process mkdir lock (transient)
-    └── transcript.md       # Incremental append (human-readable)
+├── discovery.json                  # Per-project discuss index
+└── <session-id>/
+    ├── event-log.jsonl             # Canonical append-only event stream
+    └── state.json                  # Derived PersistedDiscussSnapshot
 ```
 
-Each session directory is created atomically with collision detection. State mutations are serialized via a cross-process `mkdir`-based lock (`state.lock/`). `transcript.md` is append-only — the `transcript_rendered` cursor tracks which entries have been written to the markdown file.
+`DiscussSessionStore.append()` writes in strict order: append + `fdatasync` the event log, reduce into the next snapshot, atomically rewrite `state.json`, then atomically merge `discovery.json`. `state.json` is an optimization and restart seed; `event-log.jsonl` is the authority.
 
 ### 10. Knowledge Base Storage
 
@@ -434,19 +441,13 @@ coral/
 │   │   ├── schemas.ts           # Zod input validation
 │   │   ├── pipe-executor.ts     # Launch, retry, wait, output formatting
 │   │   └── handler.ts           # Entry point (DI from backend router)
-│   └── discuss/                 # Discuss MCP server (dc)
-│       ├── server.ts            # Composition root
-│       ├── server-handlers.ts   # Tool dispatch
-│       ├── lock.ts              # File locking and atomic writes
-│       ├── handlers/
-│       │   ├── bid.ts           # bid/speak flow
-│       │   └── step.ts          # _3_step flow
-│       ├── schemas.ts           # Zod validation
-│       ├── state-machine.ts     # Pure state transitions
-│       ├── session-store.ts     # I/O: atomic writes, locking
-│       ├── transcript.ts        # Markdown rendering
+│   └── discuss/                 # Discuss domain + projections
+│       ├── events.ts            # Domain event union + persisted runtime types
+│       ├── reducer.ts           # Event replay into snapshot state
+│       ├── projections.ts       # Control/audit/watch projections
+│       ├── state-machine.ts     # Pure deciders: state -> event batches
+│       ├── transcript.ts        # Transcript rendering helpers
 │       ├── persona-seed.ts      # Persona sampling (k-DPP)
-│       ├── wait.ts              # File polling
 │       ├── types.ts             # Discuss type definitions
 │       └── util/
 │           ├── string.ts        # String/ID formatting utilities
@@ -469,7 +470,7 @@ coral/
 ├── bridge/
 │   ├── coral-ax.cjs             # MCP stdio proxy bundle (committed)
 │   ├── coral-backend.cjs        # HTTP backend daemon bundle (committed)
-│   └── coral-discuss.cjs        # Discuss MCP server bundle (committed)
+│   └── coral-discuss.cjs        # Legacy discuss bundle still committed
 ├── docs/                        # Documentation
 ├── vitest.config.ts
 ├── package.json
@@ -518,37 +519,45 @@ types.ts provides shared contracts across all modules
 workflow/types.ts provides pipeline AST types
 ```
 
-### Discuss Server (`dc`)
+### Discuss Subsystem
 
-Strict layered dependency order (lower layers never import from higher):
+The current discuss stack is event-sourced and split across pure domain modules, persistence, orchestration, and read models:
 
 ```
-L0  discuss/types.ts             (type definitions — zero imports)
-L1  discuss/util/string.ts       (string/ID formatting)
-    discuss/util/rng.ts          (seeded RNG, sampling)
-    discuss/util/time.ts         (time formatting)
-    discuss/util/dpp.ts          (k-DPP linear algebra → imports rng)
-L2  discuss/state-machine.ts     (pure state transitions → imports util/string)
-    discuss/transcript.ts        (markdown rendering)
-    discuss/schemas.ts           (Zod validation)
-    discuss/persona-seed.ts      (k-DPP sampling → imports util/rng, util/dpp)
-L3  discuss/lock.ts              (file locking, atomic writes)
-    discuss/session-store.ts     (I/O shell → imports util/string, lock, transcript)
-    discuss/wait.ts              (file polling)
-L4  discuss/handlers/bid.ts      (bid/speak flow)
-    discuss/handlers/step.ts     (_3_step flow)
-L5  discuss/server-handlers.ts   (tool dispatch → imports handlers/bid, handlers/step)
-L6  discuss/server.ts            (composition root — wiring only)
+Pure domain
+  discuss/types.ts
+  discuss/util/{string,time,rng,dpp}.ts
+  discuss/events.ts
+  discuss/state-machine.ts        (deciders emit validated event batches)
+  discuss/reducer.ts              (events -> PersistedDiscussSnapshot)
+  discuss/transcript.ts
+  discuss/persona-seed.ts
 
-shared/mcp-utils.ts ← referenced by L4–L5
+Read models
+  discuss/projections.ts          (control/audit/watch projections)
+  client/discuss.ts               (stable DTO builders for API + reef)
+
+Persistence + runtime
+  execution/discuss-session-store.ts
+    -> client/{paths,readers,discuss}.ts
+    -> discuss/reducer.ts
+
+  execution/discuss-manager.ts
+    -> discuss/{events,state-machine,projections,transcript}.ts
+    -> execution/discuss-session-store.ts
+    -> execution/service.ts
+
+  execution/server.ts
+    -> execution/discuss-manager.ts
+    -> execution/discuss-session-store.ts
+    -> client/discuss.ts
+    -> execution/event-bus.ts
 ```
 
-### Key Design: Functional Core / Imperative Shell
+### Key Design: Event-Sourced Control Loop
 
-The discuss server separates pure logic from I/O:
-
-- **L0–L1**: Zero project imports. `util/` provides pure string, RNG, time, and DPP primitives.
-- **L2 Functional Core** (`state-machine.ts`, `transcript.ts`, `persona-seed.ts`): pure functions, zero `node:fs`. Fully testable without filesystem.
-- **L3 Imperative Shell** (`lock.ts`, `session-store.ts`, `wait.ts`): all filesystem operations. Atomic writes via `writeStateAtomic` (from `lock.ts`). All state mutations serialized through `withLock`.
-- **L4 Handler layer**: `handlers/bid.ts` and `handlers/step.ts` contain the extracted bid/speak and `_3_step` flows.
-- **L5 Dispatch**: `server-handlers.ts` is a thin router — Zod parsing, `envInt`, and routing to handlers.
+- Deciders in `state-machine.ts` never mutate `DiscussState` directly. They validate input and emit event batches.
+- `reducer.ts` is the single replay path for both live execution and restart recovery.
+- `DiscussSessionStore` owns durability: append-only log first, snapshot second, discovery index third.
+- `DiscussManager` is a live loop runner over persisted snapshots, not the source of truth.
+- `projections.ts` and `client/discuss.ts` give the API, watch history, and reef sync paths one shared read-model contract.

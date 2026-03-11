@@ -7,19 +7,14 @@ import {
 } from '../events.js';
 import {
   makeEmptySnapshot,
+  reduceDiscussEvent,
   replayDiscussEvents,
 } from '../reducer.js';
 import {
-  applyBid,
-  applyEnd,
-  applySpeech,
   decideBid,
   decideBidRoundClose,
   decideSessionCreate,
   decideSpeech,
-  initSession,
-  resolveWinner,
-  startBidding,
 } from '../state-machine.js';
 import type { DiscussCreateInput, DiscussState, Result } from '../types.js';
 
@@ -34,14 +29,22 @@ function unwrap<T>(result: Result<T>): T {
   throw new Error(result.error);
 }
 
+function applyEvents(
+  snapshot: PersistedDiscussSnapshot,
+  events: DiscussDomainEvent[],
+): PersistedDiscussSnapshot {
+  return events.reduce((current, event) => reduceDiscussEvent(current, event), snapshot);
+}
+
 function replay(
   snapshot: PersistedDiscussSnapshot | undefined,
   events: DiscussDomainEvent[],
 ): PersistedDiscussSnapshot {
-  return replayDiscussEvents(
-    events,
-    snapshot,
-  );
+  return replayDiscussEvents(events, snapshot);
+}
+
+function nextSeq(snapshot: PersistedDiscussSnapshot): number {
+  return snapshot.lastAppliedSeq + 1;
 }
 
 function makeInput(
@@ -55,103 +58,162 @@ function makeInput(
   };
 }
 
-function makeDirectBiddingState(input: DiscussCreateInput): DiscussState {
-  const created = {
-    ...initSession(input, NOW),
-    session_id: SESSION_ID,
-  };
-  return unwrap(startBidding(created, NOW));
+function createSnapshot(
+  input: DiscussCreateInput,
+  agentExecution?: Parameters<typeof decideSessionCreate>[9],
+): PersistedDiscussSnapshot {
+  return replayDiscussEvents(unwrap(decideSessionCreate(
+    input,
+    SESSION_ID,
+    PROJECT_ROOT,
+    input.topic,
+    1,
+    NOW,
+    undefined,
+    undefined,
+    undefined,
+    agentExecution,
+  )));
 }
 
-function makeSnapshotFromState(state: DiscussState): PersistedDiscussSnapshot {
-  return {
-    ...makeEmptySnapshot(SESSION_ID, PROJECT_ROOT),
-    updatedAt: state.last_activity_at,
-    state,
-  };
-}
-
-describe('reducer parity', () => {
-  it('replays session creation, bidding, round close, and speech to the same state as direct execution', () => {
+describe('reducer projections', () => {
+  it('matches incremental reduce and tail replay for a creation -> bid -> speech cycle', () => {
     const input = makeInput([
       { name: 'alpha', persona: 'Alpha', participation: 'required' },
       { name: 'beta', persona: 'Beta', participation: 'observer' },
     ]);
-    let seq = 1;
 
-    let direct = makeDirectBiddingState(input);
-    let snapshot = replay(
-      undefined,
-      unwrap(decideSessionCreate(
-        input,
-        SESSION_ID,
-        PROJECT_ROOT,
-        input.topic,
-        seq,
-        NOW,
-      )),
-    );
-    seq += 2;
-    expect(snapshot.state).toEqual(direct);
+    const history: DiscussDomainEvent[] = [];
+    let snapshot = makeEmptySnapshot(SESSION_ID, PROJECT_ROOT);
 
-    direct = unwrap(applyBid(direct, 'alpha', 10, 'I can go later.', NOW));
-    snapshot = replay(
-      snapshot,
-      unwrap(decideBid(snapshot.state, 'alpha', 10, 'I can go later.', SESSION_ID, PROJECT_ROOT, input.topic, seq, NOW)),
-    );
-    seq += 1;
-    expect(snapshot.state).toEqual(direct);
+    const created = unwrap(decideSessionCreate(
+      input,
+      SESSION_ID,
+      PROJECT_ROOT,
+      input.topic,
+      1,
+      NOW,
+    ));
+    history.push(...created);
+    snapshot = replay(snapshot, created);
 
-    direct = unwrap(applyBid(direct, 'beta', 20, 'I should break the tie now.', NOW));
-    snapshot = replay(
-      snapshot,
-      unwrap(decideBid(snapshot.state, 'beta', 20, 'I should break the tie now.', SESSION_ID, PROJECT_ROOT, input.topic, seq, NOW)),
-    );
-    seq += 1;
-    expect(snapshot.state).toEqual(direct);
+    const alphaBid = unwrap(decideBid(
+      snapshot.state,
+      'alpha',
+      10,
+      'I can go later.',
+      SESSION_ID,
+      PROJECT_ROOT,
+      input.topic,
+      nextSeq(snapshot),
+      NOW,
+    ));
+    history.push(...alphaBid);
+    snapshot = replay(snapshot, alphaBid);
 
-    const directClosed = unwrap(resolveWinner(direct, NOW));
-    snapshot = replay(
-      snapshot,
-      unwrap(decideBidRoundClose(snapshot.state, SESSION_ID, PROJECT_ROOT, input.topic, seq, NOW)),
-    );
-    seq += 1;
-    expect(snapshot.state).toEqual(directClosed[0]);
+    const betaBid = unwrap(decideBid(
+      snapshot.state,
+      'beta',
+      20,
+      'I should break the tie now.',
+      SESSION_ID,
+      PROJECT_ROOT,
+      input.topic,
+      nextSeq(snapshot),
+      NOW,
+    ));
+    history.push(...betaBid);
+    snapshot = replay(snapshot, betaBid);
 
-    const directAfterSpeech = unwrap(applySpeech(directClosed[0], 'beta', 'I will open the discussion.', NOW));
-    snapshot = replay(
-      snapshot,
-      unwrap(decideSpeech(snapshot.state, 'beta', 'I will open the discussion.', SESSION_ID, PROJECT_ROOT, input.topic, seq, NOW)),
-    );
-    expect(snapshot.state).toEqual(directAfterSpeech);
+    const closed = unwrap(decideBidRoundClose(
+      snapshot.state,
+      SESSION_ID,
+      PROJECT_ROOT,
+      input.topic,
+      nextSeq(snapshot),
+      NOW,
+    ));
+    history.push(...closed);
+    snapshot = replay(snapshot, closed);
+
+    const speech = unwrap(decideSpeech(
+      snapshot.state,
+      'beta',
+      'I will open the discussion.',
+      SESSION_ID,
+      PROJECT_ROOT,
+      input.topic,
+      nextSeq(snapshot),
+      NOW,
+    ));
+    history.push(...speech);
+
+    const fullReplay = replay(undefined, history);
+    const incremental = applyEvents(makeEmptySnapshot(SESSION_ID, PROJECT_ROOT), history);
+    const tailReplay = replay(replay(undefined, history.slice(0, 4)), history.slice(4));
+
+    expect(incremental).toEqual(fullReplay);
+    expect(tailReplay).toEqual(fullReplay);
+    expect(fullReplay.state.status).toBe('bidding');
+    expect(fullReplay.state.step).toBe(2);
+    expect(fullReplay.state.last_speech_step).toBe(1);
+    expect(fullReplay.state.current_speaker).toBeNull();
+    expect(fullReplay.state.agents.beta.total_speaks).toBe(1);
+    expect(fullReplay.runtime.controlPhase).toBe('idle');
   });
 
-  it('matches direct resolve-then-end behavior for terminal no-winner batches', () => {
+  it('ends the session and enters synthesize control for a terminal no-winner batch', () => {
     const input = makeInput([
       { name: 'alpha', persona: 'Alpha', participation: 'required' },
       { name: 'beta', persona: 'Beta', participation: 'required' },
     ]);
-    let direct = makeDirectBiddingState(input);
-    direct = { ...direct, cold_start: false };
-    direct = unwrap(applyBid(direct, 'alpha', 10, 'Not enough urgency.', NOW));
-    direct = unwrap(applyBid(direct, 'beta', 20, 'Still below threshold.', NOW));
+    let snapshot = createSnapshot(input);
+    snapshot = {
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        cold_start: false,
+      },
+    };
 
-    const resolved = unwrap(resolveWinner(direct, NOW));
-    if ('winner' in resolved[1]) {
-      throw new Error('expected a no-winner outcome');
-    }
-    if (resolved[1].reason === 'epoch_transition') {
-      throw new Error('expected a terminal no-winner reason');
-    }
-    const ended = unwrap(applyEnd(resolved[0], { endReason: resolved[1].reason }, NOW));
+    snapshot = replay(snapshot, unwrap(decideBid(
+      snapshot.state,
+      'alpha',
+      10,
+      'Not enough urgency.',
+      SESSION_ID,
+      PROJECT_ROOT,
+      input.topic,
+      nextSeq(snapshot),
+      NOW,
+    )));
+    snapshot = replay(snapshot, unwrap(decideBid(
+      snapshot.state,
+      'beta',
+      20,
+      'Still below threshold.',
+      SESSION_ID,
+      PROJECT_ROOT,
+      input.topic,
+      nextSeq(snapshot),
+      NOW,
+    )));
 
-    const snapshot = replay(
-      makeSnapshotFromState(direct),
-      unwrap(decideBidRoundClose(direct, SESSION_ID, PROJECT_ROOT, input.topic, 7, NOW)),
-    );
+    const terminalBatch = unwrap(decideBidRoundClose(
+      snapshot.state,
+      SESSION_ID,
+      PROJECT_ROOT,
+      input.topic,
+      nextSeq(snapshot),
+      NOW,
+    ));
+    const ended = replay(snapshot, terminalBatch);
 
-    expect(snapshot.state).toEqual(ended);
-    expect(snapshot.runtime.controlPhase).toBe('synthesize');
+    expect(terminalBatch.map((event) => event.kind)).toEqual(['bid.round.closed', 'session.ended']);
+    expect(ended.state.status).toBe('ended');
+    expect(ended.state.end_reason_content).toBe('All participants bid below the threshold. Ending discussion.');
+    expect(ended.runtime.controlPhase).toBe('synthesize');
+    expect(ended.lastAppliedSeq).toBe(snapshot.lastAppliedSeq + 2);
   });
 
   it('projects epoch_transition into evaluate_epoch runtime control', () => {
@@ -159,34 +221,46 @@ describe('reducer parity', () => {
       { name: 'alpha', persona: 'Alpha', participation: 'required' },
       { name: 'beta', persona: 'Beta', participation: 'required' },
     ]);
-    const baseState = makeDirectBiddingState(input);
+    const baseSnapshot = createSnapshot(input);
     const biddingState: DiscussState = {
-      ...baseState,
+      ...baseSnapshot.state,
       cold_start: false,
       current_bids: { alpha: 90, beta: 85 },
       current_thoughts: { alpha: 'I am blocked by quota.', beta: 'Same here.' },
       pending_bidders: [],
       agents: {
         alpha: {
-          ...baseState.agents.alpha,
+          ...baseSnapshot.state.agents.alpha,
           quota_remaining: 0,
           fallback_used: true,
         },
         beta: {
-          ...baseState.agents.beta,
+          ...baseSnapshot.state.agents.beta,
           quota_remaining: 0,
           fallback_used: true,
         },
       },
     };
 
-    const directResolved = unwrap(resolveWinner(biddingState, NOW));
     const snapshot = replay(
-      makeSnapshotFromState(biddingState),
-      unwrap(decideBidRoundClose(biddingState, SESSION_ID, PROJECT_ROOT, input.topic, 9, NOW)),
+      {
+        ...baseSnapshot,
+        state: biddingState,
+      },
+      unwrap(decideBidRoundClose(
+        biddingState,
+        SESSION_ID,
+        PROJECT_ROOT,
+        input.topic,
+        3,
+        NOW,
+      )),
     );
 
-    expect(snapshot.state).toEqual(directResolved[0]);
+    expect(snapshot.state.status).toBe('bidding');
+    expect(snapshot.state.epoch).toBe(2);
+    expect(snapshot.state.step).toBe(2);
+    expect(snapshot.state.epoch_summary_written).toBeNull();
     expect(snapshot.runtime.controlPhase).toBe('evaluate_epoch');
   });
 
@@ -195,23 +269,10 @@ describe('reducer parity', () => {
       { name: 'alpha', persona: 'Alpha', participation: 'required' },
       { name: 'user', persona: 'User', participation: 'observer' },
     ]);
-    const created = replayDiscussEvents([
-      ...unwrap(decideSessionCreate(
-        input,
-        SESSION_ID,
-        PROJECT_ROOT,
-        input.topic,
-        1,
-        NOW,
-        undefined,
-        undefined,
-        undefined,
-        {
-          alpha: { manual: false, provider: 'codex', model: 'gpt-5' },
-          user: { manual: true },
-        },
-      )),
-    ]);
+    const created = createSnapshot(input, {
+      alpha: { manual: false, provider: 'codex', model: 'gpt-5' },
+      user: { manual: true },
+    });
 
     const afterBound = replayDiscussEvents([
       makeEvent(SESSION_ID, PROJECT_ROOT, input.topic, 3, 'agent.run.bound', NOW, {
