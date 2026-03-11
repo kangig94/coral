@@ -64,8 +64,10 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
 
     ### Step 2 — Context
 
-    **Plan mode only**: Read the plan's **Execution Order** section for dependency graph, batches, and file mapping.
-    Prompt mode skips this step.
+    **Plan mode**: Read the plan's **Execution Order** section for dependency graph, batches, and file mapping.
+    **Prompt mode**: Analyze the prompt, identify discrete tasks, and derive an Execution Order:
+    - Group independent tasks into parallel batches; order batches by dependency (batch N's outputs feed batch N+1).
+    - Each batch lists its tasks with affected file paths.
 
     ### Step 3 — Execute
 
@@ -85,8 +87,6 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
     | `--codex` | `<Exec_Codex>` |
     | `--team` | `<Exec_Team>` |
     | `--team --codex` | `<Exec_Team>` (with codex workers — see its `--codex` subsection) |
-
-    If blocked, or after 10 steps without completion: stop, confirm direction with user.
 
     ### Step 4 — Post-Implementation (strict order, fail-fast)
 
@@ -110,13 +110,16 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
     Output Completion Report (see `<Output_Format>`).
   </Protocol>
   <Exec_Default>
-    Claude-native sequential execution.
-
-    Execute steps from the plan's Execution Order (or prompt requirements), one by one.
-    Use specialist agents where appropriate.
+    Claude-native execution.
 
     **`--red`**: Before starting, spawn `Agent("coral:red-attacker", { run_in_background: true })`
     with prompt: plan file path + acceptance criteria. Staging: `.claude/coral/tmp/red/`.
+
+    **Execution loop** — process batches from Execution Order sequentially; parallelize within each batch:
+    1. For each batch, identify independent ACs vs tightly coupled ACs (shared files, sequential dependency).
+       Launch independent ACs as parallel `Agent` calls; execute coupled ACs sequentially.
+       Use specialist agents where appropriate.
+    2. Verify each AC's output before proceeding to the next batch.
 
     Then continue to Step 4.
   </Exec_Default>
@@ -130,15 +133,17 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
     - System: Ralph's `<Role>` and `<Success_Criteria>`
     - Plan: plan file path as reference (Codex should read it for broader context, not implement the entire plan)
     - Context: working directory, file paths, code sections, constraints
-    - Task: description and acceptance criteria for this batch only
+    - Task: description and acceptance criteria for this call's scope only
 
-    **Execution loop** (max 5 rounds, then ask user):
-    1. `codex({ op: "bypass_exec", prompt: "<task + file paths + constraints>", work_dir: "<project root>" })`
-       → `wait({ jobs: [job], inline: true })` → read result.
-       Do NOT pass `session`.
-    2. Verify changes yourself: read changed files, compare against acceptance criteria.
-    3. All criteria pass → read all modified files, compare against plan, fix discrepancies yourself. Then continue to Step 4.
-       Not all criteria pass → loop to 1.
+    **Execution loop** — process batches from Execution Order sequentially; parallelize within each batch:
+    1. Group ACs in the batch by coupling: tightly coupled ACs (shared files, sequential dependency)
+       go into one Codex call; independent ACs get separate parallel calls.
+       `codex({ op: "bypass_exec", prompt: "<ACs + file paths + constraints>", work_dir: "<project root>" })`
+       Do NOT pass `session`. Collect all job IDs.
+    2. `wait({ jobs: [job1, job2, ...], inline: true })` → read results for all jobs.
+    3. Verify changes yourself: read changed files, compare against acceptance criteria.
+    4. All criteria pass → read all modified files, compare against plan, fix discrepancies yourself. Then continue to Step 4.
+       Failed criteria → re-launch only the failed ACs, loop to 1.
   </Exec_Codex>
   <Exec_Team>
     Parallel execution via Agent Teams. Requires plan mode with Acceptance Criteria.
@@ -160,7 +165,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
           → wait({ jobs: [job], inline: true }) → read result.
           Do NOT pass `session`.
        2. Verify changes yourself: read changed files, compare against AC.
-       3. If AC not met → re-run codex (max 5 rounds). If met → report completion.
+       3. If AC not met → re-run codex. If met → report completion.
        ```
 
     3. **`--red`**: Spawn red-attacker as teammate in `ralph-workers` team.
