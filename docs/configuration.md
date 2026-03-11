@@ -59,7 +59,7 @@ Version is managed in `package.json` (single source of truth) and synced to `plu
 
 ### .mcp.json - MCP Server Registration
 
-Registers both MCP servers with Claude Code. `ax` runs `bridge/coral-ax.cjs`, which proxies remote AX tools (`codex`, `claude`, `abort`, `workflow`) to the backend daemon (`bridge/coral-backend.cjs`) and intercepts bridge-local tools (`wait`, `backend`). `dc` runs `bridge/coral-discuss.cjs` via Node.js stdio transport.
+Registers the MCP server with Claude Code. `ax` runs `bridge/coral-ax.cjs`, which proxies all tools (`codex`, `claude`, `abort`, `workflow`, `discuss`, `discuss_watch`) to the backend daemon (`bridge/coral-backend.cjs`) and intercepts bridge-local tools (`wait`, `backend`).
 
 ### hooks/hooks.json - Hook Configuration
 
@@ -140,7 +140,6 @@ hooks/hud-auto-update.mjs    -> SessionStart HUD auto-update hook
 /tmp/coral-jobs/<jobId>/                        -> Runtime job directories (temporary)
 {project}/.claude/coral/discuss/<session-dir>/  -> Runtime discuss session dirs (auto-created)
 
-bridge/coral-ax.cjs      -> Unified AX MCP server bundle (codex + claude + wait + abort + workflow + backend, committed)
-bridge/coral-discuss.cjs  -> Discuss MCP server bundle (committed)
+bridge/coral-ax.cjs      -> Unified AX MCP server bundle (codex + claude + wait + abort + workflow + discuss + backend, committed)
 bridge/coral-backend.cjs  -> HTTP backend daemon bundle (committed)
 ```

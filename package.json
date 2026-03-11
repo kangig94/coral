@@ -10,7 +10,6 @@
     "dist/",
     "bridge/coral-backend.cjs",
     "bridge/coral-ax.cjs",
-    "bridge/coral-discuss.cjs",
     "bridge/manifest.json"
   ],
   "scripts": {
