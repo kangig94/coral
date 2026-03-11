@@ -276,6 +276,28 @@ describe('codex provider adapter', () => {
       warnings: ['be careful'],
     });
   });
+
+  it.each(['opus', 'sonnet', 'haiku'])('resolves abstract tier "%s" to default model (undefined)', async (tier) => {
+    const { runtime } = makeRuntime();
+
+    await codexProvider.execute(makeRequest({ model: tier }), runtime);
+
+    expect(mockExecuteOneShot).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ model: undefined }),
+    );
+  });
+
+  it('passes explicit codex model names through unchanged', async () => {
+    const { runtime } = makeRuntime();
+
+    await codexProvider.execute(makeRequest({ model: 'gpt-5.4' }), runtime);
+
+    expect(mockExecuteOneShot).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ model: 'gpt-5.4' }),
+    );
+  });
 });
 
 describe('claude provider adapter', () => {
