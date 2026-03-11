@@ -552,8 +552,14 @@ export class DiscussManager {
     events: WatchEvent[];
     cursor: number;
   } {
-    const session = this.requireLiveSession(sessionId);
-    const { watchHistory } = session;
+    const session = this.sessions.get(sessionId);
+    const watchHistory = session
+      ? session.watchHistory
+      : this.loadEndedWatchHistory(sessionId);
+    const snapshot = session
+      ? session.snapshot
+      : this.loadEndedSnapshot(sessionId);
+
     if (cursor !== undefined && cursor > watchHistory.length) {
       throw new DiscussManagerError('invalid_cursor', {
         cursor,
@@ -561,7 +567,6 @@ export class DiscussManager {
       });
     }
 
-    const snapshot = session.snapshot;
     return {
       session: sessionId,
       status: snapshot.state.status,
@@ -571,6 +576,18 @@ export class DiscussManager {
       events: cursor === undefined ? watchHistory.slice() : watchHistory.slice(cursor),
       cursor: watchHistory.length,
     };
+  }
+
+  private loadEndedSnapshot(sessionId: string): PersistedDiscussSnapshot {
+    const snapshot = this.store.load(sessionId);
+    if (!snapshot) {
+      throw new DiscussManagerError('session_not_found', { session: sessionId });
+    }
+    return snapshot;
+  }
+
+  private loadEndedWatchHistory(sessionId: string): WatchEvent[] {
+    return buildWatchEvents(this.readSessionEvents(sessionId));
   }
 
   resumeLoop(sessionId: string, ctx: CallerContext): void {

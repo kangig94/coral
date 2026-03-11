@@ -279,6 +279,52 @@ describe('DiscussManager.runAgentTurn', () => {
     harness.cleanup();
   });
 
+  it('getWatchState falls back to disk for ended sessions after detach', async () => {
+    const harness = createDiscussHarness();
+    await persistSession(harness, {
+      sessionId: 'discuss-ended',
+      recover: true,
+      buildTail: (snapshot) => [
+        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.round.closed', '2026-03-10T00:01:00.000Z', {
+          allBids: { alpha: 88, beta: 42 },
+          effectiveBids: { alpha: 88, beta: 42 },
+          thoughts: { alpha: 'keep sealed', beta: 'also sealed' },
+          outcome: { winner: 'alpha', speaker_type: 'quota' as const },
+          stateMutations: { cold_start: false },
+        }),
+        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'speech.recorded', '2026-03-10T00:01:01.000Z', {
+          agent: 'alpha',
+          content: 'Final speech before end.',
+          decrementQuota: true,
+          recordLastSpeechStep: 1,
+        }),
+      ],
+    });
+
+    const stateBefore = harness.manager.getWatchState('discuss-ended');
+    expect(stateBefore.cursor).toBe(2);
+
+    harness.manager.detachSession('discuss-ended');
+    expect(harness.manager.getSession('discuss-ended')).toBeUndefined();
+
+    const stateAfter = harness.manager.getWatchState('discuss-ended');
+    expect(stateAfter.status).toBe(stateBefore.status);
+    expect(stateAfter.cursor).toBe(2);
+    expect(stateAfter.events).toHaveLength(2);
+
+    const stateWithCursor = harness.manager.getWatchState('discuss-ended', 1);
+    expect(stateWithCursor.events).toHaveLength(1);
+    expect(stateWithCursor.cursor).toBe(2);
+
+    harness.cleanup();
+  });
+
+  it('getWatchState returns session_not_found for non-existent sessions', () => {
+    const harness = createDiscussHarness();
+    expect(() => harness.manager.getWatchState('non-existent')).toThrow('session_not_found');
+    harness.cleanup();
+  });
+
   it('sets abortEnded on the cached session before abort detaches it', async () => {
     const harness = createDiscussHarness();
     await persistSession(harness, {
