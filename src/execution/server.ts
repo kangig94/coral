@@ -573,7 +573,7 @@ function getToolDescriptors(): Array<Record<string, unknown>> {
     },
     {
       name: 'discuss_participate',
-      description: 'Submit a bid or speech for an active discussion participant.',
+      description: 'Submit a bid (score + thought) or speech (content) for an active discussion participant. Provide either score+thought or content, not both.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -584,10 +584,6 @@ function getToolDescriptors(): Array<Record<string, unknown>> {
           content: { type: 'string' },
         },
         required: ['session', 'agent_name'],
-        oneOf: [
-          { required: ['session', 'agent_name', 'score', 'thought'] },
-          { required: ['session', 'agent_name', 'content'] },
-        ],
       },
     },
     {
