@@ -35,7 +35,7 @@ Strip `--codex` flag before passing the prompt to the execution path.
     |---|------|-------------|-------------------|
     | 1 | **Problem Statement** | Current state vs desired state. What is wrong? | Conversation context |
     | 2 | **Success Criteria** | Testable, verifiable conditions for "done" | Reverse-infer from problem (unconfirmed) |
-    | 3 | **Scope** | What is included / excluded | Codebase analysis (unconfirmed) |
+    | 3 | **Scope** | What is included / excluded. Must include a **Legacy** sub-item when the change touches existing APIs, data formats, or public interfaces: preserve backward compatibility vs full deprecation. Always mark Legacy as `[unconfirmed]` with default/minimal/elegant alternatives — never auto-confirm. | Codebase analysis (unconfirmed) |
     | 4 | **Assumptions** | What we assume to be true | Code analysis, project rules |
     | 5 | **Affected Systems** | Existing systems affected by this change | Dependency analysis |
 
@@ -167,7 +167,13 @@ Strip `--codex` flag before passing the prompt to the execution path.
     - [ ] Criterion 3 [unconfirmed]  <!-- needs verification, no alternatives -->
 
     ## Scope
-    ...
+    - Included: ...
+    - Excluded: ...
+    - Legacy: ... [unconfirmed]
+      - default: preserve backward compatibility, deprecation warnings
+      - minimal: break immediately, no migration path
+      - elegant: versioned migration with adapter layer
+
     ## Assumptions
     ...
     ## Affected Systems
