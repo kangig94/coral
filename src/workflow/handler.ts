@@ -44,7 +44,7 @@ function validateNamespaces(ast: PipelineAST): void {
     for (const atom of ast[stepIndex]) {
       if (atom.kind !== 'agent' || atom.namespace === 'coral') continue;
       throw new Error(
-        `Step ${stepIndex + 1}, atom '${atom.agent}' has unsupported namespace '${atom.namespace}'`,
+        `Step ${stepIndex}, atom '${atom.agent}' has unsupported namespace '${atom.namespace}'`,
       );
     }
   }
