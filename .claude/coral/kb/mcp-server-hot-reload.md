@@ -1,7 +1,7 @@
 # MCP Server Hot-Reload
 
 ## Rule
-Rebuilding `bridge/coral-discuss.cjs` (or `coral-ax.cjs`) via `npm run build` does NOT affect the running MCP server process — Claude Code starts MCP servers as long-running child processes that load the bundle once at startup. However, `/reload-plugins` (built-in CLI command) hot-reloads MCP servers without restarting the session. Do not kill MCP server processes directly — Claude Code will not respawn them.
+Rebuilding `bridge/coral-ax.cjs` (or `bridge/coral-backend.cjs`) via `npm run build` does NOT affect the running MCP server process — Claude Code starts MCP servers as long-running child processes that load the bundle once at startup. However, `/reload-plugins` (built-in CLI command) hot-reloads MCP servers without restarting the session. Do not kill MCP server processes directly — Claude Code will not respawn them.
 
 For new sessions: a `SessionStart` hook with `matcher: "startup"` runs before MCP servers load, so freshly built bridge files are picked up automatically.
 

@@ -469,8 +469,7 @@ coral/
 │   └── build-server.mjs         # esbuild bundling + version sync
 ├── bridge/
 │   ├── coral-ax.cjs             # MCP stdio proxy bundle (committed)
-│   ├── coral-backend.cjs        # HTTP backend daemon bundle (committed)
-│   └── coral-discuss.cjs        # Legacy discuss bundle still committed
+│   └── coral-backend.cjs        # HTTP backend daemon bundle (committed)
 ├── docs/                        # Documentation
 ├── vitest.config.ts
 ├── package.json

@@ -3,7 +3,7 @@ Promoted: 2026-03-09 | Updated: 2026-03-09
 ## Rule
 If the repo exposes a dedicated test entrypoint such as `npm run test:integration`, its include globs must match real files or the command must be removed or intentionally stubbed with clear semantics. An empty suite behind a failing command is not harmless bookkeeping; it creates false confidence that an integration layer is covered when no tests actually run.
 ## Why
-Coral ships three runtime bundles (`bridge/coral-ax.cjs`, `bridge/coral-discuss.cjs`, `bridge/coral-backend.cjs`) and multiple stdio/HTTP boundaries, so the existence of an integration command strongly implies end-to-end coverage. When `vitest.integration.config.ts` points at a nonexistent directory, the command fails with `No test files found`, which means the verification surface for bundles, stdio startup, and cross-process wiring is effectively absent even though the script exists.
+Coral ships two runtime bundles (`bridge/coral-ax.cjs`, `bridge/coral-backend.cjs`) and multiple stdio/HTTP boundaries, so the existence of an integration command strongly implies end-to-end coverage. When `vitest.integration.config.ts` points at a nonexistent directory, the command fails with `No test files found`, which means the verification surface for bundles, stdio startup, and cross-process wiring is effectively absent even though the script exists.
 ## Pattern
 ```ts
 // WRONG: dedicated integration script, but the glob matches nothing

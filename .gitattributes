@@ -1,3 +1,2 @@
 bridge/coral-ax.cjs -diff linguist-generated=true
 bridge/coral-backend.cjs -diff linguist-generated=true
-bridge/coral-discuss.cjs -diff linguist-generated=true
