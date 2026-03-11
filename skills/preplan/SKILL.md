@@ -4,7 +4,6 @@ description: "Use when a problem needs clarification and agreement before planni
 argument-hint: "[--codex] <issue or topic>"
 ---
 
-> **CORAL_AGENTS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/agents/")`
 > **CORAL_METHODS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/methods/")`
 
 # Pre-plan
