@@ -2,7 +2,7 @@ import { shortPath } from '../../shared/format-progress.js';
 
 type Rule = [RegExp, (m: RegExpMatchArray, sp: (path: string) => string) => string];
 
-/** Remove surrounding quotes (single or double) from a captured string. */
+/** Remove surrounding quotes (single or double). Returns `s` unchanged if not quoted. */
 function stripQuotes(s: string): string {
   if (s.length >= 2 && ((s[0] === '"' && s.at(-1) === '"') || (s[0] === "'" && s.at(-1) === "'"))) {
     return s.slice(1, -1);
@@ -24,16 +24,20 @@ const RULES: Rule[] = [
     (m, sp) => `Read(${sp(stripQuotes(m[1]))})`],
   [new RegExp(String.raw`^cat\s+${NONDASH_FILE}$`),
     (m, sp) => `Read(${sp(stripQuotes(m[1]))})`],
-  [/^rg\b.*?"([^"]+)"/, (m, _sp) => `Grep(${m[1]})`],
-  [/^rg\b.*?'([^']+)'/, (m, _sp) => `Grep(${m[1]})`],
+  [/^rg\b.*?(?:"([^"]+)"|'([^']+)')/, (m, _sp) => `Grep(${m[1] ?? m[2]})`],
   [/^rg\s+(?:-\S+\s+)*([^-\s]\S*)/, (m, _sp) => `Grep(${m[1]})`],
 ];
 
-const SHELL_PREFIX = /^(?:\/usr\/bin\/|\/bin\/)?(?:zsh|bash|sh)\s+(?:-lc|-c)\s+/;
-const SHELL_CLEAN = /^(?:\/usr\/bin\/|\/bin\/)?(?:zsh|bash|sh)\s+(?:-lc|-c)\s+(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')\s*$/;
+const SHELL_HEAD = String.raw`(?:\/usr\/bin\/|\/bin\/)?(?:zsh|bash|sh)\s+(?:-lc|-c)\s+`;
+const SHELL_PREFIX = new RegExp('^' + SHELL_HEAD);
+const SHELL_CLEAN = new RegExp('^' + SHELL_HEAD + String.raw`(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')\s*$`);
+const CD_PREFIX = /^cd\s+\S+\s*&&\s*(.+)$/;
 
 export function stripShellWrapper(command: string): string {
-  // Precise extraction for clean quoting (balanced double/single quotes)
+  const prefixMatch = command.match(SHELL_PREFIX);
+  if (prefixMatch === null) return stripCdPrefix(command);
+
+  // Try precise extraction first (balanced quotes with proper escaping)
   const cleanMatch = command.match(SHELL_CLEAN);
   if (cleanMatch !== null) {
     if (cleanMatch[1] !== undefined) {
@@ -42,27 +46,16 @@ export function stripShellWrapper(command: string): string {
     return stripCdPrefix(cleanMatch[2] ?? command);
   }
 
-  // Fallback: strip shell prefix, peel outer quotes best-effort
-  const prefixMatch = command.match(SHELL_PREFIX);
-  if (prefixMatch !== null) {
-    let payload = command.slice(prefixMatch[0].length);
-    if (payload.length >= 2) {
-      const first = payload[0];
-      const last = payload.at(-1);
-      if (first === '"' && last === '"') {
-        payload = payload.slice(1, -1).replace(/\\"/g, '"');
-      } else if (first === "'" && last === "'") {
-        payload = payload.slice(1, -1);
-      }
-    }
-    return stripCdPrefix(payload);
-  }
-
-  return stripCdPrefix(command);
+  // Fallback: peel outer quotes best-effort (handles unbalanced/POSIX quote-toggle)
+  let payload = command.slice(prefixMatch[0].length);
+  const hadDoubleQuotes = payload.length >= 2 && payload[0] === '"';
+  payload = stripQuotes(payload);
+  if (hadDoubleQuotes) payload = payload.replace(/\\"/g, '"');
+  return stripCdPrefix(payload);
 }
 
 function stripCdPrefix(command: string): string {
-  const match = command.match(/^cd\s+\S+\s*&&\s*(.+)$/);
+  const match = command.match(CD_PREFIX);
   return match ? match[1].trim() : command;
 }
 
