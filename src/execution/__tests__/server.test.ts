@@ -294,6 +294,13 @@ describe('execution backend server', () => {
     expect(body.some((tool) => tool.name === 'discuss_abort')).toBe(true);
     expect(body.some((tool) => tool.name === 'discuss_watch')).toBe(true);
     expect(body.some((tool) => tool.name === 'discuss_participate')).toBe(true);
+    const watchTool = body.find((tool: { name?: string }) => tool.name === 'discuss_watch') as
+      | { inputSchema?: { properties?: { cursor?: unknown } } }
+      | undefined;
+    expect(watchTool?.inputSchema?.properties?.cursor).toMatchObject({
+      type: 'integer',
+      minimum: 0,
+    });
   });
 
   it('recovers discuss-only project roots from the durable root registry before idle watching starts', async () => {

@@ -1,16 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { makeEvent, type PersistedDiscussSnapshot } from '../../discuss/events.js';
+import { makeEvent } from '../../discuss/events.js';
 import { DiscussManagerRegistry } from '../discuss-manager.js';
 import {
+  attachPersistedSession,
   cleanupDiscussHarnesses,
   createDiscussHarness,
   persistSession,
 } from './discuss-test-helpers.js';
-
-function attachSession(manager: unknown, snapshot: PersistedDiscussSnapshot) {
-  return (manager as { attachSession(nextSnapshot: PersistedDiscussSnapshot): unknown }).attachSession(snapshot);
-}
 
 describe('DiscussManager lifecycle boundaries', () => {
   afterEach(() => {
@@ -28,7 +25,7 @@ describe('DiscussManager lifecycle boundaries', () => {
       sessionId: 'live-session',
       recover: false,
     });
-    attachSession(manager, liveSnapshot);
+    attachPersistedSession({ ...harness, manager }, liveSnapshot);
     await persistSession({ ...harness, manager }, {
       sessionId: 'ended-session',
       recover: false,
