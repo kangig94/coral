@@ -2,23 +2,63 @@ import { shortPath } from '../../shared/format-progress.js';
 
 type Rule = [RegExp, (m: RegExpMatchArray, sp: (path: string) => string) => string];
 
+/** Remove surrounding quotes (single or double) from a captured string. */
+function stripQuotes(s: string): string {
+  if (s.length >= 2 && ((s[0] === '"' && s.at(-1) === '"') || (s[0] === "'" && s.at(-1) === "'"))) {
+    return s.slice(1, -1);
+  }
+  return s;
+}
+
+// Reusable pattern fragments — handle "quoted", 'quoted', and unquoted forms
+const FILE = String.raw`("[^"]+"|'[^']+'|\S+)`;
+const NONDASH_FILE = String.raw`("[^"]+"|'[^']+'|[^-\s]\S*)`;
+const SED_RANGE = String.raw`['"]?(\d+),(\d+)p['"]?`;
+
 const RULES: Rule[] = [
-  [/^nl\s+-ba\s+(\S+)\s*\|\s*sed\s+-n\s+'(\d+),(\d+)p'$/, (m, sp) => `Read(${sp(m[1])}:${m[2]}-${m[3]})`],
-  [/^sed\s+-n\s+'(\d+),(\d+)p'\s+(\S+)$/, (m, sp) => `Read(${sp(m[3])}:${m[1]}-${m[2]})`],
-  [/^nl\s+-ba\s+(\S+)$/, (m, sp) => `Read(${sp(m[1])})`],
-  [/^cat\s+([^-\s]\S*)$/, (m, sp) => `Read(${sp(m[1])})`],
+  [new RegExp(String.raw`^nl\s+-ba\s+${FILE}\s*\|\s*sed\s+-n\s+${SED_RANGE}$`),
+    (m, sp) => `Read(${sp(stripQuotes(m[1]))}:${m[2]}-${m[3]})`],
+  [new RegExp(String.raw`^sed\s+-n\s+${SED_RANGE}\s+${FILE}$`),
+    (m, sp) => `Read(${sp(stripQuotes(m[3]))}:${m[1]}-${m[2]})`],
+  [new RegExp(String.raw`^nl\s+-ba\s+${FILE}$`),
+    (m, sp) => `Read(${sp(stripQuotes(m[1]))})`],
+  [new RegExp(String.raw`^cat\s+${NONDASH_FILE}$`),
+    (m, sp) => `Read(${sp(stripQuotes(m[1]))})`],
   [/^rg\b.*?"([^"]+)"/, (m, _sp) => `Grep(${m[1]})`],
   [/^rg\b.*?'([^']+)'/, (m, _sp) => `Grep(${m[1]})`],
   [/^rg\s+(?:-\S+\s+)*([^-\s]\S*)/, (m, _sp) => `Grep(${m[1]})`],
 ];
 
+const SHELL_PREFIX = /^(?:\/usr\/bin\/|\/bin\/)?(?:zsh|bash|sh)\s+(?:-lc|-c)\s+/;
+const SHELL_CLEAN = /^(?:\/usr\/bin\/|\/bin\/)?(?:zsh|bash|sh)\s+(?:-lc|-c)\s+(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')\s*$/;
+
 export function stripShellWrapper(command: string): string {
-  const shellMatch = command.match(/^(?:\/usr\/bin\/|\/bin\/)?(?:zsh|bash|sh)\s+(?:-lc|-c)\s+(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')\s*$/);
-  if (shellMatch === null) return stripCdPrefix(command);
-  if (shellMatch[1] !== undefined) {
-    return stripCdPrefix(shellMatch[1].replace(/\\"/g, '"'));
+  // Precise extraction for clean quoting (balanced double/single quotes)
+  const cleanMatch = command.match(SHELL_CLEAN);
+  if (cleanMatch !== null) {
+    if (cleanMatch[1] !== undefined) {
+      return stripCdPrefix(cleanMatch[1].replace(/\\"/g, '"'));
+    }
+    return stripCdPrefix(cleanMatch[2] ?? command);
   }
-  return stripCdPrefix(shellMatch[2] ?? command);
+
+  // Fallback: strip shell prefix, peel outer quotes best-effort
+  const prefixMatch = command.match(SHELL_PREFIX);
+  if (prefixMatch !== null) {
+    let payload = command.slice(prefixMatch[0].length);
+    if (payload.length >= 2) {
+      const first = payload[0];
+      const last = payload.at(-1);
+      if (first === '"' && last === '"') {
+        payload = payload.slice(1, -1).replace(/\\"/g, '"');
+      } else if (first === "'" && last === "'") {
+        payload = payload.slice(1, -1);
+      }
+    }
+    return stripCdPrefix(payload);
+  }
+
+  return stripCdPrefix(command);
 }
 
 function stripCdPrefix(command: string): string {
