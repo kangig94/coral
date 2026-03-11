@@ -8,6 +8,7 @@ import {
 } from 'node:fs';
 import { dirname } from 'node:path';
 import {
+  readDiscussProjectRoots,
   listPersistedDiscussSessions,
   readDiscussEventLog,
   readDiscussSnapshot,
@@ -16,6 +17,7 @@ import {
   type DiscussDiscoverySession,
 } from '../client/readers.js';
 import {
+  DISCUSS_PROJECT_ROOTS_PATH,
   discussDiscoveryPath,
   discussEventLogPath,
   discussSessionDir,
@@ -30,6 +32,7 @@ import {
 
 const sessionAppendLocks = new Map<string, Promise<void>>();
 const projectDiscoveryLocks = new Map<string, Promise<void>>();
+const discussProjectRootRegistryLocks = new Map<string, Promise<void>>();
 
 export interface DiscussSummaryDto {
   sessionId: string;
@@ -222,6 +225,19 @@ export class DiscussSessionStore {
 
           writeAtomicJson(discussDiscoveryPath(this.projectRoot), discovery);
         });
+
+        await withPromiseChainLock(
+          discussProjectRootRegistryLocks,
+          DISCUSS_PROJECT_ROOTS_PATH,
+          () => {
+            const projectRoots = new Set(readDiscussProjectRoots());
+            projectRoots.add(this.projectRoot);
+            writeAtomicJson(DISCUSS_PROJECT_ROOTS_PATH, {
+              updatedAt: nextSnapshot.updatedAt,
+              projectRoots: [...projectRoots].sort(),
+            });
+          },
+        );
 
         return nextSnapshot;
       },

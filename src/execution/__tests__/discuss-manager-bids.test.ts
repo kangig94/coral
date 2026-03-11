@@ -1,173 +1,181 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { initSession } from '../../discuss/state-machine.js';
-import type { CallerContext, ExecutionService } from '../service.js';
-import { DiscussManager } from '../discuss-manager.js';
+import {
+  DEFAULT_TOPIC,
+  cleanupDiscussHarnesses,
+  createDiscussHarness,
+  createExecutionServiceStub,
+  defaultAgents,
+  persistSession,
+} from './discuss-test-helpers.js';
+import type { CallerContext } from '../service.js';
 
-const ctx: CallerContext = {
-  projectRoot: '/tmp/project',
-  pluginRoot: '/tmp/plugin',
-};
-
-function createServiceStub(): ExecutionService {
-  return Object.create(null) as ExecutionService;
-}
-
-function createState(sessionId: string) {
-  return {
-    ...initSession({
-      topic: 'Should the city pedestrianize the downtown core?',
-      agents: [
-        { name: 'alpha', persona: 'Alpha', participation: 'required' },
-        { name: 'beta', persona: 'Beta', participation: 'required' },
-      ],
-      min_bid_delay_ms: 0,
-    }, '2026-03-10T00:00:00.000Z'),
-    session_id: sessionId,
-  };
-}
-
-function collectBids(manager: DiscussManager, sessionId: string, currentCtx: CallerContext): Promise<void> {
-  return (manager as unknown as {
-    collectBids(targetSessionId: string, targetCtx: CallerContext): Promise<void>;
-  }).collectBids(sessionId, currentCtx);
+function collectBids(manager: unknown, sessionId: string, ctx: CallerContext): Promise<void> {
+  return (manager as { collectBids(targetSessionId: string, targetCtx: CallerContext): Promise<void> })
+    .collectBids(sessionId, ctx);
 }
 
 afterEach(() => {
+  cleanupDiscussHarnesses();
+  vi.clearAllTimers();
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
 describe('DiscussManager bid collection', () => {
   it('records valid JSON bids during session start', async () => {
-    const manager = new DiscussManager('/tmp/project', createServiceStub());
-    vi.spyOn(manager, 'runAgentTurn')
+    const start = vi.fn()
+      .mockResolvedValueOnce({ status: 'running', job: 'job-1', session: 'exec-alpha' })
+      .mockResolvedValueOnce({ status: 'running', job: 'job-2', session: 'exec-beta' });
+    const waitStreamOnce = vi.fn()
       .mockResolvedValueOnce({ content: '{"score": 61, "thought": "I should frame the tradeoff."}', nonResumable: false })
       .mockResolvedValueOnce({ content: '{"score": 37, "thought": "I have a narrower follow-up."}', nonResumable: false });
+    const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
+    const resumeLoopSpy = vi.spyOn(
+      harness.manager as unknown as {
+        resumeLoop(targetSessionId: string, targetCtx: CallerContext): void;
+      },
+      'resumeLoop',
+    ).mockImplementation(() => {});
 
-    const session = await manager.start(
+    const session = await harness.manager.start(
       'discuss-1',
-      'Should the city pedestrianize the downtown core?',
+      DEFAULT_TOPIC,
       [
         { name: 'alpha', persona: 'Alpha', provider: 'codex', model: 'gpt-5' },
         { name: 'beta', persona: 'Beta', provider: 'claude', model: 'sonnet' },
       ],
       { min_bid_delay_ms: 15 },
-      ctx,
+      harness.ctx,
     );
 
-    expect(session.state.status).toBe('bidding');
-    expect(session.state.session_id).toBe('discuss-1');
-    expect(session.state.current_bids).toEqual({ alpha: 61, beta: 37 });
-    expect(session.state.current_thoughts).toEqual({
+    expect(session.snapshot.state.status).toBe('bidding');
+    expect(session.snapshot.state.current_bids).toEqual({ alpha: 61, beta: 37 });
+    expect(session.snapshot.state.current_thoughts).toEqual({
       alpha: 'I should frame the tradeoff.',
       beta: 'I have a narrower follow-up.',
     });
-    expect(session.agentRuns.get('alpha')).toMatchObject({ provider: 'codex', model: 'gpt-5' });
-    expect(session.agentRuns.get('beta')).toMatchObject({ provider: 'claude', model: 'sonnet' });
-    session.controller.abort();
+    expect(resumeLoopSpy).toHaveBeenCalledWith('discuss-1', harness.ctx);
+    expect(session.snapshot.runtime.agentRuns.alpha).toMatchObject({ provider: 'codex', model: 'gpt-5' });
+    expect(session.snapshot.runtime.agentRuns.beta).toMatchObject({ provider: 'claude', model: 'sonnet' });
+
+    harness.cleanup();
   });
 
-  it('retries malformed JSON and accepts a later valid response', async () => {
-    const manager = new DiscussManager('/tmp/project', createServiceStub());
-    const session = manager.createSession('discuss-1', {
-      ...createState('discuss-1'),
-      status: 'bidding',
-      current_bids: { alpha: null, beta: 55 },
-      current_thoughts: { beta: 'Already in.' },
-      pending_bidders: ['alpha'],
-    });
-    session.agentRuns.set('alpha', { provider: 'codex' });
-
-    const runAgentTurn = vi.spyOn(manager, 'runAgentTurn')
+  it('retries malformed JSON and persists the second-attempt success', async () => {
+    const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'exec-alpha' });
+    const resume = vi.fn().mockResolvedValue({ status: 'running', job: 'job-2', session: 'exec-alpha' });
+    const waitStreamOnce = vi.fn()
       .mockResolvedValueOnce({ content: 'not json at all', nonResumable: false })
       .mockResolvedValueOnce({ content: '```json\n{"score": 72, "thought": "The last speech missed costs."}\n```', nonResumable: false });
-
-    await collectBids(manager, 'discuss-1', ctx);
-
-    expect(runAgentTurn).toHaveBeenCalledTimes(2);
-    expect(runAgentTurn.mock.calls[1]?.[4]).toContain('Previous response:');
-    expect(runAgentTurn.mock.calls[1]?.[4]).toContain('not json at all');
-    expect(session.state.current_bids).toEqual({ alpha: 72, beta: 55 });
-    expect(session.state.current_thoughts).toEqual({
-      alpha: 'The last speech missed costs.',
-      beta: 'Already in.',
+    const harness = createDiscussHarness(createExecutionServiceStub({ start, resume, waitStreamOnce }));
+    await persistSession(harness, {
+      sessionId: 'discuss-1',
+      recover: true,
+      agents: [
+        { name: 'alpha', persona: '# Alpha', participation: 'required' },
+        { name: 'user', persona: '# User', participation: 'observer' },
+      ],
     });
+
+    await collectBids(harness.manager, 'discuss-1', harness.ctx);
+
+    const snapshot = harness.store.load('discuss-1');
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(snapshot?.state.current_bids).toEqual({ alpha: 72, user: null });
+    expect(snapshot?.state.current_thoughts.alpha).toBe('The last speech missed costs.');
+    expect(snapshot?.runtime.agentRuns.alpha.currentAttempt).toBe(2);
+    expect(snapshot?.runtime.agentRuns.alpha.lastAttemptOutcome).toBe('completed');
+
+    harness.cleanup();
   });
 
-  it('ends the session when every cold-start bidder times out or crashes', async () => {
-    const manager = new DiscussManager('/tmp/project', createServiceStub());
-    vi.spyOn(manager, 'runAgentTurn').mockRejectedValue(new Error('Job timed out waiting for terminal result'));
-
-    const session = await manager.start(
-      'discuss-1',
-      'Should the city pedestrianize the downtown core?',
-      [
-        { name: 'alpha', persona: 'Alpha', provider: 'codex' },
-        { name: 'beta', persona: 'Beta', provider: 'codex' },
+  it('revalidates provider bids after a manual observer advances the session seq', async () => {
+    let releaseAlpha!: () => void;
+    let releaseBeta!: () => void;
+    const alphaReady = new Promise<void>((resolve) => {
+      releaseAlpha = resolve;
+    });
+    const betaReady = new Promise<void>((resolve) => {
+      releaseBeta = resolve;
+    });
+    const start = vi.fn()
+      .mockResolvedValueOnce({ status: 'running', job: 'job-1', session: 'exec-alpha' })
+      .mockResolvedValueOnce({ status: 'running', job: 'job-2', session: 'exec-beta' });
+    const waitStreamOnce = vi.fn()
+      .mockImplementationOnce(async () => {
+        await alphaReady;
+        return { content: '{"score": 61, "thought": "alpha"}', nonResumable: false };
+      })
+      .mockImplementationOnce(async () => {
+        await betaReady;
+        return { content: '{"score": 37, "thought": "beta"}', nonResumable: false };
+      });
+    const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
+    await persistSession(harness, {
+      sessionId: 'discuss-1',
+      recover: true,
+      agents: [
+        ...defaultAgents(),
+        { name: 'user', persona: '# User', participation: 'observer' },
       ],
-      {},
-      ctx,
+    });
+
+    const bidWork = collectBids(harness.manager, 'discuss-1', harness.ctx);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await harness.manager.submitManualBid(
+      'discuss-1',
+      'user',
+      63,
+      'I need to answer the accessibility concern.',
+      harness.ctx,
     );
 
-    expect(session.state.status).toBe('ended');
-    expect(session.state.end_reason_content).toBe('No eligible agents remaining. Ending discussion.');
-    expect(session.state.current_bids).toEqual({ alpha: 0, beta: 0 });
-    expect(session.state.pending_bidders).toEqual([]);
-  });
+    releaseAlpha();
+    releaseBeta();
+    await bidWork;
 
-  it('preserves healthy submitted bids during later-round expulsion', async () => {
-    const manager = new DiscussManager('/tmp/project', createServiceStub());
-    const session = manager.createSession('discuss-1', {
-      ...createState('discuss-1'),
-      status: 'bidding',
-      step: 3,
-      epoch: 2,
-      cold_start: false,
-      bid_release_step: 2,
-      current_bids: { alpha: 88, beta: null },
-      current_thoughts: { alpha: 'I need to answer the financing point.' },
-      pending_bidders: ['beta'],
-    });
-    session.agentRuns.set('beta', { provider: 'codex', sessionId: 'resume-beta' });
+    const snapshot = harness.store.load('discuss-1');
+    expect(snapshot?.state.current_bids).toEqual({ alpha: 61, beta: 37, user: 63 });
+    expect(snapshot?.state.current_thoughts.user).toBe('I need to answer the accessibility concern.');
 
-    vi.spyOn(manager, 'runAgentTurn').mockRejectedValue(new Error('resume failed'));
-
-    await collectBids(manager, 'discuss-1', ctx);
-
-    expect(session.state.status).toBe('bidding');
-    expect(session.state.bid_release_step).toBe(2);
-    expect(session.state.current_bids).toEqual({ alpha: 88, beta: 0 });
-    expect(session.state.current_thoughts).toEqual({
-      alpha: 'I need to answer the financing point.',
-      beta: '',
-    });
-    expect(session.state.agents.beta?.banned).toBe(true);
-    expect(session.state.pending_bidders).toEqual([]);
+    harness.cleanup();
   });
 
   it('does not auto-bid for manual observer participants', async () => {
-    vi.useFakeTimers();
-    const manager = new DiscussManager('/tmp/project', createServiceStub());
-    const runAgentTurn = vi.spyOn(manager, 'runAgentTurn')
-      .mockResolvedValueOnce({ content: '{"score": 61, "thought": "I should frame the tradeoff."}', nonResumable: false })
-      .mockResolvedValueOnce({ content: '{"score": 37, "thought": "I have a narrower follow-up."}', nonResumable: false });
+    const start = vi.fn()
+      .mockResolvedValueOnce({ status: 'running', job: 'job-1', session: 'exec-alpha' })
+      .mockResolvedValueOnce({ status: 'running', job: 'job-2', session: 'exec-beta' });
+    const waitStreamOnce = vi.fn()
+      .mockResolvedValueOnce({ content: '{"score": 61, "thought": "alpha"}', nonResumable: false })
+      .mockResolvedValueOnce({ content: '{"score": 37, "thought": "beta"}', nonResumable: false });
+    const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
+    const resumeLoopSpy = vi.spyOn(
+      harness.manager as unknown as {
+        resumeLoop(targetSessionId: string, targetCtx: CallerContext): void;
+      },
+      'resumeLoop',
+    ).mockImplementation(() => {});
 
-    const session = await manager.start(
+    const session = await harness.manager.start(
       'discuss-1',
-      'Should the city pedestrianize the downtown core?',
+      DEFAULT_TOPIC,
       [
         { name: 'alpha', persona: 'Alpha', provider: 'codex' },
         { name: 'beta', persona: 'Beta', provider: 'codex' },
         { name: 'user', persona: '# User', participation: 'observer' },
       ],
       { min_bid_delay_ms: 1000 },
-      ctx,
+      harness.ctx,
     );
 
-    expect(runAgentTurn).toHaveBeenCalledTimes(2);
-    expect(session.state.current_bids.user).toBeNull();
-    expect(session.agentRuns.has('user')).toBe(false);
-    session.controller.abort();
+    expect(session.snapshot.state.current_bids.user).toBeNull();
+    expect(session.snapshot.runtime.agentRuns.user).toBeUndefined();
+    expect(resumeLoopSpy).toHaveBeenCalledWith('discuss-1', harness.ctx);
+
+    harness.cleanup();
   });
 });

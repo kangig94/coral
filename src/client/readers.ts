@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  DISCUSS_PROJECT_ROOTS_PATH,
   JOBS_DIR,
   discussBaseDir,
   discussDiscoveryPath,
@@ -401,6 +402,14 @@ function isValidDiscussDiscoveryData(value: unknown): value is DiscussDiscoveryD
     && value.sessions.every(isValidDiscussDiscoverySession);
 }
 
+function isValidDiscussProjectRootsRegistry(
+  value: unknown,
+): value is { updatedAt?: string; projectRoots: string[] } {
+  return isRecord(value)
+    && isStringArray(value.projectRoots)
+    && (value.updatedAt === undefined || typeof value.updatedAt === 'string');
+}
+
 /**
  * Provenance marker for lenient session scans.
  */
@@ -564,6 +573,14 @@ export function readDiscussDiscovery(projectRoot: string): DiscussDiscoveryData 
   const discovery = readJsonFile(discussDiscoveryPath(projectRoot));
   if (discovery === null) return null;
   return isValidDiscussDiscoveryData(discovery) ? discovery : null;
+}
+
+export function readDiscussProjectRoots(): string[] {
+  const registry = readJsonFile(DISCUSS_PROJECT_ROOTS_PATH);
+  if (!isValidDiscussProjectRootsRegistry(registry)) {
+    return [];
+  }
+  return [...new Set(registry.projectRoots)];
 }
 
 function canUseDiscussSessionDir(sessionDir: string): boolean {

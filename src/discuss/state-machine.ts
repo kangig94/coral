@@ -769,7 +769,8 @@ export function initSession(
     quotaPerEpoch,
   );
   if (!decided.ok) {
-    throw new Error(decided.error);
+    const createError = decided.error;
+    throw new Error(createError);
   }
 
   return reduceDiscussEvent(makeEmptySnapshot('', ''), decided.value[0]).state;
@@ -785,7 +786,7 @@ export function startBidding(state: DiscussState, now: string): Result<DiscussSt
     now,
   );
   if (!decided.ok) {
-    return decided;
+    return { ok: false, error: decided.error, detail: decided.detail };
   }
 
   return { ok: true, value: applyLegacyEvent(state, decided.value[0]) };
@@ -810,7 +811,7 @@ export function applyBid(
     now,
   );
   if (!decided.ok) {
-    return decided;
+    return { ok: false, error: decided.error, detail: decided.detail };
   }
 
   return { ok: true, value: applyLegacyEvent(state, decided.value[0]) };
@@ -829,7 +830,7 @@ export function resolveWinner(
     now,
   );
   if (!decided.ok) {
-    return decided;
+    return { ok: false, error: decided.error, detail: decided.detail };
   }
 
   const closeEvent = decided.value[0];
@@ -868,7 +869,7 @@ export function applySpeech(
     now,
   );
   if (!decided.ok) {
-    return decided;
+    return { ok: false, error: decided.error, detail: decided.detail };
   }
 
   return { ok: true, value: applyLegacyEvent(state, decided.value[0]) };
@@ -887,7 +888,7 @@ export function applySpeechTimeout(
     now,
   );
   if (!decided.ok) {
-    return decided;
+    return { ok: false, error: decided.error, detail: decided.detail };
   }
 
   return { ok: true, value: applyLegacyEvent(state, decided.value[0]) };
@@ -908,7 +909,7 @@ export function applyExpel(
     now,
   );
   if (!decided.ok) {
-    return decided;
+    return { ok: false, error: decided.error, detail: decided.detail };
   }
 
   const expelledEvent = decided.value[0];
@@ -936,7 +937,7 @@ export function applyEpochSummary(
     now,
   );
   if (!decided.ok) {
-    return decided;
+    return { ok: false, error: decided.error, detail: decided.detail };
   }
 
   return { ok: true, value: applyLegacyEvent(state, decided.value[0]) };
@@ -957,7 +958,7 @@ export function applyEnd(
     now,
   );
   if (!decided.ok) {
-    return decided;
+    return { ok: false, error: decided.error, detail: decided.detail };
   }
   if (decided.value.length === 0) {
     return { ok: true, value: state };
@@ -981,7 +982,7 @@ export function applySynthesis(
     now,
   );
   if (!decided.ok) {
-    return decided;
+    return { ok: false, error: decided.error, detail: decided.detail };
   }
   if (decided.value.length === 0) {
     return { ok: true, value: state };

@@ -13,10 +13,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { readDiscussDiscovery, readDiscussEventLog } from '../../client/readers.js';
 import {
+  DISCUSS_PROJECT_ROOTS_PATH,
   discussDiscoveryPath,
   discussEventLogPath,
   discussSessionDir,
   discussStatePath,
+  syncHomePaths,
 } from '../../client/paths.js';
 import { replayDiscussEvents } from '../../discuss/reducer.js';
 import {
@@ -36,6 +38,8 @@ const SECOND_SESSION_ID = 'session-2';
 const TOPIC = 'Should the city pedestrianize the downtown core?';
 
 let projectRoot = '';
+let homeRoot = '';
+const originalHome = process.env.HOME;
 
 function unwrap<T>(result: Result<T>): T {
   if (result.ok) {
@@ -137,11 +141,21 @@ async function appendRoundTripHistory(store: DiscussSessionStore, sessionId = SE
 }
 
 beforeEach(() => {
+  homeRoot = mkdtempSync(join(tmpdir(), 'coral-discuss-home-'));
+  process.env.HOME = homeRoot;
+  syncHomePaths();
   projectRoot = mkdtempSync(join(tmpdir(), 'coral-discuss-store-'));
 });
 
 afterEach(() => {
   rmSync(projectRoot, { recursive: true, force: true });
+  rmSync(homeRoot, { recursive: true, force: true });
+  if (originalHome === undefined) {
+    delete process.env.HOME;
+  } else {
+    process.env.HOME = originalHome;
+  }
+  syncHomePaths();
 });
 
 describe('DiscussSessionStore', () => {
@@ -160,6 +174,10 @@ describe('DiscussSessionStore', () => {
         agentCount: 2,
       },
     ]);
+    expect(JSON.parse(readFileSync(DISCUSS_PROJECT_ROOTS_PATH, 'utf8'))).toEqual({
+      updatedAt: finalSnapshot.updatedAt,
+      projectRoots: [projectRoot],
+    });
   });
 
   it('recovers the full session state by replaying the event log when state.json is deleted', async () => {
