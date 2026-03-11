@@ -27,6 +27,7 @@ export {
   readSessionEntry,
   readSessionEntryLenient,
   readDiscussState,
+  readDiscussSnapshot,
   readDiscussEventLog,
   readDiscussDiscovery,
 } from './readers.js';
