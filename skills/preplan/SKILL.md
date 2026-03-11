@@ -1,7 +1,7 @@
 ---
 name: preplan
-description: "Use when a problem needs clarification and agreement before planning begins."
-argument-hint: "<issue or topic>"
+description: "Use when a problem needs clarification and agreement before planning begins. Supports --codex."
+argument-hint: "[--codex] <issue or topic>"
 ---
 
 > **CORAL_METHODS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/methods/")`
@@ -9,6 +9,15 @@ argument-hint: "<issue or topic>"
 # Pre-plan
 
 Structured problem-definition conversation with the user before planning begins.
+
+## Argument Routing
+
+| Argument | Mode |
+|----------|------|
+| `<prompt>` | Claude-native (default) |
+| `--codex` | Codex delegates self-review to gap-finder |
+
+Strip `--codex` flag before passing the prompt to the execution path.
 
 <Preplan_Protocol>
   <Role>
@@ -26,7 +35,7 @@ Structured problem-definition conversation with the user before planning begins.
     |---|------|-------------|-------------------|
     | 1 | **Problem Statement** | Current state vs desired state. What is wrong? | Conversation context |
     | 2 | **Success Criteria** | Testable, verifiable conditions for "done" | Reverse-infer from problem (unconfirmed) |
-    | 3 | **Scope** | What is included / excluded | Codebase analysis (unconfirmed) |
+    | 3 | **Scope** | What is included / excluded. Must include a **Legacy** sub-item when the change touches existing APIs, data formats, or public interfaces: preserve backward compatibility vs full deprecation. Always mark Legacy as `[unconfirmed]` with default/minimal/elegant alternatives — never auto-confirm. | Codebase analysis (unconfirmed) |
     | 4 | **Assumptions** | What we assume to be true | Code analysis, project rules |
     | 5 | **Affected Systems** | Existing systems affected by this change | Dependency analysis |
 
@@ -52,15 +61,26 @@ Structured problem-definition conversation with the user before planning begins.
     **RECOMMENDED**: When filling Assumptions (#4), consider applying
     `CORAL_METHODS/HOW-ELICIT.md` Lens 3 (Assumption Surfacing).
 
-    ### 2. Self-Review
+    ### 2. Review and Refine
 
-    Before presenting to the user, review the entire draft as a whole:
-    - Do the items tell a coherent story? (Problem → Criteria → Scope → Assumptions → Systems)
-    - Are there contradictions between items? (e.g., scope excludes something that success criteria requires)
-    - Is the problem statement actually the root problem, or a symptom?
-    - Do any elegant alternatives make you reconsider the problem statement itself?
-    - Even for confirmed sub-items: does a genuine structural deficiency exist that only an elegant alternative can address?
-      If yes, mark it unconfirmed and add the three-point spectrum. If it merely reflects taste or preference, omit it.
+    Dispatch a workflow review of the draft before presenting to the user.
+    Provider depends on mode: `"codex"` if `--codex`, `"claude"` otherwise.
+
+    ```
+    workflow({
+      expression: "(gap-finder, critic)",
+      init_prompt: "Review this preplan draft. Check:\n1. Coherence: do items tell a consistent story (Problem → Criteria → Scope → Assumptions → Systems)?\n2. Contradictions: does scope exclude something success criteria requires?\n3. Root problem: is the problem statement the actual root problem, or a symptom?\n4. Missing gaps: are there unstated requirements or edge cases?\n5. Elegant alternatives: do any alternatives make you reconsider the problem statement itself? For each confirmed sub-item, does a genuine structural deficiency exist that only an elegant alternative can address? Do not self-censor due to breaking changes, major refactors, or migration cost — surface them regardless. If it merely reflects taste or preference, skip it.",
+      context: <draft file content>,
+      work_dir: "{work_dir}",
+      provider: "--codex" ? "codex" : "claude"
+    })
+    wait({ jobs: [job], inline: false })
+    ```
+
+    Read `result.content` to get the full output (`<gap-finder>…</gap-finder>` + `<critic>…</critic>`).
+    Apply substantive fixes (contradictions, missing gaps, misidentified root problem) to the draft.
+    Discard stylistic suggestions. For confirmed sub-items where either reviewer identifies a genuine structural deficiency
+    with an elegant alternative: mark it unconfirmed and add the three-point spectrum (default, minimal, elegant).
 
     Fix inconsistencies before presenting. This step is silent — no output to the user.
 
@@ -99,17 +119,8 @@ Structured problem-definition conversation with the user before planning begins.
     If ambiguous about a specific item, call it out and ask for clarification.
 
     After each exchange, count remaining `[unconfirmed]` sub-items and show progress
-    (e.g. "3 unconfirmed items remaining"). When zero remain —
-    including after a previously unconfirmed item was resolved —
-    **always** present the agreement summary and call `AskUserQuestion`:
-    ```
-    AskUserQuestion({
-      question: "All items confirmed. Proceed to coral:plan?",
-      options: ["Proceed", "Proceed --deep", "Proceed --codex", "Proceed --deep --codex", "Continue discussion"]
-    })
-    ```
-    If the user chooses "Continue discussion", stay in the loop.
-    Otherwise, proceed to step 5.
+    (e.g. "3 unconfirmed items remaining"). When zero remain, present the `<Output_Format>`.
+    If the user continues discussion and items are re-modified, re-present `<Output_Format>` when zero remain again.
 
     ### 4a. Early Exit
 
@@ -156,7 +167,13 @@ Structured problem-definition conversation with the user before planning begins.
     - [ ] Criterion 3 [unconfirmed]  <!-- needs verification, no alternatives -->
 
     ## Scope
-    ...
+    - Included: ...
+    - Excluded: ...
+    - Legacy: ... [unconfirmed]
+      - default: preserve backward compatibility, deprecation warnings
+      - minimal: break immediately, no migration path
+      - elegant: versioned migration with adapter layer
+
     ## Assumptions
     ...
     ## Affected Systems
@@ -176,10 +193,17 @@ Structured problem-definition conversation with the user before planning begins.
 
     Markers: only `[unconfirmed]` is marked — no marker means confirmed. Unconfirmed sub-items that need a decision list three alternatives as nested items (default, minimal, elegant). Unconfirmed sub-items that need verification have no nested list. Section headings carry no markers. Optional items need no markers.
 
-    ### Transition Handoff
+    ### Transition
 
-    User approved transition via AskUserQuestion in step 3.
-    Finalize `.claude/coral/plans/pre-{topic}.md`, then: `Skill({ skill: "coral:plan", args: "{topic} [selected flags]" })`
+    Present the agreement summary, then call `AskUserQuestion`:
+    ```
+    AskUserQuestion({
+      question: "All items confirmed. Proceed to coral:plan?",
+      options: ["Proceed", "Proceed --deep", "Proceed --deep --codex", "Continue discussion"]
+    })
+    ```
+    If the user chooses "Continue discussion", return to step 4.
+    Otherwise, finalize `.claude/coral/plans/pre-{topic}.md`, then: `Skill({ skill: "coral:plan", args: "{topic} [selected flags]" })`
     Do NOT pass `--no-handoff` — preplan has no post-plan step, so plan owns the implementation handoff.
   </Output_Format>
 </Preplan_Protocol>

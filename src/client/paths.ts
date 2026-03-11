@@ -9,6 +9,8 @@ export let BACKEND_INFO_PATH = join(readHomeDir(), '.claude', 'coral', 'backend.
 
 export let BACKEND_LOCK_PATH = join(readHomeDir(), '.claude', 'coral', 'backend.lock');
 
+export let DISCUSS_PROJECT_ROOTS_PATH = join(readHomeDir(), '.claude', 'coral', 'discuss-project-roots.json');
+
 function readHomeDir(): string {
   try {
     return homedir();
@@ -28,6 +30,7 @@ export function syncHomePaths(): void {
   SESSION_BASE = join(home, '.claude', 'coral', 'execution', 'sessions');
   BACKEND_INFO_PATH = join(home, '.claude', 'coral', 'backend.json');
   BACKEND_LOCK_PATH = join(home, '.claude', 'coral', 'backend.lock');
+  DISCUSS_PROJECT_ROOTS_PATH = join(home, '.claude', 'coral', 'discuss-project-roots.json');
 }
 
 /**
@@ -42,6 +45,20 @@ export function discussBaseDir(projectRoot: string): string {
  */
 export function discussDiscoveryPath(projectRoot: string): string {
   return join(discussBaseDir(projectRoot), 'discovery.json');
+}
+
+/**
+ * Returns the directory that stores one discuss session.
+ */
+export function discussSessionDir(projectRoot: string, sessionId: string): string {
+  return join(discussBaseDir(projectRoot), sessionId);
+}
+
+/**
+ * Returns the durable snapshot path for a discuss session directory.
+ */
+export function discussStatePath(sessionDir: string): string {
+  return join(sessionDir, 'state.json');
 }
 
 /**

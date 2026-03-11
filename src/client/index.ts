@@ -3,9 +3,9 @@
  *
  * IMPORT DISCIPLINE: Backend-side modules (src/execution/server.ts, etc.)
  * must import from specific client sub-modules (client/paths.js, client/readers.js),
- * NEVER from client/index.js — the barrel re-exports backend-lifecycle.ts which
- * contains import.meta.url, and esbuild would pull it into coral-backend.cjs
- * where it resolves to the bundle path.
+ * NEVER from client/index.js — the barrel re-exports backend-lifecycle.ts and
+ * other client-facing helpers, so bundling it into coral-backend.cjs would
+ * pull in code that the backend intentionally imports directly elsewhere.
  */
 
 // ./paths.js
@@ -27,6 +27,7 @@ export {
   readSessionEntry,
   readSessionEntryLenient,
   readDiscussState,
+  readDiscussSnapshot,
   readDiscussEventLog,
   readDiscussDiscovery,
 } from './readers.js';
@@ -37,6 +38,22 @@ export type {
   DiscussDiscoverySession,
   DiscussDiscoveryData,
 } from './readers.js';
+
+// ./discuss.js
+export { buildDiscussDetail, buildDiscussSummary } from './discuss.js';
+export type {
+  DiscussAuthority,
+  DiscussAuditDetailResponse,
+  DiscussAuditSessionDto,
+  DiscussAuditTranscriptEntryDto,
+  DiscussControlBidsTranscriptEntryDto,
+  DiscussControlDetailResponse,
+  DiscussControlSessionDto,
+  DiscussControlTranscriptEntryDto,
+  DiscussDetailResponse,
+  DiscussSummaryDto,
+  DiscussView,
+} from './discuss.js';
 
 // ./backend-lifecycle.js
 export { ensureBackend, withAbortTimeout } from './backend-lifecycle.js';

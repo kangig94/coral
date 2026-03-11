@@ -109,7 +109,7 @@ function readAtomConfig(
 ): { instruction?: string } {
   if (rawConfig == null) return {};
   if (typeof rawConfig !== 'object' || Array.isArray(rawConfig)) {
-    throw new Error(`Step ${stepIndex + 1}, atom '${atomName}' atoms config must be an object`);
+    throw new Error(`Step ${stepIndex}, atom '${atomName}' atoms config must be an object`);
   }
   return rawConfig as { instruction?: string };
 }
@@ -121,7 +121,7 @@ function atomTagName(atom: PipeAtom): string {
 function atomDiagnosticLabel(atom: PipeAtom, atomIndex: number): string {
   if (atom.kind === 'agent') return atom.agent;
   const truncated = atom.text.length > 20 ? `${atom.text.slice(0, 20)}...` : atom.text;
-  return `prompt#${atomIndex + 1}(${truncated})`;
+  return `prompt#${atomIndex}(${truncated})`;
 }
 
 function describeTerminalFailure(result: TerminalResult): string {
@@ -209,7 +209,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
   if (atom.kind === 'agent') {
     const namespace = atom.namespace ?? 'coral';
     if (namespace !== 'coral') {
-      throw new Error(`Step ${stepIndex + 1}, atom '${label}' launch failed: unsupported namespace "${namespace}"`);
+      throw new Error(`Step ${stepIndex}, atom '${label}' launch failed: unsupported namespace "${namespace}"`);
     }
 
     config = readAtomConfig(stepIndex, atom.agent, atoms?.[atom.agent]);
@@ -244,13 +244,13 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
   );
 
   if (decision.status === 'rejected') {
-    throw new Error(`Step ${stepIndex + 1}, atom '${label}' launch failed: ${decision.message}`);
+    throw new Error(`Step ${stepIndex}, atom '${label}' launch failed: ${decision.message}`);
   }
 
   const launchState = await executionSvc.awaitLaunch(decision.job, BOOTSTRAP_TIMEOUT_MS);
   if (launchState === 'error') {
     const message = await readLaunchFailureMessage(decision.job, executionSvc, signal);
-    throw new Error(`Step ${stepIndex + 1}, atom '${label}' failed: ${message ?? 'unknown error'}`);
+    throw new Error(`Step ${stepIndex}, atom '${label}' failed: ${message ?? 'unknown error'}`);
   }
 
   return {
@@ -292,7 +292,7 @@ async function recoverStaleAtom(
     const retries = staleRetries.get(atom.atomKey) ?? 0;
     if (retries >= MAX_STALE_RECOVERY_RETRIES) {
       throw createWorkflowExecutionError(
-        `Step ${atom.stepIndex + 1}, atom '${atom.agent}' stale after ${retries} recovery attempts`,
+        `Step ${atom.stepIndex}, atom '${atom.agent}' stale after ${retries} recovery attempts`,
         false,
         options.buildPartialStepDetails(),
       );
@@ -322,7 +322,7 @@ async function recoverStaleAtom(
 
     if (resumed.status === 'rejected') {
       throw createWorkflowExecutionError(
-        `Step ${atom.stepIndex + 1}, atom '${atom.agent}' resume failed: ${resumed.message}`,
+        `Step ${atom.stepIndex}, atom '${atom.agent}' resume failed: ${resumed.message}`,
         false,
         options.buildPartialStepDetails(),
       );
@@ -332,7 +332,7 @@ async function recoverStaleAtom(
     if (launchState === 'error') {
       const message = await readLaunchFailureMessage(resumed.job, executionSvc, options.signal);
       throw createWorkflowExecutionError(
-        `Step ${atom.stepIndex + 1}, atom '${atom.agent}' resume failed: ${message ?? 'unknown error'}`,
+        `Step ${atom.stepIndex}, atom '${atom.agent}' resume failed: ${message ?? 'unknown error'}`,
         false,
         options.buildPartialStepDetails(),
       );
@@ -448,7 +448,7 @@ export async function waitForAtoms(
         if (event.result.aborted || event.result.notice) {
           firstFailure ??= {
             aborted: Boolean(event.result.aborted),
-            message: `Step ${atom.stepIndex + 1}, atom '${atom.agent}' failed: ${describeTerminalFailure(event.result)}`,
+            message: `Step ${atom.stepIndex}, atom '${atom.agent}' failed: ${describeTerminalFailure(event.result)}`,
           };
           if (!abortRequested) {
             abortRequested = true;
@@ -541,7 +541,7 @@ export function formatStepOutput(results: Array<{ tagName: string; output: strin
 function requireStepResult(stepIndex: number, atom: LaunchedAtom, results: Map<string, string>): string {
   const output = results.get(atom.atomKey);
   if (output !== undefined) return output;
-  throw new Error(`Step ${stepIndex + 1}, atom '${atom.agent}' completed without a result`);
+  throw new Error(`Step ${stepIndex}, atom '${atom.agent}' completed without a result`);
 }
 
 export async function executePipeline(

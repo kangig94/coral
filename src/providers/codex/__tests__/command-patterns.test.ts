@@ -137,6 +137,36 @@ describe('stripShellWrapper — adversarial', () => {
       expect(() => stripShellWrapper(`zsh  -lc "${inner}"`)).not.toThrow();
     });
   });
+
+  describe('unbalanced quotes — fallback extraction', () => {
+    it('strips wrapper with POSIX quote-toggle in double-quoted payload', () => {
+      // /usr/bin/zsh -lc "find src | sed 's#"'^#/#'"'"
+      const cmd = `/usr/bin/zsh -lc "find src | sed 's#"'^#/#'"'"`;
+      const result = stripShellWrapper(cmd);
+      expect(result).not.toContain('/usr/bin/zsh');
+      expect(result).toContain('find src');
+    });
+
+    it('strips wrapper with for-loop in single-quoted payload containing inner quotes', () => {
+      const cmd = `/usr/bin/zsh -lc 'for f in a.md b.md; do echo "=== $f ==="; cat "$f"; done'`;
+      const result = stripShellWrapper(cmd);
+      expect(result).not.toContain('zsh');
+      expect(result).toContain('for f in');
+    });
+
+    it('strips wrapper with rg containing complex escapes', () => {
+      const cmd = `/usr/bin/zsh -lc "rg -n \\"controlPhase|expectedSeq\\" src"`;
+      const result = stripShellWrapper(cmd);
+      expect(result).not.toContain('zsh');
+      expect(result).toContain('rg');
+    });
+
+    it('strips wrapper and inner rg matches Grep pattern', () => {
+      const cmd = `/usr/bin/zsh -lc "rg -n \\"persistMutation\\" src"`;
+      const result = stripShellWrapper(cmd);
+      expect(result).toBe('rg -n "persistMutation" src');
+    });
+  });
 });
 
 describe('matchCommandPattern — adversarial', () => {
@@ -253,6 +283,46 @@ describe('matchCommandPattern — adversarial', () => {
 
     it('matches bare nl -ba as Read(path)', () => {
       expectPattern('nl -ba src/main.ts', 'Read(src/main.ts)');
+    });
+  });
+
+  describe('quote-agnostic matching', () => {
+    it('matches nl|sed with unquoted sed range', () => {
+      expectPattern('nl -ba src/main.ts | sed -n 1,220p', 'Read(src/main.ts:1-220)');
+    });
+
+    it('matches nl|sed with double-quoted sed range', () => {
+      expectPattern('nl -ba src/main.ts | sed -n "10,50p"', 'Read(src/main.ts:10-50)');
+    });
+
+    it('matches nl|sed with single-quoted sed range', () => {
+      expectPattern("nl -ba src/main.ts | sed -n '10,50p'", 'Read(src/main.ts:10-50)');
+    });
+
+    it('matches sed with unquoted range', () => {
+      expectPattern('sed -n 5,8p src/app.ts', 'Read(src/app.ts:5-8)');
+    });
+
+    it('matches sed with double-quoted range', () => {
+      expectPattern('sed -n "5,8p" src/app.ts', 'Read(src/app.ts:5-8)');
+    });
+
+    it('matches nl -ba with quoted file path', () => {
+      expectPattern("nl -ba 'src/main.ts'", 'Read(src/main.ts)');
+      expectPattern('nl -ba "src/main.ts"', 'Read(src/main.ts)');
+    });
+
+    it('matches cat with quoted file path', () => {
+      expectPattern("cat 'src/main.ts'", 'Read(src/main.ts)');
+      expectPattern('cat "src/main.ts"', 'Read(src/main.ts)');
+    });
+
+    it('matches nl|sed with quoted file path and unquoted range', () => {
+      expectPattern('nl -ba "src/main.ts" | sed -n 1,220p', 'Read(src/main.ts:1-220)');
+    });
+
+    it('matches sed with quoted file path and double-quoted range', () => {
+      expectPattern('sed -n "10,20p" "src/app.ts"', 'Read(src/app.ts:10-20)');
     });
   });
 });

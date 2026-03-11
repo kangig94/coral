@@ -117,6 +117,26 @@ Type definitions for backend request routing: `CallerContext { projectRoot, plug
 
 ---
 
+### src/execution/discuss-session-store.ts - Event-Sourced Discuss Persistence
+
+Persistent store for discuss sessions. Owns compare-and-append writes to `event-log.jsonl`, snapshot materialization to `state.json`, project discovery updates, and project-root registry updates. Key methods: `load(sessionId)`, `append(sessionId, expectedSeq, events)`, `listSummaries()`, `listRecoveryCandidates()`, and `resolveSessionDir(sessionId)`. Imports from `client/readers.ts`, `client/paths.ts`, `client/discuss.ts`, and `discuss/reducer.ts`; it is the only place that knows the write ordering for discuss durability. See `src/execution/discuss-session-store.ts`.
+
+---
+
+### src/execution/discuss-manager.ts - Live Discuss Orchestrator
+
+`DiscussManager`: the imperative shell for live discuss sessions. Holds attached live snapshots, drives the control loop, launches provider turns through `ExecutionService`, records runtime bookkeeping events, handles manual participation, derives watch history, and resumes persisted control phases on backend restart. It never mutates authority state directly; every change goes through `DiscussSessionStore.append()` with a freshly validated event batch from `state-machine.ts`. See `src/execution/discuss-manager.ts`.
+
+---
+
+## Client Modules (`src/client/`)
+
+### src/client/discuss.ts - Discuss DTO Builders
+
+Stable discuss read surface for backend APIs and external consumers such as coral-reef. Defines summary/detail DTOs, the `control` vs `audit` transcript types, and the builders `buildDiscussSummary(snapshot, authority)` and `buildDiscussDetail(snapshot, view, authority)`. Delegates redaction and transcript cloning to `discuss/projections.ts`. See `src/client/discuss.ts`.
+
+---
+
 ## Coral Modules (`src/coral/`)
 
 ### src/coral/resolver.ts - Agent/Skill Resolver
@@ -263,135 +283,61 @@ Central type hub for the execution service contract. Re-exports provider-specifi
 
 See `src/types.ts`.
 
-## Discuss Server Modules (`src/discuss/`)
+## Discuss Modules (`src/discuss/`)
 
-The discuss server follows a **Functional Core / Imperative Shell** architecture with strict layered dependencies:
-- **L0** (`types.ts`) — zero imports; type definitions only
-- **L1** (`util/`) — pure primitives: string formatting, seeded RNG, k-DPP linear algebra
-- **L2 Functional Core** (`state-machine.ts`, `conditions.ts`, `transcript.ts`, `persona-seed.ts`) — zero I/O, fully testable without filesystem
-- **L3 Imperative Shell** (`lock.ts`, `session-store.ts`, `wait.ts`) — all filesystem operations
-- **L4** (`handlers/utils.ts`) — shared cross-handler utilities
-- **L5** (`handlers/bid.ts`, `handlers/step.ts`) — extracted flow handlers
-- **L6 Dispatch** (`server-handlers.ts`) — thin tool router (Zod parsing + routing)
-- **L7** (`server.ts`) — composition root (wiring only)
+The current discuss implementation is split across pure domain modules in `src/discuss/`, persistence/orchestration in `src/execution/`, and read DTOs in `src/client/`. The `src/discuss/` layer contains the event model, deciders, reducer, transcript helpers, and projections.
 
 ---
 
-### src/discuss/types.ts - Shared Type Definitions
+### src/discuss/types.ts - Shared Discuss State Types
 
-Defines `DiscussState` (full session state: agents, bids, transcript, step, epoch, speaker), `AgentState` (per-agent tracking: quota, fallback_used, total_speaks, etc.), `TranscriptEntry` (discriminated union: `bids` / `speech` / `epoch_summary` / `session_event`), `Result<T>` (ok/error value type - all state-modifying functions return this, errors are values not throws), `EndReason`, and `PersonaAssignment`. Zero imports from `node:` or project modules. See `src/discuss/types.ts`.
-
----
-
-### src/discuss/util/string.ts - String/ID Formatting Utilities
-
-Pure string utilities with zero project imports. Exports: `randomSuffix` (4-char hex suffix for session IDs), `formatDateId` (compact `YYMMDD-HHMM` date string), `topicSlug` (topic → max-40-char URL-safe slug), `parseDisplayName` (strips numeric suffix for display). Used by `state-machine.ts` and `session-store.ts`. See `src/discuss/util/string.ts`.
+Defines `DiscussState`, `AgentState`, `TranscriptEntry`, `Result<T>`, `EndReason`, and the rest of the domain state vocabulary. This is the base shape for both deciders and reducer replay. See `src/discuss/types.ts`.
 
 ---
 
-### src/discuss/util/rng.ts - Seeded RNG and Sampling Primitives
+### src/discuss/events.ts - Domain Event And Runtime Snapshot Types
 
-Pure RNG utilities with zero project imports. Exports: `UINT32_SIZE` (2³²), `drawUInt32` (single Mulberry32 step), `createSeededRng` (returns `() => number` in [0,1)), `shuffleInPlace` (Fisher-Yates in-place shuffle), `weightedSample` (weighted random index selection). Used by `persona-seed.ts` and `util/dpp.ts`. See `src/discuss/util/rng.ts`.
-
----
-
-### src/discuss/util/dpp.ts - k-DPP Linear Algebra
-
-Pure k-Determinantal Point Process implementation. Exports: `MAX_POOL_SIZE` (100), `cartesianProduct`, `hammingDistance`, `buildKernel` (similarity matrix from ControversyAxis positions), `eigendecompose` (power-iteration QR), `sampleKDpp` (elementary symmetric polynomial sampling). Private helpers: matrix ops (`identityMatrix`, `dot`, `normSquared`, `getColumn`), ESP computation, Gram-Schmidt orthonormalization. Imports `weightedSample` from `./rng.ts`. See `src/discuss/util/dpp.ts`.
+Defines the full discriminated union of persisted discuss events, the `DiscussEventEnvelope` shape, `PersistedDiscussRuntime`, `PersistedDiscussSnapshot`, and helper `makeEvent(...)`. This file is the contract between deciders, reducer, store, manager recovery, and API projections. See `src/discuss/events.ts`.
 
 ---
 
-### src/discuss/lock.ts - File Locking and Atomic Writes
+### src/discuss/state-machine.ts - Pure Deciders
 
-I/O primitives extracted from `session-store.ts`. Exports: `writeStateAtomic` (write `DiscussState` via `.tmp` + `renameSync`), `SessionLock` (class wrapping `mkdir`-based cross-process lock with PID liveness check and 30s stale-lock threshold). Private helpers: `tryRemoveSync`, `sleep`, `parseLockOwner`, `isProcessAlive`, `isStaleOwner`. See `src/discuss/lock.ts`.
-
----
-
-### src/discuss/state-machine.ts - Pure State Transitions
-
-All state-modifying logic. Zero I/O imports — `node:fs` and `node:path` are banned in this file. Every state-modifying function follows the signature pattern `(state, ...args, now: string) → Result<T>`.
-
-Key functions: `initSession`, `applyBid`, `resolveWinner` (handles winner / fallback / cold_start / epoch_transition / max_epochs_reached / no_winner), `applySpeech` (sets monotonic `last_speech_step`), `applyEpochSummary`, `applyEnd`, `resolveAgentName` (strips numeric suffix for agent alias resolution).
-
-Imports `parseDisplayName` from `util/string.ts`. See `src/discuss/state-machine.ts`.
+Contains the rule engine for event emission. The `decide*` functions validate the current `DiscussState` and return one or more `DiscussDomainEvent`s without mutating state directly. Key exports: `decideSessionCreate`, `decideBid`, `decideBidRoundClose`, `decideSpeech`, `decideSpeechTimeout`, `decideEpochSummary`, `decideEnd`, `decideSynthesis`, plus helpers such as `computeEffectiveBids`, `findLastSpeaker`, `endContent`, and `resolveAgentName`. See `src/discuss/state-machine.ts`.
 
 ---
 
-### src/discuss/conditions.ts - Wait Condition Predicates
+### src/discuss/reducer.ts - Event Replay
 
-Pure boolean predicates used by `wait.ts` when polling `state.json`:
-- `allBidsIn(state)` - all agents have submitted bids AND status is bidding
-- `speechDelivered(state)` - `last_speech_step === step - 1` (monotonic marker)
-- `bidReleased(state)` - winner has been resolved (bid hold lifted)
-- `isWinner(agentName)(state)` - this agent is the current winner
-- `setupComplete(state)` - session has transitioned out of setup
-- `noEligibleParticipants(state)` - no eligible required agents remain
-
-These predicates are called by `waitForCondition` in `wait.ts` at polling intervals. `_3_step` in `server-handlers.ts` uses `waitForCondition` directly for moderator blocking. Discussant agents use `discuss({ op: "bid", ... })` and `discuss({ op: "speak", ... })` which also resolve via internal polling. See `src/discuss/conditions.ts`.
+Single replay path from persisted events to `PersistedDiscussSnapshot`. Exports `makeEmptySnapshot`, `reduceDiscussEvent`, and `replayDiscussEvents`. Handles both user-visible state transitions and persisted runtime control projection (`observer_wait`, `evaluate_epoch`, `collect_follow_up`, `synthesize`). See `src/discuss/reducer.ts`.
 
 ---
 
-### src/discuss/wait.ts - Async File Polling
+### src/discuss/projections.ts - Control/Audit/Watch Read Models
 
-Polls `state.json` at intervals until a predicate is true or timeout expires. Key design: immediate first check, `lastKnownGood` pattern (returns last valid state even on timeout so callers always get a valid state object), transient read failures silently retried. Default poll interval: 500ms. `INFINITE_POLL=0` timeout means poll forever (used by agent-facing operations). See `src/discuss/wait.ts`.
-
----
-
-### src/discuss/session-store.ts - I/O Shell
-
-Handles session directory management, atomic writes, cross-process locking, and transcript rendering.
-
-- **Lock**: `SessionLock` (from `lock.ts`) — `mkdir`-based atomic test-and-set. Stale lock detection via PID liveness check + 30s age threshold
-- **Atomic writes**: `writeStateAtomic` (from `lock.ts`) — `.tmp` + `renameSync`, same pattern as codex session-manager
-- **Directory naming**: `{session_id}-{topic_slug}` — imports `randomSuffix`, `formatDateId`, `topicSlug` from `util/string.ts`
-- **`save()`**: serializes state under lock, then calls `transcript.ts` for incremental markdown append
-
-See `src/discuss/session-store.ts`.
+Builds the redacted and full transcript projections that sit on top of the reducer output. `buildControlView()` strips live bid internals, `buildAuditView()` clones the full transcript, and `buildWatchEvents()` derives watch-log events from committed domain events. See `src/discuss/projections.ts`.
 
 ---
 
 ### src/discuss/transcript.ts - Transcript Rendering
 
-Pure functions on `TranscriptEntry[]`. Produces human-readable markdown with soft 80 / hard 100 word-wrap. Supports Korean/CJK sentence-ending patterns for grace-zone detection. Supports three modes: `recent` (last N entries), `full` (full transcript, bids visible), `summary` (epoch-level overview). Bid scores are filtered from agent-facing views. See `src/discuss/transcript.ts`.
+Pure rendering helpers for `TranscriptEntry[]`. Produces human-readable transcript text for prompts and summaries without owning persistence. Supports recent/full rendering and word-wrap logic for mixed English/CJK content. See `src/discuss/transcript.ts`.
 
 ---
 
-### src/discuss/schemas.ts - Zod Input Validation
+### src/discuss/persona-seed.ts - Persona Sampling
 
-Zod schemas for the two discuss MCP tools. `discussAgentOpSchema` is a discriminated union on `op` covering `bid` and `speak`. `discussLeadOpSchema` covers `_1_seed` through `_8_synthesize`. Cross-field constraints are enforced in `server-handlers.ts` after Zod validation. See `src/discuss/schemas.ts`.
-
----
-
-### src/discuss/persona-seed.ts - k-DPP Persona Sampling
-
-Pure implementation of k-Determinantal Point Process sampling for maximally diverse persona position assignment. Zero I/O. Key exports: `seedPersonas` (main entry point), `assignTones` (2×2×2 combinatorial assignment), `assignOrigins` (weighted demographics). RNG and DPP primitives are delegated to `util/rng.ts` and `util/dpp.ts`. See `src/discuss/persona-seed.ts`.
+Pure k-DPP-based persona assignment for `discuss_seed`. Combines controversy axes, tone assignment, and optional origin weighting to produce diverse seeded personas before the live session starts. See `src/discuss/persona-seed.ts`.
 
 ---
 
-### src/discuss/handlers/utils.ts - Cross-Handler Utilities
+### src/discuss/util/string.ts / util/time.ts / util/rng.ts / util/dpp.ts
 
-Shared utilities used by both `handlers/bid.ts` and `handlers/step.ts` (and indirectly `server-handlers.ts`). Exports: `resolveSession` (session ID → directory path), `nowIsoString`, `resultToMcp` (converts `Result<T>` to `McpResult`), `loadState` (locked state read), `endContent` (human-readable end reason strings). See `src/discuss/handlers/utils.ts`.
+Pure utility layer for the discuss subsystem:
 
----
+- `util/string.ts` handles display-name parsing and string formatting helpers.
+- `util/time.ts` provides timestamp helpers such as `nowIsoString()`.
+- `util/rng.ts` provides seeded randomness and weighted sampling primitives.
+- `util/dpp.ts` implements the linear-algebra machinery for k-DPP persona sampling.
 
-### src/discuss/handlers/bid.ts - bid/speak Flow
-
-Contains the full `handleBid` and `handleSpeak` implementations, exposed via `handleAgentOp`. `handleBid` is a polling loop: waits for session to reach `bidding` state → applies bid under lock → waits for winner resolution via `bidReleased` predicate. Returns `speak` action to the winner, `listen` action to everyone else. See `src/discuss/handlers/bid.ts`.
-
----
-
-### src/discuss/handlers/step.ts - _3_step Flow
-
-Implements the `handle3Step` moderator operation with phase decomposition (`bootstrapFromSetup`, `stepSpeaking`, `stepBidding`). Manages the full bidding→speaking cycle: starts bidding on first call, waits for all bids via `waitForCondition(allBidsIn)`, resolves winner under lock, then in the next call waits for speech delivery via `waitForCondition(speechDelivered)`. Handles expulsion of non-responsive agents after two hold cycles. See `src/discuss/handlers/step.ts`.
-
----
-
-### src/discuss/server-handlers.ts - Tool Dispatch
-
-Thin router: Zod parsing (`parseToolInput`), environment config (`envInt`), and routing to `handleAgentOp` / `handle3Step` / inline op handlers. Per-op handlers `handle2Create` through `handle8Synthesize` live here for ops that don't warrant their own file. See `src/discuss/server-handlers.ts`.
-
----
-
-### src/discuss/server.ts - MCP Server Entry Point
-
-Composition root (~40 lines). SDK + stdio transport setup, `SessionStore` initialization, shutdown signal handling. No business logic - delegates entirely to `server-handlers.ts`. See `src/discuss/server.ts`.
+These modules stay free of filesystem and backend concerns so both the deciders and persona seeding remain deterministic and easy to test.

@@ -132,7 +132,7 @@ export function serializeWorkflowResult(details: StepDetail[]): {
   const steps: WorkflowResultMeta['steps'] = [];
 
   for (const detail of details) {
-    lines.push(`# Step ${detail.stepIndex + 1}.${detail.atomIndex + 1}: ${detail.label}`);
+    lines.push(`# Step ${detail.stepIndex}.${detail.atomIndex}: ${detail.label}`);
     lines.push('');
     const start = lines.length + 1;
     const contentLines = detail.output.split('\n');
@@ -142,8 +142,8 @@ export function serializeWorkflowResult(details: StepDetail[]): {
 
     steps.push({
       agent: detail.label,
-      step: detail.stepIndex + 1,
-      atom: detail.atomIndex + 1,
+      step: detail.stepIndex,
+      atom: detail.atomIndex,
       provider: detail.provider,
       start,
       end,

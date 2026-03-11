@@ -1,10 +1,31 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { JOBS_DIR, discussDiscoveryPath } from './paths.js';
+import {
+  DISCUSS_PROJECT_ROOTS_PATH,
+  JOBS_DIR,
+  discussBaseDir,
+  discussDiscoveryPath,
+  discussEventLogPath,
+  discussStatePath,
+} from './paths.js';
 import type { PersistedProgressRecord, PersistedStatusRecord } from '../types.js';
 import type { SessionEntry } from '../execution/session-manager.js';
 import type { DiscussState } from '../discuss/types.js';
+import {
+  type DiscussDomainEvent,
+  type PersistedDiscussSnapshot,
+  discussEventKinds,
+} from '../discuss/events.js';
 import { isNoEntryError } from '../shared/mcp-utils.js';
+
+const discussEventKindSet = new Set<string>(discussEventKinds);
+const discussStatusSet = new Set(['setup', 'bidding', 'speaking', 'ended']);
+const participationSet = new Set(['required', 'observer']);
+const speakerTypeSet = new Set(['quota', 'fallback', 'cold_start']);
+const transcriptResolveTypeSet = new Set(['normal', 'fallback', 'cold_start', 'no_winner']);
+const transcriptEventSet = new Set(['force_end', 'synthesis']);
+const controlPhaseSet = new Set(['idle', 'observer_wait', 'evaluate_epoch', 'collect_follow_up', 'synthesize']);
+const resolveReasonSet = new Set(['all_below_threshold', 'max_epochs_reached', 'all_blocked', 'epoch_transition']);
 
 function readJsonFile(filePath: string): unknown | null {
   try {
@@ -28,6 +49,97 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isInteger(value: unknown): value is number {
+  return Number.isInteger(value);
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  if (!isRecord(value)) return false;
+  return Object.values(value).every((entry) => typeof entry === 'string');
+}
+
+function isBooleanRecord(value: unknown): value is Record<string, boolean> {
+  if (!isRecord(value)) return false;
+  return Object.values(value).every((entry) => typeof entry === 'boolean');
+}
+
+function isNumberRecord(value: unknown): value is Record<string, number> {
+  if (!isRecord(value)) return false;
+  return Object.values(value).every((entry) => isFiniteNumber(entry));
+}
+
+function isNullableNumberRecord(value: unknown): value is Record<string, number | null> {
+  if (!isRecord(value)) return false;
+  return Object.values(value).every((entry) => entry === null || isFiniteNumber(entry));
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+function isValidDiscussAgentState(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return typeof value.persona === 'string'
+    && typeof value.display_name === 'string'
+    && typeof value.participation === 'string'
+    && participationSet.has(value.participation)
+    && isFiniteNumber(value.quota_remaining)
+    && isFiniteNumber(value.total_speaks)
+    && typeof value.fallback_used === 'boolean'
+    && typeof value.banned === 'boolean';
+}
+
+function isValidTranscriptEntry(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.type !== 'string') return false;
+
+  switch (value.type) {
+    case 'bids':
+      return isFiniteNumber(value.step)
+        && isFiniteNumber(value.epoch)
+        && typeof value.ts === 'string'
+        && isNumberRecord(value.bids)
+        && (value.effective_bids === undefined || isNumberRecord(value.effective_bids))
+        && (value.thoughts === undefined || isStringRecord(value.thoughts))
+        && (value.winner === null || typeof value.winner === 'string')
+        && typeof value.resolve_type === 'string'
+        && transcriptResolveTypeSet.has(value.resolve_type);
+
+    case 'speech':
+      return isFiniteNumber(value.step)
+        && isFiniteNumber(value.epoch)
+        && typeof value.ts === 'string'
+        && typeof value.agent === 'string'
+        && typeof value.display_name === 'string'
+        && typeof value.content === 'string';
+
+    case 'follow_up':
+      return isFiniteNumber(value.epoch)
+        && typeof value.ts === 'string'
+        && typeof value.agent === 'string'
+        && typeof value.question === 'string'
+        && typeof value.answer === 'string';
+
+    case 'epoch_summary':
+      return isFiniteNumber(value.epoch)
+        && typeof value.ts === 'string'
+        && typeof value.summary === 'string';
+
+    case 'session_event':
+      return isFiniteNumber(value.epoch)
+        && typeof value.ts === 'string'
+        && typeof value.event === 'string'
+        && transcriptEventSet.has(value.event)
+        && typeof value.detail === 'string';
+
+    default:
+      return false;
+  }
+}
+
 function isValidSessionEntry(value: unknown): value is SessionEntry {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
@@ -49,15 +161,230 @@ function isValidDiscussState(value: unknown): value is DiscussState {
     && isRecord(value.agents);
 }
 
-function isValidDiscussEventLogEntry(value: unknown): value is DiscussEventLogEntry {
+function isValidSessionCreatedInput(value: unknown): boolean {
+  if (!isRecord(value) || !Array.isArray(value.agents)) return false;
+  return typeof value.topic === 'string'
+    && isFiniteNumber(value.min_bid_delay_ms)
+    && value.agents.every((agent) =>
+      isRecord(agent)
+      && typeof agent.name === 'string'
+      && typeof agent.persona === 'string'
+      && typeof agent.participation === 'string'
+      && participationSet.has(agent.participation),
+    );
+}
+
+function isValidSessionCreatedConfig(value: unknown): boolean {
   if (!isRecord(value)) return false;
-  return typeof value.sessionId === 'string'
-    && typeof value.topic === 'string'
+  return isFiniteNumber(value.bidThreshold)
+    && isFiniteNumber(value.maxEpochs)
+    && isFiniteNumber(value.quotaPerEpoch);
+}
+
+function isValidSessionCreatedAgentExecution(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.manual !== 'boolean') return false;
+  if (value.manual) {
+    return value.provider === undefined && value.model === undefined;
+  }
+  return typeof value.provider === 'string' && typeof value.model === 'string';
+}
+
+function isValidFollowUpQueueItem(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return typeof value.agent === 'string' && typeof value.question === 'string';
+}
+
+function isValidBidRoundClosedOutcome(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (typeof value.winner === 'string') {
+    return typeof value.speaker_type === 'string' && speakerTypeSet.has(value.speaker_type);
+  }
+  return value.no_winner === true
+    && typeof value.reason === 'string'
+    && resolveReasonSet.has(value.reason);
+}
+
+function isValidBidRoundClosedStateMutations(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return (value.cold_start === undefined || typeof value.cold_start === 'boolean')
+    && (value.fallback_used === undefined || isBooleanRecord(value.fallback_used))
+    && (value.quota_remaining === undefined || isNumberRecord(value.quota_remaining))
+    && (value.epoch === undefined || isFiniteNumber(value.epoch));
+}
+
+function isValidDiscussEventPayload(kind: DiscussDomainEvent['kind'], payload: unknown): boolean {
+  if (!isRecord(payload)) return false;
+
+  switch (kind) {
+    case 'session.created':
+      return isValidSessionCreatedInput(payload.input)
+        && isValidSessionCreatedConfig(payload.config)
+        && isRecord(payload.agentExecution)
+        && Object.values(payload.agentExecution).every(isValidSessionCreatedAgentExecution);
+
+    case 'bidding.opened':
+      return true;
+
+    case 'bid.submitted':
+      return typeof payload.agent === 'string'
+        && isFiniteNumber(payload.score)
+        && typeof payload.thought === 'string';
+
+    case 'participants.expelled':
+      return isStringArray(payload.agents)
+        && typeof payload.isRespawn === 'boolean'
+        && typeof payload.hint === 'string';
+
+    case 'bid.round.closed':
+      return isNumberRecord(payload.allBids)
+        && isNumberRecord(payload.effectiveBids)
+        && isStringRecord(payload.thoughts)
+        && isValidBidRoundClosedOutcome(payload.outcome)
+        && isValidBidRoundClosedStateMutations(payload.stateMutations);
+
+    case 'speech.recorded':
+      return typeof payload.agent === 'string'
+        && typeof payload.content === 'string'
+        && typeof payload.decrementQuota === 'boolean'
+        && (payload.recordLastSpeechStep === undefined || isInteger(payload.recordLastSpeechStep));
+
+    case 'speech.timed_out':
+      return typeof payload.agent === 'string'
+        && typeof payload.content === 'string'
+        && typeof payload.decrementQuota === 'boolean';
+
+    case 'epoch.summary.recorded':
+      return typeof payload.summary === 'string';
+
+    case 'must_answer.carry_forward.set':
+      return isStringArray(payload.items);
+
+    case 'follow_up.queue.set':
+      return Array.isArray(payload.queue) && payload.queue.every(isValidFollowUpQueueItem);
+
+    case 'follow_up.answered':
+      return typeof payload.agent === 'string'
+        && typeof payload.question === 'string'
+        && typeof payload.answer === 'string';
+
+    case 'session.ended':
+      return (payload.endReason === undefined || typeof payload.endReason === 'string')
+        && (payload.endReasonContent === undefined || payload.endReasonContent === null || typeof payload.endReasonContent === 'string')
+        && (payload.force === undefined || typeof payload.force === 'boolean')
+        && (payload.reason === undefined || typeof payload.reason === 'string');
+
+    case 'session.synthesized':
+      return typeof payload.synthesis === 'string';
+
+    case 'agent.run.bound':
+      return typeof payload.agent === 'string' && typeof payload.executionSessionId === 'string';
+
+    case 'agent.job.started':
+      return typeof payload.agent === 'string'
+        && typeof payload.jobId === 'string'
+        && typeof payload.purpose === 'string'
+        && isInteger(payload.attempt);
+
+    case 'agent.job.finished':
+      return typeof payload.agent === 'string'
+        && typeof payload.jobId === 'string'
+        && typeof payload.outcome === 'string'
+        && isInteger(payload.attempt);
+  }
+}
+
+function isValidDiscussDomainEvent(value: unknown): value is DiscussDomainEvent {
+  if (!isRecord(value)) return false;
+  return value.v === 1
+    && typeof value.sessionId === 'string'
     && typeof value.projectRoot === 'string'
-    && typeof value.seq === 'number'
+    && typeof value.topic === 'string'
+    && isInteger(value.seq)
+    && value.seq > 0
     && typeof value.kind === 'string'
+    && discussEventKindSet.has(value.kind)
     && typeof value.ts === 'string'
-    && isRecord(value.payload);
+    && isValidDiscussEventPayload(value.kind as DiscussDomainEvent['kind'], value.payload);
+}
+
+function isValidPersistedDiscussRuntime(value: unknown): value is PersistedDiscussSnapshot['runtime'] {
+  if (!isRecord(value)) return false;
+  return typeof value.controlPhase === 'string'
+    && controlPhaseSet.has(value.controlPhase)
+    && isStringArray(value.carryForwardMustAnswer)
+    && Array.isArray(value.followUpQueue)
+    && value.followUpQueue.every(isValidFollowUpQueueItem)
+    && isRecord(value.agentRuns)
+    && Object.values(value.agentRuns).every((run) =>
+      isRecord(run)
+      && typeof run.provider === 'string'
+      && typeof run.model === 'string'
+      && (run.executionSessionId === undefined || typeof run.executionSessionId === 'string')
+      && (run.currentJobId === undefined || typeof run.currentJobId === 'string')
+      && (run.currentJobPurpose === undefined || typeof run.currentJobPurpose === 'string')
+      && (run.currentAttempt === undefined || isInteger(run.currentAttempt))
+      && (run.lastAttemptOutcome === undefined || typeof run.lastAttemptOutcome === 'string'),
+    );
+}
+
+function isValidPersistedDiscussState(value: unknown): value is DiscussState {
+  if (!isRecord(value) || !isRecord(value.agents)) return false;
+
+  const agentNames = new Set(Object.keys(value.agents));
+  const currentSpeaker = value.current_speaker;
+  const speakerType = value.speaker_type;
+
+  return typeof value.session_id === 'string'
+    && typeof value.topic === 'string'
+    && typeof value.status === 'string'
+    && discussStatusSet.has(value.status)
+    && isInteger(value.step)
+    && isInteger(value.epoch)
+    && isInteger(value.max_epochs)
+    && isFiniteNumber(value.quota_per_epoch)
+    && typeof value.cold_start === 'boolean'
+    && Object.values(value.agents).every(isValidDiscussAgentState)
+    && isNullableNumberRecord(value.current_bids)
+    && Object.keys(value.current_bids).every((name) => agentNames.has(name))
+    && isStringRecord(value.current_thoughts)
+    && Object.keys(value.current_thoughts).every((name) => agentNames.has(name))
+    && isStringArray(value.pending_bidders)
+    && value.pending_bidders.every((name) => agentNames.has(name))
+    && (currentSpeaker === null || (typeof currentSpeaker === 'string' && agentNames.has(currentSpeaker)))
+    && (speakerType === null || (typeof speakerType === 'string' && speakerTypeSet.has(speakerType)))
+    && (value.epoch_summary_written === null || isInteger(value.epoch_summary_written))
+    && typeof value.created_at === 'string'
+    && typeof value.last_activity_at === 'string'
+    && isInteger(value.last_speech_step)
+    && (value.pending_since_ts === null || isFiniteNumber(value.pending_since_ts))
+    && isInteger(value.bid_release_step)
+    && (value.end_reason_content === null || typeof value.end_reason_content === 'string')
+    && Array.isArray(value.transcript)
+    && value.transcript.every(isValidTranscriptEntry)
+    && isFiniteNumber(value.bid_threshold)
+    && isFiniteNumber(value.min_bid_delay_ms)
+    && (value.status !== 'speaking' || (currentSpeaker !== null && speakerType !== null));
+}
+
+function isValidPersistedDiscussSnapshot(value: unknown): value is PersistedDiscussSnapshot {
+  if (!isRecord(value)) return false;
+  if (value.schemaVersion !== 2
+    || typeof value.sessionId !== 'string'
+    || typeof value.projectRoot !== 'string'
+    || typeof value.updatedAt !== 'string'
+    || !isInteger(value.lastAppliedSeq)
+    || value.lastAppliedSeq < 0) {
+    return false;
+  }
+
+  const state = value.state;
+  const runtime = value.runtime;
+  if (!isValidPersistedDiscussState(state) || !isValidPersistedDiscussRuntime(runtime)) {
+    return false;
+  }
+
+  return state.session_id === value.sessionId
+    && Object.keys(runtime.agentRuns).every((name) => name in state.agents);
 }
 
 function isValidDiscussDiscoverySession(value: unknown): value is DiscussDiscoverySession {
@@ -73,6 +400,14 @@ function isValidDiscussDiscoveryData(value: unknown): value is DiscussDiscoveryD
   return typeof value.projectRoot === 'string'
     && typeof value.updatedAt === 'string'
     && value.sessions.every(isValidDiscussDiscoverySession);
+}
+
+function isValidDiscussProjectRootsRegistry(
+  value: unknown,
+): value is { updatedAt?: string; projectRoots: string[] } {
+  return isRecord(value)
+    && isStringArray(value.projectRoots)
+    && (value.updatedAt === undefined || typeof value.updatedAt === 'string');
 }
 
 /**
@@ -103,15 +438,7 @@ export interface LenientSessionEntry {
 /**
  * Persisted discuss event log entry.
  */
-export interface DiscussEventLogEntry {
-  sessionId: string;
-  topic: string;
-  projectRoot: string;
-  seq: number;
-  kind: string;
-  ts: string;
-  payload: Record<string, unknown>;
-}
+export type DiscussEventLogEntry = DiscussDomainEvent;
 
 /**
  * Session reference stored in discuss discovery metadata.
@@ -208,18 +535,27 @@ export function readDiscussState(statePath: string): DiscussState | null {
 }
 
 /**
+ * Reads and validates a v2 persisted discuss snapshot.
+ */
+export function readDiscussSnapshot(statePath: string): PersistedDiscussSnapshot | null {
+  const snapshot = readJsonFile(statePath);
+  if (snapshot === null) return null;
+  return isValidPersistedDiscussSnapshot(snapshot) ? snapshot : null;
+}
+
+/**
  * Reads and parses a discuss JSONL event log, skipping malformed lines.
  */
-export function readDiscussEventLog(logPath: string): DiscussEventLogEntry[] {
+export function readDiscussEventLog(logPath: string): DiscussDomainEvent[] {
   const log = readTextFile(logPath);
   if (log === null) return [];
 
-  const entries: DiscussEventLogEntry[] = [];
+  const entries: DiscussDomainEvent[] = [];
   for (const line of log.split('\n')) {
     if (line.trim().length === 0) continue;
     try {
       const entry = JSON.parse(line) as unknown;
-      if (isValidDiscussEventLogEntry(entry)) {
+      if (isValidDiscussDomainEvent(entry)) {
         entries.push(entry);
       }
     } catch (error: unknown) {
@@ -237,4 +573,118 @@ export function readDiscussDiscovery(projectRoot: string): DiscussDiscoveryData 
   const discovery = readJsonFile(discussDiscoveryPath(projectRoot));
   if (discovery === null) return null;
   return isValidDiscussDiscoveryData(discovery) ? discovery : null;
+}
+
+export function readDiscussProjectRoots(): string[] {
+  const registry = readJsonFile(DISCUSS_PROJECT_ROOTS_PATH);
+  if (!isValidDiscussProjectRootsRegistry(registry)) {
+    return [];
+  }
+  return [...new Set(registry.projectRoots)];
+}
+
+function canUseDiscussSessionDir(sessionDir: string): boolean {
+  return existsSync(discussStatePath(sessionDir)) || existsSync(discussEventLogPath(sessionDir));
+}
+
+function scanPersistedDiscussSessions(projectRoot: string): DiscussDiscoverySession[] {
+  const baseDir = discussBaseDir(projectRoot);
+  let entries: Array<{ name: string; isDirectory(): boolean }>;
+  try {
+    entries = readdirSync(baseDir, { withFileTypes: true });
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return [];
+    throw error;
+  }
+
+  const sessions: DiscussDiscoverySession[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const sessionDir = join(baseDir, entry.name);
+    const snapshot = readDiscussSnapshot(discussStatePath(sessionDir));
+    if (!snapshot) continue;
+    sessions.push({
+      sessionId: snapshot.sessionId,
+      topic: snapshot.state.topic,
+      sessionDir,
+      createdAt: snapshot.state.created_at,
+    });
+  }
+
+  return sessions;
+}
+
+/**
+ * Resolves a discuss session directory using discovery first, then directory scan fallback.
+ */
+export function resolveDiscussSessionDir(projectRoot: string, sessionId: string): string | null {
+  const discovery = readDiscussDiscovery(projectRoot);
+  const discoveredDir = discovery?.sessions.find((session) => session.sessionId === sessionId)?.sessionDir;
+  if (discoveredDir && canUseDiscussSessionDir(discoveredDir)) {
+    return discoveredDir;
+  }
+
+  const baseDir = discussBaseDir(projectRoot);
+  let entries: Array<{ name: string; isDirectory(): boolean }>;
+  try {
+    entries = readdirSync(baseDir, { withFileTypes: true });
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return null;
+    throw error;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const sessionDir = join(baseDir, entry.name);
+    if (entry.name === sessionId && canUseDiscussSessionDir(sessionDir)) {
+      return sessionDir;
+    }
+    const snapshot = readDiscussSnapshot(discussStatePath(sessionDir));
+    if (snapshot?.sessionId === sessionId) {
+      return sessionDir;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Lists persisted discuss sessions using discovery first with state-based fallback repair.
+ */
+export function listPersistedDiscussSessions(projectRoot: string): DiscussDiscoverySession[] {
+  const discovered = readDiscussDiscovery(projectRoot);
+  const scanned = scanPersistedDiscussSessions(projectRoot);
+  if (!discovered) {
+    return scanned;
+  }
+
+  const usableDiscovered: DiscussDiscoverySession[] = [];
+  let stale = false;
+  for (const session of discovered.sessions) {
+    if (!canUseDiscussSessionDir(session.sessionDir)) {
+      stale = true;
+      continue;
+    }
+    usableDiscovered.push(session);
+  }
+
+  const discoveredIds = new Set(usableDiscovered.map((session) => session.sessionId));
+  if (scanned.some((session) => !discoveredIds.has(session.sessionId))) {
+    stale = true;
+  }
+
+  if (!stale) {
+    return usableDiscovered;
+  }
+
+  const merged = new Map<string, DiscussDiscoverySession>();
+  for (const session of usableDiscovered) {
+    merged.set(session.sessionId, session);
+  }
+  for (const session of scanned) {
+    if (!merged.has(session.sessionId)) {
+      merged.set(session.sessionId, session);
+    }
+  }
+  return [...merged.values()];
 }

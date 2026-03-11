@@ -28,13 +28,30 @@ import { IdleTimer } from './idle-timer.js';
 import { createReplayCursor, ProgressStore, JOBS_DIR } from './progress-store.js';
 import type { CallerContext, ToolRequest } from './request-context.js';
 import { SessionManager, type SessionEntry } from './session-manager.js';
-import { DiscussManagerRegistry, type DiscussManager } from './discuss-manager.js';
-import { readSessionEntryLenient, readDiscussState, type LenientSessionEntry } from '../client/readers.js';
-import { discussBaseDir } from '../client/paths.js';
+import {
+  DiscussManagerError,
+  DiscussManagerRegistry,
+  type DiscussManager,
+} from './discuss-manager.js';
+import {
+  DiscussSessionStore,
+} from './discuss-session-store.js';
+import {
+  buildDiscussDetail,
+  buildDiscussSummary,
+  type DiscussAuthority,
+  type DiscussDetailResponse,
+  type DiscussSummaryDto,
+  type DiscussView,
+} from '../client/discuss.js';
+import {
+  readDiscussProjectRoots,
+  readSessionEntryLenient,
+  type LenientSessionEntry,
+} from '../client/readers.js';
 import { getAllNewProviders, getNewProvider } from '../providers/registry.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { seedPersonas } from '../discuss/persona-seed.js';
-import { applyBid, applySpeech } from '../discuss/state-machine.js';
 import {
   ExecutionService as DefaultExecutionService,
 } from './service.js';
@@ -48,8 +65,6 @@ import type {
   WaitRequest,
   WaitStreamEvent,
 } from '../types.js';
-import type { BidResult, DiscussState, SpeechResult, TranscriptEntry } from '../discuss/types.js';
-import { nowIsoString } from '../discuss/util/time.js';
 
 export type LifecycleState = 'starting' | 'running' | 'draining' | 'stopped';
 
@@ -573,7 +588,7 @@ function getToolDescriptors(): Array<Record<string, unknown>> {
     },
     {
       name: 'discuss_participate',
-      description: 'Submit a bid or speech for an active discussion participant.',
+      description: 'Submit a bid (score + thought) or speech (content) for an active discussion participant. Provide either score+thought or content, not both.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -584,10 +599,6 @@ function getToolDescriptors(): Array<Record<string, unknown>> {
           content: { type: 'string' },
         },
         required: ['session', 'agent_name'],
-        oneOf: [
-          { required: ['session', 'agent_name', 'score', 'thought'] },
-          { required: ['session', 'agent_name', 'content'] },
-        ],
       },
     },
     {
@@ -720,14 +731,15 @@ export async function routeToolCall(
       return toolValidationError(parsed.error);
     }
 
-    const session = helpers.getDiscussManager(request.context).getSession(parsed.data.session);
-    if (!session) {
-      return toolError('session_not_found', { session: parsed.data.session });
+    try {
+      await helpers.getDiscussManager(request.context).abortSession(parsed.data.session);
+      return toolSuccess({ ok: true, session: parsed.data.session });
+    } catch (error: unknown) {
+      if (error instanceof DiscussManagerError) {
+        return toolError(error.code, error.detail);
+      }
+      throw error;
     }
-
-    session.controller.abort();
-    helpers.getDiscussManager(request.context).removeSession(parsed.data.session);
-    return toolSuccess({ ok: true, session: parsed.data.session });
   }
 
   if (request.name === 'discuss_watch') {
@@ -736,23 +748,14 @@ export async function routeToolCall(
       return toolValidationError(parsed.error);
     }
 
-    const session = helpers.getDiscussManager(request.context).getSession(parsed.data.session);
-    if (!session) {
-      return toolError('session_not_found', { session: parsed.data.session });
+    try {
+      return toolSuccess(helpers.getDiscussManager(request.context).getWatchState(parsed.data.session));
+    } catch (error: unknown) {
+      if (error instanceof DiscussManagerError) {
+        return toolError(error.code, error.detail);
+      }
+      throw error;
     }
-
-    return toolSuccess({
-      session: parsed.data.session,
-      status: session.state.status,
-      topic: session.state.topic,
-      epoch: session.state.epoch,
-      step: session.state.step,
-      events: session.watchLog.map((event) => ({
-        type: event.type,
-        data: { ...event.data },
-        ts: event.ts,
-      })),
-    });
   }
 
   if (request.name === 'discuss_participate') {
@@ -762,72 +765,33 @@ export async function routeToolCall(
     }
 
     const manager = helpers.getDiscussManager(request.context);
-    const session = manager.getSession(parsed.data.session);
-    if (!session) {
-      return toolError('session_not_found', { session: parsed.data.session });
-    }
-
-    if (session.state.status === 'ended') {
-      const ended: BidResult | SpeechResult = {
-        action: 'session_ended',
-        reason: session.state.end_reason_content ?? undefined,
-        content: session.state.end_reason_content ?? undefined,
-      };
-      return toolSuccess(ended);
-    }
-
-    if (typeof parsed.data.content === 'string') {
-      if (session.state.current_speaker !== parsed.data.agent_name) {
-        const result: SpeechResult = {
-          action: 'not_your_turn',
-          current_speaker: session.state.current_speaker,
-        };
-        return toolSuccess(result);
+    try {
+      if (typeof parsed.data.content === 'string') {
+        return toolSuccess(
+          await manager.submitManualSpeech(
+            parsed.data.session,
+            parsed.data.agent_name,
+            parsed.data.content,
+            request.context,
+          ),
+        );
       }
 
-      const applied = applySpeech(
-        session.state,
-        parsed.data.agent_name,
-        parsed.data.content,
-        nowIsoString(),
+      return toolSuccess(
+        await manager.submitManualBid(
+          parsed.data.session,
+          parsed.data.agent_name,
+          parsed.data.score,
+          parsed.data.thought,
+          request.context,
+        ),
       );
-      if (!applied.ok) {
-        return toolError(applied.error, applied.detail);
+    } catch (error: unknown) {
+      if (error instanceof DiscussManagerError) {
+        return toolError(error.code, error.detail);
       }
-
-      session.state = applied.value;
-      manager.emitWatch(parsed.data.session, {
-        type: 'speech_done',
-        data: {
-          speaker: parsed.data.agent_name,
-          content: parsed.data.content,
-        },
-        ts: Date.now(),
-      });
-      manager.resumeLoop(parsed.data.session, request.context);
-
-      const result: SpeechResult = { action: 'speech_recorded' };
-      return toolSuccess(result);
+      throw error;
     }
-
-    const applied = applyBid(
-      session.state,
-      parsed.data.agent_name,
-      parsed.data.score,
-      parsed.data.thought,
-      nowIsoString(),
-    );
-    if (!applied.ok) {
-      return toolError(applied.error, applied.detail);
-    }
-
-    session.state = applied.value;
-    const result: BidResult = {
-      action: 'listen',
-      speaker: null,
-      content: 'Bid recorded.',
-    };
-    return toolSuccess(result);
   }
 
   if (!getNewProvider(request.name)) {
@@ -1000,6 +964,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const killAllChildrenFn = options.killAllChildrenFn ?? killAllChildren;
 
   const services = new Map<string, ExecutionServiceLike>();
+  const discussStores = new Map<string, DiscussSessionStore>();
   const streamResponses = new Set<ServerResponse>();
   let startedAt = now();
   let lifecycle: LifecycleState = 'starting';
@@ -1015,8 +980,30 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     return created;
   }
 
+  function getDiscussStore(projectRoot: string): DiscussSessionStore {
+    const existing = discussStores.get(projectRoot);
+    if (existing) return existing;
+    const created = new DiscussSessionStore(projectRoot, {
+      onCommit: (snapshot) => {
+        eventBus.emit('discuss:updated', {
+          projectRoot: snapshot.projectRoot,
+          sessionId: snapshot.sessionId,
+          lastSeq: snapshot.lastAppliedSeq,
+          status: snapshot.state.status,
+        });
+      },
+    });
+    discussStores.set(projectRoot, created);
+    return created;
+  }
+
   function getDiscussManager(ctx: CallerContext): DiscussManager {
-    return discussRegistry.getOrCreate(ctx.projectRoot, getExecutionService(ctx) as ExecutionService);
+    const store = getDiscussStore(ctx.projectRoot);
+    return discussRegistry.getOrCreate(
+      ctx.projectRoot,
+      getExecutionService(ctx) as ExecutionService,
+      store,
+    );
   }
 
   function abortJobs(jobIds: string[]): AbortResult {
@@ -1107,35 +1094,11 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     return entries;
   }
 
-  type DiscussAuthority = 'live' | 'persisted_non_authoritative';
-  type DiscussSessionSummary = {
-    sessionId: string;
-    projectRoot: string;
-    topic: string;
-    status: string;
-    createdAt: string;
-    agentCount: number;
-    authority: DiscussAuthority;
-  };
-
-  function summarizeDiscussSession(
-    state: DiscussState,
-    projectRoot: string,
-    authority: DiscussAuthority,
-  ): DiscussSessionSummary {
-    return {
-      sessionId: state.session_id,
-      projectRoot,
-      topic: state.topic,
-      status: state.status,
-      createdAt: state.created_at,
-      agentCount: Object.keys(state.agents).length,
-      authority,
-    };
-  }
-
   function knownDiscussProjectRoots(): Set<string> {
     const projectRoots = new Set<string>();
+    for (const projectRoot of readDiscussProjectRoots()) {
+      projectRoots.add(projectRoot);
+    }
     for (const liveSession of discussRegistry.listLiveSessions()) {
       projectRoots.add(liveSession.projectRoot);
     }
@@ -1147,167 +1110,59 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     return projectRoots;
   }
 
-  function listDiscussSessions(): DiscussSessionSummary[] {
-    const results = new Map<string, DiscussSessionSummary>();
-
-    for (const liveSession of discussRegistry.listLiveSessions()) {
-      const summary = summarizeDiscussSession(liveSession.session.state, liveSession.projectRoot, 'live');
-      results.set(`${summary.projectRoot}\u0000${summary.sessionId}`, summary);
-    }
+  function listDiscussSessions(): DiscussSummaryDto[] {
+    const results = new Map<string, DiscussSummaryDto>();
 
     for (const projectRoot of knownDiscussProjectRoots()) {
-      const baseDir = discussBaseDir(projectRoot);
-      let entries: { name: string; isDirectory(): boolean }[];
-      try {
-        entries = readdirSync(baseDir, { withFileTypes: true });
-      } catch (error: unknown) {
-        if (isNoEntryError(error)) continue;
-        throw error;
+      for (const summary of getDiscussStore(projectRoot).listSummaries()) {
+        const key = `${projectRoot}\u0000${summary.sessionId}`;
+        results.set(key, summary);
       }
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
-        const state = readDiscussState(join(baseDir, entry.name, 'state.json'));
-        if (!state) continue;
-        const key = `${projectRoot}\u0000${state.session_id}`;
-        if (results.has(key)) continue;
-        results.set(key, summarizeDiscussSession(state, projectRoot, 'persisted_non_authoritative'));
-      }
+    }
+
+    for (const liveSession of discussRegistry.listLiveSessions()) {
+      const snapshot = getDiscussStore(liveSession.projectRoot).load(liveSession.sessionId)
+        ?? liveSession.session.snapshot;
+      const summary = buildDiscussSummary(snapshot, 'live');
+      results.set(`${summary.projectRoot}\u0000${summary.sessionId}`, summary);
     }
 
     return [...results.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
-  function redactDiscussTranscriptEntry(entry: TranscriptEntry): Record<string, unknown> {
-    switch (entry.type) {
-      case 'bids':
-        return {
-          type: entry.type,
-          step: entry.step,
-          epoch: entry.epoch,
-          ts: entry.ts,
-          winner: entry.winner,
-          resolve_type: entry.resolve_type,
-        };
-      case 'speech':
-        return {
-          type: entry.type,
-          step: entry.step,
-          epoch: entry.epoch,
-          ts: entry.ts,
-          agent: entry.agent,
-          display_name: entry.display_name,
-          content: entry.content,
-        };
-      case 'follow_up':
-        return {
-          type: entry.type,
-          epoch: entry.epoch,
-          ts: entry.ts,
-          agent: entry.agent,
-          question: entry.question,
-          answer: entry.answer,
-        };
-      case 'epoch_summary':
-        return {
-          type: entry.type,
-          epoch: entry.epoch,
-          ts: entry.ts,
-          summary: entry.summary,
-        };
-      case 'session_event':
-        return {
-          type: entry.type,
-          epoch: entry.epoch,
-          ts: entry.ts,
-          event: entry.event,
-          detail: entry.detail,
-        };
-    }
+  function isLiveDiscussSession(projectRoot: string, sessionId: string): boolean {
+    return discussRegistry.get(projectRoot)?.getSession(sessionId) !== undefined;
   }
 
-  function redactDiscussState(
-    state: DiscussState,
+  function parseDiscussView(raw: string | null): DiscussView | null {
+    if (raw === null || raw === 'control') {
+      return 'control';
+    }
+    if (raw === 'audit') {
+      return 'audit';
+    }
+    return null;
+  }
+
+  function loadDiscussDetail(
     projectRoot: string,
-    authority: DiscussAuthority,
-  ): {
-    authority: DiscussAuthority;
-    session: Record<string, unknown>;
-  } {
-    return {
-      authority,
-      session: {
-        sessionId: state.session_id,
-        projectRoot,
-        topic: state.topic,
-        status: state.status,
-        step: state.step,
-        epoch: state.epoch,
-        maxEpochs: state.max_epochs,
-        quotaPerEpoch: state.quota_per_epoch,
-        coldStart: state.cold_start,
-        currentSpeaker: state.current_speaker,
-        speakerType: state.speaker_type,
-        epochSummaryWritten: state.epoch_summary_written,
-        createdAt: state.created_at,
-        lastActivityAt: state.last_activity_at,
-        lastSpeechStep: state.last_speech_step,
-        bidReleaseStep: state.bid_release_step,
-        endReasonContent: state.end_reason_content,
-        bidThreshold: state.bid_threshold,
-        minBidDelayMs: state.min_bid_delay_ms,
-        agents: Object.entries(state.agents).map(([name, agent]) => ({
-          name,
-          displayName: agent.display_name,
-          participation: agent.participation,
-          totalSpeaks: agent.total_speaks,
-          banned: agent.banned,
-        })),
-        transcript: state.transcript.map((entry) => redactDiscussTranscriptEntry(entry)),
-      },
-    };
-  }
-
-  function resolveDiscussDir(projectRoot: string, sessionId: string): string | null {
-    const baseDir = discussBaseDir(projectRoot);
-    let entries: string[];
-    try {
-      entries = readdirSync(baseDir);
-    } catch (error: unknown) {
-      if (isNoEntryError(error)) return null;
-      throw error;
-    }
-    if (entries.includes(sessionId)) return join(baseDir, sessionId);
-    const match = entries.find((e) => e.startsWith(`${sessionId}-`));
-    return match ? join(baseDir, match) : null;
-  }
-
-  function liveDiscussDetail(projectRoot: string, sessionId: string): {
-    authority: DiscussAuthority;
-    session: Record<string, unknown>;
-  } | null {
-    const manager = discussRegistry.get(projectRoot);
-    const session = manager?.getSession(sessionId);
-    if (!session) {
+    sessionId: string,
+    view: DiscussView,
+  ): DiscussDetailResponse | 'audit_requires_ended_session' | null {
+    const snapshot = getDiscussStore(projectRoot).load(sessionId);
+    if (!snapshot) {
       return null;
     }
-    return redactDiscussState(session.state, projectRoot, 'live');
-  }
-
-  function persistedDiscussDetail(projectRoot: string, sessionId: string): {
-    authority: DiscussAuthority;
-    session: Record<string, unknown>;
-  } | null {
-    const sessionDir = resolveDiscussDir(projectRoot, sessionId);
-    if (!sessionDir) {
-      return null;
+    if (view === 'audit' && snapshot.state.status !== 'ended') {
+      return 'audit_requires_ended_session';
     }
 
-    const state = readDiscussState(join(sessionDir, 'state.json'));
-    if (!state) {
-      return null;
-    }
-
-    return redactDiscussState(state, projectRoot, 'persisted_non_authoritative');
+    const authority: DiscussAuthority = isLiveDiscussSession(projectRoot, sessionId)
+      ? 'live'
+      : 'persisted';
+    return view === 'audit'
+      ? buildDiscussDetail(snapshot, 'audit', authority)
+      : buildDiscussDetail(snapshot, 'control', authority);
   }
 
   const server = createServer((req, res) => {
@@ -1482,6 +1337,10 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       if (closed) return;
       writeSseEvent(res, 'session:updated', payload);
     };
+    const onDiscussUpdated = (payload: EventBusEvents['discuss:updated']): void => {
+      if (closed) return;
+      writeSseEvent(res, 'discuss:updated', payload);
+    };
 
     const onClose = () => {
       if (closed) return;
@@ -1493,6 +1352,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       eventBus.off('job:progress', onProgress);
       eventBus.off('job:completed', onCompleted);
       eventBus.off('session:updated', onSessionUpdated);
+      eventBus.off('discuss:updated', onDiscussUpdated);
     };
     res.once('close', onClose);
 
@@ -1501,6 +1361,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     eventBus.on('job:progress', onProgress);
     eventBus.on('job:completed', onCompleted);
     eventBus.on('session:updated', onSessionUpdated);
+    eventBus.on('discuss:updated', onDiscussUpdated);
 
     await new Promise<void>((resolve) => {
       if (closed) {
@@ -1659,9 +1520,18 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
           sendJson(res, 400, { error: 'missing_params', message: 'projectRoot and sessionId are required' });
           return;
         }
-        const detail = liveDiscussDetail(projectRoot, sessionId) ?? persistedDiscussDetail(projectRoot, sessionId);
+        const view = parseDiscussView(parsedUrl.searchParams.get('view'));
+        if (!view) {
+          sendJson(res, 400, { error: 'invalid_view', message: 'view must be control or audit' });
+          return;
+        }
+        const detail = loadDiscussDetail(projectRoot, sessionId, view);
         if (!detail) {
           sendJson(res, 404, { error: 'session_not_found' });
+          return;
+        }
+        if (detail === 'audit_requires_ended_session') {
+          sendJson(res, 409, { error: 'audit_requires_ended_session' });
           return;
         }
         sendJson(res, 200, detail);
@@ -1681,6 +1551,13 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     try {
       await acquireLockFn(instanceId, version, bundleHash);
       recoverOrphanedJobsFn();
+      for (const projectRoot of knownDiscussProjectRoots()) {
+        const ctx: CallerContext = {
+          projectRoot,
+          pluginRoot: defaultPluginRoot,
+        };
+        await getDiscussManager(ctx).recoverPersistedSessions(ctx);
+      }
       const bindHost = process.env.CORAL_BACKEND_BIND ?? '127.0.0.1';
       const { port, host } = await listen(server, bindHost);
       startedAt = now();
@@ -1694,6 +1571,14 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         instanceId,
         startedAt,
       });
+
+      for (const projectRoot of knownDiscussProjectRoots()) {
+        const recoveryCtx: CallerContext = {
+          projectRoot,
+          pluginRoot: defaultPluginRoot,
+        };
+        await getDiscussManager(recoveryCtx).recoverPersistedSessions(recoveryCtx);
+      }
 
       lifecycle = 'running';
       started = true;

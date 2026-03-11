@@ -296,6 +296,50 @@ describe('execution backend server', () => {
     expect(body.some((tool) => tool.name === 'discuss_participate')).toBe(true);
   });
 
+  it('recovers discuss-only project roots from the durable root registry before idle watching starts', async () => {
+    const fakeIdleTimer = createFakeIdleTimer();
+    const projectRoot = createProjectRoot('discuss-only-project');
+    mkdirSync(join(mockState.tmpHome, '.claude', 'coral'), { recursive: true });
+    writeFileSync(
+      join(mockState.tmpHome, '.claude', 'coral', 'discuss-project-roots.json'),
+      JSON.stringify({
+        updatedAt: '2026-03-11T00:00:00.000Z',
+        projectRoots: [projectRoot],
+      }, null, 2),
+      'utf8',
+    );
+
+    const recoverPersistedSessions = vi.fn().mockResolvedValue(undefined);
+    const discussRegistry = {
+      getOrCreate: vi.fn(() => ({ recoverPersistedSessions })),
+      get: vi.fn(() => undefined),
+      listLiveSessions: vi.fn(() => []),
+      hasLiveSessions: vi.fn(() => false),
+    };
+
+    await startBackendServer({
+      createIdleTimer: () => fakeIdleTimer as never,
+      discussRegistry: discussRegistry as never,
+    });
+
+    expect(discussRegistry.getOrCreate).toHaveBeenCalledTimes(2);
+    const getOrCreateCalls = discussRegistry.getOrCreate.mock.calls as Array<unknown[]>;
+    expect(getOrCreateCalls.every((call) => call[0] === projectRoot)).toBe(true);
+    expect(recoverPersistedSessions).toHaveBeenCalledTimes(2);
+    expect(recoverPersistedSessions).toHaveBeenCalledWith({
+      projectRoot,
+      pluginRoot: expect.any(String),
+    });
+    expect(fakeIdleTimer.startWatching).toHaveBeenCalledTimes(1);
+    const finalRecoveryOrder = recoverPersistedSessions.mock.invocationCallOrder.at(-1);
+    const idleWatchOrder = fakeIdleTimer.startWatching.mock.invocationCallOrder.at(0);
+    expect(finalRecoveryOrder).toBeDefined();
+    expect(idleWatchOrder).toBeDefined();
+    expect(finalRecoveryOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(
+      idleWatchOrder ?? Number.POSITIVE_INFINITY,
+    );
+  });
+
   it('returns 404 for unknown /tool requests', async () => {
     const backend = await startBackendServer();
 

@@ -32,6 +32,7 @@ export type ShutdownResult =
 type SseEventBlock = {
   event?: string;
   data: string;
+  id?: string;
 };
 
 function isBackendStatus(value: unknown): value is Extract<BackendStatus, { status: 'ok' }> {
@@ -173,6 +174,7 @@ function parseSseBlock(block: string): SseEventBlock | null {
   if (!block.trim()) return null;
 
   let event: string | undefined;
+  let id: string | undefined;
   const data: string[] = [];
 
   for (const rawLine of block.split('\n')) {
@@ -190,11 +192,14 @@ function parseSseBlock(block: string): SseEventBlock | null {
       case 'data':
         data.push(value);
         break;
+      case 'id':
+        id = value;
+        break;
     }
   }
 
   if (data.length === 0) return null;
-  return { event, data: data.join('\n') };
+  return { event, data: data.join('\n'), id };
 }
 
 function describeHttpError(status: number, statusText: string): string {
@@ -252,6 +257,8 @@ export async function proxyToolCall(
   }
 }
 
+export type WaitCursorRef = { lastEventId?: string };
+
 export async function* streamWait(
   jobIds: string[],
   timeoutSeconds: number | undefined,
@@ -259,6 +266,7 @@ export async function* streamWait(
   lastEventId?: string,
   signal?: AbortSignal,
   projectRoot?: string,
+  cursorRef?: WaitCursorRef,
 ): AsyncGenerator<WaitStreamEvent> {
   const fetchTimeoutMs = Math.min(
     (timeoutSeconds ?? 600) * 1000 + WAIT_FETCH_MARGIN_MS,
@@ -305,6 +313,7 @@ export async function* streamWait(
       for (const block of blocks) {
         const parsed = parseSseBlock(block);
         if (!parsed) continue;
+        if (cursorRef && parsed.id) cursorRef.lastEventId = parsed.id;
         const event = parseWaitStreamEvent(parsed.event, parsed.data);
         if (event) yield event;
       }
@@ -313,6 +322,7 @@ export async function* streamWait(
     buffer += decoder.decode();
     const finalBlock = parseSseBlock(buffer.replace(/\r\n/g, '\n'));
     if (!finalBlock) return;
+    if (cursorRef && finalBlock.id) cursorRef.lastEventId = finalBlock.id;
     const finalEvent = parseWaitStreamEvent(finalBlock.event, finalBlock.data);
     if (finalEvent) yield finalEvent;
   } catch (error) {

@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { ensureBackend, proxyToolCall, streamWait } from './backend-client.js';
+import { setTimeout as delay } from 'node:timers/promises';
+import { ensureBackend, proxyToolCall, streamWait, type WaitCursorRef } from './backend-client.js';
 import { buildToolList, handleBackendToolCall } from './backend-tool.js';
 import { isRecord, jsonResult, mcpError, textResult, type McpResult } from '../shared/mcp-utils.js';
 import { waitInputSchema } from '../shared/schemas.js';
@@ -119,6 +120,15 @@ function waitFailureResult(error: unknown): ReturnType<typeof mcpError> {
   });
 }
 
+function isTransientStreamError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  // undici throws TypeError("terminated") when SSE connection is killed mid-stream
+  if (error.message === 'terminated') return true;
+  // Node.js connection-level errors
+  const code = 'code' in error && typeof error.code === 'string' ? error.code : null;
+  return code === 'ECONNRESET' || code === 'ECONNREFUSED' || code === 'ECONNABORTED';
+}
+
 function isMcpTextResult(value: unknown): value is McpResult {
   return isRecord(value)
     && typeof value.isError === 'boolean'
@@ -151,62 +161,73 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   try {
     if (name === 'wait') {
       const parsed = waitInputSchema.parse(rawArgs);
-      const backendInfo = await ensureBackend(pluginRoot);
+      const cursorRef: WaitCursorRef = { lastEventId: parsed.cursor };
+      let progressCount = 0;
+      let retriesLeft = 2;
 
-      try {
-        let progressCount = 0;
-        for await (const event of streamWait(
-          parsed.jobs,
-          parsed.timeout_seconds,
-          backendInfo,
-          parsed.cursor,
-          extra.signal,
-          process.cwd(),
-        )) {
-          switch (event.type) {
-            case 'progress':
-              sendProgress(notify, progressToken, ++progressCount, event.message);
-              continue;
-            case 'queued':
-              sendProgress(notify, progressToken, ++progressCount, `queued (position ${event.queuePosition})`);
-              continue;
-            case 'terminal': {
-              const { content: rawContent, ...resultMeta } = event.result;
-              const isWorkflow = event.result.workflow !== undefined;
-              const content = !parsed.inline
-                ? event.resultPath
-                : isWorkflow
-                  ? readFileSync(event.resultPath, 'utf-8')
-                  : rawContent;
-              const result = { ...resultMeta, content };
-              return jsonResult({
-                state: 'ended',
-                completedJobId: event.completedJobId,
-                sessionId: event.sessionId,
-                remainingJobIds: event.remainingJobIds,
-                result,
-              });
+      while (true) {
+        const backendInfo = await ensureBackend(pluginRoot);
+
+        try {
+          for await (const event of streamWait(
+            parsed.jobs,
+            parsed.timeout_seconds,
+            backendInfo,
+            cursorRef.lastEventId,
+            extra.signal,
+            process.cwd(),
+            cursorRef,
+          )) {
+            switch (event.type) {
+              case 'progress':
+                sendProgress(notify, progressToken, ++progressCount, event.message);
+                continue;
+              case 'queued':
+                sendProgress(notify, progressToken, ++progressCount, `queued (position ${event.queuePosition})`);
+                continue;
+              case 'terminal': {
+                const { content: rawContent, ...resultMeta } = event.result;
+                const isWorkflow = event.result.workflow !== undefined;
+                const content = !parsed.inline
+                  ? event.resultPath
+                  : isWorkflow
+                    ? readFileSync(event.resultPath, 'utf-8')
+                    : rawContent;
+                const result = { ...resultMeta, content };
+                return jsonResult({
+                  state: 'ended',
+                  completedJobId: event.completedJobId,
+                  sessionId: event.sessionId,
+                  remainingJobIds: event.remainingJobIds,
+                  result,
+                });
+              }
+              case 'timeout':
+                return jsonResult({
+                  state: 'running',
+                  runningJobIds: event.runningJobIds,
+                });
             }
-            case 'timeout':
-              return jsonResult({
-                state: 'running',
-                runningJobIds: event.runningJobIds,
-              });
           }
-        }
 
-        return mcpError({
-          error: 'wait_transport_failure',
-          message: 'wait stream ended without a terminal event',
-        });
-      } catch (waitError) {
-        if (waitError instanceof Error && waitError.name === 'AbortError' && extra.signal.aborted) {
-          return jsonResult({
-            state: 'running',
-            runningJobIds: parsed.jobs,
+          return mcpError({
+            error: 'wait_transport_failure',
+            message: 'wait stream ended without a terminal event',
           });
+        } catch (waitError) {
+          // Abort signal is authoritative — covers both AbortError and undici TypeError("terminated")
+          if (extra.signal.aborted) {
+            return jsonResult({
+              state: 'running',
+              runningJobIds: parsed.jobs,
+            });
+          }
+          // ensureBackend failures are not transient SSE errors — surface immediately
+          if (retriesLeft-- <= 0 || !isTransientStreamError(waitError)) {
+            return waitFailureResult(waitError);
+          }
+          await delay(500);
         }
-        return waitFailureResult(waitError);
       }
     }
 

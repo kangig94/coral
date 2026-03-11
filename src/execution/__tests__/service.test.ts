@@ -681,11 +681,11 @@ describe('ExecutionService', () => {
 
     expect(existsSync(terminal.resultPath)).toBe(true);
     expect(markdownAtTerminal).toBe([
-      '# Step 1.1: architect',
+      '# Step 0.0: architect',
       '',
       'ARCH',
       '',
-      '# Step 2.1: resolver',
+      '# Step 1.0: resolver',
       '',
       'FINAL',
       '',
@@ -696,16 +696,16 @@ describe('ExecutionService', () => {
         steps: [
           {
             agent: 'architect',
-            step: 1,
-            atom: 1,
+            step: 0,
+            atom: 0,
             provider: 'codex',
             start: 3,
             end: 3,
           },
           {
             agent: 'resolver',
-            step: 2,
-            atom: 1,
+            step: 1,
+            atom: 0,
             provider: 'codex',
             start: 7,
             end: 7,
@@ -855,16 +855,16 @@ describe('ExecutionService', () => {
     const { progressStore } = getInternals(service);
     const status = progressStore.readStatus(decision.job);
 
-    expect(markdownAtTerminal).toBe('# Step 1.1: architect\n\nARCH\n');
+    expect(markdownAtTerminal).toBe('# Step 0.0: architect\n\nARCH\n');
     expect(terminal.result).toEqual({
       content: '',
-      notice: "Step 2, atom 'resolver' failed: resolver failed",
+      notice: "Step 1, atom 'resolver' failed: resolver failed",
       workflow: {
         steps: [
           {
             agent: 'architect',
-            step: 1,
-            atom: 1,
+            step: 0,
+            atom: 0,
             provider: 'codex',
             start: 3,
             end: 3,
@@ -921,17 +921,17 @@ describe('ExecutionService', () => {
     const { progressStore } = getInternals(service);
     const status = progressStore.readStatus(decision.job);
 
-    expect(markdownAtTerminal).toBe('# Step 1.1: architect\n\nARCH\n');
+    expect(markdownAtTerminal).toBe('# Step 0.0: architect\n\nARCH\n');
     expect(terminal.result).toEqual({
       content: '',
       aborted: true,
-      notice: "Step 2, atom 'resolver' failed: aborted",
+      notice: "Step 1, atom 'resolver' failed: aborted",
       workflow: {
         steps: [
           {
             agent: 'architect',
-            step: 1,
-            atom: 1,
+            step: 0,
+            atom: 0,
             provider: 'codex',
             start: 3,
             end: 3,

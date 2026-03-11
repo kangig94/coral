@@ -218,7 +218,7 @@ describe('workflow pipe executor', () => {
         stepIndex: 0,
         atomIndex: 0,
         kind: 'prompt',
-        label: 'prompt#1(Use A)',
+        label: 'prompt#0(Use A)',
         provider: 'codex',
         tagName: 'step-result',
         output: 'OUT A',
@@ -227,7 +227,7 @@ describe('workflow pipe executor', () => {
         stepIndex: 0,
         atomIndex: 1,
         kind: 'prompt',
-        label: 'prompt#2(Use B)',
+        label: 'prompt#1(Use B)',
         provider: 'codex',
         tagName: 'step-result',
         output: 'OUT B',
@@ -335,7 +335,7 @@ describe('workflow pipe executor', () => {
       executionSvc,
       ctx,
     )).rejects.toMatchObject({
-      message: "Step 1, atom 'critic' launch failed: launch blocked",
+      message: "Step 0, atom 'critic' launch failed: launch blocked",
       aborted: false,
       stepDetails: [
         {
@@ -372,7 +372,7 @@ describe('workflow pipe executor', () => {
       executionSvc,
       ctx,
     )).rejects.toMatchObject({
-      message: "Step 1, atom 'critic' failed: primary failure",
+      message: "Step 0, atom 'critic' failed: primary failure",
       aborted: false,
       stepDetails: [
         {
@@ -584,7 +584,7 @@ describe('launchAtomWithRetry', () => {
       executionSvc,
       ctx,
       completedStepDetails: [],
-    })).rejects.toThrow("Step 1, atom 'architect' launch failed: Unknown provider: ghost");
+    })).rejects.toThrow("Step 0, atom 'architect' launch failed: Unknown provider: ghost");
   });
 
   it('throws with unsupported namespace error immediately without calling coralDispatch', async () => {
@@ -669,7 +669,7 @@ describe('waitForAtoms', () => {
         },
       ),
     ).rejects.toMatchObject({
-      message: "Step 1, atom 'critic' failed: process killed",
+      message: "Step 0, atom 'critic' failed: process killed",
       aborted: false,
       stepDetails: [
         {
