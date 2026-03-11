@@ -1,29 +1,31 @@
-# Discuss Decider Migration Must Preserve the Legacy Creation Surface
+# Phased Decider Migrations Need Explicit Caller Cutover
 Promoted: 2026-03-11 | Updated: 2026-03-11
 ## Rule
-During the event-sourced discuss migration, keep compatibility wrappers for `initSession()` and `startBidding()` in addition to the existing `apply*` wrappers, because the current execution layer still calls them directly. Parity checks for `session.created` must compare against the real legacy creation path (`initSession` -> stamp `state.session_id` -> `startBidding`) instead of raw `initSession()` output, since `initSession()` intentionally leaves `session_id` blank and `DiscussManager.start()` fills it in afterward.
+When migrating from direct state mutation helpers to deciders + reducer replay, keep compatibility wrappers only until every production caller and test has been moved. After the last caller is gone, delete the wrappers and any wrapper-based tests in the same cleanup pass so the codebase has one authoritative transition path.
 ## Why
-The Phase 1 plan naturally focuses attention on `apply*` wrappers, but the untouched manager and tests still rely on pre-event creation helpers. Removing or changing those exports too early breaks the tree before later batches move callers onto store-backed appends. Separately, `session.created` already carries the canonical `sessionId`, so naive reducer-parity tests appear to fail even when the domain state is otherwise identical; the mismatch is only the old post-init session-id assignment.
+Deleting wrappers too early breaks the tree while callers still depend on the legacy surface. Keeping them after the cutover is also harmful: dead compatibility layers hide the real architecture, keep obsolete tests alive, and make documentation drift toward a path that production no longer uses.
 ## Pattern
 Right:
 ```typescript
-// Keep legacy helpers alive during the phased migration.
-export function initSession(input: DiscussCreateInput, now: string): DiscussState {
-  const events = decideSessionCreate(input, '', '', input.topic, 1, now);
-  return reduceDiscussEvent(makeEmptySnapshot('', ''), events.value[0]).state;
-}
+// 1. Search all callers.
+const callers = rg("initSession|startBidding|applyBid|resolveWinner", "src docs");
 
-// Parity test follows the legacy call path that production uses today.
-const direct = unwrap(startBidding({ ...initSession(input, now), session_id: sessionId }, now));
-const replayed = replayDiscussEvents(decideSessionCreate(input, sessionId, root, input.topic, 1, now));
-expect(replayed.state).toEqual(direct);
+// 2. Move runtime code and tests to deciders + reducer replay.
+const snapshot = replayDiscussEvents(decideSessionCreate(input, sessionId, root, input.topic, 1, now));
+const next = replayDiscussEvents(
+  decideBid(snapshot.state, "alpha", 10, "Thought", sessionId, root, input.topic, 3, now),
+  snapshot,
+);
+
+// 3. Remove the zero-caller wrapper surface in one cleanup batch.
+// export function applyBid(...) { ... }  // deleted
 ```
 
 Wrong:
 ```typescript
-// Remove init/start wrappers immediately even though current callers still use them.
-export { decideSessionCreate as initSession };
+// Delete wrappers before checking callers.
+// Runtime/tests still import applyBid() and startBidding().
 
-// Compare event replay against raw initSession output.
-expect(replayed.state).toEqual(initSession(input, now)); // false mismatch on session_id
+// Or leave them around after the migration, keeping dead code and stale docs.
+export function applyBid(...) { ... } // zero callers, still documented
 ```

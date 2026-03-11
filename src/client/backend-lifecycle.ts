@@ -1,9 +1,9 @@
+declare const __PLUGIN_ROOT__: string;
 declare const __VERSION__: string;
 
 import { readFileSync, unlinkSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BACKEND_INFO_PATH, BACKEND_LOCK_PATH } from './paths.js';
 import { readBackendInfo, type BackendInfo } from '../execution/backend-info.js';
@@ -179,7 +179,9 @@ async function waitForReplacementBackend(
 export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle> {
   function resolvePluginRoot(root?: string): string {
     if (root) return root;
-    return fileURLToPath(new URL('../..', import.meta.url));
+    if (typeof __PLUGIN_ROOT__ === 'string') return __PLUGIN_ROOT__;
+    if (typeof __dirname === 'string') return join(__dirname, '..', '..');
+    return process.cwd();
   }
 
   const root = resolvePluginRoot(pluginRoot);
