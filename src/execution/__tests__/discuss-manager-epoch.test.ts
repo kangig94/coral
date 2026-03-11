@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { makeEvent, type PersistedDiscussSnapshot } from '../../discuss/events.js';
 import type { CallerContext } from '../service.js';
 import {
+  attachPersistedSession,
   cleanupDiscussHarnesses,
   createDiscussHarness,
   createExecutionServiceStub,
@@ -14,10 +15,6 @@ afterEach(() => {
   vi.clearAllTimers();
   vi.restoreAllMocks();
 });
-
-function attachSession(manager: unknown, snapshot: PersistedDiscussSnapshot) {
-  return (manager as { attachSession(nextSnapshot: PersistedDiscussSnapshot): unknown }).attachSession(snapshot);
-}
 
 function handleEpochTransition(manager: unknown, sessionId: string, ctx: CallerContext): Promise<void> {
   return (manager as {
@@ -91,7 +88,7 @@ describe('DiscussManager epoch evaluation', () => {
       recover: false,
       buildTail: epochTransitionEvents(harness.projectRoot),
     });
-    attachSession(harness.manager, snapshot);
+    attachPersistedSession(harness, snapshot);
 
     await handleEpochTransition(harness.manager, 'discuss-1', harness.ctx);
 
@@ -139,7 +136,7 @@ describe('DiscussManager epoch evaluation', () => {
       recover: false,
       buildTail: epochTransitionEvents(harness.projectRoot),
     });
-    attachSession(harness.manager, snapshot);
+    attachPersistedSession(harness, snapshot);
 
     await continueLoop(harness.manager, 'discuss-1', harness.ctx);
 

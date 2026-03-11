@@ -175,6 +175,10 @@ const discussStartSchema = z.object({
 const discussSessionSchema = z.object({
   session: z.string().min(1),
 });
+const discussWatchSchema = z.object({
+  session: z.string().min(1),
+  cursor: z.number().int().min(0).optional(),
+});
 const discussParticipateBidSchema = z.object({
   session: z.string().min(1),
   agent_name: z.string().min(1),
@@ -582,6 +586,7 @@ function getToolDescriptors(): Array<Record<string, unknown>> {
         type: 'object',
         properties: {
           session: { type: 'string' },
+          cursor: { type: 'integer', minimum: 0, description: 'Resume from this offset. Omit for full history.' },
         },
         required: ['session'],
       },
@@ -743,13 +748,14 @@ export async function routeToolCall(
   }
 
   if (request.name === 'discuss_watch') {
-    const parsed = discussSessionSchema.safeParse(request.args);
+    const parsed = discussWatchSchema.safeParse(request.args);
     if (!parsed.success) {
       return toolValidationError(parsed.error);
     }
 
     try {
-      return toolSuccess(helpers.getDiscussManager(request.context).getWatchState(parsed.data.session));
+      return toolSuccess(helpers.getDiscussManager(request.context)
+        .getWatchState(parsed.data.session, parsed.data.cursor));
     } catch (error: unknown) {
       if (error instanceof DiscussManagerError) {
         return toolError(error.code, error.detail);

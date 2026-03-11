@@ -10,7 +10,9 @@ import type {
 } from '../../discuss/events.js';
 import { decideSessionCreate } from '../../discuss/state-machine.js';
 import type { DiscussCreateInput } from '../../discuss/types.js';
-import { syncHomePaths } from '../../client/paths.js';
+import { discussEventLogPath, syncHomePaths } from '../../client/paths.js';
+import { readDiscussEventLog } from '../../client/readers.js';
+import { buildWatchEvents } from '../../discuss/projections.js';
 import { DiscussManager } from '../discuss-manager.js';
 import { DiscussSessionStore } from '../discuss-session-store.js';
 import type { CallerContext, ExecutionService } from '../service.js';
@@ -148,6 +150,32 @@ export function cleanupDiscussHarnesses(): void {
   disableDiscussTestHome();
 }
 
+export function attachPersistedSession(
+  harness: Pick<DiscussHarness, 'manager' | 'store' | 'projectRoot'>,
+  snapshot: PersistedDiscussSnapshot,
+): void {
+  const events = readDiscussEventLog(discussEventLogPath(harness.store.resolveSessionDir(snapshot.sessionId))).filter(
+    (event) => event.sessionId === snapshot.sessionId && event.projectRoot === harness.projectRoot,
+  );
+  const abortEnded = (() => {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event?.kind !== 'session.ended') {
+        continue;
+      }
+      return event.payload.reason === 'abort';
+    }
+    return false;
+  })();
+  (harness.manager as unknown as {
+    attachSession(
+      input: PersistedDiscussSnapshot,
+      initialWatchHistory?: ReturnType<typeof buildWatchEvents>,
+      abortEnded?: boolean,
+    ): unknown;
+  }).attachSession(snapshot, buildWatchEvents(events), abortEnded);
+}
+
 export async function persistSession(
   harness: DiscussHarness,
   options: {
@@ -197,9 +225,7 @@ export async function persistSession(
 
   if (options.recover ?? false) {
     const attached = harness.store.load(sessionId) ?? snapshot;
-    (harness.manager as unknown as {
-      attachSession(input: PersistedDiscussSnapshot): unknown;
-    }).attachSession(attached);
+    attachPersistedSession(harness, attached);
   }
 
   return harness.store.load(sessionId) ?? snapshot;

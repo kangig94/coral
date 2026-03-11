@@ -45,10 +45,12 @@ Pass `--user` to participate as a human observer.
 
 7. **Monitor progress** by polling:
    `discuss_watch({ session: session_id })`
+   - First poll: omit `cursor` to get full history.
+   - Subsequent polls: pass the returned `cursor` value to get only new events:
+     `discuss_watch({ session: session_id, cursor: previous_cursor })`
    - Show new `speech_done` events as they appear.
    - Watch for `epoch_transition` and `session_ended`.
    - Do not expect sealed-bid internals in this payload.
-   - Dedicated streaming for `discuss_watch` is future work. For now, use polling snapshots.
 
 8. **If `--user`**, return immediately:
    "Discussion started! Use `/bid <score>, <thought>` to submit a bid, or `/bid <your speech>` when you win the floor."

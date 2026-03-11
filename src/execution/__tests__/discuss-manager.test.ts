@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent } from '../../discuss/events.js';
+import * as discussReaders from '../../client/readers.js';
 import { DiscussManagerRegistry } from '../discuss-manager.js';
 import type { CallerContext } from '../service.js';
 import {
@@ -203,6 +204,98 @@ describe('DiscussManager.runAgentTurn', () => {
     expect(continueLoopSpy).not.toHaveBeenCalled();
     await vi.runAllTimersAsync();
     expect(continueLoopSpy).toHaveBeenCalledWith('discuss-1', harness.ctx);
+
+    harness.cleanup();
+  });
+
+  it('recovery hydrates watch history once and repeated polls stay in memory', async () => {
+    const harness = createDiscussHarness();
+    await persistSession(harness, {
+      sessionId: 'discuss-recovery',
+      recover: false,
+      buildTail: (snapshot) => [
+        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.round.closed', '2026-03-10T00:01:00.000Z', {
+          allBids: { alpha: 88, beta: 42 },
+          effectiveBids: { alpha: 88, beta: 42 },
+          thoughts: { alpha: 'keep sealed', beta: 'also sealed' },
+          outcome: { winner: 'alpha', speaker_type: 'quota' as const },
+          stateMutations: { cold_start: false },
+        }),
+        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'session.ended', '2026-03-10T00:01:01.000Z', {
+          endReason: 'all_blocked',
+          endReasonContent: 'All blocked.',
+        }),
+        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 3, 'session.synthesized', '2026-03-10T00:01:02.000Z', {
+          synthesis: 'The discussion ended without consensus.',
+        }),
+      ],
+    });
+    const readDiscussEventLogSpy = vi.spyOn(discussReaders, 'readDiscussEventLog');
+
+    await harness.manager.recoverPersistedSessions(harness.ctx);
+    const recoveryReadCount = readDiscussEventLogSpy.mock.calls.length;
+
+    expect(recoveryReadCount).toBeGreaterThan(0);
+    expect(harness.manager.getWatchState('discuss-recovery')).toMatchObject({
+      cursor: 2,
+    });
+    expect(harness.manager.getWatchState('discuss-recovery', 1)).toMatchObject({
+      cursor: 2,
+    });
+    expect(readDiscussEventLogSpy).toHaveBeenCalledTimes(recoveryReadCount);
+
+    harness.cleanup();
+  });
+
+  it('getWatchState returns a fresh events array on each call', async () => {
+    const harness = createDiscussHarness();
+    await persistSession(harness, {
+      sessionId: 'discuss-copy',
+      recover: true,
+      buildTail: (snapshot) => [
+        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.round.closed', '2026-03-10T00:01:00.000Z', {
+          allBids: { alpha: 88, beta: 42 },
+          effectiveBids: { alpha: 88, beta: 42 },
+          thoughts: { alpha: 'keep sealed', beta: 'also sealed' },
+          outcome: { winner: 'alpha', speaker_type: 'quota' as const },
+          stateMutations: { cold_start: false },
+        }),
+        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'speech.recorded', '2026-03-10T00:01:01.000Z', {
+          agent: 'alpha',
+          content: 'Open the street to buses and bikes first.',
+          decrementQuota: true,
+          recordLastSpeechStep: 1,
+        }),
+      ],
+    });
+
+    const state1 = harness.manager.getWatchState('discuss-copy');
+    state1.events.push({ type: 'fake' } as never);
+    const state2 = harness.manager.getWatchState('discuss-copy');
+
+    expect(state1.events).not.toBe(state2.events);
+    expect(state2.events).not.toContainEqual({ type: 'fake' });
+
+    harness.cleanup();
+  });
+
+  it('sets abortEnded on the cached session before abort detaches it', async () => {
+    const harness = createDiscussHarness();
+    await persistSession(harness, {
+      sessionId: 'discuss-abort',
+      recover: true,
+    });
+
+    const sessions = (harness.manager as unknown as {
+      sessions: Map<string, { abortEnded: boolean }>;
+    }).sessions;
+    const sessionRef = sessions.get('discuss-abort');
+
+    expect(sessionRef).toBeDefined();
+
+    await harness.manager.abortSession('discuss-abort');
+
+    expect(sessionRef?.abortEnded).toBe(true);
 
     harness.cleanup();
   });

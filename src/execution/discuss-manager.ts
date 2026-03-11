@@ -70,7 +70,8 @@ export type LiveDiscussSession = {
   snapshot: PersistedDiscussSnapshot;
   controller: AbortController;
   watchSubscribers: Set<(event: WatchEvent) => void>;
-  watchTail: WatchEvent[];
+  watchHistory: WatchEvent[];
+  abortEnded: boolean;
   loopState: { running: boolean };
 };
 
@@ -86,7 +87,6 @@ const EPOCH_EVAL_TIMEOUT_MS = 5 * 60 * 1000;
 const CONVERGENCE_THRESHOLD = 7;
 const MAX_BID_ATTEMPTS = 3;
 const MAX_FOLLOW_UP_ATTEMPTS = 3;
-const WATCH_TAIL_LIMIT = 64;
 const MUST_ANSWER_SEPARATOR = '\u0000';
 const RETRYABLE_ATTEMPT_OUTCOMES = new Set([
   'execution_error',
@@ -413,22 +413,27 @@ export class DiscussManager {
   }
 
   async recoverPersistedSessions(ctx: CallerContext): Promise<void> {
+    const resumableSessionIds: string[] = [];
     for (const candidate of this.store.listRecoveryCandidates()) {
       const snapshot = this.store.load(candidate.sessionId);
       if (!snapshot) {
         continue;
       }
-      if (this.isAbortEnded(candidate.sessionId)) {
+      const events = this.readSessionEvents(candidate.sessionId);
+      const abortEnded = this.isAbortEnded(events);
+      if (abortEnded) {
         continue;
       }
-      this.attachSession(snapshot);
+      this.attachSession(snapshot, buildWatchEvents(events), abortEnded);
+      if (this.requiresRecovery(snapshot, abortEnded)) {
+        resumableSessionIds.push(snapshot.sessionId);
+      }
     }
 
-    for (const [sessionId, session] of this.sessions.entries()) {
-      if (!this.requiresRecovery(session.snapshot, sessionId)) {
-        continue;
-      }
-      await this.continueLoop(sessionId, ctx);
+    for (const sessionId of resumableSessionIds) {
+      await this.continueLoop(sessionId, ctx).catch((error: unknown) => {
+        void this.forceEndAfterLoopFailure(sessionId, error);
+      });
     }
   }
 
@@ -538,15 +543,24 @@ export class DiscussManager {
     this.detachSession(sessionId);
   }
 
-  getWatchState(sessionId: string): {
+  getWatchState(sessionId: string, cursor?: number): {
     session: string;
     status: string;
     topic: string;
     epoch: number;
     step: number;
     events: WatchEvent[];
+    cursor: number;
   } {
     const session = this.requireLiveSession(sessionId);
+    const { watchHistory } = session;
+    if (cursor !== undefined && cursor > watchHistory.length) {
+      throw new DiscussManagerError('invalid_cursor', {
+        cursor,
+        max: watchHistory.length,
+      });
+    }
+
     const snapshot = session.snapshot;
     return {
       session: sessionId,
@@ -554,7 +568,8 @@ export class DiscussManager {
       topic: snapshot.state.topic,
       epoch: snapshot.state.epoch,
       step: snapshot.state.step,
-      events: this.loadWatchHistory(sessionId),
+      events: cursor === undefined ? watchHistory.slice() : watchHistory.slice(cursor),
+      cursor: watchHistory.length,
     };
   }
 
@@ -571,10 +586,15 @@ export class DiscussManager {
     }, 0);
   }
 
-  private attachSession(snapshot: PersistedDiscussSnapshot): LiveDiscussSession {
+  private attachSession(
+    snapshot: PersistedDiscussSnapshot,
+    initialWatchHistory: WatchEvent[] = [],
+    abortEnded = false,
+  ): LiveDiscussSession {
     const existing = this.sessions.get(snapshot.sessionId);
     if (existing) {
       existing.snapshot = snapshot;
+      existing.abortEnded = abortEnded;
       return existing;
     }
 
@@ -582,7 +602,8 @@ export class DiscussManager {
       snapshot,
       controller: new AbortController(),
       watchSubscribers: new Set(),
-      watchTail: [],
+      watchHistory: initialWatchHistory,
+      abortEnded,
       loopState: { running: false },
     };
     this.sessions.set(snapshot.sessionId, session);
@@ -611,24 +632,19 @@ export class DiscussManager {
     }
   }
 
-  private loadWatchHistory(sessionId: string): WatchEvent[] {
-    return buildWatchEvents(this.readSessionEvents(sessionId));
-  }
-
-  private isAbortEnded(sessionId: string): boolean {
-    const events = this.readSessionEvents(sessionId);
+  private isAbortEnded(events: DiscussDomainEvent[]): boolean {
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const event = events[index];
       if (event?.kind !== 'session.ended') {
         continue;
       }
-      return event.payload.reason === 'abort';
+      return event.payload.reason === ABORT_REASON;
     }
     return false;
   }
 
-  private requiresRecovery(snapshot: PersistedDiscussSnapshot, sessionId: string): boolean {
-    if (this.isAbortEnded(sessionId)) {
+  private requiresRecovery(snapshot: PersistedDiscussSnapshot, abortEnded: boolean): boolean {
+    if (abortEnded) {
       return false;
     }
     if (snapshot.state.status === 'ended') {
@@ -648,12 +664,13 @@ export class DiscussManager {
     }
 
     session.snapshot = snapshot;
+    session.abortEnded ||= this.isAbortEnded(events);
     const watchEvents = buildWatchEvents(events);
     if (watchEvents.length === 0) {
       return;
     }
 
-    session.watchTail = [...session.watchTail, ...watchEvents].slice(-WATCH_TAIL_LIMIT);
+    session.watchHistory.push(...watchEvents);
     for (const event of watchEvents) {
       for (const subscriber of session.watchSubscribers) {
         subscriber(event);
@@ -869,7 +886,7 @@ export class DiscussManager {
         const snapshot = current.snapshot;
 
         if (snapshot.runtime.controlPhase === 'synthesize') {
-          if (this.isAbortEnded(sessionId)) {
+          if (current.abortEnded) {
             return;
           }
           await this.handleSynthesis(sessionId, ctx);
@@ -1925,7 +1942,7 @@ export class DiscussManager {
     if (!snapshot || snapshot.state.status !== 'ended' || snapshot.runtime.controlPhase !== 'synthesize') {
       return;
     }
-    if (this.isAbortEnded(sessionId)) {
+    if (this.sessions.get(sessionId)?.abortEnded ?? false) {
       return;
     }
 

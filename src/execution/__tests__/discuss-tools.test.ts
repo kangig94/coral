@@ -42,6 +42,35 @@ function parseMcpError(result: { statusCode: number; body: unknown }): Record<st
   return JSON.parse(body.content[0].text) as Record<string, unknown>;
 }
 
+async function createWatchToolFixture(sessionId = 'discuss-1') {
+  const harness = createDiscussHarness();
+  const registry = new DiscussManagerRegistry();
+  const manager = registry.getOrCreate(harness.projectRoot, harness.service);
+  const stores = new Map([[harness.projectRoot, harness.store]]);
+  await persistSession({ ...harness, manager }, {
+    sessionId,
+    recover: true,
+    buildTail: (snapshot) => [
+      makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.submitted', '2026-03-10T00:01:00.000Z', { agent: 'alpha', score: 88, thought: 'keep sealed' }),
+      makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'bid.submitted', '2026-03-10T00:01:01.000Z', { agent: 'beta', score: 42, thought: 'also sealed' }),
+      makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 3, 'bid.round.closed', '2026-03-10T00:01:02.000Z', {
+        allBids: { alpha: 88, beta: 42 },
+        effectiveBids: { alpha: 88, beta: 42 },
+        thoughts: { alpha: 'keep sealed', beta: 'also sealed' },
+        outcome: { winner: 'alpha', speaker_type: 'quota' as const },
+        stateMutations: { cold_start: false },
+      }),
+      makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 4, 'speech.recorded', '2026-03-10T00:01:03.000Z', {
+        agent: 'alpha',
+        content: 'Open the street to buses and bikes first.',
+        decrementQuota: true,
+        recordLastSpeechStep: 1,
+      }),
+    ],
+  });
+  return { harness, registry, stores };
+}
+
 describe('execution discuss tools', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -113,31 +142,7 @@ describe('execution discuss tools', () => {
   });
 
   it('discuss_watch returns the committed watch history', async () => {
-    const harness = createDiscussHarness();
-    const registry = new DiscussManagerRegistry();
-    const manager = registry.getOrCreate(harness.projectRoot, harness.service);
-    const stores = new Map([[harness.projectRoot, harness.store]]);
-    await persistSession({ ...harness, manager }, {
-      sessionId: 'discuss-1',
-      recover: true,
-      buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.submitted', '2026-03-10T00:01:00.000Z', { agent: 'alpha', score: 88, thought: 'keep sealed' }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'bid.submitted', '2026-03-10T00:01:01.000Z', { agent: 'beta', score: 42, thought: 'also sealed' }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 3, 'bid.round.closed', '2026-03-10T00:01:02.000Z', {
-          allBids: { alpha: 88, beta: 42 },
-          effectiveBids: { alpha: 88, beta: 42 },
-          thoughts: { alpha: 'keep sealed', beta: 'also sealed' },
-          outcome: { winner: 'alpha', speaker_type: 'quota' as const },
-          stateMutations: { cold_start: false },
-        }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 4, 'speech.recorded', '2026-03-10T00:01:03.000Z', {
-          agent: 'alpha',
-          content: 'Open the street to buses and bikes first.',
-          decrementQuota: true,
-          recordLastSpeechStep: 1,
-        }),
-      ],
-    });
+    const { harness, registry, stores } = await createWatchToolFixture();
 
     const result = await routeToolCall({
       name: 'discuss_watch',
@@ -160,6 +165,7 @@ describe('execution discuss tools', () => {
       topic: DEFAULT_TOPIC,
       epoch: 1,
       step: 2,
+      cursor: 2,
       events: [
         {
           type: 'bid_resolved',
@@ -213,9 +219,22 @@ describe('execution discuss tools', () => {
     }, createHelpers(registry, stores, harness.service));
 
     const parsed = parseMcpBody<{
+      session: string;
+      status: string;
+      topic: string;
+      epoch: number;
+      step: number;
       events: Array<Record<string, unknown>>;
+      cursor: number;
     }>(result);
 
+    expect(parsed).toMatchObject({
+      session: 'discuss-epoch',
+      status: 'ended',
+      topic: DEFAULT_TOPIC,
+      epoch: 2,
+      cursor: 2,
+    });
     expect(parsed.events).toEqual([
       {
         type: 'epoch_transition',
@@ -228,6 +247,169 @@ describe('execution discuss tools', () => {
         ts: Date.parse('2026-03-10T00:02:01.000Z'),
       },
     ]);
+
+    harness.cleanup();
+  });
+
+  it('discuss_watch with cursor=0 returns full history and cursor count', async () => {
+    const { harness, registry, stores } = await createWatchToolFixture();
+
+    const result = await routeToolCall({
+      name: 'discuss_watch',
+      args: { session: 'discuss-1', cursor: 0 },
+      context: harness.ctx,
+    }, createHelpers(registry, stores, harness.service));
+
+    const parsed = parseMcpBody<{
+      session: string;
+      status: string;
+      topic: string;
+      epoch: number;
+      step: number;
+      events: Array<Record<string, unknown>>;
+      cursor: number;
+    }>(result);
+
+    expect(parsed).toEqual({
+      session: 'discuss-1',
+      status: 'bidding',
+      topic: DEFAULT_TOPIC,
+      epoch: 1,
+      step: 2,
+      cursor: 2,
+      events: [
+        {
+          type: 'bid_resolved',
+          data: { winner: 'alpha', speaker_type: 'quota' as const },
+          ts: Date.parse('2026-03-10T00:01:02.000Z'),
+        },
+        {
+          type: 'speech_done',
+          data: { speaker: 'alpha', content: 'Open the street to buses and bikes first.' },
+          ts: Date.parse('2026-03-10T00:01:03.000Z'),
+        },
+      ],
+    });
+
+    harness.cleanup();
+  });
+
+  it('discuss_watch with cursor=N returns only incremental events', async () => {
+    const { harness, registry, stores } = await createWatchToolFixture();
+
+    const result = await routeToolCall({
+      name: 'discuss_watch',
+      args: { session: 'discuss-1', cursor: 1 },
+      context: harness.ctx,
+    }, createHelpers(registry, stores, harness.service));
+
+    const parsed = parseMcpBody<{
+      session: string;
+      status: string;
+      topic: string;
+      epoch: number;
+      step: number;
+      events: Array<Record<string, unknown>>;
+      cursor: number;
+    }>(result);
+
+    expect(parsed).toMatchObject({
+      session: 'discuss-1',
+      status: 'bidding',
+      topic: DEFAULT_TOPIC,
+      epoch: 1,
+      step: 2,
+      cursor: 2,
+    });
+    expect(parsed.events).toEqual([
+      {
+        type: 'speech_done',
+        data: { speaker: 'alpha', content: 'Open the street to buses and bikes first.' },
+        ts: Date.parse('2026-03-10T00:01:03.000Z'),
+      },
+    ]);
+
+    harness.cleanup();
+  });
+
+  it('discuss_watch with cursor equal to events length returns empty events and same cursor', async () => {
+    const { harness, registry, stores } = await createWatchToolFixture();
+
+    const result = await routeToolCall({
+      name: 'discuss_watch',
+      args: { session: 'discuss-1', cursor: 2 },
+      context: harness.ctx,
+    }, createHelpers(registry, stores, harness.service));
+
+    const parsed = parseMcpBody<{
+      session: string;
+      status: string;
+      topic: string;
+      epoch: number;
+      step: number;
+      events: Array<Record<string, unknown>>;
+      cursor: number;
+    }>(result);
+
+    expect(parsed).toMatchObject({
+      session: 'discuss-1',
+      status: 'bidding',
+      topic: DEFAULT_TOPIC,
+      epoch: 1,
+      step: 2,
+      cursor: 2,
+    });
+    expect(parsed.events).toEqual([]);
+
+    harness.cleanup();
+  });
+
+  it('discuss_watch with cursor greater than events length returns invalid_cursor error', async () => {
+    const { harness, registry, stores } = await createWatchToolFixture();
+
+    const result = await routeToolCall({
+      name: 'discuss_watch',
+      args: { session: 'discuss-1', cursor: 3 },
+      context: harness.ctx,
+    }, createHelpers(registry, stores, harness.service));
+
+    expect(parseMcpError(result)).toEqual({
+      error: 'invalid_cursor',
+      cursor: 3,
+      max: 2,
+    });
+
+    harness.cleanup();
+  });
+
+  it('discuss_watch with cursor=-1 returns Zod validation error (invalid_request)', async () => {
+    const { harness, registry, stores } = await createWatchToolFixture();
+
+    const result = await routeToolCall({
+      name: 'discuss_watch',
+      args: { session: 'discuss-1', cursor: -1 },
+      context: harness.ctx,
+    }, createHelpers(registry, stores, harness.service));
+    const error = parseMcpError(result);
+
+    expect(error).toMatchObject({ error: 'invalid_request' });
+    expect(String(error.message)).toContain('cursor');
+
+    harness.cleanup();
+  });
+
+  it('discuss_watch with cursor=1.5 returns Zod validation error (invalid_request)', async () => {
+    const { harness, registry, stores } = await createWatchToolFixture();
+
+    const result = await routeToolCall({
+      name: 'discuss_watch',
+      args: { session: 'discuss-1', cursor: 1.5 },
+      context: harness.ctx,
+    }, createHelpers(registry, stores, harness.service));
+    const error = parseMcpError(result);
+
+    expect(error).toMatchObject({ error: 'invalid_request' });
+    expect(String(error.message)).toContain('cursor');
 
     harness.cleanup();
   });
