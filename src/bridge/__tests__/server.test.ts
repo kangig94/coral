@@ -81,7 +81,11 @@ async function loadCallToolHandler(): Promise<CallToolHandler> {
   return handler;
 }
 
-async function invokeToolRaw(name: string, argumentsValue: Record<string, unknown>): Promise<McpResult> {
+async function invokeToolRaw(
+  name: string,
+  argumentsValue: Record<string, unknown>,
+  options?: { signal?: AbortSignal },
+): Promise<McpResult> {
   const handler = await loadCallToolHandler();
   return handler(
     {
@@ -91,7 +95,7 @@ async function invokeToolRaw(name: string, argumentsValue: Record<string, unknow
       },
     },
     {
-      signal: new AbortController().signal,
+      signal: options?.signal ?? new AbortController().signal,
       _meta: {},
     },
   );
@@ -489,6 +493,94 @@ describe('bridge wait handler', () => {
       { op: 'exec', prompt: 'hello' },
       expect.objectContaining({ projectRoot: process.cwd() }),
     );
+  });
+
+  it('retries on transient SSE failure and succeeds on reconnect', async () => {
+    mockState.streamWait
+      .mockImplementationOnce(() => fail(new TypeError('terminated')))
+      .mockImplementationOnce(() => emit([
+        {
+          type: 'terminal',
+          completedJobId: 'job-1',
+          sessionId: 'session-1',
+          remainingJobIds: [],
+          resultPath: '/tmp/coral-jobs/job-1/result.md',
+          result: { content: 'done' },
+        },
+      ]));
+
+    const result = await invokeWait({ jobs: ['job-1'], inline: true });
+
+    expect(result).toEqual({
+      state: 'ended',
+      completedJobId: 'job-1',
+      sessionId: 'session-1',
+      remainingJobIds: [],
+      result: { content: 'done' },
+    });
+    expect(mockState.ensureBackend).toHaveBeenCalledTimes(2);
+    expect(mockState.streamWait).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces error after retries exhausted', async () => {
+    mockState.streamWait
+      .mockImplementation(() => fail(new TypeError('terminated')));
+
+    const result = await invokeWaitRaw({ jobs: ['job-1'] });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      error: 'wait_transport_failure',
+      message: 'terminated',
+    });
+    // 1 initial + 2 retries = 3
+    expect(mockState.streamWait).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not retry non-transient errors (ensureBackend timeout, HTTP 4xx, parse errors)', async () => {
+    // ensureBackend timeout
+    mockState.streamWait
+      .mockImplementationOnce(() => fail(new Error('Timed out waiting for Coral backend startup')));
+    const r1 = await invokeWaitRaw({ jobs: ['job-1'] });
+    expect(r1.isError).toBe(true);
+    expect(mockState.streamWait).toHaveBeenCalledTimes(1);
+
+    // HTTP 403
+    mockState.streamWait.mockReset();
+    mockState.streamWait
+      .mockImplementationOnce(() => fail(new Error('Backend request failed: 403 Forbidden')));
+    const r2 = await invokeWaitRaw({ jobs: ['job-1'] });
+    expect(r2.isError).toBe(true);
+    expect(JSON.parse(r2.content[0].text).error).toBe('scope_mismatch');
+    expect(mockState.streamWait).toHaveBeenCalledTimes(1);
+
+    // Parse error
+    mockState.streamWait.mockReset();
+    mockState.streamWait
+      .mockImplementationOnce(() => fail(new Error('Invalid terminal wait stream event')));
+    const r3 = await invokeWaitRaw({ jobs: ['job-1'] });
+    expect(r3.isError).toBe(true);
+    expect(mockState.streamWait).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns graceful running state when signal is aborted (TypeError terminated)', async () => {
+    const controller = new AbortController();
+    mockState.streamWait.mockImplementationOnce(async function* () {
+      controller.abort();
+      throw new TypeError('terminated');
+    });
+
+    const result = await invokeToolRaw(
+      'wait',
+      { jobs: ['job-1'] },
+      { signal: controller.signal },
+    );
+
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      state: 'running',
+      runningJobIds: ['job-1'],
+    });
+    expect(result.isError).toBe(false);
   });
 
   it('passes through backend MCP-shaped tool results unchanged', async () => {

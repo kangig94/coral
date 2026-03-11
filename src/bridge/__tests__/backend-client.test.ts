@@ -415,4 +415,40 @@ describe('bridge backend-client', () => {
       body: JSON.stringify({ jobIds: ['job-1'], timeoutSeconds: 5, projectRoot: '/tmp/project' }),
     }));
   });
+
+  it('streamWait updates cursorRef with SSE id fields', async () => {
+    const client = await loadBackendClientModule();
+    fetchMock.mockResolvedValueOnce(new Response([
+      'event: progress',
+      'id: cursor-after-progress',
+      'data: {"type":"progress","jobId":"job-1","sessionId":"s1","eventId":1,"message":"step 1"}',
+      '',
+      'event: progress',
+      'id: cursor-after-progress-2',
+      'data: {"type":"progress","jobId":"job-1","sessionId":"s1","eventId":2,"message":"step 2"}',
+      '',
+      'event: terminal',
+      'id: cursor-final',
+      'data: {"type":"terminal","completedJobId":"job-1","sessionId":"s1","remainingJobIds":[],"resultPath":"/tmp/r.md","result":{"content":"ok"}}',
+      '',
+    ].join('\n'), {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    }));
+
+    const cursorRef: { lastEventId?: string } = {};
+    for await (const _event of client.streamWait(
+      ['job-1'],
+      5,
+      { host: '127.0.0.1', port: 4100, token: 'tok' },
+      undefined,
+      undefined,
+      undefined,
+      cursorRef,
+    )) {
+      // consume
+    }
+
+    expect(cursorRef.lastEventId).toBe('cursor-final');
+  });
 });
