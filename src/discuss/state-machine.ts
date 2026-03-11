@@ -1,3 +1,14 @@
+import {
+  makeEvent,
+  type DiscussDomainEvent,
+  type PersistedDiscussSnapshot,
+  type SessionCreatedAgentExecutionConfig,
+} from './events.js';
+import {
+  makeEmptySnapshot,
+  reduceDiscussEvent,
+  replayDiscussEvents,
+} from './reducer.js';
 import type {
   AgentState,
   DiscussCreateInput,
@@ -45,9 +56,9 @@ function collectSubmittedBids(state: DiscussState): Record<string, number> {
 }
 
 export function findLastSpeaker(transcript: TranscriptEntry[]): string | null {
-  for (let i = transcript.length - 1; i >= 0; i--) {
-    const e = transcript[i];
-    if (e.type === 'speech') return e.agent;
+  for (let i = transcript.length - 1; i >= 0; i -= 1) {
+    const entry = transcript[i];
+    if (entry.type === 'speech') return entry.agent;
   }
   return null;
 }
@@ -165,21 +176,22 @@ function appendEntry(state: DiscussState, entry: TranscriptEntry, now: string): 
 }
 
 function resetBids(state: DiscussState): DiscussState {
-  const current_bids: Record<string, number | null> = {};
-  const pending_bidders: string[] = [];
+  const currentBids: Record<string, number | null> = {};
+  const pendingBidders: string[] = [];
 
   for (const [name, agent] of Object.entries(state.agents)) {
     if (agent.banned) continue;
-    current_bids[name] = null;
-    if (agent.participation !== 'required') continue;
-    pending_bidders.push(name);
+    currentBids[name] = null;
+    if (agent.participation === 'required') {
+      pendingBidders.push(name);
+    }
   }
 
   return {
     ...state,
-    current_bids,
+    current_bids: currentBids,
     current_thoughts: {},
-    pending_bidders,
+    pending_bidders: pendingBidders,
     pending_since_ts: null,
   };
 }
@@ -201,240 +213,6 @@ function coldStartPick(state: DiscussState): string | null {
   return eligible[0]?.[0] ?? null;
 }
 
-export function initSession(
-  input: DiscussCreateInput,
-  now: string,
-  bidThreshold = DEFAULT_BID_THRESHOLD,
-  maxEpochs = DEFAULT_MAX_EPOCHS,
-  quotaPerEpoch = DEFAULT_QUOTA_PER_EPOCH,
-): DiscussState {
-  const agents: Record<string, AgentState> = {};
-  const agentNames: string[] = [];
-  const requiredNames: string[] = [];
-  for (const a of input.agents) {
-    agents[a.name] = {
-      persona: a.persona,
-      display_name: parseDisplayName(a.persona, a.name),
-      participation: a.participation,
-      quota_remaining: quotaPerEpoch,
-      total_speaks: 0,
-      fallback_used: false,
-      banned: false,
-    };
-    agentNames.push(a.name);
-    if (a.participation === 'required') {
-      requiredNames.push(a.name);
-    }
-  }
-  return {
-    session_id: '',
-    topic: input.topic,
-    status: 'setup',
-    step: 1,
-    epoch: 1,
-    max_epochs: maxEpochs,
-    quota_per_epoch: quotaPerEpoch,
-    cold_start: true,
-    agents,
-    current_bids: Object.fromEntries(agentNames.map((n) => [n, null])),
-    current_thoughts: {},
-    pending_bidders: requiredNames,
-    current_speaker: null,
-    speaker_type: null,
-    epoch_summary_written: 0,
-    created_at: now,
-    last_activity_at: now,
-    last_speech_step: 0,
-    pending_since_ts: null,
-    bid_release_step: 0,
-    end_reason_content: null,
-    transcript: [],
-    bid_threshold: bidThreshold,
-    min_bid_delay_ms: input.min_bid_delay_ms,
-  };
-}
-
-export function startBidding(state: DiscussState, now: string): Result<DiscussState> {
-  if (state.status !== 'setup') {
-    return { ok: false, error: 'not_in_setup', detail: { current: state.status } };
-  }
-
-  return {
-    ok: true,
-    value: {
-      ...state,
-      status: 'bidding',
-      last_activity_at: now,
-    },
-  };
-}
-
-export function applyBid(
-  state: DiscussState,
-  agentName: string,
-  score: number,
-  thought: string,
-  now: string,
-): Result<DiscussState> {
-  const name = resolveAgentName(state.agents, agentName);
-  if (!name) {
-    return { ok: false, error: 'agent_not_found', detail: { agent_name: agentName } };
-  }
-  if (state.current_bids[name] !== null) {
-    return {
-      ok: false,
-      error: 'already_bid',
-      detail: {
-        agent_name: name,
-        hint: 'Already bid this round. Wait for bid collection to progress.',
-      },
-    };
-  }
-
-  const current_thoughts = state.current_thoughts ?? {};
-  return {
-    ok: true,
-    value: {
-      ...state,
-      current_bids: { ...state.current_bids, [name]: score },
-      current_thoughts: { ...current_thoughts, [name]: thought },
-      pending_bidders: state.pending_bidders.filter((n) => n !== name),
-      last_activity_at: now,
-    },
-  };
-}
-
-export function resolveWinner(
-  state: DiscussState,
-  now: string,
-): Result<[DiscussState, ResolveResult]> {
-  if (state.status !== 'bidding') {
-    return { ok: false, error: 'invalid_status', detail: { current: state.status } };
-  }
-
-  const requiredAgents = Object.entries(state.agents).filter(([, a]) => !a.banned && a.participation === 'required');
-  const missing = requiredAgents
-    .map(([name]) => name)
-    .filter((name) => state.current_bids[name] == null);
-
-  if (missing.length > 0) {
-    return { ok: false, error: 'quorum_not_met', detail: { missing } };
-  }
-
-  const allBids = collectSubmittedBids(state);
-
-  const lastSpeaker = findLastSpeaker(state.transcript);
-  const effectiveBids = computeEffectiveBids(allBids, state.agents, lastSpeaker);
-  const threshold = state.bid_threshold;
-  const cmp = (a: [string, number], b: [string, number]) => compareBidCandidates(state.agents, effectiveBids, a, b);
-  const bidEntries = Object.entries(allBids);
-
-  const createBidPool = (qualifier: (name: string, score: number) => boolean): Array<[string, number]> =>
-    bidEntries
-      .filter(([name, score]) => qualifier(name, score))
-      .sort(cmp);
-
-  const primaryPool = createBidPool((name, score) => score >= threshold && state.agents[name].quota_remaining > 0);
-  if (primaryPool.length > 0) {
-    return startSpeaking(state, allBids, primaryPool[0][0], 'quota', now, undefined, effectiveBids);
-  }
-
-  const fallbackPool = createBidPool((name, score) =>
-    score >= threshold
-    && state.agents[name].quota_remaining === 0
-    && !state.agents[name].fallback_used,
-  );
-
-  if (fallbackPool.length > 0) {
-    const [winnerName] = fallbackPool[0];
-    return startSpeaking(state, allBids, winnerName, 'fallback', now, {
-      agents: {
-        ...state.agents,
-        [winnerName]: { ...state.agents[winnerName], fallback_used: true },
-      },
-    }, effectiveBids);
-  }
-
-  const allBelowThreshold = Object.values(allBids).every((s) => s < threshold);
-  if (allBelowThreshold) {
-    if (state.cold_start) {
-      const picked = coldStartPick(state);
-      if (picked !== null) {
-        return startSpeaking(state, allBids, picked, 'cold_start', now, undefined, effectiveBids);
-      }
-    }
-    return noWinnerResult(state, allBids, 'all_below_threshold', now, effectiveBids);
-  }
-
-  const allExhausted = requiredAgents.every(([, a]) => a.quota_remaining === 0);
-  if (!allExhausted) {
-    return noWinnerResult(state, allBids, 'all_blocked', now, effectiveBids);
-  }
-
-  if (state.epoch < state.max_epochs) {
-    const agents = Object.fromEntries(
-      Object.entries(state.agents).map(([name, agent]) => [
-        name,
-        agent.banned
-          ? agent
-          : { ...agent, quota_remaining: state.quota_per_epoch, fallback_used: false },
-      ]),
-    ) as Record<string, AgentState>;
-
-    const nextEpochState = resetBids({
-      ...appendEntry(state, makeBidEntry(state, allBids, null, 'no_winner', now, effectiveBids), now),
-      epoch: state.epoch + 1,
-      cold_start: true,
-      current_speaker: null,
-      speaker_type: null,
-      agents,
-      step: state.step + 1,
-      epoch_summary_written: null,
-    });
-
-    return {
-      ok: true,
-      value: [nextEpochState, { no_winner: true, reason: 'epoch_transition' }],
-    };
-  }
-
-  return noWinnerResult(state, allBids, 'max_epochs_reached', now, effectiveBids);
-}
-
-export function applySpeech(
-  state: DiscussState,
-  agentName: string,
-  content: string,
-  now: string,
-): Result<DiscussState> {
-  if (state.status !== 'speaking') {
-    return {
-      ok: false,
-      error: 'invalid_status',
-      detail: { current: state.status, hint: 'Not your turn. Session is not in speaking status.' },
-    };
-  }
-
-  const name = resolveAgentName(state.agents, agentName);
-  if (!name) {
-    return { ok: false, error: 'agent_not_found', detail: { agent_name: agentName } };
-  }
-
-  if (state.current_speaker !== name) {
-    return { ok: false, error: 'not_your_turn', detail: { current_speaker: state.current_speaker } };
-  }
-
-  const speechState = buildSpeechState({
-    state,
-    speaker: name,
-    content,
-    now,
-    decrementQuota: state.speaker_type !== 'fallback',
-    recordLastSpeechStep: state.step,
-  });
-  return { ok: true, value: speechState };
-}
-
 function buildSpeechState({
   state,
   speaker,
@@ -451,14 +229,13 @@ function buildSpeechState({
   recordLastSpeechStep?: number;
 }): DiscussState {
   const speakerState = state.agents[speaker];
-  const display_name = speakerState.display_name;
   const speechEntry: TranscriptEntry = {
     type: 'speech',
     step: state.step,
     epoch: state.epoch,
     ts: now,
     agent: speaker,
-    display_name,
+    display_name: speakerState.display_name,
     content,
   };
 
@@ -480,85 +257,409 @@ function buildSpeechState({
   });
 }
 
-export function applySpeechTimeout(
+function makeLegacySnapshot(state: DiscussState): PersistedDiscussSnapshot {
+  return {
+    schemaVersion: 2,
+    sessionId: state.session_id,
+    projectRoot: '',
+    updatedAt: state.last_activity_at,
+    lastAppliedSeq: 0,
+    state,
+    runtime: {
+      controlPhase: 'idle',
+      carryForwardMustAnswer: [],
+      followUpQueue: [],
+      agentRuns: {},
+    },
+  };
+}
+
+function applyLegacyEvent(state: DiscussState, event: DiscussDomainEvent): DiscussState {
+  return reduceDiscussEvent(makeLegacySnapshot(state), event).state;
+}
+
+export function decideSessionCreate(
+  input: DiscussCreateInput,
+  sessionId: string,
+  projectRoot: string,
+  topic: string,
+  seq: number,
+  ts: string,
+  bidThreshold = DEFAULT_BID_THRESHOLD,
+  maxEpochs = DEFAULT_MAX_EPOCHS,
+  quotaPerEpoch = DEFAULT_QUOTA_PER_EPOCH,
+  agentExecution: Record<string, SessionCreatedAgentExecutionConfig> = Object.fromEntries(
+    input.agents.map((agent) => [agent.name, { manual: true }]),
+  ) as Record<string, SessionCreatedAgentExecutionConfig>,
+): Result<DiscussDomainEvent[]> {
+  return {
+    ok: true,
+    value: [
+      makeEvent(
+        sessionId,
+        projectRoot,
+        topic,
+        seq,
+        'session.created',
+        ts,
+        {
+          input,
+          config: {
+            bidThreshold,
+            maxEpochs,
+            quotaPerEpoch,
+          },
+          agentExecution,
+        },
+      ),
+      makeEvent(sessionId, projectRoot, topic, seq + 1, 'bidding.opened', ts, {}),
+    ],
+  };
+}
+
+export function decideBiddingOpen(
   state: DiscussState,
-  now: string,
-): Result<DiscussState> {
+  sessionId: string,
+  projectRoot: string,
+  topic: string,
+  seq: number,
+  ts: string,
+): Result<DiscussDomainEvent[]> {
+  if (state.status !== 'setup') {
+    return { ok: false, error: 'not_in_setup', detail: { current: state.status } };
+  }
+
+  return {
+    ok: true,
+    value: [makeEvent(sessionId, projectRoot, topic, seq, 'bidding.opened', ts, {})],
+  };
+}
+
+export function decideBid(
+  state: DiscussState,
+  agentName: string,
+  score: number,
+  thought: string,
+  sessionId: string,
+  projectRoot: string,
+  topic: string,
+  seq: number,
+  ts: string,
+): Result<DiscussDomainEvent[]> {
+  const name = resolveAgentName(state.agents, agentName);
+  if (!name) {
+    return { ok: false, error: 'agent_not_found', detail: { agent_name: agentName } };
+  }
+  if (state.current_bids[name] !== null) {
+    return {
+      ok: false,
+      error: 'already_bid',
+      detail: {
+        agent_name: name,
+        hint: 'Already bid this round. Wait for bid collection to progress.',
+      },
+    };
+  }
+
+  return {
+    ok: true,
+    value: [
+      makeEvent(sessionId, projectRoot, topic, seq, 'bid.submitted', ts, {
+        agent: name,
+        score,
+        thought,
+      }),
+    ],
+  };
+}
+
+export function decideBidRoundClose(
+  state: DiscussState,
+  sessionId: string,
+  projectRoot: string,
+  topic: string,
+  seq: number,
+  ts: string,
+): Result<DiscussDomainEvent[]> {
+  if (state.status !== 'bidding') {
+    return { ok: false, error: 'invalid_status', detail: { current: state.status } };
+  }
+
+  const requiredAgents = Object.entries(state.agents).filter(([, agent]) =>
+    !agent.banned && agent.participation === 'required',
+  );
+  const missing = requiredAgents
+    .map(([name]) => name)
+    .filter((name) => state.current_bids[name] == null);
+
+  if (missing.length > 0) {
+    return { ok: false, error: 'quorum_not_met', detail: { missing } };
+  }
+
+  const allBids = collectSubmittedBids(state);
+  const lastSpeaker = findLastSpeaker(state.transcript);
+  const effectiveBids = computeEffectiveBids(allBids, state.agents, lastSpeaker);
+  const threshold = state.bid_threshold;
+  const compare = (left: [string, number], right: [string, number]) =>
+    compareBidCandidates(state.agents, effectiveBids, left, right);
+  const bidEntries = Object.entries(allBids);
+
+  const createBidPool = (qualifier: (name: string, score: number) => boolean): Array<[string, number]> =>
+    bidEntries
+      .filter(([name, score]) => qualifier(name, score))
+      .sort(compare);
+
+  const primaryPool = createBidPool(
+    (name, score) => score >= threshold && state.agents[name].quota_remaining > 0,
+  );
+  if (primaryPool.length > 0) {
+    const [winner] = primaryPool[0];
+    return {
+      ok: true,
+      value: [
+        makeEvent(sessionId, projectRoot, topic, seq, 'bid.round.closed', ts, {
+          allBids,
+          effectiveBids,
+          thoughts: { ...state.current_thoughts },
+          outcome: { winner, speaker_type: 'quota' as const },
+          stateMutations: { cold_start: false },
+        }),
+      ],
+    };
+  }
+
+  const fallbackPool = createBidPool((name, score) =>
+    score >= threshold
+    && state.agents[name].quota_remaining === 0
+    && !state.agents[name].fallback_used,
+  );
+  if (fallbackPool.length > 0) {
+    const [winner] = fallbackPool[0];
+    return {
+      ok: true,
+      value: [
+        makeEvent(sessionId, projectRoot, topic, seq, 'bid.round.closed', ts, {
+          allBids,
+          effectiveBids,
+          thoughts: { ...state.current_thoughts },
+          outcome: { winner, speaker_type: 'fallback' as const },
+          stateMutations: {
+            cold_start: false,
+            fallback_used: { [winner]: true },
+          },
+        }),
+      ],
+    };
+  }
+
+  const allBelowThreshold = Object.values(allBids).every((score) => score < threshold);
+  if (allBelowThreshold) {
+    if (state.cold_start) {
+      const picked = coldStartPick(state);
+      if (picked !== null) {
+        return {
+          ok: true,
+          value: [
+            makeEvent(sessionId, projectRoot, topic, seq, 'bid.round.closed', ts, {
+              allBids,
+              effectiveBids,
+              thoughts: { ...state.current_thoughts },
+              outcome: { winner: picked, speaker_type: 'cold_start' as const },
+              stateMutations: { cold_start: false },
+            }),
+          ],
+        };
+      }
+    }
+
+    return {
+      ok: true,
+      value: [
+        makeEvent(sessionId, projectRoot, topic, seq, 'bid.round.closed', ts, {
+          allBids,
+          effectiveBids,
+          thoughts: { ...state.current_thoughts },
+          outcome: { no_winner: true as const, reason: 'all_below_threshold' as const },
+          stateMutations: {},
+        }),
+        makeEvent(sessionId, projectRoot, topic, seq + 1, 'session.ended', ts, {
+          endReason: 'all_below_threshold',
+          endReasonContent: endContent('all_below_threshold'),
+        }),
+      ],
+    };
+  }
+
+  const allExhausted = requiredAgents.every(([, agent]) => agent.quota_remaining === 0);
+  if (!allExhausted) {
+    return {
+      ok: true,
+      value: [
+        makeEvent(sessionId, projectRoot, topic, seq, 'bid.round.closed', ts, {
+          allBids,
+          effectiveBids,
+          thoughts: { ...state.current_thoughts },
+          outcome: { no_winner: true as const, reason: 'all_blocked' as const },
+          stateMutations: {},
+        }),
+        makeEvent(sessionId, projectRoot, topic, seq + 1, 'session.ended', ts, {
+          endReason: 'all_blocked',
+          endReasonContent: endContent('all_blocked'),
+        }),
+      ],
+    };
+  }
+
+  if (state.epoch < state.max_epochs) {
+    const quotaRemaining: Record<string, number> = {};
+    const fallbackUsed: Record<string, boolean> = {};
+
+    for (const [name, agent] of Object.entries(state.agents)) {
+      if (agent.banned) continue;
+      quotaRemaining[name] = state.quota_per_epoch;
+      fallbackUsed[name] = false;
+    }
+
+    return {
+      ok: true,
+      value: [
+        makeEvent(sessionId, projectRoot, topic, seq, 'bid.round.closed', ts, {
+          allBids,
+          effectiveBids,
+          thoughts: { ...state.current_thoughts },
+          outcome: { no_winner: true as const, reason: 'epoch_transition' as const },
+          stateMutations: {
+            cold_start: true,
+            epoch: state.epoch + 1,
+            fallback_used: fallbackUsed,
+            quota_remaining: quotaRemaining,
+          },
+        }),
+      ],
+    };
+  }
+
+  return {
+    ok: true,
+    value: [
+      makeEvent(sessionId, projectRoot, topic, seq, 'bid.round.closed', ts, {
+        allBids,
+        effectiveBids,
+        thoughts: { ...state.current_thoughts },
+        outcome: { no_winner: true as const, reason: 'max_epochs_reached' as const },
+        stateMutations: {},
+      }),
+      makeEvent(sessionId, projectRoot, topic, seq + 1, 'session.ended', ts, {
+        endReason: 'max_epochs_reached',
+        endReasonContent: endContent('max_epochs_reached'),
+      }),
+    ],
+  };
+}
+
+export function decideSpeech(
+  state: DiscussState,
+  agentName: string,
+  content: string,
+  sessionId: string,
+  projectRoot: string,
+  topic: string,
+  seq: number,
+  ts: string,
+): Result<DiscussDomainEvent[]> {
+  if (state.status !== 'speaking') {
+    return {
+      ok: false,
+      error: 'invalid_status',
+      detail: { current: state.status, hint: 'Not your turn. Session is not in speaking status.' },
+    };
+  }
+
+  const name = resolveAgentName(state.agents, agentName);
+  if (!name) {
+    return { ok: false, error: 'agent_not_found', detail: { agent_name: agentName } };
+  }
+
+  if (state.current_speaker !== name) {
+    return { ok: false, error: 'not_your_turn', detail: { current_speaker: state.current_speaker } };
+  }
+
+  return {
+    ok: true,
+    value: [
+      makeEvent(sessionId, projectRoot, topic, seq, 'speech.recorded', ts, {
+        agent: name,
+        content,
+        decrementQuota: state.speaker_type !== 'fallback',
+        recordLastSpeechStep: state.step,
+      }),
+    ],
+  };
+}
+
+export function decideSpeechTimeout(
+  state: DiscussState,
+  sessionId: string,
+  projectRoot: string,
+  topic: string,
+  seq: number,
+  ts: string,
+): Result<DiscussDomainEvent[]> {
   if (state.status !== 'speaking' || !state.current_speaker) {
     return { ok: false, error: 'not_speaking', detail: { status: state.status } };
   }
 
   const winner = state.current_speaker;
   const speaker = state.agents[winner];
-  const displayName = speaker.display_name;
-  const timeoutMsg = `${displayName} (${winner}) timed out without delivering a speech.`;
+  const timeoutMsg = `${speaker.display_name} (${winner}) timed out without delivering a speech.`;
+
   return {
     ok: true,
-    value: buildSpeechState({
-      state,
-      speaker: winner,
-      content: timeoutMsg,
-      now,
-      decrementQuota: state.speaker_type !== 'fallback',
-    }),
+    value: [
+      makeEvent(sessionId, projectRoot, topic, seq, 'speech.timed_out', ts, {
+        agent: winner,
+        content: timeoutMsg,
+        decrementQuota: state.speaker_type !== 'fallback',
+      }),
+    ],
   };
 }
 
-export function applyExpel(
+export function decideExpel(
   state: DiscussState,
   pendingAgents: string[],
-  now: string,
-): Result<{ state: DiscussState; hint: string }> {
+  sessionId: string,
+  projectRoot: string,
+  topic: string,
+  seq: number,
+  ts: string,
+): Result<DiscussDomainEvent[]> {
   const isRespawn = state.epoch === 1 && state.step === 1;
-  let nextState: DiscussState = { ...state, last_activity_at: now, pending_since_ts: null };
-  const removedPendingBidders = new Set<string>();
-
-  for (const agent of pendingAgents) {
-    if (isRespawn) {
-      removedPendingBidders.add(agent);
-      nextState = {
-        ...nextState,
-        current_bids: { ...nextState.current_bids, [agent]: 0 },
-        current_thoughts: { ...nextState.current_thoughts, [agent]: '' },
-      };
-      continue;
-    }
-
-    const targetAgent = nextState.agents[agent];
-    if (!targetAgent) continue;
-    if (targetAgent.participation === 'observer') continue;
-    removedPendingBidders.add(agent);
-
-    nextState = {
-      ...nextState,
-      agents: {
-        ...nextState.agents,
-        [agent]: {
-          ...targetAgent,
-          banned: true,
-          quota_remaining: 0,
-        },
-      },
-    };
-  }
-  if (removedPendingBidders.size > 0) {
-    nextState = {
-      ...nextState,
-      pending_bidders: nextState.pending_bidders.filter((name) => !removedPendingBidders.has(name)),
-    };
-  }
   const hint = isRespawn
     ? `Shutdown and respawn: ${pendingAgents.join(', ')}.`
     : `Banned: ${pendingAgents.join(', ')}. Shutdown and do not respawn.`;
 
-  return { ok: true, value: { state: nextState, hint } };
+  return {
+    ok: true,
+    value: [
+      makeEvent(sessionId, projectRoot, topic, seq, 'participants.expelled', ts, {
+        agents: [...pendingAgents],
+        isRespawn,
+        hint,
+      }),
+    ],
+  };
 }
 
-export function applyEpochSummary(
+export function decideEpochSummary(
   state: DiscussState,
   summary: string,
-  now: string,
-): Result<DiscussState> {
+  sessionId: string,
+  projectRoot: string,
+  topic: string,
+  seq: number,
+  ts: string,
+): Result<DiscussDomainEvent[]> {
   if (state.status === 'setup') {
     return { ok: false, error: 'session_not_started' };
   }
@@ -576,25 +677,25 @@ export function applyEpochSummary(
     };
   }
 
-  const entry: TranscriptEntry = { type: 'epoch_summary', epoch: state.epoch, ts: now, summary };
   return {
     ok: true,
-    value: {
-      ...appendEntry(state, entry, now),
-      epoch_summary_written: state.epoch,
-      bid_release_step: state.step,
-      step: state.step + 1,
-    },
+    value: [
+      makeEvent(sessionId, projectRoot, topic, seq, 'epoch.summary.recorded', ts, { summary }),
+    ],
   };
 }
 
-export function applyEnd(
+export function decideEnd(
   state: DiscussState,
   opts: { force?: boolean; reason?: string; endReason?: Exclude<EndReason, 'already_ended'> },
-  now: string,
-): Result<DiscussState> {
+  sessionId: string,
+  projectRoot: string,
+  topic: string,
+  seq: number,
+  ts: string,
+): Result<DiscussDomainEvent[]> {
   if (state.status === 'ended') {
-    return { ok: true, value: state };
+    return { ok: true, value: [] };
   }
 
   const { force = false, reason, endReason } = opts;
@@ -607,29 +708,262 @@ export function applyEnd(
     : force
       ? (reason ?? state.end_reason_content)
       : state.end_reason_content;
-  const endedState: DiscussState = {
-    ...state,
-    status: 'ended',
-    current_speaker: null,
-    speaker_type: null,
-    bid_release_step: state.step,
-    last_activity_at: now,
-    end_reason_content: endReasonContent,
-  };
 
-  if (state.status !== 'speaking') {
-    return { ok: true, value: endedState };
+  return {
+    ok: true,
+    value: [
+      makeEvent(sessionId, projectRoot, topic, seq, 'session.ended', ts, {
+        endReason,
+        endReasonContent,
+        force,
+        reason,
+      }),
+    ],
+  };
+}
+
+export function decideSynthesis(
+  state: DiscussState,
+  synthesis: string,
+  sessionId: string,
+  projectRoot: string,
+  topic: string,
+  seq: number,
+  ts: string,
+): Result<DiscussDomainEvent[]> {
+  if (state.status !== 'ended') {
+    return { ok: false, error: 'not_ended' };
   }
 
-  const forceEndEntry: TranscriptEntry = {
-    type: 'session_event',
-    epoch: state.epoch,
-    ts: now,
-    event: 'force_end',
-    detail: `Force-ended during speech by ${state.current_speaker}. Reason: ${reason ?? endReasonContent}`,
-  };
+  const alreadyHasSynthesis = state.transcript.some(
+    (entry) => entry.type === 'session_event' && entry.event === 'synthesis',
+  );
+  if (alreadyHasSynthesis) {
+    return { ok: true, value: [] };
+  }
 
-  return { ok: true, value: appendEntry(endedState, forceEndEntry, now) };
+  return {
+    ok: true,
+    value: [
+      makeEvent(sessionId, projectRoot, topic, seq, 'session.synthesized', ts, { synthesis }),
+    ],
+  };
+}
+
+export function initSession(
+  input: DiscussCreateInput,
+  now: string,
+  bidThreshold = DEFAULT_BID_THRESHOLD,
+  maxEpochs = DEFAULT_MAX_EPOCHS,
+  quotaPerEpoch = DEFAULT_QUOTA_PER_EPOCH,
+): DiscussState {
+  const decided = decideSessionCreate(
+    input,
+    '',
+    '',
+    input.topic,
+    1,
+    now,
+    bidThreshold,
+    maxEpochs,
+    quotaPerEpoch,
+  );
+  if (!decided.ok) {
+    throw new Error(decided.error);
+  }
+
+  return reduceDiscussEvent(makeEmptySnapshot('', ''), decided.value[0]).state;
+}
+
+export function startBidding(state: DiscussState, now: string): Result<DiscussState> {
+  const decided = decideBiddingOpen(
+    state,
+    state.session_id,
+    '',
+    state.topic,
+    1,
+    now,
+  );
+  if (!decided.ok) {
+    return decided;
+  }
+
+  return { ok: true, value: applyLegacyEvent(state, decided.value[0]) };
+}
+
+export function applyBid(
+  state: DiscussState,
+  agentName: string,
+  score: number,
+  thought: string,
+  now: string,
+): Result<DiscussState> {
+  const decided = decideBid(
+    state,
+    agentName,
+    score,
+    thought,
+    state.session_id,
+    '',
+    state.topic,
+    1,
+    now,
+  );
+  if (!decided.ok) {
+    return decided;
+  }
+
+  return { ok: true, value: applyLegacyEvent(state, decided.value[0]) };
+}
+
+export function resolveWinner(
+  state: DiscussState,
+  now: string,
+): Result<[DiscussState, ResolveResult]> {
+  const decided = decideBidRoundClose(
+    state,
+    state.session_id,
+    '',
+    state.topic,
+    1,
+    now,
+  );
+  if (!decided.ok) {
+    return decided;
+  }
+
+  const closeEvent = decided.value[0];
+  const nextState = applyLegacyEvent(state, closeEvent);
+  const outcome = closeEvent.kind === 'bid.round.closed'
+    ? closeEvent.payload.outcome
+    : { no_winner: true, reason: 'all_blocked' as const };
+
+  if ('winner' in outcome) {
+    return {
+      ok: true,
+      value: [nextState, { winner: outcome.winner, speaker_type: outcome.speaker_type }],
+    };
+  }
+
+  return {
+    ok: true,
+    value: [nextState, { no_winner: true, reason: outcome.reason }],
+  };
+}
+
+export function applySpeech(
+  state: DiscussState,
+  agentName: string,
+  content: string,
+  now: string,
+): Result<DiscussState> {
+  const decided = decideSpeech(
+    state,
+    agentName,
+    content,
+    state.session_id,
+    '',
+    state.topic,
+    1,
+    now,
+  );
+  if (!decided.ok) {
+    return decided;
+  }
+
+  return { ok: true, value: applyLegacyEvent(state, decided.value[0]) };
+}
+
+export function applySpeechTimeout(
+  state: DiscussState,
+  now: string,
+): Result<DiscussState> {
+  const decided = decideSpeechTimeout(
+    state,
+    state.session_id,
+    '',
+    state.topic,
+    1,
+    now,
+  );
+  if (!decided.ok) {
+    return decided;
+  }
+
+  return { ok: true, value: applyLegacyEvent(state, decided.value[0]) };
+}
+
+export function applyExpel(
+  state: DiscussState,
+  pendingAgents: string[],
+  now: string,
+): Result<{ state: DiscussState; hint: string }> {
+  const decided = decideExpel(
+    state,
+    pendingAgents,
+    state.session_id,
+    '',
+    state.topic,
+    1,
+    now,
+  );
+  if (!decided.ok) {
+    return decided;
+  }
+
+  const expelledEvent = decided.value[0];
+  return {
+    ok: true,
+    value: {
+      state: applyLegacyEvent(state, expelledEvent),
+      hint: expelledEvent.kind === 'participants.expelled' ? expelledEvent.payload.hint : '',
+    },
+  };
+}
+
+export function applyEpochSummary(
+  state: DiscussState,
+  summary: string,
+  now: string,
+): Result<DiscussState> {
+  const decided = decideEpochSummary(
+    state,
+    summary,
+    state.session_id,
+    '',
+    state.topic,
+    1,
+    now,
+  );
+  if (!decided.ok) {
+    return decided;
+  }
+
+  return { ok: true, value: applyLegacyEvent(state, decided.value[0]) };
+}
+
+export function applyEnd(
+  state: DiscussState,
+  opts: { force?: boolean; reason?: string; endReason?: Exclude<EndReason, 'already_ended'> },
+  now: string,
+): Result<DiscussState> {
+  const decided = decideEnd(
+    state,
+    opts,
+    state.session_id,
+    '',
+    state.topic,
+    1,
+    now,
+  );
+  if (!decided.ok) {
+    return decided;
+  }
+  if (decided.value.length === 0) {
+    return { ok: true, value: state };
+  }
+
+  return { ok: true, value: applyLegacyEvent(state, decided.value[0]) };
 }
 
 export function applySynthesis(
@@ -637,24 +971,23 @@ export function applySynthesis(
   synthesis: string,
   now: string,
 ): Result<DiscussState> {
-  if (state.status !== 'ended') {
-    return { ok: false, error: 'not_ended' };
-  }
-
-  const alreadyHasSynthesis = state.transcript.some(
-    (e) => e.type === 'session_event' && e.event === 'synthesis',
+  const decided = decideSynthesis(
+    state,
+    synthesis,
+    state.session_id,
+    '',
+    state.topic,
+    1,
+    now,
   );
-  if (alreadyHasSynthesis) {
+  if (!decided.ok) {
+    return decided;
+  }
+  if (decided.value.length === 0) {
     return { ok: true, value: state };
   }
 
-  const synthesisEntry: TranscriptEntry = {
-    type: 'session_event',
-    epoch: state.epoch,
-    ts: now,
-    event: 'synthesis',
-    detail: synthesis,
-  };
-
-  return { ok: true, value: appendEntry(state, synthesisEntry, now) };
+  return { ok: true, value: applyLegacyEvent(state, decided.value[0]) };
 }
+
+export { replayDiscussEvents };

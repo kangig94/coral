@@ -45,6 +45,20 @@ export function discussDiscoveryPath(projectRoot: string): string {
 }
 
 /**
+ * Returns the directory that stores one discuss session.
+ */
+export function discussSessionDir(projectRoot: string, sessionId: string): string {
+  return join(discussBaseDir(projectRoot), sessionId);
+}
+
+/**
+ * Returns the durable snapshot path for a discuss session directory.
+ */
+export function discussStatePath(sessionDir: string): string {
+  return join(sessionDir, 'state.json');
+}
+
+/**
  * Returns the durable event log path for a discuss session directory.
  */
 export function discussEventLogPath(sessionDir: string): string {
