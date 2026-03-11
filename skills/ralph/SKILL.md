@@ -76,7 +76,8 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
 
     Track progress by updating Task status as work proceeds. This enables resumability and gives visibility into what remains.
 
-    **Dispatch** by flags to ONE execution path (read only that section, ignore others):
+    **Dispatch** by flags to ONE execution path (read only that section, ignore others).
+    ⚠️ Re-check: does the user's original input contain `--codex`? Verify before dispatching — misrouting loses the flag silently.
 
     | Flags | Section |
     |-------|---------|

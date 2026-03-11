@@ -11,6 +11,14 @@ import type { EffortLevel } from '../../shared/schemas.js';
 /** Raw result type returned by Codex executors. */
 type CodexRawResult = Awaited<ReturnType<typeof executeOneShot>>;
 
+/** Abstract model tiers from agent frontmatter — all map to the default Codex model. */
+const ABSTRACT_MODEL_TIERS = new Set(['opus', 'sonnet', 'haiku']);
+
+function resolveModel(model: string | undefined): string | undefined {
+  if (model !== undefined && ABSTRACT_MODEL_TIERS.has(model)) return undefined;
+  return model;
+}
+
 let lastValidatedCli: (CliInfo & { available: true }) | undefined;
 
 async function preflight(): Promise<void> {
@@ -55,7 +63,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
   const prompt = buildPrompt(request);
   const effort = request.effort as EffortLevel | undefined;
   const options = {
-    model: request.model,
+    model: resolveModel(request.model),
     workingDirectory: request.cwd,
     effort,
     bypassSandbox: request.bypassPermissions,
