@@ -16,7 +16,7 @@
     "build": "tsc && node scripts/build-server.mjs",
     "build:server": "node scripts/build-server.mjs",
     "dev": "tsc --watch",
-    "test": "vitest run",
+    "test": "node scripts/test.mjs",
     "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
