@@ -1,5 +1,91 @@
 # Backend Domain Guide
 
+## Cross-Cutting Security Concerns
+
+### Mandatory Concerns
+- **Access control (A01)**: RBAC/ABAC enforcement on every endpoint, IDOR prevention via ownership checks before returning data
+- **Cryptography (A02)**: TLS everywhere, no hardcoded secrets, use bcrypt/argon2 (never MD5/SHA1) for password hashing
+- **Injection (A03)**: Output encoding for HTML contexts, CSP header — SQL injection covered in per-framework sections
+- **Insecure design (A04)**: Threat model sensitive flows (auth, payment, data export) before implementation
+- **Security misconfiguration (A05)**: Security headers (HSTS, X-Content-Type-Options, X-Frame-Options, CSP), CORS restricted to known origins
+- **Vulnerable components (A06)**: Dependency audit (npm audit, pip-audit, govulncheck) before release, no critical/high CVEs
+- **Auth failures (A07)**: Brute force protection on login, session invalidation on password change, secure token storage
+- **Data integrity (A08)**: Verify CI/CD artifact integrity, signed commits or verified pipeline steps
+- **Logging failures (A09)**: Log security events (auth failures, privilege changes, data access) — never include PII in logs
+- **SSRF (A10)**: Validate and restrict outbound URLs from user input using an allowlist
+
+### Validation Checklist
+#### BLOCKING
+- [ ] No unvalidated user-supplied URLs in server-side requests (SSRF — A10)
+- [ ] No raw HTML insertion from user input (XSS — A03)
+- [ ] No plaintext secrets in committed config or env files (A02)
+- [ ] Endpoint-level authorization tested, not just authentication (A01)
+#### STRONG
+- [ ] Security headers on all responses: HSTS, CSP, X-Content-Type-Options, X-Frame-Options (A05)
+- [ ] No known critical/high CVEs in dependencies (A06)
+- [ ] Rate limiting on authentication endpoints (A07)
+- [ ] Auth failure events logged without PII (A09)
+
+### Core Patterns
+```typescript
+// CORRECT: SSRF prevention — allowlist outbound URLs
+const ALLOWED_HOSTS = new Set(['api.example.com', 'cdn.example.com']);
+async function fetchExternal(url: string): Promise<Response> {
+  const { hostname } = new URL(url);
+  if (!ALLOWED_HOSTS.has(hostname)) throw new Error(`Blocked host: ${hostname}`);
+  return fetch(url);
+}
+
+// WRONG: SSRF — unvalidated user-supplied URL
+async function fetchExternal(url: string): Promise<Response> {
+  return fetch(url); // attacker can reach internal services or cloud metadata
+}
+```
+
+```typescript
+// CORRECT: XSS prevention — text node, not HTML
+element.textContent = userInput;
+res.setHeader('Content-Security-Policy', "default-src 'self'");
+
+// WRONG: XSS — raw HTML injection
+element.innerHTML = userInput;
+```
+
+### Anti-Patterns
+| Bug | Symptom | Detection | Fix |
+|-----|---------|-----------|-----|
+| SSRF via fetch(userInput) | Internal service access from public endpoint | `grep -rn 'fetch(req\.'` | Allowlist outbound hosts, reject unknown URLs |
+| XSS via innerHTML | Script execution from user-supplied content | `grep -rn 'innerHTML'` | Use textContent or sanitize with DOMPurify |
+| CORS wildcard in production | Any origin makes credentialed requests | `grep -rn 'Allow-Origin.*\*'` | Restrict to explicit allowed-origins list |
+
+---
+
+## Cross-Cutting Performance Concerns
+
+### Mandatory Concerns
+- **Pagination**: Enforce pagination on all list endpoints — no unbounded queries
+- **Connection pooling**: Document and configure pool size for all database connections
+
+### Validation Checklist
+#### STRONG
+- [ ] p95 response time budget defined for critical endpoints
+- [ ] Load test exists (k6, Artillery, or equivalent)
+
+---
+
+## Cross-Cutting API Contract Concerns
+
+### Mandatory Concerns
+- **Versioning**: API versioning strategy defined (URL path, header, or content negotiation)
+- **Error format**: Consistent error response shape across all endpoints
+
+### Validation Checklist
+#### STRONG
+- [ ] API spec (OpenAPI/GraphQL schema) exists and is not stale
+- [ ] Breaking changes detected before merge (spec diff tooling)
+
+---
+
 ## Node.js / Express
 
 ### Required Agents

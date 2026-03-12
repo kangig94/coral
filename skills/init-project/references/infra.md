@@ -77,6 +77,7 @@
 - **Artifacts**: Sign or checksum build artifacts, pin action versions
 - **Deployment**: Require approval for production, rollback strategy defined
 - **Caching**: Cache dependencies for speed, invalidate on lockfile change
+- **Supply chain**: Verify lockfile integrity in CI (use `npm ci` / `pip install --require-hashes`, not bare install)
 
 ### Validation Checklist
 #### BLOCKING
@@ -87,6 +88,10 @@
 - [ ] Dependency caching configured
 - [ ] Pipeline runs in under 10 minutes
 - [ ] Failure notifications configured
+- [ ] SAST scanner configured (Semgrep, CodeQL, or equivalent)
+- [ ] Dependency vulnerability scanner in pipeline (Trivy, Snyk, or npm audit)
+- [ ] Secret scanning in pre-commit or CI (Gitleaks or equivalent)
+- [ ] DAST scanner in CI pipeline (ZAP, Nuclei, or equivalent)
 
 ---
 
