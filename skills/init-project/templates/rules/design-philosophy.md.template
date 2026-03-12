@@ -29,4 +29,4 @@ Dependency direction is strict: the composition root imports from lower modules;
 
 - **Tiered Expertise**: OPUS for safety/orchestration, SONNET for domain/quality
 - **Mandatory Consultations**: Cross-domain changes require multiple agents
-- **Final validation**: review-orchestrator as mandatory last step
+- **Final validation**: `Skill(coral:review)` as mandatory last step (reads agents.md, spawns agents by tier)

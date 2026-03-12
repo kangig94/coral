@@ -65,7 +65,7 @@ my-project/
 + .claude/
 +   CLAUDE.md                 <- 프로젝트 허브: 빌드 명령, 워크플로우, 핵심 규칙
 +   agents/
-+     review-orchestrator.md  <- 최종 검증 게이트
++     code-critic.md          <- 코드 품질 리뷰
 +     ...                     <- 도메인 에이전트 (React, Go, ML, infra 등)
 +   rules/
 +     conventions.md          <- 네이밍, git, 스타일
@@ -164,6 +164,7 @@ Codex를 활용한 교차 모델 워크플로우:
 | `/coral:ralph` | 검증 포함 영속적 실행. `--red`로 적대적 테스트 | 선택 |
 | `/coral:bugfix` | 버그 진단, 계획, 수정 실행 | 선택 |
 | `/coral:code-simplify` | 코드 명확성 향상 및 정리 | 선택 |
+| `/coral:review` | 계층별 리뷰 게이트 — 프로젝트 에이전트 탐색, 계층순 실행, 결과 통합 | - |
 | `/coral:codex` | Codex CLI 직접 실행 (세션 유지) | 필수 |
 | `/coral:init-project` | 프로젝트 초기화 오케스트레이터 | - |
 | `/coral:discuss` | 모더레이션 기반 다자간 AI 토론 | - |
@@ -189,10 +190,13 @@ Claude가 놓치기 쉬운 것을 발견하면 (근본 원인, 주의사항, 기
 |------|--------|------|
 | `CORAL_CODEX_MODEL` | `gpt-5.4` | Codex CLI 기본 모델 |
 | `CORAL_CODEX_EFFORT` | `xhigh` | Codex 추론 노력도 (`low`, `medium`, `high`, `xhigh`) |
+| `CORAL_CLAUDE_MODEL_CAP` | `opus` | Claude 최대 모델 티어 (`opus`, `sonnet`, `haiku`). 상위 티어 요청은 자동 다운그레이드. |
 | `CORAL_MAX_SESSIONS` | `10` | 최대 동시 CLI 세션 수 (1–10) |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | 토론 자동 종료 전 최대 에포크 (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `0` | 완료된 토론 세션 자동 정리 기한 (일, 0 = 비활성화) |
 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(미설정)_ | `/coral:discuss` **필수**. `1`로 설정. |
+
+> **팁:** Coral의 워크플로우와 리뷰 에이전트는 기본적으로 Opus를 사용합니다. Pro 구독이거나 사용량을 절약하고 싶다면 `CORAL_CLAUDE_MODEL_CAP=sonnet`으로 설정하여 모든 Claude 서브에이전트 호출을 Sonnet 티어로 제한할 수 있습니다.
 `.claude/settings.json`에 설정 (세션 간 유지):
 
 ```json

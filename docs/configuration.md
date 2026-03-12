@@ -9,6 +9,7 @@ Environment variables, config files, and the plugin manifest.
 | `CORAL_CODEX_MODEL` | `gpt-5.4` | Default Codex model for new sessions |
 | `CORAL_CODEX_EFFORT` | `xhigh` | Codex reasoning effort (`low`, `medium`, `high`, `xhigh`) |
 | `CORAL_CLAUDE_EFFORT` | `high` | Claude reasoning effort (`low`, `medium`, `high`, `xhigh`→`high`) |
+| `CORAL_CLAUDE_MODEL_CAP` | `opus` | Maximum Claude model tier (`opus`, `sonnet`, `haiku`). Requests for higher tiers are downgraded. |
 | `CORAL_EFFORT` | _(none)_ | Global effort override — if set, applies to any provider without its own `CORAL_<PROVIDER>_EFFORT` |
 | `CORAL_MAX_SESSIONS` | `10` | Max concurrent CLI sessions (range: 1–10) |
 | `CORAL_DISCUSS_BID_THRESHOLD` | `30` | Minimum bid score (1–100) for floor eligibility. Stored per-session at creation time. |

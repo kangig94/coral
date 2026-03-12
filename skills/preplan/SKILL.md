@@ -119,8 +119,9 @@ Strip `--codex` flag before passing the prompt to the execution path.
     If ambiguous about a specific item, call it out and ask for clarification.
 
     After each exchange, count remaining `[unconfirmed]` sub-items and show progress
-    (e.g. "3 unconfirmed items remaining"). When zero remain, present the `<Output_Format>`.
-    If the user continues discussion and items are re-modified, re-present `<Output_Format>` when zero remain again.
+    (e.g. "3 unconfirmed items remaining"). When zero remain, proceed to **Finalization & Transition**
+    in `<Output_Format>`.
+    If the user continues discussion and items are re-modified, re-present when zero remain again.
 
     ### 4a. Early Exit
 
@@ -193,17 +194,22 @@ Strip `--codex` flag before passing the prompt to the execution path.
 
     Markers: only `[unconfirmed]` is marked — no marker means confirmed. Unconfirmed sub-items that need a decision list three alternatives as nested items (default, minimal, elegant). Unconfirmed sub-items that need verification have no nested list. Section headings carry no markers. Optional items need no markers.
 
-    ### Transition
+    ### Finalization & Transition
 
-    Present the agreement summary, then call `AskUserQuestion`:
+    When zero unconfirmed items remain:
+    1. Present the decision summary table
+    2. Finalize `.claude/coral/plans/pre-{topic}.md` — remove all `[unconfirmed]` markers and
+       alternative lists, keeping only the chosen values
+    3. Call `AskUserQuestion`:
+
     ```
     AskUserQuestion({
-      question: "All items confirmed. Proceed to coral:plan?",
+      question: "Preplan document finalized. Proceed to coral:plan?",
       options: ["Proceed", "Proceed --deep", "Proceed --deep --codex", "Continue discussion"]
     })
     ```
-    If the user chooses "Continue discussion", return to step 4.
-    Otherwise, finalize `.claude/coral/plans/pre-{topic}.md`, then: `Skill({ skill: "coral:plan", args: "{topic} [selected flags]" })`
+    If "Continue discussion", return to step 4.
+    Otherwise: `Skill({ skill: "coral:plan", args: "{topic} [selected flags]" })`
     Do NOT pass `--no-handoff` — preplan has no post-plan step, so plan owns the implementation handoff.
   </Output_Format>
 </Preplan_Protocol>

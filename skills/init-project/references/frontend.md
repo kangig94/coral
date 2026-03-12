@@ -1,5 +1,40 @@
 # Frontend Domain Guide
 
+## Cross-Cutting Performance Concerns
+
+### Mandatory Concerns
+- **Code splitting**: Route-level lazy loading to minimize initial bundle size
+- **Image optimization**: Modern formats (WebP/AVIF), responsive `srcset`, lazy load below-fold images
+- **Bundle size**: Define and enforce a size budget (bundlesize, Lighthouse CI, or equivalent)
+
+### Validation Checklist
+#### STRONG
+- [ ] LCP < 2.5s on primary pages (Lighthouse or CrUX)
+- [ ] CLS < 0.1 (no layout shift from dynamic content)
+- [ ] INP < 200ms (interaction responsiveness)
+- [ ] Bundle size budget defined and enforced in CI
+
+### Anti-Patterns
+| Bug | Symptom | Detection | Fix |
+|-----|---------|-----------|-----|
+| Layout shift from dynamic content | CLS score > 0.1 | Lighthouse CLS report | Reserve space with min-height or aspect-ratio |
+| Render-blocking resources in critical path | LCP score degraded | Lighthouse "Eliminate render-blocking resources" | Defer non-critical CSS/JS, inline critical CSS |
+
+---
+
+## Cross-Cutting Design System Concerns
+
+### Mandatory Concerns
+- **Spacing/typography scale**: Use a consistent scale (4/8px grid, type scale) — no arbitrary px values
+- **Component API consistency**: Consistent prop naming and composition patterns across all components
+
+### Validation Checklist
+#### STRONG
+- [ ] Design tokens used (CSS custom properties or theme config) — no magic values
+- [ ] Responsive breakpoint strategy defined and consistently applied
+
+---
+
 ## React
 
 ### Required Agents

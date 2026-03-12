@@ -67,7 +67,7 @@ my-project/
 + .claude/
 +   CLAUDE.md                 ← project hub: build commands, workflow, critical rules
 +   agents/
-+     review-orchestrator.md  ← final validation gate
++     code-critic.md          ← code quality review
 +     ...                     ← domain agents (React, Go, ML, infra, etc.)
 +   rules/
 +     conventions.md          ← naming, git, style
@@ -169,6 +169,7 @@ Consecutive `/coral:codex` calls continue the same session. Say "new" to start f
 | `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | Optional |
 | `/coral:bugfix` | Bug diagnosis, planning, and fix execution | Optional |
 | `/coral:code-simplify` | Simplify and refine code for clarity | Optional |
+| `/coral:review` | Tier-ordered review gate — discovers project agents, spawns by tier, consolidates verdict | - |
 | `/coral:codex` | Direct Codex CLI execution (session-persistent) | Required |
 | `/coral:init-project` | Project initialization orchestrator | - |
 | `/coral:discuss` | Moderated multi-agent discussion | - |
@@ -195,10 +196,13 @@ Mistakes aren't repeated across sessions.
 |---|---|---|
 | `CORAL_CODEX_MODEL` | `gpt-5.4` | Default Codex CLI model |
 | `CORAL_CODEX_EFFORT` | `xhigh` | Codex reasoning effort (`low`, `medium`, `high`, `xhigh`) |
+| `CORAL_CLAUDE_MODEL_CAP` | `opus` | Maximum Claude model tier (`opus`, `sonnet`, `haiku`). Requests for higher tiers are downgraded. |
 | `CORAL_MAX_SESSIONS` | `10` | Max concurrent CLI sessions (1–10) |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Max epochs before discussion auto-ends (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `0` | Days before completed discuss sessions are auto-pruned (0 = disabled) |
 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(unset)_ | **Required** for `/coral:discuss`. Set to `1`. |
+
+> **Tip:** Coral's workflow and review agents use Opus by default. If you're on a Pro plan or want to conserve usage, set `CORAL_CLAUDE_MODEL_CAP=sonnet` to cap all Claude subagent calls at Sonnet tier.
 
 Set in `.claude/settings.json` (persists across sessions):
 
