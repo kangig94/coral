@@ -4,45 +4,44 @@ Quality patterns for generating agents and documentation.
 
 ## Agent Writing Rules
 
-### Required Sections (every agent)
+### Required Sections (WHO / WHAT / GUARD / FORMAT)
 
-Every generated agent MUST use `<Agent_Prompt>` XML structure with these sections:
+Every generated agent MUST use `<Agent_Prompt>` XML structure with exactly these 4 sections:
 
 1. **`<Role>`** - "You are [role]. Responsible for: X. NOT responsible for: Y." + When to Invoke table (Situation/Priority)
 2. **`<Success_Criteria>`** - Measurable criteria. Use BLOCKING/STRONG/MINOR hierarchy where applicable
-3. **`<Constraints>`** - DO/DON'T table. Include consultation rules as "Consult X BEFORE/AFTER Y" rows
-4. **`<Investigation_Protocol>`** - Numbered review/execution steps with code examples
-5. **`<Output_Format>`** - Structured output template with tables
-6. **`<Failure_Modes_To_Avoid>`** - Common mistakes with "Instead:" corrections
+3. **`<Constraints>`** - Iron law in caps + DO/DON'T table. Compress failure modes as one-liner rows. Include consultation rules as "Consult X BEFORE/AFTER Y" rows
+4. **`<Output_Format>`** - Structured output template with tables
 
-Optional but recommended for review/safety agents:
-- **`<Tool_Usage>`** - Detection bash commands + key files with concerns (required when agent has specific detection commands or file dependencies)
+### Optional Sections
 
-### Tier-Specific Requirements
+Include only when the agent genuinely needs them — not by default.
 
-| Tier | Additional Sections |
-|------|-------------------|
-| 0 (orchestration) | **`<Why_This_Matters>`** (design philosophy), invocation order in Investigation_Protocol |
-| 1 (safety) | **`<Why_This_Matters>`** (design philosophy), **`<Failure_Modes_To_Avoid>`** with Bug/Symptom/Detection/Fix table |
-| 2 (domain) | `<Failure_Modes_To_Avoid>` with diagnostic table recommended but optional |
-| 3 (quality) | Standard sections sufficient |
+| Section | When to Include |
+|---------|-----------------|
+| `Investigation_Protocol` | Agent has a multi-step procedure LLMs wouldn't follow naturally (e.g., tiered review order, state machine transitions) |
+| `Tool_Usage` | Agent has specific detection commands or project-specific file dependencies. Omit for standard tools (Read, Write, Grep, etc.) |
 
 ### Quality Rules
 
-1. **Concrete code examples** in `<Investigation_Protocol>` - never abstract descriptions.
+1. **Failure modes go in `<Constraints>`** as DO/DON'T rows, not a separate section.
+   - BAD: Separate `<Failure_Modes_To_Avoid>` section with paragraphs
+   - GOOD: `| Verify wsClient cleanup in useEffect return | Accept subscribe without checking cleanup |`
+
+2. **Concrete code examples** belong in `<Constraints>` DO/DON'T rows or domain reference Anti-Patterns tables — not in a separate Investigation_Protocol unless the procedure is genuinely multi-step.
    - BAD: "Ensure proper cleanup"
-   - GOOD: Show the exact code pattern with `// correct` vs `// wrong` comments
+   - GOOD: Show the exact code pattern with `// correct` vs `// wrong` in a DO/DON'T row
 
-2. **`<Failure_Modes_To_Avoid>` diagnostic table** for safety agents (tier 1):
-   | Bug | Symptom | Detection | Fix |
-   |-----|---------|-----------|-----|
-   | GPU context leak | Segfault on second render | `cuCtxGetCurrent` returns NULL | Pair push/pop in RAII wrapper |
-
-3. **Detection Commands in `<Tool_Usage>`** must be runnable - no pseudo-commands.
+3. **Detection commands in `<Tool_Usage>`** must be runnable - no pseudo-commands.
 
 4. **Consultation rules in `<Constraints>`** use concrete task types, not abstract categories.
    - BAD: "When changing important code"
    - GOOD: "Consult mcp-guardian BEFORE modifying GPU memory allocation functions"
+
+5. **Tier 1 (safety) agents** should have richer `<Constraints>` with diagnostic-quality rows:
+   | DO | DON'T |
+   |----|-------|
+   | Check `cuCtxGetCurrent` returns non-NULL before GPU ops — segfault on second render otherwise | Assume context persists across function boundaries |
 
 ### Quality Review Agent Design
 
@@ -143,8 +142,9 @@ When augmenting existing docs (merge rule = "enhance"):
 ## Best Practices
 
 ### Agent Design
-- `<Agent_Prompt>` XML template with tier-based required/optional sections
-- Agents have explicit state machine diagrams for complex domains
+- 4 required sections only: Role, Success_Criteria, Constraints, Output_Format
+- Optional sections (Investigation_Protocol, Tool_Usage) only when genuinely needed
+- Failure modes compressed into Constraints DO/DON'T rows — not separate sections
 - Validation gate: BLOCKING items prevent completion
 - Agent tiering by model routing (opus for safety, sonnet for domain/quality)
 - Consultation rules in `<Constraints>`: concrete task-type → agent mappings

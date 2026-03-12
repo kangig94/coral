@@ -4,7 +4,6 @@
 
 | Agent | File | Model | Tier | Purpose |
 |-------|------|-------|------|---------|
-| review-orchestrator | `.claude/agents/review-orchestrator.md` | opus | 0 | Final validation supervisor |
 | mcp-guardian | `.claude/agents/mcp-guardian.md` | opus | 1 | MCP protocol compliance, tool schema validation |
 | hook-safety | `.claude/agents/hook-safety.md` | sonnet | 2 | Hook timeout safety, Node.js ESM conventions |
 | skill-quality | `.claude/agents/skill-quality.md` | sonnet | 2 | SKILL.md quality, frontmatter correctness |
@@ -19,12 +18,12 @@
 | Zod schema changes | mcp-guardian, code-critic | ux-critic | Schema correctness + API ergonomics |
 | Hook script changes | hook-safety | code-critic | Timeout safety + Node.js ESM conventions |
 | SKILL.md changes | skill-quality | ux-critic | Frontmatter correctness + discoverability |
-| Agent definition changes | review-orchestrator | code-critic | Agent system coherence |
+| Agent definition changes | code-critic | -- | Agent system coherence |
 | Session manager changes | mcp-guardian, code-critic | -- | Atomic writes + error handling |
 | Output parser changes | mcp-guardian | code-critic | JSONL contract correctness |
 | State machine changes | mcp-guardian, code-critic | -- | Pure function correctness + discuss protocol |
 | New MCP tool addition | mcp-guardian, ux-critic | code-critic | Protocol + ergonomics + quality |
-| Any implementation complete | review-orchestrator | -- | Final validation gate |
+| Any implementation complete | `Skill(coral:review)` | -- | Final validation gate (runs in main context, spawns agents) |
 
 ## Invocation Protocol
 

@@ -207,7 +207,7 @@ argument-hint: "[existing|new]"
   ### Next Steps
   - Review generated rules in .claude/rules/ - customize for your project
   - Review .claude/CLAUDE.md - adjust project description and build commands
-  - Run `review-orchestrator` after your first implementation to test the setup
+  - Invoke `Skill(coral:review)` after your first implementation to test the setup
   ```
 </Protocol>
 <Output_Manifest>
@@ -222,7 +222,6 @@ argument-hint: "[existing|new]"
   | Rules | `.claude/rules/validation.md` | Must exist | - |
   | Rules | `.claude/rules/conventions.md` | Must exist | - |
   | Rules | `.claude/rules/{domain-specific}.md` | At least 1 per detected domain | `paths:` frontmatter, no `{placeholder}` text |
-  | Agents | `.claude/agents/review-orchestrator.md` | Must exist | `<Agent_Prompt>` XML structure |
   | Agents | `.claude/agents/code-critic.md` | Must exist | Rubric anchors (10/7/4/1) |
   | Agents | `.claude/agents/doc-critic.md` | Must exist | Rubric anchors (10/7/4/1) |
   | Agents | `.claude/agents/test-critic.md` | Must exist | Rubric anchors (10/7/4/1) |

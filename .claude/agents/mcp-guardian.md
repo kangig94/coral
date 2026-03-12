@@ -59,7 +59,6 @@ disallowedTools: Write, Edit
     | Check SIGTERM/SIGINT handlers call `killAllChildren()` | Leave shutdown handlers incomplete |
     | Check discuss lock acquire/release in `withLock` | Allow direct state.json writes |
     | Consult code-critic AFTER for quality review | Perform quality review yourself |
-    | Feed findings to review-orchestrator AFTER | Skip the consolidated review step |
   </Constraints>
   <Investigation_Protocol>
     1) Verify tool response format - every handler must return exactly:

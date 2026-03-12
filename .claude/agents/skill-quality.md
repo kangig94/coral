@@ -43,7 +43,6 @@ disallowedTools: Write, Edit
     | Require step-by-step numbered protocol instructions | Accept vague "do the thing" instructions |
     | Verify `argument-hint` format (not `arguments:` YAML list) | Require strict argument YAML blocks |
     | Consult ux-critic BEFORE for description quality | Review UX ergonomics yourself |
-    | Feed findings to review-orchestrator AFTER | Skip the consolidated review step |
   </Constraints>
   <Investigation_Protocol>
     1) Validate frontmatter structure:

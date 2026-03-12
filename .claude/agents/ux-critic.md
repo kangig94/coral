@@ -54,7 +54,6 @@ disallowedTools: Write, Edit
     | Check progressive disclosure: simple ops one-liner, advanced discoverable | Require all parameters upfront when defaults suffice |
     | Consult mcp-guardian BEFORE if tool schemas changed | Review MCP protocol constraints yourself |
     | Consult skill-quality BEFORE if SKILL.md changed | Review frontmatter requirements yourself |
-    | Feed findings to review-orchestrator AFTER | Skip the consolidated review step |
   </Constraints>
   <Investigation_Protocol>
     Calibrate first: identify the target audience from project context (README,

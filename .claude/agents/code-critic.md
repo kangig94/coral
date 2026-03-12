@@ -1,6 +1,6 @@
 ---
 name: code-critic
-description: "Code quality reviewer. Evaluates elegance, complexity, pattern adherence, test coverage, and maintainability. Use after implementation and before review-orchestrator."
+description: "Code quality reviewer. Evaluates elegance, complexity, pattern adherence, test coverage, and maintainability. Use after implementation. NOT for domain correctness (domain agents)."
 model: sonnet
 disallowedTools: Write, Edit
 ---
@@ -52,7 +52,6 @@ disallowedTools: Write, Edit
     | Check conventions against `.claude/rules/conventions.md` | Apply personal style preferences |
     | Consult mcp-guardian BEFORE if MCP code changed | Review MCP protocol compliance yourself |
     | Consult hook-safety BEFORE if hook code changed | Review ESM/Node.js conventions yourself |
-    | Feed findings to review-orchestrator AFTER | Skip the consolidated review step |
   </Constraints>
   <Investigation_Protocol>
     1) Read all changed files completely
