@@ -84,11 +84,22 @@ function requireConversationRef(request: ProviderRequest, action: 'resume' | 'fo
   return request.conversationRef;
 }
 
+const TIER_RANK: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3 };
+
+function capModel(model: string | undefined): string | undefined {
+  const cap = process.env.CORAL_CLAUDE_MODEL_CAP ?? 'opus';
+  if (!model) return model;
+  const modelRank = TIER_RANK[model];
+  const capRank = TIER_RANK[cap];
+  if (modelRank === undefined || capRank === undefined) return model;
+  return modelRank > capRank ? cap : model;
+}
+
 async function execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult> {
   const { prompt, systemPrompt } = buildClaudeArgs(request);
   const effort = request.effort as EffortLevel | undefined;
   const options = {
-    model: request.model,
+    model: capModel(request.model),
     workingDirectory: request.cwd,
     systemPrompt,
     effort,

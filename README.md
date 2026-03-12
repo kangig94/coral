@@ -196,10 +196,13 @@ Mistakes aren't repeated across sessions.
 |---|---|---|
 | `CORAL_CODEX_MODEL` | `gpt-5.4` | Default Codex CLI model |
 | `CORAL_CODEX_EFFORT` | `xhigh` | Codex reasoning effort (`low`, `medium`, `high`, `xhigh`) |
+| `CORAL_CLAUDE_MODEL_CAP` | `opus` | Maximum Claude model tier (`opus`, `sonnet`, `haiku`). Requests for higher tiers are downgraded. |
 | `CORAL_MAX_SESSIONS` | `10` | Max concurrent CLI sessions (1–10) |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Max epochs before discussion auto-ends (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `0` | Days before completed discuss sessions are auto-pruned (0 = disabled) |
 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | _(unset)_ | **Required** for `/coral:discuss`. Set to `1`. |
+
+> **Tip:** Coral's workflow and review agents use Opus by default. If you're on a Pro plan or want to conserve usage, set `CORAL_CLAUDE_MODEL_CAP=sonnet` to cap all Claude subagent calls at Sonnet tier.
 
 Set in `.claude/settings.json` (persists across sessions):
 
