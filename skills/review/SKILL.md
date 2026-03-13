@@ -38,11 +38,13 @@ Run project review agents in tier order, consolidate findings, issue a verdict.
        - If all agents are SKIP → report "no agents relevant to this scope" and exit.
     4. Report the table before executing.
 
-    ## Phase 3 — Execute (tier-ordered)
+    ## Phase 3 — Execute
 
     Spawn only agents marked INVOKE in the table.
     For each agent, pass: "Review [scope files] focusing on [focus from plan]."
 
+    **Fast path** (total INVOKE agents < 5): spawn ALL agents in parallel, wait for all.
+    **Standard path** (5+ INVOKE agents): tier-ordered execution:
     1. Tier 1 (safety) — spawn in parallel, wait for all to complete
        - If ANY returns BLOCKING findings → output REJECT verdict, STOP here
     2. Tier 2 (domain) + tier 3 (quality) — spawn in parallel, wait for all to complete
@@ -68,20 +70,9 @@ Run project review agents in tier order, consolidate findings, issue a verdict.
   <Output_Format>
     ## Review: [scope]
 
-    ### Tier 1 — Safety
-    | Agent | Status | Verdict | Key Findings |
-    |-------|--------|---------|--------------|
-    | {agent} | INVOKED/SKIPPED | PASS/FAIL/- | {summary or skip reason} |
-
-    ### Tier 2 — Domain
-    | Agent | Status | Verdict | Key Findings |
-    |-------|--------|---------|--------------|
-    | {agent} | INVOKED/SKIPPED | PASS/FAIL/- | {summary or skip reason} |
-
-    ### Tier 3 — Quality
-    | Agent | Status | Verdict | Key Findings |
-    |-------|--------|---------|--------------|
-    | {agent} | INVOKED/SKIPPED | PASS/FAIL/- | {summary or skip reason} |
+    | Tier | Agent | Status | Verdict | Key Findings |
+    |------|-------|--------|---------|--------------|
+    | {1/2/3} | {agent} | INVOKED/SKIPPED | PASS/FAIL/- | {summary or skip reason} |
 
     ### Strengths
     - {Positive observations from agents with file:line evidence}
