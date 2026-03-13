@@ -547,8 +547,9 @@ export class BackendClient {
           signal,
         });
 
+        const responseBody = await parseJsonResponse(response);
+
         if (!response.ok) {
-          const responseBody = await parseJsonResponse(response);
           throw new BackendToolHttpError(
             describeHttpError(response.status, response.statusText),
             response.status,
@@ -556,7 +557,7 @@ export class BackendClient {
           );
         }
 
-        return parseJsonResponse(response);
+        return responseBody;
       });
     } catch (error) {
       if (error instanceof Error) throw error;

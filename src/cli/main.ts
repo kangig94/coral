@@ -106,6 +106,7 @@ function makeClient(projectRoot: string): BackendClient {
   });
 }
 
+// Stricter than shared isRecord — excludes arrays because JSON flags must be objects
 function isRecord(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -225,46 +226,39 @@ function shapeInlineTerminal(event: WaitStreamEvent): WaitStreamEvent {
     return event;
   }
 
-  const { content: rawContent, ...resultMeta } = event.result;
-  // Workflow jobs write large output to resultPath; inline it here
-  const content = event.result.workflow !== undefined
-    ? readFileSync(event.resultPath, 'utf8')
-    : rawContent;
+  if (event.result.workflow === undefined) {
+    return event;
+  }
 
+  // Workflow jobs write large output to resultPath; inline it here
+  const { content: _omitted, ...resultMeta } = event.result;
   return {
     ...event,
     result: {
       ...resultMeta,
-      content,
+      content: readFileSync(event.resultPath, 'utf8'),
     },
   };
 }
 
 function normalizeProviderArgv(argv: readonly string[]): string[] {
   if (argv.length < 4) {
-    return [...argv];
+    return argv as string[];
   }
 
   const provider = argv[2];
   const dispatchToken = argv[3];
 
   if (!providerNameSet.has(provider)) {
-    return [...argv];
+    return argv as string[];
   }
 
   const match = /^coral:([a-z0-9][a-z0-9-]*)$/.exec(dispatchToken);
   if (!match) {
-    return [...argv];
+    return argv as string[];
   }
 
-  return [
-    argv[0],
-    argv[1],
-    provider,
-    'coral',
-    match[1],
-    ...argv.slice(4),
-  ];
+  return [argv[0], argv[1], provider, 'coral', match[1], ...argv.slice(4)];
 }
 
 function registerProviderCommands(program: Command): void {
@@ -378,7 +372,7 @@ program.command('wait')
         jobIds,
         timeoutSeconds,
         { port, host, token },
-        cursorRef.lastEventId,
+        opts.cursor,
         undefined,
         projectRoot,
         cursorRef,
