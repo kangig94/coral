@@ -1,9 +1,9 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { BACKEND_INFO_PATH } from '../client/paths.js';
+import { backendInfoPath } from '../client/paths.js';
 import { isNoEntryError } from '../shared/mcp-utils.js';
 
-export { BACKEND_INFO_PATH } from '../client/paths.js';
+export { backendInfoPath } from '../client/paths.js';
 
 export type BackendInfo = {
   pid: number;
@@ -39,21 +39,21 @@ function isBackendInfo(value: unknown): value is BackendInfo {
 }
 
 export function writeBackendInfo(info: BackendInfo): void {
-  mkdirSync(dirname(BACKEND_INFO_PATH), { recursive: true });
+  mkdirSync(dirname(backendInfoPath()), { recursive: true });
 
-  const tmpPath = `${BACKEND_INFO_PATH}.tmp`;
+  const tmpPath = `${backendInfoPath()}.tmp`;
   const payload = JSON.stringify(info);
   writeFileSync(tmpPath, payload, { encoding: 'utf-8', mode: 0o600 });
-  renameSync(tmpPath, BACKEND_INFO_PATH);
+  renameSync(tmpPath, backendInfoPath());
 
   if (process.platform !== 'win32') {
-    chmodSync(BACKEND_INFO_PATH, 0o600);
+    chmodSync(backendInfoPath(), 0o600);
   }
 }
 
 export function readBackendInfo(): BackendInfo | null {
   try {
-    const raw = readFileSync(BACKEND_INFO_PATH, 'utf-8');
+    const raw = readFileSync(backendInfoPath(), 'utf-8');
     const parsed: unknown = JSON.parse(raw);
     return isBackendInfo(parsed) ? parsed : null;
   } catch (error: unknown) {
@@ -67,7 +67,7 @@ export function removeBackendInfoIfOwner(instanceId: string): void {
   if (!info || info.instanceId !== instanceId) return;
 
   try {
-    unlinkSync(BACKEND_INFO_PATH);
+    unlinkSync(backendInfoPath());
   } catch (error: unknown) {
     if (isNoEntryError(error)) return;
     throw error;

@@ -5,7 +5,7 @@ import { readFileSync, unlinkSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { BACKEND_INFO_PATH, BACKEND_LOCK_PATH } from './paths.js';
+import { backendInfoPath, backendLockPath } from './paths.js';
 import { readBackendInfo, type BackendInfo } from '../execution/backend-info.js';
 import { isNoEntryError, isRecord, readBundleHash, tryExclusiveWrite } from '../shared/mcp-utils.js';
 
@@ -119,20 +119,20 @@ function tryAcquireReplacementLock(version: string, bundleHash: string): Replace
     bundleHash,
     startedAt: Date.now(),
   });
-  if (!tryExclusiveWrite(BACKEND_LOCK_PATH, payload)) return null;
+  if (!tryExclusiveWrite(backendLockPath(), payload)) return null;
   return { payload };
 }
 
 function releaseReplacementLock(lock: ReplacementLock): void {
   try {
-    if (readFileSync(BACKEND_LOCK_PATH, 'utf-8') !== lock.payload) return;
+    if (readFileSync(backendLockPath(), 'utf-8') !== lock.payload) return;
   } catch (error: unknown) {
     if (isNoEntryError(error)) return;
     throw error;
   }
 
   try {
-    unlinkSync(BACKEND_LOCK_PATH);
+    unlinkSync(backendLockPath());
   } catch (error: unknown) {
     if (isNoEntryError(error)) return;
     throw error;
@@ -141,7 +141,7 @@ function releaseReplacementLock(lock: ReplacementLock): void {
 
 function removeStaleBackendInfo(): void {
   try {
-    unlinkSync(BACKEND_INFO_PATH);
+    unlinkSync(backendInfoPath());
   } catch (error: unknown) {
     if (isNoEntryError(error)) return;
     throw error;

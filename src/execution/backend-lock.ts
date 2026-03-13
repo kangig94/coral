@@ -1,10 +1,10 @@
 import { readFileSync, unlinkSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
-import { BACKEND_LOCK_PATH } from '../client/paths.js';
+import { backendLockPath } from '../client/paths.js';
 import { readBackendInfo } from './backend-info.js';
 import { isNoEntryError, isProcessAlive, tryExclusiveWrite } from '../shared/mcp-utils.js';
 
-export { BACKEND_LOCK_PATH } from '../client/paths.js';
+export { backendLockPath } from '../client/paths.js';
 export const STARTUP_DEADLINE = 30_000;
 
 const RETRY_DELAY_MS = 200;
@@ -57,7 +57,7 @@ function parseLockRecord(raw: string): LockRecord | null {
 
 function readLockSnapshot(): LockSnapshot | null {
   try {
-    const raw = readFileSync(BACKEND_LOCK_PATH, 'utf-8');
+    const raw = readFileSync(backendLockPath(), 'utf-8');
     return { raw, record: parseLockRecord(raw) };
   } catch (error: unknown) {
     if (isNoEntryError(error)) return null;
@@ -73,7 +73,7 @@ function snapshotKey(snapshot: LockSnapshot): string {
 }
 
 function writeLockFile(record: LockRecord): boolean {
-  return tryExclusiveWrite(BACKEND_LOCK_PATH, JSON.stringify(record));
+  return tryExclusiveWrite(backendLockPath(), JSON.stringify(record));
 }
 
 async function isMatchingHealthyBackend(record: LockRecord): Promise<boolean> {
@@ -115,7 +115,7 @@ function removeLockIfSnapshotMatches(snapshot: LockSnapshot): boolean {
   if (current.raw !== snapshot.raw) return false;
 
   try {
-    unlinkSync(BACKEND_LOCK_PATH);
+    unlinkSync(backendLockPath());
     return true;
   } catch (error: unknown) {
     if (isNoEntryError(error)) return true;
@@ -182,7 +182,7 @@ export function removeLockIfOwner(instanceId: string): void {
   if (!snapshot?.record || snapshot.record.instanceId !== instanceId) return;
 
   try {
-    unlinkSync(BACKEND_LOCK_PATH);
+    unlinkSync(backendLockPath());
   } catch (error: unknown) {
     if (isNoEntryError(error)) return;
     throw error;

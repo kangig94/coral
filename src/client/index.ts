@@ -11,13 +11,12 @@
 // ./paths.js
 export {
   JOBS_DIR,
-  SESSION_BASE,
-  BACKEND_INFO_PATH,
-  BACKEND_LOCK_PATH,
+  sessionBase,
+  backendInfoPath,
+  backendLockPath,
   discussBaseDir,
   discussDiscoveryPath,
   discussEventLogPath,
-  syncHomePaths,
 } from './paths.js';
 
 // ./readers.js

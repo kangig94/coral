@@ -13,12 +13,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { readDiscussDiscovery, readDiscussEventLog } from '../../client/readers.js';
 import {
-  DISCUSS_PROJECT_ROOTS_PATH,
+  discussProjectRootsPath,
   discussDiscoveryPath,
   discussEventLogPath,
   discussSessionDir,
   discussStatePath,
-  syncHomePaths,
 } from '../../client/paths.js';
 import { replayDiscussEvents } from '../../discuss/reducer.js';
 import {
@@ -143,7 +142,6 @@ async function appendRoundTripHistory(store: DiscussSessionStore, sessionId = SE
 beforeEach(() => {
   homeRoot = mkdtempSync(join(tmpdir(), 'coral-discuss-home-'));
   process.env.HOME = homeRoot;
-  syncHomePaths();
   projectRoot = mkdtempSync(join(tmpdir(), 'coral-discuss-store-'));
 });
 
@@ -155,7 +153,6 @@ afterEach(() => {
   } else {
     process.env.HOME = originalHome;
   }
-  syncHomePaths();
 });
 
 describe('DiscussSessionStore', () => {
@@ -175,7 +172,7 @@ describe('DiscussSessionStore', () => {
         authority: 'persisted',
       },
     ]);
-    expect(JSON.parse(readFileSync(DISCUSS_PROJECT_ROOTS_PATH, 'utf8'))).toEqual({
+    expect(JSON.parse(readFileSync(discussProjectRootsPath(), 'utf8'))).toEqual({
       updatedAt: finalSnapshot.updatedAt,
       projectRoots: [projectRoot],
     });

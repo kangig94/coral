@@ -3,34 +3,24 @@ import { join } from 'node:path';
 
 export const JOBS_DIR = join(tmpdir(), 'coral-jobs');
 
-export let SESSION_BASE = join(readHomeDir(), '.claude', 'coral', 'execution', 'sessions');
-
-export let BACKEND_INFO_PATH = join(readHomeDir(), '.claude', 'coral', 'backend.json');
-
-export let BACKEND_LOCK_PATH = join(readHomeDir(), '.claude', 'coral', 'backend.lock');
-
-export let DISCUSS_PROJECT_ROOTS_PATH = join(readHomeDir(), '.claude', 'coral', 'discuss-project-roots.json');
-
-function readHomeDir(): string {
-  try {
-    return homedir();
-  } catch (error: unknown) {
-    if (error instanceof ReferenceError) {
-      return '';
-    }
-    throw error;
-  }
+function coralHome(): string {
+  return join(homedir(), '.claude', 'coral');
 }
 
-/**
- * Synchronizes home-directory-based paths with the current `homedir()` value.
- */
-export function syncHomePaths(): void {
-  const home = readHomeDir();
-  SESSION_BASE = join(home, '.claude', 'coral', 'execution', 'sessions');
-  BACKEND_INFO_PATH = join(home, '.claude', 'coral', 'backend.json');
-  BACKEND_LOCK_PATH = join(home, '.claude', 'coral', 'backend.lock');
-  DISCUSS_PROJECT_ROOTS_PATH = join(home, '.claude', 'coral', 'discuss-project-roots.json');
+export function sessionBase(): string {
+  return join(coralHome(), 'execution', 'sessions');
+}
+
+export function backendInfoPath(): string {
+  return join(coralHome(), 'backend.json');
+}
+
+export function backendLockPath(): string {
+  return join(coralHome(), 'backend.lock');
+}
+
+export function discussProjectRootsPath(): string {
+  return join(coralHome(), 'discuss-project-roots.json');
 }
 
 /**

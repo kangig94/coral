@@ -1049,15 +1049,15 @@ describe('execution backend server', () => {
 
     await waitForCondition(() => closeStarted);
     expect(backend.controller.getLifecycle()).toBe('draining');
-    expect(existsSync(backend.backendInfo.BACKEND_INFO_PATH)).toBe(true);
-    expect(existsSync(backend.backendLock.BACKEND_LOCK_PATH)).toBe(true);
+    expect(existsSync(backend.backendInfo.backendInfoPath())).toBe(true);
+    expect(existsSync(backend.backendLock.backendLockPath())).toBe(true);
 
     closeBarrier.resolve();
     await backend.controller.waitForShutdown();
 
     expect(backend.controller.getLifecycle()).toBe('stopped');
-    expect(existsSync(backend.backendInfo.BACKEND_INFO_PATH)).toBe(false);
-    expect(existsSync(backend.backendLock.BACKEND_LOCK_PATH)).toBe(false);
+    expect(existsSync(backend.backendInfo.backendInfoPath())).toBe(false);
+    expect(existsSync(backend.backendLock.backendLockPath())).toBe(false);
   });
 
   it('returns 401 for unauthorized requests', async () => {
