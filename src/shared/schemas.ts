@@ -77,6 +77,9 @@ export const sharedListSchema = z.object({
   op: z.literal('list'),
 }).strict();
 
+/** Maximum serialized emitted CallToolResult body length for optional content embedding. */
+export const MAX_INLINE = 30_000;
+
 /**
  * Wait tool input schema — accepts a list of jobIds to monitor.
  */
@@ -84,7 +87,6 @@ export const waitInputSchema = z.object({
   jobs: z.array(z.string()).min(1, 'At least one job required'),
   timeout_seconds: z.number().min(1).max(1200).optional(),
   cursor: z.string().min(1).optional(),
-  inline: z.boolean().default(false),
 }).strict();
 
 export type WaitInput = z.infer<typeof waitInputSchema>;

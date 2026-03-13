@@ -74,10 +74,10 @@ Strip `--codex` flag before passing the prompt to the execution path.
       work_dir: "{work_dir}",
       provider: "--codex" ? "codex" : "claude"
     })
-    wait({ jobs: [job], inline: false })
+    wait({ jobs: [job] })
     ```
 
-    Read `result.content` to get the full output (`<gap-finder>…</gap-finder>` + `<critic>…</critic>`).
+    Use `result.content ?? Read(result.path)` to get the full output (`<gap-finder>…</gap-finder>` + `<critic>…</critic>`).
     Apply substantive fixes (contradictions, missing gaps, misidentified root problem) to the draft.
     Discard stylistic suggestions. For confirmed sub-items where either reviewer identifies a genuine structural deficiency
     with an elegant alternative: mark it unconfirmed and add the three-point spectrum (default, minimal, elegant).

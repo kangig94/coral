@@ -52,7 +52,7 @@ describe('cli main — help and structure', () => {
     expect(stdout).toContain('--jobs');
     expect(stdout).toContain('--timeout');
     expect(stdout).toContain('--cursor');
-    expect(stdout).toContain('--inline');
+    expect(stdout).toContain('--embed');
   });
 
   it('shows discuss subcommand help', () => {

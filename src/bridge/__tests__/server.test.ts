@@ -17,6 +17,8 @@ type CallToolHandler = (
   },
 ) => Promise<McpResult>;
 
+type ListToolsHandler = () => Promise<{ tools: unknown[] }>;
+
 const mockState = vi.hoisted(() => ({
   handlers: new Map<unknown, RegisteredHandler>(),
   ensureBackend: vi.fn(),
@@ -81,6 +83,18 @@ async function loadCallToolHandler(): Promise<CallToolHandler> {
   return handler;
 }
 
+async function loadListToolsHandler(): Promise<ListToolsHandler> {
+  vi.resetModules();
+  mockState.handlers.clear();
+  await import('../server.js');
+  const { ListToolsRequestSchema } = await import('@modelcontextprotocol/sdk/types.js');
+  const handler = mockState.handlers.get(ListToolsRequestSchema) as ListToolsHandler | undefined;
+  if (!handler) {
+    throw new Error('ListTools handler was not registered');
+  }
+  return handler;
+}
+
 async function invokeToolRaw(
   name: string,
   argumentsValue: Record<string, unknown>,
@@ -110,6 +124,11 @@ async function invokeWait(argumentsValue: Record<string, unknown>) {
   return JSON.parse(result.content[0].text) as Record<string, unknown>;
 }
 
+async function invokeListTools() {
+  const handler = await loadListToolsHandler();
+  return handler();
+}
+
 describe('bridge wait handler', () => {
   beforeEach(() => {
     mockState.ensureBackend.mockReset();
@@ -120,16 +139,17 @@ describe('bridge wait handler', () => {
     mockState.readFileSync.mockReset();
     mockState.connect.mockClear();
     mockState.close.mockClear();
-    mockState.ensureBackend.mockResolvedValue({ port: 4100, token: 'backend-token' });
+    mockState.ensureBackend.mockResolvedValue({ host: '127.0.0.1', port: 4100, token: 'backend-token' });
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     vi.resetModules();
     mockState.handlers.clear();
   });
 
-  it('workflow wait responses return metadata plus content shaped by inline mode', async () => {
+  it('workflow wait responses return metadata plus path and embedded file content when payload fits', async () => {
     mockState.streamWait
       .mockImplementationOnce(() => emit([
         {
@@ -191,15 +211,12 @@ describe('bridge wait handler', () => {
 
     const success = await invokeWait({
       jobs: ['workflow-success'],
-      inline: true,
     });
     const failure = await invokeWait({
       jobs: ['workflow-failure'],
-      inline: false,
     });
     const aborted = await invokeWait({
       jobs: ['workflow-abort'],
-      inline: true,
     });
 
     expect(success).toEqual({
@@ -220,6 +237,7 @@ describe('bridge wait handler', () => {
             },
           ],
         },
+        path: '/tmp/coral-jobs/workflow-success/result.md',
         content: '# Step 1.1: architect\n\nARCH\n',
       },
     });
@@ -231,7 +249,8 @@ describe('bridge wait handler', () => {
       result: {
         notice: 'failed',
         workflow: { steps: [] },
-        content: '/tmp/coral-jobs/workflow-failure/result.md',
+        path: '/tmp/coral-jobs/workflow-failure/result.md',
+        content: '',
       },
     });
     expect(aborted).toEqual({
@@ -243,12 +262,13 @@ describe('bridge wait handler', () => {
         aborted: true,
         notice: 'aborted',
         workflow: { steps: [] },
+        path: '/tmp/coral-jobs/workflow-abort/result.md',
         content: '',
       },
     });
   });
 
-  it('workflow inline: true reads from resultPath file, not terminal content', async () => {
+  it('workflow wait reads from resultPath file, not terminal content', async () => {
     mockState.readFileSync.mockReturnValueOnce('# Step 1.1: architect\n\nFILE CONTENT');
     mockState.streamWait.mockImplementationOnce(() => emit([
       {
@@ -277,7 +297,6 @@ describe('bridge wait handler', () => {
 
     const result = await invokeWait({
       jobs: ['workflow-diverge'],
-      inline: true,
     });
     const terminalResult = result.result as Record<string, unknown>;
 
@@ -300,6 +319,7 @@ describe('bridge wait handler', () => {
           },
         ],
       },
+      path: '/tmp/coral-jobs/workflow-diverge/result.md',
     });
     expect(terminalResult.content).toBe('# Step 1.1: architect\n\nFILE CONTENT');
     expect(terminalResult.content).not.toBe('FINAL');
@@ -341,7 +361,6 @@ describe('bridge wait handler', () => {
 
     const result = await invokeWaitRaw({
       jobs: ['job-failed'],
-      inline: true,
     });
 
     expect(result.isError).toBe(false);
@@ -351,6 +370,7 @@ describe('bridge wait handler', () => {
       sessionId: 'session-failed',
       remainingJobIds: [],
       result: {
+        path: '/tmp/coral-jobs/job-failed/result.md',
         content: 'provider failure output',
         failed: true,
         exitCode: 1,
@@ -401,63 +421,148 @@ describe('bridge wait handler', () => {
     expect(result.content[0].text).toContain('include_result');
   });
 
-  it('single-job wait behavior still respects inline', async () => {
-    mockState.streamWait
-      .mockImplementationOnce(() => emit([
-        {
-          type: 'terminal',
-          completedJobId: 'single-inline',
-          sessionId: 'session-a',
-          remainingJobIds: [],
-          resultPath: '/tmp/coral-jobs/single-inline/result.md',
-          result: {
-            content: 'INLINE RESULT',
-            durationMs: 42,
-          },
-        },
-      ]))
-      .mockImplementationOnce(() => emit([
-        {
-          type: 'terminal',
-          completedJobId: 'single-path',
-          sessionId: 'session-b',
-          remainingJobIds: [],
-          resultPath: '/tmp/coral-jobs/single-path/result.md',
-          result: {
-            content: 'FILE RESULT',
-            durationMs: 21,
-          },
-        },
-      ]));
+  it('should reject legacy inline parameter', async () => {
+    const result = await invokeWaitRaw({ jobs: ['job-1'], inline: true });
 
-    const inline = await invokeWait({
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('inline');
+  });
+
+  it('single-job wait behavior is path-first and embeds provider content when payload fits', async () => {
+    mockState.streamWait.mockImplementationOnce(() => emit([
+      {
+        type: 'terminal',
+        completedJobId: 'single-inline',
+        sessionId: 'session-a',
+        remainingJobIds: [],
+        resultPath: '/tmp/coral-jobs/single-inline/result.md',
+        result: {
+          content: 'INLINE RESULT',
+          durationMs: 42,
+        },
+      },
+    ]));
+
+    const result = await invokeWait({
       jobs: ['single-inline'],
-      inline: true,
-    });
-    const pathOnly = await invokeWait({
-      jobs: ['single-path'],
-      inline: false,
     });
 
-    expect(inline).toEqual({
+    expect(result).toEqual({
       state: 'ended',
       completedJobId: 'single-inline',
       sessionId: 'session-a',
       remainingJobIds: [],
       result: {
+        path: '/tmp/coral-jobs/single-inline/result.md',
         content: 'INLINE RESULT',
         durationMs: 42,
       },
     });
-    expect(pathOnly).toEqual({
+  });
+
+  it('omits provider content when the serialized wait payload exceeds the inline budget', async () => {
+    mockState.streamWait.mockImplementationOnce(() => emit([
+      {
+        type: 'terminal',
+        completedJobId: 'single-path',
+        sessionId: 'session-b',
+        remainingJobIds: [],
+        resultPath: '/tmp/coral-jobs/single-path/result.md',
+        result: {
+          content: 'x'.repeat(31_000),
+          durationMs: 21,
+        },
+      },
+    ]));
+
+    const result = await invokeWait({
+      jobs: ['single-path'],
+    });
+
+    expect(result).toEqual({
       state: 'ended',
       completedJobId: 'single-path',
       sessionId: 'session-b',
       remainingJobIds: [],
       result: {
         durationMs: 21,
-        content: '/tmp/coral-jobs/single-path/result.md',
+        path: '/tmp/coral-jobs/single-path/result.md',
       },
+    });
+  });
+
+  it('omits workflow content when the serialized wait payload exceeds the inline budget', async () => {
+    mockState.readFileSync.mockReturnValueOnce('x'.repeat(31_000));
+    mockState.streamWait.mockImplementationOnce(() => emit([
+      {
+        type: 'terminal',
+        completedJobId: 'workflow-large',
+        sessionId: 'session-large',
+        remainingJobIds: [],
+        resultPath: '/tmp/coral-jobs/workflow-large/result.md',
+        result: {
+          content: 'FINAL',
+          workflow: { steps: [] },
+        },
+      },
+    ]));
+
+    const result = await invokeWait({
+      jobs: ['workflow-large'],
+    });
+
+    expect(result).toEqual({
+      state: 'ended',
+      completedJobId: 'workflow-large',
+      sessionId: 'session-large',
+      remainingJobIds: [],
+      result: {
+        workflow: { steps: [] },
+        path: '/tmp/coral-jobs/workflow-large/result.md',
+      },
+    });
+  });
+
+  it('ListTools does not advertise inline on the wait schema', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [
+        {
+          name: 'wait',
+          description: 'Wait for jobs',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              jobs: { type: 'array' },
+              timeout_seconds: { type: 'number' },
+              cursor: { type: 'string' },
+              inline: { type: 'boolean' },
+            },
+            required: ['jobs'],
+          },
+        },
+      ],
+    }));
+
+    const result = await invokeListTools();
+    const waitTool = result.tools.find((tool) =>
+      typeof tool === 'object'
+      && tool !== null
+      && 'name' in tool
+      && tool.name === 'wait');
+
+    expect(waitTool).toBeDefined();
+    expect(waitTool).toMatchObject({
+      name: 'wait',
+      inputSchema: {
+        type: 'object',
+        required: ['jobs'],
+      },
+    });
+    expect((waitTool as { inputSchema: { properties: Record<string, unknown> } }).inputSchema.properties).toEqual({
+      jobs: { type: 'array', items: { type: 'string' }, description: 'Job IDs to monitor (from exec/fork response)' },
+      timeout_seconds: { type: 'number', description: 'Max wait time in seconds (1-1200, default 600)' },
+      cursor: { type: 'string', description: 'Opaque stream cursor returned by the previous wait call' },
     });
   });
 
@@ -509,14 +614,17 @@ describe('bridge wait handler', () => {
         },
       ]));
 
-    const result = await invokeWait({ jobs: ['job-1'], inline: true });
+    const result = await invokeWait({ jobs: ['job-1'] });
 
     expect(result).toEqual({
       state: 'ended',
       completedJobId: 'job-1',
       sessionId: 'session-1',
       remainingJobIds: [],
-      result: { content: 'done' },
+      result: {
+        path: '/tmp/coral-jobs/job-1/result.md',
+        content: 'done',
+      },
     });
     expect(mockState.ensureBackend).toHaveBeenCalledTimes(2);
     expect(mockState.streamWait).toHaveBeenCalledTimes(2);

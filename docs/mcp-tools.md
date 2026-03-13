@@ -147,7 +147,7 @@ Returns immediately. Same accepted format as `exec` (`status: "running"` or `sta
 
 `status: "queued"` means the fork request was accepted and will auto-execute when capacity is available.
 
-Use `wait({ jobs: [job] })` then `Read("/tmp/coral-jobs/<job>/result.md")` to get the fork response.
+Use `wait({ jobs: [job] })` to get the fork response. Completed waits always include `result.path` and may also include `result.content` when the serialized response fits the inline budget.
 
 ---
 
@@ -155,9 +155,11 @@ Use `wait({ jobs: [job] })` then `Read("/tmp/coral-jobs/<job>/result.md")` to ge
 
 ```
 exec → { status: "running" | "queued", job, session }
-wait({ jobs: [job] }) → { state, ... }
-if state == "ended":
-  Read("/tmp/coral-jobs/<job>/result.md") → response text
+wait({ jobs: [job] }) → { state, result.path, result.content?, ... }
+if state == "ended" and result.content:
+  use result.content
+if state == "ended" and !result.content:
+  Read(result.path) → response text (workflow-safe fallback; provider path is best-effort)
 if state == "running":
   wait again with cursor, or abort({ jobs: [job] })
 ```
@@ -168,7 +170,7 @@ if state == "running":
 
 | Field | Source | Purpose |
 |-------|--------|---------|
-| `job` | exec/fork response | Pass to `wait`/`abort`, read results from `/tmp/coral-jobs/<job>/result.md` |
+| `job` | exec/fork response | Pass to `wait`/`abort`; completed waits return `result.path` for artifact access |
 | `session` | exec/fork response | Pass to next `exec`/`fork` for session continuity |
 
 Do NOT pass `job` as the `session` parameter on subsequent exec calls.
@@ -291,35 +293,24 @@ Provider-agnostic wait for background jobs from any AX adapter. Wait returns whe
 | `jobs` | string[] | Yes | Job IDs to monitor (min 1, from exec/fork response). |
 | `timeout_seconds` | number | No | Max wait time in seconds (1-1200, default 600). |
 | `cursor` | string | No | Opaque stream cursor returned by the previous wait call (for incremental streaming). |
-| `inline` | boolean | No | Inline result text in `content` (default `false` — `content` is the result file path for selective `Read`). |
 
 ### Output — Ended
 
 `state: "ended"` means the waited job terminated — this includes normal completion, errors, and aborts. Inspect `result` fields (`notice`, `failed`, `aborted`, `exitCode`) to distinguish outcomes.
 
-Default (`inline: false`):
 ```json
 {
   "state": "ended",
   "completedJobId": "job-uuid",
   "sessionId": "session-uuid",
   "remainingJobIds": [],
-  "result": { "durationMs": 1234, "content": "/tmp/coral-jobs/job-uuid/result.md" }
+  "result": { "durationMs": 1234, "path": "/tmp/coral-jobs/job-uuid/result.md", "content": "..." }
 }
 ```
 
-With `inline: true`:
-```json
-{
-  "state": "ended",
-  "completedJobId": "job-uuid",
-  "sessionId": "session-uuid",
-  "remainingJobIds": [],
-  "result": { "content": "...", "durationMs": 1234 }
-}
-```
+`result.content` is omitted when the serialized response exceeds the inline budget; use `Read(result.path)` as fallback.
 
-Workflow jobs follow the same contract — `result.content` is always present:
+Workflow jobs follow the same contract — `result.path` is always present and `result.content` is optional:
 ```json
 {
   "state": "ended",
@@ -340,7 +331,8 @@ Workflow jobs follow the same contract — `result.content` is always present:
         }
       ]
     },
-    "content": "/tmp/coral-jobs/workflow-job/result.md"
+    "path": "/tmp/coral-jobs/workflow-job/result.md",
+    "content": "..."
   }
 }
 ```
@@ -374,8 +366,9 @@ This is a normal accepted launch outcome, not an error. The job auto-dispatches 
 - **Cross-provider**: accepts mixed Codex/Claude job IDs in one call.
 - **Progress notifications**: incremental updates are emitted through `notifications/progress`.
 - **Incremental streaming**: pass `cursor` from a previous wait response to resume from where the last call left off.
-- **Content field**: `result.content` is always present. `inline: false` (default) → file path. `inline: true` → actual text (workflow jobs read the full serialized step markdown from the artifact file).
-- **Selective read**: with `inline: false`, `Read(result.content)` loads the full artifact. Use `result.workflow.steps[N].start` and `end` to read only the step you need with `Read(result.content, start, limit)`.
+- **Content field**: `result.path` is always present. `result.content` is optional enrichment — present when the serialized response fits within the inline budget.
+- **Selective read**: `Read(result.path)` loads the full artifact. Use `result.workflow.steps[N].start` and `end` to read only the step you need with `Read(result.path, start, limit)`.
+- **Workflow fallback**: use `result.content ?? Read(result.path)`, then use `result.workflow.steps[N].start` and `end` to read only the step you need.
 - **Workflow line semantics**: `start` and `end` bound the content block for each step (line numbers in the artifact file).
 
 ---
@@ -464,7 +457,7 @@ Returns immediately (same as `codex`/`claude` exec). Pipeline runs in background
 }
 ```
 
-Use `wait({ jobs: [job] })` then `Read(result.content)` for the pipeline result. Successful, failed, and aborted workflow waits include `result.workflow.steps` so callers can read only the relevant section without loading the full artifact.
+Use `wait({ jobs: [job] })` then `result.content ?? Read(result.path)` for the pipeline result. Successful, failed, and aborted workflow waits include `result.workflow.steps` so callers can read only the relevant section without loading the full artifact.
 
 ### Step Output Format
 

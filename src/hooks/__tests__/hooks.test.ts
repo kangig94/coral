@@ -436,7 +436,7 @@ describe('post-compact.mjs', () => {
     const output = expectHookOutput(result);
     expect(output.hookSpecificOutput.additionalContext).toContain('Completed during compaction:');
     expect(output.hookSpecificOutput.additionalContext).toContain('wait({ jobs: [');
-    expect(output.hookSpecificOutput.additionalContext).toContain('inline: true');
+    expect(output.hookSpecificOutput.additionalContext).toContain('Read result.content if present, otherwise Read(result.path) for the full artifact.');
   });
 
   it('outputs Read path for completed job with result.md', () => {

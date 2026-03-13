@@ -67,8 +67,8 @@ Caller invokes codex MCP:
   -> server validates op with coralAgentSchema
   -> server reads agents/<agent>.md
   -> server prepends agent content to prompt
-  -> launchJob(handleSessionCreate/handleSessionSend)
-  -> wait({ inline: true }) → result.content
+  -> launchJob(handleSessionCreate/handleSessionSend) → { job, ... }
+  -> wait({ jobs: [job] }) → result.content ?? Read(result.path)
 ```
 
 `ensureMultiAgent()` runs in `codex-executor.ts` before Codex spawn. No SubagentStart hook is involved in Codex delegation.

@@ -173,7 +173,7 @@ execution/server.ts handleWaitStream()
 bridge/server.ts parseSseBlock() → MCP progress notifications
 ```
 
-Provider-agnostic: monitors any job regardless of whether it was launched by codex or claude.
+Provider-agnostic: monitors any job regardless of whether it was launched by codex or claude. Completed terminal results always include `result.path`; `result.content` is optional enrichment when the serialized response fits within the inline budget. Workflow callers should use `result.content ?? Read(result.path)`. Provider callers should prefer `result.content` and treat `result.path` as a best-effort recovery artifact when content is absent.
 
 ### `workflow` Tool
 
@@ -327,7 +327,8 @@ User/Skill → workflow({ expression: "(architect, critic) -> resolver", init_pr
               → waitForAllAtoms
               → readAtomOutput(result.md)
            → Final output written to /tmp/coral-jobs/<jobId>/result.md
-           → wait({ jobs: [job] }) + Read(/tmp/coral-jobs/<jobId>/result.md)
+           → wait({ jobs: [job] }) returns result.path (+ optional result.content)
+           → workflow caller uses result.content ?? Read(result.path)
 ```
 
 ### 6. Session-based Conversation (Codex)

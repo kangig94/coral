@@ -18,9 +18,9 @@ If the argument starts with `session`, handle directly:
 | Command | Action |
 |---------|--------|
 | `session list` | `codex({ op: "list" })` |
-| `session fork <session-uuid> [new-name]` | `codex({ op: "fork", session: sessionUuid, name: newName })` → `wait({ jobs: [job], inline: true })` → read `result.content` |
+| `session fork <session-uuid> [new-name]` | `codex({ op: "fork", session: sessionUuid, name: newName })` → `wait({ jobs: [job] })` → read `result.content`; if absent, `Read(result.path)` is best-effort recovery |
 
-Present: list → table (name, model, last used). fork → show response from `result.content`.
+Present: list → table (name, model, last used). fork → show response from `result.content`; if absent, `Read(result.path)` is best-effort recovery.
 Never show raw `session` UUID, `model`, or `duration_ms` unless asked.
 
 If not `session`, continue to step 2.
@@ -50,7 +50,7 @@ Dispatch TWO Codex jobs in parallel:
 - `codex({ op: "coral:critic", prompt, session, work_dir })`
 
 Use `session` only when available from step 2. Omit it for fresh review sessions.
-`wait({ jobs: pendingJobs, inline: true })` until both complete, read each `result.content`.
+`wait({ jobs: pendingJobs })` until both complete; read each `result.content`; if absent, `Read(result.path)` is best-effort recovery.
 
 After both return, synthesize:
 1. Merge findings, deduplicate
@@ -76,7 +76,7 @@ Call MCP tool directly. Pass prompt **verbatim**. Never rephrase, filter, or ref
 | No session | `codex({ op: "exec", prompt, work_dir })` → `{ job, session }` |
 | Session exists | `codex({ op: "exec", session, prompt, work_dir })` → `{ job, session }` |
 
-`wait({ jobs: [job], inline: true })` → read `result.content`.
+`wait({ jobs: [job] })` → read `result.content`; if absent, `Read(result.path)` is best-effort recovery.
 Keep using the `session` UUID from the exec/fork response for continuity.
 Show the response, then append: `session: <session_name>`.
 On error, show the error and suggest resuming with /codex.
