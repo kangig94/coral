@@ -25,6 +25,10 @@ export type BackendStatus = {
   status: 'shutting_down';
 };
 
+export type BackendStatusFull =
+  | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }> }
+  | { status: 'shutting_down' | 'unauthorized' | 'not_running' };
+
 export type ShutdownResult =
   | { ok: true; alreadyDraining?: true }
   | { ok: false; reason: string };
@@ -52,8 +56,19 @@ function isShuttingDownError(value: unknown): value is { error: 'backend_shuttin
 }
 
 export async function getBackendStatus(): Promise<BackendStatus | null> {
+  const status = await getBackendStatusFull();
+  if (status.status === 'ok') {
+    return status.health;
+  }
+  if (status.status === 'shutting_down') {
+    return { status: 'shutting_down' };
+  }
+  return null;
+}
+
+export async function getBackendStatusFull(): Promise<BackendStatusFull> {
   const info = readBackendInfo();
-  if (!info || !isProcessAlive(info.pid)) return null;
+  if (!info || !isProcessAlive(info.pid)) return { status: 'not_running' };
 
   try {
     const { body, response } = await withAbortTimeout(HEALTH_TIMEOUT_MS, async (signal) => {
@@ -69,15 +84,15 @@ export async function getBackendStatus(): Promise<BackendStatus | null> {
       };
     });
     if (response.status === 200) {
-      return isBackendStatus(body) ? body : null;
+      return isBackendStatus(body) ? { status: 'ok', health: body } : { status: 'not_running' };
     }
-    if (response.status === 503 && isShuttingDownError(body)) {
+    if (response.status === 503) {
       return { status: 'shutting_down' };
     }
-    if (response.status === 401) return null;
-    return null;
+    if (response.status === 401) return { status: 'unauthorized' };
+    return { status: 'not_running' };
   } catch {
-    return null;
+    return { status: 'not_running' };
   }
 }
 

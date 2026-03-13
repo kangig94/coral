@@ -15,6 +15,7 @@ MCP stdio server (composition root). Receives MCP tool calls from the Claude Cod
 HTTP client for the persistent backend daemon. Key exports:
 - `ensureBackend()` — read `backend.json`, healthcheck, spawn if not running or version-mismatched, poll until ready. Handles replacement of outdated daemons (shutdown old, acquire replacement lock, spawn new, wait for ready).
 - `getBackendStatus()` — read `backend.json`, confirm PID liveness, then query `GET /health` without auto-starting the backend. Returns full health payload or `shutting_down` during drain.
+- `getBackendStatusFull()` — same as `getBackendStatus()` but returns a 4-state discriminated union: `ok` (with full health), `shutting_down`, `unauthorized`, or `not_running`. Used by the CLI `backend status` subcommand.
 - `shutdownBackend()` — read `backend.json`, confirm PID liveness, then call `POST /admin/shutdown` without auto-starting the backend. Returns idempotent drain-aware status.
 - `proxyToolCall(name, args, ctx)` — `POST /tool` with JSON body and auth token
 - `streamWait(jobIds, timeoutSeconds, backendInfo, lastEventId?)` — async generator yielding `WaitStreamEvent` from SSE response. Includes SSE block parsing (`parseSseBlock`) and typed event validation (`parseWaitStreamEvent`).
@@ -126,6 +127,26 @@ Persistent store for discuss sessions. Owns compare-and-append writes to `event-
 ### src/execution/discuss-manager.ts - Live Discuss Orchestrator
 
 `DiscussManager`: the imperative shell for live discuss sessions. Holds attached live snapshots, drives the control loop, launches provider turns through `ExecutionService`, records runtime bookkeeping events, handles manual participation, derives watch history, and resumes persisted control phases on backend restart. It never mutates authority state directly; every change goes through `DiscussSessionStore.append()` with a freshly validated event batch from `state-machine.ts`. See `src/execution/discuss-manager.ts`.
+
+---
+
+## CLI Modules (`src/cli/`)
+
+### src/cli/main.ts - CLI Entry Point
+
+Commander-based parallel client for all Coral MCP tools. Bundled as `bridge/coral-cli.cjs` (third esbuild entry point). Direct invocation: `node bridge/coral-cli.cjs ...`; bare `coral-cli ...` is resolved by the `hooks/cli-resolve.mjs` PreToolUse hook.
+
+**Subcommands**: `codex exec|fork|list|coral:<agent>`, `claude exec|fork|list|coral:<agent>`, `wait`, `abort`, `workflow`, `backend status|shutdown`, `discuss seed|start|watch|participate|abort`.
+
+**Response normalizer** — `normalizeResult(result)` handles three payload shapes from `/tool` responses: `McpResult` envelopes (unwraps `content[0].text`, parses JSON), `{ status: 'rejected' }` launches (stderr + exit 1), and plain JSON success (stdout + exit 0). `BackendToolHttpError` carries HTTP status code and parsed JSON body for structured error output.
+
+**Wait output** — calls `streamWait()` from `src/bridge/backend-client.ts`, writes NDJSON records `{"cursor":"..."|null,"event":{...}}`. `shapeInlineTerminal()` matches bridge inline semantics for terminal events.
+
+**Provider `coral:<agent>` normalization** — `normalizeProviderArgv()` rewrites `process.argv` before Commander parses it, converting `codex coral:architect` → `codex coral architect` for clean subcommand routing.
+
+**Backend subcommands** — use `getBackendStatusFull()` and `shutdownBackend()` from `src/bridge/backend-client.ts`; never call `ensureBackend()`, so the daemon is not auto-started as a side effect. `backend status` always exits 0 for all four states (`ok`, `shutting_down`, `unauthorized`, `not_running`).
+
+See `src/cli/main.ts`.
 
 ---
 

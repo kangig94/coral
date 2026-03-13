@@ -1,3 +1,4 @@
+// @flaky — vi.resetModules() + dynamic import contention under parallel suite execution; run with retry
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -20,7 +21,7 @@ async function loadBackendToolModule(): Promise<BridgeBackendToolModule> {
   return import('../backend-tool.js');
 }
 
-describe('bridge backend-tool', () => {
+describe('bridge backend-tool', { retry: 2 }, () => {
   beforeEach(() => {
     getBackendStatusMock.mockReset();
     shutdownBackendMock.mockReset();

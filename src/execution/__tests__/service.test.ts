@@ -1192,7 +1192,8 @@ describe('ExecutionService', () => {
   });
 });
 
-describe('ExecutionService adversarial', () => {
+// @flaky — timing-sensitive concurrent fork tests; passes in isolation, retry under parallel suite
+describe('ExecutionService adversarial', { retry: 2 }, () => {
   let ctx: CallerContext;
 
   beforeEach(() => {

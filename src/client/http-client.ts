@@ -20,6 +20,16 @@ interface ProviderToolOptions {
   system_prompt?: string;
 }
 
+interface ProviderExecOptions extends ProviderToolOptions {
+  session?: string;
+}
+
+interface ProviderCoralDispatchOptions {
+  context?: CallerContext;
+  session?: string;
+  work_dir?: string;
+}
+
 interface WorkflowOptions {
   init_prompt: string;
   context?: string;
@@ -179,6 +189,18 @@ function parseSseBlock(block: string): SseEventBlock | null {
   return { event, data: data.join('\n') };
 }
 
+export class BackendToolHttpError extends Error {
+  constructor(
+    message: string,
+    public readonly statusCode: number,
+    public readonly body: unknown,
+  ) {
+    super(message);
+    this.name = 'BackendToolHttpError';
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 /**
  * Typed HTTP wrapper around the Coral backend endpoints used by coral-reef.
  */
@@ -198,8 +220,7 @@ export class BackendClient {
    * Starts a new Codex execution.
    */
   async exec(prompt: string, options: ProviderToolOptions = {}): Promise<unknown> {
-    const { context, ...args } = options;
-    return this.proxyToolCall('codex', { op: 'exec', prompt, ...args }, this.resolveContext(context));
+    return this.providerExec('codex', prompt, options);
   }
 
   /**
@@ -214,21 +235,14 @@ export class BackendClient {
    * Forks a Codex session, optionally with a follow-up prompt.
    */
   async fork(source: string, prompt?: string, options: ProviderToolOptions = {}): Promise<unknown> {
-    const { context, ...args } = options;
-    const request: Record<string, unknown> = { op: 'fork', session: source, ...args };
-
-    if (prompt !== undefined) {
-      request.prompt = prompt;
-    }
-
-    return this.proxyToolCall('codex', request, this.resolveContext(context));
+    return this.providerFork('codex', source, prompt, options);
   }
 
   /**
    * Aborts a single backend job.
    */
   async abort(jobId: string, context?: CallerContext): Promise<unknown> {
-    return this.proxyToolCall('abort', { jobs: [jobId] }, this.resolveContext(context));
+    return this.abortJobs([jobId], context);
   }
 
   /**
@@ -249,6 +263,99 @@ export class BackendClient {
     }
 
     return this.proxyToolCall('workflow', { expression, ...options }, this.resolveContext(callerContext));
+  }
+
+  async providerExec(provider: string, prompt: string, options: ProviderExecOptions = {}): Promise<unknown> {
+    const { context, ...args } = options;
+    return this.proxyToolCall(provider, { op: 'exec', prompt, ...args }, this.resolveContext(context));
+  }
+
+  async providerFork(
+    provider: string,
+    session: string,
+    prompt?: string,
+    options: ProviderToolOptions = {},
+  ): Promise<unknown> {
+    const { context, ...args } = options;
+    const request: Record<string, unknown> = { op: 'fork', session, ...args };
+
+    if (prompt !== undefined) {
+      request.prompt = prompt;
+    }
+
+    return this.proxyToolCall(provider, request, this.resolveContext(context));
+  }
+
+  async providerList(provider: string, context?: CallerContext): Promise<unknown> {
+    return this.proxyToolCall(provider, { op: 'list' }, this.resolveContext(context));
+  }
+
+  async providerCoralDispatch(
+    provider: string,
+    agentName: string,
+    prompt: string,
+    options: ProviderCoralDispatchOptions = {},
+  ): Promise<unknown> {
+    const { context, ...args } = options;
+    return this.proxyToolCall(
+      provider,
+      { op: `coral:${agentName}`, prompt, ...args },
+      this.resolveContext(context),
+    );
+  }
+
+  async discussSeed(
+    args: {
+      controversy_axes: Array<{ axis: string; positions: string[] }>;
+      n: number;
+      seed: number;
+      demographics?: { origin_weights: Record<string, number>; outlier_ratio?: number };
+    },
+    context?: CallerContext,
+  ): Promise<unknown> {
+    return this.proxyToolCall('discuss_seed', args, this.resolveContext(context));
+  }
+
+  async discussStart(
+    args: {
+      topic: string;
+      agents: Array<{
+        name: string;
+        persona: string;
+        participation?: string;
+        provider?: string;
+        model?: string;
+      }>;
+      config?: { min_bid_delay_ms?: number };
+    },
+    context?: CallerContext,
+  ): Promise<unknown> {
+    return this.proxyToolCall('discuss_start', args, this.resolveContext(context));
+  }
+
+  async discussWatch(session: string, cursor?: number, context?: CallerContext): Promise<unknown> {
+    return this.proxyToolCall('discuss_watch', { session, cursor }, this.resolveContext(context));
+  }
+
+  async discussParticipate(
+    args: {
+      session: string;
+      agent_name: string;
+      score?: number;
+      thought?: string;
+      content?: string;
+    },
+    context?: CallerContext,
+  ): Promise<unknown> {
+    return this.proxyToolCall('discuss_participate', args, this.resolveContext(context));
+  }
+
+  async discussAbort(session: string, context?: CallerContext): Promise<unknown> {
+    return this.proxyToolCall('discuss_abort', { session }, this.resolveContext(context));
+  }
+
+  async abortJobs(jobIds: string[], context?: CallerContext): Promise<unknown> {
+    return this.proxyToolCall('abort', { jobs: jobIds }, this.resolveContext(context));
   }
 
   /**
@@ -441,7 +548,12 @@ export class BackendClient {
         });
 
         if (!response.ok) {
-          throw new Error(describeHttpError(response.status, response.statusText));
+          const responseBody = await parseJsonResponse(response);
+          throw new BackendToolHttpError(
+            describeHttpError(response.status, response.statusText),
+            response.status,
+            responseBody,
+          );
         }
 
         return parseJsonResponse(response);

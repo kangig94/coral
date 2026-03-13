@@ -46,6 +46,14 @@ await esbuild.build({
 });
 console.log('Built bridge/coral-backend.cjs');
 
+await esbuild.build({
+  ...sharedOpts,
+  entryPoints: ['src/cli/main.ts'],
+  outfile: 'bridge/coral-cli.cjs',
+  banner: { js: '#!/usr/bin/env node\n' + sharedOpts.banner.js },
+});
+console.log('Built bridge/coral-cli.cjs');
+
 // Write bundle manifest with content hash for version-independent change detection
 const backendHash = createHash('sha256')
   .update(readFileSync('bridge/coral-backend.cjs'))
