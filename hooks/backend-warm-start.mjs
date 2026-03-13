@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -15,7 +16,15 @@ try {
   const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
   if (!pluginRoot) process.exit(0);
 
-  const infoPath = join(homedir(), '.claude', 'coral', 'backend.json');
+  let canonicalPluginRoot;
+  try {
+    canonicalPluginRoot = realpathSync(pluginRoot);
+  } catch {
+    process.exit(0);
+  }
+
+  const namespace = createHash('sha256').update(canonicalPluginRoot).digest('hex').slice(0, 12);
+  const infoPath = join(homedir(), '.claude', 'coral', 'installations', namespace, 'backend.json');
   try {
     const info = JSON.parse(readFileSync(infoPath, 'utf-8'));
     if (info && typeof info.pid === 'number' && info.pid > 0) {

@@ -452,7 +452,7 @@ backend.command('status')
   .description('Show backend daemon status')
   .action(async () => {
     try {
-      const status = await getBackendStatusFull();
+      const status = await getBackendStatusFull(pluginRoot);
       process.stdout.write(JSON.stringify(status) + '\n');
     } catch (error) {
       emitError(error);
@@ -463,7 +463,7 @@ backend.command('shutdown')
   .description('Gracefully shut down backend daemon')
   .action(async () => {
     try {
-      const result = await shutdownBackend();
+      const result = await shutdownBackend(pluginRoot);
       if (result.ok) {
         process.stdout.write(JSON.stringify(result) + '\n');
         return;

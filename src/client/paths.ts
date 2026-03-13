@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -7,16 +9,25 @@ function coralHome(): string {
   return join(homedir(), '.claude', 'coral');
 }
 
+export function pluginRootNamespace(pluginRoot: string): string {
+  const canonical = realpathSync(pluginRoot);
+  return createHash('sha256').update(canonical).digest('hex').slice(0, 12);
+}
+
+export function installationDir(pluginRoot: string): string {
+  return join(coralHome(), 'installations', pluginRootNamespace(pluginRoot));
+}
+
+export function backendInfoPath(pluginRoot: string): string {
+  return join(installationDir(pluginRoot), 'backend.json');
+}
+
+export function backendLockPath(pluginRoot: string): string {
+  return join(installationDir(pluginRoot), 'backend.lock');
+}
+
 export function sessionBase(): string {
   return join(coralHome(), 'execution', 'sessions');
-}
-
-export function backendInfoPath(): string {
-  return join(coralHome(), 'backend.json');
-}
-
-export function backendLockPath(): string {
-  return join(coralHome(), 'backend.lock');
 }
 
 export function discussProjectRootsPath(): string {

@@ -5,7 +5,7 @@ import { readFileSync, unlinkSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { backendInfoPath, backendLockPath } from './paths.js';
+import { backendInfoPath, backendLockPath, pluginRootNamespace } from './paths.js';
 import { readBackendInfo, type BackendInfo } from '../execution/backend-info.js';
 import { isNoEntryError, isRecord, readBundleHash, tryExclusiveWrite } from '../shared/mcp-utils.js';
 
@@ -19,6 +19,7 @@ type BackendHealth = {
   version: string;
   bundleHash: string;
   instanceId: string;
+  namespace: string;
 };
 
 type ReplacementLock = {
@@ -41,7 +42,9 @@ function isBackendHealth(value: unknown): value is BackendHealth {
     && value.status === 'ok'
     && typeof value.version === 'string'
     && typeof value.bundleHash === 'string'
-    && typeof value.instanceId === 'string';
+    && typeof value.instanceId === 'string'
+    && typeof value.namespace === 'string'
+    && value.namespace.length > 0;
 }
 
 function currentBundleHash(root: string): string {
@@ -91,11 +94,19 @@ async function fetchBackendHealth(info: BackendInfo): Promise<BackendHealth | nu
   }
 }
 
-async function readHealthyBackendInfo(info = readBackendInfo()): Promise<BackendInfo | null> {
+async function readHealthyBackendInfo(root: string, info = readBackendInfo(root)): Promise<BackendInfo | null> {
   if (!info) return null;
   const health = await fetchBackendHealth(info);
   if (!health) return null;
-  if (health.bundleHash !== info.bundleHash || health.instanceId !== info.instanceId) return null;
+  const expectedNamespace = pluginRootNamespace(root);
+  if (
+    health.namespace !== expectedNamespace
+    || health.namespace !== info.namespace
+    || health.bundleHash !== info.bundleHash
+    || health.instanceId !== info.instanceId
+  ) {
+    return null;
+  }
   return info;
 }
 
@@ -111,7 +122,11 @@ async function requestBackendShutdown(info: BackendInfo): Promise<void> {
   }
 }
 
-function tryAcquireReplacementLock(version: string, bundleHash: string): ReplacementLock | null {
+function tryAcquireReplacementLock(
+  root: string,
+  version: string,
+  bundleHash: string,
+): ReplacementLock | null {
   const payload = JSON.stringify({
     instanceId: `proxy-replacement-${process.pid}-${Date.now()}`,
     pid: process.pid,
@@ -119,29 +134,29 @@ function tryAcquireReplacementLock(version: string, bundleHash: string): Replace
     bundleHash,
     startedAt: Date.now(),
   });
-  if (!tryExclusiveWrite(backendLockPath(), payload)) return null;
+  if (!tryExclusiveWrite(backendLockPath(root), payload)) return null;
   return { payload };
 }
 
-function releaseReplacementLock(lock: ReplacementLock): void {
+function releaseReplacementLock(root: string, lock: ReplacementLock): void {
   try {
-    if (readFileSync(backendLockPath(), 'utf-8') !== lock.payload) return;
+    if (readFileSync(backendLockPath(root), 'utf-8') !== lock.payload) return;
   } catch (error: unknown) {
     if (isNoEntryError(error)) return;
     throw error;
   }
 
   try {
-    unlinkSync(backendLockPath());
+    unlinkSync(backendLockPath(root));
   } catch (error: unknown) {
     if (isNoEntryError(error)) return;
     throw error;
   }
 }
 
-function removeStaleBackendInfo(): void {
+function removeStaleBackendInfo(root: string): void {
   try {
-    unlinkSync(backendInfoPath());
+    unlinkSync(backendInfoPath(root));
   } catch (error: unknown) {
     if (isNoEntryError(error)) return;
     throw error;
@@ -157,12 +172,13 @@ function spawnBackend(backendBin: string): void {
 }
 
 async function waitForReplacementBackend(
+  root: string,
   oldInstanceId: string | null,
   expectedHash: string,
   deadline: number,
 ): Promise<BackendInfo> {
   while (Date.now() < deadline) {
-    const info = await readHealthyBackendInfo();
+    const info = await readHealthyBackendInfo(root);
     if (
       info
       && info.bundleHash === expectedHash
@@ -186,8 +202,8 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
 
   const root = resolvePluginRoot(pluginRoot);
   const backendBin = join(root, 'bridge', 'coral-backend.cjs');
-  const existingInfo = readBackendInfo();
-  const existingHealthy = await readHealthyBackendInfo(existingInfo);
+  const existingInfo = readBackendInfo(root);
+  const existingHealthy = await readHealthyBackendInfo(root, existingInfo);
   const expectedHash = currentBundleHash(root);
   if (existingHealthy && existingHealthy.bundleHash === expectedHash) {
     return summarizeBackend(existingHealthy);
@@ -203,7 +219,7 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
 
   const startupDeadline = Date.now() + STARTUP_TIMEOUT_MS;
   while (Date.now() < startupDeadline) {
-    const healthy = await readHealthyBackendInfo();
+    const healthy = await readHealthyBackendInfo(root);
     if (
       healthy
       && healthy.bundleHash === expectedHash
@@ -221,18 +237,18 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
       await requestBackendShutdown(healthy);
     }
 
-    const replacementLock = tryAcquireReplacementLock(currentVersion(root), expectedHash);
+    const replacementLock = tryAcquireReplacementLock(root, currentVersion(root), expectedHash);
     if (replacementLock) {
       try {
-        removeStaleBackendInfo();
+        removeStaleBackendInfo(root);
       } finally {
-        releaseReplacementLock(replacementLock);
+        releaseReplacementLock(root, replacementLock);
       }
 
       spawnBackend(backendBin);
       const replacementDeadline = Math.min(startupDeadline, Date.now() + REPLACEMENT_TIMEOUT_MS);
       return summarizeBackend(
-        await waitForReplacementBackend(replacedInstanceId, expectedHash, replacementDeadline),
+        await waitForReplacementBackend(root, replacedInstanceId, expectedHash, replacementDeadline),
       );
     }
 

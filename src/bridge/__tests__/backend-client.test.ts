@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { WaitStreamEvent } from '../../types.js';
 
 let tmpDir = '';
 const PKG_VERSION = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf-8')).version as string;
+const TEST_PLUGIN_ROOT = '/test/plugin/root';
 
 function readTestBundleHash(): string {
   try {
@@ -34,6 +36,14 @@ function backendInfoPath(): string {
 
 function backendLockPath(): string {
   return join(tmpDir, 'backend.lock');
+}
+
+function actualPluginRoot(): string {
+  return join(tmpDir, 'plugin-root');
+}
+
+function actualPluginNamespace(): string {
+  return createHash('sha256').update(realpathSync(actualPluginRoot())).digest('hex').slice(0, 12);
 }
 
 vi.mock('../../execution/backend-info.js', () => ({
@@ -65,10 +75,11 @@ function makeInfo(overrides: Partial<{
   port: number;
   token: string;
   version: string;
-  bundleHash: string;
-  instanceId: string;
-  startedAt: number;
-}> = {}) {
+    bundleHash: string;
+    instanceId: string;
+    namespace: string;
+    startedAt: number;
+  }> = {}) {
   return {
     pid: 1234,
     port: 4100,
@@ -77,6 +88,7 @@ function makeInfo(overrides: Partial<{
     version: PKG_VERSION,
     bundleHash: BUNDLE_HASH,
     instanceId: 'backend-instance',
+    namespace: actualPluginNamespace(),
     startedAt: 1_700_000_000_000,
     ...overrides,
   };
@@ -96,9 +108,10 @@ async function loadBackendClientModule(): Promise<BridgeBackendClientModule> {
 
 function makeBackendStatus(overrides: Partial<{
   version: string;
-  bundleHash: string;
-  instanceId: string;
-  uptimeMs: number;
+    bundleHash: string;
+    instanceId: string;
+    namespace: string;
+    uptimeMs: number;
   activeChildren: number;
   activeJobs: number;
   inflightRequests: number;
@@ -108,6 +121,7 @@ function makeBackendStatus(overrides: Partial<{
     version: PKG_VERSION,
     bundleHash: BUNDLE_HASH,
     instanceId: 'backend-instance',
+    namespace: actualPluginNamespace(),
     uptimeMs: 12_345,
     activeChildren: 2,
     activeJobs: 3,
@@ -145,6 +159,12 @@ function expectHealthRequest(info: TestBackendInfo) {
 describe('bridge backend-client', () => {
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'coral-bridge-backend-client-test-'));
+    mkdirSync(join(actualPluginRoot(), 'bridge'), { recursive: true });
+    writeFileSync(
+      join(actualPluginRoot(), 'bridge', 'manifest.json'),
+      JSON.stringify({ bundleHash: BUNDLE_HASH }, null, 2),
+      'utf-8',
+    );
     readBackendInfoMock.mockReset();
     spawnMock.mockClear();
     fetchMock.mockReset();
@@ -166,7 +186,17 @@ describe('bridge backend-client', () => {
 
     fetchMock.mockResolvedValueOnce(jsonResponse(status));
 
-    await expect(client.getBackendStatus()).resolves.toEqual(status);
+    await expect(client.getBackendStatus(TEST_PLUGIN_ROOT)).resolves.toEqual({
+      status: 'ok',
+      version: status.version,
+      bundleHash: status.bundleHash,
+      instanceId: status.instanceId,
+      uptimeMs: status.uptimeMs,
+      activeChildren: status.activeChildren,
+      activeJobs: status.activeJobs,
+      inflightRequests: status.inflightRequests,
+    });
+    expect(readBackendInfoMock).toHaveBeenCalledWith(TEST_PLUGIN_ROOT);
     expect(killSpy).toHaveBeenCalledWith(info.pid, 0);
     expectHealthRequest(info);
   });
@@ -178,10 +208,20 @@ describe('bridge backend-client', () => {
 
     fetchMock.mockResolvedValueOnce(jsonResponse(status));
 
-    await expect(client.getBackendStatusFull()).resolves.toEqual({
+    await expect(client.getBackendStatusFull(TEST_PLUGIN_ROOT)).resolves.toEqual({
       status: 'ok',
-      health: status,
+      health: {
+        status: 'ok',
+        version: status.version,
+        bundleHash: status.bundleHash,
+        instanceId: status.instanceId,
+        uptimeMs: status.uptimeMs,
+        activeChildren: status.activeChildren,
+        activeJobs: status.activeJobs,
+        inflightRequests: status.inflightRequests,
+      },
     });
+    expect(readBackendInfoMock).toHaveBeenCalledWith(TEST_PLUGIN_ROOT);
     expect(killSpy).toHaveBeenCalledWith(info.pid, 0);
     expectHealthRequest(info);
   });
@@ -191,7 +231,8 @@ describe('bridge backend-client', () => {
 
     readBackendInfoMock.mockReturnValueOnce(null);
 
-    await expect(client.getBackendStatus()).resolves.toBeNull();
+    await expect(client.getBackendStatus(TEST_PLUGIN_ROOT)).resolves.toBeNull();
+    expect(readBackendInfoMock).toHaveBeenCalledWith(TEST_PLUGIN_ROOT);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -200,7 +241,8 @@ describe('bridge backend-client', () => {
 
     readBackendInfoMock.mockReturnValueOnce(null);
 
-    await expect(client.getBackendStatusFull()).resolves.toEqual({ status: 'not_running' });
+    await expect(client.getBackendStatusFull(TEST_PLUGIN_ROOT)).resolves.toEqual({ status: 'not_running' });
+    expect(readBackendInfoMock).toHaveBeenCalledWith(TEST_PLUGIN_ROOT);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -208,7 +250,8 @@ describe('bridge backend-client', () => {
     const client = await loadBackendClientModule();
     mockDeadBackendProcess();
 
-    await expect(client.getBackendStatus()).resolves.toBeNull();
+    await expect(client.getBackendStatus(TEST_PLUGIN_ROOT)).resolves.toBeNull();
+    expect(readBackendInfoMock).toHaveBeenCalledWith(TEST_PLUGIN_ROOT);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -216,7 +259,8 @@ describe('bridge backend-client', () => {
     const client = await loadBackendClientModule();
     mockDeadBackendProcess();
 
-    await expect(client.getBackendStatusFull()).resolves.toEqual({ status: 'not_running' });
+    await expect(client.getBackendStatusFull(TEST_PLUGIN_ROOT)).resolves.toEqual({ status: 'not_running' });
+    expect(readBackendInfoMock).toHaveBeenCalledWith(TEST_PLUGIN_ROOT);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -225,7 +269,8 @@ describe('bridge backend-client', () => {
     mockRunningBackend();
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'backend_shutting_down' }, 503));
 
-    await expect(client.getBackendStatus()).resolves.toEqual({ status: 'shutting_down' });
+    await expect(client.getBackendStatus(TEST_PLUGIN_ROOT)).resolves.toEqual({ status: 'shutting_down' });
+    expect(readBackendInfoMock).toHaveBeenCalledWith(TEST_PLUGIN_ROOT);
   });
 
   it('getBackendStatusFull returns shutting_down during backend drain', async () => {
@@ -233,7 +278,8 @@ describe('bridge backend-client', () => {
     mockRunningBackend();
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'backend_shutting_down' }, 503));
 
-    await expect(client.getBackendStatusFull()).resolves.toEqual({ status: 'shutting_down' });
+    await expect(client.getBackendStatusFull(TEST_PLUGIN_ROOT)).resolves.toEqual({ status: 'shutting_down' });
+    expect(readBackendInfoMock).toHaveBeenCalledWith(TEST_PLUGIN_ROOT);
   });
 
   it('getBackendStatus returns null on stale auth', async () => {
@@ -241,7 +287,8 @@ describe('bridge backend-client', () => {
     mockRunningBackend();
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'unauthorized' }, 401));
 
-    await expect(client.getBackendStatus()).resolves.toBeNull();
+    await expect(client.getBackendStatus(TEST_PLUGIN_ROOT)).resolves.toBeNull();
+    expect(readBackendInfoMock).toHaveBeenCalledWith(TEST_PLUGIN_ROOT);
   });
 
   it('getBackendStatusFull returns unauthorized on stale auth', async () => {
@@ -249,7 +296,8 @@ describe('bridge backend-client', () => {
     mockRunningBackend();
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'unauthorized' }, 401));
 
-    await expect(client.getBackendStatusFull()).resolves.toEqual({ status: 'unauthorized' });
+    await expect(client.getBackendStatusFull(TEST_PLUGIN_ROOT)).resolves.toEqual({ status: 'unauthorized' });
+    expect(readBackendInfoMock).toHaveBeenCalledWith(TEST_PLUGIN_ROOT);
   });
 
   it('getBackendStatus returns null on connection errors', async () => {
@@ -257,7 +305,8 @@ describe('bridge backend-client', () => {
     mockRunningBackend();
     fetchMock.mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
 
-    await expect(client.getBackendStatus()).resolves.toBeNull();
+    await expect(client.getBackendStatus(TEST_PLUGIN_ROOT)).resolves.toBeNull();
+    expect(readBackendInfoMock).toHaveBeenCalledWith(TEST_PLUGIN_ROOT);
   });
 
   it('getBackendStatusFull returns not_running on connection errors', async () => {
@@ -265,7 +314,8 @@ describe('bridge backend-client', () => {
     mockRunningBackend();
     fetchMock.mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
 
-    await expect(client.getBackendStatusFull()).resolves.toEqual({ status: 'not_running' });
+    await expect(client.getBackendStatusFull(TEST_PLUGIN_ROOT)).resolves.toEqual({ status: 'not_running' });
+    expect(readBackendInfoMock).toHaveBeenCalledWith(TEST_PLUGIN_ROOT);
   });
 
   it('shutdownBackend returns ok when shutdown starts', async () => {
@@ -273,7 +323,8 @@ describe('bridge backend-client', () => {
     const { info } = mockRunningBackend();
     fetchMock.mockResolvedValueOnce(jsonResponse({ status: 'shutting_down' }));
 
-    await expect(client.shutdownBackend()).resolves.toEqual({ ok: true });
+    await expect(client.shutdownBackend(TEST_PLUGIN_ROOT)).resolves.toEqual({ ok: true });
+    expect(readBackendInfoMock).toHaveBeenCalledWith(TEST_PLUGIN_ROOT);
     expect(fetchMock).toHaveBeenCalledWith(`http://127.0.0.1:${info.port}/admin/shutdown`, expect.objectContaining({
       method: 'POST',
       headers: { 'X-Coral-Backend-Token': info.token },
@@ -285,7 +336,8 @@ describe('bridge backend-client', () => {
 
     readBackendInfoMock.mockReturnValueOnce(null);
 
-    await expect(client.shutdownBackend()).resolves.toEqual({ ok: false, reason: 'not_running' });
+    await expect(client.shutdownBackend(TEST_PLUGIN_ROOT)).resolves.toEqual({ ok: false, reason: 'not_running' });
+    expect(readBackendInfoMock).toHaveBeenCalledWith(TEST_PLUGIN_ROOT);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -294,7 +346,8 @@ describe('bridge backend-client', () => {
     mockRunningBackend();
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'backend_shutting_down' }, 503));
 
-    await expect(client.shutdownBackend()).resolves.toEqual({ ok: true, alreadyDraining: true });
+    await expect(client.shutdownBackend(TEST_PLUGIN_ROOT)).resolves.toEqual({ ok: true, alreadyDraining: true });
+    expect(readBackendInfoMock).toHaveBeenCalledWith(TEST_PLUGIN_ROOT);
   });
 
   it('shutdownBackend returns unauthorized on stale auth', async () => {
@@ -302,7 +355,8 @@ describe('bridge backend-client', () => {
     mockRunningBackend();
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'unauthorized' }, 401));
 
-    await expect(client.shutdownBackend()).resolves.toEqual({ ok: false, reason: 'unauthorized' });
+    await expect(client.shutdownBackend(TEST_PLUGIN_ROOT)).resolves.toEqual({ ok: false, reason: 'unauthorized' });
+    expect(readBackendInfoMock).toHaveBeenCalledWith(TEST_PLUGIN_ROOT);
   });
 
   it('shutdownBackend rejects malformed success payloads', async () => {
@@ -314,7 +368,8 @@ describe('bridge backend-client', () => {
       headers: { 'Content-Type': 'application/json' },
     }));
 
-    await expect(client.shutdownBackend()).resolves.toEqual({ ok: false, reason: '200 OK' });
+    await expect(client.shutdownBackend(TEST_PLUGIN_ROOT)).resolves.toEqual({ ok: false, reason: '200 OK' });
+    expect(readBackendInfoMock).toHaveBeenCalledWith(TEST_PLUGIN_ROOT);
   });
 
   it('shutdownBackend returns not_running on connection errors', async () => {
@@ -322,7 +377,8 @@ describe('bridge backend-client', () => {
     mockRunningBackend();
     fetchMock.mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
 
-    await expect(client.shutdownBackend()).resolves.toEqual({ ok: false, reason: 'not_running' });
+    await expect(client.shutdownBackend(TEST_PLUGIN_ROOT)).resolves.toEqual({ ok: false, reason: 'not_running' });
+    expect(readBackendInfoMock).toHaveBeenCalledWith(TEST_PLUGIN_ROOT);
   });
 
   it('reuses a healthy backend with the current bundle hash without spawning', async () => {
@@ -335,9 +391,10 @@ describe('bridge backend-client', () => {
       version: info.version,
       bundleHash: info.bundleHash,
       instanceId: info.instanceId,
+      namespace: info.namespace,
     }));
 
-    await expect(client.ensureBackend()).resolves.toEqual({
+    await expect(client.ensureBackend(actualPluginRoot())).resolves.toEqual({
       port: info.port,
       host: info.host,
       token: info.token,
@@ -360,9 +417,10 @@ describe('bridge backend-client', () => {
       version: started.version,
       bundleHash: started.bundleHash,
       instanceId: started.instanceId,
+      namespace: started.namespace,
     }));
 
-    await expect(client.ensureBackend()).resolves.toEqual({
+    await expect(client.ensureBackend(actualPluginRoot())).resolves.toEqual({
       port: started.port,
       host: started.host,
       token: started.token,
@@ -383,12 +441,13 @@ describe('bridge backend-client', () => {
         version: info.version,
         bundleHash: info.bundleHash,
         instanceId: info.instanceId,
+        namespace: info.namespace,
       }))
       .mockResolvedValueOnce(jsonResponse({ status: 'running', job: 'job-1', session: 'session-1' }));
 
     const result = await client.proxyToolCall('codex', { op: 'exec', prompt: 'hello' }, {
       projectRoot: '/tmp/project',
-      pluginRoot: '/tmp/plugin',
+      pluginRoot: actualPluginRoot(),
     });
 
     expect(result).toEqual({ status: 'running', job: 'job-1', session: 'session-1' });
@@ -401,7 +460,7 @@ describe('bridge backend-client', () => {
       body: JSON.stringify({
         name: 'codex',
         args: { op: 'exec', prompt: 'hello' },
-        context: { projectRoot: '/tmp/project', pluginRoot: '/tmp/plugin' },
+        context: { projectRoot: '/tmp/project', pluginRoot: actualPluginRoot() },
       }),
     }));
   });

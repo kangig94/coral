@@ -18,6 +18,7 @@ try {
 
   const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
   if (!pluginRoot) process.exit(0);
+  if (!pluginRoot.includes('/.claude/plugins/cache/')) process.exit(0);
 
   const installed = join(homedir(), '.claude', 'hud', 'coral-hud.mjs');
   const source = join(pluginRoot, 'skills', 'statusline', 'coral-hud.mjs');

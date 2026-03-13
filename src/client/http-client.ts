@@ -62,6 +62,7 @@ export interface BackendHealth {
   version: string;
   bundleHash: string;
   instanceId: string;
+  namespace: string;
   uptimeMs: number;
   activeChildren: number;
   activeJobs: number;
@@ -81,6 +82,8 @@ function isBackendHealth(value: unknown): value is BackendHealth {
     && typeof value.version === 'string'
     && typeof value.bundleHash === 'string'
     && typeof value.instanceId === 'string'
+    && typeof value.namespace === 'string'
+    && value.namespace.length > 0
     && Number.isFinite(value.uptimeMs)
     && Number.isInteger(value.activeChildren)
     && Number.isInteger(value.activeJobs)
@@ -205,15 +208,16 @@ export class BackendToolHttpError extends Error {
  * Typed HTTP wrapper around the Coral backend endpoints used by coral-reef.
  */
 export class BackendClient {
-  private readonly ensureBackendHandle: () => Promise<BackendHandle>;
+  private readonly ensureBackendHandle: (pluginRoot?: string) => Promise<BackendHandle>;
   private readonly defaultContext?: CallerContext;
 
   constructor(options: {
-    ensureBackend?: () => Promise<BackendHandle>;
+    ensureBackend?: (pluginRoot?: string) => Promise<BackendHandle>;
     defaultContext?: CallerContext;
   } = {}) {
-    this.ensureBackendHandle = options.ensureBackend ?? defaultEnsureBackend;
     this.defaultContext = options.defaultContext;
+    this.ensureBackendHandle = options.ensureBackend
+      ?? ((pluginRoot?: string) => defaultEnsureBackend(pluginRoot ?? this.defaultContext?.pluginRoot));
   }
 
   /**
@@ -369,7 +373,7 @@ export class BackendClient {
       throw new Error('projectRoot is required for wait');
     }
 
-    const { port, host, token } = await this.ensureBackendHandle();
+    const { port, host, token } = await this.resolveBackendHandle();
     const fetchTimeoutMs = Math.min(
       (timeoutSeconds ?? 600) * 1000 + WAIT_FETCH_MARGIN_MS,
       MAX_WAIT_FETCH_TIMEOUT_MS,
@@ -443,7 +447,7 @@ export class BackendClient {
    * Returns backend health metadata when the daemon responds with a valid payload.
    */
   async health(): Promise<BackendHealth | null> {
-    const { port, host, token } = await this.ensureBackendHandle();
+    const { port, host, token } = await this.resolveBackendHandle();
 
     try {
       const response = await withAbortTimeout(HEALTH_TIMEOUT_MS, (signal) => fetch(`http://${host}:${port}/health`, {
@@ -467,7 +471,7 @@ export class BackendClient {
    * Requests backend shutdown.
    */
   async shutdown(): Promise<{ ok: boolean }> {
-    const { port, host, token } = await this.ensureBackendHandle();
+    const { port, host, token } = await this.resolveBackendHandle();
 
     try {
       const response = await withAbortTimeout(HEALTH_TIMEOUT_MS, (signal) => fetch(`http://${host}:${port}/admin/shutdown`, {
@@ -486,7 +490,7 @@ export class BackendClient {
    * Lists the tool descriptors currently served by the backend.
    */
   async listTools(): Promise<unknown> {
-    const { port, host, token } = await this.ensureBackendHandle();
+    const { port, host, token } = await this.resolveBackendHandle();
 
     try {
       return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
@@ -520,12 +524,17 @@ export class BackendClient {
     throw new Error('CallerContext is required for backend tool calls');
   }
 
+  private resolveBackendHandle(context?: CallerContext): Promise<BackendHandle> {
+    const pluginRoot = context?.pluginRoot ?? this.defaultContext?.pluginRoot;
+    return this.ensureBackendHandle(pluginRoot);
+  }
+
   private async proxyToolCall(
     name: string,
     args: Record<string, unknown>,
     ctx: CallerContext,
   ): Promise<unknown> {
-    const { port, host, token } = await this.ensureBackendHandle();
+    const { port, host, token } = await this.resolveBackendHandle(ctx);
     const body = JSON.stringify({
       name,
       args,

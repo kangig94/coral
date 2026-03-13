@@ -12,6 +12,8 @@
 export {
   JOBS_DIR,
   sessionBase,
+  pluginRootNamespace,
+  installationDir,
   backendInfoPath,
   backendLockPath,
   discussBaseDir,

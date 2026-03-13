@@ -31,6 +31,7 @@ const mockState = vi.hoisted(() => ({
   getNewProvider: vi.fn(),
   resolveCoralContent: vi.fn(),
 }));
+const TEST_BACKEND_NAMESPACE = 'test-namespace';
 
 vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof import('node:os')>('node:os');
@@ -468,6 +469,7 @@ describe('ExecutionService', () => {
       sessionId: 'session-1',
       provider: 'codex',
       projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
       phase: 'running',
       launch: {
         state: 'ready',
@@ -528,6 +530,7 @@ describe('ExecutionService', () => {
       sessionId: 'session-1',
       provider: 'codex',
       projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
       phase: 'completed',
       launch: {
         state: 'ready',
@@ -562,6 +565,7 @@ describe('ExecutionService', () => {
       sessionId: 'session-1',
       provider: 'codex',
       projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
       phase: 'running',
       launch: {
         state: 'ready',
@@ -1473,6 +1477,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
             sessionId: 'session-a',
             provider: 'codex',
             projectRoot: ctx.projectRoot,
+            backendNamespace: TEST_BACKEND_NAMESPACE,
             phase: 'running',
             launch: { state: 'ready', updatedAt: '' },
           };
@@ -1483,6 +1488,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
             sessionId: 'session-b',
             provider: 'codex',
             projectRoot: ctx.projectRoot,
+            backendNamespace: TEST_BACKEND_NAMESPACE,
             phase: 'running',
             launch: { state: 'ready', updatedAt: '' },
           };
@@ -1522,6 +1528,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
           sessionId: 'session-1',
           provider: 'codex',
           projectRoot: ctx.projectRoot,
+          backendNamespace: TEST_BACKEND_NAMESPACE,
           phase: 'running',
           launch: { state: 'ready', updatedAt: '' },
         };

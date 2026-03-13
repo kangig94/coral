@@ -13,6 +13,7 @@ export type BackendInfo = {
   version: string;
   bundleHash: string;
   instanceId: string;
+  namespace: string;
   startedAt: number;
 };
 
@@ -34,26 +35,29 @@ function isBackendInfo(value: unknown): value is BackendInfo {
     && record.bundleHash.length > 0
     && typeof record.instanceId === 'string'
     && record.instanceId.length > 0
+    && typeof record.namespace === 'string'
+    && record.namespace.length > 0
     && Number.isFinite(record.startedAt)
     && (record.startedAt as number) > 0;
 }
 
-export function writeBackendInfo(info: BackendInfo): void {
-  mkdirSync(dirname(backendInfoPath()), { recursive: true });
+export function writeBackendInfo(pluginRoot: string, info: BackendInfo): void {
+  const infoPath = backendInfoPath(pluginRoot);
+  mkdirSync(dirname(infoPath), { recursive: true });
 
-  const tmpPath = `${backendInfoPath()}.tmp`;
+  const tmpPath = `${infoPath}.tmp`;
   const payload = JSON.stringify(info);
   writeFileSync(tmpPath, payload, { encoding: 'utf-8', mode: 0o600 });
-  renameSync(tmpPath, backendInfoPath());
+  renameSync(tmpPath, infoPath);
 
   if (process.platform !== 'win32') {
-    chmodSync(backendInfoPath(), 0o600);
+    chmodSync(infoPath, 0o600);
   }
 }
 
-export function readBackendInfo(): BackendInfo | null {
+export function readBackendInfo(pluginRoot: string): BackendInfo | null {
   try {
-    const raw = readFileSync(backendInfoPath(), 'utf-8');
+    const raw = readFileSync(backendInfoPath(pluginRoot), 'utf-8');
     const parsed: unknown = JSON.parse(raw);
     return isBackendInfo(parsed) ? parsed : null;
   } catch (error: unknown) {
@@ -62,12 +66,12 @@ export function readBackendInfo(): BackendInfo | null {
   }
 }
 
-export function removeBackendInfoIfOwner(instanceId: string): void {
-  const info = readBackendInfo();
+export function removeBackendInfoIfOwner(pluginRoot: string, instanceId: string): void {
+  const info = readBackendInfo(pluginRoot);
   if (!info || info.instanceId !== instanceId) return;
 
   try {
-    unlinkSync(backendInfoPath());
+    unlinkSync(backendInfoPath(pluginRoot));
   } catch (error: unknown) {
     if (isNoEntryError(error)) return;
     throw error;

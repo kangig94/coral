@@ -43,24 +43,25 @@ export function formatError(error: unknown): string {
   return error instanceof Error ? error.stack ?? error.message : String(error);
 }
 
-let cachedBundleHash: string | undefined;
+const bundleHashCache = new Map<string, string>();
 
 /**
- * Read the bundle hash from bridge/manifest.json, caching the result.
- * The hash doesn't change during process lifetime.
+ * Read the bundle hash from bridge/manifest.json, caching the result per pluginRoot.
+ * The hash doesn't change during process lifetime for a given root.
  */
 export function readBundleHash(pluginRoot: string): string {
-  if (cachedBundleHash !== undefined) return cachedBundleHash;
+  const cached = bundleHashCache.get(pluginRoot);
+  if (cached !== undefined) return cached;
+  let hash = 'unknown';
   try {
     const raw = readFileSync(join(pluginRoot, 'bridge', 'manifest.json'), 'utf-8');
     const parsed: unknown = JSON.parse(raw);
     if (isRecord(parsed) && typeof parsed.bundleHash === 'string') {
-      cachedBundleHash = parsed.bundleHash;
-      return cachedBundleHash;
+      hash = parsed.bundleHash;
     }
   } catch { /* fall through */ }
-  cachedBundleHash = 'unknown';
-  return cachedBundleHash;
+  bundleHashCache.set(pluginRoot, hash);
+  return hash;
 }
 
 /**

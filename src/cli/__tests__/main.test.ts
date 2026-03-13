@@ -108,7 +108,7 @@ describe('cli main — workflow --json merge', () => {
     }));
 
     // Without backend running, will fail to connect but should get past validation
-    const { stderr } = runCli(['workflow', '--json', jsonFile]);
+    const { stderr } = runCli(['workflow', '--json', jsonFile], { HOME: tmpDir });
     // The error is a connection error, not a validation error
     expect(stderr).not.toContain('--expression is required');
     expect(stderr).not.toContain('--init-prompt is required');
@@ -140,7 +140,7 @@ describe('cli main — workflow --json merge', () => {
     }));
 
     // With both flag and json, flag wins — no validation error (both present)
-    const { stderr } = runCli(['workflow', '--expression', 'from-flag', '--json', jsonFile]);
+    const { stderr } = runCli(['workflow', '--expression', 'from-flag', '--json', jsonFile], { HOME: tmpDir });
     expect(stderr).not.toContain('--expression is required');
     expect(stderr).not.toContain('--init-prompt is required');
   });

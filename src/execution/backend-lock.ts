@@ -1,6 +1,6 @@
 import { readFileSync, unlinkSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
-import { backendLockPath } from '../client/paths.js';
+import { backendLockPath, pluginRootNamespace } from '../client/paths.js';
 import { readBackendInfo } from './backend-info.js';
 import { isNoEntryError, isProcessAlive, tryExclusiveWrite } from '../shared/mcp-utils.js';
 
@@ -55,9 +55,9 @@ function parseLockRecord(raw: string): LockRecord | null {
   }
 }
 
-function readLockSnapshot(): LockSnapshot | null {
+function readLockSnapshot(pluginRoot: string): LockSnapshot | null {
   try {
-    const raw = readFileSync(backendLockPath(), 'utf-8');
+    const raw = readFileSync(backendLockPath(pluginRoot), 'utf-8');
     return { raw, record: parseLockRecord(raw) };
   } catch (error: unknown) {
     if (isNoEntryError(error)) return null;
@@ -72,14 +72,20 @@ function snapshotKey(snapshot: LockSnapshot): string {
   return `invalid:${snapshot.raw}`;
 }
 
-function writeLockFile(record: LockRecord): boolean {
-  return tryExclusiveWrite(backendLockPath(), JSON.stringify(record));
+function writeLockFile(pluginRoot: string, record: LockRecord): boolean {
+  return tryExclusiveWrite(backendLockPath(pluginRoot), JSON.stringify(record));
 }
 
-async function isMatchingHealthyBackend(record: LockRecord): Promise<boolean> {
-  const info = readBackendInfo();
+async function isMatchingHealthyBackend(pluginRoot: string, record: LockRecord): Promise<boolean> {
+  const expectedNamespace = pluginRootNamespace(pluginRoot);
+  const info = readBackendInfo(pluginRoot);
   if (!info) return false;
-  if (info.instanceId !== record.instanceId || info.pid !== record.pid || info.bundleHash !== record.bundleHash) {
+  if (
+    info.instanceId !== record.instanceId
+    || info.pid !== record.pid
+    || info.bundleHash !== record.bundleHash
+    || info.namespace !== expectedNamespace
+  ) {
     return false;
   }
 
@@ -101,7 +107,8 @@ async function isMatchingHealthyBackend(record: LockRecord): Promise<boolean> {
     const payload = body as Record<string, unknown>;
     return payload.status === 'ok'
       && payload.bundleHash === record.bundleHash
-      && payload.instanceId === record.instanceId;
+      && payload.instanceId === record.instanceId
+      && payload.namespace === expectedNamespace;
   } catch {
     return false;
   } finally {
@@ -109,13 +116,13 @@ async function isMatchingHealthyBackend(record: LockRecord): Promise<boolean> {
   }
 }
 
-function removeLockIfSnapshotMatches(snapshot: LockSnapshot): boolean {
-  const current = readLockSnapshot();
+function removeLockIfSnapshotMatches(pluginRoot: string, snapshot: LockSnapshot): boolean {
+  const current = readLockSnapshot(pluginRoot);
   if (!current) return true;
   if (current.raw !== snapshot.raw) return false;
 
   try {
-    unlinkSync(backendLockPath());
+    unlinkSync(backendLockPath(pluginRoot));
     return true;
   } catch (error: unknown) {
     if (isNoEntryError(error)) return true;
@@ -123,7 +130,7 @@ function removeLockIfSnapshotMatches(snapshot: LockSnapshot): boolean {
   }
 }
 
-export async function acquireLock(instanceId: string, version: string, bundleHash: string): Promise<void> {
+export async function acquireLock(pluginRoot: string, instanceId: string, version: string, bundleHash: string): Promise<void> {
   const record: LockRecord = {
     instanceId,
     pid: process.pid,
@@ -136,9 +143,9 @@ export async function acquireLock(instanceId: string, version: string, bundleHas
   let observedAt = Date.now();
 
   while (true) {
-    if (writeLockFile(record)) return;
+    if (writeLockFile(pluginRoot, record)) return;
 
-    const snapshot = readLockSnapshot();
+    const snapshot = readLockSnapshot(pluginRoot);
     if (!snapshot) {
       observedKey = null;
       observedAt = Date.now();
@@ -155,7 +162,7 @@ export async function acquireLock(instanceId: string, version: string, bundleHas
     const ownerAlive = snapshot.record ? isProcessAlive(snapshot.record.pid) : false;
 
     if (snapshot.record && ownerAlive) {
-      if (await isMatchingHealthyBackend(snapshot.record)) {
+      if (await isMatchingHealthyBackend(pluginRoot, snapshot.record)) {
         throw new BackendAlreadyRunningError();
       }
       if (!deadlineExpired) {
@@ -167,7 +174,7 @@ export async function acquireLock(instanceId: string, version: string, bundleHas
       continue;
     }
 
-    if (removeLockIfSnapshotMatches(snapshot)) {
+    if (removeLockIfSnapshotMatches(pluginRoot, snapshot)) {
       observedKey = null;
       observedAt = Date.now();
       continue;
@@ -177,12 +184,12 @@ export async function acquireLock(instanceId: string, version: string, bundleHas
   }
 }
 
-export function removeLockIfOwner(instanceId: string): void {
-  const snapshot = readLockSnapshot();
+export function removeLockIfOwner(pluginRoot: string, instanceId: string): void {
+  const snapshot = readLockSnapshot(pluginRoot);
   if (!snapshot?.record || snapshot.record.instanceId !== instanceId) return;
 
   try {
-    unlinkSync(backendLockPath());
+    unlinkSync(backendLockPath(pluginRoot));
   } catch (error: unknown) {
     if (isNoEntryError(error)) return;
     throw error;

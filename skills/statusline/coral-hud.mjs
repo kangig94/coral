@@ -5,6 +5,8 @@
 // Line 2: codex model │ codex limits │ spark limits
 
 import { readFileSync, existsSync, writeFileSync, mkdirSync, openSync, fstatSync, readSync, closeSync, renameSync, unlinkSync } from "fs";
+import { realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "path";
 import { homedir } from "os";
 import { execSync } from "child_process";
@@ -95,7 +97,9 @@ function renderModel(input) {
   const name = input.model.display_name || input.model.id || "";
   return name.toLowerCase()
     .replace(/^claude\s+/, "")
-    .replace(/\((\d+[km])\s+context\)/i, "$1");
+    .replace(/\(200k\s+context\)/i, "")
+    .replace(/\((\d+[km])\s+context\)/i, "$1")
+    .replace(/\s+$/, "");
 }
 
 function renderSession(input) {
@@ -758,7 +762,19 @@ async function renderCodexData() {
 
 // --- coral backend ---
 
-const BACKEND_INFO_PATH = join(homedir(), ".claude", "coral", "backend.json");
+function resolveBackendInfoPath() {
+  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
+  if (!pluginRoot) return null;
+  try {
+    const canonical = realpathSync(pluginRoot);
+    const hash = createHash("sha256").update(canonical).digest("hex").slice(0, 12);
+    return join(homedir(), ".claude", "coral", "installations", hash, "backend.json");
+  } catch {
+    return null;
+  }
+}
+
+const BACKEND_INFO_PATH = resolveBackendInfoPath();
 const REEF_INFO_PATH = join(homedir(), ".claude", "coral", "reef.json");
 
 function readReefInfo() {
@@ -771,6 +787,8 @@ function readReefInfo() {
 }
 
 async function renderCoralLine() {
+  if (!BACKEND_INFO_PATH) return null;
+
   const cached = readBackendSlot();
   if (cached) return cached.line;
 
