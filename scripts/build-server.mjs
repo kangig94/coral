@@ -11,11 +11,20 @@ for (const file of ['plugin.json', 'marketplace.json']) {
   const path = `.claude-plugin/${file}`;
   const json = JSON.parse(readFileSync(path, 'utf8'));
   let changed = false;
-  if (json.version !== version) { json.version = version; changed = true; }
-  if (json.plugins?.[0]?.version !== undefined && json.plugins[0].version !== version) {
-    json.plugins[0].version = version; changed = true;
+
+  if (json.version !== version) {
+    json.version = version;
+    changed = true;
   }
-  if (changed) writeFileSync(path, JSON.stringify(json, null, 2) + '\n');
+
+  if (json.plugins?.[0]?.version !== undefined && json.plugins[0].version !== version) {
+    json.plugins[0].version = version;
+    changed = true;
+  }
+
+  if (changed) {
+    writeFileSync(path, JSON.stringify(json, null, 2) + '\n');
+  }
 }
 
 const sharedOpts = {

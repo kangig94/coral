@@ -116,6 +116,32 @@ function makeBackendStatus(overrides: Partial<{
   };
 }
 
+type TestBackendInfo = ReturnType<typeof makeInfo>;
+
+function mockRunningBackend(info: TestBackendInfo = makeInfo()) {
+  readBackendInfoMock.mockReturnValueOnce(info);
+  return {
+    info,
+    killSpy: vi.spyOn(process, 'kill').mockReturnValue(true),
+  };
+}
+
+function mockDeadBackendProcess(info: TestBackendInfo = makeInfo()) {
+  readBackendInfoMock.mockReturnValueOnce(info);
+  vi.spyOn(process, 'kill').mockImplementation(() => {
+    const error = new Error('process not found') as NodeJS.ErrnoException;
+    error.code = 'ESRCH';
+    throw error;
+  });
+}
+
+function expectHealthRequest(info: TestBackendInfo) {
+  expect(fetchMock).toHaveBeenCalledWith(`http://127.0.0.1:${info.port}/health`, expect.objectContaining({
+    method: 'GET',
+    headers: { 'X-Coral-Backend-Token': info.token },
+  }));
+}
+
 describe('bridge backend-client', () => {
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'coral-bridge-backend-client-test-'));
@@ -135,28 +161,21 @@ describe('bridge backend-client', () => {
 
   it('getBackendStatus returns full health when the backend is running', async () => {
     const client = await loadBackendClientModule();
-    const info = makeInfo();
-    const killSpy = vi.spyOn(process, 'kill').mockReturnValue(true);
+    const { info, killSpy } = mockRunningBackend();
     const status = makeBackendStatus({ version: info.version, instanceId: info.instanceId });
 
-    readBackendInfoMock.mockReturnValueOnce(info);
     fetchMock.mockResolvedValueOnce(jsonResponse(status));
 
     await expect(client.getBackendStatus()).resolves.toEqual(status);
     expect(killSpy).toHaveBeenCalledWith(info.pid, 0);
-    expect(fetchMock).toHaveBeenCalledWith(`http://127.0.0.1:${info.port}/health`, expect.objectContaining({
-      method: 'GET',
-      headers: { 'X-Coral-Backend-Token': info.token },
-    }));
+    expectHealthRequest(info);
   });
 
   it('getBackendStatusFull returns ok health when the backend is running', async () => {
     const client = await loadBackendClientModule();
-    const info = makeInfo();
-    const killSpy = vi.spyOn(process, 'kill').mockReturnValue(true);
+    const { info, killSpy } = mockRunningBackend();
     const status = makeBackendStatus({ version: info.version, instanceId: info.instanceId });
 
-    readBackendInfoMock.mockReturnValueOnce(info);
     fetchMock.mockResolvedValueOnce(jsonResponse(status));
 
     await expect(client.getBackendStatusFull()).resolves.toEqual({
@@ -164,10 +183,7 @@ describe('bridge backend-client', () => {
       health: status,
     });
     expect(killSpy).toHaveBeenCalledWith(info.pid, 0);
-    expect(fetchMock).toHaveBeenCalledWith(`http://127.0.0.1:${info.port}/health`, expect.objectContaining({
-      method: 'GET',
-      headers: { 'X-Coral-Backend-Token': info.token },
-    }));
+    expectHealthRequest(info);
   });
 
   it('getBackendStatus returns null when backend info is missing', async () => {
@@ -190,14 +206,7 @@ describe('bridge backend-client', () => {
 
   it('getBackendStatus returns null when the recorded pid is dead', async () => {
     const client = await loadBackendClientModule();
-    const info = makeInfo();
-    vi.spyOn(process, 'kill').mockImplementation(() => {
-      const error = new Error('process not found') as NodeJS.ErrnoException;
-      error.code = 'ESRCH';
-      throw error;
-    });
-
-    readBackendInfoMock.mockReturnValueOnce(info);
+    mockDeadBackendProcess();
 
     await expect(client.getBackendStatus()).resolves.toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
@@ -205,14 +214,7 @@ describe('bridge backend-client', () => {
 
   it('getBackendStatusFull returns not_running when the recorded pid is dead', async () => {
     const client = await loadBackendClientModule();
-    const info = makeInfo();
-    vi.spyOn(process, 'kill').mockImplementation(() => {
-      const error = new Error('process not found') as NodeJS.ErrnoException;
-      error.code = 'ESRCH';
-      throw error;
-    });
-
-    readBackendInfoMock.mockReturnValueOnce(info);
+    mockDeadBackendProcess();
 
     await expect(client.getBackendStatusFull()).resolves.toEqual({ status: 'not_running' });
     expect(fetchMock).not.toHaveBeenCalled();
@@ -220,10 +222,7 @@ describe('bridge backend-client', () => {
 
   it('getBackendStatus returns shutting_down during backend drain', async () => {
     const client = await loadBackendClientModule();
-    const info = makeInfo();
-    vi.spyOn(process, 'kill').mockReturnValue(true);
-
-    readBackendInfoMock.mockReturnValueOnce(info);
+    mockRunningBackend();
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'backend_shutting_down' }, 503));
 
     await expect(client.getBackendStatus()).resolves.toEqual({ status: 'shutting_down' });
@@ -231,10 +230,7 @@ describe('bridge backend-client', () => {
 
   it('getBackendStatusFull returns shutting_down during backend drain', async () => {
     const client = await loadBackendClientModule();
-    const info = makeInfo();
-    vi.spyOn(process, 'kill').mockReturnValue(true);
-
-    readBackendInfoMock.mockReturnValueOnce(info);
+    mockRunningBackend();
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'backend_shutting_down' }, 503));
 
     await expect(client.getBackendStatusFull()).resolves.toEqual({ status: 'shutting_down' });
@@ -242,10 +238,7 @@ describe('bridge backend-client', () => {
 
   it('getBackendStatus returns null on stale auth', async () => {
     const client = await loadBackendClientModule();
-    const info = makeInfo();
-    vi.spyOn(process, 'kill').mockReturnValue(true);
-
-    readBackendInfoMock.mockReturnValueOnce(info);
+    mockRunningBackend();
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'unauthorized' }, 401));
 
     await expect(client.getBackendStatus()).resolves.toBeNull();
@@ -253,10 +246,7 @@ describe('bridge backend-client', () => {
 
   it('getBackendStatusFull returns unauthorized on stale auth', async () => {
     const client = await loadBackendClientModule();
-    const info = makeInfo();
-    vi.spyOn(process, 'kill').mockReturnValue(true);
-
-    readBackendInfoMock.mockReturnValueOnce(info);
+    mockRunningBackend();
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'unauthorized' }, 401));
 
     await expect(client.getBackendStatusFull()).resolves.toEqual({ status: 'unauthorized' });
@@ -264,10 +254,7 @@ describe('bridge backend-client', () => {
 
   it('getBackendStatus returns null on connection errors', async () => {
     const client = await loadBackendClientModule();
-    const info = makeInfo();
-    vi.spyOn(process, 'kill').mockReturnValue(true);
-
-    readBackendInfoMock.mockReturnValueOnce(info);
+    mockRunningBackend();
     fetchMock.mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
 
     await expect(client.getBackendStatus()).resolves.toBeNull();
@@ -275,10 +262,7 @@ describe('bridge backend-client', () => {
 
   it('getBackendStatusFull returns not_running on connection errors', async () => {
     const client = await loadBackendClientModule();
-    const info = makeInfo();
-    vi.spyOn(process, 'kill').mockReturnValue(true);
-
-    readBackendInfoMock.mockReturnValueOnce(info);
+    mockRunningBackend();
     fetchMock.mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
 
     await expect(client.getBackendStatusFull()).resolves.toEqual({ status: 'not_running' });
@@ -286,10 +270,7 @@ describe('bridge backend-client', () => {
 
   it('shutdownBackend returns ok when shutdown starts', async () => {
     const client = await loadBackendClientModule();
-    const info = makeInfo();
-    vi.spyOn(process, 'kill').mockReturnValue(true);
-
-    readBackendInfoMock.mockReturnValueOnce(info);
+    const { info } = mockRunningBackend();
     fetchMock.mockResolvedValueOnce(jsonResponse({ status: 'shutting_down' }));
 
     await expect(client.shutdownBackend()).resolves.toEqual({ ok: true });
@@ -310,10 +291,7 @@ describe('bridge backend-client', () => {
 
   it('shutdownBackend is idempotent while the backend is draining', async () => {
     const client = await loadBackendClientModule();
-    const info = makeInfo();
-    vi.spyOn(process, 'kill').mockReturnValue(true);
-
-    readBackendInfoMock.mockReturnValueOnce(info);
+    mockRunningBackend();
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'backend_shutting_down' }, 503));
 
     await expect(client.shutdownBackend()).resolves.toEqual({ ok: true, alreadyDraining: true });
@@ -321,10 +299,7 @@ describe('bridge backend-client', () => {
 
   it('shutdownBackend returns unauthorized on stale auth', async () => {
     const client = await loadBackendClientModule();
-    const info = makeInfo();
-    vi.spyOn(process, 'kill').mockReturnValue(true);
-
-    readBackendInfoMock.mockReturnValueOnce(info);
+    mockRunningBackend();
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'unauthorized' }, 401));
 
     await expect(client.shutdownBackend()).resolves.toEqual({ ok: false, reason: 'unauthorized' });
@@ -332,10 +307,7 @@ describe('bridge backend-client', () => {
 
   it('shutdownBackend rejects malformed success payloads', async () => {
     const client = await loadBackendClientModule();
-    const info = makeInfo();
-    vi.spyOn(process, 'kill').mockReturnValue(true);
-
-    readBackendInfoMock.mockReturnValueOnce(info);
+    mockRunningBackend();
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ status: 'ok' }), {
       status: 200,
       statusText: 'OK',
@@ -347,10 +319,7 @@ describe('bridge backend-client', () => {
 
   it('shutdownBackend returns not_running on connection errors', async () => {
     const client = await loadBackendClientModule();
-    const info = makeInfo();
-    vi.spyOn(process, 'kill').mockReturnValue(true);
-
-    readBackendInfoMock.mockReturnValueOnce(info);
+    mockRunningBackend();
     fetchMock.mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
 
     await expect(client.shutdownBackend()).resolves.toEqual({ ok: false, reason: 'not_running' });

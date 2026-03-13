@@ -15,7 +15,6 @@ import {
   getBackendStatusFull,
   shutdownBackend,
   streamWait,
-  type BackendStatusFull,
   type WaitCursorRef,
 } from '../bridge/backend-client.js';
 import type { WaitStreamEvent } from '../types.js';
@@ -453,7 +452,7 @@ backend.command('status')
   .description('Show backend daemon status')
   .action(async () => {
     try {
-      const status: BackendStatusFull = await getBackendStatusFull();
+      const status = await getBackendStatusFull();
       process.stdout.write(JSON.stringify(status) + '\n');
     } catch (error) {
       emitError(error);

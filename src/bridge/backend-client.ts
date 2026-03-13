@@ -1,6 +1,6 @@
 declare const __PLUGIN_ROOT__: string;
 
-import { ensureBackend, withAbortTimeout, type BackendHandle } from '../client/backend-lifecycle.js';
+import { ensureBackend, withAbortTimeout } from '../client/backend-lifecycle.js';
 import { readBackendInfo } from '../execution/backend-info.js';
 import { isProcessAlive, isRecord } from '../shared/mcp-utils.js';
 import type { WaitStreamEvent } from '../types.js';
@@ -236,7 +236,7 @@ export async function proxyToolCall(
   args: Record<string, unknown>,
   ctx: { projectRoot: string; pluginRoot: string },
 ): Promise<unknown> {
-  const { port, host, token }: BackendHandle = await ensureBackend(
+  const { port, host, token } = await ensureBackend(
     typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : undefined,
   );
   const body = JSON.stringify({
