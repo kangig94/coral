@@ -16,15 +16,23 @@
 │  └──────────────┘          │                ▼                    │        │
 │                            ▼                                     │        │
 │  ┌─────────────────────────────────────────────────────────────┐ │        │
-│  │ MCP Server "ax" (bridge/coral-ax.cjs)                      │ │        │
+│  │ MCP Server "ax" (bridge/coral-ax.cjs)                       │ │        │
 │  │                                                             │ │        │
-│  │ Tools: codex + claude + discuss_* + wait + abort +         │ │        │
+│  │ Tools: codex + claude + discuss_* + wait + abort +          │ │        │
 │  │        workflow + backend                                   │ │        │
-│  │ codex/claude: exec/list/fork + coral:<name> dispatch       │ │        │
+│  │ codex/claude: exec/list/fork + coral:<name> dispatch        │ │        │
 │  │ discuss_*: backend-managed discuss lifecycle tools          │ │        │
 │  │ wait/abort/workflow/backend: proxy or bridge-local helpers  │ │        │
 │  │                                                             │ │        │
 │  │ Thin MCP stdio proxy -> HTTP backend daemon                 │ │        │
+│  └──────────────────────────────┬──────────────────────────────┘ │        │
+│                                                                  │        │
+│  ┌─────────────────────────────────────────────────────────────┐ │        │
+│  │ CLI (bridge/coral-cli.cjs) — parallel Bash-tool client      │ │        │
+│  │ node bridge/coral-cli.cjs ...  or  coral-cli ... (hook)     │ │        │
+│  │ Subcommands: codex, claude, wait, abort, workflow,          │ │        │
+│  │              backend status|shutdown, discuss (all ops)     │ │        │
+│  │ Uses BackendClient + streamWait/lifecycle bridge helpers    │ │        │
 │  └──────────────────────────────┬──────────────────────────────┘ │        │
 │                                 │                                │        │
 │  Persisted discuss data: {project}/.claude/coral/discuss/        │        │

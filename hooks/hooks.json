@@ -113,6 +113,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/cli-resolve.mjs\"",
+            "timeout": 3
+          }
+        ]
       }
     ],
     "Stop": [

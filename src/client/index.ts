@@ -11,13 +11,14 @@
 // ./paths.js
 export {
   JOBS_DIR,
-  SESSION_BASE,
-  BACKEND_INFO_PATH,
-  BACKEND_LOCK_PATH,
+  sessionBase,
+  pluginRootNamespace,
+  installationDir,
+  backendInfoPath,
+  backendLockPath,
   discussBaseDir,
   discussDiscoveryPath,
   discussEventLogPath,
-  syncHomePaths,
 } from './paths.js';
 
 // ./readers.js
@@ -60,7 +61,7 @@ export { ensureBackend, withAbortTimeout } from './backend-lifecycle.js';
 export type { BackendHandle } from './backend-lifecycle.js';
 
 // ./http-client.js
-export { BackendClient } from './http-client.js';
+export { BackendClient, BackendToolHttpError } from './http-client.js';
 export type { CallerContext, BackendHealth } from './http-client.js';
 
 // ../types.js

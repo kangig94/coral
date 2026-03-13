@@ -1029,9 +1029,11 @@ describe('execution backend server', () => {
   });
 
   it('returns 200 from /admin/shutdown and transitions to draining', async () => {
+    const pluginRoot = createProjectRoot('plugin-root');
     let closeStarted = false;
     const closeBarrier = createDeferred();
     const backend = await startBackendServer({
+      pluginRoot,
       closeServerFn: async (server) => {
         closeStarted = true;
         await closeBarrier.promise;
@@ -1049,15 +1051,15 @@ describe('execution backend server', () => {
 
     await waitForCondition(() => closeStarted);
     expect(backend.controller.getLifecycle()).toBe('draining');
-    expect(existsSync(backend.backendInfo.BACKEND_INFO_PATH)).toBe(true);
-    expect(existsSync(backend.backendLock.BACKEND_LOCK_PATH)).toBe(true);
+    expect(existsSync(backend.backendInfo.backendInfoPath(pluginRoot))).toBe(true);
+    expect(existsSync(backend.backendLock.backendLockPath(pluginRoot))).toBe(true);
 
     closeBarrier.resolve();
     await backend.controller.waitForShutdown();
 
     expect(backend.controller.getLifecycle()).toBe('stopped');
-    expect(existsSync(backend.backendInfo.BACKEND_INFO_PATH)).toBe(false);
-    expect(existsSync(backend.backendLock.BACKEND_LOCK_PATH)).toBe(false);
+    expect(existsSync(backend.backendInfo.backendInfoPath(pluginRoot))).toBe(false);
+    expect(existsSync(backend.backendLock.backendLockPath(pluginRoot))).toBe(false);
   });
 
   it('returns 401 for unauthorized requests', async () => {

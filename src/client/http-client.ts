@@ -20,6 +20,16 @@ interface ProviderToolOptions {
   system_prompt?: string;
 }
 
+interface ProviderExecOptions extends ProviderToolOptions {
+  session?: string;
+}
+
+interface ProviderCoralDispatchOptions {
+  context?: CallerContext;
+  session?: string;
+  work_dir?: string;
+}
+
 interface WorkflowOptions {
   init_prompt: string;
   context?: string;
@@ -52,6 +62,7 @@ export interface BackendHealth {
   version: string;
   bundleHash: string;
   instanceId: string;
+  namespace: string;
   uptimeMs: number;
   activeChildren: number;
   activeJobs: number;
@@ -71,6 +82,8 @@ function isBackendHealth(value: unknown): value is BackendHealth {
     && typeof value.version === 'string'
     && typeof value.bundleHash === 'string'
     && typeof value.instanceId === 'string'
+    && typeof value.namespace === 'string'
+    && value.namespace.length > 0
     && Number.isFinite(value.uptimeMs)
     && Number.isInteger(value.activeChildren)
     && Number.isInteger(value.activeJobs)
@@ -179,27 +192,39 @@ function parseSseBlock(block: string): SseEventBlock | null {
   return { event, data: data.join('\n') };
 }
 
+export class BackendToolHttpError extends Error {
+  constructor(
+    message: string,
+    public readonly statusCode: number,
+    public readonly body: unknown,
+  ) {
+    super(message);
+    this.name = 'BackendToolHttpError';
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 /**
  * Typed HTTP wrapper around the Coral backend endpoints used by coral-reef.
  */
 export class BackendClient {
-  private readonly ensureBackendHandle: () => Promise<BackendHandle>;
+  private readonly ensureBackendHandle: (pluginRoot?: string) => Promise<BackendHandle>;
   private readonly defaultContext?: CallerContext;
 
   constructor(options: {
-    ensureBackend?: () => Promise<BackendHandle>;
+    ensureBackend?: (pluginRoot?: string) => Promise<BackendHandle>;
     defaultContext?: CallerContext;
   } = {}) {
-    this.ensureBackendHandle = options.ensureBackend ?? defaultEnsureBackend;
     this.defaultContext = options.defaultContext;
+    this.ensureBackendHandle = options.ensureBackend
+      ?? ((pluginRoot?: string) => defaultEnsureBackend(pluginRoot ?? this.defaultContext?.pluginRoot));
   }
 
   /**
    * Starts a new Codex execution.
    */
   async exec(prompt: string, options: ProviderToolOptions = {}): Promise<unknown> {
-    const { context, ...args } = options;
-    return this.proxyToolCall('codex', { op: 'exec', prompt, ...args }, this.resolveContext(context));
+    return this.providerExec('codex', prompt, options);
   }
 
   /**
@@ -214,21 +239,14 @@ export class BackendClient {
    * Forks a Codex session, optionally with a follow-up prompt.
    */
   async fork(source: string, prompt?: string, options: ProviderToolOptions = {}): Promise<unknown> {
-    const { context, ...args } = options;
-    const request: Record<string, unknown> = { op: 'fork', session: source, ...args };
-
-    if (prompt !== undefined) {
-      request.prompt = prompt;
-    }
-
-    return this.proxyToolCall('codex', request, this.resolveContext(context));
+    return this.providerFork('codex', source, prompt, options);
   }
 
   /**
    * Aborts a single backend job.
    */
   async abort(jobId: string, context?: CallerContext): Promise<unknown> {
-    return this.proxyToolCall('abort', { jobs: [jobId] }, this.resolveContext(context));
+    return this.abortJobs([jobId], context);
   }
 
   /**
@@ -251,6 +269,99 @@ export class BackendClient {
     return this.proxyToolCall('workflow', { expression, ...options }, this.resolveContext(callerContext));
   }
 
+  async providerExec(provider: string, prompt: string, options: ProviderExecOptions = {}): Promise<unknown> {
+    const { context, ...args } = options;
+    return this.proxyToolCall(provider, { op: 'exec', prompt, ...args }, this.resolveContext(context));
+  }
+
+  async providerFork(
+    provider: string,
+    session: string,
+    prompt?: string,
+    options: ProviderToolOptions = {},
+  ): Promise<unknown> {
+    const { context, ...args } = options;
+    const request: Record<string, unknown> = { op: 'fork', session, ...args };
+
+    if (prompt !== undefined) {
+      request.prompt = prompt;
+    }
+
+    return this.proxyToolCall(provider, request, this.resolveContext(context));
+  }
+
+  async providerList(provider: string, context?: CallerContext): Promise<unknown> {
+    return this.proxyToolCall(provider, { op: 'list' }, this.resolveContext(context));
+  }
+
+  async providerCoralDispatch(
+    provider: string,
+    agentName: string,
+    prompt: string,
+    options: ProviderCoralDispatchOptions = {},
+  ): Promise<unknown> {
+    const { context, ...args } = options;
+    return this.proxyToolCall(
+      provider,
+      { op: `coral:${agentName}`, prompt, ...args },
+      this.resolveContext(context),
+    );
+  }
+
+  async discussSeed(
+    args: {
+      controversy_axes: Array<{ axis: string; positions: string[] }>;
+      n: number;
+      seed: number;
+      demographics?: { origin_weights: Record<string, number>; outlier_ratio?: number };
+    },
+    context?: CallerContext,
+  ): Promise<unknown> {
+    return this.proxyToolCall('discuss_seed', args, this.resolveContext(context));
+  }
+
+  async discussStart(
+    args: {
+      topic: string;
+      agents: Array<{
+        name: string;
+        persona: string;
+        participation?: string;
+        provider?: string;
+        model?: string;
+      }>;
+      config?: { min_bid_delay_ms?: number };
+    },
+    context?: CallerContext,
+  ): Promise<unknown> {
+    return this.proxyToolCall('discuss_start', args, this.resolveContext(context));
+  }
+
+  async discussWatch(session: string, cursor?: number, context?: CallerContext): Promise<unknown> {
+    return this.proxyToolCall('discuss_watch', { session, cursor }, this.resolveContext(context));
+  }
+
+  async discussParticipate(
+    args: {
+      session: string;
+      agent_name: string;
+      score?: number;
+      thought?: string;
+      content?: string;
+    },
+    context?: CallerContext,
+  ): Promise<unknown> {
+    return this.proxyToolCall('discuss_participate', args, this.resolveContext(context));
+  }
+
+  async discussAbort(session: string, context?: CallerContext): Promise<unknown> {
+    return this.proxyToolCall('discuss_abort', { session }, this.resolveContext(context));
+  }
+
+  async abortJobs(jobIds: string[], context?: CallerContext): Promise<unknown> {
+    return this.proxyToolCall('abort', { jobs: jobIds }, this.resolveContext(context));
+  }
+
   /**
    * Streams wait events for one or more jobs.
    */
@@ -262,7 +373,7 @@ export class BackendClient {
       throw new Error('projectRoot is required for wait');
     }
 
-    const { port, host, token } = await this.ensureBackendHandle();
+    const { port, host, token } = await this.resolveBackendHandle();
     const fetchTimeoutMs = Math.min(
       (timeoutSeconds ?? 600) * 1000 + WAIT_FETCH_MARGIN_MS,
       MAX_WAIT_FETCH_TIMEOUT_MS,
@@ -336,7 +447,7 @@ export class BackendClient {
    * Returns backend health metadata when the daemon responds with a valid payload.
    */
   async health(): Promise<BackendHealth | null> {
-    const { port, host, token } = await this.ensureBackendHandle();
+    const { port, host, token } = await this.resolveBackendHandle();
 
     try {
       const response = await withAbortTimeout(HEALTH_TIMEOUT_MS, (signal) => fetch(`http://${host}:${port}/health`, {
@@ -360,7 +471,7 @@ export class BackendClient {
    * Requests backend shutdown.
    */
   async shutdown(): Promise<{ ok: boolean }> {
-    const { port, host, token } = await this.ensureBackendHandle();
+    const { port, host, token } = await this.resolveBackendHandle();
 
     try {
       const response = await withAbortTimeout(HEALTH_TIMEOUT_MS, (signal) => fetch(`http://${host}:${port}/admin/shutdown`, {
@@ -379,7 +490,7 @@ export class BackendClient {
    * Lists the tool descriptors currently served by the backend.
    */
   async listTools(): Promise<unknown> {
-    const { port, host, token } = await this.ensureBackendHandle();
+    const { port, host, token } = await this.resolveBackendHandle();
 
     try {
       return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
@@ -413,12 +524,17 @@ export class BackendClient {
     throw new Error('CallerContext is required for backend tool calls');
   }
 
+  private resolveBackendHandle(context?: CallerContext): Promise<BackendHandle> {
+    const pluginRoot = context?.pluginRoot ?? this.defaultContext?.pluginRoot;
+    return this.ensureBackendHandle(pluginRoot);
+  }
+
   private async proxyToolCall(
     name: string,
     args: Record<string, unknown>,
     ctx: CallerContext,
   ): Promise<unknown> {
-    const { port, host, token } = await this.ensureBackendHandle();
+    const { port, host, token } = await this.resolveBackendHandle(ctx);
     const body = JSON.stringify({
       name,
       args,
@@ -440,11 +556,17 @@ export class BackendClient {
           signal,
         });
 
+        const responseBody = await parseJsonResponse(response);
+
         if (!response.ok) {
-          throw new Error(describeHttpError(response.status, response.statusText));
+          throw new BackendToolHttpError(
+            describeHttpError(response.status, response.statusText),
+            response.status,
+            responseBody,
+          );
         }
 
-        return parseJsonResponse(response);
+        return responseBody;
       });
     } catch (error) {
       if (error instanceof Error) throw error;

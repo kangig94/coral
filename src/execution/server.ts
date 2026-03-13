@@ -11,11 +11,11 @@ import {
   formatError,
   isNoEntryError,
   isRecord,
-  providerIdentPattern,
   readBundleHash,
   textResult,
   type McpResult,
 } from '../shared/mcp-utils.js';
+import { pluginRootNamespace } from '../client/paths.js';
 import { sharedExecSchema, sharedForkSchema, sharedResumeSchema } from '../shared/schemas.js';
 import type { ExecutionService } from './service.js';
 import { activeChildren, killAllChildren, queueDepth } from './engine.js';
@@ -27,7 +27,7 @@ import { eventBus, type EventBusEvents } from './event-bus.js';
 import { IdleTimer } from './idle-timer.js';
 import { createReplayCursor, ProgressStore, JOBS_DIR } from './progress-store.js';
 import type { CallerContext, ToolRequest } from './request-context.js';
-import { SessionManager, type SessionEntry } from './session-manager.js';
+import { SessionManager } from './session-manager.js';
 import {
   DiscussManagerError,
   DiscussManagerRegistry,
@@ -57,13 +57,11 @@ import {
 } from './service.js';
 import { handleWorkflow } from '../workflow/handler.js';
 import type {
-  JobPhase,
   PersistedProgressRecord,
   PersistedStatusRecord,
   TerminalResult,
   WaitCursor,
   WaitRequest,
-  WaitStreamEvent,
 } from '../types.js';
 
 export type LifecycleState = 'starting' | 'running' | 'draining' | 'stopped';
@@ -85,6 +83,10 @@ type ScopeCheckResult = {
   mismatch: string[];
 };
 
+type PersistedStatusRecordWithNamespace = PersistedStatusRecord & {
+  backendNamespace?: string;
+};
+
 type RouteToolCallFn = (
   request: ToolRequest,
   helpers: {
@@ -97,6 +99,7 @@ type RouteToolCallFn = (
 
 type BackendServerOptions = {
   progressStore?: ProgressStore;
+  pluginRoot?: string;
   version?: string;
   bundleHash?: string;
   instanceId?: string;
@@ -105,14 +108,14 @@ type BackendServerOptions = {
   log?: (message: string) => void;
   createIdleTimer?: () => IdleTimer;
   createExecutionService?: (ctx: CallerContext) => ExecutionServiceLike;
-  acquireLockFn?: (instanceId: string, version: string, bundleHash: string) => Promise<void>;
+  acquireLockFn?: (pluginRoot: string, instanceId: string, version: string, bundleHash: string) => Promise<void>;
   writeBackendInfoFn?: typeof writeBackendInfo;
   removeBackendInfoIfOwnerFn?: typeof removeBackendInfoIfOwner;
   removeLockIfOwnerFn?: typeof removeLockIfOwner;
   routeToolCallFn?: RouteToolCallFn;
   closeServerFn?: (server: Server) => Promise<void>;
-  recoverOrphanedJobsFn?: () => void;
-  markJobsAsErrorFn?: (message: string) => void;
+  recoverOrphanedJobsFn?: (namespace: string) => void;
+  markJobsAsErrorFn?: (namespace: string, message: string) => void;
   killAllChildrenFn?: () => void;
   onStopped?: () => void;
   onFatalShutdownError?: (error: unknown) => void;
@@ -125,6 +128,7 @@ export type BackendServerInfo = {
   token: string;
   version: string;
   bundleHash: string;
+  namespace: string;
   instanceId: string;
   startedAt: number;
 };
@@ -261,7 +265,7 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
   });
 }
 
-function parseToolRequest(body: unknown): ToolRequest | null {
+function parseToolRequest(body: unknown, resolvedPluginRoot: string): ToolRequest | null {
   if (!isRecord(body)) return null;
   if (typeof body.name !== 'string') return null;
   if (!isRecord(body.args) || !isRecord(body.context)) return null;
@@ -274,7 +278,7 @@ function parseToolRequest(body: unknown): ToolRequest | null {
     args: body.args,
     context: {
       projectRoot: body.context.projectRoot,
-      pluginRoot: typeof body.context.pluginRoot === 'string' ? body.context.pluginRoot : defaultPluginRoot,
+      pluginRoot: resolvedPluginRoot,
     },
   };
 }
@@ -377,11 +381,50 @@ function readJobIds(): string[] {
   }
 }
 
-function listLiveJobs(progressStore: ProgressStore): PersistedStatusRecord[] {
-  return readJobIds()
-    .map((jobId) => progressStore.readStatus(jobId))
-    .filter((status): status is PersistedStatusRecord =>
-      status !== null && (status.phase === 'queued' || status.phase === 'launching' || status.phase === 'running'));
+function readBackendNamespace(status: PersistedStatusRecord): string | null {
+  const namespace = (status as PersistedStatusRecordWithNamespace).backendNamespace;
+  return typeof namespace === 'string' && namespace.length > 0 ? namespace : null;
+}
+
+function withBackendNamespace(
+  status: PersistedStatusRecord,
+  namespace: string,
+): PersistedStatusRecord {
+  return {
+    ...status,
+    backendNamespace: namespace,
+  } as PersistedStatusRecord;
+}
+
+function isLiveJob(status: PersistedStatusRecord): boolean {
+  return status.phase === 'queued' || status.phase === 'launching' || status.phase === 'running';
+}
+
+function belongsToNamespace(status: PersistedStatusRecord, namespace: string): boolean {
+  return readBackendNamespace(status) === namespace;
+}
+
+function listLiveJobs(progressStore: ProgressStore, namespace: string): PersistedStatusRecord[] {
+  const results: PersistedStatusRecord[] = [];
+
+  for (const jobId of readJobIds()) {
+    const status = progressStore.readStatus(jobId);
+    if (!status || !isLiveJob(status)) continue;
+
+    const backendNamespace = readBackendNamespace(status);
+    if (backendNamespace === null) {
+      const rewritten = withBackendNamespace(status, namespace);
+      progressStore.writeStatus(jobId, rewritten);
+      results.push(rewritten);
+      continue;
+    }
+
+    if (backendNamespace === namespace) {
+      results.push(status);
+    }
+  }
+
+  return results;
 }
 
 function hasJobDir(progressStore: ProgressStore, jobId: string): boolean {
@@ -440,7 +483,7 @@ function markJobAsError(
   }
 }
 
-function recoverOrphanedJobs(progressStore: ProgressStore, log: (message: string) => void): void {
+function recoverOrphanedJobs(progressStore: ProgressStore, namespace: string, log: (message: string) => void): void {
   for (const shardDir of SessionManager.listShards()) {
     try {
       const sessionManager = SessionManager.openShard(shardDir);
@@ -460,7 +503,7 @@ function recoverOrphanedJobs(progressStore: ProgressStore, log: (message: string
     }
   }
 
-  for (const status of listLiveJobs(progressStore)) {
+  for (const status of listLiveJobs(progressStore, namespace)) {
     try {
       markJobAsError(progressStore, status, ORPHANED_JOB_NOTICE, log);
       const sessionManager = new SessionManager(status.projectRoot);
@@ -472,8 +515,8 @@ function recoverOrphanedJobs(progressStore: ProgressStore, log: (message: string
   }
 }
 
-function markJobsAsError(progressStore: ProgressStore, message: string): void {
-  for (const status of listLiveJobs(progressStore)) {
+function markJobsAsError(progressStore: ProgressStore, namespace: string, message: string): void {
+  for (const status of listLiveJobs(progressStore, namespace)) {
     try {
       markJobAsError(progressStore, status, message, () => {});
     } catch {
@@ -944,8 +987,10 @@ async function listen(server: Server, bindHost: string): Promise<{ port: number;
 }
 
 export function createBackendServer(options: BackendServerOptions = {}): BackendServerController {
+  const resolvedPluginRoot = options.pluginRoot ?? defaultPluginRoot;
+  const namespace = pluginRootNamespace(resolvedPluginRoot);
   const version = options.version ?? (typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0');
-  const bundleHash = options.bundleHash ?? readBundleHash(defaultPluginRoot);
+  const bundleHash = options.bundleHash ?? readBundleHash(resolvedPluginRoot);
   const instanceId = options.instanceId ?? randomUUID();
   const token = options.token ?? randomBytes(32).toString('hex');
   const idleTimer = options.createIdleTimer?.() ?? new IdleTimer();
@@ -963,9 +1008,11 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const removeLockIfOwnerFn = options.removeLockIfOwnerFn ?? removeLockIfOwner;
   const routeToolCallFn = options.routeToolCallFn ?? routeToolCall;
   const closeServerFn = options.closeServerFn ?? closeServer;
-  const recoverOrphanedJobsFn = options.recoverOrphanedJobsFn ?? (() => recoverOrphanedJobs(progressStore, log));
-  const markJobsAsErrorFn = options.markJobsAsErrorFn ?? ((message: string) => {
-    markJobsAsError(progressStore, message);
+  const recoverOrphanedJobsFn = options.recoverOrphanedJobsFn ?? ((currentNamespace: string) => {
+    recoverOrphanedJobs(progressStore, currentNamespace, log);
+  });
+  const markJobsAsErrorFn = options.markJobsAsErrorFn ?? ((currentNamespace: string, message: string) => {
+    markJobsAsError(progressStore, currentNamespace, message);
   });
   const killAllChildrenFn = options.killAllChildrenFn ?? killAllChildren;
 
@@ -1029,32 +1076,35 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     return { aborted, notFound: [...pending] };
   }
 
-  function scopeCheckJobs(jobIds: string[], projectRoot: string): ScopeCheckResult {
+  function scopeCheckJobs(jobIds: string[], projectRoot: string, currentNamespace: string): ScopeCheckResult {
     const valid: string[] = [];
     const missing: string[] = [];
     const mismatch: string[] = [];
 
     for (const jobId of jobIds) {
-      const lookup = progressStore.scopedLookup(jobId, projectRoot);
-      if (lookup === 'mismatch') {
+      const status = progressStore.readStatus(jobId);
+      if (!status) {
+        valid.push(jobId);
+        missing.push(jobId);
+        continue;
+      }
+
+      if (status.projectRoot !== projectRoot || !belongsToNamespace(status, currentNamespace)) {
         mismatch.push(jobId);
         continue;
       }
 
       valid.push(jobId);
-      if (lookup === 'missing') {
-        missing.push(jobId);
-      }
     }
 
     return { valid, missing, mismatch };
   }
 
-  function listAllJobs(store: ProgressStore): Array<{ jobId: string; status: PersistedStatusRecord }> {
+  function listAllJobs(store: ProgressStore, currentNamespace: string): Array<{ jobId: string; status: PersistedStatusRecord }> {
     const results: Array<{ jobId: string; status: PersistedStatusRecord }> = [];
     for (const jobId of readJobIds()) {
       const status = store.readStatus(jobId);
-      if (status) {
+      if (status && belongsToNamespace(status, currentNamespace)) {
         results.push({ jobId, status });
       }
     }
@@ -1064,9 +1114,10 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   function getJobDetail(
     store: ProgressStore,
     jobId: string,
+    currentNamespace: string,
   ): { status: PersistedStatusRecord; events: PersistedProgressRecord[] } | null {
     const status = store.readStatus(jobId);
-    if (!status) return null;
+    if (!status || !belongsToNamespace(status, currentNamespace)) return null;
     const cursor = createReplayCursor();
     const events = store.replayFrom(jobId, 0, cursor);
     return { status, events };
@@ -1098,6 +1149,19 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     }
 
     return entries;
+  }
+
+  function listSessionsForNamespace(currentNamespace: string): Array<{ shardHash: string; sessions: LenientSessionEntry[] }> {
+    return listAllSessions()
+      .map(({ shardHash, sessions }) => ({
+        shardHash,
+        sessions: sessions.filter((session) => {
+          if (!session.activeJobId) return true;
+          const status = progressStore.readStatus(session.activeJobId);
+          return status !== null && belongsToNamespace(status, currentNamespace);
+        }),
+      }))
+      .filter(({ sessions }) => sessions.length > 0);
   }
 
   function knownDiscussProjectRoots(): Set<string> {
@@ -1203,11 +1267,11 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_DRAIN_TIMEOUT_MS)),
       ]);
 
-      markJobsAsErrorFn('Backend shutting down');
+      markJobsAsErrorFn(namespace, 'Backend shutting down');
       killAllChildrenFn();
 
-      removeBackendInfoIfOwnerFn(instanceId);
-      removeLockIfOwnerFn(instanceId);
+      removeBackendInfoIfOwnerFn(resolvedPluginRoot, instanceId);
+      removeLockIfOwnerFn(resolvedPluginRoot, instanceId);
 
       lifecycle = 'stopped';
       options.onStopped?.();
@@ -1237,7 +1301,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       return;
     }
 
-    const scopeCheck = scopeCheckJobs(parsed.jobIds, parsed.projectRoot);
+    const scopeCheck = scopeCheckJobs(parsed.jobIds, parsed.projectRoot, namespace);
     if (scopeCheck.mismatch.length > 0) {
       sendJson(res, 403, { error: 'scope_mismatch' });
       return;
@@ -1257,7 +1321,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       ...parsed,
       cursor: inputCursor,
     };
-    const ctx: CallerContext = { projectRoot: parsed.projectRoot, pluginRoot: defaultPluginRoot };
+    const ctx: CallerContext = { projectRoot: parsed.projectRoot, pluginRoot: resolvedPluginRoot };
 
     res.statusCode = 200;
     res.setHeader('Content-Type', 'text/event-stream');
@@ -1433,6 +1497,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         status: 'ok',
         version,
         bundleHash,
+        namespace,
         instanceId,
         uptimeMs: now() - startedAt,
         activeChildren: activeChildren.size,
@@ -1451,7 +1516,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     if (req.method === 'POST' && req.url === '/tool') {
       let request: ToolRequest | null;
       try {
-        request = parseToolRequest(await readJsonBody(req));
+        request = parseToolRequest(await readJsonBody(req), resolvedPluginRoot);
       } catch {
         sendJson(res, 400, { error: 'invalid_json' });
         return;
@@ -1464,7 +1529,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         getExecutionService,
         getDiscussManager,
         abortJobs,
-        scopeCheckJobs,
+        scopeCheckJobs: (jobIds, projectRoot) => scopeCheckJobs(jobIds, projectRoot, namespace),
       });
       sendJson(res, result.statusCode, result.body);
       return;
@@ -1486,7 +1551,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       if (pathname === '/api/jobs') {
         req.resume();
         const phase = parsedUrl.searchParams.get('phase');
-        let jobs = listAllJobs(progressStore);
+        let jobs = listAllJobs(progressStore, namespace);
         if (phase !== null) {
           jobs = jobs.filter((j) => j.status?.phase === phase);
         }
@@ -1497,7 +1562,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       const jobDetailMatch = pathname.match(/^\/api\/jobs\/([^/]+)$/);
       if (jobDetailMatch) {
         req.resume();
-        const detail = getJobDetail(progressStore, jobDetailMatch[1]);
+        const detail = getJobDetail(progressStore, jobDetailMatch[1], namespace);
         if (!detail) {
           sendJson(res, 404, { error: 'job_not_found' });
           return;
@@ -1508,7 +1573,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
 
       if (pathname === '/api/sessions') {
         req.resume();
-        sendJson(res, 200, { sessions: listAllSessions() });
+        sendJson(res, 200, { sessions: listSessionsForNamespace(namespace) });
         return;
       }
 
@@ -1555,25 +1620,26 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     }
 
     try {
-      await acquireLockFn(instanceId, version, bundleHash);
-      recoverOrphanedJobsFn();
+      await acquireLockFn(resolvedPluginRoot, instanceId, version, bundleHash);
+      recoverOrphanedJobsFn(namespace);
       for (const projectRoot of knownDiscussProjectRoots()) {
         const ctx: CallerContext = {
           projectRoot,
-          pluginRoot: defaultPluginRoot,
+          pluginRoot: resolvedPluginRoot,
         };
         await getDiscussManager(ctx).recoverPersistedSessions(ctx);
       }
       const bindHost = process.env.CORAL_BACKEND_BIND ?? '127.0.0.1';
       const { port, host } = await listen(server, bindHost);
       startedAt = now();
-      writeBackendInfoFn({
+      writeBackendInfoFn(resolvedPluginRoot, {
         pid: process.pid,
         port,
         host,
         token,
         version,
         bundleHash,
+        namespace,
         instanceId,
         startedAt,
       });
@@ -1581,7 +1647,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       for (const projectRoot of knownDiscussProjectRoots()) {
         const recoveryCtx: CallerContext = {
           projectRoot,
-          pluginRoot: defaultPluginRoot,
+          pluginRoot: resolvedPluginRoot,
         };
         await getDiscussManager(recoveryCtx).recoverPersistedSessions(recoveryCtx);
       }
@@ -1605,6 +1671,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         token,
         version,
         bundleHash,
+        namespace,
         instanceId,
         startedAt,
       };
@@ -1617,8 +1684,8 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       } catch {
         /* best effort */
       }
-      removeBackendInfoIfOwnerFn(instanceId);
-      removeLockIfOwnerFn(instanceId);
+      removeBackendInfoIfOwnerFn(resolvedPluginRoot, instanceId);
+      removeLockIfOwnerFn(resolvedPluginRoot, instanceId);
 
       throw error;
     }

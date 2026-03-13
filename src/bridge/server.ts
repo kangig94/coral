@@ -232,7 +232,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     }
 
     if (name === 'backend') {
-      return handleBackendToolCall(rawArgs);
+      return handleBackendToolCall(rawArgs, pluginRoot);
     }
 
     const response = await proxyToolCall(name, rawArgs, {

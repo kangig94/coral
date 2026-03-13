@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  DISCUSS_PROJECT_ROOTS_PATH,
+  discussProjectRootsPath,
   JOBS_DIR,
   discussBaseDir,
   discussDiscoveryPath,
@@ -576,7 +576,7 @@ export function readDiscussDiscovery(projectRoot: string): DiscussDiscoveryData 
 }
 
 export function readDiscussProjectRoots(): string[] {
-  const registry = readJsonFile(DISCUSS_PROJECT_ROOTS_PATH);
+  const registry = readJsonFile(discussProjectRootsPath());
   if (!isValidDiscussProjectRootsRegistry(registry)) {
     return [];
   }

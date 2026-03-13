@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { pluginRootNamespace } from '../client/paths.js';
 import type {
   JobKind,
   JobPhase,
@@ -45,6 +46,8 @@ import type { SessionEntry } from './session-manager.js';
 
 import type { CallerContext } from './request-context.js';
 export type { CallerContext } from './request-context.js';
+
+declare const __PLUGIN_ROOT__: string;
 
 export interface ExecInput {
   prompt: string;
@@ -99,6 +102,7 @@ export interface ListResult {
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
 const QUEUED_ABORT_MESSAGE = 'Aborted while queued.';
+const defaultPluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : process.cwd();
 
 type AcceptedAdmission = Exclude<AdmissionResult, 'queue_full'>;
 type ClaimJobOptions = {
@@ -122,6 +126,14 @@ function rejectLaunch(code: string, message: string): LaunchDecision {
     code,
     message,
   };
+}
+
+function resolveBackendNamespace(pluginRoot: string): string {
+  try {
+    return pluginRootNamespace(pluginRoot);
+  } catch {
+    return pluginRootNamespace(defaultPluginRoot);
+  }
 }
 
 export function serializeWorkflowResult(details: StepDetail[]): {
@@ -176,12 +188,14 @@ class SessionClaimError extends Error {
 export class ExecutionService {
   private readonly sessionManager: SessionManager;
   private readonly abortRegistry: AbortRegistry;
+  private readonly backendNamespace: string;
   private readonly progressStore: ProgressStore;
   private readonly jobPools = new Map<string, LaunchPool>();
 
   constructor(ctx: CallerContext, progressStore?: ProgressStore) {
     this.sessionManager = new SessionManager(ctx.projectRoot);
     this.abortRegistry = new AbortRegistry();
+    this.backendNamespace = resolveBackendNamespace(ctx.pluginRoot);
     this.progressStore = progressStore ?? new ProgressStore();
   }
 
@@ -197,6 +211,7 @@ export class ExecutionService {
       session.sessionId,
       providerName,
       projectRoot,
+      this.backendNamespace,
       options.jobKind,
       options.initialPhase ?? 'launching',
     );

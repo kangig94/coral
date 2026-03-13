@@ -1,7 +1,7 @@
 import { readFileSync, statSync, writeFileSync, mkdirSync, readdirSync, renameSync, rmdirSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { SESSION_BASE, syncHomePaths } from '../client/paths.js';
+import { sessionBase } from '../client/paths.js';
 import type { SessionState } from '../types.js';
 import { isNoEntryError, providerIdentPattern } from '../shared/mcp-utils.js';
 import { eventBus } from './event-bus.js';
@@ -52,8 +52,7 @@ export class SessionManager {
   private readonly cache = new Map<string, CachedSession>();
 
   constructor(workingDirectory: string) {
-    syncHomePaths();
-    this.sessionDir = join(SESSION_BASE, projectHash(workingDirectory));
+    this.sessionDir = join(sessionBase(), projectHash(workingDirectory));
     mkdirSync(this.sessionDir, { recursive: true });
   }
 
@@ -65,8 +64,7 @@ export class SessionManager {
   }
 
   static listShards(): string[] {
-    syncHomePaths();
-    const sessionsRoot = SESSION_BASE;
+    const sessionsRoot = sessionBase();
     try {
       return readdirSync(sessionsRoot, { withFileTypes: true })
         .filter((entry) => entry.isDirectory())

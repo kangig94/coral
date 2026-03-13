@@ -10,6 +10,7 @@
     "dist/",
     "bridge/coral-backend.cjs",
     "bridge/coral-ax.cjs",
+    "bridge/coral-cli.cjs",
     "bridge/manifest.json"
   ],
   "scripts": {
@@ -25,6 +26,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.19.7",
+    "commander": "^14.0.3",
     "esbuild": "^0.27.2",
     "typescript": "^5.7.2",
     "vitest": "^4.0.17"

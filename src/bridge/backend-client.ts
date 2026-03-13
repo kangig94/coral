@@ -1,6 +1,6 @@
 declare const __PLUGIN_ROOT__: string;
 
-import { ensureBackend, withAbortTimeout, type BackendHandle } from '../client/backend-lifecycle.js';
+import { ensureBackend, withAbortTimeout } from '../client/backend-lifecycle.js';
 import { readBackendInfo } from '../execution/backend-info.js';
 import { isProcessAlive, isRecord } from '../shared/mcp-utils.js';
 import type { WaitStreamEvent } from '../types.js';
@@ -25,6 +25,10 @@ export type BackendStatus = {
   status: 'shutting_down';
 };
 
+export type BackendStatusFull =
+  | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }> }
+  | { status: 'shutting_down' | 'unauthorized' | 'not_running' };
+
 export type ShutdownResult =
   | { ok: true; alreadyDraining?: true }
   | { ok: false; reason: string };
@@ -35,25 +39,52 @@ type SseEventBlock = {
   id?: string;
 };
 
-function isBackendStatus(value: unknown): value is Extract<BackendStatus, { status: 'ok' }> {
+type BackendHealthPayload = Extract<BackendStatus, { status: 'ok' }> & {
+  namespace: string;
+};
+
+function isBackendHealthPayload(
+  value: unknown,
+  expectedNamespace: string,
+): value is BackendHealthPayload {
   return isRecord(value)
     && value.status === 'ok'
     && typeof value.version === 'string'
     && typeof value.bundleHash === 'string'
     && typeof value.instanceId === 'string'
+    && typeof value.namespace === 'string'
+    && value.namespace === expectedNamespace
     && Number.isFinite(value.uptimeMs)
     && Number.isInteger(value.activeChildren)
     && Number.isInteger(value.activeJobs)
     && Number.isInteger(value.inflightRequests);
 }
 
+function toBackendStatus({
+  namespace: _namespace,
+  ...status
+}: BackendHealthPayload): Extract<BackendStatus, { status: 'ok' }> {
+  return status;
+}
+
 function isShuttingDownError(value: unknown): value is { error: 'backend_shutting_down' } {
   return isRecord(value) && value.error === 'backend_shutting_down';
 }
 
-export async function getBackendStatus(): Promise<BackendStatus | null> {
-  const info = readBackendInfo();
-  if (!info || !isProcessAlive(info.pid)) return null;
+export async function getBackendStatus(pluginRoot: string): Promise<BackendStatus | null> {
+  const status = await getBackendStatusFull(pluginRoot);
+  if (status.status === 'ok') {
+    return status.health;
+  }
+  if (status.status === 'shutting_down') {
+    return { status: 'shutting_down' };
+  }
+  return null;
+}
+
+export async function getBackendStatusFull(pluginRoot: string): Promise<BackendStatusFull> {
+  const info = readBackendInfo(pluginRoot);
+  if (!info || !isProcessAlive(info.pid)) return { status: 'not_running' };
 
   try {
     const { body, response } = await withAbortTimeout(HEALTH_TIMEOUT_MS, async (signal) => {
@@ -69,20 +100,22 @@ export async function getBackendStatus(): Promise<BackendStatus | null> {
       };
     });
     if (response.status === 200) {
-      return isBackendStatus(body) ? body : null;
+      return isBackendHealthPayload(body, info.namespace)
+        ? { status: 'ok', health: toBackendStatus(body) }
+        : { status: 'not_running' };
     }
-    if (response.status === 503 && isShuttingDownError(body)) {
+    if (response.status === 503) {
       return { status: 'shutting_down' };
     }
-    if (response.status === 401) return null;
-    return null;
+    if (response.status === 401) return { status: 'unauthorized' };
+    return { status: 'not_running' };
   } catch {
-    return null;
+    return { status: 'not_running' };
   }
 }
 
-export async function shutdownBackend(): Promise<ShutdownResult> {
-  const info = readBackendInfo();
+export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResult> {
+  const info = readBackendInfo(pluginRoot);
   if (!info || !isProcessAlive(info.pid)) {
     return { ok: false, reason: 'not_running' };
   }
@@ -221,9 +254,7 @@ export async function proxyToolCall(
   args: Record<string, unknown>,
   ctx: { projectRoot: string; pluginRoot: string },
 ): Promise<unknown> {
-  const { port, host, token }: BackendHandle = await ensureBackend(
-    typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : undefined,
-  );
+  const { port, host, token } = await ensureBackend(ctx.pluginRoot);
   const body = JSON.stringify({
     name,
     args,

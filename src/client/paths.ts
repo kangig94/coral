@@ -1,36 +1,37 @@
+import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 export const JOBS_DIR = join(tmpdir(), 'coral-jobs');
 
-export let SESSION_BASE = join(readHomeDir(), '.claude', 'coral', 'execution', 'sessions');
-
-export let BACKEND_INFO_PATH = join(readHomeDir(), '.claude', 'coral', 'backend.json');
-
-export let BACKEND_LOCK_PATH = join(readHomeDir(), '.claude', 'coral', 'backend.lock');
-
-export let DISCUSS_PROJECT_ROOTS_PATH = join(readHomeDir(), '.claude', 'coral', 'discuss-project-roots.json');
-
-function readHomeDir(): string {
-  try {
-    return homedir();
-  } catch (error: unknown) {
-    if (error instanceof ReferenceError) {
-      return '';
-    }
-    throw error;
-  }
+function coralHome(): string {
+  return join(homedir(), '.claude', 'coral');
 }
 
-/**
- * Synchronizes home-directory-based paths with the current `homedir()` value.
- */
-export function syncHomePaths(): void {
-  const home = readHomeDir();
-  SESSION_BASE = join(home, '.claude', 'coral', 'execution', 'sessions');
-  BACKEND_INFO_PATH = join(home, '.claude', 'coral', 'backend.json');
-  BACKEND_LOCK_PATH = join(home, '.claude', 'coral', 'backend.lock');
-  DISCUSS_PROJECT_ROOTS_PATH = join(home, '.claude', 'coral', 'discuss-project-roots.json');
+export function pluginRootNamespace(pluginRoot: string): string {
+  const canonical = realpathSync(pluginRoot);
+  return createHash('sha256').update(canonical).digest('hex').slice(0, 12);
+}
+
+export function installationDir(pluginRoot: string): string {
+  return join(coralHome(), 'installations', pluginRootNamespace(pluginRoot));
+}
+
+export function backendInfoPath(pluginRoot: string): string {
+  return join(installationDir(pluginRoot), 'backend.json');
+}
+
+export function backendLockPath(pluginRoot: string): string {
+  return join(installationDir(pluginRoot), 'backend.lock');
+}
+
+export function sessionBase(): string {
+  return join(coralHome(), 'execution', 'sessions');
+}
+
+export function discussProjectRootsPath(): string {
+  return join(coralHome(), 'discuss-project-roots.json');
 }
 
 /**

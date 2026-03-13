@@ -23,21 +23,24 @@ export const backendToolDescriptor: ToolDescriptor = {
   },
 };
 
-export async function handleBackendToolCall(args: Record<string, unknown>): Promise<McpResult> {
+export async function handleBackendToolCall(
+  args: Record<string, unknown>,
+  pluginRoot: string,
+): Promise<McpResult> {
   const parsed = backendInputSchema.safeParse(args);
   if (!parsed.success) {
     return textResult(parsed.error.message, true);
   }
 
   if (parsed.data.op === 'status') {
-    const status = await getBackendStatus();
+    const status = await getBackendStatus(pluginRoot);
     if (!status) {
       return textResult('Backend is not running', true);
     }
     return textResult(JSON.stringify(status));
   }
 
-  const shutdown = await shutdownBackend();
+  const shutdown = await shutdownBackend(pluginRoot);
   if (!shutdown.ok) {
     return textResult(shutdown.reason, true);
   }

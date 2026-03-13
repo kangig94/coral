@@ -9,6 +9,7 @@ import { JOBS_DIR, ProgressStore, createReplayCursor, formatElapsed } from '../p
 
 const jobIdsToClean = new Set<string>();
 const projectRoot = '/tmp/project';
+const TEST_BACKEND_NAMESPACE = 'test-namespace';
 const renameCalls = vi.hoisted(() => [] as Array<[unknown, unknown]>);
 
 vi.mock('node:fs', async () => {
@@ -160,6 +161,7 @@ describe('execution ProgressStore', () => {
       sessionId: 'session-1',
       provider: 'codex',
       projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
       phase: 'running',
       launch: { state: 'ready', updatedAt: '2026-03-06T00:00:00.000Z' },
     } satisfies PersistedStatusRecord;
@@ -184,6 +186,7 @@ describe('execution ProgressStore', () => {
       sessionId: 'session-1',
       provider: 'codex',
       projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
       phase: 'completed',
       launch: { state: 'ready', updatedAt: '2026-03-06T00:00:00.000Z' },
       result: { content: 'done' },

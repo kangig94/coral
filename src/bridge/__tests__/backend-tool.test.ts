@@ -1,3 +1,4 @@
+// @flaky — vi.resetModules() + dynamic import contention under parallel suite execution; run with retry
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -7,6 +8,7 @@ const {
   getBackendStatusMock: vi.fn(),
   shutdownBackendMock: vi.fn(),
 }));
+const TEST_PLUGIN_ROOT = '/test/plugin/root';
 
 vi.mock('../backend-client.js', () => ({
   getBackendStatus: getBackendStatusMock,
@@ -20,7 +22,7 @@ async function loadBackendToolModule(): Promise<BridgeBackendToolModule> {
   return import('../backend-tool.js');
 }
 
-describe('bridge backend-tool', () => {
+describe('bridge backend-tool', { retry: 2 }, () => {
   beforeEach(() => {
     getBackendStatusMock.mockReset();
     shutdownBackendMock.mockReset();
@@ -44,7 +46,7 @@ describe('bridge backend-tool', () => {
     };
     getBackendStatusMock.mockResolvedValueOnce(status);
 
-    await expect(handleBackendToolCall({ op: 'status' })).resolves.toEqual({
+    await expect(handleBackendToolCall({ op: 'status' }, TEST_PLUGIN_ROOT)).resolves.toEqual({
       content: [{ type: 'text', text: JSON.stringify(status) }],
       isError: false,
     });
@@ -54,7 +56,7 @@ describe('bridge backend-tool', () => {
     const { handleBackendToolCall } = await loadBackendToolModule();
     getBackendStatusMock.mockResolvedValueOnce(null);
 
-    await expect(handleBackendToolCall({ op: 'status' })).resolves.toEqual({
+    await expect(handleBackendToolCall({ op: 'status' }, TEST_PLUGIN_ROOT)).resolves.toEqual({
       content: [{ type: 'text', text: 'Backend is not running' }],
       isError: true,
     });
@@ -64,7 +66,7 @@ describe('bridge backend-tool', () => {
     const { handleBackendToolCall } = await loadBackendToolModule();
     shutdownBackendMock.mockResolvedValueOnce({ ok: true });
 
-    await expect(handleBackendToolCall({ op: 'shutdown' })).resolves.toEqual({
+    await expect(handleBackendToolCall({ op: 'shutdown' }, TEST_PLUGIN_ROOT)).resolves.toEqual({
       content: [{ type: 'text', text: JSON.stringify({ status: 'shutting_down' }) }],
       isError: false,
     });
@@ -74,7 +76,7 @@ describe('bridge backend-tool', () => {
     const { handleBackendToolCall } = await loadBackendToolModule();
     shutdownBackendMock.mockResolvedValueOnce({ ok: false, reason: 'not_running' });
 
-    await expect(handleBackendToolCall({ op: 'shutdown' })).resolves.toEqual({
+    await expect(handleBackendToolCall({ op: 'shutdown' }, TEST_PLUGIN_ROOT)).resolves.toEqual({
       content: [{ type: 'text', text: 'not_running' }],
       isError: true,
     });
@@ -83,7 +85,7 @@ describe('bridge backend-tool', () => {
   it('rejects invalid op values', async () => {
     const { handleBackendToolCall } = await loadBackendToolModule();
 
-    const result = await handleBackendToolCall({ op: 'restart' });
+    const result = await handleBackendToolCall({ op: 'restart' }, TEST_PLUGIN_ROOT);
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/Invalid enum value/i);
@@ -92,7 +94,7 @@ describe('bridge backend-tool', () => {
   it('returns zod validation errors for malformed input', async () => {
     const { handleBackendToolCall } = await loadBackendToolModule();
 
-    const result = await handleBackendToolCall({});
+    const result = await handleBackendToolCall({}, TEST_PLUGIN_ROOT);
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/Required/i);

@@ -5,6 +5,8 @@
 // Line 2: codex model │ codex limits │ spark limits
 
 import { readFileSync, existsSync, writeFileSync, mkdirSync, openSync, fstatSync, readSync, closeSync, renameSync, unlinkSync } from "fs";
+import { realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "path";
 import { homedir } from "os";
 import { execSync } from "child_process";
@@ -93,7 +95,11 @@ function renderGitBranch(input) {
 function renderModel(input) {
   if (!input.model) return null;
   const name = input.model.display_name || input.model.id || "";
-  return name.toLowerCase().replace(/^claude\s+/, "");
+  return name.toLowerCase()
+    .replace(/^claude\s+/, "")
+    .replace(/\(200k\s+context\)/i, "")
+    .replace(/\((\d+[km])\s+context\)/i, "$1")
+    .replace(/\s+$/, "");
 }
 
 function renderSession(input) {
@@ -222,19 +228,50 @@ function parseRunningAgents(lines) {
   );
 }
 
-function renderActivity(input) {
+function isSystemNoise(text) {
+  return /^\[Request interrupted|^\[Tool cancelled|^\[User cancelled/i.test(text);
+}
+
+function parseLastUserMessage(lines) {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line.includes('"human"') && !line.includes('"user"')) continue;
+    try {
+      const entry = JSON.parse(line);
+      if (entry?.type !== "human" && entry?.message?.role !== "user") continue;
+      const content = entry?.message?.content;
+      if (typeof content === "string") {
+        const clean = content.replace(/<[^>]+>/g, "").trim();
+        if (clean && !isSystemNoise(clean)) return clean;
+      }
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block.type === "text" && typeof block.text === "string") {
+            const clean = block.text.replace(/<[^>]+>/g, "").trim();
+            if (clean && !isSystemNoise(clean)) return clean;
+          }
+        }
+      }
+    } catch {}
+  }
+  return null;
+}
+
+function parseTranscript(input) {
   const lines = readTranscriptTail(input.transcript_path);
-  if (!lines) return null;
+  if (!lines) return { activity: null, lastUserMessage: null };
   const running = parseRunningAgents(lines);
+  let activity = null;
   if (running.length > 0) {
     const counts = {};
     for (const a of running) counts[a.subagent_type] = (counts[a.subagent_type] || 0) + 1;
     const str = Object.entries(counts).map(([t, c]) => c > 1 ? `${t}×${c}` : t).join(" ");
-    return `${DIM}${str}${RESET}`;
+    activity = `${DIM}${str}${RESET}`;
+  } else {
+    const skill = parseLastSkill(lines);
+    if (skill) activity = `${CYAN}${skill}${RESET}`;
   }
-  const skill = parseLastSkill(lines);
-  if (!skill) return null;
-  return `${CYAN}${skill}${RESET}`;
+  return { activity, lastUserMessage: parseLastUserMessage(lines) };
 }
 
 // --- cache ---
@@ -725,7 +762,19 @@ async function renderCodexData() {
 
 // --- coral backend ---
 
-const BACKEND_INFO_PATH = join(homedir(), ".claude", "coral", "backend.json");
+function resolveBackendInfoPath() {
+  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
+  if (!pluginRoot) return null;
+  try {
+    const canonical = realpathSync(pluginRoot);
+    const hash = createHash("sha256").update(canonical).digest("hex").slice(0, 12);
+    return join(homedir(), ".claude", "coral", "installations", hash, "backend.json");
+  } catch {
+    return null;
+  }
+}
+
+const BACKEND_INFO_PATH = resolveBackendInfoPath();
 const REEF_INFO_PATH = join(homedir(), ".claude", "coral", "reef.json");
 
 function readReefInfo() {
@@ -738,6 +787,8 @@ function readReefInfo() {
 }
 
 async function renderCoralLine() {
+  if (!BACKEND_INFO_PATH) return null;
+
   const cached = readBackendSlot();
   if (cached) return cached.line;
 
@@ -847,6 +898,9 @@ async function main() {
     col2Codex = null;
   }
 
+  // Parse transcript once for activity + last user message
+  const transcript = parseTranscript(input);
+
   // Line 1: Claude
   const line1 = [
     col1Claude,
@@ -854,7 +908,7 @@ async function main() {
     renderContext(input),
     renderSession(input),
     renderGitBranch(input),
-    renderActivity(input),
+    transcript.activity,
   ].filter(Boolean);
 
   let output = line1.join(SEP);
@@ -879,8 +933,24 @@ async function main() {
     output += "\n" + codexData.message;
   }
 
-  // Line 3: Coral backend
-  if (coralLine) output += "\n" + coralLine;
+  // Line 3: Coral backend + right-aligned last user input
+  if (coralLine) {
+    const targetWidth = visualLen(line1.join(SEP));
+    const lastMsg = transcript.lastUserMessage;
+    let coralFinal = coralLine;
+    if (lastMsg && targetWidth > 0) {
+      const coralLen = visualLen(coralLine);
+      const maxMsg = Math.min(40, targetWidth - coralLen - 3);
+      if (maxMsg > 8) {
+        const truncated = lastMsg.length > maxMsg ? lastMsg.slice(0, maxMsg - 1) + "\u2026" : lastMsg;
+        const gap = targetWidth - coralLen - truncated.length;
+        if (gap > 0) {
+          coralFinal = coralLine + " ".repeat(gap) + DIM + truncated + RESET;
+        }
+      }
+    }
+    output += "\n" + coralFinal;
+  }
 
   output = output
     .split("\n")

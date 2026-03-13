@@ -17,7 +17,7 @@ import {
   type DiscussDiscoverySession,
 } from '../client/readers.js';
 import {
-  DISCUSS_PROJECT_ROOTS_PATH,
+  discussProjectRootsPath,
   discussDiscoveryPath,
   discussEventLogPath,
   discussSessionDir,
@@ -229,11 +229,11 @@ export class DiscussSessionStore {
 
         await withPromiseChainLock(
           discussProjectRootRegistryLocks,
-          DISCUSS_PROJECT_ROOTS_PATH,
+          discussProjectRootsPath(),
           () => {
             const projectRoots = new Set(readDiscussProjectRoots());
             projectRoots.add(this.projectRoot);
-            writeAtomicJson(DISCUSS_PROJECT_ROOTS_PATH, {
+            writeAtomicJson(discussProjectRootsPath(), {
               updatedAt: nextSnapshot.updatedAt,
               projectRoots: [...projectRoots].sort(),
             });

@@ -10,7 +10,7 @@ import type {
 } from '../../discuss/events.js';
 import { decideSessionCreate } from '../../discuss/state-machine.js';
 import type { DiscussCreateInput } from '../../discuss/types.js';
-import { discussEventLogPath, syncHomePaths } from '../../client/paths.js';
+import { discussEventLogPath } from '../../client/paths.js';
 import { readDiscussEventLog } from '../../client/readers.js';
 import { buildWatchEvents } from '../../discuss/projections.js';
 import { DiscussManager } from '../discuss-manager.js';
@@ -89,7 +89,6 @@ function enableDiscussTestHome(): void {
     return;
   }
   process.env.HOME = discussTestHomeRoot;
-  syncHomePaths();
   usingDiscussTestHome = true;
 }
 
@@ -102,7 +101,6 @@ function disableDiscussTestHome(): void {
   } else {
     process.env.HOME = originalHome;
   }
-  syncHomePaths();
   rmSync(discussTestHomeRoot, { recursive: true, force: true });
   usingDiscussTestHome = false;
 }
