@@ -4,8 +4,6 @@ description: "One-touch install of MCP tools to enhance Claude's capabilities"
 argument-hint: "[--list | [--update] cgc[@version]]"
 ---
 
-> **CORAL_SKILLS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/skills/")`
-
 # Equip
 
 Install and configure MCP tools for Claude Code.
@@ -14,13 +12,13 @@ Install and configure MCP tools for Claude Code.
 
 ### No argument or `--list`
 
-1. Run `node CORAL_SKILLS/equip/install.mjs --list`
+1. Bash(`node equip/install.mjs --list`)
 2. Present catalog as a table (id, name, description)
 3. Ask the user which package to install
 
 ### `<package>` (e.g., `cgc`)
 
-1. Run `node CORAL_SKILLS/equip/install.mjs <package>`
+1. Bash(`node equip/install.mjs <package>`)
 2. Parse JSON output (single line from stdout)
 3. Route by `status`:
 
