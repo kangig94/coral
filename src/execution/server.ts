@@ -1584,6 +1584,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
 
     try {
       await acquireLockFn(resolvedPluginRoot, instanceId, version, bundleHash);
+      registerBuiltInProviders();
       recoverOrphanedJobsFn(namespace);
       for (const projectRoot of knownDiscussProjectRoots()) {
         const ctx: CallerContext = {

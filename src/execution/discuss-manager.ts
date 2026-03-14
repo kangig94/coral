@@ -906,7 +906,13 @@ export class DiscussManager {
           if (current.abortEnded) {
             return;
           }
+          const beforePhase = snapshot.runtime.controlPhase;
           await this.handleSynthesis(sessionId, ctx);
+          const after = this.sessions.get(sessionId);
+          if (after?.snapshot.runtime.controlPhase === beforePhase) {
+            await this.forceEndAfterLoopFailure(sessionId, new Error('synthesis failed to advance'));
+            return;
+          }
           continue;
         }
 
