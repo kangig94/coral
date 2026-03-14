@@ -24,11 +24,22 @@ try {
   }
 
   const namespace = createHash('sha256').update(canonicalPluginRoot).digest('hex').slice(0, 12);
-  const infoPath = join(homedir(), '.claude', 'coral', 'installations', namespace, 'backend.json');
+  const installDir = join(homedir(), '.claude', 'coral', 'installations', namespace);
+
+  // Skip if backend already running (backend.json with live pid)
   try {
-    const info = JSON.parse(readFileSync(infoPath, 'utf-8'));
+    const info = JSON.parse(readFileSync(join(installDir, 'backend.json'), 'utf-8'));
     if (info && typeof info.pid === 'number' && info.pid > 0) {
       process.kill(info.pid, 0);
+      process.exit(0);
+    }
+  } catch {}
+
+  // Skip if another process is already starting a backend (lock with live pid)
+  try {
+    const lock = JSON.parse(readFileSync(join(installDir, 'backend.lock'), 'utf-8'));
+    if (lock && typeof lock.pid === 'number' && lock.pid > 0) {
+      process.kill(lock.pid, 0);
       process.exit(0);
     }
   } catch {}
