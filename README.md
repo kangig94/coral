@@ -164,7 +164,7 @@ Consecutive `/coral:codex` calls continue the same session. Say "new" to start f
 | Skill | Description | Codex |
 |-------|-------------|:-----:|
 | `/coral:analyze` | Deep analysis and investigation | Optional |
-| `/coral:preplan` | Problem definition before planning | - |
+| `/coral:preplan` | Problem definition before planning | Optional |
 | `/coral:plan` | Multi-round planning with structured review and conflict resolution. `--deep` for methodology-driven synthesis | Optional |
 | `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | Optional |
 | `/coral:bugfix` | Bug diagnosis, planning, and fix execution | Optional |
