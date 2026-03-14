@@ -1,4 +1,4 @@
-const pad2 = (n: number): string => String(n).padStart(2, '0');
+export const pad2 = (n: number): string => String(n).padStart(2, '0');
 
 export function randomSuffix(): string {
   const suffix = Math.random().toString(36).slice(2, 6);

@@ -1,10 +1,10 @@
 import type { AgentState, TranscriptEntry } from './types.js';
+import { pad2 } from './util/string.js';
 
 const SOFT_LIMIT = 80;
 const HARD_LIMIT = 100;
 
 const SENTENCE_END = /[.!?]$/u;
-const pad2 = (value: number): string => String(value).padStart(2, '0');
 
 export function wrapText(text: string, opts?: { soft?: number; hard?: number }): string {
   const soft = opts?.soft ?? SOFT_LIMIT;

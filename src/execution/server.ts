@@ -169,6 +169,20 @@ function jsonTextResult(data: unknown, isError = false): McpResult {
   return textResult(JSON.stringify(data), isError);
 }
 
+function toProviderFields(
+  data: { session?: string; prompt?: string; work_dir?: string; model?: string; system_prompt?: string },
+  bypassPermissions: boolean,
+): { sessionId: string; prompt: string; cwd: string | undefined; model: string | undefined; bypassPermissions: boolean; systemPrompt: string | undefined } {
+  return {
+    sessionId: data.session ?? '',
+    prompt: data.prompt ?? '',
+    cwd: data.work_dir,
+    model: data.model,
+    bypassPermissions,
+    systemPrompt: data.system_prompt,
+  };
+}
+
 function toolValidationError(error: z.ZodError): ToolRouteResponse {
   return {
     statusCode: 200,
@@ -833,15 +847,7 @@ export async function routeToolCall(
     if (!parsed.success) return { statusCode: 400, body: { error: 'invalid_request' } };
     return {
       statusCode: 200,
-      body: await service.fork(request.name, {
-        sessionId: parsed.data.session,
-        prompt: parsed.data.prompt,
-        cwd: parsed.data.work_dir,
-        model: parsed.data.model,
-
-        bypassPermissions: true,
-        systemPrompt: parsed.data.system_prompt,
-      }, request.context),
+      body: await service.fork(request.name, toProviderFields(parsed.data, true), request.context),
     };
   }
 
@@ -850,15 +856,7 @@ export async function routeToolCall(
     if (!parsed.success) return { statusCode: 400, body: { error: 'invalid_request' } };
     return {
       statusCode: 200,
-      body: await service.resume(request.name, {
-        sessionId: parsed.data.session,
-        prompt: parsed.data.prompt,
-        cwd: parsed.data.work_dir,
-        model: parsed.data.model,
-
-        bypassPermissions: true,
-        systemPrompt: parsed.data.system_prompt,
-      }, request.context),
+      body: await service.resume(request.name, toProviderFields(parsed.data, true), request.context),
     };
   }
 
@@ -871,27 +869,15 @@ export async function routeToolCall(
     if (parsed.data.session) {
       return {
         statusCode: 200,
-        body: await service.resume(request.name, {
-          sessionId: parsed.data.session,
-          prompt: parsed.data.prompt,
-          cwd: parsed.data.work_dir,
-          model: parsed.data.model,
-
-          bypassPermissions,
-          systemPrompt: parsed.data.system_prompt,
-        }, request.context),
+        body: await service.resume(request.name, toProviderFields(parsed.data, bypassPermissions), request.context),
       };
     }
 
     return {
       statusCode: 200,
       body: await service.start(request.name, {
-        prompt: parsed.data.prompt,
+        ...toProviderFields(parsed.data, bypassPermissions),
         cwd: parsed.data.work_dir ?? defaultCwd,
-        model: parsed.data.model,
-
-        bypassPermissions,
-        systemPrompt: parsed.data.system_prompt,
       }, request.context),
     };
   }

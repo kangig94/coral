@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { isRecord } from '../shared/mcp-utils.js';
 import {
   discussProjectRootsPath,
   JOBS_DIR,
@@ -45,9 +46,6 @@ function readTextFile(filePath: string): string | null {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
