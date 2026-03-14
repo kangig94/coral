@@ -1433,6 +1433,31 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       return;
     }
 
+    if (req.method === 'GET' && req.url === '/health') {
+      sendJson(res, 200, {
+        status: lifecycle === 'running' ? 'ok' : lifecycle,
+        version,
+        bundleHash,
+        namespace,
+        instanceId,
+        uptimeMs: now() - startedAt,
+        activeChildren: activeChildren.size,
+        activeJobs: progressStore.liveJobCount(),
+        queueDepth: queueDepth(),
+        inflightRequests: idleTimer.inflightRequests,
+      });
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/admin/shutdown') {
+      req.resume();
+      runOnResponseDone(res, () => {
+        void shutdown('admin').catch(() => {});
+      });
+      sendJson(res, 200, { status: 'shutting_down' });
+      return;
+    }
+
     if (lifecycle !== 'running') {
       req.resume();
       sendJson(res, 503, { error: 'backend_shutting_down' });
@@ -1452,22 +1477,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
 
     if (req.method === 'POST' && req.url === '/wait/stream') {
       await handleWaitStream(req, res);
-      return;
-    }
-
-    if (req.method === 'GET' && req.url === '/health') {
-      sendJson(res, 200, {
-        status: 'ok',
-        version,
-        bundleHash,
-        namespace,
-        instanceId,
-        uptimeMs: now() - startedAt,
-        activeChildren: activeChildren.size,
-        activeJobs: progressStore.liveJobCount(),
-        queueDepth: queueDepth(),
-        inflightRequests: idleTimer.inflightRequests,
-      });
       return;
     }
 
@@ -1495,15 +1504,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         scopeCheckJobs: (jobIds, projectRoot) => scopeCheckJobs(jobIds, projectRoot, namespace),
       });
       sendJson(res, result.statusCode, result.body);
-      return;
-    }
-
-    if (req.method === 'POST' && req.url === '/admin/shutdown') {
-      req.resume();
-      runOnResponseDone(res, () => {
-        void shutdown('admin').catch(() => {});
-      });
-      sendJson(res, 200, { status: 'shutting_down' });
       return;
     }
 

@@ -268,7 +268,7 @@ describe('execution backend server', () => {
       instanceId: 'execution-backend-instance-1',
       activeChildren: 0,
       activeJobs: 0,
-      inflightRequests: 1,
+      inflightRequests: 0,
       queueDepth: 0,
     });
     expect(typeof body.uptimeMs).toBe('number');
@@ -1060,6 +1060,61 @@ describe('execution backend server', () => {
     expect(backend.controller.getLifecycle()).toBe('stopped');
     expect(existsSync(backend.backendInfo.backendInfoPath(pluginRoot))).toBe(false);
     expect(existsSync(backend.backendLock.backendLockPath(pluginRoot))).toBe(false);
+  });
+
+  it('returns health with draining status while shutting down', async () => {
+    const closeBarrier = createDeferred();
+    const backend = await startBackendServer({
+      closeServerFn: async (server) => {
+        await closeBarrier.promise;
+        await closeHttpServer(server);
+      },
+    });
+
+    await fetch(`${backend.baseUrl}/admin/shutdown`, {
+      method: 'POST',
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+    await waitForCondition(() => backend.controller.getLifecycle() === 'draining');
+
+    const response = await fetch(`${backend.baseUrl}/health`, {
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+    const body = await response.json() as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect(body.status).toBe('draining');
+    expect(body.bundleHash).toBe('testhash1234');
+
+    closeBarrier.resolve();
+    await backend.controller.waitForShutdown();
+  });
+
+  it('accepts /admin/shutdown while already draining', async () => {
+    const closeBarrier = createDeferred();
+    const backend = await startBackendServer({
+      closeServerFn: async (server) => {
+        await closeBarrier.promise;
+        await closeHttpServer(server);
+      },
+    });
+
+    await fetch(`${backend.baseUrl}/admin/shutdown`, {
+      method: 'POST',
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+    await waitForCondition(() => backend.controller.getLifecycle() === 'draining');
+
+    const response = await fetch(`${backend.baseUrl}/admin/shutdown`, {
+      method: 'POST',
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: 'shutting_down' });
+
+    closeBarrier.resolve();
+    await backend.controller.waitForShutdown();
   });
 
   it('returns 401 for unauthorized requests', async () => {
