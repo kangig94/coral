@@ -329,10 +329,10 @@ describe('execution backend server', () => {
       discussRegistry: discussRegistry as never,
     });
 
-    expect(discussRegistry.getOrCreate).toHaveBeenCalledTimes(2);
+    expect(discussRegistry.getOrCreate).toHaveBeenCalledTimes(1);
     const getOrCreateCalls = discussRegistry.getOrCreate.mock.calls as Array<unknown[]>;
     expect(getOrCreateCalls.every((call) => call[0] === projectRoot)).toBe(true);
-    expect(recoverPersistedSessions).toHaveBeenCalledTimes(2);
+    expect(recoverPersistedSessions).toHaveBeenCalledTimes(1);
     expect(recoverPersistedSessions).toHaveBeenCalledWith({
       projectRoot,
       pluginRoot: expect.any(String),

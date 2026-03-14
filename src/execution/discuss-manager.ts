@@ -413,27 +413,14 @@ export class DiscussManager {
   }
 
   async recoverPersistedSessions(ctx: CallerContext): Promise<void> {
-    const resumableSessionIds: string[] = [];
     for (const candidate of this.store.listRecoveryCandidates()) {
       const snapshot = this.store.load(candidate.sessionId);
-      if (!snapshot) {
-        continue;
-      }
+      if (!snapshot) continue;
       const events = this.readSessionEvents(candidate.sessionId);
       const abortEnded = this.isAbortEnded(events);
-      if (abortEnded) {
-        continue;
-      }
+      if (abortEnded) continue;
+      // Attach only — continueLoop fires when the user re-engages via discuss_participate
       this.attachSession(snapshot, buildWatchEvents(events), abortEnded);
-      if (this.requiresRecovery(snapshot, abortEnded)) {
-        resumableSessionIds.push(snapshot.sessionId);
-      }
-    }
-
-    for (const sessionId of resumableSessionIds) {
-      await this.continueLoop(sessionId, ctx).catch((error: unknown) => {
-        void this.forceEndAfterLoopFailure(sessionId, error);
-      });
     }
   }
 
@@ -658,16 +645,6 @@ export class DiscussManager {
       return event.payload.reason === ABORT_REASON;
     }
     return false;
-  }
-
-  private requiresRecovery(snapshot: PersistedDiscussSnapshot, abortEnded: boolean): boolean {
-    if (abortEnded) {
-      return false;
-    }
-    if (snapshot.state.status === 'ended') {
-      return snapshot.runtime.controlPhase === 'synthesize';
-    }
-    return true;
   }
 
   private afterCommit(
