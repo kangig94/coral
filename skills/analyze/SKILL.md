@@ -63,7 +63,7 @@ argument-hint: "[--codex] [investigation target or question]"
   Run one step at a time — do NOT launch steps in parallel. Each step's output informs
   the next step's scope and "Needed when" evaluation.
   Each step is a fresh call (no session continuity — each agent has a different role).
-  After each exec: capture `job`, then `wait({ jobs: [job], inline: true })` → read `result.content`.
+  After each exec: capture `job`, then `wait({ jobs: [job] })` → read `result.content`; if absent, `Read(result.path)` is best-effort recovery.
   On error, abort the chain and report the error.
   You (the executor) post-process and append the result to the file after each step completes.
 

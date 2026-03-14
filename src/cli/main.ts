@@ -17,6 +17,7 @@ import {
   streamWait,
   type WaitCursorRef,
 } from '../bridge/backend-client.js';
+import { MAX_INLINE } from '../shared/schemas.js';
 import type { WaitStreamEvent } from '../types.js';
 
 const providerNames = ['codex', 'claude'] as const;
@@ -51,7 +52,7 @@ type WaitOptions = {
   jobs: string;
   timeout: string;
   cursor?: string;
-  inline?: boolean;
+  embed?: boolean;
 };
 
 type AbortOptions = {
@@ -220,24 +221,67 @@ async function readJsonFlag(flag: string | undefined): Promise<JsonObject> {
   return parsed;
 }
 
-function shapeInlineTerminal(event: WaitStreamEvent): WaitStreamEvent {
+type WaitOutputRecord = {
+  cursor: string | null;
+  event: unknown;
+};
+
+function shapeWaitOutputRecord(
+  event: WaitStreamEvent,
+  cursor: string | null,
+  embed: boolean,
+): WaitOutputRecord {
   if (event.type !== 'terminal') {
-    return event;
+    return { cursor, event };
   }
 
-  if (event.result.workflow === undefined) {
-    return event;
-  }
-
-  // Workflow jobs write large output to resultPath; inline it here
-  const { content: _omitted, ...resultMeta } = event.result;
-  return {
+  const {
+    resultPath,
+    result: { content: rawContent, ...resultMeta },
+  } = event;
+  const pathFirstEvent = {
     ...event,
     result: {
       ...resultMeta,
-      content: readFileSync(event.resultPath, 'utf8'),
+      path: resultPath,
     },
   };
+  const { resultPath: _rp, ...pathFirstEventWithoutResultPath } = pathFirstEvent;
+
+  if (!embed) {
+    return { cursor, event: pathFirstEventWithoutResultPath };
+  }
+
+  let text: string | undefined;
+  if (event.result.workflow !== undefined) {
+    try {
+      text = readFileSync(resultPath, 'utf8');
+    } catch {
+      // Fall back to path-only output when the artifact is unavailable.
+    }
+  } else {
+    text = rawContent;
+  }
+
+  if (text === undefined) {
+    return { cursor, event: pathFirstEventWithoutResultPath };
+  }
+
+  const embeddedRecord: WaitOutputRecord = {
+    cursor,
+    event: {
+      ...pathFirstEventWithoutResultPath,
+      result: {
+        ...resultMeta,
+        path: resultPath,
+        content: text,
+      },
+    },
+  };
+
+  return JSON.stringify(embeddedRecord).length <= MAX_INLINE
+    ? embeddedRecord
+    : { cursor, event: pathFirstEventWithoutResultPath };
 }
 
 function normalizeProviderArgv(argv: readonly string[]): string[] {
@@ -356,7 +400,7 @@ program.command('wait')
   .requiredOption('--jobs <ids>', 'Comma-separated job IDs')
   .option('--timeout <seconds>', 'Timeout in seconds', '600')
   .option('--cursor <cursor>', 'Opaque resume cursor (from previous wait output)')
-  .option('--inline', 'Embed terminal result content inline instead of emitting the result path')
+  .option('--embed', 'Embed terminal result content when size permits (path is always present)')
   .action(async (opts: WaitOptions) => {
     try {
       const jobIds = parseJobIds(opts.jobs);
@@ -376,11 +420,8 @@ program.command('wait')
         projectRoot,
         cursorRef,
       )) {
-        const shaped = opts.inline ? shapeInlineTerminal(event) : event;
-        process.stdout.write(JSON.stringify({
-          cursor: cursorRef.lastEventId ?? null,
-          event: shaped,
-        }) + '\n');
+        const record = shapeWaitOutputRecord(event, cursorRef.lastEventId ?? null, opts.embed === true);
+        process.stdout.write(JSON.stringify(record) + '\n');
       }
     } catch (error) {
       emitError(error);

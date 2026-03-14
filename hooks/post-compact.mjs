@@ -155,7 +155,7 @@ try {
       }
 
       if (!entry.isWorkflow) {
-        lines.push(`- ${entry.job.jobId} (${entry.status.phase}, ${provider}). Use wait({ jobs: [${JSON.stringify(entry.job.jobId)}], inline: true }) once to attempt replay.`);
+        lines.push(`- ${entry.job.jobId} (${entry.status.phase}, ${provider}). Use wait({ jobs: [${JSON.stringify(entry.job.jobId)}] }) to attempt replay. Read result.content if present, otherwise Read(result.path) for the full artifact.`);
         continue;
       }
 

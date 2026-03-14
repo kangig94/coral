@@ -10,7 +10,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { ensureBackend, proxyToolCall, streamWait, type WaitCursorRef } from './backend-client.js';
 import { buildToolList, handleBackendToolCall } from './backend-tool.js';
 import { isRecord, jsonResult, mcpError, textResult, type McpResult } from '../shared/mcp-utils.js';
-import { waitInputSchema } from '../shared/schemas.js';
+import { waitInputSchema, MAX_INLINE } from '../shared/schemas.js';
 
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
 const version = typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0';
@@ -39,11 +39,14 @@ function waitToolDescriptor(tool: ToolDescriptor): ToolDescriptor {
         jobs: { type: 'array', items: { type: 'string' }, description: 'Job IDs to monitor (from exec/fork response)' },
         timeout_seconds: { type: 'number', description: 'Max wait time in seconds (1-1200, default 600)' },
         cursor: { type: 'string', description: 'Opaque stream cursor returned by the previous wait call' },
-        inline: { type: 'boolean', description: 'Inline result text in content (default false — content is the result file path for selective Read)' },
       },
       required: ['jobs'],
     },
   };
+}
+
+function fitsInlineWaitPayload(payload: Record<string, unknown>): boolean {
+  return JSON.stringify(jsonResult(payload)).length <= MAX_INLINE;
 }
 
 async function fetchTools(): Promise<ToolDescriptor[]> {
@@ -188,19 +191,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
               case 'terminal': {
                 const { content: rawContent, ...resultMeta } = event.result;
                 const isWorkflow = event.result.workflow !== undefined;
-                const content = !parsed.inline
-                  ? event.resultPath
-                  : isWorkflow
-                    ? readFileSync(event.resultPath, 'utf-8')
-                    : rawContent;
-                const result = { ...resultMeta, content };
-                return jsonResult({
-                  state: 'ended',
+                let text: string | undefined;
+                if (isWorkflow) {
+                  try { text = readFileSync(event.resultPath, 'utf-8'); } catch { /* fall through to path-only */ }
+                } else {
+                  text = rawContent;
+                }
+
+                const responseBase = {
+                  state: 'ended' as const,
                   completedJobId: event.completedJobId,
                   sessionId: event.sessionId,
                   remainingJobIds: event.remainingJobIds,
-                  result,
-                });
+                };
+                const pathFirstResult = { ...resultMeta, path: event.resultPath };
+                const embeddedPayload = { ...responseBase, result: { ...pathFirstResult, content: text } };
+
+                if (text !== undefined && fitsInlineWaitPayload(embeddedPayload)) {
+                  return jsonResult(embeddedPayload);
+                }
+                return jsonResult({ ...responseBase, result: pathFirstResult });
               }
               case 'timeout':
                 return jsonResult({

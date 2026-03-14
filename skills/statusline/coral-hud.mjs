@@ -4,9 +4,7 @@
 // Line 1: model │ limits │ ctx │ session │ skill
 // Line 2: codex model │ codex limits │ spark limits
 
-import { readFileSync, existsSync, writeFileSync, mkdirSync, openSync, fstatSync, readSync, closeSync, renameSync, unlinkSync } from "fs";
-import { realpathSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { readFileSync, readdirSync, existsSync, writeFileSync, mkdirSync, openSync, fstatSync, readSync, closeSync, renameSync, unlinkSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { execSync } from "child_process";
@@ -763,12 +761,20 @@ async function renderCodexData() {
 // --- coral backend ---
 
 function resolveBackendInfoPath() {
-  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
-  if (!pluginRoot) return null;
+  const installationsDir = join(homedir(), ".claude", "coral", "installations");
   try {
-    const canonical = realpathSync(pluginRoot);
-    const hash = createHash("sha256").update(canonical).digest("hex").slice(0, 12);
-    return join(homedir(), ".claude", "coral", "installations", hash, "backend.json");
+    let best = null;
+    for (const entry of readdirSync(installationsDir)) {
+      const infoPath = join(installationsDir, entry, "backend.json");
+      try {
+        const info = JSON.parse(readFileSync(infoPath, "utf-8"));
+        if (info?.pid && info?.startedAt) {
+          try { process.kill(info.pid, 0); } catch { continue; }
+          if (!best || info.startedAt > best.startedAt) best = { path: infoPath, startedAt: info.startedAt };
+        }
+      } catch { /* skip corrupt/missing */ }
+    }
+    return best?.path ?? null;
   } catch {
     return null;
   }

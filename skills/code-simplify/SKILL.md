@@ -73,13 +73,13 @@ Strip the `--codex` flag before passing the prompt to the execution path.
        - `--codex`: call `codex({ op: "bypass_exec", ... })` with `<Execution>`, `<Constraints>`,
          `<Failure_Modes_To_Avoid>`, `<Output_Format>`, target file paths, and coding standards.
          Pass `work_dir`. Do NOT pass `session`.
-         `wait({ jobs: [job], inline: true })` → read `result.content`.
+         `wait({ jobs: [job] })` → read `result.content`; if absent, `Read(result.path)` is best-effort recovery.
        Parallel split:
        - Default: spawn each group as a parallel Task (`subagent_type: "general-purpose"`).
          Pass `<Execution>`, `<Constraints>`, the file group, and project coding standards.
        - `--codex`: dispatch one `codex({ op: "bypass_exec", ... })` call per file group.
          Do NOT pass `session`.
-         Collect all `job`s, then `wait({ jobs: pendingJobs, inline: true })` until all complete, read each `result.content`.
+         Collect all `job`s, then `wait({ jobs: pendingJobs })` until all complete; read each `result.content`; if absent, `Read(result.path)` is best-effort recovery.
     5) Review each change for correctness AND justification.
        Use git diff as a before/after reference when the diff is manageable.
        Correctness:

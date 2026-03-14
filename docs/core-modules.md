@@ -140,7 +140,7 @@ Commander-based parallel client for all Coral MCP tools. Bundled as `bridge/cora
 
 **Response normalizer** — `normalizeResult(result)` handles three payload shapes from `/tool` responses: `McpResult` envelopes (unwraps `content[0].text`, parses JSON), `{ status: 'rejected' }` launches (stderr + exit 1), and plain JSON success (stdout + exit 0). `BackendToolHttpError` carries HTTP status code and parsed JSON body for structured error output.
 
-**Wait output** — calls `streamWait()` from `src/bridge/backend-client.ts`, writes NDJSON records `{"cursor":"..."|null,"event":{...}}`. `shapeInlineTerminal()` matches bridge inline semantics for terminal events.
+**Wait output** — calls `streamWait()` from `src/bridge/backend-client.ts`, writes NDJSON records `{"cursor":"..."|null,"event":{...}}`. `shapeWaitOutputRecord()` applies the path-first terminal shape (`result.path` always present, `result.content` embedded only when the final NDJSON record fits the inline budget).
 
 **Provider `coral:<agent>` normalization** — `normalizeProviderArgv()` rewrites `process.argv` before Commander parses it, converting `codex coral:architect` → `codex coral architect` for clean subcommand routing.
 

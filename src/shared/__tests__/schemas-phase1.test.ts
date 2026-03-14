@@ -56,17 +56,10 @@ describe('Phase 1 shared schemas', () => {
   });
 });
 
-describe('waitInputSchema — inline field', () => {
-  it('should accept inline: true', () => {
+describe('waitInputSchema — inline removed', () => {
+  it('should reject inline field (strict mode)', () => {
     const result = waitInputSchema.safeParse({ jobs: ['job-1'], inline: true });
-    expect(result.success).toBe(true);
-    if (result.success) expect(result.data.inline).toBe(true);
-  });
-
-  it('should default inline to false', () => {
-    const result = waitInputSchema.safeParse({ jobs: ['job-1'] });
-    expect(result.success).toBe(true);
-    if (result.success) expect(result.data.inline).toBe(false);
+    expect(result.success).toBe(false);
   });
 
   it('should reject legacy include_result field (strict mode)', () => {
