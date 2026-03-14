@@ -3,12 +3,17 @@ declare const __PLUGIN_ROOT__: string;
 import { ensureBackend, withAbortTimeout } from '../client/backend-lifecycle.js';
 import { readBackendInfo } from '../execution/backend-info.js';
 import { isProcessAlive, isRecord } from '../shared/mcp-utils.js';
+import {
+  describeHttpError,
+  HEALTH_TIMEOUT_MS,
+  MAX_WAIT_FETCH_TIMEOUT_MS,
+  parseJsonResponse,
+  parseSseBlock,
+  parseWaitStreamEvent,
+  TOOL_TIMEOUT_MS,
+  WAIT_FETCH_MARGIN_MS,
+} from '../shared/sse-parser.js';
 import type { WaitStreamEvent } from '../types.js';
-
-const HEALTH_TIMEOUT_MS = 3_000;
-const TOOL_TIMEOUT_MS = 300_000;
-const MAX_WAIT_FETCH_TIMEOUT_MS = 30 * 60 * 1000;
-const WAIT_FETCH_MARGIN_MS = 30_000;
 
 export { ensureBackend } from '../client/backend-lifecycle.js';
 
@@ -32,12 +37,6 @@ export type BackendStatusFull =
 export type ShutdownResult =
   | { ok: true; alreadyDraining?: true }
   | { ok: false; reason: string };
-
-type SseEventBlock = {
-  event?: string;
-  data: string;
-  id?: string;
-};
 
 type BackendHealthPayload = Extract<BackendStatus, { status: 'ok' }> & {
   namespace: string;
@@ -148,107 +147,6 @@ export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResul
   }
 }
 
-function parseWaitStreamEvent(eventType: string | undefined, rawData: string): WaitStreamEvent | null {
-  if (!eventType) return null;
-
-  const parsed: unknown = JSON.parse(rawData);
-  if (!isRecord(parsed) || parsed.type !== eventType) {
-    throw new Error(`Invalid wait stream event payload for ${eventType}`);
-  }
-
-  switch (eventType) {
-    case 'progress':
-      if (
-        typeof parsed.jobId === 'string'
-        && typeof parsed.sessionId === 'string'
-        && Number.isInteger(parsed.eventId)
-        && typeof parsed.message === 'string'
-      ) {
-        return parsed as WaitStreamEvent;
-      }
-      throw new Error('Invalid progress wait stream event');
-    case 'terminal':
-      if (
-        typeof parsed.completedJobId === 'string'
-        && typeof parsed.sessionId === 'string'
-        && Array.isArray(parsed.remainingJobIds)
-        && parsed.remainingJobIds.every((jobId) => typeof jobId === 'string')
-        && typeof parsed.resultPath === 'string'
-        && isRecord(parsed.result)
-      ) {
-        return parsed as WaitStreamEvent;
-      }
-      throw new Error('Invalid terminal wait stream event');
-    case 'timeout':
-      if (
-        Array.isArray(parsed.runningJobIds)
-        && parsed.runningJobIds.every((jobId) => typeof jobId === 'string')
-      ) {
-        return parsed as WaitStreamEvent;
-      }
-      throw new Error('Invalid timeout wait stream event');
-    case 'queued':
-      if (
-        typeof parsed.jobId === 'string'
-        && typeof parsed.sessionId === 'string'
-        && typeof parsed.queuePosition === 'number'
-        && Array.isArray(parsed.runningJobIds)
-        && parsed.runningJobIds.every((jobId) => typeof jobId === 'string')
-      ) {
-        return parsed as WaitStreamEvent;
-      }
-      throw new Error('Invalid queued wait stream event');
-    default:
-      return null;
-  }
-}
-
-function parseSseBlock(block: string): SseEventBlock | null {
-  if (!block.trim()) return null;
-
-  let event: string | undefined;
-  let id: string | undefined;
-  const data: string[] = [];
-
-  for (const rawLine of block.split('\n')) {
-    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
-    if (!line || line.startsWith(':')) continue;
-
-    const separator = line.indexOf(':');
-    const field = separator >= 0 ? line.slice(0, separator) : line;
-    const value = separator >= 0 ? line.slice(separator + 1).replace(/^ /, '') : '';
-
-    switch (field) {
-      case 'event':
-        event = value;
-        break;
-      case 'data':
-        data.push(value);
-        break;
-      case 'id':
-        id = value;
-        break;
-    }
-  }
-
-  if (data.length === 0) return null;
-  return { event, data: data.join('\n'), id };
-}
-
-function describeHttpError(status: number, statusText: string): string {
-  if (status === 503) return 'Backend shutting down, retry';
-  if (status === 401) return 'Backend auth failure - stale token';
-  return `Backend request failed: ${status} ${statusText}`;
-}
-
-async function parseJsonResponse(response: Response): Promise<unknown> {
-  try {
-    return await response.json();
-  } catch {
-    return null;
-  }
-}
-
 export async function proxyToolCall(
   name: string,
   args: Record<string, unknown>,
@@ -336,7 +234,7 @@ export async function* streamWait(
     let buffer = '';
 
     for await (const chunk of response.body) {
-      const decoded = decoder.decode(chunk, { stream: true }).replace(/\r\n/g, '\n');
+      const decoded = decoder.decode(chunk, { stream: true });
       buffer += decoded;
       const blocks = buffer.split('\n\n');
       buffer = blocks.pop() ?? '';
@@ -351,7 +249,7 @@ export async function* streamWait(
     }
 
     buffer += decoder.decode();
-    const finalBlock = parseSseBlock(buffer.replace(/\r\n/g, '\n'));
+    const finalBlock = parseSseBlock(buffer);
     if (!finalBlock) return;
     if (cursorRef && finalBlock.id) cursorRef.lastEventId = finalBlock.id;
     const finalEvent = parseWaitStreamEvent(finalBlock.event, finalBlock.data);

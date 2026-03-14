@@ -10,7 +10,7 @@ export type DiscussStartAgentInput = {
   model?: string;
 };
 
-function isJsonObject(value: unknown): value is JsonObject {
+export function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 

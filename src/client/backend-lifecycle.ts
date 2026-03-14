@@ -8,10 +8,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { backendInfoPath, backendLockPath, pluginRootNamespace } from './paths.js';
 import { readBackendInfo, type BackendInfo } from '../execution/backend-info.js';
 import { isNoEntryError, isRecord, readBundleHash, tryExclusiveWrite } from '../shared/mcp-utils.js';
+import { HEALTH_TIMEOUT_MS } from '../shared/sse-parser.js';
 
 const STARTUP_POLL_MS = 200;
 const STARTUP_TIMEOUT_MS = 60_000;
-const HEALTH_TIMEOUT_MS = 3_000;
 const REPLACEMENT_TIMEOUT_MS = 45_000;
 
 type BackendHealth = {
@@ -45,10 +45,6 @@ function isBackendHealth(value: unknown): value is BackendHealth {
     && typeof value.instanceId === 'string'
     && typeof value.namespace === 'string'
     && value.namespace.length > 0;
-}
-
-function currentBundleHash(root: string): string {
-  return readBundleHash(root);
 }
 
 function currentVersion(root: string): string {
@@ -204,7 +200,7 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
   const backendBin = join(root, 'bridge', 'coral-backend.cjs');
   const existingInfo = readBackendInfo(root);
   const existingHealthy = await readHealthyBackendInfo(root, existingInfo);
-  const expectedHash = currentBundleHash(root);
+  const expectedHash = readBundleHash(root);
   if (existingHealthy && existingHealthy.bundleHash === expectedHash) {
     return summarizeBackend(existingHealthy);
   }
@@ -217,6 +213,7 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
     await requestBackendShutdown(existingHealthy);
   }
 
+  const version = currentVersion(root);
   const startupDeadline = Date.now() + STARTUP_TIMEOUT_MS;
   while (Date.now() < startupDeadline) {
     const healthy = await readHealthyBackendInfo(root);
@@ -237,7 +234,7 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
       await requestBackendShutdown(healthy);
     }
 
-    const replacementLock = tryAcquireReplacementLock(root, currentVersion(root), expectedHash);
+    const replacementLock = tryAcquireReplacementLock(root, version, expectedHash);
     if (replacementLock) {
       try {
         removeStaleBackendInfo(root);

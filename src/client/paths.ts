@@ -9,9 +9,15 @@ function coralHome(): string {
   return join(homedir(), '.claude', 'coral');
 }
 
+const namespaceCache = new Map<string, string>();
+
 export function pluginRootNamespace(pluginRoot: string): string {
+  const cached = namespaceCache.get(pluginRoot);
+  if (cached) return cached;
   const canonical = realpathSync(pluginRoot);
-  return createHash('sha256').update(canonical).digest('hex').slice(0, 12);
+  const ns = createHash('sha256').update(canonical).digest('hex').slice(0, 12);
+  namespaceCache.set(pluginRoot, ns);
+  return ns;
 }
 
 export function installationDir(pluginRoot: string): string {

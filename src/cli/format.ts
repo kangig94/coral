@@ -1,4 +1,5 @@
 import { MAX_INLINE } from '../shared/schemas.js';
+import { isRecord } from '../shared/mcp-utils.js';
 import type { BackendToolHttpError } from '../client/http-client.js';
 import type { BackendStatusFull, ShutdownResult } from '../bridge/backend-client.js';
 import type {
@@ -11,11 +12,11 @@ import type { AbortResult } from '../execution/abort-registry.js';
 import type { ListResult } from '../execution/service.js';
 import type { LaunchDecision, TerminalResult, WaitStreamEvent } from '../types.js';
 
-type DiscussStartResult = {
+export type DiscussStartResult = {
   session: string;
 };
 
-type DiscussAbortResult = {
+export type DiscussAbortResult = {
   ok: boolean;
   session: string;
 };
@@ -42,10 +43,6 @@ export type WaitRenderContext = {
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled value: ${String(value)}`);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 function joinLines(lines: Array<string | undefined>): string {

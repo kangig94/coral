@@ -1,16 +1,16 @@
 import { ensureBackend as defaultEnsureBackend, withAbortTimeout, type BackendHandle } from './backend-lifecycle.js';
 import type { WaitCursor, WaitStreamEvent } from '../types.js';
 import { isRecord } from '../shared/mcp-utils.js';
-
-const TOOL_TIMEOUT_MS = 300_000;
-const HEALTH_TIMEOUT_MS = 3_000;
-const MAX_WAIT_FETCH_TIMEOUT_MS = 30 * 60 * 1000;
-const WAIT_FETCH_MARGIN_MS = 30_000;
-
-type SseEventBlock = {
-  event?: string;
-  data: string;
-};
+import {
+  describeHttpError,
+  HEALTH_TIMEOUT_MS,
+  MAX_WAIT_FETCH_TIMEOUT_MS,
+  parseJsonResponse,
+  parseSseBlock,
+  parseWaitStreamEvent,
+  TOOL_TIMEOUT_MS,
+  WAIT_FETCH_MARGIN_MS,
+} from '../shared/sse-parser.js';
 
 interface ProviderToolOptions {
   context?: CallerContext;
@@ -91,105 +91,8 @@ function isBackendHealth(value: unknown): value is BackendHealth {
     && Number.isInteger(value.queueDepth);
 }
 
-function describeHttpError(status: number, statusText: string): string {
-  if (status === 503) return 'Backend shutting down, retry';
-  if (status === 401) return 'Backend auth failure - stale token';
-  return `Backend request failed: ${status} ${statusText}`;
-}
-
-async function parseJsonResponse(response: Response): Promise<unknown> {
-  try {
-    return await response.json();
-  } catch {
-    return null;
-  }
-}
-
 function serializeWaitCursor(cursor: WaitCursor): string {
   return Buffer.from(JSON.stringify(cursor)).toString('base64url');
-}
-
-function parseWaitStreamEvent(eventType: string | undefined, rawData: string): WaitStreamEvent | null {
-  if (!eventType) return null;
-
-  const parsed: unknown = JSON.parse(rawData);
-  if (!isRecord(parsed) || parsed.type !== eventType) {
-    throw new Error(`Invalid wait stream event payload for ${eventType}`);
-  }
-
-  switch (eventType) {
-    case 'progress':
-      if (
-        typeof parsed.jobId === 'string'
-        && typeof parsed.sessionId === 'string'
-        && Number.isInteger(parsed.eventId)
-        && typeof parsed.message === 'string'
-      ) {
-        return parsed as WaitStreamEvent;
-      }
-      throw new Error('Invalid progress wait stream event');
-    case 'terminal':
-      if (
-        typeof parsed.completedJobId === 'string'
-        && typeof parsed.sessionId === 'string'
-        && Array.isArray(parsed.remainingJobIds)
-        && parsed.remainingJobIds.every((jobId) => typeof jobId === 'string')
-        && typeof parsed.resultPath === 'string'
-        && isRecord(parsed.result)
-      ) {
-        return parsed as WaitStreamEvent;
-      }
-      throw new Error('Invalid terminal wait stream event');
-    case 'timeout':
-      if (
-        Array.isArray(parsed.runningJobIds)
-        && parsed.runningJobIds.every((jobId) => typeof jobId === 'string')
-      ) {
-        return parsed as WaitStreamEvent;
-      }
-      throw new Error('Invalid timeout wait stream event');
-    case 'queued':
-      if (
-        typeof parsed.jobId === 'string'
-        && typeof parsed.sessionId === 'string'
-        && typeof parsed.queuePosition === 'number'
-        && Array.isArray(parsed.runningJobIds)
-        && parsed.runningJobIds.every((jobId) => typeof jobId === 'string')
-      ) {
-        return parsed as WaitStreamEvent;
-      }
-      throw new Error('Invalid queued wait stream event');
-    default:
-      return null;
-  }
-}
-
-function parseSseBlock(block: string): SseEventBlock | null {
-  if (!block.trim()) return null;
-
-  let event: string | undefined;
-  const data: string[] = [];
-
-  for (const rawLine of block.split('\n')) {
-    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
-    if (!line || line.startsWith(':')) continue;
-
-    const separator = line.indexOf(':');
-    const field = separator >= 0 ? line.slice(0, separator) : line;
-    const value = separator >= 0 ? line.slice(separator + 1).replace(/^ /, '') : '';
-
-    switch (field) {
-      case 'event':
-        event = value;
-        break;
-      case 'data':
-        data.push(value);
-        break;
-    }
-  }
-
-  if (data.length === 0) return null;
-  return { event, data: data.join('\n') };
 }
 
 export class BackendToolHttpError extends Error {
@@ -415,7 +318,7 @@ export class BackendClient {
       let buffer = '';
 
       for await (const chunk of response.body) {
-        const decoded = decoder.decode(chunk, { stream: true }).replace(/\r\n/g, '\n');
+        const decoded = decoder.decode(chunk, { stream: true });
         buffer += decoded;
         const blocks = buffer.split('\n\n');
         buffer = blocks.pop() ?? '';
@@ -429,7 +332,7 @@ export class BackendClient {
       }
 
       buffer += decoder.decode();
-      const finalBlock = parseSseBlock(buffer.replace(/\r\n/g, '\n'));
+      const finalBlock = parseSseBlock(buffer);
       if (!finalBlock) return;
 
       const finalEvent = parseWaitStreamEvent(finalBlock.event, finalBlock.data);
