@@ -158,6 +158,9 @@ argument-hint: "[existing|new]"
   The analysis file (from Phase 1d) provides factual grounding, not content drafts.
   Doc content comes from the plan — write what the plan specifies, not from your own analysis.
 
+  Also write `.claude/skills/tier-review/SKILL.md` by copying from
+  `{skill_base_dir}/templates/skills/tier-review/SKILL.md` — fixed artifact, not plan-dependent.
+
   **Evidence gate**: Phase 3 is complete ONLY when generated files exist on disk.
   If no files were created, Phase 3 did not execute correctly.
 
@@ -207,7 +210,7 @@ argument-hint: "[existing|new]"
   ### Next Steps
   - Review generated rules in .claude/rules/ - customize for your project
   - Review .claude/CLAUDE.md - adjust project description and build commands
-  - Invoke `Skill(coral:review)` after your first implementation to test the setup
+  - Invoke `Skill(tier-review)` after your first implementation to test the setup
   ```
 </Protocol>
 <Output_Manifest>
@@ -226,6 +229,7 @@ argument-hint: "[existing|new]"
   | Agents | `.claude/agents/doc-critic.md` | Must exist | Rubric anchors (10/7/4/1) |
   | Agents | `.claude/agents/test-critic.md` | Must exist | Rubric anchors (10/7/4/1) |
   | Template | `.claude/templates/AGENT.md` | Must exist | - |
+  | Skills | `.claude/skills/tier-review/SKILL.md` | Must exist | `name: tier-review` in frontmatter |
   | Agents | `.claude/agents/{domain-specific}.md` | Per plan | `<Agent_Prompt>` XML structure |
   | Docs | `docs/ARCHITECTURE.md` | If generated | Layer diagram present |
   | Docs | `docs/DEV_GUIDE.md` | If generated | Exact build/test commands |
