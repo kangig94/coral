@@ -1111,7 +1111,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     const results = new Map<string, DiscussSummaryDto>();
 
     for (const projectRoot of knownDiscussProjectRoots()) {
-      for (const summary of getDiscussStore(projectRoot).listSummaries()) {
+      for (const summary of getDiscussStore(projectRoot).listSummariesFromIndex()) {
         const key = `${projectRoot}\u0000${summary.sessionId}`;
         results.set(key, summary);
       }
