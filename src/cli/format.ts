@@ -1,0 +1,338 @@
+import { MAX_INLINE } from '../shared/schemas.js';
+import type { BackendToolHttpError } from '../client/http-client.js';
+import type { BackendStatusFull, ShutdownResult } from '../bridge/backend-client.js';
+import type {
+  BidResult,
+  PersonaAssignment,
+  PersonaSeedOutput,
+  SpeechResult,
+} from '../discuss/types.js';
+import type { AbortResult } from '../execution/abort-registry.js';
+import type { ListResult } from '../execution/service.js';
+import type { LaunchDecision, TerminalResult, WaitStreamEvent } from '../types.js';
+
+type DiscussStartResult = {
+  session: string;
+};
+
+type DiscussAbortResult = {
+  ok: boolean;
+  session: string;
+};
+
+type DiscussWatchResult = {
+  session: string;
+  status: string;
+  topic: string;
+  epoch: number;
+  step: number;
+  events: unknown[];
+  cursor: number;
+};
+
+type WaitProgressEvent = Extract<WaitStreamEvent, { type: 'progress' }>;
+type WaitQueuedEvent = Extract<WaitStreamEvent, { type: 'queued' }>;
+type WaitTerminalEvent = Extract<WaitStreamEvent, { type: 'terminal' }>;
+type WaitTimeoutEvent = Extract<WaitStreamEvent, { type: 'timeout' }>;
+
+export type WaitRenderContext = {
+  isTTY: boolean;
+  columns: number;
+};
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled value: ${String(value)}`);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function joinLines(lines: Array<string | undefined>): string {
+  return lines.filter((line): line is string => typeof line === 'string' && line.length > 0).join('\n');
+}
+
+function formatUnknown(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  try {
+    const text = JSON.stringify(value);
+    return text === undefined ? String(value) : text;
+  } catch {
+    return String(value);
+  }
+}
+
+function appendCursor(text: string, cursor: string | null): string {
+  return cursor === null ? text : `${text} (cursor: ${cursor})`;
+}
+
+function formatTable(headers: string[], rows: string[][]): string {
+  const widths = headers.map((header, index) =>
+    Math.max(header.length, ...rows.map((row) => row[index]?.length ?? 0)));
+
+  const formatRow = (row: string[]) =>
+    row.map((cell, index) => cell.padEnd(widths[index])).join('  ');
+
+  return [
+    formatRow(headers),
+    formatRow(widths.map((width) => '-'.repeat(width))),
+    ...rows.map(formatRow),
+  ].join('\n');
+}
+
+function formatPersonaAssignment(index: number, assignment: PersonaAssignment): string {
+  const positions = Object.entries(assignment.positions)
+    .map(([axis, position]) => `${axis}=${position}`)
+    .join(' | ');
+  const tone = `${assignment.tone.formality}/${assignment.tone.evidence}/${assignment.tone.pace}`;
+  const details = [
+    `tone ${tone}`,
+    `seed ${assignment.persona_seed}`,
+    assignment.shared_position_with === undefined ? undefined : `shared_with ${assignment.shared_position_with}`,
+    assignment.suggested_origin === undefined ? undefined : `origin ${assignment.suggested_origin}`,
+    assignment.is_outlier ? 'outlier' : undefined,
+  ].filter((detail): detail is string => detail !== undefined);
+
+  return `${index + 1}. ${positions || '(no positions)'}${details.length > 0 ? ` (${details.join(', ')})` : ''}`;
+}
+
+function formatDiscussEnded(result: { reason?: string; content?: string }): string {
+  const headline = result.reason ? `Session ended: ${result.reason}` : 'Session ended';
+  return joinLines([headline, result.content]);
+}
+
+function isDiscussWatchResult(value: unknown): value is DiscussWatchResult {
+  return isRecord(value)
+    && typeof value.session === 'string'
+    && typeof value.status === 'string'
+    && typeof value.topic === 'string'
+    && Number.isInteger(value.epoch)
+    && Number.isInteger(value.step)
+    && Array.isArray(value.events)
+    && Number.isInteger(value.cursor);
+}
+
+function isBackendToolHttpError(value: unknown): value is BackendToolHttpError {
+  return isRecord(value)
+    && typeof value.statusCode === 'number'
+    && 'body' in value
+    && typeof value.message === 'string';
+}
+
+function truncatePreview(text: string): string {
+  if (text.length <= MAX_INLINE) {
+    return text;
+  }
+
+  return `${text.slice(0, Math.max(0, MAX_INLINE - 3))}...`;
+}
+
+function pickTerminalPreviewSource(result: TerminalResult): string {
+  const content = result.content.trimEnd();
+  if (content.length > 0) {
+    return content;
+  }
+
+  if (typeof result.notice === 'string' && result.notice.length > 0) {
+    return result.notice;
+  }
+
+  if (result.aborted) {
+    return 'Aborted';
+  }
+
+  if (result.exitCode !== undefined && result.exitCode !== null) {
+    return `Exited with code ${result.exitCode}`;
+  }
+
+  return '(empty result)';
+}
+
+export function formatLaunchDecision(result: LaunchDecision): string {
+  switch (result.status) {
+    case 'running':
+      return `Job ${result.job} running (session ${result.session})`;
+    case 'queued':
+      return `Job ${result.job} queued (session ${result.session})`;
+    case 'rejected':
+      return `Rejected [${result.code}]: ${result.message}`;
+    default:
+      return assertNever(result);
+  }
+}
+
+export function formatAbortResult(result: AbortResult): string {
+  return joinLines([
+    result.aborted.length > 0
+      ? `Aborted jobs: ${result.aborted.join(', ')}`
+      : 'No jobs aborted',
+    result.notFound.length > 0
+      ? `Not found: ${result.notFound.join(', ')}`
+      : undefined,
+  ]);
+}
+
+export function formatProviderList(result: ListResult): string {
+  if (result.sessions.length === 0) {
+    return 'No sessions';
+  }
+
+  const rows = result.sessions.map((session) => [
+    session.sessionId,
+    session.state,
+    session.name || '-',
+    session.model || '-',
+    session.cwd || '-',
+  ]);
+
+  return formatTable(['SESSION', 'STATE', 'NAME', 'MODEL', 'CWD'], rows);
+}
+
+export function formatPersonaSeed(result: PersonaSeedOutput): string {
+  return joinLines([
+    `Seed used: ${result.seed_used}`,
+    `Sigma used: ${result.sigma_used}`,
+    `Pool size: ${result.pool_size}`,
+    result.subsampled === undefined
+      ? undefined
+      : result.subsampled
+        ? `Subsampled: yes${result.original_pool_size === undefined ? '' : ` (from ${result.original_pool_size})`}`
+        : 'Subsampled: no',
+    result.assignments.length === 0
+      ? 'Assignments: none'
+      : `Assignments:\n${result.assignments.map((assignment, index) => formatPersonaAssignment(index, assignment)).join('\n')}`,
+  ]);
+}
+
+export function formatDiscussStart(result: DiscussStartResult): string {
+  return `Session started: ${result.session}`;
+}
+
+export function formatDiscussAbort(result: DiscussAbortResult): string {
+  return result.ok
+    ? `Session aborted: ${result.session}`
+    : `Abort failed: ${result.session}`;
+}
+
+export function formatDiscussParticipate(result: BidResult | SpeechResult): string {
+  switch (result.action) {
+    case 'speak':
+      return 'Your turn to speak';
+    case 'listen':
+      return result.speaker === null
+        ? joinLines(['Listen', result.content])
+        : joinLines([`Listen to ${result.speaker}`, result.content]);
+    case 'session_ended':
+      return formatDiscussEnded(result);
+    case 'speech_recorded':
+      return 'Speech recorded';
+    case 'not_your_turn':
+      return result.current_speaker === null
+        ? 'Not your turn'
+        : `Not your turn (current speaker: ${result.current_speaker})`;
+    default:
+      return assertNever(result);
+  }
+}
+
+export function formatDiscussWatch(result: unknown): string {
+  if (!isDiscussWatchResult(result)) {
+    return formatUnknown(result);
+  }
+
+  return joinLines([
+    `Session ${result.session} [${result.status}]`,
+    `Topic: ${result.topic}`,
+    `Epoch: ${result.epoch} | Step: ${result.step} | Events: ${result.events.length} | Cursor: ${result.cursor}`,
+  ]);
+}
+
+export function formatBackendStatus(result: BackendStatusFull): string {
+  switch (result.status) {
+    case 'ok':
+      return joinLines([
+        'Backend ok',
+        `Version: ${result.health.version}`,
+        `Uptime: ${result.health.uptimeMs}ms`,
+        `Active children: ${result.health.activeChildren}`,
+        `Active jobs: ${result.health.activeJobs}`,
+      ]);
+    case 'not_running':
+      return 'Backend not running';
+    case 'shutting_down':
+      return 'Backend shutting down';
+    case 'unauthorized':
+      return 'Backend unauthorized';
+    default:
+      return assertNever(result);
+  }
+}
+
+export function formatShutdown(result: ShutdownResult): string {
+  return result.ok
+    ? 'Backend shutdown initiated'
+    : `Shutdown failed: ${result.reason}`;
+}
+
+export function formatError(error: unknown): string {
+  if (isBackendToolHttpError(error)) {
+    const detail = error.body == null ? error.message : formatUnknown(error.body);
+    return `HTTP ${error.statusCode}: ${detail}`;
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
+}
+
+export function formatWaitProgress(event: WaitProgressEvent, cursor: string | null): string {
+  return appendCursor(`[${event.jobId}] ${event.message}`, cursor);
+}
+
+export function formatWaitQueued(event: WaitQueuedEvent, cursor: string | null): string {
+  return appendCursor(`[${event.jobId}] queued at position ${event.queuePosition}`, cursor);
+}
+
+export function formatWaitTerminal(
+  event: WaitTerminalEvent,
+  cursor: string | null,
+  inline: boolean,
+): string {
+  if (!inline) {
+    return joinLines([
+      `[${event.completedJobId}] completed`,
+      `Result path: ${event.resultPath}`,
+      `Remaining jobs: ${event.remainingJobIds.length}`,
+      cursor === null ? undefined : `Cursor: ${cursor}`,
+    ]);
+  }
+
+  return joinLines([
+    `[${event.completedJobId}] completed`,
+    truncatePreview(pickTerminalPreviewSource(event.result)),
+    cursor === null ? undefined : `Cursor: ${cursor}`,
+  ]);
+}
+
+export function formatWaitTimeout(event: WaitTimeoutEvent, cursor: string | null): string {
+  const running = event.runningJobIds.length > 0
+    ? event.runningJobIds.join(', ')
+    : 'none';
+
+  return appendCursor(`Wait timed out; running jobs: ${running}`, cursor);
+}
+
+export function renderWaitLine(text: string, ctx: WaitRenderContext): string {
+  const columns = typeof ctx.columns === 'number' && ctx.columns > 0 ? ctx.columns : 80;
+
+  if (!ctx.isTTY) {
+    return `${text}\n`;
+  }
+
+  return `\r${text.padEnd(columns)}`;
+}

@@ -2,8 +2,7 @@ declare const __PLUGIN_ROOT__: string;
 declare const __VERSION__: string;
 
 import { readFileSync } from 'node:fs';
-import { readFile as readFileAsync } from 'node:fs/promises';
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 
 import {
   BackendClient,
@@ -17,14 +16,49 @@ import {
   streamWait,
   type WaitCursorRef,
 } from '../bridge/backend-client.js';
+import type { AbortResult } from '../execution/abort-registry.js';
+import type { ListResult } from '../execution/service.js';
+import {
+  discussParticipateSchema,
+  discussSeedSchema,
+  discussStartSchema,
+} from '../discuss/schemas.js';
+import type {
+  BidResult,
+  PersonaSeedOutput,
+  SpeechResult,
+} from '../discuss/types.js';
 import { MAX_INLINE } from '../shared/schemas.js';
-import type { WaitStreamEvent } from '../types.js';
+import type { LaunchDecision, WaitStreamEvent } from '../types.js';
+import {
+  formatAbortResult,
+  formatBackendStatus,
+  formatDiscussAbort,
+  formatDiscussParticipate,
+  formatDiscussStart,
+  formatDiscussWatch,
+  formatError,
+  formatLaunchDecision,
+  formatPersonaSeed,
+  formatProviderList,
+  formatShutdown,
+  formatWaitProgress,
+  formatWaitQueued,
+  formatWaitTerminal,
+  formatWaitTimeout,
+  renderWaitLine,
+  type WaitRenderContext,
+} from './format.js';
+import {
+  parseAgentSpec,
+  parseAxisSpec,
+  parseInputJson,
+  type JsonObject,
+} from './parse.js';
 
 const providerNames = ['codex', 'claude'] as const;
 const providerNameSet = new Set<string>(providerNames);
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : (process.env.CLAUDE_PLUGIN_ROOT ?? '');
-
-type JsonObject = Record<string, unknown>;
 
 type ProviderExecOptions = {
   prompt: string;
@@ -66,17 +100,20 @@ type WorkflowOptions = {
   provider?: string;
   workDir?: string;
   staleTimeoutSeconds?: string;
-  json?: string;
+  inputJson?: string;
+  atoms?: string;
 };
 
 type DiscussSeedOptions = {
-  json: string;
+  inputJson?: string;
+  axis?: string[];
   count?: string;
   seed?: string;
 };
 
 type DiscussStartOptions = {
-  json: string;
+  inputJson?: string;
+  agent?: string[];
   topic?: string;
 };
 
@@ -86,15 +123,24 @@ type DiscussWatchOptions = {
 };
 
 type DiscussParticipateOptions = {
-  json?: string;
-  session: string;
-  agentName: string;
+  inputJson?: string;
+  session?: string;
+  agentName?: string;
   score?: string;
   thought?: string;
   content?: string;
 };
 
 type DiscussAbortOptions = {
+  session: string;
+};
+
+type DiscussStartResult = {
+  session: string;
+};
+
+type DiscussAbortResult = {
+  ok: boolean;
   session: string;
 };
 
@@ -136,38 +182,39 @@ function normalizeResult(result: unknown): { output: unknown; isError: boolean }
   return { output: result, isError: false };
 }
 
-function emit(result: unknown): void {
+function emit(result: unknown, textFormatter?: (data: unknown) => string): void {
   const { output, isError } = normalizeResult(result);
-  const text = JSON.stringify(output);
+  const isText = program.opts<{ outputFormat?: string }>().outputFormat !== 'json';
 
   if (isError) {
+    const text = isText ? formatError(output) : JSON.stringify(output);
     process.stderr.write(text + '\n');
     process.exitCode = 1;
     return;
   }
 
+  const text = isText && textFormatter !== undefined
+    ? textFormatter(output)
+    : JSON.stringify(output);
   process.stdout.write(text + '\n');
 }
 
 function emitError(error: unknown): void {
-  if (error instanceof BackendToolHttpError) {
-    process.stderr.write(JSON.stringify({
-      error: true,
-      statusCode: error.statusCode,
-      body: error.body,
-    }) + '\n');
-  } else if (error instanceof Error) {
-    process.stderr.write(JSON.stringify({
-      error: true,
-      message: error.message,
-    }) + '\n');
-  } else {
-    process.stderr.write(JSON.stringify({
-      error: true,
-      message: String(error),
-    }) + '\n');
+  const isText = program.opts<{ outputFormat?: string }>().outputFormat !== 'json';
+
+  if (isText) {
+    process.stderr.write(formatError(error) + '\n');
+    process.exitCode = 1;
+    return;
   }
 
+  if (error instanceof BackendToolHttpError) {
+    process.stderr.write(JSON.stringify({ error: true, statusCode: error.statusCode, body: error.body }) + '\n');
+  } else if (error instanceof Error) {
+    process.stderr.write(JSON.stringify({ error: true, message: error.message }) + '\n');
+  } else {
+    process.stderr.write(JSON.stringify({ error: true, message: String(error) }) + '\n');
+  }
   process.exitCode = 1;
 }
 
@@ -186,39 +233,6 @@ function parseJobIds(raw: string): string[] {
   }
 
   return jobIds;
-}
-
-async function readStdin(): Promise<string> {
-  if (process.stdin.readableEnded) {
-    return '';
-  }
-
-  return new Promise((resolve, reject) => {
-    let data = '';
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (chunk) => {
-      data += chunk;
-    });
-    process.stdin.on('end', () => resolve(data));
-    process.stdin.on('error', reject);
-  });
-}
-
-async function readJsonFlag(flag: string | undefined): Promise<JsonObject> {
-  if (!flag) {
-    return {};
-  }
-
-  const text = flag === '-'
-    ? await readStdin()
-    : await readFileAsync(flag, 'utf8');
-  const parsed: unknown = JSON.parse(text);
-
-  if (!isRecord(parsed)) {
-    throw new Error('--json must be a JSON object');
-  }
-
-  return parsed;
 }
 
 type WaitOutputRecord = {
@@ -328,7 +342,7 @@ function registerProviderCommands(program: Command): void {
             system_prompt: opts.systemPrompt,
             bypass_permissions: opts.bypassPermissions,
           });
-          emit(result);
+          emit(result, (data) => formatLaunchDecision(data as LaunchDecision));
         } catch (error) {
           emitError(error);
         }
@@ -347,7 +361,7 @@ function registerProviderCommands(program: Command): void {
             work_dir: opts.workDir,
             model: opts.model,
           });
-          emit(result);
+          emit(result, (data) => formatLaunchDecision(data as LaunchDecision));
         } catch (error) {
           emitError(error);
         }
@@ -359,7 +373,7 @@ function registerProviderCommands(program: Command): void {
         try {
           const client = makeClient(process.cwd());
           const result = await client.providerList(providerName);
-          emit(result);
+          emit(result, (data) => formatProviderList(data as ListResult));
         } catch (error) {
           emitError(error);
         }
@@ -378,7 +392,7 @@ function registerProviderCommands(program: Command): void {
             session: opts.session,
             work_dir: opts.workDir,
           });
-          emit(result);
+          emit(result, (data) => formatLaunchDecision(data as LaunchDecision));
         } catch (error) {
           emitError(error);
         }
@@ -392,6 +406,11 @@ program
   .name('coral-cli')
   .version(typeof __VERSION__ === 'string' ? __VERSION__ : '0.0.0')
   .description('Coral CLI — invoke Codex/Claude providers, monitor jobs, and manage discuss sessions');
+program.addOption(
+  new Option('--output-format <format>', 'Output format')
+    .choices(['text', 'json'])
+    .default('text'),
+);
 
 registerProviderCommands(program);
 
@@ -420,8 +439,30 @@ program.command('wait')
         projectRoot,
         cursorRef,
       )) {
-        const record = shapeWaitOutputRecord(event, cursorRef.lastEventId ?? null, opts.embed === true);
-        process.stdout.write(JSON.stringify(record) + '\n');
+        const isText = program.opts<{ outputFormat?: string }>().outputFormat !== 'json';
+        if (isText) {
+          const ctx: WaitRenderContext = {
+            isTTY: process.stdout.isTTY === true,
+            columns: process.stdout.columns ?? 80,
+          };
+          let formatted: string;
+          if (event.type === 'progress') {
+            formatted = formatWaitProgress(event, cursorRef.lastEventId ?? null);
+          } else if (event.type === 'queued') {
+            formatted = formatWaitQueued(event, cursorRef.lastEventId ?? null);
+          } else if (event.type === 'terminal') {
+            formatted = formatWaitTerminal(event, cursorRef.lastEventId ?? null, opts.embed === true);
+          } else {
+            formatted = formatWaitTimeout(event, cursorRef.lastEventId ?? null);
+          }
+          process.stdout.write(renderWaitLine(formatted, ctx));
+          if (event.type === 'terminal' || event.type === 'timeout') {
+            if (ctx.isTTY) process.stdout.write('\n');
+          }
+        } else {
+          const record = shapeWaitOutputRecord(event, cursorRef.lastEventId ?? null, opts.embed === true);
+          process.stdout.write(JSON.stringify(record) + '\n');
+        }
       }
     } catch (error) {
       emitError(error);
@@ -435,7 +476,7 @@ program.command('abort')
     try {
       const client = makeClient(process.cwd());
       const result = await client.abortJobs(parseJobIds(opts.jobs));
-      emit(result);
+      emit(result, (data) => formatAbortResult(data as AbortResult));
     } catch (error) {
       emitError(error);
     }
@@ -443,16 +484,17 @@ program.command('abort')
 
 program.command('workflow')
   .description('Execute a workflow pipeline')
-  .option('--expression <expr>', 'Pipeline DSL expression (required unless in --json)')
-  .option('--init-prompt <text>', 'Initial prompt (required unless in --json)')
+  .option('--expression <expr>', 'Pipeline DSL expression')
+  .option('--init-prompt <text>', 'Initial prompt')
   .option('--context <text>', 'Shared context')
   .option('--provider <name>', 'Provider (claude or codex)')
   .option('--work-dir <path>', 'Working directory')
   .option('--stale-timeout-seconds <seconds>', 'Stale job timeout')
-  .option('--json <file>', 'JSON payload file (- for stdin)')
+  .option('--input-json <source>', 'JSON payload from stdin (use -)')
+  .option('--atoms <json>', 'Atoms JSON object (replaces atoms from stdin)')
   .action(async (opts: WorkflowOptions) => {
     try {
-      const base = await readJsonFlag(opts.json);
+      const base: JsonObject = await parseInputJson(opts.inputJson);
       const {
         expression: baseExpression,
         init_prompt: baseInitPrompt,
@@ -476,12 +518,13 @@ program.command('workflow')
         ...(opts.staleTimeoutSeconds !== undefined
           ? { stale_timeout_seconds: parseIntegerFlag('--stale-timeout-seconds', opts.staleTimeoutSeconds) }
           : {}),
+        ...(opts.atoms !== undefined ? { atoms: JSON.parse(opts.atoms) } : {}),
         init_prompt: initPrompt,
       };
 
       const client = makeClient(process.cwd());
       const result = await client.workflow(expression, payload);
-      emit(result);
+      emit(result, (data) => formatLaunchDecision(data as LaunchDecision));
     } catch (error) {
       emitError(error);
     }
@@ -494,7 +537,8 @@ backend.command('status')
   .action(async () => {
     try {
       const status = await getBackendStatusFull(pluginRoot);
-      process.stdout.write(JSON.stringify(status) + '\n');
+      const isText = program.opts<{ outputFormat?: string }>().outputFormat !== 'json';
+      process.stdout.write((isText ? formatBackendStatus(status) : JSON.stringify(status)) + '\n');
     } catch (error) {
       emitError(error);
     }
@@ -505,12 +549,13 @@ backend.command('shutdown')
   .action(async () => {
     try {
       const result = await shutdownBackend(pluginRoot);
+      const isText = program.opts<{ outputFormat?: string }>().outputFormat !== 'json';
       if (result.ok) {
-        process.stdout.write(JSON.stringify(result) + '\n');
+        process.stdout.write((isText ? formatShutdown(result) : JSON.stringify(result)) + '\n');
         return;
       }
 
-      process.stderr.write(JSON.stringify(result) + '\n');
+      process.stderr.write((isText ? formatShutdown(result) : JSON.stringify(result)) + '\n');
       process.exitCode = 1;
     } catch (error) {
       emitError(error);
@@ -521,22 +566,26 @@ const discuss = program.command('discuss').description('Discussion operations');
 
 discuss.command('seed')
   .description('Generate discussion personas')
-  .requiredOption('--json <file>', 'JSON payload (required; must include controversy_axes array) or - for stdin')
+  .option('--input-json <source>', 'JSON payload from stdin (use -)')
+  .option('--axis <spec>', 'Controversy axis spec (repeatable)', (value: string, previous: string[] | undefined) => [...(previous ?? []), value])
   .option('--count <n>', 'Number of personas')
   .option('--seed <n>', 'Random seed')
   .action(async (opts: DiscussSeedOptions) => {
     try {
-      const base = await readJsonFlag(opts.json);
+      const stdinBase: JsonObject = await parseInputJson(opts.inputJson);
+      const axes = opts.axis?.map(parseAxisSpec);
       const args = {
-        ...base,
+        ...stdinBase,
         ...(opts.count !== undefined ? { n: parseIntegerFlag('--count', opts.count) } : {}),
         ...(opts.seed !== undefined ? { seed: parseIntegerFlag('--seed', opts.seed) } : {}),
+        ...(axes !== undefined ? { controversy_axes: axes } : {}),
       };
+      discussSeedSchema.parse(args);
       const client = makeClient(process.cwd());
       const result = await client.discussSeed(
         args as Parameters<BackendClient['discussSeed']>[0],
       );
-      emit(result);
+      emit(result, (data) => formatPersonaSeed(data as PersonaSeedOutput));
     } catch (error) {
       emitError(error);
     }
@@ -544,20 +593,25 @@ discuss.command('seed')
 
 discuss.command('start')
   .description('Start a discussion session')
-  .requiredOption('--json <file>', 'JSON payload (required; must include agents array) or - for stdin')
-  .option('--topic <text>', 'Discussion topic (overrides topic in --json)')
+  .option('--input-json <source>', 'JSON payload from stdin (use -)')
+  .option('--agent <spec>', 'Agent spec (repeatable)', (value: string, previous: string[] | undefined) => [...(previous ?? []), value])
+  .option('--topic <text>', 'Discussion topic')
   .action(async (opts: DiscussStartOptions) => {
     try {
-      const base = await readJsonFlag(opts.json);
+      const stdinBase: JsonObject = await parseInputJson(opts.inputJson);
+      const agentSpecs = opts.agent;
+      const agents = agentSpecs === undefined ? undefined : agentSpecs.map(parseAgentSpec);
       const args = {
-        ...base,
+        ...stdinBase,
         ...(opts.topic !== undefined ? { topic: opts.topic } : {}),
+        ...(agents !== undefined ? { agents } : {}),
       };
+      discussStartSchema.parse(args);
       const client = makeClient(process.cwd());
       const result = await client.discussStart(
         args as Parameters<BackendClient['discussStart']>[0],
       );
-      emit(result);
+      emit(result, (data) => formatDiscussStart(data as DiscussStartResult));
     } catch (error) {
       emitError(error);
     }
@@ -572,7 +626,7 @@ discuss.command('watch')
       const cursor = opts.cursor !== undefined ? parseIntegerFlag('--cursor', opts.cursor) : undefined;
       const client = makeClient(process.cwd());
       const result = await client.discussWatch(opts.session, cursor);
-      emit(result);
+      emit(result, formatDiscussWatch);
     } catch (error) {
       emitError(error);
     }
@@ -580,28 +634,29 @@ discuss.command('watch')
 
 discuss.command('participate')
   .description('Submit bid or speech')
-  .option('--json <file>', 'JSON payload file (- for stdin)')
-  .requiredOption('--session <id>', 'Session ID')
-  .requiredOption('--agent-name <name>', 'Agent name')
+  .option('--input-json <source>', 'JSON payload from stdin (use -)')
+  .option('--session <id>', 'Session ID')
+  .option('--agent-name <name>', 'Agent name')
   .option('--score <n>', 'Bid score (0-100)')
   .option('--thought <text>', 'Bid thought')
   .option('--content <text>', 'Speech content')
   .action(async (opts: DiscussParticipateOptions) => {
     try {
-      const base = await readJsonFlag(opts.json);
+      const stdinBase: JsonObject = await parseInputJson(opts.inputJson);
       const args = {
-        ...base,
-        session: opts.session,
-        agent_name: opts.agentName,
+        ...stdinBase,
+        ...(opts.session !== undefined ? { session: opts.session } : {}),
+        ...(opts.agentName !== undefined ? { agent_name: opts.agentName } : {}),
         ...(opts.score !== undefined ? { score: parseIntegerFlag('--score', opts.score) } : {}),
         ...(opts.thought !== undefined ? { thought: opts.thought } : {}),
         ...(opts.content !== undefined ? { content: opts.content } : {}),
       };
+      discussParticipateSchema.parse(args);
       const client = makeClient(process.cwd());
       const result = await client.discussParticipate(
         args as Parameters<BackendClient['discussParticipate']>[0],
       );
-      emit(result);
+      emit(result, (data) => formatDiscussParticipate(data as BidResult | SpeechResult));
     } catch (error) {
       emitError(error);
     }
@@ -614,7 +669,7 @@ discuss.command('abort')
     try {
       const client = makeClient(process.cwd());
       const result = await client.discussAbort(opts.session);
-      emit(result);
+      emit(result, (data) => formatDiscussAbort(data as DiscussAbortResult));
     } catch (error) {
       emitError(error);
     }
