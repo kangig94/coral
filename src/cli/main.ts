@@ -252,10 +252,14 @@ function shapeWaitOutputRecord(
       path: resultPath,
     },
   };
-  const { resultPath: _rp, ...pathFirstEventWithoutResultPath } = pathFirstEvent;
+  const { resultPath: _resultPath, ...pathFirstEventWithoutResultPath } = pathFirstEvent;
+  const pathOnlyRecord: WaitOutputRecord = {
+    cursor,
+    event: pathFirstEventWithoutResultPath,
+  };
 
   if (!embed) {
-    return { cursor, event: pathFirstEventWithoutResultPath };
+    return pathOnlyRecord;
   }
 
   let text: string | undefined;
@@ -270,7 +274,7 @@ function shapeWaitOutputRecord(
   }
 
   if (text === undefined) {
-    return { cursor, event: pathFirstEventWithoutResultPath };
+    return pathOnlyRecord;
   }
 
   const embeddedRecord: WaitOutputRecord = {
@@ -287,27 +291,26 @@ function shapeWaitOutputRecord(
 
   return JSON.stringify(embeddedRecord).length <= MAX_INLINE
     ? embeddedRecord
-    : { cursor, event: pathFirstEventWithoutResultPath };
+    : pathOnlyRecord;
 }
 
 function normalizeProviderArgv(argv: readonly string[]): string[] {
   if (argv.length < 4) {
-    return argv as string[];
+    return argv.slice();
   }
 
-  const provider = argv[2];
-  const dispatchToken = argv[3];
+  const [nodePath, scriptPath, provider, dispatchToken] = argv;
 
   if (!providerNames.includes(provider)) {
-    return argv as string[];
+    return argv.slice();
   }
 
   const match = /^coral:([a-z0-9][a-z0-9-]*)$/.exec(dispatchToken);
   if (!match) {
-    return argv as string[];
+    return argv.slice();
   }
 
-  return [argv[0], argv[1], provider, 'coral', match[1], ...argv.slice(4)];
+  return [nodePath, scriptPath, provider, 'coral', match[1], ...argv.slice(4)];
 }
 
 function registerProviderCommands(program: Command): void {
@@ -417,6 +420,8 @@ program.command('wait')
       const jobIds = parseJobIds(opts.jobs);
       const timeoutSeconds = parseIntegerFlag('--timeout', opts.timeout);
       const projectRoot = process.cwd();
+      const isText = isTextOutput();
+      const embed = opts.embed === true;
       // Use streamWait directly (not BackendClient.wait) — the CLI cursor is a raw SSE id
       // string, while BackendClient.wait uses a different base64url-encoded WaitCursor type.
       const { port, host, token } = await ensureBackend(pluginRoot || undefined);
@@ -431,29 +436,38 @@ program.command('wait')
         projectRoot,
         cursorRef,
       )) {
-        const isText = isTextOutput();
-        if (isText) {
-          const ctx: WaitRenderContext = {
-            isTTY: process.stdout.isTTY === true,
-            columns: process.stdout.columns ?? 80,
-          };
-          let formatted: string;
-          if (event.type === 'progress') {
-            formatted = formatWaitProgress(event, cursorRef.lastEventId ?? null);
-          } else if (event.type === 'queued') {
-            formatted = formatWaitQueued(event, cursorRef.lastEventId ?? null);
-          } else if (event.type === 'terminal') {
-            formatted = formatWaitTerminal(event, cursorRef.lastEventId ?? null, opts.embed === true);
-          } else {
-            formatted = formatWaitTimeout(event, cursorRef.lastEventId ?? null);
-          }
-          process.stdout.write(renderWaitLine(formatted, ctx));
-          if (event.type === 'terminal' || event.type === 'timeout') {
-            if (ctx.isTTY) process.stdout.write('\n');
-          }
-        } else {
-          const record = shapeWaitOutputRecord(event, cursorRef.lastEventId ?? null, opts.embed === true);
+        const cursor = cursorRef.lastEventId ?? null;
+
+        if (!isText) {
+          const record = shapeWaitOutputRecord(event, cursor, embed);
           process.stdout.write(JSON.stringify(record) + '\n');
+          continue;
+        }
+
+        const ctx: WaitRenderContext = {
+          isTTY: process.stdout.isTTY === true,
+          columns: process.stdout.columns ?? 80,
+        };
+        let formatted: string;
+
+        switch (event.type) {
+          case 'progress':
+            formatted = formatWaitProgress(event, cursor);
+            break;
+          case 'queued':
+            formatted = formatWaitQueued(event, cursor);
+            break;
+          case 'terminal':
+            formatted = formatWaitTerminal(event, cursor, embed);
+            break;
+          case 'timeout':
+            formatted = formatWaitTimeout(event, cursor);
+            break;
+        }
+
+        process.stdout.write(renderWaitLine(formatted, ctx));
+        if ((event.type === 'terminal' || event.type === 'timeout') && ctx.isTTY) {
+          process.stdout.write('\n');
         }
       }
     } catch (error) {
@@ -591,8 +605,7 @@ discuss.command('start')
   .action(async (opts: DiscussStartOptions) => {
     try {
       const stdinBase: JsonObject = await parseInputJson(opts.inputJson);
-      const agentSpecs = opts.agent;
-      const agents = agentSpecs === undefined ? undefined : agentSpecs.map(parseAgentSpec);
+      const agents = opts.agent?.map(parseAgentSpec);
       const args = {
         ...stdinBase,
         ...(opts.topic !== undefined ? { topic: opts.topic } : {}),

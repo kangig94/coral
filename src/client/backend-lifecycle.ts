@@ -22,9 +22,7 @@ type BackendHealth = {
   namespace: string;
 };
 
-type ReplacementLock = {
-  payload: string;
-};
+type ReplacementLock = string;
 
 export type BackendHandle = {
   port: number;
@@ -92,18 +90,19 @@ async function fetchBackendHealth(info: BackendInfo): Promise<BackendHealth | nu
 
 async function readHealthyBackendInfo(root: string, info = readBackendInfo(root)): Promise<BackendInfo | null> {
   if (!info) return null;
+
   const health = await fetchBackendHealth(info);
   if (!health) return null;
+
   const expectedNamespace = pluginRootNamespace(root);
-  if (
+  const hasMismatch = (
     health.namespace !== expectedNamespace
     || health.namespace !== info.namespace
     || health.bundleHash !== info.bundleHash
     || health.instanceId !== info.instanceId
-  ) {
-    return null;
-  }
-  return info;
+  );
+
+  return hasMismatch ? null : info;
 }
 
 async function requestBackendShutdown(info: BackendInfo): Promise<void> {
@@ -131,19 +130,21 @@ function tryAcquireReplacementLock(
     startedAt: Date.now(),
   });
   if (!tryExclusiveWrite(backendLockPath(root), payload)) return null;
-  return { payload };
+  return payload;
 }
 
 function releaseReplacementLock(root: string, lock: ReplacementLock): void {
+  const lockPath = backendLockPath(root);
+
   try {
-    if (readFileSync(backendLockPath(root), 'utf-8') !== lock.payload) return;
+    if (readFileSync(lockPath, 'utf-8') !== lock) return;
   } catch (error: unknown) {
     if (isNoEntryError(error)) return;
     throw error;
   }
 
   try {
-    unlinkSync(backendLockPath(root));
+    unlinkSync(lockPath);
   } catch (error: unknown) {
     if (isNoEntryError(error)) return;
     throw error;
@@ -217,39 +218,37 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
   const startupDeadline = Date.now() + STARTUP_TIMEOUT_MS;
   while (Date.now() < startupDeadline) {
     const healthy = await readHealthyBackendInfo(root);
-    if (
-      healthy
-      && healthy.bundleHash === expectedHash
-      && (replacedInstanceId === null || healthy.instanceId !== replacedInstanceId)
-    ) {
-      return summarizeBackend(healthy);
-    }
+    if (healthy) {
+      if (
+        healthy.bundleHash === expectedHash
+        && (replacedInstanceId === null || healthy.instanceId !== replacedInstanceId)
+      ) {
+        return summarizeBackend(healthy);
+      }
 
-    if (
-      healthy
-      && healthy.bundleHash !== expectedHash
-      && shutdownRequestedFor !== healthy.instanceId
-    ) {
-      shutdownRequestedFor = healthy.instanceId;
-      await requestBackendShutdown(healthy);
+      if (healthy.bundleHash !== expectedHash && shutdownRequestedFor !== healthy.instanceId) {
+        shutdownRequestedFor = healthy.instanceId;
+        await requestBackendShutdown(healthy);
+      }
     }
 
     const replacementLock = tryAcquireReplacementLock(root, version, expectedHash);
-    if (replacementLock) {
-      try {
-        removeStaleBackendInfo(root);
-      } finally {
-        releaseReplacementLock(root, replacementLock);
-      }
-
-      spawnBackend(backendBin);
-      const replacementDeadline = Math.min(startupDeadline, Date.now() + REPLACEMENT_TIMEOUT_MS);
-      return summarizeBackend(
-        await waitForReplacementBackend(root, replacedInstanceId, expectedHash, replacementDeadline),
-      );
+    if (!replacementLock) {
+      await delay(STARTUP_POLL_MS);
+      continue;
     }
 
-    await delay(STARTUP_POLL_MS);
+    try {
+      removeStaleBackendInfo(root);
+    } finally {
+      releaseReplacementLock(root, replacementLock);
+    }
+
+    spawnBackend(backendBin);
+    const replacementDeadline = Math.min(startupDeadline, Date.now() + REPLACEMENT_TIMEOUT_MS);
+    return summarizeBackend(
+      await waitForReplacementBackend(root, replacedInstanceId, expectedHash, replacementDeadline),
+    );
   }
 
   throw new Error('Timed out waiting for Coral backend startup');

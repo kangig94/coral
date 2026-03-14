@@ -12,6 +12,10 @@ export type SseEventBlock = {
   id?: string;
 };
 
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
 export function parseWaitStreamEvent(eventType: string | undefined, rawData: string): WaitStreamEvent | null {
   if (!eventType) return null;
 
@@ -35,8 +39,7 @@ export function parseWaitStreamEvent(eventType: string | undefined, rawData: str
       if (
         typeof parsed.completedJobId === 'string'
         && typeof parsed.sessionId === 'string'
-        && Array.isArray(parsed.remainingJobIds)
-        && parsed.remainingJobIds.every((jobId) => typeof jobId === 'string')
+        && isStringArray(parsed.remainingJobIds)
         && typeof parsed.resultPath === 'string'
         && isRecord(parsed.result)
       ) {
@@ -44,10 +47,7 @@ export function parseWaitStreamEvent(eventType: string | undefined, rawData: str
       }
       throw new Error('Invalid terminal wait stream event');
     case 'timeout':
-      if (
-        Array.isArray(parsed.runningJobIds)
-        && parsed.runningJobIds.every((jobId) => typeof jobId === 'string')
-      ) {
+      if (isStringArray(parsed.runningJobIds)) {
         return parsed as WaitStreamEvent;
       }
       throw new Error('Invalid timeout wait stream event');
@@ -56,8 +56,7 @@ export function parseWaitStreamEvent(eventType: string | undefined, rawData: str
         typeof parsed.jobId === 'string'
         && typeof parsed.sessionId === 'string'
         && typeof parsed.queuePosition === 'number'
-        && Array.isArray(parsed.runningJobIds)
-        && parsed.runningJobIds.every((jobId) => typeof jobId === 'string')
+        && isStringArray(parsed.runningJobIds)
       ) {
         return parsed as WaitStreamEvent;
       }

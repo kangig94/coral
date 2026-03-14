@@ -16,22 +16,6 @@ function restoreStdin(): void {
   }
 }
 
-async function withMockStdin<T>(input: string, fn: () => Promise<T>): Promise<T> {
-  const stdin = new PassThrough();
-  Object.defineProperty(process, 'stdin', {
-    configurable: true,
-    value: stdin as unknown as typeof process.stdin,
-  });
-
-  try {
-    const result = fn();
-    stdin.end(input);
-    return await result;
-  } finally {
-    restoreStdin();
-  }
-}
-
 afterEach(() => {
   restoreStdin();
 });
@@ -153,9 +137,16 @@ describe('cli parse', () => {
     });
 
     it('reads and parses JSON from stdin when the flag is -', async () => {
-      const parsed = await withMockStdin('{"topic":"risk","count":2}', () => parseInputJson('-'));
+      const stdin = new PassThrough();
+      Object.defineProperty(process, 'stdin', {
+        configurable: true,
+        value: stdin as unknown as typeof process.stdin,
+      });
 
-      expect(parsed).toEqual({
+      const parsedPromise = parseInputJson('-');
+      stdin.end('{"topic":"risk","count":2}');
+
+      await expect(parsedPromise).resolves.toEqual({
         topic: 'risk',
         count: 2,
       });

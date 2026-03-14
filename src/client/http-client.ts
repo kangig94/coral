@@ -165,9 +165,7 @@ export class BackendClient {
     const callerContext = isCallerContext(contextOrOptions) ? contextOrOptions : undefined;
     const options = callerContext ? maybeOptions : contextOrOptions;
 
-    if (!options) {
-      throw new Error('Workflow options are required');
-    }
+    if (!options) throw new Error('Workflow options are required');
 
     return this.proxyToolCall('workflow', { expression, ...options }, this.resolveContext(callerContext));
   }
@@ -416,14 +414,8 @@ export class BackendClient {
   }
 
   private resolveContext(context?: CallerContext): CallerContext {
-    if (context) {
-      return context;
-    }
-
-    if (this.defaultContext) {
-      return this.defaultContext;
-    }
-
+    const resolvedContext = context ?? this.defaultContext;
+    if (resolvedContext) return resolvedContext;
     throw new Error('CallerContext is required for backend tool calls');
   }
 
