@@ -11,7 +11,8 @@ executor call.
 Asserting spawned argv from a handler test requires un-mocking the executor and running the full
 stack, which couples handler tests to CLI implementation details and makes them fragile. The right
 split is: executor tests own "does `bypassPermissions: true` produce `--dangerously-skip-permissions`
-in argv?"; handler tests own "does `bypass: true` on the input reach the executor as `bypassPermissions: true`?"
+in argv?"; handler tests own "does `bypass_exec` op reach the executor as `bypassPermissions: true`?"
+(bypass is determined by op, not by a schema field).
 
 ## Pattern
 ```typescript

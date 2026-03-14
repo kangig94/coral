@@ -1,4 +1,5 @@
 import { MAX_INLINE } from '../shared/schemas.js';
+import { isRecord } from '../shared/mcp-utils.js';
 import type { BackendToolHttpError } from '../client/http-client.js';
 import type { BackendStatusFull, ShutdownResult } from '../bridge/backend-client.js';
 import type {
@@ -11,11 +12,11 @@ import type { AbortResult } from '../execution/abort-registry.js';
 import type { ListResult } from '../execution/service.js';
 import type { LaunchDecision, TerminalResult, WaitStreamEvent } from '../types.js';
 
-type DiscussStartResult = {
+export type DiscussStartResult = {
   session: string;
 };
 
-type DiscussAbortResult = {
+export type DiscussAbortResult = {
   ok: boolean;
   session: string;
 };
@@ -42,10 +43,6 @@ export type WaitRenderContext = {
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled value: ${String(value)}`);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 function joinLines(lines: Array<string | undefined>): string {
@@ -91,10 +88,19 @@ function formatPersonaAssignment(index: number, assignment: PersonaAssignment): 
   const details = [
     `tone ${tone}`,
     `seed ${assignment.persona_seed}`,
-    assignment.shared_position_with === undefined ? undefined : `shared_with ${assignment.shared_position_with}`,
-    assignment.suggested_origin === undefined ? undefined : `origin ${assignment.suggested_origin}`,
-    assignment.is_outlier ? 'outlier' : undefined,
-  ].filter((detail): detail is string => detail !== undefined);
+  ];
+
+  if (assignment.shared_position_with !== undefined) {
+    details.push(`shared_with ${assignment.shared_position_with}`);
+  }
+
+  if (assignment.suggested_origin !== undefined) {
+    details.push(`origin ${assignment.suggested_origin}`);
+  }
+
+  if (assignment.is_outlier) {
+    details.push('outlier');
+  }
 
   return `${index + 1}. ${positions || '(no positions)'}${details.length > 0 ? ` (${details.join(', ')})` : ''}`;
 }
@@ -192,15 +198,17 @@ export function formatProviderList(result: ListResult): string {
 }
 
 export function formatPersonaSeed(result: PersonaSeedOutput): string {
+  const subsampledLine = result.subsampled === undefined
+    ? undefined
+    : result.subsampled
+      ? `Subsampled: yes${result.original_pool_size === undefined ? '' : ` (from ${result.original_pool_size})`}`
+      : 'Subsampled: no';
+
   return joinLines([
     `Seed used: ${result.seed_used}`,
     `Sigma used: ${result.sigma_used}`,
     `Pool size: ${result.pool_size}`,
-    result.subsampled === undefined
-      ? undefined
-      : result.subsampled
-        ? `Subsampled: yes${result.original_pool_size === undefined ? '' : ` (from ${result.original_pool_size})`}`
-        : 'Subsampled: no',
+    subsampledLine,
     result.assignments.length === 0
       ? 'Assignments: none'
       : `Assignments:\n${result.assignments.map((assignment, index) => formatPersonaAssignment(index, assignment)).join('\n')}`,
@@ -222,17 +230,21 @@ export function formatDiscussParticipate(result: BidResult | SpeechResult): stri
     case 'speak':
       return 'Your turn to speak';
     case 'listen':
-      return result.speaker === null
-        ? joinLines(['Listen', result.content])
-        : joinLines([`Listen to ${result.speaker}`, result.content]);
+      if (result.speaker === null) {
+        return joinLines(['Listen', result.content]);
+      }
+
+      return joinLines([`Listen to ${result.speaker}`, result.content]);
     case 'session_ended':
       return formatDiscussEnded(result);
     case 'speech_recorded':
       return 'Speech recorded';
     case 'not_your_turn':
-      return result.current_speaker === null
-        ? 'Not your turn'
-        : `Not your turn (current speaker: ${result.current_speaker})`;
+      if (result.current_speaker === null) {
+        return 'Not your turn';
+      }
+
+      return `Not your turn (current speaker: ${result.current_speaker})`;
     default:
       return assertNever(result);
   }

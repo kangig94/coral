@@ -31,6 +31,8 @@ import type {
 import { MAX_INLINE } from '../shared/schemas.js';
 import type { LaunchDecision, WaitStreamEvent } from '../types.js';
 import {
+  type DiscussAbortResult,
+  type DiscussStartResult,
   formatAbortResult,
   formatBackendStatus,
   formatDiscussAbort,
@@ -50,14 +52,14 @@ import {
   type WaitRenderContext,
 } from './format.js';
 import {
+  isJsonObject,
   parseAgentSpec,
   parseAxisSpec,
   parseInputJson,
   type JsonObject,
 } from './parse.js';
 
-const providerNames = ['codex', 'claude'] as const;
-const providerNameSet = new Set<string>(providerNames);
+const providerNames: readonly string[] = ['codex', 'claude'];
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : (process.env.CLAUDE_PLUGIN_ROOT ?? '');
 
 type ProviderExecOptions = {
@@ -65,8 +67,6 @@ type ProviderExecOptions = {
   session?: string;
   workDir?: string;
   model?: string;
-  systemPrompt?: string;
-  bypassPermissions?: boolean;
 };
 
 type ProviderForkOptions = {
@@ -135,15 +135,6 @@ type DiscussAbortOptions = {
   session: string;
 };
 
-type DiscussStartResult = {
-  session: string;
-};
-
-type DiscussAbortResult = {
-  ok: boolean;
-  session: string;
-};
-
 function makeClient(projectRoot: string): BackendClient {
   const defaultContext: CallerContext = { pluginRoot, projectRoot };
   return new BackendClient({
@@ -152,20 +143,15 @@ function makeClient(projectRoot: string): BackendClient {
   });
 }
 
-// Stricter than shared isRecord — excludes arrays because JSON flags must be objects
-function isRecord(value: unknown): value is JsonObject {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function normalizeResult(result: unknown): { output: unknown; isError: boolean } {
   if (
-    isRecord(result)
+    isJsonObject(result)
     && typeof result.isError === 'boolean'
     && Array.isArray(result.content)
     && result.content.length > 0
   ) {
     const first = result.content[0];
-    if (isRecord(first) && typeof first.text === 'string') {
+    if (isJsonObject(first) && typeof first.text === 'string') {
       try {
         return { output: JSON.parse(first.text), isError: result.isError };
       } catch {
@@ -174,7 +160,7 @@ function normalizeResult(result: unknown): { output: unknown; isError: boolean }
     }
   }
 
-  if (isRecord(result) && result.status === 'rejected') {
+  if (isJsonObject(result) && result.status === 'rejected') {
     return { output: result, isError: true };
   }
 
@@ -182,9 +168,13 @@ function normalizeResult(result: unknown): { output: unknown; isError: boolean }
   return { output: result, isError: false };
 }
 
+function isTextOutput(): boolean {
+  return program.opts<{ outputFormat?: string }>().outputFormat !== 'json';
+}
+
 function emit(result: unknown, textFormatter?: (data: unknown) => string): void {
   const { output, isError } = normalizeResult(result);
-  const isText = program.opts<{ outputFormat?: string }>().outputFormat !== 'json';
+  const isText = isTextOutput();
 
   if (isError) {
     const text = isText ? formatError(output) : JSON.stringify(output);
@@ -200,7 +190,7 @@ function emit(result: unknown, textFormatter?: (data: unknown) => string): void 
 }
 
 function emitError(error: unknown): void {
-  const isText = program.opts<{ outputFormat?: string }>().outputFormat !== 'json';
+  const isText = isTextOutput();
 
   if (isText) {
     process.stderr.write(formatError(error) + '\n');
@@ -260,10 +250,14 @@ function shapeWaitOutputRecord(
       path: resultPath,
     },
   };
-  const { resultPath: _rp, ...pathFirstEventWithoutResultPath } = pathFirstEvent;
+  const { resultPath: _resultPath, ...pathFirstEventWithoutResultPath } = pathFirstEvent;
+  const pathOnlyRecord: WaitOutputRecord = {
+    cursor,
+    event: pathFirstEventWithoutResultPath,
+  };
 
   if (!embed) {
-    return { cursor, event: pathFirstEventWithoutResultPath };
+    return pathOnlyRecord;
   }
 
   let text: string | undefined;
@@ -278,7 +272,7 @@ function shapeWaitOutputRecord(
   }
 
   if (text === undefined) {
-    return { cursor, event: pathFirstEventWithoutResultPath };
+    return pathOnlyRecord;
   }
 
   const embeddedRecord: WaitOutputRecord = {
@@ -295,27 +289,26 @@ function shapeWaitOutputRecord(
 
   return JSON.stringify(embeddedRecord).length <= MAX_INLINE
     ? embeddedRecord
-    : { cursor, event: pathFirstEventWithoutResultPath };
+    : pathOnlyRecord;
 }
 
 function normalizeProviderArgv(argv: readonly string[]): string[] {
   if (argv.length < 4) {
-    return argv as string[];
+    return argv.slice();
   }
 
-  const provider = argv[2];
-  const dispatchToken = argv[3];
+  const [nodePath, scriptPath, provider, dispatchToken] = argv;
 
-  if (!providerNameSet.has(provider)) {
-    return argv as string[];
+  if (!providerNames.includes(provider)) {
+    return argv.slice();
   }
 
   const match = /^coral:([a-z0-9][a-z0-9-]*)$/.exec(dispatchToken);
   if (!match) {
-    return argv as string[];
+    return argv.slice();
   }
 
-  return [argv[0], argv[1], provider, 'coral', match[1], ...argv.slice(4)];
+  return [nodePath, scriptPath, provider, 'coral', match[1], ...argv.slice(4)];
 }
 
 function registerProviderCommands(program: Command): void {
@@ -330,8 +323,6 @@ function registerProviderCommands(program: Command): void {
       .option('--session <id>', 'Resume session ID')
       .option('--work-dir <path>', 'Working directory')
       .option('--model <model>', 'Model override')
-      .option('--system-prompt <text>', 'System prompt override')
-      .option('--bypass-permissions', 'Bypass permission checks')
       .action(async (opts: ProviderExecOptions) => {
         try {
           const client = makeClient(process.cwd());
@@ -339,8 +330,6 @@ function registerProviderCommands(program: Command): void {
             session: opts.session,
             work_dir: opts.workDir,
             model: opts.model,
-            system_prompt: opts.systemPrompt,
-            bypass_permissions: opts.bypassPermissions,
           });
           emit(result, (data) => formatLaunchDecision(data as LaunchDecision));
         } catch (error) {
@@ -425,6 +414,8 @@ program.command('wait')
       const jobIds = parseJobIds(opts.jobs);
       const timeoutSeconds = parseIntegerFlag('--timeout', opts.timeout);
       const projectRoot = process.cwd();
+      const isText = isTextOutput();
+      const embed = opts.embed === true;
       // Use streamWait directly (not BackendClient.wait) — the CLI cursor is a raw SSE id
       // string, while BackendClient.wait uses a different base64url-encoded WaitCursor type.
       const { port, host, token } = await ensureBackend(pluginRoot || undefined);
@@ -439,29 +430,38 @@ program.command('wait')
         projectRoot,
         cursorRef,
       )) {
-        const isText = program.opts<{ outputFormat?: string }>().outputFormat !== 'json';
-        if (isText) {
-          const ctx: WaitRenderContext = {
-            isTTY: process.stdout.isTTY === true,
-            columns: process.stdout.columns ?? 80,
-          };
-          let formatted: string;
-          if (event.type === 'progress') {
-            formatted = formatWaitProgress(event, cursorRef.lastEventId ?? null);
-          } else if (event.type === 'queued') {
-            formatted = formatWaitQueued(event, cursorRef.lastEventId ?? null);
-          } else if (event.type === 'terminal') {
-            formatted = formatWaitTerminal(event, cursorRef.lastEventId ?? null, opts.embed === true);
-          } else {
-            formatted = formatWaitTimeout(event, cursorRef.lastEventId ?? null);
-          }
-          process.stdout.write(renderWaitLine(formatted, ctx));
-          if (event.type === 'terminal' || event.type === 'timeout') {
-            if (ctx.isTTY) process.stdout.write('\n');
-          }
-        } else {
-          const record = shapeWaitOutputRecord(event, cursorRef.lastEventId ?? null, opts.embed === true);
+        const cursor = cursorRef.lastEventId ?? null;
+
+        if (!isText) {
+          const record = shapeWaitOutputRecord(event, cursor, embed);
           process.stdout.write(JSON.stringify(record) + '\n');
+          continue;
+        }
+
+        const ctx: WaitRenderContext = {
+          isTTY: process.stdout.isTTY === true,
+          columns: process.stdout.columns ?? 80,
+        };
+        let formatted: string;
+
+        switch (event.type) {
+          case 'progress':
+            formatted = formatWaitProgress(event, cursor);
+            break;
+          case 'queued':
+            formatted = formatWaitQueued(event, cursor);
+            break;
+          case 'terminal':
+            formatted = formatWaitTerminal(event, cursor, embed);
+            break;
+          case 'timeout':
+            formatted = formatWaitTimeout(event, cursor);
+            break;
+        }
+
+        process.stdout.write(renderWaitLine(formatted, ctx));
+        if ((event.type === 'terminal' || event.type === 'timeout') && ctx.isTTY) {
+          process.stdout.write('\n');
         }
       }
     } catch (error) {
@@ -537,7 +537,7 @@ backend.command('status')
   .action(async () => {
     try {
       const status = await getBackendStatusFull(pluginRoot);
-      const isText = program.opts<{ outputFormat?: string }>().outputFormat !== 'json';
+      const isText = isTextOutput();
       process.stdout.write((isText ? formatBackendStatus(status) : JSON.stringify(status)) + '\n');
     } catch (error) {
       emitError(error);
@@ -549,7 +549,7 @@ backend.command('shutdown')
   .action(async () => {
     try {
       const result = await shutdownBackend(pluginRoot);
-      const isText = program.opts<{ outputFormat?: string }>().outputFormat !== 'json';
+      const isText = isTextOutput();
       if (result.ok) {
         process.stdout.write((isText ? formatShutdown(result) : JSON.stringify(result)) + '\n');
         return;
@@ -599,8 +599,7 @@ discuss.command('start')
   .action(async (opts: DiscussStartOptions) => {
     try {
       const stdinBase: JsonObject = await parseInputJson(opts.inputJson);
-      const agentSpecs = opts.agent;
-      const agents = agentSpecs === undefined ? undefined : agentSpecs.map(parseAgentSpec);
+      const agents = opts.agent?.map(parseAgentSpec);
       const args = {
         ...stdinBase,
         ...(opts.topic !== undefined ? { topic: opts.topic } : {}),

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   abortInputSchema,
+  internalProviderFieldsShape,
   sharedExecSchema,
   sharedForkSchema,
   sharedResumeSchema,
@@ -8,15 +9,13 @@ import {
 } from '../schemas.js';
 
 describe('Phase 1 shared schemas', () => {
-  it('sharedExecSchema validates valid exec input', () => {
+  it('sharedExecSchema validates valid exec input without internal fields', () => {
     const parsed = sharedExecSchema.parse({
       op: 'exec',
       prompt: 'Analyze this change',
       session: 'session-1',
       work_dir: '/tmp/work',
       model: 'o4-mini',
-      bypass_permissions: true,
-      system_prompt: 'Follow the policy',
     });
 
     expect(parsed).toMatchObject({
@@ -25,9 +24,22 @@ describe('Phase 1 shared schemas', () => {
       session: 'session-1',
       work_dir: '/tmp/work',
       model: 'o4-mini',
-      bypass_permissions: true,
-      system_prompt: 'Follow the policy',
     });
+    expect(parsed).not.toHaveProperty('bypass_permissions');
+    expect(parsed).not.toHaveProperty('system_prompt');
+  });
+
+  it('internal fields are accepted when schema is extended', () => {
+    const extended = sharedExecSchema.extend(internalProviderFieldsShape);
+    const parsed = extended.parse({
+      op: 'bypass_exec',
+      prompt: 'Internal call',
+      bypass_permissions: true,
+      system_prompt: 'Agent context',
+    });
+
+    expect(parsed.bypass_permissions).toBe(true);
+    expect(parsed.system_prompt).toBe('Agent context');
   });
 
   it('sharedResumeSchema requires session', () => {

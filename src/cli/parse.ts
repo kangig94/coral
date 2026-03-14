@@ -10,7 +10,7 @@ export type DiscussStartAgentInput = {
   model?: string;
 };
 
-function isJsonObject(value: unknown): value is JsonObject {
+export function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
@@ -92,13 +92,24 @@ export function parseAgentSpec(spec: string): DiscussStartAgentInput {
     throw new Error('Agent spec requires persona');
   }
 
-  return {
+  const agent: DiscussStartAgentInput = {
     name: pairs.name,
     persona: pairs.persona,
-    ...(pairs.participation === undefined ? {} : { participation: pairs.participation }),
-    ...(pairs.provider === undefined ? {} : { provider: pairs.provider }),
-    ...(pairs.model === undefined ? {} : { model: pairs.model }),
   };
+
+  if (pairs.participation !== undefined) {
+    agent.participation = pairs.participation;
+  }
+
+  if (pairs.provider !== undefined) {
+    agent.provider = pairs.provider;
+  }
+
+  if (pairs.model !== undefined) {
+    agent.model = pairs.model;
+  }
+
+  return agent;
 }
 
 export function parseAxisSpec(spec: string): ControversyAxis {
@@ -138,10 +149,14 @@ export function parseAxisSpec(spec: string): ControversyAxis {
       }
 
       const trimmedValue = rawValue.trim();
-      positions = trimmedValue.startsWith('"')
-        ? parseScalarValue(trimmedValue).split(',').map((position) => position.trim())
-        : [parseScalarValue(trimmedValue)];
-      collectingPositions = !trimmedValue.startsWith('"');
+      if (trimmedValue.startsWith('"')) {
+        positions = parseScalarValue(trimmedValue).split(',').map((position) => position.trim());
+        collectingPositions = false;
+        continue;
+      }
+
+      positions = [parseScalarValue(trimmedValue)];
+      collectingPositions = true;
       continue;
     }
 

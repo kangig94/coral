@@ -16,7 +16,7 @@ import {
   type McpResult,
 } from '../shared/mcp-utils.js';
 import { pluginRootNamespace } from '../client/paths.js';
-import { sharedExecSchema, sharedForkSchema, sharedResumeSchema } from '../shared/schemas.js';
+import { internalProviderFieldsShape, sharedExecSchema, sharedForkSchema, sharedResumeSchema } from '../shared/schemas.js';
 import {
   AgentInputSchema,
   ControversyAxisSchema,
@@ -829,7 +829,7 @@ export async function routeToolCall(
   }
 
   if (op === 'fork') {
-    const parsed = sharedForkSchema.safeParse(request.args);
+    const parsed = sharedForkSchema.extend(internalProviderFieldsShape).safeParse(request.args);
     if (!parsed.success) return { statusCode: 400, body: { error: 'invalid_request' } };
     return {
       statusCode: 200,
@@ -839,14 +839,14 @@ export async function routeToolCall(
         cwd: parsed.data.work_dir,
         model: parsed.data.model,
 
-        bypassPermissions: parsed.data.bypass_permissions ?? false,
+        bypassPermissions: true,
         systemPrompt: parsed.data.system_prompt,
       }, request.context),
     };
   }
 
   if (op === 'resume') {
-    const parsed = sharedResumeSchema.safeParse(request.args);
+    const parsed = sharedResumeSchema.extend(internalProviderFieldsShape).safeParse(request.args);
     if (!parsed.success) return { statusCode: 400, body: { error: 'invalid_request' } };
     return {
       statusCode: 200,
@@ -856,17 +856,17 @@ export async function routeToolCall(
         cwd: parsed.data.work_dir,
         model: parsed.data.model,
 
-        bypassPermissions: parsed.data.bypass_permissions ?? false,
+        bypassPermissions: true,
         systemPrompt: parsed.data.system_prompt,
       }, request.context),
     };
   }
 
   if (op === 'exec' || op === 'bypass_exec') {
-    const parsed = sharedExecSchema.safeParse(request.args);
+    const parsed = sharedExecSchema.extend(internalProviderFieldsShape).safeParse(request.args);
     if (!parsed.success) return { statusCode: 400, body: { error: 'invalid_request' } };
 
-    const bypassPermissions = op === 'bypass_exec' || (parsed.data.bypass_permissions ?? false);
+    const bypassPermissions = op === 'bypass_exec';
 
     if (parsed.data.session) {
       return {
@@ -1433,6 +1433,31 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       return;
     }
 
+    if (req.method === 'GET' && req.url === '/health') {
+      sendJson(res, 200, {
+        status: lifecycle === 'running' ? 'ok' : lifecycle,
+        version,
+        bundleHash,
+        namespace,
+        instanceId,
+        uptimeMs: now() - startedAt,
+        activeChildren: activeChildren.size,
+        activeJobs: progressStore.liveJobCount(),
+        queueDepth: queueDepth(),
+        inflightRequests: idleTimer.inflightRequests,
+      });
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/admin/shutdown') {
+      req.resume();
+      runOnResponseDone(res, () => {
+        void shutdown('admin').catch(() => {});
+      });
+      sendJson(res, 200, { status: 'shutting_down' });
+      return;
+    }
+
     if (lifecycle !== 'running') {
       req.resume();
       sendJson(res, 503, { error: 'backend_shutting_down' });
@@ -1452,22 +1477,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
 
     if (req.method === 'POST' && req.url === '/wait/stream') {
       await handleWaitStream(req, res);
-      return;
-    }
-
-    if (req.method === 'GET' && req.url === '/health') {
-      sendJson(res, 200, {
-        status: 'ok',
-        version,
-        bundleHash,
-        namespace,
-        instanceId,
-        uptimeMs: now() - startedAt,
-        activeChildren: activeChildren.size,
-        activeJobs: progressStore.liveJobCount(),
-        queueDepth: queueDepth(),
-        inflightRequests: idleTimer.inflightRequests,
-      });
       return;
     }
 
@@ -1495,15 +1504,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         scopeCheckJobs: (jobIds, projectRoot) => scopeCheckJobs(jobIds, projectRoot, namespace),
       });
       sendJson(res, result.statusCode, result.body);
-      return;
-    }
-
-    if (req.method === 'POST' && req.url === '/admin/shutdown') {
-      req.resume();
-      runOnResponseDone(res, () => {
-        void shutdown('admin').catch(() => {});
-      });
-      sendJson(res, 200, { status: 'shutting_down' });
       return;
     }
 
