@@ -24,8 +24,6 @@ export interface SessionEntry {
 
 type CachedSession = {
   entry: SessionEntry;
-  mtimeMs: number;
-  size: number;
 };
 
 function projectHash(dir: string): string {
@@ -48,18 +46,26 @@ function isValidEntry(value: unknown): value is SessionEntry {
 }
 
 export class SessionManager {
+  private static readonly shardStamps = new Map<string, number>();
   private readonly sessionDir: string;
   private readonly cache = new Map<string, CachedSession>();
+  private readonly knownSessionIds = new Set<string>();
+  private shardStamp = 0;
+  private cacheHydrated = false;
 
   constructor(workingDirectory: string) {
     this.sessionDir = join(sessionBase(), projectHash(workingDirectory));
     mkdirSync(this.sessionDir, { recursive: true });
+    this.shardStamp = SessionManager.ensureShardStamp(this.sessionDir);
   }
 
   static openShard(shardDir: string): SessionManager {
     const manager = Object.create(SessionManager.prototype) as SessionManager;
     (manager as unknown as { sessionDir: string }).sessionDir = shardDir;
     (manager as unknown as { cache: Map<string, CachedSession> }).cache = new Map();
+    (manager as unknown as { knownSessionIds: Set<string> }).knownSessionIds = new Set();
+    (manager as unknown as { shardStamp: number }).shardStamp = SessionManager.ensureShardStamp(shardDir);
+    (manager as unknown as { cacheHydrated: boolean }).cacheHydrated = false;
     return manager;
   }
 
@@ -80,6 +86,19 @@ export class SessionManager {
 
   private lockPath(sessionId: string): string {
     return join(this.sessionDir, `${sessionId}.lock`);
+  }
+
+  private static ensureShardStamp(sessionDir: string): number {
+    const current = SessionManager.shardStamps.get(sessionDir);
+    if (current !== undefined) return current;
+    SessionManager.shardStamps.set(sessionDir, 0);
+    return 0;
+  }
+
+  private static bumpShardStamp(sessionDir: string): number {
+    const next = SessionManager.ensureShardStamp(sessionDir) + 1;
+    SessionManager.shardStamps.set(sessionDir, next);
+    return next;
   }
 
   private async acquireSessionLock(sessionId: string, timeoutMs = 5000): Promise<() => void> {
@@ -112,34 +131,26 @@ export class SessionManager {
     throw new Error(`Session lock timeout: ${sessionId}`);
   }
 
-  private getFileStats(sessionId: string): { mtimeMs: number; size: number } | null {
-    try {
-      const stats = statSync(this.sessionPath(sessionId));
-      return { mtimeMs: stats.mtimeMs, size: stats.size };
-    } catch {
-      return null;
-    }
+  private syncCacheWithShardStamp(): void {
+    const currentStamp = SessionManager.ensureShardStamp(this.sessionDir);
+    if (this.shardStamp === currentStamp) return;
+    this.cache.clear();
+    this.knownSessionIds.clear();
+    this.cacheHydrated = false;
+    this.shardStamp = currentStamp;
   }
 
   private populateCache(sessionId: string, entry: SessionEntry): void {
-    const stats = this.getFileStats(sessionId);
-    if (stats) {
-      this.cache.set(sessionId, {
-        entry: { ...entry },
-        mtimeMs: stats.mtimeMs,
-        size: stats.size,
-      });
-    }
+    this.cache.set(sessionId, { entry: { ...entry } });
+    this.knownSessionIds.add(sessionId);
   }
 
-  private readEntry(sessionId: string): SessionEntry | null {
-    const cached = this.cache.get(sessionId);
-    if (cached) {
-      const stats = this.getFileStats(sessionId);
-      if (stats && stats.mtimeMs === cached.mtimeMs && stats.size === cached.size) {
-        return { ...cached.entry };
-      }
-      this.cache.delete(sessionId);
+  private readEntry(sessionId: string, options?: { forceFresh?: boolean }): SessionEntry | null {
+    this.syncCacheWithShardStamp();
+
+    if (!options?.forceFresh) {
+      const cached = this.cache.get(sessionId);
+      if (cached) return { ...cached.entry };
     }
 
     try {
@@ -149,10 +160,15 @@ export class SessionManager {
         this.populateCache(sessionId, parsed);
         return { ...parsed };
       }
+      this.cache.delete(sessionId);
       process.stderr.write(`Warning: Session file ${sessionId}.json has unexpected shape, skipping\n`);
       return null;
     } catch (error: unknown) {
-      if (isNoEntryError(error)) return null;
+      this.cache.delete(sessionId);
+      if (isNoEntryError(error)) {
+        this.knownSessionIds.delete(sessionId);
+        return null;
+      }
       if (error instanceof SyntaxError) {
         process.stderr.write(`Warning: Corrupt session file ${sessionId}.json, skipping\n`);
         return null;
@@ -162,11 +178,13 @@ export class SessionManager {
   }
 
   private writeEntry(entry: SessionEntry): void {
+    this.syncCacheWithShardStamp();
     const filePath = this.sessionPath(entry.sessionId);
     const tmpPath = filePath + '.tmp';
     entry.version = (entry.version ?? 0) + 1;
     writeFileSync(tmpPath, JSON.stringify(entry, null, 2), 'utf-8');
     renameSync(tmpPath, filePath);
+    this.shardStamp = SessionManager.bumpShardStamp(this.sessionDir);
     this.populateCache(entry.sessionId, entry);
     const shardHash = basename(this.sessionDir);
     eventBus.emit('session:updated', {
@@ -218,7 +236,7 @@ export class SessionManager {
   async claimForJobAtomic(sessionId: string, jobId: string, expectedVersion?: number): Promise<boolean> {
     const release = await this.acquireSessionLock(sessionId);
     try {
-      const entry = this.readEntry(sessionId);
+      const entry = this.readEntry(sessionId, { forceFresh: true });
       if (!entry || entry.activeJobId) return false;
       if (expectedVersion !== undefined && entry.version !== expectedVersion) return false;
       entry.activeJobId = jobId;
@@ -262,11 +280,24 @@ export class SessionManager {
 
   /** List all sessions for a provider. */
   list(provider: string): SessionEntry[] {
+    this.syncCacheWithShardStamp();
+    if (this.cacheHydrated) {
+      return Array.from(this.knownSessionIds)
+        .map((sessionId) => this.readEntry(sessionId))
+        .filter((entry): entry is SessionEntry => entry !== null && entry.provider === provider);
+    }
+
     try {
       const files = readdirSync(this.sessionDir).filter((file) => file.endsWith('.json'));
-      return files
+      this.knownSessionIds.clear();
+      for (const file of files) {
+        this.knownSessionIds.add(file.slice(0, -5));
+      }
+      const entries = files
         .map((file) => this.readEntry(file.slice(0, -5)))
         .filter((entry): entry is SessionEntry => entry !== null && entry.provider === provider);
+      this.cacheHydrated = true;
+      return entries;
     } catch {
       return [];
     }

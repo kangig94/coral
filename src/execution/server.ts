@@ -35,7 +35,7 @@ import type { AbortResult } from './abort-registry.js';
 
 import { eventBus, type EventBusEvents } from './event-bus.js';
 import { IdleTimer } from './idle-timer.js';
-import { createReplayCursor, ProgressStore, JOBS_DIR } from './progress-store.js';
+import { createReplayCursor, ProgressStore } from './progress-store.js';
 import type { CallerContext, ToolRequest } from './request-context.js';
 import { SessionManager } from './session-manager.js';
 import {
@@ -347,17 +347,6 @@ function waitForInflightDrain(idleTimer: IdleTimer, timeoutMs: number): Promise<
   });
 }
 
-function readJobIds(): string[] {
-  try {
-    return readdirSync(JOBS_DIR, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name);
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) return [];
-    throw error;
-  }
-}
-
 function readBackendNamespace(status: PersistedStatusRecord): string | null {
   const namespace = (status as PersistedStatusRecordWithNamespace).backendNamespace;
   return typeof namespace === 'string' && namespace.length > 0 ? namespace : null;
@@ -384,7 +373,7 @@ function belongsToNamespace(status: PersistedStatusRecord, namespace: string): b
 function listLiveJobs(progressStore: ProgressStore, namespace: string): PersistedStatusRecord[] {
   const results: PersistedStatusRecord[] = [];
 
-  for (const jobId of readJobIds()) {
+  for (const jobId of progressStore.listJobIds()) {
     const status = progressStore.readStatus(jobId);
     if (!status || !isLiveJob(status)) continue;
 
@@ -1052,7 +1041,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
 
   function listAllJobs(store: ProgressStore, currentNamespace: string): Array<{ jobId: string; status: PersistedStatusRecord }> {
     const results: Array<{ jobId: string; status: PersistedStatusRecord }> = [];
-    for (const jobId of readJobIds()) {
+    for (const jobId of store.listJobIds()) {
       const status = store.readStatus(jobId);
       if (status && belongsToNamespace(status, currentNamespace)) {
         results.push({ jobId, status });

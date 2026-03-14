@@ -3,6 +3,7 @@ import {
   closeSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   readSync,
   rmSync,
@@ -70,10 +71,25 @@ export class ProgressStore {
   private readonly eventCounters = new Map<string, number>();
   private readonly jobStartedAt = new Map<string, number>();
   private readonly statusCache = new Map<string, PersistedStatusRecord>();
+  private readonly knownJobIds = new Set<string>();
   private readonly readBuf = Buffer.alloc(READ_CHUNK);
   private liveCount = 0;
   private changeSeq = 0;
   private waiters: Array<() => void> = [];
+
+  constructor() {
+    try {
+      for (const entry of readdirSync(JOBS_DIR, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          this.knownJobIds.add(entry.name);
+        }
+      }
+    } catch (error: unknown) {
+      if (!isNoEntryError(error)) {
+        throw error;
+      }
+    }
+  }
 
   /**
    * Returns a snapshot of the change sequence counter.
@@ -126,6 +142,10 @@ export class ProgressStore {
 
   liveJobCount(): number {
     return this.liveCount;
+  }
+
+  listJobIds(): string[] {
+    return [...this.knownJobIds];
   }
 
   private applyStatusRecord(jobId: string, record: PersistedStatusRecord): void {
@@ -202,6 +222,7 @@ export class ProgressStore {
       record.jobKind = resolvedJobKind;
     }
     this.persistStatusSync(jobId, record);
+    this.knownJobIds.add(jobId);
     this.applyStatusRecord(jobId, record);
     writeFileSync(this.progressPath(jobId), '');
     eventBus.emit('job:created', { jobId, sessionId, provider, projectRoot });
@@ -213,6 +234,7 @@ export class ProgressStore {
     if (record && this.isLivePhase(record.phase)) {
       this.liveCount--;
     }
+    this.knownJobIds.delete(jobId);
     this.statusCache.delete(jobId);
     this.eventCounters.delete(jobId);
     this.jobStartedAt.delete(jobId);
@@ -222,6 +244,7 @@ export class ProgressStore {
   /** Atomically write status.json (sync to avoid race between consecutive writes). */
   writeStatus(jobId: string, record: PersistedStatusRecord): void {
     this.persistStatusSync(jobId, record);
+    this.knownJobIds.add(jobId);
     this.applyStatusRecord(jobId, record);
   }
 
@@ -299,6 +322,7 @@ export class ProgressStore {
       result,
     };
     appendFileSync(this.progressPath(jobId), JSON.stringify(entry) + '\n');
+    this.knownJobIds.add(jobId);
 
     this.updateTerminalStatus(jobId, result, phase);
     this.clearTerminalState(jobId);
