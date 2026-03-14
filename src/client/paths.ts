@@ -55,6 +55,13 @@ export function discussDiscoveryPath(projectRoot: string): string {
 }
 
 /**
+ * Returns the summary index path used to list discuss sessions without loading snapshots.
+ */
+export function discussSummaryIndexPath(projectRoot: string): string {
+  return join(discussBaseDir(projectRoot), 'summary-index.json');
+}
+
+/**
  * Returns the directory that stores one discuss session.
  */
 export function discussSessionDir(projectRoot: string, sessionId: string): string {

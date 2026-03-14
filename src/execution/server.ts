@@ -5,7 +5,7 @@ declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFileSync, readdirSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import { z } from 'zod';
 import {
   formatError,
@@ -37,6 +37,7 @@ import { eventBus, type EventBusEvents } from './event-bus.js';
 import { IdleTimer } from './idle-timer.js';
 import { createReplayCursor, ProgressStore } from './progress-store.js';
 import type { CallerContext, ToolRequest } from './request-context.js';
+import { SessionIndex } from './session-index.js';
 import { SessionManager } from './session-manager.js';
 import {
   DiscussManagerError,
@@ -56,8 +57,6 @@ import {
 } from '../client/discuss.js';
 import {
   readDiscussProjectRoots,
-  readSessionEntryLenient,
-  type LenientSessionEntry,
 } from '../client/readers.js';
 import { getAllNewProviders, getNewProvider } from '../providers/registry.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
@@ -935,6 +934,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const idleTimer = options.createIdleTimer?.() ?? new IdleTimer();
   const discussRegistry = options.discussRegistry ?? globalDiscussRegistry;
   const progressStore = options.progressStore ?? new ProgressStore();
+  const sessionIndex = new SessionIndex();
   const now = options.now ?? (() => Date.now());
   const log = options.log ?? ((message: string) => {
     process.stderr.write(message);
@@ -962,6 +962,23 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   let lifecycle: LifecycleState = 'starting';
   let shutdownPromise: Promise<void> | null = null;
   let started = false;
+  let sessionIndexSubscribed = false;
+
+  const onSessionIndexUpdated = (payload: EventBusEvents['session:updated']): void => {
+    sessionIndex.invalidate(payload.shardHash, payload.sessionId);
+  };
+
+  function subscribeSessionIndex(): void {
+    if (sessionIndexSubscribed) return;
+    eventBus.on('session:updated', onSessionIndexUpdated);
+    sessionIndexSubscribed = true;
+  }
+
+  function unsubscribeSessionIndex(): void {
+    if (!sessionIndexSubscribed) return;
+    eventBus.off('session:updated', onSessionIndexUpdated);
+    sessionIndexSubscribed = false;
+  }
 
   function getExecutionService(ctx: CallerContext): ExecutionServiceLike {
     const key = ctx.projectRoot;
@@ -1062,47 +1079,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     return { status, events };
   }
 
-  function listAllSessions(): Array<{ shardHash: string; sessions: LenientSessionEntry[] }> {
-    const results: Array<{ shardHash: string; sessions: LenientSessionEntry[] }> = [];
-    for (const shardDir of SessionManager.listShards()) {
-      const entries = listShardSessions(shardDir);
-      if (entries.length > 0) {
-        results.push({ shardHash: basename(shardDir), sessions: entries });
-      }
-    }
-    return results;
-  }
-
-  function listShardSessions(shardDir: string): LenientSessionEntry[] {
-    let files: string[];
-    try {
-      files = readdirSync(shardDir).filter((file) => file.endsWith('.json') && !file.endsWith('.lock'));
-    } catch {
-      return [];
-    }
-
-    const entries: LenientSessionEntry[] = [];
-    for (const file of files) {
-      const entry = readSessionEntryLenient(join(shardDir, file));
-      if (entry) entries.push(entry);
-    }
-
-    return entries;
-  }
-
-  function listSessionsForNamespace(currentNamespace: string): Array<{ shardHash: string; sessions: LenientSessionEntry[] }> {
-    return listAllSessions()
-      .map(({ shardHash, sessions }) => ({
-        shardHash,
-        sessions: sessions.filter((session) => {
-          if (!session.activeJobId) return true;
-          const status = progressStore.readStatus(session.activeJobId);
-          return status !== null && belongsToNamespace(status, currentNamespace);
-        }),
-      }))
-      .filter(({ sessions }) => sessions.length > 0);
-  }
-
   function knownDiscussProjectRoots(): Set<string> {
     const projectRoots = new Set<string>();
     for (const projectRoot of readDiscussProjectRoots()) {
@@ -1111,7 +1087,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     for (const liveSession of discussRegistry.listLiveSessions()) {
       projectRoots.add(liveSession.projectRoot);
     }
-    for (const { sessions } of listAllSessions()) {
+    for (const { sessions } of sessionIndex.listAll()) {
       for (const s of sessions) {
         if (s.projectRoot) projectRoots.add(s.projectRoot);
       }
@@ -1208,6 +1184,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
 
       markJobsAsErrorFn(namespace, 'Backend shutting down');
       killAllChildrenFn();
+      unsubscribeSessionIndex();
 
       removeBackendInfoIfOwnerFn(resolvedPluginRoot, instanceId);
       removeLockIfOwnerFn(resolvedPluginRoot, instanceId);
@@ -1512,7 +1489,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
 
       if (pathname === '/api/sessions') {
         req.resume();
-        sendJson(res, 200, { sessions: listSessionsForNamespace(namespace) });
+        sendJson(res, 200, { sessions: sessionIndex.listForNamespace(namespace, progressStore) });
         return;
       }
 
@@ -1561,6 +1538,8 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     try {
       await acquireLockFn(resolvedPluginRoot, instanceId, version, bundleHash);
       registerBuiltInProviders();
+      subscribeSessionIndex();
+      sessionIndex.hydrate(SessionManager.listShards());
       recoverOrphanedJobsFn(namespace);
       const bindHost = process.env.CORAL_BACKEND_BIND ?? '127.0.0.1';
       const { port, host } = await listen(server, bindHost);
@@ -1611,6 +1590,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     } catch (error: unknown) {
       lifecycle = 'stopped';
       idleTimer.stopWatching();
+      unsubscribeSessionIndex();
 
       try {
         await closeServerFn(server);

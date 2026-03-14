@@ -11,12 +11,17 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { readDiscussDiscovery, readDiscussEventLog } from '../../client/readers.js';
+import {
+  readDiscussDiscovery,
+  readDiscussEventLog,
+  readDiscussSummaryIndex,
+} from '../../client/readers.js';
 import {
   discussProjectRootsPath,
   discussDiscoveryPath,
   discussEventLogPath,
   discussSessionDir,
+  discussSummaryIndexPath,
   discussStatePath,
 } from '../../client/paths.js';
 import { replayDiscussEvents } from '../../discuss/reducer.js';
@@ -139,6 +144,30 @@ async function appendRoundTripHistory(store: DiscussSessionStore, sessionId = SE
   return { finalSnapshot };
 }
 
+function buildExpectedSummaryRow(
+  snapshot: Awaited<ReturnType<DiscussSessionStore['append']>>,
+): {
+  sessionId: string;
+  projectRoot: string;
+  topic: string;
+  status: string;
+  createdAt: string;
+  agentCount: number;
+  updatedAt: string;
+  lastSeq: number;
+} {
+  return {
+    sessionId: snapshot.sessionId,
+    projectRoot: snapshot.projectRoot,
+    topic: snapshot.state.topic,
+    status: snapshot.state.status,
+    createdAt: snapshot.state.created_at,
+    agentCount: Object.keys(snapshot.state.agents).length,
+    updatedAt: snapshot.updatedAt,
+    lastSeq: snapshot.lastAppliedSeq,
+  };
+}
+
 beforeEach(() => {
   homeRoot = mkdtempSync(join(tmpdir(), 'coral-discuss-home-'));
   process.env.HOME = homeRoot;
@@ -172,6 +201,11 @@ describe('DiscussSessionStore', () => {
         authority: 'persisted',
       },
     ]);
+    expect(readDiscussSummaryIndex(projectRoot)).toEqual({
+      projectRoot,
+      updatedAt: finalSnapshot.updatedAt,
+      sessions: [buildExpectedSummaryRow(finalSnapshot)],
+    });
     expect(JSON.parse(readFileSync(discussProjectRootsPath(), 'utf8'))).toEqual({
       updatedAt: finalSnapshot.updatedAt,
       projectRoots: [projectRoot],
@@ -324,6 +358,10 @@ describe('DiscussSessionStore', () => {
       SESSION_ID,
       SECOND_SESSION_ID,
     ]);
+    expect(readDiscussSummaryIndex(projectRoot)?.sessions.map((session) => session.sessionId).sort()).toEqual([
+      SESSION_ID,
+      SECOND_SESSION_ID,
+    ]);
   });
 
   it('falls back from missing, stale, or corrupt discovery data when listing and loading committed sessions', async () => {
@@ -367,6 +405,64 @@ describe('DiscussSessionStore', () => {
       SESSION_ID,
       SECOND_SESSION_ID,
     ]);
+  });
+
+  it('hydrates summary-index.json and repairs the project-root registry on first index listing', async () => {
+    const store = new DiscussSessionStore(projectRoot);
+    const { finalSnapshot: firstSnapshot } = await appendRoundTripHistory(store, SESSION_ID);
+    const { finalSnapshot: secondSnapshot } = await appendRoundTripHistory(store, SECOND_SESSION_ID);
+
+    unlinkSync(discussSummaryIndexPath(projectRoot));
+    writeJsonAtomic(discussProjectRootsPath(), {
+      updatedAt: '2026-03-11T00:00:04.000Z',
+      projectRoots: [],
+    });
+
+    const coldStartStore = new DiscussSessionStore(projectRoot);
+
+    expect(coldStartStore.listSummariesFromIndex().map((summary) => summary.sessionId).sort()).toEqual([
+      SESSION_ID,
+      SECOND_SESSION_ID,
+    ]);
+    expect(readDiscussSummaryIndex(projectRoot)).toEqual({
+      projectRoot,
+      updatedAt: secondSnapshot.updatedAt,
+      sessions: [
+        buildExpectedSummaryRow(firstSnapshot),
+        buildExpectedSummaryRow(secondSnapshot),
+      ],
+    });
+    expect(JSON.parse(readFileSync(discussProjectRootsPath(), 'utf8'))).toEqual({
+      updatedAt: secondSnapshot.updatedAt,
+      projectRoots: [projectRoot],
+    });
+  });
+
+  it('repairs stale summary-index.json rows from persisted sessions on first index listing', async () => {
+    const store = new DiscussSessionStore(projectRoot);
+    const { finalSnapshot: firstSnapshot } = await appendRoundTripHistory(store, SESSION_ID);
+    const { finalSnapshot: secondSnapshot } = await appendRoundTripHistory(store, SECOND_SESSION_ID);
+
+    writeJsonAtomic(discussSummaryIndexPath(projectRoot), {
+      projectRoot,
+      updatedAt: firstSnapshot.updatedAt,
+      sessions: [buildExpectedSummaryRow(firstSnapshot)],
+    });
+
+    const coldStartStore = new DiscussSessionStore(projectRoot);
+
+    expect(coldStartStore.listSummariesFromIndex().map((summary) => summary.sessionId).sort()).toEqual([
+      SESSION_ID,
+      SECOND_SESSION_ID,
+    ]);
+    expect(readDiscussSummaryIndex(projectRoot)).toEqual({
+      projectRoot,
+      updatedAt: secondSnapshot.updatedAt,
+      sessions: [
+        buildExpectedSummaryRow(firstSnapshot),
+        buildExpectedSummaryRow(secondSnapshot),
+      ],
+    });
   });
 
   it('skips corrupt event-log lines without breaking load', async () => {

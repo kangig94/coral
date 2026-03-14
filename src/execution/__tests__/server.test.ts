@@ -347,6 +347,42 @@ describe('execution backend server', () => {
     );
   });
 
+  it('recovers project roots discovered from the session index before idle watching starts', async () => {
+    const fakeIdleTimer = createFakeIdleTimer();
+    const projectRoot = createProjectRoot('session-index-project');
+    new SessionManager(projectRoot).allocate('codex', 'alpha', 'gpt-5', projectRoot, projectRoot);
+
+    const recoverPersistedSessions = vi.fn().mockResolvedValue(undefined);
+    const discussRegistry = {
+      getOrCreate: vi.fn(() => ({ recoverPersistedSessions })),
+      get: vi.fn(() => undefined),
+      listLiveSessions: vi.fn(() => []),
+      hasLiveSessions: vi.fn(() => false),
+    };
+
+    await startBackendServer({
+      createIdleTimer: () => fakeIdleTimer as never,
+      discussRegistry: discussRegistry as never,
+    });
+
+    expect(discussRegistry.getOrCreate).toHaveBeenCalledTimes(1);
+    const getOrCreateCalls = discussRegistry.getOrCreate.mock.calls as Array<unknown[]>;
+    expect(getOrCreateCalls.every((call) => call[0] === projectRoot)).toBe(true);
+    expect(recoverPersistedSessions).toHaveBeenCalledTimes(1);
+    expect(recoverPersistedSessions).toHaveBeenCalledWith({
+      projectRoot,
+      pluginRoot: expect.any(String),
+    });
+    expect(fakeIdleTimer.startWatching).toHaveBeenCalledTimes(1);
+    const finalRecoveryOrder = recoverPersistedSessions.mock.invocationCallOrder.at(-1);
+    const idleWatchOrder = fakeIdleTimer.startWatching.mock.invocationCallOrder.at(0);
+    expect(finalRecoveryOrder).toBeDefined();
+    expect(idleWatchOrder).toBeDefined();
+    expect(finalRecoveryOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(
+      idleWatchOrder ?? Number.POSITIVE_INFINITY,
+    );
+  });
+
   it('returns 404 for unknown /tool requests', async () => {
     const backend = await startBackendServer();
 
