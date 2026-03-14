@@ -919,6 +919,7 @@ function writeSseEvent(
   data: unknown,
   cursorId?: string,
 ): void {
+  if (res.writableEnded) return;
   if (cursorId) {
     res.write(`event: ${event}\nid: ${cursorId}\ndata: ${JSON.stringify(data)}\n\n`);
     return;
