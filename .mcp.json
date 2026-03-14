@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "ax": {
-      "command": "sh",
-      "args": ["-c", "node \"${CLAUDE_PLUGIN_ROOT:-.}/bridge/coral-ax.cjs\""]
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-ax.cjs"]
     }
   }
 }
