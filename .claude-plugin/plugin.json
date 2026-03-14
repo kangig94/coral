@@ -19,5 +19,5 @@
     "bridge"
   ],
   "skills": "./skills/",
-  "mcpServers": "./.claude-plugin/mcp.json"
+  "mcpServers": "./.mcp.json"
 }
