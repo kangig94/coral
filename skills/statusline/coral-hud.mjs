@@ -226,27 +226,40 @@ function parseRunningAgents(lines) {
   );
 }
 
-function isSystemNoise(text) {
-  return /^\[Request interrupted|^\[Tool cancelled|^\[User cancelled/i.test(text);
+function extractUserText(raw) {
+  // Command invocation: extract /name + args as the original input
+  const cmdMatch = raw.match(/<command-name>([^<]+)<\/command-name>/);
+  if (cmdMatch) {
+    const name = cmdMatch[1].trim();
+    const argsMatch = raw.match(/<command-args>([^<]*)<\/command-args>/);
+    const args = argsMatch?.[1]?.trim();
+    return args ? `${name} ${args}` : name;
+  }
+  // System-injected content — skip entirely
+  if (/<task-notification>|<local-command|^Base directory for this skill:|^This session is being continued from|^Stop hook feedback:/i.test(raw)) return null;
+  // Strip remaining XML tags (system-reminder etc.) and noise markers
+  const clean = raw.replace(/<[^>]+>/g, "").trim();
+  if (!clean || /^\[Request interrupted|^\[Tool cancelled|^\[User cancelled/i.test(clean)) return null;
+  return clean;
 }
 
 function parseLastUserMessage(lines) {
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
-    if (!line.includes('"human"') && !line.includes('"user"')) continue;
+    if (!line.includes('"user"')) continue;
     try {
       const entry = JSON.parse(line);
       if (entry?.type !== "human" && entry?.message?.role !== "user") continue;
       const content = entry?.message?.content;
       if (typeof content === "string") {
-        const clean = content.replace(/<[^>]+>/g, "").trim();
-        if (clean && !isSystemNoise(clean)) return clean;
+        const text = extractUserText(content);
+        if (text) return text;
       }
       if (Array.isArray(content)) {
         for (const block of content) {
           if (block.type === "text" && typeof block.text === "string") {
-            const clean = block.text.replace(/<[^>]+>/g, "").trim();
-            if (clean && !isSystemNoise(clean)) return clean;
+            const text = extractUserText(block.text);
+            if (text) return text;
           }
         }
       }
@@ -942,7 +955,7 @@ async function main() {
   // Line 3: Coral backend + right-aligned last user input
   if (coralLine) {
     const targetWidth = visualLen(line1.join(SEP));
-    const lastMsg = transcript.lastUserMessage;
+    const lastMsg = transcript.lastUserMessage?.replace(/[\n\r]+/g, " ");
     let coralFinal = coralLine;
     if (lastMsg && targetWidth > 0) {
       const coralLen = visualLen(coralLine);
