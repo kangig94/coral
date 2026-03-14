@@ -1,28 +1,28 @@
 # Discuss Startup Recovery Needs Durable Project-Root Enumeration
-Promoted: 2026-03-11 | Updated: 2026-03-11
+Promoted: 2026-03-11 | Updated: 2026-03-14
 ## Rule
-If discuss recovery is scoped per project root, assign explicit startup ownership for enumerating project roots and invoking that recovery before the backend starts idle shutdown checks, and make that enumeration come from a durable home-scoped registry or another explicit global source. Per-project `discovery.json` alone is not enough, because startup still needs a trustworthy way to discover which project roots may contain discuss data at all. In Coral, that means updating a home-scoped registry such as `~/.claude/coral/discuss-project-roots.json` whenever a discuss append commits.
+If discuss recovery is scoped per project root, assign explicit startup ownership for enumerating project roots and invoking that recovery (attach-only) before the backend starts idle shutdown checks. The enumeration must come from a durable home-scoped registry. Per-project `discovery.json` alone is not enough. `recoverPersistedSessions()` must only attach sessions to memory — it must NOT call `continueLoop`. Execution resumes only when the user re-engages via `discuss_participate`.
 ## Why
-Without a startup coordinator, persisted discuss sessions remain inert after restart until some later request happens to touch the matching project root. Without a durable global root source, even a well-defined per-project recovery routine still misses discuss-only roots and pre-launch-crash sessions, because the current runtime only knows roots from live managers or persisted execution-session provenance. Both failures break restart guarantees for background bidding, follow-up, and synthesis work, and can let idle shutdown conclude that the backend is inactive even though durable discuss work still exists on disk.
+Without a startup coordinator, persisted discuss sessions remain inert after restart until some later request happens to touch the matching project root. Without a durable global root source, discuss-only roots are invisible. If `recoverPersistedSessions` calls `continueLoop`, it blocks `listen()` and `writeBackendInfo()` — if any session has `controlPhase: 'synthesize'` and providers aren't registered yet, the loop spins at 100% CPU and the backend never starts.
 ## Pattern
 Right:
 ```ts
+registerBuiltInProviders();        // must come before recovery
 await recoverOrphanedJobs();
+await listen(server, host);        // recovery runs AFTER listen()
+writeBackendInfo(...);
 for (const projectRoot of readDiscussProjectRoots()) {
-  const manager = discussRegistry.getOrCreate(projectRoot, getExecutionService({ projectRoot, pluginRoot }));
-  await manager.recoverPersistedSessions();
+  const manager = discussRegistry.getOrCreate(projectRoot, ...);
+  await manager.recoverPersistedSessions(ctx); // attach only; no continueLoop
 }
 idleTimer.startWatching(isIdle, shutdown);
 ```
 
 Wrong:
 ```ts
-await recoverOrphanedJobs();
-idleTimer.startWatching(isIdle, shutdown);
-
-function getDiscussManager(ctx: CallerContext) {
-  return discussRegistry.getOrCreate(ctx.projectRoot, getExecutionService(ctx));
+// Before listen() — blocks startup if continueLoop hangs
+for (const projectRoot of readDiscussProjectRoots()) {
+  await manager.recoverPersistedSessions(ctx); // called continueLoop internally
 }
-// Recovery only happens if a later request touches that project root,
-// and discuss-only roots are invisible unless some other subsystem already knows them.
+await listen(server, host);  // never reached if recovery hangs
 ```
