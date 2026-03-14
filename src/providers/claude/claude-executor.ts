@@ -24,7 +24,20 @@ export class ClaudeExecParseError extends Error {
   }
 }
 
-const DEFAULT_EFFORT = (process.env.CORAL_CLAUDE_EFFORT ?? process.env.CORAL_EFFORT ?? 'high') as NonNullable<EffortLevel>;
+const VALID_CLAUDE_EFFORT = new Set(['low', 'medium', 'high', 'max']);
+
+function resolveClaudeDefaultEffort(): NonNullable<EffortLevel> {
+  const raw = process.env.CORAL_CLAUDE_EFFORT;
+  if (raw !== undefined) {
+    if (!VALID_CLAUDE_EFFORT.has(raw)) {
+      throw new Error(`Invalid CORAL_CLAUDE_EFFORT="${raw}". Valid values: low, medium, high, max`);
+    }
+    return raw as NonNullable<EffortLevel>;
+  }
+  return (process.env.CORAL_EFFORT ?? 'high') as NonNullable<EffortLevel>;
+}
+
+const DEFAULT_EFFORT = resolveClaudeDefaultEffort();
 
 const STREAM_JSON_ARGS = ['-p', '--verbose', '--output-format', 'stream-json'];
 
@@ -63,7 +76,7 @@ function appendSharedArgs(args: string[], options: ClaudeExecOptions): void {
   if (options.systemPrompt) args.push('--append-system-prompt', options.systemPrompt);
   if (options.model) args.push('--model', options.model);
   const effort = options.effort ?? DEFAULT_EFFORT;
-  args.push('--effort', effort === 'xhigh' ? 'high' : effort);
+  args.push('--effort', effort);
 }
 
 async function executeClaude(

@@ -556,17 +556,17 @@ describe('codex adapter: missing conversationRef guard', () => {
 });
 
 describe('codex adapter: effort values', () => {
-  it("passes 'xhigh' effort through unchanged to executeOneShot", async () => {
+  it("passes 'max' effort through to executeOneShot", async () => {
     const { runtime, signal } = makeRuntime();
 
-    await codexProvider.execute(makeRequest({ effort: 'xhigh' }), runtime);
+    await codexProvider.execute(makeRequest({ effort: 'max' }), runtime);
 
     expect(mockExecuteOneShot).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({
         model: undefined,
         workingDirectory: undefined,
-        effort: 'xhigh',
+        effort: 'max',
         bypassSandbox: false,
         onEvent: expect.any(Function),
         signal,

@@ -17,7 +17,7 @@ export const sessionRefSchema = z.string().min(1, 'Session reference is required
 
 export const cwdSchema = z.string().optional();
 
-export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh';
+export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
 
 export const coralOpSchema = z
   .string()

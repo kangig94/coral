@@ -23,7 +23,23 @@ export interface CodexExecOptions {
 }
 
 const DEFAULT_MODEL = process.env.CORAL_CODEX_MODEL ?? 'gpt-5.4';
-const DEFAULT_EFFORT = (process.env.CORAL_CODEX_EFFORT ?? process.env.CORAL_EFFORT ?? 'xhigh') as NonNullable<EffortLevel>;
+const VALID_CODEX_EFFORT = new Set(['low', 'medium', 'high', 'xhigh']);
+
+/** Resolve default effort to Codex-native CLI value. */
+function resolveCodexDefaultEffort(): string {
+  const raw = process.env.CORAL_CODEX_EFFORT;
+  if (raw !== undefined) {
+    if (!VALID_CODEX_EFFORT.has(raw)) {
+      throw new Error(`Invalid CORAL_CODEX_EFFORT="${raw}". Valid values: low, medium, high, xhigh`);
+    }
+    return raw;
+  }
+  const shared = process.env.CORAL_EFFORT;
+  if (shared !== undefined) return toCodexEffort(shared as NonNullable<EffortLevel>);
+  return 'xhigh';
+}
+
+const DEFAULT_EFFORT = resolveCodexDefaultEffort();
 
 function getDefaultModel(): string {
   return DEFAULT_MODEL;
@@ -153,9 +169,15 @@ function baseFlags(bypassSandbox: boolean): string[] {
   return flags;
 }
 
+/** Map internal EffortLevel to Codex CLI value. */
+function toCodexEffort(effort: NonNullable<EffortLevel>): string {
+  return effort === 'max' ? 'xhigh' : effort;
+}
+
 /** Build CLI flags for reasoning effort, falling back to DEFAULT_EFFORT. */
 function reasoningEffortFlags(effort?: EffortLevel): string[] {
-  return ['-c', `model_reasoning_effort=${effort ?? DEFAULT_EFFORT}`];
+  const value = effort !== undefined ? toCodexEffort(effort) : DEFAULT_EFFORT;
+  return ['-c', `model_reasoning_effort=${value}`];
 }
 
 /** One-shot execution: codex exec -m MODEL --json --full-auto */

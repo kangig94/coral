@@ -93,7 +93,15 @@ const BYPASS_FLAGS = [
   'web_search=live',
 ];
 
-const DEFAULT_EFFORT_FLAGS = ['-c', `model_reasoning_effort=${process.env.CORAL_CODEX_EFFORT ?? process.env.CORAL_EFFORT ?? 'xhigh'}`];
+// Mirrors resolveCodexDefaultEffort: CORAL_CODEX_EFFORT uses Codex naming (xhigh), CORAL_EFFORT uses Claude naming (max)
+function expectedDefaultEffortFlag(): string {
+  const codexEnv = process.env.CORAL_CODEX_EFFORT;
+  if (codexEnv !== undefined) return codexEnv; // already Codex-native
+  const shared = process.env.CORAL_EFFORT;
+  if (shared !== undefined) return shared === 'max' ? 'xhigh' : shared;
+  return 'xhigh';
+}
+const DEFAULT_EFFORT_FLAGS = ['-c', `model_reasoning_effort=${expectedDefaultEffortFlag()}`];
 
 type MockProcess = ChildProcess & { stdinWrites: string[] };
 
@@ -235,7 +243,7 @@ describe('executeOneShot', () => {
     mockCliAvailable();
     mockAgentProcess();
 
-    await executeOneShot('test', withAuthenticatedCli({ model: 'o4-mini', workingDirectory: '/tmp', effort: 'xhigh' }));
+    await executeOneShot('test', withAuthenticatedCli({ model: 'o4-mini', workingDirectory: '/tmp', effort: 'max' }));
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'codex',
