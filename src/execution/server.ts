@@ -17,6 +17,16 @@ import {
 } from '../shared/mcp-utils.js';
 import { pluginRootNamespace } from '../client/paths.js';
 import { sharedExecSchema, sharedForkSchema, sharedResumeSchema } from '../shared/schemas.js';
+import {
+  AgentInputSchema,
+  ControversyAxisSchema,
+  DemographicsSchema,
+  discussParticipateBidSchema,
+  discussParticipateSchema,
+  discussParticipateSpeechSchema,
+  discussSeedSchema,
+  discussStartSchema,
+} from '../discuss/schemas.js';
 import type { ExecutionService } from './service.js';
 import { activeChildren, killAllChildren, queueDepth } from './engine.js';
 import { writeBackendInfo, removeBackendInfoIfOwner } from './backend-info.js';
@@ -147,35 +157,6 @@ const ORPHANED_JOB_NOTICE = 'Unclean shutdown - orphaned job';
 const CORAL_OP_PREFIX = 'coral:';
 const defaultPluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
 const globalDiscussRegistry = new DiscussManagerRegistry();
-
-const ControversyAxisSchema = z.object({
-  axis: z.string(),
-  positions: z.array(z.string()),
-});
-const DemographicsSchema = z.object({
-  origin_weights: z.record(z.number()),
-  outlier_ratio: z.number().optional(),
-});
-const discussSeedSchema = z.object({
-  controversy_axes: z.array(ControversyAxisSchema),
-  n: z.number().int().min(1).max(20),
-  demographics: DemographicsSchema.optional(),
-  seed: z.number().int(),
-});
-const AgentInputSchema = z.object({
-  name: z.string(),
-  persona: z.string(),
-  participation: z.enum(['required', 'observer']).optional(),
-  provider: z.string().optional(),
-  model: z.string().optional(),
-});
-const discussStartSchema = z.object({
-  topic: z.string().min(1),
-  agents: z.array(AgentInputSchema).min(2),
-  config: z.object({
-    min_bid_delay_ms: z.number().int().min(0).optional(),
-  }).optional(),
-});
 const discussSessionSchema = z.object({
   session: z.string().min(1),
 });
@@ -183,24 +164,6 @@ const discussWatchSchema = z.object({
   session: z.string().min(1),
   cursor: z.number().int().min(0).optional(),
 });
-const discussParticipateBidSchema = z.object({
-  session: z.string().min(1),
-  agent_name: z.string().min(1),
-  score: z.number().int().min(0).max(100),
-  thought: z.string(),
-  content: z.undefined().optional(),
-});
-const discussParticipateSpeechSchema = z.object({
-  session: z.string().min(1),
-  agent_name: z.string().min(1),
-  content: z.string(),
-  score: z.undefined().optional(),
-  thought: z.undefined().optional(),
-});
-const discussParticipateSchema = z.union([
-  discussParticipateBidSchema,
-  discussParticipateSpeechSchema,
-]);
 
 function jsonTextResult(data: unknown, isError = false): McpResult {
   return textResult(JSON.stringify(data), isError);
