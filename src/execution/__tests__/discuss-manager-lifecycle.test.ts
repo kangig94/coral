@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent } from '../../discuss/events.js';
-import { DiscussManagerRegistry } from '../discuss-manager.js';
+import {
+  createDiscussContextRegistry,
+  getOrCreate as getOrCreateDiscussContext,
+  hasRunningSessions,
+  listAttachedSessions,
+} from '../discuss-context-registry.js';
+import { detachSession } from '../discuss-registry.js';
 import {
   attachPersistedSession,
   cleanupDiscussHarnesses,
@@ -9,24 +15,24 @@ import {
   persistSession,
 } from './discuss-test-helpers.js';
 
-describe('DiscussManager lifecycle boundaries', () => {
+describe('DiscussContext lifecycle boundaries', () => {
   afterEach(() => {
     cleanupDiscussHarnesses();
     vi.clearAllTimers();
     vi.restoreAllMocks();
   });
 
-  it('keeps live registry iteration separate from persisted store summaries', async () => {
+  it('keeps attached-session iteration separate from persisted store summaries', async () => {
     const harness = createDiscussHarness();
-    const registry = new DiscussManagerRegistry();
-    const manager = registry.getOrCreate(harness.projectRoot, harness.service, harness.store);
+    const registry = createDiscussContextRegistry();
+    const context = getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
 
-    const liveSnapshot = await persistSession({ ...harness, manager }, {
+    const liveSnapshot = await persistSession({ ...harness, context }, {
       sessionId: 'live-session',
       recover: false,
     });
-    attachPersistedSession({ ...harness, manager }, liveSnapshot);
-    await persistSession({ ...harness, manager }, {
+    attachPersistedSession({ ...harness, context }, liveSnapshot);
+    await persistSession({ ...harness, context }, {
       sessionId: 'ended-session',
       recover: false,
       buildTail: (snapshot) => [
@@ -35,23 +41,21 @@ describe('DiscussManager lifecycle boundaries', () => {
       ],
     });
 
-    expect(registry.listLiveSessions().map((session) => session.sessionId)).toEqual(['live-session']);
+    expect(listAttachedSessions(registry).map((session) => session.sessionId)).toEqual(['live-session']);
     expect(harness.store.listSummaries().map((summary) => summary.sessionId).sort()).toEqual([
       'ended-session',
       'live-session',
     ]);
 
-    manager.detachSession('live-session');
-    expect(registry.hasLiveSessions()).toBe(false);
+    detachSession(context, 'live-session');
+    expect(hasRunningSessions(registry)).toBe(false);
     expect(harness.store.listSummaries()).toHaveLength(2);
-
-    harness.cleanup();
   });
 
-  it('persisted ended sessions do not count as live sessions', async () => {
+  it('persisted ended sessions do not count as running sessions', async () => {
     const harness = createDiscussHarness();
-    const registry = new DiscussManagerRegistry();
-    registry.getOrCreate(harness.projectRoot, harness.service, harness.store);
+    const registry = createDiscussContextRegistry();
+    getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
     await persistSession(harness, {
       sessionId: 'ended-session',
       recover: false,
@@ -61,10 +65,8 @@ describe('DiscussManager lifecycle boundaries', () => {
       ],
     });
 
-    expect(registry.hasLiveSessions()).toBe(false);
-    expect(registry.listLiveSessions()).toEqual([]);
+    expect(hasRunningSessions(registry)).toBe(false);
+    expect(listAttachedSessions(registry)).toEqual([]);
     expect(harness.store.listSummaries()).toHaveLength(1);
-
-    harness.cleanup();
   });
 });

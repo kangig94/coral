@@ -3,7 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent } from '../../discuss/events.js';
 import * as discussPrompts from '../discuss-prompts.js';
-import type { CallerContext } from '../service.js';
+import * as discussLoop from '../discuss-loop.js';
+import * as discussSubflows from '../discuss-subflows.js';
+import { getWatchState, recoverPersistedSessions } from '../discuss-operations.js';
+import { getSession } from '../discuss-registry.js';
 import {
   cleanupDiscussHarnesses,
   createDiscussHarness,
@@ -11,24 +14,13 @@ import {
   persistSession,
 } from './discuss-test-helpers.js';
 
-function collectBids(manager: unknown, sessionId: string, ctx: CallerContext): Promise<void> {
-  return (manager as { collectBids(targetSessionId: string, targetCtx: CallerContext): Promise<void> })
-    .collectBids(sessionId, ctx);
-}
-
-function collectSpeech(manager: unknown, sessionId: string, winnerName: string, ctx: CallerContext): Promise<void> {
-  return (manager as {
-    collectSpeech(targetSessionId: string, targetWinnerName: string, targetCtx: CallerContext): Promise<void>;
-  }).collectSpeech(sessionId, winnerName, ctx);
-}
-
 afterEach(() => {
   cleanupDiscussHarnesses();
   vi.clearAllTimers();
   vi.restoreAllMocks();
 });
 
-describe('DiscussManager speech collection', { retry: 2 }, () => {
+describe('Discuss speech collection', { retry: 2 }, () => {
   it('records a successful speech and emits a derived speech_done watch event', async () => {
     const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'exec-alpha' });
     const waitStreamOnce = vi.fn().mockResolvedValue({
@@ -52,7 +44,7 @@ describe('DiscussManager speech collection', { retry: 2 }, () => {
       ],
     });
 
-    await collectSpeech(harness.manager, 'discuss-1', 'alpha', harness.ctx);
+    await discussSubflows.collectSpeech(harness.context, 'discuss-1', 'alpha', harness.ctx);
 
     const snapshot = harness.store.load('discuss-1');
     expect(snapshot?.state.status).toBe('bidding');
@@ -61,16 +53,14 @@ describe('DiscussManager speech collection', { retry: 2 }, () => {
       agent: 'alpha',
       content: 'Pedestrianization should start with the transit-heavy core and freight exemptions.',
     });
-    expect(harness.manager.getWatchState('discuss-1').events.at(-1)).toMatchObject({
+    expect(getWatchState(harness.context, 'discuss-1').events.at(-1)).toMatchObject({
       type: 'speech_done',
       data: {
         speaker: 'alpha',
         content: 'Pedestrianization should start with the transit-heavy core and freight exemptions.',
       },
     });
-    expect(harness.manager.getWatchState('discuss-1').events.at(-1)?.ts).toEqual(expect.any(Number));
-
-    harness.cleanup();
+    expect(getWatchState(harness.context, 'discuss-1').events.at(-1)?.ts).toEqual(expect.any(Number));
   });
 
   it('passes prior speech only to listeners during the next bid collection', async () => {
@@ -108,7 +98,7 @@ describe('DiscussManager speech collection', { retry: 2 }, () => {
       realBuildBidPrompt(promptCtx),
     );
 
-    await collectBids(harness.manager, 'discuss-1', harness.ctx);
+    await discussSubflows.collectBids(harness.context, 'discuss-1', harness.ctx);
 
     const alphaCall = buildBidPromptSpy.mock.calls
       .map(([promptCtx]) => promptCtx)
@@ -122,8 +112,6 @@ describe('DiscussManager speech collection', { retry: 2 }, () => {
       speaker: 'alpha',
       content: 'We need to talk about freight access before setting a ban.',
     });
-
-    harness.cleanup();
   });
 
   it('after recovery attach, resumeLoop resumes a persisted speech job before reopening bidding', async () => {
@@ -154,20 +142,14 @@ describe('DiscussManager speech collection', { retry: 2 }, () => {
         makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 5, 'agent.job.started', '2026-03-10T00:01:04.000Z', { agent: 'alpha', jobId: 'job-1', purpose: 'speech', attempt: 1 }),
       ],
     });
-    vi.spyOn(
-      harness.manager as unknown as {
-        collectBids(targetSessionId: string, targetCtx: CallerContext): Promise<void>;
-      },
-      'collectBids',
-    ).mockImplementation(async () => {
-      harness.manager.getSession('discuss-1')?.controller.abort();
+    vi.spyOn(discussSubflows, 'collectBids').mockImplementation(async () => {
+      getSession(harness.context, 'discuss-1')?.controller.abort();
+      return { shouldResume: false };
     });
 
-    // resumeLoop schedules continueLoop via setTimeout(0); runAllTimersAsync fires it then
-    // yields one event-loop tick. Valid only because all stubs resolve via Promise.resolve (microtasks).
     vi.useFakeTimers();
-    await harness.manager.recoverPersistedSessions(harness.ctx);
-    harness.manager.resumeLoop('discuss-1', harness.ctx);
+    await recoverPersistedSessions(harness.context, harness.ctx);
+    discussLoop.resumeLoop(harness.context, 'discuss-1', harness.ctx);
     await vi.runAllTimersAsync();
     vi.useRealTimers();
 
@@ -182,7 +164,5 @@ describe('DiscussManager speech collection', { retry: 2 }, () => {
       agent: 'alpha',
       content: 'Start with the transit-heavy core.',
     });
-
-    harness.cleanup();
   });
 });

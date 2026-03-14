@@ -4,7 +4,7 @@ import type {
   DiscussControlTranscriptEntryDto,
   DiscussControlView,
 } from '../client/discuss.js';
-import type { WatchEvent } from '../execution/discuss-manager.js';
+import type { WatchEvent } from '../execution/discuss-context.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from './events.js';
 import type { TranscriptEntry } from './types.js';
 

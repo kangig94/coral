@@ -3,7 +3,13 @@ import { request as httpRequest, type IncomingMessage as ClientIncomingMessage }
 
 import { makeEvent } from '../../discuss/events.js';
 import type { DiscussDetailResponse } from '../../client/discuss.js';
-import { DiscussManagerRegistry } from '../discuss-manager.js';
+import * as discussLoop from '../discuss-loop.js';
+import {
+  createDiscussContextRegistry,
+  get as getDiscussContext,
+  type DiscussContextRegistry,
+} from '../discuss-context-registry.js';
+import { submitManualSpeech } from '../discuss-operations.js';
 import type { BackendServerController } from '../server.js';
 import { createBackendServer } from '../server.js';
 import {
@@ -115,9 +121,9 @@ describe('server discuss API', () => {
 
   async function startServer(
     projectRoot: string,
-    registry: DiscussManagerRegistry,
+    registry: DiscussContextRegistry,
     service = createExecutionServiceStub(),
-  ): Promise<{ baseUrl: string; token: string; registry: DiscussManagerRegistry }> {
+  ): Promise<{ baseUrl: string; token: string; registry: DiscussContextRegistry }> {
     controller = createBackendServer({
       instanceId: 'server-discuss-api-test',
       token: 'test-token',
@@ -200,7 +206,7 @@ describe('server discuss API', () => {
       ],
     });
 
-    const backend = await startServer(harness.projectRoot, new DiscussManagerRegistry(), harness.service);
+    const backend = await startServer(harness.projectRoot, createDiscussContextRegistry(), harness.service);
 
     const controlResponse = await fetch(
       `${backend.baseUrl}/api/discuss/detail?projectRoot=${encodeURIComponent(harness.projectRoot)}&sessionId=ended-session`,
@@ -278,19 +284,14 @@ describe('server discuss API', () => {
       ],
     });
 
-    const registry = new DiscussManagerRegistry();
+    const registry = createDiscussContextRegistry();
     const backend = await startServer(harness.projectRoot, registry, harness.service);
-    const manager = registry.get(harness.projectRoot);
-    if (!manager) {
-      throw new Error('Expected recovered discuss manager');
+    const context = getDiscussContext(registry, harness.projectRoot);
+    if (!context) {
+      throw new Error('Expected recovered discuss context');
     }
 
-    vi.spyOn(
-      manager as unknown as {
-        resumeLoop(targetSessionId: string, targetCtx: typeof harness.ctx): void;
-      },
-      'resumeLoop',
-    ).mockImplementation(() => {});
+    vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
 
     const stream = await openHttpStream(`${backend.baseUrl}/events/stream`, {
       'X-Coral-Backend-Token': backend.token,
@@ -298,7 +299,8 @@ describe('server discuss API', () => {
 
     try {
       await stream.waitForText((text) => text.includes('event: ready'));
-      await manager.submitManualSpeech(
+      await submitManualSpeech(
+        context,
         'manual-live-session',
         'user',
         'I will take the floor manually.',

@@ -2,10 +2,24 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent } from '../../discuss/events.js';
 import * as discussReaders from '../../client/readers.js';
-import { DiscussManagerRegistry } from '../discuss-manager.js';
-import type { CallerContext } from '../service.js';
+import {
+  createDiscussContextRegistry,
+  get as getDiscussContext,
+  getOrCreate as getOrCreateDiscussContext,
+  hasRunningSessions,
+} from '../discuss-context-registry.js';
+import { runPlainTurn } from '../discuss-executor.js';
+import { continueLoop } from '../discuss-loop.js';
+import {
+  abortDiscussSession,
+  getWatchState,
+  recoverPersistedSessions,
+  startDiscussSession,
+} from '../discuss-operations.js';
+import { detachSession, getSession } from '../discuss-registry.js';
 import {
   DEFAULT_TOPIC,
+  attachPersistedSession,
   cleanupDiscussHarnesses,
   createDiscussHarness,
   createExecutionServiceStub,
@@ -20,35 +34,37 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('DiscussManagerRegistry', () => {
+describe('Discuss context registry', () => {
   it('isolates live sessions by project root', async () => {
     const serviceOne = createExecutionServiceStub();
     const serviceTwo = createExecutionServiceStub();
     const harnessOne = createDiscussHarness(serviceOne);
     const harnessTwo = createDiscussHarness(serviceTwo);
-    const registry = new DiscussManagerRegistry();
-    const managerOne = registry.getOrCreate(harnessOne.projectRoot, serviceOne);
-    const managerTwo = registry.getOrCreate(harnessTwo.projectRoot, serviceTwo);
+    const registry = createDiscussContextRegistry();
+    const contextOne = getOrCreateDiscussContext(registry, harnessOne.projectRoot, serviceOne, harnessOne.store);
+    const contextTwo = getOrCreateDiscussContext(registry, harnessTwo.projectRoot, serviceTwo, harnessTwo.store);
 
-    await persistSession({ ...harnessOne, manager: managerOne }, { sessionId: 'shared', recover: true });
-    await persistSession({ ...harnessTwo, manager: managerTwo }, { sessionId: 'shared', topic: 'topic two', recover: true });
+    const snapshotOne = await persistSession(harnessOne, { sessionId: 'shared', recover: false });
+    const snapshotTwo = await persistSession(harnessTwo, { sessionId: 'shared', topic: 'topic two', recover: false });
+    attachPersistedSession({ context: contextOne }, snapshotOne);
+    attachPersistedSession({ context: contextTwo }, snapshotTwo);
 
-    expect(registry.get(harnessOne.projectRoot)).toBe(managerOne);
-    expect(registry.get(harnessTwo.projectRoot)).toBe(managerTwo);
-    expect(managerOne.getSession('shared')?.snapshot.state.topic).toBe(DEFAULT_TOPIC);
-    expect(managerTwo.getSession('shared')?.snapshot.state.topic).toBe('topic two');
-    expect(registry.hasLiveSessions()).toBe(true);
+    expect(getDiscussContext(registry, harnessOne.projectRoot)).toBe(contextOne);
+    expect(getDiscussContext(registry, harnessTwo.projectRoot)).toBe(contextTwo);
+    expect(getSession(contextOne, 'shared')?.snapshot.state.topic).toBe(DEFAULT_TOPIC);
+    expect(getSession(contextTwo, 'shared')?.snapshot.state.topic).toBe('topic two');
+    expect(hasRunningSessions(registry)).toBe(true);
 
-    managerOne.detachSession('shared');
-    expect(managerOne.getSession('shared')).toBeUndefined();
-    expect(managerTwo.getSession('shared')).toBeDefined();
+    detachSession(contextOne, 'shared');
+    expect(getSession(contextOne, 'shared')).toBeUndefined();
+    expect(getSession(contextTwo, 'shared')).toBeDefined();
 
     harnessOne.cleanup();
     harnessTwo.cleanup();
   });
 });
 
-describe('DiscussManager.runAgentTurn', () => {
+describe('Discuss executor and operations', () => {
   it('starts a first turn, binds the execution session, and records the finished attempt', async () => {
     const start = vi.fn().mockResolvedValue({
       status: 'running',
@@ -62,30 +78,17 @@ describe('DiscussManager.runAgentTurn', () => {
     const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
     await persistSession(harness, { sessionId: 'discuss-1', recover: true });
 
-    const result = await (harness.manager as unknown as {
-      runPlainTurn(
-        agentName: string,
-        sessionId: string,
-        provider: string,
-        model: string | undefined,
-        prompt: string,
-        instruction: string,
-        cwd: string,
-        ctx: CallerContext,
-        purpose: string,
-        timeoutMs?: number,
-      ): Promise<{ content: string; nonResumable: boolean }>
-    }).runPlainTurn(
-      'alpha',
-      'discuss-1',
-      'codex',
-      'gpt-5',
-      'Bid now',
-      'System turn contract',
-      '/repo',
-      harness.ctx,
-      'turn',
-    );
+    const result = await runPlainTurn(harness.context, {
+      agentName: 'alpha',
+      sessionId: 'discuss-1',
+      provider: 'codex',
+      model: 'gpt-5',
+      prompt: 'Bid now',
+      instruction: 'System turn contract',
+      cwd: '/repo',
+      callerCtx: harness.ctx,
+      purpose: 'turn',
+    });
 
     expect(start).toHaveBeenCalledWith('codex', {
       prompt: 'Bid now',
@@ -100,7 +103,7 @@ describe('DiscussManager.runAgentTurn', () => {
     }, harness.ctx);
     expect(waitStreamOnce).toHaveBeenCalledWith('job-1', undefined);
     expect(result).toEqual({ content: 'bid result', nonResumable: false });
-    expect(harness.manager.getSession('discuss-1')?.snapshot.runtime.agentRuns.alpha).toMatchObject({
+    expect(getSession(harness.context, 'discuss-1')?.snapshot.runtime.agentRuns.alpha).toMatchObject({
       provider: 'codex',
       executionSessionId: 'exec-session-1',
       currentJobId: undefined,
@@ -138,30 +141,17 @@ describe('DiscussManager.runAgentTurn', () => {
       ],
     });
 
-    const result = await (harness.manager as unknown as {
-      runPlainTurn(
-        agentName: string,
-        sessionId: string,
-        provider: string,
-        model: string | undefined,
-        prompt: string,
-        instruction: string,
-        cwd: string,
-        ctx: CallerContext,
-        purpose: string,
-        timeoutMs?: number,
-      ): Promise<{ content: string; nonResumable: boolean }>
-    }).runPlainTurn(
-      'alpha',
-      'discuss-1',
-      'claude',
-      'sonnet',
-      'Speak now',
-      'Resume turn contract',
-      '/repo',
-      harness.ctx,
-      'turn',
-    );
+    const result = await runPlainTurn(harness.context, {
+      agentName: 'alpha',
+      sessionId: 'discuss-1',
+      provider: 'claude',
+      model: 'sonnet',
+      prompt: 'Speak now',
+      instruction: 'Resume turn contract',
+      cwd: '/repo',
+      callerCtx: harness.ctx,
+      purpose: 'turn',
+    });
 
     expect(resume).toHaveBeenCalledWith('claude', {
       sessionId: 'exec-session-1',
@@ -172,7 +162,7 @@ describe('DiscussManager.runAgentTurn', () => {
       bypassPermissions: true,
     }, harness.ctx);
     expect(result).toEqual({ content: 'speech result', nonResumable: true });
-    expect(harness.manager.getSession('discuss-1')?.snapshot.runtime.agentRuns.alpha).toMatchObject({
+    expect(getSession(harness.context, 'discuss-1')?.snapshot.runtime.agentRuns.alpha).toMatchObject({
       executionSessionId: 'exec-session-1',
       currentJobId: undefined,
       currentAttempt: 1,
@@ -184,15 +174,16 @@ describe('DiscussManager.runAgentTurn', () => {
 
   it('schedules the loop after start completes initial bid collection', async () => {
     vi.useFakeTimers();
-    const harness = createDiscussHarness();
-    const managerInternals = harness.manager as unknown as {
-      collectBids(targetSessionId: string, targetCtx: CallerContext): Promise<void>;
-      continueLoop(targetSessionId: string, targetCtx: CallerContext): Promise<void>;
-    };
-    const collectBidsSpy = vi.spyOn(managerInternals, 'collectBids').mockResolvedValue();
-    const continueLoopSpy = vi.spyOn(managerInternals, 'continueLoop').mockResolvedValue();
+    const start = vi.fn()
+      .mockResolvedValueOnce({ status: 'running', job: 'job-1', session: 'exec-alpha' })
+      .mockResolvedValueOnce({ status: 'running', job: 'job-2', session: 'exec-beta' });
+    const waitStreamOnce = vi.fn()
+      .mockResolvedValueOnce({ content: '{"score": 61, "thought": "alpha"}', nonResumable: false })
+      .mockResolvedValueOnce({ content: '{"score": 37, "thought": "beta"}', nonResumable: false });
+    const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
 
-    await harness.manager.start(
+    const session = await startDiscussSession(
+      harness.context,
       'discuss-1',
       DEFAULT_TOPIC,
       defaultAgents().map((agent) => ({ ...agent, provider: 'codex' })),
@@ -200,10 +191,10 @@ describe('DiscussManager.runAgentTurn', () => {
       harness.ctx,
     );
 
-    expect(collectBidsSpy).toHaveBeenCalledWith('discuss-1', harness.ctx);
-    expect(continueLoopSpy).not.toHaveBeenCalled();
+    expect(session.snapshot.state.current_bids).toEqual({ alpha: 61, beta: 37 });
+    expect(session.snapshot.state.status).toBe('bidding');
     await vi.runAllTimersAsync();
-    expect(continueLoopSpy).toHaveBeenCalledWith('discuss-1', harness.ctx);
+    expect(getSession(harness.context, 'discuss-1')?.snapshot.state.status).not.toBe('bidding');
 
     harness.cleanup();
   });
@@ -232,14 +223,14 @@ describe('DiscussManager.runAgentTurn', () => {
     });
     const readDiscussEventLogSpy = vi.spyOn(discussReaders, 'readDiscussEventLog');
 
-    await harness.manager.recoverPersistedSessions(harness.ctx);
+    await recoverPersistedSessions(harness.context, harness.ctx);
     const recoveryReadCount = readDiscussEventLogSpy.mock.calls.length;
 
     expect(recoveryReadCount).toBeGreaterThan(0);
-    expect(harness.manager.getWatchState('discuss-recovery')).toMatchObject({
+    expect(getWatchState(harness.context, 'discuss-recovery')).toMatchObject({
       cursor: 2,
     });
-    expect(harness.manager.getWatchState('discuss-recovery', 1)).toMatchObject({
+    expect(getWatchState(harness.context, 'discuss-recovery', 1)).toMatchObject({
       cursor: 2,
     });
     expect(readDiscussEventLogSpy).toHaveBeenCalledTimes(recoveryReadCount);
@@ -269,9 +260,9 @@ describe('DiscussManager.runAgentTurn', () => {
       ],
     });
 
-    const state1 = harness.manager.getWatchState('discuss-copy');
+    const state1 = getWatchState(harness.context, 'discuss-copy');
     state1.events.push({ type: 'fake' } as never);
-    const state2 = harness.manager.getWatchState('discuss-copy');
+    const state2 = getWatchState(harness.context, 'discuss-copy');
 
     expect(state1.events).not.toBe(state2.events);
     expect(state2.events).not.toContainEqual({ type: 'fake' });
@@ -301,18 +292,18 @@ describe('DiscussManager.runAgentTurn', () => {
       ],
     });
 
-    const stateBefore = harness.manager.getWatchState('discuss-ended');
+    const stateBefore = getWatchState(harness.context, 'discuss-ended');
     expect(stateBefore.cursor).toBe(2);
 
-    harness.manager.detachSession('discuss-ended');
-    expect(harness.manager.getSession('discuss-ended')).toBeUndefined();
+    detachSession(harness.context, 'discuss-ended');
+    expect(getSession(harness.context, 'discuss-ended')).toBeUndefined();
 
-    const stateAfter = harness.manager.getWatchState('discuss-ended');
+    const stateAfter = getWatchState(harness.context, 'discuss-ended');
     expect(stateAfter.status).toBe(stateBefore.status);
     expect(stateAfter.cursor).toBe(2);
     expect(stateAfter.events).toHaveLength(2);
 
-    const stateWithCursor = harness.manager.getWatchState('discuss-ended', 1);
+    const stateWithCursor = getWatchState(harness.context, 'discuss-ended', 1);
     expect(stateWithCursor.events).toHaveLength(1);
     expect(stateWithCursor.cursor).toBe(2);
 
@@ -321,7 +312,7 @@ describe('DiscussManager.runAgentTurn', () => {
 
   it('getWatchState returns session_not_found for non-existent sessions', () => {
     const harness = createDiscussHarness();
-    expect(() => harness.manager.getWatchState('non-existent')).toThrow('session_not_found');
+    expect(() => getWatchState(harness.context, 'non-existent')).toThrow('session_not_found');
     harness.cleanup();
   });
 
@@ -332,14 +323,11 @@ describe('DiscussManager.runAgentTurn', () => {
       recover: true,
     });
 
-    const sessions = (harness.manager as unknown as {
-      sessions: Map<string, { abortEnded: boolean }>;
-    }).sessions;
-    const sessionRef = sessions.get('discuss-abort');
+    const sessionRef = getSession(harness.context, 'discuss-abort');
 
     expect(sessionRef).toBeDefined();
 
-    await harness.manager.abortSession('discuss-abort');
+    await abortDiscussSession(harness.context, 'discuss-abort');
 
     expect(sessionRef?.abortEnded).toBe(true);
 
