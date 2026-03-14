@@ -13,6 +13,7 @@ import {
   renderWaitLine,
   type WaitRenderContext,
 } from './format.js';
+import { isTransientStreamError } from '../shared/mcp-utils.js';
 import type { CliStreamEvent } from './types.js';
 
 const FOLLOW_TIMEOUT_SECONDS = 600;
@@ -30,22 +31,6 @@ type LaunchAndFollowOptions = {
   isTTY: boolean;
   columns: number;
 };
-
-function isTransientStreamError(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-
-  if (error instanceof TypeError && error.message === 'terminated') {
-    return true;
-  }
-
-  const code = typeof (error as NodeJS.ErrnoException).code === 'string'
-    ? (error as NodeJS.ErrnoException).code
-    : null;
-
-  return code === 'ECONNRESET' || code === 'ECONNREFUSED' || code === 'ECONNABORTED';
-}
 
 function toLaunchEvent(decision: FollowLaunchDecision): Extract<CliStreamEvent, { type: 'launch' }> {
   return {

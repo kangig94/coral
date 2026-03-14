@@ -272,6 +272,47 @@ export function emitRejectedLaunchDecision(
   process.exitCode = 1;
 }
 
+function getTerminalContext(): { isTTY: boolean; columns: number } {
+  return {
+    isTTY: process.stdout.isTTY === true,
+    columns: process.stdout.columns ?? 80,
+  };
+}
+
+async function handleLaunchResult(
+  result: unknown,
+  detach: boolean | undefined,
+  outputFormat: 'text' | 'json',
+  client: BackendClient,
+): Promise<void> {
+  const normalized = normalizeResult(result);
+
+  if (normalized.isError) {
+    if (isLaunchDecision(normalized.output) && normalized.output.status === 'rejected') {
+      emitRejectedLaunchDecision(normalized.output, outputFormat);
+    } else {
+      emitError(normalized.output, outputFormat);
+    }
+    return;
+  }
+
+  if (detach) {
+    emitLaunchDecision(normalized.output as LaunchDecision, outputFormat);
+    return;
+  }
+
+  process.exitCode = await launchAndFollow({
+    launchResult: normalized.output as Extract<LaunchDecision, { status: 'running' | 'queued' }>,
+    abortJob: async (jobId) => {
+      await client.abortJobs([jobId]);
+    },
+    pluginRoot,
+    projectRoot: process.cwd(),
+    outputFormat,
+    ...getTerminalContext(),
+  });
+}
+
 type WaitOutputRecord = {
   cursor: string | null;
   event: unknown;
@@ -382,33 +423,7 @@ function registerProviderCommands(program: Command): void {
             work_dir: opts.workDir,
             model: opts.model,
           });
-          const normalized = normalizeResult(result);
-
-          if (normalized.isError) {
-            if (isLaunchDecision(normalized.output) && normalized.output.status === 'rejected') {
-              emitRejectedLaunchDecision(normalized.output, outputFormat);
-            } else {
-              emitError(normalized.output, outputFormat);
-            }
-            return;
-          }
-
-          if (opts.detach) {
-            emitLaunchDecision(normalized.output as LaunchDecision, outputFormat);
-            return;
-          }
-
-          process.exitCode = await launchAndFollow({
-            launchResult: normalized.output as Extract<LaunchDecision, { status: 'running' | 'queued' }>,
-            abortJob: async (jobId) => {
-              await client.abortJobs([jobId]);
-            },
-            pluginRoot,
-            projectRoot: process.cwd(),
-            outputFormat,
-            isTTY: process.stdout.isTTY === true,
-            columns: process.stdout.columns ?? 80,
-          });
+          await handleLaunchResult(result, opts.detach, outputFormat, client);
         } catch (error) {
           emitError(error, outputFormat);
         }
@@ -431,33 +446,7 @@ function registerProviderCommands(program: Command): void {
             work_dir: opts.workDir,
             model: opts.model,
           });
-          const normalized = normalizeResult(result);
-
-          if (normalized.isError) {
-            if (isLaunchDecision(normalized.output) && normalized.output.status === 'rejected') {
-              emitRejectedLaunchDecision(normalized.output, outputFormat);
-            } else {
-              emitError(normalized.output, outputFormat);
-            }
-            return;
-          }
-
-          if (opts.detach) {
-            emitLaunchDecision(normalized.output as LaunchDecision, outputFormat);
-            return;
-          }
-
-          process.exitCode = await launchAndFollow({
-            launchResult: normalized.output as Extract<LaunchDecision, { status: 'running' | 'queued' }>,
-            abortJob: async (jobId) => {
-              await client.abortJobs([jobId]);
-            },
-            pluginRoot,
-            projectRoot: process.cwd(),
-            outputFormat,
-            isTTY: process.stdout.isTTY === true,
-            columns: process.stdout.columns ?? 80,
-          });
+          await handleLaunchResult(result, opts.detach, outputFormat, client);
         } catch (error) {
           emitError(error, outputFormat);
         }
@@ -495,33 +484,7 @@ function registerProviderCommands(program: Command): void {
             session: opts.session,
             work_dir: opts.workDir,
           });
-          const normalized = normalizeResult(result);
-
-          if (normalized.isError) {
-            if (isLaunchDecision(normalized.output) && normalized.output.status === 'rejected') {
-              emitRejectedLaunchDecision(normalized.output, outputFormat);
-            } else {
-              emitError(normalized.output, outputFormat);
-            }
-            return;
-          }
-
-          if (opts.detach) {
-            emitLaunchDecision(normalized.output as LaunchDecision, outputFormat);
-            return;
-          }
-
-          process.exitCode = await launchAndFollow({
-            launchResult: normalized.output as Extract<LaunchDecision, { status: 'running' | 'queued' }>,
-            abortJob: async (jobId) => {
-              await client.abortJobs([jobId]);
-            },
-            pluginRoot,
-            projectRoot: process.cwd(),
-            outputFormat,
-            isTTY: process.stdout.isTTY === true,
-            columns: process.stdout.columns ?? 80,
-          });
+          await handleLaunchResult(result, opts.detach, outputFormat, client);
         } catch (error) {
           emitError(error, outputFormat);
         }
@@ -579,10 +542,7 @@ export function buildProgram(): Command {
             continue;
           }
 
-          const ctx: WaitRenderContext = {
-            isTTY: process.stdout.isTTY === true,
-            columns: process.stdout.columns ?? 80,
-          };
+          const ctx: WaitRenderContext = getTerminalContext();
           let formatted: string;
 
           switch (event.type) {
@@ -672,33 +632,7 @@ export function buildProgram(): Command {
 
         const client = makeClient(process.cwd());
         const result = await client.workflow(expression, payload);
-        const normalized = normalizeResult(result);
-
-        if (normalized.isError) {
-          if (isLaunchDecision(normalized.output) && normalized.output.status === 'rejected') {
-            emitRejectedLaunchDecision(normalized.output, outputFormat);
-          } else {
-            emitError(normalized.output, outputFormat);
-          }
-          return;
-        }
-
-        if (opts.detach) {
-          emitLaunchDecision(normalized.output as LaunchDecision, outputFormat);
-          return;
-        }
-
-        process.exitCode = await launchAndFollow({
-          launchResult: normalized.output as Extract<LaunchDecision, { status: 'running' | 'queued' }>,
-          abortJob: async (jobId) => {
-            await client.abortJobs([jobId]);
-          },
-          pluginRoot,
-          projectRoot: process.cwd(),
-          outputFormat,
-          isTTY: process.stdout.isTTY === true,
-          columns: process.stdout.columns ?? 80,
-        });
+        await handleLaunchResult(result, opts.detach, outputFormat, client);
       } catch (error) {
         emitError(error, outputFormat);
       }
