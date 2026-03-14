@@ -7,7 +7,7 @@ paths:
 
 ## Agent Definitions
 
-- Agent files in `agents/` use `<Agent_Prompt>` XML structure (see `.claude/templates/AGENT.md`)
+- Agent files in `agents/` use `<Agent_Prompt>` XML structure (see `skills/init-project/templates/agents/AGENT.md.template`)
 - Agent names use kebab-case: `architect.md`, `discuss-lead.md`
 - Agent markdown is injected as protocol instructions — keep concise and actionable
 
