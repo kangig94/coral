@@ -19,5 +19,10 @@
     "bridge"
   ],
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json"
+  "mcpServers": {
+    "ax": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/coral-ax.cjs"]
+    }
+  }
 }
