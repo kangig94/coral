@@ -118,7 +118,7 @@ describe('DiscussManager faults and retry recovery', () => {
     harness.cleanup();
   });
 
-  it('recovery re-runs a missing bid job against the persisted execution session id', async () => {
+  it('after recovery attach, resumeLoop re-runs a missing bid job against the persisted execution session id', async () => {
     const resume = vi.fn().mockResolvedValue({ status: 'running', job: 'job-2', session: 'exec-alpha' });
     const waitStreamOnce = vi.fn().mockResolvedValue({
       content: '{"score": 58, "thought": "recovered bid"}',
@@ -146,7 +146,13 @@ describe('DiscussManager faults and retry recovery', () => {
       harness.manager.getSession('discuss-1')?.controller.abort();
     });
 
+    // resumeLoop schedules continueLoop via setTimeout(0); runAllTimersAsync fires it then
+    // yields one event-loop tick. Valid only because all stubs resolve via Promise.resolve (microtasks).
+    vi.useFakeTimers();
     await harness.manager.recoverPersistedSessions(harness.ctx);
+    harness.manager.resumeLoop('discuss-1', harness.ctx);
+    await vi.runAllTimersAsync();
+    vi.useRealTimers();
 
     const snapshot = harness.store.load('discuss-1');
     expect(resume).toHaveBeenCalledWith('codex', expect.objectContaining({

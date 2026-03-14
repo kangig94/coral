@@ -126,7 +126,7 @@ describe('DiscussManager speech collection', { retry: 2 }, () => {
     harness.cleanup();
   });
 
-  it('recovery resumes a persisted speech job before reopening bidding', async () => {
+  it('after recovery attach, resumeLoop resumes a persisted speech job before reopening bidding', async () => {
     const resume = vi.fn().mockResolvedValue({
       status: 'running',
       job: 'job-2',
@@ -163,7 +163,13 @@ describe('DiscussManager speech collection', { retry: 2 }, () => {
       harness.manager.getSession('discuss-1')?.controller.abort();
     });
 
+    // resumeLoop schedules continueLoop via setTimeout(0); runAllTimersAsync fires it then
+    // yields one event-loop tick. Valid only because all stubs resolve via Promise.resolve (microtasks).
+    vi.useFakeTimers();
     await harness.manager.recoverPersistedSessions(harness.ctx);
+    harness.manager.resumeLoop('discuss-1', harness.ctx);
+    await vi.runAllTimersAsync();
+    vi.useRealTimers();
 
     const snapshot = harness.store.load('discuss-1');
     expect(resume).toHaveBeenCalledWith('codex', expect.objectContaining({

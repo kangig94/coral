@@ -1586,13 +1586,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       await acquireLockFn(resolvedPluginRoot, instanceId, version, bundleHash);
       registerBuiltInProviders();
       recoverOrphanedJobsFn(namespace);
-      for (const projectRoot of knownDiscussProjectRoots()) {
-        const ctx: CallerContext = {
-          projectRoot,
-          pluginRoot: resolvedPluginRoot,
-        };
-        await getDiscussManager(ctx).recoverPersistedSessions(ctx);
-      }
       const bindHost = process.env.CORAL_BACKEND_BIND ?? '127.0.0.1';
       const { port, host } = await listen(server, bindHost);
       startedAt = now();

@@ -48,7 +48,7 @@ describe('DiscussManager synthesis', () => {
     harness.cleanup();
   });
 
-  it('recovery resumes synthesis for ended sessions that have not been synthesized yet', async () => {
+  it('after recovery attach, resumeLoop resumes synthesis for ended sessions that have not been synthesized yet', async () => {
     const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'synth-session' });
     const waitStreamOnce = vi.fn().mockResolvedValue({
       content: 'Recovered synthesis text.',
@@ -63,7 +63,13 @@ describe('DiscussManager synthesis', () => {
       ],
     });
 
+    // resumeLoop schedules continueLoop via setTimeout(0); runAllTimersAsync fires it then
+    // yields one event-loop tick. Valid only because all stubs resolve via Promise.resolve (microtasks).
+    vi.useFakeTimers();
     await harness.manager.recoverPersistedSessions(harness.ctx);
+    harness.manager.resumeLoop('discuss-1', harness.ctx);
+    await vi.runAllTimersAsync();
+    vi.useRealTimers();
 
     const snapshot = harness.store.load('discuss-1');
     expect(snapshot?.state.transcript.at(-1)).toMatchObject({
