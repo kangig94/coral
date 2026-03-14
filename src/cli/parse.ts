@@ -145,11 +145,6 @@ export function parseAxisSpec(spec: string): ControversyAxis {
       continue;
     }
 
-    if (collectingPositions && positions !== undefined) {
-      positions.push(parseScalarValue(segment));
-      continue;
-    }
-
     throw new Error(`Unknown axis key: ${key}`);
   }
 

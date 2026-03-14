@@ -137,6 +137,10 @@ describe('cli parse', () => {
     it('throws when positions are missing', () => {
       expect(() => parseAxisSpec('axis=topic')).toThrow('Axis spec requires positions');
     });
+
+    it('throws on unknown keys during position collection', () => {
+      expect(() => parseAxisSpec('positions=a,b,foo=bar')).toThrow('Unknown axis key: foo');
+    });
   });
 
   describe('parseInputJson', () => {
