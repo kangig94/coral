@@ -102,7 +102,7 @@ argument-hint: "[existing|new]"
   1. Domain references: `references/{domain}.md` for each detected domain
   2. Writing guide: `references/writing-guide.md`
   3. Merge policy: `references/merge-policy.md`
-  4. Templates: `templates/CLAUDE.md.template`, `templates/rules/*.md.template`, agent templates
+  4. Templates: `templates/CLAUDE.md.template`, `templates/rules/*.md.template`, `templates/agents/*.md`, `templates/skills/tier-review/SKILL.md`
 
   Extract from each domain reference: required agents, mandatory concerns, validation items, core patterns, recommended docs.
 
