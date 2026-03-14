@@ -50,6 +50,6 @@ Good code guides readers naturally — structure reveals intent without requirin
 1. **Lint** - run linter if configured (cheapest check first)
 2. **Review Gate** - invoke `Skill(tier-review)`. BLOCKING items must pass before build.
 3. **Build** - `npm run build` (tsc + esbuild, must pass clean)
-4. **Test** - `npm test` (vitest, all tests must pass)
+4. **Test** - `npm test` (vitest, all tests must pass and all errors must be zero. Never assume errors are "pre-existing" without tracing the stack and verifying the affected code was not modified.)
 5. **KB update** - review work for `.claude/coral/kb/` promotion if non-obvious lessons were learned
 6. **Commit** - stage and commit all changes including KB files (KB update precedes commit so kb/ changes are part of the same commit)

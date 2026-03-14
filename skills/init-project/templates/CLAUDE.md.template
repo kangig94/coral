@@ -31,4 +31,4 @@ Good code guides readers naturally — structure reveals intent without requirin
 1. **Lint** - run linter if available (cheapest check first)
 2. **Review Gate** - invoke `Skill(tier-review)`. BLOCKING items must pass before build.
 3. **Build** - run project build command
-4. **Test** - run test suite. All tests must pass before declaring complete.
+4. **Test** - run test suite. All tests must pass and all errors must be zero before declaring complete. Never assume errors are "pre-existing" without tracing the stack and verifying the affected code was not modified.
