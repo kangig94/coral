@@ -102,7 +102,7 @@ argument-hint: "[existing|new]"
   1. Domain references: `references/{domain}.md` for each detected domain
   2. Writing guide: `references/writing-guide.md`
   3. Merge policy: `references/merge-policy.md`
-  4. Templates: `templates/CLAUDE.md.template`, `templates/rules/*.md.template`, `templates/agents/AGENT.md.template`, `templates/agents/*.md` (fixed agents), `templates/skills/tier-review/SKILL.md`
+  4. Templates: `templates/CLAUDE.md.template`, `templates/rules/*.md.template`, `templates/agents/*.md` (fixed agents), `templates/agents/AGENT.md.template` (agent writing guide — internal use only, not copied to project), `templates/skills/tier-review/SKILL.md`
 
   Extract from each domain reference: required agents, mandatory concerns, validation items, core patterns, recommended docs.
 
@@ -228,7 +228,7 @@ argument-hint: "[existing|new]"
   | Agents | `.claude/agents/code-critic.md` | Must exist | Rubric anchors (10/7/4/1) |
   | Agents | `.claude/agents/doc-critic.md` | Must exist | Rubric anchors (10/7/4/1) |
   | Agents | `.claude/agents/test-critic.md` | Must exist | Rubric anchors (10/7/4/1) |
-  | Template | `.claude/templates/AGENT.md` | Must exist | - |
+  | Template | `.claude/templates/AGENT.md` | Must NOT be created | Internal template — not deployed to user project |
   | Skills | `.claude/skills/tier-review/SKILL.md` | Must exist | `name: tier-review` in frontmatter |
   | Agents | `.claude/agents/{domain-specific}.md` | Per plan | `<Agent_Prompt>` XML structure |
   | Docs | `docs/ARCHITECTURE.md` | If generated | Layer diagram present |
