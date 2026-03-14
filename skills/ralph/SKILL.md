@@ -2,7 +2,6 @@
 name: ralph
 description: "Use when implementing a plan or executing a prompt that requires verified completion."
 argument-hint: "[--red] [--codex] [--team] [task description]"
-model: sonnet
 ---
 
 > **CORAL_AGENTS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/agents/")`
