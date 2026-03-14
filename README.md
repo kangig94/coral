@@ -164,12 +164,11 @@ Consecutive `/coral:codex` calls continue the same session. Say "new" to start f
 | Skill | Description | Codex |
 |-------|-------------|:-----:|
 | `/coral:analyze` | Deep analysis and investigation | Optional |
-| `/coral:preplan` | Problem definition before planning | - |
+| `/coral:preplan` | Problem definition before planning | Optional |
 | `/coral:plan` | Multi-round planning with structured review and conflict resolution. `--deep` for methodology-driven synthesis | Optional |
 | `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | Optional |
 | `/coral:bugfix` | Bug diagnosis, planning, and fix execution | Optional |
 | `/coral:code-simplify` | Simplify and refine code for clarity | Optional |
-| `/coral:review` | Tier-ordered review gate — discovers project agents, spawns by tier, consolidates verdict | - |
 | `/coral:codex` | Direct Codex CLI execution (session-persistent) | Required |
 | `/coral:init-project` | Project initialization orchestrator | - |
 | `/coral:discuss` | Moderated multi-agent discussion | - |

@@ -23,7 +23,7 @@
 | Output parser changes | mcp-guardian | code-critic | JSONL contract correctness |
 | State machine changes | mcp-guardian, code-critic | -- | Pure function correctness + discuss protocol |
 | New MCP tool addition | mcp-guardian, ux-critic | code-critic | Protocol + ergonomics + quality |
-| Any implementation complete | `Skill(coral:review)` | -- | Final validation gate (runs in main context, spawns agents) |
+| Any implementation complete | `Skill(tier-review)` | -- | Final validation gate (runs in main context, spawns agents) |
 
 ## Invocation Protocol
 

@@ -14,7 +14,7 @@ import {
 const mockSpawnCli = vi.mocked(spawnCli);
 const baseArgs = ['-p', '--verbose', '--output-format', 'stream-json'];
 const defaultEffort = process.env.CORAL_CLAUDE_EFFORT ?? process.env.CORAL_EFFORT ?? 'high';
-const defaultEffortArgs = ['--effort', defaultEffort === 'xhigh' ? 'high' : defaultEffort];
+const defaultEffortArgs = ['--effort', defaultEffort];
 
 function mockCliResult(
   stdout: string,
@@ -125,16 +125,16 @@ describe('claude-executor', () => {
     }));
   });
 
-  it('maps xhigh effort to --effort high', async () => {
+  it('passes max effort to --effort max', async () => {
     mockCliResult('{"type":"result","result":"ok","session_id":"sess-effort-map"}');
 
-    await executeClaudeOneShot('Use max effort', { effort: 'xhigh' });
+    await executeClaudeOneShot('Use max effort', { effort: 'max' });
 
     expect(mockSpawnCli).toHaveBeenCalledWith(expect.objectContaining({
       args: [
         ...baseArgs,
         '--effort',
-        'high',
+        'max',
       ],
     }));
   });

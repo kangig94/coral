@@ -48,7 +48,7 @@ Good code guides readers naturally — structure reveals intent without requirin
 **Scope gate**: Steps 1-4 apply only when source-affecting files are modified (`src/`, `scripts/`, `package.json`, `tsconfig.json`). Non-source changes (`agents/`, `skills/`, `docs/`, `hooks/`, `.claude/`) skip to step 5.
 
 1. **Lint** - run linter if configured (cheapest check first)
-2. **Review Gate** - invoke `Skill(coral:review)`. BLOCKING items must pass before build.
+2. **Review Gate** - invoke `Skill(tier-review)`. BLOCKING items must pass before build.
 3. **Build** - `npm run build` (tsc + esbuild, must pass clean)
 4. **Test** - `npm test` (vitest, all tests must pass)
 5. **KB update** - review work for `.claude/coral/kb/` promotion if non-obvious lessons were learned

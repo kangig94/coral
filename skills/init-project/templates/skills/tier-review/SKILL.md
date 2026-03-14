@@ -1,5 +1,5 @@
 ---
-name: review
+name: tier-review
 description: "Use after implementation to run tier-ordered review agents and produce a consolidated verdict."
 argument-hint: "[scope description]"
 ---

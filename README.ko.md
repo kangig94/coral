@@ -159,12 +159,11 @@ Codex를 활용한 교차 모델 워크플로우:
 | 스킬 | 설명 | Codex |
 |------|------|:-----:|
 | `/coral:analyze` | 심층 분석 및 조사 | 선택 |
-| `/coral:preplan` | 계획 전 문제 정의 | - |
+| `/coral:preplan` | 계획 전 문제 정의 | 선택 |
 | `/coral:plan` | 구조화된 다중 라운드 리뷰 및 충돌 해결 포함 계획. `--deep`으로 방법론 기반 종합 | 선택 |
 | `/coral:ralph` | 검증 포함 영속적 실행. `--red`로 적대적 테스트 | 선택 |
 | `/coral:bugfix` | 버그 진단, 계획, 수정 실행 | 선택 |
 | `/coral:code-simplify` | 코드 명확성 향상 및 정리 | 선택 |
-| `/coral:review` | 계층별 리뷰 게이트 — 프로젝트 에이전트 탐색, 계층순 실행, 결과 통합 | - |
 | `/coral:codex` | Codex CLI 직접 실행 (세션 유지) | 필수 |
 | `/coral:init-project` | 프로젝트 초기화 오케스트레이터 | - |
 | `/coral:discuss` | 모더레이션 기반 다자간 AI 토론 | - |

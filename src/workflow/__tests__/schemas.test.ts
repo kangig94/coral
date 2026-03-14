@@ -125,7 +125,7 @@ describe('workflowInputSchema', () => {
       init_prompt: 'hello',
       atoms: {
         architect: {
-          effort: 'xhigh',
+          effort: 'max',
         },
       },
     })).toThrow();

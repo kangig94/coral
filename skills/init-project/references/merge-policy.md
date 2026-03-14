@@ -58,12 +58,6 @@ No auto-migration of monolithic CLAUDE.md. Users with existing monolithic files 
 | Directory exists | No-op |
 | Directory does not exist | Create with `mkdir -p` |
 
-### .claude/templates/AGENT.md
-
-| Condition | Action |
-|-----------|--------|
-| File exists | Skip |
-| File does not exist | Create from template |
 
 ## Idempotency Guarantee
 
