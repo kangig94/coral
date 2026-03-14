@@ -164,7 +164,6 @@ Codex를 활용한 교차 모델 워크플로우:
 | `/coral:ralph` | 검증 포함 영속적 실행. `--red`로 적대적 테스트 | 선택 |
 | `/coral:bugfix` | 버그 진단, 계획, 수정 실행 | 선택 |
 | `/coral:code-simplify` | 코드 명확성 향상 및 정리 | 선택 |
-| `/coral:review` | 계층별 리뷰 게이트 — 프로젝트 에이전트 탐색, 계층순 실행, 결과 통합 | - |
 | `/coral:codex` | Codex CLI 직접 실행 (세션 유지) | 필수 |
 | `/coral:init-project` | 프로젝트 초기화 오케스트레이터 | - |
 | `/coral:discuss` | 모더레이션 기반 다자간 AI 토론 | - |
