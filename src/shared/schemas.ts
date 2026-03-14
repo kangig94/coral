@@ -33,6 +33,14 @@ export const providerNameSchema = z
 const sharedProviderFieldsShape = {
   work_dir: cwdSchema,
   model: modelSchema,
+};
+
+/**
+ * Internal-only fields accepted by the backend but never exposed in MCP inputSchema.
+ * bypass_permissions: controlled by op (bypass_exec, fork, resume, coral:*) — not a user-facing flag.
+ * system_prompt: injected by coral:* dispatch or internal callers — not user-facing.
+ */
+export const internalProviderFieldsShape = {
   bypass_permissions: z.boolean().optional(),
   system_prompt: z.string().optional(),
 };

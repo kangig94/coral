@@ -67,8 +67,6 @@ type ProviderExecOptions = {
   session?: string;
   workDir?: string;
   model?: string;
-  systemPrompt?: string;
-  bypassPermissions?: boolean;
 };
 
 type ProviderForkOptions = {
@@ -325,8 +323,6 @@ function registerProviderCommands(program: Command): void {
       .option('--session <id>', 'Resume session ID')
       .option('--work-dir <path>', 'Working directory')
       .option('--model <model>', 'Model override')
-      .option('--system-prompt <text>', 'System prompt override')
-      .option('--bypass-permissions', 'Bypass permission checks')
       .action(async (opts: ProviderExecOptions) => {
         try {
           const client = makeClient(process.cwd());
@@ -334,8 +330,6 @@ function registerProviderCommands(program: Command): void {
             session: opts.session,
             work_dir: opts.workDir,
             model: opts.model,
-            system_prompt: opts.systemPrompt,
-            bypass_permissions: opts.bypassPermissions,
           });
           emit(result, (data) => formatLaunchDecision(data as LaunchDecision));
         } catch (error) {

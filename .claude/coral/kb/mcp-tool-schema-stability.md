@@ -1,23 +1,27 @@
 # MCP Tool Schema Stability
+Promoted: 2026-03-12 | Updated: 2026-03-14
 
 ## Rule
-`getToolDescriptors()` in `execution/server.ts` defines the MCP tool schemas visible to LLMs via ToolSearch. Internal routing fields (`model`, `effort`, `bypass_permissions`, `system_prompt`) must NEVER appear in these descriptors — they are accepted server-side in `routeToolCall()` but not advertised. The tool schema surface must remain stable: `op`, `prompt`, `session`, `work_dir` only.
+`getToolDescriptors()` in `execution/server.ts` defines the MCP tool schemas visible to LLMs. The public schema surface is: `op`, `prompt`, `session`, `work_dir`, `model`. Internal-only fields (`bypass_permissions`, `system_prompt`) live in `internalProviderFieldsShape` — they are accepted server-side via `.extend()` but never advertised in tool descriptors. Bypass is determined by op (`bypass_exec` = true, `exec` = false, all others = true), not by a field.
 
 ## Why
-LLMs and users see these schemas as the tool's API contract. Adding internal fields pollutes the interface and creates confusion. Framework-internal fields (used by coral dispatch, workflows, etc.) should flow through routing silently without being exposed.
+LLMs and users see these schemas as the tool's API contract. Internal fields pollute the interface. `bypass_permissions` is redundant with `bypass_exec` op. `system_prompt` is injected by `coral:*` dispatch — not a user-controllable parameter.
 
 ## Pattern
-Right — accept extra fields in routeToolCall() via Zod parsing, keep getToolDescriptors() unchanged:
+Right — public schema is minimal, internal fields accepted via `.extend()` in routeToolCall():
 ```typescript
-// getToolDescriptors() — stable, minimal
-properties: { op, prompt, session, work_dir }
+// sharedProviderFieldsShape — public (in providerOpSchema / MCP inputSchema)
+{ work_dir, model }
 
-// routeToolCall() — accepts more via schema parsing
-const parsed = sharedExecSchema.parse(request.args); // includes model, effort, etc.
+// internalProviderFieldsShape — backend-only (never in MCP inputSchema)
+{ bypass_permissions, system_prompt }
+
+// routeToolCall() — extends at parse time for internal callers
+const parsed = sharedExecSchema.extend(internalProviderFieldsShape).safeParse(request.args);
+const bypassPermissions = op === 'bypass_exec'; // op determines bypass, not field
 ```
 
-Wrong — adding internal fields to tool descriptors:
+Wrong — exposing internal fields in tool descriptors:
 ```typescript
-// DON'T do this
-properties: { op, prompt, session, work_dir, model, effort, bypass_permissions, system_prompt }
+properties: { op, prompt, session, work_dir, model, bypass_permissions, system_prompt }
 ```
