@@ -317,14 +317,16 @@ describe('SessionManager adversarial', () => {
     expect(JSON.parse(readFileSync(join(sessionDir, `${oldSessionId}.json`), 'utf-8'))).toEqual(oldEntry);
   });
 
-  it('get() returns null for a corrupt (non-JSON) session file without throwing', () => {
+  it('get() returns null for a corrupt (non-JSON) session file on cache-miss read', () => {
     const { mgr, workDir } = setup('corrupt-session');
     const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
 
     const sessionDir = resolveSessionDir(tmpHome);
     writeFileSync(join(sessionDir, `${entry.sessionId}.json`), '{ not valid json }', 'utf-8');
 
-    expect(() => mgr.get('codex', entry.sessionId)).not.toThrow();
-    expect(mgr.get('codex', entry.sessionId)).toBeNull();
+    // A fresh manager (no cache) should gracefully handle the corrupt file
+    const freshMgr = SessionManager.openShard(sessionDir);
+    expect(() => freshMgr.get('codex', entry.sessionId)).not.toThrow();
+    expect(freshMgr.get('codex', entry.sessionId)).toBeNull();
   });
 });

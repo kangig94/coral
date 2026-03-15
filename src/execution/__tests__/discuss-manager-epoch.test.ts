@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent, type PersistedDiscussSnapshot } from '../../discuss/events.js';
-import type { CallerContext } from '../service.js';
+import { continueLoop } from '../discuss-loop.js';
+import { getWatchState } from '../discuss-operations.js';
+import { getSession } from '../discuss-registry.js';
+import { handleEpochTransition } from '../discuss-subflows.js';
 import {
   attachPersistedSession,
   cleanupDiscussHarnesses,
@@ -15,18 +18,6 @@ afterEach(() => {
   vi.clearAllTimers();
   vi.restoreAllMocks();
 });
-
-function handleEpochTransition(manager: unknown, sessionId: string, ctx: CallerContext): Promise<void> {
-  return (manager as {
-    handleEpochTransition(targetSessionId: string, targetCtx: CallerContext): Promise<void>;
-  }).handleEpochTransition(sessionId, ctx);
-}
-
-function continueLoop(manager: unknown, sessionId: string, ctx: CallerContext): Promise<void> {
-  return (manager as {
-    continueLoop(targetSessionId: string, targetCtx: CallerContext): Promise<void>;
-  }).continueLoop(sessionId, ctx);
-}
 
 function epochTransitionEvents(projectRoot: string) {
   return (snapshot: PersistedDiscussSnapshot) => [
@@ -71,7 +62,7 @@ function epochTransitionEvents(projectRoot: string) {
   ];
 }
 
-describe('DiscussManager epoch evaluation', () => {
+describe('Discuss epoch evaluation', () => {
   it('records the epoch summary and carry-forward questions for a non-converged epoch', async () => {
     const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'eval-session' });
     const waitStreamOnce = vi.fn().mockResolvedValue({
@@ -90,7 +81,7 @@ describe('DiscussManager epoch evaluation', () => {
     });
     attachPersistedSession(harness, snapshot);
 
-    await handleEpochTransition(harness.manager, 'discuss-1', harness.ctx);
+    await handleEpochTransition(harness.context, 'discuss-1', harness.ctx);
 
     const updated = harness.store.load('discuss-1');
     expect(updated?.state.epoch).toBe(2);
@@ -98,7 +89,7 @@ describe('DiscussManager epoch evaluation', () => {
     expect(updated?.runtime.carryForwardMustAnswer).toEqual([
       'alpha\u0000What freight exemption would you accept?',
     ]);
-    expect(harness.manager.getWatchState('discuss-1').events).toContainEqual(
+    expect(getWatchState(harness.context, 'discuss-1').events).toContainEqual(
       expect.objectContaining({ type: 'epoch_transition', data: { epoch: 2 } }),
     );
 
@@ -138,7 +129,7 @@ describe('DiscussManager epoch evaluation', () => {
     });
     attachPersistedSession(harness, snapshot);
 
-    await continueLoop(harness.manager, 'discuss-1', harness.ctx);
+    await continueLoop(harness.context, 'discuss-1', harness.ctx);
 
     const updated = harness.store.load('discuss-1');
     expect(updated?.state.status).toBe('ended');
@@ -148,7 +139,7 @@ describe('DiscussManager epoch evaluation', () => {
       event: 'synthesis',
       detail: 'The discussion converged after clarifying freight access and rollout timing.',
     });
-    expect(harness.manager.getSession('discuss-1')).toBeUndefined();
+    expect(getSession(harness.context, 'discuss-1')).toBeUndefined();
 
     harness.cleanup();
   });

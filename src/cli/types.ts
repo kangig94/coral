@@ -1,0 +1,15 @@
+import type { TerminalResult } from '../types.js';
+
+/** CLI NDJSON unified event stream — all events share the `type` discriminator. */
+export type CliStreamEvent =
+  | { type: 'launch'; jobId: string; sessionId: string; status: 'running' | 'queued' }
+  | { type: 'progress'; jobId: string; sessionId: string; message: string }
+  | { type: 'queued'; jobId: string; sessionId: string; queuePosition: number; runningJobIds: string[] }
+  | {
+    type: 'terminal';
+    completedJobId: string;
+    sessionId: string;
+    remainingJobIds: string[];
+    result: Omit<TerminalResult, 'content'> & { path: string };
+  }
+  | { type: 'timeout'; runningJobIds: string[] };

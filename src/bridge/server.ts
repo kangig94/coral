@@ -9,7 +9,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { setTimeout as delay } from 'node:timers/promises';
 import { ensureBackend, proxyToolCall, streamWait, type WaitCursorRef } from './backend-client.js';
 import { buildToolList, handleBackendToolCall } from './backend-tool.js';
-import { isRecord, jsonResult, mcpError, textResult, type McpResult } from '../shared/mcp-utils.js';
+import { isRecord, isTransientStreamError, jsonResult, mcpError, textResult, type McpResult } from '../shared/mcp-utils.js';
 import { waitInputSchema, MAX_INLINE } from '../shared/schemas.js';
 
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
@@ -123,14 +123,6 @@ function waitFailureResult(error: unknown): ReturnType<typeof mcpError> {
   });
 }
 
-function isTransientStreamError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  // undici throws TypeError("terminated") when SSE connection is killed mid-stream
-  if (error.message === 'terminated') return true;
-  // Node.js connection-level errors
-  const code = 'code' in error && typeof error.code === 'string' ? error.code : null;
-  return code === 'ECONNRESET' || code === 'ECONNREFUSED' || code === 'ECONNABORTED';
-}
 
 function isMcpTextResult(value: unknown): value is McpResult {
   return isRecord(value)

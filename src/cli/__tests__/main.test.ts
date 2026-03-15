@@ -116,7 +116,7 @@ describe('cli main — workflow --input-json merge', () => {
 
   it('reads expression and init_prompt from --input-json stdin', () => {
     const { stderr } = runCli(
-      ['workflow', '--input-json', '-'],
+      ['workflow', '--input-json', '-', '--detach'],
       {
         env: { HOME: tmpDir },
         input: JSON.stringify({
@@ -156,7 +156,7 @@ describe('cli main — workflow --input-json merge', () => {
 
   it('accepts explicit flags alongside --input-json stdin', () => {
     const { stderr } = runCli(
-      ['workflow', '--expression', 'from-flag', '--input-json', '-'],
+      ['workflow', '--expression', 'from-flag', '--input-json', '-', '--detach'],
       {
         env: { HOME: tmpDir },
         input: JSON.stringify({

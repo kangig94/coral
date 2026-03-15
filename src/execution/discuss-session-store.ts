@@ -12,21 +12,22 @@ import {
   listPersistedDiscussSessions,
   readDiscussEventLog,
   readDiscussSnapshot,
+  readDiscussSummaryIndex,
   resolveDiscussSessionDir,
   type DiscussDiscoveryData,
   type DiscussDiscoverySession,
+  type DiscussSummaryIndexData,
+  type DiscussSummaryIndexRow,
 } from '../client/readers.js';
 import {
   discussProjectRootsPath,
   discussDiscoveryPath,
   discussEventLogPath,
   discussSessionDir,
+  discussSummaryIndexPath,
   discussStatePath,
 } from '../client/paths.js';
-import {
-  buildDiscussSummary,
-  type DiscussSummaryDto,
-} from '../client/discuss.js';
+import { type DiscussSummaryDto } from '../client/discuss.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../discuss/events.js';
 import {
   makeEmptySnapshot,
@@ -40,6 +41,11 @@ const discussProjectRootRegistryLocks = new Map<string, Promise<void>>();
 
 type DiscussSessionStoreOptions = {
   onCommit?: (snapshot: PersistedDiscussSnapshot, events: DiscussDomainEvent[]) => void;
+};
+
+type PersistedSummaryRepair = {
+  index: DiscussSummaryIndexData;
+  summaries: DiscussSummaryDto[];
 };
 
 export class DiscussStaleWriteError extends Error {
@@ -78,6 +84,31 @@ async function withPromiseChainLock<T>(
   } finally {
     releaseLock();
     if (locks.get(key) === current) {
+      locks.delete(key);
+    }
+  }
+}
+
+function tryWithPromiseChainLockSync<T>(
+  locks: Map<string, Promise<void>>,
+  key: string,
+  work: () => T,
+): T | null {
+  if (locks.has(key)) {
+    return null;
+  }
+
+  let releaseLock!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseLock = resolve;
+  });
+  locks.set(key, gate);
+
+  try {
+    return work();
+  } finally {
+    releaseLock();
+    if (locks.get(key) === gate) {
       locks.delete(key);
     }
   }
@@ -152,9 +183,92 @@ function toDiscoverySession(
   };
 }
 
+function compareSummaryIndexRows(
+  left: DiscussSummaryIndexRow,
+  right: DiscussSummaryIndexRow,
+): number {
+  if (left.createdAt !== right.createdAt) {
+    return left.createdAt.localeCompare(right.createdAt);
+  }
+  return left.sessionId.localeCompare(right.sessionId);
+}
+
+function sortSummaryIndexRows(rows: DiscussSummaryIndexRow[]): DiscussSummaryIndexRow[] {
+  return [...rows].sort(compareSummaryIndexRows);
+}
+
+function buildSummaryIndexData(
+  projectRoot: string,
+  rows: DiscussSummaryIndexRow[],
+): DiscussSummaryIndexData {
+  const sessions = sortSummaryIndexRows(rows);
+  const updatedAt = sessions.reduce(
+    (latest, session) => (session.updatedAt > latest ? session.updatedAt : latest),
+    '',
+  );
+
+  return {
+    projectRoot,
+    updatedAt,
+    sessions,
+  };
+}
+
+function summaryIndexDataEquals(
+  left: DiscussSummaryIndexData | null,
+  right: DiscussSummaryIndexData,
+): boolean {
+  if (!left) {
+    return false;
+  }
+  if (left.projectRoot !== right.projectRoot
+    || left.updatedAt !== right.updatedAt
+    || left.sessions.length !== right.sessions.length) {
+    return false;
+  }
+
+  return left.sessions.every((session, index) => {
+    const expected = right.sessions[index];
+    return session.sessionId === expected.sessionId
+      && session.projectRoot === expected.projectRoot
+      && session.topic === expected.topic
+      && session.status === expected.status
+      && session.createdAt === expected.createdAt
+      && session.agentCount === expected.agentCount
+      && session.updatedAt === expected.updatedAt
+      && session.lastSeq === expected.lastSeq;
+  });
+}
+
+function toSummaryIndexRow(snapshot: PersistedDiscussSnapshot): DiscussSummaryIndexRow {
+  return {
+    sessionId: snapshot.sessionId,
+    projectRoot: snapshot.projectRoot,
+    topic: snapshot.state.topic,
+    status: snapshot.state.status,
+    createdAt: snapshot.state.created_at,
+    agentCount: Object.keys(snapshot.state.agents).length,
+    updatedAt: snapshot.updatedAt,
+    lastSeq: snapshot.lastAppliedSeq,
+  };
+}
+
+function buildPersistedSummary(row: DiscussSummaryIndexRow): DiscussSummaryDto {
+  return {
+    sessionId: row.sessionId,
+    projectRoot: row.projectRoot,
+    topic: row.topic,
+    status: row.status,
+    createdAt: row.createdAt,
+    agentCount: row.agentCount,
+    authority: 'persisted',
+  };
+}
+
 export class DiscussSessionStore {
   private readonly projectRoot: string;
   private readonly onCommit?: DiscussSessionStoreOptions['onCommit'];
+  private coldStartHydrated = false;
 
   constructor(projectRoot: string, options: DiscussSessionStoreOptions = {}) {
     this.projectRoot = projectRoot;
@@ -213,6 +327,12 @@ export class DiscussSessionStore {
           }
           mergedSessions.set(sessionId, toDiscoverySession(sessionDir, nextSnapshot));
 
+          const mergedSummaryRows = new Map<string, DiscussSummaryIndexRow>();
+          for (const summary of readDiscussSummaryIndex(this.projectRoot)?.sessions ?? []) {
+            mergedSummaryRows.set(summary.sessionId, summary);
+          }
+          mergedSummaryRows.set(sessionId, toSummaryIndexRow(nextSnapshot));
+
           const discovery: DiscussDiscoveryData = {
             projectRoot: this.projectRoot,
             updatedAt: nextSnapshot.updatedAt,
@@ -225,6 +345,10 @@ export class DiscussSessionStore {
           };
 
           writeAtomicJson(discussDiscoveryPath(this.projectRoot), discovery);
+          writeAtomicJson(
+            discussSummaryIndexPath(this.projectRoot),
+            buildSummaryIndexData(this.projectRoot, [...mergedSummaryRows.values()]),
+          );
         });
 
         await withPromiseChainLock(
@@ -247,16 +371,34 @@ export class DiscussSessionStore {
   }
 
   listSummaries(): DiscussSummaryDto[] {
-    const summaries: DiscussSummaryDto[] = [];
-    for (const session of this.listRecoveryCandidates()) {
-      const snapshot = this.load(session.sessionId);
-      if (!snapshot) {
-        continue;
-      }
-      summaries.push(buildDiscussSummary(snapshot, 'persisted'));
+    const repair = this.buildPersistedSummaryRepair();
+    if (this.persistPersistedSummaryRepair(repair)) {
+      this.coldStartHydrated = true;
+    }
+    return repair.summaries;
+  }
+
+  listSummariesFromIndex(): DiscussSummaryDto[] {
+    const currentIndex = readDiscussSummaryIndex(this.projectRoot);
+    if (this.coldStartHydrated && currentIndex) {
+      return this.buildSummariesFromIndex(currentIndex);
     }
 
-    return summaries.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    if (this.coldStartHydrated && currentIndex === null) {
+      this.coldStartHydrated = false;
+    }
+
+    const repair = this.buildPersistedSummaryRepair();
+    if (!this.persistPersistedSummaryRepair(repair)) {
+      return repair.summaries;
+    }
+
+    this.coldStartHydrated = true;
+    const hydratedIndex = readDiscussSummaryIndex(this.projectRoot);
+    if (!hydratedIndex) {
+      return repair.summaries;
+    }
+    return this.buildSummariesFromIndex(hydratedIndex);
   }
 
   listRecoveryCandidates(): DiscussDiscoverySession[] {
@@ -309,5 +451,72 @@ export class DiscussSessionStore {
       return null;
     }
     return snapshot;
+  }
+
+  private buildPersistedSummaryRepair(): PersistedSummaryRepair {
+    const rows: DiscussSummaryIndexRow[] = [];
+    for (const session of this.listRecoveryCandidates()) {
+      const snapshot = this.loadFromSessionDir(session.sessionId, session.sessionDir);
+      if (!snapshot) {
+        continue;
+      }
+      rows.push(toSummaryIndexRow(snapshot));
+    }
+
+    const index = buildSummaryIndexData(this.projectRoot, rows);
+    return {
+      index,
+      summaries: this.buildSummariesFromIndex(index),
+    };
+  }
+
+  private buildSummariesFromIndex(index: DiscussSummaryIndexData): DiscussSummaryDto[] {
+    return index.sessions
+      .map(buildPersistedSummary)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  private persistPersistedSummaryRepair(repair: PersistedSummaryRepair): boolean {
+    const currentIndex = readDiscussSummaryIndex(this.projectRoot);
+    if (!summaryIndexDataEquals(currentIndex, repair.index)) {
+      const wroteSummaryIndex = tryWithPromiseChainLockSync(
+        projectDiscoveryLocks,
+        this.projectRoot,
+        () => {
+          const latestIndex = readDiscussSummaryIndex(this.projectRoot);
+          if (summaryIndexDataEquals(latestIndex, repair.index)) {
+            return true;
+          }
+          writeAtomicJson(discussSummaryIndexPath(this.projectRoot), repair.index);
+          return true;
+        },
+      );
+      if (wroteSummaryIndex === null) {
+        return false;
+      }
+    }
+
+    if (repair.index.sessions.length === 0 || readDiscussProjectRoots().includes(this.projectRoot)) {
+      return true;
+    }
+
+    const updatedRegistry = tryWithPromiseChainLockSync(
+      discussProjectRootRegistryLocks,
+      discussProjectRootsPath(),
+      () => {
+        const projectRoots = new Set(readDiscussProjectRoots());
+        if (projectRoots.has(this.projectRoot)) {
+          return true;
+        }
+        projectRoots.add(this.projectRoot);
+        writeAtomicJson(discussProjectRootsPath(), {
+          updatedAt: repair.index.updatedAt,
+          projectRoots: [...projectRoots].sort(),
+        });
+        return true;
+      },
+    );
+
+    return updatedRegistry !== null;
   }
 }

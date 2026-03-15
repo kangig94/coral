@@ -1,10 +1,12 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { isRecord } from '../shared/mcp-utils.js';
 import {
   discussProjectRootsPath,
   JOBS_DIR,
   discussBaseDir,
   discussDiscoveryPath,
+  discussSummaryIndexPath,
   discussEventLogPath,
   discussStatePath,
 } from './paths.js';
@@ -45,9 +47,6 @@ function readTextFile(filePath: string): string | null {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
@@ -402,6 +401,30 @@ function isValidDiscussDiscoveryData(value: unknown): value is DiscussDiscoveryD
     && value.sessions.every(isValidDiscussDiscoverySession);
 }
 
+function isValidDiscussSummaryIndexRow(value: unknown): value is DiscussSummaryIndexRow {
+  if (!isRecord(value)) return false;
+  return typeof value.sessionId === 'string'
+    && typeof value.projectRoot === 'string'
+    && typeof value.topic === 'string'
+    && typeof value.status === 'string'
+    && discussStatusSet.has(value.status)
+    && typeof value.createdAt === 'string'
+    && isInteger(value.agentCount)
+    && value.agentCount >= 0
+    && typeof value.updatedAt === 'string'
+    && isInteger(value.lastSeq)
+    && value.lastSeq >= 0;
+}
+
+function isValidDiscussSummaryIndexData(value: unknown): value is DiscussSummaryIndexData {
+  if (!isRecord(value) || !Array.isArray(value.sessions)) return false;
+  return typeof value.projectRoot === 'string'
+    && typeof value.updatedAt === 'string'
+    && value.sessions.every((session) =>
+      isValidDiscussSummaryIndexRow(session) && session.projectRoot === value.projectRoot,
+    );
+}
+
 function isValidDiscussProjectRootsRegistry(
   value: unknown,
 ): value is { updatedAt?: string; projectRoots: string[] } {
@@ -455,6 +478,29 @@ export interface DiscussDiscoverySession {
  */
 export interface DiscussDiscoveryData {
   sessions: DiscussDiscoverySession[];
+  projectRoot: string;
+  updatedAt: string;
+}
+
+/**
+ * Persisted summary row used for index-only discuss listing.
+ */
+export interface DiscussSummaryIndexRow {
+  sessionId: string;
+  projectRoot: string;
+  topic: string;
+  status: DiscussState['status'];
+  createdAt: string;
+  agentCount: number;
+  updatedAt: string;
+  lastSeq: number;
+}
+
+/**
+ * Summary index metadata for all discuss sessions under a project root.
+ */
+export interface DiscussSummaryIndexData {
+  sessions: DiscussSummaryIndexRow[];
   projectRoot: string;
   updatedAt: string;
 }
@@ -573,6 +619,15 @@ export function readDiscussDiscovery(projectRoot: string): DiscussDiscoveryData 
   const discovery = readJsonFile(discussDiscoveryPath(projectRoot));
   if (discovery === null) return null;
   return isValidDiscussDiscoveryData(discovery) ? discovery : null;
+}
+
+/**
+ * Reads and validates the discuss summary index for a project.
+ */
+export function readDiscussSummaryIndex(projectRoot: string): DiscussSummaryIndexData | null {
+  const index = readJsonFile(discussSummaryIndexPath(projectRoot));
+  if (index === null) return null;
+  return isValidDiscussSummaryIndexData(index) ? index : null;
 }
 
 export function readDiscussProjectRoots(): string[] {

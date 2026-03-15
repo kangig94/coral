@@ -4,6 +4,9 @@ import { request as httpRequest, type IncomingMessage as ClientIncomingMessage }
 import { basename, join } from 'node:path';
 import type { WaitStreamEvent } from '../../types.js';
 
+import {
+  createDiscussContextRegistry,
+} from '../discuss-context-registry.js';
 import { JOBS_DIR, ProgressStore, jobResultPath } from '../progress-store.js';
 import { SessionManager } from '../session-manager.js';
 import type { BackendServerController } from '../server.js';
@@ -316,35 +319,45 @@ describe('execution backend server', () => {
       'utf8',
     );
 
-    const recoverPersistedSessions = vi.fn().mockResolvedValue(undefined);
-    const discussRegistry = {
-      getOrCreate: vi.fn(() => ({ recoverPersistedSessions })),
-      get: vi.fn(() => undefined),
-      listLiveSessions: vi.fn(() => []),
-      hasLiveSessions: vi.fn(() => false),
-    };
+    const discussRegistry = createDiscussContextRegistry();
+    const setSpy = vi.spyOn(discussRegistry.contexts, 'set');
 
     await startBackendServer({
       createIdleTimer: () => fakeIdleTimer as never,
-      discussRegistry: discussRegistry as never,
+      discussRegistry,
     });
 
-    expect(discussRegistry.getOrCreate).toHaveBeenCalledTimes(1);
-    const getOrCreateCalls = discussRegistry.getOrCreate.mock.calls as Array<unknown[]>;
-    expect(getOrCreateCalls.every((call) => call[0] === projectRoot)).toBe(true);
-    expect(recoverPersistedSessions).toHaveBeenCalledTimes(1);
-    expect(recoverPersistedSessions).toHaveBeenCalledWith({
+    expect(setSpy).toHaveBeenCalledWith(
       projectRoot,
-      pluginRoot: expect.any(String),
-    });
+      expect.objectContaining({ projectRoot }),
+    );
+    expect(discussRegistry.contexts.has(projectRoot)).toBe(true);
     expect(fakeIdleTimer.startWatching).toHaveBeenCalledTimes(1);
-    const finalRecoveryOrder = recoverPersistedSessions.mock.invocationCallOrder.at(-1);
+    const finalRecoveryOrder = setSpy.mock.invocationCallOrder.at(-1);
     const idleWatchOrder = fakeIdleTimer.startWatching.mock.invocationCallOrder.at(0);
     expect(finalRecoveryOrder).toBeDefined();
     expect(idleWatchOrder).toBeDefined();
     expect(finalRecoveryOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(
       idleWatchOrder ?? Number.POSITIVE_INFINITY,
     );
+  });
+
+  it('does not recover discuss project roots discovered only from the session index', async () => {
+    const fakeIdleTimer = createFakeIdleTimer();
+    const projectRoot = createProjectRoot('session-index-only-project');
+    new SessionManager(projectRoot).allocate('codex', 'alpha', 'gpt-5', projectRoot, projectRoot);
+
+    const discussRegistry = createDiscussContextRegistry();
+    const setSpy = vi.spyOn(discussRegistry.contexts, 'set');
+
+    await startBackendServer({
+      createIdleTimer: () => fakeIdleTimer as never,
+      discussRegistry,
+    });
+
+    expect(setSpy).not.toHaveBeenCalled();
+    expect(discussRegistry.contexts.size).toBe(0);
+    expect(fakeIdleTimer.startWatching).toHaveBeenCalledTimes(1);
   });
 
   it('returns 404 for unknown /tool requests', async () => {

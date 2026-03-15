@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent } from '../../discuss/events.js';
+import * as discussLoop from '../discuss-loop.js';
+import * as discussSubflows from '../discuss-subflows.js';
+import { recoverPersistedSessions } from '../discuss-operations.js';
+import { getSession } from '../discuss-registry.js';
 import {
   DEFAULT_TOPIC,
   cleanupDiscussHarnesses,
@@ -8,18 +12,6 @@ import {
   createExecutionServiceStub,
   persistSession,
 } from './discuss-test-helpers.js';
-import type { CallerContext } from '../service.js';
-
-function collectBids(manager: unknown, sessionId: string, ctx: CallerContext): Promise<void> {
-  return (manager as { collectBids(targetSessionId: string, targetCtx: CallerContext): Promise<void> })
-    .collectBids(sessionId, ctx);
-}
-
-function collectSpeech(manager: unknown, sessionId: string, winnerName: string, ctx: CallerContext): Promise<void> {
-  return (manager as {
-    collectSpeech(targetSessionId: string, targetWinnerName: string, targetCtx: CallerContext): Promise<void>;
-  }).collectSpeech(sessionId, winnerName, ctx);
-}
 
 afterEach(() => {
   cleanupDiscussHarnesses();
@@ -27,7 +19,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('DiscussManager faults and retry recovery', () => {
+describe('Discuss faults and retry recovery', () => {
   it('treats a speech wait timeout as a persisted speech timeout', async () => {
     const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'exec-alpha' });
     const waitStreamOnce = vi.fn().mockRejectedValue(new Error('Job timed out waiting for terminal result'));
@@ -48,7 +40,7 @@ describe('DiscussManager faults and retry recovery', () => {
       ],
     });
 
-    await collectSpeech(harness.manager, 'discuss-1', 'alpha', harness.ctx);
+    await discussSubflows.collectSpeech(harness.context, 'discuss-1', 'alpha', harness.ctx);
 
     const snapshot = harness.store.load('discuss-1');
     expect(snapshot?.state.status).toBe('bidding');
@@ -57,8 +49,6 @@ describe('DiscussManager faults and retry recovery', () => {
     if (timeoutEntry?.type === 'speech') {
       expect(timeoutEntry.content).toContain('(alpha) timed out without delivering a speech.');
     }
-
-    harness.cleanup();
   });
 
   it('soft-expels a failed cold-start bidder without wiping a healthy committed bid', async () => {
@@ -73,14 +63,12 @@ describe('DiscussManager faults and retry recovery', () => {
       ],
     });
 
-    await collectBids(harness.manager, 'discuss-1', harness.ctx);
+    await discussSubflows.collectBids(harness.context, 'discuss-1', harness.ctx);
 
     const snapshot = harness.store.load('discuss-1');
     expect(snapshot?.state.current_bids).toEqual({ alpha: 88, beta: 0 });
     expect(snapshot?.state.current_thoughts).toEqual({ alpha: 'alpha', beta: '' });
     expect(snapshot?.state.agents.beta?.banned).toBe(false);
-
-    harness.cleanup();
   });
 
   it('restarts malformed bid retries from the persisted attempt counter', async () => {
@@ -104,7 +92,7 @@ describe('DiscussManager faults and retry recovery', () => {
       ],
     });
 
-    await collectBids(harness.manager, 'discuss-1', harness.ctx);
+    await discussSubflows.collectBids(harness.context, 'discuss-1', harness.ctx);
 
     const snapshot = harness.store.load('discuss-1');
     expect(resume).toHaveBeenCalledWith('codex', expect.objectContaining({
@@ -114,15 +102,18 @@ describe('DiscussManager faults and retry recovery', () => {
     expect(snapshot?.state.current_bids).toEqual({ alpha: 66, user: null });
     expect(snapshot?.runtime.agentRuns.alpha.currentAttempt).toBe(2);
     expect(snapshot?.runtime.agentRuns.alpha.lastAttemptOutcome).toBe('completed');
-
-    harness.cleanup();
   });
 
   it('after recovery attach, resumeLoop re-runs a missing bid job against the persisted execution session id', async () => {
     const resume = vi.fn().mockResolvedValue({ status: 'running', job: 'job-2', session: 'exec-alpha' });
-    const waitStreamOnce = vi.fn().mockResolvedValue({
-      content: '{"score": 58, "thought": "recovered bid"}',
-      nonResumable: false,
+    const waitStreamOnce = vi.fn().mockImplementation(async () => {
+      queueMicrotask(() => {
+        getSession(harness.context, 'discuss-1')?.controller.abort();
+      });
+      return {
+        content: '{"score": 58, "thought": "recovered bid"}',
+        nonResumable: false,
+      };
     });
     const harness = createDiscussHarness(createExecutionServiceStub({ resume, waitStreamOnce }));
     await persistSession(harness, {
@@ -137,20 +128,9 @@ describe('DiscussManager faults and retry recovery', () => {
         makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'agent.job.started', '2026-03-10T00:01:01.000Z', { agent: 'alpha', jobId: 'job-missing', purpose: 'bid', attempt: 1 }),
       ],
     });
-    vi.spyOn(
-      harness.manager as unknown as {
-        collectSpeech(targetSessionId: string, targetWinnerName: string, targetCtx: CallerContext): Promise<void>;
-      },
-      'collectSpeech',
-    ).mockImplementation(async () => {
-      harness.manager.getSession('discuss-1')?.controller.abort();
-    });
-
-    // resumeLoop schedules continueLoop via setTimeout(0); runAllTimersAsync fires it then
-    // yields one event-loop tick. Valid only because all stubs resolve via Promise.resolve (microtasks).
     vi.useFakeTimers();
-    await harness.manager.recoverPersistedSessions(harness.ctx);
-    harness.manager.resumeLoop('discuss-1', harness.ctx);
+    await recoverPersistedSessions(harness.context, harness.ctx);
+    discussLoop.resumeLoop(harness.context, 'discuss-1', harness.ctx);
     await vi.runAllTimersAsync();
     vi.useRealTimers();
 
@@ -162,7 +142,5 @@ describe('DiscussManager faults and retry recovery', () => {
     expect(snapshot?.state.current_bids).toEqual({ alpha: 58, user: null });
     expect(snapshot?.runtime.agentRuns.alpha.currentAttempt).toBe(2);
     expect(snapshot?.runtime.agentRuns.alpha.lastAttemptOutcome).toBe('completed');
-
-    harness.cleanup();
   });
 });

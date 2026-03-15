@@ -366,7 +366,20 @@ This is a normal accepted launch outcome, not an error. The job auto-dispatches 
 - **Cross-provider**: accepts mixed Codex/Claude job IDs in one call.
 - **Progress notifications**: incremental updates are emitted through `notifications/progress`.
 - **Incremental streaming**: pass `cursor` from a previous wait response to resume from where the last call left off.
-- **Content field**: `result.path` is always present. `result.content` is optional enrichment — present when the serialized response fits within the inline budget.
+- **Content field**: `result.path` is always present. `result.content` is optional enrichment — present when the fully serialized `CallToolResult` body fits within `MAX_INLINE` (10K chars). Measured on `JSON.stringify(jsonResult(payload))` which includes pretty-print overhead and MCP envelope fields.
+
+  Empirical distribution from 199 job results (non-empty only):
+
+  | Size range | Regular | Workflow | Total |
+  |------------|---------|----------|-------|
+  | 1 ~ 1K | 9 | 2 | 11 |
+  | 1K ~ 5K | 41 | 1 | 42 |
+  | 5K ~ 10K | 33 | 0 | 33 |
+  | 10K ~ 20K | 10 | 14 | 24 |
+  | 20K ~ 30K | 6 | 8 | 14 |
+  | 30K+ | 1 | 2 | 3 |
+
+  Regular jobs under 10K: 97%. Workflow jobs over 10K: 59%. This makes 10K a natural boundary — regular results inline for zero-latency reads, workflow results return path references for selective step access.
 - **Selective read**: `Read(result.path)` loads the full artifact. Use `result.workflow.steps[N].start` and `end` to read only the step you need with `Read(result.path, start, limit)`.
 - **Workflow fallback**: use `result.content ?? Read(result.path)`, then use `result.workflow.steps[N].start` and `end` to read only the step you need.
 - **Workflow line semantics**: `start` and `end` bound the content block for each step (line numbers in the artifact file).

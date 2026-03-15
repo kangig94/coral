@@ -57,7 +57,7 @@ console.log('Built bridge/coral-backend.cjs');
 
 await esbuild.build({
   ...sharedOpts,
-  entryPoints: ['src/cli/main.ts'],
+  entryPoints: ['src/cli/bootstrap.ts'],
   outfile: 'bridge/coral-cli.cjs',
   banner: { js: '#!/usr/bin/env node\n' + sharedOpts.banner.js },
 });

@@ -1,0 +1,209 @@
+import { discussEventLogPath } from '../client/paths.js';
+import { readDiscussEventLog } from '../client/readers.js';
+import { buildWatchEvents } from '../discuss/projections.js';
+import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../discuss/events.js';
+import type { Result } from '../discuss/types.js';
+import { DiscussStaleWriteError } from './discuss-session-store.js';
+import {
+  DiscussManagerError,
+  compactLiveWatchBuffer,
+  createWatchBuffer,
+  getSubscriberCursorMap,
+  type DiscussContext,
+  type WatchState,
+  watchBufferCursor,
+} from './discuss-context.js';
+
+const ABORT_REASON = 'abort';
+
+export type CommitSuccess = {
+  ok: true;
+  previous: PersistedDiscussSnapshot;
+  snapshot: PersistedDiscussSnapshot;
+  events: DiscussDomainEvent[];
+};
+
+export type CommitFailure = {
+  ok: false;
+  error: string;
+  detail?: Record<string, unknown>;
+};
+
+export type CommitResult = CommitSuccess | CommitFailure;
+
+export function loadAttachedOrPersistedSnapshot(
+  ctx: DiscussContext,
+  sessionId: string,
+): PersistedDiscussSnapshot | null {
+  return ctx.sessions.get(sessionId)?.snapshot ?? ctx.store.load(sessionId);
+}
+
+export function readSessionEvents(ctx: DiscussContext, sessionId: string): DiscussDomainEvent[] {
+  try {
+    const sessionDir = ctx.store.resolveSessionDir(sessionId);
+    return readDiscussEventLog(discussEventLogPath(sessionDir)).filter((event) =>
+      event.sessionId === sessionId && event.projectRoot === ctx.projectRoot);
+  } catch {
+    return [];
+  }
+}
+
+export function isAbortEnded(events: DiscussDomainEvent[]): boolean {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.kind !== 'session.ended') {
+      continue;
+    }
+    return event.payload.reason === ABORT_REASON;
+  }
+  return false;
+}
+
+export function afterCommit(
+  ctx: DiscussContext,
+  sessionId: string,
+  snapshot: PersistedDiscussSnapshot,
+  events: DiscussDomainEvent[],
+): void {
+  const session = ctx.sessions.get(sessionId);
+  if (!session) {
+    return;
+  }
+
+  session.snapshot = snapshot;
+  session.abortEnded ||= isAbortEnded(events);
+  const watchEvents = buildWatchEvents(events);
+  if (watchEvents.length === 0) {
+    return;
+  }
+
+  session.watchBuffer.events.push(...watchEvents);
+  for (const event of watchEvents) {
+    for (const subscriber of session.watchSubscribers) {
+      subscriber(event);
+    }
+  }
+
+  const nextCursor = watchBufferCursor(session.watchBuffer);
+  const subscriberCursorMap = getSubscriberCursorMap(session);
+  for (const subscriber of session.watchSubscribers) {
+    subscriberCursorMap.set(subscriber, nextCursor);
+  }
+  compactLiveWatchBuffer(session);
+}
+
+export async function commitDecision(
+  ctx: DiscussContext,
+  sessionId: string,
+  decide: (snapshot: PersistedDiscussSnapshot) => Result<DiscussDomainEvent[]>,
+): Promise<CommitResult> {
+  while (true) {
+    const current = loadAttachedOrPersistedSnapshot(ctx, sessionId);
+    if (!current) {
+      return { ok: false, error: 'session_not_found', detail: { session: sessionId } };
+    }
+
+    const decided = decide(current);
+    if (!decided.ok) {
+      return { ok: false, error: decided.error, detail: decided.detail };
+    }
+
+    if (decided.value.length === 0) {
+      return {
+        ok: true,
+        previous: current,
+        snapshot: current,
+        events: [],
+      };
+    }
+
+    try {
+      const snapshot = await ctx.store.append(sessionId, current.lastAppliedSeq, decided.value);
+      afterCommit(ctx, sessionId, snapshot, decided.value);
+      return {
+        ok: true,
+        previous: current,
+        snapshot,
+        events: decided.value,
+      };
+    } catch (error: unknown) {
+      if (error instanceof DiscussStaleWriteError) {
+        const latest = ctx.store.load(sessionId);
+        if (latest) {
+          const live = ctx.sessions.get(sessionId);
+          if (live) {
+            live.snapshot = latest;
+          }
+        }
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
+export async function appendRuntimeEvents(
+  ctx: DiscussContext,
+  sessionId: string,
+  buildEvents: (snapshot: PersistedDiscussSnapshot) => DiscussDomainEvent[],
+): Promise<PersistedDiscussSnapshot | null> {
+  while (true) {
+    const current = loadAttachedOrPersistedSnapshot(ctx, sessionId);
+    if (!current) {
+      return null;
+    }
+
+    const events = buildEvents(current);
+    if (events.length === 0) {
+      return current;
+    }
+
+    try {
+      const snapshot = await ctx.store.append(sessionId, current.lastAppliedSeq, events);
+      afterCommit(ctx, sessionId, snapshot, events);
+      return snapshot;
+    } catch (error: unknown) {
+      if (error instanceof DiscussStaleWriteError) {
+        const latest = ctx.store.load(sessionId);
+        if (latest) {
+          const live = ctx.sessions.get(sessionId);
+          if (live) {
+            live.snapshot = latest;
+          }
+        }
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
+export function buildPersistedWatchState(
+  ctx: DiscussContext,
+  sessionId: string,
+  cursor?: number,
+): WatchState {
+  const snapshot = ctx.store.load(sessionId);
+  if (!snapshot) {
+    throw new DiscussManagerError('session_not_found', { session: sessionId });
+  }
+
+  const watchBuffer = createWatchBuffer(buildWatchEvents(readSessionEvents(ctx, sessionId)));
+  const totalCursor = watchBufferCursor(watchBuffer);
+  if (cursor !== undefined && cursor > totalCursor) {
+    throw new DiscussManagerError('invalid_cursor', {
+      cursor,
+      max: totalCursor,
+    });
+  }
+
+  return {
+    session: sessionId,
+    status: snapshot.state.status,
+    topic: snapshot.state.topic,
+    epoch: snapshot.state.epoch,
+    step: snapshot.state.step,
+    events: cursor === undefined ? watchBuffer.events.slice() : watchBuffer.events.slice(cursor),
+    cursor: totalCursor,
+  };
+}

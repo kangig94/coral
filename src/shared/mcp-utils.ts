@@ -7,6 +7,14 @@ export function isNoEntryError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
+/** Classify transient SSE/connection errors eligible for cursor-based retry. */
+export function isTransientStreamError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error.message === 'terminated') return true;
+  const code = 'code' in error && typeof error.code === 'string' ? error.code : null;
+  return code === 'ECONNRESET' || code === 'ECONNREFUSED' || code === 'ECONNABORTED';
+}
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }

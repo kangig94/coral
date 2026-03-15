@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { collectBids } from '../discuss-subflows.js';
+import {
+  startDiscussSession,
+  submitManualBid,
+} from '../discuss-operations.js';
 import {
   DEFAULT_TOPIC,
   cleanupDiscussHarnesses,
@@ -8,12 +13,6 @@ import {
   defaultAgents,
   persistSession,
 } from './discuss-test-helpers.js';
-import type { CallerContext } from '../service.js';
-
-function collectBids(manager: unknown, sessionId: string, ctx: CallerContext): Promise<void> {
-  return (manager as { collectBids(targetSessionId: string, targetCtx: CallerContext): Promise<void> })
-    .collectBids(sessionId, ctx);
-}
 
 afterEach(() => {
   cleanupDiscussHarnesses();
@@ -22,7 +21,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('DiscussManager bid collection', () => {
+describe('Discuss bid collection', () => {
   it('records valid JSON bids during session start', async () => {
     const start = vi.fn()
       .mockResolvedValueOnce({ status: 'running', job: 'job-1', session: 'exec-alpha' })
@@ -31,14 +30,9 @@ describe('DiscussManager bid collection', () => {
       .mockResolvedValueOnce({ content: '{"score": 61, "thought": "I should frame the tradeoff."}', nonResumable: false })
       .mockResolvedValueOnce({ content: '{"score": 37, "thought": "I have a narrower follow-up."}', nonResumable: false });
     const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
-    const resumeLoopSpy = vi.spyOn(
-      harness.manager as unknown as {
-        resumeLoop(targetSessionId: string, targetCtx: CallerContext): void;
-      },
-      'resumeLoop',
-    ).mockImplementation(() => {});
 
-    const session = await harness.manager.start(
+    const session = await startDiscussSession(
+      harness.context,
       'discuss-1',
       DEFAULT_TOPIC,
       [
@@ -55,7 +49,6 @@ describe('DiscussManager bid collection', () => {
       alpha: 'I should frame the tradeoff.',
       beta: 'I have a narrower follow-up.',
     });
-    expect(resumeLoopSpy).toHaveBeenCalledWith('discuss-1', harness.ctx);
     expect(session.snapshot.runtime.agentRuns.alpha).toMatchObject({ provider: 'codex', model: 'gpt-5' });
     expect(session.snapshot.runtime.agentRuns.beta).toMatchObject({ provider: 'claude', model: 'sonnet' });
 
@@ -78,7 +71,7 @@ describe('DiscussManager bid collection', () => {
       ],
     });
 
-    await collectBids(harness.manager, 'discuss-1', harness.ctx);
+    await collectBids(harness.context, 'discuss-1', harness.ctx);
 
     const snapshot = harness.store.load('discuss-1');
     expect(start).toHaveBeenCalledTimes(1);
@@ -122,11 +115,12 @@ describe('DiscussManager bid collection', () => {
       ],
     });
 
-    const bidWork = collectBids(harness.manager, 'discuss-1', harness.ctx);
+    const bidWork = collectBids(harness.context, 'discuss-1', harness.ctx);
     await Promise.resolve();
     await Promise.resolve();
 
-    await harness.manager.submitManualBid(
+    await submitManualBid(
+      harness.context,
       'discuss-1',
       'user',
       63,
@@ -153,14 +147,9 @@ describe('DiscussManager bid collection', () => {
       .mockResolvedValueOnce({ content: '{"score": 61, "thought": "alpha"}', nonResumable: false })
       .mockResolvedValueOnce({ content: '{"score": 37, "thought": "beta"}', nonResumable: false });
     const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
-    const resumeLoopSpy = vi.spyOn(
-      harness.manager as unknown as {
-        resumeLoop(targetSessionId: string, targetCtx: CallerContext): void;
-      },
-      'resumeLoop',
-    ).mockImplementation(() => {});
 
-    const session = await harness.manager.start(
+    const session = await startDiscussSession(
+      harness.context,
       'discuss-1',
       DEFAULT_TOPIC,
       [
@@ -174,7 +163,6 @@ describe('DiscussManager bid collection', () => {
 
     expect(session.snapshot.state.current_bids.user).toBeNull();
     expect(session.snapshot.runtime.agentRuns.user).toBeUndefined();
-    expect(resumeLoopSpy).toHaveBeenCalledWith('discuss-1', harness.ctx);
 
     harness.cleanup();
   });

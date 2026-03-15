@@ -5,7 +5,7 @@ declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFileSync, readdirSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import { z } from 'zod';
 import {
   formatError,
@@ -35,17 +35,27 @@ import type { AbortResult } from './abort-registry.js';
 
 import { eventBus, type EventBusEvents } from './event-bus.js';
 import { IdleTimer } from './idle-timer.js';
-import { createReplayCursor, ProgressStore, JOBS_DIR } from './progress-store.js';
+import { createReplayCursor, ProgressStore } from './progress-store.js';
 import type { CallerContext, ToolRequest } from './request-context.js';
+import { SessionIndex } from './session-index.js';
 import { SessionManager } from './session-manager.js';
 import {
   DiscussManagerError,
-  DiscussManagerRegistry,
-  type DiscussManager,
-} from './discuss-manager.js';
+  type DiscussContext,
+} from './discuss-context.js';
+import {
+  createDiscussContextRegistry,
+  get as getDiscussContextFromRegistry,
+  getOrCreate as getOrCreateDiscussContext,
+  hasRunningSessions,
+  listAttachedSessions,
+  type DiscussContextRegistry,
+} from './discuss-context-registry.js';
 import {
   DiscussSessionStore,
 } from './discuss-session-store.js';
+import * as discussOperations from './discuss-operations.js';
+import { getSession as getAttachedDiscussSession } from './discuss-registry.js';
 import {
   buildDiscussDetail,
   buildDiscussSummary,
@@ -56,8 +66,6 @@ import {
 } from '../client/discuss.js';
 import {
   readDiscussProjectRoots,
-  readSessionEntryLenient,
-  type LenientSessionEntry,
 } from '../client/readers.js';
 import { getAllNewProviders, getNewProvider } from '../providers/registry.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
@@ -101,7 +109,7 @@ type RouteToolCallFn = (
   request: ToolRequest,
   helpers: {
     getExecutionService: (ctx: CallerContext) => ExecutionServiceLike;
-    getDiscussManager: (ctx: CallerContext) => DiscussManager;
+    getDiscussContext: (ctx: CallerContext) => DiscussContext;
     abortJobs: (jobIds: string[]) => AbortResult;
     scopeCheckJobs: (jobIds: string[], projectRoot: string) => ScopeCheckResult;
   },
@@ -129,7 +137,7 @@ type BackendServerOptions = {
   killAllChildrenFn?: () => void;
   onStopped?: () => void;
   onFatalShutdownError?: (error: unknown) => void;
-  discussRegistry?: DiscussManagerRegistry;
+  discussRegistry?: DiscussContextRegistry;
 };
 
 export type BackendServerInfo = {
@@ -156,7 +164,7 @@ const SHUTDOWN_POLL_MS = 50;
 const ORPHANED_JOB_NOTICE = 'Unclean shutdown - orphaned job';
 const CORAL_OP_PREFIX = 'coral:';
 const defaultPluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
-const globalDiscussRegistry = new DiscussManagerRegistry();
+const globalDiscussRegistry = createDiscussContextRegistry();
 const discussSessionSchema = z.object({
   session: z.string().min(1),
 });
@@ -167,6 +175,20 @@ const discussWatchSchema = z.object({
 
 function jsonTextResult(data: unknown, isError = false): McpResult {
   return textResult(JSON.stringify(data), isError);
+}
+
+function toProviderFields(
+  data: { session?: string; prompt?: string; work_dir?: string; model?: string; system_prompt?: string },
+  bypassPermissions: boolean,
+): { sessionId: string; prompt: string; cwd: string | undefined; model: string | undefined; bypassPermissions: boolean; systemPrompt: string | undefined } {
+  return {
+    sessionId: data.session ?? '',
+    prompt: data.prompt ?? '',
+    cwd: data.work_dir,
+    model: data.model,
+    bypassPermissions,
+    systemPrompt: data.system_prompt,
+  };
 }
 
 function toolValidationError(error: z.ZodError): ToolRouteResponse {
@@ -333,17 +355,6 @@ function waitForInflightDrain(idleTimer: IdleTimer, timeoutMs: number): Promise<
   });
 }
 
-function readJobIds(): string[] {
-  try {
-    return readdirSync(JOBS_DIR, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name);
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) return [];
-    throw error;
-  }
-}
-
 function readBackendNamespace(status: PersistedStatusRecord): string | null {
   const namespace = (status as PersistedStatusRecordWithNamespace).backendNamespace;
   return typeof namespace === 'string' && namespace.length > 0 ? namespace : null;
@@ -370,7 +381,7 @@ function belongsToNamespace(status: PersistedStatusRecord, namespace: string): b
 function listLiveJobs(progressStore: ProgressStore, namespace: string): PersistedStatusRecord[] {
   const results: PersistedStatusRecord[] = [];
 
-  for (const jobId of readJobIds()) {
+  for (const jobId of progressStore.listJobIds()) {
     const status = progressStore.readStatus(jobId);
     if (!status || !isLiveJob(status)) continue;
 
@@ -668,7 +679,7 @@ export async function routeToolCall(
   request: ToolRequest,
   helpers: {
     getExecutionService: (ctx: CallerContext) => ExecutionServiceLike;
-    getDiscussManager: (ctx: CallerContext) => DiscussManager;
+    getDiscussContext: (ctx: CallerContext) => DiscussContext;
     abortJobs: (jobIds: string[]) => AbortResult;
     scopeCheckJobs: (jobIds: string[], projectRoot: string) => ScopeCheckResult;
   },
@@ -720,8 +731,8 @@ export async function routeToolCall(
 
     const sessionId = randomUUID();
     try {
-      const manager = helpers.getDiscussManager(request.context);
-      await manager.start(
+      await discussOperations.startDiscussSession(
+        helpers.getDiscussContext(request.context),
         sessionId,
         parsed.data.topic,
         parsed.data.agents,
@@ -743,7 +754,10 @@ export async function routeToolCall(
     }
 
     try {
-      await helpers.getDiscussManager(request.context).abortSession(parsed.data.session);
+      await discussOperations.abortDiscussSession(
+        helpers.getDiscussContext(request.context),
+        parsed.data.session,
+      );
       return toolSuccess({ ok: true, session: parsed.data.session });
     } catch (error: unknown) {
       if (error instanceof DiscussManagerError) {
@@ -760,8 +774,11 @@ export async function routeToolCall(
     }
 
     try {
-      return toolSuccess(helpers.getDiscussManager(request.context)
-        .getWatchState(parsed.data.session, parsed.data.cursor));
+      return toolSuccess(discussOperations.getWatchState(
+        helpers.getDiscussContext(request.context),
+        parsed.data.session,
+        parsed.data.cursor,
+      ));
     } catch (error: unknown) {
       if (error instanceof DiscussManagerError) {
         return toolError(error.code, error.detail);
@@ -776,11 +793,11 @@ export async function routeToolCall(
       return toolValidationError(parsed.error);
     }
 
-    const manager = helpers.getDiscussManager(request.context);
     try {
       if (typeof parsed.data.content === 'string') {
         return toolSuccess(
-          await manager.submitManualSpeech(
+          await discussOperations.submitManualSpeech(
+            helpers.getDiscussContext(request.context),
             parsed.data.session,
             parsed.data.agent_name,
             parsed.data.content,
@@ -790,7 +807,8 @@ export async function routeToolCall(
       }
 
       return toolSuccess(
-        await manager.submitManualBid(
+        await discussOperations.submitManualBid(
+          helpers.getDiscussContext(request.context),
           parsed.data.session,
           parsed.data.agent_name,
           parsed.data.score,
@@ -833,15 +851,7 @@ export async function routeToolCall(
     if (!parsed.success) return { statusCode: 400, body: { error: 'invalid_request' } };
     return {
       statusCode: 200,
-      body: await service.fork(request.name, {
-        sessionId: parsed.data.session,
-        prompt: parsed.data.prompt,
-        cwd: parsed.data.work_dir,
-        model: parsed.data.model,
-
-        bypassPermissions: true,
-        systemPrompt: parsed.data.system_prompt,
-      }, request.context),
+      body: await service.fork(request.name, toProviderFields(parsed.data, true), request.context),
     };
   }
 
@@ -850,15 +860,7 @@ export async function routeToolCall(
     if (!parsed.success) return { statusCode: 400, body: { error: 'invalid_request' } };
     return {
       statusCode: 200,
-      body: await service.resume(request.name, {
-        sessionId: parsed.data.session,
-        prompt: parsed.data.prompt,
-        cwd: parsed.data.work_dir,
-        model: parsed.data.model,
-
-        bypassPermissions: true,
-        systemPrompt: parsed.data.system_prompt,
-      }, request.context),
+      body: await service.resume(request.name, toProviderFields(parsed.data, true), request.context),
     };
   }
 
@@ -871,27 +873,15 @@ export async function routeToolCall(
     if (parsed.data.session) {
       return {
         statusCode: 200,
-        body: await service.resume(request.name, {
-          sessionId: parsed.data.session,
-          prompt: parsed.data.prompt,
-          cwd: parsed.data.work_dir,
-          model: parsed.data.model,
-
-          bypassPermissions,
-          systemPrompt: parsed.data.system_prompt,
-        }, request.context),
+        body: await service.resume(request.name, toProviderFields(parsed.data, bypassPermissions), request.context),
       };
     }
 
     return {
       statusCode: 200,
       body: await service.start(request.name, {
-        prompt: parsed.data.prompt,
+        ...toProviderFields(parsed.data, bypassPermissions),
         cwd: parsed.data.work_dir ?? defaultCwd,
-        model: parsed.data.model,
-
-        bypassPermissions,
-        systemPrompt: parsed.data.system_prompt,
       }, request.context),
     };
   }
@@ -919,6 +909,7 @@ function writeSseEvent(
   data: unknown,
   cursorId?: string,
 ): void {
+  if (res.writableEnded) return;
   if (cursorId) {
     res.write(`event: ${event}\nid: ${cursorId}\ndata: ${JSON.stringify(data)}\n\n`);
     return;
@@ -959,6 +950,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const idleTimer = options.createIdleTimer?.() ?? new IdleTimer();
   const discussRegistry = options.discussRegistry ?? globalDiscussRegistry;
   const progressStore = options.progressStore ?? new ProgressStore();
+  const sessionIndex = new SessionIndex();
   const now = options.now ?? (() => Date.now());
   const log = options.log ?? ((message: string) => {
     process.stderr.write(message);
@@ -986,6 +978,23 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   let lifecycle: LifecycleState = 'starting';
   let shutdownPromise: Promise<void> | null = null;
   let started = false;
+  let sessionIndexSubscribed = false;
+
+  const onSessionIndexUpdated = (payload: EventBusEvents['session:updated']): void => {
+    sessionIndex.invalidate(payload.shardHash, payload.sessionId);
+  };
+
+  function subscribeSessionIndex(): void {
+    if (sessionIndexSubscribed) return;
+    eventBus.on('session:updated', onSessionIndexUpdated);
+    sessionIndexSubscribed = true;
+  }
+
+  function unsubscribeSessionIndex(): void {
+    if (!sessionIndexSubscribed) return;
+    eventBus.off('session:updated', onSessionIndexUpdated);
+    sessionIndexSubscribed = false;
+  }
 
   function getExecutionService(ctx: CallerContext): ExecutionServiceLike {
     const key = ctx.projectRoot;
@@ -1013,9 +1022,10 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     return created;
   }
 
-  function getDiscussManager(ctx: CallerContext): DiscussManager {
+  function getDiscussContext(ctx: CallerContext): DiscussContext {
     const store = getDiscussStore(ctx.projectRoot);
-    return discussRegistry.getOrCreate(
+    return getOrCreateDiscussContext(
+      discussRegistry,
       ctx.projectRoot,
       getExecutionService(ctx) as ExecutionService,
       store,
@@ -1065,7 +1075,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
 
   function listAllJobs(store: ProgressStore, currentNamespace: string): Array<{ jobId: string; status: PersistedStatusRecord }> {
     const results: Array<{ jobId: string; status: PersistedStatusRecord }> = [];
-    for (const jobId of readJobIds()) {
+    for (const jobId of store.listJobIds()) {
       const status = store.readStatus(jobId);
       if (status && belongsToNamespace(status, currentNamespace)) {
         results.push({ jobId, status });
@@ -1086,59 +1096,13 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     return { status, events };
   }
 
-  function listAllSessions(): Array<{ shardHash: string; sessions: LenientSessionEntry[] }> {
-    const results: Array<{ shardHash: string; sessions: LenientSessionEntry[] }> = [];
-    for (const shardDir of SessionManager.listShards()) {
-      const entries = listShardSessions(shardDir);
-      if (entries.length > 0) {
-        results.push({ shardHash: basename(shardDir), sessions: entries });
-      }
-    }
-    return results;
-  }
-
-  function listShardSessions(shardDir: string): LenientSessionEntry[] {
-    let files: string[];
-    try {
-      files = readdirSync(shardDir).filter((file) => file.endsWith('.json') && !file.endsWith('.lock'));
-    } catch {
-      return [];
-    }
-
-    const entries: LenientSessionEntry[] = [];
-    for (const file of files) {
-      const entry = readSessionEntryLenient(join(shardDir, file));
-      if (entry) entries.push(entry);
-    }
-
-    return entries;
-  }
-
-  function listSessionsForNamespace(currentNamespace: string): Array<{ shardHash: string; sessions: LenientSessionEntry[] }> {
-    return listAllSessions()
-      .map(({ shardHash, sessions }) => ({
-        shardHash,
-        sessions: sessions.filter((session) => {
-          if (!session.activeJobId) return true;
-          const status = progressStore.readStatus(session.activeJobId);
-          return status !== null && belongsToNamespace(status, currentNamespace);
-        }),
-      }))
-      .filter(({ sessions }) => sessions.length > 0);
-  }
-
   function knownDiscussProjectRoots(): Set<string> {
     const projectRoots = new Set<string>();
     for (const projectRoot of readDiscussProjectRoots()) {
       projectRoots.add(projectRoot);
     }
-    for (const liveSession of discussRegistry.listLiveSessions()) {
+    for (const liveSession of listAttachedSessions(discussRegistry)) {
       projectRoots.add(liveSession.projectRoot);
-    }
-    for (const { sessions } of listAllSessions()) {
-      for (const s of sessions) {
-        if (s.projectRoot) projectRoots.add(s.projectRoot);
-      }
     }
     return projectRoots;
   }
@@ -1147,13 +1111,13 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     const results = new Map<string, DiscussSummaryDto>();
 
     for (const projectRoot of knownDiscussProjectRoots()) {
-      for (const summary of getDiscussStore(projectRoot).listSummaries()) {
+      for (const summary of getDiscussStore(projectRoot).listSummariesFromIndex()) {
         const key = `${projectRoot}\u0000${summary.sessionId}`;
         results.set(key, summary);
       }
     }
 
-    for (const liveSession of discussRegistry.listLiveSessions()) {
+    for (const liveSession of listAttachedSessions(discussRegistry)) {
       const snapshot = getDiscussStore(liveSession.projectRoot).load(liveSession.sessionId)
         ?? liveSession.session.snapshot;
       const summary = buildDiscussSummary(snapshot, 'live');
@@ -1164,7 +1128,8 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   }
 
   function isLiveDiscussSession(projectRoot: string, sessionId: string): boolean {
-    return discussRegistry.get(projectRoot)?.getSession(sessionId) !== undefined;
+    const context = getDiscussContextFromRegistry(discussRegistry, projectRoot);
+    return context !== undefined && getAttachedDiscussSession(context, sessionId) !== undefined;
   }
 
   function parseDiscussView(raw: string | null): DiscussView | null {
@@ -1232,6 +1197,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
 
       markJobsAsErrorFn(namespace, 'Backend shutting down');
       killAllChildrenFn();
+      unsubscribeSessionIndex();
 
       removeBackendInfoIfOwnerFn(resolvedPluginRoot, instanceId);
       removeLockIfOwnerFn(resolvedPluginRoot, instanceId);
@@ -1499,7 +1465,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       }
       const result = await routeToolCallFn(request, {
         getExecutionService,
-        getDiscussManager,
+        getDiscussContext,
         abortJobs,
         scopeCheckJobs: (jobIds, projectRoot) => scopeCheckJobs(jobIds, projectRoot, namespace),
       });
@@ -1536,7 +1502,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
 
       if (pathname === '/api/sessions') {
         req.resume();
-        sendJson(res, 200, { sessions: listSessionsForNamespace(namespace) });
+        sendJson(res, 200, { sessions: sessionIndex.listForNamespace(namespace, progressStore) });
         return;
       }
 
@@ -1585,6 +1551,8 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     try {
       await acquireLockFn(resolvedPluginRoot, instanceId, version, bundleHash);
       registerBuiltInProviders();
+      subscribeSessionIndex();
+      sessionIndex.hydrate(SessionManager.listShards());
       recoverOrphanedJobsFn(namespace);
       const bindHost = process.env.CORAL_BACKEND_BIND ?? '127.0.0.1';
       const { port, host } = await listen(server, bindHost);
@@ -1606,7 +1574,10 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
           projectRoot,
           pluginRoot: resolvedPluginRoot,
         };
-        await getDiscussManager(recoveryCtx).recoverPersistedSessions(recoveryCtx);
+        await discussOperations.recoverPersistedSessions(
+          getDiscussContext(recoveryCtx),
+          recoveryCtx,
+        );
       }
 
       lifecycle = 'running';
@@ -1616,7 +1587,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
           && activeChildren.size === 0
           && progressStore.liveJobCount() === 0
           && idleTimer.inflightRequests === 0
-          && !discussRegistry.hasLiveSessions(),
+          && !hasRunningSessions(discussRegistry),
         () => {
           void shutdown('idle').catch(() => {});
         },
@@ -1635,6 +1606,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     } catch (error: unknown) {
       lifecycle = 'stopped';
       idleTimer.stopWatching();
+      unsubscribeSessionIndex();
 
       try {
         await closeServerFn(server);

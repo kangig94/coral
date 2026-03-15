@@ -10,11 +10,23 @@ import type {
 } from '../../discuss/events.js';
 import { decideSessionCreate } from '../../discuss/state-machine.js';
 import type { DiscussCreateInput } from '../../discuss/types.js';
-import { discussEventLogPath } from '../../client/paths.js';
-import { readDiscussEventLog } from '../../client/readers.js';
+import {
+  createDiscussContextRegistry,
+  getOrCreate as getOrCreateDiscussContext,
+  type DiscussContextRegistry,
+} from '../discuss-context-registry.js';
+import type { DiscussContext } from '../discuss-context.js';
 import { buildWatchEvents } from '../../discuss/projections.js';
-import { DiscussManager } from '../discuss-manager.js';
 import { DiscussSessionStore } from '../discuss-session-store.js';
+import {
+  attachSession,
+  detachSession,
+  listSessions,
+} from '../discuss-registry.js';
+import {
+  isAbortEnded,
+  readSessionEvents,
+} from '../discuss-persistence.js';
 import type { CallerContext, ExecutionService } from '../service.js';
 
 export const DEFAULT_TOPIC = 'Should the city pedestrianize the downtown core?';
@@ -67,7 +79,8 @@ export type DiscussHarness = {
   projectRoot: string;
   ctx: CallerContext;
   store: DiscussSessionStore;
-  manager: DiscussManager;
+  context: DiscussContext;
+  registry: DiscussContextRegistry;
   service: ExecutionService;
   cleanup: () => void;
 };
@@ -77,10 +90,10 @@ const discussTestHomeRoot = mkdtempSync(join(tmpdir(), 'coral-discuss-home-'));
 const originalHome = process.env.HOME;
 let usingDiscussTestHome = false;
 
-function cleanupLiveSessions(manager: DiscussManager): void {
-  for (const [sessionId, session] of manager.listSessions()) {
+function cleanupLiveSessions(context: DiscussContext): void {
+  for (const [sessionId, session] of listSessions(context)) {
     session.controller.abort();
-    manager.detachSession(sessionId);
+    detachSession(context, sessionId);
   }
 }
 
@@ -114,7 +127,8 @@ export function createDiscussHarness(service = createExecutionServiceStub()): Di
   mkdirSync(pluginRoot, { recursive: true });
 
   const store = new DiscussSessionStore(projectRoot);
-  const manager = new DiscussManager(projectRoot, service, store);
+  const registry = createDiscussContextRegistry();
+  const context = getOrCreateDiscussContext(registry, projectRoot, service, store);
   const ctx: CallerContext = { projectRoot, pluginRoot };
   let cleaned = false;
 
@@ -123,14 +137,15 @@ export function createDiscussHarness(service = createExecutionServiceStub()): Di
     projectRoot,
     ctx,
     store,
-    manager,
+    context,
+    registry,
     service,
     cleanup: () => {
       if (cleaned) {
         return;
       }
       cleaned = true;
-      cleanupLiveSessions(manager);
+      cleanupLiveSessions(context);
       rmSync(tmpRoot, { recursive: true, force: true });
       activeHarnesses.delete(harness);
       disableDiscussTestHome();
@@ -149,29 +164,14 @@ export function cleanupDiscussHarnesses(): void {
 }
 
 export function attachPersistedSession(
-  harness: Pick<DiscussHarness, 'manager' | 'store' | 'projectRoot'>,
+  harness: Pick<DiscussHarness, 'context'>,
   snapshot: PersistedDiscussSnapshot,
 ): void {
-  const events = readDiscussEventLog(discussEventLogPath(harness.store.resolveSessionDir(snapshot.sessionId))).filter(
-    (event) => event.sessionId === snapshot.sessionId && event.projectRoot === harness.projectRoot,
-  );
-  const abortEnded = (() => {
-    for (let index = events.length - 1; index >= 0; index -= 1) {
-      const event = events[index];
-      if (event?.kind !== 'session.ended') {
-        continue;
-      }
-      return event.payload.reason === 'abort';
-    }
-    return false;
-  })();
-  (harness.manager as unknown as {
-    attachSession(
-      input: PersistedDiscussSnapshot,
-      initialWatchHistory?: ReturnType<typeof buildWatchEvents>,
-      abortEnded?: boolean,
-    ): unknown;
-  }).attachSession(snapshot, buildWatchEvents(events), abortEnded);
+  const events = readSessionEvents(harness.context, snapshot.sessionId);
+  attachSession(harness.context, snapshot, {
+    baseCursor: 0,
+    events: buildWatchEvents(events),
+  }, isAbortEnded(events));
 }
 
 export async function persistSession(

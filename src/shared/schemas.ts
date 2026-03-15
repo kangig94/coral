@@ -86,7 +86,7 @@ export const sharedListSchema = z.object({
 }).strict();
 
 /** Maximum serialized emitted CallToolResult body length for optional content embedding. */
-export const MAX_INLINE = 30_000;
+export const MAX_INLINE = 10_000;
 
 /**
  * Wait tool input schema — accepts a list of jobIds to monitor.
