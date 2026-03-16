@@ -70,6 +70,9 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
 
     ### Step 3 — Execute
 
+    ⛔ DO NOT ask the user for confirmation, warn about task size, estimate time, or question feasibility.
+    The user invoked ralph — that IS the decision. Execute all batches in order. Start now.
+
     **Task Registration** (both modes, before dispatch):
     Break work into discrete units and register each via `TaskCreate`:
     - **Plan mode**: one Task per Acceptance Criterion from the plan.

@@ -4,7 +4,7 @@
 // Line 1: model │ limits │ ctx │ session │ skill
 // Line 2: codex model │ codex limits │ spark limits
 
-import { readFileSync, readdirSync, existsSync, writeFileSync, mkdirSync, openSync, fstatSync, readSync, closeSync, renameSync, unlinkSync } from "fs";
+import { readFileSync, readdirSync, existsSync, writeFileSync, mkdirSync, openSync, fstatSync, statSync, readSync, closeSync, renameSync, unlinkSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { execSync } from "child_process";
@@ -142,6 +142,8 @@ function renderContext(input) {
 }
 
 const STALE_AGENT_MS = 30 * 60 * 1000;
+const SESSION_PRUNE_MS = 60 * 60 * 1000;
+const ACTIVITY_TTL_MS = 60 * 60 * 1000;
 
 function readTranscriptTail(transcriptPath) {
   if (!transcriptPath) return null;
@@ -268,21 +270,61 @@ function parseLastUserMessage(lines) {
   return null;
 }
 
-function parseTranscript(input) {
-  const lines = readTranscriptTail(input.transcript_path);
-  if (!lines) return { activity: null, lastUserMessage: null };
-  const running = parseRunningAgents(lines);
-  let activity = null;
-  if (running.length > 0) {
-    const counts = {};
-    for (const a of running) counts[a.subagent_type] = (counts[a.subagent_type] || 0) + 1;
-    const str = Object.entries(counts).map(([t, c]) => c > 1 ? `${t}×${c}` : t).join(" ");
-    activity = `${DIM}${str}${RESET}`;
-  } else {
-    const skill = parseLastSkill(lines);
-    if (skill) activity = `${CYAN}${skill}${RESET}`;
+function formatAgentCounts(agents) {
+  const counts = {};
+  for (const a of agents) counts[a.subagent_type] = (counts[a.subagent_type] || 0) + 1;
+  return `${DIM}${Object.entries(counts).map(([t, c]) => c > 1 ? `${t}×${c}` : t).join(" ")}${RESET}`;
+}
+
+function renderActivityStr(agents, activity) {
+  const agentList = Array.isArray(agents) ? agents : Object.values(agents || {});
+  if (agentList.length > 0) return formatAgentCounts(agentList);
+  if (activity?.name && activity?.ts && (Date.now() - activity.ts < ACTIVITY_TTL_MS)) {
+    return `${CYAN}${activity.name}${RESET}`;
   }
-  return { activity, lastUserMessage: parseLastUserMessage(lines) };
+  return null;
+}
+
+function parseTranscript(input) {
+  const sessionId = input.session_id;
+  const transcriptPath = input.transcript_path;
+
+  let transcriptSize = 0;
+  try { transcriptSize = statSync(transcriptPath).size; } catch {}
+
+  const cached = sessionId ? readSessionEntry(sessionId) : null;
+
+  if (cached && cached.transcriptSize === transcriptSize) {
+    const agents = cached.agents || {};
+    return {
+      activity: renderActivityStr(agents, cached.activity),
+      lastUserMessage: cached.prompt,
+      _session: { activity: cached.activity, agents, prompt: cached.prompt, transcriptSize },
+    };
+  }
+
+  const lines = readTranscriptTail(transcriptPath);
+  if (!lines) return { activity: null, lastUserMessage: null, _session: { activity: null, agents: {}, prompt: null, transcriptSize } };
+
+  const running = parseRunningAgents(lines);
+  const skill = parseLastSkill(lines);
+  const prompt = parseLastUserMessage(lines);
+
+  const agentsMap = {};
+  running.forEach((a, i) => {
+    agentsMap[i] = { subagent_type: a.subagent_type, ts: a.startTime?.getTime() || Date.now() };
+  });
+
+  const now = Date.now();
+  const activity = skill
+    ? { name: skill, ts: (cached?.activity?.name === skill ? cached.activity.ts : now) }
+    : (cached?.activity || null);
+
+  return {
+    activity: renderActivityStr(running, activity),
+    lastUserMessage: prompt,
+    _session: { activity, agents: agentsMap, prompt, transcriptSize },
+  };
 }
 
 // --- cache ---
@@ -299,6 +341,43 @@ const LOCK_STALE_MS = 10_000;
 const CORAL_ONLINE_TTL_MS = 5_000;
 const CORAL_OFFLINE_TTL_MS = 2_000;
 const CORAL_HEALTH_TIMEOUT_MS = 200;
+
+// --- session state ---
+
+const SESSIONS_FILE = join(CACHE_DIR, ".coral-sessions.json");
+let _sessionsCache = null;
+
+function readSessions() {
+  if (_sessionsCache) return _sessionsCache;
+  try {
+    _sessionsCache = JSON.parse(readFileSync(SESSIONS_FILE, "utf-8"));
+  } catch {
+    _sessionsCache = {};
+  }
+  return _sessionsCache;
+}
+
+function readSessionEntry(sessionId) {
+  return readSessions()[sessionId] || null;
+}
+
+function writeSession(sessionId, data) {
+  try {
+    const all = readSessions();
+    const existing = all[sessionId];
+    if (existing && existing.ctx === data.ctx && existing.transcriptSize === data.transcriptSize) return;
+    all[sessionId] = { ...data, ts: Date.now() };
+    const now = Date.now();
+    for (const key of Object.keys(all)) {
+      if (now - (all[key]?.ts || 0) > SESSION_PRUNE_MS) delete all[key];
+    }
+    mkdirSync(CACHE_DIR, { recursive: true });
+    const tmpPath = `${SESSIONS_FILE}.tmp-${process.pid}`;
+    writeFileSync(tmpPath, JSON.stringify(all), { mode: 0o600 });
+    renameSync(tmpPath, SESSIONS_FILE);
+    _sessionsCache = all;
+  } catch {}
+}
 
 function readFullCache() {
   try {
@@ -529,6 +608,11 @@ function formatErrorIndicator(cache) {
   }
 }
 
+function cacheError(slot, errorKind, rateLimit = 0) {
+  writeCacheSlot(slot, null, true, rateLimit, errorKind);
+  return formatErrorIndicator({ error: true, errorKind, ts: Date.now(), rateLimit });
+}
+
 async function renderLimits() {
   const cached = readCacheSlot("claude");
   if (cached) {
@@ -549,19 +633,9 @@ async function renderLimits() {
     if (!token) return null;
 
     const resp = await fetchUsage(token, controller.signal);
-    if (resp?.unauthorized) {
-      writeCacheSlot("claude", null, true, 0, "auth");
-      return formatErrorIndicator({ error: true, errorKind: "auth", ts: Date.now(), rateLimit: 0 });
-    }
-    if (resp?.rateLimited) {
-      const newRL = readBackoffState("claude") + 1;
-      writeCacheSlot("claude", null, true, newRL, "rateLimit");
-      return formatErrorIndicator({ error: true, errorKind: "rateLimit", ts: Date.now(), rateLimit: newRL });
-    }
-    if (!resp) {
-      writeCacheSlot("claude", null, true, 0, "generic");
-      return formatErrorIndicator({ error: true, errorKind: "generic", ts: Date.now(), rateLimit: 0 });
-    }
+    if (resp?.unauthorized) return cacheError("claude", "auth");
+    if (resp?.rateLimited) return cacheError("claude", "rateLimit", readBackoffState("claude") + 1);
+    if (!resp) return cacheError("claude", "generic");
 
     const data = {
       fiveHour: resp.five_hour?.utilization,
@@ -720,51 +794,23 @@ async function renderCodexData() {
 
     if (result?.unauthorized) {
       const refreshed = await refreshCodexToken(creds.refreshToken, creds.clientId, controller.signal);
-      if (!refreshed) {
-        writeCacheSlot("codex", null, true, 0, "generic");
-        return {
-          kind: "error",
-          message: formatErrorIndicator({ error: true, errorKind: "generic", ts: Date.now(), rateLimit: 0 }),
-        };
-      }
+      if (!refreshed) return { kind: "error", message: cacheError("codex", "generic") };
       token = refreshed.accessToken;
       if (refreshed.refreshToken) writeBackCodexCredentials(creds, refreshed);
       result = await fetchCodexUsage(token, creds.accountId, controller.signal);
     }
 
-    if (result?.unauthorized) {
-      writeCacheSlot("codex", null, true, 0, "auth");
-      return {
-        kind: "error",
-        message: formatErrorIndicator({ error: true, errorKind: "auth", ts: Date.now(), rateLimit: 0 }),
-      };
-    }
+    if (result?.unauthorized) return { kind: "error", message: cacheError("codex", "auth") };
+    if (result?.rateLimited) return { kind: "error", message: cacheError("codex", "rateLimit", readBackoffState("codex") + 1) };
 
-    if (result?.rateLimited) {
-      const newRL = readBackoffState("codex") + 1;
-      writeCacheSlot("codex", null, true, newRL, "rateLimit");
-      return {
-        kind: "error",
-        message: formatErrorIndicator({ error: true, errorKind: "rateLimit", ts: Date.now(), rateLimit: newRL }),
-      };
-    }
-
-    if (result && !result.unauthorized && !result.rateLimited) {
+    if (result) {
       writeCacheSlot("codex", result);
       return { kind: "data", ...result };
     }
 
-    writeCacheSlot("codex", null, true, 0, "generic");
-    return {
-      kind: "error",
-      message: formatErrorIndicator({ error: true, errorKind: "generic", ts: Date.now(), rateLimit: 0 }),
-    };
+    return { kind: "error", message: cacheError("codex", "generic") };
   } catch {
-    writeCacheSlot("codex", null, true, 0, "generic");
-    return {
-      kind: "error",
-      message: formatErrorIndicator({ error: true, errorKind: "generic", ts: Date.now(), rateLimit: 0 }),
-    };
+    return { kind: "error", message: cacheError("codex", "generic") };
   } finally {
     clearTimeout(timer);
     releaseFetchLock(lock);
@@ -900,12 +946,11 @@ async function main() {
   const claudeModel = renderModel(input);
   const envModel = process.env.CORAL_CODEX_MODEL || "gpt-5.4";
   let col1Claude, col1Codex, col2Claude, col2Codex;
+  const addonTier = codexData.additionalLabel?.toLowerCase() || null;
+  const hasAddon = addonTier ? envModel.toLowerCase().endsWith(`-${addonTier}`) : false;
 
   if (codexData.kind === "data") {
-    const addonTier = codexData.additionalLabel?.toLowerCase() || null;
-    const hasAddon = addonTier ? envModel.toLowerCase().endsWith(`-${addonTier}`) : false;
-    const baseModel = hasAddon ? envModel.slice(0, envModel.lastIndexOf("-")) : envModel;
-    const codexModel = baseModel;
+    const codexModel = hasAddon ? envModel.slice(0, envModel.lastIndexOf("-")) : envModel;
 
     [col1Claude, col1Codex] = alignColumns(claudeModel, codexModel);
     const codexLimits = formatLimits(codexData.codex);
@@ -934,8 +979,6 @@ async function main() {
 
   // Line 2: Codex
   if (codexData.kind === "data") {
-    const addonTier = codexData.additionalLabel?.toLowerCase() || null;
-    const hasAddon = addonTier ? envModel.toLowerCase().endsWith(`-${addonTier}`) : false;
     const sparkLabel = hasAddon ? `${GREEN}${codexData.additionalLabel}${RESET}` : codexData.additionalLabel;
     const sparkLimits = codexData.spark ? formatLimits(codexData.spark) : null;
     const sparkStr = sparkLimits ? `${sparkLabel} ${sparkLimits}` : null;
@@ -969,6 +1012,13 @@ async function main() {
       }
     }
     output += "\n" + coralFinal;
+  }
+
+  // Write session state
+  const sessionId = input.session_id;
+  if (sessionId && transcript._session) {
+    const ctx = input.context_window?.used_percentage ?? null;
+    writeSession(sessionId, { ctx, ...transcript._session });
   }
 
   output = output

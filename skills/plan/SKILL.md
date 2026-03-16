@@ -149,7 +149,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     - **Continue**: Either reviewer returned CRITICAL or HIGH → go to 4a for re-verification (plan was modified to address findings, but the modifications themselves may introduce new issues).
     - **Fix and pass**: No CRITICAL/HIGH but MEDIUM/LOW exist → fixes applied, exit.
     - **Clean pass**: No findings above LOW (and HOW-COMPLETE satisfied, if `--deep`) → proceed to next phase (or step 5 if last phase).
-    - **Max rounds (5)**: Proceed to next phase (or `AskUserQuestion` — continue, finalize, or abort — if last phase).
+    - **Max rounds (5)**: Proceed to next phase using workflow with that phase's provider (or `AskUserQuestion` — continue, finalize, or abort — if last phase).
 
     ### 4e. Execution Order
 
