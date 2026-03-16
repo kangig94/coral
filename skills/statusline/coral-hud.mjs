@@ -608,6 +608,11 @@ function formatErrorIndicator(cache) {
   }
 }
 
+function cacheError(slot, errorKind, rateLimit = 0) {
+  writeCacheSlot(slot, null, true, rateLimit, errorKind);
+  return formatErrorIndicator({ error: true, errorKind, ts: Date.now(), rateLimit });
+}
+
 async function renderLimits() {
   const cached = readCacheSlot("claude");
   if (cached) {
@@ -628,19 +633,9 @@ async function renderLimits() {
     if (!token) return null;
 
     const resp = await fetchUsage(token, controller.signal);
-    if (resp?.unauthorized) {
-      writeCacheSlot("claude", null, true, 0, "auth");
-      return formatErrorIndicator({ error: true, errorKind: "auth", ts: Date.now(), rateLimit: 0 });
-    }
-    if (resp?.rateLimited) {
-      const newRL = readBackoffState("claude") + 1;
-      writeCacheSlot("claude", null, true, newRL, "rateLimit");
-      return formatErrorIndicator({ error: true, errorKind: "rateLimit", ts: Date.now(), rateLimit: newRL });
-    }
-    if (!resp) {
-      writeCacheSlot("claude", null, true, 0, "generic");
-      return formatErrorIndicator({ error: true, errorKind: "generic", ts: Date.now(), rateLimit: 0 });
-    }
+    if (resp?.unauthorized) return cacheError("claude", "auth");
+    if (resp?.rateLimited) return cacheError("claude", "rateLimit", readBackoffState("claude") + 1);
+    if (!resp) return cacheError("claude", "generic");
 
     const data = {
       fiveHour: resp.five_hour?.utilization,
@@ -799,51 +794,23 @@ async function renderCodexData() {
 
     if (result?.unauthorized) {
       const refreshed = await refreshCodexToken(creds.refreshToken, creds.clientId, controller.signal);
-      if (!refreshed) {
-        writeCacheSlot("codex", null, true, 0, "generic");
-        return {
-          kind: "error",
-          message: formatErrorIndicator({ error: true, errorKind: "generic", ts: Date.now(), rateLimit: 0 }),
-        };
-      }
+      if (!refreshed) return { kind: "error", message: cacheError("codex", "generic") };
       token = refreshed.accessToken;
       if (refreshed.refreshToken) writeBackCodexCredentials(creds, refreshed);
       result = await fetchCodexUsage(token, creds.accountId, controller.signal);
     }
 
-    if (result?.unauthorized) {
-      writeCacheSlot("codex", null, true, 0, "auth");
-      return {
-        kind: "error",
-        message: formatErrorIndicator({ error: true, errorKind: "auth", ts: Date.now(), rateLimit: 0 }),
-      };
-    }
+    if (result?.unauthorized) return { kind: "error", message: cacheError("codex", "auth") };
+    if (result?.rateLimited) return { kind: "error", message: cacheError("codex", "rateLimit", readBackoffState("codex") + 1) };
 
-    if (result?.rateLimited) {
-      const newRL = readBackoffState("codex") + 1;
-      writeCacheSlot("codex", null, true, newRL, "rateLimit");
-      return {
-        kind: "error",
-        message: formatErrorIndicator({ error: true, errorKind: "rateLimit", ts: Date.now(), rateLimit: newRL }),
-      };
-    }
-
-    if (result && !result.unauthorized && !result.rateLimited) {
+    if (result) {
       writeCacheSlot("codex", result);
       return { kind: "data", ...result };
     }
 
-    writeCacheSlot("codex", null, true, 0, "generic");
-    return {
-      kind: "error",
-      message: formatErrorIndicator({ error: true, errorKind: "generic", ts: Date.now(), rateLimit: 0 }),
-    };
+    return { kind: "error", message: cacheError("codex", "generic") };
   } catch {
-    writeCacheSlot("codex", null, true, 0, "generic");
-    return {
-      kind: "error",
-      message: formatErrorIndicator({ error: true, errorKind: "generic", ts: Date.now(), rateLimit: 0 }),
-    };
+    return { kind: "error", message: cacheError("codex", "generic") };
   } finally {
     clearTimeout(timer);
     releaseFetchLock(lock);
@@ -979,12 +946,11 @@ async function main() {
   const claudeModel = renderModel(input);
   const envModel = process.env.CORAL_CODEX_MODEL || "gpt-5.4";
   let col1Claude, col1Codex, col2Claude, col2Codex;
+  const addonTier = codexData.additionalLabel?.toLowerCase() || null;
+  const hasAddon = addonTier ? envModel.toLowerCase().endsWith(`-${addonTier}`) : false;
 
   if (codexData.kind === "data") {
-    const addonTier = codexData.additionalLabel?.toLowerCase() || null;
-    const hasAddon = addonTier ? envModel.toLowerCase().endsWith(`-${addonTier}`) : false;
-    const baseModel = hasAddon ? envModel.slice(0, envModel.lastIndexOf("-")) : envModel;
-    const codexModel = baseModel;
+    const codexModel = hasAddon ? envModel.slice(0, envModel.lastIndexOf("-")) : envModel;
 
     [col1Claude, col1Codex] = alignColumns(claudeModel, codexModel);
     const codexLimits = formatLimits(codexData.codex);
@@ -1013,8 +979,6 @@ async function main() {
 
   // Line 2: Codex
   if (codexData.kind === "data") {
-    const addonTier = codexData.additionalLabel?.toLowerCase() || null;
-    const hasAddon = addonTier ? envModel.toLowerCase().endsWith(`-${addonTier}`) : false;
     const sparkLabel = hasAddon ? `${GREEN}${codexData.additionalLabel}${RESET}` : codexData.additionalLabel;
     const sparkLimits = codexData.spark ? formatLimits(codexData.spark) : null;
     const sparkStr = sparkLimits ? `${sparkLabel} ${sparkLimits}` : null;
