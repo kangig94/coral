@@ -145,11 +145,11 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
     **4d. Exit Condition**
     **If `--deep`**: Read `CORAL_METHODS/HOW-COMPLETE.md` and apply its additional completion criteria alongside the rules below.
-    Evaluate based on what reviewers RETURNED this round (not your post-edit assessment):
-    - **Continue**: Either reviewer returned CRITICAL or HIGH → go to 4a for re-verification (plan was modified to address findings, but the modifications themselves may introduce new issues).
-    - **Fix and pass**: No CRITICAL/HIGH but MEDIUM/LOW exist → fixes applied, exit.
-    - **Clean pass**: No findings above LOW (and HOW-COMPLETE satisfied, if `--deep`) → proceed to next phase (or step 5 if last phase).
-    - **Max rounds (5)**: Proceed to next phase using workflow with that phase's provider (or `AskUserQuestion` — continue, finalize, or abort — if last phase).
+    Evaluate based on what reviewers RETURNED this round — not your post-edit assessment. In `--deep` mode, resolver Adopt/Adapt does not downgrade the original severity:
+    - **Continue** (same phase): Either reviewer returned CRITICAL or HIGH → loop back to 4a **within the current phase** for re-verification. This holds even when the resolver has applied all fixes — the modifications themselves may introduce new issues.
+    - **Fix and pass** (exit phase): No CRITICAL/HIGH but MEDIUM/LOW exist → fixes applied, exit phase.
+    - **Clean pass** (exit phase): No findings above LOW (and HOW-COMPLETE satisfied, if `--deep`) → exit phase, proceed to next phase (or step 5 if last phase).
+    - **Max rounds (5)** (exit phase): Proceed to next phase using workflow with that phase's provider (or `AskUserQuestion` — continue, finalize, or abort — if last phase).
 
     ### 4e. Execution Order
 
