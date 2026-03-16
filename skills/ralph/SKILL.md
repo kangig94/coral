@@ -138,14 +138,22 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
     **`--red`**: Before starting, spawn `Agent("coral:red-attacker", { run_in_background: true })`
     with prompt: plan file path + acceptance criteria. Staging: `.claude/coral/tmp/red/`.
 
-    **Prompt construction** for each Codex call:
-    1. System: Ralph's `<Role>` and `<Success_Criteria>`
-    2. Plan: plan file path as reference (Codex should read it for broader context, not implement the entire plan)
-    3. Context: working directory, file paths, code sections, constraints
-    4. AC block: copy the assigned ACs from the plan into the prompt inside a fenced block.
-       The text inside the fence MUST be identical to the plan — no rewording, no additions,
-       no scope-reduction annotations (e.g., "skip X for now", "do not add Y yet").
-       Ralph executes ACs. Ralph does not author, edit, or judge them.
+    **Prompt construction** — each Codex call receives a single prompt with this structure:
+    ```
+    <Ralph's Role and Success_Criteria>
+
+    Implement AC3, AC4 EXACTLY as specified in the plan.
+    Read <plan file path> for full context.
+    Working directory: <project root>
+
+    ## Acceptance Criteria (verbatim from plan — implement exactly as written)
+    <AC text copied identically from plan>
+
+    ## Context
+    <relevant file paths, code sections, constraints for the assigned ACs>
+    ```
+    ⛔ The AC text MUST be identical to the plan — no rewording, no additions,
+    no scope-reduction annotations. Ralph executes ACs, not edits them.
 
     **Execution loop** — process batches from Execution Order sequentially; parallelize within each batch:
     1. Group ACs in the batch by coupling: tightly coupled ACs (shared files, sequential dependency)
@@ -171,10 +179,13 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
 
        **If `--codex`**: each worker's prompt must ALSO include these Codex execution instructions:
        ```
-       For each assigned AC, delegate implementation to Codex.
-       Include the plan file path in the prompt so Codex can read it for context.
-       ⛔ AC integrity: copy assigned ACs from the plan identically. No rewording, no scope-reduction annotations.
-       1. codex({ op: "bypass_exec", prompt: "<literal AC quotes + file paths + constraints>", work_dir: "<project root>" })
+       For each assigned AC, delegate to Codex using this prompt structure:
+         Implement <AC numbers> EXACTLY as specified in the plan.
+         Read <plan file path> for full context.
+         ## Acceptance Criteria (verbatim from plan — implement exactly as written)
+         <AC text copied identically from plan>
+       ⛔ AC text must be identical to the plan. No rewording, no scope-reduction annotations.
+       1. codex({ op: "bypass_exec", prompt: "<above structure + file paths + constraints>", work_dir: "<project root>" })
           → wait({ jobs: [job] }) → read `result.content`; if absent, `Read(result.path)` is best-effort recovery.
           Do NOT pass `session`.
        2. Verify changes yourself: read changed files, compare against AC.
