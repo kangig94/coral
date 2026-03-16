@@ -1,15 +1,7 @@
 import type { CodexThreadEvent } from './types.js';
-import { shortPath, truncate } from '../../shared/format-progress.js';
+import { formatToolProgress, truncate } from '../../shared/format-progress.js';
 import { stripShellWrapper, matchCommandPattern } from './command-patterns.js';
-
-function formatCommandExecution(command: string, projectRoot?: string): string {
-  const stripped = stripShellWrapper(command);
-  return matchCommandPattern(stripped, projectRoot) ?? `Bash(${truncate(stripped)})`;
-}
-
-function formatFileChange(path: string | undefined, projectRoot?: string): string {
-  return `Edit(${shortPath(path ?? 'file', projectRoot)})`;
-}
+import { isRecord } from '../../shared/mcp-utils.js';
 
 /** Extract a human-readable progress message from a Codex JSONL event. */
 export function extractProgressMessage(event: CodexThreadEvent, projectRoot?: string): string | null {
@@ -19,19 +11,30 @@ export function extractProgressMessage(event: CodexThreadEvent, projectRoot?: st
   const item = event.item;
   switch (item.type) {
     case 'reasoning':
-      return typeof item.text === 'string' ? item.text.slice(0, 120) : null;
+      return typeof item.text === 'string' ? truncate(item.text, 120) : null;
     case 'web_search':
-      return typeof item.query === 'string' ? `Searching: ${item.query}` : null;
+      return typeof item.query === 'string'
+        ? formatToolProgress('WebSearch', { query: item.query }, projectRoot)
+        : null;
     case 'agent_message':
       return 'Generating response...';
-    case 'command_execution':
-      return typeof item.command === 'string' ? formatCommandExecution(item.command, projectRoot) : null;
+    case 'command_execution': {
+      if (typeof item.command !== 'string') return null;
+      const stripped = stripShellWrapper(item.command);
+      return matchCommandPattern(stripped, projectRoot)
+        ?? formatToolProgress('Bash', { command: stripped }, projectRoot);
+    }
     case 'file_change': {
       const firstChange = Array.isArray(item.changes) ? item.changes[0] : undefined;
-      return formatFileChange(typeof firstChange?.path === 'string' ? firstChange.path : undefined, projectRoot);
+      const path = typeof firstChange?.path === 'string' ? firstChange.path : 'file';
+      const tool = firstChange?.kind === 'created' ? 'Write' : 'Edit';
+      return formatToolProgress(tool, { file_path: path }, projectRoot);
     }
-    case 'mcp_tool_call':
-      return typeof item.tool === 'string' ? `Calling: ${item.tool}` : null;
+    case 'mcp_tool_call': {
+      if (typeof item.tool !== 'string') return null;
+      const args = isRecord(item.arguments) ? item.arguments : {};
+      return formatToolProgress(item.tool, args, projectRoot);
+    }
     default:
       return null;
   }

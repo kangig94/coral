@@ -46,7 +46,7 @@ describe('formatToolProgress', () => {
 
   it('formats Edit and Write tools', () => {
     expect(formatToolProgress('Edit', { file_path: projectMainFile, old_string: 'before\nline', new_string: 'after\nline' }, projectRoot))
-      .toBe('Edit(src/main.ts, "before" → "after")');
+      .toBe('Update(src/main.ts, "before" → "after")');
     expect(formatToolProgress('Write', { file_path: projectMainFile }, projectRoot)).toBe('Write(src/main.ts)');
   });
 

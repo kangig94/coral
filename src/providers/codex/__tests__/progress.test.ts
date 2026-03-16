@@ -4,8 +4,8 @@ import type { CodexThreadEvent } from '../types.js';
 
 const projectRoot = '/repo';
 
-function fileChangeEvent(path?: string): CodexThreadEvent {
-  const changes: Array<{ path: string; kind: string }> = path === undefined ? [] : [{ path, kind: 'modified' }];
+function fileChangeEvent(path?: string, kind = 'modified'): CodexThreadEvent {
+  const changes: Array<{ path: string; kind: string }> = path === undefined ? [] : [{ path, kind }];
   return {
     type: 'item.completed',
     item: {
@@ -32,20 +32,24 @@ function commandEvent(command: string): CodexThreadEvent {
 }
 
 describe('extractProgressMessage', () => {
-  it('formats file_change path inside projectRoot as relative', () => {
-    expect(extractProgressMessage(fileChangeEvent('/repo/src/main.ts'), projectRoot)).toBe('Edit(src/main.ts)');
+  it('formats modified file_change as Edit', () => {
+    expect(extractProgressMessage(fileChangeEvent('/repo/src/main.ts'), projectRoot)).toBe('Update(src/main.ts)');
+  });
+
+  it('formats created file_change as Write', () => {
+    expect(extractProgressMessage(fileChangeEvent('/repo/src/new.ts', 'created'), projectRoot)).toBe('Write(src/new.ts)');
   });
 
   it('formats file_change path outside projectRoot as absolute', () => {
-    expect(extractProgressMessage(fileChangeEvent('/tmp/scratch.ts'), projectRoot)).toBe('Edit(/tmp/scratch.ts)');
+    expect(extractProgressMessage(fileChangeEvent('/tmp/scratch.ts'), projectRoot)).toBe('Update(/tmp/scratch.ts)');
   });
 
   it('formats relative file_change path against projectRoot', () => {
-    expect(extractProgressMessage(fileChangeEvent('src/main.ts'), projectRoot)).toBe('Edit(src/main.ts)');
+    expect(extractProgressMessage(fileChangeEvent('src/main.ts'), projectRoot)).toBe('Update(src/main.ts)');
   });
 
-  it('falls back to "file" when file_change path is missing', () => {
-    expect(extractProgressMessage(fileChangeEvent(undefined), projectRoot)).toBe('Edit(file)');
+  it('falls back to "Update(file)" when file_change path is missing', () => {
+    expect(extractProgressMessage(fileChangeEvent(undefined), projectRoot)).toBe('Update(file)');
   });
 
   it('formats command_execution file reads relative to projectRoot', () => {
