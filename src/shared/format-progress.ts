@@ -12,7 +12,7 @@ function formatFilePath(input: Record<string, unknown>, projectRoot?: string): s
 }
 
 function firstLine(value: unknown): string {
-  return typeof value === 'string' ? value.split('\n')[0] : '';
+  return typeof value === 'string' ? value.split('\n', 1)[0] : '';
 }
 
 export function formatToolProgress(name: string, input: Record<string, unknown>, projectRoot?: string): string {
@@ -29,6 +29,7 @@ export function formatToolProgress(name: string, input: Record<string, unknown>,
       const file = formatFilePath(input, projectRoot);
       const old = firstLine(input.old_string);
       const next = firstLine(input.new_string);
+      if (!old && !next) return `Update(${file})`;
       return `Update(${file}, "${truncate(old, 30)}" → "${truncate(next, 30)}")`;
     }
     case 'Write': {
@@ -59,4 +60,17 @@ export function formatToolProgress(name: string, input: Record<string, unknown>,
 
 export function truncate(text: string, maxLen = 80): string {
   return text.length > maxLen ? `${text.slice(0, maxLen)}...` : text;
+}
+
+export function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const s = String(seconds).padStart(2, ' ');
+  const m = String(minutes).padStart(2, ' ');
+  if (hours > 0) {
+    return `${hours}h ${String(minutes).padStart(2, '0')}m ${String(seconds).padStart(2, '0')}s`;
+  }
+  return `${m}m ${s}s`;
 }

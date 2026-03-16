@@ -48,7 +48,7 @@ describe('extractProgressMessage', () => {
     expect(extractProgressMessage(fileChangeEvent('src/main.ts'), projectRoot)).toBe('Update(src/main.ts)');
   });
 
-  it('falls back to "Edit(file)" when file_change path is missing', () => {
+  it('falls back to "Update(file)" when file_change path is missing', () => {
     expect(extractProgressMessage(fileChangeEvent(undefined), projectRoot)).toBe('Update(file)');
   });
 

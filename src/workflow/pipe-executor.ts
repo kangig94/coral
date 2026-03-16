@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { CallerContext, ExecutionService } from '../execution/service.js';
 import type { TerminalResult, WaitCursor } from '../types.js';
 import type { PipeAtom, PipelineAST } from './types.js';
+import { truncate } from '../shared/format-progress.js';
 
 export const BOOTSTRAP_TIMEOUT_MS = 2_000;
 export const SIBLING_DRAIN_TIMEOUT_MS = 15_000;
@@ -120,7 +121,7 @@ function atomTagName(atom: PipeAtom): string {
 
 function atomDiagnosticLabel(atom: PipeAtom, atomIndex: number): string {
   if (atom.kind === 'agent') return atom.agent;
-  const truncated = atom.text.length > 20 ? `${atom.text.slice(0, 20)}...` : atom.text;
+  const truncated = truncate(atom.text, 20);
   return `prompt#${atomIndex}(${truncated})`;
 }
 

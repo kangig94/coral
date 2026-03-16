@@ -21,6 +21,7 @@ import type {
   TerminalResult,
 } from '../types.js';
 import { isNoEntryError } from '../shared/mcp-utils.js';
+import { formatElapsed } from '../shared/format-progress.js';
 import { eventBus } from './event-bus.js';
 
 export { JOBS_DIR } from '../client/paths.js';
@@ -54,18 +55,7 @@ export function createReplayCursor(): ReplayCursor {
   return { lastOffset: 0, remainder: '' };
 }
 
-export function formatElapsed(ms: number): string {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  const s = String(seconds).padStart(2, ' ');
-  const m = String(minutes).padStart(2, ' ');
-  if (hours > 0) {
-    return `${hours}h ${String(minutes).padStart(2, '0')}m ${String(seconds).padStart(2, '0')}s`;
-  }
-  return `${m}m ${s}s`;
-}
+export { formatElapsed } from '../shared/format-progress.js';
 
 export class ProgressStore {
   private readonly eventCounters = new Map<string, number>();
@@ -290,7 +280,8 @@ export class ProgressStore {
   /** Append a progress event to progress.jsonl. Returns the eventId. */
   appendProgress(jobId: string, sessionId: string, message: string): number {
     const eventId = this.nextEventId(jobId);
-    const elapsed = Date.now() - (this.jobStartedAt.get(jobId) ?? Date.now());
+    const startedAt = this.jobStartedAt.get(jobId);
+    const elapsed = startedAt !== undefined ? Date.now() - startedAt : 0;
     const stamped = `[${formatElapsed(elapsed)}] ${message}`;
     const entry: PersistedProgressRecord = {
       jobId,
@@ -422,7 +413,7 @@ export class ProgressStore {
       const combined = cursor.remainder + chunks.join('');
       const lines = combined.split('\n');
       cursor.remainder = lines.pop() ?? '';
-      return lines.filter((line) => line.trim().length > 0);
+      return lines.filter((line) => line.length > 0);
     } finally {
       closeSync(fd);
     }
