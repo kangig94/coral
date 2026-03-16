@@ -112,9 +112,9 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
       provider: "{phase provider}"
     })
     ```
-    - **If `--deep`**: `wait({ jobs: [job], inline: false })` →
-      `{ start, end } = result.workflow.steps.find(s => s.agent === "resolver")` → `Read(result.content, start, end - start + 1)`.
-    - **Otherwise**: `wait({ jobs: [job], inline: true })` → read `result.content`.
+    - **If `--deep`**: `wait({ jobs: [job] })` →
+      `{ start, end } = result.workflow.steps.find(s => s.agent === "resolver")` → `Read(result.path, start, end - start + 1)`.
+    - **Otherwise**: `wait({ jobs: [job] })` → use `result.content ?? Read(result.path)`.
 
     **4b. Post-Round Processing**
 
@@ -122,7 +122,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     Read the updated plan file, then the resolver's synthesis report from the workflow result.
     Record Deferred/Diverged items.
 
-    **Otherwise**: `result.content` is `<architect>…</architect>` + `<critic>…</critic>`.
+    **Otherwise**: `result.content ?? Read(result.path)` is `<architect>…</architect>` + `<critic>…</critic>`.
     Read `CORAL_METHODS/HOW-SYNTHESIZE.md` and resolve the findings yourself. Edit the plan file.
 
     **4c. Round Summary** (AFTER 4b)
