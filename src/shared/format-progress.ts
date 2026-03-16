@@ -29,7 +29,7 @@ export function formatToolProgress(name: string, input: Record<string, unknown>,
       const file = formatFilePath(input, projectRoot);
       const old = firstLine(input.old_string);
       const next = firstLine(input.new_string);
-      return `Edit(${file}, "${truncate(old, 30)}" → "${truncate(next, 30)}")`;
+      return `Update(${file}, "${truncate(old, 30)}" → "${truncate(next, 30)}")`;
     }
     case 'Write': {
       return `Write(${formatFilePath(input, projectRoot)})`;

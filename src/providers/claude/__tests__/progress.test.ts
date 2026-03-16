@@ -52,7 +52,7 @@ describe('extractClaudeProgressMessage', () => {
       new_string: 'after\nextra',
     });
 
-    expect(extractClaudeProgressMessage(event)).toBe('Edit(/repo/src/main.ts, "before" → "after")');
+    expect(extractClaudeProgressMessage(event)).toBe('Update(/repo/src/main.ts, "before" → "after")');
   });
 
   it('formats Edit tool_use relative to explicit projectRoot', () => {
@@ -62,7 +62,7 @@ describe('extractClaudeProgressMessage', () => {
       new_string: 'after\nextra',
     });
 
-    expect(extractClaudeProgressMessage(event, '/repo')).toBe('Edit(src/main.ts, "before" → "after")');
+    expect(extractClaudeProgressMessage(event, '/repo')).toBe('Update(src/main.ts, "before" → "after")');
   });
 
   it('formats Bash tool_use using description fallback', () => {
