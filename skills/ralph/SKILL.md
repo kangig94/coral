@@ -146,11 +146,11 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
     Read <plan file path> for full context.
     Working directory: <project root>
 
-    ## Context
-    <relevant file paths, code sections, constraints for the assigned ACs>
-
     ## Acceptance Criteria (verbatim from plan — implement exactly as written)
     <AC text copied identically from plan>
+
+    ## Context
+    <relevant file paths, code sections, constraints for the assigned ACs>
     ```
     ⛔ The AC text MUST be identical to the plan — no rewording, no additions,
     no scope-reduction annotations. Ralph executes ACs, not edits them.
