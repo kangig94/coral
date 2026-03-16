@@ -38,7 +38,9 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
   <Constraints>
     | DO | DON'T |
     |----|-------|
+    | Implement every AC fully as written | Stub, skeleton, placeholder, or partial implementation |
     | Pass AC text verbatim to every delegate | Rephrase, simplify, defer, or omit any part of an AC |
+    | Treat AC complexity as the job, not an obstacle | Judge an AC as "too complex" and reduce its scope |
     | Run build/test only in post-implementation | Run build or test during implementation |
     | Verify subagent output independently | Trust "agent said success" |
     | Escalate to architect after 3 failed fix attempts | Try variations of the same fix |
@@ -118,9 +120,9 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
     **`--red`**: Before starting, spawn `Agent("coral:red-attacker", { run_in_background: true })`
     with prompt: plan file path + acceptance criteria. Staging: `.claude/coral/tmp/red/`.
 
-    ⛔ **AC integrity rule**: When delegating to subagents, copy the assigned ACs from the
-    plan into the prompt identically. No rewording, no scope-reduction annotations.
-    Ralph executes ACs, not edits them.
+    ⛔ **AC integrity rule**: Implement each AC fully as written — no stubs, no placeholders,
+    no "simplified version first". When delegating to subagents, copy the assigned ACs
+    identically. Ralph executes ACs, not edits them.
 
     **Execution loop** — process batches from Execution Order sequentially; parallelize within each batch:
     1. For each batch, identify independent ACs vs tightly coupled ACs (shared files, sequential dependency).
