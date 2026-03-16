@@ -1,30 +1,42 @@
-# Bash PreToolUse Rewrites Must Use `updatedInput`
-Promoted: 2026-03-13 | Updated: 2026-03-13
+# Bash PreToolUse Rewrites — updatedInput Shape
+Promoted: 2026-03-13 | Updated: 2026-03-16
 ## Rule
-A `PreToolUse` hook that rewrites a Bash command must read the pending command from `input.tool_input.command` and return the mutation through `hookSpecificOutput.updatedInput.tool_input.command`. Writing only generic `hookSpecificOutput` text does not change the tool invocation.
+A `PreToolUse` hook that rewrites a Bash command must return `hookSpecificOutput.updatedInput` as a **flat tool_input object** (spread original, override `command`). The `updatedInput` value IS `tool_input` — do not nest `tool_input` inside it. Must include `hookEventName: "PreToolUse"`.
 ## Why
-Coral hook scripts often emit `hookSpecificOutput.additionalContext`, which is valid for reminders and annotations but not for command mutation. Reusing that pattern for a CLI rewrite silently produces a no-op hook: the hook runs, but Claude still executes the original Bash command.
+Wrapping as `updatedInput: { tool_input: { command } }` causes Claude Code to error (`undefined is not an object (evaluating 'H.includes')`) because it expects `updatedInput` to be the tool_input shape directly. Omitting `hookEventName` causes the `updatedInput` to be silently ignored.
 ## Pattern
-Right:
+Right — spread original tool_input, override command:
+```js
+const updatedInput = { ...input.tool_input, command: rewritten };
+process.stdout.write(JSON.stringify({
+  hookSpecificOutput: {
+    hookEventName: 'PreToolUse',
+    updatedInput,
+  },
+}));
+```
+
+Wrong — nested tool_input (causes runtime error):
 ```json
 {
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "updatedInput": {
       "tool_input": {
-        "command": "CORAL_PLUGIN_ROOT=\"$CLAUDE_PLUGIN_ROOT\" node \"$CLAUDE_PLUGIN_ROOT/bridge/coral-cli.cjs\" backend status"
+        "command": "rewritten command"
       }
     }
   }
 }
 ```
 
-Wrong:
+Wrong — missing hookEventName (rewrite silently ignored):
 ```json
 {
   "hookSpecificOutput": {
-    "hookEventName": "PreToolUse",
-    "additionalContext": "Use node bridge/coral-cli.cjs instead"
+    "updatedInput": {
+      "command": "rewritten command"
+    }
   }
 }
 ```

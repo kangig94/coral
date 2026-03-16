@@ -12,6 +12,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
 const DEFAULT_STATE = {
@@ -89,13 +90,36 @@ try {
     iteration: state.iteration + 1,
   };
   atomicWriteJson(statePath, nextState);
+  const ctxPct = readCtxPct(sessionId);
+  let ctxNote = '';
+  if (ctxPct != null) {
+    const compactPct = parseInt(process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE, 10) || 95;
+    if (ctxPct >= compactPct - 10) {
+      ctxNote = `\n\nContext usage is at ${ctxPct}%. Continue working — auto-compact will trigger automatically.`;
+    } else {
+      ctxNote = `\n\nContext usage is currently ${ctxPct}%. Do NOT stop due to context concerns.`;
+    }
+  }
   writeJson({
     decision: 'block',
-    reason: `${state.prompt}\n\nIf already complete, output <promise>${state.completionPromise}</promise> immediately. If not complete, continue from where you left off.`,
+    reason: `${state.prompt}\n\nIf already complete, output <promise>${state.completionPromise}</promise> immediately. If not complete, continue from where you left off.${ctxNote}`,
     systemMessage: `🔄 Ralph iteration ${nextState.iteration}`,
   });
 } catch {
   process.exit(0);
+}
+
+function readCtxPct(sessionId) {
+  try {
+    const sessionsPath = join(homedir(), '.claude', 'hud', '.coral-sessions.json');
+    const all = JSON.parse(readFileSync(sessionsPath, 'utf8'));
+    const entry = all[sessionId];
+    if (!entry || entry.ctx == null) return null;
+    if (Date.now() - (entry.ts || 0) > 5 * 60 * 1000) return null;
+    return entry.ctx;
+  } catch {
+    return null;
+  }
 }
 
 function createStateFile(projectDir, sessionId) {

@@ -2,6 +2,7 @@
 name: ralph
 description: "Use when implementing a plan or executing a prompt that requires verified completion."
 argument-hint: "[--red] [--codex] [--team] [task description]"
+model: sonnet
 ---
 
 > **CORAL_AGENTS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/agents/")`
@@ -38,6 +39,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
   <Constraints>
     | DO | DON'T |
     |----|-------|
+    | Start executing immediately — the user already decided | Ask for confirmation, warn about scope/time/feasibility, or give estimates |
     | Run build/test only in post-implementation | Run build or test during implementation |
     | Verify subagent output independently | Trust "agent said success" |
     | Escalate to architect after 3 failed fix attempts | Try variations of the same fix |
@@ -69,6 +71,9 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
     - Each batch lists its tasks with affected file paths.
 
     ### Step 3 — Execute
+
+    ⛔ DO NOT ask the user for confirmation, warn about task size, estimate time, or question feasibility.
+    The user invoked ralph — that IS the decision. Execute all batches in order. Start now.
 
     **Task Registration** (both modes, before dispatch):
     Break work into discrete units and register each via `TaskCreate`:
@@ -139,7 +144,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
        go into one Codex call; independent ACs get separate parallel calls.
        `codex({ op: "bypass_exec", prompt: "<ACs + file paths + constraints>", work_dir: "<project root>" })`
        Do NOT pass `session`. Collect all job IDs.
-    2. `wait({ jobs: [job1, job2, ...] })` → read each `result.content`; if absent, `Read(result.path)` is best-effort recovery.
+    2. `wait({ jobs: [job1, job2, ...], inline: true })` → read results for all jobs.
     3. Verify changes yourself: read changed files, compare against acceptance criteria.
     4. All criteria pass → read all modified files, compare against plan, fix discrepancies yourself. Then continue to Step 4.
        Failed criteria → re-launch only the failed ACs, loop to 1.
@@ -161,7 +166,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
        For each assigned AC, delegate implementation to Codex.
        Include the plan file path in the prompt so Codex can read it for context.
        1. codex({ op: "bypass_exec", prompt: "<AC description + file paths + constraints>", work_dir: "<project root>" })
-          → wait({ jobs: [job] }) → read `result.content`; if absent, `Read(result.path)` is best-effort recovery.
+          → wait({ jobs: [job], inline: true }) → read result.
           Do NOT pass `session`.
        2. Verify changes yourself: read changed files, compare against AC.
        3. If AC not met → re-run codex. If met → report completion.

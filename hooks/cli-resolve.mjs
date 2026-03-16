@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
 // Fail-open: any error -> silent exit 0
 try {
@@ -10,9 +13,6 @@ try {
   if (input.hook_event_name !== 'PreToolUse' || input.tool_name !== 'Bash') {
     process.exit(0);
   }
-
-  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
-  if (!pluginRoot) process.exit(0);
 
   const command = input.tool_input?.command;
   if (typeof command !== 'string') process.exit(0);
@@ -24,16 +24,14 @@ try {
   const match = command.match(/^(\s*)coral-cli(\s|$)(.*)/s);
   if (!match) process.exit(0);
 
-  const cliPath = join(pluginRoot, 'bridge', 'coral-cli.cjs');
+  const cliPath = join(PLUGIN_ROOT, 'bridge', 'coral-cli.cjs');
   const rewritten = `${match[1]}node "${cliPath}"${match[2]}${match[3]}`;
 
+  const updatedInput = { ...input.tool_input, command: rewritten };
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
-      updatedInput: {
-        tool_input: {
-          command: rewritten,
-        },
-      },
+      hookEventName: 'PreToolUse',
+      updatedInput,
     },
   }));
 } catch {
