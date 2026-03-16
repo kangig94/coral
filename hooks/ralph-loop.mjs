@@ -99,6 +99,8 @@ try {
     } else {
       ctxNote = `\n\nContext usage is currently ${ctxPct}%. Do NOT stop due to context concerns.`;
     }
+  } else {
+    ctxNote = '\n\nDo NOT stop due to context concerns — auto-compact handles context management automatically.';
   }
   writeJson({
     decision: 'block',
