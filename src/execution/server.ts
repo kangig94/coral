@@ -258,13 +258,26 @@ function parseToolRequest(body: unknown, resolvedPluginRoot: string): ToolReques
   if ('pluginRoot' in body.context && body.context.pluginRoot !== undefined && typeof body.context.pluginRoot !== 'string') {
     return null;
   }
+  if ('coralEnv' in body.context && body.context.coralEnv !== undefined && !isRecord(body.context.coralEnv)) {
+    return null;
+  }
+  const rawEnv = isRecord(body.context.coralEnv) ? body.context.coralEnv : undefined;
+  const coralEnv: Record<string, string> = {};
+  if (rawEnv) {
+    for (const [key, value] of Object.entries(rawEnv)) {
+      if (typeof value !== 'string') return null;
+      coralEnv[key] = value;
+    }
+  }
+  const context = {
+    projectRoot: body.context.projectRoot,
+    pluginRoot: resolvedPluginRoot,
+    ...(rawEnv ? { coralEnv } : {}),
+  };
   return {
     name: body.name,
     args: body.args,
-    context: {
-      projectRoot: body.context.projectRoot,
-      pluginRoot: resolvedPluginRoot,
-    },
+    context,
   };
 }
 
@@ -1400,6 +1413,12 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     }
 
     if (req.method === 'GET' && req.url === '/health') {
+      const envKeys = Object.keys(process.env)
+        .filter((k) => k.startsWith('CORAL_'))
+        .sort();
+      const env: Record<string, string> = {};
+      for (const k of envKeys) env[k] = process.env[k]!;
+
       sendJson(res, 200, {
         status: lifecycle === 'running' ? 'ok' : lifecycle,
         version,
@@ -1411,6 +1430,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         activeJobs: progressStore.liveJobCount(),
         queueDepth: queueDepth(),
         inflightRequests: idleTimer.inflightRequests,
+        env,
       });
       return;
     }

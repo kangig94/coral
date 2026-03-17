@@ -86,8 +86,12 @@ function requireConversationRef(request: ProviderRequest, action: 'resume' | 'fo
 
 const TIER_RANK: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3 };
 
-function capModel(model: string | undefined): string | undefined {
-  const cap = process.env.CORAL_CLAUDE_MODEL_CAP ?? 'opus';
+function resolveModelCap(environment?: Record<string, string>): string {
+  return (environment?.CORAL_CLAUDE_MODEL_CAP ?? process.env.CORAL_CLAUDE_MODEL_CAP) ?? 'opus';
+}
+
+function capModel(model: string | undefined, environment?: Record<string, string>): string | undefined {
+  const cap = resolveModelCap(environment);
   if (!model) return model;
   const modelRank = TIER_RANK[model];
   const capRank = TIER_RANK[cap];
@@ -99,13 +103,14 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
   const { prompt, systemPrompt } = buildClaudeArgs(request);
   const effort = request.effort as EffortLevel | undefined;
   const options = {
-    model: capModel(request.model),
+    model: capModel(request.model, request.coralEnv),
     workingDirectory: request.cwd,
     systemPrompt,
     effort,
     bypassPermissions: request.bypassPermissions,
     signal: runtime.signal,
     onEvent: makeOnEvent(runtime, request.sessionId, extractClaudeProgressMessage, request.cwd),
+    environment: request.coralEnv,
   };
 
   try {

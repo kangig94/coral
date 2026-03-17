@@ -451,18 +451,27 @@ describe('bridge backend-client', () => {
     });
 
     expect(result).toEqual({ status: 'running', job: 'job-1', session: 'session-1' });
-    expect(fetchMock).toHaveBeenNthCalledWith(2, `http://127.0.0.1:${info.port}/tool`, expect.objectContaining({
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const toolCall = fetchMock.mock.calls[1];
+    const toolCallInit = toolCall?.[1];
+    expect(toolCallInit).toMatchObject({
       method: 'POST',
       headers: expect.objectContaining({
         'Content-Type': 'application/json',
         'X-Coral-Backend-Token': info.token,
       }),
-      body: JSON.stringify({
-        name: 'codex',
-        args: { op: 'exec', prompt: 'hello' },
-        context: { projectRoot: '/tmp/project', pluginRoot: actualPluginRoot() },
-      }),
-    }));
+    });
+    expect(JSON.parse(String(toolCallInit?.body))).toMatchObject({
+      name: 'codex',
+      args: { op: 'exec', prompt: 'hello' },
+      context: {
+        projectRoot: '/tmp/project',
+        pluginRoot: actualPluginRoot(),
+      },
+    });
+    const parsedBody = JSON.parse(String(toolCallInit?.body));
+    expect(typeof parsedBody.context).toBe('object');
+    expect(parsedBody.context.coralEnv).toBeDefined();
   });
 
   it('streamWait sends projectRoot and parses SSE progress and terminal events', async () => {

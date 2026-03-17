@@ -70,6 +70,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
     onEvent: makeOnEvent(runtime, request.sessionId, extractProgressMessage, request.cwd),
     signal: runtime.signal,
     preChecked: lastValidatedCli!,
+    environment: request.coralEnv,
   };
 
   switch (request.action) {

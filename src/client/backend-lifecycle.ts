@@ -20,6 +20,7 @@ type BackendHealth = {
   bundleHash: string;
   instanceId: string;
   namespace: string;
+  env?: Record<string, string>;
 };
 
 type ReplacementLock = string;
