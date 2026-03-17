@@ -1,5 +1,6 @@
 import { decideBidRoundClose, decideEnd } from '../discuss/state-machine.js';
 import { nowIsoString } from '../discuss/util/time.js';
+import { errorMessage } from '../shared/mcp-utils.js';
 import type { CallerContext } from './request-context.js';
 import {
   hasActiveBidWork,
@@ -41,7 +42,7 @@ async function forceEndAfterLoopFailure(
     return;
   }
 
-  const detail = error instanceof Error ? error.message : String(error);
+  const detail = errorMessage(error);
   const committed = await commitDecision(ctx, sessionId, (current) =>
     decideEnd(
       current.state,

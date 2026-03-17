@@ -5,7 +5,7 @@ import { detectCodexCli, type CliInfo } from '../cli-detection.js';
 import { extractProgressMessage } from './progress.js';
 import type { ProviderRequest, ProviderResult } from '../../types.js';
 import { mapProviderResultBase } from '../result-mapping.js';
-import { makeOnEvent, type Provider, type ProviderRuntime } from '../types.js';
+import { makeOnEvent, requireConversationRef, type Provider, type ProviderRuntime } from '../types.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 
 /** Raw result type returned by Codex executors. */
@@ -52,11 +52,6 @@ function buildPrompt(request: ProviderRequest): string {
   if (request.systemPrompt) parts.push(request.systemPrompt);
   parts.push(request.prompt);
   return parts.join('\n\n---\n\n');
-}
-
-function requireConversationRef(request: ProviderRequest, action: 'resume' | 'fork'): string {
-  if (!request.conversationRef) throw new Error(`${action} requires conversationRef`);
-  return request.conversationRef;
 }
 
 async function execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult> {

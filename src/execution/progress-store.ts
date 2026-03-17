@@ -12,13 +12,14 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { JOBS_DIR, pluginRootNamespace } from '../client/paths.js';
-import type {
-  JobKind,
-  JobPhase,
-  LaunchState,
-  PersistedProgressRecord,
-  PersistedStatusRecord,
-  TerminalResult,
+import {
+  isLivePhase,
+  type JobKind,
+  type JobPhase,
+  type LaunchState,
+  type PersistedProgressRecord,
+  type PersistedStatusRecord,
+  type TerminalResult,
 } from '../types.js';
 import { isNoEntryError } from '../shared/mcp-utils.js';
 import { formatElapsed } from '../shared/format-progress.js';
@@ -126,10 +127,6 @@ export class ProgressStore {
     return next;
   }
 
-  private isLivePhase(phase: JobPhase): boolean {
-    return phase === 'queued' || phase === 'launching' || phase === 'running';
-  }
-
   liveJobCount(): number {
     return this.liveCount;
   }
@@ -140,8 +137,8 @@ export class ProgressStore {
 
   private applyStatusRecord(jobId: string, record: PersistedStatusRecord): void {
     const oldRecord = this.statusCache.get(jobId);
-    const wasLive = oldRecord ? this.isLivePhase(oldRecord.phase) : false;
-    const isLive = this.isLivePhase(record.phase);
+    const wasLive = oldRecord ? isLivePhase(oldRecord.phase) : false;
+    const isLive = isLivePhase(record.phase);
     if (!wasLive && isLive) this.liveCount++;
     if (wasLive && !isLive) this.liveCount--;
     this.statusCache.set(jobId, { ...record });
@@ -221,7 +218,7 @@ export class ProgressStore {
 
   rollbackJob(jobId: string): void {
     const record = this.statusCache.get(jobId);
-    if (record && this.isLivePhase(record.phase)) {
+    if (record && isLivePhase(record.phase)) {
       this.liveCount--;
     }
     this.knownJobIds.delete(jobId);
@@ -247,7 +244,7 @@ export class ProgressStore {
       const data = readFileSync(this.statusPath(jobId), 'utf-8');
       const record = JSON.parse(data) as PersistedStatusRecord;
       this.statusCache.set(jobId, { ...record });
-      if (this.isLivePhase(record.phase)) this.liveCount++;
+      if (isLivePhase(record.phase)) this.liveCount++;
       return { ...record };
     } catch {
       return null;

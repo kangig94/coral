@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { isRecord } from '../shared/mcp-utils.js';
+import { isRecord, isStringArray } from '../shared/mcp-utils.js';
 import {
   discussProjectRootsPath,
   JOBS_DIR,
@@ -74,10 +74,6 @@ function isNumberRecord(value: unknown): value is Record<string, number> {
 function isNullableNumberRecord(value: unknown): value is Record<string, number | null> {
   if (!isRecord(value)) return false;
   return Object.values(value).every((entry) => entry === null || isFiniteNumber(entry));
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 }
 
 function isValidDiscussAgentState(value: unknown): boolean {

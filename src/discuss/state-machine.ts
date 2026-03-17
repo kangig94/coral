@@ -13,6 +13,7 @@ import type {
   Result,
   TranscriptEntry,
 } from './types.js';
+import { appendEntry, resetBids } from './state-helpers.js';
 import { parseDisplayName } from './util/string.js';
 
 export const DEFAULT_BID_THRESHOLD = 30;
@@ -158,35 +159,6 @@ function noWinnerResult(
       appendEntry(state, makeBidEntry(state, allBids, null, 'no_winner', now, effectiveBids), now),
       { no_winner: true, reason },
     ],
-  };
-}
-
-function appendEntry(state: DiscussState, entry: TranscriptEntry, now: string): DiscussState {
-  return {
-    ...state,
-    last_activity_at: now,
-    transcript: [...state.transcript, entry],
-  };
-}
-
-function resetBids(state: DiscussState): DiscussState {
-  const currentBids: Record<string, number | null> = {};
-  const pendingBidders: string[] = [];
-
-  for (const [name, agent] of Object.entries(state.agents)) {
-    if (agent.banned) continue;
-    currentBids[name] = null;
-    if (agent.participation === 'required') {
-      pendingBidders.push(name);
-    }
-  }
-
-  return {
-    ...state,
-    current_bids: currentBids,
-    current_thoughts: {},
-    pending_bidders: pendingBidders,
-    pending_since_ts: null,
   };
 }
 

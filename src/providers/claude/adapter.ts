@@ -14,7 +14,7 @@ import { detectClaudeCli } from '../cli-detection.js';
 import { extractClaudeProgressMessage } from './progress.js';
 import type { ProviderRequest, ProviderResult } from '../../types.js';
 import { mapProviderResultBase } from '../result-mapping.js';
-import { makeOnEvent, type Provider, type ProviderRuntime } from '../types.js';
+import { makeOnEvent, requireConversationRef, type Provider, type ProviderRuntime } from '../types.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 import type { ClaudeExecResult } from './types.js';
 
@@ -77,11 +77,6 @@ function parseError(error: unknown, fallbackModel: string): ProviderResult {
     };
   }
   throw error;
-}
-
-function requireConversationRef(request: ProviderRequest, action: 'resume' | 'fork'): string {
-  if (!request.conversationRef) throw new Error(`${action} requires conversationRef`);
-  return request.conversationRef;
 }
 
 const TIER_RANK: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3 };

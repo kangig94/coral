@@ -51,6 +51,23 @@ export function formatError(error: unknown): string {
   return error instanceof Error ? error.stack ?? error.message : String(error);
 }
 
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+export function collectCoralEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of Object.keys(process.env)) {
+    if (!key.startsWith('CORAL_') || process.env[key] === undefined) continue;
+    env[key] = process.env[key]!;
+  }
+  return env;
+}
+
 const bundleHashCache = new Map<string, string>();
 
 /**

@@ -19,6 +19,14 @@ export type SessionState = 'pending' | 'ready' | 'non_resumable';
 /** Lifecycle phase of a single job. */
 export type JobPhase = 'queued' | 'launching' | 'running' | 'completed' | 'error' | 'aborted';
 
+export function isLivePhase(phase: JobPhase | string): phase is Extract<JobPhase, 'queued' | 'launching' | 'running'> {
+  return phase === 'queued' || phase === 'launching' || phase === 'running';
+}
+
+export function isTerminalPhase(phase: JobPhase | string): phase is Extract<JobPhase, 'completed' | 'error' | 'aborted'> {
+  return phase === 'completed' || phase === 'error' || phase === 'aborted';
+}
+
 /** Bootstrap state surfaced by awaitLaunch(). */
 export type LaunchState = 'pending' | 'queued' | 'ready' | 'busy' | 'error';
 

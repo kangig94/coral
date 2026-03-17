@@ -2,7 +2,7 @@ declare const __PLUGIN_ROOT__: string;
 
 import { ensureBackend, withAbortTimeout } from '../client/backend-lifecycle.js';
 import { readBackendInfo } from '../execution/backend-info.js';
-import { isProcessAlive, isRecord } from '../shared/mcp-utils.js';
+import { collectCoralEnv, isProcessAlive, isRecord } from '../shared/mcp-utils.js';
 import {
   describeHttpError,
   HEALTH_TIMEOUT_MS,
@@ -41,16 +41,6 @@ export type ShutdownResult =
 type BackendHealthPayload = Extract<BackendStatus, { status: 'ok' }> & {
   namespace: string;
 };
-
-function collectCoralEnv(): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const key of Object.keys(process.env)) {
-    if (!key.startsWith('CORAL_') || process.env[key] === undefined) continue;
-    env[key] = process.env[key]!;
-  }
-
-  return env;
-}
 
 function isBackendHealthPayload(
   value: unknown,

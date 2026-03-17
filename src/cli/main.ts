@@ -9,6 +9,7 @@ import {
   BackendToolHttpError,
   type CallerContext,
 } from '../client/http-client.js';
+import { collectCoralEnv } from '../shared/mcp-utils.js';
 import { ensureBackend } from '../client/backend-lifecycle.js';
 import {
   getBackendStatusFull,
@@ -141,11 +142,7 @@ type DiscussAbortOptions = {
 };
 
 function makeClient(projectRoot: string): BackendClient {
-  const coralEnv: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (k.startsWith('CORAL_') && v !== undefined) coralEnv[k] = v;
-  }
-  const defaultContext: CallerContext = { pluginRoot, projectRoot, coralEnv };
+  const defaultContext: CallerContext = { pluginRoot, projectRoot, coralEnv: collectCoralEnv() };
   return new BackendClient({
     ensureBackend: () => ensureBackend(pluginRoot || undefined),
     defaultContext,

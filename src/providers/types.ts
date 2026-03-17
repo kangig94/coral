@@ -32,3 +32,8 @@ export interface Provider {
   /** Optional preflight check: auth/availability. Throw to reject launch before jobId is allocated. */
   preflight?(): Promise<void>;
 }
+
+export function requireConversationRef(request: ProviderRequest, action: 'resume' | 'fork'): string {
+  if (!request.conversationRef) throw new Error(`${action} requires conversationRef`);
+  return request.conversationRef;
+}

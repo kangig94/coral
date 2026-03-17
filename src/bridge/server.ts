@@ -9,7 +9,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { setTimeout as delay } from 'node:timers/promises';
 import { ensureBackend, proxyToolCall, streamWait, type WaitCursorRef } from './backend-client.js';
 import { buildToolList, handleBackendToolCall } from './backend-tool.js';
-import { isRecord, isTransientStreamError, jsonResult, mcpError, textResult, type McpResult } from '../shared/mcp-utils.js';
+import { errorMessage, isRecord, isTransientStreamError, jsonResult, mcpError, textResult, type McpResult } from '../shared/mcp-utils.js';
 import { waitInputSchema, MAX_INLINE } from '../shared/schemas.js';
 
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
@@ -255,8 +255,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 
     return textResult(JSON.stringify(response));
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return textResult(message, true);
+    return textResult(errorMessage(error), true);
   }
 });
 

@@ -1,21 +1,23 @@
 import { randomUUID } from 'node:crypto';
 import { pluginRootNamespace } from '../client/paths.js';
-import type {
-  JobKind,
-  JobPhase,
-  LaunchDecision,
-  LaunchState,
-  PersistedStatusRecord,
-  ProviderInstruction,
-  ProviderProgressEvent,
-  ProviderRequest,
-  TerminalResult,
-  WaitRequest,
-  WaitStreamEvent,
-  WorkflowResultMeta,
+import {
+  isTerminalPhase,
+  type JobKind,
+  type JobPhase,
+  type LaunchDecision,
+  type LaunchState,
+  type PersistedStatusRecord,
+  type ProviderInstruction,
+  type ProviderProgressEvent,
+  type ProviderRequest,
+  type TerminalResult,
+  type WaitRequest,
+  type WaitStreamEvent,
+  type WorkflowResultMeta,
 } from '../types.js';
 import { resolveCoralContent, stripAgentMetadata, parseAgentMeta } from '../coral/resolver.js';
 import { getNewProvider } from '../providers/registry.js';
+import { errorMessage } from '../shared/mcp-utils.js';
 import type { EffortLevel } from '../shared/schemas.js';
 import type { Provider, ProviderRuntime } from '../providers/types.js';
 import {
@@ -111,10 +113,6 @@ type ClaimJobOptions = {
   jobKind?: JobKind;
 };
 
-function isTerminalPhase(phase: JobPhase): phase is Extract<JobPhase, 'completed' | 'error' | 'aborted'> {
-  return phase === 'completed' || phase === 'error' || phase === 'aborted';
-}
-
 function canAdvanceLaunchState(status: PersistedStatusRecord | null): status is PersistedStatusRecord {
   return status !== null && !isTerminalPhase(status.phase) && status.launch.state !== 'ready';
 }
@@ -174,7 +172,7 @@ async function runProviderPreflight(provider: Provider): Promise<string | null> 
     await provider.preflight();
     return null;
   } catch (error: unknown) {
-    return error instanceof Error ? error.message : String(error);
+    return errorMessage(error);
   }
 }
 

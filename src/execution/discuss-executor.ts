@@ -1,6 +1,8 @@
 import { makeEvent, type PersistedDiscussAgentRun, type SessionCreatedAgentExecutionConfig } from '../discuss/events.js';
 import type { PersistedDiscussSnapshot } from '../discuss/events.js';
 import { nowIsoString } from '../discuss/util/time.js';
+import { isLivePhase } from '../types.js';
+import { errorMessage } from '../shared/mcp-utils.js';
 import { readStatusRecord } from '../client/readers.js';
 import type { CallerContext } from './request-context.js';
 import {
@@ -9,7 +11,7 @@ import {
 } from './discuss-persistence.js';
 import type { AgentConfig, DiscussContext } from './discuss-context.js';
 
-const DEFAULT_DISCUSS_PROVIDER = 'codex';
+export const DEFAULT_DISCUSS_PROVIDER = 'codex';
 const RETRYABLE_ATTEMPT_OUTCOMES = new Set([
   'execution_error',
   'recovery_failed',
@@ -85,10 +87,6 @@ type FacilitatorRun = {
 
 function isRetryableAttemptOutcome(outcome: string | undefined): boolean {
   return outcome !== undefined && RETRYABLE_ATTEMPT_OUTCOMES.has(outcome);
-}
-
-function isLivePhase(phase: string): boolean {
-  return phase === 'queued' || phase === 'launching' || phase === 'running';
 }
 
 export function isAttemptSuccess(result: AttemptResult): result is AttemptSuccess {
@@ -303,7 +301,7 @@ export async function executeAgentAttempt(
           nonResumable: result.nonResumable,
         };
       } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         await recordJobFinished(ctx, {
           sessionId,
           agentName,
@@ -428,7 +426,7 @@ export async function executeAgentAttempt(
       nonResumable: result.nonResumable,
     };
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     await recordJobFinished(ctx, {
       sessionId,
       agentName,

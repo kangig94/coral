@@ -9,6 +9,8 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import {
   formatError,
+  collectCoralEnv,
+  errorMessage,
   isNoEntryError,
   isRecord,
   readBundleHash,
@@ -750,7 +752,7 @@ export async function routeToolCall(
       return toolSuccess({ session: sessionId });
     } catch (error: unknown) {
       return toolError('start_failed', {
-        message: error instanceof Error ? error.message : String(error),
+        message: errorMessage(error),
       });
     }
   }
