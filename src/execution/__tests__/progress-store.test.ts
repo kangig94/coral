@@ -312,3 +312,102 @@ describe('formatElapsed', () => {
     expect(formatElapsed(ms)).toBe(expected);
   });
 });
+
+describe('legacy backendNamespace bridge', () => {
+  function seedLegacyStatus(
+    progressStore: ProgressStore,
+    jobId: string,
+    overrides: Partial<PersistedStatusRecord & { backendNamespace?: string | null }> = {},
+  ): void {
+    const jobDir = progressStore.jobDir(jobId);
+    mkdirSync(jobDir, { recursive: true });
+    const record = {
+      jobId,
+      sessionId: `sess-${jobId}`,
+      provider: 'codex',
+      projectRoot: '/tmp/project',
+      phase: 'running',
+      launch: { state: 'ready', updatedAt: new Date().toISOString() },
+      ...overrides,
+    };
+    writeFileSync(join(jobDir, 'status.json'), JSON.stringify(record), 'utf-8');
+    writeFileSync(join(jobDir, 'progress.jsonl'), '', 'utf-8');
+  }
+
+  it('readStatus returns the record when backendNamespace key is completely absent (legacy format)', () => {
+    const store = new ProgressStore();
+    const jobId = `legacy-absent-${randomUUID()}`;
+    jobIdsToClean.add(jobId);
+
+    seedLegacyStatus(store, jobId);
+
+    const status = store.readStatus(jobId);
+    expect(status).not.toBeNull();
+    expect(status?.phase).toBe('running');
+  });
+
+  it('scopedLookup still finds a legacy job (no backendNamespace) by projectRoot', () => {
+    const store = new ProgressStore();
+    const jobId = `legacy-scoped-${randomUUID()}`;
+    jobIdsToClean.add(jobId);
+
+    seedLegacyStatus(store, jobId, { projectRoot: '/tmp/project' });
+
+    expect(store.scopedLookup(jobId, '/tmp/project')).toBe('found');
+  });
+
+  it('a job with backendNamespace set to empty string is distinguishable from absent', () => {
+    const store = new ProgressStore();
+    const jobId = `empty-ns-${randomUUID()}`;
+    jobIdsToClean.add(jobId);
+
+    seedLegacyStatus(store, jobId, { backendNamespace: '' } as never);
+
+    const status = store.readStatus(jobId) as Record<string, unknown> | null;
+    expect(status).not.toBeNull();
+
+    if (status && 'backendNamespace' in status) {
+      expect(status['backendNamespace']).toBe('');
+    }
+  });
+
+  it('a job with a foreign backendNamespace must NOT be treated as a legacy job', () => {
+    const store = new ProgressStore();
+    const jobId = `foreign-ns-${randomUUID()}`;
+    jobIdsToClean.add(jobId);
+
+    const foreignNamespace = 'aabbccdd1122';
+    seedLegacyStatus(store, jobId, { backendNamespace: foreignNamespace } as never);
+
+    const status = store.readStatus(jobId) as Record<string, unknown> | null;
+    expect(status).not.toBeNull();
+
+    if (status && 'backendNamespace' in status) {
+      expect(status['backendNamespace']).toBe(foreignNamespace);
+    }
+  });
+
+  it('legacy job without backendNamespace is still listed by readStatus (not silently dropped)', () => {
+    const store = new ProgressStore();
+    const jobId = `legacy-list-${randomUUID()}`;
+    jobIdsToClean.add(jobId);
+
+    seedLegacyStatus(store, jobId, { phase: 'queued' });
+
+    const status = store.readStatus(jobId);
+    expect(status?.phase).toBe('queued');
+  });
+
+  it('initJob stores the provided backendNamespace in the persisted status record', () => {
+    const store = new ProgressStore();
+    const jobId = `init-with-ns-${randomUUID()}`;
+    jobIdsToClean.add(jobId);
+
+    const namespace = 'my-plugin-namespace';
+    store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot: '/tmp/project', backendNamespace: namespace });
+
+    const status = store.readStatus(jobId) as Record<string, unknown> | null;
+    expect(status).not.toBeNull();
+    expect(status?.['backendNamespace']).toBe(namespace);
+  });
+});
