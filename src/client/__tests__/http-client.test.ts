@@ -13,6 +13,7 @@ const backendHandle: BackendHandle = {
 const defaultContext: CallerContext = {
   projectRoot: '/tmp/project',
   pluginRoot: '/tmp/plugin',
+  coralEnv: {},
 };
 
 describe('client http-client', () => {

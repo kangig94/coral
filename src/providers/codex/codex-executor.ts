@@ -20,29 +20,27 @@ export interface CodexExecOptions {
   onEvent?: (line: string) => void;
   signal?: AbortSignal;
   preChecked: CliInfo & { available: true };
+  environment: Record<string, string>;
 }
 
-const DEFAULT_MODEL = process.env.CORAL_CODEX_MODEL ?? 'gpt-5.4';
 const VALID_CODEX_EFFORT = new Set(['low', 'medium', 'high', 'xhigh']);
 
 /** Resolve default effort to Codex-native CLI value. */
-function resolveCodexDefaultEffort(): string {
-  const raw = process.env.CORAL_CODEX_EFFORT;
+function resolveCodexDefaultEffort(env: Record<string, string>): string {
+  const raw = env.CORAL_CODEX_EFFORT;
   if (raw !== undefined) {
     if (!VALID_CODEX_EFFORT.has(raw)) {
       throw new Error(`Invalid CORAL_CODEX_EFFORT="${raw}". Valid values: low, medium, high, xhigh`);
     }
     return raw;
   }
-  const shared = process.env.CORAL_EFFORT;
+  const shared = env.CORAL_EFFORT;
   if (shared !== undefined) return toCodexEffort(shared as NonNullable<EffortLevel>);
   return 'xhigh';
 }
 
-const DEFAULT_EFFORT = resolveCodexDefaultEffort();
-
-function getDefaultModel(): string {
-  return DEFAULT_MODEL;
+function getDefaultModel(env: Record<string, string>): string {
+  return env.CORAL_CODEX_MODEL ?? 'gpt-5.4';
 }
 
 export { killAllRunnerChildren as killAllChildren };
@@ -174,9 +172,9 @@ function toCodexEffort(effort: NonNullable<EffortLevel>): string {
   return effort === 'max' ? 'xhigh' : effort;
 }
 
-/** Build CLI flags for reasoning effort, falling back to DEFAULT_EFFORT. */
-function reasoningEffortFlags(effort?: EffortLevel): string[] {
-  const value = effort !== undefined ? toCodexEffort(effort) : DEFAULT_EFFORT;
+/** Build CLI flags for reasoning effort. */
+function reasoningEffortFlags(effort: EffortLevel | undefined, env: Record<string, string>): string[] {
+  const value = effort !== undefined ? toCodexEffort(effort) : resolveCodexDefaultEffort(env);
   return ['-c', `model_reasoning_effort=${value}`];
 }
 
@@ -185,9 +183,9 @@ export async function executeOneShot(
   prompt: string,
   opts: CodexExecOptions,
 ): Promise<CodexExecResult> {
-  const resolvedModel = opts.model ?? getDefaultModel();
+  const resolvedModel = opts.model ?? getDefaultModel(opts.environment);
   return executeCodex(
-    ['exec', '-m', resolvedModel, ...baseFlags(opts.bypassSandbox ?? false), ...reasoningEffortFlags(opts.effort)],
+    ['exec', '-m', resolvedModel, ...baseFlags(opts.bypassSandbox ?? false), ...reasoningEffortFlags(opts.effort, opts.environment)],
     prependClaudeMd(prompt),
     resolvedModel,
     opts,
@@ -200,9 +198,9 @@ export async function executeResume(
   prompt: string,
   opts: CodexExecOptions,
 ): Promise<CodexExecResult> {
-  const resolvedModel = opts.model ?? getDefaultModel();
+  const resolvedModel = opts.model ?? getDefaultModel(opts.environment);
   return executeCodex(
-    ['exec', 'resume', threadId, '-m', resolvedModel, ...baseFlags(opts.bypassSandbox ?? false), ...reasoningEffortFlags(opts.effort)],
+    ['exec', 'resume', threadId, '-m', resolvedModel, ...baseFlags(opts.bypassSandbox ?? false), ...reasoningEffortFlags(opts.effort, opts.environment)],
     prompt,
     resolvedModel,
     opts,

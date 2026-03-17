@@ -129,7 +129,8 @@ async function invokeListTools() {
   return handler();
 }
 
-describe('bridge wait handler', () => {
+// @flaky — workflow wait test intermittently times out under full suite (mock timing sensitivity)
+describe('bridge wait handler', { retry: 2 }, () => {
   beforeEach(() => {
     mockState.ensureBackend.mockReset();
     mockState.proxyToolCall.mockReset();

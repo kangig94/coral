@@ -169,7 +169,7 @@ describe('ExecutionService', () => {
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-execution-home-'));
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
-    ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin') };
+    ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {} };
     baselineJobIds = listJobDirs();
     mockState.getNewProvider.mockReset();
     mockState.resolveCoralContent.mockReset();
@@ -1204,7 +1204,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'red-exec-home-'));
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
-    ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin') };
+    ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {} };
     baselineJobIds = listJobDirs();
     mockState.getNewProvider.mockReset();
     mockState.resolveCoralContent.mockReset();

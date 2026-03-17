@@ -42,6 +42,16 @@ type BackendHealthPayload = Extract<BackendStatus, { status: 'ok' }> & {
   namespace: string;
 };
 
+function collectCoralEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of Object.keys(process.env)) {
+    if (!key.startsWith('CORAL_') || process.env[key] === undefined) continue;
+    env[key] = process.env[key]!;
+  }
+
+  return env;
+}
+
 function isBackendHealthPayload(
   value: unknown,
   expectedNamespace: string,
@@ -153,12 +163,14 @@ export async function proxyToolCall(
   ctx: { projectRoot: string; pluginRoot: string },
 ): Promise<unknown> {
   const { port, host, token } = await ensureBackend(ctx.pluginRoot);
+  const coralEnv = collectCoralEnv();
   const body = JSON.stringify({
     name,
     args,
     context: {
       projectRoot: ctx.projectRoot,
       pluginRoot: ctx.pluginRoot,
+      coralEnv,
     },
   });
 

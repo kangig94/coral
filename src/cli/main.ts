@@ -141,7 +141,11 @@ type DiscussAbortOptions = {
 };
 
 function makeClient(projectRoot: string): BackendClient {
-  const defaultContext: CallerContext = { pluginRoot, projectRoot };
+  const coralEnv: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (k.startsWith('CORAL_') && v !== undefined) coralEnv[k] = v;
+  }
+  const defaultContext: CallerContext = { pluginRoot, projectRoot, coralEnv };
   return new BackendClient({
     ensureBackend: () => ensureBackend(pluginRoot || undefined),
     defaultContext,

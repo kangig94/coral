@@ -258,13 +258,21 @@ function parseToolRequest(body: unknown, resolvedPluginRoot: string): ToolReques
   if ('pluginRoot' in body.context && body.context.pluginRoot !== undefined && typeof body.context.pluginRoot !== 'string') {
     return null;
   }
+  if (!isRecord(body.context.coralEnv)) return null;
+  const coralEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(body.context.coralEnv)) {
+    if (typeof value !== 'string') return null;
+    coralEnv[key] = value;
+  }
+  const context: CallerContext = {
+    projectRoot: body.context.projectRoot,
+    pluginRoot: resolvedPluginRoot,
+    coralEnv,
+  };
   return {
     name: body.name,
     args: body.args,
-    context: {
-      projectRoot: body.context.projectRoot,
-      pluginRoot: resolvedPluginRoot,
-    },
+    context,
   };
 }
 
@@ -1250,7 +1258,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       ...parsed,
       cursor: inputCursor,
     };
-    const ctx: CallerContext = { projectRoot: parsed.projectRoot, pluginRoot: resolvedPluginRoot };
+    const ctx: CallerContext = { projectRoot: parsed.projectRoot, pluginRoot: resolvedPluginRoot, coralEnv: {} };
 
     res.statusCode = 200;
     res.setHeader('Content-Type', 'text/event-stream');
@@ -1400,6 +1408,12 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     }
 
     if (req.method === 'GET' && req.url === '/health') {
+      const envKeys = Object.keys(process.env)
+        .filter((k) => k.startsWith('CORAL_'))
+        .sort();
+      const env: Record<string, string> = {};
+      for (const k of envKeys) env[k] = process.env[k]!;
+
       sendJson(res, 200, {
         status: lifecycle === 'running' ? 'ok' : lifecycle,
         version,
@@ -1411,6 +1425,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         activeJobs: progressStore.liveJobCount(),
         queueDepth: queueDepth(),
         inflightRequests: idleTimer.inflightRequests,
+        env,
       });
       return;
     }
@@ -1573,6 +1588,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         const recoveryCtx: CallerContext = {
           projectRoot,
           pluginRoot: resolvedPluginRoot,
+          coralEnv: {},
         };
         await discussOperations.recoverPersistedSessions(
           getDiscussContext(recoveryCtx),

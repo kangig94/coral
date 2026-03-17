@@ -372,7 +372,7 @@ describe('execution backend server', () => {
       body: JSON.stringify({
         name: 'missing-provider',
         args: { op: 'exec', prompt: 'hello' },
-        context: { projectRoot: '/tmp/project' },
+        context: { projectRoot: '/tmp/project', coralEnv: {} },
       }),
     });
 
@@ -395,7 +395,7 @@ describe('execution backend server', () => {
       body: JSON.stringify({
         name: 'wait',
         args: { jobs: ['job-1'] },
-        context: { projectRoot: '/tmp/project' },
+        context: { projectRoot: '/tmp/project', coralEnv: {} },
       }),
     });
 
@@ -418,7 +418,7 @@ describe('execution backend server', () => {
       body: JSON.stringify({
         name: 'abort',
         args: { jobs: ['job-1'] },
-        context: { projectRoot: '/tmp/project' },
+        context: { projectRoot: '/tmp/project', coralEnv: {} },
       }),
     });
 
@@ -448,7 +448,7 @@ describe('execution backend server', () => {
       body: JSON.stringify({
         name: 'codex',
         args: { op: 'list' },
-        context: { projectRoot: '/tmp/project' },
+        context: { projectRoot: '/tmp/project', coralEnv: {} },
       }),
     });
 
@@ -461,7 +461,7 @@ describe('execution backend server', () => {
       body: JSON.stringify({
         name: 'abort',
         args: { jobs: ['job-1', 'job-foreign'] },
-        context: { projectRoot: '/tmp/project' },
+        context: { projectRoot: '/tmp/project', coralEnv: {} },
       }),
     });
 
@@ -488,7 +488,7 @@ describe('execution backend server', () => {
       body: JSON.stringify({
         name: 'workflow',
         args: { expression: 'architect', init_prompt: 'hello' },
-        context: { projectRoot: '/tmp/project' },
+        context: { projectRoot: '/tmp/project', coralEnv: {} },
       }),
     });
 
@@ -518,7 +518,7 @@ describe('execution backend server', () => {
       body: JSON.stringify({
         name: 'codex',
         args: { op: 'bypass_exec', prompt: 'do something' },
-        context: { projectRoot: '/tmp/project' },
+        context: { projectRoot: '/tmp/project', coralEnv: {} },
       }),
     });
 
@@ -552,7 +552,7 @@ describe('execution backend server', () => {
       body: JSON.stringify({
         name: 'codex',
         args: { op: 'exec', prompt: 'do something' },
-        context: { projectRoot: '/tmp/project' },
+        context: { projectRoot: '/tmp/project', coralEnv: {} },
       }),
     });
 

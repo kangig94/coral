@@ -54,8 +54,9 @@ function mockCliAvailable(): void {
 
 const authenticatedCli = { available: true as const, version: '1.0.0', authState: 'authenticated' as const };
 
-function withAuthenticatedCli(overrides: Omit<CodexExecOptions, 'preChecked'> = {}): CodexExecOptions {
+function withAuthenticatedCli(overrides: Partial<Omit<CodexExecOptions, 'preChecked'>> = {}): CodexExecOptions {
   return {
+    environment: {},
     ...overrides,
     preChecked: authenticatedCli,
   };
@@ -194,6 +195,7 @@ describe('executeOneShot', () => {
 
   it('throws when preChecked is unauthenticated', async () => {
     await expect(executeOneShot('test', {
+      environment: {},
       preChecked: {
         available: true,
         version: '1.0.0',
@@ -257,7 +259,7 @@ describe('executeOneShot', () => {
     mockAgentProcess();
 
     const result = await executeOneShot('test', withAuthenticatedCli());
-    expect(result.model).toBe(process.env.CORAL_CODEX_MODEL ?? 'gpt-5.4');
+    expect(result.model).toBe('gpt-5.4');
   });
 
   it('uses --dangerously-bypass-approvals-and-sandbox when bypassSandbox=true', async () => {
@@ -406,6 +408,7 @@ describe('preChecked auth guard for executeResume', () => {
         'thread-abc',
         'continue',
         {
+          environment: {},
           bypassSandbox: false,
           preChecked: {
             available: true as const,
@@ -428,6 +431,7 @@ describe('preChecked auth guard for executeResume', () => {
       'thread-abc',
       'continue',
       {
+        environment: {},
         model: 'o4-mini',
         bypassSandbox: false,
         preChecked: { available: true as const, version: '1.0.0', authState: 'unknown' as const },
@@ -446,6 +450,7 @@ describe('preChecked auth guard for executeResume', () => {
       'thread-abc',
       'continue',
       {
+        environment: {},
         model: 'o4-mini',
         bypassSandbox: false,
         preChecked: { available: true as const, version: '1.0.0', authState: 'authenticated' as const },
@@ -468,7 +473,7 @@ describe('preChecked auth guard for executeFork', () => {
 
   it('unauthenticated throws before spawn, detectCodexCli not called', async () => {
     await expect(
-      executeFork('thread-orig', 'Continue from where we left off.', { bypassSandbox: false, preChecked: unauthChecked }),
+      executeFork('thread-orig', 'Continue from where we left off.', { environment: {}, bypassSandbox: false, preChecked: unauthChecked }),
     ).rejects.toThrow('Codex CLI is not authenticated');
 
     expect(mockSpawn).not.toHaveBeenCalled();
@@ -479,6 +484,7 @@ describe('preChecked auth guard for executeFork', () => {
     const customError = 'Fork-specific custom auth error';
     await expect(
       executeFork('thread-orig', 'prompt', {
+        environment: {},
         bypassSandbox: false,
         preChecked: { ...unauthChecked, authError: customError },
       }),
@@ -492,6 +498,7 @@ describe('preChecked auth guard for executeFork', () => {
       'thread-orig',
       'do something new',
       {
+        environment: {},
         model: 'o4-mini',
         bypassSandbox: false,
         preChecked: { available: true as const, version: '1.0.0', authState: 'unknown' as const },
@@ -510,6 +517,7 @@ describe('preChecked auth guard for executeFork', () => {
       'thread-orig',
       'Continue from where we left off.',
       {
+        environment: {},
         model: 'o4-mini',
         bypassSandbox: false,
         preChecked: { available: true as const, version: '1.0.0', authState: 'authenticated' as const },

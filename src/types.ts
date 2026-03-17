@@ -60,6 +60,7 @@ export interface ProviderRequest {
   bypassPermissions: boolean;
   /** User-facing system prompt from MCP tool schema (Claude: --append-system-prompt). */
   systemPrompt?: string;
+  coralEnv: Record<string, string>;
   /**
    * Framework-injected instruction (coral dispatch / workflow).
    * When both systemPrompt and instruction are present, instruction takes precedence

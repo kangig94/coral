@@ -324,6 +324,7 @@ export class ExecutionService {
       bypassPermissions: input.bypassPermissions ?? false,
       systemPrompt: input.systemPrompt,
       instruction: input.instruction,
+      coralEnv: ctx.coralEnv,
     };
 
     return this.launchProviderJob(
@@ -382,6 +383,7 @@ export class ExecutionService {
       bypassPermissions: input.bypassPermissions ?? false,
       systemPrompt: input.systemPrompt,
       instruction: input.instruction,
+      coralEnv: ctx.coralEnv,
     };
 
     return this.launchProviderJob(
@@ -448,6 +450,7 @@ export class ExecutionService {
         bypassPermissions: input.bypassPermissions ?? false,
         systemPrompt: input.systemPrompt,
         instruction: input.instruction,
+        coralEnv: ctx.coralEnv,
       };
 
       return this.launchProviderJob(
