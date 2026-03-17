@@ -37,7 +37,7 @@ import {
 } from './discuss-persistence.js';
 import { collectBids } from './discuss-subflows.js';
 
-const ABORT_REASON = 'abort';
+export const ABORT_REASON = 'abort';
 
 function readDiscussMaxEpochs(): number {
   const raw = Number.parseInt(process.env.CORAL_DISCUSS_MAX_EPOCHS ?? '', 10);

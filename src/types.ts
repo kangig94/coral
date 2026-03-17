@@ -27,6 +27,16 @@ export function isTerminalPhase(phase: JobPhase | string): phase is Extract<JobP
   return phase === 'completed' || phase === 'error' || phase === 'aborted';
 }
 
+export function readBackendNamespace(status: PersistedStatusRecord): string | null {
+  return typeof status.backendNamespace === 'string' && status.backendNamespace.length > 0
+    ? status.backendNamespace
+    : null;
+}
+
+export function belongsToNamespace(status: PersistedStatusRecord, namespace: string): boolean {
+  return readBackendNamespace(status) === namespace;
+}
+
 /** Bootstrap state surfaced by awaitLaunch(). */
 export type LaunchState = 'pending' | 'queued' | 'ready' | 'busy' | 'error';
 

@@ -32,6 +32,32 @@ async function waitForObserverBidWindow(delayMs: number, signal: AbortSignal): P
   });
 }
 
+async function handleBidRoundClose(
+  ctx: DiscussContext,
+  sessionId: string,
+  callerCtx: CallerContext,
+): Promise<{ shouldResume: boolean }> {
+  const resolved = await commitDecision(ctx, sessionId, (latest) =>
+    decideBidRoundClose(
+      latest.state,
+      latest.sessionId,
+      ctx.projectRoot,
+      latest.state.topic,
+      latest.lastAppliedSeq + 1,
+      nowIsoString(),
+    ));
+  if (resolved.ok) {
+    return { shouldResume: true };
+  }
+  if (resolved.error === 'quorum_not_met') {
+    return collectBids(ctx, sessionId, callerCtx);
+  }
+  if (resolved.error === 'session_not_found') {
+    return { shouldResume: false };
+  }
+  throw new DiscussManagerError(resolved.error, resolved.detail);
+}
+
 async function forceEndAfterLoopFailure(
   ctx: DiscussContext,
   sessionId: string,
@@ -140,27 +166,9 @@ export async function continueLoop(
 
       if (snapshot.runtime.controlPhase === 'observer_wait') {
         await waitForObserverBidWindow(snapshot.state.min_bid_delay_ms, current.controller.signal);
-        const resolved = await commitDecision(ctx, sessionId, (latest) =>
-          decideBidRoundClose(
-            latest.state,
-            latest.sessionId,
-            ctx.projectRoot,
-            latest.state.topic,
-            latest.lastAppliedSeq + 1,
-            nowIsoString(),
-          ));
-        if (!resolved.ok) {
-          if (resolved.error === 'quorum_not_met') {
-            const result = await collectBids(ctx, sessionId, callerCtx);
-            if (!result.shouldResume) {
-              return;
-            }
-            continue;
-          }
-          if (resolved.error === 'session_not_found') {
-            return;
-          }
-          throw new DiscussManagerError(resolved.error, resolved.detail);
+        const result = await handleBidRoundClose(ctx, sessionId, callerCtx);
+        if (!result.shouldResume) {
+          return;
         }
         continue;
       }
@@ -177,27 +185,9 @@ export async function continueLoop(
         continue;
       }
 
-      const resolved = await commitDecision(ctx, sessionId, (latest) =>
-        decideBidRoundClose(
-          latest.state,
-          latest.sessionId,
-          ctx.projectRoot,
-          latest.state.topic,
-          latest.lastAppliedSeq + 1,
-          nowIsoString(),
-        ));
-      if (!resolved.ok) {
-        if (resolved.error === 'quorum_not_met') {
-          const result = await collectBids(ctx, sessionId, callerCtx);
-          if (!result.shouldResume) {
-            return;
-          }
-          continue;
-        }
-        if (resolved.error === 'session_not_found') {
-          return;
-        }
-        throw new DiscussManagerError(resolved.error, resolved.detail);
+      const result = await handleBidRoundClose(ctx, sessionId, callerCtx);
+      if (!result.shouldResume) {
+        return;
       }
     }
   } finally {

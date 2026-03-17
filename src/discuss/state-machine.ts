@@ -8,12 +8,9 @@ import type {
   DiscussCreateInput,
   DiscussState,
   EndReason,
-  ResolveReason,
-  ResolveResult,
   Result,
   TranscriptEntry,
 } from './types.js';
-import { appendEntry, resetBids } from './state-helpers.js';
 import { parseDisplayName } from './util/string.js';
 
 export const DEFAULT_BID_THRESHOLD = 30;
@@ -98,70 +95,6 @@ function compareBidCandidates(
   return leftName < rightName ? -1 : 1;
 }
 
-function makeBidEntry(
-  state: DiscussState,
-  allBids: Record<string, number>,
-  winner: string | null,
-  resolveType: 'normal' | 'fallback' | 'cold_start' | 'no_winner',
-  now: string,
-  effectiveBids?: Record<string, number>,
-): TranscriptEntry {
-  const thoughtsEntry = Object.keys(state.current_thoughts).length > 0
-    ? { thoughts: { ...state.current_thoughts } }
-    : {};
-  return {
-    type: 'bids',
-    step: state.step,
-    epoch: state.epoch,
-    ts: now,
-    bids: allBids,
-    ...(effectiveBids && { effective_bids: effectiveBids }),
-    ...thoughtsEntry,
-    winner,
-    resolve_type: resolveType,
-  };
-}
-
-function startSpeaking(
-  state: DiscussState,
-  allBids: Record<string, number>,
-  winner: string,
-  speakerType: 'quota' | 'fallback' | 'cold_start',
-  now: string,
-  extraState?: Partial<DiscussState>,
-  effectiveBids?: Record<string, number>,
-): Result<[DiscussState, ResolveResult]> {
-  const transcriptType = speakerType === 'quota' ? 'normal' : speakerType;
-  const newState: DiscussState = {
-    ...appendEntry(state, makeBidEntry(state, allBids, winner, transcriptType, now, effectiveBids), now),
-    current_speaker: winner,
-    speaker_type: speakerType,
-    status: 'speaking',
-    cold_start: false,
-    ...extraState,
-  };
-  return {
-    ok: true,
-    value: [newState, { winner, speaker_type: speakerType }],
-  };
-}
-
-function noWinnerResult(
-  state: DiscussState,
-  allBids: Record<string, number>,
-  reason: ResolveReason,
-  now: string,
-  effectiveBids?: Record<string, number>,
-): Result<[DiscussState, ResolveResult]> {
-  return {
-    ok: true,
-    value: [
-      appendEntry(state, makeBidEntry(state, allBids, null, 'no_winner', now, effectiveBids), now),
-      { no_winner: true, reason },
-    ],
-  };
-}
-
 function coldStartPick(state: DiscussState): string | null {
   const eligible = Object.entries(state.agents)
     .filter(([name, agent]) =>
@@ -177,50 +110,6 @@ function coldStartPick(state: DiscussState): string | null {
       return aName < bName ? -1 : 1;
     });
   return eligible[0]?.[0] ?? null;
-}
-
-function buildSpeechState({
-  state,
-  speaker,
-  content,
-  now,
-  decrementQuota,
-  recordLastSpeechStep,
-}: {
-  state: DiscussState;
-  speaker: string;
-  content: string;
-  now: string;
-  decrementQuota: boolean;
-  recordLastSpeechStep?: number;
-}): DiscussState {
-  const speakerState = state.agents[speaker];
-  const speechEntry: TranscriptEntry = {
-    type: 'speech',
-    step: state.step,
-    epoch: state.epoch,
-    ts: now,
-    agent: speaker,
-    display_name: speakerState.display_name,
-    content,
-  };
-
-  const updatedAgent = {
-    ...speakerState,
-    quota_remaining: decrementQuota ? speakerState.quota_remaining - 1 : speakerState.quota_remaining,
-    total_speaks: speakerState.total_speaks + 1,
-  };
-
-  return resetBids({
-    ...appendEntry(state, speechEntry, now),
-    agents: { ...state.agents, [speaker]: updatedAgent },
-    current_speaker: null,
-    speaker_type: null,
-    bid_release_step: state.step,
-    step: state.step + 1,
-    status: 'bidding',
-    ...(recordLastSpeechStep === undefined ? {} : { last_speech_step: recordLastSpeechStep }),
-  });
 }
 
 export function decideSessionCreate(

@@ -13,8 +13,7 @@ import {
   type WatchState,
   watchBufferCursor,
 } from './discuss-context.js';
-
-const ABORT_REASON = 'abort';
+import { ABORT_REASON } from './discuss-operations.js';
 
 export type CommitSuccess = {
   ok: true;

@@ -4,7 +4,7 @@ declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import {
@@ -76,12 +76,15 @@ import {
   ExecutionService as DefaultExecutionService,
 } from './service.js';
 import { handleWorkflow } from '../workflow/handler.js';
-import type {
-  PersistedProgressRecord,
-  PersistedStatusRecord,
-  TerminalResult,
-  WaitCursor,
-  WaitRequest,
+import {
+  belongsToNamespace,
+  isLivePhase,
+  readBackendNamespace,
+  type PersistedProgressRecord,
+  type PersistedStatusRecord,
+  type TerminalResult,
+  type WaitCursor,
+  type WaitRequest,
 } from '../types.js';
 
 export type LifecycleState = 'starting' | 'running' | 'draining' | 'stopped';
@@ -103,9 +106,6 @@ type ScopeCheckResult = {
   mismatch: string[];
 };
 
-type PersistedStatusRecordWithNamespace = PersistedStatusRecord & {
-  backendNamespace?: string;
-};
 
 type RouteToolCallFn = (
   request: ToolRequest,
@@ -365,11 +365,6 @@ function waitForInflightDrain(idleTimer: IdleTimer, timeoutMs: number): Promise<
   });
 }
 
-function readBackendNamespace(status: PersistedStatusRecord): string | null {
-  const namespace = (status as PersistedStatusRecordWithNamespace).backendNamespace;
-  return typeof namespace === 'string' && namespace.length > 0 ? namespace : null;
-}
-
 function withBackendNamespace(
   status: PersistedStatusRecord,
   namespace: string,
@@ -380,20 +375,12 @@ function withBackendNamespace(
   } as PersistedStatusRecord;
 }
 
-function isLiveJob(status: PersistedStatusRecord): boolean {
-  return status.phase === 'queued' || status.phase === 'launching' || status.phase === 'running';
-}
-
-function belongsToNamespace(status: PersistedStatusRecord, namespace: string): boolean {
-  return readBackendNamespace(status) === namespace;
-}
-
 function listLiveJobs(progressStore: ProgressStore, namespace: string): PersistedStatusRecord[] {
   const results: PersistedStatusRecord[] = [];
 
   for (const jobId of progressStore.listJobIds()) {
     const status = progressStore.readStatus(jobId);
-    if (!status || !isLiveJob(status)) continue;
+    if (!status || !isLivePhase(status.phase)) continue;
 
     const backendNamespace = readBackendNamespace(status);
     if (backendNamespace === null) {
@@ -413,7 +400,7 @@ function listLiveJobs(progressStore: ProgressStore, namespace: string): Persiste
 
 function hasJobDir(progressStore: ProgressStore, jobId: string): boolean {
   try {
-    readdirSync(progressStore.jobDir(jobId));
+    statSync(progressStore.jobDir(jobId));
     return true;
   } catch (error: unknown) {
     if (isNoEntryError(error)) return false;
@@ -1413,11 +1400,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     }
 
     if (req.method === 'GET' && req.url === '/health') {
-      const envKeys = Object.keys(process.env)
-        .filter((k) => k.startsWith('CORAL_'))
-        .sort();
-      const env: Record<string, string> = {};
-      for (const k of envKeys) env[k] = process.env[k]!;
+      const env = collectCoralEnv();
 
       sendJson(res, 200, {
         status: lifecycle === 'running' ? 'ok' : lifecycle,

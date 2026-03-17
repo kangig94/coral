@@ -4,20 +4,11 @@ import {
   readSessionEntryLenient,
   type LenientSessionEntry,
 } from '../client/readers.js';
-import type { PersistedStatusRecord } from '../types.js';
+import { belongsToNamespace } from '../types.js';
 import type { ProgressStore } from './progress-store.js';
 import { SessionManager } from './session-manager.js';
 
 type SessionIndexRow = { shardHash: string; sessions: LenientSessionEntry[] };
-
-function readBackendNamespace(status: PersistedStatusRecord): string | null {
-  const namespace = (status as PersistedStatusRecord & { backendNamespace?: string }).backendNamespace;
-  return typeof namespace === 'string' && namespace.length > 0 ? namespace : null;
-}
-
-function belongsToNamespace(status: PersistedStatusRecord, namespace: string): boolean {
-  return readBackendNamespace(status) === namespace;
-}
 
 export class SessionIndex {
   private readonly index = new Map<string, Map<string, LenientSessionEntry>>();

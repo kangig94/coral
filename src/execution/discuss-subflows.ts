@@ -533,7 +533,7 @@ async function collectFollowUpAnswer(
     DEFAULT_DISCUSS_PROVIDER,
     undefined,
   );
-  const latestRun = loadAttachedOrPersistedSnapshot(ctx, sessionId)?.runtime.agentRuns[item.agent] ?? run;
+  const latestRun = snapshot.runtime.agentRuns[item.agent] ?? run;
   if (
     latestRun.currentJobId === undefined
     && latestRun.lastAttemptOutcome === 'retryable_parse_error'

@@ -884,21 +884,11 @@ export class ExecutionService {
     result: TerminalResult,
     markdown: string,
   ): void {
-    this.persistWorkflowTerminalState(sessionId, jobId, phase, result, markdown);
-    this.abortRegistry.remove(jobId);
-    this.sessionManager.releaseJob(sessionId, jobId);
-  }
-
-  private persistWorkflowTerminalState(
-    sessionId: string,
-    jobId: string,
-    phase: Extract<JobPhase, 'completed' | 'error' | 'aborted'>,
-    result: TerminalResult,
-    markdown: string,
-  ): void {
     this.progressStore.writeWorkflowResultMdOrThrow(jobId, markdown);
     this.writeTerminalResult(jobId, sessionId, result, phase);
     this.sessionManager.setNonResumable(sessionId);
+    this.abortRegistry.remove(jobId);
+    this.sessionManager.releaseJob(sessionId, jobId);
   }
 
   private writeTerminalResult(jobId: string, sessionId: string, result: TerminalResult, phase: JobPhase): void {
