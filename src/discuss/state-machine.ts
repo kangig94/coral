@@ -112,6 +112,13 @@ function coldStartPick(state: DiscussState): string | null {
   return eligible[0]?.[0] ?? null;
 }
 
+export interface SessionCreateOptions {
+  bidThreshold?: number;
+  maxEpochs?: number;
+  quotaPerEpoch?: number;
+  agentExecution?: Record<string, SessionCreatedAgentExecutionConfig>;
+}
+
 export function decideSessionCreate(
   input: DiscussCreateInput,
   sessionId: string,
@@ -119,13 +126,16 @@ export function decideSessionCreate(
   topic: string,
   seq: number,
   ts: string,
-  bidThreshold = DEFAULT_BID_THRESHOLD,
-  maxEpochs = DEFAULT_MAX_EPOCHS,
-  quotaPerEpoch = DEFAULT_QUOTA_PER_EPOCH,
-  agentExecution: Record<string, SessionCreatedAgentExecutionConfig> = Object.fromEntries(
-    input.agents.map((agent) => [agent.name, { manual: true }]),
-  ) as Record<string, SessionCreatedAgentExecutionConfig>,
+  opts: SessionCreateOptions = {},
 ): Result<DiscussDomainEvent[]> {
+  const {
+    bidThreshold = DEFAULT_BID_THRESHOLD,
+    maxEpochs = DEFAULT_MAX_EPOCHS,
+    quotaPerEpoch = DEFAULT_QUOTA_PER_EPOCH,
+    agentExecution = Object.fromEntries(
+      input.agents.map((agent) => [agent.name, { manual: true }]),
+    ) as Record<string, SessionCreatedAgentExecutionConfig>,
+  } = opts;
   return {
     ok: true,
     value: [

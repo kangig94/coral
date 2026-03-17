@@ -1,5 +1,6 @@
 import { readdirSync, type Dirent } from 'node:fs';
 import { basename, join } from 'node:path';
+import { sessionBase } from '../client/paths.js';
 import {
   readSessionEntryLenient,
   type LenientSessionEntry,
@@ -25,6 +26,16 @@ export class SessionIndex {
     const stale = this.staleSessionIds.get(shardHash) ?? new Set<string>();
     stale.add(sessionId);
     this.staleSessionIds.set(shardHash, stale);
+  }
+
+  discoverShard(shardHash: string): void {
+    if (this.shardDirs.has(shardHash)) return;
+    const shardDir = join(sessionBase(), shardHash);
+    this.hydrateShard(shardDir);
+  }
+
+  hasShard(shardHash: string): boolean {
+    return this.shardDirs.has(shardHash);
   }
 
   reread(shardHash: string, sessionId: string): void {
@@ -81,8 +92,11 @@ export class SessionIndex {
   }
 
   private refreshIndex(): void {
-    this.hydrateUnknownShards(SessionManager.listShards());
-
+    // Shard discovery is event-driven via session:updated — no unconditional readdirSync.
+    // Bootstrap guard: if index is completely empty, do a one-time full scan.
+    if (this.shardDirs.size === 0) {
+      this.hydrateUnknownShards(SessionManager.listShards());
+    }
     for (const [shardHash, sessionIds] of this.staleSessionIds) {
       for (const sessionId of [...sessionIds]) {
         this.reread(shardHash, sessionId);

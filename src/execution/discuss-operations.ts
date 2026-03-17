@@ -81,10 +81,7 @@ export async function startDiscussSession(
       topic,
       1,
       nowIsoString(),
-      undefined,
-      readDiscussMaxEpochs(),
-      undefined,
-      buildAgentExecutionConfig(agents),
+      { maxEpochs: readDiscussMaxEpochs(), agentExecution: buildAgentExecutionConfig(agents) },
     ),
   );
 

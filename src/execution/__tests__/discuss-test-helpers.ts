@@ -203,10 +203,7 @@ export async function persistSession(
     topic,
     1,
     createdAt,
-    undefined,
-    undefined,
-    undefined,
-    options.agentExecution ?? defaultAgentExecution(agents),
+    { agentExecution: options.agentExecution ?? defaultAgentExecution(agents) },
   );
   if (!created.ok) {
     const createError = created.error;

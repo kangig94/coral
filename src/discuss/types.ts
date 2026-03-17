@@ -1,7 +1,25 @@
 type AgentScoreMap = Record<string, number>;
 type NullableAgentScoreMap = Record<string, number | null>;
-type SpeakerType = 'quota' | 'fallback' | 'cold_start';
-type TranscriptResolveType = 'normal' | 'fallback' | 'cold_start' | 'no_winner';
+
+export const speakerTypes = ['quota', 'fallback', 'cold_start'] as const;
+export type SpeakerType = typeof speakerTypes[number];
+
+export const transcriptResolveTypes = ['normal', 'fallback', 'cold_start', 'no_winner'] as const;
+export type TranscriptResolveType = typeof transcriptResolveTypes[number];
+
+export const participationTypes = ['required', 'observer'] as const;
+export type ParticipationType = typeof participationTypes[number];
+
+export const discussStatuses = ['setup', 'bidding', 'speaking', 'ended'] as const;
+export type DiscussStatus = typeof discussStatuses[number];
+
+export const resolveReasons = ['all_below_threshold', 'max_epochs_reached', 'all_blocked', 'epoch_transition'] as const;
+
+export const endReasons = ['all_below_threshold', 'max_epochs_reached', 'all_blocked', 'no_participants', 'already_ended'] as const;
+
+export const sessionEventKinds = ['force_end', 'synthesis'] as const;
+export type SessionEventKind = typeof sessionEventKinds[number];
+
 type TranscriptStepMetadata = {
   step: number;
   epoch: number;
@@ -24,12 +42,12 @@ export type TranscriptEntry =
   | ({ type: 'speech'; agent: string; display_name: string; content: string; } & TranscriptStepMetadata)
   | ({ type: 'follow_up'; agent: string; question: string; answer: string; } & TranscriptEpochMetadata)
   | ({ type: 'epoch_summary'; summary: string; } & TranscriptEpochMetadata)
-  | ({ type: 'session_event'; event: 'force_end' | 'synthesis'; detail: string; } & TranscriptEpochMetadata);
+  | ({ type: 'session_event'; event: SessionEventKind; detail: string; } & TranscriptEpochMetadata);
 
 export type AgentState = {
   persona: string;
   display_name: string;
-  participation: 'required' | 'observer';
+  participation: ParticipationType;
   quota_remaining: number;
   total_speaks: number;
   fallback_used: boolean;
@@ -39,7 +57,7 @@ export type AgentState = {
 export type DiscussState = {
   session_id: string;
   topic: string;
-  status: 'setup' | 'bidding' | 'speaking' | 'ended';
+  status: DiscussStatus;
   step: number;
   epoch: number;
   max_epochs: number;
@@ -67,11 +85,7 @@ export type Result<T> =
   | { ok: true; value: T }
   | { ok: false; error: string; detail?: Record<string, unknown> };
 
-export type ResolveReason =
-  | 'all_below_threshold'
-  | 'max_epochs_reached'
-  | 'all_blocked'
-  | 'epoch_transition';
+export type ResolveReason = typeof resolveReasons[number];
 
 /**
  * Sealed-bid design: individual bid scores are never returned to any caller.
@@ -92,19 +106,14 @@ export type SpeechResult =
   | { action: 'not_your_turn'; current_speaker: string | null }
   | { action: 'session_ended'; reason?: string; content?: string };
 
-export type EndReason =
-  | 'all_below_threshold'
-  | 'max_epochs_reached'
-  | 'all_blocked'
-  | 'no_participants'
-  | 'already_ended';
+export type EndReason = typeof endReasons[number];
 
 export type DiscussCreateInput = {
   topic: string;
   agents: {
     name: string;
     persona: string;
-    participation: 'required' | 'observer';
+    participation: ParticipationType;
   }[];
   min_bid_delay_ms: number;
 };

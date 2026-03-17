@@ -4,6 +4,7 @@ import {
   mkdirSync,
   openSync,
   renameSync,
+  statSync,
   writeSync,
 } from 'node:fs';
 import { dirname } from 'node:path';
@@ -317,11 +318,13 @@ export class DiscussSessionStore {
         validateAppendBatch(sessionId, this.projectRoot, currentSnapshot.lastAppliedSeq, events);
 
         appendEventBatch(logPath, events);
+        const logByteOffset = statSync(logPath).size;
 
         const nextSnapshot = events.reduce(
           (snapshot, event) => reduceDiscussEvent(snapshot, event),
           currentSnapshot,
         );
+        nextSnapshot.logByteOffset = logByteOffset;
 
         writeAtomicJson(statePath, nextSnapshot);
 
@@ -490,6 +493,19 @@ export class DiscussSessionStore {
     const statePath = discussStatePath(sessionDir);
     const logPath = discussEventLogPath(sessionDir);
     const snapshot = this.readSessionSnapshot(sessionId, statePath);
+
+    // Skip log read if snapshot records the log size and the log hasn't grown
+    if (snapshot?.logByteOffset !== undefined) {
+      try {
+        if (statSync(logPath).size === snapshot.logByteOffset) {
+          return snapshot;
+        }
+      } catch {
+        // ENOENT or other stat error — fall through to full log read
+      }
+    }
+
+    // Fallback: read log and replay (crash recovery, legacy snapshots without logByteOffset, stat failure)
     const eventLog = readDiscussEventLog(logPath).filter((event) =>
       event.sessionId === sessionId && event.projectRoot === this.projectRoot,
     );

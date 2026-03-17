@@ -219,7 +219,11 @@ describe('DiscussSessionStore', () => {
 
     unlinkSync(statePath);
 
-    expect(store.load(SESSION_ID)).toEqual(finalSnapshot);
+    const { logByteOffset: _dropped, ...expected } = finalSnapshot;
+    const loaded = store.load(SESSION_ID);
+    expect(loaded).not.toBeNull();
+    const { logByteOffset: _droppedLoaded, ...actual } = loaded!;
+    expect(actual).toEqual(expected);
   });
 
   it('replays only the tail past snapshot.lastAppliedSeq and matches full replay', async () => {
@@ -231,7 +235,11 @@ describe('DiscussSessionStore', () => {
 
     writeJsonAtomic(discussStatePath(sessionDir), truncatedSnapshot);
 
-    expect(store.load(SESSION_ID)).toEqual(finalSnapshot);
+    const { logByteOffset: _dropped, ...expected } = finalSnapshot;
+    const loaded = store.load(SESSION_ID);
+    expect(loaded).not.toBeNull();
+    const { logByteOffset: _droppedLoaded, ...actual } = loaded!;
+    expect(actual).toEqual(expected);
   });
 
   it('rejects compare-and-append when expectedSeq is stale', async () => {

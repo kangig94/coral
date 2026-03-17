@@ -979,6 +979,9 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   let sessionIndexSubscribed = false;
 
   const onSessionIndexUpdated = (payload: EventBusEvents['session:updated']): void => {
+    if (!sessionIndex.hasShard(payload.shardHash)) {
+      sessionIndex.discoverShard(payload.shardHash);
+    }
     sessionIndex.invalidate(payload.shardHash, payload.sessionId);
   };
 
@@ -1116,8 +1119,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     }
 
     for (const liveSession of listAttachedSessions(discussRegistry)) {
-      const snapshot = getDiscussStore(liveSession.projectRoot).load(liveSession.sessionId)
-        ?? liveSession.session.snapshot;
+      const snapshot = liveSession.session.snapshot;
       const summary = buildDiscussSummary(snapshot, 'live');
       results.set(`${summary.projectRoot}\u0000${summary.sessionId}`, summary);
     }

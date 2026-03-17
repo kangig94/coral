@@ -135,6 +135,15 @@ describe('execution SessionIndex', () => {
     const projectRootB = createProjectRoot('shard-b');
     const sessionB = new SessionManager(projectRootB).allocate('codex', 'beta', 'gpt-5', projectRootB, projectRootB);
 
+    // Simulate event-driven shard discovery (refreshIndex no longer scans unconditionally)
+    // Find the new shard by diffing listShards against known shards
+    for (const shardDir of SessionManager.listShards()) {
+      const shardHash = basename(shardDir);
+      if (!index.hasShard(shardHash)) {
+        index.discoverShard(shardHash);
+      }
+    }
+
     expect(index.listAll().flatMap((row) => row.sessions.map((session) => session.sessionId)).sort()).toEqual([
       sessionA.sessionId,
       sessionB.sessionId,

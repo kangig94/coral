@@ -13,21 +13,23 @@ import {
 import type { PersistedProgressRecord, PersistedStatusRecord } from '../types.js';
 import type { SessionEntry } from '../execution/session-manager.js';
 import type { DiscussState } from '../discuss/types.js';
+import { discussStatuses, participationTypes, speakerTypes, transcriptResolveTypes, sessionEventKinds, resolveReasons } from '../discuss/types.js';
 import {
   type DiscussDomainEvent,
   type PersistedDiscussSnapshot,
+  controlPhases,
   discussEventKinds,
 } from '../discuss/events.js';
 import { isNoEntryError } from '../shared/mcp-utils.js';
 
 const discussEventKindSet = new Set<string>(discussEventKinds);
-const discussStatusSet = new Set(['setup', 'bidding', 'speaking', 'ended']);
-const participationSet = new Set(['required', 'observer']);
-const speakerTypeSet = new Set(['quota', 'fallback', 'cold_start']);
-const transcriptResolveTypeSet = new Set(['normal', 'fallback', 'cold_start', 'no_winner']);
-const transcriptEventSet = new Set(['force_end', 'synthesis']);
-const controlPhaseSet = new Set(['idle', 'observer_wait', 'evaluate_epoch', 'collect_follow_up', 'synthesize']);
-const resolveReasonSet = new Set(['all_below_threshold', 'max_epochs_reached', 'all_blocked', 'epoch_transition']);
+const discussStatusSet = new Set<string>(discussStatuses);
+const participationSet = new Set<string>(participationTypes);
+const speakerTypeSet = new Set<string>(speakerTypes);
+const transcriptResolveTypeSet = new Set<string>(transcriptResolveTypes);
+const transcriptEventSet = new Set<string>(sessionEventKinds);
+const controlPhaseSet = new Set<string>(controlPhases);
+const resolveReasonSet = new Set<string>(resolveReasons);
 
 function readJsonFile(filePath: string): unknown | null {
   try {
@@ -135,7 +137,7 @@ function isValidTranscriptEntry(value: unknown): boolean {
   }
 }
 
-function isValidSessionEntry(value: unknown): value is SessionEntry {
+export function isValidSessionEntry(value: unknown): value is SessionEntry {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
   return typeof v.sessionId === 'string'
@@ -368,7 +370,8 @@ function isValidPersistedDiscussSnapshot(value: unknown): value is PersistedDisc
     || typeof value.projectRoot !== 'string'
     || typeof value.updatedAt !== 'string'
     || !isInteger(value.lastAppliedSeq)
-    || value.lastAppliedSeq < 0) {
+    || value.lastAppliedSeq < 0
+    || (value.logByteOffset !== undefined && (!isInteger(value.logByteOffset) || value.logByteOffset < 0))) {
     return false;
   }
 

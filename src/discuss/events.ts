@@ -4,6 +4,9 @@ import type {
   ResolveReason,
 } from './types.js';
 
+export const controlPhases = ['idle', 'observer_wait', 'evaluate_epoch', 'collect_follow_up', 'synthesize'] as const;
+export type ControlPhase = typeof controlPhases[number];
+
 export const discussEventKinds = [
   'session.created',
   'bidding.opened',
@@ -195,7 +198,7 @@ export interface PersistedDiscussAgentRun {
 }
 
 export interface PersistedDiscussRuntime {
-  controlPhase: 'idle' | 'observer_wait' | 'evaluate_epoch' | 'collect_follow_up' | 'synthesize';
+  controlPhase: ControlPhase;
   carryForwardMustAnswer: string[];
   followUpQueue: FollowUpQueueItem[];
   agentRuns: Record<string, PersistedDiscussAgentRun>;
@@ -207,6 +210,7 @@ export interface PersistedDiscussSnapshot {
   projectRoot: string;
   updatedAt: string;
   lastAppliedSeq: number;
+  logByteOffset?: number;
   state: DiscussState;
   runtime: PersistedDiscussRuntime;
 }
