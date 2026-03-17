@@ -42,6 +42,7 @@ function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest 
     sessionId: 'job-1',
     prompt: 'Run checks',
     bypassPermissions: false,
+    coralEnv: {},
     ...overrides,
   };
 }

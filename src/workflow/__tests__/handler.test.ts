@@ -4,6 +4,7 @@ import type { CallerContext } from '../../execution/service.js';
 const ctx: CallerContext = {
   projectRoot: '/tmp/coral-workflow-project',
   pluginRoot: '/tmp/coral-workflow-plugin',
+  coralEnv: {},
 };
 
 function createExecutionService(result = { status: 'running', job: 'job-1', session: 'session-1' } as const) {

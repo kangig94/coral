@@ -52,6 +52,7 @@ interface WaitOptions {
 export interface CallerContext {
   projectRoot: string;
   pluginRoot: string;
+  coralEnv: Record<string, string>;
 }
 
 /**
@@ -436,6 +437,7 @@ export class BackendClient {
       context: {
         projectRoot: ctx.projectRoot,
         pluginRoot: ctx.pluginRoot,
+        coralEnv: ctx.coralEnv,
       },
     });
 

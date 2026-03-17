@@ -86,12 +86,12 @@ function requireConversationRef(request: ProviderRequest, action: 'resume' | 'fo
 
 const TIER_RANK: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3 };
 
-function resolveModelCap(environment?: Record<string, string>): string {
-  return (environment?.CORAL_CLAUDE_MODEL_CAP ?? process.env.CORAL_CLAUDE_MODEL_CAP) ?? 'opus';
+function resolveModelCap(env: Record<string, string>): string {
+  return env.CORAL_CLAUDE_MODEL_CAP ?? 'opus';
 }
 
-function capModel(model: string | undefined, environment?: Record<string, string>): string | undefined {
-  const cap = resolveModelCap(environment);
+function capModel(model: string | undefined, env: Record<string, string>): string | undefined {
+  const cap = resolveModelCap(env);
   if (!model) return model;
   const modelRank = TIER_RANK[model];
   const capRank = TIER_RANK[cap];

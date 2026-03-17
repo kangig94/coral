@@ -3,17 +3,18 @@ import { executeClaudeOneShot, executeClaudeResume } from '../claude-executor.js
 
 describe.skipIf(!process.env.CORAL_SMOKE_TEST)('claude-executor smoke', () => {
   it('runs one-shot execution using stdin prompt transport', async () => {
-    const result = await executeClaudeOneShot('Reply with exactly: OK');
+    const result = await executeClaudeOneShot('Reply with exactly: OK', { environment: {} });
 
     expect(result.response.length).toBeGreaterThan(0);
   }, 120_000);
 
   it('supports --resume with --append-system-prompt', async () => {
-    const first = await executeClaudeOneShot('Reply with exactly: READY');
+    const first = await executeClaudeOneShot('Reply with exactly: READY', { environment: {} });
 
     expect(first.sessionId).toBeTruthy();
 
     const resumed = await executeClaudeResume(first.sessionId!, 'Reply with exactly: CONTINUE', {
+      environment: {},
       systemPrompt: 'You are a test assistant. Output exactly one token.',
     });
 

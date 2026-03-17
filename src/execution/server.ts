@@ -258,21 +258,16 @@ function parseToolRequest(body: unknown, resolvedPluginRoot: string): ToolReques
   if ('pluginRoot' in body.context && body.context.pluginRoot !== undefined && typeof body.context.pluginRoot !== 'string') {
     return null;
   }
-  if ('coralEnv' in body.context && body.context.coralEnv !== undefined && !isRecord(body.context.coralEnv)) {
-    return null;
-  }
-  const rawEnv = isRecord(body.context.coralEnv) ? body.context.coralEnv : undefined;
+  if (!isRecord(body.context.coralEnv)) return null;
   const coralEnv: Record<string, string> = {};
-  if (rawEnv) {
-    for (const [key, value] of Object.entries(rawEnv)) {
-      if (typeof value !== 'string') return null;
-      coralEnv[key] = value;
-    }
+  for (const [key, value] of Object.entries(body.context.coralEnv)) {
+    if (typeof value !== 'string') return null;
+    coralEnv[key] = value;
   }
-  const context = {
+  const context: CallerContext = {
     projectRoot: body.context.projectRoot,
     pluginRoot: resolvedPluginRoot,
-    ...(rawEnv ? { coralEnv } : {}),
+    coralEnv,
   };
   return {
     name: body.name,
@@ -1263,7 +1258,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       ...parsed,
       cursor: inputCursor,
     };
-    const ctx: CallerContext = { projectRoot: parsed.projectRoot, pluginRoot: resolvedPluginRoot };
+    const ctx: CallerContext = { projectRoot: parsed.projectRoot, pluginRoot: resolvedPluginRoot, coralEnv: {} };
 
     res.statusCode = 200;
     res.setHeader('Content-Type', 'text/event-stream');
@@ -1593,6 +1588,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         const recoveryCtx: CallerContext = {
           projectRoot,
           pluginRoot: resolvedPluginRoot,
+          coralEnv: {},
         };
         await discussOperations.recoverPersistedSessions(
           getDiscussContext(recoveryCtx),

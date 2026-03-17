@@ -20,31 +20,27 @@ export interface CodexExecOptions {
   onEvent?: (line: string) => void;
   signal?: AbortSignal;
   preChecked: CliInfo & { available: true };
-  environment?: Record<string, string>;
+  environment: Record<string, string>;
 }
 
 const VALID_CODEX_EFFORT = new Set(['low', 'medium', 'high', 'xhigh']);
 
-function coralEnv(env: Record<string, string> | undefined, key: string): string | undefined {
-  return env !== undefined ? env[key] : process.env[key];
-}
-
 /** Resolve default effort to Codex-native CLI value. */
-function resolveCodexDefaultEffort(environment?: Record<string, string>): string {
-  const raw = coralEnv(environment, 'CORAL_CODEX_EFFORT');
+function resolveCodexDefaultEffort(env: Record<string, string>): string {
+  const raw = env.CORAL_CODEX_EFFORT;
   if (raw !== undefined) {
     if (!VALID_CODEX_EFFORT.has(raw)) {
       throw new Error(`Invalid CORAL_CODEX_EFFORT="${raw}". Valid values: low, medium, high, xhigh`);
     }
     return raw;
   }
-  const shared = coralEnv(environment, 'CORAL_EFFORT');
+  const shared = env.CORAL_EFFORT;
   if (shared !== undefined) return toCodexEffort(shared as NonNullable<EffortLevel>);
   return 'xhigh';
 }
 
-function getDefaultModel(environment?: Record<string, string>): string {
-  return coralEnv(environment, 'CORAL_CODEX_MODEL') ?? 'gpt-5.4';
+function getDefaultModel(env: Record<string, string>): string {
+  return env.CORAL_CODEX_MODEL ?? 'gpt-5.4';
 }
 
 export { killAllRunnerChildren as killAllChildren };
@@ -177,8 +173,8 @@ function toCodexEffort(effort: NonNullable<EffortLevel>): string {
 }
 
 /** Build CLI flags for reasoning effort. */
-function reasoningEffortFlags(effort: EffortLevel | undefined, environment?: Record<string, string>): string[] {
-  const value = effort !== undefined ? toCodexEffort(effort) : resolveCodexDefaultEffort(environment);
+function reasoningEffortFlags(effort: EffortLevel | undefined, env: Record<string, string>): string[] {
+  const value = effort !== undefined ? toCodexEffort(effort) : resolveCodexDefaultEffort(env);
   return ['-c', `model_reasoning_effort=${value}`];
 }
 

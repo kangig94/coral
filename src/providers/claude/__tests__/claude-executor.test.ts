@@ -45,6 +45,7 @@ describe('claude-executor', () => {
     ));
 
     const result = await executeClaudeOneShot('Say hello', {
+      environment: {},
       model: 'claude-3-5-sonnet',
       systemPrompt: 'You are precise',
       workingDirectory: '/tmp/work',
@@ -83,6 +84,7 @@ describe('claude-executor', () => {
     mockCliResult('{"type":"result","result":"done","session_id":"sess-2"}');
 
     const result = await executeClaudeResume('sess-1', 'Continue', {
+      environment: {},
       model: 'claude-sonnet',
       systemPrompt: 'Resume mode',
       workingDirectory: '/tmp/project',
@@ -114,7 +116,7 @@ describe('claude-executor', () => {
   it('appends --effort when effort is set', async () => {
     mockCliResult('{"type":"result","result":"ok","session_id":"sess-effort"}');
 
-    await executeClaudeOneShot('Use effort', { effort: 'high' });
+    await executeClaudeOneShot('Use effort', { environment: {}, effort: 'high' });
 
     expect(mockSpawnCli).toHaveBeenCalledWith(expect.objectContaining({
       args: [
@@ -128,7 +130,7 @@ describe('claude-executor', () => {
   it('passes max effort to --effort max', async () => {
     mockCliResult('{"type":"result","result":"ok","session_id":"sess-effort-map"}');
 
-    await executeClaudeOneShot('Use max effort', { effort: 'max' });
+    await executeClaudeOneShot('Use max effort', { environment: {}, effort: 'max' });
 
     expect(mockSpawnCli).toHaveBeenCalledWith(expect.objectContaining({
       args: [
@@ -142,7 +144,7 @@ describe('claude-executor', () => {
   it('includes --dangerously-skip-permissions for one-shot when bypassPermissions is true', async () => {
     mockCliResult('{"type":"result","result":"ok","session_id":"sess-5"}');
 
-    await executeClaudeOneShot('Bypass one-shot', { bypassPermissions: true });
+    await executeClaudeOneShot('Bypass one-shot', { environment: {}, bypassPermissions: true });
 
     expect(mockSpawnCli).toHaveBeenCalledWith(expect.objectContaining({
       args: [
@@ -156,7 +158,7 @@ describe('claude-executor', () => {
   it('includes --dangerously-skip-permissions for resume when bypassPermissions is true', async () => {
     mockCliResult('{"type":"result","result":"ok","session_id":"sess-6"}');
 
-    await executeClaudeResume('sess-6', 'Bypass resume', { bypassPermissions: true });
+    await executeClaudeResume('sess-6', 'Bypass resume', { environment: {}, bypassPermissions: true });
 
     expect(mockSpawnCli).toHaveBeenCalledWith(expect.objectContaining({
       args: [
@@ -175,7 +177,7 @@ describe('claude-executor', () => {
       '{"type":"result","session_id":"sess-3","total_cost_usd":0.01}',
     ));
 
-    const result = await executeClaudeOneShot('Emit lines');
+    const result = await executeClaudeOneShot('Emit lines', { environment: {} });
 
     expect(result.response).toBe('line one\nline two');
     expect(result.sessionId).toBe('sess-3');
@@ -184,7 +186,7 @@ describe('claude-executor', () => {
   it('returns null sessionId when stream output omits session_id', async () => {
     mockCliResult('{"type":"result","result":"ok"}');
 
-    const result = await executeClaudeOneShot('No session id');
+    const result = await executeClaudeOneShot('No session id', { environment: {} });
 
     expect(result.sessionId).toBeNull();
     expect(result.response).toBe('ok');
@@ -194,7 +196,7 @@ describe('claude-executor', () => {
     mockCliResult('{"type":"result","result":"ok","session_id":"sess-on-event"}');
 
     const onEvent = vi.fn();
-    await executeClaudeOneShot('stream events', { onEvent });
+    await executeClaudeOneShot('stream events', { environment: {}, onEvent });
 
     expect(mockSpawnCli).toHaveBeenCalledWith(expect.objectContaining({
       onEvent,
@@ -204,7 +206,7 @@ describe('claude-executor', () => {
   it('throws structured ClaudeExecParseError when stdout is fully unparseable', async () => {
     mockCliResult('not-json-output', { stderr: 'stderr text', code: 17 });
 
-    const error = await executeClaudeOneShot('bad output').catch((caught: unknown) => caught);
+    const error = await executeClaudeOneShot('bad output', { environment: {} }).catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(ClaudeExecParseError);
     if (!(error instanceof ClaudeExecParseError)) return;
@@ -219,7 +221,7 @@ describe('claude-executor', () => {
   it('throws structured ClaudeExecParseError when stdout is empty', async () => {
     mockCliResult('', { stderr: 'stderr text', code: 0 });
 
-    const error = await executeClaudeOneShot('empty output').catch((caught: unknown) => caught);
+    const error = await executeClaudeOneShot('empty output', { environment: {} }).catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(ClaudeExecParseError);
     if (!(error instanceof ClaudeExecParseError)) return;

@@ -129,7 +129,7 @@ export function createDiscussHarness(service = createExecutionServiceStub()): Di
   const store = new DiscussSessionStore(projectRoot);
   const registry = createDiscussContextRegistry();
   const context = getOrCreateDiscussContext(registry, projectRoot, service, store);
-  const ctx: CallerContext = { projectRoot, pluginRoot };
+  const ctx: CallerContext = { projectRoot, pluginRoot, coralEnv: {} };
   let cleaned = false;
 
   const harness: DiscussHarness = {

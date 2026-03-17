@@ -54,6 +54,7 @@ function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest 
     sessionId: 'job-1',
     prompt: 'Run checks',
     bypassPermissions: false,
+    coralEnv: {},
     ...overrides,
   };
 }
@@ -340,6 +341,7 @@ describe('claude provider adapter', () => {
       systemPrompt: `You are the architect agent\n\nHonor repository policy\n\n${OUTPUT_STYLE_OVERRIDE}`,
       effort: 'medium',
       bypassPermissions: true,
+      environment: {},
       signal,
       onEvent: expect.any(Function),
     });
@@ -362,6 +364,7 @@ describe('claude provider adapter', () => {
         systemPrompt: `System stays separate\n\n${OUTPUT_STYLE_OVERRIDE}`,
         effort: undefined,
         bypassPermissions: false,
+        environment: {},
         signal,
         onEvent: expect.any(Function),
       },
@@ -381,6 +384,7 @@ describe('claude provider adapter', () => {
       systemPrompt: `Just the system prompt\n\n${OUTPUT_STYLE_OVERRIDE}`,
       effort: undefined,
       bypassPermissions: false,
+      environment: {},
       signal,
       onEvent: expect.any(Function),
     });
@@ -402,6 +406,7 @@ describe('claude provider adapter', () => {
       systemPrompt: `Restore persona\n\n${OUTPUT_STYLE_OVERRIDE}`,
       effort: undefined,
       bypassPermissions: false,
+      environment: {},
       signal,
       onEvent: expect.any(Function),
     });
@@ -654,6 +659,7 @@ describe('claude adapter: systemPrompt edge cases', () => {
       systemPrompt: OUTPUT_STYLE_OVERRIDE,
       effort: undefined,
       bypassPermissions: false,
+      environment: {},
       signal,
       onEvent: expect.any(Function),
     });

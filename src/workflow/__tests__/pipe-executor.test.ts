@@ -16,6 +16,7 @@ import {
 const ctx: CallerContext = {
   projectRoot: '/tmp/coral-workflow-project',
   pluginRoot: '/tmp/coral-workflow-plugin',
+  coralEnv: {},
 };
 
 function running(job: string, session: string) {

@@ -12,7 +12,7 @@ export type ClaudeExecOptions = {
   bypassPermissions?: boolean;
   signal?: AbortSignal;
   onEvent?: (line: string) => void;
-  environment?: Record<string, string>;
+  environment: Record<string, string>;
 };
 
 export class ClaudeExecParseError extends Error {
@@ -27,19 +27,15 @@ export class ClaudeExecParseError extends Error {
 
 const VALID_CLAUDE_EFFORT = new Set(['low', 'medium', 'high', 'max']);
 
-function coralEnv(env: Record<string, string> | undefined, key: string): string | undefined {
-  return env !== undefined ? env[key] : process.env[key];
-}
-
-function resolveClaudeDefaultEffort(environment?: Record<string, string>): NonNullable<EffortLevel> {
-  const raw = coralEnv(environment, 'CORAL_CLAUDE_EFFORT');
+function resolveClaudeDefaultEffort(env: Record<string, string>): NonNullable<EffortLevel> {
+  const raw = env.CORAL_CLAUDE_EFFORT;
   if (raw !== undefined) {
     if (!VALID_CLAUDE_EFFORT.has(raw)) {
       throw new Error(`Invalid CORAL_CLAUDE_EFFORT="${raw}". Valid values: low, medium, high, max`);
     }
     return raw as NonNullable<EffortLevel>;
   }
-  const shared = coralEnv(environment, 'CORAL_EFFORT');
+  const shared = env.CORAL_EFFORT;
   if (shared !== undefined) {
     if (!VALID_CLAUDE_EFFORT.has(shared)) {
       throw new Error(`Invalid CORAL_EFFORT="${shared}". Valid values: low, medium, high, max`);
@@ -53,7 +49,7 @@ const STREAM_JSON_ARGS = ['-p', '--verbose', '--output-format', 'stream-json'];
 
 export async function executeClaudeOneShot(
   prompt: string,
-  options: ClaudeExecOptions = {},
+  options: ClaudeExecOptions,
 ): Promise<ClaudeExecResult> {
   const args = [...STREAM_JSON_ARGS];
   appendSharedArgs(args, options);
@@ -64,7 +60,7 @@ export async function executeClaudeOneShot(
 export async function executeClaudeResume(
   sessionId: string,
   prompt: string,
-  options: Omit<ClaudeExecOptions, 'sessionId'> = {},
+  options: Omit<ClaudeExecOptions, 'sessionId'>,
 ): Promise<ClaudeExecResult> {
   const args = [...STREAM_JSON_ARGS, '--resume', sessionId];
   appendSharedArgs(args, options);
@@ -74,7 +70,7 @@ export async function executeClaudeResume(
 export async function executeClaudeFork(
   sessionId: string,
   prompt: string,
-  options: Omit<ClaudeExecOptions, 'sessionId'> = {},
+  options: Omit<ClaudeExecOptions, 'sessionId'>,
 ): Promise<ClaudeExecResult> {
   const args = [...STREAM_JSON_ARGS, '--resume', sessionId, '--fork-session'];
   appendSharedArgs(args, options);
