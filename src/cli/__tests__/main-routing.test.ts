@@ -70,7 +70,7 @@ async function loadMainModule(): Promise<MainModule> {
   return import('../main.js');
 }
 
-describe('cli main factory', () => {
+describe('cli main routing', () => {
   let stdout = '';
   let stderr = '';
 

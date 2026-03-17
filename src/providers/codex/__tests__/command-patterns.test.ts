@@ -102,39 +102,25 @@ describe('stripShellWrapper — adversarial', () => {
 
   describe('/usr/bin/bash variant', () => {
     it('strips /usr/bin/bash -c wrapper', () => {
-      const inner = 'echo hello';
-      const result = stripShellWrapper(`/usr/bin/bash -c "${inner}"`);
-      // Either strips it or passes through — must not crash
-      expect(typeof result).toBe('string');
-      if (result !== `/usr/bin/bash -c "${inner}"`) {
-        expect(result).toBe(inner);
-      }
+      expect(stripShellWrapper('/usr/bin/bash -c "echo hello"')).toBe('echo hello');
     });
   });
 
   describe('zsh -c without -l flag', () => {
     it('strips zsh -c wrapper (no -l)', () => {
-      const inner = 'cat README.md';
-      const result = stripShellWrapper(`zsh -c "${inner}"`);
-      // Either strips it or passes through — must not crash
-      expect(typeof result).toBe('string');
-      expect(result.length).toBeGreaterThan(0);
+      expect(stripShellWrapper('zsh -c "cat README.md"')).toBe('cat README.md');
     });
   });
 
   describe('payload with trailing whitespace', () => {
-    it('strips trailing whitespace from extracted payload', () => {
-      const inner = 'ls -la  ';
-      const wrapped = `/bin/sh -c "${inner}"`;
-      const result = stripShellWrapper(wrapped);
-      expect(typeof result).toBe('string');
+    it('preserves trailing whitespace in extracted payload', () => {
+      expect(stripShellWrapper('/bin/sh -c "ls -la  "')).toBe('ls -la  ');
     });
   });
 
   describe('wrapper with extra spaces between parts', () => {
-    it('handles extra space between command and -lc flag', () => {
-      const inner = 'cat file.ts';
-      expect(() => stripShellWrapper(`zsh  -lc "${inner}"`)).not.toThrow();
+    it('strips wrapper despite extra spaces between command and flag', () => {
+      expect(stripShellWrapper('zsh  -lc "cat file.ts"')).toBe('cat file.ts');
     });
   });
 

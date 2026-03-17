@@ -74,7 +74,7 @@ function createSnapshot(
   )));
 }
 
-describe('reducer projections', () => {
+describe('discuss reducer', () => {
   it('matches incremental reduce and tail replay for a creation -> bid -> speech cycle', () => {
     const input = makeInput([
       { name: 'alpha', persona: 'Alpha', participation: 'required' },
