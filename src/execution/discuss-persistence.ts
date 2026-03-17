@@ -13,8 +13,18 @@ import {
   type WatchState,
   watchBufferCursor,
 } from './discuss-context.js';
+import { ABORT_REASON } from './discuss-operations.js';
 
-const ABORT_REASON = 'abort';
+function syncLiveSnapshot(ctx: DiscussContext, sessionId: string): void {
+  const latest = ctx.store.load(sessionId);
+  if (!latest) {
+    return;
+  }
+  const live = ctx.sessions.get(sessionId);
+  if (live) {
+    live.snapshot = latest;
+  }
+}
 
 export type CommitSuccess = {
   ok: true;
@@ -128,13 +138,7 @@ export async function commitDecision(
       };
     } catch (error: unknown) {
       if (error instanceof DiscussStaleWriteError) {
-        const latest = ctx.store.load(sessionId);
-        if (latest) {
-          const live = ctx.sessions.get(sessionId);
-          if (live) {
-            live.snapshot = latest;
-          }
-        }
+        syncLiveSnapshot(ctx, sessionId);
         continue;
       }
       throw error;
@@ -164,13 +168,7 @@ export async function appendRuntimeEvents(
       return snapshot;
     } catch (error: unknown) {
       if (error instanceof DiscussStaleWriteError) {
-        const latest = ctx.store.load(sessionId);
-        if (latest) {
-          const live = ctx.sessions.get(sessionId);
-          if (live) {
-            live.snapshot = latest;
-          }
-        }
+        syncLiveSnapshot(ctx, sessionId);
         continue;
       }
       throw error;

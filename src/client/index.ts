@@ -61,7 +61,7 @@ export { ensureBackend, withAbortTimeout } from './backend-lifecycle.js';
 export type { BackendHandle } from './backend-lifecycle.js';
 
 // ./http-client.js
-export { BackendClient, BackendToolHttpError } from './http-client.js';
+export { BackendClient, BackendToolHttpError, isBackendHealth } from './http-client.js';
 export type { CallerContext, BackendHealth } from './http-client.js';
 
 // ../types.js

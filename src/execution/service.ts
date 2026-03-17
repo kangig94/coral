@@ -1,21 +1,23 @@
 import { randomUUID } from 'node:crypto';
 import { pluginRootNamespace } from '../client/paths.js';
-import type {
-  JobKind,
-  JobPhase,
-  LaunchDecision,
-  LaunchState,
-  PersistedStatusRecord,
-  ProviderInstruction,
-  ProviderProgressEvent,
-  ProviderRequest,
-  TerminalResult,
-  WaitRequest,
-  WaitStreamEvent,
-  WorkflowResultMeta,
+import {
+  isTerminalPhase,
+  type JobKind,
+  type JobPhase,
+  type LaunchDecision,
+  type LaunchState,
+  type PersistedStatusRecord,
+  type ProviderInstruction,
+  type ProviderProgressEvent,
+  type ProviderRequest,
+  type TerminalResult,
+  type WaitRequest,
+  type WaitStreamEvent,
+  type WorkflowResultMeta,
 } from '../types.js';
 import { resolveCoralContent, stripAgentMetadata, parseAgentMeta } from '../coral/resolver.js';
 import { getNewProvider } from '../providers/registry.js';
+import { errorMessage } from '../shared/mcp-utils.js';
 import type { EffortLevel } from '../shared/schemas.js';
 import type { Provider, ProviderRuntime } from '../providers/types.js';
 import {
@@ -111,10 +113,6 @@ type ClaimJobOptions = {
   jobKind?: JobKind;
 };
 
-function isTerminalPhase(phase: JobPhase): phase is Extract<JobPhase, 'completed' | 'error' | 'aborted'> {
-  return phase === 'completed' || phase === 'error' || phase === 'aborted';
-}
-
 function canAdvanceLaunchState(status: PersistedStatusRecord | null): status is PersistedStatusRecord {
   return status !== null && !isTerminalPhase(status.phase) && status.launch.state !== 'ready';
 }
@@ -174,7 +172,7 @@ async function runProviderPreflight(provider: Provider): Promise<string | null> 
     await provider.preflight();
     return null;
   } catch (error: unknown) {
-    return error instanceof Error ? error.message : String(error);
+    return errorMessage(error);
   }
 }
 
@@ -206,15 +204,15 @@ export class ExecutionService {
     projectRoot: string,
     options: ClaimJobOptions = {},
   ): Promise<SessionEntry> {
-    this.progressStore.initJob(
+    this.progressStore.initJob({
       jobId,
-      session.sessionId,
-      providerName,
+      sessionId: session.sessionId,
+      provider: providerName,
       projectRoot,
-      this.backendNamespace,
-      options.jobKind,
-      options.initialPhase ?? 'launching',
-    );
+      backendNamespace: this.backendNamespace,
+      jobKind: options.jobKind,
+      initialPhase: options.initialPhase ?? 'launching',
+    });
 
     try {
       const claimed = await this.sessionManager.claimForJobAtomic(
@@ -886,42 +884,19 @@ export class ExecutionService {
     result: TerminalResult,
     markdown: string,
   ): void {
-    this.persistWorkflowTerminalState(sessionId, jobId, phase, result, markdown);
-    this.abortRegistry.remove(jobId);
-    this.sessionManager.releaseJob(sessionId, jobId);
-  }
-
-  private persistWorkflowTerminalState(
-    sessionId: string,
-    jobId: string,
-    phase: Extract<JobPhase, 'completed' | 'error' | 'aborted'>,
-    result: TerminalResult,
-    markdown: string,
-  ): void {
     this.progressStore.writeWorkflowResultMdOrThrow(jobId, markdown);
     this.writeTerminalResult(jobId, sessionId, result, phase);
     this.sessionManager.setNonResumable(sessionId);
+    this.abortRegistry.remove(jobId);
+    this.sessionManager.releaseJob(sessionId, jobId);
   }
 
   private writeTerminalResult(jobId: string, sessionId: string, result: TerminalResult, phase: JobPhase): void {
     try {
       this.progressStore.appendTerminal(jobId, sessionId, result, phase);
     } catch {
-      this.progressStore.markTerminalStatus(jobId, sessionId, result, phase);
+      this.progressStore.markTerminalStatus(jobId, result, phase);
     }
-  }
-
-  private finishWorkflowWithEmptyArtifact(
-    sessionId: string,
-    jobId: string,
-    message: string,
-    aborted: boolean,
-  ): void {
-    const phase: Extract<JobPhase, 'error' | 'aborted'> = aborted ? 'aborted' : 'error';
-    const result: TerminalResult = aborted
-      ? { content: '', aborted: true, notice: message, workflow: { steps: [] } }
-      : { content: '', notice: message, workflow: { steps: [] } };
-    this.finishWorkflowJob(sessionId, jobId, phase, result, '');
   }
 
   private runWorkflowAsync(
@@ -988,7 +963,10 @@ export class ExecutionService {
             };
           this.finishWorkflowJob(sessionId, jobId, phase, terminalResult, serialized.markdown);
         } catch {
-          this.finishWorkflowWithEmptyArtifact(sessionId, jobId, message, aborted);
+          const emptyResult: TerminalResult = aborted
+            ? { content: '', aborted: true, notice: message, workflow: { steps: [] } }
+            : { content: '', notice: message, workflow: { steps: [] } };
+          this.finishWorkflowJob(sessionId, jobId, phase, emptyResult, '');
         }
       });
   }

@@ -5,6 +5,7 @@ import type { CallerContext, ExecutionService } from '../execution/service.js';
 import type { TerminalResult, WaitCursor } from '../types.js';
 import type { PipeAtom, PipelineAST } from './types.js';
 import { truncate } from '../shared/format-progress.js';
+import { errorMessage } from '../shared/mcp-utils.js';
 
 export const BOOTSTRAP_TIMEOUT_MS = 2_000;
 export const SIBLING_DRAIN_TIMEOUT_MS = 15_000;
@@ -638,7 +639,7 @@ export async function executePipeline(
         throw error;
       }
 
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       throw createWorkflowExecutionError(message, Boolean(options.signal?.aborted), [...stepDetails]);
     }
   }

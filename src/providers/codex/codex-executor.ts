@@ -27,13 +27,14 @@ const VALID_CODEX_EFFORT = new Set(['low', 'medium', 'high', 'xhigh']);
 
 /** Resolve default effort to Codex-native CLI value. */
 function resolveCodexDefaultEffort(env: Record<string, string>): string {
-  const raw = env.CORAL_CODEX_EFFORT;
-  if (raw !== undefined) {
+  if (env.CORAL_CODEX_EFFORT !== undefined) {
+    const raw = env.CORAL_CODEX_EFFORT;
     if (!VALID_CODEX_EFFORT.has(raw)) {
       throw new Error(`Invalid CORAL_CODEX_EFFORT="${raw}". Valid values: low, medium, high, xhigh`);
     }
     return raw;
   }
+
   const shared = env.CORAL_EFFORT;
   if (shared !== undefined) return toCodexEffort(shared as NonNullable<EffortLevel>);
   return 'xhigh';
@@ -183,9 +184,9 @@ export async function executeOneShot(
   prompt: string,
   opts: CodexExecOptions,
 ): Promise<CodexExecResult> {
-  const resolvedModel = opts.model ?? getDefaultModel(opts.environment);
+  const resolvedModel = resolveModel(opts);
   return executeCodex(
-    ['exec', '-m', resolvedModel, ...baseFlags(opts.bypassSandbox ?? false), ...reasoningEffortFlags(opts.effort, opts.environment)],
+    buildExecutionArgs(['exec'], resolvedModel, opts),
     prependClaudeMd(prompt),
     resolvedModel,
     opts,
@@ -198,9 +199,9 @@ export async function executeResume(
   prompt: string,
   opts: CodexExecOptions,
 ): Promise<CodexExecResult> {
-  const resolvedModel = opts.model ?? getDefaultModel(opts.environment);
+  const resolvedModel = resolveModel(opts);
   return executeCodex(
-    ['exec', 'resume', threadId, '-m', resolvedModel, ...baseFlags(opts.bypassSandbox ?? false), ...reasoningEffortFlags(opts.effort, opts.environment)],
+    buildExecutionArgs(['exec', 'resume', threadId], resolvedModel, opts),
     prompt,
     resolvedModel,
     opts,
@@ -214,4 +215,22 @@ export async function executeFork(
   opts: CodexExecOptions,
 ): Promise<CodexExecResult> {
   return executeResume(threadId, prompt, opts);
+}
+
+function resolveModel(opts: CodexExecOptions): string {
+  return opts.model ?? getDefaultModel(opts.environment);
+}
+
+function buildExecutionArgs(
+  command: string[],
+  model: string,
+  opts: CodexExecOptions,
+): string[] {
+  return [
+    ...command,
+    '-m',
+    model,
+    ...baseFlags(opts.bypassSandbox ?? false),
+    ...reasoningEffortFlags(opts.effort, opts.environment),
+  ];
 }

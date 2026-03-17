@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { errorMessage } from '../shared/mcp-utils.js';
 
 import {
   makeEvent,
@@ -28,6 +29,7 @@ import {
 } from './discuss-prompts.js';
 import {
   CONTINUE_TURN_INSTRUCTION,
+  DEFAULT_DISCUSS_PROVIDER,
   FOLLOW_UP_TURN_INSTRUCTION,
   PURPOSE_BID,
   PURPOSE_EPOCH_EVALUATION,
@@ -60,7 +62,6 @@ const CONVERGENCE_THRESHOLD = 7;
 const MAX_BID_ATTEMPTS = 3;
 const MAX_FOLLOW_UP_ATTEMPTS = 3;
 const MUST_ANSWER_SEPARATOR = '\u0000';
-const DEFAULT_DISCUSS_PROVIDER = 'codex';
 
 const BidSchema = z.object({
   score: z.number().int().min(0).max(100),
@@ -324,7 +325,6 @@ function buildBidBatch(
         nextSeq,
         nowIsoString(),
       ),
-      `expel agents ${expelAgents.join(', ')}`,
     );
     events.push(...expelEvents);
     working = applyEventsLocally(working, expelEvents);
@@ -368,7 +368,6 @@ function buildBidBatch(
         nextSeq,
         nowIsoString(),
       ),
-      'end session after bid failures',
     );
     events.push(...endEvents);
   }
@@ -509,7 +508,7 @@ async function collectBidOutcome(
         };
       }
 
-      const failure = error instanceof Error ? error.message : String(error);
+      const failure = errorMessage(error);
       prompt = buildBidRetryPrompt(basePrompt, attempt.content, failure);
     }
   }
@@ -532,7 +531,7 @@ async function collectFollowUpAnswer(
     DEFAULT_DISCUSS_PROVIDER,
     undefined,
   );
-  const latestRun = loadAttachedOrPersistedSnapshot(ctx, sessionId)?.runtime.agentRuns[item.agent] ?? run;
+  const latestRun = snapshot.runtime.agentRuns[item.agent] ?? run;
   if (
     latestRun.currentJobId === undefined
     && latestRun.lastAttemptOutcome === 'retryable_parse_error'
@@ -801,7 +800,6 @@ export async function handleEpochTransition(
           nextSeq,
           ts,
         ),
-        'record epoch summary',
       );
 
       return {

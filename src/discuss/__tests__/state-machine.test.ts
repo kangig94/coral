@@ -204,10 +204,12 @@ describe('state-machine deciders', () => {
       'Topic',
       12,
       NOW,
-      30,
-      2,
-      3,
-      { alpha: { manual: false, provider: 'codex', model: 'gpt-5' } },
+      {
+        bidThreshold: 30,
+        maxEpochs: 2,
+        quotaPerEpoch: 3,
+        agentExecution: { alpha: { manual: false, provider: 'codex', model: 'gpt-5' } },
+      },
     ));
 
     expect(events.map((event) => event.kind)).toEqual(['session.created', 'bidding.opened']);

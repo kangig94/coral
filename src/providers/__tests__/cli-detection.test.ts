@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { detectCodexCli, resetCodexCliCache } from '../../cli-detection.js';
+import {
+  detectCodexCli, resetCodexCliCache,
+  detectClaudeCli, resetClaudeCliCache,
+} from '../cli-detection.js';
 
 vi.mock('node:child_process', () => ({
   execFile: vi.fn(),
@@ -11,19 +14,23 @@ const mockExecFile = vi.mocked(execFile);
 
 type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
 
-let originalApiKey: string | undefined;
-
 function mockExecByArgs(responders: Record<string, (cb: ExecFileCallback) => void>): void {
   mockExecFile.mockImplementation((_cmd, args, _opts, callback) => {
     const key = Array.isArray(args) ? args.join(' ') : '';
     const responder = responders[key];
-    if (!responder) throw new Error(`Unexpected codex args: ${key}`);
+    if (!responder) throw new Error(`Unexpected args: ${key}`);
     responder(callback as ExecFileCallback);
     return undefined as never;
   });
 }
 
+// ── Codex ──────────────────────────────────────
+// Tests both codex-specific config and the shared createCliDetector mechanism
+// (caching, concurrent dedup, re-check, reset).
+
 describe('detectCodexCli', () => {
+  let originalApiKey: string | undefined;
+
   beforeEach(() => {
     originalApiKey = process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
@@ -304,5 +311,84 @@ describe('detectCodexCli', () => {
       authState: 'unauthenticated',
     });
     expect(mockExecFile).toHaveBeenCalledTimes(3);
+  });
+});
+
+// ── Claude ─────────────────────────────────────
+// Provider-specific tests only. Shared createCliDetector mechanism
+// (caching, concurrent dedup, re-check) is proven by the codex suite above.
+
+describe('detectClaudeCli', () => {
+  let originalApiKey: string | undefined;
+
+  beforeEach(() => {
+    originalApiKey = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    resetClaudeCliCache();
+    mockExecFile.mockReset();
+  });
+
+  afterEach(() => {
+    if (originalApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = originalApiKey;
+  });
+
+  it('returns authenticated when ANTHROPIC_API_KEY is set (fast path)', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    mockExecByArgs({
+      '--version': (cb) => cb(null, '2.1.63 (Claude Code)\n', ''),
+    });
+
+    const result = await detectClaudeCli();
+
+    expect(result).toEqual({
+      available: true,
+      version: '2.1.63 (Claude Code)',
+      authState: 'authenticated',
+    });
+    expect(mockExecFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns authenticated when auth status json says authenticated', async () => {
+    mockExecByArgs({
+      '--version': (cb) => cb(null, '2.1.63 (Claude Code)\n', ''),
+      'auth status --json': (cb) => cb(null, '{"authenticated":true}\n', ''),
+    });
+
+    const result = await detectClaudeCli();
+
+    expect(result).toEqual({
+      available: true,
+      version: '2.1.63 (Claude Code)',
+      authState: 'authenticated',
+    });
+  });
+
+  it('returns unauthenticated when auth probe reports not logged in', async () => {
+    mockExecByArgs({
+      '--version': (cb) => cb(null, '2.1.63 (Claude Code)\n', ''),
+      'auth status --json': (cb) => cb(new Error('exit 1'), '', 'Not logged in'),
+    });
+
+    const result = await detectClaudeCli();
+
+    expect(result).toMatchObject({
+      available: true,
+      authState: 'unauthenticated',
+    });
+  });
+
+  it('returns unavailable when claude binary is missing', async () => {
+    mockExecByArgs({
+      '--version': (cb) => cb(new Error('ENOENT'), '', ''),
+    });
+
+    const result = await detectClaudeCli();
+
+    expect(result).toEqual(expect.objectContaining({
+      available: false,
+      error: expect.stringContaining('not found'),
+    }));
+    expect(mockExecFile).toHaveBeenCalledTimes(1);
   });
 });

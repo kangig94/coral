@@ -44,17 +44,21 @@ function isProvider(value: string): boolean {
   return providerIdentPattern.test(value);
 }
 
-function hasUnquotedParentheses(text: string): boolean {
+function hasUnquotedChar(text: string, target: string): boolean {
   let found = false;
 
   scanQuoteAware(text, (char, _index, inQuote) => {
-    if (inQuote === null && (char === '(' || char === ')')) {
+    if (inQuote === null && char === target) {
       found = true;
       return true;
     }
   });
 
   return found;
+}
+
+function hasUnquotedParentheses(text: string): boolean {
+  return hasUnquotedChar(text, '(') || hasUnquotedChar(text, ')');
 }
 
 function splitByComma(text: string): string[] {
@@ -76,16 +80,7 @@ function splitByComma(text: string): string[] {
 }
 
 function hasTopLevelComma(text: string): boolean {
-  let found = false;
-
-  scanQuoteAware(text, (char, _index, inQuote) => {
-    if (inQuote === null && char === ',') {
-      found = true;
-      return true;
-    }
-  });
-
-  return found;
+  return hasUnquotedChar(text, ',');
 }
 
 function parsePromptLiteral(atomText: string): PromptAtom {

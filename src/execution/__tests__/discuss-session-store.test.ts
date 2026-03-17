@@ -219,7 +219,11 @@ describe('DiscussSessionStore', () => {
 
     unlinkSync(statePath);
 
-    expect(store.load(SESSION_ID)).toEqual(finalSnapshot);
+    const { logByteOffset: _dropped, ...expected } = finalSnapshot;
+    const loaded = store.load(SESSION_ID);
+    expect(loaded).not.toBeNull();
+    const { logByteOffset: _droppedLoaded, ...actual } = loaded!;
+    expect(actual).toEqual(expected);
   });
 
   it('replays only the tail past snapshot.lastAppliedSeq and matches full replay', async () => {
@@ -231,7 +235,11 @@ describe('DiscussSessionStore', () => {
 
     writeJsonAtomic(discussStatePath(sessionDir), truncatedSnapshot);
 
-    expect(store.load(SESSION_ID)).toEqual(finalSnapshot);
+    const { logByteOffset: _dropped, ...expected } = finalSnapshot;
+    const loaded = store.load(SESSION_ID);
+    expect(loaded).not.toBeNull();
+    const { logByteOffset: _droppedLoaded, ...actual } = loaded!;
+    expect(actual).toEqual(expected);
   });
 
   it('rejects compare-and-append when expectedSeq is stale', async () => {
@@ -284,6 +292,7 @@ describe('DiscussSessionStore', () => {
       ),
     );
     const created = await store.append(SESSION_ID, 0, createEvents);
+    store.flushDirtyIndexes();
     const firstDiscovery = readDiscussDiscovery(projectRoot);
 
     expect(firstDiscovery).toEqual({
@@ -311,6 +320,7 @@ describe('DiscussSessionStore', () => {
       ),
     );
     const afterBid = await store.append(SESSION_ID, created.lastAppliedSeq, bidEvents);
+    store.flushDirtyIndexes();
     const secondDiscovery = readDiscussDiscovery(projectRoot);
 
     expect(secondDiscovery?.updatedAt).toBe(afterBid.updatedAt);
@@ -353,6 +363,9 @@ describe('DiscussSessionStore', () => {
       secondStore.append(SECOND_SESSION_ID, 0, secondCreate),
     ]);
 
+    firstStore.flushDirtyIndexes();
+    secondStore.flushDirtyIndexes();
+
     const discovery = readDiscussDiscovery(projectRoot);
     expect(discovery?.sessions.map((session) => session.sessionId).sort()).toEqual([
       SESSION_ID,
@@ -368,6 +381,7 @@ describe('DiscussSessionStore', () => {
     const store = new DiscussSessionStore(projectRoot);
     await appendRoundTripHistory(store, SESSION_ID);
     await appendRoundTripHistory(store, SECOND_SESSION_ID);
+    store.flushDirtyIndexes();
 
     const firstSnapshot = store.load(SESSION_ID);
     const secondSnapshot = store.load(SECOND_SESSION_ID);
@@ -411,6 +425,7 @@ describe('DiscussSessionStore', () => {
     const store = new DiscussSessionStore(projectRoot);
     const { finalSnapshot: firstSnapshot } = await appendRoundTripHistory(store, SESSION_ID);
     const { finalSnapshot: secondSnapshot } = await appendRoundTripHistory(store, SECOND_SESSION_ID);
+    store.flushDirtyIndexes();
 
     unlinkSync(discussSummaryIndexPath(projectRoot));
     writeJsonAtomic(discussProjectRootsPath(), {
@@ -442,6 +457,7 @@ describe('DiscussSessionStore', () => {
     const store = new DiscussSessionStore(projectRoot);
     const { finalSnapshot: firstSnapshot } = await appendRoundTripHistory(store, SESSION_ID);
     const { finalSnapshot: secondSnapshot } = await appendRoundTripHistory(store, SECOND_SESSION_ID);
+    store.flushDirtyIndexes();
 
     writeJsonAtomic(discussSummaryIndexPath(projectRoot), {
       projectRoot,
@@ -492,6 +508,56 @@ describe('DiscussSessionStore', () => {
     expect(JSON.parse(lines[5]) as { kind: string; seq: number }).toMatchObject({
       kind: 'speech.recorded',
       seq: 6,
+    });
+  });
+
+  it('returns correct data from listing methods immediately after append (flush-before-read)', async () => {
+    const store = new DiscussSessionStore(projectRoot);
+    const { finalSnapshot } = await appendRoundTripHistory(store);
+
+    const summaries = store.listSummaries();
+    expect(summaries).toEqual([
+      {
+        sessionId: SESSION_ID,
+        projectRoot,
+        topic: TOPIC,
+        status: 'bidding',
+        createdAt: '2026-03-11T00:00:00.000Z',
+        agentCount: 2,
+        authority: 'persisted',
+      },
+    ]);
+
+    expect(readDiscussSummaryIndex(projectRoot)).toEqual({
+      projectRoot,
+      updatedAt: finalSnapshot.updatedAt,
+      sessions: [buildExpectedSummaryRow(finalSnapshot)],
+    });
+  });
+
+  it('flushes dirty indexes to disk on dispose (shutdown flush)', async () => {
+    const store = new DiscussSessionStore(projectRoot);
+    const { finalSnapshot } = await appendRoundTripHistory(store);
+
+    expect(readDiscussDiscovery(projectRoot)).toBeNull();
+
+    store.dispose();
+
+    const discovery = readDiscussDiscovery(projectRoot);
+    expect(discovery).not.toBeNull();
+    expect(discovery?.sessions).toHaveLength(1);
+    expect(discovery?.sessions[0]).toMatchObject({
+      sessionId: SESSION_ID,
+      topic: TOPIC,
+    });
+    expect(readDiscussSummaryIndex(projectRoot)).toEqual({
+      projectRoot,
+      updatedAt: finalSnapshot.updatedAt,
+      sessions: [buildExpectedSummaryRow(finalSnapshot)],
+    });
+    expect(JSON.parse(readFileSync(discussProjectRootsPath(), 'utf8'))).toEqual({
+      updatedAt: finalSnapshot.updatedAt,
+      projectRoots: [projectRoot],
     });
   });
 });

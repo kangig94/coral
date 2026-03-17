@@ -37,7 +37,7 @@ import {
 } from './discuss-persistence.js';
 import { collectBids } from './discuss-subflows.js';
 
-const ABORT_REASON = 'abort';
+export const ABORT_REASON = 'abort';
 
 function readDiscussMaxEpochs(): number {
   const raw = Number.parseInt(process.env.CORAL_DISCUSS_MAX_EPOCHS ?? '', 10);
@@ -81,12 +81,8 @@ export async function startDiscussSession(
       topic,
       1,
       nowIsoString(),
-      undefined,
-      readDiscussMaxEpochs(),
-      undefined,
-      buildAgentExecutionConfig(agents),
+      { maxEpochs: readDiscussMaxEpochs(), agentExecution: buildAgentExecutionConfig(agents) },
     ),
-    'create session',
   );
 
   const snapshot = await ctx.store.append(sessionId, null, created);
@@ -219,7 +215,6 @@ export function getWatchState(
 
 export async function recoverPersistedSessions(
   ctx: DiscussContext,
-  _callerCtx: CallerContext,
 ): Promise<void> {
   for (const candidate of ctx.store.listRecoveryCandidates()) {
     const snapshot = ctx.store.load(candidate.sessionId);

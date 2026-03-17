@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { backendInfoPath, backendLockPath, pluginRootNamespace } from './paths.js';
+import { isBackendHealth, type BackendHealth } from './backend-health.js';
 import { readBackendInfo, type BackendInfo } from '../execution/backend-info.js';
 import { isNoEntryError, isRecord, readBundleHash, tryExclusiveWrite } from '../shared/mcp-utils.js';
 import { HEALTH_TIMEOUT_MS } from '../shared/sse-parser.js';
@@ -13,15 +14,6 @@ import { HEALTH_TIMEOUT_MS } from '../shared/sse-parser.js';
 const STARTUP_POLL_MS = 200;
 const STARTUP_TIMEOUT_MS = 60_000;
 const REPLACEMENT_TIMEOUT_MS = 45_000;
-
-type BackendHealth = {
-  status: 'ok';
-  version: string;
-  bundleHash: string;
-  instanceId: string;
-  namespace: string;
-  env?: Record<string, string>;
-};
 
 type ReplacementLock = string;
 
@@ -34,16 +26,6 @@ export type BackendHandle = {
 
 function summarizeBackend(info: BackendInfo): BackendHandle {
   return { port: info.port, host: info.host, token: info.token, instanceId: info.instanceId };
-}
-
-function isBackendHealth(value: unknown): value is BackendHealth {
-  return isRecord(value)
-    && value.status === 'ok'
-    && typeof value.version === 'string'
-    && typeof value.bundleHash === 'string'
-    && typeof value.instanceId === 'string'
-    && typeof value.namespace === 'string'
-    && value.namespace.length > 0;
 }
 
 function currentVersion(root: string): string {

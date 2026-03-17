@@ -86,10 +86,26 @@ Strip the `--codex` flag before passing the prompt to the execution path.
        a. API substitutions preserve semantic intent
        b. Local variable removal does not inline expensive access patterns
        c. If a change could affect behavior or performance, revert it
+         (exception: efficiency/performance improvements with identical observable semantics are acceptable)
        Justification:
        d. Every new helper/extraction must either deduplicate (2+ call sites) or name a complex block for clarity — revert if it merely relocates code
        e. Every rename must fix a genuinely misleading name — revert cosmetic renames
        f. If no files were skipped as "already clean", treat as red flag and re-examine
+
+       **Codex delegation review (critical)**:
+       When `--codex` was used, Codex operates without test feedback and frequently introduces
+       subtle behavioral changes disguised as simplifications. You MUST `git diff` every modified
+       file and verify line-by-line that behavior is preserved. Common Codex failure modes:
+       g. Early-return converted to fall-through (helper wrapping `return` into a void function
+          loses the caller's early exit — execution continues to the next statement)
+       h. Argument/flag ordering changed (CLI arg order can be semantically significant;
+          extracting a shared builder may reorder flags relative to positional args)
+       i. Dedup scope expanded beyond original intent (e.g., dedup that was intentionally
+          cross-type-only gets applied within a single type, changing filtering behavior)
+       j. Operations added to code paths that didn't have them (e.g., a helper adds
+          a normalization step to a branch that previously passed values through raw)
+       k. Single-use extractions or cosmetic renames that violate the Constraints
+       Revert the entire file if any of (g–k) apply. Do not attempt to fix — revert and move on.
     6) Run build and tests to verify no regressions. When parallel Tasks were used,
        run only after ALL tasks complete — not per-task.
        If tests fail, the simplification broke behavior — revert the offending change

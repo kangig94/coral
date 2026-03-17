@@ -51,6 +51,23 @@ export function formatError(error: unknown): string {
   return error instanceof Error ? error.stack ?? error.message : String(error);
 }
 
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+export function collectCoralEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of Object.keys(process.env)) {
+    if (!key.startsWith('CORAL_') || process.env[key] === undefined) continue;
+    env[key] = process.env[key]!;
+  }
+  return env;
+}
+
 const bundleHashCache = new Map<string, string>();
 
 /**
@@ -76,6 +93,8 @@ export function readBundleHash(pluginRoot: string): string {
  * Attempt an exclusive-create write: creates parent directory, writes with O_EXCL,
  * and sets mode 0o600 on non-Windows. Returns true on success, false if file already exists.
  */
+export const nowIsoString = (): string => new Date().toISOString();
+
 export function tryExclusiveWrite(filePath: string, payload: string): boolean {
   mkdirSync(dirname(filePath), { recursive: true });
   try {

@@ -1,23 +1,15 @@
 import { readdirSync, type Dirent } from 'node:fs';
 import { basename, join } from 'node:path';
+import { sessionBase } from '../client/paths.js';
 import {
   readSessionEntryLenient,
   type LenientSessionEntry,
 } from '../client/readers.js';
-import type { PersistedStatusRecord } from '../types.js';
+import { belongsToNamespace } from '../types.js';
 import type { ProgressStore } from './progress-store.js';
 import { SessionManager } from './session-manager.js';
 
 type SessionIndexRow = { shardHash: string; sessions: LenientSessionEntry[] };
-
-function readBackendNamespace(status: PersistedStatusRecord): string | null {
-  const namespace = (status as PersistedStatusRecord & { backendNamespace?: string }).backendNamespace;
-  return typeof namespace === 'string' && namespace.length > 0 ? namespace : null;
-}
-
-function belongsToNamespace(status: PersistedStatusRecord, namespace: string): boolean {
-  return readBackendNamespace(status) === namespace;
-}
 
 export class SessionIndex {
   private readonly index = new Map<string, Map<string, LenientSessionEntry>>();
@@ -36,22 +28,29 @@ export class SessionIndex {
     this.staleSessionIds.set(shardHash, stale);
   }
 
+  discoverShard(shardHash: string): void {
+    if (this.shardDirs.has(shardHash)) return;
+    const shardDir = join(sessionBase(), shardHash);
+    this.hydrateShard(shardDir);
+  }
+
+  hasShard(shardHash: string): boolean {
+    return this.shardDirs.has(shardHash);
+  }
+
   reread(shardHash: string, sessionId: string): void {
     const shardDir = this.resolveShardDir(shardHash);
     const sessions = this.index.get(shardHash) ?? new Map<string, LenientSessionEntry>();
+    sessions.delete(sessionId);
 
     if (!shardDir) {
-      sessions.delete(sessionId);
       this.index.set(shardHash, sessions);
       this.clearStale(shardHash, sessionId);
       return;
     }
 
     const entry = readSessionEntryLenient(join(shardDir, `${sessionId}.json`));
-    if (entry === null) {
-      sessions.delete(sessionId);
-    } else {
-      sessions.delete(sessionId);
+    if (entry !== null) {
       sessions.set(entry.sessionId, entry);
     }
 
@@ -90,8 +89,11 @@ export class SessionIndex {
   }
 
   private refreshIndex(): void {
-    this.hydrateUnknownShards(SessionManager.listShards());
-
+    // Shard discovery is event-driven via session:updated — no unconditional readdirSync.
+    // Bootstrap guard: if index is completely empty, do a one-time full scan.
+    if (this.shardDirs.size === 0) {
+      this.hydrateUnknownShards(SessionManager.listShards());
+    }
     for (const [shardHash, sessionIds] of this.staleSessionIds) {
       for (const sessionId of [...sessionIds]) {
         this.reread(shardHash, sessionId);

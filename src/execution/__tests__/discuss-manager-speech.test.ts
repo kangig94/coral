@@ -148,7 +148,7 @@ describe('Discuss speech collection', { retry: 2 }, () => {
     });
 
     vi.useFakeTimers();
-    await recoverPersistedSessions(harness.context, harness.ctx);
+    await recoverPersistedSessions(harness.context);
     discussLoop.resumeLoop(harness.context, 'discuss-1', harness.ctx);
     await vi.runAllTimersAsync();
     vi.useRealTimers();

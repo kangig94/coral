@@ -4,13 +4,16 @@ declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import {
   formatError,
+  collectCoralEnv,
+  errorMessage,
   isNoEntryError,
   isRecord,
+  nowIsoString,
   readBundleHash,
   textResult,
   type McpResult,
@@ -74,12 +77,15 @@ import {
   ExecutionService as DefaultExecutionService,
 } from './service.js';
 import { handleWorkflow } from '../workflow/handler.js';
-import type {
-  PersistedProgressRecord,
-  PersistedStatusRecord,
-  TerminalResult,
-  WaitCursor,
-  WaitRequest,
+import {
+  belongsToNamespace,
+  isLivePhase,
+  readBackendNamespace,
+  type PersistedProgressRecord,
+  type PersistedStatusRecord,
+  type TerminalResult,
+  type WaitCursor,
+  type WaitRequest,
 } from '../types.js';
 
 export type LifecycleState = 'starting' | 'running' | 'draining' | 'stopped';
@@ -101,9 +107,6 @@ type ScopeCheckResult = {
   mismatch: string[];
 };
 
-type PersistedStatusRecordWithNamespace = PersistedStatusRecord & {
-  backendNamespace?: string;
-};
 
 type RouteToolCallFn = (
   request: ToolRequest,
@@ -363,11 +366,6 @@ function waitForInflightDrain(idleTimer: IdleTimer, timeoutMs: number): Promise<
   });
 }
 
-function readBackendNamespace(status: PersistedStatusRecord): string | null {
-  const namespace = (status as PersistedStatusRecordWithNamespace).backendNamespace;
-  return typeof namespace === 'string' && namespace.length > 0 ? namespace : null;
-}
-
 function withBackendNamespace(
   status: PersistedStatusRecord,
   namespace: string,
@@ -378,20 +376,12 @@ function withBackendNamespace(
   } as PersistedStatusRecord;
 }
 
-function isLiveJob(status: PersistedStatusRecord): boolean {
-  return status.phase === 'queued' || status.phase === 'launching' || status.phase === 'running';
-}
-
-function belongsToNamespace(status: PersistedStatusRecord, namespace: string): boolean {
-  return readBackendNamespace(status) === namespace;
-}
-
 function listLiveJobs(progressStore: ProgressStore, namespace: string): PersistedStatusRecord[] {
   const results: PersistedStatusRecord[] = [];
 
   for (const jobId of progressStore.listJobIds()) {
     const status = progressStore.readStatus(jobId);
-    if (!status || !isLiveJob(status)) continue;
+    if (!status || !isLivePhase(status.phase)) continue;
 
     const backendNamespace = readBackendNamespace(status);
     if (backendNamespace === null) {
@@ -411,7 +401,7 @@ function listLiveJobs(progressStore: ProgressStore, namespace: string): Persiste
 
 function hasJobDir(progressStore: ProgressStore, jobId: string): boolean {
   try {
-    readdirSync(progressStore.jobDir(jobId));
+    statSync(progressStore.jobDir(jobId));
     return true;
   } catch (error: unknown) {
     if (isNoEntryError(error)) return false;
@@ -461,7 +451,7 @@ function markJobAsError(
   try {
     progressStore.appendTerminal(status.jobId, status.sessionId, terminalResult, 'error');
   } catch {
-    progressStore.markTerminalStatus(status.jobId, status.sessionId, terminalResult, 'error');
+    progressStore.markTerminalStatus(status.jobId, terminalResult, 'error');
   }
 }
 
@@ -750,7 +740,7 @@ export async function routeToolCall(
       return toolSuccess({ session: sessionId });
     } catch (error: unknown) {
       return toolError('start_failed', {
-        message: error instanceof Error ? error.message : String(error),
+        message: errorMessage(error),
       });
     }
   }
@@ -989,6 +979,9 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   let sessionIndexSubscribed = false;
 
   const onSessionIndexUpdated = (payload: EventBusEvents['session:updated']): void => {
+    if (!sessionIndex.hasShard(payload.shardHash)) {
+      sessionIndex.discoverShard(payload.shardHash);
+    }
     sessionIndex.invalidate(payload.shardHash, payload.sessionId);
   };
 
@@ -1126,8 +1119,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     }
 
     for (const liveSession of listAttachedSessions(discussRegistry)) {
-      const snapshot = getDiscussStore(liveSession.projectRoot).load(liveSession.sessionId)
-        ?? liveSession.session.snapshot;
+      const snapshot = liveSession.session.snapshot;
       const summary = buildDiscussSummary(snapshot, 'live');
       results.set(`${summary.projectRoot}\u0000${summary.sessionId}`, summary);
     }
@@ -1206,6 +1198,9 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       markJobsAsErrorFn(namespace, 'Backend shutting down');
       killAllChildrenFn();
       unsubscribeSessionIndex();
+      for (const store of discussStores.values()) {
+        store.dispose();
+      }
 
       removeBackendInfoIfOwnerFn(resolvedPluginRoot, instanceId);
       removeLockIfOwnerFn(resolvedPluginRoot, instanceId);
@@ -1319,7 +1314,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     res.flushHeaders?.();
 
     streamResponses.add(res);
-    writeSseEvent(res, 'ready', { streamId, startedAt: new Date().toISOString() });
+    writeSseEvent(res, 'ready', { streamId, startedAt: nowIsoString() });
 
     let closed = false;
     const matchesFilter = (jobId: string): boolean => !filterJobId || jobId === filterJobId;
@@ -1408,11 +1403,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     }
 
     if (req.method === 'GET' && req.url === '/health') {
-      const envKeys = Object.keys(process.env)
-        .filter((k) => k.startsWith('CORAL_'))
-        .sort();
-      const env: Record<string, string> = {};
-      for (const k of envKeys) env[k] = process.env[k]!;
+      const env = collectCoralEnv();
 
       sendJson(res, 200, {
         status: lifecycle === 'running' ? 'ok' : lifecycle,
@@ -1592,7 +1583,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         };
         await discussOperations.recoverPersistedSessions(
           getDiscussContext(recoveryCtx),
-          recoveryCtx,
         );
       }
 

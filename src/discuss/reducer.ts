@@ -20,6 +20,7 @@ import type {
   DiscussState,
   TranscriptEntry,
 } from './types.js';
+import { appendEntry, resetBids } from './state-helpers.js';
 import { parseDisplayName } from './util/string.js';
 
 function makeEmptyState(sessionId: string): DiscussState {
@@ -57,35 +58,6 @@ function makeEmptyRuntime(): PersistedDiscussRuntime {
     carryForwardMustAnswer: [],
     followUpQueue: [],
     agentRuns: {},
-  };
-}
-
-function appendEntry(state: DiscussState, entry: TranscriptEntry, now: string): DiscussState {
-  return {
-    ...state,
-    last_activity_at: now,
-    transcript: [...state.transcript, entry],
-  };
-}
-
-function resetBids(state: DiscussState): DiscussState {
-  const currentBids: Record<string, number | null> = {};
-  const pendingBidders: string[] = [];
-
-  for (const [name, agent] of Object.entries(state.agents)) {
-    if (agent.banned) continue;
-    currentBids[name] = null;
-    if (agent.participation === 'required') {
-      pendingBidders.push(name);
-    }
-  }
-
-  return {
-    ...state,
-    current_bids: currentBids,
-    current_thoughts: {},
-    pending_bidders: pendingBidders,
-    pending_since_ts: null,
   };
 }
 
@@ -270,6 +242,28 @@ function ensureAgentRun(
   return runtime.agentRuns[agent] ?? { provider: '', model: '' };
 }
 
+function withAgentRunState(
+  snapshot: PersistedDiscussSnapshot,
+  agent: string,
+  ts: string,
+  seq: number,
+  mutate: (existing: PersistedDiscussAgentRun) => PersistedDiscussAgentRun,
+): PersistedDiscussSnapshot {
+  const existing = ensureAgentRun(snapshot.runtime, agent);
+  return {
+    ...snapshot,
+    updatedAt: ts,
+    lastAppliedSeq: seq,
+    runtime: {
+      ...snapshot.runtime,
+      agentRuns: {
+        ...snapshot.runtime.agentRuns,
+        [agent]: mutate(existing),
+      },
+    },
+  };
+}
+
 function reduceSessionEnded(
   snapshot: PersistedDiscussSnapshot,
   event: SessionEndedEvent,
@@ -367,74 +361,35 @@ function reduceAgentRunBound(
   snapshot: PersistedDiscussSnapshot,
   event: AgentRunBoundEvent,
 ): PersistedDiscussSnapshot {
-  const existing = ensureAgentRun(snapshot.runtime, event.payload.agent);
-
-  return {
-    ...snapshot,
-    updatedAt: event.ts,
-    lastAppliedSeq: event.seq,
-    runtime: {
-      ...snapshot.runtime,
-      agentRuns: {
-        ...snapshot.runtime.agentRuns,
-        [event.payload.agent]: {
-          ...existing,
-          executionSessionId: event.payload.executionSessionId,
-        },
-      },
-    },
-  };
+  return withAgentRunState(snapshot, event.payload.agent, event.ts, event.seq, (existing) => ({
+    ...existing,
+    executionSessionId: event.payload.executionSessionId,
+  }));
 }
 
 function reduceAgentJobStarted(
   snapshot: PersistedDiscussSnapshot,
   event: AgentJobStartedEvent,
 ): PersistedDiscussSnapshot {
-  const existing = ensureAgentRun(snapshot.runtime, event.payload.agent);
-
-  return {
-    ...snapshot,
-    updatedAt: event.ts,
-    lastAppliedSeq: event.seq,
-    runtime: {
-      ...snapshot.runtime,
-      agentRuns: {
-        ...snapshot.runtime.agentRuns,
-        [event.payload.agent]: {
-          ...existing,
-          currentJobId: event.payload.jobId,
-          currentJobPurpose: event.payload.purpose,
-          currentAttempt: event.payload.attempt,
-        },
-      },
-    },
-  };
+  return withAgentRunState(snapshot, event.payload.agent, event.ts, event.seq, (existing) => ({
+    ...existing,
+    currentJobId: event.payload.jobId,
+    currentJobPurpose: event.payload.purpose,
+    currentAttempt: event.payload.attempt,
+  }));
 }
 
 function reduceAgentJobFinished(
   snapshot: PersistedDiscussSnapshot,
   event: AgentJobFinishedEvent,
 ): PersistedDiscussSnapshot {
-  const existing = ensureAgentRun(snapshot.runtime, event.payload.agent);
-
-  return {
-    ...snapshot,
-    updatedAt: event.ts,
-    lastAppliedSeq: event.seq,
-    runtime: {
-      ...snapshot.runtime,
-      agentRuns: {
-        ...snapshot.runtime.agentRuns,
-        [event.payload.agent]: {
-          ...existing,
-          currentJobId: undefined,
-          currentJobPurpose: undefined,
-          currentAttempt: event.payload.attempt,
-          lastAttemptOutcome: event.payload.outcome,
-        },
-      },
-    },
-  };
+  return withAgentRunState(snapshot, event.payload.agent, event.ts, event.seq, (existing) => ({
+    ...existing,
+    currentJobId: undefined,
+    currentJobPurpose: undefined,
+    currentAttempt: event.payload.attempt,
+    lastAttemptOutcome: event.payload.outcome,
+  }));
 }
 
 export function makeEmptySnapshot(
@@ -641,20 +596,7 @@ export function reduceDiscussEvent(
       };
     }
 
-    case 'speech.recorded': {
-      const nextState = buildSpeechState(snapshot.state, event);
-      return {
-        ...snapshot,
-        updatedAt: event.ts,
-        lastAppliedSeq: event.seq,
-        state: nextState,
-        runtime: {
-          ...snapshot.runtime,
-          controlPhase: deriveBiddingControlPhase(nextState),
-        },
-      };
-    }
-
+    case 'speech.recorded':
     case 'speech.timed_out': {
       const nextState = buildSpeechState(snapshot.state, event);
       return {

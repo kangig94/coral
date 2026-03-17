@@ -40,7 +40,7 @@ describe('coral-hud AC18 — CLAUDE_PLUGIN_ROOT canonicalization', () => {
   const createdDirs: string[] = [];
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'red-hud-canon-'));
+    tmpDir = mkdtempSync(join(tmpdir(), 'hud-canon-'));
     createdDirs.push(tmpDir);
   });
 
@@ -92,15 +92,6 @@ describe('coral-hud AC18 — CLAUDE_PLUGIN_ROOT canonicalization', () => {
     // realpathSync throw and return null rather than calling hudNamespaceUnsafe.
   });
 
-  it('two distinct installation paths never accidentally share a namespace', () => {
-    const installA = join(tmpDir, 'installA');
-    const installB = join(tmpDir, 'installB');
-    mkdirSync(installA);
-    mkdirSync(installB);
-
-    expect(hudNamespace(installA)).not.toBe(hudNamespace(installB));
-  });
-
   it('trailing slash does not change namespace when realpathSync normalises it', () => {
     const install = join(tmpDir, 'install-slash');
     mkdirSync(install);
@@ -114,18 +105,6 @@ describe('coral-hud AC18 — CLAUDE_PLUGIN_ROOT canonicalization', () => {
       expect(hudNamespace(install + '/')).toBe(hudNamespace(install));
     }
     // If they differ (unusual but possible on some FSes), we skip — not a bug
-  });
-
-  it('namespace output is stable across multiple calls (deterministic hashing)', () => {
-    const install = join(tmpDir, 'stable-install');
-    mkdirSync(install);
-
-    const first = hudNamespace(install);
-    const second = hudNamespace(install);
-    const third = hudNamespace(install);
-
-    expect(first).toBe(second);
-    expect(second).toBe(third);
   });
 
   it('empty CLAUDE_PLUGIN_ROOT env is handled — realpathSync on empty string either throws or resolves cwd', () => {

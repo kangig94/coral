@@ -13,7 +13,7 @@ import {
   renderWaitLine,
   type WaitRenderContext,
 } from './format.js';
-import { isTransientStreamError } from '../shared/mcp-utils.js';
+import { errorMessage, isTransientStreamError } from '../shared/mcp-utils.js';
 import type { CliStreamEvent } from './types.js';
 
 const FOLLOW_TIMEOUT_SECONDS = 600;
@@ -123,7 +123,7 @@ function emitWaitEvent(
 
 function emitFollowError(error: unknown, outputFormat: 'text' | 'json'): void {
   if (outputFormat === 'json') {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     process.stderr.write(JSON.stringify({ error: true, message }) + '\n');
     return;
   }

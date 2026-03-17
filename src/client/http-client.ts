@@ -1,16 +1,13 @@
 import { ensureBackend as defaultEnsureBackend, withAbortTimeout, type BackendHandle } from './backend-lifecycle.js';
-import type { WaitCursor, WaitStreamEvent } from '../types.js';
+import type { CallerContext } from '../execution/request-context.js';
 import { isRecord } from '../shared/mcp-utils.js';
 import {
   describeHttpError,
   HEALTH_TIMEOUT_MS,
-  MAX_WAIT_FETCH_TIMEOUT_MS,
   parseJsonResponse,
-  parseSseBlock,
-  parseWaitStreamEvent,
   TOOL_TIMEOUT_MS,
-  WAIT_FETCH_MARGIN_MS,
 } from '../shared/sse-parser.js';
+import { isBackendHealth, type BackendHealth } from './backend-health.js';
 
 interface ProviderToolOptions {
   context?: CallerContext;
@@ -39,61 +36,14 @@ interface WorkflowOptions {
   atoms?: Record<string, { instruction?: string }>;
 }
 
-interface WaitOptions {
-  timeoutSeconds?: number;
-  cursor?: WaitCursor;
-  projectRoot?: string;
-  signal?: AbortSignal;
-}
-
-/**
- * Request-scoped paths the backend needs for job provenance and plugin resolution.
- */
-export interface CallerContext {
-  projectRoot: string;
-  pluginRoot: string;
-  coralEnv: Record<string, string>;
-}
-
-/**
- * Health metadata exposed by the Coral backend.
- */
-export interface BackendHealth {
-  status: 'ok';
-  version: string;
-  bundleHash: string;
-  instanceId: string;
-  namespace: string;
-  uptimeMs: number;
-  activeChildren: number;
-  activeJobs: number;
-  inflightRequests: number;
-  queueDepth: number;
-}
+export { isBackendHealth };
+export type { CallerContext, BackendHealth };
 
 function isCallerContext(value: unknown): value is CallerContext {
   return isRecord(value)
     && typeof value.projectRoot === 'string'
-    && typeof value.pluginRoot === 'string';
-}
-
-function isBackendHealth(value: unknown): value is BackendHealth {
-  return isRecord(value)
-    && value.status === 'ok'
-    && typeof value.version === 'string'
-    && typeof value.bundleHash === 'string'
-    && typeof value.instanceId === 'string'
-    && typeof value.namespace === 'string'
-    && value.namespace.length > 0
-    && Number.isFinite(value.uptimeMs)
-    && Number.isInteger(value.activeChildren)
-    && Number.isInteger(value.activeJobs)
-    && Number.isInteger(value.inflightRequests)
-    && Number.isInteger(value.queueDepth);
-}
-
-function serializeWaitCursor(cursor: WaitCursor): string {
-  return Buffer.from(JSON.stringify(cursor)).toString('base64url');
+    && typeof value.pluginRoot === 'string'
+    && isRecord(value.coralEnv);
 }
 
 export class BackendToolHttpError extends Error {
@@ -120,8 +70,9 @@ export class BackendClient {
     defaultContext?: CallerContext;
   } = {}) {
     this.defaultContext = options.defaultContext;
+    const defaultPluginRoot = this.defaultContext?.pluginRoot;
     this.ensureBackendHandle = options.ensureBackend
-      ?? ((pluginRoot?: string) => defaultEnsureBackend(pluginRoot ?? this.defaultContext?.pluginRoot));
+      ?? ((pluginRoot?: string) => defaultEnsureBackend(pluginRoot ?? defaultPluginRoot));
   }
 
   /**
@@ -262,87 +213,6 @@ export class BackendClient {
 
   async abortJobs(jobIds: string[], context?: CallerContext): Promise<unknown> {
     return this.proxyToolCall('abort', { jobs: jobIds }, this.resolveContext(context));
-  }
-
-  /**
-   * Streams wait events for one or more jobs.
-   */
-  async *wait(jobIds: string[], options: WaitOptions = {}): AsyncGenerator<WaitStreamEvent> {
-    const { timeoutSeconds, cursor, projectRoot, signal } = options;
-    const resolvedProjectRoot = projectRoot ?? this.defaultContext?.projectRoot;
-
-    if (!resolvedProjectRoot) {
-      throw new Error('projectRoot is required for wait');
-    }
-
-    const { port, host, token } = await this.resolveBackendHandle();
-    const fetchTimeoutMs = Math.min(
-      (timeoutSeconds ?? 600) * 1000 + WAIT_FETCH_MARGIN_MS,
-      MAX_WAIT_FETCH_TIMEOUT_MS,
-    );
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), fetchTimeoutMs);
-    const onExternalAbort = () => controller.abort();
-    signal?.addEventListener('abort', onExternalAbort);
-
-    try {
-      const response = await fetch(`http://${host}:${port}/wait/stream`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Coral-Backend-Token': token,
-          ...(cursor ? { 'Last-Event-ID': serializeWaitCursor(cursor) } : {}),
-        },
-        body: JSON.stringify({
-          jobIds,
-          timeoutSeconds,
-          projectRoot: resolvedProjectRoot,
-        }),
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        const body = await parseJsonResponse(response);
-        const message = isRecord(body) && typeof body.message === 'string'
-          ? body.message
-          : describeHttpError(response.status, response.statusText);
-        throw new Error(message);
-      }
-
-      if (!response.body) {
-        throw new Error('Backend wait stream returned no response body');
-      }
-
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      for await (const chunk of response.body) {
-        const decoded = decoder.decode(chunk, { stream: true });
-        buffer += decoded;
-        const blocks = buffer.split('\n\n');
-        buffer = blocks.pop() ?? '';
-
-        for (const block of blocks) {
-          const parsed = parseSseBlock(block);
-          if (!parsed) continue;
-          const event = parseWaitStreamEvent(parsed.event, parsed.data);
-          if (event) yield event;
-        }
-      }
-
-      buffer += decoder.decode();
-      const finalBlock = parseSseBlock(buffer);
-      if (!finalBlock) return;
-
-      const finalEvent = parseWaitStreamEvent(finalBlock.event, finalBlock.data);
-      if (finalEvent) yield finalEvent;
-    } catch (error) {
-      if (error instanceof Error) throw error;
-      throw new Error(`Backend communication error: ${String(error)}`);
-    } finally {
-      clearTimeout(timeout);
-      signal?.removeEventListener('abort', onExternalAbort);
-    }
   }
 
   /**

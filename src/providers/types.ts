@@ -1,4 +1,5 @@
 import type { ProviderProgressEvent, ProviderRequest, ProviderResult } from '../types.js';
+import { nowIsoString } from '../shared/mcp-utils.js';
 
 /** Build an onEvent callback that parses JSON lines and emits ProviderProgressEvents. */
 export function makeOnEvent<TEvent>(
@@ -12,7 +13,7 @@ export function makeOnEvent<TEvent>(
       const event = JSON.parse(line) as TEvent;
       const message = extractor(event, projectRoot);
       if (!message) return;
-      const progressEvent: ProviderProgressEvent = { jobId, message, ts: new Date().toISOString() };
+      const progressEvent: ProviderProgressEvent = { jobId, message, ts: nowIsoString() };
       runtime.onEvent(progressEvent);
     } catch {
       /* ignore non-JSON or unparseable lines */
@@ -31,4 +32,9 @@ export interface Provider {
   execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult>;
   /** Optional preflight check: auth/availability. Throw to reject launch before jobId is allocated. */
   preflight?(): Promise<void>;
+}
+
+export function requireConversationRef(request: ProviderRequest, action: 'resume' | 'fork'): string {
+  if (!request.conversationRef) throw new Error(`${action} requires conversationRef`);
+  return request.conversationRef;
 }

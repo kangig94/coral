@@ -1,4 +1,4 @@
-import { isRecord } from './mcp-utils.js';
+import { isRecord, isStringArray } from './mcp-utils.js';
 import type { WaitStreamEvent } from '../types.js';
 
 export const HEALTH_TIMEOUT_MS = 3_000;
@@ -11,10 +11,6 @@ export type SseEventBlock = {
   data: string;
   id?: string;
 };
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
-}
 
 export function parseWaitStreamEvent(eventType: string | undefined, rawData: string): WaitStreamEvent | null {
   if (!eventType) return null;

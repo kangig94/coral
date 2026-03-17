@@ -1,9 +1,10 @@
 import { readFileSync, statSync, writeFileSync, mkdirSync, readdirSync, renameSync, rmdirSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { sessionBase } from '../client/paths.js';
+import { pluginRootNamespace, sessionBase } from '../client/paths.js';
 import type { SessionState } from '../types.js';
-import { isNoEntryError, providerIdentPattern } from '../shared/mcp-utils.js';
+import { isNoEntryError, nowIsoString, providerIdentPattern } from '../shared/mcp-utils.js';
+import { isValidSessionEntry } from '../client/readers.js';
 import { eventBus } from './event-bus.js';
 
 export interface SessionEntry {
@@ -26,23 +27,22 @@ type CachedSession = {
   entry: SessionEntry;
 };
 
-function projectHash(dir: string): string {
-  return createHash('sha256').update(resolve(dir)).digest('hex').slice(0, 12);
+function toSessionNamespace(dir: string): string {
+  try {
+    return pluginRootNamespace(dir);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) {
+      return createHash('sha256').update(resolve(dir)).digest('hex').slice(0, 12);
+    }
+    throw error;
+  }
 }
 
 function isValidEntry(value: unknown): value is SessionEntry {
-  if (!value || typeof value !== 'object') return false;
-  const v = value as Record<string, unknown>;
-  return typeof v.sessionId === 'string'
-    && typeof v.provider === 'string'
-    && typeof v.name === 'string'
-    && typeof v.state === 'string'
-    && (v.state === 'pending' || v.state === 'ready' || v.state === 'non_resumable')
-    && typeof v.model === 'string'
-    && typeof v.cwd === 'string'
-    && typeof v.version === 'number'
-    && providerIdentPattern.test(v.provider)
-    && (v.projectRoot === undefined || typeof v.projectRoot === 'string');
+  if (!isValidSessionEntry(value)) return false;
+  if (!providerIdentPattern.test(value.provider)) return false;
+  const raw = value as unknown as Record<string, unknown>;
+  return raw.projectRoot === undefined || typeof raw.projectRoot === 'string';
 }
 
 export class SessionManager {
@@ -54,7 +54,7 @@ export class SessionManager {
   private cacheHydrated = false;
 
   constructor(workingDirectory: string) {
-    this.sessionDir = join(sessionBase(), projectHash(workingDirectory));
+    this.sessionDir = join(sessionBase(), toSessionNamespace(workingDirectory));
     mkdirSync(this.sessionDir, { recursive: true });
     this.shardStamp = SessionManager.ensureShardStamp(this.sessionDir);
   }
@@ -197,7 +197,7 @@ export class SessionManager {
 
   /** Allocate a new sessionId and persist as 'pending'. Returns the new entry. */
   allocate(provider: string, name: string, model: string, cwd: string, projectRoot?: string): SessionEntry {
-    const now = new Date().toISOString();
+    const now = nowIsoString();
     const entry: SessionEntry = {
       sessionId: randomUUID(),
       provider,
@@ -220,7 +220,7 @@ export class SessionManager {
     if (!entry) return;
     entry.conversationRef = conversationRef;
     entry.state = 'ready';
-    entry.lastUsedAt = new Date().toISOString();
+    entry.lastUsedAt = nowIsoString();
     this.writeEntry(entry);
   }
 
@@ -229,7 +229,7 @@ export class SessionManager {
     const entry = this.readEntry(sessionId);
     if (!entry) return;
     entry.state = 'non_resumable';
-    entry.lastUsedAt = new Date().toISOString();
+    entry.lastUsedAt = nowIsoString();
     this.writeEntry(entry);
   }
 
@@ -240,7 +240,7 @@ export class SessionManager {
       if (!entry || entry.activeJobId) return false;
       if (expectedVersion !== undefined && entry.version !== expectedVersion) return false;
       entry.activeJobId = jobId;
-      entry.lastUsedAt = new Date().toISOString();
+      entry.lastUsedAt = nowIsoString();
       this.writeEntry(entry);
       return true;
     } finally {
@@ -256,7 +256,7 @@ export class SessionManager {
     const entry = this.readEntry(sessionId);
     if (!entry || entry.activeJobId) return false;
     entry.activeJobId = jobId;
-    entry.lastUsedAt = new Date().toISOString();
+    entry.lastUsedAt = nowIsoString();
     this.writeEntry(entry);
     return true;
   }
@@ -267,7 +267,7 @@ export class SessionManager {
     if (!entry || entry.activeJobId !== jobId) return;
     entry.activeJobId = undefined;
     entry.lastJobId = jobId;
-    entry.lastUsedAt = new Date().toISOString();
+    entry.lastUsedAt = nowIsoString();
     this.writeEntry(entry);
   }
 

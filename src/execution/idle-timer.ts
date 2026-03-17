@@ -2,7 +2,7 @@ import { parsePositiveInt } from './engine.js';
 
 export const IDLE_TIMEOUT_MS = parsePositiveInt(process.env.CORAL_BACKEND_IDLE_MS, 21_600_000);
 
-const IDLE_CHECK_INTERVAL_MS = 1_000;
+const IDLE_CHECK_INTERVAL_MS = 60_000;
 
 export class IdleTimer {
   private inflight = 0;

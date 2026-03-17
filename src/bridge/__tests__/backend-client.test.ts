@@ -115,6 +115,7 @@ function makeBackendStatus(overrides: Partial<{
   activeChildren: number;
   activeJobs: number;
   inflightRequests: number;
+  queueDepth: number;
 }> = {}) {
   return {
     status: 'ok' as const,
@@ -126,6 +127,7 @@ function makeBackendStatus(overrides: Partial<{
     activeChildren: 2,
     activeJobs: 3,
     inflightRequests: 1,
+    queueDepth: 0,
     ...overrides,
   };
 }
@@ -386,13 +388,12 @@ describe('bridge backend-client', () => {
     const info = makeInfo();
 
     readBackendInfoMock.mockReturnValueOnce(info);
-    fetchMock.mockResolvedValueOnce(jsonResponse({
-      status: 'ok',
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeBackendStatus({
       version: info.version,
       bundleHash: info.bundleHash,
       instanceId: info.instanceId,
       namespace: info.namespace,
-    }));
+    })));
 
     await expect(client.ensureBackend(actualPluginRoot())).resolves.toEqual({
       port: info.port,
@@ -412,13 +413,12 @@ describe('bridge backend-client', () => {
       .mockReturnValueOnce(null)
       .mockReturnValueOnce(null)
       .mockReturnValueOnce(started);
-    fetchMock.mockResolvedValueOnce(jsonResponse({
-      status: 'ok',
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeBackendStatus({
       version: started.version,
       bundleHash: started.bundleHash,
       instanceId: started.instanceId,
       namespace: started.namespace,
-    }));
+    })));
 
     await expect(client.ensureBackend(actualPluginRoot())).resolves.toEqual({
       port: started.port,
@@ -436,13 +436,12 @@ describe('bridge backend-client', () => {
 
     readBackendInfoMock.mockReturnValueOnce(info);
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({
-        status: 'ok',
+      .mockResolvedValueOnce(jsonResponse(makeBackendStatus({
         version: info.version,
         bundleHash: info.bundleHash,
         instanceId: info.instanceId,
         namespace: info.namespace,
-      }))
+      })))
       .mockResolvedValueOnce(jsonResponse({ status: 'running', job: 'job-1', session: 'session-1' }));
 
     const result = await client.proxyToolCall('codex', { op: 'exec', prompt: 'hello' }, {

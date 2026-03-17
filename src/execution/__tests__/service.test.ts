@@ -422,7 +422,7 @@ describe('ExecutionService', () => {
     const service = new ExecutionService(ctx);
     const { progressStore } = getInternals(service);
     const jobId = `test-await-launch-${Date.now()}`;
-    progressStore.initJob(jobId, 'test-session', 'codex', ctx.projectRoot);
+    progressStore.initJob({ jobId, sessionId: 'test-session', provider: 'codex', projectRoot: ctx.projectRoot, backendNamespace: 'test-ns' });
 
     setTimeout(() => {
       progressStore.updateLaunchState(jobId, 'ready');
@@ -973,7 +973,6 @@ describe('ExecutionService', () => {
     expect(appendTerminal).toHaveBeenCalled();
     expect(markTerminalStatus).toHaveBeenCalledWith(
       decision.job,
-      decision.session,
       expect.objectContaining({ content: 'ok' }),
       'completed',
     );
@@ -989,7 +988,7 @@ describe('ExecutionService', () => {
     const { progressStore } = getInternals(service);
     const jobId = `queued-abort-${randomUUID()}`;
     trackJob(jobId);
-    progressStore.initJob(jobId, 'session-1', 'codex', ctx.projectRoot);
+    progressStore.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot: ctx.projectRoot, backendNamespace: 'test-ns' });
     vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
       throw new Error('disk full');
     });
@@ -1003,7 +1002,6 @@ describe('ExecutionService', () => {
 
     expect(markTerminalStatus).toHaveBeenCalledWith(
       jobId,
-      'session-1',
       { content: '', aborted: true, notice: 'Aborted while queued.' },
       'aborted',
     );
@@ -1015,7 +1013,7 @@ describe('ExecutionService', () => {
     const { progressStore } = getInternals(service);
     const jobId = `fail-job-${randomUUID()}`;
     trackJob(jobId);
-    progressStore.initJob(jobId, 'session-1', 'codex', ctx.projectRoot);
+    progressStore.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot: ctx.projectRoot, backendNamespace: 'test-ns' });
     vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
       throw new Error('disk full');
     });
@@ -1029,7 +1027,6 @@ describe('ExecutionService', () => {
 
     expect(markTerminalStatus).toHaveBeenCalledWith(
       jobId,
-      'session-1',
       { content: '', notice: 'provider failed' },
       'error',
     );
@@ -1041,7 +1038,7 @@ describe('ExecutionService', () => {
     const { progressStore } = getInternals(service);
     const jobId = `workflow-terminal-${randomUUID()}`;
     trackJob(jobId);
-    progressStore.initJob(jobId, 'session-1', 'codex', ctx.projectRoot);
+    progressStore.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot: ctx.projectRoot, backendNamespace: 'test-ns' });
     vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
       throw new Error('disk full');
     });
@@ -1060,7 +1057,7 @@ describe('ExecutionService', () => {
       }
     ).finishWorkflowJob('session-1', jobId, 'completed', result, '# workflow\n');
 
-    expect(markTerminalStatus).toHaveBeenCalledWith(jobId, 'session-1', result, 'completed');
+    expect(markTerminalStatus).toHaveBeenCalledWith(jobId, result, 'completed');
     expect(progressStore.readStatus(jobId)).toMatchObject({
       phase: 'completed',
       result,
@@ -1092,7 +1089,7 @@ describe('ExecutionService', () => {
       const session = sessionManager.allocate('codex', `workflow-${phase}`, 'workflow', ctx.projectRoot);
       const jobId = `workflow-order-${phase}-${randomUUID()}`;
       trackJob(jobId);
-      progressStore.initJob(jobId, session.sessionId, 'codex', ctx.projectRoot, 'workflow');
+      progressStore.initJob({ jobId, sessionId: session.sessionId, provider: 'codex', projectRoot: ctx.projectRoot, backendNamespace: 'test-ns', jobKind: 'workflow' });
       expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
 
       const order: string[] = [];
@@ -1147,7 +1144,7 @@ describe('ExecutionService', () => {
     const result = { content: '', aborted: true, notice: 'aborted', workflow: { steps: [] } };
     const markdown = '# fallback\n';
     trackJob(jobId);
-    progressStore.initJob(jobId, session.sessionId, 'codex', ctx.projectRoot, 'workflow');
+    progressStore.initJob({ jobId, sessionId: session.sessionId, provider: 'codex', projectRoot: ctx.projectRoot, backendNamespace: 'test-ns', jobKind: 'workflow' });
     expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
 
     const order: string[] = [];
@@ -1162,12 +1159,12 @@ describe('ExecutionService', () => {
     vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
       throw new Error('disk full');
     });
-    vi.spyOn(progressStore, 'markTerminalStatus').mockImplementation((targetJobId, targetSessionId, terminalResult, terminalPhase) => {
+    vi.spyOn(progressStore, 'markTerminalStatus').mockImplementation((targetJobId, terminalResult, terminalPhase) => {
       order.push('terminal');
       expect(existsSync(jobResultPath(targetJobId))).toBe(true);
       expect(readFileSync(jobResultPath(targetJobId), 'utf-8')).toBe(markdown);
-      expect(new SessionManager(ctx.projectRoot).get('codex', targetSessionId)?.state).toBe('pending');
-      return originalMarkTerminalStatus(targetJobId, targetSessionId, terminalResult, terminalPhase);
+      expect(new SessionManager(ctx.projectRoot).get('codex', session.sessionId)?.state).toBe('pending');
+      return originalMarkTerminalStatus(targetJobId, terminalResult, terminalPhase);
     });
     vi.spyOn(sessionManager, 'setNonResumable').mockImplementation((targetSessionId) => {
       order.push('non_resumable');

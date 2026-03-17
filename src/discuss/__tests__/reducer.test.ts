@@ -15,6 +15,7 @@ import {
   decideBidRoundClose,
   decideSessionCreate,
   decideSpeech,
+  type SessionCreateOptions,
 } from '../state-machine.js';
 import type { DiscussCreateInput, DiscussState, Result } from '../types.js';
 
@@ -60,7 +61,7 @@ function makeInput(
 
 function createSnapshot(
   input: DiscussCreateInput,
-  agentExecution?: Parameters<typeof decideSessionCreate>[9],
+  agentExecution?: SessionCreateOptions['agentExecution'],
 ): PersistedDiscussSnapshot {
   return replayDiscussEvents(unwrap(decideSessionCreate(
     input,
@@ -69,14 +70,11 @@ function createSnapshot(
     input.topic,
     1,
     NOW,
-    undefined,
-    undefined,
-    undefined,
-    agentExecution,
+    agentExecution ? { agentExecution } : {},
   )));
 }
 
-describe('reducer projections', () => {
+describe('discuss reducer', () => {
   it('matches incremental reduce and tail replay for a creation -> bid -> speech cycle', () => {
     const input = makeInput([
       { name: 'alpha', persona: 'Alpha', participation: 'required' },

@@ -8,7 +8,7 @@ import {
   waitInputSchema,
 } from '../schemas.js';
 
-describe('Phase 1 shared schemas', () => {
+describe('shared schemas', () => {
   it('sharedExecSchema validates valid exec input without internal fields', () => {
     const parsed = sharedExecSchema.parse({
       op: 'exec',
