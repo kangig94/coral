@@ -204,15 +204,15 @@ export class ExecutionService {
     projectRoot: string,
     options: ClaimJobOptions = {},
   ): Promise<SessionEntry> {
-    this.progressStore.initJob(
+    this.progressStore.initJob({
       jobId,
-      session.sessionId,
-      providerName,
+      sessionId: session.sessionId,
+      provider: providerName,
       projectRoot,
-      this.backendNamespace,
-      options.jobKind,
-      options.initialPhase ?? 'launching',
-    );
+      backendNamespace: this.backendNamespace,
+      jobKind: options.jobKind,
+      initialPhase: options.initialPhase ?? 'launching',
+    });
 
     try {
       const claimed = await this.sessionManager.claimForJobAtomic(

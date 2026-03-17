@@ -422,7 +422,7 @@ describe('ExecutionService', () => {
     const service = new ExecutionService(ctx);
     const { progressStore } = getInternals(service);
     const jobId = `test-await-launch-${Date.now()}`;
-    progressStore.initJob(jobId, 'test-session', 'codex', ctx.projectRoot);
+    progressStore.initJob({ jobId, sessionId: 'test-session', provider: 'codex', projectRoot: ctx.projectRoot, backendNamespace: 'test-ns' });
 
     setTimeout(() => {
       progressStore.updateLaunchState(jobId, 'ready');
@@ -989,7 +989,7 @@ describe('ExecutionService', () => {
     const { progressStore } = getInternals(service);
     const jobId = `queued-abort-${randomUUID()}`;
     trackJob(jobId);
-    progressStore.initJob(jobId, 'session-1', 'codex', ctx.projectRoot);
+    progressStore.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot: ctx.projectRoot, backendNamespace: 'test-ns' });
     vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
       throw new Error('disk full');
     });
@@ -1015,7 +1015,7 @@ describe('ExecutionService', () => {
     const { progressStore } = getInternals(service);
     const jobId = `fail-job-${randomUUID()}`;
     trackJob(jobId);
-    progressStore.initJob(jobId, 'session-1', 'codex', ctx.projectRoot);
+    progressStore.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot: ctx.projectRoot, backendNamespace: 'test-ns' });
     vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
       throw new Error('disk full');
     });
@@ -1041,7 +1041,7 @@ describe('ExecutionService', () => {
     const { progressStore } = getInternals(service);
     const jobId = `workflow-terminal-${randomUUID()}`;
     trackJob(jobId);
-    progressStore.initJob(jobId, 'session-1', 'codex', ctx.projectRoot);
+    progressStore.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot: ctx.projectRoot, backendNamespace: 'test-ns' });
     vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
       throw new Error('disk full');
     });
@@ -1092,7 +1092,7 @@ describe('ExecutionService', () => {
       const session = sessionManager.allocate('codex', `workflow-${phase}`, 'workflow', ctx.projectRoot);
       const jobId = `workflow-order-${phase}-${randomUUID()}`;
       trackJob(jobId);
-      progressStore.initJob(jobId, session.sessionId, 'codex', ctx.projectRoot, 'workflow');
+      progressStore.initJob({ jobId, sessionId: session.sessionId, provider: 'codex', projectRoot: ctx.projectRoot, backendNamespace: 'test-ns', jobKind: 'workflow' });
       expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
 
       const order: string[] = [];
@@ -1147,7 +1147,7 @@ describe('ExecutionService', () => {
     const result = { content: '', aborted: true, notice: 'aborted', workflow: { steps: [] } };
     const markdown = '# fallback\n';
     trackJob(jobId);
-    progressStore.initJob(jobId, session.sessionId, 'codex', ctx.projectRoot, 'workflow');
+    progressStore.initJob({ jobId, sessionId: session.sessionId, provider: 'codex', projectRoot: ctx.projectRoot, backendNamespace: 'test-ns', jobKind: 'workflow' });
     expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
 
     const order: string[] = [];

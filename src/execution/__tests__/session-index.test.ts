@@ -111,8 +111,8 @@ describe('execution SessionIndex', () => {
     manager.claimForJobSync(orphaned.sessionId, 'job-orphaned');
 
     const progressStore = new ProgressStore();
-    progressStore.initJob('job-visible', visible.sessionId, 'codex', projectRoot, 'ns-visible');
-    progressStore.initJob('job-foreign', foreign.sessionId, 'codex', projectRoot, 'ns-foreign');
+    progressStore.initJob({ jobId: 'job-visible', sessionId: visible.sessionId, provider: 'codex', projectRoot, backendNamespace: 'ns-visible' });
+    progressStore.initJob({ jobId: 'job-foreign', sessionId: foreign.sessionId, provider: 'codex', projectRoot, backendNamespace: 'ns-foreign' });
 
     const index = new SessionIndex();
     index.hydrate(SessionManager.listShards());

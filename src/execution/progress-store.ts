@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { JOBS_DIR, pluginRootNamespace } from '../client/paths.js';
+import { JOBS_DIR } from '../client/paths.js';
 import {
   isLivePhase,
   type JobKind,
@@ -27,26 +27,21 @@ import { eventBus } from './event-bus.js';
 
 export { JOBS_DIR } from '../client/paths.js';
 
-declare const __PLUGIN_ROOT__: string;
-
 const STATUS_FILE = 'status.json';
 const PROGRESS_FILE = 'progress.jsonl';
 const READ_CHUNK = 8 * 1024;
-const defaultPluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : process.cwd();
 
 export type ReplayCursor = { lastOffset: number; remainder: string };
 
-function isJobKind(value: string | undefined): value is JobKind {
-  return value === 'provider' || value === 'workflow';
-}
-
-function defaultBackendNamespace(): string {
-  try {
-    return pluginRootNamespace(defaultPluginRoot);
-  } catch {
-    return defaultPluginRoot;
-  }
-}
+export type InitJobOptions = {
+  jobId: string;
+  sessionId: string;
+  provider: string;
+  projectRoot: string;
+  backendNamespace: string;
+  jobKind?: JobKind;
+  initialPhase?: JobPhase;
+};
 
 export function jobResultPath(jobId: string): string {
   return join(JOBS_DIR, jobId, 'result.md');
@@ -156,44 +151,8 @@ export class ProgressStore {
   }
 
   /** Create the job directory and write initial status.json. */
-  initJob(
-    jobId: string,
-    sessionId: string,
-    provider: string,
-    projectRoot: string,
-    backendNamespace: string,
-    jobKind?: JobKind,
-    initialPhase?: JobPhase,
-  ): void;
-  initJob(
-    jobId: string,
-    sessionId: string,
-    provider: string,
-    projectRoot: string,
-    jobKind?: JobKind,
-    initialPhase?: JobPhase,
-  ): void;
-  initJob(
-    jobId: string,
-    sessionId: string,
-    provider: string,
-    projectRoot: string,
-    backendNamespaceOrJobKind?: string | JobKind,
-    jobKindOrInitialPhase?: JobKind | JobPhase,
-    initialPhase: JobPhase = 'launching',
-  ): void {
-    const isLegacyCall = backendNamespaceOrJobKind === undefined || isJobKind(backendNamespaceOrJobKind);
-    const backendNamespace = isLegacyCall ? defaultBackendNamespace() : backendNamespaceOrJobKind;
-    const resolvedJobKind = isLegacyCall
-      ? backendNamespaceOrJobKind
-      : isJobKind(jobKindOrInitialPhase)
-        ? jobKindOrInitialPhase
-        : undefined;
-    const resolvedInitialPhase = isLegacyCall
-      ? (jobKindOrInitialPhase ?? initialPhase) as JobPhase
-      : isJobKind(jobKindOrInitialPhase)
-        ? initialPhase
-        : jobKindOrInitialPhase ?? initialPhase;
+  initJob(opts: InitJobOptions): void {
+    const { jobId, sessionId, provider, projectRoot, backendNamespace, jobKind, initialPhase = 'launching' } = opts;
     const dir = this.jobDir(jobId);
     mkdirSync(dir, { recursive: true });
     const record: PersistedStatusRecord = {
@@ -202,11 +161,11 @@ export class ProgressStore {
       provider,
       projectRoot,
       backendNamespace,
-      phase: resolvedInitialPhase,
+      phase: initialPhase,
       launch: { state: 'pending', updatedAt: new Date().toISOString() },
     };
-    if (resolvedJobKind !== undefined) {
-      record.jobKind = resolvedJobKind;
+    if (jobKind !== undefined) {
+      record.jobKind = jobKind;
     }
     this.persistStatusSync(jobId, record);
     this.knownJobIds.add(jobId);

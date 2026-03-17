@@ -39,7 +39,7 @@ describe('execution ProgressStore', () => {
     const jobId = `progress-init-${randomUUID()}`;
     jobIdsToClean.add(jobId);
 
-    store.initJob(jobId, 'session-1', 'codex', projectRoot);
+    store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
 
     expect(existsSync(store.jobDir(jobId))).toBe(true);
     expect(store.readStatus(jobId)).toMatchObject({
@@ -56,7 +56,7 @@ describe('execution ProgressStore', () => {
     const store = new ProgressStore();
     const jobId = `progress-events-${randomUUID()}`;
     jobIdsToClean.add(jobId);
-    store.initJob(jobId, 'session-1', 'codex', projectRoot);
+    store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
 
     const first = store.appendProgress(jobId, 'session-1', 'first');
     const second = store.appendProgress(jobId, 'session-1', 'second');
@@ -80,7 +80,7 @@ describe('execution ProgressStore', () => {
     eventBus.on('job:progress', progress);
     eventBus.on('job:completed', completed);
 
-    store.initJob(jobId, 'session-1', 'codex', projectRoot);
+    store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
     store.updatePhase(jobId, 'running');
     const eventId = store.appendProgress(jobId, 'session-1', 'working');
     store.appendTerminal(jobId, 'session-1', result, 'completed');
@@ -107,7 +107,7 @@ describe('execution ProgressStore', () => {
     const store = new ProgressStore();
     const jobId = `progress-replay-${randomUUID()}`;
     jobIdsToClean.add(jobId);
-    store.initJob(jobId, 'session-1', 'codex', projectRoot);
+    store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
     store.appendProgress(jobId, 'session-1', 'first');
     store.appendProgress(jobId, 'session-1', 'second');
     store.appendProgress(jobId, 'session-1', 'third');
@@ -123,7 +123,7 @@ describe('execution ProgressStore', () => {
     const jobId = `progress-terminal-${randomUUID()}`;
     const result = { content: 'done', exitCode: 0 } satisfies TerminalResult;
     jobIdsToClean.add(jobId);
-    store.initJob(jobId, 'session-1', 'codex', projectRoot);
+    store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
 
     store.appendTerminal(jobId, 'session-1', result, 'completed');
 
@@ -137,7 +137,7 @@ describe('execution ProgressStore', () => {
     const store = new ProgressStore();
     const jobId = `progress-terminal-throw-${randomUUID()}`;
     jobIdsToClean.add(jobId);
-    store.initJob(jobId, 'session-1', 'codex', projectRoot);
+    store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
     vi.spyOn(fs, 'appendFileSync').mockImplementation(() => {
       throw new Error('disk full');
     });
@@ -152,7 +152,7 @@ describe('execution ProgressStore', () => {
     const store = new ProgressStore();
     const jobId = `progress-atomic-nonterminal-${randomUUID()}`;
     jobIdsToClean.add(jobId);
-    store.initJob(jobId, 'session-1', 'codex', projectRoot);
+    store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
 
     renameCalls.length = 0;
 
@@ -177,7 +177,7 @@ describe('execution ProgressStore', () => {
     const store = new ProgressStore();
     const jobId = `progress-atomic-terminal-${randomUUID()}`;
     jobIdsToClean.add(jobId);
-    store.initJob(jobId, 'session-1', 'codex', projectRoot);
+    store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
 
     renameCalls.length = 0;
 
@@ -206,7 +206,7 @@ describe('execution ProgressStore', () => {
     const store = new ProgressStore();
     const jobId = `progress-terminal-only-${randomUUID()}`;
     jobIdsToClean.add(jobId);
-    store.initJob(jobId, 'session-1', 'codex', projectRoot);
+    store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
     store.appendTerminal(jobId, 'session-1', { content: 'result text' }, 'completed');
 
     const events = store.replayFrom(jobId, 0, createReplayCursor());
@@ -232,7 +232,7 @@ describe('execution ProgressStore', () => {
     const store = new ProgressStore();
     const jobId = `progress-terminal-fallback-${randomUUID()}`;
     jobIdsToClean.add(jobId);
-    store.initJob(jobId, 'session-1', 'codex', projectRoot);
+    store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
     store.appendProgress(jobId, 'session-1', 'before terminal');
     const progressPath = join(store.jobDir(jobId), 'progress.jsonl');
     const before = readFileSync(progressPath, 'utf-8');
@@ -263,7 +263,7 @@ describe('execution ProgressStore', () => {
     jobIdsToClean.add(jobId);
     eventBus.on('job:completed', completed);
 
-    store.initJob(jobId, 'session-1', 'codex', projectRoot);
+    store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
     store.markTerminalStatus(jobId, 'session-1', result, 'completed');
 
     expect(completed).toHaveBeenCalledWith({ jobId, result });
@@ -273,7 +273,7 @@ describe('execution ProgressStore', () => {
     const store = new ProgressStore();
     const jobId = `progress-cursor-advance-${randomUUID()}`;
     jobIdsToClean.add(jobId);
-    store.initJob(jobId, 'session-1', 'codex', projectRoot);
+    store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
     store.appendProgress(jobId, 'session-1', 'first');
     store.appendProgress(jobId, 'session-1', 'second');
 
@@ -292,7 +292,7 @@ describe('execution ProgressStore', () => {
     const store = new ProgressStore();
     const jobId = `progress-scope-${randomUUID()}`;
     jobIdsToClean.add(jobId);
-    store.initJob(jobId, 'session-1', 'codex', projectRoot);
+    store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
 
     expect(store.scopedLookup(jobId, projectRoot)).toBe('found');
     expect(store.scopedLookup(jobId, '/tmp/other-project')).toBe('mismatch');

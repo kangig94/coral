@@ -143,25 +143,16 @@ describe('execution ProgressStore AC17 — legacy backendNamespace bridge', () =
     expect(status?.phase).toBe('queued');
   });
 
-  it('initJob without backendNamespace argument does not write backendNamespace field (pre-implementation guard)', () => {
+  it('initJob stores the provided backendNamespace in the persisted status record', () => {
     const store = new ProgressStore();
-    const jobId = `init-no-ns-${randomUUID()}`;
+    const jobId = `init-with-ns-${randomUUID()}`;
     jobIdsToClean.add(jobId);
 
-    // Current signature: initJob(jobId, sessionId, provider, projectRoot, jobKind?, initialPhase?)
-    // After AC13: initJob(jobId, sessionId, provider, projectRoot, backendNamespace, jobKind?, initialPhase?)
-    // Pre-implementation call site passes no backendNamespace — should not write it.
-    store.initJob(jobId, 'session-1', 'codex', '/tmp/project');
+    const namespace = 'my-plugin-namespace';
+    store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot: '/tmp/project', backendNamespace: namespace });
 
     const status = store.readStatus(jobId) as Record<string, unknown> | null;
     expect(status).not.toBeNull();
-
-    // Verify that the existing 0-backendNamespace call does not silently inject
-    // an empty-string or undefined backendNamespace that could confuse filtering.
-    if (status && 'backendNamespace' in status) {
-      // If it IS present, it must be a non-empty string (not "", not null, not undefined)
-      expect(typeof status['backendNamespace']).toBe('string');
-      expect((status['backendNamespace'] as string).length).toBeGreaterThan(0);
-    }
+    expect(status?.['backendNamespace']).toBe(namespace);
   });
 });

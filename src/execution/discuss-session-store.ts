@@ -269,6 +269,11 @@ export class DiscussSessionStore {
   private readonly projectRoot: string;
   private readonly onCommit?: DiscussSessionStoreOptions['onCommit'];
   private coldStartHydrated = false;
+  private dirtyDiscovery = false;
+  private dirtySummaryIndex = false;
+  private dirtyProjectRoots = false;
+  private pendingSnapshots = new Map<string, { sessionDir: string; snapshot: PersistedDiscussSnapshot }>();
+  private flushTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(projectRoot: string, options: DiscussSessionStoreOptions = {}) {
     this.projectRoot = projectRoot;
@@ -320,49 +325,8 @@ export class DiscussSessionStore {
 
         writeAtomicJson(statePath, nextSnapshot);
 
-        await withPromiseChainLock(projectDiscoveryLocks, this.projectRoot, () => {
-          const mergedSessions = new Map<string, DiscussDiscoverySession>();
-          for (const session of listPersistedDiscussSessions(this.projectRoot)) {
-            mergedSessions.set(session.sessionId, session);
-          }
-          mergedSessions.set(sessionId, toDiscoverySession(sessionDir, nextSnapshot));
-
-          const mergedSummaryRows = new Map<string, DiscussSummaryIndexRow>();
-          for (const summary of readDiscussSummaryIndex(this.projectRoot)?.sessions ?? []) {
-            mergedSummaryRows.set(summary.sessionId, summary);
-          }
-          mergedSummaryRows.set(sessionId, toSummaryIndexRow(nextSnapshot));
-
-          const discovery: DiscussDiscoveryData = {
-            projectRoot: this.projectRoot,
-            updatedAt: nextSnapshot.updatedAt,
-            sessions: [...mergedSessions.values()].sort((left, right) => {
-              if (left.createdAt !== right.createdAt) {
-                return left.createdAt.localeCompare(right.createdAt);
-              }
-              return left.sessionId.localeCompare(right.sessionId);
-            }),
-          };
-
-          writeAtomicJson(discussDiscoveryPath(this.projectRoot), discovery);
-          writeAtomicJson(
-            discussSummaryIndexPath(this.projectRoot),
-            buildSummaryIndexData(this.projectRoot, [...mergedSummaryRows.values()]),
-          );
-        });
-
-        await withPromiseChainLock(
-          discussProjectRootRegistryLocks,
-          discussProjectRootsPath(),
-          () => {
-            const projectRoots = new Set(readDiscussProjectRoots());
-            projectRoots.add(this.projectRoot);
-            writeAtomicJson(discussProjectRootsPath(), {
-              updatedAt: nextSnapshot.updatedAt,
-              projectRoots: [...projectRoots].sort(),
-            });
-          },
-        );
+        this.pendingSnapshots.set(sessionId, { sessionDir, snapshot: nextSnapshot });
+        this.markIndexesDirty();
 
         this.onCommit?.(nextSnapshot, events);
         return nextSnapshot;
@@ -371,6 +335,7 @@ export class DiscussSessionStore {
   }
 
   listSummaries(): DiscussSummaryDto[] {
+    this.flushDirtyIndexes();
     const repair = this.buildPersistedSummaryRepair();
     if (this.persistPersistedSummaryRepair(repair)) {
       this.coldStartHydrated = true;
@@ -379,6 +344,7 @@ export class DiscussSessionStore {
   }
 
   listSummariesFromIndex(): DiscussSummaryDto[] {
+    this.flushDirtyIndexes();
     const currentIndex = readDiscussSummaryIndex(this.projectRoot);
     if (this.coldStartHydrated && currentIndex) {
       return this.buildSummariesFromIndex(currentIndex);
@@ -402,6 +368,7 @@ export class DiscussSessionStore {
   }
 
   listRecoveryCandidates(): DiscussDiscoverySession[] {
+    this.flushDirtyIndexes();
     return listPersistedDiscussSessions(this.projectRoot);
   }
 
@@ -411,6 +378,109 @@ export class DiscussSessionStore {
       throw new Error(`Discuss session not found: ${sessionId}`);
     }
     return sessionDir;
+  }
+
+  flushDirtyIndexes(): void {
+    if (!this.dirtyDiscovery && !this.dirtySummaryIndex && !this.dirtyProjectRoots) {
+      return;
+    }
+
+    tryWithPromiseChainLockSync(projectDiscoveryLocks, this.projectRoot, () => {
+      const flushedKeys: string[] = [];
+
+      if (this.dirtyDiscovery || this.dirtySummaryIndex) {
+        const mergedSessions = new Map<string, DiscussDiscoverySession>();
+        for (const session of listPersistedDiscussSessions(this.projectRoot)) {
+          mergedSessions.set(session.sessionId, session);
+        }
+
+        const mergedSummaryRows = new Map<string, DiscussSummaryIndexRow>();
+        for (const summary of readDiscussSummaryIndex(this.projectRoot)?.sessions ?? []) {
+          mergedSummaryRows.set(summary.sessionId, summary);
+        }
+
+        let latestUpdatedAt = '';
+        for (const [sessionId, { sessionDir, snapshot }] of this.pendingSnapshots) {
+          mergedSessions.set(sessionId, toDiscoverySession(sessionDir, snapshot));
+          mergedSummaryRows.set(sessionId, toSummaryIndexRow(snapshot));
+          if (snapshot.updatedAt > latestUpdatedAt) {
+            latestUpdatedAt = snapshot.updatedAt;
+          }
+          flushedKeys.push(sessionId);
+        }
+
+        if (this.dirtyDiscovery) {
+          const discovery: DiscussDiscoveryData = {
+            projectRoot: this.projectRoot,
+            updatedAt: latestUpdatedAt,
+            sessions: [...mergedSessions.values()].sort((left, right) => {
+              if (left.createdAt !== right.createdAt) {
+                return left.createdAt.localeCompare(right.createdAt);
+              }
+              return left.sessionId.localeCompare(right.sessionId);
+            }),
+          };
+          writeAtomicJson(discussDiscoveryPath(this.projectRoot), discovery);
+          this.dirtyDiscovery = false;
+        }
+
+        if (this.dirtySummaryIndex) {
+          writeAtomicJson(
+            discussSummaryIndexPath(this.projectRoot),
+            buildSummaryIndexData(this.projectRoot, [...mergedSummaryRows.values()]),
+          );
+          this.dirtySummaryIndex = false;
+        }
+      }
+
+      if (this.dirtyProjectRoots) {
+        const latestSnapshot = [...this.pendingSnapshots.values()].reduce(
+          (latest, { snapshot }) => (snapshot.updatedAt > latest.updatedAt ? snapshot : latest),
+          { updatedAt: '' } as { updatedAt: string },
+        );
+        const wroteRoots = tryWithPromiseChainLockSync(
+          discussProjectRootRegistryLocks,
+          discussProjectRootsPath(),
+          () => {
+            const projectRoots = new Set(readDiscussProjectRoots());
+            projectRoots.add(this.projectRoot);
+            writeAtomicJson(discussProjectRootsPath(), {
+              updatedAt: latestSnapshot.updatedAt,
+              projectRoots: [...projectRoots].sort(),
+            });
+            return true;
+          },
+        );
+        if (wroteRoots !== null) {
+          this.dirtyProjectRoots = false;
+        }
+      }
+
+      for (const key of flushedKeys) {
+        this.pendingSnapshots.delete(key);
+      }
+    });
+  }
+
+  dispose(): void {
+    if (this.flushTimer !== null) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    this.flushDirtyIndexes();
+  }
+
+  private markIndexesDirty(): void {
+    this.dirtyDiscovery = true;
+    this.dirtySummaryIndex = true;
+    this.dirtyProjectRoots = true;
+    if (this.flushTimer === null) {
+      this.flushTimer = setTimeout(() => {
+        this.flushTimer = null;
+        this.flushDirtyIndexes();
+      }, 500);
+      this.flushTimer.unref?.();
+    }
   }
 
   private loadFromSessionDir(

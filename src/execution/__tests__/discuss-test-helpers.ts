@@ -221,6 +221,8 @@ export async function persistSession(
     }
   }
 
+  harness.store.flushDirtyIndexes();
+
   if (options.recover ?? false) {
     const attached = harness.store.load(sessionId) ?? snapshot;
     attachPersistedSession(harness, attached);
@@ -244,5 +246,7 @@ export async function appendPersistedEvents(
     return snapshot;
   }
 
-  return harness.store.append(sessionId, snapshot.lastAppliedSeq, events);
+  const result = await harness.store.append(sessionId, snapshot.lastAppliedSeq, events);
+  harness.store.flushDirtyIndexes();
+  return result;
 }

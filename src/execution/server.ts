@@ -1208,6 +1208,9 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       markJobsAsErrorFn(namespace, 'Backend shutting down');
       killAllChildrenFn();
       unsubscribeSessionIndex();
+      for (const store of discussStores.values()) {
+        store.dispose();
+      }
 
       removeBackendInfoIfOwnerFn(resolvedPluginRoot, instanceId);
       removeLockIfOwnerFn(resolvedPluginRoot, instanceId);

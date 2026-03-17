@@ -9,7 +9,10 @@ import {
 } from '../discuss-context-registry.js';
 import { JOBS_DIR, ProgressStore, jobResultPath } from '../progress-store.js';
 import { SessionManager } from '../session-manager.js';
+import { pluginRootNamespace } from '../../client/paths.js';
 import type { BackendServerController } from '../server.js';
+
+const testBackendNamespace = pluginRootNamespace(process.cwd());
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -431,8 +434,8 @@ describe('execution backend server', () => {
     const progressStore = new ProgressStore();
     createdJobIds.add('job-1');
     createdJobIds.add('job-foreign');
-    progressStore.initJob('job-1', 'session-1', 'codex', '/tmp/project');
-    progressStore.initJob('job-foreign', 'session-foreign', 'codex', '/tmp/other-project');
+    progressStore.initJob({ jobId: 'job-1', sessionId: 'session-1', provider: 'codex', projectRoot: '/tmp/project', backendNamespace: testBackendNamespace });
+    progressStore.initJob({ jobId: 'job-foreign', sessionId: 'session-foreign', provider: 'codex', projectRoot: '/tmp/other-project', backendNamespace: testBackendNamespace });
 
     const backend = await startBackendServer({
       createExecutionService: () => fakeService as never,
@@ -568,7 +571,7 @@ describe('execution backend server', () => {
     const fakeService = createFakeExecutionService();
     const progressStore = new ProgressStore();
     createdJobIds.add('job-1');
-    progressStore.initJob('job-1', 'session-1', 'codex', '/tmp/project');
+    progressStore.initJob({ jobId: 'job-1', sessionId: 'session-1', provider: 'codex', projectRoot: '/tmp/project', backendNamespace: testBackendNamespace });
     const backend = await startBackendServer({
       createExecutionService: () => fakeService as never,
       progressStore,
@@ -669,10 +672,10 @@ describe('execution backend server', () => {
     const progressStore = new ProgressStore();
     createdJobIds.add('job-1');
     createdJobIds.add('job-2');
-    progressStore.initJob('job-1', 'session-1', 'codex', '/tmp/project');
+    progressStore.initJob({ jobId: 'job-1', sessionId: 'session-1', provider: 'codex', projectRoot: '/tmp/project', backendNamespace: testBackendNamespace });
     progressStore.appendProgress('job-1', 'session-1', 'working');
     progressStore.appendTerminal('job-1', 'session-1', { content: 'done' }, 'completed');
-    progressStore.initJob('job-2', 'session-2', 'claude', '/tmp/project');
+    progressStore.initJob({ jobId: 'job-2', sessionId: 'session-2', provider: 'claude', projectRoot: '/tmp/project', backendNamespace: testBackendNamespace });
 
     const backend = await startBackendServer({
       progressStore,
@@ -750,9 +753,9 @@ describe('execution backend server', () => {
       createdJobIds.add('job-queued');
       createdJobIds.add('job-completed');
 
-      progressStore.initJob('job-running', 'session-running', 'codex', '/tmp/project', undefined, 'running');
-      progressStore.initJob('job-queued', 'session-queued', 'claude', '/tmp/project', undefined, 'queued');
-      progressStore.initJob('job-completed', 'session-completed', 'codex', '/tmp/project');
+      progressStore.initJob({ jobId: 'job-running', sessionId: 'session-running', provider: 'codex', projectRoot: '/tmp/project', backendNamespace: testBackendNamespace, initialPhase: 'running' });
+      progressStore.initJob({ jobId: 'job-queued', sessionId: 'session-queued', provider: 'claude', projectRoot: '/tmp/project', backendNamespace: testBackendNamespace, initialPhase: 'queued' });
+      progressStore.initJob({ jobId: 'job-completed', sessionId: 'session-completed', provider: 'codex', projectRoot: '/tmp/project', backendNamespace: testBackendNamespace });
       progressStore.appendTerminal('job-completed', 'session-completed', { content: 'done' }, 'completed');
 
       const backend = await startBackendServer({
@@ -903,7 +906,7 @@ describe('execution backend server', () => {
     const fakeService = createFakeExecutionService();
     const progressStore = new ProgressStore();
     createdJobIds.add('job-foreign');
-    progressStore.initJob('job-foreign', 'session-foreign', 'codex', '/tmp/other-project');
+    progressStore.initJob({ jobId: 'job-foreign', sessionId: 'session-foreign', provider: 'codex', projectRoot: '/tmp/other-project', backendNamespace: testBackendNamespace });
 
     const backend = await startBackendServer({
       createExecutionService: () => fakeService as never,
@@ -983,7 +986,7 @@ describe('execution backend server', () => {
     const jobId = 'completed-job';
 
     createdJobIds.add(jobId);
-    progressStore.initJob(jobId, session.sessionId, 'codex', projectRoot);
+    progressStore.initJob({ jobId, sessionId: session.sessionId, provider: 'codex', projectRoot, backendNamespace: testBackendNamespace });
     progressStore.updatePhase(jobId, 'completed');
     new SessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
 
@@ -1002,7 +1005,7 @@ describe('execution backend server', () => {
     const session = new SessionManager(projectRoot).allocate('codex', 'workflow-session', 'gpt-5', projectRoot);
 
     createdJobIds.add(jobId);
-    progressStore.initJob(jobId, session.sessionId, 'codex', projectRoot, 'workflow');
+    progressStore.initJob({ jobId, sessionId: session.sessionId, provider: 'codex', projectRoot, backendNamespace: testBackendNamespace, jobKind: 'workflow' });
     progressStore.updatePhase(jobId, 'running');
     new SessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
 
