@@ -58,24 +58,24 @@ function isInteger(value: unknown): value is number {
   return Number.isInteger(value);
 }
 
+function isRecordOf(value: unknown, predicate: (entry: unknown) => boolean): boolean {
+  return isRecord(value) && Object.values(value).every(predicate);
+}
+
 function isStringRecord(value: unknown): value is Record<string, string> {
-  if (!isRecord(value)) return false;
-  return Object.values(value).every((entry) => typeof entry === 'string');
+  return isRecordOf(value, (entry) => typeof entry === 'string');
 }
 
 function isBooleanRecord(value: unknown): value is Record<string, boolean> {
-  if (!isRecord(value)) return false;
-  return Object.values(value).every((entry) => typeof entry === 'boolean');
+  return isRecordOf(value, (entry) => typeof entry === 'boolean');
 }
 
 function isNumberRecord(value: unknown): value is Record<string, number> {
-  if (!isRecord(value)) return false;
-  return Object.values(value).every((entry) => isFiniteNumber(entry));
+  return isRecordOf(value, isFiniteNumber);
 }
 
 function isNullableNumberRecord(value: unknown): value is Record<string, number | null> {
-  if (!isRecord(value)) return false;
-  return Object.values(value).every((entry) => entry === null || isFiniteNumber(entry));
+  return isRecordOf(value, (entry) => entry === null || isFiniteNumber(entry));
 }
 
 function isValidDiscussAgentState(value: unknown): boolean {
