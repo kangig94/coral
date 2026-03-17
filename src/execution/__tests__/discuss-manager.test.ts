@@ -223,7 +223,7 @@ describe('Discuss executor and operations', () => {
     });
     const readDiscussEventLogSpy = vi.spyOn(discussReaders, 'readDiscussEventLog');
 
-    await recoverPersistedSessions(harness.context, harness.ctx);
+    await recoverPersistedSessions(harness.context);
     const recoveryReadCount = readDiscussEventLogSpy.mock.calls.length;
 
     expect(recoveryReadCount).toBeGreaterThan(0);

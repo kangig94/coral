@@ -75,7 +75,7 @@ export function subscribe(
   return () => {
     session.watchSubscribers.delete(callback);
     getSubscriberCursorMap(session).delete(callback);
-    compactWatchBuffer(session);
+    compactLiveWatchBuffer(session);
   };
 }
 
@@ -117,6 +117,4 @@ export function getWatchState(
   };
 }
 
-export function compactWatchBuffer(session: LiveDiscussSession): void {
-  compactLiveWatchBuffer(session);
-}
+export { compactLiveWatchBuffer as compactWatchBuffer } from './discuss-context.js';

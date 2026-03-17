@@ -21,7 +21,7 @@ import {
   type PersistedStatusRecord,
   type TerminalResult,
 } from '../types.js';
-import { isNoEntryError } from '../shared/mcp-utils.js';
+import { isNoEntryError, nowIsoString } from '../shared/mcp-utils.js';
 import { formatElapsed } from '../shared/format-progress.js';
 import { eventBus } from './event-bus.js';
 
@@ -162,7 +162,7 @@ export class ProgressStore {
       projectRoot,
       backendNamespace,
       phase: initialPhase,
-      launch: { state: 'pending', updatedAt: new Date().toISOString() },
+      launch: { state: 'pending', updatedAt: nowIsoString() },
     };
     if (jobKind !== undefined) {
       record.jobKind = jobKind;
@@ -221,7 +221,7 @@ export class ProgressStore {
   updateLaunchState(jobId: string, state: LaunchState, message?: string): void {
     const record = this.readStatus(jobId);
     if (!record) return;
-    record.launch = { state, message, updatedAt: new Date().toISOString() };
+    record.launch = { state, message, updatedAt: nowIsoString() };
     this.writeStatus(jobId, record);
   }
 
@@ -244,7 +244,7 @@ export class ProgressStore {
       sessionId,
       eventId,
       type: 'progress',
-      ts: new Date().toISOString(),
+      ts: nowIsoString(),
       message: stamped,
     };
     try {
@@ -265,7 +265,7 @@ export class ProgressStore {
       sessionId,
       eventId,
       type: 'terminal',
-      ts: new Date().toISOString(),
+      ts: nowIsoString(),
       result,
     };
     appendFileSync(this.progressPath(jobId), JSON.stringify(entry) + '\n');
@@ -277,7 +277,7 @@ export class ProgressStore {
     return eventId;
   }
 
-  markTerminalStatus(jobId: string, _sessionId: string, result: TerminalResult, phase: JobPhase): void {
+  markTerminalStatus(jobId: string, result: TerminalResult, phase: JobPhase): void {
     const didUpdateStatus = this.updateTerminalStatus(jobId, result, phase);
     this.clearTerminalState(jobId);
     if (!didUpdateStatus) {

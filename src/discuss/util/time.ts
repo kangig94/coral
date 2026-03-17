@@ -1,1 +1,1 @@
-export const nowIsoString = (): string => new Date().toISOString();
+export { nowIsoString } from '../../shared/mcp-utils.js';

@@ -13,6 +13,7 @@ import {
   errorMessage,
   isNoEntryError,
   isRecord,
+  nowIsoString,
   readBundleHash,
   textResult,
   type McpResult,
@@ -450,7 +451,7 @@ function markJobAsError(
   try {
     progressStore.appendTerminal(status.jobId, status.sessionId, terminalResult, 'error');
   } catch {
-    progressStore.markTerminalStatus(status.jobId, status.sessionId, terminalResult, 'error');
+    progressStore.markTerminalStatus(status.jobId, terminalResult, 'error');
   }
 }
 
@@ -1311,7 +1312,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     res.flushHeaders?.();
 
     streamResponses.add(res);
-    writeSseEvent(res, 'ready', { streamId, startedAt: new Date().toISOString() });
+    writeSseEvent(res, 'ready', { streamId, startedAt: nowIsoString() });
 
     let closed = false;
     const matchesFilter = (jobId: string): boolean => !filterJobId || jobId === filterJobId;
@@ -1580,7 +1581,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         };
         await discussOperations.recoverPersistedSessions(
           getDiscussContext(recoveryCtx),
-          recoveryCtx,
         );
       }
 

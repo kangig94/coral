@@ -129,7 +129,7 @@ describe('Discuss faults and retry recovery', () => {
       ],
     });
     vi.useFakeTimers();
-    await recoverPersistedSessions(harness.context, harness.ctx);
+    await recoverPersistedSessions(harness.context);
     discussLoop.resumeLoop(harness.context, 'discuss-1', harness.ctx);
     await vi.runAllTimersAsync();
     vi.useRealTimers();

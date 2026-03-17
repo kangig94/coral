@@ -973,7 +973,6 @@ describe('ExecutionService', () => {
     expect(appendTerminal).toHaveBeenCalled();
     expect(markTerminalStatus).toHaveBeenCalledWith(
       decision.job,
-      decision.session,
       expect.objectContaining({ content: 'ok' }),
       'completed',
     );
@@ -1003,7 +1002,6 @@ describe('ExecutionService', () => {
 
     expect(markTerminalStatus).toHaveBeenCalledWith(
       jobId,
-      'session-1',
       { content: '', aborted: true, notice: 'Aborted while queued.' },
       'aborted',
     );
@@ -1029,7 +1027,6 @@ describe('ExecutionService', () => {
 
     expect(markTerminalStatus).toHaveBeenCalledWith(
       jobId,
-      'session-1',
       { content: '', notice: 'provider failed' },
       'error',
     );
@@ -1060,7 +1057,7 @@ describe('ExecutionService', () => {
       }
     ).finishWorkflowJob('session-1', jobId, 'completed', result, '# workflow\n');
 
-    expect(markTerminalStatus).toHaveBeenCalledWith(jobId, 'session-1', result, 'completed');
+    expect(markTerminalStatus).toHaveBeenCalledWith(jobId, result, 'completed');
     expect(progressStore.readStatus(jobId)).toMatchObject({
       phase: 'completed',
       result,
@@ -1162,12 +1159,12 @@ describe('ExecutionService', () => {
     vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
       throw new Error('disk full');
     });
-    vi.spyOn(progressStore, 'markTerminalStatus').mockImplementation((targetJobId, targetSessionId, terminalResult, terminalPhase) => {
+    vi.spyOn(progressStore, 'markTerminalStatus').mockImplementation((targetJobId, terminalResult, terminalPhase) => {
       order.push('terminal');
       expect(existsSync(jobResultPath(targetJobId))).toBe(true);
       expect(readFileSync(jobResultPath(targetJobId), 'utf-8')).toBe(markdown);
-      expect(new SessionManager(ctx.projectRoot).get('codex', targetSessionId)?.state).toBe('pending');
-      return originalMarkTerminalStatus(targetJobId, targetSessionId, terminalResult, terminalPhase);
+      expect(new SessionManager(ctx.projectRoot).get('codex', session.sessionId)?.state).toBe('pending');
+      return originalMarkTerminalStatus(targetJobId, terminalResult, terminalPhase);
     });
     vi.spyOn(sessionManager, 'setNonResumable').mockImplementation((targetSessionId) => {
       order.push('non_resumable');

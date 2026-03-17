@@ -325,7 +325,6 @@ function buildBidBatch(
         nextSeq,
         nowIsoString(),
       ),
-      `expel agents ${expelAgents.join(', ')}`,
     );
     events.push(...expelEvents);
     working = applyEventsLocally(working, expelEvents);
@@ -369,7 +368,6 @@ function buildBidBatch(
         nextSeq,
         nowIsoString(),
       ),
-      'end session after bid failures',
     );
     events.push(...endEvents);
   }
@@ -802,7 +800,6 @@ export async function handleEpochTransition(
           nextSeq,
           ts,
         ),
-        'record epoch summary',
       );
 
       return {

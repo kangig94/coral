@@ -93,6 +93,8 @@ export function readBundleHash(pluginRoot: string): string {
  * Attempt an exclusive-create write: creates parent directory, writes with O_EXCL,
  * and sets mode 0o600 on non-Windows. Returns true on success, false if file already exists.
  */
+export const nowIsoString = (): string => new Date().toISOString();
+
 export function tryExclusiveWrite(filePath: string, payload: string): boolean {
   mkdirSync(dirname(filePath), { recursive: true });
   try {

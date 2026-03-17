@@ -71,7 +71,7 @@ export class DiscussManagerError extends Error {
 
 const subscriberCursors = new WeakMap<LiveDiscussSession, Map<WatchSubscriber, number>>();
 
-export function unwrapResult<T>(result: Result<T>, _action: string): T {
+export function unwrapResult<T>(result: Result<T>): T {
   if (result.ok) {
     return result.value;
   }

@@ -3,7 +3,7 @@ import { basename, join, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { sessionBase } from '../client/paths.js';
 import type { SessionState } from '../types.js';
-import { isNoEntryError, providerIdentPattern } from '../shared/mcp-utils.js';
+import { isNoEntryError, nowIsoString, providerIdentPattern } from '../shared/mcp-utils.js';
 import { eventBus } from './event-bus.js';
 
 export interface SessionEntry {
@@ -197,7 +197,7 @@ export class SessionManager {
 
   /** Allocate a new sessionId and persist as 'pending'. Returns the new entry. */
   allocate(provider: string, name: string, model: string, cwd: string, projectRoot?: string): SessionEntry {
-    const now = new Date().toISOString();
+    const now = nowIsoString();
     const entry: SessionEntry = {
       sessionId: randomUUID(),
       provider,
@@ -220,7 +220,7 @@ export class SessionManager {
     if (!entry) return;
     entry.conversationRef = conversationRef;
     entry.state = 'ready';
-    entry.lastUsedAt = new Date().toISOString();
+    entry.lastUsedAt = nowIsoString();
     this.writeEntry(entry);
   }
 
@@ -229,7 +229,7 @@ export class SessionManager {
     const entry = this.readEntry(sessionId);
     if (!entry) return;
     entry.state = 'non_resumable';
-    entry.lastUsedAt = new Date().toISOString();
+    entry.lastUsedAt = nowIsoString();
     this.writeEntry(entry);
   }
 
@@ -240,7 +240,7 @@ export class SessionManager {
       if (!entry || entry.activeJobId) return false;
       if (expectedVersion !== undefined && entry.version !== expectedVersion) return false;
       entry.activeJobId = jobId;
-      entry.lastUsedAt = new Date().toISOString();
+      entry.lastUsedAt = nowIsoString();
       this.writeEntry(entry);
       return true;
     } finally {
@@ -256,7 +256,7 @@ export class SessionManager {
     const entry = this.readEntry(sessionId);
     if (!entry || entry.activeJobId) return false;
     entry.activeJobId = jobId;
-    entry.lastUsedAt = new Date().toISOString();
+    entry.lastUsedAt = nowIsoString();
     this.writeEntry(entry);
     return true;
   }
@@ -267,7 +267,7 @@ export class SessionManager {
     if (!entry || entry.activeJobId !== jobId) return;
     entry.activeJobId = undefined;
     entry.lastJobId = jobId;
-    entry.lastUsedAt = new Date().toISOString();
+    entry.lastUsedAt = nowIsoString();
     this.writeEntry(entry);
   }
 

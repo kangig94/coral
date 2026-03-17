@@ -895,21 +895,8 @@ export class ExecutionService {
     try {
       this.progressStore.appendTerminal(jobId, sessionId, result, phase);
     } catch {
-      this.progressStore.markTerminalStatus(jobId, sessionId, result, phase);
+      this.progressStore.markTerminalStatus(jobId, result, phase);
     }
-  }
-
-  private finishWorkflowWithEmptyArtifact(
-    sessionId: string,
-    jobId: string,
-    message: string,
-    aborted: boolean,
-  ): void {
-    const phase: Extract<JobPhase, 'error' | 'aborted'> = aborted ? 'aborted' : 'error';
-    const result: TerminalResult = aborted
-      ? { content: '', aborted: true, notice: message, workflow: { steps: [] } }
-      : { content: '', notice: message, workflow: { steps: [] } };
-    this.finishWorkflowJob(sessionId, jobId, phase, result, '');
   }
 
   private runWorkflowAsync(
@@ -976,7 +963,10 @@ export class ExecutionService {
             };
           this.finishWorkflowJob(sessionId, jobId, phase, terminalResult, serialized.markdown);
         } catch {
-          this.finishWorkflowWithEmptyArtifact(sessionId, jobId, message, aborted);
+          const emptyResult: TerminalResult = aborted
+            ? { content: '', aborted: true, notice: message, workflow: { steps: [] } }
+            : { content: '', notice: message, workflow: { steps: [] } };
+          this.finishWorkflowJob(sessionId, jobId, phase, emptyResult, '');
         }
       });
   }

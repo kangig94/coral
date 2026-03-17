@@ -1,4 +1,5 @@
 import type { ProviderProgressEvent, ProviderRequest, ProviderResult } from '../types.js';
+import { nowIsoString } from '../shared/mcp-utils.js';
 
 /** Build an onEvent callback that parses JSON lines and emits ProviderProgressEvents. */
 export function makeOnEvent<TEvent>(
@@ -12,7 +13,7 @@ export function makeOnEvent<TEvent>(
       const event = JSON.parse(line) as TEvent;
       const message = extractor(event, projectRoot);
       if (!message) return;
-      const progressEvent: ProviderProgressEvent = { jobId, message, ts: new Date().toISOString() };
+      const progressEvent: ProviderProgressEvent = { jobId, message, ts: nowIsoString() };
       runtime.onEvent(progressEvent);
     } catch {
       /* ignore non-JSON or unparseable lines */

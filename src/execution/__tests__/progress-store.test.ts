@@ -238,7 +238,7 @@ describe('execution ProgressStore', () => {
     const before = readFileSync(progressPath, 'utf-8');
     const seq = store.getChangeSeq();
 
-    store.markTerminalStatus(jobId, 'session-1', { content: 'done' }, 'completed');
+    store.markTerminalStatus(jobId, { content: 'done' }, 'completed');
 
     await expect(store.waitForChange(seq)).resolves.toBeUndefined();
     expect(readFileSync(progressPath, 'utf-8')).toBe(before);
@@ -264,7 +264,7 @@ describe('execution ProgressStore', () => {
     eventBus.on('job:completed', completed);
 
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
-    store.markTerminalStatus(jobId, 'session-1', result, 'completed');
+    store.markTerminalStatus(jobId, result, 'completed');
 
     expect(completed).toHaveBeenCalledWith({ jobId, result });
   });

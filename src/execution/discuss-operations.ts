@@ -86,7 +86,6 @@ export async function startDiscussSession(
       undefined,
       buildAgentExecutionConfig(agents),
     ),
-    'create session',
   );
 
   const snapshot = await ctx.store.append(sessionId, null, created);
@@ -219,7 +218,6 @@ export function getWatchState(
 
 export async function recoverPersistedSessions(
   ctx: DiscussContext,
-  _callerCtx: CallerContext,
 ): Promise<void> {
   for (const candidate of ctx.store.listRecoveryCandidates()) {
     const snapshot = ctx.store.load(candidate.sessionId);

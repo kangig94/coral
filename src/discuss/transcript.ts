@@ -208,7 +208,6 @@ export function formatRecent(
 
 export function formatSummary(
   entries: TranscriptEntry[],
-  _agents: Record<string, AgentState>,
 ): string {
   return entries
     .filter(isSpeechEntry)
