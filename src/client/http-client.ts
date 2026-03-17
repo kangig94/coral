@@ -7,6 +7,7 @@ import {
   parseJsonResponse,
   TOOL_TIMEOUT_MS,
 } from '../shared/sse-parser.js';
+import { isBackendHealth, type BackendHealth } from './backend-health.js';
 
 interface ProviderToolOptions {
   context?: CallerContext;
@@ -35,11 +36,8 @@ interface WorkflowOptions {
   atoms?: Record<string, { instruction?: string }>;
 }
 
-export type { CallerContext } from '../execution/request-context.js';
-export { isBackendHealth, type BackendHealth } from './backend-health.js';
-
-import { isBackendHealth } from './backend-health.js';
-import type { BackendHealth } from './backend-health.js';
+export { isBackendHealth };
+export type { CallerContext, BackendHealth };
 
 function isCallerContext(value: unknown): value is CallerContext {
   return isRecord(value)
@@ -72,8 +70,9 @@ export class BackendClient {
     defaultContext?: CallerContext;
   } = {}) {
     this.defaultContext = options.defaultContext;
+    const defaultPluginRoot = this.defaultContext?.pluginRoot;
     this.ensureBackendHandle = options.ensureBackend
-      ?? ((pluginRoot?: string) => defaultEnsureBackend(pluginRoot ?? this.defaultContext?.pluginRoot));
+      ?? ((pluginRoot?: string) => defaultEnsureBackend(pluginRoot ?? defaultPluginRoot));
   }
 
   /**

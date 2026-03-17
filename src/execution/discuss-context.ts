@@ -90,14 +90,12 @@ export function watchBufferCursor(buffer: WatchBuffer): number {
 }
 
 export function getSubscriberCursorMap(session: LiveDiscussSession): Map<WatchSubscriber, number> {
-  let cursors = subscriberCursors.get(session);
-  if (cursors) {
-    return cursors;
-  }
+  const cursors = subscriberCursors.get(session);
+  if (cursors) return cursors;
 
-  cursors = new Map<WatchSubscriber, number>();
-  subscriberCursors.set(session, cursors);
-  return cursors;
+  const created = new Map<WatchSubscriber, number>();
+  subscriberCursors.set(session, created);
+  return created;
 }
 
 export function compactLiveWatchBuffer(session: LiveDiscussSession): void {
@@ -111,10 +109,6 @@ export function compactLiveWatchBuffer(session: LiveDiscussSession): void {
     if (cursor < minCursor) {
       minCursor = cursor;
     }
-  }
-
-  if (!Number.isFinite(minCursor) || minCursor <= session.watchBuffer.baseCursor) {
-    return;
   }
 
   const dropCount = minCursor - session.watchBuffer.baseCursor;

@@ -49,6 +49,33 @@ function readTextFile(filePath: string): string | null {
   }
 }
 
+function parseJsonLines<T>(
+  text: string,
+  parseLine: (value: unknown) => T | null,
+): T[] {
+  const entries: T[] = [];
+  for (const rawLine of text.split('\n')) {
+    if (rawLine.trim().length === 0) continue;
+    try {
+      const value = parseLine(JSON.parse(rawLine));
+      if (value !== null) entries.push(value);
+    } catch (error: unknown) {
+      if (error instanceof SyntaxError) continue;
+      throw error;
+    }
+  }
+  return entries;
+}
+
+function readDirectoryEntries(baseDir: string): Array<{ name: string; isDirectory(): boolean }> {
+  try {
+    return readdirSync(baseDir, { withFileTypes: true });
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return [];
+    throw error;
+  }
+}
+
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
@@ -518,18 +545,7 @@ export function readStatusRecord(jobId: string): PersistedStatusRecord | null {
 export function readProgressLog(jobId: string): PersistedProgressRecord[] {
   const log = readTextFile(join(JOBS_DIR, jobId, 'progress.jsonl'));
   if (log === null) return [];
-
-  const records: PersistedProgressRecord[] = [];
-  for (const line of log.split('\n')) {
-    if (line.trim().length === 0) continue;
-    try {
-      records.push(JSON.parse(line) as PersistedProgressRecord);
-    } catch (error: unknown) {
-      if (error instanceof SyntaxError) continue;
-      throw error;
-    }
-  }
-  return records;
+  return parseJsonLines(log, (lineValue) => lineValue as PersistedProgressRecord);
 }
 
 /**
@@ -594,21 +610,8 @@ export function readDiscussSnapshot(statePath: string): PersistedDiscussSnapshot
 export function readDiscussEventLog(logPath: string): DiscussDomainEvent[] {
   const log = readTextFile(logPath);
   if (log === null) return [];
-
-  const entries: DiscussDomainEvent[] = [];
-  for (const line of log.split('\n')) {
-    if (line.trim().length === 0) continue;
-    try {
-      const entry = JSON.parse(line) as unknown;
-      if (isValidDiscussDomainEvent(entry)) {
-        entries.push(entry);
-      }
-    } catch (error: unknown) {
-      if (error instanceof SyntaxError) continue;
-      throw error;
-    }
-  }
-  return entries;
+  return parseJsonLines(log, (lineValue) =>
+    isValidDiscussDomainEvent(lineValue) ? lineValue : null);
 }
 
 /**
@@ -643,13 +646,7 @@ function canUseDiscussSessionDir(sessionDir: string): boolean {
 
 function scanPersistedDiscussSessions(projectRoot: string): DiscussDiscoverySession[] {
   const baseDir = discussBaseDir(projectRoot);
-  let entries: Array<{ name: string; isDirectory(): boolean }>;
-  try {
-    entries = readdirSync(baseDir, { withFileTypes: true });
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) return [];
-    throw error;
-  }
+  const entries = readDirectoryEntries(baseDir);
 
   const sessions: DiscussDiscoverySession[] = [];
   for (const entry of entries) {
@@ -679,13 +676,7 @@ export function resolveDiscussSessionDir(projectRoot: string, sessionId: string)
   }
 
   const baseDir = discussBaseDir(projectRoot);
-  let entries: Array<{ name: string; isDirectory(): boolean }>;
-  try {
-    entries = readdirSync(baseDir, { withFileTypes: true });
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) return null;
-    throw error;
-  }
+  const entries = readDirectoryEntries(baseDir);
 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;

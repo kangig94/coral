@@ -41,19 +41,16 @@ export class SessionIndex {
   reread(shardHash: string, sessionId: string): void {
     const shardDir = this.resolveShardDir(shardHash);
     const sessions = this.index.get(shardHash) ?? new Map<string, LenientSessionEntry>();
+    sessions.delete(sessionId);
 
     if (!shardDir) {
-      sessions.delete(sessionId);
       this.index.set(shardHash, sessions);
       this.clearStale(shardHash, sessionId);
       return;
     }
 
     const entry = readSessionEntryLenient(join(shardDir, `${sessionId}.json`));
-    if (entry === null) {
-      sessions.delete(sessionId);
-    } else {
-      sessions.delete(sessionId);
+    if (entry !== null) {
       sessions.set(entry.sessionId, entry);
     }
 

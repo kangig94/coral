@@ -1,6 +1,7 @@
 import {
   makeEvent,
   type DiscussDomainEvent,
+  type BidRoundClosedStateMutations,
   type SessionCreatedAgentExecutionConfig,
 } from './events.js';
 import type {
@@ -10,6 +11,7 @@ import type {
   EndReason,
   Result,
   TranscriptEntry,
+  ResolveResult,
 } from './types.js';
 import { parseDisplayName } from './util/string.js';
 
@@ -253,6 +255,28 @@ export function decideBidRoundClose(
       .filter(([name, score]) => qualifier(name, score))
       .sort(compare);
 
+  const makeBidRoundClosedEvent = (
+    outcome: ResolveResult,
+    stateMutations: BidRoundClosedStateMutations,
+  ) =>
+    makeEvent(sessionId, projectRoot, topic, seq, 'bid.round.closed', ts, {
+      allBids,
+      effectiveBids,
+      thoughts: { ...state.current_thoughts },
+      outcome,
+      stateMutations,
+    });
+
+  const makeNoWinnerTerminalEvent = (
+    reason: 'all_below_threshold' | 'all_blocked' | 'max_epochs_reached',
+  ) => [
+    makeBidRoundClosedEvent({ no_winner: true as const, reason }, {}),
+    makeEvent(sessionId, projectRoot, topic, seq + 1, 'session.ended', ts, {
+      endReason: reason,
+      endReasonContent: endContent(reason),
+    }),
+  ];
+
   const primaryPool = createBidPool(
     (name, score) => score >= threshold && state.agents[name].quota_remaining > 0,
   );
@@ -261,13 +285,10 @@ export function decideBidRoundClose(
     return {
       ok: true,
       value: [
-        makeEvent(sessionId, projectRoot, topic, seq, 'bid.round.closed', ts, {
-          allBids,
-          effectiveBids,
-          thoughts: { ...state.current_thoughts },
-          outcome: { winner, speaker_type: 'quota' as const },
-          stateMutations: { cold_start: false },
-        }),
+        makeBidRoundClosedEvent(
+          { winner, speaker_type: 'quota' as const },
+          { cold_start: false },
+        ),
       ],
     };
   }
@@ -282,16 +303,13 @@ export function decideBidRoundClose(
     return {
       ok: true,
       value: [
-        makeEvent(sessionId, projectRoot, topic, seq, 'bid.round.closed', ts, {
-          allBids,
-          effectiveBids,
-          thoughts: { ...state.current_thoughts },
-          outcome: { winner, speaker_type: 'fallback' as const },
-          stateMutations: {
+        makeBidRoundClosedEvent(
+          { winner, speaker_type: 'fallback' as const },
+          {
             cold_start: false,
             fallback_used: { [winner]: true },
           },
-        }),
+        ),
       ],
     };
   }
@@ -304,13 +322,10 @@ export function decideBidRoundClose(
         return {
           ok: true,
           value: [
-            makeEvent(sessionId, projectRoot, topic, seq, 'bid.round.closed', ts, {
-              allBids,
-              effectiveBids,
-              thoughts: { ...state.current_thoughts },
-              outcome: { winner: picked, speaker_type: 'cold_start' as const },
-              stateMutations: { cold_start: false },
-            }),
+            makeBidRoundClosedEvent(
+              { winner: picked, speaker_type: 'cold_start' as const },
+              { cold_start: false },
+            ),
           ],
         };
       }
@@ -318,19 +333,7 @@ export function decideBidRoundClose(
 
     return {
       ok: true,
-      value: [
-        makeEvent(sessionId, projectRoot, topic, seq, 'bid.round.closed', ts, {
-          allBids,
-          effectiveBids,
-          thoughts: { ...state.current_thoughts },
-          outcome: { no_winner: true as const, reason: 'all_below_threshold' as const },
-          stateMutations: {},
-        }),
-        makeEvent(sessionId, projectRoot, topic, seq + 1, 'session.ended', ts, {
-          endReason: 'all_below_threshold',
-          endReasonContent: endContent('all_below_threshold'),
-        }),
-      ],
+      value: makeNoWinnerTerminalEvent('all_below_threshold'),
     };
   }
 
@@ -338,19 +341,7 @@ export function decideBidRoundClose(
   if (!allExhausted) {
     return {
       ok: true,
-      value: [
-        makeEvent(sessionId, projectRoot, topic, seq, 'bid.round.closed', ts, {
-          allBids,
-          effectiveBids,
-          thoughts: { ...state.current_thoughts },
-          outcome: { no_winner: true as const, reason: 'all_blocked' as const },
-          stateMutations: {},
-        }),
-        makeEvent(sessionId, projectRoot, topic, seq + 1, 'session.ended', ts, {
-          endReason: 'all_blocked',
-          endReasonContent: endContent('all_blocked'),
-        }),
-      ],
+      value: makeNoWinnerTerminalEvent('all_blocked'),
     };
   }
 
@@ -367,37 +358,22 @@ export function decideBidRoundClose(
     return {
       ok: true,
       value: [
-        makeEvent(sessionId, projectRoot, topic, seq, 'bid.round.closed', ts, {
-          allBids,
-          effectiveBids,
-          thoughts: { ...state.current_thoughts },
-          outcome: { no_winner: true as const, reason: 'epoch_transition' as const },
-          stateMutations: {
+        makeBidRoundClosedEvent(
+          { no_winner: true as const, reason: 'epoch_transition' as const },
+          {
             cold_start: true,
             epoch: state.epoch + 1,
             fallback_used: fallbackUsed,
             quota_remaining: quotaRemaining,
           },
-        }),
+        ),
       ],
     };
   }
 
   return {
     ok: true,
-    value: [
-      makeEvent(sessionId, projectRoot, topic, seq, 'bid.round.closed', ts, {
-        allBids,
-        effectiveBids,
-        thoughts: { ...state.current_thoughts },
-        outcome: { no_winner: true as const, reason: 'max_epochs_reached' as const },
-        stateMutations: {},
-      }),
-      makeEvent(sessionId, projectRoot, topic, seq + 1, 'session.ended', ts, {
-        endReason: 'max_epochs_reached',
-        endReasonContent: endContent('max_epochs_reached'),
-      }),
-    ],
+    value: makeNoWinnerTerminalEvent('max_epochs_reached'),
   };
 }
 
