@@ -146,7 +146,27 @@ argument-hint: "[existing|new]"
   If plan file does not exist, STOP and report: "Phase 2 did not produce a plan file. Cannot proceed to Phase 3."
   Do NOT attempt to write a plan or execute without one.
 
-  Invoke `Skill({ skill: "coral:ralph", args: "execute the plan from Phase 2" })`.
+  ### 3a. Staging Setup
+
+  `.claude/rules/` is auto-loaded by Claude Code. Writing files there incrementally exposes
+  partial state. Stage all `.claude/` files in a temp directory, then move atomically.
+
+  **Staging directory**: `$TMPDIR/coral/<project-slug>/init-staging/`
+  (`<project-slug>` = project dir path with `/` replaced by `-`, e.g. `-home-kang-workspace-myapp`)
+
+  ```bash
+  STAGING="$TMPDIR/coral/$(echo "$CLAUDE_PROJECT_DIR" | tr '/' '-')/init-staging"
+  rm -rf "$STAGING" && mkdir -p "$STAGING"
+  ```
+
+  **Write rules**:
+  - **All `.claude/` files** (new and enhanced): Write to `$STAGING/.claude/...`. For enhanced files, first `cp` the existing file into staging, then Edit there.
+  - **`.coral/` files**: Write directly (project data, not auto-loaded)
+  - **`docs/` files** (new and enhanced): Write directly (not auto-loaded)
+
+  ### 3b. Generate Artifacts
+
+  Invoke `Skill({ skill: "coral:ralph", args: "execute the plan from Phase 2. Stage all .claude/ files (new and enhanced) under $STAGING/.claude/ instead of .claude/ directly. For enhanced files, cp the original into staging first, then Edit there." })`.
   Same pattern as Phase 2 — you execute at depth 0, spawning subagents at depth 1 as needed.
 
   You MUST read these reference files before generating any artifacts:
@@ -158,10 +178,18 @@ argument-hint: "[existing|new]"
   The analysis file (from Phase 1d) provides factual grounding, not content drafts.
   Doc content comes from the plan — write what the plan specifies, not from your own analysis.
 
-  Also write `.claude/skills/tier-review/SKILL.md` by copying from
+  Also write `$STAGING/.claude/skills/tier-review/SKILL.md` by copying from
   `{skill_base_dir}/templates/skills/tier-review/SKILL.md` — fixed artifact, not plan-dependent.
 
-  **Evidence gate**: Phase 3 is complete ONLY when generated files exist on disk.
+  ### 3c. Atomic Move
+
+  After all files are generated, move staged `.claude/` files to their final location:
+
+  ```bash
+  cp -r "$STAGING/.claude/"* .claude/ && rm -rf "$STAGING"
+  ```
+
+  **Evidence gate**: Phase 3 is complete ONLY when generated files exist in their final locations.
   If no files were created, Phase 3 did not execute correctly.
 
   ## Phase 3.5: Verify Artifacts
