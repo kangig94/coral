@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const JOBS_DIR = join(tmpdir(), 'coral-jobs');
 const LIVE_PHASES = new Set(['queued', 'launching', 'running']);
@@ -39,7 +39,8 @@ try {
 
   if (jobs.length === 0) process.exit(0);
 
-  const snapshotDir = join(projectRoot, '.coral', 'tmp');
+  const projectSlug = projectRoot.replace(/\//g, '-');
+  const snapshotDir = join(tmpdir(), 'coral', projectSlug);
   const capturedAtMs = Date.now();
   mkdirSync(snapshotDir, { recursive: true });
 
