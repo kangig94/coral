@@ -47,11 +47,11 @@ No auto-migration of monolithic CLAUDE.md. Users with existing monolithic files 
 **Coral block format**:
 ```
 # Coral (device-local files)
-.claude/coral/*
-!.claude/coral/kb/
+.coral/*
+!.coral/kb/
 ```
 
-### .claude/coral/kb/
+### .coral/kb/
 
 | Condition | Action |
 |-----------|--------|

@@ -36,7 +36,7 @@ Cross-cutting methodology files live in `methods/`. Agents and skills reference 
 `/coral:ralph --red <task>` spawns a red-attacker **before implementation begins**, running adversarial test generation in parallel with the main work:
 
 1. Red-attacker spawns at step 2 (plan mode) or step 3 start (prompt mode) with plan file + AC as input
-2. Implementation proceeds in parallel — red-attacker works independently in `.claude/coral/tmp/red/`
+2. Implementation proceeds in parallel — red-attacker works independently in `.coral/tmp/red/`
 3. Post-implementation: wait for red-attacker, move staged tests into test directory, run full suite
 4. Fix loop: fix failures → re-run (max 3 iterations), then escalate
 

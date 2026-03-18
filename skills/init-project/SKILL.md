@@ -137,7 +137,7 @@ argument-hint: "[existing|new]"
            conventions, patterns, and principles. Not endpoint catalogs or table definitions.
        * For new projects, mark uncertain sections with "to be updated" per writing-guide.
 
-  **Evidence gate**: Phase 2 is complete ONLY when a plan file exists at `.claude/coral/plans/init-*.md`.
+  **Evidence gate**: Phase 2 is complete ONLY when a plan file exists at `.coral/plans/init-*.md`.
   If no file exists on disk, Phase 2 did not execute correctly.
 
   ## Phase 3: Execute
@@ -218,7 +218,7 @@ argument-hint: "[existing|new]"
 
   | Category | File | Condition | Content Check |
   |----------|------|-----------|---------------|
-  | Analysis | `.claude/coral/analysis/*-init-*.md` | If existing project | Scan Report section present |
+  | Analysis | `.coral/analysis/*-init-*.md` | If existing project | Scan Report section present |
   | Hub | `.claude/CLAUDE.md` | Must exist (created or pre-existing) | Quality principle line present |
   | Rules | `.claude/rules/agents.md` | Must exist | - |
   | Rules | `.claude/rules/design-philosophy.md` | Must exist | - |
@@ -234,7 +234,7 @@ argument-hint: "[existing|new]"
   | Docs | `docs/ARCHITECTURE.md` | If generated | Layer diagram present |
   | Docs | `docs/DEV_GUIDE.md` | If generated | Exact build/test commands |
   | Docs | `docs/{domain-specific}.md` | Per domain reference Recommended Docs | Architecture-level content, not catalogs |
-  | KB | `.claude/coral/kb/` | Directory must exist | - |
+  | KB | `.coral/kb/` | Directory must exist | - |
   | Git | `.gitignore` contains Coral block | Must contain `# Coral` | - |
 
   If any required file is missing or fails its content check, report it as an error.

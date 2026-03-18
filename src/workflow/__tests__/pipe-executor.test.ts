@@ -61,6 +61,7 @@ type MockExecutionService = WorkflowExecutionService & {
   abort: ReturnType<typeof vi.fn>;
   awaitLaunch: ReturnType<typeof vi.fn>;
   waitStream: ReturnType<typeof vi.fn>;
+  getConversationRef: ReturnType<typeof vi.fn>;
 };
 
 function createExecutionService(overrides: Partial<MockExecutionService> = {}): MockExecutionService {
@@ -70,6 +71,7 @@ function createExecutionService(overrides: Partial<MockExecutionService> = {}): 
     abort: vi.fn((jobIds: string[]) => ({ aborted: jobIds, notFound: [] })),
     awaitLaunch: vi.fn(async () => 'ready'),
     waitStream: vi.fn((_req: WaitRequest) => emit([])),
+    getConversationRef: vi.fn(() => undefined),
     ...overrides,
   } as MockExecutionService;
 }
@@ -305,6 +307,208 @@ describe('workflow pipe executor', () => {
         ['0:0', 'CODEX DONE'],
         ['0:1', 'CLAUDE DONE'],
       ]);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('success path calls cleanup with resolved refs, undefined refs skipped', async () => {
+    const executionSvc = createExecutionService({
+      coralDispatch: vi.fn(async (_provider, coralName) => {
+        if (coralName === 'architect') {
+          return running('job-1', 'session-1');
+        }
+        return running('job-2', 'session-2');
+      }),
+      waitStream: vi.fn((req: WaitRequest) => {
+        if (req.jobIds.includes('job-1') && req.jobIds.includes('job-2')) {
+          return emit([
+            terminal('job-1', 'session-1', { content: 'ARCH' }),
+            terminal('job-2', 'session-2', { content: 'CRIT' }),
+          ]);
+        }
+        return emit([]);
+      }),
+      getConversationRef: vi.fn((_provider, sessionId) => (
+        sessionId === 'session-1' ? 'conv-ref-1' : undefined
+      )),
+    });
+
+    const result = await executePipeline(
+      parseExpression('(architect, critic)'),
+      'seed',
+      'claude',
+      executionSvc,
+      ctx,
+    );
+
+    expect(result.finalOutput).toBe(
+      '<architect>\nARCH\n</architect>\n\n<critic>\nCRIT\n</critic>',
+    );
+    expect(executionSvc.coralDispatch).toHaveBeenNthCalledWith(
+      1,
+      'claude',
+      'architect',
+      expect.objectContaining({ prompt: 'seed', cwd: ctx.projectRoot }),
+      ctx,
+    );
+    expect(executionSvc.coralDispatch).toHaveBeenNthCalledWith(
+      2,
+      'claude',
+      'critic',
+      expect.objectContaining({ prompt: 'seed', cwd: ctx.projectRoot }),
+      ctx,
+    );
+    expect(executionSvc.getConversationRef).toHaveBeenCalledWith('claude', 'session-1');
+    expect(executionSvc.getConversationRef).toHaveBeenCalledWith('claude', 'session-2');
+  });
+
+  it('abort path calls cleanup', async () => {
+    const controller = new AbortController();
+    let waitCalls = 0;
+    const executionSvc = createExecutionService({
+      getConversationRef: vi.fn(() => 'conv-ref-aborted'),
+      waitStream: vi.fn((_req: WaitRequest) => {
+        waitCalls += 1;
+        if (waitCalls === 1) {
+          controller.abort();
+          return emit([timeout(['job-1'])]);
+        }
+        return emit([terminal('job-1', 'session-1', { content: '', aborted: true })]);
+      }),
+    });
+
+    await expect(executePipeline(
+      parseExpression('architect'),
+      'seed',
+      'claude',
+      executionSvc,
+      ctx,
+      { signal: controller.signal },
+    )).rejects.toMatchObject({
+      message: 'Pipeline aborted (launched atoms may continue)',
+      aborted: true,
+    });
+
+    expect(executionSvc.getConversationRef).toHaveBeenCalledWith('claude', 'session-1');
+    expect(executionSvc.getConversationRef).toHaveBeenCalledTimes(1);
+  });
+
+  it('error path calls cleanup', async () => {
+    const executionSvc = createExecutionService({
+      getConversationRef: vi.fn(() => 'conv-ref-error'),
+      waitStream: vi.fn((req: WaitRequest) => {
+        if (req.jobIds[0] === 'job-1') {
+          return emit([terminal('job-1', 'session-1', { content: '', notice: 'error msg' })]);
+        }
+        return emit([]);
+      }),
+    });
+
+    await expect(executePipeline(
+      parseExpression('architect'),
+      'seed',
+      'claude',
+      executionSvc,
+      ctx,
+    )).rejects.toMatchObject({
+      message: "Step 0, atom 'architect' failed: error msg",
+      aborted: false,
+    });
+
+    expect(executionSvc.getConversationRef).toHaveBeenCalledWith('claude', 'session-1');
+  });
+
+  it('very-early-abort skips cleanup with no launched atoms', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const executionSvc = createExecutionService({
+      getConversationRef: vi.fn(() => 'conv-ref-skipped'),
+    });
+
+    await expect(executePipeline(
+      parseExpression('architect'),
+      'seed',
+      'claude',
+      executionSvc,
+      ctx,
+      { signal: controller.signal },
+    )).rejects.toMatchObject({ aborted: true });
+
+    expect(executionSvc.getConversationRef).not.toHaveBeenCalled();
+    expect(executionSvc.coralDispatch).not.toHaveBeenCalled();
+  });
+
+  it('codex-only pipeline skips ref resolution', async () => {
+    const executionSvc = createExecutionService({
+      coralDispatch: vi.fn(async () => running('job-1', 'session-1')),
+      waitStream: vi.fn((req: WaitRequest) => {
+        if (req.jobIds[0] === 'job-1') {
+          return emit([terminal('job-1', 'session-1', { content: 'DONE' })]);
+        }
+        return emit([]);
+      }),
+      getConversationRef: vi.fn(() => 'conv-ref-codex'),
+    });
+
+    const result = await executePipeline(
+      parseExpression('architect'),
+      'seed',
+      'codex',
+      executionSvc,
+      ctx,
+    );
+
+    expect(result.finalOutput).toBe('DONE');
+    expect(executionSvc.getConversationRef).not.toHaveBeenCalled();
+  });
+
+  it('deduplicates stale-recovered claude sessions by sessionId', async () => {
+    // Mock Date.now to guarantee time advances between lastActivityAt set and stale check.
+    let mockNow = 10_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => {
+      mockNow += 10;
+      return mockNow;
+    });
+
+    let firstCycle = true;
+    const executionSvc = createExecutionService({
+      getConversationRef: vi.fn(() => 'conv-ref-1'),
+      resume: vi.fn(async () => running('job-resumed', 'session-1')),
+      waitStream: vi.fn((_req: WaitRequest) => {
+        if (firstCycle) {
+          firstCycle = false;
+          return emit([timeout(['job-1'])]);
+        }
+        return emit([
+          terminal('job-resumed', 'session-1', { content: 'DONE' }),
+        ]);
+      }),
+    });
+
+    try {
+      const result = await executePipeline(
+        parseExpression('architect'),
+        'seed',
+        'claude',
+        executionSvc,
+        ctx,
+        { staleTimeoutMs: 1, pollIntervalMs: 1 },
+      );
+
+      expect(result.finalOutput).toBe('DONE');
+      expect(executionSvc.resume).toHaveBeenCalledWith(
+        'claude',
+        {
+          sessionId: 'session-1',
+          prompt: 'Your previous execution timed out due to inactivity. Continue where you left off.',
+          cwd: ctx.projectRoot,
+        },
+        ctx,
+      );
+      expect(executionSvc.getConversationRef).toHaveBeenCalledTimes(1);
+      expect(executionSvc.getConversationRef).toHaveBeenCalledWith('claude', 'session-1');
     } finally {
       vi.restoreAllMocks();
     }

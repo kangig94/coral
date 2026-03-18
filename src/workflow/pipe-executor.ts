@@ -372,7 +372,6 @@ export async function waitForAtoms(
     workDir?: string;
     onProgress: (message: string) => void;
     completedStepDetails?: StepDetail[];
-    claudeSessionIds?: string[];
   },
 ): Promise<Map<string, string>> {
   const pending = new Map<string, LaunchedAtom>();
@@ -461,10 +460,6 @@ export async function waitForAtoms(
         }
 
         results.set(atom.atomKey, event.result.content);
-        if (atom.providerName === 'claude' && options.claudeSessionIds) {
-          const ref = executionSvc.getConversationRef('claude', atom.sessionId);
-          if (ref) options.claudeSessionIds.push(ref);
-        }
         continue;
       }
 
@@ -566,90 +561,101 @@ export async function executePipeline(
   const staleTimeoutMs = options.staleTimeoutMs ?? 0;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_WAIT_POLL_INTERVAL_MS;
   const stepDetails: StepDetail[] = [];
-  const claudeSessionIds: string[] = [];
   let stepPrompt = initialPrompt;
+  const allLaunchedAtoms: LaunchedAtom[] = [];
 
-  for (let stepIndex = 0; stepIndex < ast.length; stepIndex += 1) {
-    const step = ast[stepIndex];
-    onProgress(`step ${stepIndex} started`);
+  try {
+    for (let stepIndex = 0; stepIndex < ast.length; stepIndex += 1) {
+      const step = ast[stepIndex];
+      onProgress(`step ${stepIndex} started`);
 
-    const launchedAtoms: LaunchedAtom[] = [];
-    let launchError: unknown = null;
+      const launchedAtoms: LaunchedAtom[] = [];
+      let launchError: unknown = null;
 
-    await Promise.all(step.map(async (atom, atomIndex) => {
-      try {
-        const launched = await launchAtomWithRetry({
-          atom,
-          atomIndex,
-          stepIndex,
-          stepPrompt,
-          context: options.context,
-          workDir: options.workDir,
-          defaultProviderName,
-          executionSvc,
-          ctx,
-          atoms: options.atoms,
+      await Promise.all(step.map(async (atom, atomIndex) => {
+        try {
+          const launched = await launchAtomWithRetry({
+            atom,
+            atomIndex,
+            stepIndex,
+            stepPrompt,
+            context: options.context,
+            workDir: options.workDir,
+            defaultProviderName,
+            executionSvc,
+            ctx,
+            atoms: options.atoms,
+            signal: options.signal,
+            completedStepDetails: stepDetails,
+          });
+          launchedAtoms.push(launched);
+        } catch (error) {
+          launchError ??= error;
+        }
+      }));
+
+      launchedAtoms.sort((left, right) => left.atomIndex - right.atomIndex);
+      allLaunchedAtoms.push(...launchedAtoms);
+
+      if (launchError !== null) {
+        const drainedStepDetails = await drainLaunchedAtoms(launchedAtoms, executionSvc, ctx, {
           signal: options.signal,
+          staleTimeoutMs,
+          pollIntervalMs,
+          workDir: options.workDir,
+          onProgress,
+        });
+        const baseStepDetails = launchError instanceof WorkflowExecutionError
+          ? launchError.stepDetails
+          : stepDetails;
+        const message = launchError instanceof Error ? launchError.message : String(launchError);
+        const aborted = launchError instanceof WorkflowExecutionError ? launchError.aborted : false;
+        throw createWorkflowExecutionError(message, aborted, [...baseStepDetails, ...drainedStepDetails]);
+      }
+
+      try {
+        const stepResults = await waitForAtoms(launchedAtoms, executionSvc, ctx, {
+          signal: options.signal,
+          staleTimeoutMs,
+          pollIntervalMs,
+          workDir: options.workDir,
+          onProgress,
           completedStepDetails: stepDetails,
         });
-        launchedAtoms.push(launched);
+
+        const orderedStepDetails = buildStepDetailsForAtoms(launchedAtoms, stepResults);
+        stepDetails.push(...orderedStepDetails);
+        stepPrompt = formatStepOutput(launchedAtoms.map((atom) => ({
+          tagName: atom.tagName,
+          output: requireStepResult(stepIndex, atom, stepResults),
+        })));
+        onProgress(`step ${stepIndex} completed`);
       } catch (error) {
-        launchError ??= error;
+        if (error instanceof WorkflowExecutionError) {
+          throw error;
+        }
+
+        const message = errorMessage(error);
+        throw createWorkflowExecutionError(message, Boolean(options.signal?.aborted), [...stepDetails]);
       }
-    }));
-
-    launchedAtoms.sort((left, right) => left.atomIndex - right.atomIndex);
-
-    if (launchError !== null) {
-      const drainedStepDetails = await drainLaunchedAtoms(launchedAtoms, executionSvc, ctx, {
-        signal: options.signal,
-        staleTimeoutMs,
-        pollIntervalMs,
-        workDir: options.workDir,
-        onProgress,
-      });
-      const baseStepDetails = launchError instanceof WorkflowExecutionError
-        ? launchError.stepDetails
-        : stepDetails;
-      const message = launchError instanceof Error ? launchError.message : String(launchError);
-      const aborted = launchError instanceof WorkflowExecutionError ? launchError.aborted : false;
-      throw createWorkflowExecutionError(message, aborted, [...baseStepDetails, ...drainedStepDetails]);
     }
 
-    try {
-      const stepResults = await waitForAtoms(launchedAtoms, executionSvc, ctx, {
-        signal: options.signal,
-        staleTimeoutMs,
-        pollIntervalMs,
-        workDir: options.workDir,
-        onProgress,
-        completedStepDetails: stepDetails,
-        claudeSessionIds,
-      });
-
-      const orderedStepDetails = buildStepDetailsForAtoms(launchedAtoms, stepResults);
-      stepDetails.push(...orderedStepDetails);
-      stepPrompt = formatStepOutput(launchedAtoms.map((atom) => ({
-        tagName: atom.tagName,
-        output: requireStepResult(stepIndex, atom, stepResults),
-      })));
-      onProgress(`step ${stepIndex} completed`);
-    } catch (error) {
-      if (error instanceof WorkflowExecutionError) {
-        throw error;
-      }
-
-      const message = errorMessage(error);
-      throw createWorkflowExecutionError(message, Boolean(options.signal?.aborted), [...stepDetails]);
+    return {
+      finalOutput: stepPrompt,
+      stepDetails,
+    };
+  } finally {
+    // Resolve conversationRefs at exit time — dedup by sessionId since stale
+    // recovery preserves sessionId (service.ts:389). If this assumption breaks,
+    // only consequence is leaked session files (no crash).
+    const seen = new Set<string>();
+    const refs: string[] = [];
+    for (const atom of allLaunchedAtoms) {
+      if (atom.providerName !== 'claude' || seen.has(atom.sessionId)) continue;
+      seen.add(atom.sessionId);
+      const ref = executionSvc.getConversationRef('claude', atom.sessionId);
+      if (ref) refs.push(ref);
     }
+    cleanupClaudeSessions(refs);
   }
-
-  // Fire-and-forget: clean up Claude session files after successful completion.
-  // Done here (not per-atom) so stale recovery can still resume mid-pipeline.
-  cleanupClaudeSessions(claudeSessionIds);
-
-  return {
-    finalOutput: stepPrompt,
-    stepDetails,
-  };
 }

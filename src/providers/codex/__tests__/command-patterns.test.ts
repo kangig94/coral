@@ -43,7 +43,7 @@ describe('matchCommandPattern', () => {
 
   it('matches bare nl -ba as Read', () => {
     expectPattern('nl -ba src/providers/codex/codex-executor.ts', 'Read(src/providers/codex/codex-executor.ts)');
-    expectPattern('nl -ba .claude/coral/plans/effort-parameter-unification.md', 'Read(.claude/coral/plans/effort-parameter-unification.md)');
+    expectPattern('nl -ba .coral/plans/effort-parameter-unification.md', 'Read(.coral/plans/effort-parameter-unification.md)');
   });
 
   it('matches cat and rg patterns', () => {

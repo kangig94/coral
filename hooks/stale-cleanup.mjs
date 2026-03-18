@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * SessionStart hook — cleans up stale flag files (>6h) from .claude/coral/tmp/.
+ * SessionStart hook — cleans up stale flag files (>6h) from .coral/tmp/.
  * Handles memo-reminded-{session}, kb-active-{session}, ralph-state-{session}.json,
  * and active-jobs-{timestamp}-{hex}.json prefixes.
  * Fail-open: any error exits silently.
@@ -16,7 +16,7 @@ const STALE_MS = 6 * 60 * 60_000;
 try {
   const input = JSON.parse((await readStdin()) || '{}');
   const projectDir = process.env.CLAUDE_PROJECT_DIR ?? input.cwd ?? '.';
-  const flagDir = join(projectDir, '.claude', 'coral', 'tmp');
+  const flagDir = join(projectDir, '.coral', 'tmp');
   if (!existsSync(flagDir)) process.exit(0);
 
   const now = Date.now();

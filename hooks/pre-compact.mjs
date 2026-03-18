@@ -39,7 +39,7 @@ try {
 
   if (jobs.length === 0) process.exit(0);
 
-  const snapshotDir = join(projectRoot, '.claude', 'coral', 'tmp');
+  const snapshotDir = join(projectRoot, '.coral', 'tmp');
   const capturedAtMs = Date.now();
   mkdirSync(snapshotDir, { recursive: true });
 
