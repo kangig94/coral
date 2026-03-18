@@ -1,31 +1,55 @@
 #!/usr/bin/env node
 
 /**
- * Stop hook — migrates .claude/coral/ to .coral/ (one-time).
- * If .coral/ already exists, skips (migration already done).
- * If .claude/coral/ exists without .coral/, moves and blocks stop to notify Claude.
+ * Stop hook — migrates .claude/coral/ data (one-time).
+ * - .claude/coral/kb/ → .kb/ (project root, git-tracked)
+ * - .claude/coral/{memo,plans,analysis,discuss} → ${CLAUDE_PLUGIN_DATA}/projects/<slug>/
+ * If .kb/ already exists, skips (migration already done).
  * Fail-open: any error exits silently.
  */
 
-import { existsSync, renameSync, mkdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 
 try {
   const input = JSON.parse((await readStdin()) || '{}');
   const projectDir = process.env.CLAUDE_PROJECT_DIR ?? input.cwd ?? '.';
+  const pluginData = process.env.CLAUDE_PLUGIN_DATA || join(process.env.HOME || '', '.claude', 'plugins', 'data', 'coral-coral');
   const oldDir = join(projectDir, '.claude', 'coral');
-  const newDir = join(projectDir, '.coral');
+  const kbTarget = join(projectDir, '.kb');
 
-  if (existsSync(newDir)) process.exit(0);
+  // Already migrated or nothing to migrate
+  if (existsSync(kbTarget)) process.exit(0);
   if (!existsSync(oldDir)) process.exit(0);
 
-  mkdirSync(dirname(newDir), { recursive: true });
-  renameSync(oldDir, newDir);
+  // Migrate kb/ → .kb/
+  const oldKb = join(oldDir, 'kb');
+  if (existsSync(oldKb)) {
+    renameSync(oldKb, kbTarget);
+  }
+
+  // Migrate memo, plans, analysis, discuss → plugin data
+  const projectSlug = projectDir.replace(/\//g, '-');
+  const dataDir = join(pluginData, 'projects', projectSlug);
+  for (const sub of ['memo', 'plans', 'analysis', 'discuss']) {
+    const src = join(oldDir, sub);
+    if (!existsSync(src)) continue;
+    const dest = join(dataDir, sub);
+    mkdirSync(dest, { recursive: true });
+    cpSync(src, dest, { recursive: true });
+    rmSync(src, { recursive: true, force: true });
+  }
+
+  // Clean up empty .claude/coral/ if possible
+  try {
+    const remaining = readdirSync(oldDir);
+    if (remaining.length === 0) rmSync(oldDir, { recursive: true });
+  } catch { /* ignore */ }
 
   console.log(JSON.stringify({
     decision: 'block',
-    reason: 'Coral data migrated from .claude/coral/ to .coral/. Update .gitignore (.claude/coral/* → .coral/*) then commit both changes.',
-    systemMessage: '📦 Coral: migrated .claude/coral/ → .coral/',
+    reason: 'Coral data migrated: .claude/coral/kb/ → .kb/ (git-tracked). Other data moved to plugin storage. Add .kb/ to version control and remove .claude/coral/ from .gitignore if present.',
+    systemMessage: '📦 Coral: migrated .claude/coral/ → .kb/ + plugin data',
   }));
 } catch {
   process.exit(0);

@@ -39,7 +39,7 @@ Pass `--user` to participate as a human observer.
      or `discuss_start({ topic, agents })` otherwise.
    - Save the returned `session` as `session_id`.
 
-6. **If `--user`**, write `.coral/discuss/active-user-session.json`
+6. **If `--user`**, write `$CORAL_DATA/discuss/active-user-session.json`
    with `{ session_id }`.
    This keeps `/bid` pointed at the active observer session.
 
@@ -56,7 +56,7 @@ Pass `--user` to participate as a human observer.
    "Discussion started! Use `/bid <score>, <thought>` to submit a bid, or `/bid <your speech>` when you win the floor."
 
 9. **When the session ends**, report the end reason from `discuss_watch`.
-   - If `--user`, delete `.coral/discuss/active-user-session.json`.
+   - If `--user`, delete `$CORAL_DATA/discuss/active-user-session.json`.
 
 ## Context Enhancement
 
