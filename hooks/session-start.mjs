@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
 
 try {
   const input = JSON.parse(await readStdin());
@@ -9,10 +10,30 @@ try {
 
   if (!pluginRoot || !existsSync(pluginRoot)) process.exit(0);
 
+  // Ensure .claude/coral → $CORAL_DATA symlink for IDE browsing
+  const projectDir = process.env.CLAUDE_PROJECT_DIR;
+  const pluginData = process.env.CLAUDE_PLUGIN_DATA || join(process.env.HOME || '', '.claude', 'plugins', 'data', 'coral-coral');
+  if (projectDir && pluginData) {
+    const projectSlug = projectDir.replace(/\//g, '-');
+    const dataDir = join(pluginData, 'projects', projectSlug);
+    const link = join(projectDir, '.claude', 'coral');
+    try {
+      mkdirSync(dataDir, { recursive: true });
+      // Replace stale symlink or skip if real dir
+      if (existsSync(link)) {
+        try { if (lstatSync(link).isSymbolicLink()) unlinkSync(link); } catch {}
+      }
+      if (!existsSync(link)) symlinkSync(dataDir, link);
+    } catch { /* fail-open */ }
+  }
+
   const claudeMdContent = readFileSync(`${pluginRoot}/CLAUDE.md`, 'utf-8');
+  const coralDataLine = projectDir && pluginData
+    ? `CORAL_DATA=${join(pluginData, 'projects', projectDir.replace(/\//g, '-'))}`
+    : '';
   const additionalContext = sessionId
-    ? `SessionStart:session_id=${sessionId}\n\n${claudeMdContent}`
-    : claudeMdContent;
+    ? `SessionStart:session_id=${sessionId}\n${coralDataLine}\n\n${claudeMdContent}`
+    : `${coralDataLine}\n\n${claudeMdContent}`;
 
   console.log(JSON.stringify({
     hookSpecificOutput: {

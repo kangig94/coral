@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * PostToolUseFailure + PostToolUse(Bash) hook — reminds Claude to check .coral/kb/ on errors.
+ * PostToolUseFailure + PostToolUse(Bash) hook — reminds Claude to check .kb/ on errors.
  * - PostToolUseFailure: any tool failure → KB reminder
  * - PostToolUse(Bash): silent failures (exit 0 but error in output) → KB reminder
  * Fail-open: any error exits silently.
@@ -25,7 +25,7 @@ try {
     if (!FAILURE_RE.test(output)) process.exit(0);
   }
 
-  const kbDir = join(process.env.CLAUDE_PROJECT_DIR || '.', '.coral', 'kb');
+  const kbDir = join(process.env.CLAUDE_PROJECT_DIR || '.', '.kb');
   const files = readdirSync(kbDir).filter(f => f.endsWith('.md'));
   if (files.length === 0) process.exit(0);
 
@@ -35,7 +35,7 @@ try {
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: event,
-      additionalContext: `${prefix}. Before debugging from scratch, check .coral/kb/ for relevant knowledge. KB topics: ${topics.join(', ')}`,
+      additionalContext: `${prefix}. Before debugging from scratch, check .kb/ for relevant knowledge. KB topics: ${topics.join(', ')}`,
     },
   }));
 } catch {

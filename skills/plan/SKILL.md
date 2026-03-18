@@ -30,12 +30,12 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
   <Protocol>
     ### 1. Create Plan File
     If invoked from preplan, `{topic}` is already defined. Otherwise, derive `{topic}` from the user's input as English kebab-case.
-    Write a stub plan file to `.coral/plans/{topic}.md` **immediately** — before any research.
+    Write a stub plan file to `$CORAL_DATA/plans/{topic}.md` **immediately** — before any research.
     Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not project-local.
 
     Stub structure (empty sections) — copy headings verbatim including parenthetical annotations:
       # [Plan Title]
-      **Preplan**: `.coral/plans/pre-{topic}.md` (omit if no preplan exists)
+      **Preplan**: `$CORAL_DATA/plans/pre-{topic}.md` (omit if no preplan exists)
       ## Requirements Summary
       ## Acceptance Criteria (testable, verifiable — register each as a Task during implementation)
       ## Execution Order (dependency graph, batches, file mapping — written after review loop, see step 4e)
@@ -48,7 +48,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
     ### 2. Gather Context
     Parse task description, read key files, identify acceptance criteria, extract working directory.
-    - **Preplan**: If `.coral/plans/pre-{topic}.md` exists, read it.
+    - **Preplan**: If `$CORAL_DATA/plans/pre-{topic}.md` exists, read it.
       Extract the **Success Criteria** section — these are the acceptance criteria the plan must satisfy.
       Pass them to reviewers in step 4a.
     - **Bug enrichment**: If the task involves deep bug diagnosis (root cause unclear, multiple
@@ -235,7 +235,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
   <Output_Format>
     ## Planning Complete
 
-    **Plan file**: `.coral/plans/{topic}.md`
+    **Plan file**: `$CORAL_DATA/plans/{topic}.md`
 
     ### Review Summary
     - Phases: [0 (Frame Gate) + 1 (Codex) + 2 (Claude)] or [0 (Frame Gate) + 1 (Claude)]
@@ -247,7 +247,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     ### Final Plan
     Summarize the plan file for the user — include all decisions, constraints,
     and action items the user needs to know, but omit verbose details they can
-    look up in `.coral/plans/{topic}.md` if needed.
+    look up in `$CORAL_DATA/plans/{topic}.md` if needed.
 
     ### Implementation Handoff
 

@@ -584,7 +584,7 @@ Behavior notes:
 
 # Discuss Tools (`dc`)
 
-The discuss MCP server manages moderated multi-agent discussion sessions. Sessions are stored as directories under `{project}/.coral/discuss/`. State mutations are serialized via a cross-process `mkdir`-based lock.
+The discuss MCP server manages moderated multi-agent discussion sessions. Sessions are stored as directories under `{project}/$CORAL_DATA/discuss/`. State mutations are serialized via a cross-process `mkdir`-based lock.
 
 Session IDs follow the format `yymmdd-HHmm-xxxx` (compact timestamp + 4-char random suffix). Legacy format `YYYYMMDD-HHmmss-xxxx` is also accepted.
 
