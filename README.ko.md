@@ -88,7 +88,7 @@ my-project/
 
 다양한 AI 페르소나가 각자의 관점에서 논쟁합니다.
 할 말이 있는 쪽이 먼저 발언하는 입찰 시스템. 상호 검증을 거치며 입장이 정제됩니다.
-최종 종합으로 마무리. 트랜스크립트는 `.claude/coral/discuss/`에 저장.
+최종 종합으로 마무리. 트랜스크립트는 `.coral/discuss/`에 저장.
 `--user`를 추가하면 직접 참여 가능: `/coral:discuss --user "topic"`, 이후 `/coral:bid`로 발언.
 
 예시: **"Am I AGI?"** — 전체 트랜스크립트 [EN](docs/examples/discuss-agi-en.md) · [KO](docs/examples/discuss-agi-ko.md)
@@ -171,12 +171,12 @@ Codex를 활용한 교차 모델 워크플로우:
 | `/coral:statusline` | HUD 상태줄 설정 | - |
 
 `선택` = Codex 없이 기본 동작; `--codex`를 전달하면 Codex CLI에 위임.
-계획은 `.claude/coral/plans/`에 저장. Ralph는 기존 계획의 구현에 최적.
+계획은 `.coral/plans/`에 저장. Ralph는 기존 계획의 구현에 최적.
 `/coral:bid`는 `/coral:discuss --user` 세션 전용 — 독립적으로 사용할 수 없습니다.
 
 ## 지식 베이스
 
-Coral은 프로젝트 로컬 지식 베이스를 `.claude/coral/kb/`에 유지합니다 —
+Coral은 프로젝트 로컬 지식 베이스를 `.coral/kb/`에 유지합니다 —
 git으로 추적되어 기기 간 동기화됩니다.
 
 Claude가 놓치기 쉬운 것을 발견하면 (근본 원인, 주의사항, 기억할 패턴) 즉시 메모를 작성합니다.

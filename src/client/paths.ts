@@ -44,7 +44,7 @@ export function discussProjectRootsPath(): string {
  * Returns the base directory that stores discuss sessions for a project.
  */
 export function discussBaseDir(projectRoot: string): string {
-  return join(projectRoot, '.claude', 'coral', 'discuss');
+  return join(projectRoot, '.coral', 'discuss');
 }
 
 /**

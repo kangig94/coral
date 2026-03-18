@@ -20,7 +20,7 @@ try {
   const event = input.hook_event_name;
   const sessionId = input.session_id;
   const projectDir = process.env.CLAUDE_PROJECT_DIR || '.';
-  const flagDir = join(projectDir, '.claude', 'coral', 'tmp');
+  const flagDir = join(projectDir, '.coral', 'tmp');
 
   // UserPromptSubmit: user typed /coral:ralph or /coral:bugfix directly
   if (event === 'UserPromptSubmit') {
@@ -50,18 +50,18 @@ try {
   }
 
   // Check for unprocessed memos (Stop + SessionStart compact)
-  const memoDir = join(projectDir, '.claude', 'coral', 'memo');
+  const memoDir = join(projectDir, '.coral', 'memo');
   if (!existsSync(memoDir)) process.exit(0);
 
   const memos = readdirSync(memoDir).filter(f => !f.startsWith('.'));
   const list = memos.join(', ');
-  const sessionKb = 'If you learned anything during this session that would be useful in future sessions, write it directly to .claude/coral/kb/.';
+  const sessionKb = 'If you learned anything during this session that would be useful in future sessions, write it directly to .coral/kb/.';
 
   if (event === 'Stop') {
     console.log(JSON.stringify({
       decision: 'block',
       reason: memos.length > 0
-        ? `Review each memo — promote to .claude/coral/kb/ only if useful across sessions. Delete all processed memos regardless of promotion. Also, ${sessionKb} Memos: ${list}`
+        ? `Review each memo — promote to .coral/kb/ only if useful across sessions. Delete all processed memos regardless of promotion. Also, ${sessionKb} Memos: ${list}`
         : `No memos to process, but ${sessionKb}`,
       systemMessage: memos.length > 0
         ? `📋 KB: promoting ${memos.length} memo(s)`

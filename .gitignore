@@ -4,5 +4,5 @@ dist/
 ref/
 
 # Coral (device-local files)
-.claude/coral/*
-!.claude/coral/kb/
+.coral/*
+!.coral/kb/

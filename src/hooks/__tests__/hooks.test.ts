@@ -85,7 +85,7 @@ function createFixture(): HookFixture {
     jobsDir: join(root, 'tmp-root', 'coral-jobs'),
     pluginRoot: join(root, 'plugin-root'),
     projectRoot: join(root, 'project-root'),
-    snapshotDir: join(root, 'project-root', '.claude', 'coral', 'tmp'),
+    snapshotDir: join(root, 'project-root', '.coral', 'tmp'),
   };
 
   createdRoots.push(root);

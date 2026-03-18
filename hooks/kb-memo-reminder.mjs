@@ -17,7 +17,7 @@ try {
   const sessionId = input.session_id;
   if (!sessionId) process.exit(0);
 
-  const flagDir = join(process.env.CLAUDE_PROJECT_DIR || '.', '.claude', 'coral', 'tmp');
+  const flagDir = join(process.env.CLAUDE_PROJECT_DIR || '.', '.coral', 'tmp');
   const flag = join(flagDir, `${FLAG_PREFIX}${sessionId}`);
 
   if (existsSync(flag)) {
@@ -31,7 +31,7 @@ try {
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',
-      additionalContext: 'Memo reminder: When you discover something non-obvious during this task (painful root cause, unexpected gotcha, clever solution), write immediately to .claude/coral/memo/<timestamp>-<topic>.md. Keep brief - one paragraph + context.',
+      additionalContext: 'Memo reminder: When you discover something non-obvious during this task (painful root cause, unexpected gotcha, clever solution), write immediately to .coral/memo/<timestamp>-<topic>.md. Keep brief - one paragraph + context.',
     },
   }));
 } catch {

@@ -15,7 +15,7 @@ try {
   const projectRoot = process.env.CLAUDE_PROJECT_DIR ?? input.cwd;
   if (!projectRoot) process.exit(0);
 
-  const snapshotDir = join(projectRoot, '.claude', 'coral', 'tmp');
+  const snapshotDir = join(projectRoot, '.coral', 'tmp');
   if (!existsSync(snapshotDir)) process.exit(0);
   if (!statSync(snapshotDir).isDirectory()) process.exit(0);
 

@@ -131,7 +131,7 @@ function createStateFile(projectDir, sessionId) {
 }
 
 function getStatePath(projectDir, sessionId) {
-  return join(projectDir, '.claude', 'coral', 'tmp', `ralph-state-${sessionId}.json`);
+  return join(projectDir, '.coral', 'tmp', `ralph-state-${sessionId}.json`);
 }
 
 function buildAdditionalContext(statePath) {
