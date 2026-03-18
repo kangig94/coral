@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 /**
- * UserPromptSubmit hook — migrates .claude/coral/ to .coral/ (one-time).
+ * Stop hook — migrates .claude/coral/ to .coral/ (one-time).
  * If .coral/ already exists, skips (migration already done).
- * If .claude/coral/ exists without .coral/, moves and notifies Claude.
+ * If .claude/coral/ exists without .coral/, moves and blocks stop to notify Claude.
  * Fail-open: any error exits silently.
  */
 
@@ -23,10 +23,9 @@ try {
   renameSync(oldDir, newDir);
 
   console.log(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'UserPromptSubmit',
-      additionalContext: 'Coral data migrated from .claude/coral/ to .coral/. Update .gitignore (.claude/coral/* → .coral/*) then commit both changes.',
-    },
+    decision: 'block',
+    reason: 'Coral data migrated from .claude/coral/ to .coral/. Update .gitignore (.claude/coral/* → .coral/*) then commit both changes.',
+    systemMessage: '📦 Coral: migrated .claude/coral/ → .coral/',
   }));
 } catch {
   process.exit(0);
