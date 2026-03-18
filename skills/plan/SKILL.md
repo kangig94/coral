@@ -144,12 +144,21 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
       **Changes Applied**: [what was edited, with rationale for each change]
 
     **4d. Exit Condition**
+
     **If `--deep`**: Read `CORAL_METHODS/HOW-COMPLETE.md` and apply its additional completion criteria alongside the rules below.
-    Evaluate based on what reviewers RETURNED this round — not your post-edit assessment. In `--deep` mode, resolver Adopt/Adapt does not downgrade the original severity:
-    - **Continue** (same phase): Either reviewer returned CRITICAL or HIGH → loop back to 4a **within the current phase** for re-verification. This holds even when the resolver has applied all fixes — the modifications themselves may introduce new issues.
-    - **Fix and pass** (exit phase): No CRITICAL/HIGH but MEDIUM/LOW exist → fixes applied, exit phase.
-    - **Clean pass** (exit phase): No findings above LOW (and HOW-COMPLETE satisfied, if `--deep`) → exit phase, proceed to next phase (or step 5 if last phase).
-    - **Max rounds (5)** (exit phase): Proceed to next phase using workflow with that phase's provider (or `AskUserQuestion` — continue, finalize, or abort — if last phase).
+
+    **Step 1 — Classify**: Scan the Round Summary table. Record `max_severity` = highest severity any reviewer returned this round. Use the severity AS RETURNED — never reclassify based on whether fixes were applied.
+
+    **Step 2 — Decide**:
+
+    | `max_severity` | Round | Verdict | Action |
+    |----------------|-------|---------|--------|
+    | CRITICAL or HIGH | < 5 | **Continue** | → 4a (same phase, next round) |
+    | CRITICAL or HIGH | = 5 | **Max rounds** | → next phase, or AskUserQuestion if last |
+    | MEDIUM or LOW | any | **Fix and pass** | → exit phase |
+    | ≤ LOW only | any | **Clean pass** | → exit phase (+ HOW-COMPLETE if `--deep`) |
+
+    > **Hard rule**: a resolved/fixed HIGH is still HIGH for this decision. Fixes may introduce new issues — re-verification catches them. Never downgrade `max_severity` based on post-round edits.
 
     ### 4e. Execution Order
 
