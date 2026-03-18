@@ -10,6 +10,7 @@
  */
 
 import { existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const FLAG_PREFIX = 'kb-active-';
@@ -20,7 +21,8 @@ try {
   const event = input.hook_event_name;
   const sessionId = input.session_id;
   const projectDir = process.env.CLAUDE_PROJECT_DIR || '.';
-  const flagDir = join(projectDir, '.coral', 'tmp');
+  const projectSlug = projectDir.replace(/\//g, '-');
+  const flagDir = join(tmpdir(), 'coral', projectSlug);
 
   // UserPromptSubmit: user typed /coral:ralph or /coral:bugfix directly
   if (event === 'UserPromptSubmit') {

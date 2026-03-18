@@ -7,6 +7,7 @@
  */
 
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const THROTTLE_MIN = 30;
@@ -17,7 +18,9 @@ try {
   const sessionId = input.session_id;
   if (!sessionId) process.exit(0);
 
-  const flagDir = join(process.env.CLAUDE_PROJECT_DIR || '.', '.coral', 'tmp');
+  const projectDir = process.env.CLAUDE_PROJECT_DIR || '.';
+  const projectSlug = projectDir.replace(/\//g, '-');
+  const flagDir = join(tmpdir(), 'coral', projectSlug);
   const flag = join(flagDir, `${FLAG_PREFIX}${sessionId}`);
 
   if (existsSync(flag)) {

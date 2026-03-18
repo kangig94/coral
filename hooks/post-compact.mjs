@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const JOBS_DIR = join(tmpdir(), 'coral-jobs');
 const LIVE_PHASES = new Set(['queued', 'launching', 'running']);
@@ -15,7 +15,8 @@ try {
   const projectRoot = process.env.CLAUDE_PROJECT_DIR ?? input.cwd;
   if (!projectRoot) process.exit(0);
 
-  const snapshotDir = join(projectRoot, '.coral', 'tmp');
+  const projectSlug = projectRoot.replace(/\//g, '-');
+  const snapshotDir = join(tmpdir(), 'coral', projectSlug);
   if (!existsSync(snapshotDir)) process.exit(0);
   if (!statSync(snapshotDir).isDirectory()) process.exit(0);
 

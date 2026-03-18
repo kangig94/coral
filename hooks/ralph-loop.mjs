@@ -12,7 +12,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
 const DEFAULT_STATE = {
@@ -131,7 +131,8 @@ function createStateFile(projectDir, sessionId) {
 }
 
 function getStatePath(projectDir, sessionId) {
-  return join(projectDir, '.coral', 'tmp', `ralph-state-${sessionId}.json`);
+  const projectSlug = projectDir.replace(/\//g, '-');
+  return join(tmpdir(), 'coral', projectSlug, `ralph-state-${sessionId}.json`);
 }
 
 function buildAdditionalContext(statePath) {

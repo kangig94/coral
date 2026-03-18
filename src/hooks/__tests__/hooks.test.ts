@@ -8,8 +8,8 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const SESSION_START_HOOK = join(process.cwd(), 'hooks', 'session-start.mjs');
@@ -79,17 +79,20 @@ afterEach(() => {
 
 function createFixture(): HookFixture {
   const root = mkdtempSync(join(tmpdir(), 'coral-hooks-'));
+  const tmpRoot = join(root, 'tmp-root');
+  const projectRoot = join(root, 'project-root');
+  const projectSlug = projectRoot.replace(/\//g, '-');
   const fixture = {
     root,
-    tmpRoot: join(root, 'tmp-root'),
-    jobsDir: join(root, 'tmp-root', 'coral-jobs'),
+    tmpRoot,
+    jobsDir: join(tmpRoot, 'coral-jobs'),
     pluginRoot: join(root, 'plugin-root'),
-    projectRoot: join(root, 'project-root'),
-    snapshotDir: join(root, 'project-root', '.coral', 'tmp'),
+    projectRoot,
+    snapshotDir: join(tmpRoot, 'coral', projectSlug),
   };
 
   createdRoots.push(root);
-  mkdirSync(fixture.tmpRoot, { recursive: true });
+  mkdirSync(tmpRoot, { recursive: true });
   return fixture;
 }
 
