@@ -48,7 +48,7 @@ try {
 
   console.log(JSON.stringify({
     decision: 'block',
-    reason: 'Coral data migrated: .claude/coral/kb/ → .kb/ (git-tracked). Other data moved to plugin storage. Add .kb/ to version control and remove .claude/coral/ from .gitignore if present.',
+    reason: 'Coral data migrated: .claude/coral/kb/ → .kb/ (git-tracked). Other data moved to plugin storage. Add .claude/coral (symlink) to .gitignore.',
     systemMessage: '📦 Coral: migrated .claude/coral/ → .kb/ + plugin data',
   }));
 } catch {
