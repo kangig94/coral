@@ -25,7 +25,7 @@ argument-hint: "[--codex] [investigation target or question]"
 <Protocol>
   ## Phase 1 — Create Analysis File
 
-  Write `$CORAL_DATA/analysis/{YYYY-MM-DD}-{topic}.md` with header:
+  Write `.coral/analysis/{YYYY-MM-DD}-{topic}.md` with header:
   ```markdown
   # Analysis: {topic}
   Date: {YYYY-MM-DD}

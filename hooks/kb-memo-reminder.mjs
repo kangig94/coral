@@ -21,7 +21,6 @@ try {
   const projectDir = process.env.CLAUDE_PROJECT_DIR || '.';
   const projectSlug = projectDir.replace(/\//g, '-');
   const flagDir = join(tmpdir(), 'coral', projectSlug);
-  const pluginData = process.env.CLAUDE_PLUGIN_DATA || join(process.env.HOME || '', '.claude', 'plugins', 'data', 'coral-coral');
   const flag = join(flagDir, `${FLAG_PREFIX}${sessionId}`);
 
   if (existsSync(flag)) {
@@ -32,12 +31,11 @@ try {
   mkdirSync(flagDir, { recursive: true });
   writeFileSync(flag, '');
 
+  const memoDir = join(projectDir, '.coral', 'memo');
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',
-      additionalContext: pluginData
-        ? `Memo reminder: When you discover something non-obvious during this task (painful root cause, unexpected gotcha, clever solution), write immediately to ${join(pluginData, 'projects', projectSlug, 'memo')}/<timestamp>-<topic>.md. Keep brief - one paragraph + context.`
-        : 'Memo reminder: When you discover something non-obvious during this task, write a memo. Keep brief - one paragraph + context.',
+      additionalContext: `Memo reminder: When you discover something non-obvious during this task (painful root cause, unexpected gotcha, clever solution), write immediately to ${memoDir}/<timestamp>-<topic>.md. Keep brief - one paragraph + context.`,
     },
   }));
 } catch {

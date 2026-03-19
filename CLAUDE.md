@@ -70,12 +70,11 @@ For multi-step tasks, state a brief plan:
 
 ## Memo
 On non-obvious discovery during any phase (review, planning, implementation), write immediately to:
-`~/.claude/plugins/data/coral-coral/projects/<project-slug>/memo/<timestamp>-<topic>.md` — one paragraph + context.
-(`<project-slug>` = project dir path with `/` replaced by `-`)
+`.coral/memo/<timestamp>-<topic>.md` — one paragraph + context.
 Also memo Insights worth preserving when Explanatory output style is active.
 
 ## Lookup
-Before debugging from scratch, check `.kb/`. On plan start, review domain-related kb files.
+Before debugging from scratch, check `.coral/kb/`. On plan start, review domain-related kb files.
 
 ## Promotion
 **Who**: top-level orchestrator only, after all work completes (not implementation — after review too).
@@ -83,7 +82,7 @@ Subagents and delegated tasks only write memos, never promote.
 
 **Process**: review all memos, check existing kb entries — discard duplicates, update existing, create only for genuinely absent knowledge. Delete processed memos.
 
-**Format** — `.kb/<domain>-<topic>.md`:
+**Format** — `.coral/kb/<domain>-<topic>.md`:
 
     # <Title>
     Promoted: <YYYY-MM-DD> | Updated: <YYYY-MM-DD>

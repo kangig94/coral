@@ -84,7 +84,7 @@ See [Hooks documentation](./hooks.md) for details.
 
 ### Discuss Session Directories
 
-**Location**: `{project}/$CORAL_DATA/discuss/{session_dir}/`
+**Location**: `{project}/.coral/discuss/{session_dir}/`
 
 **Session ID format**: `yymmdd-HHmm-xxxx` (compact timestamp + 4-char random suffix)
 
@@ -139,7 +139,7 @@ hooks/hud-auto-update.mjs    -> SessionStart HUD auto-update hook
 ~/.claude/coral/backend.json                    -> Runtime backend connection info (auto-created)
 ~/.claude/coral/backend.lock                    -> Runtime backend singleton lock (auto-created)
 /tmp/coral-jobs/<jobId>/                        -> Runtime job directories (temporary)
-{project}/$CORAL_DATA/discuss/<session-dir>/  -> Runtime discuss session dirs (auto-created)
+{project}/.coral/discuss/<session-dir>/  -> Runtime discuss session dirs (auto-created)
 
 bridge/coral-ax.cjs      -> Unified AX MCP server bundle (codex + claude + wait + abort + workflow + discuss + backend, committed)
 bridge/coral-backend.cjs  -> HTTP backend daemon bundle (committed)
