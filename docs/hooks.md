@@ -11,7 +11,7 @@ Claude Code's hook system executes scripts on specific events. Coral uses hooks 
 2. **SessionStart** (`compact`) - After context compaction, reminds about KB promotion
 3. **UserPromptSubmit** - Creates session-scoped KB flag for `/coral:ralph`|`/coral:bugfix`, creates ralph loop state for `/coral:ralph`|`/ralph`, and periodically reminds about memo writing
 4. **PreToolUse** (`Skill`) - Creates session-scoped KB flag when Claude calls Skill("coral:ralph"|"coral:bugfix"), and creates ralph loop state when Claude calls Skill("coral:ralph")
-5. **PostToolUseFailure** (`*`) - On any non-zero tool exit, reminds Claude to check `.kb/` before debugging
+5. **PostToolUseFailure** (`*`) - On any non-zero tool exit, reminds Claude to check `.coral/kb/` before debugging
 6. **PostToolUse** (`Bash`) - Detects silent failures in command output when exit codes are masked and injects the same KB lookup reminder context
 7. **Stop** - Enforces KB promotion for unprocessed memos and drives prompt-mode ralph loop iteration
 8. **TeammateIdle** (`dc-*`) - Blocks idle when discuss agents have pending actions (bid/speak/vote)
@@ -58,7 +58,7 @@ Script: `hooks/hud-auto-update.mjs`. Fires at session start (matcher: `*`, timeo
 
 Fires after context compaction (matcher: `compact`).
 
-**Script: `hooks/kb-promote-gate.mjs`** — Checks for unprocessed memos in `$CLAUDE_PLUGIN_DATA/projects/<slug>/memo/`. Injects `hookSpecificOutput` with `additionalContext` reminding about KB promotion.
+**Script: `hooks/kb-promote-gate.mjs`** — Checks for unprocessed memos in `.coral/memo/`. Injects `hookSpecificOutput` with `additionalContext` reminding about KB promotion.
 
 **Purpose**: After compaction the model loses prior context. This hook restores KB promotion reminders so work continues seamlessly.
 
@@ -78,7 +78,7 @@ Script: `hooks/kb-memo-reminder.mjs`. Injects `additionalContext` reminding Clau
 
 Script: `hooks/kb-lookup-reminder.mjs`. Handles two events in one script:
 
-- **PostToolUseFailure** (`*`) — On any tool failure, immediately reminds Claude to check `.kb/`.
+- **PostToolUseFailure** (`*`) — On any tool failure, immediately reminds Claude to check `.coral/kb/`.
 - **PostToolUse** (`Bash`) — On successful Bash executions (exit 0), detects silent failures via two-stage filter: first checks for exit-code-masking constructs (`| tee`, `|| true`, `|| :`), then regex-matches output for failure patterns (`Failed to build`, `BUILD FAILED`, `Traceback`, `npm ERR!`, `^error[E...]`).
 
 The two events are complementary — `PostToolUseFailure` covers non-zero exits, `PostToolUse` covers silent failures with zero exits. They never overlap on the same tool execution.

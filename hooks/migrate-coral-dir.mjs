@@ -1,55 +1,30 @@
 #!/usr/bin/env node
 
 /**
- * Stop hook — migrates .claude/coral/ data (one-time).
- * - .claude/coral/kb/ → .kb/ (project root, git-tracked)
- * - .claude/coral/{memo,plans,analysis,discuss} → ${CLAUDE_PLUGIN_DATA}/projects/<slug>/
- * If .kb/ already exists, skips (migration already done).
+ * Stop hook — migrates .claude/coral/ to .coral/ (one-time).
+ * If .coral/ already exists, skips (migration already done).
+ * If .claude/coral/ exists without .coral/, renames and notifies Claude.
  * Fail-open: any error exits silently.
  */
 
-import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 
 try {
   const input = JSON.parse((await readStdin()) || '{}');
   const projectDir = process.env.CLAUDE_PROJECT_DIR ?? input.cwd ?? '.';
-  const pluginData = process.env.CLAUDE_PLUGIN_DATA || join(process.env.HOME || '', '.claude', 'plugins', 'data', 'coral-coral');
   const oldDir = join(projectDir, '.claude', 'coral');
-  const kbTarget = join(projectDir, '.kb');
+  const newDir = join(projectDir, '.coral');
 
-  // Already migrated or nothing to migrate
-  if (existsSync(kbTarget)) process.exit(0);
+  if (existsSync(newDir)) process.exit(0);
   if (!existsSync(oldDir)) process.exit(0);
 
-  // Migrate kb/ → .kb/
-  const oldKb = join(oldDir, 'kb');
-  if (existsSync(oldKb)) {
-    renameSync(oldKb, kbTarget);
-  }
-
-  // Migrate memo, plans, analysis, discuss → plugin data
-  const projectSlug = projectDir.replace(/\//g, '-');
-  const dataDir = join(pluginData, 'projects', projectSlug);
-  for (const sub of ['memo', 'plans', 'analysis', 'discuss']) {
-    const src = join(oldDir, sub);
-    if (!existsSync(src)) continue;
-    const dest = join(dataDir, sub);
-    mkdirSync(dest, { recursive: true });
-    cpSync(src, dest, { recursive: true });
-    rmSync(src, { recursive: true, force: true });
-  }
-
-  // Clean up empty .claude/coral/ if possible
-  try {
-    const remaining = readdirSync(oldDir);
-    if (remaining.length === 0) rmSync(oldDir, { recursive: true });
-  } catch { /* ignore */ }
+  renameSync(oldDir, newDir);
 
   console.log(JSON.stringify({
     decision: 'block',
-    reason: 'Coral data migrated: .claude/coral/kb/ → .kb/ (git-tracked). Other data moved to plugin storage. Add .claude/coral (symlink) to .gitignore.',
-    systemMessage: '📦 Coral: migrated .claude/coral/ → .kb/ + plugin data',
+    reason: 'Coral data migrated from .claude/coral/ to .coral/. Update .gitignore if needed.',
+    systemMessage: '📦 Coral: migrated .claude/coral/ → .coral/',
   }));
 } catch {
   process.exit(0);

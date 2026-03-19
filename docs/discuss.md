@@ -57,7 +57,7 @@ The reducer preserves the same bidding rules as before: thresholded primary pool
 Per-project storage is under:
 
 ```text
-{project}/$CORAL_DATA/discuss/
+{project}/.coral/discuss/
 ├── discovery.json
 └── <session-id>/
     ├── event-log.jsonl

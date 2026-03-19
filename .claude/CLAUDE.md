@@ -39,9 +39,9 @@ Good code guides readers naturally — structure reveals intent without requirin
 
 ## Workflow
 
-**Before**: Read `docs/architecture.md` and `docs/core-modules.md` for the module being modified. Check `.kb/` for existing knowledge. Identify mandatory consultations from matrix in `.claude/rules/agents.md`.
+**Before**: Read `docs/architecture.md` and `docs/core-modules.md` for the module being modified. Check `.coral/kb/` for existing knowledge. Identify mandatory consultations from matrix in `.claude/rules/agents.md`.
 
-**During**: Invoke domain agents per consultation matrix. On errors, check `.kb/` before debugging from scratch.
+**During**: Invoke domain agents per consultation matrix. On errors, check `.coral/kb/` before debugging from scratch.
 
 **After Implementation** (strict order, fail-fast by cost):
 
@@ -51,5 +51,5 @@ Good code guides readers naturally — structure reveals intent without requirin
 2. **Review Gate** - invoke `Skill(tier-review)`. BLOCKING items must pass before build.
 3. **Build** - `npm run build` (tsc + esbuild, must pass clean)
 4. **Test** - `npm test` (vitest, all tests must pass and all errors must be zero. Never assume errors are "pre-existing" without tracing the stack and verifying the affected code was not modified.)
-5. **KB update** - review work for `.kb/` promotion if non-obvious lessons were learned
+5. **KB update** - review work for `.coral/kb/` promotion if non-obvious lessons were learned
 6. **Commit** - stage and commit all changes including KB files (KB update precedes commit so kb/ changes are part of the same commit)

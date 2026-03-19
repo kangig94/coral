@@ -35,7 +35,7 @@
 │  │ Uses BackendClient + streamWait/lifecycle bridge helpers    │ │        │
 │  └──────────────────────────────┬──────────────────────────────┘ │        │
 │                                 │                                │        │
-│  Persisted discuss data: {project}/$CORAL_DATA/discuss/        │        │
+│  Persisted discuss data: {project}/.coral/discuss/        │        │
 │    discovery.json + <session-id>/{event-log.jsonl,state.json}    │        │
 │                                 │                                │        │
 │                                 │                                │        │
@@ -57,7 +57,7 @@
 │  ├── Idle auto-shutdown (CORAL_BACKEND_IDLE_MS, default 6h)               │
 │  ├── Job storage       (/tmp/coral-jobs/<jobId>/)                         │
 │  ├── Session storage   (~/.claude/coral/sessions/)                        │
-│  ├── Discuss storage   {project}/$CORAL_DATA/discuss/                   │
+│  ├── Discuss storage   {project}/.coral/discuss/                   │
 │  └── Routes:                                                              │
 │      GET  /health         → version, instanceId, uptime                   │
 │      GET  /tools          → tool descriptors for MCP ListTools            │
@@ -370,7 +370,7 @@ Each file is a single `SessionEntry`. Corrupt files are skipped with a warning; 
 ### 9. Session Storage Layout (Discuss)
 
 ```
-{project}/$CORAL_DATA/discuss/
+{project}/.coral/discuss/
 ├── discovery.json                  # Per-project discuss index
 └── <session-id>/
     ├── event-log.jsonl             # Canonical append-only event stream
@@ -382,16 +382,19 @@ Each file is a single `SessionEntry`. Corrupt files are skipped with a warning; 
 ### 10. Knowledge Base Storage
 
 ```
-{project}/.kb/          # Git-tracked (multi-device sync)
-├── domain-topic.md
-└── ...
-
-{project}/$CORAL_DATA/memo/        # Gitignored (ephemeral buffer before promotion)
-└── <timestamp>-<topic>.md
+{project}/.coral/
+├── kb/                             # Git-tracked (multi-device sync)
+│   ├── domain-topic.md
+│   └── ...
+├── memo/                           # Gitignored (ephemeral buffer before promotion)
+│   └── <timestamp>-<topic>.md
+├── plans/                          # Gitignored
+├── analysis/                       # Gitignored
+└── discuss/                        # Gitignored
 ```
 
-- **KB** is project-local and git-tracked for cross-device sync
-- **Memo** is project-local and gitignored (ephemeral buffer)
+- **KB** (`.coral/kb/`) is project-local and git-tracked for cross-device sync
+- Everything else in `.coral/` is gitignored (ephemeral working data)
 - Promotion: memo → kb (on task completion or plan approval)
 
 ## Directory Structure

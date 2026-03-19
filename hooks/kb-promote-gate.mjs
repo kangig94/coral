@@ -52,19 +52,18 @@ try {
   }
 
   // Check for unprocessed memos (Stop + SessionStart compact)
-  const pluginData = process.env.CLAUDE_PLUGIN_DATA || join(process.env.HOME || '', '.claude', 'plugins', 'data', 'coral-coral');
-  const memoDir = join(pluginData, 'projects', projectSlug, 'memo');
+  const memoDir = join(projectDir, '.coral', 'memo');
   if (!existsSync(memoDir)) process.exit(0);
 
   const memos = readdirSync(memoDir).filter(f => !f.startsWith('.'));
   const list = memos.join(', ');
-  const sessionKb = 'If you learned anything during this session that would be useful in future sessions, write it directly to .kb/.';
+  const sessionKb = 'If you learned anything during this session that would be useful in future sessions, write it directly to .coral/kb/.';
 
   if (event === 'Stop') {
     console.log(JSON.stringify({
       decision: 'block',
       reason: memos.length > 0
-        ? `Review each memo — promote to .kb/ only if useful across sessions. Delete all processed memos regardless of promotion. Also, ${sessionKb} Memos: ${list}`
+        ? `Review each memo — promote to .coral/kb/ only if useful across sessions. Delete all processed memos regardless of promotion. Also, ${sessionKb} Memos: ${list}`
         : `No memos to process, but ${sessionKb}`,
       systemMessage: memos.length > 0
         ? `📋 KB: promoting ${memos.length} memo(s)`
@@ -76,7 +75,7 @@ try {
         hookEventName: 'SessionStart',
         additionalContext: memos.length > 0
           ? `KB promotion reminder: promote only if useful across sessions. Also, ${sessionKb} Memos: ${list}`
-          : `KB reminder: ${sessionKb}`,
+          : sessionKb,
       },
     }));
   }
