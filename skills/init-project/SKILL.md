@@ -4,7 +4,7 @@ description: "Use when setting up a new or existing project for AI-assisted deve
 argument-hint: "[existing|new]"
 ---
 
-> **CORAL_SKILLS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/skills/")`
+> **CORAL_PROJECT**: !`url=$(git remote get-url origin 2>/dev/null) && echo ~/.coral/projects/$(echo "$url" | sed -E 's#.*[:/]([^/]+/[^/.]+)(\.git)?$#\1#' | tr '/' '-') || echo ~/.coral/projects/local-$(basename $PWD)`
 
 # Project Initialization
 
@@ -98,7 +98,6 @@ argument-hint: "[existing|new]"
 
   ### 1f. Load References
 
-  Read from this plugin's skill directory (`CORAL_SKILLS/init-project/`):
   1. Domain references: `references/{domain}.md` for each detected domain
   2. Writing guide: `references/writing-guide.md`
   3. Merge policy: `references/merge-policy.md`
@@ -137,7 +136,7 @@ argument-hint: "[existing|new]"
            conventions, patterns, and principles. Not endpoint catalogs or table definitions.
        * For new projects, mark uncertain sections with "to be updated" per writing-guide.
 
-  **Evidence gate**: Phase 2 is complete ONLY when a plan file exists at `.coral/plans/init-*.md`.
+  **Evidence gate**: Phase 2 is complete ONLY when a plan file exists at `CORAL_PROJECT/plans/init-*.md`.
   If no file exists on disk, Phase 2 did not execute correctly.
 
   ## Phase 3: Execute
@@ -161,7 +160,7 @@ argument-hint: "[existing|new]"
 
   **Write rules**:
   - **All `.claude/` files** (new and enhanced): Write to `$STAGING/.claude/...`. For enhanced files, first `cp` the existing file into staging, then Edit there.
-  - **`.coral/` files** (kb, plans, analysis): Write directly (not auto-loaded)
+  - **`CORAL_PROJECT/` working files** (plans, analysis): Write directly (not auto-loaded)
   - **`docs/` files** (new and enhanced): Write directly (not auto-loaded)
 
   ### 3b. Generate Artifacts
@@ -246,7 +245,7 @@ argument-hint: "[existing|new]"
 
   | Category | File | Condition | Content Check |
   |----------|------|-----------|---------------|
-  | Analysis | `.coral/analysis/*-init-*.md` | If existing project | Scan Report section present |
+  | Analysis | `CORAL_PROJECT/analysis/*-init-*.md` | If existing project | Scan Report section present |
   | Hub | `.claude/CLAUDE.md` | Must exist (created or pre-existing) | Quality principle line present |
   | Rules | `.claude/rules/agents.md` | Must exist | - |
   | Rules | `.claude/rules/design-philosophy.md` | Must exist | - |
@@ -262,9 +261,6 @@ argument-hint: "[existing|new]"
   | Docs | `docs/ARCHITECTURE.md` | If generated | Layer diagram present |
   | Docs | `docs/DEV_GUIDE.md` | If generated | Exact build/test commands |
   | Docs | `docs/{domain-specific}.md` | Per domain reference Recommended Docs | Architecture-level content, not catalogs |
-  | KB | `.coral/kb/` | Directory must exist | - |
-  | Git | `.gitignore` contains Coral block | Must contain `# Coral` | - |
-
   If any required file is missing or fails its content check, report it as an error.
 </Output_Manifest>
 <Constraints>

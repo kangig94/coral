@@ -4,7 +4,8 @@ description: "Use when implementing a plan or executing a prompt that requires v
 argument-hint: "[--red] [--codex] [--team] [task description]"
 ---
 
-> **CORAL_AGENTS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/agents/")`
+> **CORAL_AGENTS**: !`echo ~/.claude/plugins/cache/coral/coral/*/agents/`
+> **CORAL_PROJECT**: !`url=$(git remote get-url origin 2>/dev/null) && echo ~/.coral/projects/$(echo "$url" | sed -E 's#.*[:/]([^/]+/[^/.]+)(\.git)?$#\1#' | tr '/' '-') || echo ~/.coral/projects/local-$(basename $PWD)`
 
 # Persistent Execution with Verification
 
@@ -52,7 +53,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
 
     ### Step 1 — Mode Detection
 
-    **Plan mode**: plan file path in context, `## Acceptance Criteria` present, or invoked by plan/bugfix/init-project handoff.
+    **Plan mode**: plan file path in context (typically `CORAL_PROJECT/plans/{topic}.md`), `## Acceptance Criteria` present, or invoked by plan/bugfix/init-project handoff.
     → Write `"{flags} implement {plan file path} — all ACs must pass"` to state file prompt.
 
     **Prompt mode**: everything else.

@@ -120,7 +120,7 @@ Type definitions for backend request routing: `CallerContext { projectRoot, plug
 
 ### src/execution/discuss-session-store.ts - Event-Sourced Discuss Persistence
 
-Persistent store for discuss sessions. Owns compare-and-append writes to `event-log.jsonl`, snapshot materialization to `state.json`, project discovery updates, and project-root registry updates. Key methods: `load(sessionId)`, `append(sessionId, expectedSeq, events)`, `listSummaries()`, `listRecoveryCandidates()`, and `resolveSessionDir(sessionId)`. Imports from `client/readers.ts`, `client/paths.ts`, `client/discuss.ts`, and `discuss/reducer.ts`; it is the only place that knows the write ordering for discuss durability. See `src/execution/discuss-session-store.ts`.
+Persistent store for discuss sessions. Owns compare-and-append writes to `event-log.jsonl`, snapshot materialization to `state.json`, source-scoped discovery/index updates under `~/.coral/projects/{slug}/discuss/`, and shared source-registry updates at `~/.coral/discuss-sources.json`. Key methods: `load(sessionId)`, `append(sessionId, expectedSeq, events)`, `listSummaries()`, `listRecoveryCandidates()`, and `resolveSessionDir(sessionId)`. Imports from `client/readers.ts`, `client/paths.ts`, `client/discuss.ts`, and `discuss/reducer.ts`; it is the only place that knows the write ordering for discuss durability. See `src/execution/discuss-session-store.ts`.
 
 ---
 
@@ -259,7 +259,7 @@ Codex `Provider` implementation. `preflight()` probes CLI availability and auth 
 Codex-specific execution wrapper over `execution/engine.ts`:
 - builds Codex CLI args (`exec`, `resume`, `fork`)
 - parses JSONL events through `output-parser.ts`
-- prepends plugin `CLAUDE.md` for one-shot sessions
+- prepends plugin `INJECT.md` for one-shot sessions
 
 ### src/providers/codex/schemas.ts / cli-detection.ts / output-parser.ts / progress.ts / command-patterns.ts / types.ts
 

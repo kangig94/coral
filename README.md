@@ -91,7 +91,7 @@ Look familiar? Browse this repository's [`.claude/`](.claude/) folder.
 Multiple AI personas argue from different angles.
 Bid-based turn-taking surfaces the most urgent responses first.
 Positions evolve through genuine cross-examination.
-Structured synthesis at the end. Transcripts saved to `.coral/discuss/`.
+Structured synthesis at the end. Transcripts saved under `~/.coral/projects/{slug}/discuss/`.
 Add `--user` to join as a participant: `/coral:discuss --user "topic"`, then `/coral:bid` to submit your turns.
 
 Example: **"Am I AGI?"** — Full transcript [EN](docs/examples/discuss-agi-en.md) · [KO](docs/examples/discuss-agi-ko.md)
@@ -176,13 +176,13 @@ Consecutive `/coral:codex` calls continue the same session. Say "new" to start f
 | `/coral:statusline` | HUD statusline setup | - |
 
 `Optional` = works without Codex by default; pass `--codex` to delegate to Codex CLI.
-Plans are saved to `.coral/plans/`. Ralph is best for implementing an existing plan.
+Plans are saved under `~/.coral/projects/{slug}/plans/`. Ralph is best for implementing an existing plan.
 `/coral:bid` is a companion to `/coral:discuss --user` — it is not usable independently.
 
 ## Knowledge Base
 
-Coral maintains a project-local knowledge base at `.coral/kb/` -
-git-tracked, so it syncs across devices.
+Coral keeps a shared knowledge base at `~/.coral/kb/` (notes and principles) and project-scoped
+working data under `~/.coral/projects/{slug}/` for memos, plans, analysis, and discuss sessions.
 
 When Claude discovers something non-obvious (a root cause, a gotcha, a pattern worth remembering),
 it writes a memo immediately. On errors, it checks the KB before debugging from scratch.

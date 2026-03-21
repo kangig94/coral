@@ -6,9 +6,10 @@
  * Fail-open: any error exits silently.
  */
 
+import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
 
 const THROTTLE_MIN = 30;
 const FLAG_PREFIX = 'memo-reminded-';
@@ -31,7 +32,7 @@ try {
   mkdirSync(flagDir, { recursive: true });
   writeFileSync(flag, '');
 
-  const memoDir = join(projectDir, '.coral', 'memo');
+  const memoDir = join(coralProjectDir(projectDir), 'memo');
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',
@@ -40,6 +41,27 @@ try {
   }));
 } catch {
   process.exit(0);
+}
+
+function resolveProjectSource(projectDir) {
+  try {
+    const remote = execSync('git remote get-url origin', {
+      cwd: projectDir,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim().replace(/\.git$/, '');
+    const sshPath = remote.match(/^[^@]+@[^:]+:(.+)$/)?.[1];
+    const rawPath = sshPath ?? remote.replace(/^[^:]+:\/\//, '').replace(/^[^@/]+@/, '').replace(/^[^/]+\/+/, '');
+    const segments = rawPath.split('/').filter(Boolean);
+    if (segments.length >= 2) return `${segments.at(-2)}/${segments.at(-1)}`;
+  } catch {
+    // fall through
+  }
+  return `local/${basename(projectDir)}`;
+}
+
+function coralProjectDir(projectDir) {
+  return join(homedir(), '.coral', 'projects', resolveProjectSource(projectDir).replace(/\//g, '-'));
 }
 
 function readStdin() {

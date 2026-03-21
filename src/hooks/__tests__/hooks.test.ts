@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -9,12 +9,16 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const SESSION_START_HOOK = join(process.cwd(), 'hooks', 'session-start.mjs');
+const KB_MEMO_REMINDER_HOOK = join(process.cwd(), 'hooks', 'kb-memo-reminder.mjs');
+const KB_PROMOTE_GATE_HOOK = join(process.cwd(), 'hooks', 'kb-promote-gate.mjs');
+const KB_LOOKUP_REMINDER_HOOK = join(process.cwd(), 'hooks', 'kb-lookup-reminder.mjs');
 const PRE_COMPACT_HOOK = join(process.cwd(), 'hooks', 'pre-compact.mjs');
 const POST_COMPACT_HOOK = join(process.cwd(), 'hooks', 'post-compact.mjs');
+const HOOKS_JSON_PATH = join(process.cwd(), 'hooks', 'hooks.json');
 
 const createdRoots: string[] = [];
 
@@ -29,6 +33,12 @@ interface HookOutput {
     hookEventName: string;
     additionalContext: string;
   };
+}
+
+interface StopHookOutput {
+  decision: string;
+  reason: string;
+  systemMessage: string;
 }
 
 interface JobStatus {
@@ -93,6 +103,7 @@ function createFixture(): HookFixture {
 
   createdRoots.push(root);
   mkdirSync(tmpRoot, { recursive: true });
+  mkdirSync(projectRoot, { recursive: true });
   return fixture;
 }
 
@@ -149,6 +160,17 @@ function parseHookOutput(stdout: string): HookOutput | null {
   }
 }
 
+function parseJsonOutput<T>(stdout: string): T | null {
+  const trimmed = stdout.trim();
+  if (trimmed === '') return null;
+
+  try {
+    return JSON.parse(trimmed) as T;
+  } catch {
+    return null;
+  }
+}
+
 function expectHookOutput(result: HookRunResult): HookOutput {
   const output = parseHookOutput(result.stdout);
   if (output == null) {
@@ -158,9 +180,32 @@ function expectHookOutput(result: HookRunResult): HookOutput {
   return output;
 }
 
-function writeClaudeMd(pluginRoot: string, content: string): void {
+function expectStopOutput(result: HookRunResult): StopHookOutput {
+  const output = parseJsonOutput<Partial<StopHookOutput>>(result.stdout);
+  if (
+    output == null
+    || typeof output.decision !== 'string'
+    || typeof output.reason !== 'string'
+    || typeof output.systemMessage !== 'string'
+  ) {
+    throw new Error(`Expected stop-hook JSON, received stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`);
+  }
+
+  return output as StopHookOutput;
+}
+
+function writeInjectMd(pluginRoot: string, content: string): void {
   mkdirSync(pluginRoot, { recursive: true });
-  writeFileSync(join(pluginRoot, 'CLAUDE.md'), content, 'utf-8');
+  writeFileSync(join(pluginRoot, 'INJECT.md'), content, 'utf-8');
+}
+
+function initGitRepo(projectRoot: string, remote: string): void {
+  execFileSync('git', ['init', '-q'], { cwd: projectRoot, stdio: 'ignore' });
+  execFileSync('git', ['remote', 'add', 'origin', remote], { cwd: projectRoot, stdio: 'ignore' });
+}
+
+function coralProjectDir(homeDir: string, source: string): string {
+  return join(homeDir, '.coral', 'projects', source.replace(/\//g, '-'));
 }
 
 function writeStatus(jobsDir: string, status: JobStatus): void {
@@ -203,10 +248,10 @@ function listSnapshots(snapshotDir: string): string[] {
 }
 
 describe('session-start.mjs', () => {
-  it('outputs CLAUDE.md with session_id when both provided', () => {
+  it('outputs INJECT.md with session_id when both provided', () => {
     const fixture = createFixture();
-    const claudeMd = 'Project instructions\nSecond line';
-    writeClaudeMd(fixture.pluginRoot, claudeMd);
+    const injectMd = 'Project instructions\nSecond line';
+    writeInjectMd(fixture.pluginRoot, injectMd);
 
     const result = runHook(
       SESSION_START_HOOK,
@@ -219,13 +264,34 @@ describe('session-start.mjs', () => {
     const output = expectHookOutput(result);
     expect(output.hookSpecificOutput.hookEventName).toBe('SessionStart');
     expect(output.hookSpecificOutput.additionalContext.startsWith('SessionStart:session_id=sess-123\n\n')).toBe(true);
-    expect(output.hookSpecificOutput.additionalContext).toContain(claudeMd);
+    expect(output.hookSpecificOutput.additionalContext).toContain(injectMd);
   });
 
-  it('outputs CLAUDE.md only when no session_id', () => {
+  it('replaces {{CORAL_PROJECTS}} with the source-derived global project dir', () => {
     const fixture = createFixture();
-    const claudeMd = 'Only CLAUDE content';
-    writeClaudeMd(fixture.pluginRoot, claudeMd);
+    initGitRepo(fixture.projectRoot, 'https://token@github.com/acme/my.repo.git');
+    writeInjectMd(fixture.pluginRoot, 'Memo dir: {{CORAL_PROJECTS}}/memo');
+
+    const result = runHook(
+      SESSION_START_HOOK,
+      { session_id: 'sess-123' },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        HOME: fixture.root,
+      },
+    );
+
+    expect(result.status).toBe(0);
+
+    const output = expectHookOutput(result);
+    expect(output.hookSpecificOutput.additionalContext).toContain(`Memo dir: ${coralProjectDir(fixture.root, 'acme/my.repo')}/memo`);
+  });
+
+  it('outputs INJECT.md only when no session_id', () => {
+    const fixture = createFixture();
+    const injectMd = 'Only CLAUDE content';
+    writeInjectMd(fixture.pluginRoot, injectMd);
 
     const result = runHook(
       SESSION_START_HOOK,
@@ -237,7 +303,7 @@ describe('session-start.mjs', () => {
 
     const output = expectHookOutput(result);
     expect(output.hookSpecificOutput.additionalContext.startsWith('SessionStart:')).toBe(false);
-    expect(output.hookSpecificOutput.additionalContext).toBe(claudeMd);
+    expect(output.hookSpecificOutput.additionalContext).toBe(injectMd);
   });
 
   it('exits cleanly when CLAUDE_PLUGIN_ROOT unset', () => {
@@ -249,6 +315,116 @@ describe('session-start.mjs', () => {
 
     expect(result.status).toBe(0);
     expect(parseHookOutput(result.stdout)).toBeNull();
+  });
+});
+
+describe('kb-memo-reminder.mjs', () => {
+  it('reminds with the source-derived global memo path', () => {
+    const fixture = createFixture();
+    initGitRepo(fixture.projectRoot, 'git@gitlab.com:group/subgroup/repo.git');
+
+    const result = runHook(
+      KB_MEMO_REMINDER_HOOK,
+      { session_id: 'sess-1' },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        HOME: fixture.root,
+      },
+    );
+
+    expect(result.status).toBe(0);
+
+    const output = expectHookOutput(result);
+    expect(output.hookSpecificOutput.hookEventName).toBe('UserPromptSubmit');
+    expect(output.hookSpecificOutput.additionalContext).toContain(`${coralProjectDir(fixture.root, 'subgroup/repo')}/memo/<timestamp>-<topic>.md`);
+  });
+});
+
+describe('kb-promote-gate.mjs', () => {
+  it('reads memos from the global project dir and blocks stop with memo-review guidance', () => {
+    const fixture = createFixture();
+    const memoDir = join(coralProjectDir(fixture.root, `local/${basename(fixture.projectRoot)}`), 'memo');
+    mkdirSync(memoDir, { recursive: true });
+    writeFileSync(join(memoDir, '20260321-hooks-note.md'), 'memo', 'utf-8');
+
+    runHook(
+      KB_PROMOTE_GATE_HOOK,
+      { hook_event_name: 'UserPromptSubmit', session_id: 'sess-1', user_message: '/coral:ralph' },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        HOME: fixture.root,
+      },
+    );
+
+    const result = runHook(
+      KB_PROMOTE_GATE_HOOK,
+      { hook_event_name: 'Stop', session_id: 'sess-1' },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        HOME: fixture.root,
+      },
+    );
+
+    expect(result.status).toBe(0);
+
+    const output = expectStopOutput(result);
+    expect(output.decision).toBe('block');
+    expect(output.reason).toContain('~/.coral/kb/notes/');
+    expect(output.reason).toContain('memo -> review -> promotion');
+    expect(output.reason).not.toContain('write directly');
+    expect(output.reason).toContain('20260321-hooks-note.md');
+  });
+
+  it('keeps compact SessionStart guidance on the memo-review workflow', () => {
+    const fixture = createFixture();
+    const memoDir = join(coralProjectDir(fixture.root, `local/${basename(fixture.projectRoot)}`), 'memo');
+    mkdirSync(memoDir, { recursive: true });
+    writeFileSync(join(memoDir, '20260321-hooks-note.md'), 'memo', 'utf-8');
+
+    const result = runHook(
+      KB_PROMOTE_GATE_HOOK,
+      { hook_event_name: 'SessionStart' },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        HOME: fixture.root,
+      },
+    );
+
+    expect(result.status).toBe(0);
+
+    const output = expectHookOutput(result);
+    expect(output.hookSpecificOutput.hookEventName).toBe('SessionStart');
+    expect(output.hookSpecificOutput.additionalContext).toContain('~/.coral/kb/notes/');
+    expect(output.hookSpecificOutput.additionalContext).toContain('memo -> review -> promotion');
+    expect(output.hookSpecificOutput.additionalContext).not.toContain('write directly');
+  });
+});
+
+describe('kb-lookup-reminder.mjs', () => {
+  it('reads KB topics from ~/.coral/kb/notes/', () => {
+    const fixture = createFixture();
+    const kbDir = join(fixture.root, '.coral', 'kb', 'notes');
+    mkdirSync(kbDir, { recursive: true });
+    writeFileSync(join(kbDir, 'hooks-paths.md'), '# Hooks', 'utf-8');
+    writeFileSync(join(kbDir, 'codex-placeholder.md'), '# Codex', 'utf-8');
+
+    const result = runHook(
+      KB_LOOKUP_REMINDER_HOOK,
+      { hook_event_name: 'PostToolUseFailure' },
+      { HOME: fixture.root },
+    );
+
+    expect(result.status).toBe(0);
+
+    const output = expectHookOutput(result);
+    expect(output.hookSpecificOutput.additionalContext).toContain('~/.coral/kb/notes/');
+    expect(output.hookSpecificOutput.additionalContext).toContain('KB topics: codex, hooks');
+  });
+});
+
+describe('hooks.json', () => {
+  it('does not reference migrate-coral-dir.mjs', () => {
+    expect(readFileSync(HOOKS_JSON_PATH, 'utf-8')).not.toContain('migrate-coral-dir.mjs');
   });
 });
 

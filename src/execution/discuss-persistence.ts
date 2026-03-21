@@ -52,7 +52,7 @@ export function readSessionEvents(ctx: DiscussContext, sessionId: string): Discu
   try {
     const sessionDir = ctx.store.resolveSessionDir(sessionId);
     return readDiscussEventLog(discussEventLogPath(sessionDir)).filter((event) =>
-      event.sessionId === sessionId && event.projectRoot === ctx.projectRoot);
+      event.sessionId === sessionId);
   } catch {
     return [];
   }

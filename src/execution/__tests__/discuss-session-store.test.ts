@@ -1,5 +1,6 @@
 import {
   appendFileSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   renameSync,
@@ -17,12 +18,13 @@ import {
   readDiscussSummaryIndex,
 } from '../../client/readers.js';
 import {
-  discussProjectRootsPath,
+  discussSourcesPath,
   discussDiscoveryPath,
   discussEventLogPath,
   discussSessionDir,
   discussSummaryIndexPath,
   discussStatePath,
+  resolveProjectSource,
 } from '../../client/paths.js';
 import { replayDiscussEvents } from '../../discuss/reducer.js';
 import {
@@ -43,6 +45,7 @@ const TOPIC = 'Should the city pedestrianize the downtown core?';
 
 let projectRoot = '';
 let homeRoot = '';
+let source = '';
 const originalHome = process.env.HOME;
 
 function unwrap<T>(result: Result<T>): T {
@@ -172,6 +175,7 @@ beforeEach(() => {
   homeRoot = mkdtempSync(join(tmpdir(), 'coral-discuss-home-'));
   process.env.HOME = homeRoot;
   projectRoot = mkdtempSync(join(tmpdir(), 'coral-discuss-store-'));
+  source = resolveProjectSource(projectRoot);
 });
 
 afterEach(() => {
@@ -186,7 +190,7 @@ afterEach(() => {
 
 describe('DiscussSessionStore', () => {
   it('appends events and loads the same snapshot back', async () => {
-    const store = new DiscussSessionStore(projectRoot);
+    const store = new DiscussSessionStore(source);
     const { finalSnapshot } = await appendRoundTripHistory(store);
 
     expect(store.load(SESSION_ID)).toEqual(finalSnapshot);
@@ -202,18 +206,18 @@ describe('DiscussSessionStore', () => {
       },
     ]);
     expect(readDiscussSummaryIndex(projectRoot)).toEqual({
-      projectRoot,
+      source,
       updatedAt: finalSnapshot.updatedAt,
       sessions: [buildExpectedSummaryRow(finalSnapshot)],
     });
-    expect(JSON.parse(readFileSync(discussProjectRootsPath(), 'utf8'))).toEqual({
+    expect(JSON.parse(readFileSync(discussSourcesPath(), 'utf8'))).toEqual({
       updatedAt: finalSnapshot.updatedAt,
-      projectRoots: [projectRoot],
+      sources: [source],
     });
   });
 
   it('recovers the full session state by replaying the event log when state.json is deleted', async () => {
-    const store = new DiscussSessionStore(projectRoot);
+    const store = new DiscussSessionStore(source);
     const { finalSnapshot } = await appendRoundTripHistory(store);
     const statePath = discussStatePath(store.resolveSessionDir(SESSION_ID));
 
@@ -227,7 +231,7 @@ describe('DiscussSessionStore', () => {
   });
 
   it('replays only the tail past snapshot.lastAppliedSeq and matches full replay', async () => {
-    const store = new DiscussSessionStore(projectRoot);
+    const store = new DiscussSessionStore(source);
     const { finalSnapshot } = await appendRoundTripHistory(store);
     const sessionDir = store.resolveSessionDir(SESSION_ID);
     const logEvents = readDiscussEventLog(discussEventLogPath(sessionDir));
@@ -243,7 +247,7 @@ describe('DiscussSessionStore', () => {
   });
 
   it('rejects compare-and-append when expectedSeq is stale', async () => {
-    const store = new DiscussSessionStore(projectRoot);
+    const store = new DiscussSessionStore(source);
     const input = makeInput();
     const createEvents = unwrap(
       decideSessionCreate(
@@ -279,7 +283,7 @@ describe('DiscussSessionStore', () => {
   });
 
   it('updates discovery.json after each committed append', async () => {
-    const store = new DiscussSessionStore(projectRoot);
+    const store = new DiscussSessionStore(source);
     const input = makeInput();
     const createEvents = unwrap(
       decideSessionCreate(
@@ -296,7 +300,7 @@ describe('DiscussSessionStore', () => {
     const firstDiscovery = readDiscussDiscovery(projectRoot);
 
     expect(firstDiscovery).toEqual({
-      projectRoot,
+      source,
       updatedAt: created.updatedAt,
       sessions: [{
         sessionId: SESSION_ID,
@@ -333,8 +337,8 @@ describe('DiscussSessionStore', () => {
   });
 
   it('preserves both discovery rows when different sessions append concurrently', async () => {
-    const firstStore = new DiscussSessionStore(projectRoot);
-    const secondStore = new DiscussSessionStore(projectRoot);
+    const firstStore = new DiscussSessionStore(source);
+    const secondStore = new DiscussSessionStore(source);
     const input = makeInput();
 
     const firstCreate = unwrap(
@@ -377,8 +381,81 @@ describe('DiscussSessionStore', () => {
     ]);
   });
 
+  it('loads and appends shared sessions from another checkout of the same source', async () => {
+    const firstProjectRoot = join(homeRoot, 'checkout-a', 'project');
+    const secondProjectRoot = join(homeRoot, 'checkout-b', 'project');
+    mkdirSync(firstProjectRoot, { recursive: true });
+    mkdirSync(secondProjectRoot, { recursive: true });
+
+    const firstSource = resolveProjectSource(firstProjectRoot);
+    const secondSource = resolveProjectSource(secondProjectRoot);
+    expect(secondSource).toBe(firstSource);
+
+    const firstStore = new DiscussSessionStore(firstSource);
+    const secondStore = new DiscussSessionStore(secondSource);
+
+    const created = await firstStore.append(
+      SESSION_ID,
+      0,
+      unwrap(
+        decideSessionCreate(
+          makeInput(),
+          SESSION_ID,
+          firstProjectRoot,
+          TOPIC,
+          1,
+          '2026-03-11T00:00:00.000Z',
+        ),
+      ),
+    );
+
+    expect(secondStore.load(SESSION_ID)).toMatchObject({
+      sessionId: SESSION_ID,
+      projectRoot: firstProjectRoot,
+      lastAppliedSeq: created.lastAppliedSeq,
+    });
+
+    const updated = await secondStore.append(
+      SESSION_ID,
+      created.lastAppliedSeq,
+      unwrap(
+        decideBid(
+          created.state,
+          'alpha',
+          60,
+          'Alternate checkout append.',
+          SESSION_ID,
+          secondProjectRoot,
+          TOPIC,
+          created.lastAppliedSeq + 1,
+          '2026-03-11T00:00:01.000Z',
+        ),
+      ),
+    );
+    secondStore.flushDirtyIndexes();
+
+    const logEvents = readDiscussEventLog(discussEventLogPath(secondStore.resolveSessionDir(SESSION_ID)));
+    expect(logEvents.at(-1)).toMatchObject({
+      sessionId: SESSION_ID,
+      projectRoot: secondProjectRoot,
+      seq: created.lastAppliedSeq + 1,
+    });
+    expect(updated.projectRoot).toBe(firstProjectRoot);
+    expect(firstStore.load(SESSION_ID)).toEqual(updated);
+    expect(readDiscussDiscovery(firstProjectRoot)).toMatchObject({
+      source: firstSource,
+    });
+    expect(readDiscussSummaryIndex(firstProjectRoot)).toMatchObject({
+      source: firstSource,
+      sessions: [expect.objectContaining({
+        sessionId: SESSION_ID,
+        projectRoot: firstProjectRoot,
+      })],
+    });
+  });
+
   it('falls back from missing, stale, or corrupt discovery data when listing and loading committed sessions', async () => {
-    const store = new DiscussSessionStore(projectRoot);
+    const store = new DiscussSessionStore(source);
     await appendRoundTripHistory(store, SESSION_ID);
     await appendRoundTripHistory(store, SECOND_SESSION_ID);
     store.flushDirtyIndexes();
@@ -389,7 +466,7 @@ describe('DiscussSessionStore', () => {
     expect(secondSnapshot).not.toBeNull();
 
     writeJsonAtomic(discussDiscoveryPath(projectRoot), {
-      projectRoot,
+      source,
       updatedAt: '2026-03-11T00:00:05.000Z',
       sessions: [{
         sessionId: SESSION_ID,
@@ -421,58 +498,58 @@ describe('DiscussSessionStore', () => {
     ]);
   });
 
-  it('hydrates summary-index.json and repairs the project-root registry on first index listing', async () => {
-    const store = new DiscussSessionStore(projectRoot);
+  it('hydrates summary-index.json and repairs the source registry on first index listing', async () => {
+    const store = new DiscussSessionStore(source);
     const { finalSnapshot: firstSnapshot } = await appendRoundTripHistory(store, SESSION_ID);
     const { finalSnapshot: secondSnapshot } = await appendRoundTripHistory(store, SECOND_SESSION_ID);
     store.flushDirtyIndexes();
 
     unlinkSync(discussSummaryIndexPath(projectRoot));
-    writeJsonAtomic(discussProjectRootsPath(), {
+    writeJsonAtomic(discussSourcesPath(), {
       updatedAt: '2026-03-11T00:00:04.000Z',
-      projectRoots: [],
+      sources: [],
     });
 
-    const coldStartStore = new DiscussSessionStore(projectRoot);
+    const coldStartStore = new DiscussSessionStore(source);
 
     expect(coldStartStore.listSummariesFromIndex().map((summary) => summary.sessionId).sort()).toEqual([
       SESSION_ID,
       SECOND_SESSION_ID,
     ]);
     expect(readDiscussSummaryIndex(projectRoot)).toEqual({
-      projectRoot,
+      source,
       updatedAt: secondSnapshot.updatedAt,
       sessions: [
         buildExpectedSummaryRow(firstSnapshot),
         buildExpectedSummaryRow(secondSnapshot),
       ],
     });
-    expect(JSON.parse(readFileSync(discussProjectRootsPath(), 'utf8'))).toEqual({
+    expect(JSON.parse(readFileSync(discussSourcesPath(), 'utf8'))).toEqual({
       updatedAt: secondSnapshot.updatedAt,
-      projectRoots: [projectRoot],
+      sources: [source],
     });
   });
 
   it('repairs stale summary-index.json rows from persisted sessions on first index listing', async () => {
-    const store = new DiscussSessionStore(projectRoot);
+    const store = new DiscussSessionStore(source);
     const { finalSnapshot: firstSnapshot } = await appendRoundTripHistory(store, SESSION_ID);
     const { finalSnapshot: secondSnapshot } = await appendRoundTripHistory(store, SECOND_SESSION_ID);
     store.flushDirtyIndexes();
 
     writeJsonAtomic(discussSummaryIndexPath(projectRoot), {
-      projectRoot,
+      source,
       updatedAt: firstSnapshot.updatedAt,
       sessions: [buildExpectedSummaryRow(firstSnapshot)],
     });
 
-    const coldStartStore = new DiscussSessionStore(projectRoot);
+    const coldStartStore = new DiscussSessionStore(source);
 
     expect(coldStartStore.listSummariesFromIndex().map((summary) => summary.sessionId).sort()).toEqual([
       SESSION_ID,
       SECOND_SESSION_ID,
     ]);
     expect(readDiscussSummaryIndex(projectRoot)).toEqual({
-      projectRoot,
+      source,
       updatedAt: secondSnapshot.updatedAt,
       sessions: [
         buildExpectedSummaryRow(firstSnapshot),
@@ -482,7 +559,7 @@ describe('DiscussSessionStore', () => {
   });
 
   it('skips corrupt event-log lines without breaking load', async () => {
-    const store = new DiscussSessionStore(projectRoot);
+    const store = new DiscussSessionStore(source);
     const { finalSnapshot } = await appendRoundTripHistory(store);
     const logPath = discussEventLogPath(store.resolveSessionDir(SESSION_ID));
 
@@ -492,7 +569,7 @@ describe('DiscussSessionStore', () => {
   });
 
   it('writes the committed event batch to the session log', async () => {
-    const store = new DiscussSessionStore(projectRoot);
+    const store = new DiscussSessionStore(source);
     await appendRoundTripHistory(store);
     const logPath = discussEventLogPath(store.resolveSessionDir(SESSION_ID));
 
@@ -512,7 +589,7 @@ describe('DiscussSessionStore', () => {
   });
 
   it('returns correct data from listing methods immediately after append (flush-before-read)', async () => {
-    const store = new DiscussSessionStore(projectRoot);
+    const store = new DiscussSessionStore(source);
     const { finalSnapshot } = await appendRoundTripHistory(store);
 
     const summaries = store.listSummaries();
@@ -529,14 +606,14 @@ describe('DiscussSessionStore', () => {
     ]);
 
     expect(readDiscussSummaryIndex(projectRoot)).toEqual({
-      projectRoot,
+      source,
       updatedAt: finalSnapshot.updatedAt,
       sessions: [buildExpectedSummaryRow(finalSnapshot)],
     });
   });
 
   it('flushes dirty indexes to disk on dispose (shutdown flush)', async () => {
-    const store = new DiscussSessionStore(projectRoot);
+    const store = new DiscussSessionStore(source);
     const { finalSnapshot } = await appendRoundTripHistory(store);
 
     expect(readDiscussDiscovery(projectRoot)).toBeNull();
@@ -551,13 +628,13 @@ describe('DiscussSessionStore', () => {
       topic: TOPIC,
     });
     expect(readDiscussSummaryIndex(projectRoot)).toEqual({
-      projectRoot,
+      source,
       updatedAt: finalSnapshot.updatedAt,
       sessions: [buildExpectedSummaryRow(finalSnapshot)],
     });
-    expect(JSON.parse(readFileSync(discussProjectRootsPath(), 'utf8'))).toEqual({
+    expect(JSON.parse(readFileSync(discussSourcesPath(), 'utf8'))).toEqual({
       updatedAt: finalSnapshot.updatedAt,
-      projectRoots: [projectRoot],
+      sources: [source],
     });
   });
 });

@@ -54,28 +54,35 @@ The reducer preserves the same bidding rules as before: thresholded primary pool
 
 ## Storage
 
-Per-project storage is under:
+Persisted discuss storage is source-scoped. All checkouts of the same canonical git source share:
 
 ```text
-{project}/.coral/discuss/
-├── discovery.json
-└── <session-id>/
-    ├── event-log.jsonl
-    └── state.json
+~/.coral/
+├── discuss-sources.json
+└── projects/
+    └── <source-slug>/
+        └── discuss/
+            ├── discovery.json
+            ├── summary-index.json
+            └── <session-id>/
+                ├── event-log.jsonl
+                └── state.json
 ```
 
 - `event-log.jsonl` is authoritative.
 - `state.json` is a `PersistedDiscussSnapshot` with `lastAppliedSeq`.
-- `discovery.json` is the per-project session index used by API listing, restart recovery, and reef cold-scan.
+- `discovery.json` is the source-scoped recovery index.
+- `summary-index.json` is the source-scoped listing index used by API reads.
+- `projectRoot` stays in snapshots and rows as last-known checkout metadata; it is not the persisted storage identity.
 
 Append order in [`DiscussSessionStore.append()`](/home/dev/workspace/coral/src/execution/discuss-session-store.ts):
 
 1. Append the event batch to `event-log.jsonl` and `fdatasync`.
 2. Reduce the batch into the next snapshot.
 3. Atomically rewrite `state.json`.
-4. Atomically merge the committed session metadata into `discovery.json`.
+4. Atomically merge the committed session metadata into `discovery.json` and `summary-index.json`.
 
-The store also updates `~/.claude/coral/discuss-project-roots.json` so the backend can enumerate discuss roots before serving requests.
+The store also updates `~/.coral/discuss-sources.json` so the backend can enumerate known sources before serving requests.
 
 ## Recovery
 
@@ -83,7 +90,7 @@ Recovery is snapshot-plus-tail, not snapshot-only:
 
 - If `state.json` exists, the store replays only events with `seq > lastAppliedSeq`.
 - If `state.json` is missing, it rebuilds from the full event log.
-- If discovery metadata is missing or stale, the readers fall back to scanning session directories and `state.json`.
+- If discovery metadata is missing or stale, the readers fall back to scanning source directories and `state.json`.
 
 On backend startup, [`DiscussManager.recoverPersistedSessions()`](/home/dev/workspace/coral/src/execution/discuss-manager.ts) attaches all non-abort sessions found through the store and resumes any persisted control phase that still needs work. Execution recovery is driven by the persisted runtime events:
 

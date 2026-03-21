@@ -27,7 +27,7 @@ codex({
 - Allowed format: `coral:[a-z0-9][a-z0-9-]*`
 - Rejected before filesystem read: `coral:`, `coral:../x`, `coral:scanner/extra`
 - Unknown file error: `Agent file not found: agents/<agent>.md`
-- Prompt order: `CLAUDE.md` (one-shot only) → `agents/<agent>.md` → user prompt
+- Prompt order: `INJECT.md` (one-shot only) → `agents/<agent>.md` → user prompt
 
 ## History
 Older workflows used `coral:codex-proxy` plus a `SubagentStart` hook to force delegation. That design was replaced by direct `coral:*` ops and executor-side `ensureMultiAgent()`, eliminating the proxy file and hook dependency.

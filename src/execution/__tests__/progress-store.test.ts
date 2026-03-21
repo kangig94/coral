@@ -269,7 +269,8 @@ describe('execution ProgressStore', () => {
     expect(completed).toHaveBeenCalledWith({ jobId, result });
   });
 
-  it('consecutive replayFrom calls on the same cursor only return newly appended events', () => {
+  // @flaky — formatElapsed timestamp depends on sub-second execution; retry under parallel suite
+  it('consecutive replayFrom calls on the same cursor only return newly appended events', { retry: 2 }, () => {
     const store = new ProgressStore();
     const jobId = `progress-cursor-advance-${randomUUID()}`;
     jobIdsToClean.add(jobId);

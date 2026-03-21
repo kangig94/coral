@@ -9,9 +9,10 @@
  * Fail-open: any error exits silently.
  */
 
+import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
 
 const FLAG_PREFIX = 'kb-active-';
 const KB_SKILL_RE = /\/(?:coral:)?ralph|\/(?:coral:)?bugfix/;
@@ -52,18 +53,18 @@ try {
   }
 
   // Check for unprocessed memos (Stop + SessionStart compact)
-  const memoDir = join(projectDir, '.coral', 'memo');
+  const memoDir = join(coralProjectDir(projectDir), 'memo');
   if (!existsSync(memoDir)) process.exit(0);
 
   const memos = readdirSync(memoDir).filter(f => !f.startsWith('.'));
   const list = memos.join(', ');
-  const sessionKb = 'If you learned anything during this session that would be useful in future sessions, write it directly to .coral/kb/.';
+  const sessionKb = 'If you learned anything during this session that would be useful in future sessions, preserve the memo -> review -> promotion workflow and promote only durable knowledge to ~/.coral/kb/notes/ after reviewing memos. Do not bypass memo review.';
 
   if (event === 'Stop') {
     console.log(JSON.stringify({
       decision: 'block',
       reason: memos.length > 0
-        ? `Review each memo — promote to .coral/kb/ only if useful across sessions. Delete all processed memos regardless of promotion. Also, ${sessionKb} Memos: ${list}`
+        ? `Review each memo, then promote only durable knowledge to ~/.coral/kb/notes/ if it is useful across sessions. Delete all processed memos regardless of promotion. Preserve the memo -> review -> promotion workflow; do not bypass memo review. Memos: ${list}`
         : `No memos to process, but ${sessionKb}`,
       systemMessage: memos.length > 0
         ? `📋 KB: promoting ${memos.length} memo(s)`
@@ -81,6 +82,27 @@ try {
   }
 } catch {
   process.exit(0);
+}
+
+function resolveProjectSource(projectDir) {
+  try {
+    const remote = execSync('git remote get-url origin', {
+      cwd: projectDir,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim().replace(/\.git$/, '');
+    const sshPath = remote.match(/^[^@]+@[^:]+:(.+)$/)?.[1];
+    const rawPath = sshPath ?? remote.replace(/^[^:]+:\/\//, '').replace(/^[^@/]+@/, '').replace(/^[^/]+\/+/, '');
+    const segments = rawPath.split('/').filter(Boolean);
+    if (segments.length >= 2) return `${segments.at(-2)}/${segments.at(-1)}`;
+  } catch {
+    // fall through
+  }
+  return `local/${basename(projectDir)}`;
+}
+
+function coralProjectDir(projectDir) {
+  return join(homedir(), '.coral', 'projects', resolveProjectSource(projectDir).replace(/\//g, '-'));
 }
 
 function readStdin() {

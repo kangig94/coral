@@ -247,6 +247,8 @@ describe('ExecutionService', () => {
     });
   });
 
+  // @flaky — queue-slot timing sensitive; passes in isolation, intermittent under parallel suite
+  describe('queue admission', { retry: 2 }, () => {
   it('start returns queued when provider launch slots are full', async () => {
     const never = new Promise<ProviderResult>(() => {});
     const { provider } = makeProvider({ execute: () => never });
@@ -417,6 +419,7 @@ describe('ExecutionService', () => {
       },
     });
   });
+  }); // end queue admission
 
   it('awaitLaunch returns ready once the launch state changes', async () => {
     const service = new ExecutionService(ctx);

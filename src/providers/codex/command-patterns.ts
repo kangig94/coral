@@ -28,7 +28,7 @@ const RULES: Rule[] = [
   [/^rg\s+(?:-\S+\s+)*([^-\s]\S*)/, (m, _sp) => `Grep(${m[1]})`],
 ];
 
-const SHELL_HEAD = String.raw`(?:\/usr\/bin\/|\/bin\/)?(?:zsh|bash|sh)\s+(?:-lc|-c)\s+`;
+const SHELL_HEAD = String.raw`(?:\S+\/)?\w*sh\s+(?:-lc|-c)\s+`;
 const SHELL_PREFIX = new RegExp('^' + SHELL_HEAD);
 const SHELL_CLEAN = new RegExp('^' + SHELL_HEAD + String.raw`(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')\s*$`);
 const CD_PREFIX = /^cd\s+\S+\s*&&\s*(.+)$/;

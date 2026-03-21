@@ -35,6 +35,7 @@ import {
   isAbortEnded,
   readSessionEvents,
 } from './discuss-persistence.js';
+import type { DiscussSessionStore } from './discuss-session-store.js';
 import { collectBids } from './discuss-subflows.js';
 
 export const ABORT_REASON = 'abort';
@@ -213,15 +214,17 @@ export function getWatchState(
   return getRegistryWatchState(ctx, sessionId, cursor);
 }
 
-export async function recoverPersistedSessions(
-  ctx: DiscussContext,
+export async function recoverPersistedSessionsFromStore(
+  store: DiscussSessionStore,
+  resolveContext: (snapshot: PersistedDiscussSnapshot) => DiscussContext,
 ): Promise<void> {
-  for (const candidate of ctx.store.listRecoveryCandidates()) {
-    const snapshot = ctx.store.load(candidate.sessionId);
+  for (const candidate of store.listRecoveryCandidates()) {
+    const snapshot = store.load(candidate.sessionId);
     if (!snapshot) {
       continue;
     }
 
+    const ctx = resolveContext(snapshot);
     const events = readSessionEvents(ctx, candidate.sessionId);
     const abortEnded = isAbortEnded(events);
     if (abortEnded) {
@@ -233,4 +236,10 @@ export async function recoverPersistedSessions(
       events: buildWatchEvents(events),
     }, abortEnded);
   }
+}
+
+export async function recoverPersistedSessions(
+  ctx: DiscussContext,
+): Promise<void> {
+  await recoverPersistedSessionsFromStore(ctx.store, () => ctx);
 }

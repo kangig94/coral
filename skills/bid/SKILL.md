@@ -4,13 +4,16 @@ description: Submit a bid or speech in an active --user discuss session
 argument-hint: "<score>, <thought> | <speech content>"
 ---
 
+> **CORAL_PROJECT**: !`url=$(git remote get-url origin 2>/dev/null) && echo ~/.coral/projects/$(echo "$url" | sed -E 's#.*[:/]([^/]+/[^/.]+)(\.git)?$#\1#' | tr '/' '-') || echo ~/.coral/projects/local-$(basename $PWD)`
+
 # Bid / Speak in Active Discussion
 
 Submit a bid or speech as the `user` observer in a running `--user` discuss session.
 
 ## Pre-flight Check
 
-If the conversation context shows no active `--user` discuss session,
+Resolve `session` by reading `CORAL_PROJECT/discuss/active-user-session.json`.
+If that file does not exist or does not contain a valid active session,
 respond: "No active --user discuss session. Start one with `/discuss --user <topic>`."
 Then STOP — do not proceed.
 
@@ -32,16 +35,16 @@ Split args on the **first comma**:
 
 1. Call `discuss_participate({ session, agent_name: 'user', score, thought })`
 2. On `action: 'listen'` → "Bid recorded. Wait for the discuss watch output to show whether you won the floor."
-3. On `action: 'session_ended'` → "Discussion ended." Clean up `active-user-session.json`.
+3. On `action: 'session_ended'` → "Discussion ended." Delete `CORAL_PROJECT/discuss/active-user-session.json`.
 
 ## Speech Mode Flow
 
 1. Call `discuss_participate({ session, agent_name: 'user', content })`
 2. On `action: 'speech_recorded'` → "Speech recorded. Waiting for next round..."
 3. On `action: 'not_your_turn'` → "It's not your turn yet. Wait to win the floor, then use `/bid <speech>`."
-4. On `action: 'session_ended'` → "Discussion ended." Clean up `active-user-session.json`.
+4. On `action: 'session_ended'` → "Discussion ended." Delete `CORAL_PROJECT/discuss/active-user-session.json`.
 
 ## Error Policy
 
-- Session ended mid-bid → "Discussion ended." Clean up `active-user-session.json`.
+- Session ended mid-bid → "Discussion ended." Delete `CORAL_PROJECT/discuss/active-user-session.json`.
 - speak() error → "Speech was not recorded. Wait for the next watch update, then try again if needed."

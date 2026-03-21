@@ -4,6 +4,8 @@ description: "Use when a topic benefits from multiple perspectives debating befo
 argument-hint: "[--user] [topic] [--hints axis1:pos1,pos2 axis2:pos1,pos2]"
 ---
 
+> **CORAL_PROJECT**: !`url=$(git remote get-url origin 2>/dev/null) && echo ~/.coral/projects/$(echo "$url" | sed -E 's#.*[:/]([^/]+/[^/.]+)(\.git)?$#\1#' | tr '/' '-') || echo ~/.coral/projects/local-$(basename $PWD)`
+
 # Moderated Multi-Agent Discussion
 
 Start a backend-managed structured discussion with AI agents.
@@ -39,7 +41,7 @@ Pass `--user` to participate as a human observer.
      or `discuss_start({ topic, agents })` otherwise.
    - Save the returned `session` as `session_id`.
 
-6. **If `--user`**, write `.coral/discuss/active-user-session.json`
+6. **If `--user`**, write `CORAL_PROJECT/discuss/active-user-session.json`
    with `{ session_id }`.
    This keeps `/bid` pointed at the active observer session.
 
@@ -56,7 +58,7 @@ Pass `--user` to participate as a human observer.
    "Discussion started! Use `/bid <score>, <thought>` to submit a bid, or `/bid <your speech>` when you win the floor."
 
 9. **When the session ends**, report the end reason from `discuss_watch`.
-   - If `--user`, delete `.coral/discuss/active-user-session.json`.
+   - If `--user`, delete `CORAL_PROJECT/discuss/active-user-session.json`.
 
 ## Context Enhancement
 

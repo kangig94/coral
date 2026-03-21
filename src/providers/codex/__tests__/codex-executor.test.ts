@@ -1,12 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter, Readable, Writable } from 'node:stream';
 import type { CodexExecOptions } from '../codex-executor.js';
 
 const mockState = vi.hoisted(() => ({
   detectCodexCli: vi.fn(),
+  execFileSync: vi.fn(),
   spawn: vi.fn(),
 }));
 
@@ -15,6 +17,7 @@ vi.mock('../../cli-detection.js', () => ({
 }));
 
 vi.mock('node:child_process', () => ({
+  execFileSync: mockState.execFileSync,
   spawn: mockState.spawn,
 }));
 
@@ -35,10 +38,12 @@ async function loadExecutor(pluginRoot?: string): Promise<ExecutorModule> {
 }
 
 const mockDetect = mockState.detectCodexCli;
+const mockExecFileSync = mockState.execFileSync;
 const mockSpawn = mockState.spawn;
 
 beforeEach(async () => {
   mockDetect.mockReset();
+  mockExecFileSync.mockReset();
   mockSpawn.mockReset();
   ({ executeOneShot, executeResume, executeFork, killAllChildren } = await loadExecutor());
 });
@@ -135,11 +140,11 @@ function createMockProcess(stdout: string, code: number): MockProcess {
   return proc as MockProcess;
 }
 
-describe('prependClaudeMd', () => {
-  it('prepends CLAUDE.md content to prompt', async () => {
+describe('prependInjectMd', () => {
+  it('prepends INJECT.md content to prompt', async () => {
     const pluginRoot = mkdtempSync(join('/tmp', 'coral-codex-plugin-'));
     try {
-      writeFileSync(join(pluginRoot, 'CLAUDE.md'), '# Guidelines\nBe concise.');
+      writeFileSync(join(pluginRoot, 'INJECT.md'), '# Guidelines\nBe concise.');
       const customExecutor = await loadExecutor(pluginRoot);
       const proc = createMockProcess(agentMessage(), 0);
       mockSpawn.mockReturnValue(proc);
@@ -152,10 +157,27 @@ describe('prependClaudeMd', () => {
     }
   });
 
-  it('returns prompt unchanged when CLAUDE.md is empty', async () => {
+  it('replaces {{CORAL_PROJECTS}} using workingDirectory before prepending', async () => {
     const pluginRoot = mkdtempSync(join('/tmp', 'coral-codex-plugin-'));
     try {
-      writeFileSync(join(pluginRoot, 'CLAUDE.md'), '');
+      writeFileSync(join(pluginRoot, 'INJECT.md'), 'Memo dir: {{CORAL_PROJECTS}}/memo');
+      mockExecFileSync.mockReturnValue('https://token@github.com/acme/my.repo.git\n');
+      const customExecutor = await loadExecutor(pluginRoot);
+      const proc = createMockProcess(agentMessage(), 0);
+      mockSpawn.mockReturnValue(proc);
+
+      await customExecutor.executeOneShot('do something', withAuthenticatedCli({ workingDirectory: '/tmp/project-root' }));
+
+      expect(proc.stdinWrites.join('')).toBe(`Memo dir: ${join(homedir(), '.coral', 'projects', 'acme-my.repo')}/memo\n\n---\n\ndo something`);
+    } finally {
+      rmSync(pluginRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('returns prompt unchanged when INJECT.md is empty', async () => {
+    const pluginRoot = mkdtempSync(join('/tmp', 'coral-codex-plugin-'));
+    try {
+      writeFileSync(join(pluginRoot, 'INJECT.md'), '');
       const customExecutor = await loadExecutor(pluginRoot);
       const proc = createMockProcess(agentMessage(), 0);
       mockSpawn.mockReturnValue(proc);

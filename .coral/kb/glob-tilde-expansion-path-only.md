@@ -17,5 +17,5 @@ Bash("echo ~/.claude/plugins/cache/coral/coral/*/methods/")
 Bash("cat ~/.claude/plugins/cache/coral/coral/*/methods/HOW-REVIEW.md")
 
 # Agent blockquote format:
-> **CORAL_METHODS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/methods/")`
+> **CORAL_METHODS**: !`echo ~/.claude/plugins/cache/coral/coral/*/methods/`
 ```

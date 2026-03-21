@@ -42,7 +42,7 @@ function toProviderResult(result: CodexRawResult, fallbackConversationRef?: stri
 /**
  * Build the final prompt for Codex by prepending any instruction/systemPrompt.
  * Both channels map to prompt prepend (Codex has no system prompt flag).
- * For exec, executeOneShot will additionally wrap the result with CLAUDE.md.
+ * For exec, executeOneShot will additionally wrap the result with INJECT.md.
  */
 function buildPrompt(request: ProviderRequest): string {
   const parts: string[] = [];
@@ -70,7 +70,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
 
   switch (request.action) {
     case 'exec': {
-      // executeOneShot internally prepends CLAUDE.md to the prompt
+      // executeOneShot internally prepends INJECT.md to the prompt
       const result = await executeOneShot(prompt, options);
       return toProviderResult(result);
     }

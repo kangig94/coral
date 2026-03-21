@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { vi } from 'vitest';
 
+import { resolveProjectSource } from '../../client/paths.js';
 import type {
   DiscussDomainEvent,
   PersistedDiscussSnapshot,
@@ -102,6 +103,7 @@ function enableDiscussTestHome(): void {
     return;
   }
   process.env.HOME = discussTestHomeRoot;
+  mkdirSync(join(discussTestHomeRoot, '.coral'), { recursive: true });
   usingDiscussTestHome = true;
 }
 
@@ -118,15 +120,18 @@ function disableDiscussTestHome(): void {
   usingDiscussTestHome = false;
 }
 
-export function createDiscussHarness(service = createExecutionServiceStub()): DiscussHarness {
+let harnessCounter = 0;
+
+export function createDiscussHarness(service = createExecutionServiceStub(), sourceOverride?: string): DiscussHarness {
   enableDiscussTestHome();
   const tmpRoot = mkdtempSync(join(tmpdir(), 'coral-discuss-'));
-  const projectRoot = join(tmpRoot, 'project');
+  const projectRoot = join(tmpRoot, `project-${++harnessCounter}`);
   const pluginRoot = join(tmpRoot, 'plugin');
   mkdirSync(projectRoot, { recursive: true });
   mkdirSync(pluginRoot, { recursive: true });
 
-  const store = new DiscussSessionStore(projectRoot);
+  const source = sourceOverride ?? resolveProjectSource(projectRoot);
+  const store = new DiscussSessionStore(source);
   const registry = createDiscussContextRegistry();
   const context = getOrCreateDiscussContext(registry, projectRoot, service, store);
   const ctx: CallerContext = { projectRoot, pluginRoot, coralEnv: {} };
