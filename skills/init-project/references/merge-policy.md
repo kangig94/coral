@@ -36,7 +36,7 @@ No auto-migration of monolithic CLAUDE.md. Users with existing monolithic files 
 | File exists, merge rule = "enhance" | **Append** missing sections identified in the plan. Do not modify existing content. Notify user: "Enhanced docs/{name}.md - added {section names}." |
 | File does not exist | Create with real content |
 
-### Shared KB (`~/.coral/kb/`)
+### Shared KB (`~/.coral/kb/notes/`)
 
 | Condition | Action |
 |-----------|--------|

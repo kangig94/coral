@@ -58,13 +58,13 @@ try {
 
   const memos = readdirSync(memoDir).filter(f => !f.startsWith('.'));
   const list = memos.join(', ');
-  const sessionKb = 'If you learned anything during this session that would be useful in future sessions, preserve the memo -> review -> promotion workflow and promote only durable knowledge to ~/.coral/kb/ after reviewing memos. Do not bypass memo review.';
+  const sessionKb = 'If you learned anything during this session that would be useful in future sessions, preserve the memo -> review -> promotion workflow and promote only durable knowledge to ~/.coral/kb/notes/ after reviewing memos. Do not bypass memo review.';
 
   if (event === 'Stop') {
     console.log(JSON.stringify({
       decision: 'block',
       reason: memos.length > 0
-        ? `Review each memo, then promote only durable knowledge to ~/.coral/kb/ if it is useful across sessions. Delete all processed memos regardless of promotion. Preserve the memo -> review -> promotion workflow; do not bypass memo review. Memos: ${list}`
+        ? `Review each memo, then promote only durable knowledge to ~/.coral/kb/notes/ if it is useful across sessions. Delete all processed memos regardless of promotion. Preserve the memo -> review -> promotion workflow; do not bypass memo review. Memos: ${list}`
         : `No memos to process, but ${sessionKb}`,
       systemMessage: memos.length > 0
         ? `📋 KB: promoting ${memos.length} memo(s)`

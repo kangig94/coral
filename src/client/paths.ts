@@ -44,7 +44,7 @@ export function coralRoot(): string {
 }
 
 export function kbDir(): string {
-  return join(coralRoot(), 'kb');
+  return join(coralRoot(), 'kb', 'notes');
 }
 
 export function resolveProjectSource(projectRoot: string): string {

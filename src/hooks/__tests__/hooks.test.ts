@@ -369,7 +369,7 @@ describe('kb-promote-gate.mjs', () => {
 
     const output = expectStopOutput(result);
     expect(output.decision).toBe('block');
-    expect(output.reason).toContain('~/.coral/kb/');
+    expect(output.reason).toContain('~/.coral/kb/notes/');
     expect(output.reason).toContain('memo -> review -> promotion');
     expect(output.reason).not.toContain('write directly');
     expect(output.reason).toContain('20260321-hooks-note.md');
@@ -394,16 +394,16 @@ describe('kb-promote-gate.mjs', () => {
 
     const output = expectHookOutput(result);
     expect(output.hookSpecificOutput.hookEventName).toBe('SessionStart');
-    expect(output.hookSpecificOutput.additionalContext).toContain('~/.coral/kb/');
+    expect(output.hookSpecificOutput.additionalContext).toContain('~/.coral/kb/notes/');
     expect(output.hookSpecificOutput.additionalContext).toContain('memo -> review -> promotion');
     expect(output.hookSpecificOutput.additionalContext).not.toContain('write directly');
   });
 });
 
 describe('kb-lookup-reminder.mjs', () => {
-  it('reads KB topics from ~/.coral/kb/', () => {
+  it('reads KB topics from ~/.coral/kb/notes/', () => {
     const fixture = createFixture();
-    const kbDir = join(fixture.root, '.coral', 'kb');
+    const kbDir = join(fixture.root, '.coral', 'kb', 'notes');
     mkdirSync(kbDir, { recursive: true });
     writeFileSync(join(kbDir, 'hooks-paths.md'), '# Hooks', 'utf-8');
     writeFileSync(join(kbDir, 'codex-placeholder.md'), '# Codex', 'utf-8');
@@ -417,7 +417,7 @@ describe('kb-lookup-reminder.mjs', () => {
     expect(result.status).toBe(0);
 
     const output = expectHookOutput(result);
-    expect(output.hookSpecificOutput.additionalContext).toContain('~/.coral/kb/');
+    expect(output.hookSpecificOutput.additionalContext).toContain('~/.coral/kb/notes/');
     expect(output.hookSpecificOutput.additionalContext).toContain('KB topics: codex, hooks');
   });
 });

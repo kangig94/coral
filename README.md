@@ -181,8 +181,8 @@ Plans are saved under `~/.coral/projects/{slug}/plans/`. Ralph is best for imple
 
 ## Knowledge Base
 
-Coral keeps a shared knowledge base at `~/.coral/kb/` and project-scoped working data
-under `~/.coral/projects/{slug}/` for memos, plans, analysis, and discuss sessions.
+Coral keeps a shared knowledge base at `~/.coral/kb/` (notes and principles) and project-scoped
+working data under `~/.coral/projects/{slug}/` for memos, plans, analysis, and discuss sessions.
 
 When Claude discovers something non-obvious (a root cause, a gotcha, a pattern worth remembering),
 it writes a memo immediately. On errors, it checks the KB before debugging from scratch.

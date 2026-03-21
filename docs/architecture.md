@@ -401,9 +401,9 @@ Each file is a single `SessionEntry`. Corrupt files are skipped with a warning; 
         └── discuss/
 ```
 
-- **KB** (`~/.coral/kb/`) is global and shared across projects.
+- **KB** (`~/.coral/kb/`) is global and shared across projects. Notes in `kb/notes/`, principles in `kb/principles/`.
 - **Project working data** lives under `~/.coral/projects/{slug}/`, where `{slug}` comes from the canonical git source (`owner/repo` -> `owner-repo`) with `local/<dirname>` fallback.
-- Promotion stays memo -> review -> `~/.coral/kb/`.
+- Promotion stays memo -> review -> `~/.coral/kb/notes/`.
 
 ## Directory Structure
 
