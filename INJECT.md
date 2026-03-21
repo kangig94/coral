@@ -81,7 +81,9 @@ source: {{PROJECT_SOURCE}}
 ```
 
 ## Lookup
-Before debugging from scratch, check `~/.coral/kb/notes/`. On plan start, review domain-related kb files.
+Before debugging from scratch or starting a plan, check KB in this order:
+1. `~/.coral/kb/principles/` — scan principle names for relevant decision patterns
+2. `~/.coral/kb/notes/` — search by tags or keywords for concrete lessons
 
 ## Promotion
 **Who**: top-level orchestrator only, after all work completes (not implementation — after review too).
@@ -95,7 +97,7 @@ Subagents and delegated tasks only write memos, never promote.
 ---
 createdAt: YYYY-MM-DD
 updatedAt: YYYY-MM-DD
-tags: [<domain>, ...]
+tags: [<primary-domain>, <sub-domain>, ...]
 source:
   - {{PROJECT_SOURCE}}
 principles:
@@ -109,17 +111,19 @@ principles:
 
 **Principles** — `~/.coral/kb/principles/<principle-name>.md`:
 
-A principle is a recurring pattern or lesson that multiple KB notes independently confirm.
-Example: `fail-open-over-fail-closed.md` — hooks, MCP error handling, and session recovery all share this lesson.
+A principle is a **decision point where reasonable alternatives exist** but experience shows one direction is consistently better. It is NOT common sense ("validate inputs") or a tautology ("be correct"). A good principle resolves a genuine tension — e.g., `lenient-read-strict-write` resolves the tension between backwards compatibility and data integrity.
+
+Test: "Could a competent engineer reasonably choose the opposite?" If no, it's not a principle — it's obvious.
 
 ```yaml
 ---
 createdAt: YYYY-MM-DD
+updatedAt: YYYY-MM-DD
 ---
 ```
 One-sentence statement of the principle. No sections needed — the value is in the backlinks that collect related notes.
 
-Do not create directly — principles emerge when multiple notes share a common lesson.
+Do not create directly — principles emerge when 3+ notes from different domains share a common lesson.
 
 ## Invalidation
 If a kb entry contradicts current code, update or delete it immediately.
