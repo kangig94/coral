@@ -21,6 +21,23 @@ describe('stripShellWrapper', () => {
     expect(stripShellWrapper('bash -lc "rg \\"needle\\" src"')).toBe('rg "needle" src');
   });
 
+  it('strips Homebrew and non-standard shell paths', () => {
+    expect(stripShellWrapper('/opt/homebrew/bin/zsh -lc "ls -la"')).toBe('ls -la');
+    expect(stripShellWrapper('/usr/local/bin/bash -c "cat file.ts"')).toBe('cat file.ts');
+    expect(stripShellWrapper('/nix/store/abc123/bin/dash -c "echo hi"')).toBe('echo hi');
+  });
+
+  it('strips any shell whose basename ends with sh', () => {
+    expect(stripShellWrapper('fish -c "ls"')).toBe('ls');
+    expect(stripShellWrapper('/usr/bin/dash -c "echo x"')).toBe('echo x');
+    expect(stripShellWrapper('/usr/bin/mksh -lc "cat f"')).toBe('cat f');
+  });
+
+  it('does not strip non-shell binaries with -c flag', () => {
+    expect(stripShellWrapper('python -c "print(1)"')).toBe('python -c "print(1)"');
+    expect(stripShellWrapper('perl -c script.pl')).toBe('perl -c script.pl');
+  });
+
   it('returns command unchanged when no shell wrapper matches', () => {
     expect(stripShellWrapper('git status')).toBe('git status');
   });
