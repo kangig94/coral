@@ -140,11 +140,11 @@ function createMockProcess(stdout: string, code: number): MockProcess {
   return proc as MockProcess;
 }
 
-describe('prependClaudeMd', () => {
-  it('prepends CLAUDE.md content to prompt', async () => {
+describe('prependInjectMd', () => {
+  it('prepends INJECT.md content to prompt', async () => {
     const pluginRoot = mkdtempSync(join('/tmp', 'coral-codex-plugin-'));
     try {
-      writeFileSync(join(pluginRoot, 'CLAUDE.md'), '# Guidelines\nBe concise.');
+      writeFileSync(join(pluginRoot, 'INJECT.md'), '# Guidelines\nBe concise.');
       const customExecutor = await loadExecutor(pluginRoot);
       const proc = createMockProcess(agentMessage(), 0);
       mockSpawn.mockReturnValue(proc);
@@ -160,7 +160,7 @@ describe('prependClaudeMd', () => {
   it('replaces {{CORAL_PROJECTS}} using workingDirectory before prepending', async () => {
     const pluginRoot = mkdtempSync(join('/tmp', 'coral-codex-plugin-'));
     try {
-      writeFileSync(join(pluginRoot, 'CLAUDE.md'), 'Memo dir: {{CORAL_PROJECTS}}/memo');
+      writeFileSync(join(pluginRoot, 'INJECT.md'), 'Memo dir: {{CORAL_PROJECTS}}/memo');
       mockExecFileSync.mockReturnValue('https://token@github.com/acme/my.repo.git\n');
       const customExecutor = await loadExecutor(pluginRoot);
       const proc = createMockProcess(agentMessage(), 0);
@@ -174,10 +174,10 @@ describe('prependClaudeMd', () => {
     }
   });
 
-  it('returns prompt unchanged when CLAUDE.md is empty', async () => {
+  it('returns prompt unchanged when INJECT.md is empty', async () => {
     const pluginRoot = mkdtempSync(join('/tmp', 'coral-codex-plugin-'));
     try {
-      writeFileSync(join(pluginRoot, 'CLAUDE.md'), '');
+      writeFileSync(join(pluginRoot, 'INJECT.md'), '');
       const customExecutor = await loadExecutor(pluginRoot);
       const proc = createMockProcess(agentMessage(), 0);
       mockSpawn.mockReturnValue(proc);

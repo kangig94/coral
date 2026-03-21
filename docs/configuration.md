@@ -64,7 +64,7 @@ Registers the MCP server with Claude Code. `ax` runs `bridge/coral-ax.cjs`, whic
 
 ### hooks/hooks.json - Hook Configuration
 
-Configures all 9 hooks: SessionStart (CLAUDE.md injection with `{{CORAL_PROJECTS}}` substitution + backend warm-start + HUD auto-update), SessionStart/compact (post-compaction KB promotion reminder), UserPromptSubmit (KB flag + ralph loop state + memo reminder), PreToolUse (KB flag + ralph loop state + CLI path resolution), PostToolUse (silent failure detector), PostToolUseFailure (KB lookup reminder), Stop (KB promotion gate + plan state cleanup), TeammateIdle (discuss idle guard).
+Configures all 9 hooks: SessionStart (INJECT.md injection with `{{CORAL_PROJECTS}}`/`{{PROJECT_SOURCE}}` substitution + backend warm-start + HUD auto-update), SessionStart/compact (post-compaction KB promotion reminder), UserPromptSubmit (KB flag + ralph loop state + memo reminder), PreToolUse (KB flag + ralph loop state + CLI path resolution), PostToolUse (silent failure detector), PostToolUseFailure (KB lookup reminder), Stop (KB promotion gate + plan state cleanup), TeammateIdle (discuss idle guard).
 
 See [Hooks documentation](./hooks.md) for details.
 

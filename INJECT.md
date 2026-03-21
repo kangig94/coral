@@ -76,7 +76,7 @@ Also memo Insights worth preserving when Explanatory output style is active.
 Memo files include YAML frontmatter with `source`:
 ```yaml
 ---
-source: kangig94/coral
+source: {{PROJECT_SOURCE}}
 ---
 ```
 
@@ -94,7 +94,7 @@ Subagents and delegated tasks only write memos, never promote.
 ```yaml
 ---
 source:
-  - kangig94/coral
+  - {{PROJECT_SOURCE}}
 createdAt: YYYY-MM-DD
 updatedAt: YYYY-MM-DD
 links: []

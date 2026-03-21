@@ -259,7 +259,7 @@ Codex `Provider` implementation. `preflight()` probes CLI availability and auth 
 Codex-specific execution wrapper over `execution/engine.ts`:
 - builds Codex CLI args (`exec`, `resume`, `fork`)
 - parses JSONL events through `output-parser.ts`
-- prepends plugin `CLAUDE.md` for one-shot sessions
+- prepends plugin `INJECT.md` for one-shot sessions
 
 ### src/providers/codex/schemas.ts / cli-detection.ts / output-parser.ts / progress.ts / command-patterns.ts / types.ts
 

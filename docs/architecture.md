@@ -9,7 +9,7 @@
 │  ┌──────────────┐  ┌───────────────┐  ┌────────────────────────────────┐  │
 │  │ SessionStart │  │ Hook Events   │  │  Skills /coral:*               │  │
 │  │ Hooks        │  │ (plan/kb/idle │  │  discuss, codex, plan,         │  │
-│  │ (CLAUDE.md   │  │  management)  │  │  ralph, analyze, ...           │  │
+│  │ (INJECT.md   │  │  management)  │  │  ralph, analyze, ...           │  │
 │  │  injection,  │  │               │  └───────────────┬────────────────┘  │
 │  │  backend     │  └───────┬───────┘                  │                   │
 │  │  warm-start) │          │                ┌─────────┴──────────┐        │

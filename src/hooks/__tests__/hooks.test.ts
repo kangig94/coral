@@ -194,9 +194,9 @@ function expectStopOutput(result: HookRunResult): StopHookOutput {
   return output as StopHookOutput;
 }
 
-function writeClaudeMd(pluginRoot: string, content: string): void {
+function writeInjectMd(pluginRoot: string, content: string): void {
   mkdirSync(pluginRoot, { recursive: true });
-  writeFileSync(join(pluginRoot, 'CLAUDE.md'), content, 'utf-8');
+  writeFileSync(join(pluginRoot, 'INJECT.md'), content, 'utf-8');
 }
 
 function initGitRepo(projectRoot: string, remote: string): void {
@@ -248,10 +248,10 @@ function listSnapshots(snapshotDir: string): string[] {
 }
 
 describe('session-start.mjs', () => {
-  it('outputs CLAUDE.md with session_id when both provided', () => {
+  it('outputs INJECT.md with session_id when both provided', () => {
     const fixture = createFixture();
-    const claudeMd = 'Project instructions\nSecond line';
-    writeClaudeMd(fixture.pluginRoot, claudeMd);
+    const injectMd = 'Project instructions\nSecond line';
+    writeInjectMd(fixture.pluginRoot, injectMd);
 
     const result = runHook(
       SESSION_START_HOOK,
@@ -264,13 +264,13 @@ describe('session-start.mjs', () => {
     const output = expectHookOutput(result);
     expect(output.hookSpecificOutput.hookEventName).toBe('SessionStart');
     expect(output.hookSpecificOutput.additionalContext.startsWith('SessionStart:session_id=sess-123\n\n')).toBe(true);
-    expect(output.hookSpecificOutput.additionalContext).toContain(claudeMd);
+    expect(output.hookSpecificOutput.additionalContext).toContain(injectMd);
   });
 
   it('replaces {{CORAL_PROJECTS}} with the source-derived global project dir', () => {
     const fixture = createFixture();
     initGitRepo(fixture.projectRoot, 'https://token@github.com/acme/my.repo.git');
-    writeClaudeMd(fixture.pluginRoot, 'Memo dir: {{CORAL_PROJECTS}}/memo');
+    writeInjectMd(fixture.pluginRoot, 'Memo dir: {{CORAL_PROJECTS}}/memo');
 
     const result = runHook(
       SESSION_START_HOOK,
@@ -288,10 +288,10 @@ describe('session-start.mjs', () => {
     expect(output.hookSpecificOutput.additionalContext).toContain(`Memo dir: ${coralProjectDir(fixture.root, 'acme/my.repo')}/memo`);
   });
 
-  it('outputs CLAUDE.md only when no session_id', () => {
+  it('outputs INJECT.md only when no session_id', () => {
     const fixture = createFixture();
-    const claudeMd = 'Only CLAUDE content';
-    writeClaudeMd(fixture.pluginRoot, claudeMd);
+    const injectMd = 'Only CLAUDE content';
+    writeInjectMd(fixture.pluginRoot, injectMd);
 
     const result = runHook(
       SESSION_START_HOOK,
@@ -303,7 +303,7 @@ describe('session-start.mjs', () => {
 
     const output = expectHookOutput(result);
     expect(output.hookSpecificOutput.additionalContext.startsWith('SessionStart:')).toBe(false);
-    expect(output.hookSpecificOutput.additionalContext).toBe(claudeMd);
+    expect(output.hookSpecificOutput.additionalContext).toBe(injectMd);
   });
 
   it('exits cleanly when CLAUDE_PLUGIN_ROOT unset', () => {

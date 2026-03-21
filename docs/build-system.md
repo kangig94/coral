@@ -68,10 +68,10 @@ The build script performs two tasks before bundling: version sync and manifest u
 | Constant | Source | Usage |
 |---|---|---|
 | `__VERSION__` | `package.json` version | MCP server initialization (`server.ts`) |
-| `__PLUGIN_ROOT__` | CJS `__dirname` + `..` | Runtime plugin-root resolution for shared resolver + Codex CLAUDE.md injection |
+| `__PLUGIN_ROOT__` | CJS `__dirname` + `..` | Runtime plugin-root resolution for shared resolver + Codex INJECT.md injection |
 | `__IS_CORAL_BACKEND_MAIN__` | `true` (backend bundle only) | Guards auto-start logic in `src/execution/server.ts` |
 
-`__PLUGIN_ROOT__` is a CJS banner variable (not a `define` replacement), set to `path.resolve(__dirname, '..')` at runtime. This allows the bundled server to locate `CLAUDE.md` regardless of where the plugin is installed.
+`__PLUGIN_ROOT__` is a CJS banner variable (not a `define` replacement), set to `path.resolve(__dirname, '..')` at runtime. This allows the bundled server to locate `INJECT.md` regardless of where the plugin is installed.
 
 ## Testing
 

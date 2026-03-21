@@ -7,7 +7,7 @@ Hooks provide automatic context injection, agent routing, HUD auto-update, error
 Claude Code's hook system executes scripts on specific events. Coral uses hooks at two levels:
 
 **Plugin hooks** (`hooks/hooks.json`):
-1. **SessionStart** (`*`) - Injects CLAUDE.md behavioral guidelines with `{{CORAL_PROJECTS}}` substituted to the active `~/.coral/projects/{slug}` path, warm-starts the backend daemon, and auto-updates HUD script
+1. **SessionStart** (`*`) - Injects INJECT.md behavioral guidelines with `{{CORAL_PROJECTS}}` and `{{PROJECT_SOURCE}}` substituted to the active project path/source, warm-starts the backend daemon, and auto-updates HUD script
 2. **SessionStart** (`compact`) - After context compaction, reminds about memo review and KB promotion
 3. **UserPromptSubmit** - Creates session-scoped KB flag for `/coral:ralph`|`/coral:bugfix`, creates ralph loop state for `/coral:ralph`|`/ralph`, and periodically reminds about memo writing
 4. **PreToolUse** (`Skill`) - Creates session-scoped KB flag when Claude calls Skill("coral:ralph"|"coral:bugfix"), and creates ralph loop state when Claude calls Skill("coral:ralph")
@@ -24,11 +24,11 @@ All hook scripts are **Node.js ESM** (`.mjs`). They read input JSON from stdin, 
 
 ## SessionStart Hook
 
-Injects the plugin's CLAUDE.md content into Claude's context at the start of every session. This ensures Claude always receives the behavioral guidelines (Clarity First, Surgical Changes, etc.) and KB system instructions.
+Injects the plugin's INJECT.md content into Claude's context at the start of every session. This ensures Claude always receives the behavioral guidelines (Clarity First, Surgical Changes, etc.) and KB system instructions.
 
-Implementation: `hooks/session-start.mjs` reads `CLAUDE.md` from the plugin root, resolves the active source slug from `CLAUDE_PROJECT_DIR`, replaces every `{{CORAL_PROJECTS}}` placeholder with `~/.coral/projects/{slug}`, and returns the result via `hookSpecificOutput.additionalContext`.
+Implementation: `hooks/session-start.mjs` reads `INJECT.md` from the plugin root, resolves the active source slug from `CLAUDE_PROJECT_DIR`, replaces `{{CORAL_PROJECTS}}` with `~/.coral/projects/{slug}` and `{{PROJECT_SOURCE}}` with the project source identifier, and returns the result via `hookSpecificOutput.additionalContext`.
 
-> **Note**: Codex sessions receive CLAUDE.md through a separate mechanism - the MCP server prepends it to the prompt in `executeOneShot()`. See [Core Modules](./core-modules.md) for details.
+> **Note**: Codex sessions receive INJECT.md through a separate mechanism - the MCP server prepends it to the prompt in `executeOneShot()`. See [Core Modules](./core-modules.md) for details.
 
 ## SessionStart Hook (Backend Warm-Start)
 

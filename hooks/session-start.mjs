@@ -13,13 +13,15 @@ try {
 
   if (!pluginRoot || !existsSync(pluginRoot)) process.exit(0);
 
-  const claudeMdText = readFileSync(`${pluginRoot}/CLAUDE.md`, 'utf-8');
-  const claudeMdContent = projectDir
-    ? claudeMdText.replaceAll('{{CORAL_PROJECTS}}', coralProjectDir(projectDir))
-    : claudeMdText;
+  const injectText = readFileSync(`${pluginRoot}/INJECT.md`, 'utf-8');
+  const injectContent = projectDir
+    ? injectText
+        .replaceAll('{{CORAL_PROJECTS}}', coralProjectDir(projectDir))
+        .replaceAll('{{PROJECT_SOURCE}}', resolveProjectSource(projectDir))
+    : injectText;
   const additionalContext = sessionId
-    ? `SessionStart:session_id=${sessionId}\n\n${claudeMdContent}`
-    : claudeMdContent;
+    ? `SessionStart:session_id=${sessionId}\n\n${injectContent}`
+    : injectContent;
 
   console.log(JSON.stringify({
     hookSpecificOutput: {

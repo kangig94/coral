@@ -11,7 +11,7 @@ import { spawnCli, killAllChildren as killAllRunnerChildren } from '../../execut
 import type { EffortLevel } from '../../shared/schemas.js';
 import { parseCodexJsonl } from './output-parser.js';
 import type { CliInfo } from '../cli-detection.js';
-import { projectDataDir } from '../../client/paths.js';
+import { projectDataDir, resolveProjectSource } from '../../client/paths.js';
 
 export interface CodexExecOptions {
   model?: string;
@@ -128,29 +128,31 @@ async function executeCodex(
   };
 }
 
-// CLAUDE.md injection - prepend plugin guidelines to one-shot prompts
+// INJECT.md injection - prepend plugin guidelines to one-shot prompts
 declare const __PLUGIN_ROOT__: string;
 const pluginRoot: string = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..');
-let claudeMdCache: string | undefined;
+let injectMdCache: string | undefined;
 
-function getClaudeMd(): string {
-  if (claudeMdCache !== undefined) return claudeMdCache;
+function getInjectMd(): string {
+  if (injectMdCache !== undefined) return injectMdCache;
 
   try {
-    claudeMdCache = readFileSync(join(pluginRoot, 'CLAUDE.md'), 'utf-8');
+    injectMdCache = readFileSync(join(pluginRoot, 'INJECT.md'), 'utf-8');
   } catch {
-    claudeMdCache = '';
+    injectMdCache = '';
   }
 
-  return claudeMdCache;
+  return injectMdCache;
 }
 
-function prependClaudeMd(prompt: string, workingDirectory?: string): string {
-  const md = getClaudeMd();
+function prependInjectMd(prompt: string, workingDirectory?: string): string {
+  const md = getInjectMd();
   if (!md) return prompt;
 
   const substitutedMd = workingDirectory
-    ? md.replaceAll('{{CORAL_PROJECTS}}', projectDataDir(workingDirectory))
+    ? md
+        .replaceAll('{{CORAL_PROJECTS}}', projectDataDir(workingDirectory))
+        .replaceAll('{{PROJECT_SOURCE}}', resolveProjectSource(workingDirectory))
     : md;
 
   return `${substitutedMd}\n\n---\n\n${prompt}`;
@@ -194,7 +196,7 @@ export async function executeOneShot(
   const resolvedModel = resolveModel(opts);
   return executeCodex(
     buildExecutionArgs(['exec'], resolvedModel, opts),
-    prependClaudeMd(prompt, opts.workingDirectory),
+    prependInjectMd(prompt, opts.workingDirectory),
     resolvedModel,
     opts,
   );
