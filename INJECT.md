@@ -66,7 +66,7 @@ For multi-step tasks, state a brief plan:
 
 # Knowledge Base
 
-**Hard rule: Never write directly to `kb/`. The only path is memo → promotion. No exceptions, all contexts.**
+**Hard rule: Never write directly to `kb/notes/`. The only path is memo → promotion. No exceptions, all contexts.**
 
 ## Memo
 On non-obvious discovery during any phase (review, planning, implementation), write immediately to:
@@ -81,7 +81,7 @@ source: {{PROJECT_SOURCE}}
 ```
 
 ## Lookup
-Before debugging from scratch, check `~/.coral/kb/`. On plan start, review domain-related kb files.
+Before debugging from scratch, check `~/.coral/kb/notes/`. On plan start, review domain-related kb files.
 
 ## Promotion
 **Who**: top-level orchestrator only, after all work completes (not implementation — after review too).
@@ -89,21 +89,37 @@ Subagents and delegated tasks only write memos, never promote.
 
 **Process**: review all memos, check existing kb entries — discard duplicates, update existing, create only for genuinely absent knowledge. Delete processed memos.
 
-**Format** — `~/.coral/kb/<domain>-<topic>.md`:
+**Format** — `~/.coral/kb/notes/<domain>-<topic>.md`:
 
 ```yaml
 ---
 source:
   - {{PROJECT_SOURCE}}
+principles:
+  - "[[<principle-name>]]"
+tags: [<domain>, ...]
 createdAt: YYYY-MM-DD
 updatedAt: YYYY-MM-DD
-links: []
 ---
 # <Title>
 ## Rule
 ## Why
 ## Pattern
 ```
+
+**Principles** — `~/.coral/kb/principles/<principle-name>.md`:
+
+A principle is a recurring pattern or lesson that multiple KB notes independently confirm.
+Example: `fail-open-over-fail-closed.md` — hooks, MCP error handling, and session recovery all share this lesson.
+
+```yaml
+---
+createdAt: YYYY-MM-DD
+---
+```
+One-sentence statement of the principle. No sections needed — the value is in the backlinks that collect related notes.
+
+Do not create directly — principles emerge when multiple notes share a common lesson.
 
 ## Invalidation
 If a kb entry contradicts current code, update or delete it immediately.
