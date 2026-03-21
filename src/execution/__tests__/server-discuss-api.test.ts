@@ -1,18 +1,21 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { request as httpRequest, type IncomingMessage as ClientIncomingMessage } from 'node:http';
 
 import { makeEvent } from '../../discuss/events.js';
-import type { DiscussDetailResponse } from '../../client/discuss.js';
+import type { DiscussDetailResponse, DiscussSummaryDto } from '../../client/discuss.js';
 import * as discussLoop from '../discuss-loop.js';
 import {
   createDiscussContextRegistry,
   get as getDiscussContext,
   type DiscussContextRegistry,
 } from '../discuss-context-registry.js';
+import { attachSession } from '../discuss-registry.js';
 import { submitManualSpeech } from '../discuss-operations.js';
 import type { BackendServerController } from '../server.js';
 import { createBackendServer } from '../server.js';
 import {
+  appendPersistedEvents,
   cleanupDiscussHarnesses,
   createDiscussHarness,
   createExecutionServiceStub,
@@ -252,6 +255,79 @@ describe('server discuss API', () => {
     expect(liveAuditResponse.status).toBe(409);
     expect(await liveAuditResponse.json()).toEqual({
       error: 'audit_requires_ended_session',
+    });
+  });
+
+  it('loads discuss detail from another checkout of the same source', async () => {
+    const sharedSource = 'test-org/shared-repo';
+    const sharedRemote = 'https://github.com/test-org/shared-repo.git';
+    const firstHarness = createDiscussHarness(createExecutionServiceStub(), sharedSource);
+    const secondHarness = createDiscussHarness(createExecutionServiceStub(), sharedSource);
+    // Init git repos so server's resolveProjectSource returns the same source
+    execFileSync('git', ['init', '-q'], { cwd: firstHarness.projectRoot, stdio: 'ignore' });
+    execFileSync('git', ['remote', 'add', 'origin', sharedRemote], { cwd: firstHarness.projectRoot, stdio: 'ignore' });
+    execFileSync('git', ['init', '-q'], { cwd: secondHarness.projectRoot, stdio: 'ignore' });
+    execFileSync('git', ['remote', 'add', 'origin', sharedRemote], { cwd: secondHarness.projectRoot, stdio: 'ignore' });
+    await persistSession(firstHarness, {
+      sessionId: 'shared-session',
+    });
+
+    const backend = await startServer(secondHarness.projectRoot, createDiscussContextRegistry(), secondHarness.service);
+
+    const response = await fetch(
+      `${backend.baseUrl}/api/discuss/detail?projectRoot=${encodeURIComponent(secondHarness.projectRoot)}&sessionId=shared-session`,
+      { headers: { 'X-Coral-Backend-Token': backend.token } },
+    );
+    const body = await response.json() as DiscussDetailResponse;
+
+    expect(response.status).toBe(200);
+    expect(body.authority).toBe('live');
+    expect(body.session.projectRoot).toBe(firstHarness.projectRoot);
+    expect(body.session.sessionId).toBe('shared-session');
+  });
+
+  it('dedupes same-source sessions across different project roots in /api/discuss', async () => {
+    const sharedSource = 'test-org/shared-repo';
+    const sharedRemote = 'https://github.com/test-org/shared-repo.git';
+    const firstHarness = createDiscussHarness(createExecutionServiceStub(), sharedSource);
+    const secondHarness = createDiscussHarness(createExecutionServiceStub(), sharedSource);
+    execFileSync('git', ['init', '-q'], { cwd: firstHarness.projectRoot, stdio: 'ignore' });
+    execFileSync('git', ['remote', 'add', 'origin', sharedRemote], { cwd: firstHarness.projectRoot, stdio: 'ignore' });
+    execFileSync('git', ['init', '-q'], { cwd: secondHarness.projectRoot, stdio: 'ignore' });
+    execFileSync('git', ['remote', 'add', 'origin', sharedRemote], { cwd: secondHarness.projectRoot, stdio: 'ignore' });
+    const firstSnapshot = await persistSession(firstHarness, {
+      sessionId: 'shared-session',
+    });
+    const secondSnapshot = await appendPersistedEvents(
+      secondHarness,
+      'shared-session',
+      (current) => [
+        makeEvent(current.sessionId, secondHarness.projectRoot, current.state.topic, current.lastAppliedSeq + 1, 'bid.submitted', '2026-03-11T00:02:30.000Z', {
+          agent: 'alpha',
+          score: 61,
+          thought: 'alt checkout update',
+        }),
+      ],
+    );
+
+    attachSession(firstHarness.context, firstSnapshot);
+    attachSession(secondHarness.context, secondSnapshot);
+    firstHarness.registry.contexts.set(secondHarness.projectRoot, secondHarness.context);
+
+    const backend = await startServer(firstHarness.projectRoot, firstHarness.registry, firstHarness.service);
+
+    const response = await fetch(`${backend.baseUrl}/api/discuss`, {
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+    const body = await response.json() as { sessions: DiscussSummaryDto[] };
+    const sharedSessions = body.sessions.filter((session) => session.sessionId === 'shared-session');
+
+    expect(response.status).toBe(200);
+    expect(sharedSessions).toHaveLength(1);
+    expect(sharedSessions[0]).toMatchObject({
+      sessionId: 'shared-session',
+      projectRoot: firstHarness.projectRoot,
+      authority: 'live',
     });
   });
 

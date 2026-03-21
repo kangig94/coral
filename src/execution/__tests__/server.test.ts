@@ -4,12 +4,14 @@ import { request as httpRequest, type IncomingMessage as ClientIncomingMessage }
 import { basename, join } from 'node:path';
 import type { WaitStreamEvent } from '../../types.js';
 
+import { decideSessionCreate } from '../../discuss/state-machine.js';
 import {
   createDiscussContextRegistry,
 } from '../discuss-context-registry.js';
+import { DiscussSessionStore } from '../discuss-session-store.js';
 import { JOBS_DIR, ProgressStore, jobResultPath } from '../progress-store.js';
 import { SessionManager } from '../session-manager.js';
-import { pluginRootNamespace } from '../../client/paths.js';
+import { discussSourcesPath, pluginRootNamespace, resolveProjectSource } from '../../client/paths.js';
 import type { BackendServerController } from '../server.js';
 
 const testBackendNamespace = pluginRootNamespace(process.cwd());
@@ -309,18 +311,31 @@ describe('execution backend server', () => {
     });
   });
 
-  it('recovers discuss-only project roots from the durable root registry before idle watching starts', async () => {
+  it('recovers discuss-only sources from the durable source registry before idle watching starts', async () => {
     const fakeIdleTimer = createFakeIdleTimer();
     const projectRoot = createProjectRoot('discuss-only-project');
-    mkdirSync(join(mockState.tmpHome, '.claude', 'coral'), { recursive: true });
-    writeFileSync(
-      join(mockState.tmpHome, '.claude', 'coral', 'discuss-project-roots.json'),
-      JSON.stringify({
-        updatedAt: '2026-03-11T00:00:00.000Z',
-        projectRoots: [projectRoot],
-      }, null, 2),
-      'utf8',
+    const store = new DiscussSessionStore(resolveProjectSource(projectRoot));
+    const created = decideSessionCreate(
+      {
+        topic: 'Should the city pedestrianize the downtown core?',
+        min_bid_delay_ms: 0,
+        agents: [
+          { name: 'alpha', persona: '# Alpha', participation: 'required' },
+          { name: 'beta', persona: '# Beta', participation: 'required' },
+        ],
+      },
+      'discuss-only-session',
+      projectRoot,
+      'Should the city pedestrianize the downtown core?',
+      1,
+      '2026-03-11T00:00:00.000Z',
     );
+    if (!created.ok) {
+      throw new Error(created.error);
+    }
+    await store.append('discuss-only-session', null, created.value);
+    store.flushDirtyIndexes();
+    expect(existsSync(discussSourcesPath())).toBe(true);
 
     const discussRegistry = createDiscussContextRegistry();
     const setSpy = vi.spyOn(discussRegistry.contexts, 'set');
@@ -335,6 +350,7 @@ describe('execution backend server', () => {
       expect.objectContaining({ projectRoot }),
     );
     expect(discussRegistry.contexts.has(projectRoot)).toBe(true);
+    expect(discussRegistry.contexts.get(projectRoot)?.sessions.has('discuss-only-session')).toBe(true);
     expect(fakeIdleTimer.startWatching).toHaveBeenCalledTimes(1);
     const finalRecoveryOrder = setSpy.mock.invocationCallOrder.at(-1);
     const idleWatchOrder = fakeIdleTimer.startWatching.mock.invocationCallOrder.at(0);

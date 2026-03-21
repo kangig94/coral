@@ -18,7 +18,7 @@ import {
   textResult,
   type McpResult,
 } from '../shared/mcp-utils.js';
-import { pluginRootNamespace } from '../client/paths.js';
+import { pluginRootNamespace, resolveProjectSource } from '../client/paths.js';
 import { internalProviderFieldsShape, sharedExecSchema, sharedForkSchema, sharedResumeSchema } from '../shared/schemas.js';
 import {
   AgentInputSchema,
@@ -48,7 +48,6 @@ import {
 } from './discuss-context.js';
 import {
   createDiscussContextRegistry,
-  get as getDiscussContextFromRegistry,
   getOrCreate as getOrCreateDiscussContext,
   hasRunningSessions,
   listAttachedSessions,
@@ -58,7 +57,6 @@ import {
   DiscussSessionStore,
 } from './discuss-session-store.js';
 import * as discussOperations from './discuss-operations.js';
-import { getSession as getAttachedDiscussSession } from './discuss-registry.js';
 import {
   buildDiscussDetail,
   buildDiscussSummary,
@@ -68,7 +66,7 @@ import {
   type DiscussView,
 } from '../client/discuss.js';
 import {
-  readDiscussProjectRoots,
+  readDiscussSources,
 } from '../client/readers.js';
 import { getAllNewProviders, getNewProvider } from '../providers/registry.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
@@ -1006,10 +1004,10 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     return created;
   }
 
-  function getDiscussStore(projectRoot: string): DiscussSessionStore {
-    const existing = discussStores.get(projectRoot);
+  function getDiscussStoreForSource(source: string): DiscussSessionStore {
+    const existing = discussStores.get(source);
     if (existing) return existing;
-    const created = new DiscussSessionStore(projectRoot, {
+    const created = new DiscussSessionStore(source, {
       onCommit: (snapshot) => {
         eventBus.emit('discuss:updated', {
           projectRoot: snapshot.projectRoot,
@@ -1019,8 +1017,12 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         });
       },
     });
-    discussStores.set(projectRoot, created);
+    discussStores.set(source, created);
     return created;
+  }
+
+  function getDiscussStore(projectRoot: string): DiscussSessionStore {
+    return getDiscussStoreForSource(resolveProjectSource(projectRoot));
   }
 
   function getDiscussContext(ctx: CallerContext): DiscussContext {
@@ -1097,23 +1099,23 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     return { status, events };
   }
 
-  function knownDiscussProjectRoots(): Set<string> {
-    const projectRoots = new Set<string>();
-    for (const projectRoot of readDiscussProjectRoots()) {
-      projectRoots.add(projectRoot);
+  function knownDiscussSources(): Set<string> {
+    const sources = new Set<string>();
+    for (const source of readDiscussSources()) {
+      sources.add(source);
     }
     for (const liveSession of listAttachedSessions(discussRegistry)) {
-      projectRoots.add(liveSession.projectRoot);
+      sources.add(resolveProjectSource(liveSession.projectRoot));
     }
-    return projectRoots;
+    return sources;
   }
 
   function listDiscussSessions(): DiscussSummaryDto[] {
     const results = new Map<string, DiscussSummaryDto>();
 
-    for (const projectRoot of knownDiscussProjectRoots()) {
-      for (const summary of getDiscussStore(projectRoot).listSummariesFromIndex()) {
-        const key = `${projectRoot}\u0000${summary.sessionId}`;
+    for (const source of knownDiscussSources()) {
+      for (const summary of getDiscussStoreForSource(source).listSummariesFromIndex()) {
+        const key = `${source}\u0000${summary.sessionId}`;
         results.set(key, summary);
       }
     }
@@ -1121,15 +1123,20 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     for (const liveSession of listAttachedSessions(discussRegistry)) {
       const snapshot = liveSession.session.snapshot;
       const summary = buildDiscussSummary(snapshot, 'live');
-      results.set(`${summary.projectRoot}\u0000${summary.sessionId}`, summary);
+      const source = resolveProjectSource(liveSession.projectRoot);
+      results.set(`${source}\u0000${summary.sessionId}`, summary);
     }
 
     return [...results.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
-  function isLiveDiscussSession(projectRoot: string, sessionId: string): boolean {
-    const context = getDiscussContextFromRegistry(discussRegistry, projectRoot);
-    return context !== undefined && getAttachedDiscussSession(context, sessionId) !== undefined;
+  function isLiveDiscussSession(source: string, sessionId: string): boolean {
+    for (const liveSession of listAttachedSessions(discussRegistry)) {
+      if (liveSession.sessionId === sessionId && resolveProjectSource(liveSession.projectRoot) === source) {
+        return true;
+      }
+    }
+    return false;
   }
 
   function parseDiscussView(raw: string | null): DiscussView | null {
@@ -1143,11 +1150,11 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   }
 
   function loadDiscussDetail(
-    projectRoot: string,
+    source: string,
     sessionId: string,
     view: DiscussView,
   ): DiscussDetailResponse | 'audit_requires_ended_session' | null {
-    const snapshot = getDiscussStore(projectRoot).load(sessionId);
+    const snapshot = getDiscussStoreForSource(source).load(sessionId);
     if (!snapshot) {
       return null;
     }
@@ -1155,7 +1162,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       return 'audit_requires_ended_session';
     }
 
-    const authority: DiscussAuthority = isLiveDiscussSession(projectRoot, sessionId)
+    const authority: DiscussAuthority = isLiveDiscussSession(source, sessionId)
       ? 'live'
       : 'persisted';
     return view === 'audit'
@@ -1531,7 +1538,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
           sendJson(res, 400, { error: 'invalid_view', message: 'view must be control or audit' });
           return;
         }
-        const detail = loadDiscussDetail(projectRoot, sessionId, view);
+        const detail = loadDiscussDetail(resolveProjectSource(projectRoot), sessionId, view);
         if (!detail) {
           sendJson(res, 404, { error: 'session_not_found' });
           return;
@@ -1575,14 +1582,14 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         startedAt,
       });
 
-      for (const projectRoot of knownDiscussProjectRoots()) {
-        const recoveryCtx: CallerContext = {
-          projectRoot,
-          pluginRoot: resolvedPluginRoot,
-          coralEnv: {},
-        };
-        await discussOperations.recoverPersistedSessions(
-          getDiscussContext(recoveryCtx),
+      for (const source of knownDiscussSources()) {
+        await discussOperations.recoverPersistedSessionsFromStore(
+          getDiscussStoreForSource(source),
+          (snapshot) => getDiscussContext({
+            projectRoot: snapshot.projectRoot,
+            pluginRoot: resolvedPluginRoot,
+            coralEnv: {},
+          }),
         );
       }
 

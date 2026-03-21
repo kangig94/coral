@@ -125,11 +125,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/migrate-coral-dir.mjs\"",
-            "timeout": 3
-          },
-          {
-            "type": "command",
             "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/ralph-loop.mjs\"",
             "timeout": 5
           },

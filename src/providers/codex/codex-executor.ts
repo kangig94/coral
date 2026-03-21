@@ -11,6 +11,7 @@ import { spawnCli, killAllChildren as killAllRunnerChildren } from '../../execut
 import type { EffortLevel } from '../../shared/schemas.js';
 import { parseCodexJsonl } from './output-parser.js';
 import type { CliInfo } from '../cli-detection.js';
+import { projectDataDir } from '../../client/paths.js';
 
 export interface CodexExecOptions {
   model?: string;
@@ -144,9 +145,15 @@ function getClaudeMd(): string {
   return claudeMdCache;
 }
 
-function prependClaudeMd(prompt: string): string {
+function prependClaudeMd(prompt: string, workingDirectory?: string): string {
   const md = getClaudeMd();
-  return md ? `${md}\n\n---\n\n${prompt}` : prompt;
+  if (!md) return prompt;
+
+  const substitutedMd = workingDirectory
+    ? md.replaceAll('{{CORAL_PROJECTS}}', projectDataDir(workingDirectory))
+    : md;
+
+  return `${substitutedMd}\n\n---\n\n${prompt}`;
 }
 
 /** Base flags shared by all exec modes. Web search is always enabled. */
@@ -187,7 +194,7 @@ export async function executeOneShot(
   const resolvedModel = resolveModel(opts);
   return executeCodex(
     buildExecutionArgs(['exec'], resolvedModel, opts),
-    prependClaudeMd(prompt),
+    prependClaudeMd(prompt, opts.workingDirectory),
     resolvedModel,
     opts,
   );

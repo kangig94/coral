@@ -5,6 +5,7 @@ argument-hint: "[--codex] <issue or topic>"
 ---
 
 > **CORAL_METHODS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/methods/")`
+> **CORAL_PROJECT**: !`url=$(git remote get-url origin 2>/dev/null) && echo ~/.coral/projects/$(echo "$url" | sed -E 's#.*[:/]([^/]+/[^/.]+)(\.git)?$#\1#' | tr '/' '-') || echo ~/.coral/projects/local-$(basename $PWD)`
 
 # Pre-plan
 
@@ -56,7 +57,7 @@ Strip `--codex` flag before passing the prompt to the execution path.
       (e.g. "race condition in this function" -> `race-condition`)
     - Explore the codebase: read relevant files, trace dependencies, check project rules
     - Fill all 7 items — maximize autonomous coverage, mark uncertain items with "unconfirmed"
-    - Create agreement file: `.coral/plans/pre-{topic}.md` and tasks for the 7 items
+    - Create agreement file: `CORAL_PROJECT/plans/pre-{topic}.md` and tasks for the 7 items
 
     **RECOMMENDED**: When filling Assumptions (#4), consider applying
     `CORAL_METHODS/HOW-ELICIT.md` Lens 3 (Assumption Surfacing).
@@ -147,7 +148,7 @@ Strip `--codex` flag before passing the prompt to the execution path.
     | Update items from organic conversation | Reject updates outside formal structure |
   </Constraints>
   <Output_Format>
-    Agreement file at `.coral/plans/pre-{topic}.md`:
+    Agreement file at `CORAL_PROJECT/plans/pre-{topic}.md`:
 
     ```markdown
     # Pre-plan: {topic}
@@ -198,7 +199,7 @@ Strip `--codex` flag before passing the prompt to the execution path.
 
     When zero unconfirmed items remain:
     1. Present the decision summary table
-    2. Finalize `.coral/plans/pre-{topic}.md` — remove all `[unconfirmed]` markers and
+    2. Finalize `CORAL_PROJECT/plans/pre-{topic}.md` — remove all `[unconfirmed]` markers and
        alternative lists, keeping only the chosen values
     3. Call `AskUserQuestion`:
 

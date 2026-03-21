@@ -9,23 +9,23 @@ import {
 } from 'node:fs';
 import { dirname } from 'node:path';
 import {
-  readDiscussProjectRoots,
-  listPersistedDiscussSessions,
+  readDiscussSources,
+  listPersistedDiscussSessionsForSource,
   readDiscussEventLog,
   readDiscussSnapshot,
-  readDiscussSummaryIndex,
-  resolveDiscussSessionDir,
+  readDiscussSummaryIndexForSource,
+  resolveDiscussSessionDirForSource,
   type DiscussDiscoveryData,
   type DiscussDiscoverySession,
   type DiscussSummaryIndexData,
   type DiscussSummaryIndexRow,
 } from '../client/readers.js';
 import {
-  discussProjectRootsPath,
-  discussDiscoveryPath,
+  discussSourcesPath,
+  discussDiscoveryPathForSource,
   discussEventLogPath,
-  discussSessionDir,
-  discussSummaryIndexPath,
+  discussSessionDirForSource,
+  discussSummaryIndexPathForSource,
   discussStatePath,
 } from '../client/paths.js';
 import { type DiscussSummaryDto } from '../client/discuss.js';
@@ -38,7 +38,7 @@ import {
 
 const sessionAppendLocks = new Map<string, Promise<void>>();
 const projectDiscoveryLocks = new Map<string, Promise<void>>();
-const discussProjectRootRegistryLocks = new Map<string, Promise<void>>();
+const discussSourcesRegistryLocks = new Map<string, Promise<void>>();
 
 type DiscussSessionStoreOptions = {
   onCommit?: (snapshot: PersistedDiscussSnapshot, events: DiscussDomainEvent[]) => void;
@@ -61,8 +61,8 @@ export class DiscussStaleWriteError extends Error {
   }
 }
 
-function sessionLockKey(projectRoot: string, sessionId: string): string {
-  return `${projectRoot}\u0000${sessionId}`;
+function sessionLockKey(source: string, sessionId: string): string {
+  return `${source}\u0000${sessionId}`;
 }
 
 async function withPromiseChainLock<T>(
@@ -153,7 +153,6 @@ function appendEventBatch(logPath: string, events: DiscussDomainEvent[]): void {
 
 function validateAppendBatch(
   sessionId: string,
-  projectRoot: string,
   lastAppliedSeq: number,
   events: DiscussDomainEvent[],
 ): void {
@@ -161,9 +160,6 @@ function validateAppendBatch(
   for (const event of events) {
     if (event.sessionId !== sessionId) {
       throw new Error(`Discuss append batch session mismatch: expected ${sessionId}, got ${event.sessionId}`);
-    }
-    if (event.projectRoot !== projectRoot) {
-      throw new Error(`Discuss append batch project mismatch: expected ${projectRoot}, got ${event.projectRoot}`);
     }
     if (event.seq !== expectedSeq) {
       throw new Error(`Discuss append batch sequence mismatch: expected ${expectedSeq}, got ${event.seq}`);
@@ -199,7 +195,7 @@ function sortSummaryIndexRows(rows: DiscussSummaryIndexRow[]): DiscussSummaryInd
 }
 
 function buildSummaryIndexData(
-  projectRoot: string,
+  source: string,
   rows: DiscussSummaryIndexRow[],
 ): DiscussSummaryIndexData {
   const sessions = sortSummaryIndexRows(rows);
@@ -209,7 +205,7 @@ function buildSummaryIndexData(
   );
 
   return {
-    projectRoot,
+    source,
     updatedAt,
     sessions,
   };
@@ -222,7 +218,7 @@ function summaryIndexDataEquals(
   if (!left) {
     return false;
   }
-  if (left.projectRoot !== right.projectRoot
+  if (left.source !== right.source
     || left.updatedAt !== right.updatedAt
     || left.sessions.length !== right.sessions.length) {
     return false;
@@ -267,22 +263,22 @@ function buildPersistedSummary(row: DiscussSummaryIndexRow): DiscussSummaryDto {
 }
 
 export class DiscussSessionStore {
-  private readonly projectRoot: string;
+  private readonly source: string;
   private readonly onCommit?: DiscussSessionStoreOptions['onCommit'];
   private coldStartHydrated = false;
   private dirtyDiscovery = false;
   private dirtySummaryIndex = false;
-  private dirtyProjectRoots = false;
+  private dirtySources = false;
   private pendingSnapshots = new Map<string, { sessionDir: string; snapshot: PersistedDiscussSnapshot }>();
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(projectRoot: string, options: DiscussSessionStoreOptions = {}) {
-    this.projectRoot = projectRoot;
+  constructor(source: string, options: DiscussSessionStoreOptions = {}) {
+    this.source = source;
     this.onCommit = options.onCommit;
   }
 
   load(sessionId: string): PersistedDiscussSnapshot | null {
-    const sessionDir = resolveDiscussSessionDir(this.projectRoot, sessionId);
+    const sessionDir = resolveDiscussSessionDirForSource(this.source, sessionId);
     if (!sessionDir) {
       return null;
     }
@@ -296,16 +292,16 @@ export class DiscussSessionStore {
   ): Promise<PersistedDiscussSnapshot> {
     return withPromiseChainLock(
       sessionAppendLocks,
-      sessionLockKey(this.projectRoot, sessionId),
+      sessionLockKey(this.source, sessionId),
       async () => {
-        const sessionDir = discussSessionDir(this.projectRoot, sessionId);
+        const sessionDir = discussSessionDirForSource(this.source, sessionId);
         const logPath = discussEventLogPath(sessionDir);
         const statePath = discussStatePath(sessionDir);
 
         mkdirSync(sessionDir, { recursive: true });
 
         const currentSnapshot = this.loadFromSessionDir(sessionId, sessionDir)
-          ?? makeEmptySnapshot(sessionId, this.projectRoot);
+          ?? makeEmptySnapshot(sessionId, events[0]?.projectRoot ?? '');
 
         if (expectedSeq !== null && expectedSeq !== currentSnapshot.lastAppliedSeq) {
           throw new DiscussStaleWriteError(expectedSeq, currentSnapshot.lastAppliedSeq);
@@ -315,7 +311,7 @@ export class DiscussSessionStore {
           return currentSnapshot;
         }
 
-        validateAppendBatch(sessionId, this.projectRoot, currentSnapshot.lastAppliedSeq, events);
+        validateAppendBatch(sessionId, currentSnapshot.lastAppliedSeq, events);
 
         appendEventBatch(logPath, events);
         const logByteOffset = statSync(logPath).size;
@@ -348,7 +344,7 @@ export class DiscussSessionStore {
 
   listSummariesFromIndex(): DiscussSummaryDto[] {
     this.flushDirtyIndexes();
-    const currentIndex = readDiscussSummaryIndex(this.projectRoot);
+    const currentIndex = readDiscussSummaryIndexForSource(this.source);
     if (this.coldStartHydrated && currentIndex) {
       return this.buildSummariesFromIndex(currentIndex);
     }
@@ -363,7 +359,7 @@ export class DiscussSessionStore {
     }
 
     this.coldStartHydrated = true;
-    const hydratedIndex = readDiscussSummaryIndex(this.projectRoot);
+    const hydratedIndex = readDiscussSummaryIndexForSource(this.source);
     if (!hydratedIndex) {
       return repair.summaries;
     }
@@ -372,11 +368,11 @@ export class DiscussSessionStore {
 
   listRecoveryCandidates(): DiscussDiscoverySession[] {
     this.flushDirtyIndexes();
-    return listPersistedDiscussSessions(this.projectRoot);
+    return listPersistedDiscussSessionsForSource(this.source);
   }
 
   resolveSessionDir(sessionId: string): string {
-    const sessionDir = resolveDiscussSessionDir(this.projectRoot, sessionId);
+    const sessionDir = resolveDiscussSessionDirForSource(this.source, sessionId);
     if (!sessionDir) {
       throw new Error(`Discuss session not found: ${sessionId}`);
     }
@@ -384,21 +380,21 @@ export class DiscussSessionStore {
   }
 
   flushDirtyIndexes(): void {
-    if (!this.dirtyDiscovery && !this.dirtySummaryIndex && !this.dirtyProjectRoots) {
+    if (!this.dirtyDiscovery && !this.dirtySummaryIndex && !this.dirtySources) {
       return;
     }
 
-    tryWithPromiseChainLockSync(projectDiscoveryLocks, this.projectRoot, () => {
+    tryWithPromiseChainLockSync(projectDiscoveryLocks, this.source, () => {
       const flushedKeys: string[] = [];
 
       if (this.dirtyDiscovery || this.dirtySummaryIndex) {
         const mergedSessions = new Map<string, DiscussDiscoverySession>();
-        for (const session of listPersistedDiscussSessions(this.projectRoot)) {
+        for (const session of listPersistedDiscussSessionsForSource(this.source)) {
           mergedSessions.set(session.sessionId, session);
         }
 
         const mergedSummaryRows = new Map<string, DiscussSummaryIndexRow>();
-        for (const summary of readDiscussSummaryIndex(this.projectRoot)?.sessions ?? []) {
+        for (const summary of readDiscussSummaryIndexForSource(this.source)?.sessions ?? []) {
           mergedSummaryRows.set(summary.sessionId, summary);
         }
 
@@ -414,7 +410,7 @@ export class DiscussSessionStore {
 
         if (this.dirtyDiscovery) {
           const discovery: DiscussDiscoveryData = {
-            projectRoot: this.projectRoot,
+            source: this.source,
             updatedAt: latestUpdatedAt,
             sessions: [...mergedSessions.values()].sort((left, right) => {
               if (left.createdAt !== right.createdAt) {
@@ -423,39 +419,39 @@ export class DiscussSessionStore {
               return left.sessionId.localeCompare(right.sessionId);
             }),
           };
-          writeAtomicJson(discussDiscoveryPath(this.projectRoot), discovery);
+          writeAtomicJson(discussDiscoveryPathForSource(this.source), discovery);
           this.dirtyDiscovery = false;
         }
 
         if (this.dirtySummaryIndex) {
           writeAtomicJson(
-            discussSummaryIndexPath(this.projectRoot),
-            buildSummaryIndexData(this.projectRoot, [...mergedSummaryRows.values()]),
+            discussSummaryIndexPathForSource(this.source),
+            buildSummaryIndexData(this.source, [...mergedSummaryRows.values()]),
           );
           this.dirtySummaryIndex = false;
         }
       }
 
-      if (this.dirtyProjectRoots) {
+      if (this.dirtySources) {
         const latestSnapshot = [...this.pendingSnapshots.values()].reduce(
           (latest, { snapshot }) => (snapshot.updatedAt > latest.updatedAt ? snapshot : latest),
           { updatedAt: '' } as { updatedAt: string },
         );
-        const wroteRoots = tryWithPromiseChainLockSync(
-          discussProjectRootRegistryLocks,
-          discussProjectRootsPath(),
+        const wroteSources = tryWithPromiseChainLockSync(
+          discussSourcesRegistryLocks,
+          discussSourcesPath(),
           () => {
-            const projectRoots = new Set(readDiscussProjectRoots());
-            projectRoots.add(this.projectRoot);
-            writeAtomicJson(discussProjectRootsPath(), {
+            const sources = new Set(readDiscussSources());
+            sources.add(this.source);
+            writeAtomicJson(discussSourcesPath(), {
               updatedAt: latestSnapshot.updatedAt,
-              projectRoots: [...projectRoots].sort(),
+              sources: [...sources].sort(),
             });
             return true;
           },
         );
-        if (wroteRoots !== null) {
-          this.dirtyProjectRoots = false;
+        if (wroteSources !== null) {
+          this.dirtySources = false;
         }
       }
 
@@ -476,7 +472,7 @@ export class DiscussSessionStore {
   private markIndexesDirty(): void {
     this.dirtyDiscovery = true;
     this.dirtySummaryIndex = true;
-    this.dirtyProjectRoots = true;
+    this.dirtySources = true;
     if (this.flushTimer === null) {
       this.flushTimer = setTimeout(() => {
         this.flushTimer = null;
@@ -507,7 +503,7 @@ export class DiscussSessionStore {
 
     // Fallback: read log and replay (crash recovery, legacy snapshots without logByteOffset, stat failure)
     const eventLog = readDiscussEventLog(logPath).filter((event) =>
-      event.sessionId === sessionId && event.projectRoot === this.projectRoot,
+      event.sessionId === sessionId,
     );
 
     if (snapshot) {
@@ -522,7 +518,7 @@ export class DiscussSessionStore {
       return null;
     }
 
-    return replayDiscussEvents(eventLog, makeEmptySnapshot(sessionId, this.projectRoot));
+    return replayDiscussEvents(eventLog, makeEmptySnapshot(sessionId, eventLog[0]?.projectRoot ?? ''));
   }
 
   private readSessionSnapshot(
@@ -533,7 +529,7 @@ export class DiscussSessionStore {
     if (!snapshot) {
       return null;
     }
-    if (snapshot.sessionId !== sessionId || snapshot.projectRoot !== this.projectRoot) {
+    if (snapshot.sessionId !== sessionId) {
       return null;
     }
     return snapshot;
@@ -549,7 +545,7 @@ export class DiscussSessionStore {
       rows.push(toSummaryIndexRow(snapshot));
     }
 
-    const index = buildSummaryIndexData(this.projectRoot, rows);
+    const index = buildSummaryIndexData(this.source, rows);
     return {
       index,
       summaries: this.buildSummariesFromIndex(index),
@@ -563,17 +559,17 @@ export class DiscussSessionStore {
   }
 
   private persistPersistedSummaryRepair(repair: PersistedSummaryRepair): boolean {
-    const currentIndex = readDiscussSummaryIndex(this.projectRoot);
+    const currentIndex = readDiscussSummaryIndexForSource(this.source);
     if (!summaryIndexDataEquals(currentIndex, repair.index)) {
       const wroteSummaryIndex = tryWithPromiseChainLockSync(
         projectDiscoveryLocks,
-        this.projectRoot,
+        this.source,
         () => {
-          const latestIndex = readDiscussSummaryIndex(this.projectRoot);
+          const latestIndex = readDiscussSummaryIndexForSource(this.source);
           if (summaryIndexDataEquals(latestIndex, repair.index)) {
             return true;
           }
-          writeAtomicJson(discussSummaryIndexPath(this.projectRoot), repair.index);
+          writeAtomicJson(discussSummaryIndexPathForSource(this.source), repair.index);
           return true;
         },
       );
@@ -582,22 +578,22 @@ export class DiscussSessionStore {
       }
     }
 
-    if (repair.index.sessions.length === 0 || readDiscussProjectRoots().includes(this.projectRoot)) {
+    if (repair.index.sessions.length === 0 || readDiscussSources().includes(this.source)) {
       return true;
     }
 
     const updatedRegistry = tryWithPromiseChainLockSync(
-      discussProjectRootRegistryLocks,
-      discussProjectRootsPath(),
+      discussSourcesRegistryLocks,
+      discussSourcesPath(),
       () => {
-        const projectRoots = new Set(readDiscussProjectRoots());
-        if (projectRoots.has(this.projectRoot)) {
+        const sources = new Set(readDiscussSources());
+        if (sources.has(this.source)) {
           return true;
         }
-        projectRoots.add(this.projectRoot);
-        writeAtomicJson(discussProjectRootsPath(), {
+        sources.add(this.source);
+        writeAtomicJson(discussSourcesPath(), {
           updatedAt: repair.index.updatedAt,
-          projectRoots: [...projectRoots].sort(),
+          sources: [...sources].sort(),
         });
         return true;
       },

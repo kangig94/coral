@@ -35,8 +35,8 @@
 │  │ Uses BackendClient + streamWait/lifecycle bridge helpers    │ │        │
 │  └──────────────────────────────┬──────────────────────────────┘ │        │
 │                                 │                                │        │
-│  Persisted discuss data: {project}/.coral/discuss/        │        │
-│    discovery.json + <session-id>/{event-log.jsonl,state.json}    │        │
+│  Persisted discuss data: ~/.coral/projects/{slug}/discuss/ │        │
+│    discovery.json + summary-index.json + <session-id>/...  │        │
 │                                 │                                │        │
 │                                 │                                │        │
 │                                 │                                │        │
@@ -57,7 +57,7 @@
 │  ├── Idle auto-shutdown (CORAL_BACKEND_IDLE_MS, default 6h)               │
 │  ├── Job storage       (/tmp/coral-jobs/<jobId>/)                         │
 │  ├── Session storage   (~/.claude/coral/sessions/)                        │
-│  ├── Discuss storage   {project}/.coral/discuss/                   │
+│  ├── Discuss storage   ~/.coral/projects/{slug}/discuss/           │
 │  └── Routes:                                                              │
 │      GET  /health         → version, instanceId, uptime                   │
 │      GET  /tools          → tool descriptors for MCP ListTools            │
@@ -370,32 +370,40 @@ Each file is a single `SessionEntry`. Corrupt files are skipped with a warning; 
 ### 9. Session Storage Layout (Discuss)
 
 ```
-{project}/.coral/discuss/
-├── discovery.json                  # Per-project discuss index
-└── <session-id>/
-    ├── event-log.jsonl             # Canonical append-only event stream
-    └── state.json                  # Derived PersistedDiscussSnapshot
+~/.coral/
+├── discuss-sources.json               # Shared source registry for recovery
+└── projects/
+    └── <source-slug>/
+        └── discuss/
+            ├── discovery.json         # Source-scoped recovery index
+            ├── summary-index.json     # Source-scoped listing index
+            └── <session-id>/
+                ├── event-log.jsonl    # Canonical append-only event stream
+                └── state.json         # Derived PersistedDiscussSnapshot
 ```
 
-`DiscussSessionStore.append()` writes in strict order: append + `fdatasync` the event log, reduce into the next snapshot, atomically rewrite `state.json`, then atomically merge `discovery.json`. `state.json` is an optimization and restart seed; `event-log.jsonl` is the authority.
+`DiscussSessionStore.append()` writes in strict order: append + `fdatasync` the event log, reduce into the next snapshot, atomically rewrite `state.json`, then atomically merge `discovery.json` and `summary-index.json`. `state.json` is an optimization and restart seed; `event-log.jsonl` is the authority. Same-source checkouts share this persisted storage; `projectRoot` remains metadata for live attachment and display.
 
 ### 10. Knowledge Base Storage
 
 ```
-{project}/.coral/
-├── kb/                             # Git-tracked (multi-device sync)
+~/.coral/
+├── kb/                             # Shared cross-project knowledge base
 │   ├── domain-topic.md
 │   └── ...
-├── memo/                           # Gitignored (ephemeral buffer before promotion)
-│   └── <timestamp>-<topic>.md
-├── plans/                          # Gitignored
-├── analysis/                       # Gitignored
-└── discuss/                        # Gitignored
+├── discuss-sources.json            # Shared discuss source registry
+└── projects/
+    └── <source-slug>/              # owner-repo or local-dirname
+        ├── memo/
+        │   └── <timestamp>-<topic>.md
+        ├── plans/
+        ├── analysis/
+        └── discuss/
 ```
 
-- **KB** (`.coral/kb/`) is project-local and git-tracked for cross-device sync
-- Everything else in `.coral/` is gitignored (ephemeral working data)
-- Promotion: memo → kb (on task completion or plan approval)
+- **KB** (`~/.coral/kb/`) is global and shared across projects.
+- **Project working data** lives under `~/.coral/projects/{slug}/`, where `{slug}` comes from the canonical git source (`owner/repo` -> `owner-repo`) with `local/<dirname>` fallback.
+- Promotion stays memo -> review -> `~/.coral/kb/`.
 
 ## Directory Structure
 

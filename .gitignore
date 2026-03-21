@@ -2,7 +2,3 @@ node_modules/
 dist/
 *.tsbuildinfo
 ref/
-
-# Coral (device-local files)
-.coral/*
-!.coral/kb/

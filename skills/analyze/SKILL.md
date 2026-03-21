@@ -6,6 +6,7 @@ argument-hint: "[--codex] [investigation target or question]"
 
 > **CORAL_AGENTS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/agents/")`
 > **CORAL_METHODS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/methods/")`
+> **CORAL_PROJECT**: !`url=$(git remote get-url origin 2>/dev/null) && echo ~/.coral/projects/$(echo "$url" | sed -E 's#.*[:/]([^/]+/[^/.]+)(\.git)?$#\1#' | tr '/' '-') || echo ~/.coral/projects/local-$(basename $PWD)`
 
 # Deep Analysis & Investigation
 
@@ -25,7 +26,7 @@ argument-hint: "[--codex] [investigation target or question]"
 <Protocol>
   ## Phase 1 — Create Analysis File
 
-  Write `.coral/analysis/{YYYY-MM-DD}-{topic}.md` with header:
+  Write `CORAL_PROJECT/analysis/{YYYY-MM-DD}-{topic}.md` with header:
   ```markdown
   # Analysis: {topic}
   Date: {YYYY-MM-DD}

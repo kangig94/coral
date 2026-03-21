@@ -2,13 +2,14 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { isRecord, isStringArray } from '../shared/mcp-utils.js';
 import {
-  discussProjectRootsPath,
+  discussSourcesPath,
   JOBS_DIR,
-  discussBaseDir,
-  discussDiscoveryPath,
-  discussSummaryIndexPath,
+  discussBaseDirForSource,
+  discussDiscoveryPathForSource,
   discussEventLogPath,
   discussStatePath,
+  discussSummaryIndexPathForSource,
+  resolveProjectSource,
 } from './paths.js';
 import type { PersistedProgressRecord, PersistedStatusRecord } from '../types.js';
 import type { SessionEntry } from '../execution/session-manager.js';
@@ -420,13 +421,6 @@ function isValidDiscussDiscoverySession(value: unknown): value is DiscussDiscove
     && typeof value.createdAt === 'string';
 }
 
-function isValidDiscussDiscoveryData(value: unknown): value is DiscussDiscoveryData {
-  if (!isRecord(value) || !Array.isArray(value.sessions)) return false;
-  return typeof value.projectRoot === 'string'
-    && typeof value.updatedAt === 'string'
-    && value.sessions.every(isValidDiscussDiscoverySession);
-}
-
 function isValidDiscussSummaryIndexRow(value: unknown): value is DiscussSummaryIndexRow {
   if (!isRecord(value)) return false;
   return typeof value.sessionId === 'string'
@@ -442,21 +436,81 @@ function isValidDiscussSummaryIndexRow(value: unknown): value is DiscussSummaryI
     && value.lastSeq >= 0;
 }
 
-function isValidDiscussSummaryIndexData(value: unknown): value is DiscussSummaryIndexData {
-  if (!isRecord(value) || !Array.isArray(value.sessions)) return false;
-  return typeof value.projectRoot === 'string'
-    && typeof value.updatedAt === 'string'
-    && value.sessions.every((session) =>
-      isValidDiscussSummaryIndexRow(session) && session.projectRoot === value.projectRoot,
-    );
+type DiscussSourcesRegistryData = {
+  updatedAt?: string;
+  sources: string[];
+};
+
+function parseDiscussDiscoveryData(
+  value: unknown,
+  source: string,
+): DiscussDiscoveryData | null {
+  if (!isRecord(value) || !Array.isArray(value.sessions)) return null;
+
+  const fileSource = typeof value.source === 'string'
+    ? value.source
+    : typeof value.projectRoot === 'string'
+      ? source
+      : null;
+
+  if (fileSource !== source
+    || typeof value.updatedAt !== 'string'
+    || !value.sessions.every(isValidDiscussDiscoverySession)) {
+    return null;
+  }
+
+  return {
+    source,
+    updatedAt: value.updatedAt,
+    sessions: value.sessions as DiscussDiscoverySession[],
+  };
 }
 
-function isValidDiscussProjectRootsRegistry(
+function parseDiscussSummaryIndexData(
   value: unknown,
-): value is { updatedAt?: string; projectRoots: string[] } {
-  return isRecord(value)
-    && isStringArray(value.projectRoots)
-    && (value.updatedAt === undefined || typeof value.updatedAt === 'string');
+  source: string,
+): DiscussSummaryIndexData | null {
+  if (!isRecord(value) || !Array.isArray(value.sessions)) return null;
+
+  const fileSource = typeof value.source === 'string'
+    ? value.source
+    : typeof value.projectRoot === 'string'
+      ? source
+      : null;
+
+  if (fileSource !== source
+    || typeof value.updatedAt !== 'string'
+    || !value.sessions.every(isValidDiscussSummaryIndexRow)) {
+    return null;
+  }
+
+  return {
+    source,
+    updatedAt: value.updatedAt,
+    sessions: value.sessions as DiscussSummaryIndexRow[],
+  };
+}
+
+function parseDiscussSourcesRegistry(value: unknown): DiscussSourcesRegistryData | null {
+  if (!isRecord(value) || (value.updatedAt !== undefined && typeof value.updatedAt !== 'string')) {
+    return null;
+  }
+
+  if (isStringArray(value.sources)) {
+    return {
+      updatedAt: value.updatedAt,
+      sources: [...new Set(value.sources)],
+    };
+  }
+
+  if (!isStringArray(value.projectRoots)) {
+    return null;
+  }
+
+  return {
+    updatedAt: value.updatedAt,
+    sources: [...new Set(value.projectRoots.map((projectRoot) => resolveProjectSource(projectRoot)))],
+  };
 }
 
 /**
@@ -504,7 +558,7 @@ export interface DiscussDiscoverySession {
  */
 export interface DiscussDiscoveryData {
   sessions: DiscussDiscoverySession[];
-  projectRoot: string;
+  source: string;
   updatedAt: string;
 }
 
@@ -527,7 +581,7 @@ export interface DiscussSummaryIndexRow {
  */
 export interface DiscussSummaryIndexData {
   sessions: DiscussSummaryIndexRow[];
-  projectRoot: string;
+  source: string;
   updatedAt: string;
 }
 
@@ -617,35 +671,54 @@ export function readDiscussEventLog(logPath: string): DiscussDomainEvent[] {
 /**
  * Reads and validates the discuss discovery metadata for a project.
  */
-export function readDiscussDiscovery(projectRoot: string): DiscussDiscoveryData | null {
-  const discovery = readJsonFile(discussDiscoveryPath(projectRoot));
+export function readDiscussDiscoveryForSource(source: string): DiscussDiscoveryData | null {
+  const discovery = readJsonFile(discussDiscoveryPathForSource(source));
   if (discovery === null) return null;
-  return isValidDiscussDiscoveryData(discovery) ? discovery : null;
+  return parseDiscussDiscoveryData(discovery, source);
+}
+
+/**
+ * Reads and validates the discuss discovery metadata for a project.
+ */
+export function readDiscussDiscovery(projectRoot: string): DiscussDiscoveryData | null {
+  return readDiscussDiscoveryForSource(resolveProjectSource(projectRoot));
+}
+
+/**
+ * Reads and validates the discuss summary index for a project.
+ */
+export function readDiscussSummaryIndexForSource(source: string): DiscussSummaryIndexData | null {
+  const index = readJsonFile(discussSummaryIndexPathForSource(source));
+  if (index === null) return null;
+  return parseDiscussSummaryIndexData(index, source);
 }
 
 /**
  * Reads and validates the discuss summary index for a project.
  */
 export function readDiscussSummaryIndex(projectRoot: string): DiscussSummaryIndexData | null {
-  const index = readJsonFile(discussSummaryIndexPath(projectRoot));
-  if (index === null) return null;
-  return isValidDiscussSummaryIndexData(index) ? index : null;
+  return readDiscussSummaryIndexForSource(resolveProjectSource(projectRoot));
+}
+
+export function readDiscussSources(): string[] {
+  const registry = readJsonFile(discussSourcesPath());
+  const parsed = parseDiscussSourcesRegistry(registry);
+  if (!parsed) {
+    return [];
+  }
+  return parsed.sources;
 }
 
 export function readDiscussProjectRoots(): string[] {
-  const registry = readJsonFile(discussProjectRootsPath());
-  if (!isValidDiscussProjectRootsRegistry(registry)) {
-    return [];
-  }
-  return [...new Set(registry.projectRoots)];
+  return readDiscussSources();
 }
 
 function canUseDiscussSessionDir(sessionDir: string): boolean {
   return existsSync(discussStatePath(sessionDir)) || existsSync(discussEventLogPath(sessionDir));
 }
 
-function scanPersistedDiscussSessions(projectRoot: string): DiscussDiscoverySession[] {
-  const baseDir = discussBaseDir(projectRoot);
+function scanPersistedDiscussSessionsForSource(source: string): DiscussDiscoverySession[] {
+  const baseDir = discussBaseDirForSource(source);
   const entries = readDirectoryEntries(baseDir);
 
   const sessions: DiscussDiscoverySession[] = [];
@@ -668,14 +741,14 @@ function scanPersistedDiscussSessions(projectRoot: string): DiscussDiscoverySess
 /**
  * Resolves a discuss session directory using discovery first, then directory scan fallback.
  */
-export function resolveDiscussSessionDir(projectRoot: string, sessionId: string): string | null {
-  const discovery = readDiscussDiscovery(projectRoot);
+export function resolveDiscussSessionDirForSource(source: string, sessionId: string): string | null {
+  const discovery = readDiscussDiscoveryForSource(source);
   const discoveredDir = discovery?.sessions.find((session) => session.sessionId === sessionId)?.sessionDir;
   if (discoveredDir && canUseDiscussSessionDir(discoveredDir)) {
     return discoveredDir;
   }
 
-  const baseDir = discussBaseDir(projectRoot);
+  const baseDir = discussBaseDirForSource(source);
   const entries = readDirectoryEntries(baseDir);
 
   for (const entry of entries) {
@@ -694,11 +767,18 @@ export function resolveDiscussSessionDir(projectRoot: string, sessionId: string)
 }
 
 /**
+ * Resolves a discuss session directory using discovery first, then directory scan fallback.
+ */
+export function resolveDiscussSessionDir(projectRoot: string, sessionId: string): string | null {
+  return resolveDiscussSessionDirForSource(resolveProjectSource(projectRoot), sessionId);
+}
+
+/**
  * Lists persisted discuss sessions using discovery first with state-based fallback repair.
  */
-export function listPersistedDiscussSessions(projectRoot: string): DiscussDiscoverySession[] {
-  const discovered = readDiscussDiscovery(projectRoot);
-  const scanned = scanPersistedDiscussSessions(projectRoot);
+export function listPersistedDiscussSessionsForSource(source: string): DiscussDiscoverySession[] {
+  const discovered = readDiscussDiscoveryForSource(source);
+  const scanned = scanPersistedDiscussSessionsForSource(source);
   if (!discovered) {
     return scanned;
   }
@@ -732,4 +812,11 @@ export function listPersistedDiscussSessions(projectRoot: string): DiscussDiscov
     }
   }
   return [...merged.values()];
+}
+
+/**
+ * Lists persisted discuss sessions using discovery first with state-based fallback repair.
+ */
+export function listPersistedDiscussSessions(projectRoot: string): DiscussDiscoverySession[] {
+  return listPersistedDiscussSessionsForSource(resolveProjectSource(projectRoot));
 }

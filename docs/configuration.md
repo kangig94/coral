@@ -64,7 +64,7 @@ Registers the MCP server with Claude Code. `ax` runs `bridge/coral-ax.cjs`, whic
 
 ### hooks/hooks.json - Hook Configuration
 
-Configures all 9 hooks: SessionStart (CLAUDE.md injection + backend warm-start), SessionStart/compact (plan-mode recovery + KB promotion reminder), UserPromptSubmit (plan state tracking), PreToolUse (memo reminder), PostToolUse (silent failure detector), PostToolUseFailure (KB lookup reminder), Stop (KB promotion gate + plan state cleanup), TeammateIdle (discuss idle guard).
+Configures all 9 hooks: SessionStart (CLAUDE.md injection with `{{CORAL_PROJECTS}}` substitution + backend warm-start + HUD auto-update), SessionStart/compact (post-compaction KB promotion reminder), UserPromptSubmit (KB flag + ralph loop state + memo reminder), PreToolUse (KB flag + ralph loop state + CLI path resolution), PostToolUse (silent failure detector), PostToolUseFailure (KB lookup reminder), Stop (KB promotion gate + plan state cleanup), TeammateIdle (discuss idle guard).
 
 See [Hooks documentation](./hooks.md) for details.
 
@@ -84,18 +84,24 @@ See [Hooks documentation](./hooks.md) for details.
 
 ### Discuss Session Directories
 
-**Location**: `{project}/.coral/discuss/{session_dir}/`
+**Location**: `~/.coral/projects/{source-slug}/discuss/{session_dir}/`
+
+**Source slug**: canonical git source (`owner/repo` -> `owner-repo`) with `local/<dirname>` fallback
 
 **Session ID format**: `yymmdd-HHmm-xxxx` (compact timestamp + 4-char random suffix)
 
 **Directory name**: `{session_id}-{topic_slug}` (slug preserves CJK characters, truncated to 40 chars)
 
-**Concurrency**: Cross-process `mkdir`-based lock (`state.lock/`) serializes all state mutations
+**Concurrency**: The backend serializes discuss mutations with in-process promise-chain locks keyed by source/session
 
 **Contents**:
-- `state.json` — full discussion state (atomic writes via `.tmp` + rename)
-- `state.lock/` — transient lock directory (created/removed per mutation)
-- `transcript.md` — human-readable incremental append log
+- `event-log.jsonl` — append-only authority log
+- `state.json` — derived discussion snapshot (atomic writes via `.tmp` + rename)
+
+**Parent directory metadata**:
+- `discovery.json` — source-scoped recovery index
+- `summary-index.json` — source-scoped listing index
+- `~/.coral/discuss-sources.json` — shared source registry used for discovery and recovery
 
 ## Dependencies
 
@@ -128,9 +134,8 @@ See [Hooks documentation](./hooks.md) for details.
 .claude-plugin/plugin.json  -> Claude Code recognizes the plugin
 .mcp.json                   -> Claude Code registers/starts both MCP servers (ax + dc)
 hooks/hooks.json            -> Claude Code configures all 9 hooks
-hooks/kb-lookup-reminder.mjs  -> PostToolUseFailure KB hint script
-hooks/silent-failure-detector.mjs -> PostToolUse silent-failure KB hint script
-hooks/kb-memo-reminder.mjs    -> PreToolUse memo reminder script
+hooks/kb-lookup-reminder.mjs  -> PostToolUseFailure/PostToolUse KB hint script
+hooks/kb-memo-reminder.mjs    -> UserPromptSubmit memo reminder script
 hooks/kb-promote-gate.mjs -> Stop/Compact promotion script
 hooks/backend-warm-start.mjs  -> SessionStart backend warm-start hook
 hooks/hud-auto-update.mjs    -> SessionStart HUD auto-update hook
@@ -139,7 +144,8 @@ hooks/hud-auto-update.mjs    -> SessionStart HUD auto-update hook
 ~/.claude/coral/backend.json                    -> Runtime backend connection info (auto-created)
 ~/.claude/coral/backend.lock                    -> Runtime backend singleton lock (auto-created)
 /tmp/coral-jobs/<jobId>/                        -> Runtime job directories (temporary)
-{project}/.coral/discuss/<session-dir>/  -> Runtime discuss session dirs (auto-created)
+~/.coral/discuss-sources.json                   -> Shared discuss source registry (auto-created)
+~/.coral/projects/<source-slug>/discuss/<session-dir>/  -> Runtime discuss session dirs (auto-created)
 
 bridge/coral-ax.cjs      -> Unified AX MCP server bundle (codex + claude + wait + abort + workflow + discuss + backend, committed)
 bridge/coral-backend.cjs  -> HTTP backend daemon bundle (committed)

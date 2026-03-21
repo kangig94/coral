@@ -120,7 +120,7 @@ Type definitions for backend request routing: `CallerContext { projectRoot, plug
 
 ### src/execution/discuss-session-store.ts - Event-Sourced Discuss Persistence
 
-Persistent store for discuss sessions. Owns compare-and-append writes to `event-log.jsonl`, snapshot materialization to `state.json`, project discovery updates, and project-root registry updates. Key methods: `load(sessionId)`, `append(sessionId, expectedSeq, events)`, `listSummaries()`, `listRecoveryCandidates()`, and `resolveSessionDir(sessionId)`. Imports from `client/readers.ts`, `client/paths.ts`, `client/discuss.ts`, and `discuss/reducer.ts`; it is the only place that knows the write ordering for discuss durability. See `src/execution/discuss-session-store.ts`.
+Persistent store for discuss sessions. Owns compare-and-append writes to `event-log.jsonl`, snapshot materialization to `state.json`, source-scoped discovery/index updates under `~/.coral/projects/{slug}/discuss/`, and shared source-registry updates at `~/.coral/discuss-sources.json`. Key methods: `load(sessionId)`, `append(sessionId, expectedSeq, events)`, `listSummaries()`, `listRecoveryCandidates()`, and `resolveSessionDir(sessionId)`. Imports from `client/readers.ts`, `client/paths.ts`, `client/discuss.ts`, and `discuss/reducer.ts`; it is the only place that knows the write ordering for discuss durability. See `src/execution/discuss-session-store.ts`.
 
 ---
 
