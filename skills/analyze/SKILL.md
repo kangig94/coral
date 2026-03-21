@@ -4,8 +4,8 @@ description: "Use when deep investigation is needed — project structure, requi
 argument-hint: "[--codex] [investigation target or question]"
 ---
 
-> **CORAL_AGENTS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/agents/")`
-> **CORAL_METHODS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/methods/")`
+> **CORAL_AGENTS**: !`echo ~/.claude/plugins/cache/coral/coral/*/agents/`
+> **CORAL_METHODS**: !`echo ~/.claude/plugins/cache/coral/coral/*/methods/`
 > **CORAL_PROJECT**: !`url=$(git remote get-url origin 2>/dev/null) && echo ~/.coral/projects/$(echo "$url" | sed -E 's#.*[:/]([^/]+/[^/.]+)(\.git)?$#\1#' | tr '/' '-') || echo ~/.coral/projects/local-$(basename $PWD)`
 
 # Deep Analysis & Investigation

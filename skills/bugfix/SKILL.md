@@ -4,7 +4,7 @@ description: "Use when encountering a bug, error, or unexpected behavior that ne
 argument-hint: "[--codex] <bug description or error message>"
 ---
 
-> **CORAL_AGENTS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/agents/")`
+> **CORAL_AGENTS**: !`echo ~/.claude/plugins/cache/coral/coral/*/agents/`
 
 # Bug Debugging
 

@@ -4,7 +4,7 @@ description: "Use when a task needs structured planning before implementation. S
 argument-hint: "[--deep] [--codex] [task description]"
 ---
 
-> **CORAL_METHODS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/methods/")`
+> **CORAL_METHODS**: !`echo ~/.claude/plugins/cache/coral/coral/*/methods/`
 > **CORAL_PROJECT**: !`url=$(git remote get-url origin 2>/dev/null) && echo ~/.coral/projects/$(echo "$url" | sed -E 's#.*[:/]([^/]+/[^/.]+)(\.git)?$#\1#' | tr '/' '-') || echo ~/.coral/projects/local-$(basename $PWD)`
 
 # Planning

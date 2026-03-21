@@ -4,7 +4,6 @@ description: "Use when setting up a new or existing project for AI-assisted deve
 argument-hint: "[existing|new]"
 ---
 
-> **CORAL_SKILLS**: `Bash("echo ~/.claude/plugins/cache/coral/coral/*/skills/")`
 > **CORAL_PROJECT**: !`url=$(git remote get-url origin 2>/dev/null) && echo ~/.coral/projects/$(echo "$url" | sed -E 's#.*[:/]([^/]+/[^/.]+)(\.git)?$#\1#' | tr '/' '-') || echo ~/.coral/projects/local-$(basename $PWD)`
 
 # Project Initialization
@@ -99,7 +98,6 @@ argument-hint: "[existing|new]"
 
   ### 1f. Load References
 
-  Read from this plugin's skill directory (`CORAL_SKILLS/init-project/`):
   1. Domain references: `references/{domain}.md` for each detected domain
   2. Writing guide: `references/writing-guide.md`
   3. Merge policy: `references/merge-policy.md`
