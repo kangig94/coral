@@ -93,13 +93,13 @@ Subagents and delegated tasks only write memos, never promote.
 
 ```yaml
 ---
+createdAt: YYYY-MM-DD
+updatedAt: YYYY-MM-DD
+tags: [<domain>, ...]
 source:
   - {{PROJECT_SOURCE}}
 principles:
   - "[[<principle-name>]]"
-tags: [<domain>, ...]
-createdAt: YYYY-MM-DD
-updatedAt: YYYY-MM-DD
 ---
 # <Title>
 ## Rule

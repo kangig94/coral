@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -22,6 +22,8 @@ try {
   const additionalContext = sessionId
     ? `SessionStart:session_id=${sessionId}\n\n${injectContent}`
     : injectContent;
+
+  if (projectDir) ensureProjectSymlink(projectDir);
 
   console.log(JSON.stringify({
     hookSpecificOutput: {
@@ -52,6 +54,18 @@ function resolveProjectSource(projectDir) {
 
 function coralProjectDir(projectDir) {
   return join(homedir(), '.coral', 'projects', resolveProjectSource(projectDir).replace(/\//g, '-'));
+}
+
+function ensureProjectSymlink(projectDir) {
+  try {
+    const link = join(projectDir, '.claude', 'coral');
+    try { if (lstatSync(link)) return; } catch { /* path doesn't exist, proceed */ }
+    const target = coralProjectDir(projectDir);
+    mkdirSync(target, { recursive: true });
+    symlinkSync(target, link);
+  } catch {
+    // fail-open
+  }
 }
 
 function readStdin() {
