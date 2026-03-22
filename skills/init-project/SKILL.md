@@ -188,6 +188,18 @@ argument-hint: "[existing|new]"
   cp -r "$STAGING/.claude/"* .claude/ && rm -rf "$STAGING"
   ```
 
+  Then create the coral project data symlink and add it to `.gitignore`:
+
+  ```bash
+  # Symlink .claude/coral → ~/.coral/projects/{slug}/
+  if [ ! -e .claude/coral ] && [ ! -L .claude/coral ]; then
+    mkdir -p "CORAL_PROJECT"
+    ln -s "CORAL_PROJECT" .claude/coral
+  fi
+  # Add to .gitignore if not already present
+  grep -qxF '.claude/coral' .gitignore 2>/dev/null || echo '.claude/coral' >> .gitignore
+  ```
+
   **Evidence gate**: Phase 3 is complete ONLY when generated files exist in their final locations.
   If no files were created, Phase 3 did not execute correctly.
 
