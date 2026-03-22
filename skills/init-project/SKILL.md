@@ -10,10 +10,13 @@ argument-hint: "[existing|new]"
 
 <Role>
   You are the Init-Project orchestrator. Execute this protocol directly at depth 0.
-  The analysis subagent and reviewers are spawned as subagents at depth 1.
+  The scanner and reviewers are spawned as subagents at depth 1.
 
   Responsible for: project analysis, domain identification, writing the plan, running the review loop, generating artifacts (following ralph protocol directly), and final reporting.
   Not responsible for: reviewing the plan (architect/critic do that).
+
+  **Autonomy**: Execute all phases (1→2→3→3.5→4) end-to-end without pausing for user confirmation.
+  Evidence gates are self-checks, not user approval points. Do not ask "shall I continue?" between phases.
 </Role>
 <Protocol>
   ## Phase 1: Gather Context
@@ -54,20 +57,33 @@ argument-hint: "[existing|new]"
 
   ### 1d. Analyze Project (existing only)
 
-  ```
-  Skill({ skill: "coral:analyze", args: "init-{project-name}:
-    scan project structure, architecture, dependencies.
-    Also assess documentation quality — documentation gaps,
-    enhancements needed for existing docs, shallow sections
-    (e.g., file lists without layer diagrams, commands without
-    runnable examples, any section under 3 lines on non-trivial topics),
-    and stale path references.
-    Append under ## Documentation Assessment." })
-  ```
+  Spawn a scanner subagent to protect the main context window from heavy file I/O.
 
-  Context from 1b and 1c is already in conversation — analyze inherits it.
+  1. **Create analysis file**: Write `CORAL_PROJECT/analysis/{YYYY-MM-DD}-init-{project-name}.md`:
+     ```markdown
+     # Analysis: init-{project-name}
+     Date: {YYYY-MM-DD}
+     Question: Scan project structure, architecture, dependencies. Assess documentation quality.
+     ```
 
-  Wait for the analysis document. Read it to extract:
+  2. **Spawn scanner**:
+     ```
+     Agent({ subagent_type: "coral:scanner",
+       prompt: "Scan this project for init-project setup.
+         Scope: project structure, architecture, dependencies, build/test config.
+         Also assess documentation quality — gaps, enhancements needed, shallow sections
+         (file lists without layer diagrams, commands without runnable examples,
+         any section under 3 lines on non-trivial topics), stale path references.
+         Focus on: source tree vs .claude/rules, agent definitions vs codebase modules,
+         CLAUDE.md accuracy, docs/ freshness, new modules/patterns not captured in rules.
+         {include summary of 1b/1c context if available}
+         Output a structured scan report." })
+     ```
+
+  3. **Write findings**: Append the scanner's output to the analysis file under `## Scan Report`.
+     Add a `## Documentation Assessment` section summarizing doc gaps and stale content.
+
+  Read the completed analysis file to extract:
   - Tech stack and primary languages
   - Architectural layers and dependency graph
   - Build/test configuration
@@ -118,14 +134,15 @@ argument-hint: "[existing|new]"
      - Plan name: `init-{project-name}`
      - Plan content requirements:
        * Structure: Requirements, Acceptance Criteria, Artifact Manifest, Risks, Verification Steps
-       * For each artifact: file path, content description, merge rule
+       * For each artifact: file path, content description, merge rule (create/skip/enhance/update)
        * Artifact Manifest must include domain-specific docs: evaluate each domain reference's Recommended Docs
          table against analysis findings (Strong docs included by default, Conditional docs included only when
          their detection condition is met). List only the docs that apply to this project.
        * Also include project-specific docs identified in the analysis document's Documentation Assessment section — these are docs the agent
          judged necessary based on project complexity, not from domain reference tables.
-       * For existing docs identified in the analysis document's Documentation Assessment section, list specific sections
-         to add. Existing docs are always enhanced (append sections, don't overwrite).
+       * For existing files identified as stale in the analysis document, use merge rule "update" with
+         specific change descriptions (what's stale, what's correct, which analysis finding).
+       * For existing docs needing new sections, use merge rule "enhance" (append sections, don't modify existing).
        * **Doc content drafts** (existing projects): Phase 3 executes the plan as-is, so the plan must
          contain the actual content for each doc - not just "generate ARCHITECTURE.md". Include:
          - ARCHITECTURE.md: layer diagram (from the analysis document's Scan Report — dependency graph section), dependency rules,
@@ -151,7 +168,7 @@ argument-hint: "[existing|new]"
   partial state. Stage all `.claude/` files in a temp directory, then move atomically.
 
   **Staging directory**: `$TMPDIR/coral/<project-slug>/init-staging/`
-  (`<project-slug>` = project dir path with `/` replaced by `-`, e.g. `-home-kang-workspace-myapp`)
+  (`<project-slug>` = project dir path with `/` replaced by `-`, e.g. `-home-user-workspace-myapp`)
 
   ```bash
   STAGING="$TMPDIR/coral/$(echo "$CLAUDE_PROJECT_DIR" | tr '/' '-')/init-staging"
@@ -159,17 +176,17 @@ argument-hint: "[existing|new]"
   ```
 
   **Write rules**:
-  - **All `.claude/` files** (new and enhanced): Write to `$STAGING/.claude/...`. For enhanced files, first `cp` the existing file into staging, then Edit there.
+  - **All `.claude/` files** (new, enhanced, and updated): Write to `$STAGING/dot-claude/...`. For enhanced/updated files, first `cp` the existing file into staging, then Edit there.
   - **`CORAL_PROJECT/` working files** (plans, analysis): Write directly (not auto-loaded)
-  - **`docs/` files** (new and enhanced): Write directly (not auto-loaded)
+  - **`docs/` files** (new, enhanced, and updated): Write directly (not auto-loaded)
 
   ### 3b. Generate Artifacts
 
-  Invoke `Skill({ skill: "coral:ralph", args: "execute the plan from Phase 2. Stage all .claude/ files (new and enhanced) under $STAGING/.claude/ instead of .claude/ directly. For enhanced files, cp the original into staging first, then Edit there." })`.
+  Invoke `Skill({ skill: "coral:ralph", args: "execute the plan from Phase 2. Stage all .claude/ files (new, enhanced, and updated) under $STAGING/dot-claude/ instead of .claude/ directly. For enhanced/updated files, cp the original into staging first, then Edit there." })`.
   Same pattern as Phase 2 — you execute at depth 0, spawning subagents at depth 1 as needed.
 
   You MUST read these reference files before generating any artifacts:
-  - `{skill_base_dir}/references/merge-policy.md` — per-artifact merge rules (skip/create/enhance)
+  - `{skill_base_dir}/references/merge-policy.md` — per-artifact merge rules (skip/create/enhance/update)
   - `{skill_base_dir}/references/writing-guide.md` — artifact quality standards
 
   Use `{skill_base_dir}/templates/` and `{skill_base_dir}/references/` for template and reference lookups.
@@ -177,15 +194,15 @@ argument-hint: "[existing|new]"
   The analysis file (from Phase 1d) provides factual grounding, not content drafts.
   Doc content comes from the plan — write what the plan specifies, not from your own analysis.
 
-  Also write `$STAGING/.claude/skills/tier-review/SKILL.md` by copying from
+  Also write `$STAGING/dot-claude/skills/tier-review/SKILL.md` by copying from
   `{skill_base_dir}/templates/skills/tier-review/SKILL.md` — fixed artifact, not plan-dependent.
 
   ### 3c. Atomic Move
 
-  After all files are generated, move staged `.claude/` files to their final location:
+  After all files are generated, move staged files to their final location:
 
   ```bash
-  cp -r "$STAGING/.claude/"* .claude/ && rm -rf "$STAGING"
+  cp -r "$STAGING/dot-claude/"* .claude/ && rm -rf "$STAGING"
   ```
 
   Then create the coral project data symlink and add it to `.gitignore`:
@@ -206,7 +223,7 @@ argument-hint: "[existing|new]"
   ## Phase 3.5: Verify Artifacts
 
   `Agent("coral:architect")` and `Agent("coral:critic")` in parallel to verify generated artifacts. Pass `--deep` in the prompt.
-  Provide each with: plan file path, list of generated/enhanced files from Phase 3.
+  Provide each with: plan file path, list of generated/enhanced/updated files from Phase 3.
   Each outputs a findings table with severity (CRITICAL/HIGH/MEDIUM/LOW) and file:line references.
 
   **Architect** — structural correctness and content fidelity:
@@ -217,13 +234,15 @@ argument-hint: "[existing|new]"
   - Docs: layer diagram in ARCHITECTURE.md, exact commands in DEV_GUIDE.md, paths and architecture match analysis
   - CLAUDE.md: build commands match analysis, key docs list matches generated files
   - Enhanced files: existing content NOT modified, new sections appended only
+  - Updated files: only cited stale content changed, all other content preserved
 
   **Critic** — plan adherence and completeness:
-  - Every artifact in the plan's Artifact Manifest was generated or enhanced
+  - Every artifact in the plan's Artifact Manifest was generated, enhanced, or updated
   - No extra files beyond what the plan specified
-  - Merge rules followed (missing → created, existing → enhanced, never overwritten)
+  - Merge rules followed (missing → created, existing → enhanced or updated per plan, never overwritten)
   - Doc content matches what the plan drafted
   - Enhancement boundaries respected (only planned sections added)
+  - Update boundaries respected (only cited stale content changed, all else preserved)
 
   **Remediation**: Synthesize both reports. For CRITICAL/HIGH findings, fix directly (read → edit).
   Fix spot issues directly (read → edit).
@@ -243,8 +262,11 @@ argument-hint: "[existing|new]"
   ### Enhanced (existing files)
   - {files that were enhanced with new sections}
 
+  ### Updated (stale content corrected)
+  - {files with targeted edits, what was changed and why}
+
   ### Note
-  {If CLAUDE.md was enhanced: mention what was added vs preserved}
+  {If CLAUDE.md was enhanced/updated: mention what was added/changed vs preserved}
 
   ### Next Steps
   - Review generated rules in .claude/rules/ - customize for your project
@@ -278,21 +300,22 @@ argument-hint: "[existing|new]"
 <Constraints>
   | DO | DON'T |
   |----|-------|
-  | Spawn analysis subagent for existing projects | Perform inline scanning or guess the stack |
+  | Spawn coral:scanner subagent for existing projects | Perform inline scanning or guess the stack |
+  | Execute all phases end-to-end without pausing | Stop between phases to ask for confirmation |
   | Write plan yourself, spawn reviewers at depth 1 | Delegate planning to a sub-agent (nesting limit) |
   | Spawn reviewers in parallel (single message) | Run reviewers sequentially |
   | Read merge-policy.md and writing-guide.md before generating | Decide merge policy ad-hoc |
-  | Report everything (created + enhanced) | Hide enhanced files from the user |
+  | Report everything (created + enhanced + updated) | Hide enhanced/updated files from the user |
   | Follow merge policy exactly | Overwrite existing user files |
   | Execute phases in order (analyze→plan→execute→verify) | Skip to file generation without plan |
 </Constraints>
 <Error_Handling>
   | Scenario | Action |
   |----------|--------|
-  | Analysis subagent fails or returns insufficient output | Read the analysis file anyway — extract what's available. For missing data, fall back to direct file reading (metadata, README, directory structure). Note gaps in Phase 4 report |
+  | Scanner subagent fails or returns insufficient output | Fall back to direct file reading (metadata, README, directory structure) and write a minimal analysis file. Note gaps in Phase 4 report |
   | Reviewer spawn fails | Proceed with other reviewer's feedback; if both fail, do single self-review |
   | Phase 3 generation fails partway | Report error with partial results |
   | Domain reference file not found | Proceed with available references, note the missing domain |
   | Template file not found | Report error for that artifact, continue with others |
-  | File already exists | Enhance existing file (append missing sections, preserve existing content). Include in report as enhanced |
+  | File already exists | Follow merge rule from plan: enhance (append missing sections) or update (patch stale content). Preserve non-cited content. Include in report as enhanced/updated |
 </Error_Handling>
