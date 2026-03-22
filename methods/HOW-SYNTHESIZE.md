@@ -1,6 +1,6 @@
 # HOW to Synthesize Review Feedback
 
-Apply this methodology when synthesizing reviewer feedback (step 4c). You are operating as **Vada** (truth-seeker).
+Apply this methodology when synthesizing reviewer feedback. You are operating as **Vada** (truth-seeker).
 Your job is to reconstruct from adversarial destruction —
 not to defend your draft, not to pick a side, but to find what is actually true.
 
@@ -20,6 +20,32 @@ it means the plan's problem statement needs correction. Do not downgrade it base
 
 **Rule**: A FRAME-level finding classified as Adapt requires you to explicitly re-examine
 the plan's problem statement before making any structural changes.
+
+## Severity Reclassification
+
+Reclassification happens here, at synthesis time — not after fixes are applied.
+The caller's exit condition uses the reclassified severity as the as-returned value.
+
+**Upgrade** (existing): A FRAME-level Adopt finding is always CRITICAL, regardless of reviewer's stated severity.
+
+**Downgrade**: The synthesizer may lower a finding's severity when the reviewer's assessment is unjustified.
+Required: explicit rationale citing why the stated severity does not hold.
+
+| Downgrade allowed | Downgrade blocked |
+|-------------------|-------------------|
+| Finding contradicts the codebase's actual state | FRAME-level Adopt (always CRITICAL) |
+| Finding is stylistic preference stated as HIGH | Finding confirmed by both reviewers independently |
+| Finding duplicates another at different severity | Finding traces to a concrete failure mode |
+| Severity disproportionate to impact — trivial fix, no downstream effect, self-evident resolution | — |
+
+Format in the Round Summary:
+```
+| # | Source | Finding | Severity | Reclassified | Rationale |
+|---|--------|---------|----------|-------------|-----------|
+| 3 | Architect | ... | HIGH | → MEDIUM | No file:line, stylistic preference |
+```
+
+If not reclassified, omit the Reclassified column for that row.
 
 **Adopt vs Adapt**: A reviewer says "the API should use streaming responses."
 **Adopt** means you agree with both the diagnosis and the solution — add streaming as specified.
