@@ -1,8 +1,7 @@
 # HOW to Evaluate Completion
 
-Apply this alongside the existing exit condition (step 4f).
-The existing severity check ("both reviewers no CRITICAL/HIGH") remains necessary.
-These are additional necessary conditions — both must also be satisfied for a round to pass.
+Apply this alongside the caller's severity gate.
+These are additional necessary conditions — the caller's severity gate AND all conditions below must pass for a round to exit.
 
 ## Frame Stability Condition
 
@@ -19,7 +18,7 @@ Frame stability is achieved when the most recent round produced no FRAME-level f
 ## Counterexample Type Coverage
 
 Track which counterexample types from HOW-REVIEW's checklist have been explicitly probed across all rounds.
-This tracking lives in the round summary (step 4e) under `### Counterexample Coverage`.
+This tracking lives in the round summary under `### Counterexample Coverage`.
 
 Format:
 ```
@@ -69,8 +68,7 @@ A round that introduces new FRAME findings in a late round is a regression — t
 ## Combined Exit Rule
 
 A round passes when ALL of the following are true:
-1. Both reviewers returned no CRITICAL or HIGH findings
-   *(existing rule — MEDIUM/LOW findings may be fixed inline without re-verification)*
-2. No FRAME-level findings in this round *(Frame Stability)*
+1. Caller's severity gate passed (no CRITICAL or HIGH after synthesis — reclassification happens at synthesis time, never after fixes)
+2. No FRAME-level findings in this round, regardless of severity *(Frame Stability)*
 3. All major counterexample types have been explored across rounds *(Coverage)*
 4. Refutation effort appears genuine *(Effort Assessment)*

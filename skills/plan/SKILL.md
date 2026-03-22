@@ -146,20 +146,24 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
     **4d. Exit Condition**
 
-    **If `--deep`**: Read `CORAL_METHODS/HOW-COMPLETE.md` and apply its additional completion criteria alongside the rules below.
+    **Step 1 — Classify**: Scan the Round Summary table. Record `max_severity` = highest severity after synthesis (reclassified severity if 4b applied one, otherwise reviewer's original). Never reclassify here — reclassification happens at synthesis time (4b), not at exit time.
 
-    **Step 1 — Classify**: Scan the Round Summary table. Record `max_severity` = highest severity any reviewer returned this round. Use the severity AS RETURNED — never reclassify based on whether fixes were applied.
-
-    **Step 2 — Decide**:
+    **Step 2 — Severity gate**:
 
     | `max_severity` | Round | Verdict | Action |
     |----------------|-------|---------|--------|
     | CRITICAL or HIGH | < 5 | **Continue** | → 4a (same phase, next round) |
     | CRITICAL or HIGH | = 5 | **Max rounds** | → next phase, or AskUserQuestion if last |
-    | MEDIUM or LOW | any | **Fix and pass** | → exit phase |
-    | ≤ LOW only | any | **Clean pass** | → exit phase (+ HOW-COMPLETE if `--deep`) |
+    | MEDIUM | any | **Fix and pass** | → fix inline, then Step 3 |
+    | LOW or none | any | **Clean pass** | → Step 3 |
 
-    > **Hard rule**: a resolved/fixed HIGH is still HIGH for this decision. Fixes may introduce new issues — re-verification catches them. Never downgrade `max_severity` based on post-round edits.
+    > **Hard rule**: severity reclassification happens only during synthesis (4b), never after fixes. A finding that was HIGH after synthesis stays HIGH at exit — fixing it does not lower the severity. Fixes may introduce new issues; re-verification catches them.
+
+    **Step 3 — Completion gate** (`--deep` only, otherwise exit phase):
+
+    If `--deep`: Read `CORAL_METHODS/HOW-COMPLETE.md`. Apply ALL conditions in its Combined Exit Rule.
+    If any condition fails → **Continue** (→ 4a, next round).
+    Exit phase only when both Step 2 AND Step 3 pass.
 
     ### 4e. Execution Order
 
