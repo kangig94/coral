@@ -14,11 +14,10 @@ try {
   if (!pluginRoot || !existsSync(pluginRoot)) process.exit(0);
 
   const injectText = readFileSync(`${pluginRoot}/INJECT.md`, 'utf-8');
-  const injectContent = projectDir
-    ? injectText
-        .replaceAll('{{CORAL_PROJECTS}}', coralProjectDir(projectDir))
-        .replaceAll('{{PROJECT_SOURCE}}', resolveProjectSource(projectDir))
-    : injectText;
+  const injectContent = injectText
+    .replaceAll('{{CORAL_KB}}', resolveKbRoot())
+    .replaceAll('{{CORAL_PROJECTS}}', projectDir ? coralProjectDir(projectDir) : '{{CORAL_PROJECTS}}')
+    .replaceAll('{{PROJECT_SOURCE}}', projectDir ? resolveProjectSource(projectDir) : '{{PROJECT_SOURCE}}');
   const additionalContext = sessionId
     ? `SessionStart:session_id=${sessionId}\n\n${injectContent}`
     : injectContent;
@@ -52,6 +51,12 @@ function resolveProjectSource(projectDir) {
 
 function coralProjectDir(projectDir) {
   return join(homedir(), '.coral', 'projects', resolveProjectSource(projectDir).replace(/\//g, '-'));
+}
+
+function resolveKbRoot() {
+  const custom = process.env.CORAL_KB_PATH;
+  if (custom) return custom.startsWith('~') ? join(homedir(), custom.slice(1)) : custom;
+  return join(homedir(), '.coral', 'kb');
 }
 
 function readStdin() {

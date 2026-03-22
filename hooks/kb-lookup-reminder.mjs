@@ -26,8 +26,9 @@ try {
     if (!FAILURE_RE.test(output)) process.exit(0);
   }
 
-  const kbDir = join(homedir(), '.coral', 'kb', 'notes');
-  const files = readdirSync(kbDir).filter(f => f.endsWith('.md'));
+  const kbRoot = resolveKbRoot();
+  const kbNotesDir = join(kbRoot, 'notes');
+  const files = readdirSync(kbNotesDir).filter(f => f.endsWith('.md'));
   if (files.length === 0) process.exit(0);
 
   const topics = [...new Set(files.map(f => f.replace(/\.md$/, '').replace(/-.*$/, '')))].sort();
@@ -36,11 +37,17 @@ try {
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: event,
-      additionalContext: `${prefix}. Before debugging from scratch, check ~/.coral/kb/notes/ for relevant knowledge. KB topics: ${topics.join(', ')}`,
+      additionalContext: `${prefix}. Before debugging from scratch, check ${kbRoot}/notes/ for relevant knowledge. KB topics: ${topics.join(', ')}`,
     },
   }));
 } catch {
   process.exit(0);
+}
+
+function resolveKbRoot() {
+  const custom = process.env.CORAL_KB_PATH;
+  if (custom) return custom.startsWith('~') ? join(homedir(), custom.slice(1)) : custom;
+  return join(homedir(), '.coral', 'kb');
 }
 
 function readStdin() {

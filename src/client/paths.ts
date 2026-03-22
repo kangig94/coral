@@ -43,8 +43,14 @@ export function coralRoot(): string {
   return join(homedir(), '.coral');
 }
 
+export function kbRoot(): string {
+  const custom = process.env.CORAL_KB_PATH;
+  if (custom) return custom.startsWith('~') ? join(homedir(), custom.slice(1)) : custom;
+  return join(coralRoot(), 'kb');
+}
+
 export function kbDir(): string {
-  return join(coralRoot(), 'kb', 'notes');
+  return join(kbRoot(), 'notes');
 }
 
 export function resolveProjectSource(projectRoot: string): string {
