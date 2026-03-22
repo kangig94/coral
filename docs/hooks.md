@@ -26,7 +26,7 @@ All hook scripts are **Node.js ESM** (`.mjs`). They read input JSON from stdin, 
 
 Injects the plugin's INJECT.md content into Claude's context at the start of every session. This ensures Claude always receives the behavioral guidelines (Clarity First, Surgical Changes, etc.) and KB system instructions.
 
-Implementation: `hooks/session-start.mjs` reads `INJECT.md` from the plugin root, resolves the active source slug from `CLAUDE_PROJECT_DIR`, replaces `{{CORAL_PROJECTS}}` with `~/.coral/projects/{slug}` and `{{PROJECT_SOURCE}}` with the project source identifier, and returns the result via `hookSpecificOutput.additionalContext`.
+Implementation: `hooks/session-start.mjs` reads `INJECT.md` from the plugin root, resolves the active source slug from `CLAUDE_PROJECT_DIR`, replaces `{{CORAL_PROJECTS}}` with `~/.coral/projects/{slug}`, `{{PROJECT_SOURCE}}` with the project source identifier, and `{{CORAL_KB}}` with the KB root path (from `CORAL_KB_PATH` env var or default `~/.coral/kb`), and returns the result via `hookSpecificOutput.additionalContext`.
 
 > **Note**: Codex sessions receive INJECT.md through a separate mechanism - the MCP server prepends it to the prompt in `executeOneShot()`. See [Core Modules](./core-modules.md) for details.
 
