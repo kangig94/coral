@@ -63,7 +63,6 @@ Consecutive `/coral:codex` calls without `session` automatically continue the pr
 
 ## /coral:discuss - Moderated Discussion
 
-Requires `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` environment variable.
 
 ```bash
 /coral:discuss "Should we adopt microservices?"
