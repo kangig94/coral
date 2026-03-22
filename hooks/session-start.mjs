@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execSync } from 'node:child_process';
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -63,19 +63,9 @@ function ensureProjectSymlink(projectDir) {
     const target = coralProjectDir(projectDir);
     mkdirSync(target, { recursive: true });
     symlinkSync(target, link);
-    ensureGitignore(projectDir, '.claude/coral');
   } catch {
     // fail-open
   }
-}
-
-function ensureGitignore(projectDir, entry) {
-  const gitignore = join(projectDir, '.gitignore');
-  if (existsSync(gitignore)) {
-    const content = readFileSync(gitignore, 'utf-8');
-    if (content.includes(entry)) return;
-  }
-  appendFileSync(gitignore, `\n${entry}\n`);
 }
 
 function readStdin() {
