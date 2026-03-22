@@ -11,7 +11,7 @@ import { spawnCli, killAllChildren as killAllRunnerChildren } from '../../execut
 import type { EffortLevel } from '../../shared/schemas.js';
 import { parseCodexJsonl } from './output-parser.js';
 import type { CliInfo } from '../cli-detection.js';
-import { projectDataDir, resolveProjectSource } from '../../client/paths.js';
+import { kbRoot, projectDataDir, resolveProjectSource } from '../../client/paths.js';
 
 export interface CodexExecOptions {
   model?: string;
@@ -149,11 +149,10 @@ function prependInjectMd(prompt: string, workingDirectory?: string): string {
   const md = getInjectMd();
   if (!md) return prompt;
 
-  const substitutedMd = workingDirectory
-    ? md
-        .replaceAll('{{CORAL_PROJECTS}}', projectDataDir(workingDirectory))
-        .replaceAll('{{PROJECT_SOURCE}}', resolveProjectSource(workingDirectory))
-    : md;
+  const substitutedMd = md
+    .replaceAll('{{CORAL_KB}}', kbRoot())
+    .replaceAll('{{CORAL_PROJECTS}}', workingDirectory ? projectDataDir(workingDirectory) : '{{CORAL_PROJECTS}}')
+    .replaceAll('{{PROJECT_SOURCE}}', workingDirectory ? resolveProjectSource(workingDirectory) : '{{PROJECT_SOURCE}}');
 
   return `${substitutedMd}\n\n---\n\n${prompt}`;
 }

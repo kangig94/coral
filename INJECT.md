@@ -82,8 +82,8 @@ source: {{PROJECT_SOURCE}}
 
 ## Lookup
 Before debugging from scratch or starting a plan, check KB in this order:
-1. `~/.coral/kb/principles/` — scan principle names for relevant decision patterns
-2. `~/.coral/kb/notes/` — search by tags or keywords for concrete lessons
+1. `{{CORAL_KB}}/principles/` — scan principle names for relevant decision patterns
+2. `{{CORAL_KB}}/notes/` — search by tags or keywords for concrete lessons
 
 ## Promotion
 **Who**: top-level orchestrator only, after all work completes (not implementation — after review too).
@@ -91,7 +91,7 @@ Subagents and delegated tasks only write memos, never promote.
 
 **Process**: review all memos, check existing kb entries — discard duplicates, update existing, create only for genuinely absent knowledge. Delete processed memos.
 
-**Format** — `~/.coral/kb/notes/<domain>-<topic>.md`:
+**Format** — `{{CORAL_KB}}/notes/<domain>-<topic>.md`:
 
 ```yaml
 ---
@@ -109,7 +109,7 @@ principles:
 ## Pattern
 ```
 
-**Principles** — `~/.coral/kb/principles/<principle-name>.md`:
+**Principles** — `{{CORAL_KB}}/principles/<principle-name>.md`:
 
 A principle is a **decision point where reasonable alternatives exist** but experience shows one direction is consistently better. It is NOT common sense ("validate inputs") or a tautology ("be correct"). A good principle resolves a genuine tension — e.g., `lenient-read-strict-write` resolves the tension between backwards compatibility and data integrity.
 
