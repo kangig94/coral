@@ -4,8 +4,6 @@ description: "Use when code needs simplification — recently modified code by d
 argument-hint: "[--codex] <scope or prompt>"
 ---
 
-> **CORAL_AGENTS**: !`echo ~/.claude/plugins/cache/coral/coral/*/agents/`
-
 # Code Simplification
 
 Simplify and refine code for clarity and maintainability while preserving functionality.

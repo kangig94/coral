@@ -4,8 +4,6 @@ description: Submit a bid or speech in an active --user discuss session
 argument-hint: "<score>, <thought> | <speech content>"
 ---
 
-> **CORAL_PROJECT**: !`url=$(git remote get-url origin 2>/dev/null) && echo ~/.coral/projects/$(echo "$url" | sed -E 's#.*[:/]([^/]+/[^/.]+)(\.git)?$#\1#' | tr '/' '-') || echo ~/.coral/projects/local-$(basename $PWD)`
-
 # Bid / Speak in Active Discussion
 
 Submit a bid or speech as the `user` observer in a running `--user` discuss session.
