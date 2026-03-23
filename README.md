@@ -135,13 +135,19 @@ Multi-round planning with architect/critic review backed by structured reasoning
 `--deep` enables methodology-driven synthesis with resolver agent and HOW reasoning files — thorough review for complex tasks.
 Systematic bug diagnosis - root cause, plan, fix. Persistent execution that verifies before declaring done.
 
+When you have problems but don't know what to build:
+```
+/coral:pathfind API is slow, DB hits limits, users are complaining
+```
+Pathfind diagnoses root causes, generates divergent directions, and hands off to preplan.
+
 For complex tasks, start with problem definition:
 ```
 /coral:preplan race condition in the session manager
 ```
 Preplan aligns understanding with you, then hands off to plan.
 Plan designs the solution with review, then ralph implements and verifies.
-Each skill works on its own — the pipeline is for when precision matters.
+Each skill works on its own — the full pipeline is `pathfind → preplan → plan → ralph`.
 
 `--red` flag spawns an adversarial agent to write tests targeting blind spots:
 ```
@@ -162,6 +168,7 @@ Consecutive `/coral:codex` calls continue the same session. Say "new" to start f
 | Skill | Description | Codex |
 |-------|-------------|:-----:|
 | `/coral:analyze` | Deep analysis and investigation | Optional |
+| `/coral:pathfind` | Divergent direction discovery from problem symptoms | - |
 | `/coral:preplan` | Problem definition before planning | Optional |
 | `/coral:plan` | Multi-round planning with structured review and conflict resolution. `--deep` for methodology-driven synthesis | Optional |
 | `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | Optional |

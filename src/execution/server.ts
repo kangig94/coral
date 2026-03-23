@@ -85,6 +85,8 @@ import {
   type WaitCursor,
   type WaitRequest,
 } from '../types.js';
+import { kbToolContracts } from '../kb/contracts.js';
+import { initKb } from '../kb/detect.js';
 
 export type LifecycleState = 'starting' | 'running' | 'draining' | 'stopped';
 
@@ -136,6 +138,7 @@ type BackendServerOptions = {
   recoverOrphanedJobsFn?: (namespace: string) => void;
   markJobsAsErrorFn?: (namespace: string, message: string) => void;
   killAllChildrenFn?: () => void;
+  initKbFn?: (pluginRoot: string) => Promise<void>;
   onStopped?: () => void;
   onFatalShutdownError?: (error: unknown) => void;
   discussRegistry?: DiscussContextRegistry;
@@ -658,6 +661,11 @@ function getToolDescriptors(): Array<Record<string, unknown>> {
         required: ['expression', 'init_prompt'],
       },
     },
+    ...Object.values(kbToolContracts).map((contract) => ({
+      name: contract.name,
+      description: contract.description,
+      inputSchema: contract.inputSchema,
+    })),
   ];
 }
 
@@ -820,6 +828,20 @@ export async function routeToolCall(
     }
   }
 
+  const kbContract = kbToolContracts[request.name as keyof typeof kbToolContracts];
+  if (kbContract) {
+    const parsed = kbContract.schema.safeParse(request.args);
+    if (!parsed.success) return toolValidationError(parsed.error);
+    try {
+      const result = await kbContract.handler(parsed.data, request.context);
+      return toolSuccess(result);
+    } catch (error: unknown) {
+      return toolError('kb_error', {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   if (!getNewProvider(request.name)) {
     return {
       statusCode: 404,
@@ -966,6 +988,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     markJobsAsError(progressStore, currentNamespace, message);
   });
   const killAllChildrenFn = options.killAllChildrenFn ?? killAllChildren;
+  const initKbFn = options.initKbFn ?? initKb;
 
   const services = new Map<string, ExecutionServiceLike>();
   const discussStores = new Map<string, DiscussSessionStore>();
@@ -1564,6 +1587,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     try {
       await acquireLockFn(resolvedPluginRoot, instanceId, version, bundleHash);
       registerBuiltInProviders();
+      await initKbFn(resolvedPluginRoot);
       subscribeSessionIndex();
       sessionIndex.hydrate(SessionManager.listShards());
       recoverOrphanedJobsFn(namespace);

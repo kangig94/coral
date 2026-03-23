@@ -2,3 +2,5 @@ node_modules/
 dist/
 *.tsbuildinfo
 ref/
+
+.claude/coral

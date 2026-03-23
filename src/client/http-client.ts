@@ -1,5 +1,13 @@
 import { ensureBackend as defaultEnsureBackend, withAbortTimeout, type BackendHandle } from './backend-lifecycle.js';
 import type { CallerContext } from '../execution/request-context.js';
+import type {
+  KbDeleteInput,
+  KbPrinciplesInput,
+  KbPromoteInput,
+  KbReindexInput,
+  KbSearchInput,
+  KbUpdateInput,
+} from '../kb/contracts.js';
 import { isRecord } from '../shared/mcp-utils.js';
 import {
   describeHttpError,
@@ -213,6 +221,30 @@ export class BackendClient {
 
   async abortJobs(jobIds: string[], context?: CallerContext): Promise<unknown> {
     return this.proxyToolCall('abort', { jobs: jobIds }, this.resolveContext(context));
+  }
+
+  async kbSearch(args: KbSearchInput, context?: CallerContext): Promise<unknown> {
+    return this.proxyToolCall('kb_search', args, this.resolveContext(context));
+  }
+
+  async kbPrinciples(args: KbPrinciplesInput, context?: CallerContext): Promise<unknown> {
+    return this.proxyToolCall('kb_principles', args, this.resolveContext(context));
+  }
+
+  async kbPromote(args: KbPromoteInput, context?: CallerContext): Promise<unknown> {
+    return this.proxyToolCall('kb_promote', args, this.resolveContext(context));
+  }
+
+  async kbUpdate(args: KbUpdateInput, context?: CallerContext): Promise<unknown> {
+    return this.proxyToolCall('kb_update', args, this.resolveContext(context));
+  }
+
+  async kbDelete(args: KbDeleteInput, context?: CallerContext): Promise<unknown> {
+    return this.proxyToolCall('kb_delete', args, this.resolveContext(context));
+  }
+
+  async kbReindex(args: KbReindexInput, context?: CallerContext): Promise<unknown> {
+    return this.proxyToolCall('kb_reindex', args, this.resolveContext(context));
   }
 
   /**

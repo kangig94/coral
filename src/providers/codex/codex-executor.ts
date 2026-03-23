@@ -149,8 +149,10 @@ function prependInjectMd(prompt: string, workingDirectory?: string): string {
   const md = getInjectMd();
   if (!md) return prompt;
 
+  const cliPath = `node "${join(pluginRoot, 'bridge', 'coral-cli.cjs')}"`;
   const substitutedMd = md
     .replaceAll('{{CORAL_KB}}', kbRoot())
+    .replaceAll('{{CORAL_CLI}}', cliPath)
     .replaceAll('{{CORAL_PROJECTS}}', workingDirectory ? projectDataDir(workingDirectory) : '{{CORAL_PROJECTS}}')
     .replaceAll('{{PROJECT_SOURCE}}', workingDirectory ? resolveProjectSource(workingDirectory) : '{{PROJECT_SOURCE}}');
 

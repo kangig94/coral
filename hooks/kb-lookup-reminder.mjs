@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * PostToolUseFailure + PostToolUse(Bash) hook — reminds Claude to check ~/.coral/kb/notes/ on errors.
+ * PostToolUseFailure + PostToolUse(Bash) hook — reminds Claude to use kb_search on errors.
  * - PostToolUseFailure: any tool failure → KB reminder
  * - PostToolUse(Bash): silent failures (exit 0 but error in output) → KB reminder
  * Fail-open: any error exits silently.
@@ -34,12 +34,12 @@ try {
   const topics = [...new Set(files.map(f => f.replace(/\.md$/, '').replace(/-.*$/, '')))].sort();
   const prefix = event === 'PostToolUse' ? 'Silent failure detected in command output' : 'Error detected';
 
-  console.log(JSON.stringify({
+  process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: event,
-      additionalContext: `${prefix}. Before debugging from scratch, check ${kbRoot}/notes/ for relevant knowledge. KB topics: ${topics.join(', ')}`,
+      additionalContext: `${prefix}. Before debugging from scratch, use kb_search({ query: "<keywords>" }) to look for relevant knowledge. KB topics: ${topics.join(', ')}`,
     },
-  }));
+  }) + '\n');
 } catch {
   process.exit(0);
 }

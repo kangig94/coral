@@ -29,6 +29,93 @@ describe('client http-client', () => {
     vi.restoreAllMocks();
   });
 
+  it.each([
+    {
+      method: 'kbSearch',
+      invoke: (client: BackendClient) => client.kbSearch({ query: 'accel' }),
+      toolName: 'kb_search',
+      args: { query: 'accel' },
+    },
+    {
+      method: 'kbPrinciples',
+      invoke: (client: BackendClient) => client.kbPrinciples({ query: 'contract', top_k: 5 }),
+      toolName: 'kb_principles',
+      args: { query: 'contract', top_k: 5 },
+    },
+    {
+      method: 'kbPromote',
+      invoke: (client: BackendClient) => client.kbPromote({
+        memo: 'memo/example.md',
+        title: 'KB note',
+        content: 'Promoted content',
+        tags: ['cli'],
+        principles: ['contract-first-design'],
+        domain: 'cli',
+        topic: 'kb-tooling',
+      }),
+      toolName: 'kb_promote',
+      args: {
+        memo: 'memo/example.md',
+        title: 'KB note',
+        content: 'Promoted content',
+        tags: ['cli'],
+        principles: ['contract-first-design'],
+        domain: 'cli',
+        topic: 'kb-tooling',
+      },
+    },
+    {
+      method: 'kbUpdate',
+      invoke: (client: BackendClient) => client.kbUpdate({
+        note: 'cli-kb-tooling',
+        content: 'Updated content',
+        tags: ['cli', 'kb'],
+      }),
+      toolName: 'kb_update',
+      args: {
+        note: 'cli-kb-tooling',
+        content: 'Updated content',
+        tags: ['cli', 'kb'],
+      },
+    },
+    {
+      method: 'kbDelete',
+      invoke: (client: BackendClient) => client.kbDelete({ note: 'cli-kb-tooling' }),
+      toolName: 'kb_delete',
+      args: { note: 'cli-kb-tooling' },
+    },
+    {
+      method: 'kbReindex',
+      invoke: (client: BackendClient) => client.kbReindex({}),
+      toolName: 'kb_reindex',
+      args: {},
+    },
+  ])('routes $method through the matching backend tool', async ({ invoke, toolName, args }) => {
+    const client = new BackendClient({
+      ensureBackend: async () => backendHandle,
+      defaultContext,
+    });
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    await expect(invoke(client)).resolves.toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:4100/tool', expect.objectContaining({
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': 'backend-token',
+      },
+      body: JSON.stringify({
+        name: toolName,
+        args,
+        context: defaultContext,
+      }),
+    }));
+  });
+
   it('preserves structured JSON error bodies from /tool failures', async () => {
     const client = new BackendClient({
       ensureBackend: async () => backendHandle,

@@ -10,6 +10,10 @@ import { platform, arch, homedir } from 'node:os';
 
 const TOOLS_DIR = join(homedir(), '.claude', 'tools');
 
+function kbRuntimeDirFromEnv() {
+  return join(homedir(), '.coral', 'data', 'kb');
+}
+
 const CATALOG = {
   cgc: {
     name: 'CodeGraphContext',
@@ -26,6 +30,13 @@ const CATALOG = {
       serverName: 'CodeGraphContext',
       args: ['mcp', 'start'],
     },
+  },
+  kb: {
+    name: 'Knowledge Base (LanceDB)',
+    description: 'Enhanced KB search with structured queries and future vector support',
+    npm: '@lancedb/lancedb',
+    targetDir: () => kbRuntimeDirFromEnv(),
+    postInstall: ['backend_shutdown', 'kb_reindex'],
   },
 };
 
@@ -63,6 +74,43 @@ function writeMeta(pkg, version, method) {
   writeFileSync(metaPath(pkg), JSON.stringify({ version, method }));
 }
 
+function targetMetaPath(targetDir) {
+  return join(targetDir, '.kb-meta.json');
+}
+
+function readTargetMeta(targetDir) {
+  try { return JSON.parse(readFileSync(targetMetaPath(targetDir), 'utf-8')); }
+  catch { return null; }
+}
+
+function writeTargetMeta(targetDir, version, method) {
+  if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true });
+  writeFileSync(targetMetaPath(targetDir), JSON.stringify({ version, method }));
+}
+
+function npmViewVersion(pkg) {
+  try {
+    return execSync(`npm view ${pkg} version`, {
+      stdio: 'pipe',
+      encoding: 'utf-8',
+      timeout: 10_000,
+    }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function localPackageVersion(targetDir, pkgName) {
+  try {
+    const pkgPath = join(targetDir, 'node_modules', pkgName, 'package.json');
+    if (!existsSync(pkgPath)) return null;
+    const parsed = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+    return typeof parsed.version === 'string' ? parsed.version : null;
+  } catch {
+    return null;
+  }
+}
+
 function fetchLatest(repo) {
   try {
     const json = execSync(
@@ -83,6 +131,16 @@ function buildResult(status, method, cmdPath, entry, extra) {
       command: cmdPath,
       args: entry.mcp.args,
     },
+    ...extra,
+  };
+}
+
+function buildLocalNpmResult(status, method, targetDir, entry, extra) {
+  return {
+    status,
+    method,
+    targetDir,
+    ...(entry.postInstall ? { postInstall: entry.postInstall } : {}),
     ...extra,
   };
 }
@@ -121,9 +179,61 @@ const plat = platform();
 const platKey = `${plat}-${arch()}`;
 
 // Resolve target version
-const targetVersion = requestedVersion
-  || fetchLatest(entry.repo)
-  || entry.fallbackVersion;
+const targetVersion = entry.npm
+  ? requestedVersion || npmViewVersion(entry.npm) || 'latest'
+  : requestedVersion || fetchLatest(entry.repo) || entry.fallbackVersion;
+
+const errors = [];
+const statusLabel = update ? 'updated' : 'installed';
+
+if (entry.npm) {
+  const targetDir = entry.targetDir();
+  const installedVersion = localPackageVersion(targetDir, entry.npm);
+  if (installedVersion === targetVersion) {
+    const meta = readTargetMeta(targetDir);
+    if (meta?.version !== targetVersion || meta?.method !== 'local-npm') {
+      writeTargetMeta(targetDir, targetVersion, 'local-npm');
+    }
+    emit(buildLocalNpmResult(
+      update ? 'already_up_to_date' : 'already_installed',
+      'local-npm',
+      targetDir,
+      entry,
+      { version: targetVersion },
+    ));
+    process.exit(0);
+  }
+
+  if (findCmd('npm')) {
+    try {
+      mkdirSync(targetDir, { recursive: true });
+      if (!existsSync(join(targetDir, 'package.json'))) {
+        execSync('npm init -y', { cwd: targetDir, stdio: 'pipe' });
+      }
+      execSync(`npm install ${entry.npm}@${targetVersion}`, {
+        cwd: targetDir,
+        stdio: 'pipe',
+        timeout: 300_000,
+      });
+      writeTargetMeta(targetDir, targetVersion, 'local-npm');
+      emit(buildLocalNpmResult(
+        statusLabel,
+        'local-npm',
+        targetDir,
+        entry,
+        { version: targetVersion },
+      ));
+      process.exit(0);
+    } catch (e) {
+      errors.push(`local-npm: ${e.message}`);
+    }
+  }
+
+  const suggestions = [];
+  if (!findCmd('npm')) suggestions.push('Install npm / Node.js to enable local package installs');
+  emit({ status: 'error', message: `Could not install ${pkg}`, errors, suggestions });
+  process.exit(1);
+}
 
 if (update) {
   const meta = readMeta(pkg);
@@ -148,9 +258,6 @@ if (!update) {
     process.exit(0);
   }
 }
-
-const errors = [];
-const statusLabel = update ? 'updated' : 'installed';
 
 // Strategy 1: Pre-built binary
 const asset = entry.binaries[platKey];

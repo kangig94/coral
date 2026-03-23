@@ -1,7 +1,7 @@
 ---
 name: equip
 description: "One-touch install of MCP tools to enhance Claude's capabilities"
-argument-hint: "[--list | [--update] cgc[@version]]"
+argument-hint: "[--list | [--update] cgc[@version] | kb[@version]]"
 ---
 
 # Equip
@@ -16,7 +16,7 @@ Install and configure MCP tools for Claude Code.
 2. Present catalog as a table (id, name, description)
 3. Ask the user which package to install
 
-### `<package>` (e.g., `cgc`)
+### `<package>` (e.g., `cgc` or `kb`)
 
 1. Bash(`node equip/install.mjs <package>`)
 2. Parse JSON output (single line from stdout)
@@ -24,11 +24,20 @@ Install and configure MCP tools for Claude Code.
 
 | status | Action |
 |--------|--------|
-| `already_installed` | Inform user, check MCP registration |
+| `already_installed` | Inform user, continue to Post-Install Routing |
 | `already_up_to_date` | Inform user (version shown), done |
-| `installed` | Show method used, proceed to MCP Registration |
-| `updated` | Show method and version, check MCP registration |
+| `installed` | Show method used, continue to Post-Install Routing |
+| `updated` | Show method and version, continue to Post-Install Routing |
 | `error` | Show `message` and `suggestions`, stop |
+
+### Post-Install Routing
+
+1. If `mcp` field present → continue to MCP Registration
+2. If `postInstall` field present → execute each action in order:
+   - `backend_shutdown`: call `backend({ op: "shutdown" })`. Continue on success or connection-refused (not running).
+   - `kb_reindex`: call `kb_reindex()`.
+   - Inform user: "Enhanced KB mode activated."
+3. If neither → inform user "Installed.", done
 
 ### MCP Registration
 

@@ -1,3 +1,4 @@
+import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockState = vi.hoisted(() => ({
@@ -12,6 +13,12 @@ const mockState = vi.hoisted(() => ({
   getBackendStatusFull: vi.fn(),
   shutdownBackend: vi.fn(),
   streamWait: vi.fn(),
+  kbSearch: vi.fn(),
+  kbPrinciples: vi.fn(),
+  kbPromote: vi.fn(),
+  kbUpdate: vi.fn(),
+  kbDelete: vi.fn(),
+  kbReindex: vi.fn(),
 }));
 
 vi.mock('../../client/http-client.js', () => {
@@ -38,6 +45,12 @@ vi.mock('../../client/http-client.js', () => {
     discussWatch = vi.fn();
     discussParticipate = vi.fn();
     discussAbort = vi.fn();
+    kbSearch = mockState.kbSearch;
+    kbPrinciples = mockState.kbPrinciples;
+    kbPromote = mockState.kbPromote;
+    kbUpdate = mockState.kbUpdate;
+    kbDelete = mockState.kbDelete;
+    kbReindex = mockState.kbReindex;
 
     constructor(_options: unknown) {}
   }
@@ -70,13 +83,37 @@ async function loadMainModule(): Promise<MainModule> {
   return import('../main.js');
 }
 
+async function withMockStdin<T>(input: string, fn: () => Promise<T>): Promise<T> {
+  const stdin = new PassThrough();
+  const descriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  Object.defineProperty(process, 'stdin', {
+    configurable: true,
+    value: stdin,
+  });
+
+  const run = fn();
+  setImmediate(() => {
+    stdin.end(input);
+  });
+
+  try {
+    return await run;
+  } finally {
+    if (descriptor) {
+      Object.defineProperty(process, 'stdin', descriptor);
+    }
+  }
+}
+
 describe('cli main routing', () => {
   let stdout = '';
   let stderr = '';
+  let originalArgv: string[];
 
   beforeEach(() => {
     stdout = '';
     stderr = '';
+    originalArgv = [...process.argv];
     process.exitCode = undefined;
 
     mockState.providerExec.mockReset();
@@ -90,6 +127,12 @@ describe('cli main routing', () => {
     mockState.getBackendStatusFull.mockReset();
     mockState.shutdownBackend.mockReset();
     mockState.streamWait.mockReset();
+    mockState.kbSearch.mockReset();
+    mockState.kbPrinciples.mockReset();
+    mockState.kbPromote.mockReset();
+    mockState.kbUpdate.mockReset();
+    mockState.kbDelete.mockReset();
+    mockState.kbReindex.mockReset();
 
     vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
       stdout += toText(chunk);
@@ -103,6 +146,7 @@ describe('cli main routing', () => {
   });
 
   afterEach(() => {
+    process.argv = originalArgv;
     process.exitCode = undefined;
     vi.restoreAllMocks();
     vi.resetModules();
@@ -264,5 +308,272 @@ describe('cli main routing', () => {
       columns: process.stdout.columns ?? 80,
     });
     expect(process.exitCode).toBe(0);
+  });
+
+  it('routes bare kb search without top_k so backend defaults apply', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbSearch.mockResolvedValueOnce({
+      results: [],
+      mode: 'basic',
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'kb',
+      'search',
+      'accel',
+    ]);
+
+    expect(mockState.kbSearch).toHaveBeenCalledWith({ query: 'accel' });
+    expect(stdout).toBe('No results\nMode: basic\n');
+    expect(stderr).toBe('');
+  });
+
+  it('routes kb search with --top-k and preserves raw json output', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbSearch.mockResolvedValueOnce({
+      results: [],
+      mode: 'basic',
+      warning: 'Run kb_reindex to build the search index.',
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'kb',
+      'search',
+      'accel',
+      '--top-k',
+      '5',
+      '--output-format',
+      'json',
+    ]);
+
+    expect(mockState.kbSearch).toHaveBeenCalledWith({ query: 'accel', top_k: 5 });
+    expect(JSON.parse(stdout.trim())).toEqual({
+      results: [],
+      mode: 'basic',
+      warning: 'Run kb_reindex to build the search index.',
+    });
+  });
+
+  it('routes bare kb principles as an empty payload', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbPrinciples.mockResolvedValueOnce({
+      principles: ['contract-first-design'],
+      total: 1,
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'kb',
+      'principles',
+    ]);
+
+    expect(mockState.kbPrinciples).toHaveBeenCalledWith({});
+    expect(stdout).toBe('contract-first-design\nTotal: 1\n');
+  });
+
+  it('routes kb principles query and top-k flags', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbPrinciples.mockResolvedValueOnce({
+      principles: [],
+      total: 0,
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'kb',
+      'principles',
+      '--query',
+      'contract',
+      '--top-k',
+      '7',
+    ]);
+
+    expect(mockState.kbPrinciples).toHaveBeenCalledWith({ query: 'contract', top_k: 7 });
+  });
+
+  it('routes kb promote flags into kb_promote arguments', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbPromote.mockResolvedValueOnce({
+      path: '/tmp/kb/notes/cli-kb-tooling.md',
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'kb',
+      'promote',
+      '--memo',
+      'memo/123.md',
+      '--title',
+      'KB CLI',
+      '--content',
+      'Details',
+      '--tag',
+      'cli',
+      '--tag',
+      'kb',
+      '--principle',
+      'contract-first-design',
+      '--domain',
+      'cli',
+      '--topic',
+      'kb-tooling',
+    ]);
+
+    expect(mockState.kbPromote).toHaveBeenCalledWith({
+      memo: 'memo/123.md',
+      title: 'KB CLI',
+      content: 'Details',
+      tags: ['cli', 'kb'],
+      principles: ['contract-first-design'],
+      domain: 'cli',
+      topic: 'kb-tooling',
+    });
+    expect(stdout).toBe('Created: /tmp/kb/notes/cli-kb-tooling.md\n');
+  });
+
+  it('gives kb promote stdin payload full precedence over individual flags', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbPromote.mockResolvedValueOnce({
+      path: '/tmp/kb/notes/stdin-note.md',
+    });
+
+    await withMockStdin(JSON.stringify({
+      memo: 'memo/stdin.md',
+      title: 'From stdin',
+      content: 'stdin content',
+      tags: ['stdin'],
+      principles: ['single-source-of-truth'],
+      domain: 'cli',
+      topic: 'stdin-note',
+    }), async () => {
+      await program.parseAsync([
+        'node',
+        'coral-cli',
+        'kb',
+        'promote',
+        '--input-json',
+        '-',
+        '--memo',
+        'memo/ignored.md',
+        '--title',
+        'Ignored',
+        '--content',
+        'ignored',
+        '--tag',
+        'ignored',
+        '--principle',
+        'ignored',
+        '--domain',
+        'ignored',
+        '--topic',
+        'ignored',
+      ]);
+    });
+
+    expect(mockState.kbPromote).toHaveBeenCalledWith({
+      memo: 'memo/stdin.md',
+      title: 'From stdin',
+      content: 'stdin content',
+      tags: ['stdin'],
+      principles: ['single-source-of-truth'],
+      domain: 'cli',
+      topic: 'stdin-note',
+    });
+  });
+
+  it('routes kb update and only sends provided fields', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbUpdate.mockResolvedValueOnce({
+      path: '/tmp/kb/notes/cli-kb-tooling.md',
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'kb',
+      'update',
+      'cli-kb-tooling',
+      '--content',
+      'Updated',
+      '--tag',
+      'cli',
+      '--principle',
+      'verify-at-boundaries',
+    ]);
+
+    expect(mockState.kbUpdate).toHaveBeenCalledWith({
+      note: 'cli-kb-tooling',
+      content: 'Updated',
+      tags: ['cli'],
+      principles: ['verify-at-boundaries'],
+    });
+    expect(stdout).toBe('Updated: /tmp/kb/notes/cli-kb-tooling.md\n');
+  });
+
+  it('routes kb delete to the delete wrapper', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbDelete.mockResolvedValueOnce({
+      deleted: '/tmp/kb/notes/cli-kb-tooling.md',
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'kb',
+      'delete',
+      'cli-kb-tooling',
+    ]);
+
+    expect(mockState.kbDelete).toHaveBeenCalledWith({ note: 'cli-kb-tooling' });
+    expect(stdout).toBe('Deleted: /tmp/kb/notes/cli-kb-tooling.md\n');
+  });
+
+  it('routes kb reindex and rewrites warning text using the active CLI invocation prefix', async () => {
+    process.argv = ['node', '/tmp/path with spaces/coral-cli.cjs'];
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbReindex.mockResolvedValueOnce({
+      notes: 4,
+      principles: 2,
+      tags: 3,
+      duration_ms: 25,
+      mode: 'basic',
+      warning: 'Run kb_reindex again to refresh it.',
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'kb',
+      'reindex',
+    ]);
+
+    expect(mockState.kbReindex).toHaveBeenCalledWith({});
+    expect(stdout).toContain('NOTES');
+    expect(stdout).toContain('node "/tmp/path with spaces/coral-cli.cjs" kb reindex');
   });
 });

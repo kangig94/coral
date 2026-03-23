@@ -36,6 +36,12 @@ import {
   type DiscussStartResult,
   formatAbortResult,
   formatBackendStatus,
+  formatKbDelete,
+  formatKbPrinciples,
+  formatKbPromote,
+  formatKbReindex,
+  formatKbSearch,
+  formatKbUpdate,
   formatDiscussAbort,
   formatDiscussParticipate,
   formatDiscussStart,
@@ -141,6 +147,33 @@ type DiscussAbortOptions = {
   session: string;
 };
 
+type KbSearchOptions = {
+  topK?: string;
+};
+
+type KbPrinciplesOptions = {
+  query?: string;
+  topK?: string;
+};
+
+type KbPromoteOptions = {
+  memo?: string;
+  title?: string;
+  content?: string;
+  tag?: string[];
+  principle?: string[];
+  domain?: string;
+  topic?: string;
+  inputJson?: string;
+};
+
+type KbUpdateOptions = {
+  title?: string;
+  content?: string;
+  tag?: string[];
+  principle?: string[];
+};
+
 function makeClient(projectRoot: string): BackendClient {
   const defaultContext: CallerContext = { pluginRoot, projectRoot, coralEnv: collectCoralEnv() };
   return new BackendClient({
@@ -178,6 +211,12 @@ export function getOutputFormat(command: Command): 'text' | 'json' {
   return command.optsWithGlobals<{ outputFormat?: string }>().outputFormat === 'json'
     ? 'json'
     : 'text';
+}
+
+function getCliDisplayPrefix(argv: readonly string[] = process.argv): string {
+  return argv[0]?.match(/node(\.exe)?$/)
+    ? `node "${argv[1]}"`
+    : (argv[0] ?? 'coral-cli');
 }
 
 function emit(
@@ -801,6 +840,146 @@ export function buildProgram(): Command {
         const client = makeClient(process.cwd());
         const result = await client.discussAbort(opts.session);
         emit(result, outputFormat, (data) => formatDiscussAbort(data as DiscussAbortResult));
+      } catch (error) {
+        emitError(error, outputFormat);
+      }
+    });
+
+  const cliPrefix = getCliDisplayPrefix();
+  const kb = program.command('kb').description('Knowledge base operations');
+
+  const kbSearchCommand = kb.command('search');
+  kbSearchCommand
+    .description('Search KB notes')
+    .argument('<query>', 'Search query')
+    .option('--top-k <n>', 'Maximum results')
+    .action(async (query: string, opts: KbSearchOptions) => {
+      const outputFormat = getOutputFormat(kbSearchCommand);
+
+      try {
+        const args = {
+          query,
+          ...(opts.topK !== undefined ? { top_k: parseIntegerFlag('--top-k', opts.topK) } : {}),
+        };
+        const client = makeClient(process.cwd());
+        const result = await client.kbSearch(args);
+        emit(result, outputFormat, (data) => formatKbSearch(data, cliPrefix));
+      } catch (error) {
+        emitError(error, outputFormat);
+      }
+    });
+
+  const kbPrinciplesCommand = kb.command('principles');
+  kbPrinciplesCommand
+    .description('List KB principle names')
+    .option('--query <text>', 'Filter principle names')
+    .option('--top-k <n>', 'Maximum results')
+    .action(async (opts: KbPrinciplesOptions) => {
+      const outputFormat = getOutputFormat(kbPrinciplesCommand);
+
+      try {
+        const args = {
+          ...(opts.query !== undefined ? { query: opts.query } : {}),
+          ...(opts.topK !== undefined ? { top_k: parseIntegerFlag('--top-k', opts.topK) } : {}),
+        };
+        const client = makeClient(process.cwd());
+        const result = await client.kbPrinciples(args);
+        emit(result, outputFormat, (data) => formatKbPrinciples(data, cliPrefix));
+      } catch (error) {
+        emitError(error, outputFormat);
+      }
+    });
+
+  const kbPromoteCommand = kb.command('promote');
+  kbPromoteCommand
+    .description('Promote a memo into a KB note')
+    .option('--memo <path>', 'Memo path')
+    .option('--title <text>', 'Note title')
+    .option('--content <text>', 'Note content')
+    .option('--tag <tag>', 'Tag (repeatable)', (value: string, previous: string[] | undefined) => [...(previous ?? []), value])
+    .option('--principle <name>', 'Principle (repeatable)', (value: string, previous: string[] | undefined) => [...(previous ?? []), value])
+    .option('--domain <slug>', 'Note domain')
+    .option('--topic <slug>', 'Note topic')
+    .option('--input-json <source>', 'JSON payload from stdin (use -)')
+    .action(async (opts: KbPromoteOptions) => {
+      const outputFormat = getOutputFormat(kbPromoteCommand);
+
+      try {
+        const args = opts.inputJson !== undefined
+          // Promote intentionally uses full-precedence stdin semantics so a JSON payload replaces all flags.
+          ? await parseInputJson(opts.inputJson)
+          : {
+              ...(opts.memo !== undefined ? { memo: opts.memo } : {}),
+              ...(opts.title !== undefined ? { title: opts.title } : {}),
+              ...(opts.content !== undefined ? { content: opts.content } : {}),
+              ...(opts.domain !== undefined ? { domain: opts.domain } : {}),
+              ...(opts.topic !== undefined ? { topic: opts.topic } : {}),
+              tags: opts.tag ?? [],
+              principles: opts.principle ?? [],
+            };
+        const client = makeClient(process.cwd());
+        const result = await client.kbPromote(
+          args as Parameters<BackendClient['kbPromote']>[0],
+        );
+        emit(result, outputFormat, formatKbPromote);
+      } catch (error) {
+        emitError(error, outputFormat);
+      }
+    });
+
+  const kbUpdateCommand = kb.command('update');
+  kbUpdateCommand
+    .description('Update an existing KB note')
+    .argument('<note>', 'Note name')
+    .option('--title <text>', 'Updated title')
+    .option('--content <text>', 'Updated content')
+    .option('--tag <tag>', 'Tag (repeatable)', (value: string, previous: string[] | undefined) => [...(previous ?? []), value])
+    .option('--principle <name>', 'Principle (repeatable)', (value: string, previous: string[] | undefined) => [...(previous ?? []), value])
+    .action(async (note: string, opts: KbUpdateOptions) => {
+      const outputFormat = getOutputFormat(kbUpdateCommand);
+
+      try {
+        const args = {
+          note,
+          ...(opts.title !== undefined ? { title: opts.title } : {}),
+          ...(opts.content !== undefined ? { content: opts.content } : {}),
+          ...(opts.tag !== undefined ? { tags: opts.tag } : {}),
+          ...(opts.principle !== undefined ? { principles: opts.principle } : {}),
+        };
+        const client = makeClient(process.cwd());
+        const result = await client.kbUpdate(args);
+        emit(result, outputFormat, formatKbUpdate);
+      } catch (error) {
+        emitError(error, outputFormat);
+      }
+    });
+
+  const kbDeleteCommand = kb.command('delete');
+  kbDeleteCommand
+    .description('Delete a KB note')
+    .argument('<note>', 'Note name')
+    .action(async (note: string) => {
+      const outputFormat = getOutputFormat(kbDeleteCommand);
+
+      try {
+        const client = makeClient(process.cwd());
+        const result = await client.kbDelete({ note });
+        emit(result, outputFormat, formatKbDelete);
+      } catch (error) {
+        emitError(error, outputFormat);
+      }
+    });
+
+  const kbReindexCommand = kb.command('reindex');
+  kbReindexCommand
+    .description('Rebuild the KB index')
+    .action(async () => {
+      const outputFormat = getOutputFormat(kbReindexCommand);
+
+      try {
+        const client = makeClient(process.cwd());
+        const result = await client.kbReindex({});
+        emit(result, outputFormat, (data) => formatKbReindex(data, cliPrefix));
       } catch (error) {
         emitError(error, outputFormat);
       }

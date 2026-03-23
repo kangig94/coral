@@ -282,6 +282,25 @@ describe('execution backend server', () => {
     expect(typeof body.uptimeMs).toBe('number');
   });
 
+  it('runs KB initialization during startup before idle watching begins', async () => {
+    const fakeIdleTimer = createFakeIdleTimer();
+    const initKbFn = vi.fn(async () => {});
+
+    await startBackendServer({
+      createIdleTimer: () => fakeIdleTimer as never,
+      initKbFn,
+    });
+
+    expect(initKbFn).toHaveBeenCalledTimes(1);
+    const initOrder = initKbFn.mock.invocationCallOrder.at(0);
+    const watchOrder = fakeIdleTimer.startWatching.mock.invocationCallOrder.at(0);
+    expect(initOrder).toBeDefined();
+    expect(watchOrder).toBeDefined();
+    expect(initOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(
+      watchOrder ?? Number.POSITIVE_INFINITY,
+    );
+  });
+
   it('returns 200 from /tools with provider and built-in descriptors', async () => {
     const backend = await startBackendServer();
 
@@ -302,6 +321,11 @@ describe('execution backend server', () => {
     expect(body.some((tool) => tool.name === 'discuss_abort')).toBe(true);
     expect(body.some((tool) => tool.name === 'discuss_watch')).toBe(true);
     expect(body.some((tool) => tool.name === 'discuss_participate')).toBe(true);
+    expect(body.some((tool) => tool.name === 'kb_search')).toBe(true);
+    expect(body.some((tool) => tool.name === 'kb_promote')).toBe(true);
+    expect(body.some((tool) => tool.name === 'kb_update')).toBe(true);
+    expect(body.some((tool) => tool.name === 'kb_delete')).toBe(true);
+    expect(body.some((tool) => tool.name === 'kb_reindex')).toBe(true);
     const watchTool = body.find((tool: { name?: string }) => tool.name === 'discuss_watch') as
       | { inputSchema?: { properties?: { cursor?: unknown } } }
       | undefined;
@@ -399,6 +423,34 @@ describe('execution backend server', () => {
     expect(await response.json()).toEqual({
       error: 'not_found',
       message: 'Unknown tool: missing-provider',
+    });
+  });
+
+  it('routes KB tool calls through KB contracts before provider fallback', async () => {
+    const backend = await startBackendServer();
+
+    const response = await fetch(`${backend.baseUrl}/tool`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        name: 'kb_search',
+        args: {},
+        context: { projectRoot: '/tmp/project', coralEnv: {} },
+      }),
+    });
+
+    const body = await response.json() as {
+      content: Array<{ type: string; text: string }>;
+      isError: boolean;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.isError).toBe(true);
+    expect(JSON.parse(body.content[0]?.text ?? '{}')).toMatchObject({
+      error: 'invalid_request',
     });
   });
 
