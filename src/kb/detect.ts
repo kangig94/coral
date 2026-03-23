@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
@@ -21,7 +21,15 @@ const INDEX_FILE = 'index.json';
 let adapter: KbLanceDbAdapter | null = null;
 let cachedIndex: KbIndex | null = null;
 let cachedIndexLoaded = false;
+let cachedIndexMtime = 0;
 let mutationLock: Promise<void> = Promise.resolve();
+
+// Lazy auto-rebuild callback — set by reindex module to avoid circular imports
+let autoRebuildFn: ((kb: KbContext) => Promise<void>) | null = null;
+
+export function setAutoRebuild(fn: (kb: KbContext) => Promise<void>): void {
+  autoRebuildFn = fn;
+}
 
 function indexStatePath(): string {
   return join(kbRuntimeDir(), INDEX_STATE_FILE);
@@ -149,6 +157,7 @@ export function readKbIndex(): KbIndex | null {
   try {
     const raw = readFileSync(indexPath(), 'utf-8');
     cachedIndex = parseIndex(JSON.parse(raw) as unknown);
+    cachedIndexMtime = statSync(indexPath()).mtimeMs;
     return cachedIndex;
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
@@ -157,6 +166,43 @@ export function readKbIndex(): KbIndex | null {
     }
     throw error;
   }
+}
+
+/** Check if index needs rebuild: missing, or notes dir modified after index was written. */
+function indexNeedsRebuild(): boolean {
+  const idxPath = indexPath();
+  if (!existsSync(idxPath)) return true;
+
+  try {
+    const notesDir = join(kbRoot(), 'notes');
+    const principlesDir = join(kbRoot(), 'principles');
+    if (!existsSync(notesDir)) return false; // no notes, nothing to index
+
+    const idxMtime = cachedIndexMtime || statSync(idxPath).mtimeMs;
+    const notesMtime = statSync(notesDir).mtimeMs;
+    if (notesMtime > idxMtime) return true;
+
+    if (existsSync(principlesDir)) {
+      const princMtime = statSync(principlesDir).mtimeMs;
+      if (princMtime > idxMtime) return true;
+    }
+
+    return false;
+  } catch {
+    return false; // fail-open: don't rebuild on stat errors
+  }
+}
+
+/** Ensure index is fresh before reading. Auto-rebuilds if missing or stale. */
+export async function ensureKbIndex(kb: KbContext): Promise<KbIndex> {
+  if (indexNeedsRebuild() && autoRebuildFn) {
+    await autoRebuildFn(kb);
+    // invalidate cache so readKbIndex re-reads the fresh file
+    cachedIndex = null;
+    cachedIndexLoaded = false;
+  }
+
+  return readKbIndex() ?? emptyIndex();
 }
 
 export function writeKbIndex(index: KbIndex): KbIndex {
