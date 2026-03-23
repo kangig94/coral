@@ -4,9 +4,6 @@ description: "Use when a problem needs clarification and agreement before planni
 argument-hint: "[--codex] <issue or topic>"
 ---
 
-> **CORAL_METHODS**: !`echo ~/.claude/plugins/cache/coral/coral/*/methods/`
-> **CORAL_PROJECT**: !`url=$(git remote get-url origin 2>/dev/null) && echo ~/.coral/projects/$(echo "$url" | sed -E 's#.*[:/]([^/]+/[^/.]+)(\.git)?$#\1#' | tr '/' '-') || echo ~/.coral/projects/local-$(basename $PWD)`
-
 # Pre-plan
 
 Structured problem-definition conversation with the user before planning begins.

@@ -4,8 +4,6 @@ description: "Use when a topic benefits from multiple perspectives debating befo
 argument-hint: "[--user] [topic] [--hints axis1:pos1,pos2 axis2:pos1,pos2]"
 ---
 
-> **CORAL_PROJECT**: !`url=$(git remote get-url origin 2>/dev/null) && echo ~/.coral/projects/$(echo "$url" | sed -E 's#.*[:/]([^/]+/[^/.]+)(\.git)?$#\1#' | tr '/' '-') || echo ~/.coral/projects/local-$(basename $PWD)`
-
 # Moderated Multi-Agent Discussion
 
 Start a backend-managed structured discussion with AI agents.

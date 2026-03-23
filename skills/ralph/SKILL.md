@@ -4,9 +4,6 @@ description: "Use when implementing a plan or executing a prompt that requires v
 argument-hint: "[--red] [--codex] [--team] [task description]"
 ---
 
-> **CORAL_AGENTS**: !`echo ~/.claude/plugins/cache/coral/coral/*/agents/`
-> **CORAL_PROJECT**: !`url=$(git remote get-url origin 2>/dev/null) && echo ~/.coral/projects/$(echo "$url" | sed -E 's#.*[:/]([^/]+/[^/.]+)(\.git)?$#\1#' | tr '/' '-') || echo ~/.coral/projects/local-$(basename $PWD)`
-
 # Persistent Execution with Verification
 
 Announce at start: "Using ralph to execute this task with verification loop."

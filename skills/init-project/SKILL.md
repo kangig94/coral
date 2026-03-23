@@ -4,8 +4,6 @@ description: "Use when setting up a new or existing project for AI-assisted deve
 argument-hint: "[existing|new]"
 ---
 
-> **CORAL_PROJECT**: !`url=$(git remote get-url origin 2>/dev/null) && echo ~/.coral/projects/$(echo "$url" | sed -E 's#.*[:/]([^/]+/[^/.]+)(\.git)?$#\1#' | tr '/' '-') || echo ~/.coral/projects/local-$(basename $PWD)`
-
 # Project Initialization
 
 <Role>

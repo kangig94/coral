@@ -4,8 +4,6 @@ description: "Use when encountering a bug, error, or unexpected behavior that ne
 argument-hint: "[--codex] <bug description or error message>"
 ---
 
-> **CORAL_AGENTS**: !`echo ~/.claude/plugins/cache/coral/coral/*/agents/`
-
 # Bug Debugging
 
 Diagnose bugs, plan fixes, and execute - end-to-end.
