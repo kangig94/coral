@@ -288,6 +288,24 @@ describe('session-start.mjs', () => {
     expect(output.hookSpecificOutput.additionalContext).toContain(`Memo dir: ${coralProjectDir(fixture.root, 'acme/my.repo')}/memo`);
   });
 
+  it('replaces {{CORAL_CLI}} with the shell-quoted coral-cli bridge path', () => {
+    const fixture = createFixture();
+    writeInjectMd(fixture.pluginRoot, 'KB: {{CORAL_CLI}} kb principles');
+
+    const result = runHook(
+      SESSION_START_HOOK,
+      {},
+      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
+    );
+
+    expect(result.status).toBe(0);
+
+    const output = expectHookOutput(result);
+    expect(output.hookSpecificOutput.additionalContext).toBe(
+      `KB: node "${join(fixture.pluginRoot, 'bridge', 'coral-cli.cjs')}" kb principles`,
+    );
+  });
+
   it('outputs INJECT.md only when no session_id', () => {
     const fixture = createFixture();
     const injectMd = 'Only CLAUDE content';

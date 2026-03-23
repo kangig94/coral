@@ -82,24 +82,22 @@ source: {{PROJECT_SOURCE}}
 
 ## Search
 Before debugging from scratch or starting a plan:
-1. `kb_principles()` — list principle names (cross-domain decision patterns). Scan names, pick relevant ones.
-2. `kb_search({ query: "<principle-name or keywords>" })` — searches filename, principles, tags, title, content. Returns top 20 results ranked by relevance.
-
-Principle names are self-descriptive (e.g., `atomic-persistence-or-nothing`). If a name is ambiguous, read the principle file for its one-sentence statement.
+1. `{{CORAL_CLI}} kb principles` — list principle names (cross-domain decision patterns). Names are self-descriptive (e.g., `atomic-persistence-or-nothing`). Read the principle file if a name is ambiguous.
+2. `{{CORAL_CLI}} kb search "<keywords>"` — searches filename, principles, tags, title, content. Returns top 20 results ranked by relevance.
 
 ## Promotion
 **Who**: top-level orchestrator only, after all work completes (not implementation — after review too).
 Subagents and delegated tasks only write memos, never promote.
 
-**Process**: review all memos, check for duplicates via `kb_search`, then promote:
-`kb_promote({ memo: "<path>", title: "...", content: "## Rule\n...\n## Why\n...\n## Pattern\n...", tags: [...], principles: [...], domain: "...", topic: "..." })`
+**Process**: review all memos, check for duplicates via `{{CORAL_CLI}} kb search`, then promote:
+`{{CORAL_CLI}} kb promote --memo "<path>" --title "..." --content "## Rule\n...\n## Why\n...\n## Pattern\n..." --tag t1 --tag t2 --principle p1 --domain d --topic t`
 
 Principles are well-formed names (not required to exist yet — they emerge from 3+ notes).
 
 ## Update / Delete
-`kb_update({ note: "<name>", content: "...", tags: [...] })`
-`kb_delete({ note: "<name>" })`
+`{{CORAL_CLI}} kb update <note> --content "..." --tag t1`
+`{{CORAL_CLI}} kb delete <note>`
 
 ## Invalidation
 If a kb entry contradicts current code:
-`kb_update({ note: "<name>", ... })` or `kb_delete({ note: "<name>" })`
+`{{CORAL_CLI}} kb update <note> ...` or `{{CORAL_CLI}} kb delete <note>`

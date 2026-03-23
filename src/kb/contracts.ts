@@ -36,7 +36,7 @@ export const kbSearchSchema = z.object({
   query: nonEmptyTrimmedSchema,
   top_k: z.number().int().min(1).max(100).optional().default(20),
 });
-export type KbSearchInput = z.infer<typeof kbSearchSchema>;
+export type KbSearchInput = z.input<typeof kbSearchSchema>;
 
 export const kbPromoteSchema = z.object({
   memo: z.string(),
@@ -47,7 +47,7 @@ export const kbPromoteSchema = z.object({
   domain: slugSchema,
   topic: slugSchema,
 });
-export type KbPromoteInput = z.infer<typeof kbPromoteSchema>;
+export type KbPromoteInput = z.input<typeof kbPromoteSchema>;
 
 export const kbUpdateSchema = z.object({
   note: noteNameSchema,
@@ -56,20 +56,21 @@ export const kbUpdateSchema = z.object({
   tags: z.array(tagSchema).optional(),
   principles: z.array(z.string()).optional(),
 });
-export type KbUpdateInput = z.infer<typeof kbUpdateSchema>;
+export type KbUpdateInput = z.input<typeof kbUpdateSchema>;
 
 export const kbDeleteSchema = z.object({
   note: noteNameSchema,
 });
-export type KbDeleteInput = z.infer<typeof kbDeleteSchema>;
+export type KbDeleteInput = z.input<typeof kbDeleteSchema>;
 
-const kbReindexSchema = z.object({});
+export const kbReindexSchema = z.object({});
+export type KbReindexInput = z.input<typeof kbReindexSchema>;
 
 export const kbPrinciplesSchema = z.object({
   query: nonEmptyTrimmedSchema.optional(),
   top_k: z.number().int().min(1).max(100).optional().default(100),
 });
-export type KbPrinciplesInput = z.infer<typeof kbPrinciplesSchema>;
+export type KbPrinciplesInput = z.input<typeof kbPrinciplesSchema>;
 
 function toInputSchema(schema: z.ZodTypeAny): Record<string, unknown> {
   const inputSchema = zodToJsonSchema(schema, { $refStrategy: 'none' });

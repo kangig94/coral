@@ -66,6 +66,14 @@ function appendCursor(text: string, cursor: string | null): string {
   return cursor === null ? text : `${text} (cursor: ${cursor})`;
 }
 
+function normalizeKbWarning(warning: unknown, cliPrefix = 'coral-cli'): string | undefined {
+  if (typeof warning !== 'string' || warning.length === 0) {
+    return undefined;
+  }
+
+  return warning.replace(/\bkb_reindex\b/g, () => `${cliPrefix} kb reindex`);
+}
+
 function formatTable(headers: string[], rows: string[][]): string {
   const widths = headers.map((header, index) =>
     Math.max(header.length, ...rows.map((row) => row[index]?.length ?? 0)));
@@ -259,6 +267,103 @@ export function formatDiscussWatch(result: unknown): string {
     `Session ${result.session} [${result.status}]`,
     `Topic: ${result.topic}`,
     `Epoch: ${result.epoch} | Step: ${result.step} | Events: ${result.events.length} | Cursor: ${result.cursor}`,
+  ]);
+}
+
+export function formatKbSearch(data: unknown, cliPrefix = 'coral-cli'): string {
+  if (!isRecord(data) || !Array.isArray(data.results) || typeof data.mode !== 'string') {
+    return formatUnknown(data);
+  }
+
+  const warning = normalizeKbWarning(data.warning, cliPrefix);
+  const rows = data.results.map((result) => {
+    if (!isRecord(result)) {
+      return ['-', '-', '-', '-'];
+    }
+
+    const matchedBy = Array.isArray(result.matchedBy)
+      ? result.matchedBy.filter((value): value is string => typeof value === 'string')
+      : [];
+
+    return [
+      typeof result.path === 'string' ? result.path : '-',
+      typeof result.title === 'string' ? result.title : '-',
+      matchedBy.length > 0 ? matchedBy.join(', ') : '-',
+      typeof result.snippet === 'string' ? result.snippet : '-',
+    ];
+  });
+
+  return joinLines([
+    rows.length === 0
+      ? 'No results'
+      : formatTable(['PATH', 'TITLE', 'MATCHED BY', 'SNIPPET'], rows),
+    `Mode: ${data.mode}`,
+    warning === undefined ? undefined : `Warning: ${warning}`,
+  ]);
+}
+
+export function formatKbPrinciples(data: unknown, cliPrefix = 'coral-cli'): string {
+  if (!isRecord(data) || !Array.isArray(data.principles) || typeof data.total !== 'number') {
+    return formatUnknown(data);
+  }
+
+  const principles = data.principles.filter((value): value is string => typeof value === 'string');
+  const warning = normalizeKbWarning(data.warning, cliPrefix);
+
+  return joinLines([
+    principles.length === 0 ? 'No principles' : principles.join('\n'),
+    `Total: ${data.total}`,
+    warning === undefined ? undefined : `Warning: ${warning}`,
+  ]);
+}
+
+export function formatKbPromote(data: unknown): string {
+  if (!isRecord(data) || typeof data.path !== 'string') {
+    return formatUnknown(data);
+  }
+
+  return `Created: ${data.path}`;
+}
+
+export function formatKbUpdate(data: unknown): string {
+  if (!isRecord(data) || typeof data.path !== 'string') {
+    return formatUnknown(data);
+  }
+
+  return `Updated: ${data.path}`;
+}
+
+export function formatKbDelete(data: unknown): string {
+  if (!isRecord(data) || typeof data.deleted !== 'string') {
+    return formatUnknown(data);
+  }
+
+  return `Deleted: ${data.deleted}`;
+}
+
+export function formatKbReindex(data: unknown, cliPrefix = 'coral-cli'): string {
+  if (
+    !isRecord(data)
+    || typeof data.notes !== 'number'
+    || typeof data.principles !== 'number'
+    || typeof data.tags !== 'number'
+    || typeof data.duration_ms !== 'number'
+    || typeof data.mode !== 'string'
+  ) {
+    return formatUnknown(data);
+  }
+
+  const warning = normalizeKbWarning(data.warning, cliPrefix);
+
+  return joinLines([
+    formatTable(['NOTES', 'PRINCIPLES', 'TAGS', 'DURATION_MS', 'MODE'], [[
+      String(data.notes),
+      String(data.principles),
+      String(data.tags),
+      String(data.duration_ms),
+      data.mode,
+    ]]),
+    warning === undefined ? undefined : `Warning: ${warning}`,
   ]);
 }
 

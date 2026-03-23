@@ -174,6 +174,22 @@ describe('prependInjectMd', () => {
     }
   });
 
+  it('replaces {{CORAL_CLI}} with the shell-quoted coral-cli bridge path before prepending', async () => {
+    const pluginRoot = mkdtempSync(join('/tmp', 'coral codex plugin-'));
+    try {
+      writeFileSync(join(pluginRoot, 'INJECT.md'), 'KB: {{CORAL_CLI}} kb search "accel"');
+      const customExecutor = await loadExecutor(pluginRoot);
+      const proc = createMockProcess(agentMessage(), 0);
+      mockSpawn.mockReturnValue(proc);
+
+      await customExecutor.executeOneShot('do something', withAuthenticatedCli());
+
+      expect(proc.stdinWrites.join('')).toBe(`KB: node "${join(pluginRoot, 'bridge', 'coral-cli.cjs')}" kb search "accel"\n\n---\n\ndo something`);
+    } finally {
+      rmSync(pluginRoot, { recursive: true, force: true });
+    }
+  });
+
   it('returns prompt unchanged when INJECT.md is empty', async () => {
     const pluginRoot = mkdtempSync(join('/tmp', 'coral-codex-plugin-'));
     try {

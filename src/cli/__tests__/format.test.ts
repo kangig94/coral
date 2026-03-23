@@ -13,6 +13,12 @@ import {
   formatDiscussStart,
   formatDiscussWatch,
   formatError,
+  formatKbDelete,
+  formatKbPrinciples,
+  formatKbPromote,
+  formatKbReindex,
+  formatKbSearch,
+  formatKbUpdate,
   formatLaunchDecision,
   formatPersonaSeed,
   formatProviderList,
@@ -332,6 +338,76 @@ describe('cli format', () => {
     it('formats a failed shutdown result', () => {
       const result = { ok: false, reason: 'unauthorized' } satisfies ShutdownResult;
       expect(formatShutdown(result)).toBe('Shutdown failed: unauthorized');
+    });
+  });
+
+  describe('kb formatters', () => {
+    it('formats kb search results in table form and rewrites kb_reindex warnings', () => {
+      const formatted = formatKbSearch({
+        results: [
+          {
+            path: 'notes/cli-kb-tooling.md',
+            title: 'KB CLI Tooling',
+            matchedBy: ['filename', 'content'],
+            snippet: 'Use kb_reindex after stale writes.',
+          },
+        ],
+        mode: 'enhanced',
+        warning: 'Enhanced KB index is stale; run kb_reindex to refresh it.',
+      }, 'node "/tmp/coral-cli.cjs"');
+
+      expect(formatted).toContain('PATH');
+      expect(formatted).toContain('MATCHED BY');
+      expect(formatted).toContain('notes/cli-kb-tooling.md');
+      expect(formatted).toContain('filename, content');
+      expect(formatted).toContain('Mode: enhanced');
+      expect(formatted).toContain('node "/tmp/coral-cli.cjs" kb reindex');
+    });
+
+    it('formats an empty kb search result set', () => {
+      expect(formatKbSearch({ results: [], mode: 'basic' })).toBe('No results\nMode: basic');
+    });
+
+    it('formats kb principles with totals and warning translation', () => {
+      expect(formatKbPrinciples({
+        principles: ['contract-first-design', 'single-source-of-truth'],
+        total: 2,
+        warning: 'No index found. Run kb_reindex first.',
+      })).toBe(
+        'contract-first-design\n'
+        + 'single-source-of-truth\n'
+        + 'Total: 2\n'
+        + 'Warning: No index found. Run coral-cli kb reindex first.',
+      );
+    });
+
+    it('formats an empty kb principles result', () => {
+      expect(formatKbPrinciples({ principles: [], total: 0 })).toBe('No principles\nTotal: 0');
+    });
+
+    it('formats kb promote, update, and delete results', () => {
+      expect(formatKbPromote({ path: '/tmp/kb/notes/cli-kb-tooling.md' }))
+        .toBe('Created: /tmp/kb/notes/cli-kb-tooling.md');
+      expect(formatKbUpdate({ path: '/tmp/kb/notes/cli-kb-tooling.md' }))
+        .toBe('Updated: /tmp/kb/notes/cli-kb-tooling.md');
+      expect(formatKbDelete({ deleted: '/tmp/kb/notes/cli-kb-tooling.md' }))
+        .toBe('Deleted: /tmp/kb/notes/cli-kb-tooling.md');
+    });
+
+    it('formats kb reindex stats and rewrites kb_reindex warnings', () => {
+      const formatted = formatKbReindex({
+        notes: 4,
+        principles: 2,
+        tags: 3,
+        duration_ms: 25,
+        mode: 'basic',
+        warning: 'Run kb_reindex again to refresh the enhanced index.',
+      }, 'node "/tmp/coral-cli.cjs"');
+
+      expect(formatted).toContain('NOTES');
+      expect(formatted).toContain('25');
+      expect(formatted).toContain('basic');
+      expect(formatted).toContain('node "/tmp/coral-cli.cjs" kb reindex again');
     });
   });
 

@@ -8,16 +8,18 @@ import { basename, join } from 'node:path';
 try {
   const input = JSON.parse(await readStdin());
   const sessionId = input.session_id;
-  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
+  const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || '';
   const projectDir = process.env.CLAUDE_PROJECT_DIR;
+  const cliPath = `node "${PLUGIN_ROOT}/bridge/coral-cli.cjs"`;
 
-  if (!pluginRoot || !existsSync(pluginRoot)) process.exit(0);
+  if (!PLUGIN_ROOT || !existsSync(PLUGIN_ROOT)) process.exit(0);
 
   if (projectDir) ensureCliPermission(projectDir);
 
-  const injectText = readFileSync(`${pluginRoot}/INJECT.md`, 'utf-8');
+  const injectText = readFileSync(`${PLUGIN_ROOT}/INJECT.md`, 'utf-8');
   const injectContent = injectText
     .replaceAll('{{CORAL_KB}}', resolveKbRoot())
+    .replaceAll('{{CORAL_CLI}}', cliPath)
     .replaceAll('{{CORAL_PROJECTS}}', projectDir ? coralProjectDir(projectDir) : '{{CORAL_PROJECTS}}')
     .replaceAll('{{PROJECT_SOURCE}}', projectDir ? resolveProjectSource(projectDir) : '{{PROJECT_SOURCE}}');
   const additionalContext = sessionId
