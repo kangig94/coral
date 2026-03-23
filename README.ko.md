@@ -130,13 +130,19 @@ my-project/
 `--deep`은 방법론 기반 종합을 활성화합니다 — resolver 에이전트와 HOW 추론 파일을 사용하여 복잡한 작업에 대한 심층 리뷰.
 체계적 버그 진단 — 근본 원인, 계획, 수정. 완료 전까지 반복 검증하며 실행.
 
+문제는 있지만 뭘 만들어야 할지 모를 때:
+```
+/coral:pathfind API is slow, DB hits limits, users are complaining
+```
+Pathfind가 근본 원인을 진단하고, 발산적 방향을 생성한 뒤 preplan으로 넘깁니다.
+
 복잡한 작업에는 문제 정의부터 시작:
 ```
 /coral:preplan race condition in the session manager
 ```
 Preplan이 사용자와 이해를 맞춘 뒤 plan으로 넘깁니다.
 Plan이 리뷰를 거쳐 솔루션을 설계하고, ralph가 구현과 검증을 수행합니다.
-각 스킬은 독립적으로도 동작합니다 — 파이프라인은 정밀함이 필요할 때 사용하세요.
+각 스킬은 독립적으로도 동작합니다 — 전체 파이프라인은 `pathfind → preplan → plan → ralph`입니다.
 
 `--red` 플래그로 놓친 부분을 찾아내는 적대적 테스트 에이전트 생성:
 ```
@@ -157,6 +163,7 @@ Codex를 활용한 교차 모델 워크플로우:
 | 스킬 | 설명 | Codex |
 |------|------|:-----:|
 | `/coral:analyze` | 심층 분석 및 조사 | 선택 |
+| `/coral:pathfind` | 문제 증상에서 발산적 방향 탐색 | - |
 | `/coral:preplan` | 계획 전 문제 정의 | 선택 |
 | `/coral:plan` | 구조화된 다중 라운드 리뷰 및 충돌 해결 포함 계획. `--deep`으로 방법론 기반 종합 | 선택 |
 | `/coral:ralph` | 검증 포함 영속적 실행. `--red`로 적대적 테스트 | 선택 |

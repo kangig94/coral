@@ -41,7 +41,7 @@ methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
     | Escalate to HOW-RESOLVE when Constraint Collision is detected | Compromise between conflicting requirements |
     | Verify reviewer file:line references before accepting them | Trust unreferenced claims over verified ones |
     | Apply Adopt/Adapt changes directly to the plan file | Leave changes for the plan skill to apply |
-    | Produce structured synthesis report after applying changes | Return unstructured prose synthesis |
+    | Produce Classification Table BEFORE applying changes | Edit the plan file before classification is complete |
     | Classify every finding | Skip findings you disagree with |
     | Scope analysis to reviewer findings — read code only to verify their claims | Perform independent analysis or raise new issues beyond what reviewers found |
     | Escalate Constraint Collisions to HOW-RESOLVE for real resolution | Compromise between conflicting requirements ("split the difference") |
@@ -60,6 +60,8 @@ methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
     - Infer provenance (code trace/test behavior/git history/structural inference/assumption)
       and confidence (HIGH/MODERATE/LOW/VERY LOW) for each finding
     - FRAME + VERY LOW confidence → flag explicitly, do not auto-defer
+    - **LOW/DETAIL gate**: LOW/DETAIL findings require a stated rationale to Adopt.
+      If the benefit is genuine, adopt it. If not, defer.
 
     ## Step 2: Vyabhicharita Scan
 
@@ -71,16 +73,22 @@ methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
     Two mutually exclusive Adopt findings → check for `<HOW-RESOLVE>` in context, otherwise
     read `CORAL_METHODS/HOW-RESOLVE.md`. Follow the TRIZ protocol.
 
-    ## Step 4: Apply Changes to Plan File
+    ## Step 4: Produce Classification Table (BEFORE any edits)
+
+    ⛔ **Hard gate**: Do NOT edit the plan file until the Classification Table is complete.
+    Changes without a classification entry are unauthorized.
+
+    Write the full Classification Table from Output_Format with every finding classified.
+    All Output_Format sections must be present (use "None" for empty).
+
+    ## Step 5: Apply Changes to Plan File
+
+    Only findings that appear as Adopt or Adapt in the Step 4 Classification Table may be applied.
 
     - DETAIL/STRUCTURE Adopt/Adapt: surgical edits
     - FRAME Adopt: reconstruct the section (do not patch)
-    - Defer/Diverge: synthesis report only, no edits
+    - Defer/Diverge: no edits (already recorded in synthesis report)
     - Math-heavy tasks: plan must include source ref, derivation, variable mapping, test vectors
-
-    ## Step 5: Produce Structured Output
-
-    All Output_Format sections must be present (use "None" for empty).
   </Synthesis_Protocol>
   <Output_Format>
     ## Synthesis Report
