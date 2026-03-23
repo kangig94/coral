@@ -59,28 +59,22 @@ Strip `--codex` flag before passing the prompt to the execution path.
     **RECOMMENDED**: When filling Assumptions (#4), consider applying
     `CORAL_METHODS/HOW-ELICIT.md` Lens 3 (Assumption Surfacing).
 
-    ### 2. Review and Refine
+    ### 2. Pioneer
 
-    Dispatch a workflow review of the draft before presenting to the user.
-    Provider depends on mode: `"codex"` if `--codex`, `"claude"` otherwise.
+    Dispatch pioneer to find the most elegant alternatives before presenting to the user.
 
     ```
-    workflow({
-      expression: "(gap-finder, critic)",
-      init_prompt: "Review this preplan draft. Check:\n1. Coherence: do items tell a consistent story (Problem → Criteria → Scope → Assumptions → Systems)?\n2. Contradictions: does scope exclude something success criteria requires?\n3. Root problem: is the problem statement the actual root problem, or a symptom?\n4. Missing gaps: are there unstated requirements or edge cases?\n5. Elegant alternatives: do any alternatives make you reconsider the problem statement itself? For each confirmed sub-item, does a genuine structural deficiency exist that only an elegant alternative can address? Do not self-censor due to breaking changes, major refactors, or migration cost — surface them regardless. If it merely reflects taste or preference, skip it.",
-      context: <draft file content>,
-      work_dir: "{work_dir}",
-      provider: "--codex" ? "codex" : "claude"
-    })
-    wait({ jobs: [job] })
+    // default mode
+    output = Agent({ subagent_type: "coral:pioneer", prompt: <draft file content> })
+
+    // --codex mode
+    codex({ op: "coral:pioneer", prompt: <draft file content> })
+    result = wait({ jobs: [job] })
+    output = result.content ?? Read(result.path)
     ```
 
-    Use `result.content ?? Read(result.path)` to get the full output (`<gap-finder>…</gap-finder>` + `<critic>…</critic>`).
-    Apply substantive fixes (contradictions, missing gaps, misidentified root problem) to the draft.
-    Discard stylistic suggestions. For confirmed sub-items where either reviewer identifies a genuine structural deficiency
-    with an elegant alternative: mark it unconfirmed and add the three-point spectrum (default, minimal, elegant).
-
-    Fix inconsistencies before presenting. This step is silent — no output to the user.
+    For items where pioneer identifies a genuinely more elegant form: mark the sub-item
+    unconfirmed and add the three-point spectrum (default, minimal, elegant).
 
     ### 3. Present Draft
 
