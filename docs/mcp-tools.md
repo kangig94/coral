@@ -2,7 +2,7 @@
 
 Coral exposes one MCP server plus a backend HTTP server:
 
-- **`ax` (Agent Execution)**: tools (`codex`, `claude`, `wait`, `abort`, `workflow`, `backend`, plus discuss tools) for Codex/Claude CLI session management, backend control, pipeline orchestration, and discuss session control. Prefix: `mcp__plugin_coral_ax__`
+- **`ax` (Agent Execution)**: tools (`codex`, `claude`, `kb_search`, `kb_promote`, `kb_update`, `kb_delete`, `kb_reindex`, `wait`, `abort`, `workflow`, `backend`, plus discuss tools) for Codex/Claude CLI session management, KB operations, backend control, pipeline orchestration, and discuss session control. Prefix: `mcp__plugin_coral_ax__`
 
 > **Note**: The `dc` MCP server and Agent Teams-based discuss tools (`discuss`, `discuss_lead`) have been removed. Discuss sessions are now controlled via backend tools (`discuss_seed`, `discuss_start`, `discuss_watch`, `discuss_participate`, `discuss_abort`) exposed through the `ax` bridge. The doc sections below on `discuss_lead` ops describe the legacy architecture.
 
@@ -579,6 +579,63 @@ Behavior notes:
 - Returns MCP error `not_running` when no live backend can be reached.
 - Returns MCP error `unauthorized` when `backend.json` contains a stale token.
 - Never auto-starts the backend for `status` or `shutdown`.
+
+---
+
+# Knowledge Base Tools (`ax`)
+
+These built-in tools are the supported interface for KB search and note mutations. Agents still write memos directly under the active project's `memo/` directory, then use KB tools for search, promotion, updates, deletes, and reindexing.
+
+## kb_search
+
+Searches KB note filename, principles, tags, title, and content for literal text matches.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `query` | string | Yes | Literal text to search for |
+| `top_k` | integer | No | Max results to return (default `20`) |
+
+Returns `{ results, mode, warning? }`. `warning` is set when the enhanced index is unavailable or stale and the backend falls back to basic search.
+
+## kb_promote
+
+Promotes a memo into a new KB note. Promotion is create-only: if the destination note already exists, the tool fails and the caller should use `kb_update` instead.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `memo` | string | Yes | Memo path under the active project's `memo/` directory |
+| `title` | string | Yes | Note title written as the H1 |
+| `content` | string | Yes | Note body, typically `## Rule`, `## Why`, `## Pattern` |
+| `tags` | string[] | Yes | Frontmatter tags |
+| `principles` | string[] | Yes | Principle names |
+| `domain` | string | Yes | Filename prefix |
+| `topic` | string | Yes | Filename suffix |
+
+Use `kb_search` first to check for duplicates before promotion.
+
+## kb_update
+
+Partially updates an existing KB note by note slug.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `note` | string | Yes | Note slug without `.md` |
+| `title` | string | No | Replacement H1 title |
+| `content` | string | No | Replacement body |
+| `tags` | string[] | No | Replacement frontmatter tags |
+| `principles` | string[] | No | Replacement frontmatter principles |
+
+## kb_delete
+
+Deletes an existing KB note by note slug.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `note` | string | Yes | Note slug without `.md` |
+
+## kb_reindex
+
+Rebuilds the derived KB search index from the markdown vault. Use it after stale-index warnings or enhanced-search fallback.
 
 ---
 

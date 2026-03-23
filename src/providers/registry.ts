@@ -1,6 +1,22 @@
 import type { Provider } from './types.js';
 
-const RESERVED_TOOL_NAMES = new Set(['wait', 'workflow', 'abort', 'backend']);
+const RESERVED_TOOL_NAMES = new Set([
+  'wait',
+  'workflow',
+  'abort',
+  'backend',
+  'kb_search',
+  'kb_promote',
+  'kb_update',
+  'kb_delete',
+  'kb_reindex',
+  'kb_principles',
+  'discuss_seed',
+  'discuss_start',
+  'discuss_watch',
+  'discuss_participate',
+  'discuss_abort',
+]);
 const newProviders = new Map<string, Provider>();
 
 export function registerNewProvider(provider: Provider): void {

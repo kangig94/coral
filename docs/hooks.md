@@ -8,10 +8,10 @@ Claude Code's hook system executes scripts on specific events. Coral uses hooks 
 
 **Plugin hooks** (`hooks/hooks.json`):
 1. **SessionStart** (`*`) - Injects INJECT.md behavioral guidelines with `{{CORAL_PROJECTS}}` and `{{PROJECT_SOURCE}}` substituted to the active project path/source, warm-starts the backend daemon, and auto-updates HUD script
-2. **SessionStart** (`compact`) - After context compaction, reminds about memo review and KB promotion
+2. **SessionStart** (`compact`) - After context compaction, reminds about memo review plus tool-based KB search/promotion
 3. **UserPromptSubmit** - Creates session-scoped KB flag for `/coral:ralph`|`/coral:bugfix`, creates ralph loop state for `/coral:ralph`|`/ralph`, and periodically reminds about memo writing
 4. **PreToolUse** (`Skill`) - Creates session-scoped KB flag when Claude calls Skill("coral:ralph"|"coral:bugfix"), and creates ralph loop state when Claude calls Skill("coral:ralph")
-5. **PostToolUseFailure** (`*`) - On any non-zero tool exit, reminds Claude to check `~/.coral/kb/notes/` before debugging
+5. **PostToolUseFailure** (`*`) - On any non-zero tool exit, reminds Claude to use `kb_search({ query: "..." })` before debugging from scratch
 6. **PostToolUse** (`Bash`) - Detects silent failures in command output when exit codes are masked and injects the same KB lookup reminder context
 7. **Stop** - Enforces KB promotion for unprocessed memos and drives prompt-mode ralph loop iteration
 8. **TeammateIdle** (`dc-*`) - Blocks idle when discuss agents have pending actions (bid/speak/vote)
@@ -26,7 +26,7 @@ All hook scripts are **Node.js ESM** (`.mjs`). They read input JSON from stdin, 
 
 Injects the plugin's INJECT.md content into Claude's context at the start of every session. This ensures Claude always receives the behavioral guidelines (Clarity First, Surgical Changes, etc.) and KB system instructions.
 
-Implementation: `hooks/session-start.mjs` reads `INJECT.md` from the plugin root, resolves the active source slug from `CLAUDE_PROJECT_DIR`, replaces `{{CORAL_PROJECTS}}` with `~/.coral/projects/{slug}`, `{{PROJECT_SOURCE}}` with the project source identifier, and `{{CORAL_KB}}` with the KB root path (from `CORAL_KB_PATH` env var or default `~/.coral/kb`), and returns the result via `hookSpecificOutput.additionalContext`.
+Implementation: `hooks/session-start.mjs` reads `INJECT.md` from the plugin root, resolves the active source slug from `CLAUDE_PROJECT_DIR`, substitutes the project-specific placeholders, and returns the result via `hookSpecificOutput.additionalContext`.
 
 > **Note**: Codex sessions receive INJECT.md through a separate mechanism - the MCP server prepends it to the prompt in `executeOneShot()`. See [Core Modules](./core-modules.md) for details.
 
@@ -58,7 +58,7 @@ Script: `hooks/hud-auto-update.mjs`. Fires at session start (matcher: `*`, timeo
 
 Fires after context compaction (matcher: `compact`).
 
-**Script: `hooks/kb-promote-gate.mjs`** — Checks for unprocessed memos in `~/.coral/projects/{slug}/memo/`. Injects `hookSpecificOutput` with `additionalContext` reminding Claude to review memos first, then promote only durable knowledge to `~/.coral/kb/notes/`.
+**Script: `hooks/kb-promote-gate.mjs`** — Checks for unprocessed memos in `~/.coral/projects/{slug}/memo/`. Injects `hookSpecificOutput` with `additionalContext` reminding Claude to review memos first, use `kb_search` to check duplicates, then promote only durable knowledge with `kb_promote`.
 
 **Purpose**: After compaction the model loses prior context. This hook restores KB promotion reminders so work continues seamlessly.
 
@@ -78,12 +78,12 @@ Script: `hooks/kb-memo-reminder.mjs`. Injects `additionalContext` reminding Clau
 
 Script: `hooks/kb-lookup-reminder.mjs`. Handles two events in one script:
 
-- **PostToolUseFailure** (`*`) — On any tool failure, immediately reminds Claude to check `~/.coral/kb/notes/`.
+- **PostToolUseFailure** (`*`) — On any tool failure, immediately reminds Claude to use `kb_search({ query: "<keywords>" })`.
 - **PostToolUse** (`Bash`) — On successful Bash executions (exit 0), detects silent failures via two-stage filter: first checks for exit-code-masking constructs (`| tee`, `|| true`, `|| :`), then regex-matches output for failure patterns (`Failed to build`, `BUILD FAILED`, `Traceback`, `npm ERR!`, `^error[E...]`).
 
 The two events are complementary — `PostToolUseFailure` covers non-zero exits, `PostToolUse` covers silent failures with zero exits. They never overlap on the same tool execution.
 
-**Output**: `hookSpecificOutput.additionalContext` with KB topics listing. Non-blocking.
+**Output**: `hookSpecificOutput.additionalContext` with the `kb_search` reminder plus KB topic names derived from note filenames. Non-blocking.
 
 **Fail-open**: Missing KB directory, no `.md` files, no pattern match — silent exit 0.
 
@@ -108,7 +108,7 @@ Script: `hooks/kb-promote-gate.mjs`. Session-scoped via flag file.
 When flag exists:
 1. Delete session's flag file
 2. `decision: "block"` prevents Claude from stopping
-3. `reason` instructs Claude to review memos, then selectively promote durable knowledge to `~/.coral/kb/notes/` (even if no memos exist, the block fires to ensure the KB review step runs)
+3. `reason` instructs Claude to review memos, use `kb_search` to check for duplicates, then selectively promote durable knowledge with `kb_promote` (even if no memos exist, the block fires to ensure the KB review step runs)
 
 
 ## Ralph Loop Hook (ralph-loop.mjs)

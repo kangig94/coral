@@ -43,6 +43,16 @@ describe('providers registry', () => {
     expect(() => registry.registerNewProvider(makeProvider('workflow'))).toThrow('reserved');
     expect(() => registry.registerNewProvider(makeProvider('abort'))).toThrow('reserved');
     expect(() => registry.registerNewProvider(makeProvider('backend'))).toThrow('reserved');
+    expect(() => registry.registerNewProvider(makeProvider('kb_search'))).toThrow('reserved');
+    expect(() => registry.registerNewProvider(makeProvider('kb_promote'))).toThrow('reserved');
+    expect(() => registry.registerNewProvider(makeProvider('kb_update'))).toThrow('reserved');
+    expect(() => registry.registerNewProvider(makeProvider('kb_delete'))).toThrow('reserved');
+    expect(() => registry.registerNewProvider(makeProvider('kb_reindex'))).toThrow('reserved');
+    expect(() => registry.registerNewProvider(makeProvider('discuss_seed'))).toThrow('reserved');
+    expect(() => registry.registerNewProvider(makeProvider('discuss_start'))).toThrow('reserved');
+    expect(() => registry.registerNewProvider(makeProvider('discuss_watch'))).toThrow('reserved');
+    expect(() => registry.registerNewProvider(makeProvider('discuss_participate'))).toThrow('reserved');
+    expect(() => registry.registerNewProvider(makeProvider('discuss_abort'))).toThrow('reserved');
   });
 
   it('rejects duplicate provider registrations', async () => {

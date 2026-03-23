@@ -66,7 +66,7 @@ For multi-step tasks, state a brief plan:
 
 # Knowledge Base
 
-**Hard rule: Never write directly to `kb/notes/`. The only path is memo → promotion. No exceptions, all contexts.**
+**Hard rule: Never write directly to KB files. Use KB tools for all operations.**
 
 ## Memo
 On non-obvious discovery during any phase (review, planning, implementation), write immediately to:
@@ -80,50 +80,26 @@ source: {{PROJECT_SOURCE}}
 ---
 ```
 
-## Lookup
-Before debugging from scratch or starting a plan, check KB in this order:
-1. `{{CORAL_KB}}/principles/` — scan principle names for relevant decision patterns
-2. `{{CORAL_KB}}/notes/` — search by tags or keywords for concrete lessons
+## Search
+Before debugging from scratch or starting a plan:
+1. `kb_principles()` — list principle names (cross-domain decision patterns). Scan names, pick relevant ones.
+2. `kb_search({ query: "<principle-name or keywords>" })` — searches filename, principles, tags, title, content. Returns top 20 results ranked by relevance.
+
+Principle names are self-descriptive (e.g., `atomic-persistence-or-nothing`). If a name is ambiguous, read the principle file for its one-sentence statement.
 
 ## Promotion
 **Who**: top-level orchestrator only, after all work completes (not implementation — after review too).
 Subagents and delegated tasks only write memos, never promote.
 
-**Process**: review all memos, check existing kb entries — discard duplicates, update existing, create only for genuinely absent knowledge. Delete processed memos.
+**Process**: review all memos, check for duplicates via `kb_search`, then promote:
+`kb_promote({ memo: "<path>", title: "...", content: "## Rule\n...\n## Why\n...\n## Pattern\n...", tags: [...], principles: [...], domain: "...", topic: "..." })`
 
-**Format** — `{{CORAL_KB}}/notes/<domain>-<topic>.md`:
+Principles are well-formed names (not required to exist yet — they emerge from 3+ notes).
 
-```yaml
----
-createdAt: YYYY-MM-DD
-updatedAt: YYYY-MM-DD
-tags: [<primary-domain>, <sub-domain>, ...]
-source:
-  - {{PROJECT_SOURCE}}
-principles:
-  - "[[<principle-name>]]"
----
-# <Title>
-## Rule
-## Why
-## Pattern
-```
-
-**Principles** — `{{CORAL_KB}}/principles/<principle-name>.md`:
-
-A principle is a **decision point where reasonable alternatives exist** but experience shows one direction is consistently better. It is NOT common sense ("validate inputs") or a tautology ("be correct"). A good principle resolves a genuine tension — e.g., `lenient-read-strict-write` resolves the tension between backwards compatibility and data integrity.
-
-Test: "Could a competent engineer reasonably choose the opposite?" If no, it's not a principle — it's obvious.
-
-```yaml
----
-createdAt: YYYY-MM-DD
-updatedAt: YYYY-MM-DD
----
-```
-One-sentence statement of the principle. No sections needed — the value is in the backlinks that collect related notes.
-
-Do not create directly — principles emerge when 3+ notes from different domains share a common lesson.
+## Update / Delete
+`kb_update({ note: "<name>", content: "...", tags: [...] })`
+`kb_delete({ note: "<name>" })`
 
 ## Invalidation
-If a kb entry contradicts current code, update or delete it immediately.
+If a kb entry contradicts current code:
+`kb_update({ note: "<name>", ... })` or `kb_delete({ note: "<name>" })`

@@ -18,7 +18,7 @@
 │  ┌─────────────────────────────────────────────────────────────┐ │        │
 │  │ MCP Server "ax" (bridge/coral-ax.cjs)                       │ │        │
 │  │                                                             │ │        │
-│  │ Tools: codex + claude + discuss_* + wait + abort +          │ │        │
+│  │ Tools: codex + claude + kb_* + discuss_* + wait + abort +  │ │        │
 │  │        workflow + backend                                   │ │        │
 │  │ codex/claude: exec/list/fork + coral:<name> dispatch        │ │        │
 │  │ discuss_*: backend-managed discuss lifecycle tools          │ │        │
@@ -403,7 +403,7 @@ Each file is a single `SessionEntry`. Corrupt files are skipped with a warning; 
 
 - **KB** (`~/.coral/kb/`) is global and shared across projects. Notes in `kb/notes/`, principles in `kb/principles/`.
 - **Project working data** lives under `~/.coral/projects/{slug}/`, where `{slug}` comes from the canonical git source (`owner/repo` -> `owner-repo`) with `local/<dirname>` fallback.
-- Promotion stays memo -> review -> `~/.coral/kb/notes/`.
+- Agents write memos under `~/.coral/projects/{slug}/memo/`, then use KB tools (`kb_search`, `kb_promote`, `kb_update`, `kb_delete`, `kb_reindex`) for note operations.
 
 ## Directory Structure
 
@@ -461,6 +461,18 @@ coral/
 │   │   ├── schemas.ts           # Zod input validation
 │   │   ├── pipe-executor.ts     # Launch, retry, wait, output formatting
 │   │   └── handler.ts           # Entry point (DI from backend router)
+│   ├── kb/                      # Knowledge base tools + storage adapters
+│   │   ├── contracts.ts         # KB tool schemas + handler bindings
+│   │   ├── detect.ts            # Mode detection, cache state, runtime context
+│   │   ├── paths.ts             # KB path and memo boundary helpers
+│   │   ├── frontmatter.ts       # Note/principle parsing + serialization
+│   │   ├── search-basic.ts      # Basic index-backed literal search
+│   │   ├── search-enhanced.ts   # Enhanced search with basic fallback
+│   │   ├── promote.ts           # Memo -> note promotion
+│   │   ├── update.ts            # Partial note updates
+│   │   ├── delete.ts            # Note deletion
+│   │   ├── reindex.ts           # JSON/enhanced index rebuild
+│   │   └── lancedb-runtime.ts   # Runtime-only enhanced search adapter
 │   └── discuss/                 # Discuss domain + projections
 │       ├── events.ts            # Domain event union + persisted runtime types
 │       ├── reducer.ts           # Event replay into snapshot state
@@ -536,6 +548,30 @@ execution/server.ts                     (HTTP daemon — composition root)
 
 types.ts provides shared contracts across all modules
 workflow/types.ts provides pipeline AST types
+```
+
+### Knowledge Base Subsystem
+
+The KB stack is split between backend-exposed tool contracts, markdown-vault helpers, and derived search state:
+
+```
+execution/server.ts
+  ├── kb/contracts.ts            (kb_search/kb_promote/kb_update/kb_delete/kb_reindex descriptors + routing)
+  ├── kb/detect.ts               (cached KB context, mode detection, index state)
+  └── providers/registry.ts      (reserves KB built-in tool names)
+
+kb/contracts.ts
+  └── kb/{search-basic,search-enhanced,promote,update,delete,reindex}.ts
+
+kb/{promote,update,delete,reindex}.ts
+  ├── kb/frontmatter.ts          (frontmatter parsing + serialization)
+  ├── kb/paths.ts                (vault/memo boundary resolution)
+  └── kb/detect.ts               (cache invalidation, stale/enhanced state)
+
+kb/search-basic.ts
+  ├── kb/frontmatter.ts
+  ├── kb/paths.ts
+  └── kb/detect.ts
 ```
 
 ### Discuss Subsystem
