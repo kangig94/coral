@@ -30,11 +30,13 @@ plugin files from project files. Three read patterns and one spawn pattern exist
 | `CORAL_METHODS/xxx.md` | **Read** the file (Read/Glob tool) | `CORAL_METHODS/HOW-REVIEW.md` |
 | `coral:xxx` | **Spawn** subagent (Task tool) | `coral:scanner` |
 
-- Every file using these aliases must define them at the top (after frontmatter):
+- **Skills**: `coral-skill-vars.mjs` hook injects CORAL_PROJECT, CORAL_AGENTS, CORAL_METHODS
+  as additionalContext on UserPromptSubmit and PreToolUse(Skill). No `!` backtick needed in SKILL.md.
+- **Agents**: Define path aliases at the top (after frontmatter) using Bash tool notation:
   ```
-  > **CORAL_AGENTS**: !`echo ~/.claude/plugins/cache/coral/coral/*/agents/`
-  > **CORAL_SKILLS**: !`echo ~/.claude/plugins/cache/coral/coral/*/skills/`
-  > **CORAL_METHODS**: !`echo ~/.claude/plugins/cache/coral/coral/*/methods/`
+  > **CORAL_AGENTS**: Bash(echo ~/.claude/plugins/cache/coral/coral/*/agents/)
+  > **CORAL_SKILLS**: Bash(echo ~/.claude/plugins/cache/coral/coral/*/skills/)
+  > **CORAL_METHODS**: Bash(echo ~/.claude/plugins/cache/coral/coral/*/methods/)
   ```
 - Never use bare `agents/xxx.md`, `skills/xxx/`, or `methods/xxx.md` — these resolve relative
   to the user's project directory, which breaks when the plugin is used outside its own repo.
