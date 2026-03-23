@@ -4,7 +4,7 @@ import { isRecord, isStringArray } from '../shared/mcp-utils.js';
 import type { KbNoteFrontmatter, KbNoteIdentity } from './types.js';
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
-const NOTE_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const NOTE_NAME_PATTERN = /^[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*$/;
 
 function extractFrontmatterBlock(content: string): string {
   const match = content.match(FRONTMATTER_PATTERN);
