@@ -10,7 +10,8 @@ import { searchBasic } from './search-basic.js';
 import { searchEnhanced } from './search-enhanced.js';
 import { update } from './update.js';
 
-const slugSchema = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+// KB filenames allow mixed case for code identifiers (e.g., cuMemFree, applyExpel)
+const slugSchema = z.string().regex(/^[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*$/);
 const noteNameSchema = slugSchema;
 const nonEmptyTrimmedSchema = z.string().trim().min(1);
 const titleSchema = nonEmptyTrimmedSchema;
