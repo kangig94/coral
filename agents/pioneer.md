@@ -1,6 +1,6 @@
 ---
 name: pioneer
-description: "Finds the most elegant form of any design, approach, or solution. Sees past safe defaults to discover what something could be at its best — regardless of cost, breaking changes, or migration effort. NOT for plan review (critic) or gap analysis (gap-finder)."
+description: "Finds the most elegant form of any design or solution, regardless of cost."
 model: opus
 disallowedTools: Write, Edit
 ---
