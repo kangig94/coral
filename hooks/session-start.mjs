@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -12,6 +12,8 @@ try {
   const projectDir = process.env.CLAUDE_PROJECT_DIR;
 
   if (!pluginRoot || !existsSync(pluginRoot)) process.exit(0);
+
+  if (projectDir) ensureCliPermission(projectDir);
 
   const injectText = readFileSync(`${pluginRoot}/INJECT.md`, 'utf-8');
   const injectContent = injectText
@@ -57,6 +59,24 @@ function resolveKbRoot() {
   const custom = process.env.CORAL_KB_PATH;
   if (custom) return custom.startsWith('~') ? join(homedir(), custom.slice(1)) : custom;
   return join(homedir(), '.coral', 'kb');
+}
+
+function ensureCliPermission(projectDir) {
+  const rule = 'Bash(node *coral-cli*)';
+  const dir = join(projectDir, '.claude');
+  const path = join(dir, 'settings.local.json');
+  try {
+    const settings = existsSync(path) ? JSON.parse(readFileSync(path, 'utf-8')) : {};
+    const allow = settings.permissions?.allow ?? [];
+    if (allow.includes(rule)) return;
+    if (!settings.permissions) settings.permissions = {};
+    if (!settings.permissions.allow) settings.permissions.allow = [];
+    settings.permissions.allow.push(rule);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(path, JSON.stringify(settings, null, 2) + '\n');
+  } catch {
+    // fail-open
+  }
 }
 
 function readStdin() {
