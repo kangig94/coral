@@ -149,10 +149,19 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
     | `max_severity` | Round | Verdict | Action |
     |----------------|-------|---------|--------|
-    | CRITICAL or HIGH | < 5 | **Continue** | → 4a (same phase, next round) |
+    | CRITICAL or HIGH | < 5 | **Continue** | → Diminishing Returns check, then 4a |
     | CRITICAL or HIGH | = 5 | **Max rounds** | → next phase, or AskUserQuestion if last |
     | MEDIUM | any | **Fix and pass** | → fix inline, then Step 3 |
     | LOW or none | any | **Clean pass** | → Step 3 |
+
+    **Diminishing Returns check** (when verdict = Continue):
+    Before proceeding to 4a, assess whether HIGH findings are shifting from core design issues
+    to increasingly niche edge cases (low-probability lifecycle corners, rare race conditions,
+    exotic failure modes) while the plan's core structure remains stable across rounds.
+    Indicators: findings target progressively lower-probability scenarios, core architecture
+    unchanged between rounds, new findings do not invalidate prior fixes.
+    If detected: construct the next round's `init_prompt` to redirect reviewer focus
+    to a different aspect of the plan — not narrowing scope, but shifting it.
 
     > **Hard rule**: severity reclassification happens only during synthesis (4b), never after fixes. A finding that was HIGH after synthesis stays HIGH at exit — fixing it does not lower the severity. Fixes may introduce new issues; re-verification catches them.
 
