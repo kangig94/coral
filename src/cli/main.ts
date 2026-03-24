@@ -159,17 +159,16 @@ type KbPrinciplesOptions = {
 type KbPromoteOptions = {
   memo?: string;
   title?: string;
-  content?: string;
+  contentFile?: string;
   tag?: string[];
   principle?: string[];
   domain?: string;
   topic?: string;
-  inputJson?: string;
 };
 
 type KbUpdateOptions = {
   title?: string;
-  content?: string;
+  contentFile?: string;
   tag?: string[];
   principle?: string[];
 };
@@ -895,28 +894,24 @@ export function buildProgram(): Command {
     .description('Promote a memo into a KB note')
     .option('--memo <path>', 'Memo path')
     .option('--title <text>', 'Note title')
-    .option('--content <text>', 'Note content')
+    .option('--content-file <path>', 'Read content from file')
     .option('--tag <tag>', 'Tag (repeatable)', (value: string, previous: string[] | undefined) => [...(previous ?? []), value])
     .option('--principle <name>', 'Principle (repeatable)', (value: string, previous: string[] | undefined) => [...(previous ?? []), value])
     .option('--domain <slug>', 'Note domain')
     .option('--topic <slug>', 'Note topic')
-    .option('--input-json <source>', 'JSON payload from stdin (use -)')
     .action(async (opts: KbPromoteOptions) => {
       const outputFormat = getOutputFormat(kbPromoteCommand);
 
       try {
-        const args = opts.inputJson !== undefined
-          // Promote intentionally uses full-precedence stdin semantics so a JSON payload replaces all flags.
-          ? await parseInputJson(opts.inputJson)
-          : {
-              ...(opts.memo !== undefined ? { memo: opts.memo } : {}),
-              ...(opts.title !== undefined ? { title: opts.title } : {}),
-              ...(opts.content !== undefined ? { content: opts.content } : {}),
-              ...(opts.domain !== undefined ? { domain: opts.domain } : {}),
-              ...(opts.topic !== undefined ? { topic: opts.topic } : {}),
-              tags: opts.tag ?? [],
-              principles: opts.principle ?? [],
-            };
+        const args = {
+          ...(opts.memo !== undefined ? { memo: opts.memo } : {}),
+          ...(opts.title !== undefined ? { title: opts.title } : {}),
+          ...(opts.contentFile !== undefined ? { content: readFileSync(opts.contentFile, 'utf8') } : {}),
+          ...(opts.domain !== undefined ? { domain: opts.domain } : {}),
+          ...(opts.topic !== undefined ? { topic: opts.topic } : {}),
+          tags: opts.tag ?? [],
+          principles: opts.principle ?? [],
+        };
         const client = makeClient(process.cwd());
         const result = await client.kbPromote(
           args as Parameters<BackendClient['kbPromote']>[0],
@@ -932,7 +927,7 @@ export function buildProgram(): Command {
     .description('Update an existing KB note')
     .argument('<note>', 'Note name')
     .option('--title <text>', 'Updated title')
-    .option('--content <text>', 'Updated content')
+    .option('--content-file <path>', 'Read content from file')
     .option('--tag <tag>', 'Tag (repeatable)', (value: string, previous: string[] | undefined) => [...(previous ?? []), value])
     .option('--principle <name>', 'Principle (repeatable)', (value: string, previous: string[] | undefined) => [...(previous ?? []), value])
     .action(async (note: string, opts: KbUpdateOptions) => {
@@ -942,7 +937,7 @@ export function buildProgram(): Command {
         const args = {
           note,
           ...(opts.title !== undefined ? { title: opts.title } : {}),
-          ...(opts.content !== undefined ? { content: opts.content } : {}),
+          ...(opts.contentFile !== undefined ? { content: readFileSync(opts.contentFile, 'utf8') } : {}),
           ...(opts.tag !== undefined ? { tags: opts.tag } : {}),
           ...(opts.principle !== undefined ? { principles: opts.principle } : {}),
         };
