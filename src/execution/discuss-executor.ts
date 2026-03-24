@@ -11,7 +11,7 @@ import {
 } from './discuss-persistence.js';
 import type { AgentConfig, DiscussContext } from './discuss-context.js';
 
-export const DEFAULT_DISCUSS_PROVIDER = 'codex';
+export const DEFAULT_DISCUSS_PROVIDER = 'claude';
 const RETRYABLE_ATTEMPT_OUTCOMES = new Set([
   'execution_error',
   'recovery_failed',
