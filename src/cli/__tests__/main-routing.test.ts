@@ -1,4 +1,6 @@
-import { PassThrough } from 'node:stream';
+import { writeFileSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockState = vi.hoisted(() => ({
@@ -81,28 +83,6 @@ function toText(chunk: string | Uint8Array): string {
 async function loadMainModule(): Promise<MainModule> {
   vi.resetModules();
   return import('../main.js');
-}
-
-async function withMockStdin<T>(input: string, fn: () => Promise<T>): Promise<T> {
-  const stdin = new PassThrough();
-  const descriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
-  Object.defineProperty(process, 'stdin', {
-    configurable: true,
-    value: stdin,
-  });
-
-  const run = fn();
-  setImmediate(() => {
-    stdin.end(input);
-  });
-
-  try {
-    return await run;
-  } finally {
-    if (descriptor) {
-      Object.defineProperty(process, 'stdin', descriptor);
-    }
-  }
 }
 
 describe('cli main routing', () => {
@@ -408,127 +388,89 @@ describe('cli main routing', () => {
   it('routes kb promote flags into kb_promote arguments', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
+    const tmpFile = join(tmpdir(), 'test-kb-content.md');
 
     mockState.kbPromote.mockResolvedValueOnce({
       path: '/tmp/kb/notes/cli-kb-tooling.md',
     });
 
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'kb',
-      'promote',
-      '--memo',
-      'memo/123.md',
-      '--title',
-      'KB CLI',
-      '--content',
-      'Details',
-      '--tag',
-      'cli',
-      '--tag',
-      'kb',
-      '--principle',
-      'contract-first-design',
-      '--domain',
-      'cli',
-      '--topic',
-      'kb-tooling',
-    ]);
+    writeFileSync(tmpFile, 'Details', 'utf8');
 
-    expect(mockState.kbPromote).toHaveBeenCalledWith({
-      memo: 'memo/123.md',
-      title: 'KB CLI',
-      content: 'Details',
-      tags: ['cli', 'kb'],
-      principles: ['contract-first-design'],
-      domain: 'cli',
-      topic: 'kb-tooling',
-    });
-    expect(stdout).toBe('Created: /tmp/kb/notes/cli-kb-tooling.md\n');
-  });
-
-  it('gives kb promote stdin payload full precedence over individual flags', async () => {
-    const { buildProgram } = await loadMainModule();
-    const program = buildProgram();
-
-    mockState.kbPromote.mockResolvedValueOnce({
-      path: '/tmp/kb/notes/stdin-note.md',
-    });
-
-    await withMockStdin(JSON.stringify({
-      memo: 'memo/stdin.md',
-      title: 'From stdin',
-      content: 'stdin content',
-      tags: ['stdin'],
-      principles: ['single-source-of-truth'],
-      domain: 'cli',
-      topic: 'stdin-note',
-    }), async () => {
+    try {
       await program.parseAsync([
         'node',
         'coral-cli',
         'kb',
         'promote',
-        '--input-json',
-        '-',
         '--memo',
-        'memo/ignored.md',
+        'memo/123.md',
         '--title',
-        'Ignored',
-        '--content',
-        'ignored',
+        'KB CLI',
+        '--content-file',
+        tmpFile,
         '--tag',
-        'ignored',
+        'cli',
+        '--tag',
+        'kb',
         '--principle',
-        'ignored',
+        'contract-first-design',
         '--domain',
-        'ignored',
+        'cli',
         '--topic',
-        'ignored',
+        'kb-tooling',
       ]);
-    });
 
-    expect(mockState.kbPromote).toHaveBeenCalledWith({
-      memo: 'memo/stdin.md',
-      title: 'From stdin',
-      content: 'stdin content',
-      tags: ['stdin'],
-      principles: ['single-source-of-truth'],
-      domain: 'cli',
-      topic: 'stdin-note',
-    });
+      expect(mockState.kbPromote).toHaveBeenCalledWith({
+        memo: 'memo/123.md',
+        title: 'KB CLI',
+        content: 'Details',
+        tags: ['cli', 'kb'],
+        principles: ['contract-first-design'],
+        domain: 'cli',
+        topic: 'kb-tooling',
+      });
+      expect(stdout).toBe('Created: /tmp/kb/notes/cli-kb-tooling.md\n');
+    } finally {
+      unlinkSync(tmpFile);
+    }
   });
 
   it('routes kb update and only sends provided fields', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
+    const tmpFile = join(tmpdir(), 'test-kb-update-content.md');
 
     mockState.kbUpdate.mockResolvedValueOnce({
       path: '/tmp/kb/notes/cli-kb-tooling.md',
     });
 
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'kb',
-      'update',
-      'cli-kb-tooling',
-      '--content',
-      'Updated',
-      '--tag',
-      'cli',
-      '--principle',
-      'verify-at-boundaries',
-    ]);
+    writeFileSync(tmpFile, 'Updated', 'utf8');
 
-    expect(mockState.kbUpdate).toHaveBeenCalledWith({
-      note: 'cli-kb-tooling',
-      content: 'Updated',
-      tags: ['cli'],
-      principles: ['verify-at-boundaries'],
-    });
-    expect(stdout).toBe('Updated: /tmp/kb/notes/cli-kb-tooling.md\n');
+    try {
+      await program.parseAsync([
+        'node',
+        'coral-cli',
+        'kb',
+        'update',
+        'cli-kb-tooling',
+        '--content-file',
+        tmpFile,
+        '--tag',
+        'cli',
+        '--principle',
+        'verify-at-boundaries',
+      ]);
+
+      expect(mockState.kbUpdate).toHaveBeenCalledWith({
+        note: 'cli-kb-tooling',
+        content: 'Updated',
+        tags: ['cli'],
+        principles: ['verify-at-boundaries'],
+      });
+      expect(stdout).toBe('Updated: /tmp/kb/notes/cli-kb-tooling.md\n');
+    } finally {
+      unlinkSync(tmpFile);
+    }
   });
 
   it('routes kb delete to the delete wrapper', async () => {
