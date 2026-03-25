@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { nowIsoString } from '../shared/mcp-utils.js';
+import { scheduleCurate } from './curate.js';
 import { parseMemoFrontmatter, serializeNote } from './frontmatter.js';
 import { memoPathFromContext, notePathFromParts } from './paths.js';
 import type { KbPromoteInput } from './contracts.js';
@@ -15,8 +16,6 @@ import {
   assertSlug,
   cloneKbIndex,
   markTextIndexStale,
-  normalizePrinciples,
-  normalizeTags,
   writeFileAtomic,
 } from './mutation-helpers.js';
 
@@ -31,8 +30,6 @@ export async function promote(kb: KbContext, input: KbPromoteInput): Promise<{ p
     throw new Error('content must be a string');
   }
   const content = input.content;
-  const tags = normalizeTags(input.tags);
-  const principles = normalizePrinciples(input.principles);
   const domain = assertSlug(input.domain, 'domain');
   const topic = assertSlug(input.topic, 'topic');
 
@@ -44,32 +41,35 @@ export async function promote(kb: KbContext, input: KbPromoteInput): Promise<{ p
 
   const memoContent = readFileSync(memoPath, 'utf-8');
   const { source } = parseMemoFrontmatter(memoContent);
-  const createdAt = nowIsoString();
-  const noteContent = serializeNote({
-    tags,
-    principles,
-    source,
-    createdAt,
-    updatedAt: createdAt,
-  }, title, content);
   const noteName = `${domain}-${topic}`;
 
-  return withKbMutationLock(async () => {
+  const result = await withKbMutationLock(async () => {
     if (existsSync(notePath)) {
       throw duplicateNoteError(notePath);
     }
 
+    const mutationSeqAtPromote = recordMutationCommitted().mutationSeq;
+    const createdAt = nowIsoString();
+    const noteContent = serializeNote({
+      tags: [domain],
+      principles: [],
+      source,
+      createdAt,
+      updatedAt: createdAt,
+      mutationSeqAtPromote,
+    }, title, content);
+
     writeFileAtomic(notePath, noteContent);
-    recordMutationCommitted();
 
     const nextIndex = cloneKbIndex(readKbIndex());
     nextIndex.notes[noteName] = {
       title,
-      tags: [...tags],
-      principles: [...principles],
+      tags: [domain],
+      principles: [],
       source: [...source],
       createdAt,
       updatedAt: createdAt,
+      mutationSeqAtPromote,
     };
     writeKbIndex(nextIndex);
 
@@ -78,4 +78,7 @@ export async function promote(kb: KbContext, input: KbPromoteInput): Promise<{ p
     rmSync(memoPath, { force: true });
     return { path: notePath };
   });
+
+  scheduleCurate(kb);
+  return result;
 }

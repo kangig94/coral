@@ -8,6 +8,7 @@ import { writeMemo } from './memo.js';
 import { promote } from './promote.js';
 import { rebuildMetadataAndOrama, reindex } from './reindex.js';
 import { searchKb } from './search.js';
+import { readNote } from './read.js';
 import { update } from './update.js';
 
 // Auto-rebuild index when missing or stale — avoids circular import by using callback
@@ -18,7 +19,6 @@ const slugSchema = z.string().regex(/^[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*$/);
 const noteNameSchema = slugSchema.describe('Note slug without path or extension (e.g. rendering-guiding-contracts)');
 const nonEmptyTrimmedSchema = z.string().trim().min(1);
 const titleSchema = nonEmptyTrimmedSchema;
-const tagSchema = nonEmptyTrimmedSchema;
 
 type KbToolDefinition<TSchema extends z.ZodTypeAny> = {
   description: string;
@@ -46,8 +46,6 @@ export const kbPromoteSchema = z.object({
   memo: z.string().describe('Memo filename (e.g. 20260325-topic.md), not a full path'),
   title: titleSchema,
   content: z.string(),
-  tags: z.array(tagSchema),
-  principles: z.array(z.string()),
   domain: slugSchema,
   topic: slugSchema,
 });
@@ -57,10 +55,13 @@ export const kbUpdateSchema = z.object({
   note: noteNameSchema,
   title: titleSchema.optional(),
   content: z.string().optional(),
-  tags: z.array(tagSchema).optional(),
-  principles: z.array(z.string()).optional(),
 });
 export type KbUpdateInput = z.input<typeof kbUpdateSchema>;
+
+export const kbReadSchema = z.object({
+  note: noteNameSchema,
+});
+export type KbReadInput = z.input<typeof kbReadSchema>;
 
 export const kbDeleteSchema = z.object({
   note: noteNameSchema,
@@ -119,6 +120,11 @@ export const kbToolContracts = defineKbToolContracts({
       const kb = getKbContext(ctx);
       return searchKb(kb, input.query, input.top_k);
     },
+  },
+  kb_read: {
+    description: 'Read a KB note by slug.',
+    schema: kbReadSchema,
+    handler: async (input) => readNote(input),
   },
   kb_promote: {
     description: 'Promote a memo to a KB note.',

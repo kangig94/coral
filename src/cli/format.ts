@@ -280,30 +280,34 @@ export function formatKbSearch(data: unknown, cliPrefix = 'coral-cli'): string {
   }
 
   const warning = normalizeKbWarning(data.warning, cliPrefix);
-  const rows = data.results.map((result) => {
+  const results = data.results.map((result) => {
     if (!isRecord(result)) {
-      return ['-', '-', '-', '-'];
+      return { note: '-', title: '-', matched: [] as string[], snippet: '-' };
     }
 
-    const matchedBy = Array.isArray(result.matchedBy)
+    const matched = Array.isArray(result.matchedBy)
       ? result.matchedBy.filter((value): value is string => typeof value === 'string')
       : [];
 
-    return [
-      typeof result.note === 'string' ? result.note : '-',
-      typeof result.title === 'string' ? result.title : '-',
-      matchedBy.length > 0 ? matchedBy.join(', ') : '-',
-      typeof result.snippet === 'string' ? result.snippet : '-',
-    ];
+    return {
+      note: typeof result.note === 'string' ? result.note : '-',
+      title: typeof result.title === 'string' ? result.title : '-',
+      matched,
+      snippet: typeof result.snippet === 'string' ? result.snippet : '-',
+    };
   });
 
-  return joinLines([
-    rows.length === 0
-      ? 'No results'
-      : formatTable(['NOTE', 'TITLE', 'MATCHED BY', 'SNIPPET'], rows),
-    `Mode: ${data.mode}`,
-    warning === undefined ? undefined : `Warning: ${warning}`,
-  ]);
+  const output: Record<string, unknown> = {
+    results,
+    mode: data.mode,
+    count: results.length,
+  };
+
+  if (warning !== undefined) {
+    output.warning = warning;
+  }
+
+  return JSON.stringify(output);
 }
 
 export function formatKbPrinciples(data: unknown, cliPrefix = 'coral-cli'): string {
@@ -319,6 +323,19 @@ export function formatKbPrinciples(data: unknown, cliPrefix = 'coral-cli'): stri
     `Total: ${data.total}`,
     warning === undefined ? undefined : `Warning: ${warning}`,
   ]);
+}
+
+export function formatKbRead(data: unknown): string {
+  if (
+    !isRecord(data)
+    || typeof data.note !== 'string'
+    || typeof data.title !== 'string'
+    || typeof data.content !== 'string'
+  ) {
+    return formatUnknown(data);
+  }
+
+  return JSON.stringify(data);
 }
 
 export function formatKbMemo(data: unknown): string {
@@ -368,13 +385,7 @@ export function formatKbReindex(data: unknown, cliPrefix = 'coral-cli'): string 
   const warning = normalizeKbWarning(data.warning, cliPrefix);
 
   return joinLines([
-    formatTable(['NOTES', 'PRINCIPLES', 'TAGS', 'DURATION_MS', 'MODE'], [[
-      String(data.notes),
-      String(data.principles),
-      String(data.tags),
-      String(data.duration_ms),
-      data.mode,
-    ]]),
+    `Reindexed: ${data.notes} notes, ${data.principles} principles, ${data.tags} tags (${data.duration_ms}ms, ${data.mode})`,
     warning === undefined ? undefined : `Warning: ${warning}`,
   ]);
 }

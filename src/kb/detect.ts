@@ -78,7 +78,15 @@ function parseIndex(value: unknown): KbIndex {
       throw new Error('Invalid KB index');
     }
 
-    const { title, tags, principles, source, createdAt, updatedAt } = rawMeta;
+    const {
+      title,
+      tags,
+      principles,
+      source,
+      createdAt,
+      updatedAt,
+      mutationSeqAtPromote,
+    } = rawMeta;
     if (
       typeof title !== 'string'
       || !isStringArray(tags)
@@ -86,6 +94,10 @@ function parseIndex(value: unknown): KbIndex {
       || !isStringArray(source)
       || typeof createdAt !== 'string'
       || typeof updatedAt !== 'string'
+      || (
+        mutationSeqAtPromote !== undefined
+        && (typeof mutationSeqAtPromote !== 'number' || !Number.isInteger(mutationSeqAtPromote) || mutationSeqAtPromote < 1)
+      )
     ) {
       throw new Error('Invalid KB index');
     }
@@ -97,6 +109,7 @@ function parseIndex(value: unknown): KbIndex {
       source: [...source],
       createdAt,
       updatedAt,
+      ...(mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote }),
     };
   }
 

@@ -16,6 +16,7 @@ import {
   formatKbDelete,
   formatKbPrinciples,
   formatKbPromote,
+  formatKbRead,
   formatKbReindex,
   formatKbSearch,
   formatKbUpdate,
@@ -342,7 +343,7 @@ describe('cli format', () => {
   });
 
   describe('kb formatters', () => {
-    it('formats kb search results in table form and rewrites kb_reindex warnings', () => {
+    it('formats kb search results as JSON and rewrites kb_reindex warnings', () => {
       const formatted = formatKbSearch({
         results: [
           {
@@ -356,16 +357,37 @@ describe('cli format', () => {
         warning: 'Enhanced KB index is stale; run kb_reindex to refresh it.',
       }, 'node "/tmp/coral-cli.cjs"');
 
-      expect(formatted).toContain('NOTE');
-      expect(formatted).toContain('MATCHED BY');
-      expect(formatted).toContain('cli-kb-tooling');
-      expect(formatted).toContain('filename, content');
-      expect(formatted).toContain('Mode: text');
-      expect(formatted).toContain('node "/tmp/coral-cli.cjs" kb reindex');
+      const parsed = JSON.parse(formatted);
+      expect(parsed.results).toHaveLength(1);
+      expect(parsed.results[0].note).toBe('cli-kb-tooling');
+      expect(parsed.results[0].matched).toEqual(['filename', 'content']);
+      expect(parsed.results[0].snippet).toBe('Use kb_reindex after stale writes.');
+      expect(parsed.mode).toBe('text');
+      expect(parsed.count).toBe(1);
+      expect(parsed.warning).toContain('node "/tmp/coral-cli.cjs" kb reindex');
     });
 
     it('formats an empty kb search result set', () => {
-      expect(formatKbSearch({ results: [], mode: 'text' })).toBe('No results\nMode: text');
+      const parsed = JSON.parse(formatKbSearch({ results: [], mode: 'text' }));
+      expect(parsed.results).toEqual([]);
+      expect(parsed.count).toBe(0);
+      expect(parsed.mode).toBe('text');
+    });
+
+    it('formats kb read as JSON', () => {
+      const formatted = formatKbRead({
+        note: 'coral-kb-read',
+        title: 'Read Test',
+        content: '## Rule\nContent here.',
+        tags: ['coral', 'kb'],
+        principles: ['contract-first-design'],
+      });
+      const parsed = JSON.parse(formatted);
+      expect(parsed.note).toBe('coral-kb-read');
+      expect(parsed.title).toBe('Read Test');
+      expect(parsed.content).toBe('## Rule\nContent here.');
+      expect(parsed.tags).toEqual(['coral', 'kb']);
+      expect(parsed.principles).toEqual(['contract-first-design']);
     });
 
     it('formats kb principles with totals and warning translation', () => {
@@ -394,7 +416,7 @@ describe('cli format', () => {
         .toBe('Deleted: /tmp/kb/notes/cli-kb-tooling.md');
     });
 
-    it('formats kb reindex stats and rewrites kb_reindex warnings', () => {
+    it('formats kb reindex as one-liner and rewrites kb_reindex warnings', () => {
       const formatted = formatKbReindex({
         notes: 4,
         principles: 2,
@@ -404,10 +426,10 @@ describe('cli format', () => {
         warning: 'Run kb_reindex again to refresh the enhanced index.',
       }, 'node "/tmp/coral-cli.cjs"');
 
-      expect(formatted).toContain('NOTES');
-      expect(formatted).toContain('25');
-      expect(formatted).toContain('text');
-      expect(formatted).toContain('node "/tmp/coral-cli.cjs" kb reindex again');
+      expect(formatted).toBe(
+        'Reindexed: 4 notes, 2 principles, 3 tags (25ms, text)\n'
+        + 'Warning: Run node "/tmp/coral-cli.cjs" kb reindex again to refresh the enhanced index.',
+      );
     });
   });
 

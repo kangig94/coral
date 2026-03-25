@@ -68,33 +68,34 @@ For multi-step tasks, state a brief plan:
 
 **Hard rule: Never write directly to KB files. Use KB tools for all operations.**
 
+CLI: `{{CORAL_CLI}}`
+
 ## Memo
 On non-obvious discovery during any phase (review, planning, implementation), write a memo immediately.
 Also memo Insights worth preserving when Explanatory output style is active.
 
-`{{CORAL_CLI}} kb memo --topic "<kebab-case-topic>" --content "one paragraph + context"`
+`CLI kb memo --topic "<kebab-case-topic>" --content "one paragraph + context"`
 
 Timestamps, paths, and frontmatter are generated automatically.
 
 ## Search
 Before debugging from scratch or starting a plan:
-1. `{{CORAL_CLI}} kb principles` — list principle names (cross-domain decision patterns). Names are self-descriptive (e.g., `atomic-persistence-or-nothing`). Read the principle file if a name is ambiguous.
-2. `{{CORAL_CLI}} kb search "<keywords>"` — searches filename, principles, tags, title, content. Returns top 20 results ranked by relevance.
+1. `CLI kb principles` — list principle names (cross-domain decision patterns). Names are self-descriptive (e.g., `atomic-persistence-or-nothing`). Read the principle file if a name is ambiguous.
+2. `CLI kb search "<keywords>"` — searches filename, principles, tags, title, content. Returns top 20 results ranked by relevance.
+3. `CLI kb read <note-slug>` — read a note's full content by slug. Always use this instead of reading KB files directly.
 
 ## Promotion
 **Who**: top-level orchestrator only, after all work completes (not implementation — after review too).
 Subagents and delegated tasks only write memos, never promote.
 
-**Process**: review all memos, check for duplicates via `{{CORAL_CLI}} kb search`, then promote:
-`{{CORAL_CLI}} kb promote --memo "<filename>" --title "..." --content-file /tmp/kb-content.md --tag t1 --tag t2 --principle p1 --domain d --topic t`
+**Process**: review all memos, check for duplicates via `CLI kb search`, then promote:
+`CLI kb promote --memo "<filename>" --title "..." --content-file /tmp/kb-content.md --domain d --topic t`
 Write `/tmp/kb-content.md` first (via the Write tool) with the full markdown body, for example `## Rule\n...\n## Why\n...\n## Pattern\n...`.
 
-Principles are well-formed names (not required to exist yet — they emerge from 3+ notes).
-
 ## Update / Delete
-`{{CORAL_CLI}} kb update <note-slug> --content-file /tmp/kb-content.md --tag t1`
-`{{CORAL_CLI}} kb delete <note-slug>`
+`CLI kb update <note-slug> --content-file /tmp/kb-content.md`
+`CLI kb delete <note-slug>`
 
 ## Invalidation
 If a kb entry contradicts current code:
-`{{CORAL_CLI}} kb update <note-slug> ...` or `{{CORAL_CLI}} kb delete <note-slug>`
+`CLI kb update <note-slug> ...` or `CLI kb delete <note-slug>`

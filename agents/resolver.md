@@ -122,5 +122,11 @@ methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
     ### Diverged Items
     [Findings classified Diverge, with explicit rationale for each rejection.]
     None if no diverged items.
+
+    ### Re-verification Advisory
+    ⚠️ Applied changes do NOT mean the findings are resolved — they mean the plan has been edited
+    in response to them. If any finding was HIGH or above, the fixes may have introduced new issues
+    or the original HIGH findings may have been masking deeper problems. The caller MUST consider
+    running the next review round before exiting.
   </Output_Format>
 </Agent_Prompt>

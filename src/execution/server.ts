@@ -31,7 +31,7 @@ import {
   discussStartSchema,
 } from '../discuss/schemas.js';
 import type { ExecutionService } from './service.js';
-import { activeChildren, killAllChildren, queueDepth } from './engine.js';
+import { activeChildren, killAllChildren, queueDepth, spawnCli } from './engine.js';
 import { writeBackendInfo, removeBackendInfoIfOwner } from './backend-info.js';
 import { acquireLock, BackendAlreadyRunningError, removeLockIfOwner } from './backend-lock.js';
 import type { AbortResult } from './abort-registry.js';
@@ -87,6 +87,7 @@ import {
 } from '../types.js';
 import { kbToolContracts } from '../kb/contracts.js';
 import { initKb } from '../kb/detect.js';
+import { curateRunActive, setCurateSpawnFn, startCurateRuntime } from '../kb/curate.js';
 
 export type LifecycleState = 'starting' | 'running' | 'draining' | 'stopped';
 
@@ -1587,7 +1588,9 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     try {
       await acquireLockFn(resolvedPluginRoot, instanceId, version, bundleHash);
       registerBuiltInProviders();
+      setCurateSpawnFn(spawnCli);
       await initKbFn(resolvedPluginRoot);
+      await startCurateRuntime();
       subscribeSessionIndex();
       sessionIndex.hydrate(SessionManager.listShards());
       recoverOrphanedJobsFn(namespace);
@@ -1624,7 +1627,8 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
           && activeChildren.size === 0
           && progressStore.liveJobCount() === 0
           && idleTimer.inflightRequests === 0
-          && !hasRunningSessions(discussRegistry),
+          && !hasRunningSessions(discussRegistry)
+          && !curateRunActive(),
         () => {
           void shutdown('idle').catch(() => {});
         },

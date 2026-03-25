@@ -469,10 +469,14 @@ function acquireFetchLock(key) {
   const lockPath = join(CACHE_DIR, `.coral-${key}.lock`);
   try {
     const raw = readFileSync(lockPath, "utf-8");
-    const lockData = JSON.parse(raw);
-    if (Date.now() - lockData.ts <= LOCK_STALE_MS) return null;
+    let isStale = true;
+    try {
+      const lockData = JSON.parse(raw);
+      isStale = Date.now() - lockData.ts > LOCK_STALE_MS;
+    } catch {} // corrupt/empty JSON → treat as stale
+    if (!isStale) return null;
     try { unlinkSync(lockPath); } catch {}
-  } catch {}
+  } catch {} // ENOENT → no lock exists
   try {
     writeFileSync(lockPath, JSON.stringify({ ts: Date.now() }), { flag: "wx", mode: 0o600 });
     return lockPath;

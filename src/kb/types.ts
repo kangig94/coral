@@ -17,6 +17,7 @@ export interface KbIndex {
     source: string[];
     createdAt: string;
     updatedAt: string;
+    mutationSeqAtPromote?: number;
   }>;
   principles: Record<string, string>;
 }
@@ -42,6 +43,7 @@ export interface KbNoteFrontmatter {
   source: string[];
   createdAt: string;
   updatedAt: string;
+  mutationSeqAtPromote?: number;
 }
 
 export interface KbNoteIdentity {
@@ -61,6 +63,7 @@ export type KbReindexNoteRecord = {
   source: string[];
   createdAt: string;
   updatedAt: string;
+  mutationSeqAtPromote?: number;
 };
 
 export interface KbLanceDbAdapter {
@@ -76,6 +79,7 @@ export interface KbLanceDbAdapter {
     source: string[];
     createdAt: string;
     updatedAt: string;
+    mutationSeqAtPromote?: number;
   }): Promise<void>;
   deleteNote?(note: string): Promise<void>;
 }

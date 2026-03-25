@@ -40,7 +40,7 @@ function extractBody(content: string): string {
     .trim();
 }
 
-function extractPrincipleStatement(content: string): string {
+export function extractPrincipleStatement(content: string): string {
   const withoutFrontmatter = content.replace(FRONTMATTER_BLOCK, '').trim();
   if (!withoutFrontmatter) {
     throw new Error('KB principle is missing a statement');
@@ -67,6 +67,9 @@ function loadNotes(kbRoot: string): KbReindexNoteRecord[] {
       source: [...frontmatter.source],
       createdAt: frontmatter.createdAt,
       updatedAt: frontmatter.updatedAt,
+      ...(frontmatter.mutationSeqAtPromote === undefined
+        ? {}
+        : { mutationSeqAtPromote: frontmatter.mutationSeqAtPromote }),
     });
   }
 
@@ -95,6 +98,7 @@ function buildKbIndex(notes: KbReindexNoteRecord[], principles: Array<[string, s
       source: [...note.source],
       createdAt: note.createdAt,
       updatedAt: note.updatedAt,
+      ...(note.mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote: note.mutationSeqAtPromote }),
     }])),
     principles: Object.fromEntries(principles),
   };

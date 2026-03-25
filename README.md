@@ -34,6 +34,8 @@ https://github.com/user-attachments/assets/881f1a14-9f4f-4d3d-8023-59610eb13ac4
 
 Coral scans your stack and generates `.claude/` — conventions, review agents, architecture docs — tailored to your project.
 
+Generated agents aren't boilerplate — they encode evaluation rubrics calibrated to your project's stack and audience. Claude follows your rules, not generic defaults.
+
 ```bash
 /coral:init-project                                          # existing project
 /coral:init-project "React + FastAPI"                        # tech stack hint
