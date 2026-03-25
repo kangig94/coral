@@ -2,16 +2,15 @@ import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { CallerContext } from '../execution/request-context.js';
 import { isRecord } from '../shared/mcp-utils.js';
-import { ensureKbIndex, getKbContext, readKbIndex, setAutoRebuild } from './detect.js';
+import { ensureKbIndex, getKbContext, setAutoRebuild } from './detect.js';
 import { deleteFn } from './delete.js';
 import { promote } from './promote.js';
-import { reindex } from './reindex.js';
-import { searchBasic } from './search-basic.js';
-import { searchEnhanced } from './search-enhanced.js';
+import { rebuildMetadataAndOrama, reindex } from './reindex.js';
+import { searchKb } from './search.js';
 import { update } from './update.js';
 
 // Auto-rebuild index when missing or stale — avoids circular import by using callback
-setAutoRebuild(async (kb) => { await reindex(kb); });
+setAutoRebuild(async (kb, startSeq) => { await rebuildMetadataAndOrama(kb, startSeq); });
 
 // KB filenames allow mixed case for code identifiers (e.g., cuMemFree, applyExpel)
 const slugSchema = z.string().regex(/^[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*$/);
@@ -43,7 +42,7 @@ export const kbSearchSchema = z.object({
 export type KbSearchInput = z.input<typeof kbSearchSchema>;
 
 export const kbPromoteSchema = z.object({
-  memo: z.string(),
+  memo: z.string().describe('Memo filename (e.g. 20260325-topic.md), not a full path'),
   title: titleSchema,
   content: z.string(),
   tags: z.array(tagSchema),
@@ -109,8 +108,7 @@ export const kbToolContracts = defineKbToolContracts({
     schema: kbSearchSchema,
     handler: async (input, ctx) => {
       const kb = getKbContext(ctx);
-      await ensureKbIndex(kb);
-      return kb.adapter ? searchEnhanced(kb, input.query, input.top_k) : searchBasic(kb, input.query, input.top_k);
+      return searchKb(kb, input.query, input.top_k);
     },
   },
   kb_promote: {

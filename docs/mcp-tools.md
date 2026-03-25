@@ -588,14 +588,14 @@ These built-in tools are the supported interface for KB search and note mutation
 
 ## kb_search
 
-Searches KB note filename, principles, tags, title, and content for literal text matches.
+Searches KB note filename, principles, tags, title, and content with Orama BM25 text search.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `query` | string | Yes | Literal text to search for |
+| `query` | string | Yes | Text query for BM25 search |
 | `top_k` | integer | No | Max results to return (default `20`) |
 
-Returns `{ results, mode, warning? }`. `warning` is set when the enhanced index is unavailable or stale and the backend falls back to basic search.
+Returns `{ results, mode, warning? }`. `mode` is `'text'` for the current Orama-backed search path and `'hybrid'` when text search is paired with vector results.
 
 ## kb_promote
 
@@ -635,7 +635,7 @@ Deletes an existing KB note by note slug.
 
 ## kb_reindex
 
-Rebuilds the derived KB search index from the markdown vault. Use it after stale-index warnings or enhanced-search fallback.
+Rebuilds the derived KB text-search index from the markdown vault. The response `mode` uses `'text'` for the text snapshot and `'hybrid'` when vector sidecars are also available.
 
 ---
 

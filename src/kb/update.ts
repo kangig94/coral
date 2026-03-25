@@ -14,7 +14,7 @@ import {
   assertNonEmptyText,
   assertSlug,
   cloneKbIndex,
-  markEnhancedIndexStale,
+  markTextIndexStale,
   normalizePrinciples,
   normalizeTags,
   writeFileAtomic,
@@ -30,7 +30,7 @@ function extractBody(content: string): string {
     .trim();
 }
 
-export async function update(kb: KbContext, input: KbUpdateInput): Promise<{ path: string }> {
+export async function update(_kb: KbContext, input: KbUpdateInput): Promise<{ path: string }> {
   const note = assertSlug(input.note, 'note');
   const notePath = notePathFromName(note);
   const title = input.title === undefined ? undefined : assertNonEmptyText(input.title, 'title');
@@ -72,10 +72,7 @@ export async function update(kb: KbContext, input: KbUpdateInput): Promise<{ pat
     };
     writeKbIndex(nextIndex);
 
-    await markEnhancedIndexStale(
-      kb,
-      'Enhanced KB index is stale after kb_update; run kb_reindex to refresh it.',
-    );
+    await markTextIndexStale('KB text snapshot is stale after kb_update.');
 
     return { path: notePath };
   });

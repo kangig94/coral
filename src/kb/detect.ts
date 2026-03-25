@@ -1,15 +1,21 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
+import { load, save, type RawData } from '@orama/orama';
 import { kbRoot } from '../client/paths.js';
 import type { CallerContext } from '../execution/request-context.js';
-import { isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
+import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
 import { loadKbLanceDb } from './lancedb-runtime.js';
+import {
+  createOramaDb,
+  type KbOramaDb,
+  type KbOramaTokenizer,
+} from './orama-factory.js';
 import { kbRuntimeDir } from './paths.js';
 import type { KbContext, KbIndex, KbLanceDbAdapter } from './types.js';
 
-type KbIndexState = {
+export type KbIndexState = {
   mutationSeq: number;
   indexedSeq: number;
   staleReason?: string;
@@ -17,17 +23,24 @@ type KbIndexState = {
 
 const INDEX_STATE_FILE = 'index-state.json';
 const INDEX_FILE = 'index.json';
+const ORAMA_INDEX_FILE = 'orama-index.json';
+
+type CachedOramaIndex = {
+  db: KbOramaDb;
+  tokenizer: KbOramaTokenizer;
+};
 
 let adapter: KbLanceDbAdapter | null = null;
 let cachedIndex: KbIndex | null = null;
 let cachedIndexLoaded = false;
 let cachedIndexMtime = 0;
+let cachedOramaIndex: CachedOramaIndex | null = null;
 let mutationLock: Promise<void> = Promise.resolve();
 
 // Lazy auto-rebuild callback — set by reindex module to avoid circular imports
-let autoRebuildFn: ((kb: KbContext) => Promise<void>) | null = null;
+let autoRebuildFn: ((kb: KbContext, startSeq: number) => Promise<void>) | null = null;
 
-export function setAutoRebuild(fn: (kb: KbContext) => Promise<void>): void {
+export function setAutoRebuild(fn: (kb: KbContext, startSeq: number) => Promise<void>): void {
   autoRebuildFn = fn;
 }
 
@@ -37,6 +50,10 @@ function indexStatePath(): string {
 
 function indexPath(): string {
   return join(kbRuntimeDir(), INDEX_FILE);
+}
+
+function oramaIndexPath(): string {
+  return join(kbRuntimeDir(), ORAMA_INDEX_FILE);
 }
 
 function defaultIndexState(): KbIndexState {
@@ -111,23 +128,57 @@ function parseIndexState(value: unknown): KbIndexState {
   if (staleReason !== undefined && typeof staleReason !== 'string') {
     throw new Error('Invalid KB index state');
   }
+  const normalizedStaleReason = typeof staleReason === 'string' ? staleReason : undefined;
 
   return {
     mutationSeq,
     indexedSeq,
-    ...(staleReason === undefined ? {} : { staleReason }),
+    ...(normalizedStaleReason === undefined ? {} : { staleReason: normalizedStaleReason }),
   };
 }
 
-function writeJsonAtomic(filePath: string, value: Record<string, unknown>): void {
+function writeJsonAtomic(filePath: string, value: unknown): void {
   mkdirSync(dirname(filePath), { recursive: true });
   const tmpPath = `${filePath}.tmp`;
   writeFileSync(tmpPath, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
   renameSync(tmpPath, filePath);
 }
 
+function isFreshTextSnapshot(state: KbIndexState | null): state is KbIndexState {
+  return state !== null && state.indexedSeq === state.mutationSeq && state.staleReason === undefined;
+}
+
+function installKbIndexCache(index: KbIndex): KbIndex {
+  const normalized = parseIndex(index);
+  cachedIndex = normalized;
+  cachedIndexLoaded = true;
+  cachedIndexMtime = statSync(indexPath()).mtimeMs;
+  return normalized;
+}
+
+function installOramaCache(orama: CachedOramaIndex): void {
+  cachedOramaIndex = orama;
+}
+
+async function loadOramaSnapshot(): Promise<CachedOramaIndex> {
+  const { db, tokenizer } = await createOramaDb();
+  const raw = JSON.parse(readFileSync(oramaIndexPath(), 'utf-8')) as RawData;
+  load(db, raw);
+  return { db, tokenizer };
+}
+
+async function rebuildWithMutationLock(kb: KbContext): Promise<void> {
+  if (autoRebuildFn === null) {
+    throw new Error('KB rebuild helper is not configured.');
+  }
+
+  const startSeq = readIndexState().mutationSeq;
+  await autoRebuildFn(kb, startSeq);
+}
+
 export async function initKb(pluginRoot: string): Promise<void> {
   adapter = null;
+  invalidateKbCache();
   mkdirSync(kbRuntimeDir(), { recursive: true });
 
   try {
@@ -136,6 +187,16 @@ export async function initKb(pluginRoot: string): Promise<void> {
     adapter = await loadKbLanceDb(pathToFileURL(entry).href);
   } catch {
     adapter = null;
+  }
+
+  if (!isFreshTextSnapshot(readIndexStateIfPresent()) || indexNeedsRebuild()) {
+    return;
+  }
+
+  try {
+    installOramaCache(await loadOramaSnapshot());
+  } catch {
+    cachedOramaIndex = null;
   }
 }
 
@@ -196,37 +257,96 @@ function indexNeedsRebuild(): boolean {
 /** Ensure index is fresh before reading. Auto-rebuilds if missing or stale. */
 export async function ensureKbIndex(kb: KbContext): Promise<KbIndex> {
   if (indexNeedsRebuild() && autoRebuildFn) {
-    await autoRebuildFn(kb);
-    // invalidate cache so readKbIndex re-reads the fresh file
-    cachedIndex = null;
-    cachedIndexLoaded = false;
+    await withKbMutationLock(async () => {
+      if (!indexNeedsRebuild()) {
+        return;
+      }
+
+      await rebuildWithMutationLock(kb);
+    });
   }
 
   return readKbIndex() ?? emptyIndex();
 }
 
-export function writeKbIndex(index: KbIndex): KbIndex {
+export async function ensureOramaIndex(kb: KbContext): Promise<{
+  db: KbOramaDb;
+  tokenizer: KbOramaTokenizer;
+  index: KbIndex;
+}> {
+  await ensureKbIndex(kb);
+
+  if (cachedOramaIndex !== null && isFreshTextSnapshot(readIndexStateIfPresent()) && !indexNeedsRebuild()) {
+    return {
+      ...cachedOramaIndex,
+      index: readKbIndex() ?? emptyIndex(),
+    };
+  }
+
+  return withKbMutationLock(async () => {
+    if (indexNeedsRebuild()) {
+      try {
+        await rebuildWithMutationLock(kb);
+      } catch (error: unknown) {
+        throw new Error(`KB text search is unavailable: ${errorMessage(error)}`);
+      }
+    } else if (!isFreshTextSnapshot(readIndexStateIfPresent())) {
+      try {
+        await rebuildWithMutationLock(kb);
+      } catch (error: unknown) {
+        throw new Error(`KB text search is unavailable: ${errorMessage(error)}`);
+      }
+    } else if (cachedOramaIndex === null) {
+      try {
+        installOramaCache(await loadOramaSnapshot());
+      } catch {
+        try {
+          await rebuildWithMutationLock(kb);
+        } catch (error: unknown) {
+          throw new Error(`KB text search is unavailable: ${errorMessage(error)}`);
+        }
+      }
+    }
+
+    if (cachedOramaIndex === null || !isFreshTextSnapshot(readIndexStateIfPresent())) {
+      throw new Error('KB text search is unavailable: a fresh text snapshot could not be installed.');
+    }
+
+    return {
+      ...cachedOramaIndex,
+      index: readKbIndex() ?? emptyIndex(),
+    };
+  });
+}
+
+export function persistKbIndex(index: KbIndex): KbIndex {
   const normalized = parseIndex(index);
-  writeJsonAtomic(indexPath(), normalized as unknown as Record<string, unknown>);
-  cachedIndex = normalized;
-  cachedIndexLoaded = true;
+  writeJsonAtomic(indexPath(), normalized);
   return normalized;
+}
+
+export function writeKbIndex(index: KbIndex): KbIndex {
+  return installKbIndexCache(persistKbIndex(index));
 }
 
 export function readOrCreateKbIndex(): KbIndex {
   return readKbIndex() ?? emptyIndex();
 }
 
-export function readIndexState(): KbIndexState {
+export function readIndexStateIfPresent(): KbIndexState | null {
   try {
     const raw = readFileSync(indexStatePath(), 'utf-8');
     return parseIndexState(JSON.parse(raw) as unknown);
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
-      return defaultIndexState();
+      return null;
     }
     throw error;
   }
+}
+
+export function readIndexState(): KbIndexState {
+  return readIndexStateIfPresent() ?? defaultIndexState();
 }
 
 export function writeIndexState(state: KbIndexState): void {
@@ -291,7 +411,27 @@ export function recordReindexSuccess(startSeq: number): KbIndexState {
   return nextState;
 }
 
+export function persistOramaSnapshot(db: KbOramaDb): void {
+  const snapshot = save(db) as unknown as RawData;
+  writeJsonAtomic(oramaIndexPath(), snapshot);
+}
+
+export function installRebuiltKbArtifacts(index: KbIndex, orama: CachedOramaIndex): KbIndex {
+  const normalized = installKbIndexCache(index);
+  installOramaCache(orama);
+  return normalized;
+}
+
+export function invalidateTextSnapshot(reason: string): KbIndexState {
+  const nextState = recordIndexSyncFailure(reason);
+  cachedOramaIndex = null;
+  rmSync(oramaIndexPath(), { force: true });
+  return nextState;
+}
+
 export function invalidateKbCache(): void {
   cachedIndex = null;
   cachedIndexLoaded = false;
+  cachedIndexMtime = 0;
+  cachedOramaIndex = null;
 }

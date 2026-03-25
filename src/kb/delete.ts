@@ -8,9 +8,9 @@ import {
   withKbMutationLock,
   writeKbIndex,
 } from './detect.js';
-import { assertSlug, cloneKbIndex, markEnhancedIndexStale } from './mutation-helpers.js';
+import { assertSlug, cloneKbIndex, markTextIndexStale } from './mutation-helpers.js';
 
-export async function deleteFn(kb: KbContext, input: KbDeleteInput): Promise<{ deleted: string }> {
+export async function deleteFn(_kb: KbContext, input: KbDeleteInput): Promise<{ deleted: string }> {
   const note = assertSlug(input.note, 'note');
   const notePath = notePathFromName(note);
 
@@ -22,10 +22,7 @@ export async function deleteFn(kb: KbContext, input: KbDeleteInput): Promise<{ d
     delete nextIndex.notes[note];
     writeKbIndex(nextIndex);
 
-    await markEnhancedIndexStale(
-      kb,
-      'Enhanced KB index is stale after kb_delete; run kb_reindex to refresh it.',
-    );
+    await markTextIndexStale('KB text snapshot is stale after kb_delete.');
 
     return { deleted: notePath };
   });

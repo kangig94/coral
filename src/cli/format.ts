@@ -74,6 +74,10 @@ function normalizeKbWarning(warning: unknown, cliPrefix = 'coral-cli'): string |
   return warning.replace(/\bkb_reindex\b/g, () => `${cliPrefix} kb reindex`);
 }
 
+function isKbSearchMode(value: unknown): value is 'text' | 'hybrid' {
+  return value === 'text' || value === 'hybrid';
+}
+
 function formatTable(headers: string[], rows: string[][]): string {
   const widths = headers.map((header, index) =>
     Math.max(header.length, ...rows.map((row) => row[index]?.length ?? 0)));
@@ -271,7 +275,7 @@ export function formatDiscussWatch(result: unknown): string {
 }
 
 export function formatKbSearch(data: unknown, cliPrefix = 'coral-cli'): string {
-  if (!isRecord(data) || !Array.isArray(data.results) || typeof data.mode !== 'string') {
+  if (!isRecord(data) || !Array.isArray(data.results) || !isKbSearchMode(data.mode)) {
     return formatUnknown(data);
   }
 
@@ -348,7 +352,7 @@ export function formatKbReindex(data: unknown, cliPrefix = 'coral-cli'): string 
     || typeof data.principles !== 'number'
     || typeof data.tags !== 'number'
     || typeof data.duration_ms !== 'number'
-    || typeof data.mode !== 'string'
+    || !isKbSearchMode(data.mode)
   ) {
     return formatUnknown(data);
   }

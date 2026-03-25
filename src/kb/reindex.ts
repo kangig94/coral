@@ -1,29 +1,24 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { insertMultiple } from '@orama/orama';
 import { errorMessage, isNoEntryError } from '../shared/mcp-utils.js';
 import {
+  installRebuiltKbArtifacts,
   invalidateKbCache,
+  invalidateTextSnapshot,
+  persistKbIndex,
+  persistOramaSnapshot,
   readIndexState,
-  recordIndexSyncFailure,
   recordReindexSuccess,
   withKbMutationLock,
-  writeKbIndex,
 } from './detect.js';
 import { deriveNoteIdentity, extractTitle, parseFrontmatter } from './frontmatter.js';
-import { rebuildEnhancedIndex, type KbReindexNoteRecord } from './reindex-enhanced.js';
-import type { KbContext, KbIndex } from './types.js';
+import { createOramaDb, toOramaDocument } from './orama-factory.js';
+import { rebuildEnhancedIndex } from './reindex-enhanced.js';
+import type { KbContext, KbIndex, KbReindexNoteRecord, ReindexResult } from './types.js';
 
 const FRONTMATTER_BLOCK = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/;
 const TOP_LEVEL_TITLE = /^# .+(?:\r?\n){1,2}/;
-
-type ReindexResult = {
-  notes: number;
-  principles: number;
-  tags: number;
-  duration_ms: number;
-  mode: 'basic' | 'enhanced';
-  warning?: string;
-};
 
 function sortedMarkdownEntries(dirPath: string): string[] {
   try {
@@ -105,58 +100,110 @@ function buildKbIndex(notes: KbReindexNoteRecord[], principles: Array<[string, s
   };
 }
 
-function basicLossWarning(): string {
-  return 'Enhanced KB runtime is unavailable; rebuilt the basic index only.';
+function buildCounts(notes: KbReindexNoteRecord[], principles: Array<[string, string]>): Pick<ReindexResult, 'notes' | 'principles' | 'tags'> {
+  return {
+    notes: notes.length,
+    principles: principles.length,
+    tags: new Set(notes.flatMap((note) => note.tags)).size,
+  };
 }
 
-function enhancedFailureWarning(): string {
-  return 'Enhanced KB reindex failed; rebuilt the basic index only. Run kb_reindex again to refresh the enhanced index.';
+function hybridWarning(error: unknown): string {
+  return `KB vector tables were not rebuilt: ${errorMessage(error)}. Text search remains available.`;
 }
 
-function concurrentSnapshotWarning(): string {
-  return 'KB state changed during reindex; rebuilt the basic index only. Run kb_reindex again to refresh the enhanced index.';
+class TextSnapshotRebuildError extends Error {
+  readonly counts: Pick<ReindexResult, 'notes' | 'principles' | 'tags'>;
+
+  constructor(message: string, counts: Pick<ReindexResult, 'notes' | 'principles' | 'tags'>) {
+    super(message);
+    this.name = 'TextSnapshotRebuildError';
+    this.counts = counts;
+  }
+}
+
+/**
+ * @precondition Caller already holds `withKbMutationLock()`.
+ */
+export async function rebuildMetadataAndOrama(
+  kb: KbContext,
+  startSeq: number,
+): Promise<{
+  notes: KbReindexNoteRecord[];
+  principles: Array<[string, string]>;
+  counts: Pick<ReindexResult, 'notes' | 'principles' | 'tags'>;
+}> {
+  const notes = loadNotes(kb.kbRoot);
+  const principles = loadPrinciples(kb.kbRoot);
+  const counts = buildCounts(notes, principles);
+  const index = buildKbIndex(notes, principles);
+  const { db, tokenizer } = await createOramaDb();
+
+  await insertMultiple(db, notes.map(toOramaDocument));
+  persistKbIndex(index);
+
+  try {
+    persistOramaSnapshot(db);
+  } catch (error: unknown) {
+    const reason = `KB text index rebuild failed: ${errorMessage(error)}`;
+    invalidateTextSnapshot(reason);
+    invalidateKbCache();
+    throw new TextSnapshotRebuildError(reason, counts);
+  }
+
+  const nextState = recordReindexSuccess(startSeq);
+  if (nextState.mutationSeq !== startSeq || nextState.indexedSeq !== startSeq || nextState.staleReason !== undefined) {
+    const reason = 'KB text index freshness changed during rebuild.';
+    invalidateTextSnapshot(reason);
+    invalidateKbCache();
+    throw new TextSnapshotRebuildError(reason, counts);
+  }
+
+  installRebuiltKbArtifacts(index, { db, tokenizer });
+
+  return {
+    notes,
+    principles,
+    counts,
+  };
 }
 
 export async function reindex(kb: KbContext): Promise<ReindexResult> {
   const startedAt = Date.now();
-  const preCallState = readIndexState();
 
   return withKbMutationLock(async () => {
     const startSeq = readIndexState().mutationSeq;
-    const notes = loadNotes(kb.kbRoot);
-    const principles = loadPrinciples(kb.kbRoot);
-    const uniqueTags = new Set(notes.flatMap((note) => note.tags));
-    const index = buildKbIndex(notes, principles);
+    let rebuildResult: Awaited<ReturnType<typeof rebuildMetadataAndOrama>>;
 
-    writeKbIndex(index);
-    invalidateKbCache();
+    try {
+      rebuildResult = await rebuildMetadataAndOrama(kb, startSeq);
+    } catch (error: unknown) {
+      if (error instanceof TextSnapshotRebuildError) {
+        return {
+          ...error.counts,
+          duration_ms: Date.now() - startedAt,
+          mode: 'text',
+          warning: error.message,
+        };
+      }
 
-    let mode: 'basic' | 'enhanced' = 'basic';
+      throw error;
+    }
+
     let warning: string | undefined;
 
     if (kb.adapter !== null) {
       try {
-        await rebuildEnhancedIndex(kb, notes);
-        const state = recordReindexSuccess(startSeq);
-        if (state.indexedSeq === startSeq && state.staleReason === undefined) {
-          mode = 'enhanced';
-        } else {
-          warning = concurrentSnapshotWarning();
-        }
+        await rebuildEnhancedIndex(kb, rebuildResult.notes);
       } catch (error: unknown) {
-        recordIndexSyncFailure(`Enhanced KB reindex failed: ${errorMessage(error)}`);
-        warning = enhancedFailureWarning();
+        warning = hybridWarning(error);
       }
-    } else if (preCallState.indexedSeq > 0) {
-      warning = basicLossWarning();
     }
 
     return {
-      notes: notes.length,
-      principles: principles.length,
-      tags: uniqueTags.size,
+      ...rebuildResult.counts,
       duration_ms: Date.now() - startedAt,
-      mode,
+      mode: 'text',
       ...(warning === undefined ? {} : { warning }),
     };
   });
