@@ -85,7 +85,7 @@ memo body
 
     const note = readFileSync(notePath, 'utf-8');
     expect(frontmatter.parseFrontmatter(note)).toEqual({
-      tags: [],
+      tags: ['coral'],
       principles: [],
       source: ['kangig94/coral'],
       createdAt: '2026-03-23T01:02:03.000Z',
@@ -97,7 +97,7 @@ memo body
     const index = detect.readKbIndex();
     expect(index?.notes['coral-kb-promotion']).toEqual({
       title: 'KB Promotion',
-      tags: [],
+      tags: ['coral'],
       principles: [],
       source: ['kangig94/coral'],
       createdAt: '2026-03-23T01:02:03.000Z',

@@ -42,7 +42,7 @@ export async function promote(kb: KbContext, input: KbPromoteInput): Promise<{ p
   const { source } = parseMemoFrontmatter(memoContent);
   const createdAt = nowIsoString();
   const noteContent = serializeNote({
-    tags: [],
+    tags: [domain],
     principles: [],
     source,
     createdAt,
@@ -61,7 +61,7 @@ export async function promote(kb: KbContext, input: KbPromoteInput): Promise<{ p
     const nextIndex = cloneKbIndex(readKbIndex());
     nextIndex.notes[noteName] = {
       title,
-      tags: [],
+      tags: [domain],
       principles: [],
       source: [...source],
       createdAt,
