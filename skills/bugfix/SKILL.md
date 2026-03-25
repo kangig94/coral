@@ -21,9 +21,8 @@ Strip the `--codex` flag before passing the prompt to the execution path.
 ## Execution
 
 1. **Diagnose**:
-   - **Default**: Read `CORAL_AGENTS/debugger.md`. **You** execute it directly with `--deep` —
-     follow `<Investigation_Protocol>` steps with conversation context.
-     Present diagnosis in `<Output_Format>` structure.
+   - **Default**: Spawn `Agent({ subagent_type: "coral:debugger", prompt: "--deep " + prompt })`.
+     Wait for the agent to return its diagnosis in `<Output_Format>` structure.
    - **`--codex`**: Call `codex({ op: "coral:debugger", prompt: "--deep " + prompt, work_dir })`.
      Capture `job` from the exec response, then `wait({ jobs: [job] })` → read `result.content`; if absent, `Read(result.path)` is best-effort recovery for findings.
      On error, stop with the error message.
@@ -44,7 +43,3 @@ Strip the `--codex` flag before passing the prompt to the execution path.
 
 5. **Project validation**: If project instructions define workflow rules (e.g., review gates,
    post-implementation steps), follow them.
-
-## Error Policy
-
-If `CORAL_AGENTS/debugger.md` cannot be read, report the error to the user.
