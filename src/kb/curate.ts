@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { kbRoot } from '../client/paths.js';
 import {
@@ -55,6 +56,94 @@ const DISCOVERY_MIN_CORPUS_SIZE = 50;
 const DISCOVERY_PROMPT_BODY_LIMIT = 500;
 const DISCOVERY_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
 const DISCOVERY_CORPUS_RESET_RATIO = 0.2;
+
+const GITIGNORE_ENTRIES = ['curate-state.json', 'data/'];
+const GITIGNORE_HEADER = '# Coral KB runtime (device-local, auto-managed)';
+
+function isGitRepo(dir: string): boolean {
+  try {
+    execFileSync('git', ['-C', dir, 'rev-parse', '--is-inside-work-tree'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 5000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function ensureKbGitignore(): void {
+  const root = kbRoot();
+  const gitignorePath = join(root, '.gitignore');
+
+  try {
+    const existing = existsSync(gitignorePath) ? readFileSync(gitignorePath, 'utf-8') : '';
+    const lines = existing.split('\n');
+    const missing = GITIGNORE_ENTRIES.filter((entry) => !lines.some((line) => line.trim() === entry));
+    if (missing.length === 0) return;
+
+    const block = `\n${GITIGNORE_HEADER}\n${missing.join('\n')}\n`;
+    if (existing.length === 0) {
+      writeFileSync(gitignorePath, `${GITIGNORE_HEADER}\n${missing.join('\n')}\n`, 'utf-8');
+    } else {
+      appendFileSync(gitignorePath, block, 'utf-8');
+    }
+  } catch {
+    // best-effort
+  }
+}
+
+function gitAutoCommit(message: string): void {
+  const root = kbRoot();
+  if (!isGitRepo(root)) return;
+
+  try {
+    execFileSync('git', ['-C', root, 'add', 'notes/', 'principles/'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 10000,
+    });
+
+    // diff --cached --quiet exits 0 = nothing staged, 1 = staged changes
+    try {
+      execFileSync('git', ['-C', root, 'diff', '--cached', '--quiet'], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 5000,
+      });
+      return; // nothing staged
+    } catch {
+      // has staged changes — proceed to commit
+    }
+
+    try {
+      execFileSync('git', ['-C', root, 'commit', '-m', message], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 10000,
+      });
+    } catch {
+      // git config may be missing — retry with author override
+      try {
+        execFileSync('git', [
+          '-C', root,
+          '-c', 'user.name=Claude',
+          '-c', 'user.email=noreply@anthropic.com',
+          'commit', '-m', message,
+        ], {
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+          timeout: 10000,
+        });
+      } catch {
+        // best-effort — commit failure doesn't break curate
+      }
+    }
+  } catch {
+    // git add failure — best-effort
+  }
+}
 
 type SpawnCliResult = {
   stdout: string;
@@ -600,6 +689,7 @@ export async function startCurateRuntime(kb?: KbContext): Promise<void> {
     return;
   }
 
+  ensureKbGitignore();
   await migrateCurateStateIfNeeded();
   runtimeStarted = true;
   armRetryWake();
@@ -1508,6 +1598,7 @@ async function runScheduledCurate(kb: KbContext): Promise<CurateCursor | null> {
       const validatedAssignments = validateAssignments(rawAssignments, claimIndex, claim.notes);
       const metadataTargets = buildMetadataTargets(validatedAssignments, claimIndex, claim.notes);
       await commitMetadataTargets(kb, metadataTargets);
+      gitAutoCommit(`curate: classify ${claim.notes.length} notes (tags + principles)`);
 
       const postPhaseOneState = readCurateState();
       const postPhaseOneProcessedThrough = postPhaseOneState.processedThrough;
@@ -1522,6 +1613,7 @@ async function runScheduledCurate(kb: KbContext): Promise<CurateCursor | null> {
           postPhaseOneIndex,
           postPhaseOneProcessedThrough,
         );
+        gitAutoCommit('curate: discover principles from principle-less notes');
       }
 
       const cleanupResult = cleanupTags(
@@ -1535,6 +1627,7 @@ async function runScheduledCurate(kb: KbContext): Promise<CurateCursor | null> {
       );
       if (cleanupTargets.length > 0) {
         await commitMetadataTargets(kb, cleanupTargets);
+        gitAutoCommit(`curate: cleanup tags for ${cleanupTargets.length} notes`);
       }
 
       await clearCurateRetryState();
