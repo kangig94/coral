@@ -597,6 +597,17 @@ Searches KB note filename, principles, tags, title, and content with Orama BM25 
 
 Returns `{ results, mode, warning? }`. Each result has `{ note, title, matchedBy, tags, principles, snippet? }` where `note` is a slug directly usable in `kb_update` and `kb_delete`. `mode` is `'text'` for the current Orama-backed search path and `'hybrid'` when text search is paired with vector results.
 
+## kb_memo
+
+Writes a memo with auto-generated timestamp, path, and frontmatter. The project source is derived from the caller's working directory via `git remote`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `topic` | string | Yes | Kebab-case topic slug (e.g. `orama-threshold`) |
+| `content` | string | Yes | Memo body text (one paragraph + context) |
+
+Returns `{ filename, path }`.
+
 ## kb_promote
 
 Promotes a memo into a new KB note. Promotion is create-only: if the destination note already exists, the tool fails and the caller should use `kb_update` instead.

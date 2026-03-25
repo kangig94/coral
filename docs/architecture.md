@@ -466,13 +466,17 @@ coral/
 │   │   ├── detect.ts            # Mode detection, cache state, runtime context
 │   │   ├── paths.ts             # KB path and memo boundary helpers
 │   │   ├── frontmatter.ts       # Note/principle parsing + serialization
-│   │   ├── search-basic.ts      # Basic index-backed literal search
-│   │   ├── search-enhanced.ts   # Enhanced search with basic fallback
+│   │   ├── orama-factory.ts      # Orama DB factory (schema, tokenizer, pre-normalization)
+│   │   ├── search.ts            # Unified BM25 text search via Orama
+│   │   ├── memo.ts              # Auto-generated memo creation
 │   │   ├── promote.ts           # Memo -> note promotion
 │   │   ├── update.ts            # Partial note updates
 │   │   ├── delete.ts            # Note deletion
-│   │   ├── reindex.ts           # JSON/enhanced index rebuild
-│   │   └── lancedb-runtime.ts   # Runtime-only enhanced search adapter
+│   │   ├── mutation-helpers.ts   # Shared mutation utilities (atomic write, stale marking)
+│   │   ├── reindex.ts           # JSON + Orama index rebuild
+│   │   ├── reindex-enhanced.ts  # LanceDB table rebuild (future vector)
+│   │   ├── types.ts             # KB type definitions
+│   │   └── lancedb-runtime.ts   # Runtime-only LanceDB adapter
 │   └── discuss/                 # Discuss domain + projections
 │       ├── events.ts            # Domain event union + persisted runtime types
 │       ├── reducer.ts           # Event replay into snapshot state
@@ -556,22 +560,22 @@ The KB stack is split between backend-exposed tool contracts, markdown-vault hel
 
 ```
 execution/server.ts
-  ├── kb/contracts.ts            (kb_search/kb_promote/kb_update/kb_delete/kb_reindex descriptors + routing)
-  ├── kb/detect.ts               (cached KB context, mode detection, index state)
+  ├── kb/contracts.ts            (kb_search/kb_promote/kb_update/kb_delete/kb_memo/kb_reindex descriptors + routing)
+  ├── kb/detect.ts               (cached KB context, Orama lifecycle, index state)
   └── providers/registry.ts      (reserves KB built-in tool names)
 
 kb/contracts.ts
-  └── kb/{search-basic,search-enhanced,promote,update,delete,reindex}.ts
+  └── kb/{search,memo,promote,update,delete,reindex}.ts
 
 kb/{promote,update,delete,reindex}.ts
   ├── kb/frontmatter.ts          (frontmatter parsing + serialization)
+  ├── kb/mutation-helpers.ts     (atomic write, text index stale marking)
   ├── kb/paths.ts                (vault/memo boundary resolution)
-  └── kb/detect.ts               (cache invalidation, stale/enhanced state)
+  └── kb/detect.ts               (cache invalidation, Orama persistence)
 
-kb/search-basic.ts
-  ├── kb/frontmatter.ts
-  ├── kb/paths.ts
-  └── kb/detect.ts
+kb/search.ts
+  ├── kb/orama-factory.ts        (schema, tokenizer, pre-normalization)
+  └── kb/detect.ts               (ensureOramaIndex)
 ```
 
 ### Discuss Subsystem
