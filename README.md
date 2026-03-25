@@ -2,10 +2,7 @@
 
 [한국어](README.ko.md)
 
-Claude Code already knows how to code. Coral teaches it how *you* code.
-
-Your conventions enforced, your workflow structured, your decisions examined from
-multiple angles - all through slash commands that work in any Claude Code session.
+Claude Code already knows how to code. Coral teaches it how *you* work.
 
 ## Install
 
@@ -15,24 +12,19 @@ multiple angles - all through slash commands that work in any Claude Code sessio
 /plugin marketplace add https://github.com/kangig94/coral
 /plugin install coral
 
-# Codex CLI (optional - enables `codex-*` skills and `--codex` flags):
-npm install -g @openai/codex  # v0.104+
+# Codex CLI (optional — enables --codex cross-model delegation):
+npm install -g @openai/codex
 ```
 
 ## Try It Now
 
-No setup. Run this in any Claude Code session, on any existing project:
+Run this on any existing project:
 
 ```
 /coral:analyze what does this codebase do?
 ```
 
-Coral reads your project and returns a structured analysis:
-architecture, modules, entry points, and dependencies. No files written, no configuration required.
-
-## Choose Your Path
-
-### Structure my project
+## Structure a Project
 
 https://github.com/user-attachments/assets/881f1a14-9f4f-4d3d-8023-59610eb13ac4
 
@@ -40,28 +32,17 @@ https://github.com/user-attachments/assets/881f1a14-9f4f-4d3d-8023-59610eb13ac4
 /coral:init-project
 ```
 
-Coral scans your stack, plans with reviewer verification, and generates `.claude/` -
-conventions, agents, architecture docs - tailored to your project.
-
-Generated agents aren't boilerplate — they encode evaluation philosophies
-with rubric-anchored scoring across multiple dimensions, calibrated to your project's audience.
-Claude follows your rules, not generic defaults.
+Coral scans your stack and generates `.claude/` — conventions, review agents, architecture docs — tailored to your project.
 
 ```bash
-# existing project - just run it, Coral scans automatically
-/coral:init-project
-
-# tech stack hint (when source files are sparse)
-/coral:init-project "React + FastAPI"
-
-# full description (new or complex projects)
-/coral:init-project "multi-tenant SaaS REST API with Go, must be serverless"
-
-# with reference material
-/coral:init-project "CLI tool like ref/existing-cli, see docs/spec.md"
+/coral:init-project                                          # existing project
+/coral:init-project "React + FastAPI"                        # tech stack hint
+/coral:init-project "multi-tenant SaaS REST API with Go"     # full description
 ```
 
-Generated structure:
+<details>
+<summary>Generated structure</summary>
+
 ```
 my-project/
 + .claude/
@@ -76,21 +57,64 @@ my-project/
 +   architecture.md           ← module map, dependency graph
 ```
 
-Look familiar? Browse this repository's [`.claude/`](.claude/) folder.
+Browse this repository's [`.claude/`](.claude/) folder for a real example.
 
----
+</details>
 
-### Get diverse perspectives
+## Plan, Build, and Fix
+
+```
+pathfind  →  preplan  →  plan  →  ralph
+(explore)    (define)    (design)  (implement + verify)
+```
+
+```bash
+# Know the problem, need a plan:
+/coral:plan add retry logic to the API client
+
+# Have symptoms, not sure what's wrong:
+/coral:pathfind API is slow, DB hits limits, users are complaining
+
+# Complex problem, need alignment first:
+/coral:preplan race condition in the session manager
+
+# Have a plan, just implement it:
+/coral:ralph implement the caching layer
+
+# Bug — diagnose, plan, fix in one shot:
+/coral:bugfix why does session lookup return null?
+```
+
+<details>
+<summary>Advanced flags</summary>
+
+```bash
+# Deep review with methodology-driven synthesis (resolver + HOW reasoning):
+/coral:plan --deep add retry logic to the API client
+
+# Adversarial testing — spawns a red-attacker to target blind spots:
+/coral:ralph --red implement the caching layer
+
+# Cross-model delegation to Codex CLI:
+/coral:plan --codex redesign the session management system
+
+# Direct Codex session (multi-turn, persistent):
+/coral:codex review auth.ts for security issues
+```
+
+`--codex` delegates within a skill; `/coral:codex` opens a persistent session.
+
+</details>
+
+## Discuss
 
 ```
 /coral:discuss should we use microservices or a monolith?
 ```
 
-Multiple AI personas argue from different angles.
-Bid-based turn-taking surfaces the most urgent responses first.
-Positions evolve through genuine cross-examination.
-Structured synthesis at the end. Transcripts saved under `~/.coral/projects/{slug}/discuss/`.
-Add `--user` to join as a participant: `/coral:discuss --user "topic"`, then `/coral:bid` to submit your turns.
+Multiple AI personas argue from different angles. Bid-based turn-taking, genuine cross-examination, structured synthesis at the end.
+
+Join as a participant: `/coral:discuss --user "topic"`, then `/coral:bid` to submit your turns.
 
 Example: **"Am I AGI?"** — Full transcript [EN](docs/examples/discuss-agi-en.md) · [KO](docs/examples/discuss-agi-ko.md)
 
@@ -120,48 +144,16 @@ and unknown behavior at their structural boundaries.
 
 </details>
 
----
-
-### Accelerate my workflow
+## Statusline
 
 ```
-/coral:plan add retry logic to the API client
-/coral:plan --deep add retry logic to the API client
-/coral:bugfix why does session lookup return null?
-/coral:ralph implement the caching layer
+/coral:statusline install
 ```
 
-Multi-round planning with architect/critic review backed by structured reasoning methodologies.
-`--deep` enables methodology-driven synthesis with resolver agent and HOW reasoning files — thorough review for complex tasks.
-Systematic bug diagnosis - root cause, plan, fix. Persistent execution that verifies before declaring done.
-
-When you have problems but don't know what to build:
 ```
-/coral:pathfind API is slow, DB hits limits, users are complaining
+opus 4.6 │ 5h:39% (1:23) wk:36% (5.2d) │ ctx:58% │ $1.57 50m │ coral:analyze
+gpt-5.4  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
 ```
-Pathfind diagnoses root causes, generates divergent directions, and hands off to preplan.
-
-For complex tasks, start with problem definition:
-```
-/coral:preplan race condition in the session manager
-```
-Preplan aligns understanding with you, then hands off to plan.
-Plan designs the solution with review, then ralph implements and verifies.
-Each skill works on its own — the full pipeline is `pathfind → preplan → plan → ralph`.
-
-`--red` flag spawns an adversarial agent to write tests targeting blind spots:
-```
-/coral:ralph --red implement the caching layer
-```
-
-For cross-model workflows with Codex:
-```
-/coral:plan --codex redesign the session management system
-/coral:codex review auth.ts for security issues
-```
-
-`--codex` delegates a single phase within a skill to Codex; `/coral:codex` is for direct multi-turn Codex sessions.
-Consecutive `/coral:codex` calls continue the same session. Say "new" to start fresh.
 
 ## Skills
 
@@ -170,29 +162,21 @@ Consecutive `/coral:codex` calls continue the same session. Say "new" to start f
 | `/coral:analyze` | Deep analysis and investigation | Optional |
 | `/coral:pathfind` | Divergent direction discovery from problem symptoms | - |
 | `/coral:preplan` | Problem definition before planning | Optional |
-| `/coral:plan` | Multi-round planning with structured review and conflict resolution. `--deep` for methodology-driven synthesis | Optional |
+| `/coral:plan` | Multi-round planning with structured review. `--deep` for methodology-driven synthesis | Optional |
 | `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | Optional |
-| `/coral:bugfix` | Bug diagnosis, planning, and fix execution | Optional |
+| `/coral:bugfix` | Bug diagnosis, planning, and fix in one shot | Optional |
 | `/coral:code-simplify` | Simplify and refine code for clarity | Optional |
 | `/coral:codex` | Direct Codex CLI execution (session-persistent) | Required |
 | `/coral:init-project` | Project initialization orchestrator | - |
 | `/coral:discuss` | Moderated multi-agent discussion | - |
 | `/coral:bid` | Submit bid/speech in active `--user` discuss session | - |
-| `/coral:statusline` | HUD statusline setup | - |
-
-`Optional` = works without Codex by default; pass `--codex` to delegate to Codex CLI.
-Plans are saved under `~/.coral/projects/{slug}/plans/`. Ralph is best for implementing an existing plan.
-`/coral:bid` is a companion to `/coral:discuss --user` — it is not usable independently.
+| `/coral:equip` | One-touch install of MCP tools | - |
+| `/coral:statusline` | Install or remove HUD statusline | - |
+| `/coral:reef` | Real-time dashboard for session activity and KB state | - |
 
 ## Knowledge Base
 
-Coral keeps a shared knowledge base at `~/.coral/kb/` (notes and principles) and project-scoped
-working data under `~/.coral/projects/{slug}/` for memos, plans, analysis, and discuss sessions.
-
-When Claude discovers something non-obvious (a root cause, a gotcha, a pattern worth remembering),
-it writes a memo immediately. On errors, it checks the KB before debugging from scratch.
-On task completion, memos are reviewed and promoted to permanent entries.
-Mistakes aren't repeated across sessions.
+Coral learns from every session. Root causes, gotchas, patterns — captured as memos, reviewed, and promoted to permanent knowledge at `~/.coral/kb/`. The next session checks the KB before debugging from scratch. Mistakes aren't repeated.
 
 ## Configuration
 
@@ -201,12 +185,12 @@ Mistakes aren't repeated across sessions.
 | `CORAL_KB_PATH` | `~/.coral/kb` | Custom KB storage path |
 | `CORAL_CODEX_MODEL` | `gpt-5.4` | Default Codex CLI model |
 | `CORAL_CODEX_EFFORT` | `xhigh` | Codex reasoning effort (`low`, `medium`, `high`, `xhigh`) |
-| `CORAL_CLAUDE_MODEL_CAP` | `opus` | Maximum Claude model tier (`opus`, `sonnet`, `haiku`). Requests for higher tiers are downgraded. |
+| `CORAL_CLAUDE_MODEL_CAP` | `opus` | Maximum Claude model tier (`opus`, `sonnet`, `haiku`) |
 | `CORAL_MAX_SESSIONS` | `10` | Max concurrent CLI sessions (1–10) |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Max epochs before discussion auto-ends (1–10) |
-| `CORAL_DISCUSS_TTL_DAYS` | `0` | Days before completed discuss sessions are auto-pruned (0 = disabled) |
+| `CORAL_DISCUSS_TTL_DAYS` | `0` | Days before completed sessions are auto-pruned (0 = disabled) |
 
-> **Tip:** Coral's workflow and review agents use Opus by default. If you're on a Pro plan or want to conserve usage, set `CORAL_CLAUDE_MODEL_CAP=sonnet` to cap all Claude subagent calls at Sonnet tier.
+> **Tip:** Set `CORAL_CLAUDE_MODEL_CAP=sonnet` to cap all subagent calls at Sonnet tier for Pro plans or to conserve usage.
 
 Set in `.claude/settings.json` (persists across sessions):
 
@@ -214,61 +198,22 @@ Set in `.claude/settings.json` (persists across sessions):
 {
   "env": {
     "CORAL_KB_PATH": "/path/to/my-obsidian-vault",
-    "CORAL_DISCUSS_MAX_EPOCHS": "2",
-    "CORAL_DISCUSS_TTL_DAYS": "0"
+    "CORAL_CLAUDE_MODEL_CAP": "sonnet"
   }
 }
 ```
 
-Or via shell: `export CORAL_CODEX_MODEL=gpt-5.4`
-
 ## Documentation
 
-- [Architecture](docs/architecture.md) - Architecture and data flow
-- [MCP Tools](docs/mcp-tools.md) - Input/output specs for all MCP tools
-- [Core Modules](docs/core-modules.md) - TypeScript module details
-- [Agents](docs/agents.md) - Agent definitions and routing
-- [Hooks](docs/hooks.md) - Hook system and lifecycle events
-- [Skills](docs/skills.md) - Slash command usage
-- [Methodology](docs/methodology.md) - Reasoning methodologies (HOW files)
-- [Discuss](docs/discuss.md) - Discuss system design
-- [Build System](docs/build-system.md) - Build pipeline
-- [Configuration](docs/configuration.md) - Environment variables and config files
+- [Architecture](docs/architecture.md) — System structure and data flow
+- [MCP Tools](docs/mcp-tools.md) — Input/output specs for all MCP tools
+- [Core Modules](docs/core-modules.md) — TypeScript module details
+- [Agents](docs/agents.md) — Agent definitions and routing
+- [Hooks](docs/hooks.md) — Hook system and lifecycle events
+- [Skills](docs/skills.md) — Slash command usage
+- [Methodology](docs/methodology.md) — Reasoning methodologies (HOW files)
+- [Discuss](docs/discuss.md) — Discuss system design
+- [Build System](docs/build-system.md) — Build pipeline
+- [Configuration](docs/configuration.md) — Environment variables and config files
 
----
-
-## Statusline
-
-Optional real-time HUD for Claude Code sessions:
-
-```
-/coral:statusline install
-
-# after install:
-opus 4.6 │ 5h:39% (1:23) wk:36% (5.2d) │ ctx:58% │ $1.57 50m │ coral:analyze
-gpt-5.4  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
-```
-
-- **Line 1 (always)**: model, Claude rate limits, context usage, session ID, last active skill
-- **Line 2 (optional)**: Codex model and rate limits - shown only when Codex is installed
-
-To remove: `/coral:statusline uninstall`
-
-## Development
-
-```bash
-npm install
-npm run build     # TypeScript compile + esbuild bundle
-npm test          # Run tests with vitest
-```
-
-### Git Workflow
-
-- **`main`**: Release branch. Always deployable.
-- **`dev`**: Integration branch. Direct commits allowed for small changes.
-- **Feature branches**: Branch from `dev`, rebase merge back via PR.
-- **Release**: Squash merge `dev` → `main` via PR.
-
-Merge policy:
-- **feature → dev**: rebase (preserve individual commits)
-- **dev → main**: squash (one commit per release, traceable via `(#N)`)
+## [Contributing](CONTRIBUTING.md)
