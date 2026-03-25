@@ -2,6 +2,7 @@ import { ensureBackend as defaultEnsureBackend, withAbortTimeout, type BackendHa
 import type { CallerContext } from '../execution/request-context.js';
 import type {
   KbDeleteInput,
+  KbMemoInput,
   KbPrinciplesInput,
   KbPromoteInput,
   KbReindexInput,
@@ -241,6 +242,10 @@ export class BackendClient {
 
   async kbDelete(args: KbDeleteInput, context?: CallerContext): Promise<unknown> {
     return this.proxyToolCall('kb_delete', args, this.resolveContext(context));
+  }
+
+  async kbMemo(args: KbMemoInput, context?: CallerContext): Promise<unknown> {
+    return this.proxyToolCall('kb_memo', args, this.resolveContext(context));
   }
 
   async kbReindex(args: KbReindexInput, context?: CallerContext): Promise<unknown> {

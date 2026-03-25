@@ -4,6 +4,7 @@ import type { CallerContext } from '../execution/request-context.js';
 import { isRecord } from '../shared/mcp-utils.js';
 import { ensureKbIndex, getKbContext, setAutoRebuild } from './detect.js';
 import { deleteFn } from './delete.js';
+import { writeMemo } from './memo.js';
 import { promote } from './promote.js';
 import { rebuildMetadataAndOrama, reindex } from './reindex.js';
 import { searchKb } from './search.js';
@@ -74,6 +75,14 @@ export const kbPrinciplesSchema = z.object({
   top_k: z.number().int().min(1).max(100).optional().default(100),
 });
 export type KbPrinciplesInput = z.input<typeof kbPrinciplesSchema>;
+
+const topicSlugSchema = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).describe('Kebab-case topic slug (e.g. orama-threshold)');
+
+export const kbMemoSchema = z.object({
+  topic: topicSlugSchema,
+  content: nonEmptyTrimmedSchema.describe('Memo body text (one paragraph + context)'),
+});
+export type KbMemoInput = z.input<typeof kbMemoSchema>;
 
 function toInputSchema(schema: z.ZodTypeAny): Record<string, unknown> {
   const inputSchema = zodToJsonSchema(schema, { $refStrategy: 'none' });
@@ -146,5 +155,10 @@ export const kbToolContracts = defineKbToolContracts({
       names.sort();
       return { principles: names.slice(0, input.top_k), total };
     },
+  },
+  kb_memo: {
+    description: 'Write a memo. Timestamps and frontmatter are generated automatically.',
+    schema: kbMemoSchema,
+    handler: async (input, ctx) => writeMemo(ctx.projectRoot, input),
   },
 }) as unknown as KbToolContractMap;

@@ -69,16 +69,12 @@ For multi-step tasks, state a brief plan:
 **Hard rule: Never write directly to KB files. Use KB tools for all operations.**
 
 ## Memo
-On non-obvious discovery during any phase (review, planning, implementation), write immediately to:
-`{{CORAL_PROJECTS}}/memo/<timestamp>-<topic>.md` — one paragraph + context.
+On non-obvious discovery during any phase (review, planning, implementation), write a memo immediately.
 Also memo Insights worth preserving when Explanatory output style is active.
 
-Memo files include YAML frontmatter with `source`:
-```yaml
----
-source: {{PROJECT_SOURCE}}
----
-```
+`{{CORAL_CLI}} kb memo --topic "<kebab-case-topic>" --content "one paragraph + context"`
+
+Timestamps, paths, and frontmatter are generated automatically.
 
 ## Search
 Before debugging from scratch or starting a plan:

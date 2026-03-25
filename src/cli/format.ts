@@ -321,6 +321,14 @@ export function formatKbPrinciples(data: unknown, cliPrefix = 'coral-cli'): stri
   ]);
 }
 
+export function formatKbMemo(data: unknown): string {
+  if (!isRecord(data) || typeof data.filename !== 'string') {
+    return formatUnknown(data);
+  }
+
+  return `Memo: ${data.filename}`;
+}
+
 export function formatKbPromote(data: unknown): string {
   if (!isRecord(data) || typeof data.path !== 'string') {
     return formatUnknown(data);

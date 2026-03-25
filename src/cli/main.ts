@@ -38,6 +38,7 @@ import {
   formatBackendStatus,
   formatKbDelete,
   formatKbPrinciples,
+  formatKbMemo,
   formatKbPromote,
   formatKbReindex,
   formatKbSearch,
@@ -884,6 +885,30 @@ export function buildProgram(): Command {
         const client = makeClient(process.cwd());
         const result = await client.kbPrinciples(args);
         emit(result, outputFormat, (data) => formatKbPrinciples(data, cliPrefix));
+      } catch (error) {
+        emitError(error, outputFormat);
+      }
+    });
+
+  const kbMemoCommand = kb.command('memo');
+  kbMemoCommand
+    .description('Write a memo with auto-generated timestamp and frontmatter')
+    .requiredOption('--topic <slug>', 'Kebab-case topic slug (e.g. orama-threshold)')
+    .option('--content <text>', 'Memo body text')
+    .option('--content-file <path>', 'Read memo body from file')
+    .action(async (opts: { topic: string; content?: string; contentFile?: string }) => {
+      const outputFormat = getOutputFormat(kbMemoCommand);
+
+      try {
+        const content = opts.contentFile !== undefined
+          ? readFileSync(opts.contentFile, 'utf8')
+          : opts.content;
+        if (content === undefined) {
+          throw new Error('Either --content or --content-file is required');
+        }
+        const client = makeClient(process.cwd());
+        const result = await client.kbMemo({ topic: opts.topic, content });
+        emit(result, outputFormat, formatKbMemo);
       } catch (error) {
         emitError(error, outputFormat);
       }
