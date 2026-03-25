@@ -15,8 +15,6 @@ import {
   assertSlug,
   cloneKbIndex,
   markTextIndexStale,
-  normalizePrinciples,
-  normalizeTags,
   writeFileAtomic,
 } from './mutation-helpers.js';
 
@@ -38,8 +36,6 @@ export async function update(_kb: KbContext, input: KbUpdateInput): Promise<{ pa
     throw new Error('content must be a string');
   }
   const nextContent = input.content;
-  const tags = input.tags === undefined ? undefined : normalizeTags(input.tags);
-  const principles = input.principles === undefined ? undefined : normalizePrinciples(input.principles);
 
   return withKbMutationLock(async () => {
     const existing = readFileSync(notePath, 'utf-8');
@@ -49,12 +45,10 @@ export async function update(_kb: KbContext, input: KbUpdateInput): Promise<{ pa
     const updatedAt = nowIsoString();
     const normalizedTitle = title ?? existingTitle;
     const normalizedContent = nextContent ?? existingBody;
-    const normalizedTags = tags ?? frontmatter.tags;
-    const normalizedPrinciples = principles ?? frontmatter.principles;
 
     writeFileAtomic(notePath, serializeNote({
-      tags: normalizedTags,
-      principles: normalizedPrinciples,
+      tags: frontmatter.tags,
+      principles: frontmatter.principles,
       source: frontmatter.source,
       createdAt: frontmatter.createdAt,
       updatedAt,
@@ -64,8 +58,8 @@ export async function update(_kb: KbContext, input: KbUpdateInput): Promise<{ pa
     const nextIndex = cloneKbIndex(readKbIndex());
     nextIndex.notes[note] = {
       title: normalizedTitle,
-      tags: [...normalizedTags],
-      principles: [...normalizedPrinciples],
+      tags: [...frontmatter.tags],
+      principles: [...frontmatter.principles],
       source: [...frontmatter.source],
       createdAt: frontmatter.createdAt,
       updatedAt,

@@ -73,8 +73,6 @@ memo body
       memo: '2026-03-23-kb.md',
       title: 'KB Promotion',
       content: '## Rule\nPromote through the tool.',
-      tags: ['coral', 'kb'],
-      principles: ['[[lenient-read-strict-write]]'],
       domain: 'coral',
       topic: 'kb-promotion',
     });
@@ -86,8 +84,8 @@ memo body
 
     const note = readFileSync(notePath, 'utf-8');
     expect(frontmatter.parseFrontmatter(note)).toEqual({
-      tags: ['coral', 'kb'],
-      principles: ['lenient-read-strict-write'],
+      tags: [],
+      principles: [],
       source: ['kangig94/coral'],
       createdAt: '2026-03-23T01:02:03.000Z',
       updatedAt: '2026-03-23T01:02:03.000Z',
@@ -98,8 +96,8 @@ memo body
     const index = detect.readKbIndex();
     expect(index?.notes['coral-kb-promotion']).toEqual({
       title: 'KB Promotion',
-      tags: ['coral', 'kb'],
-      principles: ['lenient-read-strict-write'],
+      tags: [],
+      principles: [],
       source: ['kangig94/coral'],
       createdAt: '2026-03-23T01:02:03.000Z',
       updatedAt: '2026-03-23T01:02:03.000Z',
@@ -133,8 +131,6 @@ memo body
       memo: 'dup.md',
       title: 'KB Promotion',
       content: '## Rule\nPromote through the tool.',
-      tags: ['coral', 'kb'],
-      principles: ['lenient-read-strict-write'],
       domain: 'coral',
       topic: 'kb-promotion',
     })).rejects.toThrow(`KB note already exists: ${notePath}`);
@@ -165,45 +161,11 @@ memo body
       memo: '../outside.md',
       title: 'KB Promotion',
       content: '## Rule\nPromote through the tool.',
-      tags: ['coral', 'kb'],
-      principles: ['lenient-read-strict-write'],
       domain: 'coral',
       topic: 'kb-promotion',
     })).rejects.toThrow();
 
     expect(existsSync(outsideMemo)).toBe(true);
-  });
-
-  it('rejects malformed principle references without writing the note', async () => {
-    const { promote, detect, paths } = await loadKbModules();
-    const projectRoot = join(mockState.tmpHome, 'project');
-    mkdirSync(projectRoot, { recursive: true });
-    mkdirSync(paths.memoDir(projectRoot), { recursive: true });
-    const memoPath = join(paths.memoDir(projectRoot), 'bad-principle.md');
-    writeFileSync(memoPath, `---
-source: kangig94/coral
----
-memo body
-`, 'utf-8');
-
-    const kb = detect.getKbContext({
-      projectRoot,
-      pluginRoot: '/plugin',
-      coralEnv: {},
-    });
-
-    await expect(promote(kb, {
-      memo: 'bad-principle.md',
-      title: 'Bad Principle',
-      content: '',
-      tags: ['coral'],
-      principles: ['[[ ]]'],
-      domain: 'coral',
-      topic: 'bad-principle',
-    })).rejects.toThrow('principle must be non-empty');
-
-    expect(existsSync(join(paths.notesDir(), 'coral-bad-principle.md'))).toBe(false);
-    expect(existsSync(memoPath)).toBe(true);
   });
 
   it('updates an existing note atomically while preserving createdAt and source', async () => {
@@ -248,7 +210,6 @@ Original body.
       note: 'coral-kb-promotion',
       title: 'Updated Title',
       content: 'Updated body.',
-      principles: ['lenient-read-strict-write'],
     });
 
     expect(result).toEqual({ path: notePath });
@@ -257,7 +218,7 @@ Original body.
     const note = readFileSync(notePath, 'utf-8');
     expect(frontmatter.parseFrontmatter(note)).toEqual({
       tags: ['coral'],
-      principles: ['lenient-read-strict-write'],
+      principles: ['contract-first-design'],
       source: ['kangig94/coral'],
       createdAt: '2026-03-20T00:00:00.000Z',
       updatedAt: '2026-03-24T05:06:07.000Z',
@@ -268,7 +229,7 @@ Original body.
     expect(detect.readKbIndex()?.notes['coral-kb-promotion']).toEqual({
       title: 'Updated Title',
       tags: ['coral'],
-      principles: ['lenient-read-strict-write'],
+      principles: ['contract-first-design'],
       source: ['kangig94/coral'],
       createdAt: '2026-03-20T00:00:00.000Z',
       updatedAt: '2026-03-24T05:06:07.000Z',

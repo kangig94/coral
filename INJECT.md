@@ -86,13 +86,11 @@ Before debugging from scratch or starting a plan:
 Subagents and delegated tasks only write memos, never promote.
 
 **Process**: review all memos, check for duplicates via `{{CORAL_CLI}} kb search`, then promote:
-`{{CORAL_CLI}} kb promote --memo "<filename>" --title "..." --content-file /tmp/kb-content.md --tag t1 --tag t2 --principle p1 --domain d --topic t`
+`{{CORAL_CLI}} kb promote --memo "<filename>" --title "..." --content-file /tmp/kb-content.md --domain d --topic t`
 Write `/tmp/kb-content.md` first (via the Write tool) with the full markdown body, for example `## Rule\n...\n## Why\n...\n## Pattern\n...`.
 
-Principles are well-formed names (not required to exist yet — they emerge from 3+ notes).
-
 ## Update / Delete
-`{{CORAL_CLI}} kb update <note-slug> --content-file /tmp/kb-content.md --tag t1`
+`{{CORAL_CLI}} kb update <note-slug> --content-file /tmp/kb-content.md`
 `{{CORAL_CLI}} kb delete <note-slug>`
 
 ## Invalidation

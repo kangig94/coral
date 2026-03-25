@@ -15,8 +15,6 @@ import {
   assertSlug,
   cloneKbIndex,
   markTextIndexStale,
-  normalizePrinciples,
-  normalizeTags,
   writeFileAtomic,
 } from './mutation-helpers.js';
 
@@ -31,8 +29,6 @@ export async function promote(kb: KbContext, input: KbPromoteInput): Promise<{ p
     throw new Error('content must be a string');
   }
   const content = input.content;
-  const tags = normalizeTags(input.tags);
-  const principles = normalizePrinciples(input.principles);
   const domain = assertSlug(input.domain, 'domain');
   const topic = assertSlug(input.topic, 'topic');
 
@@ -46,8 +42,8 @@ export async function promote(kb: KbContext, input: KbPromoteInput): Promise<{ p
   const { source } = parseMemoFrontmatter(memoContent);
   const createdAt = nowIsoString();
   const noteContent = serializeNote({
-    tags,
-    principles,
+    tags: [],
+    principles: [],
     source,
     createdAt,
     updatedAt: createdAt,
@@ -65,8 +61,8 @@ export async function promote(kb: KbContext, input: KbPromoteInput): Promise<{ p
     const nextIndex = cloneKbIndex(readKbIndex());
     nextIndex.notes[noteName] = {
       title,
-      tags: [...tags],
-      principles: [...principles],
+      tags: [],
+      principles: [],
       source: [...source],
       createdAt,
       updatedAt: createdAt,

@@ -48,8 +48,6 @@ describe('client http-client', () => {
         memo: 'memo/example.md',
         title: 'KB note',
         content: 'Promoted content',
-        tags: ['cli'],
-        principles: ['contract-first-design'],
         domain: 'cli',
         topic: 'kb-tooling',
       }),
@@ -58,8 +56,6 @@ describe('client http-client', () => {
         memo: 'memo/example.md',
         title: 'KB note',
         content: 'Promoted content',
-        tags: ['cli'],
-        principles: ['contract-first-design'],
         domain: 'cli',
         topic: 'kb-tooling',
       },
@@ -69,13 +65,11 @@ describe('client http-client', () => {
       invoke: (client: BackendClient) => client.kbUpdate({
         note: 'cli-kb-tooling',
         content: 'Updated content',
-        tags: ['cli', 'kb'],
       }),
       toolName: 'kb_update',
       args: {
         note: 'cli-kb-tooling',
         content: 'Updated content',
-        tags: ['cli', 'kb'],
       },
     },
     {

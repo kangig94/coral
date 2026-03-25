@@ -161,8 +161,6 @@ type KbPromoteOptions = {
   memo?: string;
   title?: string;
   contentFile?: string;
-  tag?: string[];
-  principle?: string[];
   domain?: string;
   topic?: string;
 };
@@ -170,8 +168,6 @@ type KbPromoteOptions = {
 type KbUpdateOptions = {
   title?: string;
   contentFile?: string;
-  tag?: string[];
-  principle?: string[];
 };
 
 function makeClient(projectRoot: string): BackendClient {
@@ -920,8 +916,6 @@ export function buildProgram(): Command {
     .option('--memo <filename>', 'Memo filename (e.g. 20260325-topic.md)')
     .option('--title <text>', 'Note title')
     .option('--content-file <path>', 'Read content from file')
-    .option('--tag <tag>', 'Tag (repeatable)', (value: string, previous: string[] | undefined) => [...(previous ?? []), value])
-    .option('--principle <name>', 'Principle (repeatable)', (value: string, previous: string[] | undefined) => [...(previous ?? []), value])
     .option('--domain <slug>', 'Note domain')
     .option('--topic <slug>', 'Note topic')
     .action(async (opts: KbPromoteOptions) => {
@@ -934,8 +928,6 @@ export function buildProgram(): Command {
           ...(opts.contentFile !== undefined ? { content: readFileSync(opts.contentFile, 'utf8') } : {}),
           ...(opts.domain !== undefined ? { domain: opts.domain } : {}),
           ...(opts.topic !== undefined ? { topic: opts.topic } : {}),
-          tags: opts.tag ?? [],
-          principles: opts.principle ?? [],
         };
         const client = makeClient(process.cwd());
         const result = await client.kbPromote(
@@ -953,8 +945,6 @@ export function buildProgram(): Command {
     .argument('<note>', 'Note slug without extension (e.g. rendering-guiding-contracts)')
     .option('--title <text>', 'Updated title')
     .option('--content-file <path>', 'Read content from file')
-    .option('--tag <tag>', 'Tag (repeatable)', (value: string, previous: string[] | undefined) => [...(previous ?? []), value])
-    .option('--principle <name>', 'Principle (repeatable)', (value: string, previous: string[] | undefined) => [...(previous ?? []), value])
     .action(async (note: string, opts: KbUpdateOptions) => {
       const outputFormat = getOutputFormat(kbUpdateCommand);
 
@@ -963,8 +953,6 @@ export function buildProgram(): Command {
           note,
           ...(opts.title !== undefined ? { title: opts.title } : {}),
           ...(opts.contentFile !== undefined ? { content: readFileSync(opts.contentFile, 'utf8') } : {}),
-          ...(opts.tag !== undefined ? { tags: opts.tag } : {}),
-          ...(opts.principle !== undefined ? { principles: opts.principle } : {}),
         };
         const client = makeClient(process.cwd());
         const result = await client.kbUpdate(args);

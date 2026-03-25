@@ -411,12 +411,6 @@ describe('cli main routing', () => {
         'KB CLI',
         '--content-file',
         tmpFile,
-        '--tag',
-        'cli',
-        '--tag',
-        'kb',
-        '--principle',
-        'contract-first-design',
         '--domain',
         'cli',
         '--topic',
@@ -427,8 +421,6 @@ describe('cli main routing', () => {
         memo: 'memo/123.md',
         title: 'KB CLI',
         content: 'Details',
-        tags: ['cli', 'kb'],
-        principles: ['contract-first-design'],
         domain: 'cli',
         topic: 'kb-tooling',
       });
@@ -458,17 +450,11 @@ describe('cli main routing', () => {
         'cli-kb-tooling',
         '--content-file',
         tmpFile,
-        '--tag',
-        'cli',
-        '--principle',
-        'verify-at-boundaries',
       ]);
 
       expect(mockState.kbUpdate).toHaveBeenCalledWith({
         note: 'cli-kb-tooling',
         content: 'Updated',
-        tags: ['cli'],
-        principles: ['verify-at-boundaries'],
       });
       expect(stdout).toBe('Updated: /tmp/kb/notes/cli-kb-tooling.md\n');
     } finally {
