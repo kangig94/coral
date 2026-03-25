@@ -308,7 +308,10 @@ describe('cli main routing', () => {
     ]);
 
     expect(mockState.kbSearch).toHaveBeenCalledWith({ query: 'accel' });
-    expect(stdout).toBe('No results\nMode: text\n');
+    const parsed = JSON.parse(stdout.trim());
+    expect(parsed.results).toEqual([]);
+    expect(parsed.count).toBe(0);
+    expect(parsed.mode).toBe('text');
     expect(stderr).toBe('');
   });
 
@@ -515,7 +518,7 @@ describe('cli main routing', () => {
     ]);
 
     expect(mockState.kbReindex).toHaveBeenCalledWith({});
-    expect(stdout).toContain('NOTES');
+    expect(stdout).toContain('Reindexed:');
     expect(stdout).toContain('node "/tmp/path with spaces/coral-cli.cjs" kb reindex');
   });
 });
