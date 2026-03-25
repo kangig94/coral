@@ -6,8 +6,9 @@ const MAX_BUFFER = 10 * 1024 * 1024; // 10MB
 const SIGTERM_GRACE_MS = 5_000; // grace period before escalating to SIGKILL
 
 export const MAX_ACTIVE_SESSIONS = Math.min(Math.max(parsePositiveInt(process.env.CORAL_MAX_SESSIONS, 10), 1), 10);
-export type LaunchPool = 'default' | 'discuss';
+export type LaunchPool = 'default' | 'discuss' | 'curate';
 export const DISCUSS_MAX_ACTIVE_SESSIONS = Math.min(Math.max(parsePositiveInt(process.env.CORAL_DISCUSS_MAX_SESSIONS, 5), 1), 10);
+export const CURATE_MAX_ACTIVE_SESSIONS = 1;
 const MAX_QUEUE_SIZE = 20;
 
 export type LaunchPermit = { type: 'immediate' };
@@ -45,8 +46,10 @@ export const activeChildren = new Set<ActiveChild>();
 
 const activeLaunchesDefault = new Map<string, string>();
 const activeLaunchesDiscuss = new Map<string, string>();
+const activeLaunchesCurate = new Map<string, string>();
 const queuedLaunchesDefault: QueuedLaunchEntry[] = [];
 const queuedLaunchesDiscuss: QueuedLaunchEntry[] = [];
+const queuedLaunchesCurate: QueuedLaunchEntry[] = [];
 const signalLaunchPermits = new WeakMap<AbortSignal, { jobId: string; pool: LaunchPool }>();
 const IMMEDIATE_PERMIT: LaunchPermit = { type: 'immediate' };
 const QUEUE_CANCELED_MESSAGE = 'Launch canceled while queued';
@@ -78,15 +81,33 @@ export function parsePositiveInt(raw: string | undefined, fallback: number): num
 }
 
 function getActiveMap(pool: LaunchPool): Map<string, string> {
-  return pool === 'discuss' ? activeLaunchesDiscuss : activeLaunchesDefault;
+  if (pool === 'discuss') {
+    return activeLaunchesDiscuss;
+  }
+  if (pool === 'curate') {
+    return activeLaunchesCurate;
+  }
+  return activeLaunchesDefault;
 }
 
 function getQueue(pool: LaunchPool): QueuedLaunchEntry[] {
-  return pool === 'discuss' ? queuedLaunchesDiscuss : queuedLaunchesDefault;
+  if (pool === 'discuss') {
+    return queuedLaunchesDiscuss;
+  }
+  if (pool === 'curate') {
+    return queuedLaunchesCurate;
+  }
+  return queuedLaunchesDefault;
 }
 
 function getActiveLimit(pool: LaunchPool): number {
-  return pool === 'discuss' ? DISCUSS_MAX_ACTIVE_SESSIONS : MAX_ACTIVE_SESSIONS;
+  if (pool === 'discuss') {
+    return DISCUSS_MAX_ACTIVE_SESSIONS;
+  }
+  if (pool === 'curate') {
+    return CURATE_MAX_ACTIVE_SESSIONS;
+  }
+  return MAX_ACTIVE_SESSIONS;
 }
 
 function hasLaunchCapacity(pool: LaunchPool): boolean {
@@ -133,6 +154,7 @@ function drainQueuedLaunchPool(queue: QueuedLaunchEntry[], message: string): voi
 function drainQueuedLaunches(message: string): void {
   drainQueuedLaunchPool(queuedLaunchesDefault, message);
   drainQueuedLaunchPool(queuedLaunchesDiscuss, message);
+  drainQueuedLaunchPool(queuedLaunchesCurate, message);
 }
 
 function consumeSignalPermit(signal: AbortSignal, provider: string): boolean {

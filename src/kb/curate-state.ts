@@ -1,0 +1,376 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { kbRoot } from '../client/paths.js';
+import { isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
+import { extractTitle, parseFrontmatter, replaceFrontmatter } from './frontmatter.js';
+import {
+  readKbIndex,
+  readIndexState,
+  withKbMutationLock,
+  writeKbIndex,
+  writeIndexState,
+} from './detect.js';
+import { cloneKbIndex, writeFileAtomic } from './mutation-helpers.js';
+import { notePathFromName, notesDir } from './paths.js';
+import type { KbNoteFrontmatter } from './types.js';
+
+const CURATE_STATE_FILE = 'curate-state.json';
+const CLAIM_STALE_MS = 15 * 60 * 1000;
+
+export type CurateCursor = {
+  mutationSeqAtPromote: number;
+  note: string;
+};
+
+export type CurateState = {
+  processedThrough: CurateCursor | null;
+  lastRunDay: string | null;
+  lastAttemptedThrough: CurateCursor | null;
+  retryNotBefore: string | null;
+  activeClaim: {
+    through: CurateCursor;
+    startedAt: string;
+  } | null;
+  pendingDiscoveries: Array<{
+    principle: string;
+    statement: string;
+    notes: string[];
+    createdAt: string;
+  }>;
+  lastDiscoveryCorpusSize: number;
+  lastDiscoveryDay: string | null;
+  consecutiveFailures: number;
+  migrationVersion: number;
+};
+
+type ScannedNote = {
+  note: string;
+  path: string;
+  content: string;
+  title: string;
+  frontmatter: KbNoteFrontmatter;
+};
+
+function defaultCurateState(): CurateState {
+  return {
+    processedThrough: null,
+    lastRunDay: null,
+    lastAttemptedThrough: null,
+    retryNotBefore: null,
+    activeClaim: null,
+    pendingDiscoveries: [],
+    lastDiscoveryCorpusSize: 0,
+    lastDiscoveryDay: null,
+    consecutiveFailures: 0,
+    migrationVersion: 0,
+  };
+}
+
+function parsePositiveInteger(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+    throw new Error(`${label} must be a positive integer`);
+  }
+  return value;
+}
+
+function parseNonNegativeInteger(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative integer`);
+  }
+  return value;
+}
+
+function parseOptionalString(value: unknown, label: string): string | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== 'string') {
+    throw new Error(`${label} must be a string or null`);
+  }
+  return value;
+}
+
+function parseCursor(value: unknown, label: string): CurateCursor | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (!isRecord(value)) {
+    throw new Error(`${label} must be an object or null`);
+  }
+  if (typeof value.note !== 'string') {
+    throw new Error(`${label}.note must be a string`);
+  }
+  return {
+    note: value.note,
+    mutationSeqAtPromote: parsePositiveInteger(value.mutationSeqAtPromote, `${label}.mutationSeqAtPromote`),
+  };
+}
+
+function parsePendingDiscoveries(value: unknown): CurateState['pendingDiscoveries'] {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error('pendingDiscoveries must be an array');
+  }
+
+  return value.map((entry, index) => {
+    if (!isRecord(entry)) {
+      throw new Error(`pendingDiscoveries[${index}] must be an object`);
+    }
+    if (typeof entry.principle !== 'string') {
+      throw new Error(`pendingDiscoveries[${index}].principle must be a string`);
+    }
+    if (typeof entry.statement !== 'string') {
+      throw new Error(`pendingDiscoveries[${index}].statement must be a string`);
+    }
+    if (!isStringArray(entry.notes)) {
+      throw new Error(`pendingDiscoveries[${index}].notes must be a string array`);
+    }
+    if (typeof entry.createdAt !== 'string') {
+      throw new Error(`pendingDiscoveries[${index}].createdAt must be a string`);
+    }
+    return {
+      principle: entry.principle,
+      statement: entry.statement,
+      notes: [...entry.notes],
+      createdAt: entry.createdAt,
+    };
+  });
+}
+
+function parseActiveClaim(value: unknown): CurateState['activeClaim'] {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (!isRecord(value)) {
+    throw new Error('activeClaim must be an object or null');
+  }
+
+  const through = parseCursor(value.through, 'activeClaim.through');
+  if (through === null) {
+    throw new Error('activeClaim.through must be present');
+  }
+  if (typeof value.startedAt !== 'string') {
+    throw new Error('activeClaim.startedAt must be a string');
+  }
+
+  return {
+    through,
+    startedAt: value.startedAt,
+  };
+}
+
+function parseCurateState(value: unknown): CurateState {
+  if (!isRecord(value)) {
+    throw new Error('Invalid curate state');
+  }
+
+  return {
+    processedThrough: parseCursor(value.processedThrough, 'processedThrough'),
+    lastRunDay: parseOptionalString(value.lastRunDay, 'lastRunDay'),
+    lastAttemptedThrough: parseCursor(value.lastAttemptedThrough, 'lastAttemptedThrough'),
+    retryNotBefore: parseOptionalString(value.retryNotBefore, 'retryNotBefore'),
+    activeClaim: parseActiveClaim(value.activeClaim),
+    pendingDiscoveries: parsePendingDiscoveries(value.pendingDiscoveries),
+    lastDiscoveryCorpusSize: value.lastDiscoveryCorpusSize === undefined
+      ? 0
+      : parseNonNegativeInteger(value.lastDiscoveryCorpusSize, 'lastDiscoveryCorpusSize'),
+    lastDiscoveryDay: parseOptionalString(value.lastDiscoveryDay, 'lastDiscoveryDay'),
+    consecutiveFailures: value.consecutiveFailures === undefined
+      ? 0
+      : parseNonNegativeInteger(value.consecutiveFailures, 'consecutiveFailures'),
+    migrationVersion: value.migrationVersion === undefined
+      ? 0
+      : parseNonNegativeInteger(value.migrationVersion, 'migrationVersion'),
+  };
+}
+
+function sortedNoteNames(): string[] {
+  try {
+    return readdirSync(notesDir())
+      .filter((entry) => entry.endsWith('.md'))
+      .map((entry) => entry.slice(0, -3))
+      .sort((left, right) => left.localeCompare(right));
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) {
+      return [];
+    }
+    throw error;
+  }
+}
+
+function syncIndexNote(
+  note: string,
+  title: string,
+  frontmatter: KbNoteFrontmatter,
+  mutationSeqAtPromote: number,
+  nextIndex: ReturnType<typeof cloneKbIndex>,
+): boolean {
+  const existing = nextIndex.notes[note];
+  if (existing === undefined) {
+    nextIndex.notes[note] = {
+      title,
+      tags: [...frontmatter.tags],
+      principles: [...frontmatter.principles],
+      source: [...frontmatter.source],
+      createdAt: frontmatter.createdAt,
+      updatedAt: frontmatter.updatedAt,
+      mutationSeqAtPromote,
+    };
+    return true;
+  }
+
+  if (existing.mutationSeqAtPromote === mutationSeqAtPromote) {
+    return false;
+  }
+
+  nextIndex.notes[note] = {
+    title: existing.title,
+    tags: [...existing.tags],
+    principles: [...existing.principles],
+    source: [...existing.source],
+    createdAt: existing.createdAt,
+    updatedAt: existing.updatedAt,
+    mutationSeqAtPromote,
+  };
+  return true;
+}
+
+function scanNote(note: string): ScannedNote {
+  const path = notePathFromName(note);
+  const content = readFileSync(path, 'utf-8');
+  return {
+    note,
+    path,
+    content,
+    title: extractTitle(content),
+    frontmatter: parseFrontmatter(content),
+  };
+}
+
+export function curateStatePath(): string {
+  return join(kbRoot(), CURATE_STATE_FILE);
+}
+
+export function readCurateState(): CurateState {
+  try {
+    return parseCurateState(JSON.parse(readFileSync(curateStatePath(), 'utf-8')) as unknown);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) {
+      return defaultCurateState();
+    }
+    throw error;
+  }
+}
+
+export function writeCurateState(state: CurateState): void {
+  writeFileAtomic(curateStatePath(), JSON.stringify(state));
+}
+
+export function compareCursor(left: CurateCursor, right: CurateCursor): number {
+  if (left.mutationSeqAtPromote !== right.mutationSeqAtPromote) {
+    return left.mutationSeqAtPromote - right.mutationSeqAtPromote;
+  }
+  return left.note.localeCompare(right.note);
+}
+
+export function isClaimStale(state: CurateState, now: string): boolean {
+  if (state.activeClaim === null) {
+    return false;
+  }
+
+  const startedAt = Date.parse(state.activeClaim.startedAt);
+  if (Number.isNaN(startedAt)) {
+    return true;
+  }
+
+  const nowMs = Date.parse(now);
+  if (Number.isNaN(nowMs)) {
+    return false;
+  }
+
+  return nowMs - startedAt >= CLAIM_STALE_MS;
+}
+
+export async function migrateCurateStateIfNeeded(): Promise<void> {
+  await withKbMutationLock(() => {
+    const state = readCurateState();
+    if (state.migrationVersion >= 1) {
+      return;
+    }
+
+    const noteNames = sortedNoteNames();
+    if (noteNames.length === 0) {
+      writeCurateState({
+        ...state,
+        migrationVersion: 1,
+      });
+      return;
+    }
+
+    const currentIndex = readKbIndex();
+    if (currentIndex === null) {
+      throw new Error('KB index must exist before curate migration.');
+    }
+
+    const nextIndex = cloneKbIndex(currentIndex);
+    const indexState = readIndexState();
+    const scannedNotes = noteNames.map(scanNote);
+    let highestExistingMutationSeq = 0;
+    for (const scannedNote of scannedNotes) {
+      if (scannedNote.frontmatter.mutationSeqAtPromote !== undefined) {
+        highestExistingMutationSeq = Math.max(
+          highestExistingMutationSeq,
+          scannedNote.frontmatter.mutationSeqAtPromote,
+        );
+      }
+    }
+
+    const baseMutationSeq = Math.max(indexState.mutationSeq, highestExistingMutationSeq);
+    let nextMutationSeqAtPromote = baseMutationSeq + 1;
+    let highestAssignedMutationSeq = highestExistingMutationSeq;
+    let indexChanged = false;
+
+    for (const scannedNote of scannedNotes) {
+      let mutationSeqAtPromote = scannedNote.frontmatter.mutationSeqAtPromote;
+      if (mutationSeqAtPromote === undefined) {
+        mutationSeqAtPromote = nextMutationSeqAtPromote;
+        nextMutationSeqAtPromote += 1;
+        scannedNote.frontmatter = {
+          ...scannedNote.frontmatter,
+          mutationSeqAtPromote,
+        };
+        writeFileAtomic(
+          scannedNote.path,
+          replaceFrontmatter(scannedNote.content, scannedNote.frontmatter),
+        );
+      }
+
+      highestAssignedMutationSeq = Math.max(highestAssignedMutationSeq, mutationSeqAtPromote);
+      indexChanged = syncIndexNote(
+        scannedNote.note,
+        scannedNote.title,
+        scannedNote.frontmatter,
+        mutationSeqAtPromote,
+        nextIndex,
+      ) || indexChanged;
+    }
+
+    if (indexChanged) {
+      writeKbIndex(nextIndex);
+    }
+
+    if (highestAssignedMutationSeq > indexState.mutationSeq) {
+      writeIndexState({
+        ...indexState,
+        mutationSeq: highestAssignedMutationSeq,
+      });
+    }
+
+    writeCurateState({
+      ...state,
+      migrationVersion: 1,
+    });
+  });
+}
