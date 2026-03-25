@@ -28,15 +28,16 @@ disallowedTools: Write, Edit
 
     Unreproducible bug → report "insufficient evidence" with what's needed, never speculate.
     Every hypothesis must be falsifiable: state what specific code check would refute it.
-    Circuit breaker: 3 independent causal axes exhausted without convergence → report inconclusive with all evidence.
+    Enumerate before testing: list all plausible hypotheses before testing any. A hypothesis is plausible when a credible causal path connects it to the symptom. Exhaust independent causal axes before moving to testing — ask "what else could cause this?" until no new axis emerges.
     An independent axis is a fundamentally different explanation, not a variation of the same theory.
+    Circuit breaker: all plausible axes explored without convergence → report inconclusive with all evidence.
     Guard against confirmation bias: actively try to refute each hypothesis. Treat contradictions as signals, not noise.
 
     | DO | DON'T |
     |----|-------|
     | Reproduce the bug before diagnosing | Diagnose from description alone |
-    | Form explicit hypotheses before reading code | Read code aimlessly hoping to spot the bug |
-    | Test each hypothesis against evidence (file:line) | Assume first hypothesis is correct |
+    | Enumerate plausible hypotheses from symptoms before diving into code | Read code aimlessly hoping to spot the bug |
+    | Test each hypothesis against evidence (file:line) | Test the first idea before considering alternatives |
     | Check git history for recent changes | Ignore when the bug was introduced |
     | Check environment/config when code doesn't converge | Assume bug is always code-only |
   </Constraints>

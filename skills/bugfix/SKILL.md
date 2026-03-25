@@ -29,15 +29,20 @@ Strip the `--codex` flag before passing the prompt to the execution path.
      On error, stop with the error message.
      Verify cited file:line references. Drop findings with incorrect references.
 
-2. **Plan fix**: Invoke `Skill({ skill: "coral:plan", args: "--no-handoff fix-{short-bug-description}" })`.
-   If `--codex` was passed, append `--codex` to the plan args.
-   The plan protocol gathers context from the conversation (diagnosis from step 1).
+2. **Record diagnosis**: Write the diagnosis to `CORAL_PROJECT/plans/debug-{short-bug-description}.md`
+   using the debugger's output format (Symptom, Reproduction Path, Hypothesis Log, Root Cause, Fix Specification).
+   Gate on hypothesis verdicts:
+   - **One confirmed root cause** → proceed to step 3.
+   - **Multiple hypotheses survived** → present to user, ask which to pursue before proceeding.
+   - **All refuted or inconclusive** → stop and report findings to user.
+
+3. **Plan fix**: Invoke `Skill({ skill: "coral:plan", args: (if --codex: "--codex ") + "--deep --no-handoff fix-{short-bug-description}" })`.
+   The plan references `CORAL_PROJECT/plans/debug-{short-bug-description}.md` for diagnosis context.
    Plan should include: what to change, why, and how to verify the fix.
 
-3. **Execute fix**: Invoke `Skill({ skill: "coral:ralph", args: "implement the plan from step 2" })`.
-   If `--codex` was passed, append `--codex` to the ralph args.
+4. **Execute fix**: Invoke `Skill({ skill: "coral:ralph", args: (if --codex: "--codex ") + "implement the plan from step 3" })`.
 
-4. **Project validation**: If project instructions define workflow rules (e.g., review gates,
+5. **Project validation**: If project instructions define workflow rules (e.g., review gates,
    post-implementation steps), follow them.
 
 ## Error Policy
