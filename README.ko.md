@@ -32,6 +32,8 @@ https://github.com/user-attachments/assets/881f1a14-9f4f-4d3d-8023-59610eb13ac4
 
 Coral이 기술 스택을 스캔하고 `.claude/` 디렉토리를 생성합니다 — 컨벤션, 리뷰 에이전트, 아키텍처 문서를 프로젝트에 맞게.
 
+생성된 에이전트는 기성품이 아닙니다 — 프로젝트의 스택과 청중에 맞게 보정된 평가 루브릭을 내장합니다. Claude가 일반적인 기본값이 아닌 당신의 규칙을 따르게 됩니다.
+
 ```bash
 /coral:init-project                                          # 기존 프로젝트
 /coral:init-project "React + FastAPI"                        # 기술 스택 힌트
