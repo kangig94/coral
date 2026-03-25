@@ -595,7 +595,7 @@ Searches KB note filename, principles, tags, title, and content with Orama BM25 
 | `query` | string | Yes | Text query for BM25 search |
 | `top_k` | integer | No | Max results to return (default `20`) |
 
-Returns `{ results, mode, warning? }`. `mode` is `'text'` for the current Orama-backed search path and `'hybrid'` when text search is paired with vector results.
+Returns `{ results, mode, warning? }`. Each result has `{ note, title, matchedBy, tags, principles, snippet? }` where `note` is a slug directly usable in `kb_update` and `kb_delete`. `mode` is `'text'` for the current Orama-backed search path and `'hybrid'` when text search is paired with vector results.
 
 ## kb_promote
 
@@ -603,7 +603,7 @@ Promotes a memo into a new KB note. Promotion is create-only: if the destination
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `memo` | string | Yes | Memo path under the active project's `memo/` directory |
+| `memo` | string | Yes | Memo filename (e.g. `20260325-topic.md`), not a full path |
 | `title` | string | Yes | Note title written as the H1 |
 | `content` | string | Yes | Note body, typically `## Rule`, `## Why`, `## Pattern` |
 | `tags` | string[] | Yes | Frontmatter tags |
@@ -619,7 +619,7 @@ Partially updates an existing KB note by note slug.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `note` | string | Yes | Note slug without `.md` |
+| `note` | string | Yes | Note slug without path or extension (e.g. `rendering-guiding-contracts`) |
 | `title` | string | No | Replacement H1 title |
 | `content` | string | No | Replacement body |
 | `tags` | string[] | No | Replacement frontmatter tags |
@@ -631,7 +631,7 @@ Deletes an existing KB note by note slug.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `note` | string | Yes | Note slug without `.md` |
+| `note` | string | Yes | Note slug without path or extension (e.g. `rendering-guiding-contracts`) |
 
 ## kb_reindex
 

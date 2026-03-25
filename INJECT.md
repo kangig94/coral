@@ -69,16 +69,12 @@ For multi-step tasks, state a brief plan:
 **Hard rule: Never write directly to KB files. Use KB tools for all operations.**
 
 ## Memo
-On non-obvious discovery during any phase (review, planning, implementation), write immediately to:
-`{{CORAL_PROJECTS}}/memo/<timestamp>-<topic>.md` — one paragraph + context.
+On non-obvious discovery during any phase (review, planning, implementation), write a memo immediately.
 Also memo Insights worth preserving when Explanatory output style is active.
 
-Memo files include YAML frontmatter with `source`:
-```yaml
----
-source: {{PROJECT_SOURCE}}
----
-```
+`{{CORAL_CLI}} kb memo --topic "<kebab-case-topic>" --content "one paragraph + context"`
+
+Timestamps, paths, and frontmatter are generated automatically.
 
 ## Search
 Before debugging from scratch or starting a plan:
@@ -96,9 +92,9 @@ Write `/tmp/kb-content.md` first (via the Write tool) with the full markdown bod
 Principles are well-formed names (not required to exist yet — they emerge from 3+ notes).
 
 ## Update / Delete
-`{{CORAL_CLI}} kb update <note> --content-file /tmp/kb-content.md --tag t1`
-`{{CORAL_CLI}} kb delete <note>`
+`{{CORAL_CLI}} kb update <note-slug> --content-file /tmp/kb-content.md --tag t1`
+`{{CORAL_CLI}} kb delete <note-slug>`
 
 ## Invalidation
 If a kb entry contradicts current code:
-`{{CORAL_CLI}} kb update <note> ...` or `{{CORAL_CLI}} kb delete <note>`
+`{{CORAL_CLI}} kb update <note-slug> ...` or `{{CORAL_CLI}} kb delete <note-slug>`

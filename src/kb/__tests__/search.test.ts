@@ -66,18 +66,18 @@ function getKbContext(detect: Awaited<ReturnType<typeof loadKbModules>>['detect'
   });
 }
 
-function resultPaths(results: { path: string }[]): string[] {
-  return results.map((result) => result.path);
+function resultNotes(results: { note: string }[]): string[] {
+  return results.map((result) => result.note);
 }
 
-function position(paths: string[], target: string): number {
-  const index = paths.indexOf(target);
+function position(notes: string[], target: string): number {
+  const index = notes.indexOf(target);
   expect(index).toBeGreaterThanOrEqual(0);
   return index;
 }
 
-function resultFor<T extends { path: string }>(results: T[], target: string): T {
-  const result = results.find((entry) => entry.path === target);
+function resultFor<T extends { note: string }>(results: T[], target: string): T {
+  const result = results.find((entry) => entry.note === target);
   expect(result).toBeDefined();
   return result!;
 }
@@ -121,9 +121,9 @@ describe('kb search', () => {
     const response = await searchKb(kb, 'rendering', 10);
 
     expect(response.mode).toBe('text');
-    expect(resultPaths(response.results)).toContain('notes/rendering-guides.md');
-    expect(resultPaths(response.results)).toContain('notes/pipeline-checklist.md');
-    expect(resultPaths(response.results)).not.toContain('notes/contract-log.md');
+    expect(resultNotes(response.results)).toContain('rendering-guides');
+    expect(resultNotes(response.results)).toContain('pipeline-checklist');
+    expect(resultNotes(response.results)).not.toContain('contract-log');
   });
 
   it('uses pairwise assertions for multi-keyword BM25 ordering', async () => {
@@ -147,12 +147,12 @@ describe('kb search', () => {
     await reindex(kb);
 
     const response = await searchKb(kb, 'rendering guiding contracts', 10);
-    const pathsByRank = resultPaths(response.results);
+    const notesByRank = resultNotes(response.results);
 
-    expect(position(pathsByRank, 'notes/rendering-guiding-contracts.md'))
-      .toBeLessThan(position(pathsByRank, 'notes/rendering-guiding.md'));
-    expect(position(pathsByRank, 'notes/rendering-guiding.md'))
-      .toBeLessThan(position(pathsByRank, 'notes/contracts-only.md'));
+    expect(position(notesByRank, 'rendering-guiding-contracts'))
+      .toBeLessThan(position(notesByRank, 'rendering-guiding'));
+    expect(position(notesByRank, 'rendering-guiding'))
+      .toBeLessThan(position(notesByRank, 'contracts-only'));
   });
 
   it('returns subset hits at threshold 1, ranks stronger matches first, and keeps snippets for subset content hits', async () => {
@@ -176,17 +176,17 @@ describe('kb search', () => {
     await reindex(kb);
 
     const response = await searchKb(kb, 'WFPG cone aperture', 10);
-    const pathsByRank = resultPaths(response.results);
+    const notesByRank = resultNotes(response.results);
 
-    expect(pathsByRank).toContain('notes/wfpg-cone-aperture.md');
-    expect(pathsByRank).toContain('notes/wfpg-aperture-notes.md');
-    expect(pathsByRank).toContain('notes/single-term.md');
-    expect(position(pathsByRank, 'notes/wfpg-cone-aperture.md'))
-      .toBeLessThan(position(pathsByRank, 'notes/wfpg-aperture-notes.md'));
-    expect(position(pathsByRank, 'notes/wfpg-aperture-notes.md'))
-      .toBeLessThan(position(pathsByRank, 'notes/single-term.md'));
+    expect(notesByRank).toContain('wfpg-cone-aperture');
+    expect(notesByRank).toContain('wfpg-aperture-notes');
+    expect(notesByRank).toContain('single-term');
+    expect(position(notesByRank, 'wfpg-cone-aperture'))
+      .toBeLessThan(position(notesByRank, 'wfpg-aperture-notes'));
+    expect(position(notesByRank, 'wfpg-aperture-notes'))
+      .toBeLessThan(position(notesByRank, 'single-term'));
 
-    const subsetMatch = resultFor(response.results, 'notes/wfpg-aperture-notes.md');
+    const subsetMatch = resultFor(response.results, 'wfpg-aperture-notes');
     expect(subsetMatch.snippet).toBeDefined();
     expect(subsetMatch.snippet?.toLowerCase()).not.toContain('wfpg cone aperture');
   });
@@ -206,7 +206,7 @@ describe('kb search', () => {
     await reindex(kb);
 
     const response = await searchKb(kb, 'contract first design tokenized tag workflow alignment', 10);
-    const match = resultFor(response.results, 'notes/contract-first-design-surface.md');
+    const match = resultFor(response.results, 'contract-first-design-surface');
 
     expect(match.matchedBy).toEqual(['filename', 'principle', 'tag', 'title', 'content']);
   });
@@ -226,7 +226,7 @@ describe('kb search', () => {
     await reindex(kb);
 
     const response = await searchKb(kb, 'contract first design', 10);
-    const match = resultFor(response.results, 'notes/contract-first-design.md');
+    const match = resultFor(response.results, 'contract-first-design');
 
     expect(match.matchedBy).toEqual(['filename', 'principle', 'tag']);
   });

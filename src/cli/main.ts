@@ -38,6 +38,7 @@ import {
   formatBackendStatus,
   formatKbDelete,
   formatKbPrinciples,
+  formatKbMemo,
   formatKbPromote,
   formatKbReindex,
   formatKbSearch,
@@ -889,6 +890,30 @@ export function buildProgram(): Command {
       }
     });
 
+  const kbMemoCommand = kb.command('memo');
+  kbMemoCommand
+    .description('Write a memo with auto-generated timestamp and frontmatter')
+    .requiredOption('--topic <slug>', 'Kebab-case topic slug (e.g. orama-threshold)')
+    .option('--content <text>', 'Memo body text')
+    .option('--content-file <path>', 'Read memo body from file')
+    .action(async (opts: { topic: string; content?: string; contentFile?: string }) => {
+      const outputFormat = getOutputFormat(kbMemoCommand);
+
+      try {
+        const content = opts.contentFile !== undefined
+          ? readFileSync(opts.contentFile, 'utf8')
+          : opts.content;
+        if (content === undefined) {
+          throw new Error('Either --content or --content-file is required');
+        }
+        const client = makeClient(process.cwd());
+        const result = await client.kbMemo({ topic: opts.topic, content });
+        emit(result, outputFormat, formatKbMemo);
+      } catch (error) {
+        emitError(error, outputFormat);
+      }
+    });
+
   const kbPromoteCommand = kb.command('promote');
   kbPromoteCommand
     .description('Promote a memo into a KB note')
@@ -925,7 +950,7 @@ export function buildProgram(): Command {
   const kbUpdateCommand = kb.command('update');
   kbUpdateCommand
     .description('Update an existing KB note')
-    .argument('<note>', 'Note name')
+    .argument('<note>', 'Note slug without extension (e.g. rendering-guiding-contracts)')
     .option('--title <text>', 'Updated title')
     .option('--content-file <path>', 'Read content from file')
     .option('--tag <tag>', 'Tag (repeatable)', (value: string, previous: string[] | undefined) => [...(previous ?? []), value])
@@ -952,7 +977,7 @@ export function buildProgram(): Command {
   const kbDeleteCommand = kb.command('delete');
   kbDeleteCommand
     .description('Delete a KB note')
-    .argument('<note>', 'Note name')
+    .argument('<note>', 'Note slug without extension (e.g. rendering-guiding-contracts)')
     .action(async (note: string) => {
       const outputFormat = getOutputFormat(kbDeleteCommand);
 

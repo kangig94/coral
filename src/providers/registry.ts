@@ -11,6 +11,7 @@ const RESERVED_TOOL_NAMES = new Set([
   'kb_delete',
   'kb_reindex',
   'kb_principles',
+  'kb_memo',
   'discuss_seed',
   'discuss_start',
   'discuss_watch',

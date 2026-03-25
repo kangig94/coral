@@ -290,7 +290,7 @@ export function formatKbSearch(data: unknown, cliPrefix = 'coral-cli'): string {
       : [];
 
     return [
-      typeof result.path === 'string' ? result.path : '-',
+      typeof result.note === 'string' ? result.note : '-',
       typeof result.title === 'string' ? result.title : '-',
       matchedBy.length > 0 ? matchedBy.join(', ') : '-',
       typeof result.snippet === 'string' ? result.snippet : '-',
@@ -300,7 +300,7 @@ export function formatKbSearch(data: unknown, cliPrefix = 'coral-cli'): string {
   return joinLines([
     rows.length === 0
       ? 'No results'
-      : formatTable(['PATH', 'TITLE', 'MATCHED BY', 'SNIPPET'], rows),
+      : formatTable(['NOTE', 'TITLE', 'MATCHED BY', 'SNIPPET'], rows),
     `Mode: ${data.mode}`,
     warning === undefined ? undefined : `Warning: ${warning}`,
   ]);
@@ -319,6 +319,14 @@ export function formatKbPrinciples(data: unknown, cliPrefix = 'coral-cli'): stri
     `Total: ${data.total}`,
     warning === undefined ? undefined : `Warning: ${warning}`,
   ]);
+}
+
+export function formatKbMemo(data: unknown): string {
+  if (!isRecord(data) || typeof data.filename !== 'string') {
+    return formatUnknown(data);
+  }
+
+  return `Memo: ${data.filename}`;
 }
 
 export function formatKbPromote(data: unknown): string {

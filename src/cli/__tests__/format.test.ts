@@ -346,7 +346,7 @@ describe('cli format', () => {
       const formatted = formatKbSearch({
         results: [
           {
-            path: 'notes/cli-kb-tooling.md',
+            note: 'cli-kb-tooling',
             title: 'KB CLI Tooling',
             matchedBy: ['filename', 'content'],
             snippet: 'Use kb_reindex after stale writes.',
@@ -356,9 +356,9 @@ describe('cli format', () => {
         warning: 'Enhanced KB index is stale; run kb_reindex to refresh it.',
       }, 'node "/tmp/coral-cli.cjs"');
 
-      expect(formatted).toContain('PATH');
+      expect(formatted).toContain('NOTE');
       expect(formatted).toContain('MATCHED BY');
-      expect(formatted).toContain('notes/cli-kb-tooling.md');
+      expect(formatted).toContain('cli-kb-tooling');
       expect(formatted).toContain('filename, content');
       expect(formatted).toContain('Mode: text');
       expect(formatted).toContain('node "/tmp/coral-cli.cjs" kb reindex');
