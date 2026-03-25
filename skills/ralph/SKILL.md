@@ -121,11 +121,12 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
     ⛔ **AC integrity rule**: Implement each AC fully as written — no stubs, no placeholders,
     no "simplified version first". When delegating to subagents, copy the assigned ACs
     identically. Ralph executes ACs, not edits them.
+    ⛔ Do not promote KB notes. Implementation only.
 
     **Execution loop** — process batches from Execution Order sequentially; parallelize within each batch:
-    1. For each batch, identify independent ACs vs tightly coupled ACs (shared files, sequential dependency).
-       Launch independent ACs as parallel `Agent` calls; execute coupled ACs sequentially.
-       Use specialist agents where appropriate.
+    1. For each batch, group ACs by coupling (shared files, sequential dependency).
+       Always spawn `Agent` calls for implementation — never implement directly in the main context.
+       Launch independent ACs as parallel `Agent` calls; tightly coupled ACs go into one `Agent` call.
     2. Verify each AC's output before proceeding to the next batch.
 
     Then continue to Step 4.
@@ -152,6 +153,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
     ```
     ⛔ The AC text MUST be identical to the plan — no rewording, no additions,
     no scope-reduction annotations. Ralph executes ACs, not edits them.
+    ⛔ Do not promote KB notes. Implementation only.
 
     **Execution loop** — process batches from Execution Order sequentially; parallelize within each batch:
     1. Group ACs in the batch by coupling: tightly coupled ACs (shared files, sequential dependency)
@@ -183,6 +185,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
          ## Acceptance Criteria (verbatim from plan — implement exactly as written)
          <AC text copied identically from plan>
        ⛔ AC text must be identical to the plan. No rewording, no scope-reduction annotations.
+       ⛔ Do not promote KB notes. Implementation only.
        1. codex({ op: "bypass_exec", prompt: "<above structure + file paths + constraints>", work_dir: "<project root>" })
           → wait({ jobs: [job] }) → read `result.content`; if absent, `Read(result.path)` is best-effort recovery.
           Do NOT pass `session`.
