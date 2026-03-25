@@ -8,6 +8,7 @@ import { writeMemo } from './memo.js';
 import { promote } from './promote.js';
 import { rebuildMetadataAndOrama, reindex } from './reindex.js';
 import { searchKb } from './search.js';
+import { readNote } from './read.js';
 import { update } from './update.js';
 
 // Auto-rebuild index when missing or stale — avoids circular import by using callback
@@ -56,6 +57,11 @@ export const kbUpdateSchema = z.object({
   content: z.string().optional(),
 });
 export type KbUpdateInput = z.input<typeof kbUpdateSchema>;
+
+export const kbReadSchema = z.object({
+  note: noteNameSchema,
+});
+export type KbReadInput = z.input<typeof kbReadSchema>;
 
 export const kbDeleteSchema = z.object({
   note: noteNameSchema,
@@ -114,6 +120,11 @@ export const kbToolContracts = defineKbToolContracts({
       const kb = getKbContext(ctx);
       return searchKb(kb, input.query, input.top_k);
     },
+  },
+  kb_read: {
+    description: 'Read a KB note by slug.',
+    schema: kbReadSchema,
+    handler: async (input) => readNote(input),
   },
   kb_promote: {
     description: 'Promote a memo to a KB note.',

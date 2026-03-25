@@ -40,6 +40,7 @@ import {
   formatKbPrinciples,
   formatKbMemo,
   formatKbPromote,
+  formatKbRead,
   formatKbReindex,
   formatKbSearch,
   formatKbUpdate,
@@ -905,6 +906,22 @@ export function buildProgram(): Command {
         const client = makeClient(process.cwd());
         const result = await client.kbMemo({ topic: opts.topic, content });
         emit(result, outputFormat, formatKbMemo);
+      } catch (error) {
+        emitError(error, outputFormat);
+      }
+    });
+
+  const kbReadCommand = kb.command('read');
+  kbReadCommand
+    .description('Read a KB note by slug')
+    .argument('<note>', 'Note slug without extension (e.g. rendering-guiding-contracts)')
+    .action(async (note: string) => {
+      const outputFormat = getOutputFormat(kbReadCommand);
+
+      try {
+        const client = makeClient(process.cwd());
+        const result = await client.kbRead({ note });
+        emit(result, outputFormat, formatKbRead);
       } catch (error) {
         emitError(error, outputFormat);
       }

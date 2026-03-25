@@ -5,6 +5,7 @@ import type {
   KbMemoInput,
   KbPrinciplesInput,
   KbPromoteInput,
+  KbReadInput,
   KbReindexInput,
   KbSearchInput,
   KbUpdateInput,
@@ -230,6 +231,10 @@ export class BackendClient {
 
   async kbPrinciples(args: KbPrinciplesInput, context?: CallerContext): Promise<unknown> {
     return this.proxyToolCall('kb_principles', args, this.resolveContext(context));
+  }
+
+  async kbRead(args: KbReadInput, context?: CallerContext): Promise<unknown> {
+    return this.proxyToolCall('kb_read', args, this.resolveContext(context));
   }
 
   async kbPromote(args: KbPromoteInput, context?: CallerContext): Promise<unknown> {

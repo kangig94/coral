@@ -16,6 +16,7 @@ import {
   formatKbDelete,
   formatKbPrinciples,
   formatKbPromote,
+  formatKbRead,
   formatKbReindex,
   formatKbSearch,
   formatKbUpdate,
@@ -371,6 +372,22 @@ describe('cli format', () => {
       expect(parsed.results).toEqual([]);
       expect(parsed.count).toBe(0);
       expect(parsed.mode).toBe('text');
+    });
+
+    it('formats kb read as JSON', () => {
+      const formatted = formatKbRead({
+        note: 'coral-kb-read',
+        title: 'Read Test',
+        content: '## Rule\nContent here.',
+        tags: ['coral', 'kb'],
+        principles: ['contract-first-design'],
+      });
+      const parsed = JSON.parse(formatted);
+      expect(parsed.note).toBe('coral-kb-read');
+      expect(parsed.title).toBe('Read Test');
+      expect(parsed.content).toBe('## Rule\nContent here.');
+      expect(parsed.tags).toEqual(['coral', 'kb']);
+      expect(parsed.principles).toEqual(['contract-first-design']);
     });
 
     it('formats kb principles with totals and warning translation', () => {

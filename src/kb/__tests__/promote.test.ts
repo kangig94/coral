@@ -17,15 +17,16 @@ vi.mock('node:os', async () => {
 
 async function loadKbModules() {
   vi.resetModules();
-  const [{ promote }, { update }, { deleteFn }, detect, paths, frontmatter] = await Promise.all([
+  const [{ promote }, { update }, { deleteFn }, { readNote }, detect, paths, frontmatter] = await Promise.all([
     import('../promote.js'),
     import('../update.js'),
     import('../delete.js'),
+    import('../read.js'),
     import('../detect.js'),
     import('../paths.js'),
     import('../frontmatter.js'),
   ]);
-  return { promote, update, deleteFn, detect, paths, frontmatter };
+  return { promote, update, deleteFn, readNote, detect, paths, frontmatter };
 }
 
 describe('kb mutations', () => {
@@ -265,5 +266,37 @@ Original body.
     expect(result).toEqual({ deleted: notePath });
     expect(existsSync(notePath)).toBe(false);
     expect(detect.readKbIndex()?.notes['coral-kb-promotion']).toBeUndefined();
+  });
+
+  it('reads a note by slug and returns structured content without timestamps', async () => {
+    const { readNote, paths } = await loadKbModules();
+    mkdirSync(paths.notesDir(), { recursive: true });
+    writeFileSync(join(paths.notesDir(), 'coral-kb-read.md'), `---
+tags: [coral, kb]
+principles: [contract-first-design]
+source:
+  - kangig94/coral
+createdAt: 2026-03-20T00:00:00.000Z
+updatedAt: 2026-03-20T00:00:00.000Z
+---
+# Read Test
+
+## Rule
+Content here.
+`, 'utf-8');
+
+    const result = readNote({ note: 'coral-kb-read' });
+    expect(result).toEqual({
+      note: 'coral-kb-read',
+      title: 'Read Test',
+      content: '## Rule\nContent here.',
+      tags: ['coral', 'kb'],
+      principles: ['contract-first-design'],
+    });
+  });
+
+  it('throws when reading a non-existent note', async () => {
+    const { readNote } = await loadKbModules();
+    expect(() => readNote({ note: 'does-not-exist' })).toThrow();
   });
 });

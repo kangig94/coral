@@ -325,6 +325,19 @@ export function formatKbPrinciples(data: unknown, cliPrefix = 'coral-cli'): stri
   ]);
 }
 
+export function formatKbRead(data: unknown): string {
+  if (
+    !isRecord(data)
+    || typeof data.note !== 'string'
+    || typeof data.title !== 'string'
+    || typeof data.content !== 'string'
+  ) {
+    return formatUnknown(data);
+  }
+
+  return JSON.stringify(data);
+}
+
 export function formatKbMemo(data: unknown): string {
   if (!isRecord(data) || typeof data.filename !== 'string') {
     return formatUnknown(data);

@@ -17,6 +17,7 @@ const mockState = vi.hoisted(() => ({
   streamWait: vi.fn(),
   kbSearch: vi.fn(),
   kbPrinciples: vi.fn(),
+  kbRead: vi.fn(),
   kbPromote: vi.fn(),
   kbUpdate: vi.fn(),
   kbDelete: vi.fn(),
@@ -49,6 +50,7 @@ vi.mock('../../client/http-client.js', () => {
     discussAbort = vi.fn();
     kbSearch = mockState.kbSearch;
     kbPrinciples = mockState.kbPrinciples;
+    kbRead = mockState.kbRead;
     kbPromote = mockState.kbPromote;
     kbUpdate = mockState.kbUpdate;
     kbDelete = mockState.kbDelete;
@@ -109,6 +111,7 @@ describe('cli main routing', () => {
     mockState.streamWait.mockReset();
     mockState.kbSearch.mockReset();
     mockState.kbPrinciples.mockReset();
+    mockState.kbRead.mockReset();
     mockState.kbPromote.mockReset();
     mockState.kbUpdate.mockReset();
     mockState.kbDelete.mockReset();
@@ -386,6 +389,32 @@ describe('cli main routing', () => {
     ]);
 
     expect(mockState.kbPrinciples).toHaveBeenCalledWith({ query: 'contract', top_k: 7 });
+  });
+
+  it('routes kb read to kb_read and returns JSON', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbRead.mockResolvedValueOnce({
+      note: 'coral-kb-read',
+      title: 'Read Test',
+      content: '## Rule\nContent.',
+      tags: ['coral'],
+      principles: ['contract-first-design'],
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'kb',
+      'read',
+      'coral-kb-read',
+    ]);
+
+    expect(mockState.kbRead).toHaveBeenCalledWith({ note: 'coral-kb-read' });
+    const parsed = JSON.parse(stdout.trim());
+    expect(parsed.note).toBe('coral-kb-read');
+    expect(parsed.title).toBe('Read Test');
   });
 
   it('routes kb promote flags into kb_promote arguments', async () => {
