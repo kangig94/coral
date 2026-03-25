@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { nowIsoString } from '../shared/mcp-utils.js';
+import { scheduleCurate } from './curate.js';
 import { parseMemoFrontmatter, serializeNote } from './frontmatter.js';
 import { memoPathFromContext, notePathFromParts } from './paths.js';
 import type { KbPromoteInput } from './contracts.js';
@@ -40,23 +41,25 @@ export async function promote(kb: KbContext, input: KbPromoteInput): Promise<{ p
 
   const memoContent = readFileSync(memoPath, 'utf-8');
   const { source } = parseMemoFrontmatter(memoContent);
-  const createdAt = nowIsoString();
-  const noteContent = serializeNote({
-    tags: [domain],
-    principles: [],
-    source,
-    createdAt,
-    updatedAt: createdAt,
-  }, title, content);
   const noteName = `${domain}-${topic}`;
 
-  return withKbMutationLock(async () => {
+  const result = await withKbMutationLock(async () => {
     if (existsSync(notePath)) {
       throw duplicateNoteError(notePath);
     }
 
+    const mutationSeqAtPromote = recordMutationCommitted().mutationSeq;
+    const createdAt = nowIsoString();
+    const noteContent = serializeNote({
+      tags: [domain],
+      principles: [],
+      source,
+      createdAt,
+      updatedAt: createdAt,
+      mutationSeqAtPromote,
+    }, title, content);
+
     writeFileAtomic(notePath, noteContent);
-    recordMutationCommitted();
 
     const nextIndex = cloneKbIndex(readKbIndex());
     nextIndex.notes[noteName] = {
@@ -66,6 +69,7 @@ export async function promote(kb: KbContext, input: KbPromoteInput): Promise<{ p
       source: [...source],
       createdAt,
       updatedAt: createdAt,
+      mutationSeqAtPromote,
     };
     writeKbIndex(nextIndex);
 
@@ -74,4 +78,7 @@ export async function promote(kb: KbContext, input: KbPromoteInput): Promise<{ p
     rmSync(memoPath, { force: true });
     return { path: notePath };
   });
+
+  scheduleCurate(kb);
+  return result;
 }

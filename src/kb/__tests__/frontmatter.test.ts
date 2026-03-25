@@ -4,6 +4,7 @@ import {
   extractTitle,
   parseFrontmatter,
   parseMemoFrontmatter,
+  replaceFrontmatter,
   serializeFrontmatter,
   serializeNote,
 } from '../frontmatter.js';
@@ -19,6 +20,7 @@ source:
   - kangig94/coral
 createdAt: 2026-03-23
 updatedAt: 2026-03-23
+mutationSeqAtPromote: 11
 ---
 # KB Contract
 `;
@@ -29,6 +31,7 @@ updatedAt: 2026-03-23
       source: ['kangig94/coral'],
       createdAt: '2026-03-23',
       updatedAt: '2026-03-23',
+      mutationSeqAtPromote: 11,
     });
   });
 
@@ -39,12 +42,35 @@ updatedAt: 2026-03-23
       source: ['kangig94/coral'],
       createdAt: '2026-03-23',
       updatedAt: '2026-03-23',
+      mutationSeqAtPromote: 17,
     });
 
     expect(serialized).not.toContain('[[lenient-read-strict-write]]');
     expect(serialized).toContain('lenient-read-strict-write');
     expect(parseFrontmatter(`${serialized}# Title\n`)).toMatchObject({
       principles: ['lenient-read-strict-write', 'contract-first-design'],
+      mutationSeqAtPromote: 17,
+    });
+  });
+
+  it('accepts legacy note frontmatter with no mutation sequence', () => {
+    const content = `---
+tags: [coral]
+principles: []
+source:
+  - kangig94/coral
+createdAt: 2026-03-23
+updatedAt: 2026-03-23
+---
+# Legacy Note
+`;
+
+    expect(parseFrontmatter(content)).toEqual({
+      tags: ['coral'],
+      principles: [],
+      source: ['kangig94/coral'],
+      createdAt: '2026-03-23',
+      updatedAt: '2026-03-23',
     });
   });
 
@@ -65,6 +91,36 @@ memo
     expect(parseMemoFrontmatter(arrayMemo)).toEqual({ source: ['kangig94/coral'] });
   });
 
+  it('replaces only the frontmatter block and preserves the remaining note bytes', () => {
+    const content = `---
+tags: [coral]
+principles: []
+source:
+  - kangig94/coral
+createdAt: 2026-03-23
+updatedAt: 2026-03-23
+---
+# KB Contract
+
+## Rule
+Keep the body stable.
+`;
+    const meta = {
+      tags: ['coral', 'kb'],
+      principles: ['contract-first-design'],
+      source: ['kangig94/coral'],
+      createdAt: '2026-03-23',
+      updatedAt: '2026-03-24',
+      mutationSeqAtPromote: 19,
+    };
+
+    expect(replaceFrontmatter(content, meta)).toBe(`${serializeFrontmatter(meta)}# KB Contract
+
+## Rule
+Keep the body stable.
+`);
+  });
+
   it('extracts titles and filename-derived identities', () => {
     const note = serializeNote({
       tags: ['coral'],
@@ -72,6 +128,7 @@ memo
       source: ['kangig94/coral'],
       createdAt: '2026-03-23',
       updatedAt: '2026-03-23',
+      mutationSeqAtPromote: 23,
     }, 'KB Runtime Root', '## Rule\nUse the configured root.');
 
     expect(extractTitle(note)).toBe('KB Runtime Root');

@@ -45,6 +45,16 @@ function normalizeStringList(value: unknown, field: string): string[] {
   return value.map((entry) => normalizeNonEmptyString(entry, field));
 }
 
+function normalizeOptionalMutationSeqAtPromote(value: unknown): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+    throw new Error('mutationSeqAtPromote must be a positive integer');
+  }
+  return value;
+}
+
 export function normalizePrincipleReference(value: string): string {
   const trimmed = value.trim();
   const wrapped = trimmed.match(/^\[\[(.+)\]\]$/)?.[1];
@@ -61,12 +71,14 @@ function normalizePrincipleList(value: unknown): string[] {
 
 export function parseFrontmatter(content: string): KbNoteFrontmatter {
   const record = parseFrontmatterRecord(content);
+  const mutationSeqAtPromote = normalizeOptionalMutationSeqAtPromote(record.mutationSeqAtPromote);
   return {
     tags: normalizeStringList(record.tags, 'tags'),
     principles: normalizePrincipleList(record.principles),
     source: normalizeStringList(record.source, 'source'),
     createdAt: normalizeNonEmptyString(record.createdAt, 'createdAt'),
     updatedAt: normalizeNonEmptyString(record.updatedAt, 'updatedAt'),
+    ...(mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote }),
   };
 }
 
@@ -85,17 +97,27 @@ export function parseMemoFrontmatter(content: string): { source: string[] } {
 }
 
 export function serializeFrontmatter(meta: KbNoteFrontmatter): string {
+  const mutationSeqAtPromote = normalizeOptionalMutationSeqAtPromote(meta.mutationSeqAtPromote);
   const serialized = yaml.stringify({
     tags: normalizeStringList(meta.tags, 'tags'),
     principles: normalizePrincipleList(meta.principles),
     source: normalizeStringList(meta.source, 'source'),
     createdAt: normalizeNonEmptyString(meta.createdAt, 'createdAt'),
     updatedAt: normalizeNonEmptyString(meta.updatedAt, 'updatedAt'),
+    ...(mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote }),
   }, {
     lineWidth: 0,
   }).trimEnd();
 
   return `---\n${serialized}\n---\n`;
+}
+
+export function replaceFrontmatter(content: string, meta: KbNoteFrontmatter): string {
+  const match = content.match(FRONTMATTER_PATTERN);
+  if (!match) {
+    throw new Error('Missing YAML frontmatter');
+  }
+  return `${serializeFrontmatter(meta)}${content.slice(match[0].length)}`;
 }
 
 export function extractTitle(content: string): string {

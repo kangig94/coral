@@ -91,6 +91,7 @@ source:
   - kangig94/coral
 createdAt: 2026-03-20T00:00:00.000Z
 updatedAt: 2026-03-21T00:00:00.000Z
+mutationSeqAtPromote: 11
 ---
 # KB Mode
 
@@ -139,6 +140,7 @@ Make the contract explicit first.
           source: ['kangig94/coral'],
           createdAt: '2026-03-20T00:00:00.000Z',
           updatedAt: '2026-03-21T00:00:00.000Z',
+          mutationSeqAtPromote: 11,
         },
       },
       principles: {

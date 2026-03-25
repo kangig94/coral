@@ -45,14 +45,18 @@ export async function update(_kb: KbContext, input: KbUpdateInput): Promise<{ pa
     const updatedAt = nowIsoString();
     const normalizedTitle = title ?? existingTitle;
     const normalizedContent = nextContent ?? existingBody;
-
-    writeFileAtomic(notePath, serializeNote({
+    const nextFrontmatter = {
       tags: frontmatter.tags,
       principles: frontmatter.principles,
       source: frontmatter.source,
       createdAt: frontmatter.createdAt,
       updatedAt,
-    }, normalizedTitle, normalizedContent));
+      ...(frontmatter.mutationSeqAtPromote === undefined
+        ? {}
+        : { mutationSeqAtPromote: frontmatter.mutationSeqAtPromote }),
+    };
+
+    writeFileAtomic(notePath, serializeNote(nextFrontmatter, normalizedTitle, normalizedContent));
     recordMutationCommitted();
 
     const nextIndex = cloneKbIndex(readKbIndex());
@@ -63,6 +67,9 @@ export async function update(_kb: KbContext, input: KbUpdateInput): Promise<{ pa
       source: [...frontmatter.source],
       createdAt: frontmatter.createdAt,
       updatedAt,
+      ...(frontmatter.mutationSeqAtPromote === undefined
+        ? {}
+        : { mutationSeqAtPromote: frontmatter.mutationSeqAtPromote }),
     };
     writeKbIndex(nextIndex);
 

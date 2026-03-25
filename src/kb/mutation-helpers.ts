@@ -79,6 +79,9 @@ export function cloneKbIndex(index: KbIndex | null): KbIndex {
         source: [...meta.source],
         createdAt: meta.createdAt,
         updatedAt: meta.updatedAt,
+        ...(meta.mutationSeqAtPromote === undefined
+          ? {}
+          : { mutationSeqAtPromote: meta.mutationSeqAtPromote }),
       }]),
     ),
     principles: { ...index.principles },

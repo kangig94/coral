@@ -90,6 +90,7 @@ memo body
       source: ['kangig94/coral'],
       createdAt: '2026-03-23T01:02:03.000Z',
       updatedAt: '2026-03-23T01:02:03.000Z',
+      mutationSeqAtPromote: 1,
     });
     expect(frontmatter.extractTitle(note)).toBe('KB Promotion');
     expect(note).toContain('## Rule\nPromote through the tool.\n');
@@ -102,6 +103,7 @@ memo body
       source: ['kangig94/coral'],
       createdAt: '2026-03-23T01:02:03.000Z',
       updatedAt: '2026-03-23T01:02:03.000Z',
+      mutationSeqAtPromote: 1,
     });
   });
 
@@ -180,6 +182,7 @@ source:
   - kangig94/coral
 createdAt: 2026-03-20T00:00:00.000Z
 updatedAt: 2026-03-20T00:00:00.000Z
+mutationSeqAtPromote: 7
 ---
 # Original Title
 
@@ -195,6 +198,7 @@ Original body.
           source: ['kangig94/coral'],
           createdAt: '2026-03-20T00:00:00.000Z',
           updatedAt: '2026-03-20T00:00:00.000Z',
+          mutationSeqAtPromote: 7,
         },
       },
       principles: {},
@@ -223,6 +227,7 @@ Original body.
       source: ['kangig94/coral'],
       createdAt: '2026-03-20T00:00:00.000Z',
       updatedAt: '2026-03-24T05:06:07.000Z',
+      mutationSeqAtPromote: 7,
     });
     expect(frontmatter.extractTitle(note)).toBe('Updated Title');
     expect(note).toContain('Updated body.\n');
@@ -234,6 +239,7 @@ Original body.
       source: ['kangig94/coral'],
       createdAt: '2026-03-20T00:00:00.000Z',
       updatedAt: '2026-03-24T05:06:07.000Z',
+      mutationSeqAtPromote: 7,
     });
   });
 
