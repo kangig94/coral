@@ -1,17 +1,4 @@
-import type { KbContext } from './types.js';
-
-export type KbReindexNoteRecord = {
-  note: string;
-  path: string;
-  domain: string;
-  title: string;
-  body: string;
-  tags: string[];
-  principles: string[];
-  source: string[];
-  createdAt: string;
-  updatedAt: string;
-};
+import type { KbContext, KbReindexNoteRecord } from './types.js';
 
 type LanceDbConnection = {
   tableNames?: () => Promise<string[]>;

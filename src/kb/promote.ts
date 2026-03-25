@@ -14,7 +14,7 @@ import {
   assertNonEmptyText,
   assertSlug,
   cloneKbIndex,
-  markEnhancedIndexStale,
+  markTextIndexStale,
   normalizePrinciples,
   normalizeTags,
   writeFileAtomic,
@@ -73,10 +73,7 @@ export async function promote(kb: KbContext, input: KbPromoteInput): Promise<{ p
     };
     writeKbIndex(nextIndex);
 
-    await markEnhancedIndexStale(
-      kb,
-      'Enhanced KB index is stale after kb_promote; run kb_reindex to refresh it.',
-    );
+    await markTextIndexStale('KB text snapshot is stale after kb_promote.');
 
     rmSync(memoPath, { force: true });
     return { path: notePath };

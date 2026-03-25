@@ -143,24 +143,39 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
     **4d. Exit Condition**
 
-    **Step 1 — Classify**: Scan the Round Summary table. Record `max_severity` = highest severity after synthesis (reclassified severity if 4b applied one, otherwise reviewer's original). Never reclassify here — reclassification happens at synthesis time (4b), not at exit time.
+    **Step 1 — Completion assessment** (`--deep` only):
+    If `--deep`: Read `CORAL_METHODS/HOW-COMPLETE.md`. Evaluate coverage gaps (Counterexample Coverage),
+    effort quality (Refutation Effort), and convergence pattern (Progressive Focus).
+    Record the assessment — it informs both the exit gate (Step 3) and next-round steering (Continue path).
 
-    **Step 2 — Severity gate**:
+    **Step 2 — Classify**: Scan the Round Summary table. Record `max_severity` = highest severity after synthesis (reclassified severity if 4b applied one, otherwise reviewer's original). Never reclassify here — reclassification happens at synthesis time (4b), not at exit time.
+
+    **Step 3 — Severity gate**:
 
     | `max_severity` | Round | Verdict | Action |
     |----------------|-------|---------|--------|
-    | CRITICAL or HIGH | < 5 | **Continue** | → 4a (same phase, next round) |
+    | CRITICAL or HIGH | < 5 | **Continue** | → Diminishing Returns check, then 4a |
     | CRITICAL or HIGH | = 5 | **Max rounds** | → next phase, or AskUserQuestion if last |
-    | MEDIUM | any | **Fix and pass** | → fix inline, then Step 3 |
-    | LOW or none | any | **Clean pass** | → Step 3 |
+    | MEDIUM | any | **Fix and pass** | → fix inline, then Step 4 |
+    | LOW or none | any | **Clean pass** | → Step 4 |
+
+    **Diminishing Returns check** (when verdict = Continue):
+    Before proceeding to 4a, assess whether HIGH findings are shifting from core design issues
+    to increasingly niche edge cases (low-probability lifecycle corners, rare race conditions,
+    exotic failure modes) while the plan's core structure remains stable across rounds.
+    Indicators: findings target progressively lower-probability scenarios, core architecture
+    unchanged between rounds, new findings do not invalidate prior fixes.
+    If detected: construct the next round's `init_prompt` to redirect reviewer focus
+    to a different aspect of the plan — not narrowing scope, but shifting it.
+    Also use Step 1's coverage gaps and convergence signals to shape the next round's focus.
 
     > **Hard rule**: severity reclassification happens only during synthesis (4b), never after fixes. A finding that was HIGH after synthesis stays HIGH at exit — fixing it does not lower the severity. Fixes may introduce new issues; re-verification catches them.
 
-    **Step 3 — Completion gate** (`--deep` only, otherwise exit phase):
+    **Step 4 — Completion gate** (`--deep` only, otherwise exit phase):
 
-    If `--deep`: Read `CORAL_METHODS/HOW-COMPLETE.md`. Apply ALL conditions in its Combined Exit Rule.
+    Apply ALL conditions in HOW-COMPLETE's Combined Exit Rule using the Step 1 assessment.
     If any condition fails → **Continue** (→ 4a, next round).
-    Exit phase only when both Step 2 AND Step 3 pass.
+    Exit phase only when both Step 3 AND Step 4 pass.
 
     ### 4e. Execution Order
 

@@ -892,7 +892,7 @@ export function buildProgram(): Command {
   const kbPromoteCommand = kb.command('promote');
   kbPromoteCommand
     .description('Promote a memo into a KB note')
-    .option('--memo <path>', 'Memo path')
+    .option('--memo <filename>', 'Memo filename (e.g. 20260325-topic.md)')
     .option('--title <text>', 'Note title')
     .option('--content-file <path>', 'Read content from file')
     .option('--tag <tag>', 'Tag (repeatable)', (value: string, previous: string[] | undefined) => [...(previous ?? []), value])

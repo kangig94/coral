@@ -1,8 +1,8 @@
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { errorMessage } from '../shared/mcp-utils.js';
-import { recordIndexSyncFailure } from './detect.js';
-import type { KbContext, KbIndex } from './types.js';
+import { invalidateTextSnapshot } from './detect.js';
+import type { KbIndex } from './types.js';
 
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -85,15 +85,10 @@ export function cloneKbIndex(index: KbIndex | null): KbIndex {
   };
 }
 
-export async function markEnhancedIndexStale(kb: KbContext, reason: string): Promise<void> {
-  if (kb.adapter === null) {
-    return;
-  }
-
+export async function markTextIndexStale(reason: string): Promise<void> {
   try {
-    await kb.adapter.ensureTables();
-    recordIndexSyncFailure(reason);
+    invalidateTextSnapshot(reason);
   } catch (error: unknown) {
-    recordIndexSyncFailure(errorMessage(error));
+    invalidateTextSnapshot(errorMessage(error));
   }
 }

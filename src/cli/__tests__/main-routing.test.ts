@@ -296,7 +296,7 @@ describe('cli main routing', () => {
 
     mockState.kbSearch.mockResolvedValueOnce({
       results: [],
-      mode: 'basic',
+      mode: 'text',
     });
 
     await program.parseAsync([
@@ -308,7 +308,7 @@ describe('cli main routing', () => {
     ]);
 
     expect(mockState.kbSearch).toHaveBeenCalledWith({ query: 'accel' });
-    expect(stdout).toBe('No results\nMode: basic\n');
+    expect(stdout).toBe('No results\nMode: text\n');
     expect(stderr).toBe('');
   });
 
@@ -318,7 +318,7 @@ describe('cli main routing', () => {
 
     mockState.kbSearch.mockResolvedValueOnce({
       results: [],
-      mode: 'basic',
+      mode: 'text',
       warning: 'Run kb_reindex to build the search index.',
     });
 
@@ -337,7 +337,7 @@ describe('cli main routing', () => {
     expect(mockState.kbSearch).toHaveBeenCalledWith({ query: 'accel', top_k: 5 });
     expect(JSON.parse(stdout.trim())).toEqual({
       results: [],
-      mode: 'basic',
+      mode: 'text',
       warning: 'Run kb_reindex to build the search index.',
     });
   });
@@ -503,7 +503,7 @@ describe('cli main routing', () => {
       principles: 2,
       tags: 3,
       duration_ms: 25,
-      mode: 'basic',
+      mode: 'text',
       warning: 'Run kb_reindex again to refresh it.',
     });
 

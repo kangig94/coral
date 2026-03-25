@@ -80,7 +80,7 @@ describe('kb reindex', () => {
     vi.resetModules();
   });
 
-  it('rebuilds the JSON index unconditionally in basic mode without warning by default', async () => {
+  it('rebuilds the JSON index unconditionally in text mode without warning by default', async () => {
     const { reindex, detect, paths } = await loadKbModules();
     mkdirSync(paths.notesDir(), { recursive: true });
     mkdirSync(paths.principlesDir(), { recursive: true });
@@ -127,7 +127,7 @@ Make the contract explicit first.
       notes: 1,
       principles: 1,
       tags: 2,
-      mode: 'basic',
+      mode: 'text',
     });
     expect(result.warning).toBeUndefined();
     expect(detect.readKbIndex()).toEqual({
@@ -148,7 +148,7 @@ Make the contract explicit first.
     expect(readFileSync(join(mockState.tmpHome, '.coral', 'data', 'kb', 'index.json'), 'utf-8')).toContain('"coral-kb-mode"');
   });
 
-  it('warns when enhanced mode was previously active but is now unavailable', async () => {
+  it('rebuilds text mode cleanly when enhanced mode was previously active but is now unavailable', async () => {
     const { reindex, detect, paths } = await loadKbModules();
     mkdirSync(paths.notesDir(), { recursive: true });
     mkdirSync(paths.principlesDir(), { recursive: true });
@@ -179,8 +179,8 @@ Make the contract explicit first.
       adapter: null,
     });
 
-    expect(result.mode).toBe('basic');
-    expect(result.warning).toContain('Enhanced KB runtime is unavailable');
+    expect(result.mode).toBe('text');
+    expect(result.warning).toBeUndefined();
   });
 
   it('rebuilds LanceDB tables in enhanced mode and clears stale index state for the rebuilt snapshot', async () => {
@@ -226,7 +226,7 @@ Make the contract explicit first.
       },
     });
 
-    expect(result.mode).toBe('enhanced');
+    expect(result.mode).toBe('text');
     expect(result.warning).toBeUndefined();
     expect(fakeDb.dropped).toEqual(['notes', 'tags', 'principles']);
     expect(fakeDb.created.notes).toEqual([{

@@ -352,7 +352,7 @@ describe('cli format', () => {
             snippet: 'Use kb_reindex after stale writes.',
           },
         ],
-        mode: 'enhanced',
+        mode: 'text',
         warning: 'Enhanced KB index is stale; run kb_reindex to refresh it.',
       }, 'node "/tmp/coral-cli.cjs"');
 
@@ -360,12 +360,12 @@ describe('cli format', () => {
       expect(formatted).toContain('MATCHED BY');
       expect(formatted).toContain('notes/cli-kb-tooling.md');
       expect(formatted).toContain('filename, content');
-      expect(formatted).toContain('Mode: enhanced');
+      expect(formatted).toContain('Mode: text');
       expect(formatted).toContain('node "/tmp/coral-cli.cjs" kb reindex');
     });
 
     it('formats an empty kb search result set', () => {
-      expect(formatKbSearch({ results: [], mode: 'basic' })).toBe('No results\nMode: basic');
+      expect(formatKbSearch({ results: [], mode: 'text' })).toBe('No results\nMode: text');
     });
 
     it('formats kb principles with totals and warning translation', () => {
@@ -400,13 +400,13 @@ describe('cli format', () => {
         principles: 2,
         tags: 3,
         duration_ms: 25,
-        mode: 'basic',
+        mode: 'text',
         warning: 'Run kb_reindex again to refresh the enhanced index.',
       }, 'node "/tmp/coral-cli.cjs"');
 
       expect(formatted).toContain('NOTES');
       expect(formatted).toContain('25');
-      expect(formatted).toContain('basic');
+      expect(formatted).toContain('text');
       expect(formatted).toContain('node "/tmp/coral-cli.cjs" kb reindex again');
     });
   });

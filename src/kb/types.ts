@@ -23,9 +23,18 @@ export interface KbIndex {
 
 export interface KbSearchResponse {
   results: KbResult[];
-  mode: 'basic' | 'enhanced';
+  mode: 'text' | 'hybrid';
   warning?: string;
 }
+
+export type ReindexResult = {
+  notes: number;
+  principles: number;
+  tags: number;
+  duration_ms: number;
+  mode: 'text' | 'hybrid';
+  warning?: string;
+};
 
 export interface KbNoteFrontmatter {
   tags: string[];
@@ -40,6 +49,19 @@ export interface KbNoteIdentity {
   domain: string;
   topic: string;
 }
+
+export type KbReindexNoteRecord = {
+  note: string;
+  path: string;
+  domain: string;
+  title: string;
+  body: string;
+  tags: string[];
+  principles: string[];
+  source: string[];
+  createdAt: string;
+  updatedAt: string;
+};
 
 export interface KbLanceDbAdapter {
   getDb(): Promise<unknown>;
