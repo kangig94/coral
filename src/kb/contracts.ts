@@ -14,7 +14,7 @@ setAutoRebuild(async (kb, startSeq) => { await rebuildMetadataAndOrama(kb, start
 
 // KB filenames allow mixed case for code identifiers (e.g., cuMemFree, applyExpel)
 const slugSchema = z.string().regex(/^[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*$/);
-const noteNameSchema = slugSchema;
+const noteNameSchema = slugSchema.describe('Note slug without path or extension (e.g. rendering-guiding-contracts)');
 const nonEmptyTrimmedSchema = z.string().trim().min(1);
 const titleSchema = nonEmptyTrimmedSchema;
 const tagSchema = nonEmptyTrimmedSchema;

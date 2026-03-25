@@ -96,9 +96,9 @@ Write `/tmp/kb-content.md` first (via the Write tool) with the full markdown bod
 Principles are well-formed names (not required to exist yet — they emerge from 3+ notes).
 
 ## Update / Delete
-`{{CORAL_CLI}} kb update <note> --content-file /tmp/kb-content.md --tag t1`
-`{{CORAL_CLI}} kb delete <note>`
+`{{CORAL_CLI}} kb update <note-slug> --content-file /tmp/kb-content.md --tag t1`
+`{{CORAL_CLI}} kb delete <note-slug>`
 
 ## Invalidation
 If a kb entry contradicts current code:
-`{{CORAL_CLI}} kb update <note> ...` or `{{CORAL_CLI}} kb delete <note>`
+`{{CORAL_CLI}} kb update <note-slug> ...` or `{{CORAL_CLI}} kb delete <note-slug>`

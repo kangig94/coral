@@ -1,7 +1,7 @@
 export type KbMatchSurface = 'filename' | 'principle' | 'tag' | 'title' | 'content';
 
 export interface KbResult {
-  path: string;
+  note: string;
   title: string;
   matchedBy: KbMatchSurface[];
   tags: string[];

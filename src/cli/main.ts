@@ -925,7 +925,7 @@ export function buildProgram(): Command {
   const kbUpdateCommand = kb.command('update');
   kbUpdateCommand
     .description('Update an existing KB note')
-    .argument('<note>', 'Note name')
+    .argument('<note>', 'Note slug without extension (e.g. rendering-guiding-contracts)')
     .option('--title <text>', 'Updated title')
     .option('--content-file <path>', 'Read content from file')
     .option('--tag <tag>', 'Tag (repeatable)', (value: string, previous: string[] | undefined) => [...(previous ?? []), value])
@@ -952,7 +952,7 @@ export function buildProgram(): Command {
   const kbDeleteCommand = kb.command('delete');
   kbDeleteCommand
     .description('Delete a KB note')
-    .argument('<note>', 'Note name')
+    .argument('<note>', 'Note slug without extension (e.g. rendering-guiding-contracts)')
     .action(async (note: string) => {
       const outputFormat = getOutputFormat(kbDeleteCommand);
 

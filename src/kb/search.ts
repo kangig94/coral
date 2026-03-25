@@ -24,10 +24,6 @@ type SnippetAnchor = {
   length: number;
 };
 
-function notePathForSlug(slug: string): string {
-  return `notes/${slug}.md`;
-}
-
 function denormalizeSlug(slug: string): string {
   return slug.replace(/ /g, '-');
 }
@@ -207,7 +203,7 @@ function toResult(
     : undefined;
 
   return {
-    path: notePathForSlug(slug),
+    note: slug,
     title,
     matchedBy: sortedMatchedBy(matchedBy),
     tags: [...tags],
