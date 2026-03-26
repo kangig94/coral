@@ -2,6 +2,8 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { insertMultiple } from '@orama/orama';
 import { errorMessage, isNoEntryError } from '../shared/mcp-utils.js';
+import { buildNoteIndexEntry } from './mutation-helpers.js';
+import { compareLocale } from './validation.js';
 import {
   extractBody,
   deriveNoteIdentity,
@@ -13,11 +15,11 @@ import { createOramaDb, toOramaDocument } from './orama-factory.js';
 import type { KbRuntime } from './runtime.js';
 import type { KbIndex, KbReindexNoteRecord, ReindexResult } from './types.js';
 
-function sortedMarkdownEntries(dirPath: string): string[] {
+export function sortedMarkdownEntries(dirPath: string): string[] {
   try {
     return readdirSync(dirPath)
       .filter((entry) => entry.endsWith('.md'))
-      .sort((left, right) => left.localeCompare(right));
+      .sort(compareLocale);
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
       return [];
@@ -69,15 +71,7 @@ function loadPrinciples(kb: KbRuntime): Array<[string, string]> {
 
 function buildKbIndex(notes: KbReindexNoteRecord[], principles: Array<[string, string]>): KbIndex {
   return {
-    notes: Object.fromEntries(notes.map((note) => [note.note, {
-      title: note.title,
-      tags: [...note.tags],
-      principles: [...note.principles],
-      source: [...note.source],
-      createdAt: note.createdAt,
-      updatedAt: note.updatedAt,
-      ...(note.mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote: note.mutationSeqAtPromote }),
-    }])),
+    notes: Object.fromEntries(notes.map((note) => [note.note, buildNoteIndexEntry(note)])),
     principles: Object.fromEntries(principles),
   };
 }
@@ -121,7 +115,7 @@ export async function rebuildTextArtifacts(
   const { db, tokenizer } = await createOramaDb();
 
   await insertMultiple(db, notes.map(toOramaDocument));
-  kb.persistIndex(index);
+  kb.persistIndexToDisk(index);
 
   try {
     kb.persistOramaSnapshot(db);

@@ -1,6 +1,7 @@
 import { search as oramaSearch } from '@orama/orama';
 import {
   normalizeOramaTerm,
+  normalizeWhitespace,
   tokenizeField,
   tokenizeQuery,
   type KbOramaDocument,
@@ -93,12 +94,8 @@ function truncateSnippet(snippet: string, matchOffset: number): string {
   return truncated.slice(0, 200).trimEnd();
 }
 
-function normalizeSnippetText(text: string): string {
-  return text.replace(/\s+/g, ' ').trim();
-}
-
 function normalizedOffset(text: string): number {
-  return text.replace(/\s+/g, ' ').replace(/^\s+/, '').length;
+  return normalizeWhitespace(text).length;
 }
 
 function findPhraseAnchor(content: string, rawQuery: string, oramaTerm: string): SnippetAnchor | null {
@@ -122,8 +119,9 @@ function findPhraseAnchor(content: string, rawQuery: string, oramaTerm: string):
   return bestAnchor;
 }
 
+// Inverse of Orama English SPLITTER — keeps the same word boundaries the indexer uses.
 function findTokenAnchor(content: string, queryTokens: string[], tokenizer: KbOramaTokenizer): SnippetAnchor | null {
-  for (const match of content.matchAll(/[A-Za-z0-9-]+/g)) {
+  for (const match of content.matchAll(/[A-Za-zàèéìòóù0-9_'-]+/gim)) {
     const value = match[0];
     const valueTokens = tokenizeField(value, tokenizer);
     if (!hasTokenOverlap(queryTokens, valueTokens)) {
@@ -156,7 +154,7 @@ function extractSnippet(
   const sentenceStart = findSentenceStart(content, anchor.index);
   const sentenceEnd = findSentenceEnd(content, anchor.index + anchor.length);
   const sentence = content.slice(sentenceStart, sentenceEnd);
-  const rawSnippet = normalizeSnippetText(sentence);
+  const rawSnippet = normalizeWhitespace(sentence);
   if (!rawSnippet) {
     return undefined;
   }
@@ -193,14 +191,12 @@ function toResult(
     matchedBy.add('title');
   }
 
-  const contentMatched = hasTokenOverlap(queryTokens, tokenizeField(hit.body, tokenizer));
-  if (contentMatched) {
+  const snippet = extractSnippet(hit.body, rawQuery, oramaTerm, queryTokens, tokenizer);
+  if (snippet !== undefined) {
+    matchedBy.add('content');
+  } else if (matchedBy.size === 0) {
     matchedBy.add('content');
   }
-
-  const snippet = contentMatched
-    ? extractSnippet(hit.body, rawQuery, oramaTerm, queryTokens, tokenizer)
-    : undefined;
 
   return {
     note: slug,

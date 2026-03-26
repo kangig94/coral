@@ -2,17 +2,16 @@ import { readFileSync } from 'node:fs';
 import { nowIsoString } from '../shared/mcp-utils.js';
 import { extractBody, parseFrontmatter, extractTitle, serializeNote } from './frontmatter.js';
 import type { KbUpdateInput } from './contracts.js';
+import { assertNonEmptyText, assertNoteSlug } from './validation.js';
 import {
-  assertNonEmptyText,
-  assertSlug,
-  cloneKbIndex,
-  markTextIndexStale,
+  buildNoteIndexEntry,
+  commitIndexUpdate,
   writeFileAtomic,
 } from './mutation-helpers.js';
 import type { KbRuntime } from './runtime.js';
 
 export async function update(rt: KbRuntime, input: KbUpdateInput): Promise<{ path: string }> {
-  const note = assertSlug(input.note, 'note');
+  const note = assertNoteSlug(input.note, 'note');
   const notePath = rt.notePath(note);
   const title = input.title === undefined ? undefined : assertNonEmptyText(input.title, 'title');
   if (input.content !== undefined && typeof input.content !== 'string') {
@@ -25,38 +24,30 @@ export async function update(rt: KbRuntime, input: KbUpdateInput): Promise<{ pat
     const frontmatter = parseFrontmatter(existing);
     const existingTitle = extractTitle(existing);
     const existingBody = extractBody(existing);
-    const updatedAt = nowIsoString();
     const normalizedTitle = title ?? existingTitle;
     const normalizedContent = nextContent ?? existingBody;
-    const nextFrontmatter = {
-      tags: frontmatter.tags,
-      principles: frontmatter.principles,
-      source: frontmatter.source,
-      createdAt: frontmatter.createdAt,
-      updatedAt,
-      ...(frontmatter.mutationSeqAtPromote === undefined
-        ? {}
-        : { mutationSeqAtPromote: frontmatter.mutationSeqAtPromote }),
-    };
+
+    if (normalizedTitle === existingTitle && normalizedContent === existingBody) {
+      return { path: notePath };
+    }
+
+    const updatedAt = nowIsoString();
+    const nextFrontmatter = { ...frontmatter, updatedAt };
 
     writeFileAtomic(notePath, serializeNote(nextFrontmatter, normalizedTitle, normalizedContent));
     rt.recordMutationCommitted();
 
-    const nextIndex = cloneKbIndex(rt.readIndex());
-    nextIndex.notes[note] = {
-      title: normalizedTitle,
-      tags: [...frontmatter.tags],
-      principles: [...frontmatter.principles],
-      source: [...frontmatter.source],
-      createdAt: frontmatter.createdAt,
-      updatedAt,
-      ...(frontmatter.mutationSeqAtPromote === undefined
-        ? {}
-        : { mutationSeqAtPromote: frontmatter.mutationSeqAtPromote }),
-    };
-    rt.writeIndex(nextIndex);
-
-    markTextIndexStale(rt.invalidateTextSnapshot, 'KB text snapshot is stale after kb_update.');
+    commitIndexUpdate(
+      rt,
+      (index) => {
+        index.notes[note] = buildNoteIndexEntry({
+          ...frontmatter,
+          title: normalizedTitle,
+          updatedAt,
+        });
+      },
+      'KB text snapshot is stale after kb_update.',
+    );
 
     return { path: notePath };
   });

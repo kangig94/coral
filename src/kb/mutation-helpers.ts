@@ -1,56 +1,45 @@
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { errorMessage } from '../shared/mcp-utils.js';
+import { errorMessage, isNoEntryError } from '../shared/mcp-utils.js';
 import type { KbIndexState } from './runtime.js';
+import type { KbRuntime } from './runtime.js';
 import type { KbIndex } from './types.js';
 
-const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+type NoteIndexEntrySource = {
+  title: string;
+  tags: readonly string[];
+  principles: readonly string[];
+  source: readonly string[];
+  createdAt: string;
+  updatedAt: string;
+  mutationSeqAtPromote?: number;
+};
 
-function assertString(value: unknown, label: string): string {
-  if (typeof value !== 'string') {
-    throw new Error(`${label} must be a string`);
-  }
-  return value;
+/** Build a deep-copied KbIndex note record from any source that carries the same fields. */
+export function buildNoteIndexEntry(meta: NoteIndexEntrySource): KbIndex['notes'][string] {
+  return {
+    title: meta.title,
+    tags: [...meta.tags],
+    principles: [...meta.principles],
+    source: [...meta.source],
+    createdAt: meta.createdAt,
+    updatedAt: meta.updatedAt,
+    ...(meta.mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote: meta.mutationSeqAtPromote }),
+  };
 }
 
-export function assertNonEmptyText(value: unknown, label: string): string {
-  const normalized = assertString(value, label).trim();
-  if (!normalized) {
-    throw new Error(`${label} must be non-empty`);
-  }
-  return normalized;
-}
+const ensuredDirs = new Set<string>();
 
-export function assertSlug(value: unknown, label: string): string {
-  const normalized = assertNonEmptyText(value, label);
-  if (!SLUG_PATTERN.test(normalized)) {
-    throw new Error(`${label} must be slug-safe`);
+function ensureDir(dir: string): void {
+  if (!ensuredDirs.has(dir)) {
+    mkdirSync(dir, { recursive: true });
+    ensuredDirs.add(dir);
   }
-  return normalized;
-}
-
-export function normalizeTags(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    throw new Error('tags must be an array');
-  }
-  return value.map((tag) => assertNonEmptyText(tag, 'tag'));
-}
-
-function normalizePrinciple(value: unknown): string {
-  const normalized = assertNonEmptyText(value, 'principle');
-  const wikilink = normalized.match(/^\[\[(.+)\]\]$/)?.[1];
-  return assertSlug(wikilink ?? normalized, 'principle');
-}
-
-export function normalizePrinciples(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    throw new Error('principles must be an array');
-  }
-  return value.map(normalizePrinciple);
 }
 
 export function writeFileAtomic(filePath: string, payload: string): void {
-  mkdirSync(dirname(filePath), { recursive: true });
+  const dir = dirname(filePath);
+  ensureDir(dir);
   const tmpPath = `${filePath}.tmp`;
 
   try {
@@ -58,6 +47,18 @@ export function writeFileAtomic(filePath: string, payload: string): void {
     renameSync(tmpPath, filePath);
   } catch (error: unknown) {
     rmSync(tmpPath, { force: true });
+    if (isNoEntryError(error)) {
+      ensuredDirs.delete(dir);
+      ensureDir(dir);
+      try {
+        writeFileSync(tmpPath, payload, 'utf-8');
+        renameSync(tmpPath, filePath);
+        return;
+      } catch (retryError: unknown) {
+        rmSync(tmpPath, { force: true });
+        throw retryError;
+      }
+    }
     throw error;
   }
 }
@@ -72,20 +73,26 @@ export function cloneKbIndex(index: KbIndex | null): KbIndex {
 
   return {
     notes: Object.fromEntries(
-      Object.entries(index.notes).map(([note, meta]) => [note, {
-        title: meta.title,
-        tags: [...meta.tags],
-        principles: [...meta.principles],
-        source: [...meta.source],
-        createdAt: meta.createdAt,
-        updatedAt: meta.updatedAt,
-        ...(meta.mutationSeqAtPromote === undefined
-          ? {}
-          : { mutationSeqAtPromote: meta.mutationSeqAtPromote }),
-      }]),
+      Object.entries(index.notes).map(([note, meta]) => [note, buildNoteIndexEntry(meta)]),
     ),
     principles: { ...index.principles },
   };
+}
+
+/**
+ * Clone the current index, apply the updater, write it back, and mark text stale.
+ * If no index exists on disk, updater receives an empty index.
+ * @precondition Caller already holds `rt.withMutationLock()`.
+ */
+export function commitIndexUpdate(
+  rt: Pick<KbRuntime, 'readIndex' | 'writeIndex' | 'invalidateTextSnapshot'>,
+  updater: (index: KbIndex) => void,
+  reason: string,
+): void {
+  const nextIndex = cloneKbIndex(rt.readIndex());
+  updater(nextIndex);
+  rt.writeIndex(nextIndex);
+  markTextIndexStale(rt.invalidateTextSnapshot, reason);
 }
 
 export function markTextIndexStale(
@@ -95,6 +102,6 @@ export function markTextIndexStale(
   try {
     invalidate(reason);
   } catch (error: unknown) {
-    invalidate(errorMessage(error));
+    process.stderr.write(`markTextIndexStale: ${errorMessage(error)}\n`);
   }
 }

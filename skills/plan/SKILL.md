@@ -119,6 +119,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     **If `--deep`**: Resolver has already applied Adopt/Adapt changes to the plan file.
     Read the updated plan file, then the resolver's synthesis report from the workflow result.
     Record Deferred/Diverged items.
+    ⛔ The resolver applying changes does NOT mean the phase can exit — you MUST still write the Round Summary (4c) and evaluate the Exit Condition (4d). Do not skip to the next phase.
 
     **Otherwise**: `result.content ?? Read(result.path)` is `<architect>…</architect>` + `<critic>…</critic>`.
     Read `CORAL_METHODS/HOW-SYNTHESIZE.md` and resolve the findings yourself. Edit the plan file.
@@ -127,7 +128,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
       ## Round N ({Round Label})
 
-      **If `--deep`**: use the resolver's Synthesis Report directly (Classification Table, Vyabhicharita, Constraint Collisions, Applied Changes, Deferred/Diverged items).
+      **If `--deep`**: use the resolver's Synthesis Report directly (Classification Table, Vyabhicharita, Constraint Collisions, Applied Changes, Deferred/Diverged items, Continue Decision).
 
       **Otherwise**: produce the summary yourself after synthesis:
 
@@ -146,36 +147,19 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     **Step 1 — Completion assessment** (`--deep` only):
     If `--deep`: Read `CORAL_METHODS/HOW-COMPLETE.md`. Evaluate coverage gaps (Counterexample Coverage),
     effort quality (Refutation Effort), and convergence pattern (Progressive Focus).
-    Record the assessment — it informs both the exit gate (Step 3) and next-round steering (Continue path).
+    Record the assessment — it informs both the verdict (Step 2) and next-round steering (Continue path).
 
-    **Step 2 — Classify**: Scan the Round Summary table. Record `max_severity` = highest severity after synthesis (reclassified severity if 4b applied one, otherwise reviewer's original). Never reclassify here — reclassification happens at synthesis time (4b), not at exit time.
+    **Step 2 — Verdict**:
 
-    **Step 3 — Severity gate**:
+    **If `--deep`**: Follow the resolver's **Continue Decision** verdict. Continue → 4a (or next phase at round 5). Exit → fix remaining MEDIUM/LOW inline, then Step 3. Hard override: CRITICAL findings always Continue. If Continue Decision is missing, fall back to the non-deep severity gate below.
 
-    | `max_severity` | Round | Verdict | Action |
-    |----------------|-------|---------|--------|
-    | CRITICAL or HIGH | < 5 | **Continue** | → Diminishing Returns check, then 4a |
-    | CRITICAL or HIGH | = 5 | **Max rounds** | → next phase, or AskUserQuestion if last |
-    | MEDIUM | any | **Fix and pass** | → fix inline, then Step 4 |
-    | LOW or none | any | **Clean pass** | → Step 4 |
+    **Otherwise**: Scan the Round Summary **Severity column**. CRITICAL/HIGH at round < 5 → Continue (4a). CRITICAL/HIGH at round 5 → next phase. MEDIUM → fix inline, then Step 3. LOW/none → Step 3. Severity is never reclassified at exit — only during synthesis (4b).
 
-    **Diminishing Returns check** (when verdict = Continue):
-    Before proceeding to 4a, assess whether HIGH findings are shifting from core design issues
-    to increasingly niche edge cases (low-probability lifecycle corners, rare race conditions,
-    exotic failure modes) while the plan's core structure remains stable across rounds.
-    Indicators: findings target progressively lower-probability scenarios, core architecture
-    unchanged between rounds, new findings do not invalidate prior fixes.
-    If detected: construct the next round's `init_prompt` to redirect reviewer focus
-    to a different aspect of the plan — not narrowing scope, but shifting it.
-    Also use Step 1's coverage gaps and convergence signals to shape the next round's focus.
-
-    > **Hard rule**: severity reclassification happens only during synthesis (4b), never after fixes. A finding that was HIGH after synthesis stays HIGH at exit — fixing it does not lower the severity. Fixes may introduce new issues; re-verification catches them.
-
-    **Step 4 — Completion gate** (`--deep` only, otherwise exit phase):
+    **Step 3 — Completion gate** (`--deep` only, otherwise exit phase):
 
     Apply ALL conditions in HOW-COMPLETE's Combined Exit Rule using the Step 1 assessment.
     If any condition fails → **Continue** (→ 4a, next round).
-    Exit phase only when both Step 3 AND Step 4 pass.
+    Exit phase only when both Step 2 AND Step 3 pass.
 
     ### 4e. Execution Order
 
@@ -246,7 +230,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     | Use workflow for all review phases | Run reviewers sequentially |
     | Synthesize with HOW-SYNTHESIZE (no `--deep`) or resolver (`--deep`) | Spawn resolver without `--deep` |
     | Cite file:line in plans | Write vague plans without references |
-    | Exit when no CRITICAL/HIGH | Continue reviewing past convergence |
+    | Exit when resolver says Exit or no CRITICAL/HIGH (non-deep) | Continue reviewing past convergence |
     | Return plan file path | Implement within this protocol |
   </Constraints>
   <Output_Format>

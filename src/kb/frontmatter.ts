@@ -2,9 +2,9 @@ import { basename } from 'node:path';
 import yaml from 'yaml';
 import { isRecord, isStringArray } from '../shared/mcp-utils.js';
 import type { KbNoteFrontmatter, KbNoteIdentity } from './types.js';
+import { NOTE_SLUG_PATTERN, assertNonEmptyText } from './validation.js';
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
-const NOTE_NAME_PATTERN = /^[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*$/;
 
 /** Non-capturing frontmatter regex for stripping (no capture group, unlike FRONTMATTER_PATTERN). */
 export const FRONTMATTER_BLOCK = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/;
@@ -44,24 +44,12 @@ function parseFrontmatterRecord(content: string): Record<string, unknown> {
   return parsed;
 }
 
-function normalizeNonEmptyString(value: unknown, field: string): string {
-  if (typeof value !== 'string') {
-    throw new Error(`${field} must be a string`);
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`${field} must be non-empty`);
-  }
-  return trimmed;
-}
-
 function normalizeStringList(value: unknown, field: string): string[] {
   if (!Array.isArray(value)) {
     throw new Error(`${field} must be a string array`);
   }
 
-  return value.map((entry) => normalizeNonEmptyString(entry, field));
+  return value.map((entry) => assertNonEmptyText(entry, field));
 }
 
 function normalizeOptionalMutationSeqAtPromote(value: unknown): number | undefined {
@@ -95,8 +83,8 @@ export function parseFrontmatter(content: string): KbNoteFrontmatter {
     tags: normalizeStringList(record.tags, 'tags'),
     principles: normalizePrincipleList(record.principles),
     source: normalizeStringList(record.source, 'source'),
-    createdAt: normalizeNonEmptyString(record.createdAt, 'createdAt'),
-    updatedAt: normalizeNonEmptyString(record.updatedAt, 'updatedAt'),
+    createdAt: assertNonEmptyText(record.createdAt, 'createdAt'),
+    updatedAt: assertNonEmptyText(record.updatedAt, 'updatedAt'),
     ...(mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote }),
   };
 }
@@ -106,10 +94,10 @@ export function parseMemoFrontmatter(content: string): { source: string[] } {
   const { source } = record;
 
   if (typeof source === 'string') {
-    return { source: [normalizeNonEmptyString(source, 'source')] };
+    return { source: [assertNonEmptyText(source, 'source')] };
   }
   if (isStringArray(source) && source.length > 0) {
-    return { source: source.map((entry) => normalizeNonEmptyString(entry, 'source')) };
+    return { source: source.map((entry) => assertNonEmptyText(entry, 'source')) };
   }
 
   throw new Error('Memo frontmatter must include source as a string or non-empty string array');
@@ -121,8 +109,8 @@ export function serializeFrontmatter(meta: KbNoteFrontmatter): string {
     tags: normalizeStringList(meta.tags, 'tags'),
     principles: normalizePrincipleList(meta.principles),
     source: normalizeStringList(meta.source, 'source'),
-    createdAt: normalizeNonEmptyString(meta.createdAt, 'createdAt'),
-    updatedAt: normalizeNonEmptyString(meta.updatedAt, 'updatedAt'),
+    createdAt: assertNonEmptyText(meta.createdAt, 'createdAt'),
+    updatedAt: assertNonEmptyText(meta.updatedAt, 'updatedAt'),
     ...(mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote }),
   }, {
     lineWidth: 0,
@@ -144,14 +132,14 @@ export function extractTitle(content: string): string {
   if (!title) {
     throw new Error('KB note is missing a top-level title');
   }
-  return normalizeNonEmptyString(title, 'title');
+  return assertNonEmptyText(title, 'title');
 }
 
 export function deriveNoteIdentity(pathOrName: string): KbNoteIdentity {
   const filename = basename(pathOrName);
   const note = filename.endsWith('.md') ? filename.slice(0, -3) : filename;
 
-  if (!NOTE_NAME_PATTERN.test(note)) {
+  if (!NOTE_SLUG_PATTERN.test(note)) {
     throw new Error(`Invalid KB note name: ${note}`);
   }
 
@@ -168,7 +156,7 @@ export function deriveNoteIdentity(pathOrName: string): KbNoteIdentity {
 }
 
 export function serializeNote(meta: KbNoteFrontmatter, title: string, body: string): string {
-  const heading = `# ${normalizeNonEmptyString(title, 'title')}`;
+  const heading = `# ${assertNonEmptyText(title, 'title')}`;
   const frontmatter = serializeFrontmatter(meta);
   const normalizedBody = body.trim();
 

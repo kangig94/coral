@@ -9,16 +9,10 @@ export interface KbResult {
   snippet?: string;
 }
 
+export type KbNoteIndexRecord = KbNoteFrontmatter & { title: string };
+
 export interface KbIndex {
-  notes: Record<string, {
-    title: string;
-    tags: string[];
-    principles: string[];
-    source: string[];
-    createdAt: string;
-    updatedAt: string;
-    mutationSeqAtPromote?: number;
-  }>;
+  notes: Record<string, KbNoteIndexRecord>;
   principles: Record<string, string>;
 }
 
@@ -52,34 +46,15 @@ export interface KbNoteIdentity {
   topic: string;
 }
 
-export type KbReindexNoteRecord = {
+export type KbReindexNoteRecord = KbNoteFrontmatter & {
   note: string;
   path: string;
   domain: string;
   title: string;
   body: string;
-  tags: string[];
-  principles: string[];
-  source: string[];
-  createdAt: string;
-  updatedAt: string;
-  mutationSeqAtPromote?: number;
 };
 
 export interface KbLanceDbAdapter {
   getDb(): Promise<unknown>;
   ensureTables(): Promise<void>;
-  upsertNote?(note: {
-    note: string;
-    path: string;
-    title: string;
-    body: string;
-    tags: string[];
-    principles: string[];
-    source: string[];
-    createdAt: string;
-    updatedAt: string;
-    mutationSeqAtPromote?: number;
-  }): Promise<void>;
-  deleteNote?(note: string): Promise<void>;
 }

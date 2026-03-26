@@ -4,6 +4,11 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCurateScheduler, type CurateHandle } from '../curate.js';
 import {
+  applyAddPendingDiscovery,
+  applyClearCurateRetryState,
+  applyRecordCurateFailure,
+  applyRecordDiscoveryAttempt,
+  applyRemovePendingDiscovery,
   compareCursor,
   curateStatePath,
   isClaimStale,
@@ -215,6 +220,90 @@ describe('curate state', () => {
         startedAt: '2026-03-25T11:45:00.000Z',
       },
     }), now)).toBe(true);
+  });
+
+  it('applies curate failure state transitions without disk access', () => {
+    const state = createCurateState({
+      lastAttemptedThrough: {
+        note: 'coral-failed',
+        mutationSeqAtPromote: 4,
+      },
+      activeClaim: {
+        through: {
+          note: 'coral-failed',
+          mutationSeqAtPromote: 4,
+        },
+        startedAt: '2026-03-25T11:59:00.000Z',
+      },
+      consecutiveFailures: 2,
+    });
+
+    expect(applyRecordCurateFailure(state, null, new Error('transient failure'))).toEqual({
+      ...state,
+      lastAttemptedThrough: {
+        note: 'coral-failed',
+        mutationSeqAtPromote: 4,
+      },
+      retryNotBefore: '2026-03-25T14:00:00.000Z',
+      activeClaim: null,
+      consecutiveFailures: 3,
+    });
+  });
+
+  it('applies retry-reset and discovery attempt transitions without rereading state', () => {
+    const retryState = createCurateState({
+      retryNotBefore: '2026-03-25T13:00:00.000Z',
+      activeClaim: {
+        through: {
+          note: 'coral-active',
+          mutationSeqAtPromote: 7,
+        },
+        startedAt: '2026-03-25T11:58:00.000Z',
+      },
+      consecutiveFailures: 4,
+    });
+
+    expect(applyClearCurateRetryState(createCurateState())).toBeNull();
+    expect(applyClearCurateRetryState(retryState)).toEqual({
+      ...retryState,
+      retryNotBefore: null,
+      activeClaim: null,
+      consecutiveFailures: 0,
+    });
+    expect(applyRecordDiscoveryAttempt(createCurateState(), 61, '2026-03-25')).toEqual(createCurateState({
+      lastDiscoveryCorpusSize: 61,
+      lastDiscoveryDay: '2026-03-25',
+    }));
+  });
+
+  it('applies pending discovery add and remove transitions with exact entry matching', () => {
+    const first = {
+      principle: 'contract-first-design',
+      statement: 'Write the contract before the implementation.',
+      notes: ['coral-alpha', 'coral-beta'],
+      createdAt: '2026-03-25T12:00:00.000Z',
+    };
+    const second = {
+      principle: 'deterministic-ordering',
+      statement: 'Sort inputs before assigning identifiers.',
+      notes: ['coral-gamma'],
+      createdAt: '2026-03-25T12:05:00.000Z',
+    };
+    const state = createCurateState({
+      pendingDiscoveries: [first, second],
+    });
+
+    expect(applyAddPendingDiscovery(state, first)).toBeNull();
+    expect(applyAddPendingDiscovery(createCurateState(), first)).toEqual(createCurateState({
+      pendingDiscoveries: [first],
+    }));
+    expect(applyRemovePendingDiscovery(state, {
+      ...first,
+      notes: ['coral-beta', 'coral-alpha'],
+    })).toBeNull();
+    expect(applyRemovePendingDiscovery(state, first)).toEqual(createCurateState({
+      pendingDiscoveries: [second],
+    }));
   });
 
   it('assigns missing mutation sequences in sorted note order starting after the highest existing sequence', async () => {

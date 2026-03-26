@@ -1,22 +1,29 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { load, save, type RawData } from '@orama/orama';
 import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
+import { CURATE_STATE_FILE } from './curate-state.js';
 import { loadKbLanceDb } from './lancedb-runtime.js';
+import { writeFileAtomic } from './mutation-helpers.js';
 import {
   createOramaDb,
   type KbOramaDb,
   type KbOramaTokenizer,
 } from './orama-factory.js';
+import {
+  notePathFromName,
+  notesDir as pathsNotesDir,
+  principlePathFromName,
+  principlesDir as pathsPrinciplesDir,
+} from './paths.js';
 import { rebuildTextArtifacts } from './text-artifacts.js';
 import type { KbIndex, KbLanceDbAdapter } from './types.js';
 
 const INDEX_STATE_FILE = 'index-state.json';
 const INDEX_FILE = 'index.json';
 const ORAMA_INDEX_FILE = 'orama-index.json';
-const CURATE_STATE_FILE = 'curate-state.json';
 
 export type KbIndexState = {
   mutationSeq: number;
@@ -35,9 +42,9 @@ export type KbRuntime = {
   readonly adapter: KbLanceDbAdapter | null;
   initAdapter(pluginRoot: string): Promise<void>;
   readIndex(): KbIndex | null;
-  persistIndex(index: KbIndex): KbIndex;
+  persistIndexToDisk(index: KbIndex): KbIndex;
   writeIndex(index: KbIndex): KbIndex;
-  readOrCreateIndex(): KbIndex;
+  readIndexOrEmpty(): KbIndex;
   readIndexStateIfPresent(): KbIndexState | null;
   readIndexState(): KbIndexState;
   writeIndexState(state: KbIndexState): void;
@@ -157,30 +164,11 @@ function parseIndexState(value: unknown): KbIndexState {
 }
 
 function writeJsonAtomic(filePath: string, value: unknown): void {
-  mkdirSync(dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.tmp`;
-
-  try {
-    writeFileSync(tmpPath, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
-    renameSync(tmpPath, filePath);
-  } catch (error: unknown) {
-    rmSync(tmpPath, { force: true });
-    throw error;
-  }
+  writeFileAtomic(filePath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 function isFreshTextSnapshot(state: KbIndexState | null): state is KbIndexState {
   return state !== null && state.indexedSeq === state.mutationSeq && state.staleReason === undefined;
-}
-
-function assertWithin(root: string, candidate: string, label: string): string {
-  const resolvedRoot = resolve(root);
-  const resolvedCandidate = resolve(candidate);
-  const rel = relative(resolvedRoot, resolvedCandidate);
-  if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))) {
-    return resolvedCandidate;
-  }
-  throw new Error(`${label} must stay within ${resolvedRoot}`);
 }
 
 export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: string; runtimeDir: string }): KbRuntime {
@@ -192,21 +180,19 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
   let mutationLock: Promise<void> = Promise.resolve();
 
   function notesDir(): string {
-    return join(markdownRoot, 'notes');
+    return pathsNotesDir(markdownRoot);
   }
 
   function principlesDir(): string {
-    return join(markdownRoot, 'principles');
+    return pathsPrinciplesDir(markdownRoot);
   }
 
   function notePath(note: string): string {
-    const root = notesDir();
-    return assertWithin(root, resolve(root, `${note}.md`), 'KB note path');
+    return notePathFromName(note, markdownRoot);
   }
 
   function principlePath(principle: string): string {
-    const root = principlesDir();
-    return assertWithin(root, resolve(root, `${principle}.md`), 'KB principle path');
+    return principlePathFromName(principle, markdownRoot);
   }
 
   function curateStatePath(): string {
@@ -225,12 +211,12 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     return join(runtimeDir, ORAMA_INDEX_FILE);
   }
 
-  function installIndexCache(index: KbIndex): KbIndex {
-    const normalized = parseIndex(index);
-    cachedIndex = normalized;
+  /** Install an already-validated index into the in-memory cache. */
+  function installIndexCache(validated: KbIndex): KbIndex {
+    cachedIndex = validated;
     cachedIndexLoaded = true;
-    cachedIndexMtime = statSync(indexPath()).mtimeMs;
-    return normalized;
+    cachedIndexMtime = Date.now();
+    return validated;
   }
 
   function installOramaCache(orama: KbCachedOramaIndex): void {
@@ -288,15 +274,17 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     }
   }
 
-  function textArtifactsNeedRebuild(): boolean {
-    return !isFreshTextSnapshot(readIndexStateIfPresent()) || indexNeedsRebuild();
+  function textArtifactsNeedRebuild(state?: KbIndexState | null): boolean {
+    const currentState = state === undefined ? readIndexStateIfPresent() : state;
+    return !isFreshTextSnapshot(currentState) || indexNeedsRebuild();
   }
 
   async function ensureIndex(): Promise<KbIndex> {
     if (textArtifactsNeedRebuild()) {
       await kbRuntime.withMutationLock(async () => {
-        const startSeq = readIndexState().mutationSeq;
-        if (!textArtifactsNeedRebuild()) {
+        const state = readIndexStateIfPresent();
+        const startSeq = state?.mutationSeq ?? 0;
+        if (!textArtifactsNeedRebuild(state)) {
           return;
         }
 
@@ -313,8 +301,9 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     index: KbIndex;
   }> {
     await ensureIndex();
+    const stateAfterEnsureIndex = readIndexStateIfPresent();
 
-    if (cachedOramaIndex !== null && !textArtifactsNeedRebuild()) {
+    if (cachedOramaIndex !== null && !textArtifactsNeedRebuild(stateAfterEnsureIndex)) {
       return {
         ...cachedOramaIndex,
         index: kbRuntime.readIndex() ?? emptyIndex(),
@@ -322,9 +311,10 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     }
 
     return kbRuntime.withMutationLock(async () => {
-      const startSeq = readIndexState().mutationSeq;
+      const state = readIndexStateIfPresent();
+      const startSeq = state?.mutationSeq ?? 0;
 
-      if (textArtifactsNeedRebuild()) {
+      if (textArtifactsNeedRebuild(state)) {
         try {
           await rebuildTextArtifacts(kbRuntime, startSeq);
         } catch (error: unknown) {
@@ -342,7 +332,8 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
         }
       }
 
-      if (cachedOramaIndex === null || textArtifactsNeedRebuild()) {
+      const stateAfterArtifacts = readIndexStateIfPresent();
+      if (cachedOramaIndex === null || textArtifactsNeedRebuild(stateAfterArtifacts)) {
         throw new Error('KB text search is unavailable: a fresh text snapshot could not be installed.');
       }
 
@@ -404,15 +395,15 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
         throw error;
       }
     },
-    persistIndex(index) {
+    persistIndexToDisk(index) {
       const normalized = parseIndex(index);
       writeJsonAtomic(indexPath(), normalized);
       return normalized;
     },
     writeIndex(index) {
-      return installIndexCache(kbRuntime.persistIndex(index));
+      return installIndexCache(kbRuntime.persistIndexToDisk(index));
     },
-    readOrCreateIndex() {
+    readIndexOrEmpty() {
       return kbRuntime.readIndex() ?? emptyIndex();
     },
     readIndexStateIfPresent,

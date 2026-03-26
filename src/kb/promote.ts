@@ -3,11 +3,10 @@ import { nowIsoString } from '../shared/mcp-utils.js';
 import { parseMemoFrontmatter, serializeNote } from './frontmatter.js';
 import { memoPathFromContext } from './paths.js';
 import type { KbPromoteInput } from './contracts.js';
+import { assertNonEmptyText, assertNoteSlug, assertSlug } from './validation.js';
 import {
-  assertNonEmptyText,
-  assertSlug,
-  cloneKbIndex,
-  markTextIndexStale,
+  buildNoteIndexEntry,
+  commitIndexUpdate,
   writeFileAtomic,
 } from './mutation-helpers.js';
 import type { KbRuntime } from './runtime.js';
@@ -29,7 +28,7 @@ export async function promote(
   }
   const content = input.content;
   const domain = assertSlug(input.domain, 'domain');
-  const topic = assertSlug(input.topic, 'topic');
+  const topic = assertNoteSlug(input.topic, 'topic');
 
   const memoPath = memoPathFromContext(projectRoot, memo);
   const noteName = `${domain}-${topic}`;
@@ -55,19 +54,21 @@ export async function promote(
 
     writeFileAtomic(notePath, noteContent);
 
-    const nextIndex = cloneKbIndex(rt.readIndex());
-    nextIndex.notes[noteName] = {
-      title,
-      tags: [domain],
-      principles: [],
-      source: [...source],
-      createdAt,
-      updatedAt: createdAt,
-      mutationSeqAtPromote,
-    };
-    rt.writeIndex(nextIndex);
-
-    markTextIndexStale(rt.invalidateTextSnapshot, 'KB text snapshot is stale after kb_promote.');
+    commitIndexUpdate(
+      rt,
+      (index) => {
+        index.notes[noteName] = buildNoteIndexEntry({
+          title,
+          tags: [domain],
+          principles: [],
+          source,
+          createdAt,
+          updatedAt: createdAt,
+          mutationSeqAtPromote,
+        });
+      },
+      'KB text snapshot is stale after kb_promote.',
+    );
 
     rmSync(memoPath, { force: true });
     return { path: notePath };

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   deriveNoteIdentity,
   extractTitle,
@@ -137,5 +137,45 @@ Keep the body stable.
       domain: 'coral',
       topic: 'kb-runtime-root',
     });
+  });
+
+  it('markTextIndexStale logs to stderr on double failure instead of silently swallowing', async () => {
+    const { markTextIndexStale } = await import('../mutation-helpers.js');
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const alwaysThrows = () => { throw new Error('disk full'); };
+    markTextIndexStale(alwaysThrows, 'stale after promote');
+
+    expect(stderrSpy).toHaveBeenCalledOnce();
+    expect(stderrSpy.mock.calls[0]![0]).toContain('markTextIndexStale');
+    expect(stderrSpy.mock.calls[0]![0]).toContain('disk full');
+    stderrSpy.mockRestore();
+  });
+
+  it('imports frontmatter and mutation helpers through validation without a circular load failure', async () => {
+    vi.resetModules();
+    const [{ parseFrontmatter: dynamicParseFrontmatter }, { buildNoteIndexEntry }, { assertNonEmptyText }] = await Promise.all([
+      import('../frontmatter.js'),
+      import('../mutation-helpers.js'),
+      import('../validation.js'),
+    ]);
+
+    expect(dynamicParseFrontmatter(`---
+tags: [coral]
+principles: []
+source:
+  - kangig94/coral
+createdAt: 2026-03-23
+updatedAt: 2026-03-23
+---
+# Dynamic Import
+`)).toMatchObject({
+      createdAt: '2026-03-23',
+      updatedAt: '2026-03-23',
+    });
+    expect(buildNoteIndexEntry({
+      title: 'Test', tags: ['coral'], principles: [], source: ['test'], createdAt: '2026-03-23', updatedAt: '2026-03-23',
+    })).toMatchObject({ title: 'Test', tags: ['coral'] });
+    expect(assertNonEmptyText(' title ', 'title')).toBe('title');
   });
 });

@@ -11,10 +11,11 @@ import { readNote } from './read.js';
 import { update } from './update.js';
 import type { CurateHandle } from './curate.js';
 import type { KbRuntime } from './runtime.js';
+import { LOWERCASE_SLUG_PATTERN, NOTE_SLUG_PATTERN } from './validation.js';
 
-// KB filenames allow mixed case for code identifiers (e.g., cuMemFree, applyExpel)
-const slugSchema = z.string().regex(/^[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*$/);
-const noteNameSchema = slugSchema.describe('Note slug without path or extension (e.g. rendering-guiding-contracts)');
+const noteSlugSchema = z.string().regex(NOTE_SLUG_PATTERN);
+const lowercaseSlugSchema = z.string().regex(LOWERCASE_SLUG_PATTERN);
+const noteNameSchema = noteSlugSchema.describe('Note slug without path or extension (e.g. rendering-guiding-contracts)');
 const nonEmptyTrimmedSchema = z.string().trim().min(1);
 const titleSchema = nonEmptyTrimmedSchema;
 
@@ -44,8 +45,8 @@ export const kbPromoteSchema = z.object({
   memo: z.string().describe('Memo filename (e.g. 20260325-topic.md), not a full path'),
   title: titleSchema,
   content: z.string(),
-  domain: slugSchema,
-  topic: slugSchema,
+  domain: lowercaseSlugSchema,
+  topic: noteSlugSchema,
 });
 export type KbPromoteInput = z.input<typeof kbPromoteSchema>;
 
@@ -75,10 +76,10 @@ export const kbPrinciplesSchema = z.object({
 });
 export type KbPrinciplesInput = z.input<typeof kbPrinciplesSchema>;
 
-const topicSlugSchema = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).describe('Kebab-case topic slug (e.g. orama-threshold)');
+const memoTopicSlugSchema = lowercaseSlugSchema.describe('Kebab-case topic slug (e.g. orama-threshold)');
 
 export const kbMemoSchema = z.object({
-  topic: topicSlugSchema,
+  topic: memoTopicSlugSchema,
   content: nonEmptyTrimmedSchema.describe('Memo body text (one paragraph + context)'),
 });
 export type KbMemoInput = z.input<typeof kbMemoSchema>;
