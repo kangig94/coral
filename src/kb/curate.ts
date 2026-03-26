@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 import {
   errorMessage,
   isNoEntryError,
@@ -52,6 +53,33 @@ const DISCOVERY_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
 const DISCOVERY_CORPUS_RESET_RATIO = 0.2;
 
 const GITIGNORE_ENTRIES = ['curate-state.json', 'data/', '.obsidian/'];
+const USAGE_CACHE_STALE_MS = 10 * 60 * 1000;
+const USAGE_5H_THRESHOLD = 90;
+const USAGE_WK_THRESHOLD = 100;
+
+function isUsageBudgetExhausted(): boolean {
+  try {
+    const cachePath = join(homedir(), '.claude', 'hud', '.coral-cache.json');
+    const raw = JSON.parse(readFileSync(cachePath, 'utf-8')) as Record<string, unknown>;
+    const entry = raw.claude as { ts?: number; data?: { fiveHour?: number; weekly?: number }; error?: boolean } | undefined;
+    if (!entry?.ts || !entry.data || entry.error) {
+      return false;
+    }
+    if (Date.now() - entry.ts > USAGE_CACHE_STALE_MS) {
+      return false;
+    }
+    const { fiveHour, weekly } = entry.data;
+    if (typeof fiveHour === 'number' && fiveHour >= USAGE_5H_THRESHOLD) {
+      return true;
+    }
+    if (typeof weekly === 'number' && weekly >= USAGE_WK_THRESHOLD) {
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
 const GITIGNORE_HEADER = '# Coral KB runtime (device-local, auto-managed)';
 
 type SpawnCliResult = {
@@ -1618,6 +1646,9 @@ export function createCurateScheduler({
 
   function launchQueuedRun(): void {
     if (!runtimeStarted || activeRun !== null || !queuedRun) {
+      return;
+    }
+    if (isUsageBudgetExhausted()) {
       return;
     }
 
