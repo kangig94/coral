@@ -68,25 +68,15 @@ export function collectCoralEnv(): Record<string, string> {
   return env;
 }
 
-const bundleHashCache = new Map<string, string>();
-
-/**
- * Read the bundle hash from bridge/manifest.json, caching the result per pluginRoot.
- * The hash doesn't change during process lifetime for a given root.
- */
 export function readBundleHash(pluginRoot: string): string {
-  const cached = bundleHashCache.get(pluginRoot);
-  if (cached !== undefined) return cached;
-  let hash = 'unknown';
   try {
     const raw = readFileSync(join(pluginRoot, 'bridge', 'manifest.json'), 'utf-8');
     const parsed: unknown = JSON.parse(raw);
     if (isRecord(parsed) && typeof parsed.bundleHash === 'string') {
-      hash = parsed.bundleHash;
+      return parsed.bundleHash;
     }
   } catch { /* fall through */ }
-  bundleHashCache.set(pluginRoot, hash);
-  return hash;
+  return 'unknown';
 }
 
 /**
