@@ -180,6 +180,7 @@ export type BackendServerController = {
   shutdown: (reason: string) => Promise<void>;
   waitForShutdown: () => Promise<void>;
   getLifecycle: () => LifecycleState;
+  getIdleTimer: () => IdleTimer;
 };
 
 const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
@@ -1546,7 +1547,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       const env = collectCoralEnv();
 
       sendJson(res, 200, {
-        status: lifecycle === 'running' ? 'ok' : lifecycle,
+        status: idleTimer.isDraining ? 'draining' : (lifecycle === 'running' ? 'ok' : lifecycle),
         version,
         bundleHash,
         namespace,
@@ -1563,10 +1564,8 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
 
     if (req.method === 'POST' && req.url === '/admin/shutdown') {
       req.resume();
-      runOnResponseDone(res, () => {
-        void shutdown('admin').catch(() => {});
-      });
-      sendJson(res, 200, { status: 'shutting_down' });
+      idleTimer.requestDrain('replaced');
+      sendJson(res, 200, { status: 'draining', instanceId });
       return;
     }
 
@@ -1739,8 +1738,8 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
           && idleTimer.inflightRequests === 0
           && !hasRunningSessions(discussRegistry)
           && !(kbSubsystem?.curateScheduler.isRunning() ?? false),
-        () => {
-          void shutdown('idle').catch(() => {});
+        (reason) => {
+          void shutdown(reason).catch(() => {});
         },
       );
 
@@ -1748,12 +1747,12 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       // will point to the replacement's instanceId). Covers the case where
       // ensureBackend's shutdown request is lost during rapid rebuild cycles.
       const ownershipChecker = setInterval(() => {
-        if (lifecycle !== 'running') return;
+        if (lifecycle !== 'running' || idleTimer.isDraining) return;
         try {
           const current = readBackendInfo(resolvedPluginRoot);
           if (current !== null && current.instanceId !== instanceId) {
             clearInterval(ownershipChecker);
-            void shutdown('replaced').catch(() => {});
+            idleTimer.requestDrain('replaced');
           }
         } catch {
           // read failure — skip this check
@@ -1794,6 +1793,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     shutdown,
     waitForShutdown: () => shutdownPromise ?? Promise.resolve(),
     getLifecycle: () => lifecycle,
+    getIdleTimer: () => idleTimer,
   };
 }
 
