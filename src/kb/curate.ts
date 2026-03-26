@@ -860,7 +860,7 @@ export function createCurateScheduler({
       try {
         existing = readFileSync(gitignorePath, 'utf-8');
       } catch {
-        // file doesn't exist yet - will create
+        // no existing .gitignore
       }
       const lines = existing.split('\n');
       const missing = GITIGNORE_ENTRIES.filter((entry) => !lines.some((line) => line.trim() === entry));
@@ -899,7 +899,7 @@ export function createCurateScheduler({
         });
         return;
       } catch {
-        // has staged changes - proceed to commit
+        // diff --cached exits non-zero when staged changes exist
       }
 
       try {
@@ -1107,7 +1107,7 @@ export function createCurateScheduler({
     state: CurateState,
   ): Promise<CurateState> {
     const sortedTargets = [...targets].sort(compareMetadataTarget);
-    const currentIndex = kb.readOrCreateIndex();
+    const currentIndex = kb.readIndexOrEmpty();
     const nextIndex = cloneKbIndex(currentIndex);
     const cleanupTagSupport = countTagSupport(currentIndex);
     let processedThrough = state.processedThrough;
@@ -1335,7 +1335,7 @@ export function createCurateScheduler({
     entry: PendingDiscovery,
     processedThrough: CurateCursor,
   ): boolean {
-    const index = kb.readOrCreateIndex();
+    const index = kb.readIndexOrEmpty();
 
     return entry.notes.every((note) => {
       const noteMeta = index.notes[note];
@@ -1373,7 +1373,7 @@ export function createCurateScheduler({
         const targets = buildPrincipleAssignmentTargets(
           entry.principle,
           entry.notes,
-          kb.readOrCreateIndex(),
+          kb.readIndexOrEmpty(),
           processedThrough,
         );
         if (targets.length > 0) {
@@ -1392,7 +1392,7 @@ export function createCurateScheduler({
   ): Promise<void> {
     await drainPendingDiscoveries(processedThrough);
 
-    const currentIndex = kb.readOrCreateIndex();
+    const currentIndex = kb.readIndexOrEmpty();
     const eligibleNotes = collectEligibleDiscoveryNotes(currentIndex, processedThrough);
     const today = nowIsoString().slice(0, 10);
     let state = readCurateState(kb);
@@ -1439,7 +1439,7 @@ export function createCurateScheduler({
         const targets = buildPrincipleAssignmentTargets(
           entry.principle,
           entry.notes,
-          kb.readOrCreateIndex(),
+          kb.readIndexOrEmpty(),
           processedThrough,
         );
         if (targets.length > 0) {
@@ -1463,7 +1463,7 @@ export function createCurateScheduler({
       }
 
       try {
-        const claimIndex = kb.readOrCreateIndex();
+        const claimIndex = kb.readIndexOrEmpty();
         const rawAssignments = await runClassificationBatches(claim, claimIndex);
         const validatedAssignments = validateAssignments(rawAssignments, claimIndex, claim.notes);
         const metadataTargets = buildMetadataTargets(validatedAssignments, claimIndex, claim.notes);
@@ -1472,7 +1472,7 @@ export function createCurateScheduler({
 
         const postPhaseOneState = readCurateState(kb);
         const postPhaseOneProcessedThrough = postPhaseOneState.processedThrough;
-        const postPhaseOneIndex = kb.readOrCreateIndex();
+        const postPhaseOneIndex = kb.readIndexOrEmpty();
 
         if (
           postPhaseOneProcessedThrough !== null

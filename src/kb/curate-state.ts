@@ -210,7 +210,7 @@ function parseCurateState(value: unknown): CurateState {
   };
 }
 
-function resolveCurateStatePath(target: CurateStateTarget): string {
+export function curateStatePath(target: CurateStateTarget): string {
   return typeof target === 'string'
     ? join(target, CURATE_STATE_FILE)
     : target.curateStatePath();
@@ -253,13 +253,9 @@ function scanNote(kb: Pick<KbRuntime, 'notePath'>, note: string): ScannedNote {
   };
 }
 
-export function curateStatePath(target: CurateStateTarget): string {
-  return resolveCurateStatePath(target);
-}
-
 export function readCurateState(target: CurateStateTarget): CurateState {
   try {
-    return parseCurateState(JSON.parse(readFileSync(resolveCurateStatePath(target), 'utf-8')) as unknown);
+    return parseCurateState(JSON.parse(readFileSync(curateStatePath(target), 'utf-8')) as unknown);
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
       return defaultCurateState();
@@ -269,7 +265,7 @@ export function readCurateState(target: CurateStateTarget): CurateState {
 }
 
 export function writeCurateState(target: CurateStateTarget, state: CurateState): void {
-  writeFileAtomic(resolveCurateStatePath(target), JSON.stringify(state));
+  writeFileAtomic(curateStatePath(target), `${JSON.stringify(state, null, 2)}\n`);
 }
 
 export function compareCursor(left: CurateCursor, right: CurateCursor): number {

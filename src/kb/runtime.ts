@@ -42,9 +42,9 @@ export type KbRuntime = {
   readonly adapter: KbLanceDbAdapter | null;
   initAdapter(pluginRoot: string): Promise<void>;
   readIndex(): KbIndex | null;
-  persistIndex(index: KbIndex): KbIndex;
+  persistIndexToDisk(index: KbIndex): KbIndex;
   writeIndex(index: KbIndex): KbIndex;
-  readOrCreateIndex(): KbIndex;
+  readIndexOrEmpty(): KbIndex;
   readIndexStateIfPresent(): KbIndexState | null;
   readIndexState(): KbIndexState;
   writeIndexState(state: KbIndexState): void;
@@ -390,15 +390,15 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
         throw error;
       }
     },
-    persistIndex(index) {
+    persistIndexToDisk(index) {
       const normalized = parseIndex(index);
       writeJsonAtomic(indexPath(), normalized);
       return normalized;
     },
     writeIndex(index) {
-      return installIndexCache(kbRuntime.persistIndex(index));
+      return installIndexCache(kbRuntime.persistIndexToDisk(index));
     },
-    readOrCreateIndex() {
+    readIndexOrEmpty() {
       return kbRuntime.readIndex() ?? emptyIndex();
     },
     readIndexStateIfPresent,

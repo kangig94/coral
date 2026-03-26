@@ -114,7 +114,7 @@ export async function rebuildTextArtifacts(
   const { db, tokenizer } = await createOramaDb();
 
   await insertMultiple(db, notes.map(toOramaDocument));
-  kb.persistIndex(index);
+  kb.persistIndexToDisk(index);
 
   try {
     kb.persistOramaSnapshot(db);
