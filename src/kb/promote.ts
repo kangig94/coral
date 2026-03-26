@@ -35,10 +35,6 @@ export async function promote(kb: KbContext, input: KbPromoteInput): Promise<{ p
 
   const memoPath = memoPathFromContext(kb.projectRoot, memo);
   const notePath = notePathFromParts(domain, topic);
-  if (existsSync(notePath)) {
-    throw duplicateNoteError(notePath);
-  }
-
   const memoContent = readFileSync(memoPath, 'utf-8');
   const { source } = parseMemoFrontmatter(memoContent);
   const noteName = `${domain}-${topic}`;

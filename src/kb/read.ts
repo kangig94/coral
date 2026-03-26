@@ -1,18 +1,8 @@
 import { readFileSync } from 'node:fs';
-import { parseFrontmatter, extractTitle } from './frontmatter.js';
+import { extractBody, parseFrontmatter, extractTitle } from './frontmatter.js';
 import { notePathFromName } from './paths.js';
 import type { KbReadInput } from './contracts.js';
 import { assertSlug } from './mutation-helpers.js';
-
-const FRONTMATTER_BLOCK = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/;
-const TOP_LEVEL_TITLE = /^# .+(?:\r?\n){1,2}/;
-
-function extractBody(raw: string): string {
-  return raw
-    .replace(FRONTMATTER_BLOCK, '')
-    .replace(TOP_LEVEL_TITLE, '')
-    .trim();
-}
 
 export type KbReadResult = {
   note: string;

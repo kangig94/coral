@@ -153,8 +153,13 @@ function parseIndexState(value: unknown): KbIndexState {
 function writeJsonAtomic(filePath: string, value: unknown): void {
   mkdirSync(dirname(filePath), { recursive: true });
   const tmpPath = `${filePath}.tmp`;
-  writeFileSync(tmpPath, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
-  renameSync(tmpPath, filePath);
+  try {
+    writeFileSync(tmpPath, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
+    renameSync(tmpPath, filePath);
+  } catch (error: unknown) {
+    rmSync(tmpPath, { force: true });
+    throw error;
+  }
 }
 
 function isFreshTextSnapshot(state: KbIndexState | null): state is KbIndexState {
@@ -297,13 +302,10 @@ export async function ensureOramaIndex(kb: KbContext): Promise<{
   }
 
   return withKbMutationLock(async () => {
-    if (indexNeedsRebuild()) {
-      try {
-        await rebuildWithMutationLock(kb);
-      } catch (error: unknown) {
-        throw new Error(`KB text search is unavailable: ${errorMessage(error)}`);
-      }
-    } else if (!isFreshTextSnapshot(readIndexStateIfPresent())) {
+    const needsRebuild = indexNeedsRebuild();
+    const freshSnapshot = isFreshTextSnapshot(readIndexStateIfPresent());
+
+    if (needsRebuild || !freshSnapshot) {
       try {
         await rebuildWithMutationLock(kb);
       } catch (error: unknown) {
@@ -321,6 +323,7 @@ export async function ensureOramaIndex(kb: KbContext): Promise<{
       }
     }
 
+    // Re-read after potential rebuild to verify freshness
     if (cachedOramaIndex === null || !isFreshTextSnapshot(readIndexStateIfPresent())) {
       throw new Error('KB text search is unavailable: a fresh text snapshot could not be installed.');
     }

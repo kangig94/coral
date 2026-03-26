@@ -1,4 +1,5 @@
-import { readFileSync, rmSync } from 'node:fs';
+import { rmSync } from 'node:fs';
+import { isNoEntryError } from '../shared/mcp-utils.js';
 import { notePathFromName } from './paths.js';
 import type { KbDeleteInput } from './contracts.js';
 import type { KbContext } from './types.js';
@@ -15,8 +16,14 @@ export async function deleteFn(_kb: KbContext, input: KbDeleteInput): Promise<{ 
   const notePath = notePathFromName(note);
 
   return withKbMutationLock(async () => {
-    readFileSync(notePath, 'utf-8');
-    rmSync(notePath);
+    try {
+      rmSync(notePath);
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) {
+        throw new Error(`KB note not found: ${note}`);
+      }
+      throw error;
+    }
     recordMutationCommitted();
 
     const nextIndex = cloneKbIndex(readKbIndex());

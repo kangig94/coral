@@ -10,13 +10,14 @@ try {
   const sessionId = input.session_id;
   const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || '';
   const projectDir = process.env.CLAUDE_PROJECT_DIR;
-  const cliPath = `node "${PLUGIN_ROOT}/bridge/coral-cli.cjs"`;
+  const cliPath = `node "${join(PLUGIN_ROOT, 'bridge', 'coral-cli.cjs')}"`;
+
 
   if (!PLUGIN_ROOT || !existsSync(PLUGIN_ROOT)) process.exit(0);
 
   if (projectDir) ensureCliPermission(projectDir);
 
-  const injectText = readFileSync(`${PLUGIN_ROOT}/INJECT.md`, 'utf-8');
+  const injectText = readFileSync(join(PLUGIN_ROOT, 'INJECT.md'), 'utf-8');
   const injectContent = injectText
     .replaceAll('{{CORAL_KB}}', resolveKbRoot())
     .replaceAll('{{CORAL_CLI}}', cliPath)

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { nowIsoString } from '../shared/mcp-utils.js';
-import { parseFrontmatter, extractTitle, serializeNote } from './frontmatter.js';
+import { extractBody, parseFrontmatter, extractTitle, serializeNote } from './frontmatter.js';
 import { notePathFromName } from './paths.js';
 import type { KbUpdateInput } from './contracts.js';
 import type { KbContext } from './types.js';
@@ -17,16 +17,6 @@ import {
   markTextIndexStale,
   writeFileAtomic,
 } from './mutation-helpers.js';
-
-const FRONTMATTER_BLOCK = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/;
-const TOP_LEVEL_TITLE = /^# .+(?:\r?\n){1,2}/;
-
-function extractBody(content: string): string {
-  return content
-    .replace(FRONTMATTER_BLOCK, '')
-    .replace(TOP_LEVEL_TITLE, '')
-    .trim();
-}
 
 export async function update(_kb: KbContext, input: KbUpdateInput): Promise<{ path: string }> {
   const note = assertSlug(input.note, 'note');
