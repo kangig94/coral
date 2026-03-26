@@ -1084,7 +1084,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     process.stderr.write(message);
   });
   const createExecutionService = options.createExecutionService
-    ?? ((ctx: CallerContext) => new DefaultExecutionService(ctx, progressStore));
+    ?? ((ctx: CallerContext) => new DefaultExecutionService(ctx, progressStore, bundleHash));
   const acquireLockFn = options.acquireLockFn ?? acquireLock;
   const writeBackendInfoFn = options.writeBackendInfoFn ?? writeBackendInfo;
   const removeBackendInfoIfOwnerFn = options.removeBackendInfoIfOwnerFn ?? removeBackendInfoIfOwner;
@@ -1554,7 +1554,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         instanceId,
         uptimeMs: now() - startedAt,
         activeChildren: activeChildren.size,
-        activeJobs: progressStore.liveJobCount(),
+        activeJobs: progressStore.liveJobCount(bundleHash),
         queueDepth: queueDepth(),
         inflightRequests: idleTimer.inflightRequests,
         env,
@@ -1734,7 +1734,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       idleTimer.startWatching(
         () => lifecycle === 'running'
           && activeChildren.size === 0
-          && progressStore.liveJobCount() === 0
+          && progressStore.liveJobCount(bundleHash) === 0
           && idleTimer.inflightRequests === 0
           && !hasRunningSessions(discussRegistry)
           && !(kbSubsystem?.curateScheduler.isRunning() ?? false),

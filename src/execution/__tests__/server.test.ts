@@ -15,6 +15,7 @@ import { discussSourcesPath, pluginRootNamespace, resolveProjectSource } from '.
 import type { BackendServerController } from '../server.js';
 
 const testBackendNamespace = pluginRootNamespace(process.cwd());
+const foreignBackendNamespace = 'foreign-namespace-xyz';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -292,6 +293,46 @@ describe('execution backend server', () => {
       queueDepth: 0,
     });
     expect(typeof body.uptimeMs).toBe('number');
+  });
+
+  it('reports only matching bundleHash live jobs from /health when mixed hashes are seeded', async () => {
+    const progressStore = new ProgressStore();
+    createdJobIds.add('job-local-health');
+    createdJobIds.add('job-stale-health');
+    progressStore.initJob({
+      jobId: 'job-local-health',
+      sessionId: 'session-local-health',
+      provider: 'codex',
+      projectRoot: '/tmp/project',
+      backendNamespace: testBackendNamespace,
+      bundleHash: 'testhash1234',
+      initialPhase: 'running',
+    });
+    progressStore.initJob({
+      jobId: 'job-stale-health',
+      sessionId: 'session-stale-health',
+      provider: 'codex',
+      projectRoot: '/tmp/project',
+      backendNamespace: testBackendNamespace,
+      bundleHash: 'oldhash9999',
+      initialPhase: 'running',
+    });
+
+    const backend = await startBackendServer({
+      progressStore,
+      recoverOrphanedJobsFn: () => {},
+    });
+
+    const response = await fetch(`${backend.baseUrl}/health`, {
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+    const body = await response.json() as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      status: 'ok',
+      activeJobs: 1,
+    });
   });
 
   it('runs KB initialization during startup before idle watching begins', async () => {
@@ -1141,6 +1182,59 @@ describe('execution backend server', () => {
     expect(backend.controller.getLifecycle()).toBe('stopped');
     expect(existsSync(backend.backendInfo.backendInfoPath(pluginRoot))).toBe(false);
     expect(existsSync(backend.backendLock.backendLockPath(pluginRoot))).toBe(false);
+  });
+
+  it('drains shutdown when only foreign namespace live jobs remain', async () => {
+    const progressStore = new ProgressStore();
+    const pluginRoot = createProjectRoot('plugin-root-foreign-drain');
+    const localNamespace = pluginRootNamespace(pluginRoot);
+    const foreignJobId = 'job-foreign-drain';
+    createdJobIds.add(foreignJobId);
+    progressStore.initJob({
+      jobId: foreignJobId,
+      sessionId: 'session-foreign-drain',
+      provider: 'codex',
+      projectRoot: '/tmp/foreign-project',
+      backendNamespace: foreignBackendNamespace,
+      initialPhase: 'running',
+    });
+
+    const backend = await startBackendServer({ pluginRoot, progressStore });
+    const statusBeforeShutdown = progressStore.readStatus(foreignJobId);
+
+    expect(statusBeforeShutdown).toMatchObject({
+      jobId: foreignJobId,
+      phase: 'running',
+      backendNamespace: foreignBackendNamespace,
+    });
+    expect(progressStore.liveJobCount('testhash1234')).toBe(0);
+
+    const response = await fetch(`${backend.baseUrl}/admin/shutdown`, {
+      method: 'POST',
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      status: 'draining',
+      instanceId: 'execution-backend-instance-1',
+    });
+
+    const shutdownResult = await Promise.race([
+      backend.controller.waitForShutdown().then(() => 'resolved'),
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 1_000)),
+    ]);
+
+    expect(shutdownResult).toBe('resolved');
+    expect(backend.controller.getLifecycle()).toBe('stopped');
+
+    const statusAfterShutdown = progressStore.readStatus(foreignJobId);
+    expect(statusAfterShutdown).toMatchObject({
+      jobId: foreignJobId,
+      phase: 'running',
+      backendNamespace: foreignBackendNamespace,
+    });
+    expect(statusAfterShutdown?.backendNamespace).not.toBe(localNamespace);
   });
 
   it('returns health with draining status after admin shutdown request', async () => {
