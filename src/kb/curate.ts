@@ -18,7 +18,7 @@ import {
   readCurateState,
   writeCurateState,
 } from './curate-state.js';
-import { cleanupTags, type TagCleanupResult } from './curate-tags.js';
+import { cleanupTags, countTagSupport, type TagCleanupResult } from './curate-tags.js';
 import {
   readKbIndex,
   recordMutationCommitted,
@@ -26,6 +26,7 @@ import {
   writeKbIndex,
 } from './detect.js';
 import {
+  extractBody,
   deriveNoteIdentity,
   extractTitle,
   parseFrontmatter,
@@ -42,8 +43,6 @@ import { notePathFromName, principlesDir } from './paths.js';
 import { extractPrincipleStatement } from './reindex.js';
 import type { KbContext, KbIndex } from './types.js';
 
-const FRONTMATTER_BLOCK = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/;
-const TOP_LEVEL_TITLE = /^# .+(?:\r?\n){1,2}/;
 const CURATE_MIN_CLAIM_SIZE = 10;
 const CURATE_MAX_CLAIM_SIZE = 30;
 const CLASSIFICATION_BATCH_SIZE = 10;
@@ -60,17 +59,21 @@ const DISCOVERY_CORPUS_RESET_RATIO = 0.2;
 const GITIGNORE_ENTRIES = ['curate-state.json', 'data/'];
 const GITIGNORE_HEADER = '# Coral KB runtime (device-local, auto-managed)';
 
+let cachedIsGitRepo: boolean | null = null;
+
 function isGitRepo(dir: string): boolean {
+  if (cachedIsGitRepo !== null) return cachedIsGitRepo;
   try {
     execFileSync('git', ['-C', dir, 'rev-parse', '--is-inside-work-tree'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 5000,
     });
-    return true;
+    cachedIsGitRepo = true;
   } catch {
-    return false;
+    cachedIsGitRepo = false;
   }
+  return cachedIsGitRepo;
 }
 
 function ensureKbGitignore(): void {
@@ -78,16 +81,20 @@ function ensureKbGitignore(): void {
   const gitignorePath = join(root, '.gitignore');
 
   try {
-    const existing = existsSync(gitignorePath) ? readFileSync(gitignorePath, 'utf-8') : '';
+    let existing = '';
+    try {
+      existing = readFileSync(gitignorePath, 'utf-8');
+    } catch {
+      // file doesn't exist yet — will create
+    }
     const lines = existing.split('\n');
     const missing = GITIGNORE_ENTRIES.filter((entry) => !lines.some((line) => line.trim() === entry));
     if (missing.length === 0) return;
 
-    const block = `\n${GITIGNORE_HEADER}\n${missing.join('\n')}\n`;
     if (existing.length === 0) {
       writeFileSync(gitignorePath, `${GITIGNORE_HEADER}\n${missing.join('\n')}\n`, 'utf-8');
     } else {
-      appendFileSync(gitignorePath, block, 'utf-8');
+      appendFileSync(gitignorePath, `\n${GITIGNORE_HEADER}\n${missing.join('\n')}\n`, 'utf-8');
     }
   } catch {
     // best-effort
@@ -183,7 +190,7 @@ export type DiscoveryProposal = {
 
 type PendingDiscovery = CurateState['pendingDiscoveries'][number];
 
-export type MetadataIntent = {
+export type MetadataTarget = {
   note: string;
   mutationSeqAtPromote: number;
   claimTimeUpdatedAt: string;
@@ -193,8 +200,6 @@ export type MetadataIntent = {
   removeTags?: string[];
   cleanup?: boolean;
 };
-
-export type MetadataTarget = MetadataIntent;
 
 export type CurateClaim = {
   notes: CurateClaimedNote[];
@@ -249,13 +254,6 @@ function buildFlatList(values: string[]): string {
   return values.map((value) => `- ${value}`).join('\n');
 }
 
-function extractBody(content: string): string {
-  return content
-    .replace(FRONTMATTER_BLOCK, '')
-    .replace(TOP_LEVEL_TITLE, '')
-    .trim();
-}
-
 function stripMarkdownCodeFences(raw: string): string {
   const trimmed = raw.trim();
   const match = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
@@ -288,7 +286,7 @@ function parseJsonArray(raw: string): ParsedArrayResult {
   };
 }
 
-function normalizeStringList(values: string[]): string[] {
+function uniqueTrimmedList(values: string[]): string[] {
   const seen = new Set<string>();
   const normalized: string[] = [];
 
@@ -487,18 +485,6 @@ function advanceProcessedThrough(
   return cursor;
 }
 
-function countTagSupport(index: KbIndex): Map<string, number> {
-  const counts = new Map<string, number>();
-
-  for (const note of Object.values(index.notes)) {
-    for (const tag of note.tags) {
-      counts.set(tag, (counts.get(tag) ?? 0) + 1);
-    }
-  }
-
-  return counts;
-}
-
 function parentAbsorptionTarget(
   tag: string,
   noteTagSet: ReadonlySet<string>,
@@ -546,7 +532,7 @@ function applyParentAbsorption(
     return parentAbsorptionTarget(tag, noteTagSet, tagSupport) ?? tag;
   });
 
-  return normalizeStringList(nextTags);
+  return uniqueTrimmedList(nextTags);
 }
 
 function buildLiveMetadataDecision(
@@ -555,12 +541,12 @@ function buildLiveMetadataDecision(
   livePrinciples: string[],
   cleanupTagSupport: ReadonlyMap<string, number>,
 ): LiveMetadataDecision {
-  const addTags = normalizeStringList(target.addTags ?? []);
-  const addPrinciples = normalizeStringList(target.addPrinciples ?? []);
-  const removeTags = normalizeStringList(target.removeTags ?? []);
+  const addTags = uniqueTrimmedList(target.addTags ?? []);
+  const addPrinciples = uniqueTrimmedList(target.addPrinciples ?? []);
+  const removeTags = uniqueTrimmedList(target.removeTags ?? []);
   const desiredTags = target.desiredTags === undefined
     ? undefined
-    : normalizeStringList(target.desiredTags);
+    : uniqueTrimmedList(target.desiredTags);
 
   if (target.cleanup && removeTags.length > 0 && removeTags.some((tag) => !liveTags.includes(tag))) {
     return {
@@ -571,7 +557,7 @@ function buildLiveMetadataDecision(
   }
 
   const removeTagSet = new Set(removeTags);
-  let nextTags = desiredTags ?? normalizeStringList([
+  let nextTags = desiredTags ?? uniqueTrimmedList([
     ...liveTags,
     ...addTags,
   ]).filter((tag) => !removeTagSet.has(tag));
@@ -579,7 +565,7 @@ function buildLiveMetadataDecision(
     nextTags = applyParentAbsorption(target.note, nextTags, cleanupTagSupport);
   }
 
-  const nextPrinciples = normalizeStringList([
+  const nextPrinciples = uniqueTrimmedList([
     ...livePrinciples,
     ...addPrinciples,
   ]);
@@ -804,17 +790,12 @@ export function buildClassificationPrompt(
   ].join('\n');
 }
 
-export function parseClassificationResponse(
-  raw: string,
+function classifyParsedEntries(
+  entries: unknown[],
   noteMap: Map<string, true>,
 ): ClassificationAssignment[] {
-  const parsed = parseJsonArray(raw);
-  if (parsed.parseFailed) {
-    return [];
-  }
-
   const assignments: ClassificationAssignment[] = [];
-  for (const entry of parsed.entries) {
+  for (const entry of entries) {
     if (!isRecord(entry)) {
       continue;
     }
@@ -836,15 +817,12 @@ export function parseClassificationResponse(
   return assignments;
 }
 
-function parseClassificationResponseResult(
+export function parseClassificationResponse(
   raw: string,
   noteMap: Map<string, true>,
-): { assignments: ClassificationAssignment[]; parseFailed: boolean } {
-  const parsed = parseJsonArray(raw);
-  return {
-    assignments: parsed.parseFailed ? [] : parseClassificationResponse(raw, noteMap),
-    parseFailed: parsed.parseFailed,
-  };
+): ClassificationAssignment[] {
+  const { entries, parseFailed } = parseJsonArray(raw);
+  return parseFailed ? [] : classifyParsedEntries(entries, noteMap);
 }
 
 export function chunkNotes<T>(notes: T[], batchSize = CLASSIFICATION_BATCH_SIZE): T[][] {
@@ -898,14 +876,12 @@ export async function runClassificationBatches(
   for (const batch of chunkNotes(claim.notes, CLASSIFICATION_BATCH_SIZE)) {
     const prompt = buildClassificationPrompt(batch, tagVocab, principleNames);
     const raw = await invokeClaude(prompt);
-    const parsed = parseClassificationResponseResult(
-      raw,
-      new Map<string, true>(batch.map((note) => [note.slug, true] as const)),
-    );
-    if (parsed.parseFailed) {
+    const { entries, parseFailed } = parseJsonArray(raw);
+    if (parseFailed) {
       throw new CurateJsonParseError('classification');
     }
-    rawAssignments.push(...parsed.assignments);
+    const noteMap = new Map<string, true>(batch.map((note) => [note.slug, true] as const));
+    rawAssignments.push(...classifyParsedEntries(entries, noteMap));
   }
 
   return rawAssignments;
@@ -936,14 +912,14 @@ export function validateAssignments(
     if (existing === undefined) {
       mergedByNote.set(proposal.note, {
         note: proposal.note,
-        tags: normalizeStringList(proposal.tags),
-        principles: normalizeStringList(proposal.principles),
+        tags: uniqueTrimmedList(proposal.tags),
+        principles: uniqueTrimmedList(proposal.principles),
       });
       continue;
     }
 
-    existing.tags = normalizeStringList([...existing.tags, ...proposal.tags]);
-    existing.principles = normalizeStringList([...existing.principles, ...proposal.principles]);
+    existing.tags = uniqueTrimmedList([...existing.tags, ...proposal.tags]);
+    existing.principles = uniqueTrimmedList([...existing.principles, ...proposal.principles]);
   }
 
   const newTagSupport = new Map<string, number>();
@@ -966,11 +942,11 @@ export function validateAssignments(
     }
 
     const domain = deriveNoteIdentity(slug).domain;
-    const tags = normalizeStringList([
+    const tags = uniqueTrimmedList([
       domain,
       ...proposal.tags.filter((tag) => existingTagVocabulary.has(tag) || (newTagSupport.get(tag) ?? 0) >= 3),
     ]);
-    const principles = normalizeStringList(
+    const principles = uniqueTrimmedList(
       proposal.principles.filter((principle) => index.principles[principle] !== undefined),
     );
 
@@ -999,10 +975,10 @@ export function buildMetadataTargets(
       const existingTags = new Set(claimTimeMeta?.tags ?? []);
       const existingPrinciples = new Set(claimTimeMeta?.principles ?? []);
       const assignment = assignmentsByNote.get(claimedNote.slug);
-      const addTags = normalizeStringList(
+      const addTags = uniqueTrimmedList(
         (assignment?.tags ?? []).filter((tag) => !existingTags.has(tag)),
       );
-      const addPrinciples = normalizeStringList(
+      const addPrinciples = uniqueTrimmedList(
         (assignment?.principles ?? []).filter((principle) => !existingPrinciples.has(principle)),
       );
 
@@ -1024,7 +1000,7 @@ function applyGlobalCleanup(
 ): string[] {
   const domain = deriveNoteIdentity(note).domain;
 
-  return normalizeStringList(tags.flatMap((tag) => {
+  return uniqueTrimmedList(tags.flatMap((tag) => {
     if (tag === domain) {
       return [tag];
     }
@@ -1240,14 +1216,9 @@ export function buildDiscoveryPrompt(
   ].join('\n');
 }
 
-export function parseDiscoveryResponse(raw: string): DiscoveryProposal[] {
-  const parsed = parseJsonArray(raw);
-  if (parsed.parseFailed) {
-    return [];
-  }
-
+function extractDiscoveryProposals(entries: unknown[]): DiscoveryProposal[] {
   const proposals: DiscoveryProposal[] = [];
-  for (const entry of parsed.entries) {
+  for (const entry of entries) {
     if (
       !isRecord(entry)
       || typeof entry.slug !== 'string'
@@ -1267,14 +1238,9 @@ export function parseDiscoveryResponse(raw: string): DiscoveryProposal[] {
   return proposals;
 }
 
-function parseDiscoveryResponseResult(
-  raw: string,
-): { proposals: DiscoveryProposal[]; parseFailed: boolean } {
-  const parsed = parseJsonArray(raw);
-  return {
-    proposals: parsed.parseFailed ? [] : parseDiscoveryResponse(raw),
-    parseFailed: parsed.parseFailed,
-  };
+export function parseDiscoveryResponse(raw: string): DiscoveryProposal[] {
+  const { entries, parseFailed } = parseJsonArray(raw);
+  return parseFailed ? [] : extractDiscoveryProposals(entries);
 }
 
 function normalizeDiscoverySlug(raw: string): string | null {
@@ -1307,7 +1273,7 @@ export function validateDiscoveryProposals(
       continue;
     }
 
-    const notes = normalizeStringList(
+    const notes = uniqueTrimmedList(
       proposal.notes.filter((note) => eligibleSet.has(note)),
     );
     if (notes.length < 3) {
@@ -1480,7 +1446,7 @@ function pendingDiscoverySatisfied(
   entry: PendingDiscovery,
   processedThrough: CurateCursor,
 ): boolean {
-  const index = cloneKbIndex(readKbIndex());
+  const index = readKbIndex() ?? { notes: {}, principles: {} };
 
   return entry.notes.every((note) => {
     const noteMeta = index.notes[note];
@@ -1560,12 +1526,12 @@ export async function runPrincipleDiscovery(
 
   const prompt = buildDiscoveryPrompt(eligibleNotes, buildPrincipleNames(currentIndex));
   const raw = await invokeClaude(prompt);
-  const parsed = parseDiscoveryResponseResult(raw);
-  if (parsed.parseFailed) {
+  const { entries, parseFailed } = parseJsonArray(raw);
+  if (parseFailed) {
     throw new CurateJsonParseError('discovery');
   }
   const proposals = validateDiscoveryProposals(
-    parsed.proposals,
+    extractDiscoveryProposals(entries),
     eligibleNotes,
     buildPrincipleNames(currentIndex),
   );

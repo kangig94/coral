@@ -12,13 +12,10 @@ import {
   recordReindexSuccess,
   withKbMutationLock,
 } from './detect.js';
-import { deriveNoteIdentity, extractTitle, parseFrontmatter } from './frontmatter.js';
+import { FRONTMATTER_BLOCK, extractBody, deriveNoteIdentity, extractTitle, parseFrontmatter } from './frontmatter.js';
 import { createOramaDb, toOramaDocument } from './orama-factory.js';
 import { rebuildEnhancedIndex } from './reindex-enhanced.js';
 import type { KbContext, KbIndex, KbReindexNoteRecord, ReindexResult } from './types.js';
-
-const FRONTMATTER_BLOCK = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/;
-const TOP_LEVEL_TITLE = /^# .+(?:\r?\n){1,2}/;
 
 function sortedMarkdownEntries(dirPath: string): string[] {
   try {
@@ -31,13 +28,6 @@ function sortedMarkdownEntries(dirPath: string): string[] {
     }
     throw error;
   }
-}
-
-function extractBody(content: string): string {
-  return content
-    .replace(FRONTMATTER_BLOCK, '')
-    .replace(TOP_LEVEL_TITLE, '')
-    .trim();
 }
 
 export function extractPrincipleStatement(content: string): string {

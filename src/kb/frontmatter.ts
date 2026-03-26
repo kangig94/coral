@@ -6,6 +6,17 @@ import type { KbNoteFrontmatter, KbNoteIdentity } from './types.js';
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 const NOTE_NAME_PATTERN = /^[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*$/;
 
+/** Non-capturing frontmatter regex for stripping (no capture group, unlike FRONTMATTER_PATTERN). */
+export const FRONTMATTER_BLOCK = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/;
+const TOP_LEVEL_TITLE = /^# .+(?:\r?\n){1,2}/;
+
+export function extractBody(content: string): string {
+  return content
+    .replace(FRONTMATTER_BLOCK, '')
+    .replace(TOP_LEVEL_TITLE, '')
+    .trim();
+}
+
 function extractFrontmatterBlock(content: string): string {
   const match = content.match(FRONTMATTER_PATTERN);
   if (!match) {

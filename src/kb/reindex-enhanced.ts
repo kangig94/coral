@@ -1,7 +1,6 @@
 import type { KbContext, KbReindexNoteRecord } from './types.js';
 
 type LanceDbConnection = {
-  tableNames?: () => Promise<string[]>;
   dropTable: (name: string) => Promise<void>;
   createTable: (name: string, rows: Record<string, unknown>[]) => Promise<unknown>;
   createEmptyTable?: (name: string, schema: LanceDbSchema) => Promise<unknown>;
@@ -55,13 +54,6 @@ function normalized(text: string): string {
 }
 
 async function dropTableIfPresent(db: LanceDbConnection, name: string): Promise<void> {
-  if (typeof db.tableNames === 'function') {
-    const tableNames = await db.tableNames();
-    if (!tableNames.includes(name)) {
-      return;
-    }
-  }
-
   try {
     await db.dropTable(name);
   } catch (error: unknown) {
@@ -125,26 +117,30 @@ export async function rebuildEnhancedIndex(
     principle_norm: normalized(principle),
   })));
 
-  await dropTableIfPresent(db, NOTES_TABLE);
-  await dropTableIfPresent(db, TAGS_TABLE);
-  await dropTableIfPresent(db, PRINCIPLES_TABLE);
+  await Promise.all([
+    dropTableIfPresent(db, NOTES_TABLE),
+    dropTableIfPresent(db, TAGS_TABLE),
+    dropTableIfPresent(db, PRINCIPLES_TABLE),
+  ]);
 
-  await createTable(
-    db,
-    NOTES_TABLE,
-    noteRows,
-    ['id', 'path', 'note_slug', 'note_slug_norm', 'domain', 'title', 'title_norm', 'body', 'body_norm', 'created', 'updated'],
-  );
-  await createTable(
-    db,
-    TAGS_TABLE,
-    tagRows,
-    ['note_id', 'tag', 'tag_norm'],
-  );
-  await createTable(
-    db,
-    PRINCIPLES_TABLE,
-    principleRows,
-    ['note_id', 'principle', 'principle_norm'],
-  );
+  await Promise.all([
+    createTable(
+      db,
+      NOTES_TABLE,
+      noteRows,
+      ['id', 'path', 'note_slug', 'note_slug_norm', 'domain', 'title', 'title_norm', 'body', 'body_norm', 'created', 'updated'],
+    ),
+    createTable(
+      db,
+      TAGS_TABLE,
+      tagRows,
+      ['note_id', 'tag', 'tag_norm'],
+    ),
+    createTable(
+      db,
+      PRINCIPLES_TABLE,
+      principleRows,
+      ['note_id', 'principle', 'principle_norm'],
+    ),
+  ]);
 }

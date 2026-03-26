@@ -14,7 +14,7 @@ export type TagCleanupResult = {
   globalDeletions: Set<string>;
 };
 
-function countTagSupport(index: KbIndex): Map<string, number> {
+export function countTagSupport(index: KbIndex): Map<string, number> {
   const counts = new Map<string, number>();
 
   for (const note of Object.values(index.notes)) {
