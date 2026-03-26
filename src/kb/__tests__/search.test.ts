@@ -215,7 +215,7 @@ describe('kb search', () => {
     expect(match.matchedBy).toEqual(['filename', 'principle', 'tag', 'title', 'content']);
   });
 
-  it('keeps content in matchedBy when the body matches but snippet extraction cannot anchor it', async () => {
+  it('finds content match and snippet for accented body text via Orama-aligned token anchor', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
@@ -231,7 +231,7 @@ describe('kb search', () => {
     const match = resultFor(response.results, 'cafe-memo');
 
     expect(match.matchedBy).toEqual(expect.arrayContaining(['title', 'content']));
-    expect(match.snippet).toBeUndefined();
+    expect(match.snippet).toBeDefined();
   });
 
   it('treats hyphenated metadata as equivalent to whitespace queries', async () => {

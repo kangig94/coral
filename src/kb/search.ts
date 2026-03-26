@@ -119,8 +119,9 @@ function findPhraseAnchor(content: string, rawQuery: string, oramaTerm: string):
   return bestAnchor;
 }
 
+// Inverse of Orama English SPLITTER — keeps the same word boundaries the indexer uses.
 function findTokenAnchor(content: string, queryTokens: string[], tokenizer: KbOramaTokenizer): SnippetAnchor | null {
-  for (const match of content.matchAll(/[A-Za-z0-9-]+/g)) {
+  for (const match of content.matchAll(/[A-Za-zàèéìòóù0-9_'-]+/gim)) {
     const value = match[0];
     const valueTokens = tokenizeField(value, tokenizer);
     if (!hasTokenOverlap(queryTokens, valueTokens)) {
@@ -190,14 +191,12 @@ function toResult(
     matchedBy.add('title');
   }
 
-  const contentMatched = hasTokenOverlap(queryTokens, tokenizeField(hit.body, tokenizer));
-  if (contentMatched) {
+  const snippet = extractSnippet(hit.body, rawQuery, oramaTerm, queryTokens, tokenizer);
+  if (snippet !== undefined) {
+    matchedBy.add('content');
+  } else if (matchedBy.size === 0) {
     matchedBy.add('content');
   }
-
-  const snippet = contentMatched
-    ? extractSnippet(hit.body, rawQuery, oramaTerm, queryTokens, tokenizer)
-    : undefined;
 
   return {
     note: slug,
