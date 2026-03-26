@@ -231,6 +231,17 @@ describe('execution backend server', () => {
     mockState.tmpHome = '';
   });
 
+  function createMockKbSubsystem() {
+    return {
+      kb: {} as never,
+      curateScheduler: {
+        start: vi.fn(async () => {}),
+        schedule: vi.fn(),
+        isRunning: () => false,
+      },
+    };
+  }
+
   async function startBackendServer(
     overrides: Parameters<ServerModule['createBackendServer']>[0] = {},
   ) {
@@ -241,6 +252,7 @@ describe('execution backend server', () => {
       version: '9.9.9',
       bundleHash: 'testhash1234',
       log: () => {},
+      createKbSubsystemFn: async () => createMockKbSubsystem(),
       ...overrides,
     });
     const started = await controller.start();
@@ -291,7 +303,6 @@ describe('execution backend server', () => {
         schedule: vi.fn(),
         isRunning: () => false,
       },
-      kbContracts: {},
     }));
 
     await startBackendServer({
@@ -329,11 +340,7 @@ describe('execution backend server', () => {
     expect(body.some((tool) => tool.name === 'discuss_abort')).toBe(true);
     expect(body.some((tool) => tool.name === 'discuss_watch')).toBe(true);
     expect(body.some((tool) => tool.name === 'discuss_participate')).toBe(true);
-    expect(body.some((tool) => tool.name === 'kb_search')).toBe(true);
-    expect(body.some((tool) => tool.name === 'kb_promote')).toBe(true);
-    expect(body.some((tool) => tool.name === 'kb_update')).toBe(true);
-    expect(body.some((tool) => tool.name === 'kb_delete')).toBe(true);
-    expect(body.some((tool) => tool.name === 'kb_reindex')).toBe(true);
+    expect(body.every((tool) => !String(tool.name).startsWith('kb_'))).toBe(true);
     const watchTool = body.find((tool: { name?: string }) => tool.name === 'discuss_watch') as
       | { inputSchema?: { properties?: { cursor?: unknown } } }
       | undefined;
@@ -434,7 +441,7 @@ describe('execution backend server', () => {
     });
   });
 
-  it('routes KB tool calls through KB contracts before provider fallback', async () => {
+  it('routes KB tool calls through direct handlers and catches errors', async () => {
     const backend = await startBackendServer();
 
     const response = await fetch(`${backend.baseUrl}/tool`, {
@@ -445,21 +452,15 @@ describe('execution backend server', () => {
       },
       body: JSON.stringify({
         name: 'kb_search',
-        args: {},
+        args: { query: 'test' },
         context: { projectRoot: '/tmp/project', coralEnv: {} },
       }),
     });
 
-    const body = await response.json() as {
-      content: Array<{ type: string; text: string }>;
-      isError: boolean;
-    };
-
     expect(response.status).toBe(200);
+    const body = await response.json() as { isError?: boolean };
+    // Mock KB subsystem has no real runtime, so the handler catches the error
     expect(body.isError).toBe(true);
-    expect(JSON.parse(body.content[0]?.text ?? '{}')).toMatchObject({
-      error: 'invalid_request',
-    });
   });
 
   it('returns 400 use_sse for wait tool calls sent to /tool', async () => {

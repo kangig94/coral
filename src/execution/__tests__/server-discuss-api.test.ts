@@ -135,6 +135,10 @@ describe('server discuss API', () => {
       log: () => {},
       discussRegistry: registry,
       createExecutionService: () => service as never,
+      createKbSubsystemFn: async () => ({
+        kb: {} as never,
+        curateScheduler: { start: async () => {}, schedule: () => {}, isRunning: () => false },
+      }),
     });
     const started = await controller.start();
     return {

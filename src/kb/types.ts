@@ -58,3 +58,44 @@ export interface KbLanceDbAdapter {
   getDb(): Promise<unknown>;
   ensureTables(): Promise<void>;
 }
+
+// KB operation input types (plain types, no Zod dependency)
+
+export type KbSearchInput = {
+  query: string;
+  top_k?: number;
+};
+
+export type KbPromoteInput = {
+  memo: string;
+  title: string;
+  content: string;
+  domain: string;
+  topic: string;
+};
+
+export type KbUpdateInput = {
+  note: string;
+  title?: string;
+  content?: string;
+};
+
+export type KbReadInput = {
+  note: string;
+};
+
+export type KbDeleteInput = {
+  note: string;
+};
+
+export type KbReindexInput = Record<string, never>;
+
+export type KbPrinciplesInput = {
+  query?: string;
+  top_k?: number;
+};
+
+export type KbMemoInput = {
+  topic: string;
+  content: string;
+};

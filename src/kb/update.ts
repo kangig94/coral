@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { nowIsoString } from '../shared/mcp-utils.js';
 import { extractBody, parseFrontmatter, extractTitle, serializeNote } from './frontmatter.js';
-import type { KbUpdateInput } from './contracts.js';
+import type { KbUpdateInput } from './types.js';
 import { assertNonEmptyText, assertNoteSlug } from './validation.js';
 import {
   buildNoteIndexEntry,

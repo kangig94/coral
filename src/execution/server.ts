@@ -85,10 +85,16 @@ import {
   type WaitCursor,
   type WaitRequest,
 } from '../types.js';
-import { createKbToolContracts, type KbToolContractMap } from '../kb/contracts.js';
 import { createCurateScheduler, type CurateHandle } from '../kb/curate.js';
+import { deleteFn as kbDeleteFn } from '../kb/delete.js';
+import { writeMemo } from '../kb/memo.js';
 import { kbRuntimeDir } from '../kb/paths.js';
+import { promote as kbPromote } from '../kb/promote.js';
+import { readNote } from '../kb/read.js';
+import { reindex as kbReindex } from '../kb/reindex.js';
 import { createKbRuntime, type KbRuntime } from '../kb/runtime.js';
+import { searchKb } from '../kb/search.js';
+import { update as kbUpdate } from '../kb/update.js';
 
 export type LifecycleState = 'starting' | 'running' | 'draining' | 'stopped';
 
@@ -118,13 +124,12 @@ type RouteToolCallFn = (
     abortJobs: (jobIds: string[]) => AbortResult;
     scopeCheckJobs: (jobIds: string[], projectRoot: string) => ScopeCheckResult;
   },
-  kbContracts: KbToolContractMap,
+  kbSubsystem: KbSubsystem | null,
 ) => Promise<ToolRouteResponse>;
 
 type KbSubsystem = {
   kb: KbRuntime;
   curateScheduler: CurateHandle;
-  kbContracts: KbToolContractMap;
 };
 
 type CreateKbSubsystemFn = (options: {
@@ -181,7 +186,6 @@ const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 const SHUTDOWN_POLL_MS = 50;
 const ORPHANED_JOB_NOTICE = 'Unclean shutdown - orphaned job';
 const CORAL_OP_PREFIX = 'coral:';
-const EMPTY_KB_TOOL_CONTRACTS: KbToolContractMap = {};
 const defaultPluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
 const globalDiscussRegistry = createDiscussContextRegistry();
 const discussSessionSchema = z.object({
@@ -513,7 +517,7 @@ function markJobsAsError(progressStore: ProgressStore, namespace: string, messag
   }
 }
 
-function getToolDescriptors(kbContracts: KbToolContractMap = EMPTY_KB_TOOL_CONTRACTS): Array<Record<string, unknown>> {
+function getToolDescriptors(): Array<Record<string, unknown>> {
   registerBuiltInProviders();
 
   const providerTools = getAllNewProviders().map((provider) => ({
@@ -676,11 +680,6 @@ function getToolDescriptors(kbContracts: KbToolContractMap = EMPTY_KB_TOOL_CONTR
         required: ['expression', 'init_prompt'],
       },
     },
-    ...Object.values(kbContracts).map((contract) => ({
-      name: contract.name,
-      description: contract.description,
-      inputSchema: contract.inputSchema,
-    })),
   ];
 }
 
@@ -701,17 +700,12 @@ async function createKbSubsystem({
     kb,
     spawnCli: spawnKbCli,
   });
-  const kbContracts = createKbToolContracts({
-    kb,
-    curate: curateScheduler,
-  });
 
   await curateScheduler.start();
 
   return {
     kb,
     curateScheduler,
-    kbContracts,
   };
 }
 
@@ -733,7 +727,7 @@ export async function routeToolCall(
     abortJobs: (jobIds: string[]) => AbortResult;
     scopeCheckJobs: (jobIds: string[], projectRoot: string) => ScopeCheckResult;
   },
-  kbContracts: KbToolContractMap = EMPTY_KB_TOOL_CONTRACTS,
+  kbSubsystem: KbSubsystem | null = null,
 ): Promise<ToolRouteResponse> {
   registerBuiltInProviders();
 
@@ -875,12 +869,63 @@ export async function routeToolCall(
     }
   }
 
-  const kbContract = kbContracts[request.name as keyof typeof kbContracts];
-  if (kbContract) {
-    const parsed = kbContract.schema.safeParse(request.args);
-    if (!parsed.success) return toolValidationError(parsed.error);
+  if (request.name.startsWith('kb_') && kbSubsystem) {
+    const { kb } = kbSubsystem;
+    const args = request.args;
+    const ctx = request.context;
     try {
-      const result = await kbContract.handler(parsed.data, request.context);
+      let result: unknown;
+      switch (request.name) {
+        case 'kb_search':
+          result = await searchKb(kb, String(args.query ?? ''), typeof args.top_k === 'number' ? args.top_k : 20);
+          break;
+        case 'kb_read':
+          result = readNote({ note: String(args.note ?? '') });
+          break;
+        case 'kb_promote':
+          result = await kbPromote(kb, ctx.projectRoot, {
+            memo: String(args.memo ?? ''),
+            title: String(args.title ?? ''),
+            content: String(args.content ?? ''),
+            domain: String(args.domain ?? ''),
+            topic: String(args.topic ?? ''),
+          }, () => { kbSubsystem.curateScheduler.schedule(); });
+          break;
+        case 'kb_update':
+          result = await kbUpdate(kb, {
+            note: String(args.note ?? ''),
+            ...(args.title !== undefined ? { title: String(args.title) } : {}),
+            ...(args.content !== undefined ? { content: String(args.content) } : {}),
+          });
+          break;
+        case 'kb_delete':
+          result = await kbDeleteFn(kb, { note: String(args.note ?? '') });
+          break;
+        case 'kb_reindex':
+          result = await kbReindex(kb);
+          break;
+        case 'kb_principles': {
+          const index = await kb.ensureIndex();
+          let names = Object.keys(index.principles);
+          const total = names.length;
+          if (typeof args.query === 'string' && args.query.trim()) {
+            const q = args.query.toLowerCase();
+            names = names.filter(n => n.includes(q));
+          }
+          names.sort();
+          const topK = typeof args.top_k === 'number' ? args.top_k : 100;
+          result = { principles: names.slice(0, topK), total };
+          break;
+        }
+        case 'kb_memo':
+          result = writeMemo(ctx.projectRoot, {
+            topic: String(args.topic ?? ''),
+            content: String(args.content ?? ''),
+          });
+          break;
+        default:
+          return { statusCode: 404, body: { error: 'unknown_tool', name: request.name } };
+      }
       return toolSuccess(result);
     } catch (error: unknown) {
       return toolError('kb_error', {
@@ -1531,7 +1576,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     }
 
     if (req.method === 'GET' && req.url === '/tools') {
-      sendJson(res, 200, getToolDescriptors(kbSubsystem?.kbContracts ?? EMPTY_KB_TOOL_CONTRACTS));
+      sendJson(res, 200, getToolDescriptors());
       return;
     }
 
@@ -1552,7 +1597,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         getDiscussContext,
         abortJobs,
         scopeCheckJobs: (jobIds, projectRoot) => scopeCheckJobs(jobIds, projectRoot, namespace),
-      }, kbSubsystem?.kbContracts ?? EMPTY_KB_TOOL_CONTRACTS);
+      }, kbSubsystem);
       sendJson(res, result.statusCode, result.body);
       return;
     }
