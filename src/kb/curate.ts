@@ -43,8 +43,8 @@ import type { KbRuntime } from './runtime.js';
 import type { KbIndex } from './types.js';
 
 const CURATE_MIN_CLAIM_SIZE = 10;
-const CURATE_MAX_CLAIM_SIZE = 30;
-const CLASSIFICATION_BATCH_SIZE = 10;
+const CURATE_MAX_CLAIM_SIZE = 100;
+const CLASSIFICATION_BATCH_SIZE = 100;
 const CURATE_STALE_REASON = 'KB text snapshot is stale after kb_curate.';
 const DISCOVERY_MIN_CORPUS_SIZE = 50;
 const DISCOVERY_PROMPT_BODY_LIMIT = 500;
@@ -625,7 +625,7 @@ export async function invokeClaude(prompt: string, spawnCli: SpawnCliFn): Promis
   const result = await spawnCli({
     provider: 'claude',
     command: 'claude',
-    args: ['-p'],
+    args: ['-p', '--no-session-persistence'],
     prompt,
     pool: 'curate',
   });
@@ -1471,11 +1471,12 @@ export function createCurateScheduler({
 
   async function runScheduledCurate(): Promise<CurateCursor | null> {
     let lastCompletedThrough: CurateCursor | null = null;
+    const allCohortSlugs: string[] = [];
 
     while (true) {
       const claim = await claimCurateRun(nowIsoString().slice(0, 10));
       if (claim === null) {
-        return lastCompletedThrough;
+        break;
       }
 
       try {
@@ -1486,32 +1487,48 @@ export function createCurateScheduler({
         await commitMetadataTargets(metadataTargets);
         gitAutoCommit(`curate: classify ${claim.notes.length} notes (tags + principles)`);
 
-        const postPhaseOneState = readCurateState(kb);
-        const postPhaseOneProcessedThrough = postPhaseOneState.processedThrough;
-        const postPhaseOneIndex = kb.readIndexOrEmpty();
-
-        if (
-          postPhaseOneProcessedThrough !== null
-          && countEligibleDiscoveryNotes(postPhaseOneIndex, postPhaseOneProcessedThrough) >= DISCOVERY_MIN_CORPUS_SIZE
-        ) {
-          await runPrincipleDiscovery(postPhaseOneProcessedThrough);
-          gitAutoCommit('curate: discover principles from principle-less notes');
-        }
-
-        const cohortSlugs = claim.notes.map((note) => note.slug);
-        const cleanupResult = cleanupTags(postPhaseOneIndex, cohortSlugs);
-        const cleanupTargets = buildCleanupTargets(postPhaseOneIndex, cohortSlugs, cleanupResult);
-        if (cleanupTargets.length > 0) {
-          await commitMetadataTargets(cleanupTargets);
-          gitAutoCommit(`curate: cleanup tags for ${cleanupTargets.length} notes`);
-        }
-
+        allCohortSlugs.push(...claim.notes.map((note) => note.slug));
         await clearCurateRetryState();
         lastCompletedThrough = claim.through;
       } catch (error: unknown) {
         throw new CurateRunError(claim.through, error);
       }
     }
+
+    if (lastCompletedThrough === null) {
+      return null;
+    }
+
+    // Discovery runs once after all classification claims, seeing the full corpus.
+    const postClassifyState = readCurateState(kb);
+    const processedThrough = postClassifyState.processedThrough;
+    const postClassifyIndex = kb.readIndexOrEmpty();
+
+    if (
+      processedThrough !== null
+      && countEligibleDiscoveryNotes(postClassifyIndex, processedThrough) >= DISCOVERY_MIN_CORPUS_SIZE
+    ) {
+      try {
+        await runPrincipleDiscovery(processedThrough);
+        gitAutoCommit('curate: discover principles from principle-less notes');
+      } catch (error: unknown) {
+        throw new CurateRunError(lastCompletedThrough, error);
+      }
+    }
+
+    // Tag cleanup runs once over all classified notes.
+    const cleanupResult = cleanupTags(postClassifyIndex, allCohortSlugs);
+    const cleanupTargets = buildCleanupTargets(postClassifyIndex, allCohortSlugs, cleanupResult);
+    if (cleanupTargets.length > 0) {
+      try {
+        await commitMetadataTargets(cleanupTargets);
+        gitAutoCommit(`curate: cleanup tags for ${cleanupTargets.length} notes`);
+      } catch (error: unknown) {
+        throw new CurateRunError(lastCompletedThrough, error);
+      }
+    }
+
+    return lastCompletedThrough;
   }
 
   function launchQueuedRun(): void {
