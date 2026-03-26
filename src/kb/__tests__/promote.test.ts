@@ -17,16 +17,34 @@ vi.mock('node:os', async () => {
 
 async function loadKbModules() {
   vi.resetModules();
-  const [{ promote }, { update }, { deleteFn }, { readNote }, detect, paths, frontmatter] = await Promise.all([
+  const [{ promote }, { update }, { deleteFn }, { readNote }, runtime, paths, frontmatter] = await Promise.all([
     import('../promote.js'),
     import('../update.js'),
     import('../delete.js'),
     import('../read.js'),
-    import('../detect.js'),
+    import('../runtime.js'),
     import('../paths.js'),
     import('../frontmatter.js'),
   ]);
-  return { promote, update, deleteFn, readNote, detect, paths, frontmatter };
+  return {
+    promote,
+    update,
+    deleteFn,
+    readNote,
+    createKbRuntime: runtime.createKbRuntime,
+    paths,
+    frontmatter,
+  };
+}
+
+function createRuntime(
+  createKbRuntime: Awaited<ReturnType<typeof loadKbModules>>['createKbRuntime'],
+  paths: Awaited<ReturnType<typeof loadKbModules>>['paths'],
+) {
+  return createKbRuntime({
+    markdownRoot: process.env.CORAL_KB_PATH!,
+    runtimeDir: paths.kbRuntimeDir(),
+  });
 }
 
 describe('kb mutations', () => {
@@ -52,7 +70,8 @@ describe('kb mutations', () => {
   });
 
   it('promotes a memo with canonical frontmatter, index update, and atomic temp-file cleanup', async () => {
-    const { promote, detect, paths, frontmatter } = await loadKbModules();
+    const { promote, createKbRuntime, paths, frontmatter } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
     mkdirSync(paths.memoDir(projectRoot), { recursive: true });
@@ -64,13 +83,7 @@ source: kangig94/coral
 memo body
 `, 'utf-8');
 
-    const kb = detect.getKbContext({
-      projectRoot,
-      pluginRoot: '/plugin',
-      coralEnv: {},
-    });
-
-    const result = await promote(kb, {
+    const result = await promote(kb, projectRoot, {
       memo: '2026-03-23-kb.md',
       title: 'KB Promotion',
       content: '## Rule\nPromote through the tool.',
@@ -95,8 +108,7 @@ memo body
     expect(frontmatter.extractTitle(note)).toBe('KB Promotion');
     expect(note).toContain('## Rule\nPromote through the tool.\n');
 
-    const index = detect.readKbIndex();
-    expect(index?.notes['coral-kb-promotion']).toEqual({
+    expect(kb.readIndex()?.notes['coral-kb-promotion']).toEqual({
       title: 'KB Promotion',
       tags: ['coral'],
       principles: [],
@@ -108,7 +120,8 @@ memo body
   });
 
   it('rejects duplicate targets before writing or deleting the memo', async () => {
-    const { promote, detect, paths } = await loadKbModules();
+    const { promote, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
     mkdirSync(paths.memoDir(projectRoot), { recursive: true });
@@ -124,13 +137,7 @@ memo body
     const notePath = join(paths.notesDir(), 'coral-kb-promotion.md');
     writeFileSync(notePath, 'original note', 'utf-8');
 
-    const kb = detect.getKbContext({
-      projectRoot,
-      pluginRoot: '/plugin',
-      coralEnv: {},
-    });
-
-    await expect(promote(kb, {
+    await expect(promote(kb, projectRoot, {
       memo: 'dup.md',
       title: 'KB Promotion',
       content: '## Rule\nPromote through the tool.',
@@ -143,7 +150,8 @@ memo body
   });
 
   it('rejects memo paths outside the active project memo directory before touching files', async () => {
-    const { promote, detect } = await loadKbModules();
+    const { promote, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
 
@@ -154,13 +162,7 @@ source: kangig94/coral
 memo body
 `, 'utf-8');
 
-    const kb = detect.getKbContext({
-      projectRoot,
-      pluginRoot: '/plugin',
-      coralEnv: {},
-    });
-
-    await expect(promote(kb, {
+    await expect(promote(kb, projectRoot, {
       memo: '../outside.md',
       title: 'KB Promotion',
       content: '## Rule\nPromote through the tool.',
@@ -172,7 +174,8 @@ memo body
   });
 
   it('updates an existing note atomically while preserving createdAt and source', async () => {
-    const { update, detect, paths, frontmatter } = await loadKbModules();
+    const { update, createKbRuntime, paths, frontmatter } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
     const notePath = join(paths.notesDir(), 'coral-kb-promotion.md');
     writeFileSync(notePath, `---
@@ -189,7 +192,7 @@ mutationSeqAtPromote: 7
 Original body.
 `, 'utf-8');
 
-    detect.writeKbIndex({
+    kb.writeIndex({
       notes: {
         'coral-kb-promotion': {
           title: 'Original Title',
@@ -205,12 +208,6 @@ Original body.
     });
 
     vi.setSystemTime(new Date('2026-03-24T05:06:07.000Z'));
-    const kb = detect.getKbContext({
-      projectRoot: join(mockState.tmpHome, 'project'),
-      pluginRoot: '/plugin',
-      coralEnv: {},
-    });
-
     const result = await update(kb, {
       note: 'coral-kb-promotion',
       title: 'Updated Title',
@@ -232,7 +229,7 @@ Original body.
     expect(frontmatter.extractTitle(note)).toBe('Updated Title');
     expect(note).toContain('Updated body.\n');
 
-    expect(detect.readKbIndex()?.notes['coral-kb-promotion']).toEqual({
+    expect(kb.readIndex()?.notes['coral-kb-promotion']).toEqual({
       title: 'Updated Title',
       tags: ['coral'],
       principles: ['contract-first-design'],
@@ -244,11 +241,12 @@ Original body.
   });
 
   it('deletes a note and removes its JSON index entry', async () => {
-    const { deleteFn, detect, paths } = await loadKbModules();
+    const { deleteFn, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
     const notePath = join(paths.notesDir(), 'coral-kb-promotion.md');
     writeFileSync(notePath, 'note body', 'utf-8');
-    detect.writeKbIndex({
+    kb.writeIndex({
       notes: {
         'coral-kb-promotion': {
           title: 'Updated Title',
@@ -262,16 +260,10 @@ Original body.
       principles: {},
     });
 
-    const kb = detect.getKbContext({
-      projectRoot: join(mockState.tmpHome, 'project'),
-      pluginRoot: '/plugin',
-      coralEnv: {},
-    });
-
     const result = await deleteFn(kb, { note: 'coral-kb-promotion' });
     expect(result).toEqual({ deleted: notePath });
     expect(existsSync(notePath)).toBe(false);
-    expect(detect.readKbIndex()?.notes['coral-kb-promotion']).toBeUndefined();
+    expect(kb.readIndex()?.notes['coral-kb-promotion']).toBeUndefined();
   });
 
   it('reads a note by slug and returns structured content without timestamps', async () => {

@@ -83,9 +83,3 @@ export interface KbLanceDbAdapter {
   }): Promise<void>;
   deleteNote?(note: string): Promise<void>;
 }
-
-export interface KbContext {
-  projectRoot: string;
-  kbRoot: string;
-  adapter: KbLanceDbAdapter | null;
-}

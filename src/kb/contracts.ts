@@ -2,17 +2,15 @@ import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { CallerContext } from '../execution/request-context.js';
 import { isRecord } from '../shared/mcp-utils.js';
-import { ensureKbIndex, getKbContext, setAutoRebuild } from './detect.js';
 import { deleteFn } from './delete.js';
 import { writeMemo } from './memo.js';
 import { promote } from './promote.js';
-import { rebuildMetadataAndOrama, reindex } from './reindex.js';
+import { reindex } from './reindex.js';
 import { searchKb } from './search.js';
 import { readNote } from './read.js';
 import { update } from './update.js';
-
-// Auto-rebuild index when missing or stale — avoids circular import by using callback
-setAutoRebuild(async (kb, startSeq) => { await rebuildMetadataAndOrama(kb, startSeq); });
+import type { CurateHandle } from './curate.js';
+import type { KbRuntime } from './runtime.js';
 
 // KB filenames allow mixed case for code identifiers (e.g., cuMemFree, applyExpel)
 const slugSchema = z.string().regex(/^[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*$/);
@@ -34,7 +32,7 @@ export type KbToolContract<TSchema extends z.ZodTypeAny> = {
   handler: (input: z.infer<TSchema>, ctx: CallerContext) => Promise<unknown>;
 };
 
-type KbToolContractMap = Record<string, KbToolContract<z.ZodTypeAny>>;
+export type KbToolContractMap = Record<string, KbToolContract<z.ZodTypeAny>>;
 
 export const kbSearchSchema = z.object({
   query: nonEmptyTrimmedSchema,
@@ -112,59 +110,63 @@ export function defineKbToolContracts<TDefs extends Record<string, KbToolDefinit
   return contracts;
 }
 
-export const kbToolContracts = defineKbToolContracts({
-  kb_search: {
-    description: 'Search the knowledge base.',
-    schema: kbSearchSchema,
-    handler: async (input, ctx) => {
-      const kb = getKbContext(ctx);
-      return searchKb(kb, input.query, input.top_k);
+export function createKbToolContracts({
+  kb,
+  curate,
+}: {
+  kb: KbRuntime;
+  curate: CurateHandle;
+}): KbToolContractMap {
+  return defineKbToolContracts({
+    kb_search: {
+      description: 'Search the knowledge base.',
+      schema: kbSearchSchema,
+      handler: async (input) => searchKb(kb, input.query, input.top_k),
     },
-  },
-  kb_read: {
-    description: 'Read a KB note by slug.',
-    schema: kbReadSchema,
-    handler: async (input) => readNote(input),
-  },
-  kb_promote: {
-    description: 'Promote a memo to a KB note.',
-    schema: kbPromoteSchema,
-    handler: async (input, ctx) => promote(getKbContext(ctx), input),
-  },
-  kb_update: {
-    description: 'Update an existing KB note.',
-    schema: kbUpdateSchema,
-    handler: async (input, ctx) => update(getKbContext(ctx), input),
-  },
-  kb_delete: {
-    description: 'Delete an existing KB note.',
-    schema: kbDeleteSchema,
-    handler: async (input, ctx) => deleteFn(getKbContext(ctx), input),
-  },
-  kb_reindex: {
-    description: 'Rebuild the KB index from markdown files.',
-    schema: kbReindexSchema,
-    handler: async (_input, ctx) => reindex(getKbContext(ctx)),
-  },
-  kb_principles: {
-    description: 'List KB principle names. Use to discover cross-domain decision patterns before searching.',
-    schema: kbPrinciplesSchema,
-    handler: async (input, ctx) => {
-      const kb = getKbContext(ctx);
-      const index = await ensureKbIndex(kb);
-      let names = Object.keys(index.principles);
-      const total = names.length;
-      if (input.query) {
-        const q = input.query.toLowerCase();
-        names = names.filter(n => n.includes(q));
-      }
-      names.sort();
-      return { principles: names.slice(0, input.top_k), total };
+    kb_read: {
+      description: 'Read a KB note by slug.',
+      schema: kbReadSchema,
+      handler: async (input) => readNote(input),
     },
-  },
-  kb_memo: {
-    description: 'Write a memo. Timestamps and frontmatter are generated automatically.',
-    schema: kbMemoSchema,
-    handler: async (input, ctx) => writeMemo(ctx.projectRoot, input),
-  },
-}) as unknown as KbToolContractMap;
+    kb_promote: {
+      description: 'Promote a memo to a KB note.',
+      schema: kbPromoteSchema,
+      handler: async (input, ctx) => promote(kb, ctx.projectRoot, input, () => { curate.schedule(); }),
+    },
+    kb_update: {
+      description: 'Update an existing KB note.',
+      schema: kbUpdateSchema,
+      handler: async (input) => update(kb, input),
+    },
+    kb_delete: {
+      description: 'Delete an existing KB note.',
+      schema: kbDeleteSchema,
+      handler: async (input) => deleteFn(kb, input),
+    },
+    kb_reindex: {
+      description: 'Rebuild the KB index from markdown files.',
+      schema: kbReindexSchema,
+      handler: async () => reindex(kb),
+    },
+    kb_principles: {
+      description: 'List KB principle names. Use to discover cross-domain decision patterns before searching.',
+      schema: kbPrinciplesSchema,
+      handler: async (input) => {
+        const index = await kb.ensureIndex();
+        let names = Object.keys(index.principles);
+        const total = names.length;
+        if (input.query) {
+          const q = input.query.toLowerCase();
+          names = names.filter(n => n.includes(q));
+        }
+        names.sort();
+        return { principles: names.slice(0, input.top_k), total };
+      },
+    },
+    kb_memo: {
+      description: 'Write a memo. Timestamps and frontmatter are generated automatically.',
+      schema: kbMemoSchema,
+      handler: async (input, ctx) => writeMemo(ctx.projectRoot, input),
+    },
+  }) as unknown as KbToolContractMap;
+}

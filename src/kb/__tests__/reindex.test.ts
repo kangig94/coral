@@ -59,12 +59,36 @@ function createFakeDb(): FakeDb {
 
 async function loadKbModules() {
   vi.resetModules();
-  const [{ reindex }, detect, paths] = await Promise.all([
+  const [{ reindex }, runtime, paths] = await Promise.all([
     import('../reindex.js'),
-    import('../detect.js'),
+    import('../runtime.js'),
     import('../paths.js'),
   ]);
-  return { reindex, detect, paths };
+  return {
+    reindex,
+    createKbRuntime: runtime.createKbRuntime,
+    paths,
+  };
+}
+
+function createRuntime(
+  createKbRuntime: Awaited<ReturnType<typeof loadKbModules>>['createKbRuntime'],
+  paths: Awaited<ReturnType<typeof loadKbModules>>['paths'],
+) {
+  return createKbRuntime({
+    markdownRoot: process.env.CORAL_KB_PATH!,
+    runtimeDir: paths.kbRuntimeDir(),
+  });
+}
+
+function setAdapter(kb: ReturnType<typeof createRuntime>, adapter: {
+  getDb: () => Promise<unknown>;
+  ensureTables: () => Promise<void>;
+} | null): void {
+  Object.defineProperty(kb, 'adapter', {
+    configurable: true,
+    get: () => adapter,
+  });
 }
 
 describe('kb reindex', () => {
@@ -81,7 +105,8 @@ describe('kb reindex', () => {
   });
 
   it('rebuilds the JSON index unconditionally in text mode without warning by default', async () => {
-    const { reindex, detect, paths } = await loadKbModules();
+    const { reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
     mkdirSync(paths.principlesDir(), { recursive: true });
     writeFileSync(join(paths.notesDir(), 'coral-kb-mode.md'), `---
@@ -104,7 +129,7 @@ updatedAt: 2026-03-20
 ---
 Make the contract explicit first.
 `, 'utf-8');
-    detect.writeKbIndex({
+    kb.writeIndex({
       notes: {
         stale: {
           title: 'Stale',
@@ -118,11 +143,7 @@ Make the contract explicit first.
       principles: {},
     });
 
-    const result = await reindex({
-      projectRoot: '/project',
-      kbRoot: process.env.CORAL_KB_PATH!,
-      adapter: null,
-    });
+    const result = await reindex(kb);
 
     expect(result).toMatchObject({
       notes: 1,
@@ -131,7 +152,7 @@ Make the contract explicit first.
       mode: 'text',
     });
     expect(result.warning).toBeUndefined();
-    expect(detect.readKbIndex()).toEqual({
+    expect(kb.readIndex()).toEqual({
       notes: {
         'coral-kb-mode': {
           title: 'KB Mode',
@@ -151,7 +172,8 @@ Make the contract explicit first.
   });
 
   it('rebuilds text mode cleanly when enhanced mode was previously active but is now unavailable', async () => {
-    const { reindex, detect, paths } = await loadKbModules();
+    const { reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
     mkdirSync(paths.principlesDir(), { recursive: true });
     writeFileSync(join(paths.notesDir(), 'coral-kb-mode.md'), `---
@@ -170,23 +192,20 @@ updatedAt: 2026-03-20
 ---
 Make the contract explicit first.
 `, 'utf-8');
-    detect.writeIndexState({
+    kb.writeIndexState({
       mutationSeq: 3,
       indexedSeq: 3,
     });
 
-    const result = await reindex({
-      projectRoot: '/project',
-      kbRoot: process.env.CORAL_KB_PATH!,
-      adapter: null,
-    });
+    const result = await reindex(kb);
 
     expect(result.mode).toBe('text');
     expect(result.warning).toBeUndefined();
   });
 
   it('rebuilds LanceDB tables in enhanced mode and clears stale index state for the rebuilt snapshot', async () => {
-    const { reindex, detect, paths } = await loadKbModules();
+    const { reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
     mkdirSync(paths.principlesDir(), { recursive: true });
     writeFileSync(join(paths.notesDir(), 'coral-kb-mode.md'), `---
@@ -208,7 +227,7 @@ updatedAt: 2026-03-20
 ---
 Make the contract explicit first.
 `, 'utf-8');
-    detect.writeIndexState({
+    kb.writeIndexState({
       mutationSeq: 5,
       indexedSeq: 3,
       staleReason: 'old failure',
@@ -218,15 +237,12 @@ Make the contract explicit first.
     fakeDb.tableNames.add('notes');
     fakeDb.tableNames.add('tags');
     fakeDb.tableNames.add('principles');
-
-    const result = await reindex({
-      projectRoot: '/project',
-      kbRoot: process.env.CORAL_KB_PATH!,
-      adapter: {
-        getDb: async () => fakeDb.connection,
-        ensureTables: async () => {},
-      },
+    setAdapter(kb, {
+      getDb: async () => fakeDb.connection,
+      ensureTables: async () => {},
     });
+
+    const result = await reindex(kb);
 
     expect(result.mode).toBe('text');
     expect(result.warning).toBeUndefined();
@@ -251,7 +267,7 @@ Make the contract explicit first.
     expect(fakeDb.created.principles).toEqual([
       { note_id: 'coral-kb-mode', principle: 'contract-first-design', principle_norm: 'contract-first-design' },
     ]);
-    expect(detect.readIndexState()).toEqual({
+    expect(kb.readIndexState()).toEqual({
       mutationSeq: 5,
       indexedSeq: 5,
     });

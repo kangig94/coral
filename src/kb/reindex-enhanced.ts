@@ -1,4 +1,5 @@
-import type { KbContext, KbReindexNoteRecord } from './types.js';
+import type { KbRuntime } from './runtime.js';
+import type { KbReindexNoteRecord } from './types.js';
 
 type LanceDbConnection = {
   dropTable: (name: string) => Promise<void>;
@@ -85,7 +86,7 @@ async function createTable(
 }
 
 export async function rebuildEnhancedIndex(
-  kb: KbContext,
+  kb: Pick<KbRuntime, 'adapter'>,
   notes: KbReindexNoteRecord[],
 ): Promise<void> {
   if (kb.adapter === null) {

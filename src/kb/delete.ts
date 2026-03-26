@@ -1,21 +1,14 @@
 import { rmSync } from 'node:fs';
 import { isNoEntryError } from '../shared/mcp-utils.js';
-import { notePathFromName } from './paths.js';
 import type { KbDeleteInput } from './contracts.js';
-import type { KbContext } from './types.js';
-import {
-  readKbIndex,
-  recordMutationCommitted,
-  withKbMutationLock,
-  writeKbIndex,
-} from './detect.js';
 import { assertSlug, cloneKbIndex, markTextIndexStale } from './mutation-helpers.js';
+import type { KbRuntime } from './runtime.js';
 
-export async function deleteFn(_kb: KbContext, input: KbDeleteInput): Promise<{ deleted: string }> {
+export async function deleteFn(rt: KbRuntime, input: KbDeleteInput): Promise<{ deleted: string }> {
   const note = assertSlug(input.note, 'note');
-  const notePath = notePathFromName(note);
+  const notePath = rt.notePath(note);
 
-  return withKbMutationLock(async () => {
+  return rt.withMutationLock(async () => {
     try {
       rmSync(notePath);
     } catch (error: unknown) {
@@ -24,13 +17,13 @@ export async function deleteFn(_kb: KbContext, input: KbDeleteInput): Promise<{ 
       }
       throw error;
     }
-    recordMutationCommitted();
+    rt.recordMutationCommitted();
 
-    const nextIndex = cloneKbIndex(readKbIndex());
+    const nextIndex = cloneKbIndex(rt.readIndex());
     delete nextIndex.notes[note];
-    writeKbIndex(nextIndex);
+    rt.writeIndex(nextIndex);
 
-    await markTextIndexStale('KB text snapshot is stale after kb_delete.');
+    markTextIndexStale(rt.invalidateTextSnapshot, 'KB text snapshot is stale after kb_delete.');
 
     return { deleted: notePath };
   });

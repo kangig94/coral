@@ -1,7 +1,7 @@
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { errorMessage } from '../shared/mcp-utils.js';
-import { invalidateTextSnapshot } from './detect.js';
+import type { KbIndexState } from './runtime.js';
 import type { KbIndex } from './types.js';
 
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -88,10 +88,13 @@ export function cloneKbIndex(index: KbIndex | null): KbIndex {
   };
 }
 
-export async function markTextIndexStale(reason: string): Promise<void> {
+export function markTextIndexStale(
+  invalidate: (reason: string) => KbIndexState,
+  reason: string,
+): void {
   try {
-    invalidateTextSnapshot(reason);
+    invalidate(reason);
   } catch (error: unknown) {
-    invalidateTextSnapshot(errorMessage(error));
+    invalidate(errorMessage(error));
   }
 }

@@ -17,6 +17,14 @@ export function extractBody(content: string): string {
     .trim();
 }
 
+export function extractPrincipleStatement(content: string): string {
+  const withoutFrontmatter = content.replace(FRONTMATTER_BLOCK, '').trim();
+  if (!withoutFrontmatter) {
+    throw new Error('KB principle is missing a statement');
+  }
+  return withoutFrontmatter.replace(/\s+/g, ' ');
+}
+
 function extractFrontmatterBlock(content: string): string {
   const match = content.match(FRONTMATTER_PATTERN);
   if (!match) {
