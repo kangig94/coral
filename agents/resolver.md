@@ -5,7 +5,7 @@ model: opus
 methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
 ---
 
-> **CORAL_METHODS**: Bash(echo ~/.claude/plugins/cache/coral/coral/*/methods/)
+> **CORAL_METHODS**: ~/.claude/plugins/marketplaces/coral/methods/
 
 <Agent_Prompt>
   <Role>

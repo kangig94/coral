@@ -34,9 +34,9 @@ plugin files from project files. Three read patterns and one spawn pattern exist
   as additionalContext on UserPromptSubmit and PreToolUse(Skill). No `!` backtick needed in SKILL.md.
 - **Agents**: Define path aliases at the top (after frontmatter) using Bash tool notation:
   ```
-  > **CORAL_AGENTS**: Bash(echo ~/.claude/plugins/cache/coral/coral/*/agents/)
-  > **CORAL_SKILLS**: Bash(echo ~/.claude/plugins/cache/coral/coral/*/skills/)
-  > **CORAL_METHODS**: Bash(echo ~/.claude/plugins/cache/coral/coral/*/methods/)
+  > **CORAL_AGENTS**: ~/.claude/plugins/marketplaces/coral/agents/
+  > **CORAL_SKILLS**: ~/.claude/plugins/marketplaces/coral/skills/
+  > **CORAL_METHODS**: ~/.claude/plugins/marketplaces/coral/methods/
   ```
 - Never use bare `agents/xxx.md`, `skills/xxx/`, or `methods/xxx.md` — these resolve relative
   to the user's project directory, which breaks when the plugin is used outside its own repo.
