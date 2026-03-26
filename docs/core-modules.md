@@ -150,6 +150,68 @@ See `src/cli/main.ts`.
 
 ---
 
+## KB Modules (`src/kb/`)
+
+### src/kb/runtime.ts - KbRuntime Factory
+
+`createKbRuntime({ markdownRoot, runtimeDir })` returns the singleton `KbRuntime` that all KB operations share. Manages in-memory caches for the parsed JSON index (`cachedIndex`) and Orama snapshot (`cachedOramaIndex`), a non-reentrant promise-chain mutation lock (`withMutationLock`), and the `ensureIndex()` / `ensureOramaIndex()` freshness pipeline. `textArtifactsNeedRebuild(state?)` accepts an optional pre-read index state to avoid redundant disk reads within one synchronous segment. See `src/kb/runtime.ts`.
+
+---
+
+### src/kb/contracts.ts - KB Tool Schemas
+
+Zod schemas and handler bindings for all KB tools (`kb_search`, `kb_read`, `kb_promote`, `kb_update`, `kb_delete`, `kb_reindex`, `kb_principles`, `kb_memo`). `defineKbToolContracts()` produces MCP-compatible descriptors with `zodToJsonSchema`. Two slug vocabularies: `noteSlugSchema` (mixed-case, for note names) and `lowercaseSlugSchema` (for domain, memo topic). See `src/kb/contracts.ts`.
+
+---
+
+### src/kb/validation.ts - Slug Patterns and Assertions
+
+Canonical slug patterns: `LOWERCASE_SLUG_PATTERN` (`/^[a-z0-9]+(?:-[a-z0-9]+)*$/`) for domain and memo topics, `NOTE_SLUG_PATTERN` (`/^[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*$/`) for note names that embed code identifiers (e.g. `rendering-efficiency-CuMem`). Exports `assertSlug` (lowercase), `assertNoteSlug` (mixed-case), `assertNonEmptyText`, `compareLocale`. See `src/kb/validation.ts`.
+
+---
+
+### src/kb/mutation-helpers.ts - Shared Mutation Utilities
+
+`buildNoteIndexEntry(meta)` — deep-copies a note index record from any source carrying frontmatter fields. `commitIndexUpdate(rt, updater, reason)` — clone index, apply mutable updater, write back, mark text stale (used by promote/update/delete; `@precondition` caller holds `withMutationLock`). `writeFileAtomic(path, payload)` — write to `.tmp` then rename, with `ensuredDirs` cache and ENOENT retry. `cloneKbIndex`, `markTextIndexStale`. See `src/kb/mutation-helpers.ts`.
+
+---
+
+### src/kb/search.ts - KB Search
+
+`searchKb(rt, query, top_k)` — Orama full-text search with BM25 ranking, field boosting (`slug:3, title:2, tags:1.5, principles:1.5, body:1`). `toResult()` uses snippet-as-signal for body match detection: `extractSnippet` attempts anchor-based body search; if snippet found → content matched; if no snippet and no other surface matched → content (Orama fallback). `findTokenAnchor` uses the inverse of Orama's English SPLITTER regex to maintain tokenizer contract alignment. See `src/kb/search.ts`.
+
+---
+
+### src/kb/frontmatter.ts - Frontmatter Parsing
+
+YAML frontmatter parse/serialize for KB notes. `parseFrontmatter(content)` → `KbNoteFrontmatter`, `serializeFrontmatter(meta)` → YAML block, `replaceFrontmatter(content, meta)` for in-place update. `deriveNoteIdentity(pathOrName)` splits `domain-topic` from a note slug. `extractBody`, `extractTitle`, `extractPrincipleStatement` for content extraction. See `src/kb/frontmatter.ts`.
+
+---
+
+### src/kb/curate.ts - Automated Curation Scheduler
+
+Background scheduler that classifies KB notes with tags and principles via `claude -p --no-session-persistence`. `createCurateScheduler({ kb, spawnCli })` returns a `CurateHandle` with `start()`, `schedule()`, `isRunning()`. Claims up to 100 notes per run, classifies in one batch, then runs principle discovery once over the full eligible corpus. Manages git sync cycle: `gitSync()` at start (fetch + rebase, stash for new notes, `-X theirs` on conflict), `gitPush()` after completion. `.gitignore` auto-managed for `curate-state.json`, `data/`, `.obsidian/`. See `src/kb/curate.ts`.
+
+---
+
+### src/kb/curate-state.ts - Curate State Machine
+
+Cursor-based tracking for curate progress: `CurateState` with `processedThrough`, `lastRunDay`, retry cooldown, pending discoveries, and migration version. Pure `apply*` functions for state transitions (failure recording, retry clearing, discovery tracking). `migrateCurateStateIfNeeded(kb)` assigns `mutationSeqAtPromote` to pre-existing notes. See `src/kb/curate-state.ts`.
+
+---
+
+### src/kb/curate-tags.ts - Tag Cleanup
+
+`cleanupTags(index, cohortNotes)` — identifies singular/plural duplicates, low-support pattern-suffix tags, and over-specific multi-segment tags for removal. `countTagSupport(index)` counts per-tag note references. Used by the curate scheduler after classification. See `src/kb/curate-tags.ts`.
+
+---
+
+### src/kb/types.ts - KB Type Definitions
+
+Core types: `KbNoteFrontmatter` (tags, principles, source, dates, optional mutationSeqAtPromote), `KbNoteIndexRecord = KbNoteFrontmatter & { title }`, `KbIndex` (notes + principles), `KbReindexNoteRecord = KbNoteFrontmatter & { note, path, domain, title, body }`, `KbSearchResponse`, `KbResult`, `KbLanceDbAdapter`. See `src/kb/types.ts`.
+
+---
+
 ## Client Modules (`src/client/`)
 
 ### src/client/discuss.ts - Discuss DTO Builders

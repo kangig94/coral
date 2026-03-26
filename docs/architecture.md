@@ -401,9 +401,10 @@ Each file is a single `SessionEntry`. Corrupt files are skipped with a warning; 
         └── discuss/
 ```
 
-- **KB** (`~/.coral/kb/`) is global and shared across projects. Notes in `kb/notes/`, principles in `kb/principles/`.
+- **KB** (`~/.coral/kb/`) is global and shared across projects. Notes in `kb/notes/`, principles in `kb/principles/`. The KB directory is a git repo when multi-device sync is enabled.
 - **Project working data** lives under `~/.coral/projects/{slug}/`, where `{slug}` comes from the canonical git source (`owner/repo` -> `owner-repo`) with `local/<dirname>` fallback.
 - Agents write memos under `~/.coral/projects/{slug}/memo/`, then use KB tools (`kb_search`, `kb_promote`, `kb_update`, `kb_delete`, `kb_reindex`) for note operations.
+- **KB git cycle**: When the KB directory has a git remote, curate auto-manages sync. On start: `fetch` + `rebase` (conflict: `abort` + `merge -X theirs`, stash preserves uncommitted new notes). After curate: `push` (failure: `pull --rebase` + retry). `.gitignore` tracks `curate-state.json`, `data/`, `.obsidian/` (device-local files excluded from sync). Curate classification metadata lost to `-X theirs` is re-applied in the next curate cycle (idempotent).
 
 ## Directory Structure
 
@@ -556,26 +557,33 @@ workflow/types.ts provides pipeline AST types
 
 ### Knowledge Base Subsystem
 
-The KB stack is split between backend-exposed tool contracts, markdown-vault helpers, and derived search state:
+The KB stack is split between backend-exposed tool contracts, markdown-vault helpers, derived search state, and an automated curation scheduler:
 
 ```
 execution/server.ts
   ├── kb/contracts.ts            (kb_search/kb_promote/kb_update/kb_delete/kb_memo/kb_reindex descriptors + routing)
-  ├── kb/detect.ts               (cached KB context, Orama lifecycle, index state)
+  ├── kb/runtime.ts              (KbRuntime: index cache, Orama lifecycle, index state, mutation lock)
   └── providers/registry.ts      (reserves KB built-in tool names)
 
 kb/contracts.ts
   └── kb/{search,memo,promote,update,delete,reindex}.ts
 
-kb/{promote,update,delete,reindex}.ts
-  ├── kb/frontmatter.ts          (frontmatter parsing + serialization)
-  ├── kb/mutation-helpers.ts     (atomic write, text index stale marking)
-  ├── kb/paths.ts                (vault/memo boundary resolution)
-  └── kb/detect.ts               (cache invalidation, Orama persistence)
+kb/{promote,update,delete}.ts
+  ├── kb/mutation-helpers.ts     (buildNoteIndexEntry, commitIndexUpdate, writeFileAtomic, cloneKbIndex)
+  ├── kb/frontmatter.ts          (frontmatter parsing + serialization, deriveNoteIdentity)
+  ├── kb/validation.ts           (slug patterns: LOWERCASE_SLUG_PATTERN, NOTE_SLUG_PATTERN, assertSlug, assertNoteSlug)
+  └── kb/paths.ts                (vault/memo boundary resolution)
 
 kb/search.ts
   ├── kb/orama-factory.ts        (schema, tokenizer, pre-normalization)
-  └── kb/detect.ts               (ensureOramaIndex)
+  └── kb/runtime.ts              (ensureOramaIndex)
+
+kb/curate.ts                     (automated tag/principle classification scheduler)
+  ├── kb/curate-state.ts         (curate state machine, cursor tracking, migration)
+  ├── kb/curate-tags.ts          (tag cleanup: plural/singular, parent absorption)
+  └── kb/runtime.ts              (mutation lock, index read/write)
+
+kb/types.ts                      (KbNoteFrontmatter, KbNoteIndexRecord, KbReindexNoteRecord, KbIndex)
 ```
 
 ### Discuss Subsystem
