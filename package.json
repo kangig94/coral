@@ -1,6 +1,6 @@
 {
   "name": "coral",
-  "version": "0.4.11",
+  "version": "0.4.12",
   "description": "Claude Code plugin - structured agents with Codex CLI bridge",
   "type": "module",
   "exports": {

@@ -1121,18 +1121,9 @@ describe('execution backend server', () => {
     expect(recoveredSession?.lastJobId).toBe(jobId);
   });
 
-  it('returns 200 from /admin/shutdown and transitions to draining', async () => {
+  it('returns 200 from /admin/shutdown with draining status and shuts down when idle', async () => {
     const pluginRoot = createProjectRoot('plugin-root');
-    let closeStarted = false;
-    const closeBarrier = createDeferred();
-    const backend = await startBackendServer({
-      pluginRoot,
-      closeServerFn: async (server) => {
-        closeStarted = true;
-        await closeBarrier.promise;
-        await closeHttpServer(server);
-      },
-    });
+    const backend = await startBackendServer({ pluginRoot });
 
     const response = await fetch(`${backend.baseUrl}/admin/shutdown`, {
       method: 'POST',
@@ -1140,14 +1131,11 @@ describe('execution backend server', () => {
     });
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ status: 'shutting_down' });
+    const body = await response.json() as Record<string, unknown>;
+    expect(body.status).toBe('draining');
+    expect(typeof body.instanceId).toBe('string');
 
-    await waitForCondition(() => closeStarted);
-    expect(backend.controller.getLifecycle()).toBe('draining');
-    expect(existsSync(backend.backendInfo.backendInfoPath(pluginRoot))).toBe(true);
-    expect(existsSync(backend.backendLock.backendLockPath(pluginRoot))).toBe(true);
-
-    closeBarrier.resolve();
+    // Backend is idle (no active jobs in test), so drain fires promptly
     await backend.controller.waitForShutdown();
 
     expect(backend.controller.getLifecycle()).toBe('stopped');
@@ -1155,20 +1143,16 @@ describe('execution backend server', () => {
     expect(existsSync(backend.backendLock.backendLockPath(pluginRoot))).toBe(false);
   });
 
-  it('returns health with draining status while shutting down', async () => {
-    const closeBarrier = createDeferred();
-    const backend = await startBackendServer({
-      closeServerFn: async (server) => {
-        await closeBarrier.promise;
-        await closeHttpServer(server);
-      },
-    });
+  it('returns health with draining status after admin shutdown request', async () => {
+    // Simulate a busy backend: hold an inflight request so drain waits
+    const backend = await startBackendServer();
+    const idleTimer = backend.controller.getIdleTimer();
+    idleTimer.beginRequest();
 
     await fetch(`${backend.baseUrl}/admin/shutdown`, {
       method: 'POST',
       headers: { 'X-Coral-Backend-Token': backend.token },
     });
-    await waitForCondition(() => backend.controller.getLifecycle() === 'draining');
 
     const response = await fetch(`${backend.baseUrl}/health`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
@@ -1177,36 +1161,31 @@ describe('execution backend server', () => {
 
     expect(response.status).toBe(200);
     expect(body.status).toBe('draining');
-    expect(body.bundleHash).toBe('testhash1234');
 
-    closeBarrier.resolve();
+    idleTimer.endRequest();
     await backend.controller.waitForShutdown();
   });
 
   it('accepts /admin/shutdown while already draining', async () => {
-    const closeBarrier = createDeferred();
-    const backend = await startBackendServer({
-      closeServerFn: async (server) => {
-        await closeBarrier.promise;
-        await closeHttpServer(server);
-      },
-    });
+    const backend = await startBackendServer();
+    const idleTimer = backend.controller.getIdleTimer();
+    idleTimer.beginRequest();
 
-    await fetch(`${backend.baseUrl}/admin/shutdown`, {
+    const first = await fetch(`${backend.baseUrl}/admin/shutdown`, {
       method: 'POST',
       headers: { 'X-Coral-Backend-Token': backend.token },
     });
-    await waitForCondition(() => backend.controller.getLifecycle() === 'draining');
+    expect(first.status).toBe(200);
+    expect((await first.json() as Record<string, unknown>).status).toBe('draining');
 
-    const response = await fetch(`${backend.baseUrl}/admin/shutdown`, {
+    const second = await fetch(`${backend.baseUrl}/admin/shutdown`, {
       method: 'POST',
       headers: { 'X-Coral-Backend-Token': backend.token },
     });
+    expect(second.status).toBe(200);
+    expect((await second.json() as Record<string, unknown>).status).toBe('draining');
 
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ status: 'shutting_down' });
-
-    closeBarrier.resolve();
+    idleTimer.endRequest();
     await backend.controller.waitForShutdown();
   });
 
