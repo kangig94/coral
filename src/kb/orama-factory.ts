@@ -47,7 +47,7 @@ export function tokenizeQuery(oramaTerm: string, tokenizer: KbOramaTokenizer): s
 }
 
 export function tokenizeField(value: string, tokenizer: KbOramaTokenizer): string[] {
-  const normalized = normalizeWhitespace(normalizeHyphens(value));
+  const normalized = normalizeOramaTerm(value);
   if (!normalized) {
     return [];
   }

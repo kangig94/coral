@@ -71,11 +71,15 @@ Strip the `--codex` flag before passing the prompt to the execution path.
        - `--codex`: call `codex({ op: "bypass_exec", ... })` with `<Execution>`, `<Constraints>`,
          `<Failure_Modes_To_Avoid>`, `<Output_Format>`, target file paths, and coding standards.
          Pass `work_dir`. Do NOT pass `session`.
+         **Every codex prompt MUST include**: "NEVER run git checkout, git restore, git reset, git clean,
+         or any command that discards uncommitted changes. Other processes may be working in the same
+         worktree. Only edit target files through tool calls."
          `wait({ jobs: [job] })` → read `result.content`; if absent, `Read(result.path)` is best-effort recovery.
        Parallel split:
        - Default: spawn each group as a parallel Task (`subagent_type: "general-purpose"`).
          Pass `<Execution>`, `<Constraints>`, the file group, and project coding standards.
        - `--codex`: dispatch one `codex({ op: "bypass_exec", ... })` call per file group.
+         **Every codex prompt MUST include** the same git-safety rule as the single-pass path above.
          Do NOT pass `session`.
          Collect all `job`s, then `wait({ jobs: pendingJobs })` until all complete; read each `result.content`; if absent, `Read(result.path)` is best-effort recovery.
     5) Review each change for correctness AND justification.

@@ -88,6 +88,39 @@ pathfind  →  preplan  →  plan  →  ralph
 ```
 
 <details>
+<summary>Pipeline details</summary>
+
+Each stage produces an artifact that feeds the next. Enter at any point — skip stages you don't need.
+
+**pathfind** — *"I have problems but don't know what to build."*
+Clusters symptoms, investigates root causes (spawns scanner for codebase analysis),
+generates divergent directions through orthogonal lanes, and spawns pioneer for elegant alternatives.
+Outputs a ranked direction list with scoring matrix.
+Hands off the chosen direction to preplan.
+
+**preplan** — *"I know the direction but need agreement on scope."*
+Fills a 7-item agreement (problem statement, success criteria, scope, assumptions, affected systems, constraints, approach direction)
+autonomously from codebase analysis, then presents to the user for correction.
+Spawns pioneer to find elegant alternatives for uncertain items, offering default/minimal/elegant spectrums.
+Produces `pre-{topic}.md` — the contract that plan must satisfy.
+
+**plan** — *"I need a design before I build."*
+Multi-round review loop: dispatches architect + critic (and resolver in `--deep` mode) as a workflow,
+synthesizes findings, edits the plan file, and evaluates an exit gate.
+The resolver classifies findings (Adopt/Adapt/Defer/Diverge), applies changes,
+and decides whether another round is needed based on finding severity and nature.
+Produces `{topic}.md` with acceptance criteria, implementation phases, and execution order (dependency graph + parallel batches).
+
+**ralph** — *"I have a plan (or prompt). Just build it."*
+Persistent executor with verification loop.
+In plan mode, reads the execution order and dispatches batches — parallelizing independent ACs.
+Every completion claim requires fresh verification evidence (lint → build → test).
+`--red` spawns a red-attacker in parallel to write adversarial tests targeting blind spots.
+`--team` uses Agent Teams for parallel AC execution.
+
+</details>
+
+<details>
 <summary>Advanced flags</summary>
 
 ```bash
@@ -191,8 +224,11 @@ Coral learns from every session. Root causes, gotchas, patterns — captured as 
 | `CORAL_MAX_SESSIONS` | `10` | Max concurrent CLI sessions (1–10) |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Max epochs before discussion auto-ends (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `0` | Days before completed sessions are auto-pruned (0 = disabled) |
+| `CORAL_KB_GIT_SYNC` | `0` | Enable KB git sync — auto push/pull with remote (`1` = enabled) |
 
 > **Tip:** Set `CORAL_CLAUDE_MODEL_CAP=sonnet` to cap all subagent calls at Sonnet tier for Pro plans or to conserve usage.
+>
+> **⚠️ Enterprise users:** KB git sync is **off by default**. KB notes may contain knowledge derived from proprietary codebases. Enabling auto-push could leak corporate IP to an external remote. Only enable if your KB remote is authorized for the content it will receive.
 
 Set in `.claude/settings.json` (persists across sessions):
 

@@ -876,31 +876,46 @@ export async function routeToolCall(
     try {
       let result: unknown;
       switch (request.name) {
-        case 'kb_search':
-          result = await searchKb(kb, String(args.query ?? ''), typeof args.top_k === 'number' ? args.top_k : 20);
+        case 'kb_search': {
+          const query = requireString(args, 'query');
+          if (query === null) return toolError('invalid_request', { message: 'query is required' });
+          result = await searchKb(kb, query, typeof args.top_k === 'number' ? args.top_k : 20);
           break;
-        case 'kb_read':
-          result = readNote({ note: String(args.note ?? '') });
+        }
+        case 'kb_read': {
+          const note = requireString(args, 'note');
+          if (note === null) return toolError('invalid_request', { message: 'note is required' });
+          result = readNote({ note });
           break;
-        case 'kb_promote':
-          result = await kbPromote(kb, ctx.projectRoot, {
-            memo: String(args.memo ?? ''),
-            title: String(args.title ?? ''),
-            content: String(args.content ?? ''),
-            domain: String(args.domain ?? ''),
-            topic: String(args.topic ?? ''),
-          }, () => { kbSubsystem.curateScheduler.schedule(); });
+        }
+        case 'kb_promote': {
+          const memo = requireString(args, 'memo');
+          const title = requireString(args, 'title');
+          const content = requireString(args, 'content');
+          const domain = requireString(args, 'domain');
+          const topic = requireString(args, 'topic');
+          if (!memo || !title || content === null || !domain || !topic) {
+            return toolError('invalid_request', { message: 'memo, title, content, domain, and topic are required strings' });
+          }
+          result = await kbPromote(kb, ctx.projectRoot, { memo, title, content, domain, topic }, () => { kbSubsystem.curateScheduler.schedule(); });
           break;
-        case 'kb_update':
+        }
+        case 'kb_update': {
+          const note = requireString(args, 'note');
+          if (note === null) return toolError('invalid_request', { message: 'note is required' });
           result = await kbUpdate(kb, {
-            note: String(args.note ?? ''),
-            ...(args.title !== undefined ? { title: String(args.title) } : {}),
-            ...(args.content !== undefined ? { content: String(args.content) } : {}),
+            note,
+            ...(args.title !== undefined ? { title: optionalString(args, 'title') } : {}),
+            ...(args.content !== undefined ? { content: optionalString(args, 'content') } : {}),
           });
           break;
-        case 'kb_delete':
-          result = await kbDeleteFn(kb, { note: String(args.note ?? '') });
+        }
+        case 'kb_delete': {
+          const note = requireString(args, 'note');
+          if (note === null) return toolError('invalid_request', { message: 'note is required' });
+          result = await kbDeleteFn(kb, { note });
           break;
+        }
         case 'kb_reindex':
           result = await kbReindex(kb);
           break;
@@ -908,21 +923,23 @@ export async function routeToolCall(
           const index = await kb.ensureIndex();
           let names = Object.keys(index.principles);
           const total = names.length;
-          if (typeof args.query === 'string' && args.query.trim()) {
-            const q = args.query.toLowerCase();
-            names = names.filter(n => n.includes(q));
+          const query = optionalString(args, 'query');
+          if (query?.trim()) {
+            const q = query.toLowerCase();
+            names = names.filter(n => n.toLowerCase().includes(q));
           }
           names.sort();
           const topK = typeof args.top_k === 'number' ? args.top_k : 100;
           result = { principles: names.slice(0, topK), total };
           break;
         }
-        case 'kb_memo':
-          result = writeMemo(ctx.projectRoot, {
-            topic: String(args.topic ?? ''),
-            content: String(args.content ?? ''),
-          });
+        case 'kb_memo': {
+          const topic = requireString(args, 'topic');
+          const content = requireString(args, 'content');
+          if (!topic || content === null) return toolError('invalid_request', { message: 'topic and content are required strings' });
+          result = writeMemo(ctx.projectRoot, { topic, content });
           break;
+        }
         default:
           return { statusCode: 404, body: { error: 'unknown_tool', name: request.name } };
       }

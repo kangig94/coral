@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
-import { extractTitle, parseFrontmatter, replaceFrontmatter } from './frontmatter.js';
+import { replaceFrontmatter } from './frontmatter.js';
 import { buildNoteIndexEntry, cloneKbIndex, writeFileAtomic } from './mutation-helpers.js';
+import { loadKbNote } from './read.js';
 import type { KbRuntime } from './runtime.js';
 import { sortedMarkdownEntries } from './text-artifacts.js';
 import type { KbNoteFrontmatter } from './types.js';
@@ -85,9 +86,7 @@ function calculateRetryCooldownMs(baseCooldownMs: number, consecutiveFailures: n
 
 function samePendingDiscovery(left: PendingDiscovery, right: PendingDiscovery): boolean {
   return left.principle === right.principle
-    && left.statement === right.statement
-    && sameStringList(left.notes, right.notes)
-    && left.createdAt === right.createdAt;
+    && left.statement === right.statement;
 }
 
 function parsePositiveInteger(value: unknown, label: string): number {
@@ -243,13 +242,13 @@ function syncIndexNote(
 
 function scanNote(kb: Pick<KbRuntime, 'notePath'>, note: string): ScannedNote {
   const path = kb.notePath(note);
-  const content = readFileSync(path, 'utf-8');
+  const loaded = loadKbNote(path);
   return {
     note,
     path,
-    content,
-    title: extractTitle(content),
-    frontmatter: parseFrontmatter(content),
+    content: loaded.raw,
+    title: loaded.title,
+    frontmatter: loaded.frontmatter,
   };
 }
 

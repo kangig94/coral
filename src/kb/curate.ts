@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 import {
   errorMessage,
   isNoEntryError,
@@ -25,13 +26,13 @@ import {
 } from './curate-state.js';
 import { cleanupTags, countTagSupport, type TagCleanupResult } from './curate-tags.js';
 import {
-  extractBody,
   deriveNoteIdentity,
   extractPrincipleStatement,
   extractTitle,
   parseFrontmatter,
   replaceFrontmatter,
 } from './frontmatter.js';
+import { loadKbNote } from './read.js';
 import { assertNonEmptyText, assertNoteSlug, compareLocale } from './validation.js';
 import {
   buildNoteIndexEntry,
@@ -52,6 +53,33 @@ const DISCOVERY_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
 const DISCOVERY_CORPUS_RESET_RATIO = 0.2;
 
 const GITIGNORE_ENTRIES = ['curate-state.json', 'data/', '.obsidian/'];
+const USAGE_CACHE_STALE_MS = 10 * 60 * 1000;
+const USAGE_5H_THRESHOLD = 90;
+const USAGE_WK_THRESHOLD = 100;
+
+function isUsageBudgetExhausted(): boolean {
+  try {
+    const cachePath = join(homedir(), '.claude', 'hud', '.coral-cache.json');
+    const raw = JSON.parse(readFileSync(cachePath, 'utf-8')) as Record<string, unknown>;
+    const entry = raw.claude as { ts?: number; data?: { fiveHour?: number; weekly?: number }; error?: boolean } | undefined;
+    if (!entry?.ts || !entry.data || entry.error) {
+      return false;
+    }
+    if (Date.now() - entry.ts > USAGE_CACHE_STALE_MS) {
+      return false;
+    }
+    const { fiveHour, weekly } = entry.data;
+    if (typeof fiveHour === 'number' && fiveHour >= USAGE_5H_THRESHOLD) {
+      return true;
+    }
+    if (typeof weekly === 'number' && weekly >= USAGE_WK_THRESHOLD) {
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
 const GITIGNORE_HEADER = '# Coral KB runtime (device-local, auto-managed)';
 
 type SpawnCliResult = {
@@ -878,11 +906,23 @@ export function createCurateScheduler({
     }
   }
 
-  function hasGitRemote(root: string): boolean {
+  function isGitSyncEnabled(root: string): boolean {
+    if (process.env.CORAL_KB_GIT_SYNC !== '1') {
+      return false;
+    }
     try {
       return gitExec(root, ['remote'], 5000).trim().length > 0;
     } catch {
       return false;
+    }
+  }
+
+  function getDefaultBranch(root: string): string {
+    try {
+      const ref = gitExec(root, ['symbolic-ref', 'refs/remotes/origin/HEAD', '--short'], 5000).trim();
+      return ref.replace(/^origin\//, '') || 'main';
+    } catch {
+      return 'main';
     }
   }
 
@@ -896,14 +936,15 @@ export function createCurateScheduler({
 
   function gitSync(): void {
     const root = kb.markdownRoot;
-    if (!isGitRepo(root) || !hasGitRemote(root)) {
+    if (!isGitRepo(root) || !isGitSyncEnabled(root)) {
       return;
     }
+
+    const branch = getDefaultBranch(root);
 
     try {
       gitExec(root, ['fetch', 'origin'], 30000);
 
-      // Stash local uncommitted changes (new notes from promote) so they survive merge.
       let stashed = false;
       try {
         const status = gitExec(root, ['status', '--porcelain'], 5000).trim();
@@ -916,14 +957,11 @@ export function createCurateScheduler({
       }
 
       try {
-        gitExec(root, ['rebase', 'origin/main']);
+        gitExec(root, ['rebase', `origin/${branch}`]);
       } catch {
-        // Rebase conflict — abort and merge with theirs for curate metadata.
-        // New notes (untracked/stashed) are preserved; only conflicting
-        // frontmatter (tags/principles) is overwritten and re-applied next cycle.
         try { gitExec(root, ['rebase', '--abort'], 5000); } catch { /* no-op */ }
         try {
-          gitExec(root, ['merge', 'origin/main', '-X', 'theirs', '--no-edit']);
+          gitExec(root, ['merge', `origin/${branch}`, '-X', 'theirs', '--no-edit']);
         } catch {
           // best-effort — local state is still valid, push will retry next cycle
         }
@@ -946,16 +984,18 @@ export function createCurateScheduler({
 
   function gitPush(): void {
     const root = kb.markdownRoot;
-    if (!isGitRepo(root) || !hasGitRemote(root)) {
+    if (!isGitRepo(root) || !isGitSyncEnabled(root)) {
       return;
     }
 
+    const branch = getDefaultBranch(root);
+
     try {
-      gitExec(root, ['push', 'origin', 'main'], 30000);
+      gitExec(root, ['push', 'origin', branch], 30000);
     } catch {
       try {
-        gitExec(root, ['pull', '--rebase', 'origin', 'main'], 30000);
-        gitExec(root, ['push', 'origin', 'main'], 30000);
+        gitExec(root, ['pull', '--rebase', 'origin', branch], 30000);
+        gitExec(root, ['push', 'origin', branch], 30000);
       } catch {
         // best-effort — will push next cycle
       }
@@ -1014,12 +1054,12 @@ export function createCurateScheduler({
   }
 
   function readClaimedNote(candidate: ClaimCandidate): CurateClaimedNote {
-    const content = readFileSync(kb.notePath(candidate.slug), 'utf-8');
+    const { body } = loadKbNote(kb.notePath(candidate.slug));
 
     return {
       slug: candidate.slug,
       title: candidate.title,
-      body: extractBody(content),
+      body,
       updatedAt: candidate.updatedAt,
       mutationSeqAtPromote: candidate.cursor.mutationSeqAtPromote,
     };
@@ -1193,7 +1233,8 @@ export function createCurateScheduler({
     const sortedTargets = [...targets].sort(compareMetadataTarget);
     const currentIndex = kb.readIndexOrEmpty();
     const nextIndex = cloneKbIndex(currentIndex);
-    const cleanupTagSupport = countTagSupport(currentIndex);
+    const hasCleanup = sortedTargets.some((t) => t.cleanup);
+    const cleanupTagSupport = hasCleanup ? countTagSupport(currentIndex) : new Map<string, number>();
     let processedThrough = state.processedThrough;
     let cursorCanAdvance = true;
     let wroteMarkdown = false;
@@ -1313,26 +1354,20 @@ export function createCurateScheduler({
     return noteMeta !== undefined && noteMeta.principles.length === 0;
   }
 
-  function countEligibleDiscoveryNotes(
+  function filterEligibleDiscoveryCandidates(
     index: KbIndex,
     processedThrough: CurateCursor,
-  ): number {
+  ): ClaimCandidate[] {
     return collectClaimCandidates(index)
-      .filter((c) => isEligibleDiscoveryCandidate(c, index, processedThrough))
-      .length;
+      .filter((c) => isEligibleDiscoveryCandidate(c, index, processedThrough));
   }
 
-  function collectEligibleDiscoveryNotes(
-    index: KbIndex,
-    processedThrough: CurateCursor,
+  function loadEligibleDiscoveryNotes(
+    candidates: ClaimCandidate[],
   ): CurateClaimedNote[] {
     const eligible: CurateClaimedNote[] = [];
 
-    for (const candidate of collectClaimCandidates(index)) {
-      if (!isEligibleDiscoveryCandidate(candidate, index, processedThrough)) {
-        continue;
-      }
-
+    for (const candidate of candidates) {
       try {
         eligible.push(readClaimedNote(candidate));
       } catch (error: unknown) {
@@ -1493,13 +1528,15 @@ export function createCurateScheduler({
     await drainPendingDiscoveries(processedThrough);
 
     const currentIndex = kb.readIndexOrEmpty();
-    const eligibleNotes = collectEligibleDiscoveryNotes(currentIndex, processedThrough);
+    const eligibleCandidates = filterEligibleDiscoveryCandidates(currentIndex, processedThrough);
     const today = nowIsoString().slice(0, 10);
     let state = readCurateState(kb);
 
-    if (!discoveryAllowed(state, eligibleNotes.length, today)) {
+    if (!discoveryAllowed(state, eligibleCandidates.length, today)) {
       return;
     }
+
+    const eligibleNotes = loadEligibleDiscoveryNotes(eligibleCandidates);
 
     await kb.withMutationLock(() => {
       state = recordDiscoveryAttemptLocked(state, eligibleNotes.length, today);
@@ -1554,6 +1591,7 @@ export function createCurateScheduler({
   }
 
   async function runScheduledCurate(): Promise<CurateCursor | null> {
+    gitSync();
     let lastCompletedThrough: CurateCursor | null = null;
     const allCohortSlugs: string[] = [];
 
@@ -1590,7 +1628,7 @@ export function createCurateScheduler({
 
     if (
       processedThrough !== null
-      && countEligibleDiscoveryNotes(postClassifyIndex, processedThrough) >= DISCOVERY_MIN_CORPUS_SIZE
+      && filterEligibleDiscoveryCandidates(postClassifyIndex, processedThrough).length >= DISCOVERY_MIN_CORPUS_SIZE
     ) {
       try {
         await runPrincipleDiscovery(processedThrough);
@@ -1618,6 +1656,9 @@ export function createCurateScheduler({
 
   function launchQueuedRun(): void {
     if (!runtimeStarted || activeRun !== null || !queuedRun) {
+      return;
+    }
+    if (isUsageBudgetExhausted()) {
       return;
     }
 
@@ -1674,7 +1715,6 @@ export function createCurateScheduler({
     }
 
     ensureKbGitignore();
-    gitSync();
     await migrateCurateStateIfNeeded(kb);
     runtimeStarted = true;
     armRetryWake();
