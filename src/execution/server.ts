@@ -32,7 +32,7 @@ import {
 } from '../discuss/schemas.js';
 import type { ExecutionService } from './service.js';
 import { activeChildren, killAllChildren, queueDepth, spawnCli } from './engine.js';
-import { writeBackendInfo, removeBackendInfoIfOwner } from './backend-info.js';
+import { readBackendInfo, writeBackendInfo, removeBackendInfoIfOwner } from './backend-info.js';
 import { acquireLock, BackendAlreadyRunningError, removeLockIfOwner } from './backend-lock.js';
 import type { AbortResult } from './abort-registry.js';
 
@@ -1726,6 +1726,23 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
           void shutdown('idle').catch(() => {});
         },
       );
+
+      // Self-terminate if another backend replaces this one (backend-info.json
+      // will point to the replacement's instanceId). Covers the case where
+      // ensureBackend's shutdown request is lost during rapid rebuild cycles.
+      const ownershipChecker = setInterval(() => {
+        if (lifecycle !== 'running') return;
+        try {
+          const current = readBackendInfo(resolvedPluginRoot);
+          if (current !== null && current.instanceId !== instanceId) {
+            clearInterval(ownershipChecker);
+            void shutdown('replaced').catch(() => {});
+          }
+        } catch {
+          // read failure — skip this check
+        }
+      }, 30_000);
+      ownershipChecker.unref();
 
       return {
         port,
