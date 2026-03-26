@@ -67,6 +67,7 @@ async function fetchTools(): Promise<ToolDescriptor[]> {
       && typeof tool.name === 'string'
       && typeof tool.description === 'string'
       && isRecord(tool.inputSchema)
+      && !tool.name.startsWith('kb_')
     ))
     .map((tool) => (tool.name === 'wait' ? waitToolDescriptor(tool) : tool));
 }

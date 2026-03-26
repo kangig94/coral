@@ -89,11 +89,11 @@ Before debugging from scratch or starting a plan:
 Subagents and delegated tasks only write memos, never promote.
 
 **Process**: review all memos, check for duplicates via `CLI kb search`, then promote:
-`CLI kb promote --memo "<filename>" --title "..." --content-file /tmp/kb-content.md --domain d --topic t`
-Write `/tmp/kb-content.md` first (via the Write tool) with the full markdown body, for example `## Rule\n...\n## Why\n...\n## Pattern\n...`.
+`CLI kb promote --memo "<filename>" --title "..." --content-file /tmp/kb-<uuid>.md --domain d --topic t`
+Write `/tmp/kb-<uuid>.md` first (via the Write tool, replacing `<uuid>` with any unique identifier) with the full markdown body, for example `## Rule\n...\n## Why\n...\n## Pattern\n...`.
 
 ## Update / Delete
-`CLI kb update <note-slug> --content-file /tmp/kb-content.md`
+`CLI kb update <note-slug> --content-file /tmp/kb-<uuid>.md`
 `CLI kb delete <note-slug>`
 
 ## Invalidation

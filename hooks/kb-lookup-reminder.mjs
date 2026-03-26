@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * PostToolUseFailure + PostToolUse(Bash) hook — reminds Claude to use kb_search on errors.
+ * PostToolUseFailure + PostToolUse(Bash) hook — reminds Claude to use CLI kb search on errors.
  * - PostToolUseFailure: any tool failure → KB reminder
  * - PostToolUse(Bash): silent failures (exit 0 but error in output) → KB reminder
  * Fail-open: any error exits silently.
@@ -37,7 +37,7 @@ try {
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: event,
-      additionalContext: `${prefix}. Before debugging from scratch, use kb_search({ query: "<keywords>" }) to look for relevant knowledge. KB topics: ${topics.join(', ')}`,
+      additionalContext: `${prefix}. Before debugging from scratch, use \`CLI kb search "<keywords>"\` to look for relevant knowledge. KB topics: ${topics.join(', ')}`,
     },
   }) + '\n');
 } catch {
