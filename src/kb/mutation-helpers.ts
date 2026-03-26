@@ -15,26 +15,32 @@ type NoteIndexEntrySource = {
   mutationSeqAtPromote?: number;
 };
 
-/** Build a deep-copied KbIndex note record from any source that carries the same fields. */
 export function buildNoteIndexEntry(meta: NoteIndexEntrySource): KbIndex['notes'][string] {
-  return {
+  const entry: KbIndex['notes'][string] = {
     title: meta.title,
     tags: [...meta.tags],
     principles: [...meta.principles],
     source: [...meta.source],
     createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
-    ...(meta.mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote: meta.mutationSeqAtPromote }),
   };
+
+  if (meta.mutationSeqAtPromote !== undefined) {
+    entry.mutationSeqAtPromote = meta.mutationSeqAtPromote;
+  }
+
+  return entry;
 }
 
 const ensuredDirs = new Set<string>();
 
 function ensureDir(dir: string): void {
-  if (!ensuredDirs.has(dir)) {
-    mkdirSync(dir, { recursive: true });
-    ensuredDirs.add(dir);
+  if (ensuredDirs.has(dir)) {
+    return;
   }
+
+  mkdirSync(dir, { recursive: true });
+  ensuredDirs.add(dir);
 }
 
 export function writeFileAtomic(filePath: string, payload: string): void {
@@ -42,24 +48,21 @@ export function writeFileAtomic(filePath: string, payload: string): void {
   ensureDir(dir);
   const tmpPath = `${filePath}.tmp`;
 
-  try {
-    writeFileSync(tmpPath, payload, 'utf-8');
-    renameSync(tmpPath, filePath);
-  } catch (error: unknown) {
-    rmSync(tmpPath, { force: true });
-    if (isNoEntryError(error)) {
-      ensuredDirs.delete(dir);
-      ensureDir(dir);
-      try {
-        writeFileSync(tmpPath, payload, 'utf-8');
-        renameSync(tmpPath, filePath);
-        return;
-      } catch (retryError: unknown) {
-        rmSync(tmpPath, { force: true });
-        throw retryError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      writeFileSync(tmpPath, payload, 'utf-8');
+      renameSync(tmpPath, filePath);
+      return;
+    } catch (error: unknown) {
+      rmSync(tmpPath, { force: true });
+      if (attempt === 0 && isNoEntryError(error)) {
+        ensuredDirs.delete(dir);
+        ensureDir(dir);
+        continue;
       }
+
+      throw error;
     }
-    throw error;
   }
 }
 

@@ -11,10 +11,6 @@ import {
 } from './mutation-helpers.js';
 import type { KbRuntime } from './runtime.js';
 
-function duplicateNoteError(notePath: string): Error {
-  return new Error(`KB note already exists: ${notePath}`);
-}
-
 export async function promote(
   rt: KbRuntime,
   projectRoot: string,
@@ -31,40 +27,36 @@ export async function promote(
   const topic = assertNoteSlug(input.topic, 'topic');
 
   const memoPath = memoPathFromContext(projectRoot, memo);
-  const noteName = `${domain}-${topic}`;
-  const notePath = rt.notePath(noteName);
+  const note = `${domain}-${topic}`;
+  const notePath = rt.notePath(note);
   const memoContent = readFileSync(memoPath, 'utf-8');
   const { source } = parseMemoFrontmatter(memoContent);
 
   const result = await rt.withMutationLock(async () => {
     if (existsSync(notePath)) {
-      throw duplicateNoteError(notePath);
+      throw new Error(`KB note already exists: ${notePath}`);
     }
 
     const mutationSeqAtPromote = rt.recordMutationCommitted().mutationSeq;
     const createdAt = nowIsoString();
-    const noteContent = serializeNote({
+    const noteMeta = {
       tags: [domain],
       principles: [],
       source,
       createdAt,
       updatedAt: createdAt,
       mutationSeqAtPromote,
-    }, title, content);
+    };
+    const noteContent = serializeNote(noteMeta, title, content);
 
     writeFileAtomic(notePath, noteContent);
 
     commitIndexUpdate(
       rt,
       (index) => {
-        index.notes[noteName] = buildNoteIndexEntry({
+        index.notes[note] = buildNoteIndexEntry({
+          ...noteMeta,
           title,
-          tags: [domain],
-          principles: [],
-          source,
-          createdAt,
-          updatedAt: createdAt,
-          mutationSeqAtPromote,
         });
       },
       'KB text snapshot is stale after kb_promote.',
