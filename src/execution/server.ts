@@ -90,7 +90,7 @@ import { deleteFn as kbDeleteFn } from '../kb/delete.js';
 import { writeMemo } from '../kb/memo.js';
 import { kbRuntimeDir } from '../kb/paths.js';
 import { promote as kbPromote } from '../kb/promote.js';
-import { readNote } from '../kb/read.js';
+import { readEntry } from '../kb/read.js';
 import { reindex as kbReindex } from '../kb/reindex.js';
 import { createKbRuntime, type KbRuntime } from '../kb/runtime.js';
 import { searchKb } from '../kb/search.js';
@@ -886,7 +886,7 @@ export async function routeToolCall(
         case 'kb_read': {
           const note = requireString(args, 'note');
           if (note === null) return toolError('invalid_request', { message: 'note is required' });
-          result = readNote({ note });
+          result = readEntry({ note }, ctx.projectRoot);
           break;
         }
         case 'kb_promote': {
