@@ -1,11 +1,11 @@
 declare const __PLUGIN_ROOT__: string;
 declare const __VERSION__: string;
 
-import { readFileSync, unlinkSync } from 'node:fs';
+import { mkdirSync, openSync, readFileSync, unlinkSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { backendInfoPath, backendLockPath, pluginRootNamespace } from './paths.js';
+import { backendInfoPath, backendLockPath, installationDir, pluginRootNamespace } from './paths.js';
 import { isBackendHealth, type BackendHealth } from './backend-health.js';
 import { readBackendInfo, type BackendInfo } from '../execution/backend-info.js';
 import { isNoEntryError, isRecord, readBundleHash, tryExclusiveWrite } from '../shared/mcp-utils.js';
@@ -144,9 +144,18 @@ function removeStaleBackendInfo(root: string): void {
 }
 
 function spawnBackend(backendBin: string): void {
+  let stderr: 'ignore' | number = 'ignore';
+  try {
+    const root = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..');
+    const logDir = installationDir(root);
+    mkdirSync(logDir, { recursive: true });
+    stderr = openSync(join(logDir, 'backend.log'), 'a');
+  } catch {
+    // fail-open: spawn without log if dir creation fails
+  }
   const child = spawn(process.execPath, [backendBin], {
     detached: true,
-    stdio: ['ignore', 'ignore', 'ignore'],
+    stdio: ['ignore', 'ignore', stderr],
   });
   child.unref();
 }

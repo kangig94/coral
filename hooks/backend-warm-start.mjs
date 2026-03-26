@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, realpathSync } from 'node:fs';
+import { mkdirSync, openSync, readFileSync, realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
@@ -45,9 +45,14 @@ try {
   } catch {}
 
   const backendBin = join(pluginRoot, 'bridge', 'coral-backend.cjs');
+  let stderr = 'ignore';
+  try {
+    mkdirSync(installDir, { recursive: true });
+    stderr = openSync(join(installDir, 'backend.log'), 'a');
+  } catch {}
   const child = spawn(process.execPath, [backendBin], {
     detached: true,
-    stdio: ['ignore', 'ignore', 'ignore'],
+    stdio: ['ignore', 'ignore', stderr],
   });
   child.unref();
 } catch {}
