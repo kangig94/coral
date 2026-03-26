@@ -1,5 +1,6 @@
 import { deriveNoteIdentity } from './frontmatter.js';
 import type { KbIndex } from './types.js';
+import { compareLocale } from './validation.js';
 
 const PATTERN_SUFFIXES = new Set([
   'pattern',
@@ -51,7 +52,7 @@ export function cleanupTags(index: KbIndex, cohortNotes: string[]): TagCleanupRe
 
   const globalReplacements = new Map<string, string>();
   const globalDeletions = new Set<string>();
-  const sortedAllTags = [...tagSupport.keys()].sort((left, right) => left.localeCompare(right));
+  const sortedAllTags = [...tagSupport.keys()].sort(compareLocale);
 
   for (const singular of sortedAllTags) {
     const plural = `${singular}s`;
@@ -73,7 +74,7 @@ export function cleanupTags(index: KbIndex, cohortNotes: string[]): TagCleanupRe
     }
   }
 
-  for (const tag of [...cohortTags].sort((left, right) => left.localeCompare(right))) {
+  for (const tag of [...cohortTags].sort(compareLocale)) {
     if (globalReplacements.has(tag)) {
       continue;
     }

@@ -28,6 +28,10 @@ export function assertSlug(value: unknown, label: string): string {
   return normalized;
 }
 
+export function compareLocale(left: string, right: string): number {
+  return left.localeCompare(right);
+}
+
 /** Assert mixed-case slug (for note names, promote topic, principle slugs). */
 export function assertNoteSlug(value: unknown, label: string): string {
   const normalized = assertNonEmptyText(value, label);

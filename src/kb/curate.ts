@@ -32,7 +32,7 @@ import {
   parseFrontmatter,
   replaceFrontmatter,
 } from './frontmatter.js';
-import { assertNonEmptyText, assertNoteSlug } from './validation.js';
+import { assertNonEmptyText, assertNoteSlug, compareLocale } from './validation.js';
 import {
   buildNoteIndexEntry,
   cloneKbIndex,
@@ -222,11 +222,11 @@ function uniqueTrimmedList(values: string[]): string[] {
 }
 
 function buildTagVocabulary(index: KbIndex): string[] {
-  return [...countTagSupport(index).keys()].sort((left, right) => left.localeCompare(right));
+  return [...countTagSupport(index).keys()].sort(compareLocale);
 }
 
 function buildPrincipleNames(index: KbIndex): string[] {
-  return Object.keys(index.principles).sort((left, right) => left.localeCompare(right));
+  return Object.keys(index.principles).sort(compareLocale);
 }
 
 function compareOptionalCursor(left: CurateCursor | null, right: CurateCursor): number {
@@ -1217,6 +1217,27 @@ export function createCurateScheduler({
     });
   }
 
+  function isEligibleDiscoveryCandidate(
+    candidate: ClaimCandidate,
+    index: KbIndex,
+    processedThrough: CurateCursor,
+  ): boolean {
+    if (compareCursor(candidate.cursor, processedThrough) > 0) {
+      return false;
+    }
+    const noteMeta = index.notes[candidate.slug];
+    return noteMeta !== undefined && noteMeta.principles.length === 0;
+  }
+
+  function countEligibleDiscoveryNotes(
+    index: KbIndex,
+    processedThrough: CurateCursor,
+  ): number {
+    return collectClaimCandidates(index)
+      .filter((c) => isEligibleDiscoveryCandidate(c, index, processedThrough))
+      .length;
+  }
+
   function collectEligibleDiscoveryNotes(
     index: KbIndex,
     processedThrough: CurateCursor,
@@ -1224,12 +1245,7 @@ export function createCurateScheduler({
     const eligible: CurateClaimedNote[] = [];
 
     for (const candidate of collectClaimCandidates(index)) {
-      if (compareCursor(candidate.cursor, processedThrough) > 0) {
-        continue;
-      }
-
-      const noteMeta = index.notes[candidate.slug];
-      if (noteMeta === undefined || noteMeta.principles.length > 0) {
+      if (!isEligibleDiscoveryCandidate(candidate, index, processedThrough)) {
         continue;
       }
 
@@ -1476,7 +1492,7 @@ export function createCurateScheduler({
 
         if (
           postPhaseOneProcessedThrough !== null
-          && collectEligibleDiscoveryNotes(postPhaseOneIndex, postPhaseOneProcessedThrough).length >= DISCOVERY_MIN_CORPUS_SIZE
+          && countEligibleDiscoveryNotes(postPhaseOneIndex, postPhaseOneProcessedThrough) >= DISCOVERY_MIN_CORPUS_SIZE
         ) {
           await runPrincipleDiscovery(postPhaseOneProcessedThrough);
           gitAutoCommit('curate: discover principles from principle-less notes');

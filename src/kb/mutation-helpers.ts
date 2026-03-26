@@ -1,6 +1,6 @@
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { errorMessage } from '../shared/mcp-utils.js';
+import { errorMessage, isNoEntryError } from '../shared/mcp-utils.js';
 import type { KbIndexState } from './runtime.js';
 import type { KbIndex } from './types.js';
 
@@ -27,8 +27,18 @@ export function buildNoteIndexEntry(meta: NoteIndexEntrySource): KbIndex['notes'
   };
 }
 
+const ensuredDirs = new Set<string>();
+
+function ensureDir(dir: string): void {
+  if (!ensuredDirs.has(dir)) {
+    mkdirSync(dir, { recursive: true });
+    ensuredDirs.add(dir);
+  }
+}
+
 export function writeFileAtomic(filePath: string, payload: string): void {
-  mkdirSync(dirname(filePath), { recursive: true });
+  const dir = dirname(filePath);
+  ensureDir(dir);
   const tmpPath = `${filePath}.tmp`;
 
   try {
@@ -36,6 +46,18 @@ export function writeFileAtomic(filePath: string, payload: string): void {
     renameSync(tmpPath, filePath);
   } catch (error: unknown) {
     rmSync(tmpPath, { force: true });
+    if (isNoEntryError(error)) {
+      ensuredDirs.delete(dir);
+      ensureDir(dir);
+      try {
+        writeFileSync(tmpPath, payload, 'utf-8');
+        renameSync(tmpPath, filePath);
+        return;
+      } catch (retryError: unknown) {
+        rmSync(tmpPath, { force: true });
+        throw retryError;
+      }
+    }
     throw error;
   }
 }

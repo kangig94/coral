@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { insertMultiple } from '@orama/orama';
 import { errorMessage, isNoEntryError } from '../shared/mcp-utils.js';
 import { buildNoteIndexEntry } from './mutation-helpers.js';
+import { compareLocale } from './validation.js';
 import {
   extractBody,
   deriveNoteIdentity,
@@ -18,7 +19,7 @@ export function sortedMarkdownEntries(dirPath: string): string[] {
   try {
     return readdirSync(dirPath)
       .filter((entry) => entry.endsWith('.md'))
-      .sort((left, right) => left.localeCompare(right));
+      .sort(compareLocale);
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
       return [];
