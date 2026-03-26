@@ -284,15 +284,23 @@ describe('execution backend server', () => {
 
   it('runs KB initialization during startup before idle watching begins', async () => {
     const fakeIdleTimer = createFakeIdleTimer();
-    const initKbFn = vi.fn(async () => {});
+    const createKbSubsystemFn = vi.fn(async () => ({
+      kb: {} as never,
+      curateScheduler: {
+        start: vi.fn(async () => {}),
+        schedule: vi.fn(),
+        isRunning: () => false,
+      },
+      kbContracts: {},
+    }));
 
     await startBackendServer({
       createIdleTimer: () => fakeIdleTimer as never,
-      initKbFn,
+      createKbSubsystemFn,
     });
 
-    expect(initKbFn).toHaveBeenCalledTimes(1);
-    const initOrder = initKbFn.mock.invocationCallOrder.at(0);
+    expect(createKbSubsystemFn).toHaveBeenCalledTimes(1);
+    const initOrder = createKbSubsystemFn.mock.invocationCallOrder.at(0);
     const watchOrder = fakeIdleTimer.startWatching.mock.invocationCallOrder.at(0);
     expect(initOrder).toBeDefined();
     expect(watchOrder).toBeDefined();

@@ -15,18 +15,30 @@ vi.mock('node:os', async () => {
   };
 });
 
-async function loadKbModules(options: { registerContracts?: boolean } = {}) {
+async function loadKbModules() {
   vi.resetModules();
-  if (options.registerContracts) {
-    await import('../contracts.js');
-  }
-  const [{ searchKb }, { reindex }, detect, paths] = await Promise.all([
+  const [{ searchKb }, { reindex }, runtime, paths] = await Promise.all([
     import('../search.js'),
     import('../reindex.js'),
-    import('../detect.js'),
+    import('../runtime.js'),
     import('../paths.js'),
   ]);
-  return { searchKb, reindex, detect, paths };
+  return {
+    searchKb,
+    reindex,
+    createKbRuntime: runtime.createKbRuntime,
+    paths,
+  };
+}
+
+function createRuntime(
+  createKbRuntime: Awaited<ReturnType<typeof loadKbModules>>['createKbRuntime'],
+  paths: Awaited<ReturnType<typeof loadKbModules>>['paths'],
+) {
+  return createKbRuntime({
+    markdownRoot: process.env.CORAL_KB_PATH!,
+    runtimeDir: paths.kbRuntimeDir(),
+  });
 }
 
 function writeNote(
@@ -56,14 +68,6 @@ updatedAt: 2026-03-23
 
 ${body}
 `, 'utf-8');
-}
-
-function getKbContext(detect: Awaited<ReturnType<typeof loadKbModules>>['detect']) {
-  return detect.getKbContext({
-    projectRoot: '/project',
-    pluginRoot: '/plugin',
-    coralEnv: {},
-  });
 }
 
 function resultNotes(results: { note: string }[]): string[] {
@@ -96,7 +100,8 @@ describe('kb search', () => {
   });
 
   it('returns relevant results for a single keyword in text mode', async () => {
-    const { searchKb, reindex, detect, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
 
     writeNote(paths.notesDir(), 'rendering-guides', {
@@ -115,7 +120,6 @@ describe('kb search', () => {
       body: 'Audit notes only.',
     });
 
-    const kb = getKbContext(detect);
     await reindex(kb);
 
     const response = await searchKb(kb, 'rendering', 10);
@@ -127,7 +131,8 @@ describe('kb search', () => {
   });
 
   it('uses pairwise assertions for multi-keyword BM25 ordering', async () => {
-    const { searchKb, reindex, detect, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
 
     writeNote(paths.notesDir(), 'rendering-guiding-contracts', {
@@ -143,7 +148,6 @@ describe('kb search', () => {
       body: 'Contracts need audits.',
     });
 
-    const kb = getKbContext(detect);
     await reindex(kb);
 
     const response = await searchKb(kb, 'rendering guiding contracts', 10);
@@ -156,7 +160,8 @@ describe('kb search', () => {
   });
 
   it('returns subset hits at threshold 1, ranks stronger matches first, and keeps snippets for subset content hits', async () => {
-    const { searchKb, reindex, detect, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
 
     writeNote(paths.notesDir(), 'wfpg-cone-aperture', {
@@ -172,7 +177,6 @@ describe('kb search', () => {
       body: 'Cone checks only.',
     });
 
-    const kb = getKbContext(detect);
     await reindex(kb);
 
     const response = await searchKb(kb, 'WFPG cone aperture', 10);
@@ -192,7 +196,8 @@ describe('kb search', () => {
   });
 
   it('derives matchedBy from token overlap across filename, principle, tag, title, and content', async () => {
-    const { searchKb, reindex, detect, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
 
     writeNote(paths.notesDir(), 'contract-first-design-surface', {
@@ -202,7 +207,6 @@ describe('kb search', () => {
       body: 'Alignment matters here.',
     });
 
-    const kb = getKbContext(detect);
     await reindex(kb);
 
     const response = await searchKb(kb, 'contract first design tokenized tag workflow alignment', 10);
@@ -212,7 +216,8 @@ describe('kb search', () => {
   });
 
   it('treats hyphenated metadata as equivalent to whitespace queries', async () => {
-    const { searchKb, reindex, detect, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
 
     writeNote(paths.notesDir(), 'contract-first-design', {
@@ -222,7 +227,6 @@ describe('kb search', () => {
       body: 'This body avoids the query tokens.',
     });
 
-    const kb = getKbContext(detect);
     await reindex(kb);
 
     const response = await searchKb(kb, 'contract first design', 10);
@@ -232,14 +236,14 @@ describe('kb search', () => {
   });
 
   it('auto-rebuilds when the search index is missing', async () => {
-    const { searchKb, detect } = await loadKbModules({ registerContracts: true });
-    const kb = getKbContext(detect);
+    const { searchKb, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
 
     await expect(searchKb(kb, 'rendering', 10)).resolves.toEqual({
       results: [],
       mode: 'text',
     });
-    expect(detect.readKbIndex()).toEqual({
+    expect(kb.readIndex()).toEqual({
       notes: {},
       principles: {},
     });

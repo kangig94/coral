@@ -2,20 +2,18 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CurateState } from '../curate-state.js';
+import { createCurateScheduler, type CurateHandle } from '../curate.js';
+import {
+  compareCursor,
+  curateStatePath,
+  isClaimStale,
+  readCurateState,
+  writeCurateState,
+  type CurateState,
+} from '../curate-state.js';
+import { parseFrontmatter } from '../frontmatter.js';
+import { createKbRuntime, type KbRuntime } from '../runtime.js';
 import type { KbIndex } from '../types.js';
-
-const mockState = vi.hoisted(() => ({
-  tmpHome: '',
-}));
-
-vi.mock('node:os', async () => {
-  const actual = await vi.importActual<typeof import('node:os')>('node:os');
-  return {
-    ...actual,
-    homedir: () => mockState.tmpHome,
-  };
-});
 
 function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
   return {
@@ -81,41 +79,46 @@ function createIndexNote(title: string, mutationSeqAtPromote?: number): KbIndex[
   };
 }
 
-async function loadKbModules() {
-  vi.resetModules();
-  const [curateState, detect, paths, frontmatter] = await Promise.all([
-    import('../curate-state.js'),
-    import('../detect.js'),
-    import('../paths.js'),
-    import('../frontmatter.js'),
-  ]);
-  return { curateState, detect, paths, frontmatter };
+function noopSpawnCli() {
+  return Promise.resolve({
+    stdout: '[]',
+    stderr: '',
+    code: 0,
+    aborted: false,
+  });
 }
 
+let tempDir: string;
+let runtime: KbRuntime;
+let scheduler: CurateHandle;
+let internals: NonNullable<CurateHandle['_testInternals']>;
+
+beforeEach(() => {
+  tempDir = mkdtempSync(join(tmpdir(), 'coral-kb-curate-state-'));
+  runtime = createKbRuntime({
+    markdownRoot: tempDir,
+    runtimeDir: tempDir,
+  });
+  scheduler = createCurateScheduler({
+    kb: runtime,
+    spawnCli: noopSpawnCli,
+  });
+  internals = scheduler._testInternals!;
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-03-25T12:00:00.000Z'));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  rmSync(tempDir, { recursive: true, force: true });
+});
+
 describe('curate state', () => {
-  beforeEach(() => {
-    mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-kb-curate-state-'));
-    process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-03-25T12:00:00.000Z'));
+  it('returns defaults when the curate state file is missing', () => {
+    expect(readCurateState(runtime)).toEqual(createCurateState());
   });
 
-  afterEach(() => {
-    vi.useRealTimers();
-    rmSync(mockState.tmpHome, { recursive: true, force: true });
-    mockState.tmpHome = '';
-    delete process.env.CORAL_KB_PATH;
-    vi.resetModules();
-  });
-
-  it('returns defaults when the curate state file is missing', async () => {
-    const { curateState } = await loadKbModules();
-
-    expect(curateState.readCurateState()).toEqual(createCurateState());
-  });
-
-  it('reads persisted curate state with nested cursors and discoveries', async () => {
-    const { curateState } = await loadKbModules();
+  it('reads persisted curate state with nested cursors and discoveries', () => {
     const persisted = createCurateState({
       processedThrough: {
         note: 'coral-first',
@@ -146,14 +149,13 @@ describe('curate state', () => {
       migrationVersion: 1,
     });
 
-    mkdirSync(process.env.CORAL_KB_PATH!, { recursive: true });
-    writeFileSync(curateState.curateStatePath(), JSON.stringify(persisted), 'utf-8');
+    mkdirSync(tempDir, { recursive: true });
+    writeFileSync(curateStatePath(runtime), JSON.stringify(persisted), 'utf-8');
 
-    expect(curateState.readCurateState()).toEqual(persisted);
+    expect(readCurateState(runtime)).toEqual(persisted);
   });
 
-  it('writes curate state atomically without leaving a temp file and round-trips through readCurateState', async () => {
-    const { curateState } = await loadKbModules();
+  it('writes curate state atomically without leaving a temp file and round-trips through readCurateState', () => {
     const state = createCurateState({
       processedThrough: {
         note: 'coral-atomic',
@@ -168,21 +170,20 @@ describe('curate state', () => {
       migrationVersion: 1,
     });
 
-    curateState.writeCurateState(state);
+    writeCurateState(runtime, state);
 
-    expect(curateState.readCurateState()).toEqual(state);
-    expect(existsSync(curateState.curateStatePath())).toBe(true);
-    expect(existsSync(`${curateState.curateStatePath()}.tmp`)).toBe(false);
+    expect(readCurateState(runtime)).toEqual(state);
+    expect(existsSync(curateStatePath(runtime))).toBe(true);
+    expect(existsSync(`${curateStatePath(runtime)}.tmp`)).toBe(false);
   });
 
-  it('sorts cursors by mutation sequence before note name ties', async () => {
-    const { curateState } = await loadKbModules();
+  it('sorts cursors by mutation sequence before note name ties', () => {
     const sorted = [
       { note: 'coral-zeta', mutationSeqAtPromote: 1 },
       { note: 'coral-beta', mutationSeqAtPromote: 3 },
       { note: 'coral-gamma', mutationSeqAtPromote: 3 },
       { note: 'coral-alpha', mutationSeqAtPromote: 5 },
-    ].sort(curateState.compareCursor);
+    ].sort(compareCursor);
 
     expect(sorted).toEqual([
       { note: 'coral-zeta', mutationSeqAtPromote: 1 },
@@ -192,12 +193,11 @@ describe('curate state', () => {
     ]);
   });
 
-  it('treats no claim and recent claims as fresh, and claims older than fifteen minutes as stale', async () => {
-    const { curateState } = await loadKbModules();
+  it('treats no claim and recent claims as fresh, and claims older than fifteen minutes as stale', () => {
     const now = new Date().toISOString();
 
-    expect(curateState.isClaimStale(createCurateState(), now)).toBe(false);
-    expect(curateState.isClaimStale(createCurateState({
+    expect(isClaimStale(createCurateState(), now)).toBe(false);
+    expect(isClaimStale(createCurateState({
       activeClaim: {
         through: {
           note: 'coral-recent',
@@ -206,7 +206,7 @@ describe('curate state', () => {
         startedAt: '2026-03-25T11:45:01.000Z',
       },
     }), now)).toBe(false);
-    expect(curateState.isClaimStale(createCurateState({
+    expect(isClaimStale(createCurateState({
       activeClaim: {
         through: {
           note: 'coral-stale',
@@ -218,17 +218,16 @@ describe('curate state', () => {
   });
 
   it('assigns missing mutation sequences in sorted note order starting after the highest existing sequence', async () => {
-    const { curateState, detect, paths, frontmatter } = await loadKbModules();
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(runtime.notesDir(), { recursive: true });
 
-    writeFileSync(join(paths.notesDir(), 'coral-second.md'), renderNote({ title: 'Coral Second' }), 'utf-8');
-    writeFileSync(join(paths.notesDir(), 'coral-third.md'), renderNote({
+    writeFileSync(join(runtime.notesDir(), 'coral-second.md'), renderNote({ title: 'Coral Second' }), 'utf-8');
+    writeFileSync(join(runtime.notesDir(), 'coral-third.md'), renderNote({
       title: 'Coral Third',
       mutationSeqAtPromote: 11,
     }), 'utf-8');
-    writeFileSync(join(paths.notesDir(), 'coral-first.md'), renderNote({ title: 'Coral First' }), 'utf-8');
+    writeFileSync(join(runtime.notesDir(), 'coral-first.md'), renderNote({ title: 'Coral First' }), 'utf-8');
 
-    detect.writeKbIndex({
+    runtime.writeIndex({
       notes: {
         'coral-first': createIndexNote('Coral First'),
         'coral-second': createIndexNote('Coral Second'),
@@ -236,20 +235,20 @@ describe('curate state', () => {
       },
       principles: {},
     });
-    detect.writeIndexState({
+    runtime.writeIndexState({
       mutationSeq: 8,
       indexedSeq: 8,
     });
-    curateState.writeCurateState(createCurateState());
-    const existingContent = readFileSync(join(paths.notesDir(), 'coral-third.md'), 'utf-8');
+    writeCurateState(runtime, createCurateState());
+    const existingContent = readFileSync(join(runtime.notesDir(), 'coral-third.md'), 'utf-8');
 
-    await curateState.migrateCurateStateIfNeeded();
+    await internals.migrateCurateStateIfNeeded();
 
-    expect(frontmatter.parseFrontmatter(readFileSync(join(paths.notesDir(), 'coral-first.md'), 'utf-8')).mutationSeqAtPromote).toBe(12);
-    expect(frontmatter.parseFrontmatter(readFileSync(join(paths.notesDir(), 'coral-second.md'), 'utf-8')).mutationSeqAtPromote).toBe(13);
-    expect(frontmatter.parseFrontmatter(readFileSync(join(paths.notesDir(), 'coral-third.md'), 'utf-8')).mutationSeqAtPromote).toBe(11);
-    expect(readFileSync(join(paths.notesDir(), 'coral-third.md'), 'utf-8')).toBe(existingContent);
-    expect(detect.readKbIndex()).toEqual({
+    expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-first.md'), 'utf-8')).mutationSeqAtPromote).toBe(12);
+    expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-second.md'), 'utf-8')).mutationSeqAtPromote).toBe(13);
+    expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-third.md'), 'utf-8')).mutationSeqAtPromote).toBe(11);
+    expect(readFileSync(join(runtime.notesDir(), 'coral-third.md'), 'utf-8')).toBe(existingContent);
+    expect(runtime.readIndex()).toEqual({
       notes: {
         'coral-first': createIndexNote('Coral First', 12),
         'coral-second': createIndexNote('Coral Second', 13),
@@ -257,30 +256,29 @@ describe('curate state', () => {
       },
       principles: {},
     });
-    expect(detect.readIndexState()).toEqual({
+    expect(runtime.readIndexState()).toEqual({
       mutationSeq: 13,
       indexedSeq: 8,
     });
-    expect(curateState.readCurateState().migrationVersion).toBe(1);
+    expect(readCurateState(runtime).migrationVersion).toBe(1);
   });
 
   it('uses the current mutation sequence as the assignment floor and skips notes that already have mutation sequences', async () => {
-    const { curateState, detect, paths, frontmatter } = await loadKbModules();
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(runtime.notesDir(), { recursive: true });
 
-    writeFileSync(join(paths.notesDir(), 'coral-current-floor.md'), renderNote({
+    writeFileSync(join(runtime.notesDir(), 'coral-current-floor.md'), renderNote({
       title: 'Current Floor',
       mutationSeqAtPromote: 9,
     }), 'utf-8');
-    writeFileSync(join(paths.notesDir(), 'coral-late-existing.md'), renderNote({
+    writeFileSync(join(runtime.notesDir(), 'coral-late-existing.md'), renderNote({
       title: 'Late Existing',
       mutationSeqAtPromote: 11,
     }), 'utf-8');
-    writeFileSync(join(paths.notesDir(), 'coral-needs-seq.md'), renderNote({
+    writeFileSync(join(runtime.notesDir(), 'coral-needs-seq.md'), renderNote({
       title: 'Needs Seq',
     }), 'utf-8');
 
-    detect.writeKbIndex({
+    runtime.writeIndex({
       notes: {
         'coral-current-floor': createIndexNote('Current Floor', 9),
         'coral-late-existing': createIndexNote('Late Existing', 11),
@@ -288,18 +286,18 @@ describe('curate state', () => {
       },
       principles: {},
     });
-    detect.writeIndexState({
+    runtime.writeIndexState({
       mutationSeq: 20,
       indexedSeq: 18,
     });
-    curateState.writeCurateState(createCurateState());
+    writeCurateState(runtime, createCurateState());
 
-    await curateState.migrateCurateStateIfNeeded();
+    await internals.migrateCurateStateIfNeeded();
 
-    expect(frontmatter.parseFrontmatter(readFileSync(join(paths.notesDir(), 'coral-current-floor.md'), 'utf-8')).mutationSeqAtPromote).toBe(9);
-    expect(frontmatter.parseFrontmatter(readFileSync(join(paths.notesDir(), 'coral-late-existing.md'), 'utf-8')).mutationSeqAtPromote).toBe(11);
-    expect(frontmatter.parseFrontmatter(readFileSync(join(paths.notesDir(), 'coral-needs-seq.md'), 'utf-8')).mutationSeqAtPromote).toBe(21);
-    expect(detect.readKbIndex()).toEqual({
+    expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-current-floor.md'), 'utf-8')).mutationSeqAtPromote).toBe(9);
+    expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-late-existing.md'), 'utf-8')).mutationSeqAtPromote).toBe(11);
+    expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-needs-seq.md'), 'utf-8')).mutationSeqAtPromote).toBe(21);
+    expect(runtime.readIndex()).toEqual({
       notes: {
         'coral-current-floor': createIndexNote('Current Floor', 9),
         'coral-late-existing': createIndexNote('Late Existing', 11),
@@ -307,46 +305,45 @@ describe('curate state', () => {
       },
       principles: {},
     });
-    expect(detect.readIndexState()).toEqual({
+    expect(runtime.readIndexState()).toEqual({
       mutationSeq: 21,
       indexedSeq: 18,
     });
   });
 
   it('skips migration entirely when the stored migration version is already current', async () => {
-    const { curateState, detect, paths, frontmatter } = await loadKbModules();
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(runtime.notesDir(), { recursive: true });
 
-    writeFileSync(join(paths.notesDir(), 'coral-skip.md'), renderNote({ title: 'Skip Migration' }), 'utf-8');
-    detect.writeKbIndex({
+    writeFileSync(join(runtime.notesDir(), 'coral-skip.md'), renderNote({ title: 'Skip Migration' }), 'utf-8');
+    runtime.writeIndex({
       notes: {
         'coral-skip': createIndexNote('Skip Migration'),
       },
       principles: {},
     });
-    detect.writeIndexState({
+    runtime.writeIndexState({
       mutationSeq: 4,
       indexedSeq: 4,
     });
-    curateState.writeCurateState(createCurateState({
+    writeCurateState(runtime, createCurateState({
       migrationVersion: 1,
       lastRunDay: '2026-03-25',
     }));
 
-    await curateState.migrateCurateStateIfNeeded();
+    await internals.migrateCurateStateIfNeeded();
 
-    expect(frontmatter.parseFrontmatter(readFileSync(join(paths.notesDir(), 'coral-skip.md'), 'utf-8')).mutationSeqAtPromote).toBeUndefined();
-    expect(detect.readKbIndex()).toEqual({
+    expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-skip.md'), 'utf-8')).mutationSeqAtPromote).toBeUndefined();
+    expect(runtime.readIndex()).toEqual({
       notes: {
         'coral-skip': createIndexNote('Skip Migration'),
       },
       principles: {},
     });
-    expect(detect.readIndexState()).toEqual({
+    expect(runtime.readIndexState()).toEqual({
       mutationSeq: 4,
       indexedSeq: 4,
     });
-    expect(curateState.readCurateState()).toEqual(createCurateState({
+    expect(readCurateState(runtime)).toEqual(createCurateState({
       migrationVersion: 1,
       lastRunDay: '2026-03-25',
     }));

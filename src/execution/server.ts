@@ -18,7 +18,7 @@ import {
   textResult,
   type McpResult,
 } from '../shared/mcp-utils.js';
-import { pluginRootNamespace, resolveProjectSource } from '../client/paths.js';
+import { kbRoot, pluginRootNamespace, resolveProjectSource } from '../client/paths.js';
 import { internalProviderFieldsShape, sharedExecSchema, sharedForkSchema, sharedResumeSchema } from '../shared/schemas.js';
 import {
   AgentInputSchema,
@@ -85,9 +85,10 @@ import {
   type WaitCursor,
   type WaitRequest,
 } from '../types.js';
-import { kbToolContracts } from '../kb/contracts.js';
-import { initKb } from '../kb/detect.js';
-import { curateRunActive, setCurateSpawnFn, startCurateRuntime } from '../kb/curate.js';
+import { createKbToolContracts, type KbToolContractMap } from '../kb/contracts.js';
+import { createCurateScheduler, type CurateHandle } from '../kb/curate.js';
+import { kbRuntimeDir } from '../kb/paths.js';
+import { createKbRuntime, type KbRuntime } from '../kb/runtime.js';
 
 export type LifecycleState = 'starting' | 'running' | 'draining' | 'stopped';
 
@@ -117,7 +118,19 @@ type RouteToolCallFn = (
     abortJobs: (jobIds: string[]) => AbortResult;
     scopeCheckJobs: (jobIds: string[], projectRoot: string) => ScopeCheckResult;
   },
+  kbContracts: KbToolContractMap,
 ) => Promise<ToolRouteResponse>;
+
+type KbSubsystem = {
+  kb: KbRuntime;
+  curateScheduler: CurateHandle;
+  kbContracts: KbToolContractMap;
+};
+
+type CreateKbSubsystemFn = (options: {
+  pluginRoot: string;
+  spawnCli: typeof spawnCli;
+}) => Promise<KbSubsystem>;
 
 type BackendServerOptions = {
   progressStore?: ProgressStore;
@@ -139,7 +152,7 @@ type BackendServerOptions = {
   recoverOrphanedJobsFn?: (namespace: string) => void;
   markJobsAsErrorFn?: (namespace: string, message: string) => void;
   killAllChildrenFn?: () => void;
-  initKbFn?: (pluginRoot: string) => Promise<void>;
+  createKbSubsystemFn?: CreateKbSubsystemFn;
   onStopped?: () => void;
   onFatalShutdownError?: (error: unknown) => void;
   discussRegistry?: DiscussContextRegistry;
@@ -168,6 +181,7 @@ const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 const SHUTDOWN_POLL_MS = 50;
 const ORPHANED_JOB_NOTICE = 'Unclean shutdown - orphaned job';
 const CORAL_OP_PREFIX = 'coral:';
+const EMPTY_KB_TOOL_CONTRACTS: KbToolContractMap = {};
 const defaultPluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
 const globalDiscussRegistry = createDiscussContextRegistry();
 const discussSessionSchema = z.object({
@@ -499,7 +513,7 @@ function markJobsAsError(progressStore: ProgressStore, namespace: string, messag
   }
 }
 
-function getToolDescriptors(): Array<Record<string, unknown>> {
+function getToolDescriptors(kbContracts: KbToolContractMap = EMPTY_KB_TOOL_CONTRACTS): Array<Record<string, unknown>> {
   registerBuiltInProviders();
 
   const providerTools = getAllNewProviders().map((provider) => ({
@@ -662,12 +676,43 @@ function getToolDescriptors(): Array<Record<string, unknown>> {
         required: ['expression', 'init_prompt'],
       },
     },
-    ...Object.values(kbToolContracts).map((contract) => ({
+    ...Object.values(kbContracts).map((contract) => ({
       name: contract.name,
       description: contract.description,
       inputSchema: contract.inputSchema,
     })),
   ];
+}
+
+async function createKbSubsystem({
+  pluginRoot,
+  spawnCli: spawnKbCli,
+}: {
+  pluginRoot: string;
+  spawnCli: typeof spawnCli;
+}): Promise<KbSubsystem> {
+  const kb = createKbRuntime({
+    markdownRoot: kbRoot(),
+    runtimeDir: kbRuntimeDir(),
+  });
+  await kb.initAdapter(pluginRoot);
+
+  const curateScheduler = createCurateScheduler({
+    kb,
+    spawnCli: spawnKbCli,
+  });
+  const kbContracts = createKbToolContracts({
+    kb,
+    curate: curateScheduler,
+  });
+
+  await curateScheduler.start();
+
+  return {
+    kb,
+    curateScheduler,
+    kbContracts,
+  };
 }
 
 function requireString(args: Record<string, unknown>, key: string): string | null {
@@ -688,6 +733,7 @@ export async function routeToolCall(
     abortJobs: (jobIds: string[]) => AbortResult;
     scopeCheckJobs: (jobIds: string[], projectRoot: string) => ScopeCheckResult;
   },
+  kbContracts: KbToolContractMap = EMPTY_KB_TOOL_CONTRACTS,
 ): Promise<ToolRouteResponse> {
   registerBuiltInProviders();
 
@@ -829,7 +875,7 @@ export async function routeToolCall(
     }
   }
 
-  const kbContract = kbToolContracts[request.name as keyof typeof kbToolContracts];
+  const kbContract = kbContracts[request.name as keyof typeof kbContracts];
   if (kbContract) {
     const parsed = kbContract.schema.safeParse(request.args);
     if (!parsed.success) return toolValidationError(parsed.error);
@@ -989,7 +1035,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     markJobsAsError(progressStore, currentNamespace, message);
   });
   const killAllChildrenFn = options.killAllChildrenFn ?? killAllChildren;
-  const initKbFn = options.initKbFn ?? initKb;
+  const createKbSubsystemFn = options.createKbSubsystemFn ?? createKbSubsystem;
 
   const services = new Map<string, ExecutionServiceLike>();
   const discussStores = new Map<string, DiscussSessionStore>();
@@ -999,6 +1045,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   let shutdownPromise: Promise<void> | null = null;
   let started = false;
   let sessionIndexSubscribed = false;
+  let kbSubsystem: KbSubsystem | null = null;
 
   const onSessionIndexUpdated = (payload: EventBusEvents['session:updated']): void => {
     if (!sessionIndex.hasShard(payload.shardHash)) {
@@ -1484,7 +1531,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     }
 
     if (req.method === 'GET' && req.url === '/tools') {
-      sendJson(res, 200, getToolDescriptors());
+      sendJson(res, 200, getToolDescriptors(kbSubsystem?.kbContracts ?? EMPTY_KB_TOOL_CONTRACTS));
       return;
     }
 
@@ -1505,7 +1552,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         getDiscussContext,
         abortJobs,
         scopeCheckJobs: (jobIds, projectRoot) => scopeCheckJobs(jobIds, projectRoot, namespace),
-      });
+      }, kbSubsystem?.kbContracts ?? EMPTY_KB_TOOL_CONTRACTS);
       sendJson(res, result.statusCode, result.body);
       return;
     }
@@ -1588,9 +1635,10 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     try {
       await acquireLockFn(resolvedPluginRoot, instanceId, version, bundleHash);
       registerBuiltInProviders();
-      setCurateSpawnFn(spawnCli);
-      await initKbFn(resolvedPluginRoot);
-      await startCurateRuntime();
+      kbSubsystem = await createKbSubsystemFn({
+        pluginRoot: resolvedPluginRoot,
+        spawnCli,
+      });
       subscribeSessionIndex();
       sessionIndex.hydrate(SessionManager.listShards());
       recoverOrphanedJobsFn(namespace);
@@ -1628,7 +1676,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
           && progressStore.liveJobCount() === 0
           && idleTimer.inflightRequests === 0
           && !hasRunningSessions(discussRegistry)
-          && !curateRunActive(),
+          && !(kbSubsystem?.curateScheduler.isRunning() ?? false),
         () => {
           void shutdown('idle').catch(() => {});
         },

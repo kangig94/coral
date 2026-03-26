@@ -624,6 +624,42 @@ describe('idle timeout', () => {
     expect(result.response).toBe('Done');
   });
 
+  it('resets idle baseline when system sleep causes a tick gap', async () => {
+    // Override default useFakeTimers to exclude Date — we control it via spy
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] });
+    const start = Date.now();
+    let fakeNow = start;
+    const dateSpy = vi.spyOn(Date, 'now').mockImplementation(() => fakeNow);
+
+    mockCliAvailable();
+    const proc = createIdleProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const promise = executeOneShot('test', withAuthenticatedCli());
+
+    // Two normal ticks (60s)
+    fakeNow = start + 30_000;
+    await vi.advanceTimersByTimeAsync(30_000);
+    fakeNow = start + 60_000;
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    // Simulate 15-minute system sleep: jump Date.now without ticking timers
+    fakeNow = start + 60_000 + 15 * 60_000;
+
+    // Next tick detects the gap and resets idle baseline instead of killing
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(proc.kill).not.toHaveBeenCalled();
+
+    // Complete the process normally
+    (proc.stdout as Readable).push('{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Done"}}\n');
+    (proc.stdout as Readable).push(null);
+    proc.emit('close', 0);
+
+    const result = await promise;
+    expect(result.response).toBe('Done');
+    dateSpy.mockRestore();
+  });
+
   it('error message derives duration from constant', async () => {
     mockCliAvailable();
     const proc = createIdleProcess();

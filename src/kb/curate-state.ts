@@ -1,21 +1,19 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { kbRoot } from '../client/paths.js';
 import { isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
 import { extractTitle, parseFrontmatter, replaceFrontmatter } from './frontmatter.js';
-import {
-  readKbIndex,
-  readIndexState,
-  withKbMutationLock,
-  writeKbIndex,
-  writeIndexState,
-} from './detect.js';
 import { cloneKbIndex, writeFileAtomic } from './mutation-helpers.js';
-import { notePathFromName, notesDir } from './paths.js';
+import type { KbRuntime } from './runtime.js';
 import type { KbNoteFrontmatter } from './types.js';
 
 const CURATE_STATE_FILE = 'curate-state.json';
 const CLAIM_STALE_MS = 15 * 60 * 1000;
+
+type CurateStateTarget = Pick<KbRuntime, 'curateStatePath'> | string;
+type CurateStateRuntime = Pick<
+  KbRuntime,
+  'curateStatePath' | 'notesDir' | 'notePath' | 'withMutationLock' | 'readIndex' | 'writeIndex' | 'readIndexState' | 'writeIndexState'
+>;
 
 export type CurateCursor = {
   mutationSeqAtPromote: number;
@@ -186,9 +184,15 @@ function parseCurateState(value: unknown): CurateState {
   };
 }
 
-function sortedNoteNames(): string[] {
+function resolveCurateStatePath(target: CurateStateTarget): string {
+  return typeof target === 'string'
+    ? join(target, CURATE_STATE_FILE)
+    : target.curateStatePath();
+}
+
+function sortedNoteNames(kb: Pick<KbRuntime, 'notesDir'>): string[] {
   try {
-    return readdirSync(notesDir())
+    return readdirSync(kb.notesDir())
       .filter((entry) => entry.endsWith('.md'))
       .map((entry) => entry.slice(0, -3))
       .sort((left, right) => left.localeCompare(right));
@@ -237,8 +241,8 @@ function syncIndexNote(
   return true;
 }
 
-function scanNote(note: string): ScannedNote {
-  const path = notePathFromName(note);
+function scanNote(kb: Pick<KbRuntime, 'notePath'>, note: string): ScannedNote {
+  const path = kb.notePath(note);
   const content = readFileSync(path, 'utf-8');
   return {
     note,
@@ -249,13 +253,13 @@ function scanNote(note: string): ScannedNote {
   };
 }
 
-export function curateStatePath(): string {
-  return join(kbRoot(), CURATE_STATE_FILE);
+export function curateStatePath(target: CurateStateTarget): string {
+  return resolveCurateStatePath(target);
 }
 
-export function readCurateState(): CurateState {
+export function readCurateState(target: CurateStateTarget): CurateState {
   try {
-    return parseCurateState(JSON.parse(readFileSync(curateStatePath(), 'utf-8')) as unknown);
+    return parseCurateState(JSON.parse(readFileSync(resolveCurateStatePath(target), 'utf-8')) as unknown);
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
       return defaultCurateState();
@@ -264,8 +268,8 @@ export function readCurateState(): CurateState {
   }
 }
 
-export function writeCurateState(state: CurateState): void {
-  writeFileAtomic(curateStatePath(), JSON.stringify(state));
+export function writeCurateState(target: CurateStateTarget, state: CurateState): void {
+  writeFileAtomic(resolveCurateStatePath(target), JSON.stringify(state));
 }
 
 export function compareCursor(left: CurateCursor, right: CurateCursor): number {
@@ -293,30 +297,30 @@ export function isClaimStale(state: CurateState, now: string): boolean {
   return nowMs - startedAt >= CLAIM_STALE_MS;
 }
 
-export async function migrateCurateStateIfNeeded(): Promise<void> {
-  await withKbMutationLock(() => {
-    const state = readCurateState();
+export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promise<void> {
+  await kb.withMutationLock(() => {
+    const state = readCurateState(kb);
     if (state.migrationVersion >= 1) {
       return;
     }
 
-    const noteNames = sortedNoteNames();
+    const noteNames = sortedNoteNames(kb);
     if (noteNames.length === 0) {
-      writeCurateState({
+      writeCurateState(kb, {
         ...state,
         migrationVersion: 1,
       });
       return;
     }
 
-    const currentIndex = readKbIndex();
+    const currentIndex = kb.readIndex();
     if (currentIndex === null) {
       throw new Error('KB index must exist before curate migration.');
     }
 
     const nextIndex = cloneKbIndex(currentIndex);
-    const indexState = readIndexState();
-    const scannedNotes = noteNames.map(scanNote);
+    const indexState = kb.readIndexState();
+    const scannedNotes = noteNames.map((note) => scanNote(kb, note));
     let highestExistingMutationSeq = 0;
     for (const scannedNote of scannedNotes) {
       if (scannedNote.frontmatter.mutationSeqAtPromote !== undefined) {
@@ -358,17 +362,17 @@ export async function migrateCurateStateIfNeeded(): Promise<void> {
     }
 
     if (indexChanged) {
-      writeKbIndex(nextIndex);
+      kb.writeIndex(nextIndex);
     }
 
     if (highestAssignedMutationSeq > indexState.mutationSeq) {
-      writeIndexState({
+      kb.writeIndexState({
         ...indexState,
         mutationSeq: highestAssignedMutationSeq,
       });
     }
 
-    writeCurateState({
+    writeCurateState(kb, {
       ...state,
       migrationVersion: 1,
     });

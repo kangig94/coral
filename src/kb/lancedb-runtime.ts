@@ -24,10 +24,9 @@ function resolveConnect(moduleValue: unknown): ConnectFn {
   throw new Error('Invalid LanceDB module');
 }
 
-export async function loadKbLanceDb(specifier: string): Promise<KbLanceDbAdapter> {
+export async function loadKbLanceDb(specifier: string, runtimeDir = kbRuntimeDir()): Promise<KbLanceDbAdapter> {
   const moduleValue = await import(specifier);
   const connect = resolveConnect(moduleValue);
-  const runtimeDir = kbRuntimeDir();
   const dbPath = join(runtimeDir, 'kb.lance');
   let dbPromise: Promise<unknown> | null = null;
   const getDb = async (): Promise<unknown> => {

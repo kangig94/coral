@@ -1,5 +1,5 @@
+import * as fs from 'node:fs';
 import {
-  appendFileSync,
   closeSync,
   mkdirSync,
   openSync,
@@ -248,7 +248,7 @@ export class ProgressStore {
       message: stamped,
     };
     try {
-      appendFileSync(this.progressPath(jobId), JSON.stringify(entry) + '\n');
+      fs.appendFileSync(this.progressPath(jobId), JSON.stringify(entry) + '\n');
     } catch {
       /* progress write must not break execution */
     }
@@ -268,7 +268,13 @@ export class ProgressStore {
       ts: nowIsoString(),
       result,
     };
-    appendFileSync(this.progressPath(jobId), JSON.stringify(entry) + '\n');
+    try {
+      fs.appendFileSync(this.progressPath(jobId), JSON.stringify(entry) + '\n');
+    } catch (error: unknown) {
+      if (!isNoEntryError(error)) {
+        throw error;
+      }
+    }
     this.knownJobIds.add(jobId);
 
     this.updateTerminalStatus(jobId, result, phase);

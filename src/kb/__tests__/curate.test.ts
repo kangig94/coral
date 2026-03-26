@@ -2,28 +2,29 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type {
-  ClassificationAssignment,
-  CurateClaimedNote,
-  DiscoveryProposal,
+import {
+  buildClassificationPrompt,
+  buildDiscoveryPrompt,
+  buildMetadataTargets,
+  chunkNotes,
+  createCurateScheduler,
+  parseClassificationResponse,
+  parseDiscoveryResponse,
+  validateAssignments,
+  validateDiscoveryProposals,
+  type ClassificationAssignment,
+  type CurateClaimedNote,
+  type CurateHandle,
+  type DiscoveryProposal,
+  type SpawnCliFn,
 } from '../curate.js';
-import type { CurateState } from '../curate-state.js';
+import { readCurateState, writeCurateState, type CurateState } from '../curate-state.js';
+import { parseFrontmatter } from '../frontmatter.js';
+import { createKbRuntime, type KbRuntime } from '../runtime.js';
 import type { KbIndex } from '../types.js';
 
 const DEFAULT_CREATED_AT = '2026-03-20T00:00:00.000Z';
 const DEFAULT_UPDATED_AT = '2026-03-20T00:00:00.000Z';
-
-const mockState = vi.hoisted(() => ({
-  tmpHome: '',
-}));
-
-vi.mock('node:os', async () => {
-  const actual = await vi.importActual<typeof import('node:os')>('node:os');
-  return {
-    ...actual,
-    homedir: () => mockState.tmpHome,
-  };
-});
 
 function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
   return {
@@ -127,38 +128,27 @@ function buildClaimedNote({
   };
 }
 
-async function loadKbModules() {
-  vi.resetModules();
-  const [curate, detect, paths, frontmatter, curateState, curateTags] = await Promise.all([
-    import('../curate.js'),
-    import('../detect.js'),
-    import('../paths.js'),
-    import('../frontmatter.js'),
-    import('../curate-state.js'),
-    import('../curate-tags.js'),
-  ]);
-  return {
-    curate,
-    detect,
-    paths,
-    frontmatter,
-    curateState,
-    curateTags,
-  };
-}
+const noopSpawnCli: SpawnCliFn = async () => ({
+  stdout: '[]',
+  stderr: '',
+  code: 0,
+  aborted: false,
+});
 
-function createKbContext(detect: Awaited<ReturnType<typeof loadKbModules>>['detect']) {
-  const projectRoot = join(mockState.tmpHome, 'project');
-  mkdirSync(projectRoot, { recursive: true });
-  return detect.getKbContext({
-    projectRoot,
-    pluginRoot: '/plugin',
-    coralEnv: {},
+let tempDir: string;
+let runtime: KbRuntime;
+let scheduler: CurateHandle;
+let internals: NonNullable<CurateHandle['_testInternals']>;
+
+function useScheduler(spawnCli: SpawnCliFn = noopSpawnCli): void {
+  scheduler = createCurateScheduler({
+    kb: runtime,
+    spawnCli,
   });
+  internals = scheduler._testInternals!;
 }
 
 function writeNote(
-  paths: Pick<Awaited<ReturnType<typeof loadKbModules>>['paths'], 'notesDir'>,
   slug: string,
   options: {
     title: string;
@@ -171,19 +161,17 @@ function writeNote(
     body?: string;
   },
 ): string {
-  mkdirSync(paths.notesDir(), { recursive: true });
-  const notePath = join(paths.notesDir(), `${slug}.md`);
+  mkdirSync(runtime.notesDir(), { recursive: true });
+  const notePath = join(runtime.notesDir(), `${slug}.md`);
   writeFileSync(notePath, renderNote(options), 'utf-8');
   return notePath;
 }
 
-async function settleCurateRuntime(
-  curate: Pick<Awaited<ReturnType<typeof loadKbModules>>['curate'], 'curateRunActive'>,
-): Promise<void> {
+async function settleCurateRuntime(handle: CurateHandle): Promise<void> {
   for (let attempt = 0; attempt < 30; attempt += 1) {
     await Promise.resolve();
     await Promise.resolve();
-    if (!curate.curateRunActive()) {
+    if (!handle.isRunning()) {
       return;
     }
   }
@@ -191,30 +179,28 @@ async function settleCurateRuntime(
   throw new Error('Curate runtime did not settle.');
 }
 
+beforeEach(() => {
+  tempDir = mkdtempSync(join(tmpdir(), 'coral-kb-curate-'));
+  runtime = createKbRuntime({
+    markdownRoot: tempDir,
+    runtimeDir: tempDir,
+  });
+  useScheduler();
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-03-25T12:00:00.000Z'));
+});
+
+afterEach(() => {
+  vi.clearAllTimers();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  rmSync(tempDir, { recursive: true, force: true });
+});
+
 describe('curate', () => {
-  beforeEach(() => {
-    mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-kb-curate-'));
-    process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-03-25T12:00:00.000Z'));
-  });
-
-  afterEach(() => {
-    vi.clearAllTimers();
-    vi.useRealTimers();
-    vi.restoreAllMocks();
-    if (mockState.tmpHome) {
-      rmSync(mockState.tmpHome, { recursive: true, force: true });
-    }
-    mockState.tmpHome = '';
-    delete process.env.CORAL_KB_PATH;
-    vi.resetModules();
-  });
-
   describe('prompt building and response parsing', () => {
-    it('builds a classification prompt with every note, tag, and principle', async () => {
-      const { curate } = await loadKbModules();
-      const prompt = curate.buildClassificationPrompt([
+    it('builds a classification prompt with every note, tag, and principle', () => {
+      const prompt = buildClassificationPrompt([
         buildClaimedNote({
           slug: 'coral-alpha',
           title: 'Alpha',
@@ -236,8 +222,7 @@ describe('curate', () => {
       expect(prompt).toContain('Return a JSON array: [{ "note": "<slug>"');
     });
 
-    it('parses classification responses from raw and code-fenced JSON arrays', async () => {
-      const { curate } = await loadKbModules();
+    it('parses classification responses from raw and code-fenced JSON arrays', () => {
       const noteMap = new Map<string, true>([
         ['coral-alpha', true],
         ['coral-beta', true],
@@ -255,7 +240,7 @@ describe('curate', () => {
         },
       ]);
 
-      expect(curate.parseClassificationResponse(raw, noteMap)).toEqual([
+      expect(parseClassificationResponse(raw, noteMap)).toEqual([
         {
           note: 'coral-alpha',
           tags: ['coral', 'kb'],
@@ -267,7 +252,7 @@ describe('curate', () => {
           principles: [],
         },
       ]);
-      expect(curate.parseClassificationResponse(`\`\`\`json\n${raw}\n\`\`\``, noteMap)).toEqual([
+      expect(parseClassificationResponse(`\`\`\`json\n${raw}\n\`\`\``, noteMap)).toEqual([
         {
           note: 'coral-alpha',
           tags: ['coral', 'kb'],
@@ -281,13 +266,12 @@ describe('curate', () => {
       ]);
     });
 
-    it('returns an empty classification list for non-array JSON, malformed JSON, and malformed entries', async () => {
-      const { curate } = await loadKbModules();
+    it('returns an empty classification list for non-array JSON, malformed JSON, and malformed entries', () => {
       const noteMap = new Map<string, true>([['coral-alpha', true]]);
 
-      expect(curate.parseClassificationResponse('{"note":"coral-alpha"}', noteMap)).toEqual([]);
-      expect(curate.parseClassificationResponse('[', noteMap)).toEqual([]);
-      expect(curate.parseClassificationResponse(JSON.stringify([
+      expect(parseClassificationResponse('{"note":"coral-alpha"}', noteMap)).toEqual([]);
+      expect(parseClassificationResponse('[', noteMap)).toEqual([]);
+      expect(parseClassificationResponse(JSON.stringify([
         { note: 'coral-alpha', tags: ['coral'] },
         { note: 'coral-missing', tags: ['coral'], principles: [] },
         { note: 'coral-alpha', tags: ['coral'], principles: [] },
@@ -300,8 +284,7 @@ describe('curate', () => {
       ]);
     });
 
-    it('validates assignments by dropping unknown notes and principles while requiring new-tag support', async () => {
-      const { curate } = await loadKbModules();
+    it('validates assignments by dropping unknown notes and principles while requiring new-tag support', () => {
       const index: KbIndex = {
         notes: {
           'coral-alpha': createIndexNote({
@@ -355,7 +338,7 @@ describe('curate', () => {
         },
       ];
 
-      expect(curate.validateAssignments(proposals, index, claimedNotes)).toEqual([
+      expect(validateAssignments(proposals, index, claimedNotes)).toEqual([
         {
           note: 'coral-alpha',
           tags: ['coral', 'existing-tag', 'new-supported'],
@@ -374,10 +357,9 @@ describe('curate', () => {
       ]);
     });
 
-    it('builds a discovery prompt with note bodies truncated to five hundred characters', async () => {
-      const { curate } = await loadKbModules();
+    it('builds a discovery prompt with note bodies truncated to five hundred characters', () => {
       const longBody = 'x'.repeat(600);
-      const prompt = curate.buildDiscoveryPrompt([
+      const prompt = buildDiscoveryPrompt([
         buildClaimedNote({
           slug: 'coral-alpha',
           title: 'Alpha',
@@ -391,8 +373,7 @@ describe('curate', () => {
       expect(prompt).not.toContain('x'.repeat(501));
     });
 
-    it('parses discovery responses from raw and code-fenced JSON arrays and drops malformed entries', async () => {
-      const { curate } = await loadKbModules();
+    it('parses discovery responses from raw and code-fenced JSON arrays and drops malformed entries', () => {
       const raw = JSON.stringify([
         {
           slug: 'stable-ownership',
@@ -405,26 +386,25 @@ describe('curate', () => {
         },
       ]);
 
-      expect(curate.parseDiscoveryResponse(raw)).toEqual([
+      expect(parseDiscoveryResponse(raw)).toEqual([
         {
           slug: 'stable-ownership',
           statement: 'Attach payloads to one owner.',
           notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
         },
       ]);
-      expect(curate.parseDiscoveryResponse(`\`\`\`json\n${raw}\n\`\`\``)).toEqual([
+      expect(parseDiscoveryResponse(`\`\`\`json\n${raw}\n\`\`\``)).toEqual([
         {
           slug: 'stable-ownership',
           statement: 'Attach payloads to one owner.',
           notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
         },
       ]);
-      expect(curate.parseDiscoveryResponse('{"slug":"not-an-array"}')).toEqual([]);
-      expect(curate.parseDiscoveryResponse('[')).toEqual([]);
+      expect(parseDiscoveryResponse('{"slug":"not-an-array"}')).toEqual([]);
+      expect(parseDiscoveryResponse('[')).toEqual([]);
     });
 
-    it('validates discovery proposals for slug uniqueness, eligibility, and minimum note support', async () => {
-      const { curate } = await loadKbModules();
+    it('validates discovery proposals for slug uniqueness, eligibility, and minimum note support', () => {
       const eligibleNotes = [
         buildClaimedNote({ slug: 'coral-alpha', title: 'Alpha', mutationSeqAtPromote: 1 }),
         buildClaimedNote({ slug: 'coral-beta', title: 'Beta', mutationSeqAtPromote: 2 }),
@@ -464,7 +444,7 @@ describe('curate', () => {
         },
       ];
 
-      expect(curate.validateDiscoveryProposals(proposals, eligibleNotes, ['existing-principle'])).toEqual([
+      expect(validateDiscoveryProposals(proposals, eligibleNotes, ['existing-principle'])).toEqual([
         {
           slug: 'shared-context',
           statement: 'Preserve one context owner.',
@@ -476,18 +456,15 @@ describe('curate', () => {
 
   describe('claim logic and batching', () => {
     it('returns null when there are no pending notes beyond processedThrough', async () => {
-      const { curate, detect, paths, curateState } = await loadKbModules();
-      const kb = createKbContext(detect);
-
-      writeNote(paths, 'coral-alpha', {
+      writeNote('coral-alpha', {
         title: 'Alpha',
         mutationSeqAtPromote: 1,
       });
-      writeNote(paths, 'coral-beta', {
+      writeNote('coral-beta', {
         title: 'Beta',
         mutationSeqAtPromote: 2,
       });
-      detect.writeKbIndex({
+      runtime.writeIndex({
         notes: {
           'coral-alpha': createIndexNote({
             title: 'Alpha',
@@ -500,24 +477,22 @@ describe('curate', () => {
         },
         principles: {},
       });
-      curateState.writeCurateState(createCurateState({
+      writeCurateState(runtime, createCurateState({
         processedThrough: {
           note: 'coral-beta',
           mutationSeqAtPromote: 2,
         },
       }));
 
-      await expect(curate.claimCurateRun(kb, '2026-03-25')).resolves.toBeNull();
+      await expect(internals.claimCurateRun('2026-03-25')).resolves.toBeNull();
     });
 
     it('returns null when pending notes stay below the first-pass threshold', async () => {
-      const { curate, detect, paths } = await loadKbModules();
-      const kb = createKbContext(detect);
       const notes: KbIndex['notes'] = {};
 
       for (let index = 1; index <= 9; index += 1) {
         const slug = `coral-note-${String(index).padStart(2, '0')}`;
-        writeNote(paths, slug, {
+        writeNote(slug, {
           title: `Note ${index}`,
           mutationSeqAtPromote: index,
           body: `Body ${index}.`,
@@ -528,14 +503,12 @@ describe('curate', () => {
         });
       }
 
-      detect.writeKbIndex({ notes, principles: {} });
+      runtime.writeIndex({ notes, principles: {} });
 
-      await expect(curate.claimCurateRun(kb, '2026-03-25')).resolves.toBeNull();
+      await expect(internals.claimCurateRun('2026-03-25')).resolves.toBeNull();
     });
 
     it('claims a new-day cohort in mutation-sequence order', async () => {
-      const { curate, detect, paths, curateState } = await loadKbModules();
-      const kb = createKbContext(detect);
       const specs: Array<[string, number]> = [
         ['coral-ten', 10],
         ['coral-two', 2],
@@ -551,7 +524,7 @@ describe('curate', () => {
       const notes: KbIndex['notes'] = {};
 
       for (const [slug, seq] of specs) {
-        writeNote(paths, slug, {
+        writeNote(slug, {
           title: `Note ${seq}`,
           mutationSeqAtPromote: seq,
           updatedAt: `2026-03-20T00:00:${String(seq).padStart(2, '0')}.000Z`,
@@ -564,12 +537,12 @@ describe('curate', () => {
         });
       }
 
-      detect.writeKbIndex({ notes, principles: {} });
-      curateState.writeCurateState(createCurateState({
+      runtime.writeIndex({ notes, principles: {} });
+      writeCurateState(runtime, createCurateState({
         lastRunDay: '2026-03-24',
       }));
 
-      const claim = await curate.claimCurateRun(kb, '2026-03-25');
+      const claim = await internals.claimCurateRun('2026-03-25');
 
       expect(claim).not.toBeNull();
       expect(claim?.notes.map((note) => note.mutationSeqAtPromote)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
@@ -589,7 +562,7 @@ describe('curate', () => {
         note: 'coral-ten',
         mutationSeqAtPromote: 10,
       });
-      expect(curateState.readCurateState()).toMatchObject({
+      expect(readCurateState(runtime)).toMatchObject({
         lastRunDay: '2026-03-25',
         lastAttemptedThrough: {
           note: 'coral-ten',
@@ -605,13 +578,11 @@ describe('curate', () => {
     });
 
     it('claims at most thirty notes when the max-size threshold is reached', async () => {
-      const { curate, detect, paths, curateState } = await loadKbModules();
-      const kb = createKbContext(detect);
       const notes: KbIndex['notes'] = {};
 
       for (let index = 31; index >= 1; index -= 1) {
         const slug = `coral-note-${String(index).padStart(2, '0')}`;
-        writeNote(paths, slug, {
+        writeNote(slug, {
           title: `Note ${index}`,
           mutationSeqAtPromote: index,
         });
@@ -621,12 +592,12 @@ describe('curate', () => {
         });
       }
 
-      detect.writeKbIndex({ notes, principles: {} });
-      curateState.writeCurateState(createCurateState({
+      runtime.writeIndex({ notes, principles: {} });
+      writeCurateState(runtime, createCurateState({
         lastRunDay: '2026-03-25',
       }));
 
-      const claim = await curate.claimCurateRun(kb, '2026-03-25');
+      const claim = await internals.claimCurateRun('2026-03-25');
 
       expect(claim?.notes).toHaveLength(30);
       expect(claim?.notes[0]?.mutationSeqAtPromote).toBe(1);
@@ -637,14 +608,12 @@ describe('curate', () => {
       });
     });
 
-    it('chunks notes at the requested batch size including edge cases', async () => {
-      const { curate } = await loadKbModules();
-
-      expect(curate.chunkNotes([], 10)).toEqual([]);
-      expect(curate.chunkNotes(Array.from({ length: 10 }, (_, index) => index + 1), 10)).toEqual([
+    it('chunks notes at the requested batch size including edge cases', () => {
+      expect(chunkNotes([], 10)).toEqual([]);
+      expect(chunkNotes(Array.from({ length: 10 }, (_, index) => index + 1), 10)).toEqual([
         [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
       ]);
-      expect(curate.chunkNotes(Array.from({ length: 11 }, (_, index) => index + 1), 10)).toEqual([
+      expect(chunkNotes(Array.from({ length: 11 }, (_, index) => index + 1), 10)).toEqual([
         [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         [11],
       ]);
@@ -652,8 +621,7 @@ describe('curate', () => {
   });
 
   describe('metadata targets and commit', () => {
-    it('builds metadata targets for every claimed note including no-op targets', async () => {
-      const { curate } = await loadKbModules();
+    it('builds metadata targets for every claimed note including no-op targets', () => {
       const index: KbIndex = {
         notes: {
           'coral-alpha': createIndexNote({
@@ -693,7 +661,7 @@ describe('curate', () => {
         }),
       ];
 
-      expect(curate.buildMetadataTargets(assignments, index, claimedNotes)).toEqual([
+      expect(buildMetadataTargets(assignments, index, claimedNotes)).toEqual([
         {
           note: 'coral-beta',
           mutationSeqAtPromote: 1,
@@ -710,11 +678,9 @@ describe('curate', () => {
     });
 
     it('merges tags and principles without changing updatedAt and records a committed mutation', async () => {
-      const { curate, detect, paths, frontmatter, curateState } = await loadKbModules();
-      const kb = createKbContext(detect);
       const updatedAt = '2026-03-21T00:00:00.000Z';
 
-      writeNote(paths, 'coral-alpha', {
+      writeNote('coral-alpha', {
         title: 'Alpha',
         tags: ['coral', 'existing-tag'],
         principles: ['existing-principle'],
@@ -722,7 +688,7 @@ describe('curate', () => {
         mutationSeqAtPromote: 4,
         body: 'Alpha body.',
       });
-      detect.writeKbIndex({
+      runtime.writeIndex({
         notes: {
           'coral-alpha': createIndexNote({
             title: 'Alpha',
@@ -735,7 +701,7 @@ describe('curate', () => {
         principles: {},
       });
 
-      await curate.commitMetadataTargets(kb, [{
+      await internals.commitMetadataTargets([{
         note: 'coral-alpha',
         mutationSeqAtPromote: 4,
         claimTimeUpdatedAt: updatedAt,
@@ -743,8 +709,8 @@ describe('curate', () => {
         addPrinciples: ['deterministic-ordering'],
       }]);
 
-      const raw = readFileSync(join(paths.notesDir(), 'coral-alpha.md'), 'utf-8');
-      expect(frontmatter.parseFrontmatter(raw)).toEqual({
+      const raw = readFileSync(join(runtime.notesDir(), 'coral-alpha.md'), 'utf-8');
+      expect(parseFrontmatter(raw)).toEqual({
         tags: ['coral', 'existing-tag', 'kb'],
         principles: ['existing-principle', 'deterministic-ordering'],
         source: ['kangig94/coral'],
@@ -752,7 +718,7 @@ describe('curate', () => {
         updatedAt,
         mutationSeqAtPromote: 4,
       });
-      expect(detect.readKbIndex()?.notes['coral-alpha']).toEqual({
+      expect(runtime.readIndex()?.notes['coral-alpha']).toEqual({
         title: 'Alpha',
         tags: ['coral', 'existing-tag', 'kb'],
         principles: ['existing-principle', 'deterministic-ordering'],
@@ -761,32 +727,29 @@ describe('curate', () => {
         updatedAt,
         mutationSeqAtPromote: 4,
       });
-      expect(detect.readIndexState()).toMatchObject({
+      expect(runtime.readIndexState()).toMatchObject({
         mutationSeq: 1,
       });
-      expect(curateState.readCurateState().processedThrough).toEqual({
+      expect(readCurateState(runtime).processedThrough).toEqual({
         note: 'coral-alpha',
         mutationSeqAtPromote: 4,
       });
     });
 
     it('skips stale notes, advances past missing notes, and only commits safe writes', async () => {
-      const { curate, detect, paths, frontmatter, curateState } = await loadKbModules();
-      const kb = createKbContext(detect);
-
-      writeNote(paths, 'coral-stale', {
+      writeNote('coral-stale', {
         title: 'Stale',
         tags: ['coral'],
         updatedAt: '2026-03-22T00:00:00.000Z',
         mutationSeqAtPromote: 2,
       });
-      writeNote(paths, 'coral-fresh', {
+      writeNote('coral-fresh', {
         title: 'Fresh',
         tags: ['coral'],
         updatedAt: '2026-03-23T00:00:00.000Z',
         mutationSeqAtPromote: 3,
       });
-      detect.writeKbIndex({
+      runtime.writeIndex({
         notes: {
           'coral-missing': createIndexNote({
             title: 'Missing',
@@ -807,7 +770,7 @@ describe('curate', () => {
         principles: {},
       });
 
-      await curate.commitMetadataTargets(kb, [
+      await internals.commitMetadataTargets([
         {
           note: 'coral-fresh',
           mutationSeqAtPromote: 3,
@@ -828,45 +791,42 @@ describe('curate', () => {
         },
       ]);
 
-      expect(existsSync(join(paths.notesDir(), 'coral-missing.md'))).toBe(false);
-      expect(frontmatter.parseFrontmatter(readFileSync(join(paths.notesDir(), 'coral-stale.md'), 'utf-8')).tags).toEqual([
+      expect(existsSync(join(runtime.notesDir(), 'coral-missing.md'))).toBe(false);
+      expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-stale.md'), 'utf-8')).tags).toEqual([
         'coral',
       ]);
-      expect(frontmatter.parseFrontmatter(readFileSync(join(paths.notesDir(), 'coral-fresh.md'), 'utf-8')).tags).toEqual([
+      expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-fresh.md'), 'utf-8')).tags).toEqual([
         'coral',
         'kb',
       ]);
-      expect(detect.readKbIndex()?.notes['coral-stale']?.tags).toEqual(['coral']);
-      expect(detect.readKbIndex()?.notes['coral-fresh']?.tags).toEqual(['coral', 'kb']);
-      expect(detect.readIndexState()).toMatchObject({
+      expect(runtime.readIndex()?.notes['coral-stale']?.tags).toEqual(['coral']);
+      expect(runtime.readIndex()?.notes['coral-fresh']?.tags).toEqual(['coral', 'kb']);
+      expect(runtime.readIndexState()).toMatchObject({
         mutationSeq: 1,
       });
-      expect(curateState.readCurateState().processedThrough).toEqual({
+      expect(readCurateState(runtime).processedThrough).toEqual({
         note: 'coral-missing',
         mutationSeqAtPromote: 1,
       });
     });
 
     it('applies cleanup-time parent absorption using live tag support', async () => {
-      const { curate, detect, paths, frontmatter } = await loadKbModules();
-      const kb = createKbContext(detect);
-
-      writeNote(paths, 'coral-parent-child', {
+      writeNote('coral-parent-child', {
         title: 'Parent Child',
         tags: ['coral', 'stable-parent', 'stable-parent-child'],
         mutationSeqAtPromote: 1,
       });
-      writeNote(paths, 'coral-parent-one', {
+      writeNote('coral-parent-one', {
         title: 'Parent One',
         tags: ['coral', 'stable-parent'],
         mutationSeqAtPromote: 2,
       });
-      writeNote(paths, 'coral-parent-two', {
+      writeNote('coral-parent-two', {
         title: 'Parent Two',
         tags: ['coral', 'stable-parent'],
         mutationSeqAtPromote: 3,
       });
-      detect.writeKbIndex({
+      runtime.writeIndex({
         notes: {
           'coral-parent-child': createIndexNote({
             title: 'Parent Child',
@@ -887,7 +847,7 @@ describe('curate', () => {
         principles: {},
       });
 
-      await curate.commitMetadataTargets(kb, [{
+      await internals.commitMetadataTargets([{
         note: 'coral-parent-child',
         mutationSeqAtPromote: 1,
         claimTimeUpdatedAt: DEFAULT_UPDATED_AT,
@@ -895,11 +855,11 @@ describe('curate', () => {
         cleanup: true,
       }]);
 
-      expect(frontmatter.parseFrontmatter(readFileSync(join(paths.notesDir(), 'coral-parent-child.md'), 'utf-8')).tags).toEqual([
+      expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-parent-child.md'), 'utf-8')).tags).toEqual([
         'coral',
         'stable-parent',
       ]);
-      expect(detect.readKbIndex()?.notes['coral-parent-child']?.tags).toEqual([
+      expect(runtime.readIndex()?.notes['coral-parent-child']?.tags).toEqual([
         'coral',
         'stable-parent',
       ]);
@@ -908,30 +868,33 @@ describe('curate', () => {
 
   describe('runtime integration and errors', () => {
     it('writes the KB gitignore block once and leaves it unchanged on a second runtime start', async () => {
-      mkdirSync(process.env.CORAL_KB_PATH!, { recursive: true });
-      const gitignorePath = join(process.env.CORAL_KB_PATH!, '.gitignore');
+      const gitignorePath = join(tempDir, '.gitignore');
       writeFileSync(gitignorePath, 'notes/\n', 'utf-8');
 
-      const first = await loadKbModules();
-      await first.curate.startCurateRuntime(createKbContext(first.detect));
-      await settleCurateRuntime(first.curate);
+      await scheduler.start();
+      await settleCurateRuntime(scheduler);
 
       const afterFirstStart = readFileSync(gitignorePath, 'utf-8');
       expect(afterFirstStart).toContain('notes/\n');
       expect(afterFirstStart).toContain('# Coral KB runtime (device-local, auto-managed)\ncurate-state.json\ndata/\n');
 
-      const second = await loadKbModules();
-      await second.curate.startCurateRuntime(createKbContext(second.detect));
-      await settleCurateRuntime(second.curate);
+      const secondRuntime = createKbRuntime({
+        markdownRoot: tempDir,
+        runtimeDir: tempDir,
+      });
+      const secondScheduler = createCurateScheduler({
+        kb: secondRuntime,
+        spawnCli: noopSpawnCli,
+      });
+      await secondScheduler.start();
+      await settleCurateRuntime(secondScheduler);
 
       expect(readFileSync(gitignorePath, 'utf-8')).toBe(afterFirstStart);
     });
 
     it('runs cleanup successfully in a non-git KB root while removing cleanup tags', async () => {
-      const { curate, detect, paths, frontmatter, curateState } = await loadKbModules();
-      const kb = createKbContext(detect);
       const notes: KbIndex['notes'] = {};
-      const spawn = vi.fn(async () => ({
+      const spawn = vi.fn<SpawnCliFn>(async () => ({
         stdout: '[]',
         stderr: '',
         code: 0,
@@ -952,7 +915,7 @@ describe('curate', () => {
       ];
 
       for (const spec of specs) {
-        writeNote(paths, spec.slug, {
+        writeNote(spec.slug, {
           title: spec.slug,
           tags: spec.tags,
           mutationSeqAtPromote: spec.seq,
@@ -964,34 +927,38 @@ describe('curate', () => {
         });
       }
 
-      detect.writeKbIndex({
+      runtime.writeIndex({
         notes,
         principles: {},
       });
-      curate.setCurateSpawnFn(spawn);
+      useScheduler(spawn);
 
-      await curate.startCurateRuntime(kb);
-      await settleCurateRuntime(curate);
+      await scheduler.start();
+      await settleCurateRuntime(scheduler);
 
       expect(spawn).toHaveBeenCalledTimes(1);
-      expect(frontmatter.parseFrontmatter(readFileSync(join(paths.notesDir(), 'coral-pattern-note.md'), 'utf-8')).tags).toEqual([
+      expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-pattern-note.md'), 'utf-8')).tags).toEqual([
         'coral',
       ]);
-      expect(frontmatter.parseFrontmatter(readFileSync(join(paths.notesDir(), 'coral-parent-child.md'), 'utf-8')).tags).toEqual([
+      expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-parent-child.md'), 'utf-8')).tags).toEqual([
         'coral',
         'stable-parent',
       ]);
-      expect(detect.readKbIndex()?.notes['coral-pattern-note']?.tags).toEqual(['coral']);
-      expect(detect.readKbIndex()?.notes['coral-parent-child']?.tags).toEqual(['coral', 'stable-parent']);
-      expect(curateState.readCurateState().processedThrough).toEqual({
+      expect(runtime.readIndex()?.notes['coral-pattern-note']?.tags).toEqual(['coral']);
+      expect(runtime.readIndex()?.notes['coral-parent-child']?.tags).toEqual(['coral', 'stable-parent']);
+      expect(readCurateState(runtime).processedThrough).toEqual({
         note: 'coral-note-10',
         mutationSeqAtPromote: 10,
       });
     });
 
     it('throws a CurateJsonParseError when classification returns malformed JSON', async () => {
-      const { curate, detect } = await loadKbModules();
-      const kb = createKbContext(detect);
+      useScheduler(async () => ({
+        stdout: '[',
+        stderr: '',
+        code: 0,
+        aborted: false,
+      }));
       const claim = {
         notes: [
           buildClaimedNote({
@@ -1006,14 +973,7 @@ describe('curate', () => {
         },
       };
 
-      curate.setCurateSpawnFn(async () => ({
-        stdout: '[',
-        stderr: '',
-        code: 0,
-        aborted: false,
-      }));
-
-      await expect(curate.runClassificationBatches(kb, claim, {
+      await expect(internals.runClassificationBatches(claim, {
         notes: {
           'coral-alpha': createIndexNote({
             title: 'Alpha',
@@ -1028,13 +988,11 @@ describe('curate', () => {
     });
 
     it('throws a CurateJsonParseError when principle discovery returns malformed JSON', async () => {
-      const { curate, detect, paths, curateState } = await loadKbModules();
-      const kb = createKbContext(detect);
       const notes: KbIndex['notes'] = {};
 
       for (let index = 1; index <= 50; index += 1) {
         const slug = `coral-discovery-${String(index).padStart(2, '0')}`;
-        writeNote(paths, slug, {
+        writeNote(slug, {
           title: `Discovery ${index}`,
           mutationSeqAtPromote: index,
           body: `Discovery body ${index}.`,
@@ -1045,21 +1003,21 @@ describe('curate', () => {
         });
       }
 
-      detect.writeKbIndex({ notes, principles: {} });
-      curateState.writeCurateState(createCurateState({
+      runtime.writeIndex({ notes, principles: {} });
+      writeCurateState(runtime, createCurateState({
         processedThrough: {
           note: 'coral-discovery-50',
           mutationSeqAtPromote: 50,
         },
       }));
-      curate.setCurateSpawnFn(async () => ({
+      useScheduler(async () => ({
         stdout: '[',
         stderr: '',
         code: 0,
         aborted: false,
       }));
 
-      await expect(curate.runPrincipleDiscovery(kb, detect.readKbIndex()!, {
+      await expect(internals.runPrincipleDiscovery({
         note: 'coral-discovery-50',
         mutationSeqAtPromote: 50,
       })).rejects.toMatchObject({
@@ -1069,13 +1027,12 @@ describe('curate', () => {
     });
 
     it('records retry state from scheduled failures using the claimed through cursor', async () => {
-      const { curate, detect, paths, curateState } = await loadKbModules();
       const stderrSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
       const notes: KbIndex['notes'] = {};
 
       for (let index = 1; index <= 10; index += 1) {
         const slug = `coral-failure-${String(index).padStart(2, '0')}`;
-        writeNote(paths, slug, {
+        writeNote(slug, {
           title: `Failure ${index}`,
           mutationSeqAtPromote: index,
         });
@@ -1085,24 +1042,24 @@ describe('curate', () => {
         });
       }
 
-      detect.writeKbIndex({ notes, principles: {} });
-      curate.setCurateSpawnFn(async () => ({
+      runtime.writeIndex({ notes, principles: {} });
+      useScheduler(async () => ({
         stdout: '[',
         stderr: '',
         code: 0,
         aborted: false,
       }));
 
-      await curate.startCurateRuntime(createKbContext(detect));
+      await scheduler.start();
       for (let attempt = 0; attempt < 30; attempt += 1) {
         await Promise.resolve();
-        if (curateState.readCurateState().consecutiveFailures === 1) {
+        if (readCurateState(runtime).consecutiveFailures === 1) {
           break;
         }
       }
 
       expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('Curate classification returned invalid JSON.'));
-      expect(curateState.readCurateState()).toMatchObject({
+      expect(readCurateState(runtime)).toMatchObject({
         lastAttemptedThrough: {
           note: 'coral-failure-10',
           mutationSeqAtPromote: 10,
@@ -1110,7 +1067,7 @@ describe('curate', () => {
         activeClaim: null,
         consecutiveFailures: 1,
       });
-      expect(curateState.readCurateState().retryNotBefore).not.toBeNull();
+      expect(readCurateState(runtime).retryNotBefore).not.toBeNull();
     });
   });
 });

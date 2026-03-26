@@ -1,5 +1,4 @@
 import { search as oramaSearch } from '@orama/orama';
-import { ensureOramaIndex } from './detect.js';
 import {
   normalizeOramaTerm,
   tokenizeField,
@@ -7,7 +6,8 @@ import {
   type KbOramaDocument,
   type KbOramaTokenizer,
 } from './orama-factory.js';
-import type { KbContext, KbIndex, KbMatchSurface, KbResult, KbSearchResponse } from './types.js';
+import type { KbRuntime } from './runtime.js';
+import type { KbIndex, KbMatchSurface, KbResult, KbSearchResponse } from './types.js';
 
 const MATCH_SURFACE_ORDER: KbMatchSurface[] = ['filename', 'principle', 'tag', 'title', 'content'];
 const ORAMA_SEARCH_PROPERTIES: Array<keyof KbOramaDocument> = ['slug', 'title', 'body', 'tags', 'principles'];
@@ -212,12 +212,11 @@ function toResult(
   };
 }
 
-export async function searchKb(kb: KbContext, query: string, top_k = 20): Promise<KbSearchResponse> {
+export async function searchKb(rt: KbRuntime, query: string, top_k = 20): Promise<KbSearchResponse> {
   const rawQuery = query.trim();
   const oramaTerm = normalizeOramaTerm(rawQuery);
   const topK = Number.isInteger(top_k) && top_k > 0 ? top_k : 20;
-
-  const { db, tokenizer, index } = await ensureOramaIndex(kb);
+  const { db, tokenizer, index } = await rt.ensureOramaIndex();
   const queryTokens = tokenizeQuery(oramaTerm, tokenizer);
   if (queryTokens.length === 0) {
     return {
