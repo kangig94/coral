@@ -70,7 +70,7 @@ describe('kb detection and paths', () => {
     expect(kb.adapter).toBeNull();
   });
 
-  it('keeps memo and note path resolution confined to their roots', async () => {
+  it('resolves configured-root markdown paths while keeping runtime artifacts machine-local', async () => {
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
     const { createKbRuntime, paths } = await loadKbModules();
     const kb = createKbRuntime({
@@ -79,18 +79,34 @@ describe('kb detection and paths', () => {
     });
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
+    const markdownRoot = join(mockState.tmpHome, 'vault');
+    const machineLocalRuntimeDir = join(mockState.tmpHome, '.coral', 'data', 'kb');
+    const notePath = join(markdownRoot, 'notes', 'coral-kb-runtime-root.md');
+    const principlePath = join(markdownRoot, 'principles', 'contract-first-design.md');
 
-    expect(kb.notePath('coral-kb-runtime-root')).toBe(
-      join(mockState.tmpHome, 'vault', 'notes', 'coral-kb-runtime-root.md'),
-    );
-    expect(paths.notePathFromParts('coral', 'kb-runtime-root')).toBe(
-      join(mockState.tmpHome, 'vault', 'notes', 'coral-kb-runtime-root.md'),
-    );
+    expect(paths.notesDir()).toBe(join(markdownRoot, 'notes'));
+    expect(paths.notesDir(markdownRoot)).toBe(join(markdownRoot, 'notes'));
+    expect(paths.principlesDir()).toBe(join(markdownRoot, 'principles'));
+    expect(paths.principlesDir(markdownRoot)).toBe(join(markdownRoot, 'principles'));
+    expect(paths.notePathFromName('coral-kb-runtime-root')).toBe(notePath);
+    expect(paths.notePathFromName('coral-kb-runtime-root', markdownRoot)).toBe(notePath);
+    expect(paths.notePathFromParts('coral', 'kb-runtime-root')).toBe(notePath);
+    expect(paths.notePathFromParts('coral', 'kb-runtime-root', markdownRoot)).toBe(notePath);
+    expect(paths.principlePathFromName('contract-first-design')).toBe(principlePath);
+    expect(paths.principlePathFromName('contract-first-design', markdownRoot)).toBe(principlePath);
+    expect(kb.notesDir()).toBe(join(markdownRoot, 'notes'));
+    expect(kb.principlesDir()).toBe(join(markdownRoot, 'principles'));
+    expect(kb.notePath('coral-kb-runtime-root')).toBe(notePath);
+    expect(kb.principlePath('contract-first-design')).toBe(principlePath);
+    expect(paths.kbRuntimeDir()).toBe(machineLocalRuntimeDir);
+    expect(kb.runtimeDir).toBe(machineLocalRuntimeDir);
     expect(paths.memoPathFromContext(projectRoot, 'memo.md')).toBe(
       join(mockState.tmpHome, '.coral', 'projects', 'local-project', 'memo', 'memo.md'),
     );
     expect(() => kb.notePath('../escape')).toThrow();
+    expect(() => kb.principlePath('../escape')).toThrow();
     expect(() => paths.notePathFromName('../escape')).toThrow();
+    expect(() => paths.principlePathFromName('../escape')).toThrow();
     expect(() => paths.memoPathFromContext(projectRoot, '../escape.md')).toThrow();
   });
 });

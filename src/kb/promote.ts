@@ -3,9 +3,8 @@ import { nowIsoString } from '../shared/mcp-utils.js';
 import { parseMemoFrontmatter, serializeNote } from './frontmatter.js';
 import { memoPathFromContext } from './paths.js';
 import type { KbPromoteInput } from './contracts.js';
+import { assertNonEmptyText, assertSlug } from './validation.js';
 import {
-  assertNonEmptyText,
-  assertSlug,
   cloneKbIndex,
   markTextIndexStale,
   writeFileAtomic,

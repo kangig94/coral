@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { load, save, type RawData } from '@orama/orama';
 import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
@@ -12,7 +12,12 @@ import {
   type KbOramaDb,
   type KbOramaTokenizer,
 } from './orama-factory.js';
-import { assertWithin } from './paths.js';
+import {
+  notePathFromName,
+  notesDir as pathsNotesDir,
+  principlePathFromName,
+  principlesDir as pathsPrinciplesDir,
+} from './paths.js';
 import { rebuildTextArtifacts } from './text-artifacts.js';
 import type { KbIndex, KbLanceDbAdapter } from './types.js';
 
@@ -175,21 +180,19 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
   let mutationLock: Promise<void> = Promise.resolve();
 
   function notesDir(): string {
-    return join(markdownRoot, 'notes');
+    return pathsNotesDir(markdownRoot);
   }
 
   function principlesDir(): string {
-    return join(markdownRoot, 'principles');
+    return pathsPrinciplesDir(markdownRoot);
   }
 
   function notePath(note: string): string {
-    const root = notesDir();
-    return assertWithin(root, resolve(root, `${note}.md`), 'KB note path');
+    return notePathFromName(note, markdownRoot);
   }
 
   function principlePath(principle: string): string {
-    const root = principlesDir();
-    return assertWithin(root, resolve(root, `${principle}.md`), 'KB principle path');
+    return principlePathFromName(principle, markdownRoot);
   }
 
   function curateStatePath(): string {

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as curateState from '../curate-state.js';
 import {
   buildClassificationPrompt,
   buildDiscoveryPrompt,
@@ -867,6 +868,145 @@ describe('curate', () => {
   });
 
   describe('runtime integration and errors', () => {
+    it('persists discovery attempts and pending discovery changes through the standalone wrappers', async () => {
+      const entry = {
+        principle: 'contract-first-design',
+        statement: 'Write the contract before the implementation.',
+        notes: ['coral-alpha', 'coral-beta'],
+        createdAt: '2026-03-25T12:00:00.000Z',
+      };
+
+      await internals.recordDiscoveryAttempt(52, '2026-03-25');
+      expect(readCurateState(runtime)).toMatchObject({
+        lastDiscoveryCorpusSize: 52,
+        lastDiscoveryDay: '2026-03-25',
+      });
+
+      await internals.addPendingDiscovery(entry);
+      await internals.addPendingDiscovery(entry);
+      expect(readCurateState(runtime).pendingDiscoveries).toEqual([entry]);
+
+      await internals.removePendingDiscovery(entry);
+      expect(readCurateState(runtime).pendingDiscoveries).toEqual([]);
+    });
+
+    it('persists failure and retry clearing through the standalone wrappers', async () => {
+      writeCurateState(runtime, createCurateState({
+        lastAttemptedThrough: {
+          note: 'coral-retry',
+          mutationSeqAtPromote: 9,
+        },
+        activeClaim: {
+          through: {
+            note: 'coral-retry',
+            mutationSeqAtPromote: 9,
+          },
+          startedAt: '2026-03-25T11:58:00.000Z',
+        },
+        consecutiveFailures: 1,
+      }));
+
+      await internals.recordCurateFailure(null, new Error('Failed to spawn claude: ENOENT'));
+      expect(readCurateState(runtime)).toMatchObject({
+        lastAttemptedThrough: {
+          note: 'coral-retry',
+          mutationSeqAtPromote: 9,
+        },
+        retryNotBefore: '2026-03-25T16:00:00.000Z',
+        activeClaim: null,
+        consecutiveFailures: 2,
+      });
+
+      await internals.clearCurateRetryState();
+      expect(readCurateState(runtime)).toMatchObject({
+        retryNotBefore: null,
+        activeClaim: null,
+        consecutiveFailures: 0,
+      });
+    });
+
+    it('keeps mutation lock acquisition flat while discovery drains pending entries and processes new proposals', async () => {
+      const notes: KbIndex['notes'] = {};
+      const pendingDiscoveries = [
+        {
+          principle: 'deterministic-ordering',
+          statement: 'Sort values before assigning identifiers.',
+          notes: ['coral-discovery-01', 'coral-discovery-02'],
+          createdAt: '2026-03-25T11:50:00.000Z',
+        },
+        {
+          principle: 'contract-first-design',
+          statement: 'Write the contract before the implementation.',
+          notes: ['coral-discovery-03', 'coral-discovery-04'],
+          createdAt: '2026-03-25T11:55:00.000Z',
+        },
+      ];
+
+      for (let index = 1; index <= 54; index += 1) {
+        const slug = `coral-discovery-${String(index).padStart(2, '0')}`;
+        writeNote(slug, {
+          title: `Discovery ${index}`,
+          mutationSeqAtPromote: index,
+          body: `Discovery body ${index}.`,
+        });
+        notes[slug] = createIndexNote({
+          title: `Discovery ${index}`,
+          mutationSeqAtPromote: index,
+        });
+      }
+
+      runtime.writeIndex({ notes, principles: {} });
+      writeCurateState(runtime, createCurateState({
+        processedThrough: {
+          note: 'coral-discovery-54',
+          mutationSeqAtPromote: 54,
+        },
+        pendingDiscoveries,
+      }));
+      useScheduler(async () => ({
+        stdout: JSON.stringify([
+          {
+            slug: 'single-source-of-truth',
+            statement: 'Keep one canonical representation for each fact.',
+            notes: ['coral-discovery-05', 'coral-discovery-06', 'coral-discovery-09'],
+          },
+          {
+            slug: 'verify-at-boundaries',
+            statement: 'Validate inputs at system boundaries before using them.',
+            notes: ['coral-discovery-07', 'coral-discovery-08', 'coral-discovery-10'],
+          },
+        ]),
+        stderr: '',
+        code: 0,
+        aborted: false,
+      }));
+
+      const lockSpy = vi.spyOn(runtime, 'withMutationLock');
+      const readSpy = vi.spyOn(curateState, 'readCurateState');
+
+      await internals.runPrincipleDiscovery({
+        note: 'coral-discovery-54',
+        mutationSeqAtPromote: 54,
+      });
+
+      expect(lockSpy).toHaveBeenCalledTimes(3);
+      expect(readSpy).toHaveBeenCalledTimes(2);
+      lockSpy.mockRestore();
+      readSpy.mockRestore();
+
+      expect(readCurateState(runtime)).toMatchObject({
+        lastDiscoveryCorpusSize: 50,
+        lastDiscoveryDay: '2026-03-25',
+        pendingDiscoveries: [],
+      });
+      expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-discovery-05.md'), 'utf-8')).principles).toEqual([
+        'single-source-of-truth',
+      ]);
+      expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-discovery-07.md'), 'utf-8')).principles).toEqual([
+        'verify-at-boundaries',
+      ]);
+    });
+
     it('writes the KB gitignore block once and leaves it unchanged on a second runtime start', async () => {
       const gitignorePath = join(tempDir, '.gitignore');
       writeFileSync(gitignorePath, 'notes/\n', 'utf-8');

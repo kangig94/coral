@@ -4,31 +4,7 @@ import { errorMessage } from '../shared/mcp-utils.js';
 import { normalizePrincipleReference } from './frontmatter.js';
 import type { KbIndexState } from './runtime.js';
 import type { KbIndex } from './types.js';
-
-const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-
-function assertString(value: unknown, label: string): string {
-  if (typeof value !== 'string') {
-    throw new Error(`${label} must be a string`);
-  }
-  return value;
-}
-
-export function assertNonEmptyText(value: unknown, label: string): string {
-  const normalized = assertString(value, label).trim();
-  if (!normalized) {
-    throw new Error(`${label} must be non-empty`);
-  }
-  return normalized;
-}
-
-export function assertSlug(value: unknown, label: string): string {
-  const normalized = assertNonEmptyText(value, label);
-  if (!SLUG_PATTERN.test(normalized)) {
-    throw new Error(`${label} must be slug-safe`);
-  }
-  return normalized;
-}
+import { assertNonEmptyText, assertSlug } from './validation.js';
 
 export function normalizeTags(value: unknown): string[] {
   if (!Array.isArray(value)) {
@@ -93,6 +69,10 @@ export function markTextIndexStale(
   try {
     invalidate(reason);
   } catch (error: unknown) {
-    invalidate(errorMessage(error));
+    try {
+      invalidate(errorMessage(error));
+    } catch (fallbackError: unknown) {
+      process.stderr.write(`markTextIndexStale: ${errorMessage(fallbackError)}\n`);
+    }
   }
 }

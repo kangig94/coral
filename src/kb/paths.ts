@@ -11,12 +11,16 @@ export function assertWithin(root: string, candidate: string, label: string): st
   throw new Error(`${label} must stay within ${resolvedRoot}`);
 }
 
-export function notesDir(): string {
-  return join(kbRoot(), 'notes');
+function markdownPath(root: string, name: string, label: string): string {
+  return assertWithin(root, resolve(root, `${name}.md`), label);
 }
 
-export function principlesDir(): string {
-  return join(kbRoot(), 'principles');
+export function notesDir(root: string = kbRoot()): string {
+  return join(root, 'notes');
+}
+
+export function principlesDir(root: string = kbRoot()): string {
+  return join(root, 'principles');
 }
 
 export function kbRuntimeDir(): string {
@@ -32,12 +36,14 @@ export function memoPathFromContext(projectRoot: string, memo: string): string {
   return assertWithin(root, resolve(root, memo), 'Memo path');
 }
 
-export function notePathFromParts(domain: string, topic: string): string {
-  const root = notesDir();
-  return assertWithin(root, resolve(root, `${domain}-${topic}.md`), 'KB note path');
+export function notePathFromParts(domain: string, topic: string, root: string = kbRoot()): string {
+  return notePathFromName(`${domain}-${topic}`, root);
 }
 
-export function notePathFromName(note: string): string {
-  const root = notesDir();
-  return assertWithin(root, resolve(root, `${note}.md`), 'KB note path');
+export function notePathFromName(note: string, root: string = kbRoot()): string {
+  return markdownPath(notesDir(root), note, 'KB note path');
+}
+
+export function principlePathFromName(principle: string, root: string = kbRoot()): string {
+  return markdownPath(principlesDir(root), principle, 'KB principle path');
 }

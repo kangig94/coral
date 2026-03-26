@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
+import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
 import { extractTitle, parseFrontmatter, replaceFrontmatter } from './frontmatter.js';
 import { cloneKbIndex, writeFileAtomic } from './mutation-helpers.js';
 import type { KbRuntime } from './runtime.js';
@@ -9,6 +9,9 @@ import type { KbNoteFrontmatter } from './types.js';
 
 export const CURATE_STATE_FILE = 'curate-state.json';
 const CLAIM_STALE_MS = 15 * 60 * 1000;
+const CURATE_TRANSIENT_RETRY_MS = 30 * 60 * 1000;
+const CURATE_MISSING_CLI_RETRY_MS = 2 * 60 * 60 * 1000;
+const CURATE_MAX_RETRY_MS = 4 * 60 * 60 * 1000;
 
 type CurateStateTarget = Pick<KbRuntime, 'curateStatePath'> | string;
 type CurateStateRuntime = Pick<
@@ -42,6 +45,8 @@ export type CurateState = {
   migrationVersion: number;
 };
 
+type PendingDiscovery = CurateState['pendingDiscoveries'][number];
+
 type ScannedNote = {
   note: string;
   path: string;
@@ -63,6 +68,26 @@ function defaultCurateState(): CurateState {
     consecutiveFailures: 0,
     migrationVersion: 0,
   };
+}
+
+function retryBaseCooldownMs(error: unknown): number {
+  const message = errorMessage(error);
+  if (message.includes('Failed to spawn claude:') && (message.includes('ENOENT') || message.includes('not found'))) {
+    return CURATE_MISSING_CLI_RETRY_MS;
+  }
+
+  return CURATE_TRANSIENT_RETRY_MS;
+}
+
+function calculateRetryCooldownMs(baseCooldownMs: number, consecutiveFailures: number): number {
+  return Math.min(baseCooldownMs * (2 ** consecutiveFailures), CURATE_MAX_RETRY_MS);
+}
+
+function samePendingDiscovery(left: PendingDiscovery, right: PendingDiscovery): boolean {
+  return left.principle === right.principle
+    && left.statement === right.statement
+    && sameStringList(left.notes, right.notes)
+    && left.createdAt === right.createdAt;
 }
 
 function parsePositiveInteger(value: unknown, label: string): number {
@@ -268,6 +293,104 @@ export function compareCursor(left: CurateCursor, right: CurateCursor): number {
     return left.mutationSeqAtPromote - right.mutationSeqAtPromote;
   }
   return left.note.localeCompare(right.note);
+}
+
+export function sameStringList(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  return left.every((value, index) => value === right[index]);
+}
+
+export function applyRecordCurateFailure(
+  state: CurateState,
+  through: CurateCursor | null,
+  error: unknown,
+): CurateState | null {
+  const attemptedThrough = through ?? state.lastAttemptedThrough;
+  if (attemptedThrough === null) {
+    if (state.activeClaim === null) {
+      return null;
+    }
+
+    return {
+      ...state,
+      activeClaim: null,
+    };
+  }
+
+  const sameAttempt = state.lastAttemptedThrough !== null
+    && compareCursor(state.lastAttemptedThrough, attemptedThrough) === 0;
+  const priorFailures = sameAttempt ? state.consecutiveFailures : 0;
+
+  return {
+    ...state,
+    lastAttemptedThrough: attemptedThrough,
+    retryNotBefore: new Date(
+      Date.now() + calculateRetryCooldownMs(retryBaseCooldownMs(error), priorFailures),
+    ).toISOString(),
+    activeClaim: null,
+    consecutiveFailures: priorFailures + 1,
+  };
+}
+
+export function applyClearCurateRetryState(state: CurateState): CurateState | null {
+  if (state.activeClaim === null && state.retryNotBefore === null && state.consecutiveFailures === 0) {
+    return null;
+  }
+
+  return {
+    ...state,
+    retryNotBefore: null,
+    activeClaim: null,
+    consecutiveFailures: 0,
+  };
+}
+
+export function applyRecordDiscoveryAttempt(
+  state: CurateState,
+  corpusSize: number,
+  today: string,
+): CurateState {
+  return {
+    ...state,
+    lastDiscoveryCorpusSize: corpusSize,
+    lastDiscoveryDay: today,
+  };
+}
+
+export function applyAddPendingDiscovery(
+  state: CurateState,
+  entry: PendingDiscovery,
+): CurateState | null {
+  const alreadyPending = state.pendingDiscoveries.some((pending) => (
+    pending.principle === entry.principle
+    && pending.statement === entry.statement
+  ));
+  if (alreadyPending) {
+    return null;
+  }
+
+  return {
+    ...state,
+    pendingDiscoveries: [...state.pendingDiscoveries, entry],
+  };
+}
+
+export function applyRemovePendingDiscovery(
+  state: CurateState,
+  entry: PendingDiscovery,
+): CurateState | null {
+  const nextPendingDiscoveries = state.pendingDiscoveries.filter((pending) => !samePendingDiscovery(pending, entry));
+  if (nextPendingDiscoveries.length === state.pendingDiscoveries.length) {
+    return null;
+  }
+
+  return {
+    ...state,
+    pendingDiscoveries: nextPendingDiscoveries,
+  };
 }
 
 export function isClaimStale(state: CurateState, now: string): boolean {
