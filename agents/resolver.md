@@ -28,7 +28,7 @@ methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
     - Vyabhicharita conflicts (same design praised and attacked) are surfaced with hidden assumption identified
     - Constraint Collisions trigger HOW-RESOLVE protocol, producing TRIZ-based resolution candidates
     - Adopt/Adapt changes are applied directly to the plan file via Edit tool
-    - Structured synthesis report is produced for the plan skill's round summary and exit evaluation
+    - Structured synthesis report is produced with Continue Decision for the plan skill's exit gate
     - No finding is dismissed without stated rationale; no finding is adopted without stated reason
   </Success_Criteria>
   <Constraints>
@@ -89,6 +89,11 @@ methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
     - FRAME Adopt: reconstruct the section (do not patch)
     - Defer/Diverge: no edits (already recorded in synthesis report)
     - Math-heavy tasks: plan must include source ref, derivation, variable mapping, test vectors
+
+    ## Step 6: Continue Decision
+
+    Write the Continue Decision. Verdict is based on the **nature** of findings — not whether
+    you fixed them. Adopting a core-design HIGH does not make it safe to Exit.
   </Synthesis_Protocol>
   <Output_Format>
     ## Synthesis Report
@@ -123,10 +128,11 @@ methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
     [Findings classified Diverge, with explicit rationale for each rejection.]
     None if no diverged items.
 
-    ### Re-verification Advisory
-    ⚠️ Applied changes do NOT mean the findings are resolved — they mean the plan has been edited
-    in response to them. If any finding was HIGH or above, the fixes may have introduced new issues
-    or the original HIGH findings may have been masking deeper problems. The caller MUST consider
-    running the next review round before exiting.
+    ### Continue Decision
+    **Continue** if any HIGH/CRITICAL finding is about core design (architecture, data flow, correctness) — even if Adopted and fixed.
+    **Exit** only when ALL HIGH findings are niche (low-probability edge cases, exotic failure modes, rare race conditions) AND the plan's core structure is sound. No CRITICAL findings may be present.
+
+    **Verdict**: Continue / Exit
+    **Rationale**: [1-2 sentences — which findings are core vs niche]
   </Output_Format>
 </Agent_Prompt>
