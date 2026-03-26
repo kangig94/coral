@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { extractBody, parseFrontmatter, extractTitle } from './frontmatter.js';
 import { notePathFromName } from './paths.js';
-import type { KbReadInput } from './contracts.js';
+import type { KbReadInput } from './types.js';
 import { assertNoteSlug } from './validation.js';
 
 export type KbReadResult = {

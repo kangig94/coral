@@ -9,7 +9,7 @@ import type {
   KbReindexInput,
   KbSearchInput,
   KbUpdateInput,
-} from '../kb/contracts.js';
+} from '../kb/types.js';
 import { isRecord } from '../shared/mcp-utils.js';
 import {
   describeHttpError,

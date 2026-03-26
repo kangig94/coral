@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveProjectSource } from '../client/paths.js';
-import type { KbMemoInput } from './contracts.js';
+import type { KbMemoInput } from './types.js';
 import { writeFileAtomic } from './mutation-helpers.js';
 import { memoDir } from './paths.js';
 

@@ -43,15 +43,15 @@ import type { KbRuntime } from './runtime.js';
 import type { KbIndex } from './types.js';
 
 const CURATE_MIN_CLAIM_SIZE = 10;
-const CURATE_MAX_CLAIM_SIZE = 30;
-const CLASSIFICATION_BATCH_SIZE = 10;
+const CURATE_MAX_CLAIM_SIZE = 100;
+const CLASSIFICATION_BATCH_SIZE = 100;
 const CURATE_STALE_REASON = 'KB text snapshot is stale after kb_curate.';
 const DISCOVERY_MIN_CORPUS_SIZE = 50;
 const DISCOVERY_PROMPT_BODY_LIMIT = 500;
 const DISCOVERY_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
 const DISCOVERY_CORPUS_RESET_RATIO = 0.2;
 
-const GITIGNORE_ENTRIES = ['curate-state.json', 'data/'];
+const GITIGNORE_ENTRIES = ['curate-state.json', 'data/', '.obsidian/'];
 const GITIGNORE_HEADER = '# Coral KB runtime (device-local, auto-managed)';
 
 type SpawnCliResult = {
@@ -625,7 +625,7 @@ export async function invokeClaude(prompt: string, spawnCli: SpawnCliFn): Promis
   const result = await spawnCli({
     provider: 'claude',
     command: 'claude',
-    args: ['-p'],
+    args: ['-p', '--no-session-persistence'],
     prompt,
     pool: 'curate',
   });
@@ -878,6 +878,90 @@ export function createCurateScheduler({
     }
   }
 
+  function hasGitRemote(root: string): boolean {
+    try {
+      return gitExec(root, ['remote'], 5000).trim().length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  function gitExec(root: string, args: string[], timeoutMs = 15000): string {
+    return execFileSync('git', ['-C', root, ...args], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: timeoutMs,
+    });
+  }
+
+  function gitSync(): void {
+    const root = kb.markdownRoot;
+    if (!isGitRepo(root) || !hasGitRemote(root)) {
+      return;
+    }
+
+    try {
+      gitExec(root, ['fetch', 'origin'], 30000);
+
+      // Stash local uncommitted changes (new notes from promote) so they survive merge.
+      let stashed = false;
+      try {
+        const status = gitExec(root, ['status', '--porcelain'], 5000).trim();
+        if (status.length > 0) {
+          gitExec(root, ['stash', 'push', '-u', '-m', 'curate-sync']);
+          stashed = true;
+        }
+      } catch {
+        // stash failure — proceed without stashing
+      }
+
+      try {
+        gitExec(root, ['rebase', 'origin/main']);
+      } catch {
+        // Rebase conflict — abort and merge with theirs for curate metadata.
+        // New notes (untracked/stashed) are preserved; only conflicting
+        // frontmatter (tags/principles) is overwritten and re-applied next cycle.
+        try { gitExec(root, ['rebase', '--abort'], 5000); } catch { /* no-op */ }
+        try {
+          gitExec(root, ['merge', 'origin/main', '-X', 'theirs', '--no-edit']);
+        } catch {
+          // best-effort — local state is still valid, push will retry next cycle
+        }
+      }
+
+      if (stashed) {
+        try {
+          gitExec(root, ['stash', 'pop']);
+        } catch {
+          // Stash pop conflict — drop stash and recover files from the stash ref.
+          // This preserves new notes that don't conflict while accepting theirs for conflicts.
+          try { gitExec(root, ['checkout', '--theirs', '.'], 5000); } catch { /* no-op */ }
+          try { gitExec(root, ['stash', 'drop'], 5000); } catch { /* no-op */ }
+        }
+      }
+    } catch {
+      // fetch failure (offline, no remote) — proceed with local state
+    }
+  }
+
+  function gitPush(): void {
+    const root = kb.markdownRoot;
+    if (!isGitRepo(root) || !hasGitRemote(root)) {
+      return;
+    }
+
+    try {
+      gitExec(root, ['push', 'origin', 'main'], 30000);
+    } catch {
+      try {
+        gitExec(root, ['pull', '--rebase', 'origin', 'main'], 30000);
+        gitExec(root, ['push', 'origin', 'main'], 30000);
+      } catch {
+        // best-effort — will push next cycle
+      }
+    }
+  }
+
   function gitAutoCommit(message: string): void {
     const root = kb.markdownRoot;
     if (!isGitRepo(root)) {
@@ -885,7 +969,7 @@ export function createCurateScheduler({
     }
 
     try {
-      execFileSync('git', ['-C', root, 'add', 'notes/', 'principles/'], {
+      execFileSync('git', ['-C', root, 'add', 'notes/', 'principles/', '.gitignore'], {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
         timeout: 10000,
@@ -1471,11 +1555,12 @@ export function createCurateScheduler({
 
   async function runScheduledCurate(): Promise<CurateCursor | null> {
     let lastCompletedThrough: CurateCursor | null = null;
+    const allCohortSlugs: string[] = [];
 
     while (true) {
       const claim = await claimCurateRun(nowIsoString().slice(0, 10));
       if (claim === null) {
-        return lastCompletedThrough;
+        break;
       }
 
       try {
@@ -1486,32 +1571,49 @@ export function createCurateScheduler({
         await commitMetadataTargets(metadataTargets);
         gitAutoCommit(`curate: classify ${claim.notes.length} notes (tags + principles)`);
 
-        const postPhaseOneState = readCurateState(kb);
-        const postPhaseOneProcessedThrough = postPhaseOneState.processedThrough;
-        const postPhaseOneIndex = kb.readIndexOrEmpty();
-
-        if (
-          postPhaseOneProcessedThrough !== null
-          && countEligibleDiscoveryNotes(postPhaseOneIndex, postPhaseOneProcessedThrough) >= DISCOVERY_MIN_CORPUS_SIZE
-        ) {
-          await runPrincipleDiscovery(postPhaseOneProcessedThrough);
-          gitAutoCommit('curate: discover principles from principle-less notes');
-        }
-
-        const cohortSlugs = claim.notes.map((note) => note.slug);
-        const cleanupResult = cleanupTags(postPhaseOneIndex, cohortSlugs);
-        const cleanupTargets = buildCleanupTargets(postPhaseOneIndex, cohortSlugs, cleanupResult);
-        if (cleanupTargets.length > 0) {
-          await commitMetadataTargets(cleanupTargets);
-          gitAutoCommit(`curate: cleanup tags for ${cleanupTargets.length} notes`);
-        }
-
+        allCohortSlugs.push(...claim.notes.map((note) => note.slug));
         await clearCurateRetryState();
         lastCompletedThrough = claim.through;
       } catch (error: unknown) {
         throw new CurateRunError(claim.through, error);
       }
     }
+
+    if (lastCompletedThrough === null) {
+      return null;
+    }
+
+    // Discovery runs once after all classification claims, seeing the full corpus.
+    const postClassifyState = readCurateState(kb);
+    const processedThrough = postClassifyState.processedThrough;
+    const postClassifyIndex = kb.readIndexOrEmpty();
+
+    if (
+      processedThrough !== null
+      && countEligibleDiscoveryNotes(postClassifyIndex, processedThrough) >= DISCOVERY_MIN_CORPUS_SIZE
+    ) {
+      try {
+        await runPrincipleDiscovery(processedThrough);
+        gitAutoCommit('curate: discover principles from principle-less notes');
+      } catch (error: unknown) {
+        throw new CurateRunError(lastCompletedThrough, error);
+      }
+    }
+
+    // Tag cleanup runs once over all classified notes.
+    const cleanupResult = cleanupTags(postClassifyIndex, allCohortSlugs);
+    const cleanupTargets = buildCleanupTargets(postClassifyIndex, allCohortSlugs, cleanupResult);
+    if (cleanupTargets.length > 0) {
+      try {
+        await commitMetadataTargets(cleanupTargets);
+        gitAutoCommit(`curate: cleanup tags for ${cleanupTargets.length} notes`);
+      } catch (error: unknown) {
+        throw new CurateRunError(lastCompletedThrough, error);
+      }
+    }
+
+    gitPush();
+    return lastCompletedThrough;
   }
 
   function launchQueuedRun(): void {
@@ -1572,6 +1674,7 @@ export function createCurateScheduler({
     }
 
     ensureKbGitignore();
+    gitSync();
     await migrateCurateStateIfNeeded(kb);
     runtimeStarted = true;
     armRetryWake();

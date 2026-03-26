@@ -578,11 +578,11 @@ describe('curate', () => {
       });
     });
 
-    it('claims at most thirty notes when the max-size threshold is reached', async () => {
+    it('claims at most one hundred notes when the max-size threshold is reached', async () => {
       const notes: KbIndex['notes'] = {};
 
-      for (let index = 31; index >= 1; index -= 1) {
-        const slug = `coral-note-${String(index).padStart(2, '0')}`;
+      for (let index = 101; index >= 1; index -= 1) {
+        const slug = `coral-note-${String(index).padStart(3, '0')}`;
         writeNote(slug, {
           title: `Note ${index}`,
           mutationSeqAtPromote: index,
@@ -600,12 +600,12 @@ describe('curate', () => {
 
       const claim = await internals.claimCurateRun('2026-03-25');
 
-      expect(claim?.notes).toHaveLength(30);
+      expect(claim?.notes).toHaveLength(100);
       expect(claim?.notes[0]?.mutationSeqAtPromote).toBe(1);
-      expect(claim?.notes[29]?.mutationSeqAtPromote).toBe(30);
+      expect(claim?.notes[99]?.mutationSeqAtPromote).toBe(100);
       expect(claim?.through).toEqual({
-        note: 'coral-note-30',
-        mutationSeqAtPromote: 30,
+        note: 'coral-note-100',
+        mutationSeqAtPromote: 100,
       });
     });
 
