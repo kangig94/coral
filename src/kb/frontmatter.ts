@@ -2,10 +2,9 @@ import { basename } from 'node:path';
 import yaml from 'yaml';
 import { isRecord, isStringArray } from '../shared/mcp-utils.js';
 import type { KbNoteFrontmatter, KbNoteIdentity } from './types.js';
-import { assertNonEmptyText } from './validation.js';
+import { NOTE_SLUG_PATTERN, assertNonEmptyText } from './validation.js';
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
-const NOTE_NAME_PATTERN = /^[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*$/;
 
 /** Non-capturing frontmatter regex for stripping (no capture group, unlike FRONTMATTER_PATTERN). */
 export const FRONTMATTER_BLOCK = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/;
@@ -140,7 +139,7 @@ export function deriveNoteIdentity(pathOrName: string): KbNoteIdentity {
   const filename = basename(pathOrName);
   const note = filename.endsWith('.md') ? filename.slice(0, -3) : filename;
 
-  if (!NOTE_NAME_PATTERN.test(note)) {
+  if (!NOTE_SLUG_PATTERN.test(note)) {
     throw new Error(`Invalid KB note name: ${note}`);
   }
 

@@ -3,10 +3,10 @@ import { isNoEntryError } from '../shared/mcp-utils.js';
 import type { KbDeleteInput } from './contracts.js';
 import { cloneKbIndex, markTextIndexStale } from './mutation-helpers.js';
 import type { KbRuntime } from './runtime.js';
-import { assertSlug } from './validation.js';
+import { assertNoteSlug } from './validation.js';
 
 export async function deleteFn(rt: KbRuntime, input: KbDeleteInput): Promise<{ deleted: string }> {
-  const note = assertSlug(input.note, 'note');
+  const note = assertNoteSlug(input.note, 'note');
   const notePath = rt.notePath(note);
 
   return rt.withMutationLock(async () => {

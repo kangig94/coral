@@ -3,7 +3,7 @@ import { nowIsoString } from '../shared/mcp-utils.js';
 import { parseMemoFrontmatter, serializeNote } from './frontmatter.js';
 import { memoPathFromContext } from './paths.js';
 import type { KbPromoteInput } from './contracts.js';
-import { assertNonEmptyText, assertSlug } from './validation.js';
+import { assertNonEmptyText, assertNoteSlug, assertSlug } from './validation.js';
 import {
   buildNoteIndexEntry,
   cloneKbIndex,
@@ -29,7 +29,7 @@ export async function promote(
   }
   const content = input.content;
   const domain = assertSlug(input.domain, 'domain');
-  const topic = assertSlug(input.topic, 'topic');
+  const topic = assertNoteSlug(input.topic, 'topic');
 
   const memoPath = memoPathFromContext(projectRoot, memo);
   const noteName = `${domain}-${topic}`;

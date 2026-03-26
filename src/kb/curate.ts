@@ -32,7 +32,7 @@ import {
   parseFrontmatter,
   replaceFrontmatter,
 } from './frontmatter.js';
-import { assertNonEmptyText, assertSlug } from './validation.js';
+import { assertNonEmptyText, assertNoteSlug } from './validation.js';
 import {
   buildNoteIndexEntry,
   cloneKbIndex,
@@ -485,7 +485,7 @@ function extractDiscoveryProposals(entries: unknown[]): DiscoveryProposal[] {
 
 function normalizeDiscoverySlug(raw: string): string | null {
   try {
-    return assertSlug(raw, 'slug');
+    return assertNoteSlug(raw, 'slug');
   } catch {
     return null;
   }
@@ -1293,7 +1293,7 @@ export function createCurateScheduler({
     entry: PendingDiscovery,
     state: CurateState,
   ): EnsurePrincipleDocumentResult {
-    const principlePath = kb.principlePath(assertSlug(entry.principle, 'principle'));
+    const principlePath = kb.principlePath(assertNoteSlug(entry.principle, 'principle'));
     const nextIndex = cloneKbIndex(kb.readIndex());
 
     if (existsSync(principlePath)) {
