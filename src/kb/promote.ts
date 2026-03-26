@@ -5,6 +5,7 @@ import { memoPathFromContext } from './paths.js';
 import type { KbPromoteInput } from './contracts.js';
 import { assertNonEmptyText, assertSlug } from './validation.js';
 import {
+  buildNoteIndexEntry,
   cloneKbIndex,
   markTextIndexStale,
   writeFileAtomic,
@@ -55,15 +56,15 @@ export async function promote(
     writeFileAtomic(notePath, noteContent);
 
     const nextIndex = cloneKbIndex(rt.readIndex());
-    nextIndex.notes[noteName] = {
+    nextIndex.notes[noteName] = buildNoteIndexEntry({
       title,
       tags: [domain],
       principles: [],
-      source: [...source],
+      source,
       createdAt,
       updatedAt: createdAt,
       mutationSeqAtPromote,
-    };
+    });
     rt.writeIndex(nextIndex);
 
     markTextIndexStale(rt.invalidateTextSnapshot, 'KB text snapshot is stale after kb_promote.');

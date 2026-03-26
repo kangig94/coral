@@ -34,6 +34,7 @@ import {
 } from './frontmatter.js';
 import { assertNonEmptyText, assertSlug } from './validation.js';
 import {
+  buildNoteIndexEntry,
   cloneKbIndex,
   markTextIndexStale,
   writeFileAtomic,
@@ -221,15 +222,7 @@ function uniqueTrimmedList(values: string[]): string[] {
 }
 
 function buildTagVocabulary(index: KbIndex): string[] {
-  const tags = new Set<string>();
-
-  for (const note of Object.values(index.notes)) {
-    for (const tag of note.tags) {
-      tags.add(tag);
-    }
-  }
-
-  return [...tags].sort((left, right) => left.localeCompare(right));
+  return [...countTagSupport(index).keys()].sort((left, right) => left.localeCompare(right));
 }
 
 function buildPrincipleNames(index: KbIndex): string[] {
@@ -653,12 +646,7 @@ export function validateAssignments(
   index: KbIndex,
   claimedNotes: CurateClaimedNote[],
 ): ClassificationAssignment[] {
-  const existingTagVocabulary = new Set<string>();
-  for (const noteMeta of Object.values(index.notes)) {
-    for (const tag of noteMeta.tags) {
-      existingTagVocabulary.add(tag);
-    }
-  }
+  const existingTagVocabulary = new Set(countTagSupport(index).keys());
 
   const claimedOrder = claimedNotes.map((note) => note.slug);
   const claimedSet = new Set(claimedOrder);
@@ -1172,15 +1160,15 @@ export function createCurateScheduler({
       wroteMarkdown = true;
 
       const existingIndexNote = nextIndex.notes[target.note];
-      nextIndex.notes[target.note] = {
+      nextIndex.notes[target.note] = buildNoteIndexEntry({
         title: existingIndexNote?.title ?? extractTitle(raw),
-        tags: [...metadataDecision.nextTags],
-        principles: [...metadataDecision.nextPrinciples],
-        source: [...liveFrontmatter.source],
+        tags: metadataDecision.nextTags,
+        principles: metadataDecision.nextPrinciples,
+        source: liveFrontmatter.source,
         createdAt: liveFrontmatter.createdAt,
         updatedAt: liveFrontmatter.updatedAt,
         mutationSeqAtPromote: nextFrontmatter.mutationSeqAtPromote,
-      };
+      });
 
       processedThrough = advanceProcessedThrough(processedThrough, cursorCanAdvance, cursor);
     }
@@ -1347,7 +1335,7 @@ export function createCurateScheduler({
     entry: PendingDiscovery,
     processedThrough: CurateCursor,
   ): boolean {
-    const index = kb.readIndex() ?? { notes: {}, principles: {} };
+    const index = kb.readOrCreateIndex();
 
     return entry.notes.every((note) => {
       const noteMeta = index.notes[note];
@@ -1385,7 +1373,7 @@ export function createCurateScheduler({
         const targets = buildPrincipleAssignmentTargets(
           entry.principle,
           entry.notes,
-          kb.readIndex() ?? { notes: {}, principles: {} },
+          kb.readOrCreateIndex(),
           processedThrough,
         );
         if (targets.length > 0) {
@@ -1451,7 +1439,7 @@ export function createCurateScheduler({
         const targets = buildPrincipleAssignmentTargets(
           entry.principle,
           entry.notes,
-          kb.readIndex() ?? { notes: {}, principles: {} },
+          kb.readOrCreateIndex(),
           processedThrough,
         );
         if (targets.length > 0) {
@@ -1475,7 +1463,7 @@ export function createCurateScheduler({
       }
 
       try {
-        const claimIndex = cloneKbIndex(kb.readIndex());
+        const claimIndex = kb.readOrCreateIndex();
         const rawAssignments = await runClassificationBatches(claim, claimIndex);
         const validatedAssignments = validateAssignments(rawAssignments, claimIndex, claim.notes);
         const metadataTargets = buildMetadataTargets(validatedAssignments, claimIndex, claim.notes);
@@ -1484,7 +1472,7 @@ export function createCurateScheduler({
 
         const postPhaseOneState = readCurateState(kb);
         const postPhaseOneProcessedThrough = postPhaseOneState.processedThrough;
-        const postPhaseOneIndex = cloneKbIndex(kb.readIndex());
+        const postPhaseOneIndex = kb.readOrCreateIndex();
 
         if (
           postPhaseOneProcessedThrough !== null
@@ -1494,15 +1482,9 @@ export function createCurateScheduler({
           gitAutoCommit('curate: discover principles from principle-less notes');
         }
 
-        const cleanupResult = cleanupTags(
-          postPhaseOneIndex,
-          claim.notes.map((note) => note.slug),
-        );
-        const cleanupTargets = buildCleanupTargets(
-          postPhaseOneIndex,
-          claim.notes.map((note) => note.slug),
-          cleanupResult,
-        );
+        const cohortSlugs = claim.notes.map((note) => note.slug);
+        const cleanupResult = cleanupTags(postPhaseOneIndex, cohortSlugs);
+        const cleanupTargets = buildCleanupTargets(postPhaseOneIndex, cohortSlugs, cleanupResult);
         if (cleanupTargets.length > 0) {
           await commitMetadataTargets(cleanupTargets);
           gitAutoCommit(`curate: cleanup tags for ${cleanupTargets.length} notes`);

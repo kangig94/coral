@@ -1,26 +1,30 @@
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { errorMessage } from '../shared/mcp-utils.js';
-import { normalizePrincipleReference } from './frontmatter.js';
 import type { KbIndexState } from './runtime.js';
 import type { KbIndex } from './types.js';
-import { assertNonEmptyText, assertSlug } from './validation.js';
 
-export function normalizeTags(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    throw new Error('tags must be an array');
-  }
-  return value.map((tag) => assertNonEmptyText(tag, 'tag'));
-}
+type NoteIndexEntrySource = {
+  title: string;
+  tags: readonly string[];
+  principles: readonly string[];
+  source: readonly string[];
+  createdAt: string;
+  updatedAt: string;
+  mutationSeqAtPromote?: number;
+};
 
-export function normalizePrinciples(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    throw new Error('principles must be an array');
-  }
-  return value.map((entry) => {
-    const normalized = normalizePrincipleReference(assertNonEmptyText(entry, 'principle'));
-    return assertSlug(normalized, 'principle');
-  });
+/** Build a deep-copied KbIndex note record from any source that carries the same fields. */
+export function buildNoteIndexEntry(meta: NoteIndexEntrySource): KbIndex['notes'][string] {
+  return {
+    title: meta.title,
+    tags: [...meta.tags],
+    principles: [...meta.principles],
+    source: [...meta.source],
+    createdAt: meta.createdAt,
+    updatedAt: meta.updatedAt,
+    ...(meta.mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote: meta.mutationSeqAtPromote }),
+  };
 }
 
 export function writeFileAtomic(filePath: string, payload: string): void {
@@ -46,17 +50,7 @@ export function cloneKbIndex(index: KbIndex | null): KbIndex {
 
   return {
     notes: Object.fromEntries(
-      Object.entries(index.notes).map(([note, meta]) => [note, {
-        title: meta.title,
-        tags: [...meta.tags],
-        principles: [...meta.principles],
-        source: [...meta.source],
-        createdAt: meta.createdAt,
-        updatedAt: meta.updatedAt,
-        ...(meta.mutationSeqAtPromote === undefined
-          ? {}
-          : { mutationSeqAtPromote: meta.mutationSeqAtPromote }),
-      }]),
+      Object.entries(index.notes).map(([note, meta]) => [note, buildNoteIndexEntry(meta)]),
     ),
     principles: { ...index.principles },
   };
@@ -69,10 +63,6 @@ export function markTextIndexStale(
   try {
     invalidate(reason);
   } catch (error: unknown) {
-    try {
-      invalidate(errorMessage(error));
-    } catch (fallbackError: unknown) {
-      process.stderr.write(`markTextIndexStale: ${errorMessage(fallbackError)}\n`);
-    }
+    process.stderr.write(`markTextIndexStale: ${errorMessage(error)}\n`);
   }
 }

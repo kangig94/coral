@@ -69,17 +69,4 @@ export type KbReindexNoteRecord = {
 export interface KbLanceDbAdapter {
   getDb(): Promise<unknown>;
   ensureTables(): Promise<void>;
-  upsertNote?(note: {
-    note: string;
-    path: string;
-    title: string;
-    body: string;
-    tags: string[];
-    principles: string[];
-    source: string[];
-    createdAt: string;
-    updatedAt: string;
-    mutationSeqAtPromote?: number;
-  }): Promise<void>;
-  deleteNote?(note: string): Promise<void>;
 }

@@ -211,12 +211,12 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     return join(runtimeDir, ORAMA_INDEX_FILE);
   }
 
-  function installIndexCache(index: KbIndex): KbIndex {
-    const normalized = parseIndex(index);
-    cachedIndex = normalized;
+  /** Install an already-validated index into the in-memory cache. */
+  function installIndexCache(validated: KbIndex): KbIndex {
+    cachedIndex = validated;
     cachedIndexLoaded = true;
-    cachedIndexMtime = statSync(indexPath()).mtimeMs;
-    return normalized;
+    cachedIndexMtime = Date.now();
+    return validated;
   }
 
   function installOramaCache(orama: KbCachedOramaIndex): void {

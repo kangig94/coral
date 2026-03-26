@@ -1,7 +1,8 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveProjectSource } from '../client/paths.js';
 import type { KbMemoInput } from './contracts.js';
+import { writeFileAtomic } from './mutation-helpers.js';
 import { memoDir } from './paths.js';
 
 function generateTimestamp(): string {
@@ -28,7 +29,7 @@ export function writeMemo(projectRoot: string, input: KbMemoInput): { filename: 
   const path = join(dir, filename);
 
   const body = `---\nsource: ${source}\n---\n\n${input.content.trim()}\n`;
-  writeFileSync(path, body, 'utf-8');
+  writeFileAtomic(path, body);
 
   return { filename, path };
 }

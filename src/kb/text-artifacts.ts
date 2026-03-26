@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { insertMultiple } from '@orama/orama';
 import { errorMessage, isNoEntryError } from '../shared/mcp-utils.js';
+import { buildNoteIndexEntry } from './mutation-helpers.js';
 import {
   extractBody,
   deriveNoteIdentity,
@@ -69,15 +70,7 @@ function loadPrinciples(kb: KbRuntime): Array<[string, string]> {
 
 function buildKbIndex(notes: KbReindexNoteRecord[], principles: Array<[string, string]>): KbIndex {
   return {
-    notes: Object.fromEntries(notes.map((note) => [note.note, {
-      title: note.title,
-      tags: [...note.tags],
-      principles: [...note.principles],
-      source: [...note.source],
-      createdAt: note.createdAt,
-      updatedAt: note.updatedAt,
-      ...(note.mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote: note.mutationSeqAtPromote }),
-    }])),
+    notes: Object.fromEntries(notes.map((note) => [note.note, buildNoteIndexEntry(note)])),
     principles: Object.fromEntries(principles),
   };
 }

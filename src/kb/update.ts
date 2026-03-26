@@ -4,6 +4,7 @@ import { extractBody, parseFrontmatter, extractTitle, serializeNote } from './fr
 import type { KbUpdateInput } from './contracts.js';
 import { assertNonEmptyText, assertSlug } from './validation.js';
 import {
+  buildNoteIndexEntry,
   cloneKbIndex,
   markTextIndexStale,
   writeFileAtomic,
@@ -24,35 +25,25 @@ export async function update(rt: KbRuntime, input: KbUpdateInput): Promise<{ pat
     const frontmatter = parseFrontmatter(existing);
     const existingTitle = extractTitle(existing);
     const existingBody = extractBody(existing);
-    const updatedAt = nowIsoString();
     const normalizedTitle = title ?? existingTitle;
     const normalizedContent = nextContent ?? existingBody;
-    const nextFrontmatter = {
-      tags: frontmatter.tags,
-      principles: frontmatter.principles,
-      source: frontmatter.source,
-      createdAt: frontmatter.createdAt,
-      updatedAt,
-      ...(frontmatter.mutationSeqAtPromote === undefined
-        ? {}
-        : { mutationSeqAtPromote: frontmatter.mutationSeqAtPromote }),
-    };
+
+    if (normalizedTitle === existingTitle && normalizedContent === existingBody) {
+      return { path: notePath };
+    }
+
+    const updatedAt = nowIsoString();
+    const nextFrontmatter = { ...frontmatter, updatedAt };
 
     writeFileAtomic(notePath, serializeNote(nextFrontmatter, normalizedTitle, normalizedContent));
     rt.recordMutationCommitted();
 
     const nextIndex = cloneKbIndex(rt.readIndex());
-    nextIndex.notes[note] = {
+    nextIndex.notes[note] = buildNoteIndexEntry({
+      ...frontmatter,
       title: normalizedTitle,
-      tags: [...frontmatter.tags],
-      principles: [...frontmatter.principles],
-      source: [...frontmatter.source],
-      createdAt: frontmatter.createdAt,
       updatedAt,
-      ...(frontmatter.mutationSeqAtPromote === undefined
-        ? {}
-        : { mutationSeqAtPromote: frontmatter.mutationSeqAtPromote }),
-    };
+    });
     rt.writeIndex(nextIndex);
 
     markTextIndexStale(rt.invalidateTextSnapshot, 'KB text snapshot is stale after kb_update.');

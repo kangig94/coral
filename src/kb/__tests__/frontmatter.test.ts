@@ -154,7 +154,7 @@ Keep the body stable.
 
   it('imports frontmatter and mutation helpers through validation without a circular load failure', async () => {
     vi.resetModules();
-    const [{ parseFrontmatter: dynamicParseFrontmatter }, { normalizeTags }, { assertNonEmptyText }] = await Promise.all([
+    const [{ parseFrontmatter: dynamicParseFrontmatter }, { buildNoteIndexEntry }, { assertNonEmptyText }] = await Promise.all([
       import('../frontmatter.js'),
       import('../mutation-helpers.js'),
       import('../validation.js'),
@@ -173,7 +173,9 @@ updatedAt: 2026-03-23
       createdAt: '2026-03-23',
       updatedAt: '2026-03-23',
     });
-    expect(normalizeTags([' coral '])).toEqual(['coral']);
+    expect(buildNoteIndexEntry({
+      title: 'Test', tags: ['coral'], principles: [], source: ['test'], createdAt: '2026-03-23', updatedAt: '2026-03-23',
+    })).toMatchObject({ title: 'Test', tags: ['coral'] });
     expect(assertNonEmptyText(' title ', 'title')).toBe('title');
   });
 });

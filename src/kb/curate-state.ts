@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
 import { extractTitle, parseFrontmatter, replaceFrontmatter } from './frontmatter.js';
-import { cloneKbIndex, writeFileAtomic } from './mutation-helpers.js';
+import { buildNoteIndexEntry, cloneKbIndex, writeFileAtomic } from './mutation-helpers.js';
 import type { KbRuntime } from './runtime.js';
 import { sortedMarkdownEntries } from './text-artifacts.js';
 import type { KbNoteFrontmatter } from './types.js';
@@ -229,15 +229,7 @@ function syncIndexNote(
 ): boolean {
   const existing = nextIndex.notes[note];
   if (existing === undefined) {
-    nextIndex.notes[note] = {
-      title,
-      tags: [...frontmatter.tags],
-      principles: [...frontmatter.principles],
-      source: [...frontmatter.source],
-      createdAt: frontmatter.createdAt,
-      updatedAt: frontmatter.updatedAt,
-      mutationSeqAtPromote,
-    };
+    nextIndex.notes[note] = buildNoteIndexEntry({ ...frontmatter, title, mutationSeqAtPromote });
     return true;
   }
 
@@ -245,15 +237,7 @@ function syncIndexNote(
     return false;
   }
 
-  nextIndex.notes[note] = {
-    title: existing.title,
-    tags: [...existing.tags],
-    principles: [...existing.principles],
-    source: [...existing.source],
-    createdAt: existing.createdAt,
-    updatedAt: existing.updatedAt,
-    mutationSeqAtPromote,
-  };
+  nextIndex.notes[note] = buildNoteIndexEntry({ ...existing, mutationSeqAtPromote });
   return true;
 }
 
