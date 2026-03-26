@@ -128,7 +128,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
       ## Round N ({Round Label})
 
-      **If `--deep`**: use the resolver's Synthesis Report directly (Classification Table, Vyabhicharita, Constraint Collisions, Applied Changes, Deferred/Diverged items, Continue Decision).
+      **If `--deep`**: copy the resolver's Synthesis Report **verbatim** into the conversation output — Classification Table, Vyabhicharita, Constraint Collisions, Applied Changes, Deferred/Diverged items, and Continue Decision. Do NOT summarize, paraphrase, or omit columns. The user needs the full table to audit the review.
 
       **Otherwise**: produce the summary yourself after synthesis:
 
