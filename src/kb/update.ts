@@ -1,6 +1,6 @@
-import { readFileSync } from 'node:fs';
 import { nowIsoString } from '../shared/mcp-utils.js';
-import { extractBody, parseFrontmatter, extractTitle, serializeNote } from './frontmatter.js';
+import { serializeNote } from './frontmatter.js';
+import { loadKbNote } from './read.js';
 import type { KbUpdateInput } from './types.js';
 import { assertNonEmptyText, assertNoteSlug } from './validation.js';
 import {
@@ -20,10 +20,7 @@ export async function update(rt: KbRuntime, input: KbUpdateInput): Promise<{ pat
   const nextContent = input.content;
 
   return rt.withMutationLock(async () => {
-    const existing = readFileSync(notePath, 'utf-8');
-    const frontmatter = parseFrontmatter(existing);
-    const existingTitle = extractTitle(existing);
-    const existingBody = extractBody(existing);
+    const { frontmatter, title: existingTitle, body: existingBody } = loadKbNote(notePath);
     const normalizedTitle = title ?? existingTitle;
     const normalizedContent = nextContent ?? existingBody;
 

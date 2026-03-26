@@ -26,13 +26,13 @@ import {
 } from './curate-state.js';
 import { cleanupTags, countTagSupport, type TagCleanupResult } from './curate-tags.js';
 import {
-  extractBody,
   deriveNoteIdentity,
   extractPrincipleStatement,
   extractTitle,
   parseFrontmatter,
   replaceFrontmatter,
 } from './frontmatter.js';
+import { loadKbNote } from './read.js';
 import { assertNonEmptyText, assertNoteSlug, compareLocale } from './validation.js';
 import {
   buildNoteIndexEntry,
@@ -1054,12 +1054,12 @@ export function createCurateScheduler({
   }
 
   function readClaimedNote(candidate: ClaimCandidate): CurateClaimedNote {
-    const content = readFileSync(kb.notePath(candidate.slug), 'utf-8');
+    const { body } = loadKbNote(kb.notePath(candidate.slug));
 
     return {
       slug: candidate.slug,
       title: candidate.title,
-      body: extractBody(content),
+      body,
       updatedAt: candidate.updatedAt,
       mutationSeqAtPromote: candidate.cursor.mutationSeqAtPromote,
     };
@@ -1354,26 +1354,20 @@ export function createCurateScheduler({
     return noteMeta !== undefined && noteMeta.principles.length === 0;
   }
 
-  function countEligibleDiscoveryNotes(
+  function filterEligibleDiscoveryCandidates(
     index: KbIndex,
     processedThrough: CurateCursor,
-  ): number {
+  ): ClaimCandidate[] {
     return collectClaimCandidates(index)
-      .filter((c) => isEligibleDiscoveryCandidate(c, index, processedThrough))
-      .length;
+      .filter((c) => isEligibleDiscoveryCandidate(c, index, processedThrough));
   }
 
-  function collectEligibleDiscoveryNotes(
-    index: KbIndex,
-    processedThrough: CurateCursor,
+  function loadEligibleDiscoveryNotes(
+    candidates: ClaimCandidate[],
   ): CurateClaimedNote[] {
     const eligible: CurateClaimedNote[] = [];
 
-    for (const candidate of collectClaimCandidates(index)) {
-      if (!isEligibleDiscoveryCandidate(candidate, index, processedThrough)) {
-        continue;
-      }
-
+    for (const candidate of candidates) {
       try {
         eligible.push(readClaimedNote(candidate));
       } catch (error: unknown) {
@@ -1534,13 +1528,15 @@ export function createCurateScheduler({
     await drainPendingDiscoveries(processedThrough);
 
     const currentIndex = kb.readIndexOrEmpty();
-    const eligibleNotes = collectEligibleDiscoveryNotes(currentIndex, processedThrough);
+    const eligibleCandidates = filterEligibleDiscoveryCandidates(currentIndex, processedThrough);
     const today = nowIsoString().slice(0, 10);
     let state = readCurateState(kb);
 
-    if (!discoveryAllowed(state, eligibleNotes.length, today)) {
+    if (!discoveryAllowed(state, eligibleCandidates.length, today)) {
       return;
     }
+
+    const eligibleNotes = loadEligibleDiscoveryNotes(eligibleCandidates);
 
     await kb.withMutationLock(() => {
       state = recordDiscoveryAttemptLocked(state, eligibleNotes.length, today);
@@ -1632,7 +1628,7 @@ export function createCurateScheduler({
 
     if (
       processedThrough !== null
-      && countEligibleDiscoveryNotes(postClassifyIndex, processedThrough) >= DISCOVERY_MIN_CORPUS_SIZE
+      && filterEligibleDiscoveryCandidates(postClassifyIndex, processedThrough).length >= DISCOVERY_MIN_CORPUS_SIZE
     ) {
       try {
         await runPrincipleDiscovery(processedThrough);
