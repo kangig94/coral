@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 
 const IDLE_TIMEOUT = 10 * 60 * 1000; // 10 minutes of inactivity
+const IDLE_CHECK_INTERVAL = 30_000; // poll interval for idle detection
 const MAX_BUFFER = 10 * 1024 * 1024; // 10MB
 const SIGTERM_GRACE_MS = 5_000; // grace period before escalating to SIGKILL
 
@@ -295,29 +296,42 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
     const entry: ActiveChild = { provider: options.provider, child };
     activeChildren.add(entry);
 
-    let idleTimer = setTimeout(onIdle, IDLE_TIMEOUT);
+    let lastOutputAt = Date.now();
+    let lastTickAt = Date.now();
+    const idleChecker = setInterval(() => {
+      if (settled) return;
+      const now = Date.now();
+      const tickGap = now - lastTickAt;
+      lastTickAt = now;
+
+      if (tickGap > IDLE_CHECK_INTERVAL * 3) {
+        // Tick arrived far later than expected — system likely woke from sleep.
+        // Reset baseline so the child gets a fresh idle window to resume output.
+        lastOutputAt = now;
+        return;
+      }
+
+      if (now - lastOutputAt >= IDLE_TIMEOUT) {
+        settled = true;
+        clearInterval(idleChecker);
+        gracefulKill(child);
+        activeChildren.delete(entry);
+        if (internalPermitJobId) {
+          releaseLaunch(internalPermitJobId, pool);
+          internalPermitJobId = null;
+        }
+        reject(new Error(`${options.command} killed after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`));
+      }
+    }, IDLE_CHECK_INTERVAL);
 
     function resetIdle() {
-      clearTimeout(idleTimer);
-      idleTimer = setTimeout(onIdle, IDLE_TIMEOUT);
-    }
-
-    function onIdle() {
-      if (settled) return;
-      settled = true;
-      gracefulKill(child);
-      activeChildren.delete(entry);
-      if (internalPermitJobId) {
-        releaseLaunch(internalPermitJobId, pool);
-        internalPermitJobId = null;
-      }
-      reject(new Error(`${options.command} killed after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`));
+      lastOutputAt = Date.now();
     }
 
     function finish(): boolean {
       if (settled) return false;
       settled = true;
-      clearTimeout(idleTimer);
+      clearInterval(idleChecker);
       activeChildren.delete(entry);
       if (internalPermitJobId) {
         releaseLaunch(internalPermitJobId, pool);
@@ -330,7 +344,7 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
       const onAbort = () => {
         if (settled) return;
         abortedBySignal = true;
-        clearTimeout(idleTimer);
+        clearInterval(idleChecker);
         gracefulKill(child);
       };
       if (options.signal.aborted) onAbort();
