@@ -220,8 +220,11 @@ Coral은 매 세션에서 배웁니다. 근본 원인, 주의사항, 패턴 — 
 | `CORAL_MAX_SESSIONS` | `10` | 최대 동시 CLI 세션 수 (1–10) |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | 토론 자동 종료 전 최대 에포크 (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `0` | 완료된 토론 세션 자동 정리 기한 (0 = 비활성화) |
+| `CORAL_KB_GIT_SYNC` | `0` | KB git 동기화 — remote와 자동 push/pull (`1` = 활성화) |
 
 > **팁:** `CORAL_CLAUDE_MODEL_CAP=sonnet`으로 설정하면 모든 서브에이전트 호출을 Sonnet 티어로 제한합니다. Pro 구독이거나 사용량을 절약하고 싶을 때.
+>
+> **⚠️ 기업 사용자:** KB git 동기화는 **기본 비활성화**입니다. KB 노트에는 사내 코드베이스에서 학습한 지식이 포함될 수 있습니다. 자동 push를 활성화하면 기업 IP가 외부 remote로 유출될 수 있습니다. KB remote가 해당 콘텐츠를 수신해도 되는 곳인지 확인한 후에만 활성화하세요.
 
 `.claude/settings.json`에 설정 (세션 간 유지):
 

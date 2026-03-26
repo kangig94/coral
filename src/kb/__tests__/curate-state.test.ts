@@ -276,7 +276,7 @@ describe('curate state', () => {
     }));
   });
 
-  it('applies pending discovery add and remove transitions with exact entry matching', () => {
+  it('applies pending discovery add and remove transitions matching by principle and statement', () => {
     const first = {
       principle: 'contract-first-design',
       statement: 'Write the contract before the implementation.',
@@ -300,7 +300,10 @@ describe('curate state', () => {
     expect(applyRemovePendingDiscovery(state, {
       ...first,
       notes: ['coral-beta', 'coral-alpha'],
-    })).toBeNull();
+      createdAt: '2026-03-25T13:00:00.000Z',
+    })).toEqual(createCurateState({
+      pendingDiscoveries: [second],
+    }));
     expect(applyRemovePendingDiscovery(state, first)).toEqual(createCurateState({
       pendingDiscoveries: [second],
     }));

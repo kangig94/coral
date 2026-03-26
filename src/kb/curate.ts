@@ -906,11 +906,23 @@ export function createCurateScheduler({
     }
   }
 
-  function hasGitRemote(root: string): boolean {
+  function isGitSyncEnabled(root: string): boolean {
+    if (process.env.CORAL_KB_GIT_SYNC !== '1') {
+      return false;
+    }
     try {
       return gitExec(root, ['remote'], 5000).trim().length > 0;
     } catch {
       return false;
+    }
+  }
+
+  function getDefaultBranch(root: string): string {
+    try {
+      const ref = gitExec(root, ['symbolic-ref', 'refs/remotes/origin/HEAD', '--short'], 5000).trim();
+      return ref.replace(/^origin\//, '') || 'main';
+    } catch {
+      return 'main';
     }
   }
 
@@ -924,14 +936,15 @@ export function createCurateScheduler({
 
   function gitSync(): void {
     const root = kb.markdownRoot;
-    if (!isGitRepo(root) || !hasGitRemote(root)) {
+    if (!isGitRepo(root) || !isGitSyncEnabled(root)) {
       return;
     }
+
+    const branch = getDefaultBranch(root);
 
     try {
       gitExec(root, ['fetch', 'origin'], 30000);
 
-      // Stash local uncommitted changes (new notes from promote) so they survive merge.
       let stashed = false;
       try {
         const status = gitExec(root, ['status', '--porcelain'], 5000).trim();
@@ -944,14 +957,11 @@ export function createCurateScheduler({
       }
 
       try {
-        gitExec(root, ['rebase', 'origin/main']);
+        gitExec(root, ['rebase', `origin/${branch}`]);
       } catch {
-        // Rebase conflict — abort and merge with theirs for curate metadata.
-        // New notes (untracked/stashed) are preserved; only conflicting
-        // frontmatter (tags/principles) is overwritten and re-applied next cycle.
         try { gitExec(root, ['rebase', '--abort'], 5000); } catch { /* no-op */ }
         try {
-          gitExec(root, ['merge', 'origin/main', '-X', 'theirs', '--no-edit']);
+          gitExec(root, ['merge', `origin/${branch}`, '-X', 'theirs', '--no-edit']);
         } catch {
           // best-effort — local state is still valid, push will retry next cycle
         }
@@ -974,16 +984,18 @@ export function createCurateScheduler({
 
   function gitPush(): void {
     const root = kb.markdownRoot;
-    if (!isGitRepo(root) || !hasGitRemote(root)) {
+    if (!isGitRepo(root) || !isGitSyncEnabled(root)) {
       return;
     }
 
+    const branch = getDefaultBranch(root);
+
     try {
-      gitExec(root, ['push', 'origin', 'main'], 30000);
+      gitExec(root, ['push', 'origin', branch], 30000);
     } catch {
       try {
-        gitExec(root, ['pull', '--rebase', 'origin', 'main'], 30000);
-        gitExec(root, ['push', 'origin', 'main'], 30000);
+        gitExec(root, ['pull', '--rebase', 'origin', branch], 30000);
+        gitExec(root, ['push', 'origin', branch], 30000);
       } catch {
         // best-effort — will push next cycle
       }
@@ -1221,7 +1233,8 @@ export function createCurateScheduler({
     const sortedTargets = [...targets].sort(compareMetadataTarget);
     const currentIndex = kb.readIndexOrEmpty();
     const nextIndex = cloneKbIndex(currentIndex);
-    const cleanupTagSupport = countTagSupport(currentIndex);
+    const hasCleanup = sortedTargets.some((t) => t.cleanup);
+    const cleanupTagSupport = hasCleanup ? countTagSupport(currentIndex) : new Map<string, number>();
     let processedThrough = state.processedThrough;
     let cursorCanAdvance = true;
     let wroteMarkdown = false;
@@ -1582,6 +1595,7 @@ export function createCurateScheduler({
   }
 
   async function runScheduledCurate(): Promise<CurateCursor | null> {
+    gitSync();
     let lastCompletedThrough: CurateCursor | null = null;
     const allCohortSlugs: string[] = [];
 
@@ -1705,7 +1719,6 @@ export function createCurateScheduler({
     }
 
     ensureKbGitignore();
-    gitSync();
     await migrateCurateStateIfNeeded(kb);
     runtimeStarted = true;
     armRetryWake();

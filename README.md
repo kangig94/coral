@@ -224,8 +224,11 @@ Coral learns from every session. Root causes, gotchas, patterns — captured as 
 | `CORAL_MAX_SESSIONS` | `10` | Max concurrent CLI sessions (1–10) |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Max epochs before discussion auto-ends (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `0` | Days before completed sessions are auto-pruned (0 = disabled) |
+| `CORAL_KB_GIT_SYNC` | `0` | Enable KB git sync — auto push/pull with remote (`1` = enabled) |
 
 > **Tip:** Set `CORAL_CLAUDE_MODEL_CAP=sonnet` to cap all subagent calls at Sonnet tier for Pro plans or to conserve usage.
+>
+> **⚠️ Enterprise users:** KB git sync is **off by default**. KB notes may contain knowledge derived from proprietary codebases. Enabling auto-push could leak corporate IP to an external remote. Only enable if your KB remote is authorized for the content it will receive.
 
 Set in `.claude/settings.json` (persists across sessions):
 

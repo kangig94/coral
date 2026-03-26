@@ -1,4 +1,3 @@
-import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveProjectSource } from '../client/paths.js';
 import type { KbMemoInput } from './types.js';
@@ -22,8 +21,6 @@ function generateTimestamp(): string {
 export function writeMemo(projectRoot: string, input: KbMemoInput): { filename: string; path: string } {
   const source = resolveProjectSource(projectRoot);
   const dir = memoDir(projectRoot);
-  mkdirSync(dir, { recursive: true });
-
   const timestamp = generateTimestamp();
   const filename = `${timestamp}-${input.topic}.md`;
   const path = join(dir, filename);

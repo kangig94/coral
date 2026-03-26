@@ -85,9 +85,7 @@ function calculateRetryCooldownMs(baseCooldownMs: number, consecutiveFailures: n
 
 function samePendingDiscovery(left: PendingDiscovery, right: PendingDiscovery): boolean {
   return left.principle === right.principle
-    && left.statement === right.statement
-    && sameStringList(left.notes, right.notes)
-    && left.createdAt === right.createdAt;
+    && left.statement === right.statement;
 }
 
 function parsePositiveInteger(value: unknown, label: string): number {
