@@ -1,12 +1,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveProjectSource } from '../client/paths.js';
+import type { KbMemoInput } from './contracts.js';
 import { memoDir } from './paths.js';
-
-export type KbMemoInput = {
-  topic: string;
-  content: string;
-};
 
 function generateTimestamp(): string {
   const now = new Date();

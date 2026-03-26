@@ -1,7 +1,7 @@
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { coralRoot, kbRoot, projectDataDir } from '../client/paths.js';
 
-function assertWithin(root: string, candidate: string, label: string): string {
+export function assertWithin(root: string, candidate: string, label: string): string {
   const resolvedRoot = resolve(root);
   const resolvedCandidate = resolve(candidate);
   const rel = relative(resolvedRoot, resolvedCandidate);

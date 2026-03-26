@@ -1,22 +1,24 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { load, save, type RawData } from '@orama/orama';
 import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
+import { CURATE_STATE_FILE } from './curate-state.js';
 import { loadKbLanceDb } from './lancedb-runtime.js';
+import { writeFileAtomic } from './mutation-helpers.js';
 import {
   createOramaDb,
   type KbOramaDb,
   type KbOramaTokenizer,
 } from './orama-factory.js';
+import { assertWithin } from './paths.js';
 import { rebuildTextArtifacts } from './text-artifacts.js';
 import type { KbIndex, KbLanceDbAdapter } from './types.js';
 
 const INDEX_STATE_FILE = 'index-state.json';
 const INDEX_FILE = 'index.json';
 const ORAMA_INDEX_FILE = 'orama-index.json';
-const CURATE_STATE_FILE = 'curate-state.json';
 
 export type KbIndexState = {
   mutationSeq: number;
@@ -157,30 +159,11 @@ function parseIndexState(value: unknown): KbIndexState {
 }
 
 function writeJsonAtomic(filePath: string, value: unknown): void {
-  mkdirSync(dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.tmp`;
-
-  try {
-    writeFileSync(tmpPath, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
-    renameSync(tmpPath, filePath);
-  } catch (error: unknown) {
-    rmSync(tmpPath, { force: true });
-    throw error;
-  }
+  writeFileAtomic(filePath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 function isFreshTextSnapshot(state: KbIndexState | null): state is KbIndexState {
   return state !== null && state.indexedSeq === state.mutationSeq && state.staleReason === undefined;
-}
-
-function assertWithin(root: string, candidate: string, label: string): string {
-  const resolvedRoot = resolve(root);
-  const resolvedCandidate = resolve(candidate);
-  const rel = relative(resolvedRoot, resolvedCandidate);
-  if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))) {
-    return resolvedCandidate;
-  }
-  throw new Error(`${label} must stay within ${resolvedRoot}`);
 }
 
 export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: string; runtimeDir: string }): KbRuntime {

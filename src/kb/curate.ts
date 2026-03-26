@@ -1140,7 +1140,7 @@ export function createCurateScheduler({
 
     await kb.withMutationLock(async () => {
       const state = readCurateState(kb);
-      const currentIndex = cloneKbIndex(kb.readIndex());
+      const currentIndex = kb.readOrCreateIndex();
       const nextIndex = cloneKbIndex(currentIndex);
       const cleanupTagSupport = countTagSupport(currentIndex);
       let processedThrough = state.processedThrough;
@@ -1382,7 +1382,7 @@ export function createCurateScheduler({
     const targets = buildPrincipleAssignmentTargets(
       entry.principle,
       entry.notes,
-      cloneKbIndex(kb.readIndex()),
+      kb.readIndex() ?? { notes: {}, principles: {} },
       processedThrough,
     );
     if (targets.length > 0) {
@@ -1407,7 +1407,7 @@ export function createCurateScheduler({
   ): Promise<void> {
     await drainPendingDiscoveries(processedThrough);
 
-    const currentIndex = cloneKbIndex(kb.readIndex());
+    const currentIndex = kb.readOrCreateIndex();
     const eligibleNotes = collectEligibleDiscoveryNotes(currentIndex, processedThrough);
     const today = nowIsoString().slice(0, 10);
     const state = readCurateState(kb);
@@ -1418,7 +1418,8 @@ export function createCurateScheduler({
 
     await recordDiscoveryAttempt(eligibleNotes.length, today);
 
-    const prompt = buildDiscoveryPrompt(eligibleNotes, buildPrincipleNames(currentIndex));
+    const principleNames = buildPrincipleNames(currentIndex);
+    const prompt = buildDiscoveryPrompt(eligibleNotes, principleNames);
     const raw = await invokeClaude(prompt, spawnCliFn);
     const { entries, parseFailed } = parseJsonArray(raw);
     if (parseFailed) {
@@ -1427,7 +1428,7 @@ export function createCurateScheduler({
     const proposals = validateDiscoveryProposals(
       extractDiscoveryProposals(entries),
       eligibleNotes,
-      buildPrincipleNames(currentIndex),
+      principleNames,
     );
 
     for (const proposal of proposals) {

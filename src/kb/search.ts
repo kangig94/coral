@@ -1,6 +1,7 @@
 import { search as oramaSearch } from '@orama/orama';
 import {
   normalizeOramaTerm,
+  normalizeWhitespace,
   tokenizeField,
   tokenizeQuery,
   type KbOramaDocument,
@@ -93,12 +94,8 @@ function truncateSnippet(snippet: string, matchOffset: number): string {
   return truncated.slice(0, 200).trimEnd();
 }
 
-function normalizeSnippetText(text: string): string {
-  return text.replace(/\s+/g, ' ').trim();
-}
-
 function normalizedOffset(text: string): number {
-  return text.replace(/\s+/g, ' ').replace(/^\s+/, '').length;
+  return normalizeWhitespace(text).length;
 }
 
 function findPhraseAnchor(content: string, rawQuery: string, oramaTerm: string): SnippetAnchor | null {
@@ -156,7 +153,7 @@ function extractSnippet(
   const sentenceStart = findSentenceStart(content, anchor.index);
   const sentenceEnd = findSentenceEnd(content, anchor.index + anchor.length);
   const sentence = content.slice(sentenceStart, sentenceEnd);
-  const rawSnippet = normalizeSnippetText(sentence);
+  const rawSnippet = normalizeWhitespace(sentence);
   if (!rawSnippet) {
     return undefined;
   }

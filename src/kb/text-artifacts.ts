@@ -13,7 +13,7 @@ import { createOramaDb, toOramaDocument } from './orama-factory.js';
 import type { KbRuntime } from './runtime.js';
 import type { KbIndex, KbReindexNoteRecord, ReindexResult } from './types.js';
 
-function sortedMarkdownEntries(dirPath: string): string[] {
+export function sortedMarkdownEntries(dirPath: string): string[] {
   try {
     return readdirSync(dirPath)
       .filter((entry) => entry.endsWith('.md'))

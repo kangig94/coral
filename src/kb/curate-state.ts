@@ -1,12 +1,13 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
 import { extractTitle, parseFrontmatter, replaceFrontmatter } from './frontmatter.js';
 import { cloneKbIndex, writeFileAtomic } from './mutation-helpers.js';
 import type { KbRuntime } from './runtime.js';
+import { sortedMarkdownEntries } from './text-artifacts.js';
 import type { KbNoteFrontmatter } from './types.js';
 
-const CURATE_STATE_FILE = 'curate-state.json';
+export const CURATE_STATE_FILE = 'curate-state.json';
 const CLAIM_STALE_MS = 15 * 60 * 1000;
 
 type CurateStateTarget = Pick<KbRuntime, 'curateStatePath'> | string;
@@ -191,17 +192,7 @@ function resolveCurateStatePath(target: CurateStateTarget): string {
 }
 
 function sortedNoteNames(kb: Pick<KbRuntime, 'notesDir'>): string[] {
-  try {
-    return readdirSync(kb.notesDir())
-      .filter((entry) => entry.endsWith('.md'))
-      .map((entry) => entry.slice(0, -3))
-      .sort((left, right) => left.localeCompare(right));
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) {
-      return [];
-    }
-    throw error;
-  }
+  return sortedMarkdownEntries(kb.notesDir()).map((entry) => entry.slice(0, -3));
 }
 
 function syncIndexNote(

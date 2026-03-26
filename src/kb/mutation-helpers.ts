@@ -1,6 +1,7 @@
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { errorMessage } from '../shared/mcp-utils.js';
+import { normalizePrincipleReference } from './frontmatter.js';
 import type { KbIndexState } from './runtime.js';
 import type { KbIndex } from './types.js';
 
@@ -36,17 +37,14 @@ export function normalizeTags(value: unknown): string[] {
   return value.map((tag) => assertNonEmptyText(tag, 'tag'));
 }
 
-function normalizePrinciple(value: unknown): string {
-  const normalized = assertNonEmptyText(value, 'principle');
-  const wikilink = normalized.match(/^\[\[(.+)\]\]$/)?.[1];
-  return assertSlug(wikilink ?? normalized, 'principle');
-}
-
 export function normalizePrinciples(value: unknown): string[] {
   if (!Array.isArray(value)) {
     throw new Error('principles must be an array');
   }
-  return value.map(normalizePrinciple);
+  return value.map((entry) => {
+    const normalized = normalizePrincipleReference(assertNonEmptyText(entry, 'principle'));
+    return assertSlug(normalized, 'principle');
+  });
 }
 
 export function writeFileAtomic(filePath: string, payload: string): void {

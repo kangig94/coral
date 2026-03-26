@@ -22,7 +22,7 @@ export type KbOramaDocument = {
 export type KbOramaDb = AnyOrama<typeof ORAMA_SCHEMA>;
 export type KbOramaTokenizer = DefaultTokenizer;
 
-function normalizeWhitespace(value: string): string {
+export function normalizeWhitespace(value: string): string {
   return value.trim().replace(/\s+/g, ' ');
 }
 
