@@ -6,8 +6,7 @@ import type { KbPromoteInput } from './contracts.js';
 import { assertNonEmptyText, assertNoteSlug, assertSlug } from './validation.js';
 import {
   buildNoteIndexEntry,
-  cloneKbIndex,
-  markTextIndexStale,
+  commitIndexUpdate,
   writeFileAtomic,
 } from './mutation-helpers.js';
 import type { KbRuntime } from './runtime.js';
@@ -55,19 +54,21 @@ export async function promote(
 
     writeFileAtomic(notePath, noteContent);
 
-    const nextIndex = cloneKbIndex(rt.readIndex());
-    nextIndex.notes[noteName] = buildNoteIndexEntry({
-      title,
-      tags: [domain],
-      principles: [],
-      source,
-      createdAt,
-      updatedAt: createdAt,
-      mutationSeqAtPromote,
-    });
-    rt.writeIndex(nextIndex);
-
-    markTextIndexStale(rt.invalidateTextSnapshot, 'KB text snapshot is stale after kb_promote.');
+    commitIndexUpdate(
+      rt,
+      (index) => {
+        index.notes[noteName] = buildNoteIndexEntry({
+          title,
+          tags: [domain],
+          principles: [],
+          source,
+          createdAt,
+          updatedAt: createdAt,
+          mutationSeqAtPromote,
+        });
+      },
+      'KB text snapshot is stale after kb_promote.',
+    );
 
     rmSync(memoPath, { force: true });
     return { path: notePath };

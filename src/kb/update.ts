@@ -5,8 +5,7 @@ import type { KbUpdateInput } from './contracts.js';
 import { assertNonEmptyText, assertNoteSlug } from './validation.js';
 import {
   buildNoteIndexEntry,
-  cloneKbIndex,
-  markTextIndexStale,
+  commitIndexUpdate,
   writeFileAtomic,
 } from './mutation-helpers.js';
 import type { KbRuntime } from './runtime.js';
@@ -38,15 +37,17 @@ export async function update(rt: KbRuntime, input: KbUpdateInput): Promise<{ pat
     writeFileAtomic(notePath, serializeNote(nextFrontmatter, normalizedTitle, normalizedContent));
     rt.recordMutationCommitted();
 
-    const nextIndex = cloneKbIndex(rt.readIndex());
-    nextIndex.notes[note] = buildNoteIndexEntry({
-      ...frontmatter,
-      title: normalizedTitle,
-      updatedAt,
-    });
-    rt.writeIndex(nextIndex);
-
-    markTextIndexStale(rt.invalidateTextSnapshot, 'KB text snapshot is stale after kb_update.');
+    commitIndexUpdate(
+      rt,
+      (index) => {
+        index.notes[note] = buildNoteIndexEntry({
+          ...frontmatter,
+          title: normalizedTitle,
+          updatedAt,
+        });
+      },
+      'KB text snapshot is stale after kb_update.',
+    );
 
     return { path: notePath };
   });

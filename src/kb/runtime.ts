@@ -274,15 +274,17 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     }
   }
 
-  function textArtifactsNeedRebuild(): boolean {
-    return !isFreshTextSnapshot(readIndexStateIfPresent()) || indexNeedsRebuild();
+  function textArtifactsNeedRebuild(state?: KbIndexState | null): boolean {
+    const currentState = state === undefined ? readIndexStateIfPresent() : state;
+    return !isFreshTextSnapshot(currentState) || indexNeedsRebuild();
   }
 
   async function ensureIndex(): Promise<KbIndex> {
     if (textArtifactsNeedRebuild()) {
       await kbRuntime.withMutationLock(async () => {
-        const startSeq = readIndexState().mutationSeq;
-        if (!textArtifactsNeedRebuild()) {
+        const state = readIndexStateIfPresent();
+        const startSeq = state?.mutationSeq ?? 0;
+        if (!textArtifactsNeedRebuild(state)) {
           return;
         }
 
@@ -299,8 +301,9 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     index: KbIndex;
   }> {
     await ensureIndex();
+    const stateAfterEnsureIndex = readIndexStateIfPresent();
 
-    if (cachedOramaIndex !== null && !textArtifactsNeedRebuild()) {
+    if (cachedOramaIndex !== null && !textArtifactsNeedRebuild(stateAfterEnsureIndex)) {
       return {
         ...cachedOramaIndex,
         index: kbRuntime.readIndex() ?? emptyIndex(),
@@ -308,9 +311,10 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     }
 
     return kbRuntime.withMutationLock(async () => {
-      const startSeq = readIndexState().mutationSeq;
+      const state = readIndexStateIfPresent();
+      const startSeq = state?.mutationSeq ?? 0;
 
-      if (textArtifactsNeedRebuild()) {
+      if (textArtifactsNeedRebuild(state)) {
         try {
           await rebuildTextArtifacts(kbRuntime, startSeq);
         } catch (error: unknown) {
@@ -328,7 +332,8 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
         }
       }
 
-      if (cachedOramaIndex === null || textArtifactsNeedRebuild()) {
+      const stateAfterArtifacts = readIndexStateIfPresent();
+      if (cachedOramaIndex === null || textArtifactsNeedRebuild(stateAfterArtifacts)) {
         throw new Error('KB text search is unavailable: a fresh text snapshot could not be installed.');
       }
 

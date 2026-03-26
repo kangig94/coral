@@ -2,6 +2,7 @@ import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { errorMessage, isNoEntryError } from '../shared/mcp-utils.js';
 import type { KbIndexState } from './runtime.js';
+import type { KbRuntime } from './runtime.js';
 import type { KbIndex } from './types.js';
 
 type NoteIndexEntrySource = {
@@ -76,6 +77,22 @@ export function cloneKbIndex(index: KbIndex | null): KbIndex {
     ),
     principles: { ...index.principles },
   };
+}
+
+/**
+ * Clone the current index, apply the updater, write it back, and mark text stale.
+ * If no index exists on disk, updater receives an empty index.
+ * @precondition Caller already holds `rt.withMutationLock()`.
+ */
+export function commitIndexUpdate(
+  rt: Pick<KbRuntime, 'readIndex' | 'writeIndex' | 'invalidateTextSnapshot'>,
+  updater: (index: KbIndex) => void,
+  reason: string,
+): void {
+  const nextIndex = cloneKbIndex(rt.readIndex());
+  updater(nextIndex);
+  rt.writeIndex(nextIndex);
+  markTextIndexStale(rt.invalidateTextSnapshot, reason);
 }
 
 export function markTextIndexStale(
