@@ -28,6 +28,7 @@ import { ExecutionService, type CallerContext } from '../service.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
+  tmpRoot: `${process.env.TMPDIR || '/tmp'}/coral-execution-service-test-tmp`,
   getNewProvider: vi.fn(),
   resolveCoralContent: vi.fn(),
 }));
@@ -38,6 +39,7 @@ vi.mock('node:os', async () => {
   return {
     ...actual,
     homedir: () => mockState.tmpHome,
+    tmpdir: () => mockState.tmpRoot,
   };
 });
 
@@ -166,6 +168,8 @@ describe('ExecutionService', () => {
   let ctx: CallerContext;
 
   beforeEach(() => {
+    rmSync(mockState.tmpRoot, { recursive: true, force: true });
+    mkdirSync(mockState.tmpRoot, { recursive: true });
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-execution-home-'));
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
@@ -188,6 +192,7 @@ describe('ExecutionService', () => {
     }
     createdJobIds.clear();
     rmSync(mockState.tmpHome, { recursive: true, force: true });
+    rmSync(mockState.tmpRoot, { recursive: true, force: true });
     mockState.getNewProvider.mockReset();
     mockState.resolveCoralContent.mockReset();
     vi.restoreAllMocks();
@@ -1201,6 +1206,8 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
   let ctx: CallerContext;
 
   beforeEach(() => {
+    rmSync(mockState.tmpRoot, { recursive: true, force: true });
+    mkdirSync(mockState.tmpRoot, { recursive: true });
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'red-exec-home-'));
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
@@ -1217,6 +1224,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
     }
     createdJobIds.clear();
     rmSync(mockState.tmpHome, { recursive: true, force: true });
+    rmSync(mockState.tmpRoot, { recursive: true, force: true });
     vi.restoreAllMocks();
     mockState.getNewProvider.mockReset();
     mockState.resolveCoralContent.mockReset();

@@ -4,12 +4,14 @@ import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 let tmpHome = '';
+const tmpRoot = vi.hoisted(() => `${process.env.TMPDIR || '/tmp'}/coral-session-index-test-tmp`);
 
 vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof import('node:os')>('node:os');
   return {
     ...actual,
     homedir: () => tmpHome,
+    tmpdir: () => tmpRoot,
   };
 });
 
@@ -19,11 +21,14 @@ import { SessionManager } from '../session-manager.js';
 
 describe('execution SessionIndex', () => {
   beforeEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+    mkdirSync(tmpRoot, { recursive: true });
     tmpHome = mkdtempSync(join(tmpdir(), 'coral-session-index-home-'));
   });
 
   afterEach(() => {
     rmSync(tmpHome, { recursive: true, force: true });
+    rmSync(tmpRoot, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
 

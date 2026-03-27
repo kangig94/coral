@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -11,6 +11,17 @@ const jobIdsToClean = new Set<string>();
 const projectRoot = '/tmp/project';
 const TEST_BACKEND_NAMESPACE = 'test-namespace';
 const renameCalls = vi.hoisted(() => [] as Array<[unknown, unknown]>);
+const mockState = vi.hoisted(() => ({
+  tmpRoot: `${process.env.TMPDIR || '/tmp'}/coral-progress-store-test-tmp`,
+}));
+
+vi.mock('node:os', async () => {
+  const actual = await vi.importActual<typeof import('node:os')>('node:os');
+  return {
+    ...actual,
+    tmpdir: () => mockState.tmpRoot,
+  };
+});
 
 vi.mock('node:fs', async () => {
   const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
@@ -23,11 +34,17 @@ vi.mock('node:fs', async () => {
   };
 });
 
+beforeEach(() => {
+  rmSync(mockState.tmpRoot, { recursive: true, force: true });
+  mkdirSync(mockState.tmpRoot, { recursive: true });
+});
+
 afterEach(() => {
   for (const jobId of jobIdsToClean) {
     rmSync(join(JOBS_DIR, jobId), { recursive: true, force: true });
   }
   jobIdsToClean.clear();
+  rmSync(mockState.tmpRoot, { recursive: true, force: true });
   renameCalls.length = 0;
   eventBus.removeAllListeners();
   vi.restoreAllMocks();
