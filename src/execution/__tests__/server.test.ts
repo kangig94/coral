@@ -254,6 +254,7 @@ describe('execution backend server', () => {
       bundleHash: 'testhash1234',
       log: () => {},
       createKbSubsystemFn: async () => createMockKbSubsystem(),
+      cleanupStaleJobsFn: () => {},
       ...overrides,
     });
     const started = await controller.start();
