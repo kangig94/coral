@@ -855,7 +855,7 @@ export function createCurateScheduler({
     const result = await spawnCli({
       provider: 'claude',
       command: 'claude',
-      args: ['-p', '--no-session-persistence', ...(extraArgs ?? [])],
+      args: ['-p', '--no-session-persistence', '--bare', ...(extraArgs ?? [])],
       prompt,
       cwd: root,
       pool: 'curate',
