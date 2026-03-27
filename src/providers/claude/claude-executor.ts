@@ -45,7 +45,7 @@ function resolveClaudeDefaultEffort(env: Record<string, string>): NonNullable<Ef
   return 'high';
 }
 
-const STREAM_JSON_ARGS = ['-p', '--bare', '--verbose', '--output-format', 'stream-json'];
+const STREAM_JSON_ARGS = ['-p', '--verbose', '--output-format', 'stream-json'];
 
 export async function executeClaudeOneShot(
   prompt: string,

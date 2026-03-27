@@ -11,7 +11,6 @@ import {
   ClaudeExecParseError,
 } from './claude-executor.js';
 import { detectClaudeCli } from '../cli-detection.js';
-import { resolveInjectMd } from '../inject.js';
 import { extractClaudeProgressMessage } from './progress.js';
 import type { ProviderRequest, ProviderResult } from '../../types.js';
 import { mapProviderResultBase } from '../result-mapping.js';
@@ -35,9 +34,6 @@ async function preflight(): Promise<void> {
 function buildClaudeArgs(request: ProviderRequest): { prompt: string; systemPrompt?: string } {
   const systemParts: string[] = [];
   let prompt = request.prompt;
-
-  const injectMd = resolveInjectMd(request.cwd);
-  if (injectMd) systemParts.push(injectMd);
 
   if (request.instruction) {
     if (request.instruction.channel === 'system') {
