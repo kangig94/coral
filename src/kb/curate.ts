@@ -655,12 +655,17 @@ export function chunkNotes<T>(notes: T[], batchSize = CLASSIFICATION_BATCH_SIZE)
   return chunks;
 }
 
-export async function invokeClaude(prompt: string, spawnCli: SpawnCliFn): Promise<string> {
+export async function invokeClaude(
+  prompt: string,
+  spawnCli: SpawnCliFn,
+  options?: { cwd?: string; extraArgs?: string[] },
+): Promise<string> {
   const result = await spawnCli({
     provider: 'claude',
     command: 'claude',
-    args: ['-p', '--no-session-persistence'],
+    args: ['-p', '--no-session-persistence', ...(options?.extraArgs ?? [])],
     prompt,
+    cwd: options?.cwd,
     pool: 'curate',
   });
 
@@ -940,7 +945,48 @@ export function createCurateScheduler({
     });
   }
 
-  function gitSync(): void {
+  function hasConflictMarkers(root: string): boolean {
+    try {
+      gitExec(root, ['diff', '--check'], 5000);
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
+  async function resolveConflictsWithClaude(root: string): Promise<boolean> {
+    const MAX_ATTEMPTS = 3;
+    const conflictPrompt = 'Git rebase conflict in KB repository. Resolve all conflicts in the working tree:'
+      + ' keep both changes where possible, prefer the incoming (remote) version for'
+      + ' frontmatter metadata (tags, principles, updatedAt), and preserve local body'
+      + ' content. Stage all resolved files with git add.';
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      try {
+        await invokeClaude(conflictPrompt, spawnCliFn, {
+          cwd: root,
+          extraArgs: ['--permission-mode', 'bypassPermissions', '--model', 'sonnet'],
+        });
+      } catch {
+        return false;
+      }
+
+      if (hasConflictMarkers(root)) {
+        continue;
+      }
+
+      try {
+        gitExec(root, ['add', '-A'], 5000);
+        gitExec(root, ['-c', 'user.name=Claude', '-c', 'user.email=noreply@anthropic.com',
+          'rebase', '--continue'], 30000);
+        return true;
+      } catch {
+        // rebase --continue failed — may have another conflicting commit
+      }
+    }
+    return false;
+  }
+
+  async function gitSync(): Promise<void> {
     const root = kb.markdownRoot;
     if (!isGitRepo(root) || !isGitSyncEnabled(root)) {
       return;
@@ -951,36 +997,30 @@ export function createCurateScheduler({
     try {
       gitExec(root, ['fetch', 'origin'], 30000);
 
-      let stashed = false;
+      // Commit any dirty state (e.g. from Obsidian Sync) instead of stashing.
+      // This preserves external changes as real commits — no stash pop conflicts.
       try {
         const status = gitExec(root, ['status', '--porcelain'], 5000).trim();
         if (status.length > 0) {
-          gitExec(root, ['stash', 'push', '-u', '-m', 'curate-sync']);
-          stashed = true;
+          gitExec(root, ['add', '-A'], 5000);
+          try {
+            gitExec(root, ['commit', '-m', 'auto: pre-sync snapshot'], 10000);
+          } catch {
+            gitExec(root, [
+              '-c', 'user.name=Claude', '-c', 'user.email=noreply@anthropic.com',
+              'commit', '-m', 'auto: pre-sync snapshot',
+            ], 10000);
+          }
         }
       } catch {
-        // stash failure — proceed without stashing
+        // commit failure — proceed with rebase anyway
       }
 
       try {
         gitExec(root, ['rebase', `origin/${branch}`]);
       } catch {
-        try { gitExec(root, ['rebase', '--abort'], 5000); } catch { /* no-op */ }
-        try {
-          gitExec(root, ['merge', `origin/${branch}`, '-X', 'theirs', '--no-edit']);
-        } catch {
-          // best-effort — local state is still valid, push will retry next cycle
-        }
-      }
-
-      if (stashed) {
-        try {
-          gitExec(root, ['stash', 'pop']);
-        } catch {
-          // Stash pop conflict — drop stash and recover files from the stash ref.
-          // This preserves new notes that don't conflict while accepting theirs for conflicts.
-          try { gitExec(root, ['checkout', '--theirs', '.'], 5000); } catch { /* no-op */ }
-          try { gitExec(root, ['stash', 'drop'], 5000); } catch { /* no-op */ }
+        if (!await resolveConflictsWithClaude(root)) {
+          try { gitExec(root, ['rebase', '--abort'], 5000); } catch { /* no-op */ }
         }
       }
     } catch {
@@ -999,12 +1039,7 @@ export function createCurateScheduler({
     try {
       gitExec(root, ['push', 'origin', branch], 30000);
     } catch {
-      try {
-        gitExec(root, ['pull', '--rebase', 'origin', branch], 30000);
-        gitExec(root, ['push', 'origin', branch], 30000);
-      } catch {
-        // best-effort — will push next cycle
-      }
+      // best-effort — gitSync will handle rebase next cycle
     }
   }
 
@@ -1220,7 +1255,7 @@ export function createCurateScheduler({
 
     for (const batch of chunkNotes(claim.notes, CLASSIFICATION_BATCH_SIZE)) {
       const prompt = buildClassificationPrompt(batch, tagVocab, principleNames);
-      const raw = await invokeClaude(prompt, spawnCliFn);
+      const raw = await invokeClaude(prompt, spawnCliFn, { cwd: kb.markdownRoot });
       const { entries, parseFailed } = parseJsonArray(raw);
       if (parseFailed) {
         throw new CurateJsonParseError('classification');
@@ -1550,7 +1585,7 @@ export function createCurateScheduler({
 
     const principleNames = buildPrincipleNames(currentIndex);
     const prompt = buildDiscoveryPrompt(eligibleNotes, principleNames);
-    const raw = await invokeClaude(prompt, spawnCliFn);
+    const raw = await invokeClaude(prompt, spawnCliFn, { cwd: kb.markdownRoot });
     const { entries, parseFailed } = parseJsonArray(raw);
     if (parseFailed) {
       throw new CurateJsonParseError('discovery');
@@ -1597,7 +1632,7 @@ export function createCurateScheduler({
   }
 
   async function runScheduledCurate(): Promise<CurateCursor | null> {
-    gitSync();
+    await gitSync();
     let lastCompletedThrough: CurateCursor | null = null;
     const allCohortSlugs: string[] = [];
 
