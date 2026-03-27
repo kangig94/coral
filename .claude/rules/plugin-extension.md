@@ -21,26 +21,19 @@ paths:
 ## Cross-Reference Convention
 
 When agent or skill files reference other coral plugin files, use path aliases to distinguish
-plugin files from project files. Three read patterns and one spawn pattern exist — never mix them:
+plugin files from project files. Two read patterns and one spawn pattern exist — never mix them:
 
 | Pattern | Usage | Example |
 |---------|-------|---------|
-| `CORAL_AGENTS/xxx.md` | **Read** the file (Read/Glob tool) | `CORAL_AGENTS/scanner.md` |
-| `CORAL_SKILLS/xxx/` | **Read** the file (Read/Glob tool) | `CORAL_SKILLS/plan/SKILL.md` |
 | `CORAL_METHODS/xxx.md` | **Read** the file (Read/Glob tool) | `CORAL_METHODS/HOW-REVIEW.md` |
-| `coral:xxx` | **Spawn** subagent (Task tool) | `coral:scanner` |
+| `CORAL_PROJECT` | **Read/write** project-local data | `CORAL_PROJECT/plans/`, `CORAL_PROJECT/memo/` |
+| `coral:xxx` | **Spawn** subagent (Agent tool) | `coral:scanner` |
 
-- **Skills**: `coral-skill-vars.mjs` hook injects CORAL_PROJECT, CORAL_AGENTS, CORAL_METHODS
-  as additionalContext on UserPromptSubmit and PreToolUse(Skill). No `!` backtick needed in SKILL.md.
-- **Agents**: Define path aliases at the top (after frontmatter) using Bash tool notation:
-  ```
-  > **CORAL_AGENTS**: ~/.claude/plugins/marketplaces/coral/agents/
-  > **CORAL_SKILLS**: ~/.claude/plugins/marketplaces/coral/skills/
-  > **CORAL_METHODS**: ~/.claude/plugins/marketplaces/coral/methods/
-  ```
-- Never use bare `agents/xxx.md`, `skills/xxx/`, or `methods/xxx.md` — these resolve relative
-  to the user's project directory, which breaks when the plugin is used outside its own repo.
-- `coral:xxx` references are for Task tool's `subagent_type` only — the framework resolves them.
+- **Skills**: `coral-skill-vars.mjs` hook injects CORAL_PROJECT and CORAL_METHODS
+  as additionalContext on UserPromptSubmit and PreToolUse(Skill).
+- **Agents**: spawned via `Agent({ subagent_type: "coral:<name>" })` or `codex({ op: "coral:<name>" })`.
+  The framework resolves agent files — do not read agent files directly from skills.
+- `coral:xxx` references are for Agent tool's `subagent_type` only — the framework resolves them.
   Do not use `coral:xxx` when the intent is to read a file.
 
 ## Hook Safety
