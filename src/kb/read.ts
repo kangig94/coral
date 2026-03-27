@@ -2,8 +2,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import {
   extractBody,
   extractPrincipleStatement,
-  parseFrontmatter,
   extractTitle,
+  parseFrontmatter,
 } from './frontmatter.js';
 import { memoDir, notePathFromName, principlePathFromName } from './paths.js';
 import type { KbNoteFrontmatter, KbReadInput, KbReadResult } from './types.js';
@@ -57,12 +57,14 @@ export function readEntry(input: KbReadInput, projectRoot?: string): KbReadResul
       content: body,
       tags: frontmatter.tags,
       principles: frontmatter.principles,
+      updatedAt: frontmatter.updatedAt,
     };
   }
 
   const principlePath = principlePathFromName(note);
   if (existsSync(principlePath)) {
     const raw = readFileSync(principlePath, 'utf-8');
+    const updatedAtMatch = raw.match(/^updatedAt:\s*(.+)$/m);
     return {
       kind: 'principle',
       note,
@@ -71,6 +73,7 @@ export function readEntry(input: KbReadInput, projectRoot?: string): KbReadResul
       rawContent: raw,
       tags: [],
       principles: [],
+      updatedAt: updatedAtMatch?.[1]?.trim(),
     };
   }
 

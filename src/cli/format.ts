@@ -361,6 +361,12 @@ export function formatKbRead(data: unknown): string {
     return formatUnknown(data);
   }
 
+  if (typeof data.updatedAt === 'string') {
+    const ms = Date.now() - Date.parse(data.updatedAt);
+    const days = Math.floor(ms / 86_400_000);
+    (data as Record<string, unknown>).age = days === 0 ? 'today' : days === 1 ? '1 day ago' : `${days} days ago`;
+  }
+
   return JSON.stringify(data);
 }
 

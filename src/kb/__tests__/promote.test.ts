@@ -310,6 +310,7 @@ Content here.
       content: '## Rule\nContent here.',
       tags: ['coral', 'kb'],
       principles: ['contract-first-design'],
+      updatedAt: '2026-03-20T00:00:00.000Z',
     });
   });
 
@@ -364,6 +365,7 @@ Note body.
       rawContent: '---\ncreatedAt: 2026-03-23\nupdatedAt: 2026-03-23\n---\nState contracts first.\n',
       tags: [],
       principles: [],
+      updatedAt: '2026-03-23',
     });
   });
 
@@ -395,6 +397,7 @@ Note body.
       content: 'Note body.',
       tags: ['coral'],
       principles: ['single-source-of-truth'],
+      updatedAt: '2026-03-20T00:00:00.000Z',
     });
   });
 
