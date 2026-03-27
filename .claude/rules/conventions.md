@@ -17,12 +17,18 @@ Merge policy:
 PR procedure (dev → main):
 1. Commit all changes on `dev`, run build + tests
 2. `git fetch origin main`
-3. `git rebase --onto origin/main <last-squash-merged-commit> dev` - drops commits already in main via prior squash merge, replays only new commits onto main
+3. Rebase only new commits onto main:
+   ```bash
+   git rebase --onto origin/main \
+     $(gh pr list --base main --head dev --state merged --limit 1 --json headRefOid -q '.[0].headRefOid') dev
+   ```
+   This finds the last squash-merged PR's head SHA on dev and replays only commits after it.
+   If dev is already rebased (no prior squash-merged PR exists), use `git rebase origin/main` instead.
 4. Verify: `git log --oneline origin/main..dev` should show only new commits
 5. `npm run build && npm test` - re-verify after rebase
 6. `git push origin dev --force-with-lease`
 7. `gh pr create --base main --head dev` (or update existing PR)
-8. Squash merge on GitHub, then repeat step 3 before next PR to keep dev clean
+8. Squash merge on GitHub
 
 ## Commit Style
 
