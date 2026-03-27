@@ -23,14 +23,13 @@ import type { KbIndex } from '../types.js';
 function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
   return {
     processedThrough: null,
-    discoveredThrough: null,
+    discoveryHighSeq: 0,
+    discoveryOffset: 0,
     lastRunDay: null,
     lastAttemptedThrough: null,
     retryNotBefore: null,
     activeClaim: null,
     pendingDiscoveries: [],
-    lastDiscoveryCorpusSize: 0,
-    lastDiscoveryDay: null,
     consecutiveFailures: 0,
     initialized: false,
     ...overrides,
@@ -149,8 +148,6 @@ describe('curate state', () => {
         notes: ['coral-first', 'coral-second'],
         createdAt: '2026-03-25T11:58:00.000Z',
       }],
-      lastDiscoveryCorpusSize: 9,
-      lastDiscoveryDay: '2026-03-25',
       consecutiveFailures: 2,
       initialized: true,
     });
@@ -271,9 +268,9 @@ describe('curate state', () => {
       activeClaim: null,
       consecutiveFailures: 0,
     });
-    expect(applyRecordDiscoveryAttempt(createCurateState(), 61, '2026-03-25')).toEqual(createCurateState({
-      lastDiscoveryCorpusSize: 61,
-      lastDiscoveryDay: '2026-03-25',
+    expect(applyRecordDiscoveryAttempt(createCurateState(), 61, 5)).toEqual(createCurateState({
+      discoveryHighSeq: 61,
+      discoveryOffset: 5,
     }));
   });
 

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -30,15 +30,14 @@ const DEFAULT_UPDATED_AT = '2026-03-20T00:00:00.000Z';
 function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
   return {
     processedThrough: null,
-    discoveredThrough: null,
+    discoveryHighSeq: 0,
+    discoveryOffset: 0,
     lastRunDay: null,
     lastAttemptedThrough: null,
     retryNotBefore: null,
     activeClaim: null,
     pendingDiscoveries: [],
-    lastDiscoveryCorpusSize: 0,
-    lastDiscoveryDay: null,
-    consecutiveFailures: 0,
+        consecutiveFailures: 0,
     initialized: false,
     ...overrides,
   };
@@ -359,20 +358,24 @@ describe('curate', () => {
       ]);
     });
 
-    it('builds a discovery prompt with note bodies truncated to five hundred characters', () => {
-      const longBody = 'x'.repeat(600);
-      const prompt = buildDiscoveryPrompt([
+    it('builds a discovery prompt with corpus file and truncated note bodies', () => {
+      const longBody = 'x'.repeat(5000);
+      const { prompt, corpusPath } = buildDiscoveryPrompt([
         buildClaimedNote({
           slug: 'coral-alpha',
           title: 'Alpha',
           body: longBody,
           mutationSeqAtPromote: 1,
         }),
-      ], ['deterministic-ordering']);
+      ], { 'deterministic-ordering': 'Operations with dependency order must use explicit declaration order or sequencing.' });
 
-      expect(prompt).toContain('Existing principle names. Do not duplicate them:\n- deterministic-ordering');
-      expect(prompt).toContain(`## coral-alpha\nAlpha\n${'x'.repeat(500)}`);
-      expect(prompt).not.toContain('x'.repeat(501));
+      expect(prompt).toContain('- deterministic-ordering: Operations with dependency order');
+      expect(prompt).toContain(corpusPath);
+      const corpus = readFileSync(corpusPath, 'utf-8');
+      expect(corpus).toContain('## coral-alpha\nAlpha\n');
+      expect(corpus).toContain('x'.repeat(4000));
+      expect(corpus).not.toContain('x'.repeat(4001));
+      unlinkSync(corpusPath);
     });
 
     it('parses discovery responses from raw and code-fenced JSON arrays and drops malformed entries', () => {
@@ -877,10 +880,10 @@ describe('curate', () => {
         createdAt: '2026-03-25T12:00:00.000Z',
       };
 
-      await internals.recordDiscoveryAttempt(52, '2026-03-25');
+      await internals.recordDiscoveryAttempt(52, 0);
       expect(readCurateState(runtime)).toMatchObject({
-        lastDiscoveryCorpusSize: 52,
-        lastDiscoveryDay: '2026-03-25',
+        discoveryHighSeq: 52,
+        discoveryOffset: 0,
       });
 
       await internals.addPendingDiscovery(entry);
@@ -990,15 +993,13 @@ describe('curate', () => {
         mutationSeqAtPromote: 54,
       });
 
-      expect(lockSpy).toHaveBeenCalledTimes(3);
+      expect(lockSpy).toHaveBeenCalledTimes(2);
       expect(readSpy).toHaveBeenCalledTimes(2);
       lockSpy.mockRestore();
       readSpy.mockRestore();
 
       expect(readCurateState(runtime)).toMatchObject({
-        lastDiscoveryCorpusSize: 50,
-        lastDiscoveryDay: '2026-03-25',
-        pendingDiscoveries: [],
+                pendingDiscoveries: [],
       });
       expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-discovery-05.md'), 'utf-8')).principles).toEqual([
         'single-source-of-truth',

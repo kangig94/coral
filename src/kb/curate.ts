@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import {
   errorMessage,
   isNoEntryError,
@@ -50,10 +51,9 @@ const CURATE_MAX_CLAIM_SIZE = 100;
 const CLASSIFICATION_BATCH_SIZE = 100;
 
 // -- Principle discovery --
-const DISCOVERY_MIN_CORPUS_SIZE = 50;
-const DISCOVERY_PROMPT_BODY_LIMIT = 500;
-const DISCOVERY_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
-const DISCOVERY_CORPUS_RESET_RATIO = 0.2;
+const DISCOVERY_NEW_NOTE_THRESHOLD = 50;
+const DISCOVERY_BATCH_SIZE = 100;
+const DISCOVERY_PROMPT_BODY_LIMIT = 4000;
 
 // -- Usage budget --
 const USAGE_CACHE_STALE_MS = 10 * 60 * 1000;
@@ -176,7 +176,7 @@ export type CurateHandle = {
     runPrincipleDiscovery(processedThrough: CurateCursor): Promise<void>;
     recordCurateFailure(through: CurateCursor | null, error: unknown): Promise<void>;
     clearCurateRetryState(): Promise<void>;
-    recordDiscoveryAttempt(corpusSize: number, today: string): Promise<void>;
+    recordDiscoveryAttempt(highSeq: number, nextOffset: number): Promise<void>;
     addPendingDiscovery(entry: PendingDiscovery): Promise<void>;
     removePendingDiscovery(entry: PendingDiscovery): Promise<void>;
     migrateCurateStateIfNeeded(): Promise<void>;
@@ -525,31 +525,37 @@ function normalizeDiscoverySlug(raw: string): string | null {
   }
 }
 
-function discoveryCorpusChangedEnough(state: CurateState, corpusSize: number): boolean {
-  if (state.lastDiscoveryCorpusSize === 0) {
-    return corpusSize > 0;
+export type DiscoveryBatch = {
+  selected: ClaimCandidate[];
+  nextHighSeq: number;
+  nextOffset: number;
+};
+
+function selectDiscoveryBatch(
+  allClassified: ClaimCandidate[],
+  highSeq: number,
+  offset: number,
+): DiscoveryBatch {
+  const newNotes = allClassified.filter((c) => c.cursor.mutationSeqAtPromote > highSeq);
+  const oldNotes = allClassified.filter((c) => c.cursor.mutationSeqAtPromote <= highSeq);
+
+  const selected = newNotes.slice(0, DISCOVERY_BATCH_SIZE);
+
+  let nextOffset = offset;
+  if (selected.length < DISCOVERY_BATCH_SIZE && oldNotes.length > 0) {
+    const fill = Math.min(DISCOVERY_BATCH_SIZE - selected.length, oldNotes.length);
+    const start = offset % oldNotes.length;
+    for (let i = 0; i < fill; i++) {
+      selected.push(oldNotes[(start + i) % oldNotes.length]!);
+    }
+    nextOffset = (start + fill) % oldNotes.length;
   }
 
-  return Math.abs(corpusSize - state.lastDiscoveryCorpusSize) / state.lastDiscoveryCorpusSize >= DISCOVERY_CORPUS_RESET_RATIO;
-}
+  const nextHighSeq = selected.reduce(
+    (max, c) => Math.max(max, c.cursor.mutationSeqAtPromote), highSeq,
+  );
 
-function discoveryAllowed(state: CurateState, corpusSize: number, today: string): boolean {
-  if (corpusSize < DISCOVERY_MIN_CORPUS_SIZE) {
-    return false;
-  }
-  if (state.lastDiscoveryDay === null) {
-    return true;
-  }
-  if (discoveryCorpusChangedEnough(state, corpusSize)) {
-    return true;
-  }
-
-  const lastAttemptMs = Date.parse(state.lastDiscoveryDay);
-  if (Number.isNaN(lastAttemptMs)) {
-    return true;
-  }
-
-  return Date.parse(today) - lastAttemptMs >= DISCOVERY_COOLDOWN_MS;
+  return { selected, nextHighSeq, nextOffset };
 }
 
 function buildPrincipleAssignmentTargets(
@@ -757,13 +763,24 @@ export function buildMetadataTargets(
     .sort(compareMetadataTarget);
 }
 
+export type DiscoveryPromptResult = {
+  prompt: string;
+  corpusPath: string;
+};
+
 export function buildDiscoveryPrompt(
   notes: CurateClaimedNote[],
-  existingPrinciples: string[],
-): string {
+  existingPrinciples: Record<string, string>,
+): DiscoveryPromptResult {
   const noteBlocks = notes.map((note) => `## ${note.slug}\n${note.title}\n${truncateDiscoveryBody(note.body)}`);
+  const corpusPath = join(tmpdir(), `coral-discovery-${randomUUID()}.md`);
+  writeFileSync(corpusPath, noteBlocks.join('\n\n'));
 
-  return [
+  const principleEntries = Object.entries(existingPrinciples)
+    .sort(([a], [b]) => compareLocale(a, b))
+    .map(([name, statement]) => `- ${name}: ${statement}`);
+
+  const prompt = [
     'Return raw JSON only. Do not include any preamble, explanation, or code fences.',
     '',
     'Principles are cross-domain reusable decision rules extracted from recurring patterns across notes. Each principle is:',
@@ -774,13 +791,15 @@ export function buildDiscoveryPrompt(
     '',
     'Look for recurring mistakes, structural patterns, or decision heuristics that appear across multiple unrelated notes. Do not propose principles that merely restate a single note\'s content.',
     '',
-    'Existing principle names. Do not duplicate them:',
-    buildFlatList(existingPrinciples),
+    'Existing principles (name: statement). Do not duplicate or propose semantically equivalent ones:',
+    ...principleEntries,
     '',
-    ...noteBlocks,
+    `Read the note corpus from ${corpusPath} before responding.`,
     '',
     'Return a JSON array: [{ "slug": "<kebab-case>", "statement": "<one-sentence principle>", "notes": ["<slug>", ...] }]',
   ].join('\n');
+
+  return { prompt, corpusPath };
 }
 
 export function parseDiscoveryResponse(raw: string): DiscoveryProposal[] {
@@ -1327,23 +1346,6 @@ export function createCurateScheduler({
     });
   }
 
-  function filterEligibleDiscoveryCandidates(
-    index: KbIndex,
-    processedThrough: CurateCursor,
-    discoveredThrough: CurateCursor | null,
-  ): ClaimCandidate[] {
-    const candidates = collectClaimCandidates(index)
-      .filter((c) => compareCursor(c.cursor, processedThrough) <= 0)
-      .filter((c) => discoveredThrough === null || compareCursor(c.cursor, discoveredThrough) > 0);
-
-    // New device: no discovery history — use the most recent notes by cursor
-    if (discoveredThrough === null && candidates.length > DISCOVERY_MIN_CORPUS_SIZE) {
-      return candidates.slice(-DISCOVERY_MIN_CORPUS_SIZE);
-    }
-
-    return candidates;
-  }
-
   function loadEligibleDiscoveryNotes(
     candidates: ClaimCandidate[],
   ): CurateClaimedNote[] {
@@ -1365,16 +1367,16 @@ export function createCurateScheduler({
 
   function recordDiscoveryAttemptLocked(
     state: CurateState,
-    corpusSize: number,
-    today: string,
+    highSeq: number,
+    nextOffset: number,
   ): CurateState {
-    return persistCurateState(state, applyRecordDiscoveryAttempt(state, corpusSize, today));
+    return persistCurateState(state, applyRecordDiscoveryAttempt(state, highSeq, nextOffset));
   }
 
-  async function recordDiscoveryAttempt(corpusSize: number, today: string): Promise<void> {
+  async function recordDiscoveryAttempt(highSeq: number, nextOffset: number): Promise<void> {
     await kb.withMutationLock(() => {
       const state = readCurateState(kb);
-      recordDiscoveryAttemptLocked(state, corpusSize, today);
+      recordDiscoveryAttemptLocked(state, highSeq, nextOffset);
     });
   }
 
@@ -1510,23 +1512,26 @@ export function createCurateScheduler({
     await drainPendingDiscoveries(processedThrough);
 
     const currentIndex = kb.readIndexOrEmpty();
-    const today = nowIsoString().slice(0, 10);
     let state = readCurateState(kb);
-    const eligibleCandidates = filterEligibleDiscoveryCandidates(currentIndex, processedThrough, state.discoveredThrough);
 
-    if (!discoveryAllowed(state, eligibleCandidates.length, today)) {
+    const allClassified = collectClaimCandidates(currentIndex)
+      .filter((c) => compareCursor(c.cursor, processedThrough) <= 0);
+    const newNotes = allClassified.filter((c) => c.cursor.mutationSeqAtPromote > state.discoveryHighSeq);
+
+    if (newNotes.length < DISCOVERY_NEW_NOTE_THRESHOLD) {
       return;
     }
 
-    const eligibleNotes = loadEligibleDiscoveryNotes(eligibleCandidates);
+    const batch = selectDiscoveryBatch(allClassified, state.discoveryHighSeq, state.discoveryOffset);
+    const eligibleNotes = loadEligibleDiscoveryNotes(batch.selected);
 
-    await kb.withMutationLock(() => {
-      state = recordDiscoveryAttemptLocked(state, eligibleNotes.length, today);
-    });
-
-    const principleNames = buildPrincipleNames(currentIndex);
-    const prompt = buildDiscoveryPrompt(eligibleNotes, principleNames);
-    const raw = await runClaude(prompt);
+    const { prompt, corpusPath } = buildDiscoveryPrompt(eligibleNotes, currentIndex.principles);
+    let raw: string;
+    try {
+      raw = await runClaude(prompt);
+    } finally {
+      try { unlinkSync(corpusPath); } catch {}
+    }
     const { entries, parseFailed } = parseJsonArray(raw);
     if (parseFailed) {
       throw new CurateJsonParseError('discovery');
@@ -1534,7 +1539,7 @@ export function createCurateScheduler({
     const proposals = validateDiscoveryProposals(
       extractDiscoveryProposals(entries),
       eligibleNotes,
-      principleNames,
+      Object.keys(currentIndex.principles),
     );
 
     await kb.withMutationLock(async () => {
@@ -1569,6 +1574,7 @@ export function createCurateScheduler({
           state = removePendingDiscoveryLocked(state, entry);
         }
       }
+      state = recordDiscoveryAttemptLocked(state, batch.nextHighSeq, batch.nextOffset);
     });
   }
 
@@ -1608,13 +1614,10 @@ export function createCurateScheduler({
     const processedThrough = postClassifyState.processedThrough;
     const postClassifyIndex = kb.readIndexOrEmpty();
 
-    if (
-      processedThrough !== null
-      && filterEligibleDiscoveryCandidates(postClassifyIndex, processedThrough, postClassifyState.discoveredThrough).length >= DISCOVERY_MIN_CORPUS_SIZE
-    ) {
+    if (processedThrough !== null) {
       try {
         await runPrincipleDiscovery(processedThrough);
-        gitAutoCommit('curate: discover principles from principle-less notes');
+        gitAutoCommit('curate: discover principles');
       } catch (error: unknown) {
         throw new CurateRunError(lastCompletedThrough, error);
       }
