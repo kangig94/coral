@@ -174,7 +174,8 @@ export function parseAxisSpec(spec: string): ControversyAxis {
   return { axis, positions };
 }
 
-async function readStdin(): Promise<string> {
+// stdin is single-consumer; commands must not combine this with another "-" stdin flag.
+export async function readStdin(): Promise<string> {
   if (process.stdin.readableEnded) {
     return '';
   }

@@ -10,6 +10,7 @@ import {
   writeFileAtomic,
 } from './mutation-helpers.js';
 import type { KbRuntime } from './runtime.js';
+import { applyNoteUpdateLocked } from './update.js';
 
 export async function promote(
   rt: KbRuntime,
@@ -29,14 +30,23 @@ export async function promote(
   const memoPath = memoPathFromContext(projectRoot, memo);
   const note = `${domain}-${topic}`;
   const notePath = rt.notePath(note);
-  const memoContent = readFileSync(memoPath, 'utf-8');
-  const { source } = parseMemoFrontmatter(memoContent);
+  if (!existsSync(memoPath)) {
+    throw new Error(`Memo file not found: ${memoPath}`);
+  }
 
   const result = await rt.withMutationLock(async () => {
     if (existsSync(notePath)) {
-      throw new Error(`KB note already exists: ${notePath}`);
+      if (!input.upsert) {
+        throw new Error(`KB note already exists: ${notePath}`);
+      }
+
+      const updated = await applyNoteUpdateLocked(rt, { note, title, content });
+      rmSync(memoPath, { force: true });
+      return updated;
     }
 
+    const memoContent = readFileSync(memoPath, 'utf-8');
+    const { source } = parseMemoFrontmatter(memoContent);
     const mutationSeqAtPromote = rt.recordMutationCommitted().mutationSeq;
     const createdAt = nowIsoString();
     const noteMeta = {

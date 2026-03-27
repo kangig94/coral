@@ -39,6 +39,9 @@ import {
   formatKbDelete,
   formatKbPrinciples,
   formatKbMemo,
+  formatKbMemoDelete,
+  formatKbMemoList,
+  formatKbMemoPurge,
   formatKbPromote,
   formatKbRead,
   formatKbReindex,
@@ -66,6 +69,7 @@ import {
   parseAgentSpec,
   parseAxisSpec,
   parseInputJson,
+  readStdin,
   type JsonObject,
 } from './parse.js';
 
@@ -156,6 +160,7 @@ type KbSearchOptions = {
 type KbPrinciplesOptions = {
   query?: string;
   topK?: string;
+  verbose?: boolean;
 };
 
 type KbPromoteOptions = {
@@ -164,6 +169,7 @@ type KbPromoteOptions = {
   contentFile?: string;
   domain?: string;
   topic?: string;
+  upsert?: boolean;
 };
 
 type KbUpdateOptions = {
@@ -868,9 +874,10 @@ export function buildProgram(): Command {
 
   const kbPrinciplesCommand = kb.command('principles');
   kbPrinciplesCommand
-    .description('List KB principle names')
+    .description('List KB principles')
     .option('--query <text>', 'Filter principle names')
     .option('--top-k <n>', 'Maximum results')
+    .option('--verbose', 'Include canonical statements and referring note slugs')
     .action(async (opts: KbPrinciplesOptions) => {
       const outputFormat = getOutputFormat(kbPrinciplesCommand);
 
@@ -878,6 +885,7 @@ export function buildProgram(): Command {
         const args = {
           ...(opts.query !== undefined ? { query: opts.query } : {}),
           ...(opts.topK !== undefined ? { top_k: parseIntegerFlag('--top-k', opts.topK) } : {}),
+          ...(opts.verbose === true ? { verbose: true } : {}),
         };
         const client = makeClient(process.cwd());
         const result = await client.kbPrinciples(args);
@@ -887,14 +895,17 @@ export function buildProgram(): Command {
       }
     });
 
-  const kbMemoCommand = kb.command('memo');
-  kbMemoCommand
+  const kbMemoCommand = kb.command('memo')
+    .description('Manage project memos');
+
+  const kbMemoWriteCommand = kbMemoCommand.command('write');
+  kbMemoWriteCommand
     .description('Write a memo with auto-generated timestamp and frontmatter')
     .requiredOption('--topic <slug>', 'Kebab-case topic slug (e.g. orama-threshold)')
     .option('--content <text>', 'Memo body text')
     .option('--content-file <path>', 'Read memo body from file')
     .action(async (opts: { topic: string; content?: string; contentFile?: string }) => {
-      const outputFormat = getOutputFormat(kbMemoCommand);
+      const outputFormat = getOutputFormat(kbMemoWriteCommand);
 
       try {
         const content = opts.contentFile !== undefined
@@ -911,10 +922,56 @@ export function buildProgram(): Command {
       }
     });
 
+  const kbMemoListCommand = kbMemoCommand.command('list');
+  kbMemoListCommand
+    .description('List project memos')
+    .action(async () => {
+      const outputFormat = getOutputFormat(kbMemoListCommand);
+
+      try {
+        const client = makeClient(process.cwd());
+        const result = await client.kbMemoList({});
+        emit(result, outputFormat, formatKbMemoList);
+      } catch (error) {
+        emitError(error, outputFormat);
+      }
+    });
+
+  const kbMemoDeleteCommand = kbMemoCommand.command('delete');
+  kbMemoDeleteCommand
+    .description('Delete project memos by simple glob pattern')
+    .argument('<pattern>', 'Simple glob pattern (supports * and ?)')
+    .action(async (pattern: string) => {
+      const outputFormat = getOutputFormat(kbMemoDeleteCommand);
+
+      try {
+        const client = makeClient(process.cwd());
+        const result = await client.kbMemoDelete({ pattern });
+        emit(result, outputFormat, formatKbMemoDelete);
+      } catch (error) {
+        emitError(error, outputFormat);
+      }
+    });
+
+  const kbMemoPurgeCommand = kbMemoCommand.command('purge');
+  kbMemoPurgeCommand
+    .description('Delete all project memos')
+    .action(async () => {
+      const outputFormat = getOutputFormat(kbMemoPurgeCommand);
+
+      try {
+        const client = makeClient(process.cwd());
+        const result = await client.kbMemoPurge({});
+        emit(result, outputFormat, formatKbMemoPurge);
+      } catch (error) {
+        emitError(error, outputFormat);
+      }
+    });
+
   const kbReadCommand = kb.command('read');
   kbReadCommand
-    .description('Read a KB note by slug')
-    .argument('<note>', 'Note slug without extension (e.g. rendering-guiding-contracts)')
+    .description('Read a KB entry by slug')
+    .argument('<note>', 'Note or principle slug without extension (e.g. rendering-guiding-contracts)')
     .action(async (note: string) => {
       const outputFormat = getOutputFormat(kbReadCommand);
 
@@ -932,19 +989,31 @@ export function buildProgram(): Command {
     .description('Promote a memo into a KB note')
     .option('--memo <filename>', 'Memo filename (e.g. 20260325-topic.md)')
     .option('--title <text>', 'Note title')
-    .option('--content-file <path>', 'Read content from file')
+    .option('--content-file <path>', 'Read content from file (use - for stdin)')
     .option('--domain <slug>', 'Note domain')
     .option('--topic <slug>', 'Note topic')
+    .option('--upsert', 'Update an existing note instead of failing when the target already exists')
     .action(async (opts: KbPromoteOptions) => {
       const outputFormat = getOutputFormat(kbPromoteCommand);
 
       try {
+        const content = opts.contentFile === undefined
+          ? undefined
+          : opts.contentFile === '-'
+            ? await (async () => {
+              if (process.stdin.isTTY === true) {
+                throw new Error('--content-file - requires stdin input');
+              }
+              return readStdin();
+            })()
+            : readFileSync(opts.contentFile, 'utf8');
         const args = {
           ...(opts.memo !== undefined ? { memo: opts.memo } : {}),
           ...(opts.title !== undefined ? { title: opts.title } : {}),
-          ...(opts.contentFile !== undefined ? { content: readFileSync(opts.contentFile, 'utf8') } : {}),
+          ...(content !== undefined ? { content } : {}),
           ...(opts.domain !== undefined ? { domain: opts.domain } : {}),
           ...(opts.topic !== undefined ? { topic: opts.topic } : {}),
+          ...(opts.upsert === true ? { upsert: true } : {}),
         };
         const client = makeClient(process.cwd());
         const result = await client.kbPromote(

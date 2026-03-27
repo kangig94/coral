@@ -149,6 +149,25 @@ memo body
     expect(existsSync(memoPath)).toBe(true);
   });
 
+  it('rejects missing memos before entering the mutation lock', async () => {
+    const { promote, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    const projectRoot = join(mockState.tmpHome, 'project');
+    mkdirSync(projectRoot, { recursive: true });
+
+    const lockSpy = vi.spyOn(kb, 'withMutationLock');
+
+    await expect(promote(kb, projectRoot, {
+      memo: 'missing.md',
+      title: 'KB Promotion',
+      content: '## Rule\nPromote through the tool.',
+      domain: 'coral',
+      topic: 'kb-promotion',
+    })).rejects.toThrow('Memo file not found');
+
+    expect(lockSpy).not.toHaveBeenCalled();
+  });
+
   it('rejects memo paths outside the active project memo directory before touching files', async () => {
     const { promote, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
@@ -171,6 +190,100 @@ memo body
     })).rejects.toThrow();
 
     expect(existsSync(outsideMemo)).toBe(true);
+  });
+
+  it('upserts an existing note while preserving note metadata and deleting a legacy memo', async () => {
+    const { promote, createKbRuntime, paths, frontmatter } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    const projectRoot = join(mockState.tmpHome, 'project');
+    mkdirSync(projectRoot, { recursive: true });
+    mkdirSync(paths.memoDir(projectRoot), { recursive: true });
+    mkdirSync(paths.notesDir(), { recursive: true });
+
+    const notePath = join(paths.notesDir(), 'coral-kb-promotion.md');
+    writeFileSync(notePath, `---
+tags: [coral]
+principles: [contract-first-design]
+source:
+  - kangig94/coral
+createdAt: 2026-03-20T00:00:00.000Z
+updatedAt: 2026-03-20T00:00:00.000Z
+mutationSeqAtPromote: 7
+---
+# Original Title
+
+Original body.
+`, 'utf-8');
+
+    const memoPath = join(paths.memoDir(projectRoot), 'legacy.md');
+    writeFileSync(memoPath, 'legacy memo without frontmatter\n', 'utf-8');
+
+    vi.setSystemTime(new Date('2026-03-24T05:06:07.000Z'));
+    const result = await promote(kb, projectRoot, {
+      memo: 'legacy.md',
+      title: 'Updated Title',
+      content: 'Updated body.',
+      domain: 'coral',
+      topic: 'kb-promotion',
+      upsert: true,
+    });
+
+    expect(result).toEqual({ path: notePath });
+    expect(existsSync(memoPath)).toBe(false);
+
+    const note = readFileSync(notePath, 'utf-8');
+    expect(frontmatter.parseFrontmatter(note)).toEqual({
+      tags: ['coral'],
+      principles: ['contract-first-design'],
+      source: ['kangig94/coral'],
+      createdAt: '2026-03-20T00:00:00.000Z',
+      updatedAt: '2026-03-24T05:06:07.000Z',
+      mutationSeqAtPromote: 7,
+    });
+    expect(frontmatter.extractTitle(note)).toBe('Updated Title');
+    expect(note).toContain('Updated body.\n');
+  });
+
+  it('deletes the source memo after a no-op upsert', async () => {
+    const { promote, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    const projectRoot = join(mockState.tmpHome, 'project');
+    mkdirSync(projectRoot, { recursive: true });
+    mkdirSync(paths.memoDir(projectRoot), { recursive: true });
+    mkdirSync(paths.notesDir(), { recursive: true });
+
+    const notePath = join(paths.notesDir(), 'coral-kb-promotion.md');
+    const existingNote = `---
+tags: [coral]
+principles: []
+source:
+  - kangig94/coral
+createdAt: 2026-03-20T00:00:00.000Z
+updatedAt: 2026-03-20T00:00:00.000Z
+mutationSeqAtPromote: 7
+---
+# Original Title
+
+Original body.
+`;
+    writeFileSync(notePath, existingNote, 'utf-8');
+
+    const memoPath = join(paths.memoDir(projectRoot), 'noop.md');
+    writeFileSync(memoPath, 'legacy memo without frontmatter\n', 'utf-8');
+
+    vi.setSystemTime(new Date('2026-03-24T05:06:07.000Z'));
+    const result = await promote(kb, projectRoot, {
+      memo: 'noop.md',
+      title: 'Original Title',
+      content: 'Original body.',
+      domain: 'coral',
+      topic: 'kb-promotion',
+      upsert: true,
+    });
+
+    expect(result).toEqual({ path: notePath });
+    expect(existsSync(memoPath)).toBe(false);
+    expect(readFileSync(notePath, 'utf-8')).toBe(existingNote);
   });
 
   it('updates an existing note atomically while preserving createdAt and source', async () => {
@@ -285,6 +398,7 @@ Content here.
 
     const result = readEntry({ note: 'coral-kb-read' });
     expect(result).toEqual({
+      kind: 'note',
       note: 'coral-kb-read',
       title: 'Read Test',
       content: '## Rule\nContent here.',
@@ -293,8 +407,93 @@ Content here.
     });
   });
 
+  it('prefers matching memos over notes for timestamp-shaped slugs', async () => {
+    const { readEntry, paths } = await loadKbModules();
+    const projectRoot = join(mockState.tmpHome, 'project');
+    mkdirSync(projectRoot, { recursive: true });
+    mkdirSync(paths.memoDir(projectRoot), { recursive: true });
+    mkdirSync(paths.notesDir(), { recursive: true });
+
+    writeFileSync(join(paths.memoDir(projectRoot), '20260323-010203-shared-slug.md'), `---
+source: kangig94/coral
+---
+Memo body
+`, 'utf-8');
+    writeFileSync(join(paths.notesDir(), '20260323-010203-shared-slug.md'), `---
+tags: [coral]
+principles: [contract-first-design]
+source:
+  - kangig94/coral
+createdAt: 2026-03-20T00:00:00.000Z
+updatedAt: 2026-03-20T00:00:00.000Z
+---
+# Note Title
+
+Note body.
+`, 'utf-8');
+
+    expect(readEntry({ note: '20260323-010203-shared-slug' }, projectRoot)).toEqual({
+      kind: 'memo',
+      note: '20260323-010203-shared-slug',
+      title: '20260323-010203-shared-slug',
+      content: 'Memo body',
+      tags: [],
+      principles: [],
+    });
+  });
+
+  it('reads principles directly when no memo or note matches', async () => {
+    const { readEntry, paths } = await loadKbModules();
+    writeFileSync(
+      join(paths.principlesDir(), 'contract-first-design.md'),
+      '---\ncreatedAt: 2026-03-23\nupdatedAt: 2026-03-23\n---\nState contracts first.\n',
+      'utf-8',
+    );
+
+    expect(readEntry({ note: 'contract-first-design' })).toEqual({
+      kind: 'principle',
+      note: 'contract-first-design',
+      title: 'contract-first-design',
+      content: 'State contracts first.',
+      rawContent: '---\ncreatedAt: 2026-03-23\nupdatedAt: 2026-03-23\n---\nState contracts first.\n',
+      tags: [],
+      principles: [],
+    });
+  });
+
+  it('prefers notes over principles when both share the same slug', async () => {
+    const { readEntry, paths } = await loadKbModules();
+    mkdirSync(paths.notesDir(), { recursive: true });
+    writeFileSync(
+      join(paths.principlesDir(), 'contract-first-design.md'),
+      '---\ncreatedAt: 2026-03-23\nupdatedAt: 2026-03-23\n---\nPrinciple statement.\n',
+      'utf-8',
+    );
+    writeFileSync(join(paths.notesDir(), 'contract-first-design.md'), `---
+tags: [coral]
+principles: [single-source-of-truth]
+source:
+  - kangig94/coral
+createdAt: 2026-03-20T00:00:00.000Z
+updatedAt: 2026-03-20T00:00:00.000Z
+---
+# Note Title
+
+Note body.
+`, 'utf-8');
+
+    expect(readEntry({ note: 'contract-first-design' })).toEqual({
+      kind: 'note',
+      note: 'contract-first-design',
+      title: 'Note Title',
+      content: 'Note body.',
+      tags: ['coral'],
+      principles: ['single-source-of-truth'],
+    });
+  });
+
   it('throws when reading a non-existent note', async () => {
     const { readEntry } = await loadKbModules();
-    expect(() => readEntry({ note: 'does-not-exist' })).toThrow();
+    expect(() => readEntry({ note: 'does-not-exist' })).toThrow('not found');
   });
 });

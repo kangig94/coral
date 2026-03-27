@@ -282,7 +282,7 @@ export function formatKbSearch(data: unknown, cliPrefix = 'coral-cli'): string {
   const warning = normalizeKbWarning(data.warning, cliPrefix);
   const results = data.results.map((result) => {
     if (!isRecord(result)) {
-      return { note: '-', title: '-', matched: [] as string[], snippet: '-' };
+      return { note: '-', title: '-', matched: [] as string[], snippet: undefined };
     }
 
     const matched = Array.isArray(result.matchedBy)
@@ -293,21 +293,20 @@ export function formatKbSearch(data: unknown, cliPrefix = 'coral-cli'): string {
       note: typeof result.note === 'string' ? result.note : '-',
       title: typeof result.title === 'string' ? result.title : '-',
       matched,
-      snippet: typeof result.snippet === 'string' ? result.snippet : '-',
+      snippet: typeof result.snippet === 'string' ? result.snippet : undefined,
     };
   });
 
-  const output: Record<string, unknown> = {
-    results,
-    mode: data.mode,
-    count: results.length,
-  };
-
-  if (warning !== undefined) {
-    output.warning = warning;
-  }
-
-  return JSON.stringify(output);
+  return joinLines([
+    results.length === 0
+      ? 'No results'
+      : results.flatMap((result) => [
+        `${result.note} — ${result.title} [${result.matched.join(', ')}]`,
+        `  → kb read ${result.note}`,
+        result.snippet === undefined ? undefined : `  ${result.snippet}`,
+      ]).join('\n'),
+    warning === undefined ? undefined : `Warning: ${warning}`,
+  ]);
 }
 
 export function formatKbPrinciples(data: unknown, cliPrefix = 'coral-cli'): string {
@@ -315,11 +314,36 @@ export function formatKbPrinciples(data: unknown, cliPrefix = 'coral-cli'): stri
     return formatUnknown(data);
   }
 
-  const principles = data.principles.filter((value): value is string => typeof value === 'string');
+  const principles = data.principles;
   const warning = normalizeKbWarning(data.warning, cliPrefix);
+  const first = principles[0];
+
+  if (typeof first === 'string' || first === undefined) {
+    const names = principles.filter((value): value is string => typeof value === 'string');
+    return joinLines([
+      names.length === 0 ? 'No principles' : names.join('\n'),
+      `Total: ${data.total}`,
+      warning === undefined ? undefined : `Warning: ${warning}`,
+    ]);
+  }
+
+  const rows = principles.flatMap((value) => {
+    if (
+      !isRecord(value)
+      || typeof value.name !== 'string'
+      || typeof value.statement !== 'string'
+      || !Array.isArray(value.notes)
+      || !value.notes.every((note) => typeof note === 'string')
+    ) {
+      return [];
+    }
+
+    const notes = value.notes.length === 0 ? '' : ` (${value.notes.join(', ')})`;
+    return [`${value.name}${notes}: ${value.statement}`];
+  });
 
   return joinLines([
-    principles.length === 0 ? 'No principles' : principles.join('\n'),
+    rows.length === 0 ? 'No principles' : rows.join('\n'),
     `Total: ${data.total}`,
     warning === undefined ? undefined : `Warning: ${warning}`,
   ]);
@@ -344,6 +368,59 @@ export function formatKbMemo(data: unknown): string {
   }
 
   return `Memo: ${data.filename}`;
+}
+
+export function formatKbMemoList(data: unknown): string {
+  if (!isRecord(data) || !Array.isArray(data.memos)) {
+    return formatUnknown(data);
+  }
+
+  const rows = data.memos.flatMap((memo) => {
+    if (
+      !isRecord(memo)
+      || typeof memo.filename !== 'string'
+      || typeof memo.summary !== 'string'
+      || typeof memo.createdAt !== 'string'
+    ) {
+      return [];
+    }
+
+    return [[memo.filename, memo.summary, memo.createdAt]];
+  });
+
+  if (rows.length !== data.memos.length) {
+    return formatUnknown(data);
+  }
+
+  if (rows.length === 0) {
+    return 'No memos';
+  }
+
+  return formatTable(['FILENAME', 'SUMMARY', 'CREATED AT'], rows);
+}
+
+export function formatKbMemoDelete(data: unknown): string {
+  if (
+    !isRecord(data)
+    || !Array.isArray(data.deleted)
+    || !data.deleted.every((entry) => typeof entry === 'string')
+    || typeof data.count !== 'number'
+  ) {
+    return formatUnknown(data);
+  }
+
+  return joinLines([
+    data.deleted.length === 0 ? 'No memos deleted' : data.deleted.join('\n'),
+    `Count: ${data.count}`,
+  ]);
+}
+
+export function formatKbMemoPurge(data: unknown): string {
+  if (!isRecord(data) || typeof data.deleted !== 'number') {
+    return formatUnknown(data);
+  }
+
+  return `Purged: ${data.deleted} memos`;
 }
 
 export function formatKbPromote(data: unknown): string {

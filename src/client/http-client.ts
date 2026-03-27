@@ -1,8 +1,11 @@
 import { ensureBackend as defaultEnsureBackend, withAbortTimeout, type BackendHandle } from './backend-lifecycle.js';
 import type { CallerContext } from '../execution/request-context.js';
 import type {
+  KbMemoDeleteInput,
   KbDeleteInput,
   KbMemoInput,
+  KbMemoListInput,
+  KbMemoPurgeInput,
   KbPrinciplesInput,
   KbPromoteInput,
   KbReadInput,
@@ -251,6 +254,18 @@ export class BackendClient {
 
   async kbMemo(args: KbMemoInput, context?: CallerContext): Promise<unknown> {
     return this.proxyToolCall('kb_memo', args, this.resolveContext(context));
+  }
+
+  async kbMemoList(args: KbMemoListInput, context?: CallerContext): Promise<unknown> {
+    return this.proxyToolCall('kb_memo_list', args, this.resolveContext(context));
+  }
+
+  async kbMemoDelete(args: KbMemoDeleteInput, context?: CallerContext): Promise<unknown> {
+    return this.proxyToolCall('kb_memo_delete', args, this.resolveContext(context));
+  }
+
+  async kbMemoPurge(args: KbMemoPurgeInput, context?: CallerContext): Promise<unknown> {
+    return this.proxyToolCall('kb_memo_purge', args, this.resolveContext(context));
   }
 
   async kbReindex(args: KbReindexInput, context?: CallerContext): Promise<unknown> {

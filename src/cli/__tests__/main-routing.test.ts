@@ -1,6 +1,7 @@
 import { writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockState = vi.hoisted(() => ({
@@ -17,6 +18,10 @@ const mockState = vi.hoisted(() => ({
   streamWait: vi.fn(),
   kbSearch: vi.fn(),
   kbPrinciples: vi.fn(),
+  kbMemo: vi.fn(),
+  kbMemoList: vi.fn(),
+  kbMemoDelete: vi.fn(),
+  kbMemoPurge: vi.fn(),
   kbRead: vi.fn(),
   kbPromote: vi.fn(),
   kbUpdate: vi.fn(),
@@ -50,6 +55,10 @@ vi.mock('../../client/http-client.js', () => {
     discussAbort = vi.fn();
     kbSearch = mockState.kbSearch;
     kbPrinciples = mockState.kbPrinciples;
+    kbMemo = mockState.kbMemo;
+    kbMemoList = mockState.kbMemoList;
+    kbMemoDelete = mockState.kbMemoDelete;
+    kbMemoPurge = mockState.kbMemoPurge;
     kbRead = mockState.kbRead;
     kbPromote = mockState.kbPromote;
     kbUpdate = mockState.kbUpdate;
@@ -91,6 +100,13 @@ describe('cli main routing', () => {
   let stdout = '';
   let stderr = '';
   let originalArgv: string[];
+  const originalStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+
+  function restoreStdin(): void {
+    if (originalStdinDescriptor) {
+      Object.defineProperty(process, 'stdin', originalStdinDescriptor);
+    }
+  }
 
   beforeEach(() => {
     stdout = '';
@@ -111,6 +127,10 @@ describe('cli main routing', () => {
     mockState.streamWait.mockReset();
     mockState.kbSearch.mockReset();
     mockState.kbPrinciples.mockReset();
+    mockState.kbMemo.mockReset();
+    mockState.kbMemoList.mockReset();
+    mockState.kbMemoDelete.mockReset();
+    mockState.kbMemoPurge.mockReset();
     mockState.kbRead.mockReset();
     mockState.kbPromote.mockReset();
     mockState.kbUpdate.mockReset();
@@ -131,6 +151,7 @@ describe('cli main routing', () => {
   afterEach(() => {
     process.argv = originalArgv;
     process.exitCode = undefined;
+    restoreStdin();
     vi.restoreAllMocks();
     vi.resetModules();
   });
@@ -298,7 +319,14 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.kbSearch.mockResolvedValueOnce({
-      results: [],
+      results: [
+        {
+          note: 'cli-kb-tooling',
+          title: 'KB CLI Tooling',
+          matchedBy: ['filename', 'content'],
+          snippet: 'Use the read surface.',
+        },
+      ],
       mode: 'text',
     });
 
@@ -311,10 +339,11 @@ describe('cli main routing', () => {
     ]);
 
     expect(mockState.kbSearch).toHaveBeenCalledWith({ query: 'accel' });
-    const parsed = JSON.parse(stdout.trim());
-    expect(parsed.results).toEqual([]);
-    expect(parsed.count).toBe(0);
-    expect(parsed.mode).toBe('text');
+    expect(stdout).toBe(
+      'cli-kb-tooling — KB CLI Tooling [filename, content]\n'
+      + '  → kb read cli-kb-tooling\n'
+      + '  Use the read surface.\n',
+    );
     expect(stderr).toBe('');
   });
 
@@ -391,11 +420,136 @@ describe('cli main routing', () => {
     expect(mockState.kbPrinciples).toHaveBeenCalledWith({ query: 'contract', top_k: 7 });
   });
 
+  it('routes verbose kb principles and formats structured rows', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbPrinciples.mockResolvedValueOnce({
+      principles: [
+        {
+          name: 'contract-first-design',
+          statement: 'State contracts first.',
+          notes: ['a-note', 'b-note'],
+        },
+      ],
+      total: 2,
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'kb',
+      'principles',
+      '--verbose',
+    ]);
+
+    expect(mockState.kbPrinciples).toHaveBeenCalledWith({ verbose: true });
+    expect(stdout).toBe('contract-first-design (a-note, b-note): State contracts first.\nTotal: 2\n');
+  });
+
+  it('routes kb memo write through kb_memo', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbMemo.mockResolvedValueOnce({
+      filename: '20260327-184939-kb-routing.md',
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'kb',
+      'memo',
+      'write',
+      '--topic',
+      'kb-routing',
+      '--content',
+      'Memo body',
+    ]);
+
+    expect(mockState.kbMemo).toHaveBeenCalledWith({ topic: 'kb-routing', content: 'Memo body' });
+    expect(stdout).toBe('Memo: 20260327-184939-kb-routing.md\n');
+  });
+
+  it('routes kb memo list through kb_memo_list', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbMemoList.mockResolvedValueOnce({
+      memos: [{ filename: 'a.md', summary: 'summary', createdAt: '2026-03-27T00:00:00.000Z' }],
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'kb',
+      'memo',
+      'list',
+      '--output-format',
+      'json',
+    ]);
+
+    expect(mockState.kbMemoList).toHaveBeenCalledWith({});
+    expect(JSON.parse(stdout.trim())).toEqual({
+      memos: [{ filename: 'a.md', summary: 'summary', createdAt: '2026-03-27T00:00:00.000Z' }],
+    });
+  });
+
+  it('routes kb memo delete through kb_memo_delete', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbMemoDelete.mockResolvedValueOnce({
+      deleted: ['a.md'],
+      count: 1,
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'kb',
+      'memo',
+      'delete',
+      '2026*',
+      '--output-format',
+      'json',
+    ]);
+
+    expect(mockState.kbMemoDelete).toHaveBeenCalledWith({ pattern: '2026*' });
+    expect(JSON.parse(stdout.trim())).toEqual({
+      deleted: ['a.md'],
+      count: 1,
+    });
+  });
+
+  it('routes kb memo purge through kb_memo_purge', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbMemoPurge.mockResolvedValueOnce({
+      deleted: 3,
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'kb',
+      'memo',
+      'purge',
+      '--output-format',
+      'json',
+    ]);
+
+    expect(mockState.kbMemoPurge).toHaveBeenCalledWith({});
+    expect(JSON.parse(stdout.trim())).toEqual({ deleted: 3 });
+  });
+
   it('routes kb read to kb_read and returns JSON', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
     mockState.kbRead.mockResolvedValueOnce({
+      kind: 'note',
       note: 'coral-kb-read',
       title: 'Read Test',
       content: '## Rule\nContent.',
@@ -457,6 +611,91 @@ describe('cli main routing', () => {
     } finally {
       unlinkSync(tmpFile);
     }
+  });
+
+  it('routes kb promote --upsert into kb_promote arguments', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    const tmpFile = join(tmpdir(), 'test-kb-upsert-content.md');
+
+    mockState.kbPromote.mockResolvedValueOnce({
+      path: '/tmp/kb/notes/cli-kb-tooling.md',
+    });
+
+    writeFileSync(tmpFile, 'Updated details', 'utf8');
+
+    try {
+      await program.parseAsync([
+        'node',
+        'coral-cli',
+        'kb',
+        'promote',
+        '--memo',
+        'memo/123.md',
+        '--title',
+        'KB CLI',
+        '--content-file',
+        tmpFile,
+        '--domain',
+        'cli',
+        '--topic',
+        'kb-tooling',
+        '--upsert',
+      ]);
+
+      expect(mockState.kbPromote).toHaveBeenCalledWith({
+        memo: 'memo/123.md',
+        title: 'KB CLI',
+        content: 'Updated details',
+        domain: 'cli',
+        topic: 'kb-tooling',
+        upsert: true,
+      });
+    } finally {
+      unlinkSync(tmpFile);
+    }
+  });
+
+  it('routes kb promote --content-file - through stdin', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    const stdin = new PassThrough();
+    Object.defineProperty(process, 'stdin', {
+      configurable: true,
+      value: stdin as unknown as typeof process.stdin,
+    });
+
+    mockState.kbPromote.mockResolvedValueOnce({
+      path: '/tmp/kb/notes/cli-kb-tooling.md',
+    });
+
+    const parsePromise = program.parseAsync([
+      'node',
+      'coral-cli',
+      'kb',
+      'promote',
+      '--memo',
+      'memo/123.md',
+      '--title',
+      'KB CLI',
+      '--content-file',
+      '-',
+      '--domain',
+      'cli',
+      '--topic',
+      'kb-tooling',
+    ]);
+    stdin.end('Details from stdin');
+
+    await parsePromise;
+
+    expect(mockState.kbPromote).toHaveBeenCalledWith({
+      memo: 'memo/123.md',
+      title: 'KB CLI',
+      content: 'Details from stdin',
+      domain: 'cli',
+      topic: 'kb-tooling',
+    });
   });
 
   it('routes kb update and only sends provided fields', async () => {

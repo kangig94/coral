@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { request as httpRequest, type IncomingMessage as ClientIncomingMessage } from 'node:http';
 import { basename, join } from 'node:path';
 import type { WaitStreamEvent } from '../../types.js';
@@ -11,7 +11,7 @@ import {
 import { DiscussSessionStore } from '../discuss-session-store.js';
 import { JOBS_DIR, ProgressStore, jobResultPath } from '../progress-store.js';
 import { SessionManager } from '../session-manager.js';
-import { discussSourcesPath, pluginRootNamespace, resolveProjectSource } from '../../client/paths.js';
+import { discussSourcesPath, pluginRootNamespace, projectDataDir, resolveProjectSource } from '../../client/paths.js';
 import type { BackendServerController } from '../server.js';
 
 const testBackendNamespace = pluginRootNamespace(process.cwd());
@@ -202,6 +202,14 @@ async function loadExecutionModules(): Promise<{
     import('../backend-lock.js'),
   ]);
   return { serverModule, backendInfo, backendLock };
+}
+
+function parseToolText(body: unknown): unknown {
+  const text = (body as { content: Array<{ text: string }> }).content[0]?.text;
+  if (typeof text !== 'string') {
+    throw new Error('Missing tool text payload');
+  }
+  return JSON.parse(text);
 }
 
 describe('execution backend server', () => {
@@ -503,6 +511,228 @@ describe('execution backend server', () => {
     const body = await response.json() as { isError?: boolean };
     // Mock KB subsystem has no real runtime, so the handler catches the error
     expect(body.isError).toBe(true);
+  });
+
+  it('returns verbose kb principles rows with deterministic note order and orphan warnings', async () => {
+    const { serverModule } = await loadExecutionModules();
+
+    const response = await serverModule.routeToolCall(
+      {
+        name: 'kb_principles',
+        args: { query: 'contract', verbose: true, top_k: 5 },
+        context: { projectRoot: '/tmp/project', pluginRoot: '/tmp/plugin', coralEnv: {} },
+      },
+      {
+        getExecutionService: () => createFakeExecutionService() as never,
+        getDiscussContext: () => ({}) as never,
+        abortJobs: () => ({ aborted: [], notFound: [] }),
+        scopeCheckJobs: () => ({ valid: [], missing: [], mismatch: [] }),
+      },
+      {
+        kb: {
+          ensureIndex: vi.fn(async () => ({
+            notes: {
+              'b-note': {
+                title: 'B',
+                tags: ['coral'],
+                principles: ['contract-first-design'],
+                source: ['kb'],
+                createdAt: '2026-03-20T00:00:00.000Z',
+                updatedAt: '2026-03-20T00:00:00.000Z',
+              },
+              'a-note': {
+                title: 'A',
+                tags: ['coral'],
+                principles: ['missing-principle', 'contract-first-design'],
+                source: ['kb'],
+                createdAt: '2026-03-20T00:00:00.000Z',
+                updatedAt: '2026-03-20T00:00:00.000Z',
+              },
+              'z-note': {
+                title: 'Z',
+                tags: ['coral'],
+                principles: ['single-source-of-truth'],
+                source: ['kb'],
+                createdAt: '2026-03-20T00:00:00.000Z',
+                updatedAt: '2026-03-20T00:00:00.000Z',
+              },
+            },
+            principles: {
+              'contract-first-design': 'State contracts first.',
+              'single-source-of-truth': 'Keep one authority.',
+            },
+          })),
+        } as never,
+        curateScheduler: {
+          start: vi.fn(async () => {}),
+          schedule: vi.fn(),
+          isRunning: () => false,
+        },
+      } as never,
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(parseToolText(response.body)).toEqual({
+      principles: [
+        {
+          name: 'contract-first-design',
+          statement: 'State contracts first.',
+          notes: ['a-note', 'b-note'],
+        },
+      ],
+      total: 2,
+      warning: 'Orphan principle refs: missing-principle',
+    });
+  });
+
+  it('passes kb promote upsert through the backend handler', async () => {
+    const { serverModule } = await loadExecutionModules();
+    const previousKbPath = process.env.CORAL_KB_PATH;
+    const markdownRoot = join(mockState.tmpHome, 'vault');
+    process.env.CORAL_KB_PATH = markdownRoot;
+
+    try {
+      const [{ createKbRuntime }, paths] = await Promise.all([
+        import('../../kb/runtime.js'),
+        import('../../kb/paths.js'),
+      ]);
+      const kb = createKbRuntime({
+        markdownRoot,
+        runtimeDir: paths.kbRuntimeDir(),
+      });
+      const projectRoot = createProjectRoot('kb-promote-upsert-project');
+      mkdirSync(paths.notesDir(), { recursive: true });
+      mkdirSync(paths.memoDir(projectRoot), { recursive: true });
+      writeFileSync(join(paths.notesDir(), 'coral-kb-promotion.md'), `---
+tags: [coral]
+principles: []
+source:
+  - kangig94/coral
+createdAt: 2026-03-20T00:00:00.000Z
+updatedAt: 2026-03-20T00:00:00.000Z
+mutationSeqAtPromote: 7
+---
+# Original Title
+
+Original body.
+`, 'utf-8');
+      writeFileSync(join(paths.memoDir(projectRoot), 'legacy.md'), 'legacy memo without frontmatter\n', 'utf-8');
+
+      const response = await serverModule.routeToolCall(
+        {
+          name: 'kb_promote',
+          args: {
+            memo: 'legacy.md',
+            title: 'Updated Title',
+            content: 'Updated body.',
+            domain: 'coral',
+            topic: 'kb-promotion',
+            upsert: true,
+          },
+          context: { projectRoot, pluginRoot: '/tmp/plugin', coralEnv: {} },
+        },
+        {
+          getExecutionService: () => createFakeExecutionService() as never,
+          getDiscussContext: () => ({}) as never,
+          abortJobs: () => ({ aborted: [], notFound: [] }),
+          scopeCheckJobs: () => ({ valid: [], missing: [], mismatch: [] }),
+        },
+        {
+          kb,
+          curateScheduler: {
+            start: vi.fn(async () => {}),
+            schedule: vi.fn(),
+            isRunning: () => false,
+          },
+        } as never,
+      );
+
+      expect(response.statusCode).toBe(200);
+      expect(parseToolText(response.body)).toEqual({
+        path: join(paths.notesDir(), 'coral-kb-promotion.md'),
+      });
+      expect(readFileSync(join(paths.notesDir(), 'coral-kb-promotion.md'), 'utf-8')).toContain('Updated body.\n');
+      expect(existsSync(join(paths.memoDir(projectRoot), 'legacy.md'))).toBe(false);
+    } finally {
+      if (previousKbPath === undefined) {
+        delete process.env.CORAL_KB_PATH;
+      } else {
+        process.env.CORAL_KB_PATH = previousKbPath;
+      }
+    }
+  });
+
+  it('routes kb memo list, delete, and purge through the backend tool handlers', async () => {
+    const backend = await startBackendServer();
+    const projectRoot = join(mockState.tmpHome, 'project');
+    const memoRoot = join(projectDataDir(projectRoot), 'memo');
+    mkdirSync(projectRoot, { recursive: true });
+    mkdirSync(memoRoot, { recursive: true });
+    const aMemo = join(memoRoot, 'a.md');
+    const bMemo = join(memoRoot, 'b.md');
+    writeFileSync(aMemo, 'Alpha summary\n', 'utf-8');
+    writeFileSync(bMemo, 'Bravo summary\n', 'utf-8');
+    utimesSync(aMemo, new Date('2026-03-24T00:00:00.000Z'), new Date('2026-03-24T00:00:00.000Z'));
+    utimesSync(bMemo, new Date('2026-03-25T00:00:00.000Z'), new Date('2026-03-25T00:00:00.000Z'));
+
+    const listResponse = await fetch(`${backend.baseUrl}/tool`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        name: 'kb_memo_list',
+        args: {},
+        context: { projectRoot, coralEnv: {} },
+      }),
+    });
+
+    expect(listResponse.status).toBe(200);
+    const listBody = await listResponse.json() as { content: Array<{ text: string }> };
+    expect(JSON.parse(listBody.content[0]!.text)).toEqual({
+      memos: [
+        { filename: 'b.md', summary: 'Bravo summary', createdAt: expect.any(String) },
+        { filename: 'a.md', summary: 'Alpha summary', createdAt: expect.any(String) },
+      ],
+    });
+
+    const deleteResponse = await fetch(`${backend.baseUrl}/tool`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        name: 'kb_memo_delete',
+        args: { pattern: 'a*' },
+        context: { projectRoot, coralEnv: {} },
+      }),
+    });
+
+    expect(deleteResponse.status).toBe(200);
+    const deleteBody = await deleteResponse.json() as { content: Array<{ text: string }> };
+    expect(JSON.parse(deleteBody.content[0]!.text)).toEqual({
+      deleted: ['a.md'],
+      count: 1,
+    });
+
+    const purgeResponse = await fetch(`${backend.baseUrl}/tool`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        name: 'kb_memo_purge',
+        args: {},
+        context: { projectRoot, coralEnv: {} },
+      }),
+    });
+
+    expect(purgeResponse.status).toBe(200);
+    const purgeBody = await purgeResponse.json() as { content: Array<{ text: string }> };
+    expect(JSON.parse(purgeBody.content[0]!.text)).toEqual({ deleted: 1 });
   });
 
   it('returns 400 use_sse for wait tool calls sent to /tool', async () => {
