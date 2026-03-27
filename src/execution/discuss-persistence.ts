@@ -5,6 +5,7 @@ import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../discuss/ev
 import type { Result } from '../discuss/types.js';
 import { DiscussStaleWriteError } from './discuss-session-store.js';
 import {
+  ABORT_REASON,
   DiscussManagerError,
   compactLiveWatchBuffer,
   createWatchBuffer,
@@ -13,7 +14,6 @@ import {
   type WatchState,
   watchBufferCursor,
 } from './discuss-context.js';
-import { ABORT_REASON } from './discuss-operations.js';
 
 function syncLiveSnapshot(ctx: DiscussContext, sessionId: string): void {
   const latest = ctx.store.load(sessionId);

@@ -43,19 +43,25 @@ import {
 import type { KbRuntime } from './runtime.js';
 import type { KbIndex } from './types.js';
 
+// -- Claim thresholds --
 const CURATE_MIN_CLAIM_SIZE = 10;
+const CURATE_IMMEDIATE_CLAIM_SIZE = 30;
 const CURATE_MAX_CLAIM_SIZE = 100;
 const CLASSIFICATION_BATCH_SIZE = 100;
-const CURATE_STALE_REASON = 'KB text snapshot is stale after kb_curate.';
+
+// -- Principle discovery --
 const DISCOVERY_MIN_CORPUS_SIZE = 50;
 const DISCOVERY_PROMPT_BODY_LIMIT = 500;
 const DISCOVERY_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
 const DISCOVERY_CORPUS_RESET_RATIO = 0.2;
 
-const GITIGNORE_ENTRIES = ['curate-state.json', 'data/', '.obsidian/'];
+// -- Usage budget --
 const USAGE_CACHE_STALE_MS = 10 * 60 * 1000;
 const USAGE_5H_THRESHOLD = 90;
 const USAGE_WK_THRESHOLD = 100;
+
+const CURATE_STALE_REASON = 'KB text snapshot is stale after kb_curate.';
+const GITIGNORE_ENTRIES = ['curate-state.json', 'data/', '.obsidian/'];
 
 function isUsageBudgetExhausted(): boolean {
   try {
@@ -649,25 +655,6 @@ export function chunkNotes<T>(notes: T[], batchSize = CLASSIFICATION_BATCH_SIZE)
   return chunks;
 }
 
-export async function invokeClaude(prompt: string, spawnCli: SpawnCliFn): Promise<string> {
-  const result = await spawnCli({
-    provider: 'claude',
-    command: 'claude',
-    args: ['-p', '--no-session-persistence'],
-    prompt,
-    pool: 'curate',
-  });
-
-  if (result.aborted) {
-    throw new Error('Claude invocation aborted during curate classification.');
-  }
-  if (result.code !== 0) {
-    const stderr = result.stderr.trim();
-    throw new Error(stderr ? `Claude exited with code ${result.code}: ${stderr}` : `Claude exited with code ${result.code}`);
-  }
-
-  return result.stdout;
-}
 
 export function validateAssignments(
   proposals: ClassificationAssignment[],
@@ -855,46 +842,110 @@ export function createCurateScheduler({
   spawnCli: SpawnCliFn;
 }): CurateHandle {
   let runtimeStarted = false;
-  const spawnCliFn = spawnCli;
   let queuedRun = false;
   let activeRun: Promise<void> | null = null;
   let retryWakeTimer: NodeJS.Timeout | null = null;
   let cachedIsGitRepo: boolean | null = null;
 
-  function isGitRepo(dir: string): boolean {
-    if (cachedIsGitRepo !== null) {
-      return cachedIsGitRepo;
+  const root = kb.markdownRoot;
+
+  // -- Claude invocation (KB-scoped) --
+
+  async function runClaude(prompt: string, extraArgs?: string[]): Promise<string> {
+    const result = await spawnCli({
+      provider: 'claude',
+      command: 'claude',
+      args: ['-p', '--no-session-persistence', ...(extraArgs ?? [])],
+      prompt,
+      cwd: root,
+      pool: 'curate',
+    });
+
+    if (result.aborted) {
+      throw new Error('Claude invocation aborted during curate.');
+    }
+    if (result.code !== 0) {
+      const stderr = result.stderr.trim();
+      throw new Error(stderr ? `Claude exited with code ${result.code}: ${stderr}` : `Claude exited with code ${result.code}`);
     }
 
+    return result.stdout;
+  }
+
+  // -- Git operations (all use closure-bound root) --
+
+  function git(args: string[], timeoutMs = 15000): string {
+    return execFileSync('git', ['-C', root, ...args], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: timeoutMs,
+    });
+  }
+
+  function gitCommit(message: string): void {
     try {
-      execFileSync('git', ['-C', dir, 'rev-parse', '--is-inside-work-tree'], {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: 5000,
-      });
+      git(['commit', '-m', message], 10000);
+    } catch {
+      git(['-c', 'user.name=Claude', '-c', 'user.email=noreply@anthropic.com',
+        'commit', '-m', message], 10000);
+    }
+  }
+
+  function isGitRepo(): boolean {
+    if (cachedIsGitRepo !== null) return cachedIsGitRepo;
+    try {
+      git(['rev-parse', '--is-inside-work-tree'], 5000);
       cachedIsGitRepo = true;
     } catch {
       cachedIsGitRepo = false;
     }
-
     return cachedIsGitRepo;
   }
 
-  function ensureKbGitignore(): void {
-    const gitignorePath = join(kb.markdownRoot, '.gitignore');
+  function isGitSyncEnabled(): boolean {
+    if (process.env.CORAL_KB_GIT_SYNC !== '1') return false;
+    try {
+      return git(['remote'], 5000).trim().length > 0;
+    } catch {
+      return false;
+    }
+  }
 
+  function getDefaultBranch(): string {
+    try {
+      const ref = git(['symbolic-ref', 'refs/remotes/origin/HEAD', '--short'], 5000).trim();
+      return ref.replace(/^origin\//, '') || 'main';
+    } catch {
+      return 'main';
+    }
+  }
+
+  function hasStagedChanges(): boolean {
+    try {
+      git(['diff', '--cached', '--quiet'], 5000);
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
+  function hasConflictMarkers(): boolean {
+    try {
+      git(['diff', '--check'], 5000);
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
+  function ensureKbGitignore(): void {
+    const gitignorePath = join(root, '.gitignore');
     try {
       let existing = '';
-      try {
-        existing = readFileSync(gitignorePath, 'utf-8');
-      } catch {
-        // no existing .gitignore
-      }
+      try { existing = readFileSync(gitignorePath, 'utf-8'); } catch { /* no file */ }
       const lines = existing.split('\n');
       const missing = GITIGNORE_ENTRIES.filter((entry) => !lines.some((line) => line.trim() === entry));
-      if (missing.length === 0) {
-        return;
-      }
+      if (missing.length === 0) return;
 
       if (existing.length === 0) {
         writeFileSync(gitignorePath, `${GITIGNORE_HEADER}\n${missing.join('\n')}\n`, 'utf-8');
@@ -906,75 +957,56 @@ export function createCurateScheduler({
     }
   }
 
-  function isGitSyncEnabled(root: string): boolean {
-    if (process.env.CORAL_KB_GIT_SYNC !== '1') {
-      return false;
-    }
-    try {
-      return gitExec(root, ['remote'], 5000).trim().length > 0;
-    } catch {
-      return false;
-    }
-  }
+  async function resolveConflictsWithClaude(): Promise<boolean> {
+    const prompt = 'Git rebase conflict in KB repository. Resolve all conflicts in the working tree:'
+      + ' keep both changes where possible, prefer the incoming (remote) version for'
+      + ' frontmatter metadata (tags, principles, updatedAt), and preserve local body'
+      + ' content. Stage all resolved files with git add.';
 
-  function getDefaultBranch(root: string): string {
-    try {
-      const ref = gitExec(root, ['symbolic-ref', 'refs/remotes/origin/HEAD', '--short'], 5000).trim();
-      return ref.replace(/^origin\//, '') || 'main';
-    } catch {
-      return 'main';
-    }
-  }
-
-  function gitExec(root: string, args: string[], timeoutMs = 15000): string {
-    return execFileSync('git', ['-C', root, ...args], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: timeoutMs,
-    });
-  }
-
-  function gitSync(): void {
-    const root = kb.markdownRoot;
-    if (!isGitRepo(root) || !isGitSyncEnabled(root)) {
-      return;
-    }
-
-    const branch = getDefaultBranch(root);
-
-    try {
-      gitExec(root, ['fetch', 'origin'], 30000);
-
-      let stashed = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const status = gitExec(root, ['status', '--porcelain'], 5000).trim();
-        if (status.length > 0) {
-          gitExec(root, ['stash', 'push', '-u', '-m', 'curate-sync']);
-          stashed = true;
+        await runClaude(prompt, ['--permission-mode', 'bypassPermissions', '--model', 'sonnet']);
+      } catch {
+        return false;
+      }
+
+      if (hasConflictMarkers()) continue;
+
+      try {
+        git(['add', '-A'], 5000);
+        git(['-c', 'user.name=Claude', '-c', 'user.email=noreply@anthropic.com',
+          'rebase', '--continue'], 30000);
+        return true;
+      } catch {
+        // rebase --continue failed — may have another conflicting commit
+      }
+    }
+    return false;
+  }
+
+  async function gitSync(): Promise<void> {
+    if (!isGitRepo() || !isGitSyncEnabled()) return;
+
+    const branch = getDefaultBranch();
+
+    try {
+      git(['fetch', 'origin'], 30000);
+
+      // Commit dirty state (e.g. from Obsidian Sync) instead of stashing.
+      try {
+        if (git(['status', '--porcelain'], 5000).trim().length > 0) {
+          git(['add', '-A'], 5000);
+          gitCommit('auto: pre-sync snapshot');
         }
       } catch {
-        // stash failure — proceed without stashing
+        // commit failure — proceed with rebase anyway
       }
 
       try {
-        gitExec(root, ['rebase', `origin/${branch}`]);
+        git(['rebase', `origin/${branch}`]);
       } catch {
-        try { gitExec(root, ['rebase', '--abort'], 5000); } catch { /* no-op */ }
-        try {
-          gitExec(root, ['merge', `origin/${branch}`, '-X', 'theirs', '--no-edit']);
-        } catch {
-          // best-effort — local state is still valid, push will retry next cycle
-        }
-      }
-
-      if (stashed) {
-        try {
-          gitExec(root, ['stash', 'pop']);
-        } catch {
-          // Stash pop conflict — drop stash and recover files from the stash ref.
-          // This preserves new notes that don't conflict while accepting theirs for conflicts.
-          try { gitExec(root, ['checkout', '--theirs', '.'], 5000); } catch { /* no-op */ }
-          try { gitExec(root, ['stash', 'drop'], 5000); } catch { /* no-op */ }
+        if (!await resolveConflictsWithClaude()) {
+          try { git(['rebase', '--abort'], 5000); } catch { /* no-op */ }
         }
       }
     } catch {
@@ -983,73 +1015,18 @@ export function createCurateScheduler({
   }
 
   function gitPush(): void {
-    const root = kb.markdownRoot;
-    if (!isGitRepo(root) || !isGitSyncEnabled(root)) {
-      return;
-    }
-
-    const branch = getDefaultBranch(root);
-
-    try {
-      gitExec(root, ['push', 'origin', branch], 30000);
-    } catch {
-      try {
-        gitExec(root, ['pull', '--rebase', 'origin', branch], 30000);
-        gitExec(root, ['push', 'origin', branch], 30000);
-      } catch {
-        // best-effort — will push next cycle
-      }
-    }
+    if (!isGitRepo() || !isGitSyncEnabled()) return;
+    try { git(['push', 'origin', getDefaultBranch()], 30000); } catch { /* next cycle */ }
   }
 
   function gitAutoCommit(message: string): void {
-    const root = kb.markdownRoot;
-    if (!isGitRepo(root)) {
-      return;
-    }
-
+    if (!isGitRepo()) return;
     try {
-      execFileSync('git', ['-C', root, 'add', 'notes/', 'principles/', '.gitignore'], {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: 10000,
-      });
-
-      try {
-        execFileSync('git', ['-C', root, 'diff', '--cached', '--quiet'], {
-          encoding: 'utf-8',
-          stdio: ['pipe', 'pipe', 'pipe'],
-          timeout: 5000,
-        });
-        return;
-      } catch {
-        // diff --cached exits non-zero when staged changes exist
-      }
-
-      try {
-        execFileSync('git', ['-C', root, 'commit', '-m', message], {
-          encoding: 'utf-8',
-          stdio: ['pipe', 'pipe', 'pipe'],
-          timeout: 10000,
-        });
-      } catch {
-        try {
-          execFileSync('git', [
-            '-C', root,
-            '-c', 'user.name=Claude',
-            '-c', 'user.email=noreply@anthropic.com',
-            'commit', '-m', message,
-          ], {
-            encoding: 'utf-8',
-            stdio: ['pipe', 'pipe', 'pipe'],
-            timeout: 10000,
-          });
-        } catch {
-          // best-effort - commit failure doesn't break curate
-        }
-      }
+      git(['add', 'notes/', 'principles/', '.gitignore'], 10000);
+      if (!hasStagedChanges()) return;
+      gitCommit(message);
     } catch {
-      // git add failure - best-effort
+      // best-effort
     }
   }
 
@@ -1164,7 +1141,7 @@ export function createCurateScheduler({
 
       const firstPassClaim = (
         (today !== state.lastRunDay && pendingNotes.length >= CURATE_MIN_CLAIM_SIZE)
-        || pendingNotes.length >= CURATE_MAX_CLAIM_SIZE
+        || pendingNotes.length >= CURATE_IMMEDIATE_CLAIM_SIZE
       );
       const retryBlocked = compareCursorDates(state.retryNotBefore, now) > 0
         && !pendingExtendsBeyondCursor(pendingNotes, state.lastAttemptedThrough);
@@ -1214,7 +1191,7 @@ export function createCurateScheduler({
 
     for (const batch of chunkNotes(claim.notes, CLASSIFICATION_BATCH_SIZE)) {
       const prompt = buildClassificationPrompt(batch, tagVocab, principleNames);
-      const raw = await invokeClaude(prompt, spawnCliFn);
+      const raw = await runClaude(prompt);
       const { entries, parseFailed } = parseJsonArray(raw);
       if (parseFailed) {
         throw new CurateJsonParseError('classification');
@@ -1544,7 +1521,7 @@ export function createCurateScheduler({
 
     const principleNames = buildPrincipleNames(currentIndex);
     const prompt = buildDiscoveryPrompt(eligibleNotes, principleNames);
-    const raw = await invokeClaude(prompt, spawnCliFn);
+    const raw = await runClaude(prompt);
     const { entries, parseFailed } = parseJsonArray(raw);
     if (parseFailed) {
       throw new CurateJsonParseError('discovery');
@@ -1591,7 +1568,7 @@ export function createCurateScheduler({
   }
 
   async function runScheduledCurate(): Promise<CurateCursor | null> {
-    gitSync();
+    await gitSync();
     let lastCompletedThrough: CurateCursor | null = null;
     const allCohortSlugs: string[] = [];
 

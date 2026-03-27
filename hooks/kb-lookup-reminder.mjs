@@ -8,8 +8,8 @@
  */
 
 import { readdirSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { readStdin, resolveKbRoot } from './lib/hook-utils.mjs';
 
 const MASKING_RE = /\|\s*tee\b|\|\|\s*(true|:)\b/;
 const FAILURE_RE = /Failed to build|BUILD FAILED|Traceback \(most recent call last\)|npm ERR!|^error\[E\d+\]/m;
@@ -42,19 +42,4 @@ try {
   }) + '\n');
 } catch {
   process.exit(0);
-}
-
-function resolveKbRoot() {
-  const custom = process.env.CORAL_KB_PATH;
-  if (custom) return custom.startsWith('~') ? join(homedir(), custom.slice(1)) : custom;
-  return join(homedir(), '.coral', 'kb');
-}
-
-function readStdin() {
-  return new Promise(resolve => {
-    let data = '';
-    process.stdin.on('data', chunk => { data += chunk; });
-    process.stdin.on('end', () => resolve(data));
-    process.stdin.on('error', () => resolve('{}'));
-  });
 }

@@ -187,13 +187,15 @@ export class ExecutionService {
   private readonly sessionManager: SessionManager;
   private readonly abortRegistry: AbortRegistry;
   private readonly backendNamespace: string;
+  private readonly bundleHash: string;
   private readonly progressStore: ProgressStore;
   private readonly jobPools = new Map<string, LaunchPool>();
 
-  constructor(ctx: CallerContext, progressStore?: ProgressStore) {
+  constructor(ctx: CallerContext, progressStore?: ProgressStore, bundleHash?: string) {
     this.sessionManager = new SessionManager(ctx.projectRoot);
     this.abortRegistry = new AbortRegistry();
     this.backendNamespace = resolveBackendNamespace(ctx.pluginRoot);
+    this.bundleHash = bundleHash ?? 'unknown';
     this.progressStore = progressStore ?? new ProgressStore();
   }
 
@@ -210,6 +212,7 @@ export class ExecutionService {
       provider: providerName,
       projectRoot,
       backendNamespace: this.backendNamespace,
+      bundleHash: this.bundleHash,
       jobKind: options.jobKind,
       initialPhase: options.initialPhase ?? 'launching',
     });

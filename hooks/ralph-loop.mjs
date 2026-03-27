@@ -14,6 +14,7 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { readStdin, sweepStale } from './lib/hook-utils.mjs';
 
 const DEFAULT_STATE = {
   prompt: '',
@@ -68,8 +69,11 @@ try {
   const state = readState(statePath);
   if (!state || !state.prompt) process.exit(0);
 
+  const stateDir = dirname(statePath);
+
   if (state.maxIterations > 0 && state.iteration >= state.maxIterations) {
     deleteFile(statePath);
+    sweepStale(stateDir, 'ralph-state-', 24 * 60 * 60_000);
     process.exit(0);
   }
 
@@ -81,6 +85,7 @@ try {
 
     if (promiseText && normalizeWhitespace(promiseText) === normalizeWhitespace(state.completionPromise)) {
       deleteFile(statePath);
+      sweepStale(stateDir, 'ralph-state-', 24 * 60 * 60_000);
       process.exit(0);
     }
   }
@@ -240,11 +245,3 @@ function writeJson(value) {
   console.log(JSON.stringify(value));
 }
 
-function readStdin() {
-  return new Promise(resolve => {
-    let data = '';
-    process.stdin.on('data', chunk => { data += chunk; });
-    process.stdin.on('end', () => resolve(data));
-    process.stdin.on('error', () => resolve('{}'));
-  });
-}

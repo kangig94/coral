@@ -128,19 +128,19 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
       ## Round N ({Round Label})
 
-      **If `--deep`**: use the resolver's Synthesis Report directly (Classification Table, Vyabhicharita, Constraint Collisions, Applied Changes, Deferred/Diverged items, Continue Decision).
-
-      **Otherwise**: produce the summary yourself after synthesis:
-
       | # | Source | Finding | Severity | Level | Classification |
       |---|--------|---------|----------|-------|----------------|
       | 1 | Critic #1/#4 | Description | HIGH | FRAME | Adopt |
       | 2 | Both | Description | MEDIUM | — | Adapt |
 
+      - **If `--deep`**: extract from the resolver's Classification Table. Source = Reviewer name. Do NOT summarize, paraphrase, or omit columns — the user needs the full table to audit the review.
+      - **Otherwise**: produce yourself after synthesis.
       - Deduplicate overlapping findings (use "Both" as source)
       - Order by Severity (CRITICAL > HIGH > MEDIUM > LOW)
 
       **Changes Applied**: [what was edited, with rationale for each change]
+
+      **Continue Decision** (`--deep` only): **{Verdict}** — {Rationale}
 
     **4d. Exit Condition**
 

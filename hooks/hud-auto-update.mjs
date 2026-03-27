@@ -3,18 +3,14 @@ import { readFileSync, copyFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { readStdin } from './lib/hook-utils.mjs';
 
 function fileHash(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
 try {
-  let data = '';
-  await new Promise((resolve) => {
-    process.stdin.on('data', (chunk) => { data += chunk; });
-    process.stdin.on('end', resolve);
-    process.stdin.on('error', resolve);
-  });
+  await readStdin();
 
   const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
   if (!pluginRoot) process.exit(0);

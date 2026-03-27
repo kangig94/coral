@@ -17,7 +17,7 @@ vi.mock('node:os', async () => {
 
 async function loadKbModules() {
   vi.resetModules();
-  const [{ promote }, { update }, { deleteFn }, { readNote }, runtime, paths, frontmatter] = await Promise.all([
+  const [{ promote }, { update }, { deleteFn }, { readEntry }, runtime, paths, frontmatter] = await Promise.all([
     import('../promote.js'),
     import('../update.js'),
     import('../delete.js'),
@@ -30,7 +30,7 @@ async function loadKbModules() {
     promote,
     update,
     deleteFn,
-    readNote,
+    readEntry,
     createKbRuntime: runtime.createKbRuntime,
     paths,
     frontmatter,
@@ -267,7 +267,7 @@ Original body.
   });
 
   it('reads a note by slug and returns structured content without timestamps', async () => {
-    const { readNote, paths } = await loadKbModules();
+    const { readEntry, paths } = await loadKbModules();
     mkdirSync(paths.notesDir(), { recursive: true });
     writeFileSync(join(paths.notesDir(), 'coral-kb-read.md'), `---
 tags: [coral, kb]
@@ -283,7 +283,7 @@ updatedAt: 2026-03-20T00:00:00.000Z
 Content here.
 `, 'utf-8');
 
-    const result = readNote({ note: 'coral-kb-read' });
+    const result = readEntry({ note: 'coral-kb-read' });
     expect(result).toEqual({
       note: 'coral-kb-read',
       title: 'Read Test',
@@ -294,7 +294,7 @@ Content here.
   });
 
   it('throws when reading a non-existent note', async () => {
-    const { readNote } = await loadKbModules();
-    expect(() => readNote({ note: 'does-not-exist' })).toThrow();
+    const { readEntry } = await loadKbModules();
+    expect(() => readEntry({ note: 'does-not-exist' })).toThrow();
   });
 });

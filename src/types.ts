@@ -152,6 +152,7 @@ export interface PersistedStatusRecord {
   provider: string;
   projectRoot: string;
   backendNamespace: string;
+  bundleHash?: string;
   jobKind?: JobKind;
   phase: JobPhase;
   launch: {

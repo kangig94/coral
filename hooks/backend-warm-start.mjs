@@ -4,14 +4,10 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { readStdin } from './lib/hook-utils.mjs';
 
 try {
-  let data = '';
-  await new Promise((resolve) => {
-    process.stdin.on('data', (chunk) => { data += chunk; });
-    process.stdin.on('end', resolve);
-    process.stdin.on('error', resolve);
-  });
+  await readStdin();
 
   const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
   if (!pluginRoot) process.exit(0);

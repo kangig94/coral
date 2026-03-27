@@ -4,7 +4,7 @@ declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import {
@@ -78,6 +78,7 @@ import { handleWorkflow } from '../workflow/handler.js';
 import {
   belongsToNamespace,
   isLivePhase,
+  isTerminalPhase,
   readBackendNamespace,
   type PersistedProgressRecord,
   type PersistedStatusRecord,
@@ -90,7 +91,7 @@ import { deleteFn as kbDeleteFn } from '../kb/delete.js';
 import { writeMemo } from '../kb/memo.js';
 import { kbRuntimeDir } from '../kb/paths.js';
 import { promote as kbPromote } from '../kb/promote.js';
-import { readNote } from '../kb/read.js';
+import { readEntry } from '../kb/read.js';
 import { reindex as kbReindex } from '../kb/reindex.js';
 import { createKbRuntime, type KbRuntime } from '../kb/runtime.js';
 import { searchKb } from '../kb/search.js';
@@ -155,6 +156,7 @@ type BackendServerOptions = {
   routeToolCallFn?: RouteToolCallFn;
   closeServerFn?: (server: Server) => Promise<void>;
   recoverOrphanedJobsFn?: (namespace: string) => void;
+  cleanupStaleJobsFn?: (currentBundleHash: string) => void;
   markJobsAsErrorFn?: (namespace: string, message: string) => void;
   killAllChildrenFn?: () => void;
   createKbSubsystemFn?: CreateKbSubsystemFn;
@@ -504,6 +506,22 @@ function recoverOrphanedJobs(progressStore: ProgressStore, namespace: string, lo
       log(`Recovered orphaned job: ${status.jobId}\n`);
     } catch (err) {
       log(`Failed to recover orphaned job ${status.jobId}: ${formatError(err)}\n`);
+    }
+  }
+}
+
+function cleanupStaleJobs(progressStore: ProgressStore, currentBundleHash: string, log: (message: string) => void): void {
+  for (const jobId of progressStore.listJobIds()) {
+    const status = progressStore.readStatus(jobId);
+    if (!status) continue;
+    if (!isTerminalPhase(status.phase)) continue;
+    if (!status.bundleHash || status.bundleHash === currentBundleHash) continue;
+
+    try {
+      rmSync(progressStore.jobDir(jobId), { recursive: true, force: true });
+      log(`Cleaned up stale job: ${jobId}\n`);
+    } catch {
+      // best-effort
     }
   }
 }
@@ -886,7 +904,7 @@ export async function routeToolCall(
         case 'kb_read': {
           const note = requireString(args, 'note');
           if (note === null) return toolError('invalid_request', { message: 'note is required' });
-          result = readNote({ note });
+          result = readEntry({ note }, ctx.projectRoot);
           break;
         }
         case 'kb_promote': {
@@ -1084,7 +1102,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     process.stderr.write(message);
   });
   const createExecutionService = options.createExecutionService
-    ?? ((ctx: CallerContext) => new DefaultExecutionService(ctx, progressStore));
+    ?? ((ctx: CallerContext) => new DefaultExecutionService(ctx, progressStore, bundleHash));
   const acquireLockFn = options.acquireLockFn ?? acquireLock;
   const writeBackendInfoFn = options.writeBackendInfoFn ?? writeBackendInfo;
   const removeBackendInfoIfOwnerFn = options.removeBackendInfoIfOwnerFn ?? removeBackendInfoIfOwner;
@@ -1093,6 +1111,9 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const closeServerFn = options.closeServerFn ?? closeServer;
   const recoverOrphanedJobsFn = options.recoverOrphanedJobsFn ?? ((currentNamespace: string) => {
     recoverOrphanedJobs(progressStore, currentNamespace, log);
+  });
+  const cleanupStaleJobsFn = options.cleanupStaleJobsFn ?? ((currentBundleHash: string) => {
+    cleanupStaleJobs(progressStore, currentBundleHash, log);
   });
   const markJobsAsErrorFn = options.markJobsAsErrorFn ?? ((currentNamespace: string, message: string) => {
     markJobsAsError(progressStore, currentNamespace, message);
@@ -1554,7 +1575,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         instanceId,
         uptimeMs: now() - startedAt,
         activeChildren: activeChildren.size,
-        activeJobs: progressStore.liveJobCount(),
+        activeJobs: progressStore.liveJobCount(bundleHash),
         queueDepth: queueDepth(),
         inflightRequests: idleTimer.inflightRequests,
         env,
@@ -1703,6 +1724,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       subscribeSessionIndex();
       sessionIndex.hydrate(SessionManager.listShards());
       recoverOrphanedJobsFn(namespace);
+      cleanupStaleJobsFn(bundleHash);
       const bindHost = process.env.CORAL_BACKEND_BIND ?? '127.0.0.1';
       const { port, host } = await listen(server, bindHost);
       startedAt = now();
@@ -1734,7 +1756,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       idleTimer.startWatching(
         () => lifecycle === 'running'
           && activeChildren.size === 0
-          && progressStore.liveJobCount() === 0
+          && progressStore.liveJobCount(bundleHash) === 0
           && idleTimer.inflightRequests === 0
           && !hasRunningSessions(discussRegistry)
           && !(kbSubsystem?.curateScheduler.isRunning() ?? false),

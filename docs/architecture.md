@@ -82,7 +82,7 @@
 
 ## AX Internal Dispatch
 
-How the AX MCP server routes tool calls internally. The MCP stdio proxy (`bridge/server.ts`) forwards all non-wait calls to the backend daemon via HTTP. The backend's `routeToolCall()` function is the top-level router: provider lookup, optional coral dispatch, then provider execution.
+How the AX MCP server routes tool calls internally. The MCP stdio proxy (`src/bridge/server.ts`) forwards all non-wait calls to the backend daemon via HTTP. The backend's `routeToolCall()` function is the top-level router: provider lookup, optional coral dispatch, then provider execution.
 
 ### MCP Proxy Layer
 
@@ -94,7 +94,7 @@ How the AX MCP server routes tool calls internally. The MCP stdio proxy (`bridge
                               │ stdio (JSON-RPC)
                               ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│  bridge/server.ts — MCP stdio proxy (composition root)           │
+│  src/bridge/server.ts — MCP stdio proxy (composition root)       │
 │                                                                  │
 │  name === "wait"    ? → streamWait() via POST /wait/stream (SSE) │
 │  name === "backend" ? → handleBackendToolCall() (bridge-local)   │
@@ -150,7 +150,7 @@ provider adapter (`providers/<name>/adapter.ts`)
 wait({ jobs: [jobId1, jobId2], timeout_seconds, cursor })
         │
         ▼
-bridge/server.ts (MCP proxy)
+src/bridge/server.ts (MCP proxy)
         │
         ├─ ensureBackend() → get port/token
         └─ streamWait(jobIds, timeout, backendInfo, cursor)
@@ -170,7 +170,7 @@ execution/server.ts handleWaitStream()
             └─ yield SSE events: progress / terminal / timeout
                 │
                 ▼
-bridge/server.ts parseSseBlock() → MCP progress notifications
+src/bridge/server.ts parseSseBlock() → MCP progress notifications
 ```
 
 Provider-agnostic: monitors any job regardless of whether it was launched by codex or claude. Completed terminal results always include `result.path`; `result.content` is optional enrichment when the serialized response fits within the inline budget. Workflow callers should use `result.content ?? Read(result.path)`. Provider callers should prefer `result.content` and treat `result.path` as a best-effort recovery artifact when content is absent.
@@ -219,7 +219,7 @@ handleWorkflow()                              workflow/handler.ts
               │            │             │          │          │          │
               └────────┬───┘             │          │          │          │
                        │                 │          │          │          │
-         bridge/server.ts (MCP proxy)    │          │          │          │
+         src/bridge/server.ts (MCP proxy)│          │          │          │
               │                          │          │          │   (bridge-local,
               ▼                          ▼          ▼          ▼   no HTTP)  │
          ┌────────────────────────────────────────────────────────┐
@@ -236,7 +236,7 @@ handleWorkflow()                              workflow/handler.ts
          │  │               → spawn CLI (background)              │
          │  │               → write progress to /tmp/coral-jobs/  │
          │  │                                                     │
-         │  ├─ abort → jobManager.abort()                         │
+         │  ├─ abort → abortJobs() / ExecutionService.abort()     │
          │  ├─ workflow → executeWorkflow → executePipeline       │
          │  └─ wait → SSE stream from waitStream()                │
          │           → poll /tmp/coral-jobs/ for events           │
@@ -300,11 +300,13 @@ User → /coral:discuss "AI ethics in healthcare"
      → Skill calls discuss_seed({ controversy_axes, n, seed }) → persona assignments
      → Spawns persona-generator agents in parallel (Task tool) → full personas
      → Skill calls discuss_start({ topic, agents }) → session_id
-     → execution/server.ts appends session.created + bidding.opened
-     → Backend DiscussManager owns the persisted control loop:
-        → loads latest snapshot from DiscussSessionStore
-        → launches provider turns via ExecutionService (pool: 'discuss')
-        → commits bid/speech/follow-up/synthesis event batches
+     → execution/server.ts resolves DiscussContext + DiscussSessionStore
+     → discuss-operations.ts appends session.created + bidding.opened
+     → discuss-subflows.ts collects initial bids
+     → discuss-loop.ts drives the live control loop:
+        → discuss-executor.ts launches provider turns via ExecutionService (pool: 'discuss')
+        → discuss-persistence.ts commits bid/speech/follow-up/synthesis event batches
+        → discuss-registry.ts maintains attached sessions + live watch buffers
         → eventBus emits discuss:updated after every committed batch
      → User/observer: discuss_watch (poll events), discuss_participate (bid/speak)
      → /api/discuss + /api/discuss/detail read projected snapshots
@@ -408,80 +410,106 @@ Each file is a single `SessionEntry`. Corrupt files are skipped with a warning; 
 
 ## Directory Structure
 
-```
+``` 
 coral/
 ├── .claude-plugin/              # Plugin + marketplace manifests
 ├── src/
-│   ├── types.ts                 # Shared type definitions (re-exports + execution contract types)
+│   ├── types.ts                 # Shared execution + provider contract types
 │   ├── shared/
-│   │   ├── mcp-utils.ts         # Shared MCP response utilities
-│   │   ├── schemas.ts           # Shared Zod schemas (effort levels, defaults)
+│   │   ├── mcp-utils.ts         # Shared MCP helpers and result formatting
+│   │   ├── schemas.ts           # Shared Zod schemas and defaults
+│   │   ├── sse-parser.ts        # HTTP/SSE parsing for wait streams
 │   │   └── format-progress.ts   # Progress message formatting
 │   ├── bridge/                  # MCP stdio proxy to backend daemon
-│   │   ├── server.ts            # MCP composition root (stdio transport)
-│   │   ├── backend-tool.ts      # Bridge-local backend tool (status/shutdown, never proxied)
-│   │   └── backend-client.ts    # HTTP client (ensureBackend, proxyToolCall, streamWait, getBackendStatus, shutdownBackend)
+│   │   ├── server.ts            # MCP stdio proxy composition root
+│   │   ├── backend-tool.ts      # Bridge-local backend tool (status/shutdown)
+│   │   └── backend-client.ts    # HTTP client for backend lifecycle + tool proxying
+│   ├── client/
+│   │   ├── backend-health.ts    # Backend health response contracts
+│   │   ├── backend-lifecycle.ts # Backend startup/ensure helpers
+│   │   ├── discuss.ts           # Discuss summary/detail/watch DTO builders
+│   │   ├── paths.ts             # Filesystem path resolution for Coral data
+│   │   └── readers.ts           # Read persisted discuss/job/backend state
 │   ├── execution/               # Persistent HTTP backend daemon
 │   │   ├── server.ts            # HTTP server, routing, lifecycle, singleton startup
-│   │   ├── service.ts           # ExecutionService (start/resume/fork/coralDispatch/wait)
+│   │   ├── service.ts           # ExecutionService (start/resume/fork/coralDispatch/wait/workflow)
+│   │   ├── abort-registry.ts    # Abort bookkeeping for live jobs
 │   │   ├── backend-lock.ts      # Singleton file lock (~/.claude/coral/backend.lock)
 │   │   ├── backend-info.ts      # Connection info persistence (~/.claude/coral/backend.json)
+│   │   ├── event-bus.ts         # In-process backend event fanout
 │   │   ├── idle-timer.ts        # Auto-shutdown on idle (CORAL_BACKEND_IDLE_MS)
-│   │   ├── job-manager.ts       # Job allocation, tracking, abort, signal management
 │   │   ├── progress-store.ts    # Event storage/replay (/tmp/coral-jobs/)
+│   │   ├── session-index.ts     # Session discovery across project roots
 │   │   ├── session-manager.ts   # Session persistence (~/.claude/coral/sessions/)
-│   │   ├── engine.ts            # CLI spawn, child tracking, kill lifecycle
+│   │   ├── engine.ts            # CLI spawn, queueing, and child lifecycle
 │   │   ├── instruction.ts       # Coral agent prompt/system instruction building
-│   │   └── request-context.ts   # CallerContext + ToolRequest type definitions
+│   │   ├── request-context.ts   # CallerContext + ToolRequest type definitions
+│   │   ├── discuss-operations.ts # Primary discuss runtime entry (imported by server.ts)
+│   │   ├── discuss-loop.ts      # Live discuss control-loop runner
+│   │   ├── discuss-subflows.ts  # Bid/speech/follow-up/synthesis subflows
+│   │   ├── discuss-persistence.ts # Commit/rebuild helpers around the session store
+│   │   ├── discuss-registry.ts  # Attached live sessions + watch buffering
+│   │   ├── discuss-executor.ts  # Provider execution + attempt bookkeeping
+│   │   ├── discuss-context.ts   # Shared discuss context types + DiscussManagerError
+│   │   ├── discuss-context-registry.ts # Project-root registry of discuss contexts
+│   │   ├── discuss-prompts.ts   # Bid/speech prompt construction
+│   │   └── discuss-session-store.ts # Durable discuss event log + snapshot I/O
 │   ├── coral/                   # Shared coral content resolution
 │   │   └── resolver.ts          # agents/ + skills/ resolver + metadata stripping
 │   ├── providers/               # Provider adapter system
 │   │   ├── types.ts             # Provider, ProviderRuntime, ProviderCapabilities contracts
 │   │   ├── registry.ts          # Provider registration + lookup
 │   │   ├── bootstrap.ts         # Built-in provider registration (codex + claude)
+│   │   ├── cli-detection.ts     # Shared CLI availability + auth probes
+│   │   ├── result-mapping.ts    # Provider result normalization
 │   │   ├── codex/
 │   │   │   ├── adapter.ts       # Codex Provider implementation
 │   │   │   ├── schemas.ts       # Zod input validation
 │   │   │   ├── codex-executor.ts # CLI spawn (exec/resume/fork)
-│   │   │   ├── cli-detection.ts # Codex CLI availability + auth check
 │   │   │   ├── output-parser.ts # JSONL event stream parser
 │   │   │   ├── progress.ts      # Progress message extraction from events
 │   │   │   ├── command-patterns.ts # CLI command construction
 │   │   │   └── types.ts         # Codex-specific type definitions
 │   │   └── claude/
 │   │       ├── adapter.ts       # Claude Provider implementation
-│   │       ├── types.ts         # Claude-specific type definitions
 │   │       ├── schemas.ts       # Zod input validation
-│   │       ├── cli-detection.ts # Claude CLI availability + auth check
 │   │       ├── claude-executor.ts # CLI spawn (exec/resume/fork)
 │   │       ├── output-parser.ts # JSON output parser
-│   │       └── progress.ts      # Progress message extraction from events
+│   │       ├── progress.ts      # Progress message extraction from events
+│   │       └── types.ts         # Claude-specific type definitions
 │   ├── workflow/                # Workflow pipeline executor
 │   │   ├── types.ts             # PipeAtom, PipeStep, PipelineAST
 │   │   ├── pipe-parser.ts       # DSL expression parser
 │   │   ├── schemas.ts           # Zod input validation
 │   │   ├── pipe-executor.ts     # Launch, retry, wait, output formatting
-│   │   └── handler.ts           # Entry point (DI from backend router)
+│   │   └── handler.ts           # Backend router entry point
 │   ├── kb/                      # Knowledge base tools + storage adapters
-│   │   ├── contracts.ts         # KB tool schemas + handler bindings
-│   │   ├── detect.ts            # Mode detection, cache state, runtime context
-│   │   ├── paths.ts             # KB path and memo boundary helpers
-│   │   ├── frontmatter.ts       # Note/principle parsing + serialization
-│   │   ├── orama-factory.ts      # Orama DB factory (schema, tokenizer, pre-normalization)
-│   │   ├── search.ts            # Unified BM25 text search via Orama
-│   │   ├── memo.ts              # Auto-generated memo creation
+│   │   ├── runtime.ts           # KbRuntime: index state, cache, mutation lock, adapter lifecycle
+│   │   ├── search.ts            # Orama-backed search
+│   │   ├── read.ts              # Note + memo reads
+│   │   ├── memo.ts              # Project-scoped memo creation
 │   │   ├── promote.ts           # Memo -> note promotion
-│   │   ├── update.ts            # Partial note updates
+│   │   ├── update.ts            # Note mutation
 │   │   ├── delete.ts            # Note deletion
-│   │   ├── mutation-helpers.ts   # Shared mutation utilities (atomic write, stale marking)
-│   │   ├── reindex.ts           # JSON + Orama index rebuild
-│   │   ├── reindex-enhanced.ts  # LanceDB table rebuild (future vector)
-│   │   ├── types.ts             # KB type definitions
-│   │   └── lancedb-runtime.ts   # Runtime-only LanceDB adapter
+│   │   ├── curate.ts            # Background metadata/principle curation scheduler
+│   │   ├── curate-state.ts      # Curate cursor, retries, pending discovery state
+│   │   ├── curate-tags.ts       # Tag cleanup + normalization
+│   │   ├── frontmatter.ts       # Markdown frontmatter parsing + serialization
+│   │   ├── validation.ts        # Slug/text validation helpers
+│   │   ├── mutation-helpers.ts  # Atomic writes + index mutation helpers
+│   │   ├── text-artifacts.ts    # Text index rebuilds + Orama snapshots
+│   │   ├── orama-factory.ts     # Orama schema/tokenizer construction
+│   │   ├── reindex.ts           # Full text/hybrid index rebuild entry
+│   │   ├── reindex-enhanced.ts  # LanceDB rebuild adapter hook
+│   │   ├── paths.ts             # KB notes/principles/runtime path helpers
+│   │   ├── types.ts             # KB result + input types
+│   │   └── lancedb-runtime.ts   # Runtime-only LanceDB adapter loader
 │   └── discuss/                 # Discuss domain + projections
 │       ├── events.ts            # Domain event union + persisted runtime types
 │       ├── reducer.ts           # Event replay into snapshot state
 │       ├── projections.ts       # Control/audit/watch projections
+│       ├── schemas.ts           # Tool input schemas for discuss_* APIs
+│       ├── state-helpers.ts     # Domain state helpers
 │       ├── state-machine.ts     # Pure deciders: state -> event batches
 │       ├── transcript.ts        # Transcript rendering helpers
 │       ├── persona-seed.ts      # Persona sampling (k-DPP)
@@ -495,18 +523,26 @@ coral/
 ├── skills/                      # Slash command SKILL.md files (one dir per skill)
 ├── agents/                      # Agent protocol definitions
 ├── hooks/
-│   ├── hooks.json               # Hook config (matcher, timeout)
-│   ├── backend-warm-start.mjs   # SessionStart backend daemon pre-spawn
-│   ├── kb-lookup-reminder.mjs   # PostToolUseFailure KB hint
-│   ├── silent-failure-detector.mjs # PostToolUse silent-failure detector
-│   ├── kb-memo-reminder.mjs     # PreToolUse memo hint
-│   ├── kb-promote-gate.mjs  # Stop/Compact promotion hint
-│   └── hud-auto-update.mjs     # SessionStart HUD auto-update
+│   ├── hooks.json               # Hook event wiring and timeouts
+│   ├── backend-warm-start.mjs   # SessionStart backend pre-spawn
+│   ├── cli-resolve.mjs          # PreToolUse Bash CLI path resolution
+│   ├── coral-skill-vars.mjs     # Inject Coral skill variables before skill runs
+│   ├── hud-auto-update.mjs      # SessionStart HUD refresh
+│   ├── kb-lookup-reminder.mjs   # KB lookup reminders after Bash failures/use
+│   ├── kb-memo-reminder.mjs     # Memo reminder on user prompt submit
+│   ├── kb-promote-gate.mjs      # Stop/submit/compact promotion gate
+│   ├── post-compact.mjs         # Post-compact cleanup
+│   ├── pre-compact.mjs          # Pre-compact checkpointing
+│   ├── ralph-loop.mjs           # Ralph loop guardrails
+│   ├── session-start.mjs        # SessionStart INJECT.md / project bootstrap
+│   └── lib/
+│       └── hook-utils.mjs       # Shared stdin/path helpers for hooks
 ├── scripts/
 │   └── build-server.mjs         # esbuild bundling + version sync
 ├── bridge/
 │   ├── coral-ax.cjs             # MCP stdio proxy bundle (committed)
-│   └── coral-backend.cjs        # HTTP backend daemon bundle (committed)
+│   ├── coral-backend.cjs        # HTTP backend daemon bundle (committed)
+│   └── coral-cli.cjs            # Parallel Bash-tool client bundle (committed)
 ├── docs/                        # Documentation
 ├── vitest.config.ts
 ├── package.json
@@ -514,111 +550,164 @@ coral/
 └── .gitignore
 ```
 
+The current hook surface is `hooks.json`, 11 top-level hook scripts, and the shared `hooks/lib/hook-utils.mjs` helper library. `hooks/hooks.json` wires them across `SessionStart`, `PreCompact`, `PostToolUseFailure`, `PostToolUse`, `UserPromptSubmit`, `PreToolUse`, and `Stop`.
+
 ## Module Dependency Graph
 
 ### AX Server (`ax`) — Bridge + Backend
 
 ```
-bridge/server.ts                        (MCP stdio proxy — composition root)
-  ├── bridge/backend-tool.ts            (bridge-local backend tool: handler, descriptor, buildToolList)
-  │   ├── bridge/backend-client.ts      (getBackendStatus, shutdownBackend)
-  │   └── shared/mcp-utils.ts
-  └── bridge/backend-client.ts          (HTTP client: ensureBackend, proxyToolCall, streamWait)
-      ├── execution/backend-info.ts     (read connection info)
-      ├── execution/backend-lock.ts     (lock path constant)
-      └── shared/mcp-utils.ts
+src/bridge/server.ts                    (MCP stdio proxy — composition root)
+  ├── src/bridge/backend-tool.ts        (bridge-local backend tool: handler, descriptor, buildToolList)
+  │   ├── src/bridge/backend-client.ts  (getBackendStatus, shutdownBackend)
+  │   └── src/shared/mcp-utils.ts
+  ├── src/bridge/backend-client.ts      (ensureBackend, proxyToolCall, streamWait)
+  │   ├── src/client/backend-lifecycle.ts
+  │   ├── src/client/backend-health.ts
+  │   ├── src/execution/backend-info.ts
+  │   ├── src/shared/mcp-utils.ts
+  │   └── src/shared/sse-parser.ts
+  └── src/shared/{mcp-utils,schemas}.ts
 
-execution/server.ts                     (HTTP daemon — composition root)
-  ├── execution/backend-lock.ts         (singleton lock: acquireLock, removeLockIfOwner)
-  ├── execution/backend-info.ts         (connection info persistence: write/remove)
-  ├── execution/idle-timer.ts           (auto-shutdown on idle)
-  ├── execution/engine.ts              (activeChildren, killAllChildren)
-  ├── execution/progress-store.ts       (ProgressStore: job dirs, event I/O)
-  ├── execution/request-context.ts      (CallerContext, ToolRequest types)
-  ├── providers/registry.ts + bootstrap.ts (provider lookup + registration)
-  ├── workflow/handler.ts               (pipeline handler)
-  └── execution/service.ts             (ExecutionService — business logic)
-      ├── execution/job-manager.ts      (job allocation, tracking, abort, signals)
-      ├── execution/progress-store.ts   (event storage/replay, /tmp/coral-jobs/)
-      ├── execution/session-manager.ts  (session persistence, ~/.claude/coral/sessions/)
-      ├── execution/engine.ts           (CLI spawn/kill/backpressure)
-      ├── execution/instruction.ts      (coral agent instruction building)
-      ├── coral/resolver.ts             (agent/skill content resolution)
-      ├── providers/registry.ts         (provider lookup)
-      ├── shared/schemas.ts             (CORAL_DEFAULT_EFFORT)
-      ├── workflow/pipe-executor.ts → pipe-parser.ts
-      └── providers/
-          ├── codex/adapter.ts → {codex-executor, cli-detection, output-parser, progress, command-patterns}.ts
-          └── claude/adapter.ts → {claude-executor, cli-detection, output-parser, progress}.ts
+src/execution/server.ts                 (HTTP daemon — composition root)
+  ├── src/execution/{backend-lock,backend-info,idle-timer,engine,event-bus}.ts
+  ├── src/execution/{progress-store,request-context,session-index,session-manager}.ts
+  ├── src/providers/{registry,bootstrap}.ts
+  ├── src/workflow/handler.ts
+  ├── src/discuss/persona-seed.ts
+  ├── src/execution/discuss-context.ts
+  ├── src/execution/discuss-context-registry.ts
+  ├── src/execution/discuss-session-store.ts
+  ├── src/execution/discuss-operations.ts
+  ├── src/kb/{curate,delete,memo,paths,promote,read,reindex,runtime,search,update}.ts
+  └── src/execution/service.ts          (ExecutionService — provider/workflow runtime)
+      ├── src/execution/abort-registry.ts
+      ├── src/execution/engine.ts
+      ├── src/execution/progress-store.ts
+      ├── src/execution/session-manager.ts
+      ├── src/execution/instruction.ts
+      ├── src/coral/resolver.ts
+      ├── src/providers/registry.ts
+      ├── src/workflow/pipe-executor.ts → src/workflow/pipe-parser.ts
+      └── src/providers/
+          ├── codex/adapter.ts → {codex-executor, output-parser, progress, command-patterns}.ts + src/providers/cli-detection.ts
+          └── claude/adapter.ts → {claude-executor, output-parser, progress}.ts + src/providers/cli-detection.ts
 
-types.ts provides shared contracts across all modules
-workflow/types.ts provides pipeline AST types
+src/types.ts provides shared contracts across the bridge, backend, and providers
+src/workflow/types.ts provides pipeline AST types
 ```
 
 ### Knowledge Base Subsystem
 
-The KB stack is split between backend-exposed tool contracts, markdown-vault helpers, derived search state, and an automated curation scheduler:
+The KB stack is split between backend routing, runtime/index state, markdown-vault helpers, search/rebuild code, and an automated curation scheduler:
 
 ```
-execution/server.ts
-  ├── kb/contracts.ts            (kb_search/kb_promote/kb_update/kb_delete/kb_memo/kb_reindex descriptors + routing)
-  ├── kb/runtime.ts              (KbRuntime: index cache, Orama lifecycle, index state, mutation lock)
-  └── providers/registry.ts      (reserves KB built-in tool names)
+src/execution/server.ts
+  ├── src/kb/runtime.ts          (KbRuntime bootstrap + index state + mutation lock)
+  ├── src/kb/search.ts           (kb_search)
+  ├── src/kb/read.ts             (kb_read + memo reads)
+  ├── src/kb/memo.ts             (kb_memo)
+  ├── src/kb/promote.ts          (kb_promote)
+  ├── src/kb/update.ts           (kb_update)
+  ├── src/kb/delete.ts           (kb_delete)
+  ├── src/kb/reindex.ts          (kb_reindex)
+  ├── src/kb/curate.ts           (background curate scheduler)
+  └── src/kb/paths.ts            (runtime dir resolution)
 
-kb/contracts.ts
-  └── kb/{search,memo,promote,update,delete,reindex}.ts
+src/kb/runtime.ts
+  ├── src/kb/paths.ts            (notes/principles/runtime paths)
+  ├── src/kb/orama-factory.ts    (Orama DB + tokenizer)
+  ├── src/kb/text-artifacts.ts   (full text rebuild into index + Orama snapshot)
+  ├── src/kb/lancedb-runtime.ts  (optional enhanced-search adapter)
+  ├── src/kb/mutation-helpers.ts (atomic JSON writes)
+  └── src/kb/curate-state.ts     (curate-state filename contract)
 
-kb/{promote,update,delete}.ts
-  ├── kb/mutation-helpers.ts     (buildNoteIndexEntry, commitIndexUpdate, writeFileAtomic, cloneKbIndex)
-  ├── kb/frontmatter.ts          (frontmatter parsing + serialization, deriveNoteIdentity)
-  ├── kb/validation.ts           (slug patterns: LOWERCASE_SLUG_PATTERN, NOTE_SLUG_PATTERN, assertSlug, assertNoteSlug)
-  └── kb/paths.ts                (vault/memo boundary resolution)
+src/kb/search.ts
+  ├── src/kb/orama-factory.ts
+  ├── src/kb/runtime.ts
+  └── src/kb/types.ts
 
-kb/search.ts
-  ├── kb/orama-factory.ts        (schema, tokenizer, pre-normalization)
-  └── kb/runtime.ts              (ensureOramaIndex)
+src/kb/read.ts
+  ├── src/kb/frontmatter.ts
+  ├── src/kb/paths.ts
+  └── src/kb/validation.ts
 
-kb/curate.ts                     (automated tag/principle classification scheduler)
-  ├── kb/curate-state.ts         (curate state machine, cursor tracking, migration)
-  ├── kb/curate-tags.ts          (tag cleanup: plural/singular, parent absorption)
-  └── kb/runtime.ts              (mutation lock, index read/write)
+src/kb/{promote,update,delete}.ts
+  ├── src/kb/mutation-helpers.ts
+  ├── src/kb/frontmatter.ts
+  ├── src/kb/read.ts             (update/promote reuse parsed markdown)
+  ├── src/kb/validation.ts
+  └── src/kb/paths.ts
 
-kb/types.ts                      (KbNoteFrontmatter, KbNoteIndexRecord, KbReindexNoteRecord, KbIndex)
+src/kb/curate.ts
+  ├── src/kb/curate-state.ts
+  ├── src/kb/curate-tags.ts
+  ├── src/kb/frontmatter.ts
+  ├── src/kb/read.ts
+  ├── src/kb/mutation-helpers.ts
+  ├── src/kb/runtime.ts
+  └── src/kb/validation.ts
+
+src/kb/reindex.ts
+  ├── src/kb/reindex-enhanced.ts
+  ├── src/kb/text-artifacts.ts
+  └── src/kb/types.ts
+
+src/kb/types.ts
+  (KbSearchInput, KbPromoteInput, KbUpdateInput, KbReadInput, KbDeleteInput,
+   KbReindexInput, KbPrinciplesInput, KbMemoInput, KbResult, KbIndex, ReindexResult)
 ```
 
 ### Discuss Subsystem
 
-The current discuss stack is event-sourced and split across pure domain modules, persistence, orchestration, and read models:
+The current discuss stack is event-sourced and split across pure domain modules, read models, durable storage, and a live runtime centered on `src/execution/discuss-operations.ts`:
 
 ```
 Pure domain
-  discuss/types.ts
-  discuss/util/{string,time,rng,dpp}.ts
-  discuss/events.ts
-  discuss/state-machine.ts        (deciders emit validated event batches)
-  discuss/reducer.ts              (events -> PersistedDiscussSnapshot)
-  discuss/transcript.ts
-  discuss/persona-seed.ts
+  src/discuss/types.ts
+  src/discuss/util/{string,time,rng,dpp}.ts
+  src/discuss/events.ts
+  src/discuss/state-machine.ts        (deciders emit validated event batches)
+  src/discuss/reducer.ts              (events -> PersistedDiscussSnapshot)
+  src/discuss/transcript.ts
+  src/discuss/persona-seed.ts
 
-Read models
-  discuss/projections.ts          (control/audit/watch projections)
-  client/discuss.ts               (stable DTO builders for API + reef)
+Read models + persisted readers
+  src/discuss/projections.ts          (control/audit/watch projections)
+  src/client/discuss.ts               (stable DTO builders for API responses)
+  src/client/{paths,readers}.ts       (persisted discuss paths + snapshot/event readers)
 
-Persistence + runtime
-  execution/discuss-session-store.ts
-    -> client/{paths,readers,discuss}.ts
-    -> discuss/reducer.ts
+Durability
+  src/execution/discuss-session-store.ts
+    -> src/client/{paths,readers,discuss}.ts
+    -> src/discuss/reducer.ts
 
-  execution/discuss-manager.ts
-    -> discuss/{events,state-machine,projections,transcript}.ts
-    -> execution/discuss-session-store.ts
-    -> execution/service.ts
+Live runtime
+  src/execution/discuss-operations.ts (primary entry imported by src/execution/server.ts)
+    -> src/execution/discuss-loop.ts
+    -> src/execution/discuss-subflows.ts
+    -> src/execution/discuss-executor.ts
+    -> src/execution/discuss-persistence.ts
+    -> src/execution/discuss-registry.ts
+    -> src/execution/discuss-context.ts
+    -> src/execution/discuss-session-store.ts
 
-  execution/server.ts
-    -> execution/discuss-manager.ts
-    -> execution/discuss-session-store.ts
-    -> client/discuss.ts
-    -> execution/event-bus.ts
+  src/execution/discuss-loop.ts
+    -> src/execution/discuss-subflows.ts
+    -> src/execution/discuss-persistence.ts
+    -> src/execution/discuss-registry.ts
+    -> src/execution/discuss-context.ts
+
+  src/execution/discuss-subflows.ts
+    -> src/execution/discuss-prompts.ts
+    -> src/execution/discuss-executor.ts
+    -> src/execution/discuss-persistence.ts
+    -> src/discuss/{state-machine,reducer,transcript}.ts
+
+  src/execution/discuss-executor.ts
+    -> src/execution/service.ts
+    -> src/client/readers.ts
+    -> src/execution/discuss-persistence.ts
 ```
 
 ### Key Design: Event-Sourced Control Loop
@@ -626,5 +715,6 @@ Persistence + runtime
 - Deciders in `state-machine.ts` never mutate `DiscussState` directly. They validate input and emit event batches.
 - `reducer.ts` is the single replay path for both live execution and restart recovery.
 - `DiscussSessionStore` owns durability: append-only log first, snapshot second, discovery index third.
-- `DiscussManager` is a live loop runner over persisted snapshots, not the source of truth.
+- `src/execution/discuss-operations.ts` is the runtime entry point imported by `src/execution/server.ts`; `src/execution/discuss-loop.ts` and `src/execution/discuss-subflows.ts` drive the live loop over persisted snapshots.
+- `DiscussManagerError` still exists, but it now lives in `src/execution/discuss-context.ts`.
 - `projections.ts` and `client/discuss.ts` give the API, watch history, and reef sync paths one shared read-model contract.

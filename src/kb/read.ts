@@ -1,8 +1,9 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { extractBody, parseFrontmatter, extractTitle } from './frontmatter.js';
-import { notePathFromName } from './paths.js';
+import { memoDir, notePathFromName } from './paths.js';
 import type { KbNoteFrontmatter, KbReadInput } from './types.js';
 import { assertNoteSlug } from './validation.js';
+import { join } from 'node:path';
 
 export type KbLoadedNote = {
   raw: string;
@@ -29,10 +30,26 @@ export type KbReadResult = {
   principles: string[];
 };
 
-export function readNote(input: KbReadInput): KbReadResult {
-  const note = assertNoteSlug(input.note, 'note');
-  const { frontmatter, title, body } = loadKbNote(notePathFromName(note));
+const MEMO_FILENAME_PATTERN = /^\d{8}-\d{6}-.+$/;
 
+export function readEntry(input: KbReadInput, projectRoot?: string): KbReadResult {
+  const note = assertNoteSlug(input.note, 'note');
+
+  if (projectRoot && MEMO_FILENAME_PATTERN.test(note)) {
+    const memoPath = join(memoDir(projectRoot), `${note}.md`);
+    if (existsSync(memoPath)) {
+      const raw = readFileSync(memoPath, 'utf-8');
+      return {
+        note,
+        title: note,
+        content: extractBody(raw),
+        tags: [],
+        principles: [],
+      };
+    }
+  }
+
+  const { frontmatter, title, body } = loadKbNote(notePathFromName(note));
   return {
     note,
     title,

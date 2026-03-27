@@ -3,6 +3,8 @@ import type { Result } from '../discuss/types.js';
 import type { DiscussSessionStore } from './discuss-session-store.js';
 import type { ExecutionService } from './service.js';
 
+export const ABORT_REASON = 'abort';
+
 export type AgentConfig = {
   name: string;
   persona: string;

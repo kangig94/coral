@@ -39,6 +39,7 @@ export type InitJobOptions = {
   provider: string;
   projectRoot: string;
   backendNamespace: string;
+  bundleHash?: string;
   jobKind?: JobKind;
   initialPhase?: JobPhase;
 };
@@ -122,9 +123,19 @@ export class ProgressStore {
     return next;
   }
 
-  liveJobCount(): number {
-    return this.liveCount;
+  liveJobCount(bundleHash?: string): number {
+    if (bundleHash === undefined) {
+      return this.liveCount;
+    }
+    let count = 0;
+    for (const record of this.statusCache.values()) {
+      if (isLivePhase(record.phase) && record.bundleHash === bundleHash) {
+        count++;
+      }
+    }
+    return count;
   }
+
 
   listJobIds(): string[] {
     return [...this.knownJobIds];
@@ -152,7 +163,7 @@ export class ProgressStore {
 
   /** Create the job directory and write initial status.json. */
   initJob(opts: InitJobOptions): void {
-    const { jobId, sessionId, provider, projectRoot, backendNamespace, jobKind, initialPhase = 'launching' } = opts;
+    const { jobId, sessionId, provider, projectRoot, backendNamespace, bundleHash, jobKind, initialPhase = 'launching' } = opts;
     const dir = this.jobDir(jobId);
     mkdirSync(dir, { recursive: true });
     const record: PersistedStatusRecord = {
@@ -164,6 +175,9 @@ export class ProgressStore {
       phase: initialPhase,
       launch: { state: 'pending', updatedAt: nowIsoString() },
     };
+    if (bundleHash !== undefined) {
+      record.bundleHash = bundleHash;
+    }
     if (jobKind !== undefined) {
       record.jobKind = jobKind;
     }
