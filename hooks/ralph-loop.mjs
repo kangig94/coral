@@ -141,7 +141,7 @@ function getStatePath(projectDir, sessionId) {
 }
 
 function buildAdditionalContext(statePath) {
-  return `Ralph loop state file created: ${statePath}. In SKILL.md step 1: if plan mode, delete this file. If prompt mode, write your cleaned prompt (flags stripped) to the 'prompt' field, optionally override maxIterations and completionPromise.`;
+  return `Ralph loop state file created: ${statePath}. Read this file first, then edit it. In SKILL.md step 1: if plan mode, delete this file. If prompt mode, write your cleaned prompt (flags stripped) to the 'prompt' field, optionally override maxIterations and completionPromise.`;
 }
 
 function readState(statePath) {
