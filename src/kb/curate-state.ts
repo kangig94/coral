@@ -27,7 +27,8 @@ export type CurateCursor = {
 
 export type CurateState = {
   processedThrough: CurateCursor | null;
-  discoveredThrough: CurateCursor | null;
+  discoveryHighSeq: number;
+  discoveryOffset: number;
   lastRunDay: string | null;
   lastAttemptedThrough: CurateCursor | null;
   retryNotBefore: string | null;
@@ -41,8 +42,6 @@ export type CurateState = {
     notes: string[];
     createdAt: string;
   }>;
-  lastDiscoveryCorpusSize: number;
-  lastDiscoveryDay: string | null;
   consecutiveFailures: number;
   initialized: boolean;
 };
@@ -60,14 +59,13 @@ type ScannedNote = {
 function defaultCurateState(): CurateState {
   return {
     processedThrough: null,
-    discoveredThrough: null,
+    discoveryHighSeq: 0,
+    discoveryOffset: 0,
     lastRunDay: null,
     lastAttemptedThrough: null,
     retryNotBefore: null,
     activeClaim: null,
     pendingDiscoveries: [],
-    lastDiscoveryCorpusSize: 0,
-    lastDiscoveryDay: null,
     consecutiveFailures: 0,
     initialized: false,
   };
@@ -193,16 +191,17 @@ function parseCurateState(value: unknown): CurateState {
 
   return {
     processedThrough: parseCursor(value.processedThrough, 'processedThrough'),
-    discoveredThrough: parseCursor(value.discoveredThrough, 'discoveredThrough'),
+    discoveryHighSeq: value.discoveryHighSeq === undefined
+      ? (parseCursor(value.discoveredThrough, 'discoveredThrough')?.mutationSeqAtPromote ?? 0)
+      : parseNonNegativeInteger(value.discoveryHighSeq, 'discoveryHighSeq'),
+    discoveryOffset: value.discoveryOffset === undefined
+      ? 0
+      : parseNonNegativeInteger(value.discoveryOffset, 'discoveryOffset'),
     lastRunDay: parseOptionalString(value.lastRunDay, 'lastRunDay'),
     lastAttemptedThrough: parseCursor(value.lastAttemptedThrough, 'lastAttemptedThrough'),
     retryNotBefore: parseOptionalString(value.retryNotBefore, 'retryNotBefore'),
     activeClaim: parseActiveClaim(value.activeClaim),
     pendingDiscoveries: parsePendingDiscoveries(value.pendingDiscoveries),
-    lastDiscoveryCorpusSize: value.lastDiscoveryCorpusSize === undefined
-      ? 0
-      : parseNonNegativeInteger(value.lastDiscoveryCorpusSize, 'lastDiscoveryCorpusSize'),
-    lastDiscoveryDay: parseOptionalString(value.lastDiscoveryDay, 'lastDiscoveryDay'),
     consecutiveFailures: value.consecutiveFailures === undefined
       ? 0
       : parseNonNegativeInteger(value.consecutiveFailures, 'consecutiveFailures'),
@@ -330,14 +329,13 @@ export function applyClearCurateRetryState(state: CurateState): CurateState | nu
 
 export function applyRecordDiscoveryAttempt(
   state: CurateState,
-  corpusSize: number,
-  today: string,
+  highSeq: number,
+  nextOffset: number,
 ): CurateState {
   return {
     ...state,
-    discoveredThrough: state.processedThrough,
-    lastDiscoveryCorpusSize: corpusSize,
-    lastDiscoveryDay: today,
+    discoveryHighSeq: Math.max(state.discoveryHighSeq, highSeq),
+    discoveryOffset: nextOffset,
   };
 }
 

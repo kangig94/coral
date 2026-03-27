@@ -91,6 +91,7 @@ export type KbReadResult = {
   content: string;
   tags: string[];
   principles: string[];
+  updatedAt?: string;
   rawContent?: string;
 };
 

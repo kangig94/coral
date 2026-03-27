@@ -30,6 +30,8 @@ npm test             # vitest run
 npm run dev          # tsc --watch
 ```
 
+**Runtime Note**: `bridge/*.cjs` bundles have build-time constants (`__PLUGIN_ROOT__`, `__VERSION__`) injected by esbuild. Do NOT execute them directly (`node bridge/coral-cli.cjs`) — they only work from the installed plugin path. Use `npm test` for CLI verification.
+
 **Version Upgrade**:
 Run `npm version <ver> --no-git-tag-version` then `npm run build`. The npm command updates both `package.json` and `package-lock.json`. The build script syncs the version to `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`, and injects `__VERSION__` into the bundle.
 
