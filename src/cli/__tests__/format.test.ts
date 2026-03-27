@@ -4,7 +4,7 @@ import type { BackendStatusFull, ShutdownResult } from '../../bridge/backend-cli
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '../../discuss/types.js';
 import type { AbortResult } from '../../execution/abort-registry.js';
 import type { ListResult } from '../../execution/service.js';
-import type { LaunchDecision, WaitStreamEvent } from '../../types.js';
+import type { LaunchDecision, WaitStreamEvent } from '../../shared/types.js';
 import {
   formatAbortResult,
   formatBackendStatus,

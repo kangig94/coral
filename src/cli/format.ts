@@ -10,7 +10,7 @@ import type {
 } from '../discuss/types.js';
 import type { AbortResult } from '../execution/abort-registry.js';
 import type { ListResult } from '../execution/service.js';
-import type { LaunchDecision, TerminalResult, WaitStreamEvent } from '../types.js';
+import type { LaunchDecision, TerminalResult, WaitStreamEvent } from '../shared/types.js';
 
 export type DiscussStartResult = {
   session: string;

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CallerContext } from '../../execution/service.js';
-import type { TerminalResult, WaitRequest, WaitStreamEvent } from '../../types.js';
+import type { TerminalResult, WaitRequest, WaitStreamEvent } from '../../shared/types.js';
 import { parseExpression } from '../pipe-parser.js';
 import {
   BOOTSTRAP_TIMEOUT_MS,

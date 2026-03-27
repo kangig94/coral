@@ -1,6 +1,6 @@
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { getNewProvider } from '../providers/registry.js';
-import type { LaunchDecision } from '../types.js';
+import type { LaunchDecision } from '../shared/types.js';
 import type { CallerContext } from '../execution/service.js';
 import { parseExpression } from './pipe-parser.js';
 import { workflowInputSchema } from './schemas.js';

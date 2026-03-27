@@ -7,16 +7,16 @@ import {
   get as getDiscussContext,
   getOrCreate as getOrCreateDiscussContext,
   hasRunningSessions,
-} from '../discuss-context-registry.js';
-import { runPlainTurn } from '../discuss-executor.js';
-import { continueLoop } from '../discuss-loop.js';
+} from '../discuss/context-registry.js';
+import { runPlainTurn } from '../discuss/executor.js';
+import { continueLoop } from '../discuss/loop.js';
 import {
   abortDiscussSession,
   getWatchState,
   recoverPersistedSessions,
   startDiscussSession,
-} from '../discuss-operations.js';
-import { detachSession, getSession } from '../discuss-registry.js';
+} from '../discuss/operations.js';
+import { detachSession, getSession } from '../discuss/registry.js';
 import {
   DEFAULT_TOPIC,
   attachPersistedSession,

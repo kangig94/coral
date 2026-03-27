@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { pluginRootNamespace } from '../client/paths.js';
+import { pluginRootNamespace } from '../infra/paths.js';
 import {
   isTerminalPhase,
   type JobKind,
@@ -14,8 +14,8 @@ import {
   type WaitRequest,
   type WaitStreamEvent,
   type WorkflowResultMeta,
-} from '../types.js';
-import { resolveCoralContent, stripAgentMetadata, parseAgentMeta } from '../coral/resolver.js';
+} from '../shared/types.js';
+import { resolveCoralContent, stripAgentMetadata, parseAgentMeta } from './resolver.js';
 import { getNewProvider } from '../providers/registry.js';
 import { errorMessage } from '../shared/mcp-utils.js';
 import type { EffortLevel } from '../shared/schemas.js';

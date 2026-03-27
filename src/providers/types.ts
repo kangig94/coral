@@ -1,4 +1,4 @@
-import type { ProviderProgressEvent, ProviderRequest, ProviderResult } from '../types.js';
+import type { ProviderProgressEvent, ProviderRequest, ProviderResult } from '../shared/types.js';
 import { nowIsoString } from '../shared/mcp-utils.js';
 
 /** Build an onEvent callback that parses JSON lines and emits ProviderProgressEvents. */

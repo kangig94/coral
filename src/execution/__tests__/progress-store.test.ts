@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import type { PersistedStatusRecord, TerminalResult } from '../../types.js';
+import type { PersistedStatusRecord, TerminalResult } from '../../shared/types.js';
 import { eventBus } from '../event-bus.js';
 import { JOBS_DIR, ProgressStore, createReplayCursor, formatElapsed } from '../progress-store.js';
 

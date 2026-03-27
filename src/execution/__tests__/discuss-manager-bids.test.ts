@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { collectBids } from '../discuss-subflows.js';
+import { collectBids } from '../discuss/subflows.js';
 import {
   startDiscussSession,
   submitManualBid,
-} from '../discuss-operations.js';
+} from '../discuss/operations.js';
 import {
   DEFAULT_TOPIC,
   cleanupDiscussHarnesses,

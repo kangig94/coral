@@ -13,7 +13,7 @@ import {
 import { detectClaudeCli } from '../cli-detection.js';
 import { resolveInjectMd } from '../inject.js';
 import { extractClaudeProgressMessage } from './progress.js';
-import type { ProviderRequest, ProviderResult } from '../../types.js';
+import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
 import { mapProviderResultBase } from '../result-mapping.js';
 import { makeOnEvent, requireConversationRef, type Provider, type ProviderRuntime } from '../types.js';
 import type { EffortLevel } from '../../shared/schemas.js';

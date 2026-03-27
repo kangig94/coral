@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import type { JobPhase, TerminalResult } from '../types.js';
+import type { JobPhase, TerminalResult } from '../shared/types.js';
 
 /** Events emitted by the execution-layer event bus. */
 export type EventBusEvents = {

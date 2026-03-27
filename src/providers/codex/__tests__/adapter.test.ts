@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ProviderRequest } from '../../../types.js';
+import type { ProviderRequest } from '../../../shared/types.js';
 import type { ProviderRuntime } from '../../types.js';
 
 const mockState = vi.hoisted(() => ({

@@ -18,7 +18,7 @@ import {
   textResult,
   type McpResult,
 } from '../shared/mcp-utils.js';
-import { kbRoot, pluginRootNamespace, resolveProjectSource } from '../client/paths.js';
+import { kbRoot, pluginRootNamespace, resolveProjectSource } from '../infra/paths.js';
 import { internalProviderFieldsShape, sharedExecSchema, sharedForkSchema, sharedResumeSchema } from '../shared/schemas.js';
 import {
   AgentInputSchema,
@@ -32,7 +32,7 @@ import {
 } from '../discuss/schemas.js';
 import type { ExecutionService } from './service.js';
 import { activeChildren, killAllChildren, queueDepth, spawnCli } from './engine.js';
-import { readBackendInfo, writeBackendInfo, removeBackendInfoIfOwner } from './backend-info.js';
+import { readBackendInfo, writeBackendInfo, removeBackendInfoIfOwner } from '../infra/backend-info.js';
 import { acquireLock, BackendAlreadyRunningError, removeLockIfOwner } from './backend-lock.js';
 import type { AbortResult } from './abort-registry.js';
 
@@ -45,18 +45,18 @@ import { SessionManager } from './session-manager.js';
 import {
   DiscussManagerError,
   type DiscussContext,
-} from './discuss-context.js';
+} from './discuss/context.js';
 import {
   createDiscussContextRegistry,
   getOrCreate as getOrCreateDiscussContext,
   hasRunningSessions,
   listAttachedSessions,
   type DiscussContextRegistry,
-} from './discuss-context-registry.js';
+} from './discuss/context-registry.js';
 import {
   DiscussSessionStore,
-} from './discuss-session-store.js';
-import * as discussOperations from './discuss-operations.js';
+} from './discuss/session-store.js';
+import * as discussOperations from './discuss/operations.js';
 import {
   buildDiscussDetail,
   buildDiscussSummary,
@@ -85,7 +85,7 @@ import {
   type TerminalResult,
   type WaitCursor,
   type WaitRequest,
-} from '../types.js';
+} from '../shared/types.js';
 import { createCurateScheduler, type CurateHandle } from '../kb/curate.js';
 import { deleteFn as kbDeleteFn } from '../kb/delete.js';
 import { deleteMemos, listMemos, purgeMemos, writeMemo } from '../kb/memo.js';

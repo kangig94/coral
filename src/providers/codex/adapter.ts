@@ -3,7 +3,7 @@
 import { executeOneShot, executeResume, executeFork } from './codex-executor.js';
 import { detectCodexCli, type CliInfo } from '../cli-detection.js';
 import { extractProgressMessage } from './progress.js';
-import type { ProviderRequest, ProviderResult } from '../../types.js';
+import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
 import { mapProviderResultBase } from '../result-mapping.js';
 import { makeOnEvent, requireConversationRef, type Provider, type ProviderRuntime } from '../types.js';
 import type { EffortLevel } from '../../shared/schemas.js';

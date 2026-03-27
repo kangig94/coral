@@ -30,7 +30,7 @@ import type {
   SpeechResult,
 } from '../discuss/types.js';
 import { MAX_INLINE } from '../shared/schemas.js';
-import type { LaunchDecision, WaitStreamEvent } from '../types.js';
+import type { LaunchDecision, WaitStreamEvent } from '../shared/types.js';
 import {
   type DiscussAbortResult,
   type DiscussStartResult,

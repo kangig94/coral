@@ -1,6 +1,6 @@
-import type { DiscussSessionStore } from './discuss-session-store.js';
-import type { ExecutionService } from './service.js';
-import type { DiscussContext, LiveDiscussSession } from './discuss-context.js';
+import type { DiscussSessionStore } from './session-store.js';
+import type { ExecutionService } from '../service.js';
+import type { DiscussContext, LiveDiscussSession } from './context.js';
 
 export type AttachedDiscussSession = {
   projectRoot: string;

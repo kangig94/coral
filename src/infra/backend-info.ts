@@ -1,9 +1,9 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { backendInfoPath } from '../client/paths.js';
+import { backendInfoPath } from './paths.js';
 import { isNoEntryError } from '../shared/mcp-utils.js';
 
-export { backendInfoPath } from '../client/paths.js';
+export { backendInfoPath } from './paths.js';
 
 export type BackendInfo = {
   pid: number;

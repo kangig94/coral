@@ -2,7 +2,7 @@ import { homedir } from 'node:os';
 import { readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { CallerContext, ExecutionService } from '../execution/service.js';
-import type { TerminalResult, WaitCursor } from '../types.js';
+import type { TerminalResult, WaitCursor } from '../shared/types.js';
 import type { PipeAtom, PipelineAST } from './types.js';
 import { truncate } from '../shared/format-progress.js';
 import { errorMessage } from '../shared/mcp-utils.js';

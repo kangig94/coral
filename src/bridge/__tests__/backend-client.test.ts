@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { WaitStreamEvent } from '../../types.js';
+import type { WaitStreamEvent } from '../../shared/types.js';
 
 let tmpDir = '';
 const PKG_VERSION = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf-8')).version as string;
@@ -46,7 +46,7 @@ function actualPluginNamespace(): string {
   return createHash('sha256').update(realpathSync(actualPluginRoot())).digest('hex').slice(0, 12);
 }
 
-vi.mock('../../execution/backend-info.js', () => ({
+vi.mock('../../infra/backend-info.js', () => ({
   backendInfoPath,
   readBackendInfo: readBackendInfoMock,
 }));
@@ -55,8 +55,8 @@ vi.mock('../../execution/backend-lock.js', () => ({
   backendLockPath,
 }));
 
-vi.mock('../../client/paths.js', async (importOriginal) => {
-  const original = await importOriginal<typeof import('../../client/paths.js')>();
+vi.mock('../../infra/paths.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../infra/paths.js')>();
   return {
     ...original,
     backendInfoPath,

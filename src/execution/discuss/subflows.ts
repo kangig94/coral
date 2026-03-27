@@ -1,13 +1,13 @@
 import { z } from 'zod';
-import { errorMessage } from '../shared/mcp-utils.js';
+import { errorMessage } from '../../shared/mcp-utils.js';
 
 import {
   makeEvent,
   type DiscussDomainEvent,
   type FollowUpQueueItem,
   type PersistedDiscussSnapshot,
-} from '../discuss/events.js';
-import { reduceDiscussEvent } from '../discuss/reducer.js';
+} from '../../discuss/events.js';
+import { reduceDiscussEvent } from '../../discuss/reducer.js';
 import {
   decideBid,
   decideEnd,
@@ -17,16 +17,16 @@ import {
   decideSpeechTimeout,
   decideSynthesis,
   resolveAgentName,
-} from '../discuss/state-machine.js';
-import type { DiscussState, TranscriptEntry } from '../discuss/types.js';
-import { renderEntries, renderHeader } from '../discuss/transcript.js';
-import { nowIsoString } from '../discuss/util/time.js';
-import type { CallerContext } from './request-context.js';
+} from '../../discuss/state-machine.js';
+import type { DiscussState, TranscriptEntry } from '../../discuss/types.js';
+import { renderEntries, renderHeader } from '../../discuss/transcript.js';
+import { nowIsoString } from '../../discuss/util/time.js';
+import type { CallerContext } from '../request-context.js';
 import {
   buildBidPrompt,
   buildFirstTurnInstruction,
   buildSpeechPrompt,
-} from './discuss-prompts.js';
+} from './prompts.js';
 import {
   CONTINUE_TURN_INSTRUCTION,
   DEFAULT_DISCUSS_PROVIDER,
@@ -43,17 +43,17 @@ import {
   normalizeModel,
   recordJobFinished,
   runFacilitatorTurn,
-} from './discuss-executor.js';
+} from './executor.js';
 import {
   DiscussManagerError,
   type DiscussContext,
   unwrapResult,
-} from './discuss-context.js';
+} from './context.js';
 import {
   commitDecision,
   loadAttachedOrPersistedSnapshot,
-} from './discuss-persistence.js';
-import { detachSession } from './discuss-registry.js';
+} from './persistence.js';
+import { detachSession } from './registry.js';
 
 const BID_ATTEMPT_TIMEOUT_MS = 3 * 60 * 1000;
 const SPEECH_TIMEOUT_MS = 5 * 60 * 1000;

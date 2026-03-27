@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { LaunchDecision, TerminalResult, WaitStreamEvent } from '../../types.js';
+import type { LaunchDecision, TerminalResult, WaitStreamEvent } from '../../shared/types.js';
 
 const mockState = vi.hoisted(() => ({
   ensureBackend: vi.fn(),

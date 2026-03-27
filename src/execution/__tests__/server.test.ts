@@ -2,16 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { request as httpRequest, type IncomingMessage as ClientIncomingMessage } from 'node:http';
 import { basename, join } from 'node:path';
-import type { WaitStreamEvent } from '../../types.js';
+import type { WaitStreamEvent } from '../../shared/types.js';
 
 import { decideSessionCreate } from '../../discuss/state-machine.js';
 import {
   createDiscussContextRegistry,
-} from '../discuss-context-registry.js';
-import { DiscussSessionStore } from '../discuss-session-store.js';
+} from '../discuss/context-registry.js';
+import { DiscussSessionStore } from '../discuss/session-store.js';
 import { JOBS_DIR, ProgressStore, jobResultPath } from '../progress-store.js';
 import { SessionManager } from '../session-manager.js';
-import { discussSourcesPath, pluginRootNamespace, projectDataDir, resolveProjectSource } from '../../client/paths.js';
+import { discussSourcesPath, pluginRootNamespace, projectDataDir, resolveProjectSource } from '../../infra/paths.js';
 import type { BackendServerController } from '../server.js';
 
 const testBackendNamespace = pluginRootNamespace(process.cwd());
@@ -34,7 +34,7 @@ vi.mock('node:os', async () => {
 });
 
 type ServerModule = typeof import('../server.js');
-type BackendInfoModule = typeof import('../backend-info.js');
+type BackendInfoModule = typeof import('../../infra/backend-info.js');
 type BackendLockModule = typeof import('../backend-lock.js');
 
 function createDeferred() {
@@ -198,7 +198,7 @@ async function loadExecutionModules(): Promise<{
   vi.resetModules();
   const [serverModule, backendInfo, backendLock] = await Promise.all([
     import('../server.js'),
-    import('../backend-info.js'),
+    import('../../infra/backend-info.js'),
     import('../backend-lock.js'),
   ]);
   return { serverModule, backendInfo, backendLock };

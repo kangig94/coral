@@ -9,9 +9,9 @@ import {
   type WatchState,
   type WatchSubscriber,
   watchBufferCursor,
-} from './discuss-context.js';
-import { buildPersistedWatchState } from './discuss-persistence.js';
-import type { PersistedDiscussSnapshot } from '../discuss/events.js';
+} from './context.js';
+import { buildPersistedWatchState } from './persistence.js';
+import type { PersistedDiscussSnapshot } from '../../discuss/events.js';
 
 export function attachSession(
   ctx: DiscussContext,
@@ -117,4 +117,4 @@ export function getWatchState(
   };
 }
 
-export { compactLiveWatchBuffer as compactWatchBuffer } from './discuss-context.js';
+export { compactLiveWatchBuffer as compactWatchBuffer } from './context.js';

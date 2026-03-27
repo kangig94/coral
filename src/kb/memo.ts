@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { resolveProjectSource } from '../client/paths.js';
+import { resolveProjectSource } from '../infra/paths.js';
 import { isNoEntryError } from '../shared/mcp-utils.js';
 import type {
   KbMemoDeleteInput,

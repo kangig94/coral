@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { JOBS_DIR } from '../client/paths.js';
+import { JOBS_DIR } from '../infra/paths.js';
 import {
   isLivePhase,
   type JobKind,
@@ -20,12 +20,12 @@ import {
   type PersistedProgressRecord,
   type PersistedStatusRecord,
   type TerminalResult,
-} from '../types.js';
+} from '../shared/types.js';
 import { isNoEntryError, nowIsoString } from '../shared/mcp-utils.js';
 import { formatElapsed } from '../shared/format-progress.js';
 import { eventBus } from './event-bus.js';
 
-export { JOBS_DIR } from '../client/paths.js';
+export { JOBS_DIR } from '../infra/paths.js';
 
 const STATUS_FILE = 'status.json';
 const PROGRESS_FILE = 'progress.jsonl';

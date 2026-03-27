@@ -1,10 +1,10 @@
 import { readFileSync, unlinkSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
-import { backendLockPath, pluginRootNamespace } from '../client/paths.js';
-import { readBackendInfo } from './backend-info.js';
+import { backendLockPath, pluginRootNamespace } from '../infra/paths.js';
+import { readBackendInfo } from '../infra/backend-info.js';
 import { isNoEntryError, isProcessAlive, tryExclusiveWrite } from '../shared/mcp-utils.js';
 
-export { backendLockPath } from '../client/paths.js';
+export { backendLockPath } from '../infra/paths.js';
 export const STARTUP_DEADLINE = 30_000;
 
 const RETRY_DELAY_MS = 200;

@@ -9,7 +9,7 @@ import type {
   ProviderRequest,
   ProviderResult,
   WaitStreamEvent,
-} from '../../types.js';
+} from '../../shared/types.js';
 
 import type { Provider } from '../../providers/types.js';
 import { parseExpression } from '../../workflow/pipe-parser.js';
@@ -47,8 +47,8 @@ vi.mock('../../providers/registry.js', () => ({
   getNewProvider: mockState.getNewProvider,
 }));
 
-vi.mock('../../coral/resolver.js', async () => {
-  const actual = await vi.importActual<typeof import('../../coral/resolver.js')>('../../coral/resolver.js');
+vi.mock('../resolver.js', async () => {
+  const actual = await vi.importActual<typeof import('../resolver.js')>('../resolver.js');
   return {
     ...actual,
     resolveCoralContent: mockState.resolveCoralContent,

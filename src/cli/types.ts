@@ -1,4 +1,4 @@
-import type { TerminalResult } from '../types.js';
+import type { TerminalResult } from '../shared/types.js';
 
 /** CLI NDJSON unified event stream — all events share the `type` discriminator. */
 export type CliStreamEvent =
