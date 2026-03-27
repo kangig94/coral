@@ -123,6 +123,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
     **Otherwise**: `result.content ?? Read(result.path)` is `<architect>…</architect>` + `<critic>…</critic>`.
     Read `CORAL_METHODS/HOW-SYNTHESIZE.md` and resolve the findings yourself. Edit the plan file.
+    If findings invalidate the current approach, propose an alternative path that achieves the user's goal. If no viable alternative exists, state why and continue to the next round.
 
     **4c. Round Summary** (AFTER 4b)
 
