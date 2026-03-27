@@ -20,6 +20,7 @@ import {
 } from './discuss-executor.js';
 import * as discussLoop from './discuss-loop.js';
 import {
+  ABORT_REASON,
   DiscussManagerError,
   type AgentConfig,
   type DiscussConfig,
@@ -37,8 +38,6 @@ import {
 } from './discuss-persistence.js';
 import type { DiscussSessionStore } from './discuss-session-store.js';
 import { collectBids } from './discuss-subflows.js';
-
-export const ABORT_REASON = 'abort';
 
 function readDiscussMaxEpochs(): number {
   const raw = Number.parseInt(process.env.CORAL_DISCUSS_MAX_EPOCHS ?? '', 10);
