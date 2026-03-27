@@ -7,8 +7,10 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
   readSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -68,8 +70,11 @@ try {
   const state = readState(statePath);
   if (!state || !state.prompt) process.exit(0);
 
+  const stateDir = dirname(statePath);
+
   if (state.maxIterations > 0 && state.iteration >= state.maxIterations) {
     deleteFile(statePath);
+    sweepStale(stateDir, 'ralph-state-', 24 * 60 * 60_000);
     process.exit(0);
   }
 
@@ -81,6 +86,7 @@ try {
 
     if (promiseText && normalizeWhitespace(promiseText) === normalizeWhitespace(state.completionPromise)) {
       deleteFile(statePath);
+      sweepStale(stateDir, 'ralph-state-', 24 * 60 * 60_000);
       process.exit(0);
     }
   }
@@ -156,6 +162,17 @@ function atomicWriteJson(path, value) {
   const tempPath = `${path}.tmp-${process.pid}`;
   writeFileSync(tempPath, JSON.stringify(value), 'utf8');
   renameSync(tempPath, path);
+}
+
+function sweepStale(dir, prefix, ttlMs) {
+  try {
+    const now = Date.now();
+    for (const f of readdirSync(dir)) {
+      if (!f.startsWith(prefix)) continue;
+      const p = join(dir, f);
+      if (now - statSync(p).mtimeMs > ttlMs) try { unlinkSync(p); } catch {}
+    }
+  } catch {}
 }
 
 function deleteFile(path) {

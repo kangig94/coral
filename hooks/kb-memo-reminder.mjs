@@ -7,7 +7,7 @@
  */
 
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -30,6 +30,7 @@ try {
   }
 
   mkdirSync(flagDir, { recursive: true });
+  sweepStale(flagDir, FLAG_PREFIX, 2 * 60 * 60_000);
   writeFileSync(flag, '');
 
   const memoDir = join(coralProjectDir(projectDir), 'memo');
@@ -41,6 +42,17 @@ try {
   }));
 } catch {
   process.exit(0);
+}
+
+function sweepStale(dir, prefix, ttlMs) {
+  try {
+    const now = Date.now();
+    for (const f of readdirSync(dir)) {
+      if (!f.startsWith(prefix)) continue;
+      const p = join(dir, f);
+      if (now - statSync(p).mtimeMs > ttlMs) try { unlinkSync(p); } catch {}
+    }
+  } catch {}
 }
 
 function resolveProjectSource(projectDir) {

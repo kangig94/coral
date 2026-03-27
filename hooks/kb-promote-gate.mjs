@@ -10,7 +10,7 @@
  */
 
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -50,6 +50,7 @@ try {
     const flag = sessionId && join(flagDir, `${FLAG_PREFIX}${sessionId}`);
     if (!flag || !existsSync(flag)) process.exit(0);
     try { unlinkSync(flag); } catch { /* ignore */ }
+    sweepStale(flagDir, FLAG_PREFIX, 24 * 60 * 60_000);
   }
 
   // Check for unprocessed memos (Stop + SessionStart compact)
@@ -103,6 +104,17 @@ function resolveProjectSource(projectDir) {
 
 function coralProjectDir(projectDir) {
   return join(homedir(), '.coral', 'projects', resolveProjectSource(projectDir).replace(/\//g, '-'));
+}
+
+function sweepStale(dir, prefix, ttlMs) {
+  try {
+    const now = Date.now();
+    for (const f of readdirSync(dir)) {
+      if (!f.startsWith(prefix)) continue;
+      const p = join(dir, f);
+      if (now - statSync(p).mtimeMs > ttlMs) try { unlinkSync(p); } catch {}
+    }
+  } catch {}
 }
 
 function readStdin() {
