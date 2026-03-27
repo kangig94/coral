@@ -43,19 +43,25 @@ import {
 import type { KbRuntime } from './runtime.js';
 import type { KbIndex } from './types.js';
 
+// -- Claim thresholds --
 const CURATE_MIN_CLAIM_SIZE = 10;
+const CURATE_IMMEDIATE_CLAIM_SIZE = 30;
 const CURATE_MAX_CLAIM_SIZE = 100;
 const CLASSIFICATION_BATCH_SIZE = 100;
-const CURATE_STALE_REASON = 'KB text snapshot is stale after kb_curate.';
+
+// -- Principle discovery --
 const DISCOVERY_MIN_CORPUS_SIZE = 50;
 const DISCOVERY_PROMPT_BODY_LIMIT = 500;
 const DISCOVERY_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
 const DISCOVERY_CORPUS_RESET_RATIO = 0.2;
 
-const GITIGNORE_ENTRIES = ['curate-state.json', 'data/', '.obsidian/'];
+// -- Usage budget --
 const USAGE_CACHE_STALE_MS = 10 * 60 * 1000;
 const USAGE_5H_THRESHOLD = 90;
 const USAGE_WK_THRESHOLD = 100;
+
+const CURATE_STALE_REASON = 'KB text snapshot is stale after kb_curate.';
+const GITIGNORE_ENTRIES = ['curate-state.json', 'data/', '.obsidian/'];
 
 function isUsageBudgetExhausted(): boolean {
   try {
@@ -1164,7 +1170,7 @@ export function createCurateScheduler({
 
       const firstPassClaim = (
         (today !== state.lastRunDay && pendingNotes.length >= CURATE_MIN_CLAIM_SIZE)
-        || pendingNotes.length >= CURATE_MAX_CLAIM_SIZE
+        || pendingNotes.length >= CURATE_IMMEDIATE_CLAIM_SIZE
       );
       const retryBlocked = compareCursorDates(state.retryNotBefore, now) > 0
         && !pendingExtendsBeyondCursor(pendingNotes, state.lastAttemptedThrough);
