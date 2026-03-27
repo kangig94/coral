@@ -347,7 +347,7 @@ describe('cli format', () => {
   });
 
   describe('kb formatters', () => {
-    it('formats kb search results with read hints and rewrites kb_reindex warnings', () => {
+    it('formats kb search results as JSON and rewrites kb_reindex warnings', () => {
       const formatted = formatKbSearch({
         results: [
           {
@@ -361,16 +361,15 @@ describe('cli format', () => {
         warning: 'Enhanced KB index is stale; run kb_reindex to refresh it.',
       }, 'node "/tmp/coral-cli.cjs"');
 
-      expect(formatted).toBe(
-        'cli-kb-tooling — KB CLI Tooling [filename, content]\n'
-        + '  → kb read cli-kb-tooling\n'
-        + '  Use kb_reindex after stale writes.\n'
-        + 'Warning: Enhanced KB index is stale; run node "/tmp/coral-cli.cjs" kb reindex to refresh it.',
-      );
+      const parsed = JSON.parse(formatted);
+      expect(parsed.count).toBe(1);
+      expect(parsed.results[0].note).toBe('cli-kb-tooling');
+      expect(parsed.warning).toContain('node "/tmp/coral-cli.cjs" kb reindex');
     });
 
     it('formats an empty kb search result set', () => {
-      expect(formatKbSearch({ results: [], mode: 'text' })).toBe('No results');
+      const parsed = JSON.parse(formatKbSearch({ results: [], mode: 'text' }));
+      expect(parsed.count).toBe(0);
     });
 
     it('formats kb read note payloads as JSON', () => {

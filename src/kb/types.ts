@@ -72,7 +72,6 @@ export type KbPromoteInput = {
   content: string;
   domain: string;
   topic: string;
-  upsert?: boolean;
 };
 
 export type KbUpdateInput = {

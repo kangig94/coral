@@ -10,7 +10,6 @@ import {
   writeFileAtomic,
 } from './mutation-helpers.js';
 import type { KbRuntime } from './runtime.js';
-import { applyNoteUpdateLocked } from './update.js';
 
 export async function promote(
   rt: KbRuntime,
@@ -36,13 +35,7 @@ export async function promote(
 
   const result = await rt.withMutationLock(async () => {
     if (existsSync(notePath)) {
-      if (!input.upsert) {
-        throw new Error(`KB note already exists: ${notePath}`);
-      }
-
-      const updated = await applyNoteUpdateLocked(rt, { note, title, content });
-      rmSync(memoPath, { force: true });
-      return updated;
+      throw new Error(`KB note already exists: ${notePath}`);
     }
 
     const memoContent = readFileSync(memoPath, 'utf-8');

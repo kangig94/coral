@@ -914,21 +914,13 @@ export async function routeToolCall(
           const content = requireString(args, 'content');
           const domain = requireString(args, 'domain');
           const topic = requireString(args, 'topic');
-          const upsert = args.upsert === true;
           if (!memo || !title || content === null || !domain || !topic) {
             return toolError('invalid_request', { message: 'memo, title, content, domain, and topic are required strings' });
           }
           result = await kbPromote(
             kb,
             ctx.projectRoot,
-            {
-              memo,
-              title,
-              content,
-              domain,
-              topic,
-              ...(upsert ? { upsert: true } : {}),
-            },
+            { memo, title, content, domain, topic },
             () => { kbSubsystem.curateScheduler.schedule(); },
           );
           break;

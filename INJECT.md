@@ -92,7 +92,6 @@ Subagents and delegated tasks only write memos, never promote.
 `CLI kb promote --memo "<filename>" --title "..." --content-file /tmp/kb-<uuid>.md --domain d --topic t`
 Write `/tmp/kb-<uuid>.md` first (via the Write tool, replacing `<uuid>` with any unique identifier) with the full markdown body, for example `## Rule\n...\n## Why\n...\n## Pattern\n...`.
 Promote automatically deletes the source memo and creates a new KB note — no separate delete step needed.
-Use `--upsert` to update an existing note instead of failing. Use `--content-file -` to read content from stdin.
 
 ## Update / Delete
 `CLI kb update <note-slug> --content-file /tmp/kb-<uuid>.md`

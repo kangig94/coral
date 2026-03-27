@@ -69,7 +69,6 @@ import {
   parseAgentSpec,
   parseAxisSpec,
   parseInputJson,
-  readStdin,
   type JsonObject,
 } from './parse.js';
 
@@ -169,7 +168,6 @@ type KbPromoteOptions = {
   contentFile?: string;
   domain?: string;
   topic?: string;
-  upsert?: boolean;
 };
 
 type KbUpdateOptions = {
@@ -989,31 +987,22 @@ export function buildProgram(): Command {
     .description('Promote a memo into a KB note')
     .option('--memo <filename>', 'Memo filename (e.g. 20260325-topic.md)')
     .option('--title <text>', 'Note title')
-    .option('--content-file <path>', 'Read content from file (use - for stdin)')
+    .option('--content-file <path>', 'Read content from file')
     .option('--domain <slug>', 'Note domain')
     .option('--topic <slug>', 'Note topic')
-    .option('--upsert', 'Update an existing note instead of failing when the target already exists')
     .action(async (opts: KbPromoteOptions) => {
       const outputFormat = getOutputFormat(kbPromoteCommand);
 
       try {
-        const content = opts.contentFile === undefined
-          ? undefined
-          : opts.contentFile === '-'
-            ? await (async () => {
-              if (process.stdin.isTTY === true) {
-                throw new Error('--content-file - requires stdin input');
-              }
-              return readStdin();
-            })()
-            : readFileSync(opts.contentFile, 'utf8');
+        const content = opts.contentFile !== undefined
+          ? readFileSync(opts.contentFile, 'utf8')
+          : undefined;
         const args = {
           ...(opts.memo !== undefined ? { memo: opts.memo } : {}),
           ...(opts.title !== undefined ? { title: opts.title } : {}),
           ...(content !== undefined ? { content } : {}),
           ...(opts.domain !== undefined ? { domain: opts.domain } : {}),
           ...(opts.topic !== undefined ? { topic: opts.topic } : {}),
-          ...(opts.upsert === true ? { upsert: true } : {}),
         };
         const client = makeClient(process.cwd());
         const result = await client.kbPromote(

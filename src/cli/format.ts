@@ -274,6 +274,7 @@ export function formatDiscussWatch(result: unknown): string {
   ]);
 }
 
+/** KB search is consumed by LLM agents, not humans — always return JSON. Do not add text-mode formatting. */
 export function formatKbSearch(data: unknown, cliPrefix = 'coral-cli'): string {
   if (!isRecord(data) || !Array.isArray(data.results) || !isKbSearchMode(data.mode)) {
     return formatUnknown(data);
@@ -282,7 +283,7 @@ export function formatKbSearch(data: unknown, cliPrefix = 'coral-cli'): string {
   const warning = normalizeKbWarning(data.warning, cliPrefix);
   const results = data.results.map((result) => {
     if (!isRecord(result)) {
-      return { note: '-', title: '-', matched: [] as string[], snippet: undefined };
+      return { note: '-', title: '-', matched: [] as string[], snippet: '-' };
     }
 
     const matched = Array.isArray(result.matchedBy)
@@ -293,20 +294,21 @@ export function formatKbSearch(data: unknown, cliPrefix = 'coral-cli'): string {
       note: typeof result.note === 'string' ? result.note : '-',
       title: typeof result.title === 'string' ? result.title : '-',
       matched,
-      snippet: typeof result.snippet === 'string' ? result.snippet : undefined,
+      snippet: typeof result.snippet === 'string' ? result.snippet : '-',
     };
   });
 
-  return joinLines([
-    results.length === 0
-      ? 'No results'
-      : results.flatMap((result) => [
-        `${result.note} — ${result.title} [${result.matched.join(', ')}]`,
-        `  → kb read ${result.note}`,
-        result.snippet === undefined ? undefined : `  ${result.snippet}`,
-      ]).join('\n'),
-    warning === undefined ? undefined : `Warning: ${warning}`,
-  ]);
+  const output: Record<string, unknown> = {
+    results,
+    mode: data.mode,
+    count: results.length,
+  };
+
+  if (warning !== undefined) {
+    output.warning = warning;
+  }
+
+  return JSON.stringify(output);
 }
 
 export function formatKbPrinciples(data: unknown, cliPrefix = 'coral-cli'): string {

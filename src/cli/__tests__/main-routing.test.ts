@@ -1,7 +1,6 @@
 import { writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockState = vi.hoisted(() => ({
@@ -339,11 +338,9 @@ describe('cli main routing', () => {
     ]);
 
     expect(mockState.kbSearch).toHaveBeenCalledWith({ query: 'accel' });
-    expect(stdout).toBe(
-      'cli-kb-tooling — KB CLI Tooling [filename, content]\n'
-      + '  → kb read cli-kb-tooling\n'
-      + '  Use the read surface.\n',
-    );
+    const parsed = JSON.parse(stdout);
+    expect(parsed.count).toBe(1);
+    expect(parsed.results[0].note).toBe('cli-kb-tooling');
     expect(stderr).toBe('');
   });
 
@@ -611,91 +608,6 @@ describe('cli main routing', () => {
     } finally {
       unlinkSync(tmpFile);
     }
-  });
-
-  it('routes kb promote --upsert into kb_promote arguments', async () => {
-    const { buildProgram } = await loadMainModule();
-    const program = buildProgram();
-    const tmpFile = join(tmpdir(), 'test-kb-upsert-content.md');
-
-    mockState.kbPromote.mockResolvedValueOnce({
-      path: '/tmp/kb/notes/cli-kb-tooling.md',
-    });
-
-    writeFileSync(tmpFile, 'Updated details', 'utf8');
-
-    try {
-      await program.parseAsync([
-        'node',
-        'coral-cli',
-        'kb',
-        'promote',
-        '--memo',
-        'memo/123.md',
-        '--title',
-        'KB CLI',
-        '--content-file',
-        tmpFile,
-        '--domain',
-        'cli',
-        '--topic',
-        'kb-tooling',
-        '--upsert',
-      ]);
-
-      expect(mockState.kbPromote).toHaveBeenCalledWith({
-        memo: 'memo/123.md',
-        title: 'KB CLI',
-        content: 'Updated details',
-        domain: 'cli',
-        topic: 'kb-tooling',
-        upsert: true,
-      });
-    } finally {
-      unlinkSync(tmpFile);
-    }
-  });
-
-  it('routes kb promote --content-file - through stdin', async () => {
-    const { buildProgram } = await loadMainModule();
-    const program = buildProgram();
-    const stdin = new PassThrough();
-    Object.defineProperty(process, 'stdin', {
-      configurable: true,
-      value: stdin as unknown as typeof process.stdin,
-    });
-
-    mockState.kbPromote.mockResolvedValueOnce({
-      path: '/tmp/kb/notes/cli-kb-tooling.md',
-    });
-
-    const parsePromise = program.parseAsync([
-      'node',
-      'coral-cli',
-      'kb',
-      'promote',
-      '--memo',
-      'memo/123.md',
-      '--title',
-      'KB CLI',
-      '--content-file',
-      '-',
-      '--domain',
-      'cli',
-      '--topic',
-      'kb-tooling',
-    ]);
-    stdin.end('Details from stdin');
-
-    await parsePromise;
-
-    expect(mockState.kbPromote).toHaveBeenCalledWith({
-      memo: 'memo/123.md',
-      title: 'KB CLI',
-      content: 'Details from stdin',
-      domain: 'cli',
-      topic: 'kb-tooling',
-    });
   });
 
   it('routes kb update and only sends provided fields', async () => {
