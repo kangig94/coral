@@ -44,6 +44,9 @@ import {
 import type { KbRuntime } from './runtime.js';
 import type { KbIndex } from './types.js';
 
+// -- Schedule debounce --
+const CURATE_SCHEDULE_DEBOUNCE_MS = 60 * 1000;
+
 // -- Claim thresholds --
 const CURATE_MIN_CLAIM_SIZE = 10;
 const CURATE_IMMEDIATE_CLAIM_SIZE = 30;
@@ -922,14 +925,17 @@ export function serializePrincipleDocument(statement: string, createdAt: string)
 export function createCurateScheduler({
   kb,
   spawnCli,
+  scheduleDebounceMs = CURATE_SCHEDULE_DEBOUNCE_MS,
 }: {
   kb: KbRuntime;
   spawnCli: SpawnCliFn;
+  scheduleDebounceMs?: number;
 }): CurateHandle {
   let runtimeStarted = false;
   let queuedRun = false;
   let activeRun: Promise<void> | null = null;
   let retryWakeTimer: NodeJS.Timeout | null = null;
+  let debounceTimer: NodeJS.Timeout | null = null;
   let cachedIsGitRepo: boolean | null = null;
 
   const root = kb.markdownRoot;
@@ -1841,7 +1847,10 @@ export function createCurateScheduler({
     await migrateCurateStateIfNeeded(kb);
     runtimeStarted = true;
     armRetryWake();
-    schedule();
+    queuedRun = true;
+    queueMicrotask(() => {
+      launchQueuedRun();
+    });
   }
 
   function schedule(): void {
@@ -1851,16 +1860,26 @@ export function createCurateScheduler({
     }
 
     clearRetryWake();
-    queueMicrotask(() => {
-      launchQueuedRun();
-    });
+    if (debounceTimer !== null) {
+      clearTimeout(debounceTimer);
+    }
+    if (scheduleDebounceMs <= 0) {
+      queueMicrotask(() => {
+        launchQueuedRun();
+      });
+    } else {
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        launchQueuedRun();
+      }, scheduleDebounceMs);
+    }
   }
 
   return {
     start,
     schedule,
     isRunning() {
-      return queuedRun || activeRun !== null || retryWakeTimer !== null;
+      return queuedRun || activeRun !== null || retryWakeTimer !== null || debounceTimer !== null;
     },
     _testInternals: {
       claimCurateRun,
