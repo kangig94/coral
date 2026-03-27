@@ -88,7 +88,7 @@ import {
 } from '../types.js';
 import { createCurateScheduler, type CurateHandle } from '../kb/curate.js';
 import { deleteFn as kbDeleteFn } from '../kb/delete.js';
-import { writeMemo } from '../kb/memo.js';
+import { deleteMemos, listMemos, purgeMemos, writeMemo } from '../kb/memo.js';
 import { kbRuntimeDir } from '../kb/paths.js';
 import { promote as kbPromote } from '../kb/promote.js';
 import { readEntry } from '../kb/read.js';
@@ -96,6 +96,7 @@ import { reindex as kbReindex } from '../kb/reindex.js';
 import { createKbRuntime, type KbRuntime } from '../kb/runtime.js';
 import { searchKb } from '../kb/search.js';
 import { update as kbUpdate } from '../kb/update.js';
+import { compareLocale } from '../kb/validation.js';
 
 export type LifecycleState = 'starting' | 'running' | 'draining' | 'stopped';
 
@@ -916,7 +917,12 @@ export async function routeToolCall(
           if (!memo || !title || content === null || !domain || !topic) {
             return toolError('invalid_request', { message: 'memo, title, content, domain, and topic are required strings' });
           }
-          result = await kbPromote(kb, ctx.projectRoot, { memo, title, content, domain, topic }, () => { kbSubsystem.curateScheduler.schedule(); });
+          result = await kbPromote(
+            kb,
+            ctx.projectRoot,
+            { memo, title, content, domain, topic },
+            () => { kbSubsystem.curateScheduler.schedule(); },
+          );
           break;
         }
         case 'kb_update': {
@@ -940,16 +946,54 @@ export async function routeToolCall(
           break;
         case 'kb_principles': {
           const index = await kb.ensureIndex();
-          let names = Object.keys(index.principles);
-          const total = names.length;
+          const verbose = args.verbose === true;
+          const allNames = Object.keys(index.principles).sort(compareLocale);
+          const total = allNames.length;
           const query = optionalString(args, 'query');
+          let names = allNames;
           if (query?.trim()) {
             const q = query.toLowerCase();
-            names = names.filter(n => n.toLowerCase().includes(q));
+            names = allNames.filter((name) => name.toLowerCase().includes(q));
           }
-          names.sort();
           const topK = typeof args.top_k === 'number' ? args.top_k : 100;
-          result = { principles: names.slice(0, topK), total };
+          names = names.slice(0, topK);
+          if (!verbose) {
+            result = { principles: names, total };
+            break;
+          }
+
+          const selected = new Set(names);
+          const notesByPrinciple = new Map(names.map((name) => [name, [] as string[]]));
+          const orphanRefs = new Set<string>();
+
+          for (const slug of Object.keys(index.notes).sort(compareLocale)) {
+            const noteRecord = index.notes[slug];
+            if (!noteRecord) {
+              continue;
+            }
+
+            for (const principle of noteRecord.principles) {
+              if (selected.has(principle)) {
+                notesByPrinciple.get(principle)?.push(slug);
+                continue;
+              }
+              if (!(principle in index.principles)) {
+                orphanRefs.add(principle);
+              }
+            }
+          }
+
+          result = {
+            principles: names.map((name) => ({
+              name,
+              statement: index.principles[name],
+              notes: notesByPrinciple.get(name) ?? [],
+            })),
+            total,
+            ...(orphanRefs.size === 0
+              ? {}
+              : { warning: `Orphan principle refs: ${[...orphanRefs].sort(compareLocale).join(', ')}` }),
+          };
           break;
         }
         case 'kb_memo': {
@@ -959,6 +1003,18 @@ export async function routeToolCall(
           result = writeMemo(ctx.projectRoot, { topic, content });
           break;
         }
+        case 'kb_memo_list':
+          result = listMemos(ctx.projectRoot);
+          break;
+        case 'kb_memo_delete': {
+          const pattern = requireString(args, 'pattern');
+          if (pattern === null) return toolError('invalid_request', { message: 'pattern is required' });
+          result = deleteMemos(ctx.projectRoot, { pattern });
+          break;
+        }
+        case 'kb_memo_purge':
+          result = purgeMemos(ctx.projectRoot);
+          break;
         default:
           return { statusCode: 404, body: { error: 'unknown_tool', name: request.name } };
       }

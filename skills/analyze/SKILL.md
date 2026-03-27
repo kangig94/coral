@@ -49,11 +49,9 @@ argument-hint: "[--codex] [investigation target or question]"
 
   ### Mode
 
-  **Claude-native (default)**: Read `CORAL_AGENTS/<agent>.md`, follow its Investigation_Protocol
-  with Claude-native tools (Read, Grep, Glob, Bash git-only). Constrain to scope.
-  You (the executor) append to the file — agent protocols are read-only references.
-  Read the agent's `methods:` frontmatter, then read each listed HOW file
-  from `CORAL_METHODS/` (e.g., `HOW-FALSIFY.md`). Apply HOW methods during that step's execution.
+  **Claude-native (default)**: Spawn `Agent({ subagent_type: "coral:<agent>", prompt: "--deep " + prompt })`.
+  Wait for the agent to return its findings.
+  You (the executor) post-process and append the result to the file after each step completes.
 
   **Codex (`--codex`)**: call `codex({ op: "coral:<role_name>", prompt: "--deep " + prompt, ... })` with scope,
   `work_dir`, and analysis file content so far.
@@ -68,9 +66,9 @@ argument-hint: "[--codex] [investigation target or question]"
 
   | Step | Agent file | Needed when | Output section |
   |------|-----------|-------------|----------------|
-  | 1 — Project Scan | `CORAL_AGENTS/scanner.md` | Project structure, architecture, dependencies, or systemic process issues are relevant | `## Scan Report` |
-  | 2 — Gap Analysis | `CORAL_AGENTS/gap-finder.md` | Requirement gaps, acceptance criteria, API contracts, or scope risks — from the user's request OR gaps discovered in Step 1 | `## Gap Analysis` |
-  | 3 — Root Cause Diagnosis | `CORAL_AGENTS/debugger.md` | Bugs, errors, crashes, or unexpected behavior — from the user's request OR symptoms surfaced in prior steps | `## Root Cause Diagnosis` |
+  | 1 — Project Scan | `coral:scanner` | Project structure, architecture, dependencies, or systemic process issues are relevant | `## Scan Report` |
+  | 2 — Gap Analysis | `coral:gap-finder` | Requirement gaps, acceptance criteria, API contracts, or scope risks — from the user's request OR gaps discovered in Step 1 | `## Gap Analysis` |
+  | 3 — Root Cause Diagnosis | `coral:debugger` | Bugs, errors, crashes, or unexpected behavior — from the user's request OR symptoms surfaced in prior steps | `## Root Cause Diagnosis` |
 
   ## Phase 3 — Synthesis Review
 

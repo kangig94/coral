@@ -74,15 +74,15 @@ CLI: `{{CORAL_CLI}}`
 On non-obvious discovery during any phase (review, planning, implementation), write a memo immediately.
 Also memo Insights worth preserving when Explanatory output style is active.
 
-`CLI kb memo --topic "<kebab-case-topic>" --content "one paragraph + context"`
+`CLI kb memo write --topic "<kebab-case-topic>" --content "one paragraph + context"`
 
 Timestamps, paths, and frontmatter are generated automatically.
 
 ## Search
 Before debugging from scratch or starting a plan:
-1. `CLI kb principles` — list principle names (cross-domain decision patterns). Names are self-descriptive (e.g., `atomic-persistence-or-nothing`). Read the principle file if a name is ambiguous.
+1. `CLI kb principles` — list principle names (cross-domain decision patterns). Names are self-descriptive (e.g., `atomic-persistence-or-nothing`). Use `--verbose` for statements and referring notes.
 2. `CLI kb search "<keywords>"` — searches filename, principles, tags, title, content. Returns top 20 results ranked by relevance.
-3. `CLI kb read <note-slug>` — read a note's full content by slug. Always use this instead of reading KB files directly.
+3. `CLI kb read <note-slug>` — read a note or principle by slug. Resolves memo → note → principle precedence. Always use this instead of reading KB files directly.
 
 ## Promotion
 **Who**: top-level orchestrator only, after all work completes (not implementation — after review too).

@@ -27,7 +27,6 @@ try {
 
   const context = [
     `CORAL_PROJECT: ${coralProjectDir(projectDir)}`,
-    `CORAL_AGENTS: ${join(pluginRoot, 'agents')}/`,
     `CORAL_METHODS: ${join(pluginRoot, 'methods')}/`,
   ].join('\n');
 

@@ -31,7 +31,7 @@ function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
     lastDiscoveryCorpusSize: 0,
     lastDiscoveryDay: null,
     consecutiveFailures: 0,
-    migrationVersion: 0,
+    initialized: false,
     ...overrides,
   };
 }
@@ -151,7 +151,7 @@ describe('curate state', () => {
       lastDiscoveryCorpusSize: 9,
       lastDiscoveryDay: '2026-03-25',
       consecutiveFailures: 2,
-      migrationVersion: 1,
+      initialized: true,
     });
 
     mkdirSync(tempDir, { recursive: true });
@@ -172,7 +172,7 @@ describe('curate state', () => {
         notes: ['coral-atomic'],
         createdAt: '2026-03-25T12:00:00.000Z',
       }],
-      migrationVersion: 1,
+      initialized: true,
     });
 
     writeCurateState(runtime, state);
@@ -352,7 +352,7 @@ describe('curate state', () => {
       mutationSeq: 13,
       indexedSeq: 8,
     });
-    expect(readCurateState(runtime).migrationVersion).toBe(1);
+    expect(readCurateState(runtime).initialized).toBe(true);
   });
 
   it('uses the current mutation sequence as the assignment floor and skips notes that already have mutation sequences', async () => {
@@ -418,7 +418,7 @@ describe('curate state', () => {
       indexedSeq: 4,
     });
     writeCurateState(runtime, createCurateState({
-      migrationVersion: 1,
+      initialized: true,
       lastRunDay: '2026-03-25',
     }));
 
@@ -436,7 +436,7 @@ describe('curate state', () => {
       indexedSeq: 4,
     });
     expect(readCurateState(runtime)).toEqual(createCurateState({
-      migrationVersion: 1,
+      initialized: true,
       lastRunDay: '2026-03-25',
     }));
   });

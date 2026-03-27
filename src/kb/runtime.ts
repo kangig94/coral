@@ -196,7 +196,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
   }
 
   function curateStatePath(): string {
-    return join(markdownRoot, CURATE_STATE_FILE);
+    return join(runtimeDir, CURATE_STATE_FILE);
   }
 
   function indexPath(): string {

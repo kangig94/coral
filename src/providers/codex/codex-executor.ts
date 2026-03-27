@@ -11,7 +11,7 @@ import { spawnCli, killAllChildren as killAllRunnerChildren } from '../../execut
 import type { EffortLevel } from '../../shared/schemas.js';
 import { parseCodexJsonl } from './output-parser.js';
 import type { CliInfo } from '../cli-detection.js';
-import { kbRoot, projectDataDir, resolveProjectSource } from '../../client/paths.js';
+import { resolveInjectMd } from '../inject.js';
 
 export interface CodexExecOptions {
   model?: string;
@@ -128,35 +128,10 @@ async function executeCodex(
   };
 }
 
-// INJECT.md injection - prepend plugin guidelines to one-shot prompts
-declare const __PLUGIN_ROOT__: string;
-const pluginRoot: string = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..');
-let injectMdCache: string | undefined;
-
-function getInjectMd(): string {
-  if (injectMdCache !== undefined) return injectMdCache;
-
-  try {
-    injectMdCache = readFileSync(join(pluginRoot, 'INJECT.md'), 'utf-8');
-  } catch {
-    injectMdCache = '';
-  }
-
-  return injectMdCache;
-}
-
 function prependInjectMd(prompt: string, workingDirectory?: string): string {
-  const md = getInjectMd();
+  const md = resolveInjectMd(workingDirectory);
   if (!md) return prompt;
-
-  const cliPath = `node "${join(pluginRoot, 'bridge', 'coral-cli.cjs')}"`;
-  const substitutedMd = md
-    .replaceAll('{{CORAL_KB}}', kbRoot())
-    .replaceAll('{{CORAL_CLI}}', cliPath)
-    .replaceAll('{{CORAL_PROJECTS}}', workingDirectory ? projectDataDir(workingDirectory) : '{{CORAL_PROJECTS}}')
-    .replaceAll('{{PROJECT_SOURCE}}', workingDirectory ? resolveProjectSource(workingDirectory) : '{{PROJECT_SOURCE}}');
-
-  return `${substitutedMd}\n\n---\n\n${prompt}`;
+  return `${md}\n\n---\n\n${prompt}`;
 }
 
 /** Base flags shared by all exec modes. Web search is always enabled. */

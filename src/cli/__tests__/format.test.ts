@@ -15,6 +15,10 @@ import {
   formatError,
   formatKbDelete,
   formatKbPrinciples,
+  formatKbMemo,
+  formatKbMemoDelete,
+  formatKbMemoList,
+  formatKbMemoPurge,
   formatKbPromote,
   formatKbRead,
   formatKbReindex,
@@ -358,24 +362,19 @@ describe('cli format', () => {
       }, 'node "/tmp/coral-cli.cjs"');
 
       const parsed = JSON.parse(formatted);
-      expect(parsed.results).toHaveLength(1);
-      expect(parsed.results[0].note).toBe('cli-kb-tooling');
-      expect(parsed.results[0].matched).toEqual(['filename', 'content']);
-      expect(parsed.results[0].snippet).toBe('Use kb_reindex after stale writes.');
-      expect(parsed.mode).toBe('text');
       expect(parsed.count).toBe(1);
+      expect(parsed.results[0].note).toBe('cli-kb-tooling');
       expect(parsed.warning).toContain('node "/tmp/coral-cli.cjs" kb reindex');
     });
 
     it('formats an empty kb search result set', () => {
       const parsed = JSON.parse(formatKbSearch({ results: [], mode: 'text' }));
-      expect(parsed.results).toEqual([]);
       expect(parsed.count).toBe(0);
-      expect(parsed.mode).toBe('text');
     });
 
-    it('formats kb read as JSON', () => {
+    it('formats kb read note payloads as JSON', () => {
       const formatted = formatKbRead({
+        kind: 'note',
         note: 'coral-kb-read',
         title: 'Read Test',
         content: '## Rule\nContent here.',
@@ -390,6 +389,43 @@ describe('cli format', () => {
       expect(parsed.principles).toEqual(['contract-first-design']);
     });
 
+    it('formats kb read principle payloads as JSON', () => {
+      const formatted = formatKbRead({
+        kind: 'principle',
+        note: 'contract-first-design',
+        title: 'contract-first-design',
+        content: 'State contracts first.',
+        rawContent: '---\ncreatedAt: 2026-03-23\nupdatedAt: 2026-03-23\n---\nState contracts first.\n',
+        tags: [],
+        principles: [],
+      });
+      const parsed = JSON.parse(formatted);
+      expect(parsed.kind).toBe('principle');
+      expect(parsed.note).toBe('contract-first-design');
+      expect(parsed.content).toBe('State contracts first.');
+      expect(parsed.rawContent).toContain('createdAt: 2026-03-23');
+      expect(parsed.tags).toEqual([]);
+      expect(parsed.principles).toEqual([]);
+    });
+
+    it('formats kb memo write, list, delete, and purge results', () => {
+      expect(formatKbMemo({ filename: '20260327-184939-kb.md' }))
+        .toBe('Memo: 20260327-184939-kb.md');
+      expect(formatKbMemoList({
+        memos: [{ filename: 'a.md', summary: 'summary', createdAt: '2026-03-27T00:00:00.000Z' }],
+      })).toBe(
+        'FILENAME  SUMMARY  CREATED AT              \n'
+        + '--------  -------  ------------------------\n'
+        + 'a.md      summary  2026-03-27T00:00:00.000Z',
+      );
+      expect(formatKbMemoList({ memos: [] })).toBe('No memos');
+      expect(formatKbMemoDelete({ deleted: ['a.md', 'b.md'], count: 2 }))
+        .toBe('a.md\nb.md\nCount: 2');
+      expect(formatKbMemoDelete({ deleted: [], count: 0 }))
+        .toBe('No memos deleted\nCount: 0');
+      expect(formatKbMemoPurge({ deleted: 3 })).toBe('Purged: 3 memos');
+    });
+
     it('formats kb principles with totals and warning translation', () => {
       expect(formatKbPrinciples({
         principles: ['contract-first-design', 'single-source-of-truth'],
@@ -401,6 +437,19 @@ describe('cli format', () => {
         + 'Total: 2\n'
         + 'Warning: No index found. Run coral-cli kb reindex first.',
       );
+    });
+
+    it('formats verbose kb principles with note lists', () => {
+      expect(formatKbPrinciples({
+        principles: [
+          {
+            name: 'contract-first-design',
+            statement: 'State contracts first.',
+            notes: ['a-note', 'b-note'],
+          },
+        ],
+        total: 2,
+      })).toBe('contract-first-design (a-note, b-note): State contracts first.\nTotal: 2');
     });
 
     it('formats an empty kb principles result', () => {

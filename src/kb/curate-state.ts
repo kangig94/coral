@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
 import { replaceFrontmatter } from './frontmatter.js';
@@ -17,7 +17,7 @@ const CURATE_MAX_RETRY_MS = 4 * 60 * 60 * 1000;
 type CurateStateTarget = Pick<KbRuntime, 'curateStatePath'> | string;
 type CurateStateRuntime = Pick<
   KbRuntime,
-  'curateStatePath' | 'notesDir' | 'notePath' | 'withMutationLock' | 'readIndex' | 'writeIndex' | 'readIndexState' | 'writeIndexState'
+  'markdownRoot' | 'curateStatePath' | 'notesDir' | 'notePath' | 'withMutationLock' | 'readIndex' | 'writeIndex' | 'readIndexState' | 'writeIndexState'
 >;
 
 export type CurateCursor = {
@@ -43,7 +43,7 @@ export type CurateState = {
   lastDiscoveryCorpusSize: number;
   lastDiscoveryDay: string | null;
   consecutiveFailures: number;
-  migrationVersion: number;
+  initialized: boolean;
 };
 
 type PendingDiscovery = CurateState['pendingDiscoveries'][number];
@@ -67,7 +67,7 @@ function defaultCurateState(): CurateState {
     lastDiscoveryCorpusSize: 0,
     lastDiscoveryDay: null,
     consecutiveFailures: 0,
-    migrationVersion: 0,
+    initialized: false,
   };
 }
 
@@ -203,9 +203,7 @@ function parseCurateState(value: unknown): CurateState {
     consecutiveFailures: value.consecutiveFailures === undefined
       ? 0
       : parseNonNegativeInteger(value.consecutiveFailures, 'consecutiveFailures'),
-    migrationVersion: value.migrationVersion === undefined
-      ? 0
-      : parseNonNegativeInteger(value.migrationVersion, 'migrationVersion'),
+    initialized: value.initialized === true || (typeof value.migrationVersion === 'number' && value.migrationVersion >= 1),
   };
 }
 
@@ -392,8 +390,15 @@ export function isClaimStale(state: CurateState, now: string): boolean {
 
 export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promise<void> {
   await kb.withMutationLock(() => {
+    // Move curate-state.json from KB content dir to runtime dir if it exists at the old location
+    const legacyPath = join(kb.markdownRoot, CURATE_STATE_FILE);
+    const currentPath = kb.curateStatePath();
+    if (legacyPath !== currentPath && existsSync(legacyPath) && !existsSync(currentPath)) {
+      try { renameSync(legacyPath, currentPath); } catch { /* best-effort */ }
+    }
+
     const state = readCurateState(kb);
-    if (state.migrationVersion >= 1) {
+    if (state.initialized) {
       return;
     }
 
@@ -401,7 +406,7 @@ export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promis
     if (noteNames.length === 0) {
       writeCurateState(kb, {
         ...state,
-        migrationVersion: 1,
+        initialized: true,
       });
       return;
     }
@@ -465,9 +470,30 @@ export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promis
       });
     }
 
+    // Infer processedThrough for synced KBs: if notes already show curation
+    // evidence (tags > 1 or principles > 0), set watermark to the highest
+    // curated cursor so curate skips the already-classified corpus.
+    let processedThrough = state.processedThrough;
+    if (processedThrough === null) {
+      let highestCuratedCursor: CurateCursor | null = null;
+      for (const scannedNote of scannedNotes) {
+        const seq = scannedNote.frontmatter.mutationSeqAtPromote;
+        if (seq === undefined) continue;
+        if (scannedNote.frontmatter.tags.length <= 1 && scannedNote.frontmatter.principles.length === 0) continue;
+        const cursor: CurateCursor = { note: scannedNote.note, mutationSeqAtPromote: seq };
+        if (highestCuratedCursor === null || compareCursor(cursor, highestCuratedCursor) > 0) {
+          highestCuratedCursor = cursor;
+        }
+      }
+      if (highestCuratedCursor !== null) {
+        processedThrough = highestCuratedCursor;
+      }
+    }
+
     writeCurateState(kb, {
       ...state,
-      migrationVersion: 1,
+      processedThrough,
+      initialized: true,
     });
   });
 }

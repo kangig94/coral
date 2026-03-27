@@ -274,6 +274,7 @@ export function formatDiscussWatch(result: unknown): string {
   ]);
 }
 
+/** KB search is consumed by LLM agents, not humans — always return JSON. Do not add text-mode formatting. */
 export function formatKbSearch(data: unknown, cliPrefix = 'coral-cli'): string {
   if (!isRecord(data) || !Array.isArray(data.results) || !isKbSearchMode(data.mode)) {
     return formatUnknown(data);
@@ -315,11 +316,36 @@ export function formatKbPrinciples(data: unknown, cliPrefix = 'coral-cli'): stri
     return formatUnknown(data);
   }
 
-  const principles = data.principles.filter((value): value is string => typeof value === 'string');
+  const principles = data.principles;
   const warning = normalizeKbWarning(data.warning, cliPrefix);
+  const first = principles[0];
+
+  if (typeof first === 'string' || first === undefined) {
+    const names = principles.filter((value): value is string => typeof value === 'string');
+    return joinLines([
+      names.length === 0 ? 'No principles' : names.join('\n'),
+      `Total: ${data.total}`,
+      warning === undefined ? undefined : `Warning: ${warning}`,
+    ]);
+  }
+
+  const rows = principles.flatMap((value) => {
+    if (
+      !isRecord(value)
+      || typeof value.name !== 'string'
+      || typeof value.statement !== 'string'
+      || !Array.isArray(value.notes)
+      || !value.notes.every((note) => typeof note === 'string')
+    ) {
+      return [];
+    }
+
+    const notes = value.notes.length === 0 ? '' : ` (${value.notes.join(', ')})`;
+    return [`${value.name}${notes}: ${value.statement}`];
+  });
 
   return joinLines([
-    principles.length === 0 ? 'No principles' : principles.join('\n'),
+    rows.length === 0 ? 'No principles' : rows.join('\n'),
     `Total: ${data.total}`,
     warning === undefined ? undefined : `Warning: ${warning}`,
   ]);
@@ -344,6 +370,59 @@ export function formatKbMemo(data: unknown): string {
   }
 
   return `Memo: ${data.filename}`;
+}
+
+export function formatKbMemoList(data: unknown): string {
+  if (!isRecord(data) || !Array.isArray(data.memos)) {
+    return formatUnknown(data);
+  }
+
+  const rows = data.memos.flatMap((memo) => {
+    if (
+      !isRecord(memo)
+      || typeof memo.filename !== 'string'
+      || typeof memo.summary !== 'string'
+      || typeof memo.createdAt !== 'string'
+    ) {
+      return [];
+    }
+
+    return [[memo.filename, memo.summary, memo.createdAt]];
+  });
+
+  if (rows.length !== data.memos.length) {
+    return formatUnknown(data);
+  }
+
+  if (rows.length === 0) {
+    return 'No memos';
+  }
+
+  return formatTable(['FILENAME', 'SUMMARY', 'CREATED AT'], rows);
+}
+
+export function formatKbMemoDelete(data: unknown): string {
+  if (
+    !isRecord(data)
+    || !Array.isArray(data.deleted)
+    || !data.deleted.every((entry) => typeof entry === 'string')
+    || typeof data.count !== 'number'
+  ) {
+    return formatUnknown(data);
+  }
+
+  return joinLines([
+    data.deleted.length === 0 ? 'No memos deleted' : data.deleted.join('\n'),
+    `Count: ${data.count}`,
+  ]);
+}
+
+export function formatKbMemoPurge(data: unknown): string {
+  if (!isRecord(data) || typeof data.deleted !== 'number') {
+    return formatUnknown(data);
+  }
+
+  return `Purged: ${data.deleted} memos`;
 }
 
 export function formatKbPromote(data: unknown): string {

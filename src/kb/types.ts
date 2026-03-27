@@ -84,6 +84,16 @@ export type KbReadInput = {
   note: string;
 };
 
+export type KbReadResult = {
+  kind: 'memo' | 'note' | 'principle';
+  note: string;
+  title: string;
+  content: string;
+  tags: string[];
+  principles: string[];
+  rawContent?: string;
+};
+
 export type KbDeleteInput = {
   note: string;
 };
@@ -93,9 +103,43 @@ export type KbReindexInput = Record<string, never>;
 export type KbPrinciplesInput = {
   query?: string;
   top_k?: number;
+  verbose?: boolean;
+};
+
+export type KbPrincipleVerboseRow = {
+  name: string;
+  statement: string;
+  notes: string[];
+};
+
+export type KbPrinciplesResult = {
+  principles: string[] | KbPrincipleVerboseRow[];
+  total: number;
+  warning?: string;
 };
 
 export type KbMemoInput = {
   topic: string;
   content: string;
+};
+
+export type KbMemoListInput = Record<string, never>;
+
+export type KbMemoListResult = {
+  memos: Array<{ filename: string; summary: string; createdAt: string }>;
+};
+
+export type KbMemoDeleteInput = {
+  pattern: string;
+};
+
+export type KbMemoDeleteResult = {
+  deleted: string[];
+  count: number;
+};
+
+export type KbMemoPurgeInput = Record<string, never>;
+
+export type KbMemoPurgeResult = {
+  deleted: number;
 };

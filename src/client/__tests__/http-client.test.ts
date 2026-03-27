@@ -43,6 +43,30 @@ describe('client http-client', () => {
       args: { query: 'contract', top_k: 5 },
     },
     {
+      method: 'kbMemo',
+      invoke: (client: BackendClient) => client.kbMemo({ topic: 'kb-routing', content: 'Memo body' }),
+      toolName: 'kb_memo',
+      args: { topic: 'kb-routing', content: 'Memo body' },
+    },
+    {
+      method: 'kbMemoList',
+      invoke: (client: BackendClient) => client.kbMemoList({}),
+      toolName: 'kb_memo_list',
+      args: {},
+    },
+    {
+      method: 'kbMemoDelete',
+      invoke: (client: BackendClient) => client.kbMemoDelete({ pattern: '2026*' }),
+      toolName: 'kb_memo_delete',
+      args: { pattern: '2026*' },
+    },
+    {
+      method: 'kbMemoPurge',
+      invoke: (client: BackendClient) => client.kbMemoPurge({}),
+      toolName: 'kb_memo_purge',
+      args: {},
+    },
+    {
       method: 'kbPromote',
       invoke: (client: BackendClient) => client.kbPromote({
         memo: 'memo/example.md',

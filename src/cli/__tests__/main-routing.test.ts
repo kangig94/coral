@@ -17,6 +17,10 @@ const mockState = vi.hoisted(() => ({
   streamWait: vi.fn(),
   kbSearch: vi.fn(),
   kbPrinciples: vi.fn(),
+  kbMemo: vi.fn(),
+  kbMemoList: vi.fn(),
+  kbMemoDelete: vi.fn(),
+  kbMemoPurge: vi.fn(),
   kbRead: vi.fn(),
   kbPromote: vi.fn(),
   kbUpdate: vi.fn(),
@@ -50,6 +54,10 @@ vi.mock('../../client/http-client.js', () => {
     discussAbort = vi.fn();
     kbSearch = mockState.kbSearch;
     kbPrinciples = mockState.kbPrinciples;
+    kbMemo = mockState.kbMemo;
+    kbMemoList = mockState.kbMemoList;
+    kbMemoDelete = mockState.kbMemoDelete;
+    kbMemoPurge = mockState.kbMemoPurge;
     kbRead = mockState.kbRead;
     kbPromote = mockState.kbPromote;
     kbUpdate = mockState.kbUpdate;
@@ -91,6 +99,13 @@ describe('cli main routing', () => {
   let stdout = '';
   let stderr = '';
   let originalArgv: string[];
+  const originalStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+
+  function restoreStdin(): void {
+    if (originalStdinDescriptor) {
+      Object.defineProperty(process, 'stdin', originalStdinDescriptor);
+    }
+  }
 
   beforeEach(() => {
     stdout = '';
@@ -111,6 +126,10 @@ describe('cli main routing', () => {
     mockState.streamWait.mockReset();
     mockState.kbSearch.mockReset();
     mockState.kbPrinciples.mockReset();
+    mockState.kbMemo.mockReset();
+    mockState.kbMemoList.mockReset();
+    mockState.kbMemoDelete.mockReset();
+    mockState.kbMemoPurge.mockReset();
     mockState.kbRead.mockReset();
     mockState.kbPromote.mockReset();
     mockState.kbUpdate.mockReset();
@@ -131,6 +150,7 @@ describe('cli main routing', () => {
   afterEach(() => {
     process.argv = originalArgv;
     process.exitCode = undefined;
+    restoreStdin();
     vi.restoreAllMocks();
     vi.resetModules();
   });
@@ -298,7 +318,14 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.kbSearch.mockResolvedValueOnce({
-      results: [],
+      results: [
+        {
+          note: 'cli-kb-tooling',
+          title: 'KB CLI Tooling',
+          matchedBy: ['filename', 'content'],
+          snippet: 'Use the read surface.',
+        },
+      ],
       mode: 'text',
     });
 
@@ -311,10 +338,9 @@ describe('cli main routing', () => {
     ]);
 
     expect(mockState.kbSearch).toHaveBeenCalledWith({ query: 'accel' });
-    const parsed = JSON.parse(stdout.trim());
-    expect(parsed.results).toEqual([]);
-    expect(parsed.count).toBe(0);
-    expect(parsed.mode).toBe('text');
+    const parsed = JSON.parse(stdout);
+    expect(parsed.count).toBe(1);
+    expect(parsed.results[0].note).toBe('cli-kb-tooling');
     expect(stderr).toBe('');
   });
 
@@ -391,11 +417,136 @@ describe('cli main routing', () => {
     expect(mockState.kbPrinciples).toHaveBeenCalledWith({ query: 'contract', top_k: 7 });
   });
 
+  it('routes verbose kb principles and formats structured rows', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbPrinciples.mockResolvedValueOnce({
+      principles: [
+        {
+          name: 'contract-first-design',
+          statement: 'State contracts first.',
+          notes: ['a-note', 'b-note'],
+        },
+      ],
+      total: 2,
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'kb',
+      'principles',
+      '--verbose',
+    ]);
+
+    expect(mockState.kbPrinciples).toHaveBeenCalledWith({ verbose: true });
+    expect(stdout).toBe('contract-first-design (a-note, b-note): State contracts first.\nTotal: 2\n');
+  });
+
+  it('routes kb memo write through kb_memo', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbMemo.mockResolvedValueOnce({
+      filename: '20260327-184939-kb-routing.md',
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'kb',
+      'memo',
+      'write',
+      '--topic',
+      'kb-routing',
+      '--content',
+      'Memo body',
+    ]);
+
+    expect(mockState.kbMemo).toHaveBeenCalledWith({ topic: 'kb-routing', content: 'Memo body' });
+    expect(stdout).toBe('Memo: 20260327-184939-kb-routing.md\n');
+  });
+
+  it('routes kb memo list through kb_memo_list', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbMemoList.mockResolvedValueOnce({
+      memos: [{ filename: 'a.md', summary: 'summary', createdAt: '2026-03-27T00:00:00.000Z' }],
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'kb',
+      'memo',
+      'list',
+      '--output-format',
+      'json',
+    ]);
+
+    expect(mockState.kbMemoList).toHaveBeenCalledWith({});
+    expect(JSON.parse(stdout.trim())).toEqual({
+      memos: [{ filename: 'a.md', summary: 'summary', createdAt: '2026-03-27T00:00:00.000Z' }],
+    });
+  });
+
+  it('routes kb memo delete through kb_memo_delete', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbMemoDelete.mockResolvedValueOnce({
+      deleted: ['a.md'],
+      count: 1,
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'kb',
+      'memo',
+      'delete',
+      '2026*',
+      '--output-format',
+      'json',
+    ]);
+
+    expect(mockState.kbMemoDelete).toHaveBeenCalledWith({ pattern: '2026*' });
+    expect(JSON.parse(stdout.trim())).toEqual({
+      deleted: ['a.md'],
+      count: 1,
+    });
+  });
+
+  it('routes kb memo purge through kb_memo_purge', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbMemoPurge.mockResolvedValueOnce({
+      deleted: 3,
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'kb',
+      'memo',
+      'purge',
+      '--output-format',
+      'json',
+    ]);
+
+    expect(mockState.kbMemoPurge).toHaveBeenCalledWith({});
+    expect(JSON.parse(stdout.trim())).toEqual({ deleted: 3 });
+  });
+
   it('routes kb read to kb_read and returns JSON', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
     mockState.kbRead.mockResolvedValueOnce({
+      kind: 'note',
       note: 'coral-kb-read',
       title: 'Read Test',
       content: '## Rule\nContent.',

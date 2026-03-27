@@ -12,7 +12,7 @@ import {
 } from '../claude-executor.js';
 
 const mockSpawnCli = vi.mocked(spawnCli);
-const baseArgs = ['-p', '--verbose', '--output-format', 'stream-json'];
+const baseArgs = ['-p', '--bare', '--verbose', '--output-format', 'stream-json'];
 const defaultEffort = process.env.CORAL_CLAUDE_EFFORT ?? process.env.CORAL_EFFORT ?? 'high';
 const defaultEffortArgs = ['--effort', defaultEffort];
 

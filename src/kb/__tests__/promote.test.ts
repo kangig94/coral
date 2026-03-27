@@ -149,6 +149,25 @@ memo body
     expect(existsSync(memoPath)).toBe(true);
   });
 
+  it('rejects missing memos before entering the mutation lock', async () => {
+    const { promote, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    const projectRoot = join(mockState.tmpHome, 'project');
+    mkdirSync(projectRoot, { recursive: true });
+
+    const lockSpy = vi.spyOn(kb, 'withMutationLock');
+
+    await expect(promote(kb, projectRoot, {
+      memo: 'missing.md',
+      title: 'KB Promotion',
+      content: '## Rule\nPromote through the tool.',
+      domain: 'coral',
+      topic: 'kb-promotion',
+    })).rejects.toThrow('Memo file not found');
+
+    expect(lockSpy).not.toHaveBeenCalled();
+  });
+
   it('rejects memo paths outside the active project memo directory before touching files', async () => {
     const { promote, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
@@ -285,6 +304,7 @@ Content here.
 
     const result = readEntry({ note: 'coral-kb-read' });
     expect(result).toEqual({
+      kind: 'note',
       note: 'coral-kb-read',
       title: 'Read Test',
       content: '## Rule\nContent here.',
@@ -293,8 +313,93 @@ Content here.
     });
   });
 
+  it('prefers matching memos over notes for timestamp-shaped slugs', async () => {
+    const { readEntry, paths } = await loadKbModules();
+    const projectRoot = join(mockState.tmpHome, 'project');
+    mkdirSync(projectRoot, { recursive: true });
+    mkdirSync(paths.memoDir(projectRoot), { recursive: true });
+    mkdirSync(paths.notesDir(), { recursive: true });
+
+    writeFileSync(join(paths.memoDir(projectRoot), '20260323-010203-shared-slug.md'), `---
+source: kangig94/coral
+---
+Memo body
+`, 'utf-8');
+    writeFileSync(join(paths.notesDir(), '20260323-010203-shared-slug.md'), `---
+tags: [coral]
+principles: [contract-first-design]
+source:
+  - kangig94/coral
+createdAt: 2026-03-20T00:00:00.000Z
+updatedAt: 2026-03-20T00:00:00.000Z
+---
+# Note Title
+
+Note body.
+`, 'utf-8');
+
+    expect(readEntry({ note: '20260323-010203-shared-slug' }, projectRoot)).toEqual({
+      kind: 'memo',
+      note: '20260323-010203-shared-slug',
+      title: '20260323-010203-shared-slug',
+      content: 'Memo body',
+      tags: [],
+      principles: [],
+    });
+  });
+
+  it('reads principles directly when no memo or note matches', async () => {
+    const { readEntry, paths } = await loadKbModules();
+    writeFileSync(
+      join(paths.principlesDir(), 'contract-first-design.md'),
+      '---\ncreatedAt: 2026-03-23\nupdatedAt: 2026-03-23\n---\nState contracts first.\n',
+      'utf-8',
+    );
+
+    expect(readEntry({ note: 'contract-first-design' })).toEqual({
+      kind: 'principle',
+      note: 'contract-first-design',
+      title: 'contract-first-design',
+      content: 'State contracts first.',
+      rawContent: '---\ncreatedAt: 2026-03-23\nupdatedAt: 2026-03-23\n---\nState contracts first.\n',
+      tags: [],
+      principles: [],
+    });
+  });
+
+  it('prefers notes over principles when both share the same slug', async () => {
+    const { readEntry, paths } = await loadKbModules();
+    mkdirSync(paths.notesDir(), { recursive: true });
+    writeFileSync(
+      join(paths.principlesDir(), 'contract-first-design.md'),
+      '---\ncreatedAt: 2026-03-23\nupdatedAt: 2026-03-23\n---\nPrinciple statement.\n',
+      'utf-8',
+    );
+    writeFileSync(join(paths.notesDir(), 'contract-first-design.md'), `---
+tags: [coral]
+principles: [single-source-of-truth]
+source:
+  - kangig94/coral
+createdAt: 2026-03-20T00:00:00.000Z
+updatedAt: 2026-03-20T00:00:00.000Z
+---
+# Note Title
+
+Note body.
+`, 'utf-8');
+
+    expect(readEntry({ note: 'contract-first-design' })).toEqual({
+      kind: 'note',
+      note: 'contract-first-design',
+      title: 'Note Title',
+      content: 'Note body.',
+      tags: ['coral'],
+      principles: ['single-source-of-truth'],
+    });
+  });
+
   it('throws when reading a non-existent note', async () => {
     const { readEntry } = await loadKbModules();
-    expect(() => readEntry({ note: 'does-not-exist' })).toThrow();
+    expect(() => readEntry({ note: 'does-not-exist' })).toThrow('not found');
   });
 });

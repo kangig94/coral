@@ -38,7 +38,7 @@ function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
     lastDiscoveryCorpusSize: 0,
     lastDiscoveryDay: null,
     consecutiveFailures: 0,
-    migrationVersion: 0,
+    initialized: false,
     ...overrides,
   };
 }
@@ -1016,7 +1016,7 @@ describe('curate', () => {
 
       const afterFirstStart = readFileSync(gitignorePath, 'utf-8');
       expect(afterFirstStart).toContain('notes/\n');
-      expect(afterFirstStart).toContain('# Coral KB runtime (device-local, auto-managed)\ncurate-state.json\ndata/\n');
+      expect(afterFirstStart).toContain('# Coral KB runtime (device-local, auto-managed)\ndata/\n');
 
       const secondRuntime = createKbRuntime({
         markdownRoot: tempDir,
@@ -1071,6 +1071,7 @@ describe('curate', () => {
         notes,
         principles: {},
       });
+      writeCurateState(runtime, { ...readCurateState(runtime), initialized: true });
       useScheduler(spawn);
 
       await scheduler.start();
