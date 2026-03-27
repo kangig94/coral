@@ -9,7 +9,8 @@
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readStdin, coralProjectDir, sweepStale } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, readStdin, coralProjectDir, sweepStale } from './lib/hook-utils.mjs';
+exitIfChildProcess();
 
 const THROTTLE_MIN = 30;
 const FLAG_PREFIX = 'memo-reminded-';

@@ -14,7 +14,8 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { readStdin, sweepStale } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, readStdin, sweepStale } from './lib/hook-utils.mjs';
+exitIfChildProcess();
 
 const DEFAULT_STATE = {
   prompt: '',

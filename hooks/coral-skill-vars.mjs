@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { join } from 'node:path';
-import { readStdin, coralProjectDir } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, readStdin, coralProjectDir } from './lib/hook-utils.mjs';
+exitIfChildProcess();
 
 const CORAL_SKILLS = /\/(?:coral:)?(?:plan|preplan|analyze|ralph|bid|discuss|init-project|bugfix|code-simplify)\b/;
 

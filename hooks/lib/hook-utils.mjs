@@ -3,6 +3,10 @@ import { readdirSync, statSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 
+export function exitIfChildProcess() {
+  if (process.env.CORAL_CHILD === '1') process.exit(0);
+}
+
 export function readStdin() {
   return new Promise(resolve => {
     let data = '';
