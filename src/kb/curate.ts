@@ -1319,24 +1319,21 @@ export function createCurateScheduler({
     });
   }
 
-  function isEligibleDiscoveryCandidate(
-    candidate: ClaimCandidate,
-    index: KbIndex,
-    processedThrough: CurateCursor,
-  ): boolean {
-    if (compareCursor(candidate.cursor, processedThrough) > 0) {
-      return false;
-    }
-    const noteMeta = index.notes[candidate.slug];
-    return noteMeta !== undefined && noteMeta.principles.length === 0;
-  }
-
   function filterEligibleDiscoveryCandidates(
     index: KbIndex,
     processedThrough: CurateCursor,
+    discoveredThrough: CurateCursor | null,
   ): ClaimCandidate[] {
-    return collectClaimCandidates(index)
-      .filter((c) => isEligibleDiscoveryCandidate(c, index, processedThrough));
+    const candidates = collectClaimCandidates(index)
+      .filter((c) => compareCursor(c.cursor, processedThrough) <= 0)
+      .filter((c) => discoveredThrough === null || compareCursor(c.cursor, discoveredThrough) > 0);
+
+    // New device: no discovery history — use the most recent notes by cursor
+    if (discoveredThrough === null && candidates.length > DISCOVERY_MIN_CORPUS_SIZE) {
+      return candidates.slice(-DISCOVERY_MIN_CORPUS_SIZE);
+    }
+
+    return candidates;
   }
 
   function loadEligibleDiscoveryNotes(
@@ -1505,9 +1502,9 @@ export function createCurateScheduler({
     await drainPendingDiscoveries(processedThrough);
 
     const currentIndex = kb.readIndexOrEmpty();
-    const eligibleCandidates = filterEligibleDiscoveryCandidates(currentIndex, processedThrough);
     const today = nowIsoString().slice(0, 10);
     let state = readCurateState(kb);
+    const eligibleCandidates = filterEligibleDiscoveryCandidates(currentIndex, processedThrough, state.discoveredThrough);
 
     if (!discoveryAllowed(state, eligibleCandidates.length, today)) {
       return;
@@ -1605,7 +1602,7 @@ export function createCurateScheduler({
 
     if (
       processedThrough !== null
-      && filterEligibleDiscoveryCandidates(postClassifyIndex, processedThrough).length >= DISCOVERY_MIN_CORPUS_SIZE
+      && filterEligibleDiscoveryCandidates(postClassifyIndex, processedThrough, postClassifyState.discoveredThrough).length >= DISCOVERY_MIN_CORPUS_SIZE
     ) {
       try {
         await runPrincipleDiscovery(processedThrough);

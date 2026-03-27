@@ -23,6 +23,7 @@ import type { KbIndex } from '../types.js';
 function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
   return {
     processedThrough: null,
+    discoveredThrough: null,
     lastRunDay: null,
     lastAttemptedThrough: null,
     retryNotBefore: null,

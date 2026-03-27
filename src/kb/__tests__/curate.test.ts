@@ -30,6 +30,7 @@ const DEFAULT_UPDATED_AT = '2026-03-20T00:00:00.000Z';
 function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
   return {
     processedThrough: null,
+    discoveredThrough: null,
     lastRunDay: null,
     lastAttemptedThrough: null,
     retryNotBefore: null,
