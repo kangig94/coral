@@ -45,22 +45,19 @@ try {
     process.exit(0);
   }
 
+  // Stop: check session-scoped flag
+  if (event === 'Stop') {
+    const flag = sessionId && join(flagDir, `${FLAG_PREFIX}${sessionId}`);
+    if (!flag || !existsSync(flag)) process.exit(0);
+    try { unlinkSync(flag); } catch { /* ignore */ }
+    sweepStale(flagDir, FLAG_PREFIX, 24 * 60 * 60_000);
+  }
+
   // Check for unprocessed memos (Stop + SessionStart compact)
   const memoDir = join(coralProjectDir(projectDir), 'memo');
   if (!existsSync(memoDir)) process.exit(0);
 
   const memos = readdirSync(memoDir).filter(f => !f.startsWith('.'));
-
-  // Stop: check session-scoped flag OR high memo count
-  if (event === 'Stop') {
-    const flag = sessionId && join(flagDir, `${FLAG_PREFIX}${sessionId}`);
-    const hasFlag = flag && existsSync(flag);
-    if (hasFlag) {
-      try { unlinkSync(flag); } catch { /* ignore */ }
-    }
-    sweepStale(flagDir, FLAG_PREFIX, 24 * 60 * 60_000);
-    if (!hasFlag && memos.length < 10) process.exit(0);
-  }
   const list = memos.join(', ');
   const sessionKb = 'If you learned anything during this session that would be useful in future sessions, preserve the memo -> review -> promotion workflow and promote only durable knowledge via CLI kb promote after reviewing memos. Use CLI kb search to check for duplicates first. Do not bypass memo review.';
 
