@@ -151,7 +151,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
     **Step 2 — Verdict**:
 
-    **If `--deep`**: Follow the resolver's **Continue Decision** verdict. Continue → 4a (or next phase at round 5). Exit → fix remaining MEDIUM/LOW inline, then Step 3. Hard override: CRITICAL findings always Continue. If Continue Decision is missing, fall back to the non-deep severity gate below.
+    **If `--deep`**: You MUST follow the resolver's **Continue Decision** verdict — do not override or reinterpret it. Continue → 4a (or next phase at round 5). Exit → fix remaining MEDIUM/LOW inline, then Step 3. Hard override: CRITICAL findings always Continue. If Continue Decision is missing, fall back to the non-deep severity gate below.
 
     **Otherwise**: Scan the Round Summary **Severity column**. CRITICAL/HIGH at round < 5 → Continue (4a). CRITICAL/HIGH at round 5 → next phase. MEDIUM → fix inline, then Step 3. LOW/none → Step 3. Severity is never reclassified at exit — only during synthesis (4b).
 
