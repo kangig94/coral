@@ -1,23 +1,51 @@
 # Discuss
 
-Backend-managed multi-agent discussion with an event-sourced core. The canonical record is an append-only event log; `state.json` is a derived snapshot used for fast reads and restart recovery.
+Backend-managed multi-agent discussion with an event-sourced core. `event-log.jsonl` is the canonical record. `state.json` is a derived `PersistedDiscussSnapshot` used for fast reads and snapshot-plus-tail hydration.
 
 ## Entry Points
 
-- `discuss_seed` generates diverse persona assignments with the k-DPP seeding logic in [`src/discuss/persona-seed.ts`](/home/dev/workspace/coral/src/discuss/persona-seed.ts).
-- `discuss_start` creates a session, persists `session.created` + `bidding.opened`, and hands control to [`DiscussManager`](/home/dev/workspace/coral/src/execution/discuss-manager.ts).
-- `discuss_participate` lets manual participants submit a bid or a speech without bypassing the same event pipeline.
-- `discuss_watch` returns the ordered watch history derived from persisted events.
-- `discuss_abort` appends a durable terminal event; aborted sessions are not resumed on restart.
+Schemas for the tool-facing inputs live in `src/discuss/schemas.ts` and `src/execution/server.ts`.
+
+- `discuss_seed` runs persona seeding in `src/discuss/persona-seed.ts`.
+- `discuss_start` validates input in `src/execution/server.ts`, then calls `startDiscussSession()` in `src/execution/discuss-operations.ts`.
+- `discuss_participate` records a manual bid or manual speech through the same append-only event pipeline used by automated turns.
+- `discuss_watch` returns a projected watch-log envelope, not raw domain events.
+- `discuss_abort` force-ends a live session and detaches it from the in-memory registry.
+
+### Manual observers
+
+`discuss_start` treats an `observer` agent with no `provider` and no `model` as a manual participant.
+
+- `src/execution/discuss-executor.ts` records that agent as `manual: true` in the `session.created` execution config.
+- `src/discuss/reducer.ts` omits manual participants from `runtime.agentRuns`.
+- `src/execution/discuss-subflows.ts` skips them during automatic bid collection.
+- `src/execution/discuss-loop.ts` stops when a manual participant becomes the current speaker.
+
+The session resumes only after `discuss_participate` appends that participant's bid or speech.
 
 ## Runtime Model
 
-The domain snapshot has two layers:
+`src/execution/server.ts` imports `src/execution/discuss-operations.ts`. That file is the primary execution-layer entry for start, watch, manual participation, abort, and persisted-session attachment.
 
-- `state`: the user-visible discussion state in [`src/discuss/types.ts`](/home/dev/workspace/coral/src/discuss/types.ts) with agents, bids, transcript, step, epoch, current speaker, thresholds, and terminal reason text.
-- `runtime`: persisted control metadata in [`src/discuss/events.ts`](/home/dev/workspace/coral/src/discuss/events.ts) with `controlPhase`, carry-forward must-answer items, follow-up queue, and provider execution bookkeeping per agent.
+The runtime is split across focused sibling modules:
 
-`DiscussManager` is the imperative shell. It loads the latest snapshot from [`DiscussSessionStore`](/home/dev/workspace/coral/src/execution/discuss-session-store.ts), asks the pure deciders in [`src/discuss/state-machine.ts`](/home/dev/workspace/coral/src/discuss/state-machine.ts) for the next event batch, appends that batch through the store, then resumes the loop from the new snapshot.
+- `src/execution/discuss-loop.ts`: resumes and continues the live control loop.
+- `src/execution/discuss-persistence.ts`: optimistic commit helpers, `afterCommit()` live updates, and persisted watch rebuilds.
+- `src/execution/discuss-subflows.ts`: bid collection, speech collection, epoch evaluation, follow-up, and synthesis subflows.
+- `src/execution/discuss-registry.ts`: attached live sessions, subscriber cursors, and watch-buffer reads.
+- `src/execution/discuss-executor.ts`: provider execution config, retry bookkeeping, and manual-participant detection.
+- `src/execution/discuss-context.ts`: shared runtime types, watch-buffer helpers, and runtime errors.
+- `src/execution/discuss-prompts.ts`: bid and speech prompt builders.
+
+Supporting storage and registry modules stay separate:
+
+- `src/execution/discuss-session-store.ts`: appends committed batches and persists source-scoped indexes.
+- `src/execution/discuss-context-registry.ts`: groups live discuss contexts by project root.
+
+The domain snapshot still has two layers:
+
+- `state` in `src/discuss/types.ts`: user-visible discussion state such as agents, bids, transcript, step, epoch, current speaker, thresholds, and terminal reason text.
+- `runtime` in `src/discuss/events.ts`: persisted control metadata such as `controlPhase`, carry-forward must-answer items, follow-up queue, and provider execution bookkeeping.
 
 Persisted control phases:
 
@@ -27,11 +55,11 @@ Persisted control phases:
 - `collect_follow_up`
 - `synthesize`
 
-Those phases are what make restart recovery resumable without relying on in-memory shadow state.
+`src/discuss/state-machine.ts` validates and emits event batches. `src/discuss/reducer.ts` is the only place that materializes committed domain events back into `state` and `runtime`.
 
 ## Event Flow
 
-The event union lives in [`src/discuss/events.ts`](/home/dev/workspace/coral/src/discuss/events.ts). The main groups are:
+The domain-event union lives in `src/discuss/events.ts`. The main groups are:
 
 - Session lifecycle: `session.created`, `session.ended`, `session.synthesized`
 - Bidding: `bidding.opened`, `bid.submitted`, `bid.round.closed`, `participants.expelled`
@@ -39,20 +67,64 @@ The event union lives in [`src/discuss/events.ts`](/home/dev/workspace/coral/src
 - Follow-up control: `must_answer.carry_forward.set`, `follow_up.queue.set`, `follow_up.answered`
 - Execution recovery: `agent.run.bound`, `agent.job.started`, `agent.job.finished`
 
-Deciders only validate and emit events. They do not mutate state directly. The reducer in [`src/discuss/reducer.ts`](/home/dev/workspace/coral/src/discuss/reducer.ts) is the single place that turns domain events back into `state` + `runtime`.
+High-level runtime flow:
 
-High-level loop:
+1. `discuss_start` appends `session.created` and `bidding.opened`, attaches the live session, collects automatic bids, and schedules the loop.
+2. `src/execution/discuss-subflows.ts` collects bids only for non-manual participants. Manual bids arrive through `discuss_participate`.
+3. `src/execution/discuss-loop.ts` closes bidding rounds and honors `observer_wait` when observer bids may still arrive.
+4. Automatic winners speak through `collectSpeech()`. If the winner is manual, the loop returns and waits for `discuss_participate` to append `speech.recorded`.
+5. Epoch evaluation, follow-up turns, and synthesis append their own committed batches and advance `runtime.controlPhase`.
 
-1. `discuss_start` appends `session.created` and `bidding.opened`.
-2. Agents or manual participants append `bid.submitted`.
-3. `DiscussManager` resolves the round by appending `bid.round.closed`, and sometimes `session.ended` in the same batch for terminal no-winner outcomes.
-4. The winning speaker appends `speech.recorded` or `speech.timed_out`.
-5. Epoch evaluation appends `epoch.summary.recorded`, `must_answer.carry_forward.set`, `follow_up.queue.set`, and `follow_up.answered` as needed.
-6. When the session finishes, synthesis is appended as `session.synthesized`.
+The reducer preserves the sealed-bid discussion rules while keeping the write path event-sourced.
 
-The reducer preserves the same bidding rules as before: thresholded primary pool, fallback pool, cold start, epoch transitions, fairness-adjusted effective bids, and deterministic tiebreaks.
+## `discuss_watch` Contract
 
-## Storage
+`discuss_watch` returns this envelope shape:
+
+```json
+{
+  "session": "session-id",
+  "status": "bidding",
+  "topic": "topic text",
+  "epoch": 1,
+  "step": 2,
+  "events": [
+    {
+      "type": "bid_resolved",
+      "data": {
+        "winner": "alpha",
+        "speaker_type": "quota"
+      },
+      "ts": 1773100862000
+    }
+  ],
+  "cursor": 1
+}
+```
+
+The `events` array is a projection from `src/discuss/projections.ts`, not a dump of raw domain events. The emitted watch event types are:
+
+- `bid_resolved`: `{ winner, speaker_type }`
+- `speech_done`: `{ speaker, content }`
+- `epoch_transition`: `{ epoch }`
+- `session_ended`: `{ reason, detail? }`
+
+Cursor semantics:
+
+- The cursor is the projected watch-event count, not the domain-event `seq`.
+- Omitting `cursor` returns the full available watch history and the current total cursor.
+- Passing `cursor = N` returns only events after index `N` in the projected watch history.
+- Passing `cursor` equal to the current total returns `events: []` and the same cursor.
+- Passing `cursor` greater than the current total returns `invalid_cursor`.
+
+Live-buffer versus persisted rebuild:
+
+- Live sessions append projected watch events into the in-memory `watchBuffer` in `src/execution/discuss-persistence.ts` via `afterCommit()`.
+- `src/execution/discuss-registry.ts` serves polling reads directly from that live buffer when the requested cursor is still inside the retained live range.
+- If there is no live session, if the caller omits `cursor` after live-buffer compaction, or if the requested cursor is older than `watchBuffer.baseCursor`, the runtime rebuilds the response from persisted events with `buildPersistedWatchState()`.
+- Both paths return the same envelope shape and cursor contract.
+
+## Storage And Recovery
 
 Persisted discuss storage is source-scoped. All checkouts of the same canonical git source share:
 
@@ -70,53 +142,51 @@ Persisted discuss storage is source-scoped. All checkouts of the same canonical 
 ```
 
 - `event-log.jsonl` is authoritative.
-- `state.json` is a `PersistedDiscussSnapshot` with `lastAppliedSeq`.
+- `state.json` stores the derived `PersistedDiscussSnapshot`, including `lastAppliedSeq`.
 - `discovery.json` is the source-scoped recovery index.
-- `summary-index.json` is the source-scoped listing index used by API reads.
-- `projectRoot` stays in snapshots and rows as last-known checkout metadata; it is not the persisted storage identity.
+- `summary-index.json` is the source-scoped listing index used by HTTP reads.
+- `projectRoot` remains last-known checkout metadata. It is not the persisted storage identity.
 
-Append order in [`DiscussSessionStore.append()`](/home/dev/workspace/coral/src/execution/discuss-session-store.ts):
+Append order in `src/execution/discuss-session-store.ts`:
 
-1. Append the event batch to `event-log.jsonl` and `fdatasync`.
+1. Append the batch to `event-log.jsonl` and `fdatasync`.
 2. Reduce the batch into the next snapshot.
 3. Atomically rewrite `state.json`.
-4. Atomically merge the committed session metadata into `discovery.json` and `summary-index.json`.
+4. Mark source indexes dirty so `discovery.json`, `summary-index.json`, and `~/.coral/discuss-sources.json` are flushed from committed state.
 
-The store also updates `~/.coral/discuss-sources.json` so the backend can enumerate known sources before serving requests.
+Hydration is snapshot-plus-tail, not snapshot-only:
 
-## Recovery
+- If `state.json` exists and the recorded log size still matches, the store returns it directly.
+- If the log grew, the store replays only events with `seq > lastAppliedSeq`.
+- If `state.json` is missing or stale, the store rebuilds from the full event log.
 
-Recovery is snapshot-plus-tail, not snapshot-only:
+On backend startup, `src/execution/server.ts` iterates known discuss sources and calls `recoverPersistedSessionsFromStore()` in `src/execution/discuss-operations.ts`. That recovery path reads the persisted event log, skips abort-ended sessions, and attaches live sessions with a prebuilt watch buffer. It does not rely on a separate manager file.
 
-- If `state.json` exists, the store replays only events with `seq > lastAppliedSeq`.
-- If `state.json` is missing, it rebuilds from the full event log.
-- If discovery metadata is missing or stale, the readers fall back to scanning source directories and `state.json`.
+## Projections, Authority, And HTTP APIs
 
-On backend startup, [`DiscussManager.recoverPersistedSessions()`](/home/dev/workspace/coral/src/execution/discuss-manager.ts) attaches all non-abort sessions found through the store and resumes any persisted control phase that still needs work. Execution recovery is driven by the persisted runtime events:
-
-- `agent.run.bound` remembers the execution session ID after `service.start()` returns.
-- `agent.job.started` remembers the in-flight job and attempt.
-- `agent.job.finished` records the last terminal outcome so retries can resume after restart.
-
-If a stored job is missing or no longer live, recovery records a failure outcome and re-runs the turn when the retry budget allows it.
-
-## Projections And APIs
-
-[`src/discuss/projections.ts`](/home/dev/workspace/coral/src/discuss/projections.ts) builds the read models used by the API and watch surfaces:
+`src/discuss/projections.ts` owns the shared read models:
 
 - `buildControlView()` redacts bid internals from transcript entries.
 - `buildAuditView()` returns the full transcript.
-- `buildWatchEvents()` derives `bid_resolved`, `speech_done`, `epoch_transition`, and `session_ended` notifications from committed events.
+- `buildWatchEvents()` derives the watch-log notifications from committed domain events.
 
-[`src/client/discuss.ts`](/home/dev/workspace/coral/src/client/discuss.ts) turns those projections into stable DTOs for backend consumers and `coral-reef`.
+`src/client/discuss.ts` wraps those projections into stable summary and detail DTOs with `authority: "persisted" | "live"` and `view: "control" | "audit"`.
 
-HTTP/API rules:
+Authority semantics:
 
-- `GET /api/discuss` lists persisted summaries from the store, with live sessions overriding authority to `live`.
-- `GET /api/discuss/detail?view=control` returns redacted transcript data.
-- `GET /api/discuss/detail?view=audit` returns full transcript data only after the session has ended; live audit requests return `409`.
-- Every committed discuss batch emits `discuss:updated` on the execution event bus and over backend SSE.
+- `/api/discuss` reads persisted summaries per canonical source, not per checkout path.
+- The server dedupes by canonical source plus `sessionId`, so the same session does not appear twice just because two checkouts point at the same repo.
+- If an attached live session exists for that same canonical-source and `sessionId` pair, the live summary overrides the persisted row and `authority` becomes `live`.
+- `/api/discuss/detail` applies the same rule: it resolves the requested `projectRoot` to its canonical source, loads the snapshot from that source store, and reports `authority: "live"` whenever a matching live session is attached for that source/session pair.
+
+Detail view rules in `src/execution/server.ts`:
+
+- `GET /api/discuss/detail` defaults to `view=control`.
+- `GET /api/discuss/detail?view=control` returns the redacted transcript view.
+- `GET /api/discuss/detail?view=audit` returns the full transcript only when `state.status === "ended"`.
+- Requests for `view=audit` against any non-ended session, including live sessions, return `409 {"error":"audit_requires_ended_session"}`.
+- Every committed discuss batch emits `discuss:updated` on the execution event bus and backend SSE, and detail reads expose the matching `lastSeq`.
 
 ## Sealed-Bid Surface
 
-The control view hides `bids`, `effective_bids`, and `thoughts` from transcript entries. Those fields remain in the event log and the audit view, but they are not exposed through live detail reads. That keeps the live protocol sealed-bid while still supporting post-hoc inspection and reef indexing from the same underlying projection contract.
+The control view hides `bids`, `effective_bids`, and `thoughts` from transcript entries. Those fields remain in the event log and in the audit view, but they are not exposed through control reads. That keeps the live protocol sealed-bid while still allowing post-hoc audit and same-source indexing from the same projection layer.

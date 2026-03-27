@@ -36,22 +36,22 @@ Static descriptor and handler for the `backend` MCP tool. Defines the `op` Zod s
 
 ### src/execution/server.ts - Backend HTTP Daemon
 
-`createBackendServer(options)`: persistent HTTP daemon. Singleton lock via `backend-lock.ts`, idle timer via `idle-timer.ts`, HTTP routing (`GET /health`, `GET /tools`, `POST /tool`, `POST /wait/stream`, `POST /admin/shutdown`). Creates per-project `ExecutionService` instances and routes tool calls through `routeToolCall`. Manages lifecycle states (`starting` → `running` → `draining` → `stopped`). Recovers orphaned jobs on startup. Exports `BackendServerController` with `start()`, `shutdown(reason)`, `waitForShutdown()`, `getLifecycle()`. See `src/execution/server.ts`.
+`createBackendServer(options)`: persistent HTTP daemon. Owns singleton locking, idle shutdown, HTTP routing (`GET /health`, `GET /tools`, `POST /tool`, `POST /wait/stream`, `POST /admin/shutdown`), cross-shard session discovery via `SessionIndex`, and per-project discuss contexts. `routeToolCall(...)` is the main backend dispatcher; discuss tool routes call into `discuss-operations.ts`, and KB routes call the `src/kb/` operations through the runtime subsystem. Manages lifecycle states (`starting` → `running` → `draining` → `stopped`) and recovers orphaned jobs on startup. See `src/execution/server.ts`.
 
 ---
 
 ### src/execution/service.ts - Core Business Logic
 
-`ExecutionService`: central orchestrator. Owns `SessionManager`, `JobManager`, and `ProgressStore` instances. Methods:
+`ExecutionService`: provider-launch orchestration and wait/abort coordination. Owns `SessionManager`, `AbortRegistry`, and `ProgressStore`, and mediates launch admission with the engine queue. Methods:
 - `start(providerName, input, ctx)` — provider preflight, session allocation, job allocation, async CLI spawn
 - `resume(providerName, input, ctx)` — session lookup, busy/non-resumable guards, async CLI spawn
 - `fork(providerName, input, ctx)` — source session lookup, new session allocation, async CLI spawn
 - `coralDispatch(providerName, coralName, input, ctx)` — resolve coral content, strip metadata, build instruction, delegate to `start`/`resume`
 - `executeWorkflow(providerName, ast, input, ctx)` — allocate workflow job, delegate to `executePipeline`
 - `list(providerName)` — provider-filtered session list
-- `abort(jobIds)` — delegate to `JobManager.abort()`
+- `abort(jobIds)` — delegate to `AbortRegistry.abort()`
 - `awaitLaunch(jobId, timeoutMs)` — poll until launch state is non-pending
-- `waitStream(req)` — async generator yielding progress/terminal/timeout events for monitored jobs
+- `waitStream(req)` / `waitStreamOnce(jobId, timeoutMs?)` — replay progress and terminal events from `ProgressStore`
 
 See `src/execution/service.ts`.
 
@@ -75,9 +75,9 @@ Connection info at `~/.claude/coral/backend.json`. Stores `{ pid, port, token, v
 
 ---
 
-### src/execution/job-manager.ts - In-Memory Job Registry
+### src/execution/abort-registry.ts - In-Memory Abort Handles
 
-`JobManager`: in-memory `Map<string, JobEntry>` of active jobs. Each `JobEntry` has `AbortController` for cancellation. Key methods: `allocate(sessionId, provider)` (returns new jobId), `setPhase(jobId, phase)`, `setLaunchState(jobId, state, message?)`, `getSignal(jobId)`, `get(jobId)`, `isActive(jobId)`, `abort(jobIds)` (returns `AbortResult { aborted, notFound }`), `remove(jobId)`. See `src/execution/job-manager.ts`.
+`AbortRegistry`: job-id to `AbortController` map used by `ExecutionService` for cancellation. `register(jobId?)` allocates or reuses a job ID, `getSignal(jobId)` exposes the controller signal to providers, `abort(jobIds)` returns `{ aborted, notFound }`, and `remove(jobId)` drops completed jobs after terminal persistence. See `src/execution/abort-registry.ts`.
 
 ---
 
@@ -90,6 +90,12 @@ Connection info at `~/.claude/coral/backend.json`. Stores `{ pid, port, token, v
 ### src/execution/session-manager.ts - Persisted Session Registry
 
 `SessionManager`: persisted session registry under `~/.claude/coral/sessions/<project-hash>/`. Provider-aware methods: `allocate(provider, name, model, cwd)`, `get(provider, sessionId)`, `list(provider)`, `setConversationRef(sessionId, ref)`, `setNonResumable(sessionId)`, `claimForJobSync(sessionId, jobId)` / `claimForJobAtomic(sessionId, jobId)` (single-active-job invariant), `releaseJob(sessionId, jobId)`. Atomic writes (`.tmp` + rename). Includes migration from old runner session format. See `src/execution/session-manager.ts`.
+
+---
+
+### src/execution/session-index.ts - Cross-Shard Session Discovery
+
+`SessionIndex`: backend-owned read model for session discovery across all session shards. Hydrates lenient session JSON from `~/.claude/coral/sessions/*`, tracks known shard directories, marks session entries stale on `session:updated` events, and rereads only touched records. `listForNamespace(namespace, progressStore)` filters active jobs by backend namespace using `ProgressStore`; `listAll()` returns the full cached index. See `src/execution/session-index.ts`.
 
 ---
 
@@ -120,13 +126,61 @@ Type definitions for backend request routing: `CallerContext { projectRoot, plug
 
 ### src/execution/discuss-session-store.ts - Event-Sourced Discuss Persistence
 
-Persistent store for discuss sessions. Owns compare-and-append writes to `event-log.jsonl`, snapshot materialization to `state.json`, source-scoped discovery/index updates under `~/.coral/projects/{slug}/discuss/`, and shared source-registry updates at `~/.coral/discuss-sources.json`. Key methods: `load(sessionId)`, `append(sessionId, expectedSeq, events)`, `listSummaries()`, `listRecoveryCandidates()`, and `resolveSessionDir(sessionId)`. Imports from `client/readers.ts`, `client/paths.ts`, `client/discuss.ts`, and `discuss/reducer.ts`; it is the only place that knows the write ordering for discuss durability. See `src/execution/discuss-session-store.ts`.
+Persistent store for discuss sessions. Owns compare-and-append writes to `event-log.jsonl`, snapshot materialization to `state.json`, source-scoped discovery and summary-index repair under `~/.coral/projects/{slug}/discuss/`, and shared source-registry updates at `~/.coral/discuss-sources.json`. Key methods: `load(sessionId)`, `append(sessionId, expectedSeq, events)`, `listSummaries()`, `listRecoveryCandidates()`, and `resolveSessionDir(sessionId)`. It is the write-order authority for discuss durability and persisted discovery surfaces. See `src/execution/discuss-session-store.ts`.
 
 ---
 
-### src/execution/discuss-manager.ts - Live Discuss Orchestrator
+### src/execution/discuss-operations.ts - Discuss Runtime Entry Point
 
-`DiscussManager`: the imperative shell for live discuss sessions. Holds attached live snapshots, drives the control loop, launches provider turns through `ExecutionService`, records runtime bookkeeping events, handles manual participation, derives watch history, and resumes persisted control phases on backend restart. It never mutates authority state directly; every change goes through `DiscussSessionStore.append()` with a freshly validated event batch from `state-machine.ts`. See `src/execution/discuss-manager.ts`.
+Primary execution-layer entry point for discuss runtime operations, imported by `server.ts`. Handles `startDiscussSession`, manual bid/speech submission, abort, `getWatchState`, and persisted-session recovery. Composes the sibling discuss modules rather than exposing a single manager class. See `src/execution/discuss-operations.ts`.
+
+---
+
+### src/execution/discuss-loop.ts - Control-Phase Loop
+
+`resumeLoop(ctx, sessionId, callerCtx)` and `continueLoop(...)` drive live discuss sessions through control phases such as `observer_wait`, `collect_follow_up`, `evaluate_epoch`, and `synthesize`. The loop decides whether to collect bids, collect speech, run follow-up turns, evaluate epochs, or stop, and force-ends the session on uncaught runtime failures. See `src/execution/discuss-loop.ts`.
+
+---
+
+### src/execution/discuss-subflows.ts - Bid/Speech/Subflow Workers
+
+The concrete async subflows used by the loop: `collectBids`, `collectSpeech`, `evaluateEpoch`, `handleEpochTransition`, `runFollowUpTurns`, and `handleSynthesis`. This file builds prompts, validates model output, applies retry rules, and commits follow-up runtime events back through the persistence helpers. See `src/execution/discuss-subflows.ts`.
+
+---
+
+### src/execution/discuss-persistence.ts - Commit And Watch Helpers
+
+Compare-and-append helpers for the live runtime. `commitDecision(...)` applies state-machine decisions through `DiscussSessionStore.append()`, retries on stale writes, updates attached live snapshots, and fans derived watch events to subscribers. `appendRuntimeEvents(...)` appends bookkeeping events, and `buildPersistedWatchState(...)` reconstructs watch history from the persisted event log when a session is not attached live. See `src/execution/discuss-persistence.ts`.
+
+---
+
+### src/execution/discuss-registry.ts - Live Session Attachment Registry
+
+In-memory registry of attached live discuss sessions. `attachSession(...)` and `detachSession(...)` manage the runtime session map, `subscribe(...)` manages live watch subscribers, and `getWatchState(...)` serves either the live watch buffer or a persisted rebuild fallback when the requested cursor predates the retained live buffer. See `src/execution/discuss-registry.ts`.
+
+---
+
+### src/execution/discuss-executor.ts - Provider Turn Execution
+
+Execution helpers for individual discuss turns. Builds per-agent execution config, distinguishes manual observers from provider-backed agents, computes retryable attempt numbers, launches provider turns through `ExecutionService`, records `agent.job.*` runtime events, and exposes constants for bid/speech/follow-up/synthesis purposes and shared turn instructions. See `src/execution/discuss-executor.ts`.
+
+---
+
+### src/execution/discuss-context.ts - Runtime Types And Live Buffers
+
+Defines the execution-layer discuss context: `AgentConfig`, `DiscussConfig`, `WatchEvent`, `WatchState`, `LiveDiscussSession`, and the `DiscussContext` container (`projectRoot`, `sessions`, `service`, `store`). Also owns live watch-buffer helpers such as `createWatchBuffer(...)`, cursor tracking, and buffer compaction. See `src/execution/discuss-context.ts`.
+
+---
+
+### src/execution/discuss-context-registry.ts - Per-Project Discuss Contexts
+
+Registry for per-project `DiscussContext` instances. `createDiscussContextRegistry()` creates the global container, `getOrCreate(...)` binds a project root to its `ExecutionService` and `DiscussSessionStore`, and `listAttachedSessions(...)` / `hasRunningSessions(...)` let `server.ts` inspect global live-discuss state during shutdown and recovery. See `src/execution/discuss-context-registry.ts`.
+
+---
+
+### src/execution/discuss-prompts.ts - Discuss Prompt Builders
+
+Prompt-construction helpers for the runtime. `buildBidPrompt(...)`, `buildSpeechPrompt(...)`, and `buildFirstTurnInstruction(...)` compose persona, participant summary, prior speech, and must-answer context into the strict response contracts expected by the discuss subflows. See `src/execution/discuss-prompts.ts`.
 
 ---
 
@@ -154,13 +208,13 @@ See `src/cli/main.ts`.
 
 ### src/kb/runtime.ts - KbRuntime Factory
 
-`createKbRuntime({ markdownRoot, runtimeDir })` returns the singleton `KbRuntime` that all KB operations share. Manages in-memory caches for the parsed JSON index (`cachedIndex`) and Orama snapshot (`cachedOramaIndex`), a non-reentrant promise-chain mutation lock (`withMutationLock`), and the `ensureIndex()` / `ensureOramaIndex()` freshness pipeline. `textArtifactsNeedRebuild(state?)` accepts an optional pre-read index state to avoid redundant disk reads within one synchronous segment. See `src/kb/runtime.ts`.
+`createKbRuntime({ markdownRoot, runtimeDir })` constructs the shared KB runtime. It owns the cached text index (`index.json`), freshness state (`index-state.json`), cached Orama snapshot (`orama-index.json`), the serialized mutation lock (`withMutationLock()`), and the rebuild/freshness pipeline behind `ensureIndex()` and `ensureOramaIndex()`. It also initializes the optional LanceDB adapter when available. See `src/kb/runtime.ts`.
 
 ---
 
-### src/kb/contracts.ts - KB Tool Schemas
+### src/kb/paths.ts - KB Path Resolution
 
-Zod schemas and handler bindings for all KB tools (`kb_search`, `kb_read`, `kb_promote`, `kb_update`, `kb_delete`, `kb_reindex`, `kb_principles`, `kb_memo`). `defineKbToolContracts()` produces MCP-compatible descriptors with `zodToJsonSchema`. Two slug vocabularies: `noteSlugSchema` (mixed-case, for note names) and `lowercaseSlugSchema` (for domain, memo topic). See `src/kb/contracts.ts`.
+Path helpers and containment checks for KB files. `notesDir()`, `principlesDir()`, `kbRuntimeDir()`, `memoDir(projectRoot)`, `memoPathFromContext(projectRoot, memo)`, `notePathFromName(note)`, `notePathFromParts(domain, topic)`, and `principlePathFromName(principle)` all route through `assertWithin(...)` so note, principle, and memo paths stay under the configured KB roots. See `src/kb/paths.ts`.
 
 ---
 
@@ -176,6 +230,12 @@ Canonical slug patterns: `LOWERCASE_SLUG_PATTERN` (`/^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
 ---
 
+### src/kb/read.ts - KB Note And Memo Reader
+
+`loadKbNote(notePath)` reads a note and parses frontmatter, title, and body. `readEntry({ note }, projectRoot?)` serves both promoted notes and project-local memos: memo-like note names (`YYYYMMDD-HHMMSS-topic`) resolve to `projectDataDir(projectRoot)/memo/<name>.md` when present, otherwise the call reads the canonical note under `notes/`. See `src/kb/read.ts`.
+
+---
+
 ### src/kb/search.ts - KB Search
 
 `searchKb(rt, query, top_k)` — Orama full-text search with BM25 ranking, field boosting (`slug:3, title:2, tags:1.5, principles:1.5, body:1`). `toResult()` uses snippet-as-signal for body match detection: `extractSnippet` attempts anchor-based body search; if snippet found → content matched; if no snippet and no other surface matched → content (Orama fallback). `findTokenAnchor` uses the inverse of Orama's English SPLITTER regex to maintain tokenizer contract alignment. See `src/kb/search.ts`.
@@ -185,6 +245,48 @@ Canonical slug patterns: `LOWERCASE_SLUG_PATTERN` (`/^[a-z0-9]+(?:-[a-z0-9]+)*$/
 ### src/kb/frontmatter.ts - Frontmatter Parsing
 
 YAML frontmatter parse/serialize for KB notes. `parseFrontmatter(content)` → `KbNoteFrontmatter`, `serializeFrontmatter(meta)` → YAML block, `replaceFrontmatter(content, meta)` for in-place update. `deriveNoteIdentity(pathOrName)` splits `domain-topic` from a note slug. `extractBody`, `extractTitle`, `extractPrincipleStatement` for content extraction. See `src/kb/frontmatter.ts`.
+
+---
+
+### src/kb/promote.ts - Memo Promotion
+
+`promote(rt, projectRoot, input, onSchedule?)` turns a project memo into a canonical note. It validates slugs, reads memo frontmatter for the source list, writes the new note atomically, records `mutationSeqAtPromote`, updates the in-memory index via `commitIndexUpdate(...)`, deletes the source memo, and optionally notifies the curate scheduler. See `src/kb/promote.ts`.
+
+---
+
+### src/kb/update.ts - Note Mutation
+
+`update(rt, input)` rewrites a note's title and/or body in place while preserving existing frontmatter fields except `updatedAt`, which it refreshes. The operation runs under `withMutationLock()`, writes atomically, records a committed mutation, and updates the cached index entry. See `src/kb/update.ts`.
+
+---
+
+### src/kb/delete.ts - Note Deletion
+
+`deleteFn(rt, input)` removes a canonical note, converts missing files into a `KB note not found` error, records a committed mutation, and removes the note from the cached index via `commitIndexUpdate(...)`. See `src/kb/delete.ts`.
+
+---
+
+### src/kb/text-artifacts.ts - Text Index Rebuild
+
+Loads markdown notes and principles from disk, constructs `KbReindexNoteRecord[]`, rebuilds the canonical `KbIndex`, inserts note documents into Orama, persists the text artifacts to disk, and installs the rebuilt caches. `rebuildTextArtifacts(kb, startSeq)` is the authoritative text-mode reindex step, and `TextSnapshotRebuildError` carries partial counts when a rebuild loses freshness or snapshot persistence fails. See `src/kb/text-artifacts.ts`.
+
+---
+
+### src/kb/orama-factory.ts - Orama Schema And Tokenization
+
+Defines the Orama document schema for KB text search and the normalization rules that keep query and field tokenization aligned. Exports `normalizeHyphens(...)`, `normalizeOramaTerm(...)`, `tokenizeQuery(...)`, `tokenizeField(...)`, `toOramaDocument(note)`, and `createOramaDb()`. See `src/kb/orama-factory.ts`.
+
+---
+
+### src/kb/reindex-enhanced.ts - LanceDB Table Rebuild
+
+`rebuildEnhancedIndex(kb, notes)` refreshes the optional LanceDB tables used for enhanced KB search. It drops and recreates `notes`, `tags`, and `principles` tables from the already-loaded `KbReindexNoteRecord[]` and writes normalized lowercase columns alongside the original text for filtering and joins. See `src/kb/reindex-enhanced.ts`.
+
+---
+
+### src/kb/reindex.ts - Reindex Orchestrator
+
+`reindex(kb)` runs the full KB rebuild under the mutation lock. It rebuilds the text artifacts first, then tries to rebuild the optional LanceDB tables. Text-mode rebuild failures surface as `TextSnapshotRebuildError` with counts; LanceDB failures degrade to a warning while text search remains available. See `src/kb/reindex.ts`.
 
 ---
 
@@ -203,6 +305,18 @@ Cursor-based tracking for curate progress: `CurateState` with `processedThrough`
 ### src/kb/curate-tags.ts - Tag Cleanup
 
 `cleanupTags(index, cohortNotes)` — identifies singular/plural duplicates, low-support pattern-suffix tags, and over-specific multi-segment tags for removal. `countTagSupport(index)` counts per-tag note references. Used by the curate scheduler after classification. See `src/kb/curate-tags.ts`.
+
+---
+
+### src/kb/memo.ts - Project Memo Writer
+
+`writeMemo(projectRoot, input)` creates a timestamped memo under the project's runtime data directory, writes memo frontmatter with the resolved project source, and uses the same atomic write helper as the canonical note mutations. See `src/kb/memo.ts`.
+
+---
+
+### src/kb/lancedb-runtime.ts - Optional LanceDB Loader
+
+Dynamic runtime loader for `@lancedb/lancedb`. `loadKbLanceDb(specifier, runtimeDir?)` resolves the module's `connect` function, lazily opens `data/kb/kb.lance`, and returns the adapter shape consumed by `KbRuntime` (`getDb()`, `ensureTables()`). See `src/kb/lancedb-runtime.ts`.
 
 ---
 
@@ -308,13 +422,19 @@ Provider contract and authority boundary:
 
 ---
 
+### src/providers/cli-detection.ts - Shared CLI Detection
+
+Shared CLI detection and auth probing for both built-in providers. `createCliDetector(...)` caches version probes, keeps confirmed authenticated results sticky, rechecks uncertain auth states, and exports `detectCodexCli()` / `detectClaudeCli()` plus cache-reset helpers. Codex probing uses `codex --version` and `codex whoami`; Claude probing uses `claude --version` and `claude auth status --json`, with env-var fast paths for `OPENAI_API_KEY` and `ANTHROPIC_API_KEY`. See `src/providers/cli-detection.ts`.
+
+---
+
 ## Codex Adapter Modules (`src/providers/codex/`)
 
 The Codex adapter implements `Provider` interface. Shared launch/wait/session infrastructure lives in `src/execution/`.
 
 ### src/providers/codex/adapter.ts
 
-Codex `Provider` implementation. `preflight()` probes CLI availability and auth via `cli-detection.ts`. `execute(request, runtime)` dispatches to `executeOneShot`, `executeResume`, or `executeFork` from `codex-executor.ts`, mapping `ProviderResult` fields. Builds prompt by prepending instruction/systemPrompt (both channels map to prompt prepend — Codex has no system prompt flag). See `src/providers/codex/adapter.ts`.
+Codex `Provider` implementation. `preflight()` probes CLI availability and auth via shared `src/providers/cli-detection.ts`. `execute(request, runtime)` dispatches to `executeOneShot`, `executeResume`, or `executeFork` from `codex-executor.ts`, mapping `ProviderResult` fields. Builds prompt by prepending instruction/systemPrompt (both channels map to prompt prepend because Codex has no system-prompt flag). See `src/providers/codex/adapter.ts`.
 
 ### src/providers/codex/codex-executor.ts
 
@@ -323,9 +443,9 @@ Codex-specific execution wrapper over `execution/engine.ts`:
 - parses JSONL events through `output-parser.ts`
 - prepends plugin `INJECT.md` for one-shot sessions
 
-### src/providers/codex/schemas.ts / cli-detection.ts / output-parser.ts / progress.ts / command-patterns.ts / types.ts
+### src/providers/codex/schemas.ts / output-parser.ts / progress.ts / command-patterns.ts / types.ts
 
-Input validation, CLI/auth probing, JSONL parsing, progress message extraction, CLI arg patterns, and Codex-specific types (`CodexExecResult`, `CodexThreadEvent`).
+Input validation, JSONL parsing, progress message extraction, CLI arg patterns, and Codex-specific types (`CodexExecResult`, `CodexThreadEvent`).
 
 ---
 
@@ -333,14 +453,7 @@ Input validation, CLI/auth probing, JSONL parsing, progress message extraction, 
 
 ### src/providers/claude/adapter.ts
 
-Claude `Provider` implementation. `preflight()` probes CLI availability and auth via `cli-detection.ts`. `execute(request, runtime)` dispatches to `executeClaudeOneShot`, `executeClaudeResume`, or `executeClaudeFork` from `claude-executor.ts`. Instruction channel routing: `system` channel maps to `--append-system-prompt`, `prompt` channel prepends to prompt text. See `src/providers/claude/adapter.ts`.
-
-### src/providers/claude/cli-detection.ts
-
-Claude CLI availability/auth probe with cache + in-flight deduplication:
-- binary detection via `claude --version`
-- auth fast path via `ANTHROPIC_API_KEY`
-- canonical auth probe via `claude auth status --json`
+Claude `Provider` implementation. `preflight()` probes CLI availability and auth via shared `src/providers/cli-detection.ts`. `execute(request, runtime)` dispatches to `executeClaudeOneShot`, `executeClaudeResume`, or `executeClaudeFork` from `claude-executor.ts`. Instruction channel routing: `system` channel maps to `--append-system-prompt`, `prompt` channel prepends to prompt text. See `src/providers/claude/adapter.ts`.
 
 ### src/providers/claude/claude-executor.ts
 
