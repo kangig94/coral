@@ -27,6 +27,7 @@ export type CurateCursor = {
 
 export type CurateState = {
   processedThrough: CurateCursor | null;
+  discoveredThrough: CurateCursor | null;
   lastRunDay: string | null;
   lastAttemptedThrough: CurateCursor | null;
   retryNotBefore: string | null;
@@ -59,6 +60,7 @@ type ScannedNote = {
 function defaultCurateState(): CurateState {
   return {
     processedThrough: null,
+    discoveredThrough: null,
     lastRunDay: null,
     lastAttemptedThrough: null,
     retryNotBefore: null,
@@ -191,6 +193,7 @@ function parseCurateState(value: unknown): CurateState {
 
   return {
     processedThrough: parseCursor(value.processedThrough, 'processedThrough'),
+    discoveredThrough: parseCursor(value.discoveredThrough, 'discoveredThrough'),
     lastRunDay: parseOptionalString(value.lastRunDay, 'lastRunDay'),
     lastAttemptedThrough: parseCursor(value.lastAttemptedThrough, 'lastAttemptedThrough'),
     retryNotBefore: parseOptionalString(value.retryNotBefore, 'retryNotBefore'),
@@ -332,6 +335,7 @@ export function applyRecordDiscoveryAttempt(
 ): CurateState {
   return {
     ...state,
+    discoveredThrough: state.processedThrough,
     lastDiscoveryCorpusSize: corpusSize,
     lastDiscoveryDay: today,
   };
