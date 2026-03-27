@@ -2,6 +2,7 @@
 
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readStdin } from './lib/hook-utils.mjs';
 
 const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -33,16 +34,8 @@ try {
       hookEventName: 'PreToolUse',
       updatedInput,
     },
-  }));
+  }) + '\n');
 } catch {
   process.exit(0);
 }
 
-function readStdin() {
-  return new Promise((resolve) => {
-    let data = '';
-    process.stdin.on('data', chunk => { data += chunk; });
-    process.stdin.on('end', () => resolve(data));
-    process.stdin.on('error', () => resolve('{}'));
-  });
-}

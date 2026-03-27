@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { readStdin } from './lib/hook-utils.mjs';
 
 const JOBS_DIR = join(tmpdir(), 'coral-jobs');
 const LIVE_PHASES = new Set(['queued', 'launching', 'running']);
@@ -67,11 +68,3 @@ function safeReadStatus(jobId) {
   }
 }
 
-function readStdin() {
-  return new Promise(resolve => {
-    let data = '';
-    process.stdin.on('data', chunk => { data += chunk; });
-    process.stdin.on('end', () => resolve(data));
-    process.stdin.on('error', () => resolve('{}'));
-  });
-}

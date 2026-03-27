@@ -7,15 +7,14 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
-  readdirSync,
   readSync,
   renameSync,
-  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { readStdin, sweepStale } from './lib/hook-utils.mjs';
 
 const DEFAULT_STATE = {
   prompt: '',
@@ -164,17 +163,6 @@ function atomicWriteJson(path, value) {
   renameSync(tempPath, path);
 }
 
-function sweepStale(dir, prefix, ttlMs) {
-  try {
-    const now = Date.now();
-    for (const f of readdirSync(dir)) {
-      if (!f.startsWith(prefix)) continue;
-      const p = join(dir, f);
-      if (now - statSync(p).mtimeMs > ttlMs) try { unlinkSync(p); } catch {}
-    }
-  } catch {}
-}
-
 function deleteFile(path) {
   try {
     unlinkSync(path);
@@ -257,11 +245,3 @@ function writeJson(value) {
   console.log(JSON.stringify(value));
 }
 
-function readStdin() {
-  return new Promise(resolve => {
-    let data = '';
-    process.stdin.on('data', chunk => { data += chunk; });
-    process.stdin.on('end', () => resolve(data));
-    process.stdin.on('error', () => resolve('{}'));
-  });
-}
