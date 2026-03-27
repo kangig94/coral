@@ -12,7 +12,8 @@
 import { existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readStdin, coralProjectDir, sweepStale } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, readStdin, coralProjectDir, sweepStale } from './lib/hook-utils.mjs';
+exitIfChildProcess();
 
 const FLAG_PREFIX = 'kb-active-';
 const KB_SKILL_RE = /\/(?:coral:)?ralph|\/(?:coral:)?bugfix/;

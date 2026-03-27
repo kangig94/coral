@@ -2,7 +2,8 @@
 
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readStdin } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, readStdin } from './lib/hook-utils.mjs';
+exitIfChildProcess();
 
 const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 

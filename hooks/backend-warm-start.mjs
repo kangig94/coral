@@ -4,7 +4,8 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { readStdin } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, readStdin } from './lib/hook-utils.mjs';
+exitIfChildProcess();
 
 try {
   await readStdin();

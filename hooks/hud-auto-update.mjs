@@ -3,7 +3,8 @@ import { readFileSync, copyFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { readStdin } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, readStdin } from './lib/hook-utils.mjs';
+exitIfChildProcess();
 
 function fileHash(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex');

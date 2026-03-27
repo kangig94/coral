@@ -3,7 +3,8 @@
 import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readStdin } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, readStdin } from './lib/hook-utils.mjs';
+exitIfChildProcess();
 
 const JOBS_DIR = join(tmpdir(), 'coral-jobs');
 const LIVE_PHASES = new Set(['queued', 'launching', 'running']);

@@ -292,6 +292,7 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: options.cwd || undefined,
       shell: process.platform === 'win32',
+      env: { ...process.env, CORAL_CHILD: '1' },
     });
     const entry: ActiveChild = { provider: options.provider, child };
     activeChildren.add(entry);
