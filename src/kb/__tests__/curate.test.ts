@@ -1016,7 +1016,7 @@ describe('curate', () => {
 
       const afterFirstStart = readFileSync(gitignorePath, 'utf-8');
       expect(afterFirstStart).toContain('notes/\n');
-      expect(afterFirstStart).toContain('# Coral KB runtime (device-local, auto-managed)\ncurate-state.json\ndata/\n');
+      expect(afterFirstStart).toContain('# Coral KB runtime (device-local, auto-managed)\ndata/\n');
 
       const secondRuntime = createKbRuntime({
         markdownRoot: tempDir,

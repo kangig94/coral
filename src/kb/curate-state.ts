@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
 import { replaceFrontmatter } from './frontmatter.js';
@@ -17,7 +17,7 @@ const CURATE_MAX_RETRY_MS = 4 * 60 * 60 * 1000;
 type CurateStateTarget = Pick<KbRuntime, 'curateStatePath'> | string;
 type CurateStateRuntime = Pick<
   KbRuntime,
-  'curateStatePath' | 'notesDir' | 'notePath' | 'withMutationLock' | 'readIndex' | 'writeIndex' | 'readIndexState' | 'writeIndexState'
+  'markdownRoot' | 'curateStatePath' | 'notesDir' | 'notePath' | 'withMutationLock' | 'readIndex' | 'writeIndex' | 'readIndexState' | 'writeIndexState'
 >;
 
 export type CurateCursor = {
@@ -392,6 +392,13 @@ export function isClaimStale(state: CurateState, now: string): boolean {
 
 export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promise<void> {
   await kb.withMutationLock(() => {
+    // Move curate-state.json from KB content dir to runtime dir if it exists at the old location
+    const legacyPath = join(kb.markdownRoot, CURATE_STATE_FILE);
+    const currentPath = kb.curateStatePath();
+    if (legacyPath !== currentPath && existsSync(legacyPath) && !existsSync(currentPath)) {
+      try { renameSync(legacyPath, currentPath); } catch { /* best-effort */ }
+    }
+
     const state = readCurateState(kb);
     if (state.migrationVersion >= 1) {
       return;

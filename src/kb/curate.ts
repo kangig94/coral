@@ -61,7 +61,7 @@ const USAGE_5H_THRESHOLD = 90;
 const USAGE_WK_THRESHOLD = 100;
 
 const CURATE_STALE_REASON = 'KB text snapshot is stale after kb_curate.';
-const GITIGNORE_ENTRIES = ['curate-state.json', 'data/', '.obsidian/'];
+const GITIGNORE_ENTRIES = ['data/', '.obsidian/'];
 
 function isUsageBudgetExhausted(): boolean {
   try {
