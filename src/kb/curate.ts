@@ -54,6 +54,8 @@ const CLASSIFICATION_BATCH_SIZE = 100;
 const DISCOVERY_NEW_NOTE_THRESHOLD = 50;
 const DISCOVERY_BATCH_SIZE = 100;
 const DISCOVERY_PROMPT_BODY_LIMIT = 4000;
+const DISCOVERY_MAX_MERGES = 2;
+const DISCOVERY_MAX_REFINES = 3;
 
 // -- Usage budget --
 const USAGE_CACHE_STALE_MS = 10 * 60 * 1000;
@@ -122,6 +124,7 @@ export type DiscoveryProposal = {
   slug: string;
   statement: string;
   notes: string[];
+  absorbs?: string[];
 };
 
 type PendingDiscovery = CurateState['pendingDiscoveries'][number];
@@ -138,6 +141,7 @@ export type MetadataTarget = {
   addTags?: string[];
   desiredTags?: string[];
   addPrinciples?: string[];
+  removePrinciples?: string[];
   removeTags?: string[];
   cleanup?: boolean;
 };
@@ -397,6 +401,7 @@ function buildLiveMetadataDecision(
 ): LiveMetadataDecision {
   const addTags = uniqueTrimmedList(target.addTags ?? []);
   const addPrinciples = uniqueTrimmedList(target.addPrinciples ?? []);
+  const removePrinciples = uniqueTrimmedList(target.removePrinciples ?? []);
   const removeTags = uniqueTrimmedList(target.removeTags ?? []);
   const desiredTags = target.desiredTags === undefined
     ? undefined
@@ -419,10 +424,11 @@ function buildLiveMetadataDecision(
     nextTags = applyParentAbsorption(target.note, nextTags, cleanupTagSupport);
   }
 
+  const removePrincipleSet = new Set(removePrinciples);
   const nextPrinciples = uniqueTrimmedList([
     ...livePrinciples,
     ...addPrinciples,
-  ]);
+  ]).filter((principle) => !removePrincipleSet.has(principle));
 
   return {
     shouldWrite: !sameStringList(nextTags, liveTags) || !sameStringList(nextPrinciples, livePrinciples),
@@ -503,6 +509,7 @@ function extractDiscoveryProposals(entries: unknown[]): DiscoveryProposal[] {
       || typeof entry.slug !== 'string'
       || typeof entry.statement !== 'string'
       || !isStringArray(entry.notes)
+      || (entry.absorbs !== undefined && !isStringArray(entry.absorbs))
     ) {
       continue;
     }
@@ -511,6 +518,7 @@ function extractDiscoveryProposals(entries: unknown[]): DiscoveryProposal[] {
       slug: entry.slug,
       statement: entry.statement,
       notes: [...entry.notes],
+      ...(entry.absorbs === undefined ? {} : { absorbs: [...entry.absorbs] }),
     });
   }
 
@@ -796,7 +804,9 @@ export function buildDiscoveryPrompt(
     '',
     `Read the note corpus from ${corpusPath} before responding.`,
     '',
-    'Return a JSON array: [{ "slug": "<kebab-case>", "statement": "<one-sentence principle>", "notes": ["<slug>", ...] }]',
+    'Return a JSON array: [{ "slug": "<kebab-case>", "statement": "<one-sentence principle>", "notes": ["<slug>", ...], "absorbs": ["<existing-slug>", ...] }]',
+    'To improve an existing principle\'s wording, return it with its existing slug and the better statement.',
+    'To merge similar principles, return the surviving slug with absorbs listing the slugs to fold in. Omit absorbs when creating new principles.',
   ].join('\n');
 
   return { prompt, corpusPath };
@@ -810,19 +820,20 @@ export function parseDiscoveryResponse(raw: string): DiscoveryProposal[] {
 export function validateDiscoveryProposals(
   proposals: DiscoveryProposal[],
   eligibleNotes: CurateClaimedNote[],
-  existingPrinciples: string[],
+  existingPrinciples: Record<string, string>,
 ): DiscoveryProposal[] {
   const eligibleSet = new Set(eligibleNotes.map((note) => note.slug));
-  const existingPrincipleSet = new Set(existingPrinciples);
   const seenSlugs = new Set<string>();
+  const seenAbsorbedSlugs = new Set<string>();
   const validated: DiscoveryProposal[] = [];
+  let mergeCount = 0;
+  let refineCount = 0;
 
   for (const proposal of proposals) {
     const slug = normalizeDiscoverySlug(proposal.slug);
-    if (slug === null || existingPrincipleSet.has(slug) || seenSlugs.has(slug)) {
+    if (slug === null || seenSlugs.has(slug) || seenAbsorbedSlugs.has(slug)) {
       continue;
     }
-    seenSlugs.add(slug);
 
     const statement = proposal.statement.trim();
     if (!statement) {
@@ -836,11 +847,58 @@ export function validateDiscoveryProposals(
       continue;
     }
 
+    const absorbs = uniqueTrimmedList(proposal.absorbs ?? []);
+    const normalizedAbsorbs: string[] = [];
+    let invalidAbsorption = false;
+
+    for (const rawAbsorb of absorbs) {
+      const absorbSlug = normalizeDiscoverySlug(rawAbsorb);
+      if (
+        absorbSlug === null
+        || existingPrinciples[absorbSlug] === undefined
+        || absorbSlug === slug
+        || seenSlugs.has(absorbSlug)
+        || seenAbsorbedSlugs.has(absorbSlug)
+      ) {
+        invalidAbsorption = true;
+        break;
+      }
+      normalizedAbsorbs.push(absorbSlug);
+    }
+    if (invalidAbsorption) {
+      continue;
+    }
+
+    const existingStatement = existingPrinciples[slug];
+    const isMerge = normalizedAbsorbs.length > 0;
+    if (existingStatement !== undefined && existingStatement === statement && !isMerge) {
+      continue;
+    }
+
+    const isRefine = existingStatement !== undefined && !isMerge;
+    if (isMerge && mergeCount >= DISCOVERY_MAX_MERGES) {
+      continue;
+    }
+    if (isRefine && refineCount >= DISCOVERY_MAX_REFINES) {
+      continue;
+    }
+
     validated.push({
       slug,
       statement,
       notes,
+      ...(normalizedAbsorbs.length === 0 ? {} : { absorbs: normalizedAbsorbs }),
     });
+    seenSlugs.add(slug);
+    for (const absorbSlug of normalizedAbsorbs) {
+      seenAbsorbedSlugs.add(absorbSlug);
+    }
+    if (isMerge) {
+      mergeCount += 1;
+    }
+    if (isRefine) {
+      refineCount += 1;
+    }
   }
 
   return validated;
@@ -1539,10 +1597,12 @@ export function createCurateScheduler({
     const proposals = validateDiscoveryProposals(
       extractDiscoveryProposals(entries),
       eligibleNotes,
-      Object.keys(currentIndex.principles),
+      currentIndex.principles,
     );
 
     await kb.withMutationLock(async () => {
+      let index = kb.readIndexOrEmpty();
+
       for (const proposal of proposals) {
         const entry: PendingDiscovery = {
           principle: proposal.slug,
@@ -1552,28 +1612,106 @@ export function createCurateScheduler({
         };
 
         state = addPendingDiscoveryLocked(state, entry);
+        const isRefineProposal = index.principles[proposal.slug] !== undefined
+          && (proposal.absorbs?.length ?? 0) === 0;
         const principleDocument = ensurePrincipleDocumentLocked(entry, state);
         state = principleDocument.state;
+        index = kb.readIndexOrEmpty();
 
         if (principleDocument.status === 'conflict') {
-          state = removePendingDiscoveryLocked(state, entry);
-          continue;
+          if (!isRefineProposal) {
+            state = removePendingDiscoveryLocked(state, entry);
+            continue;
+          }
+
+          const principlePath = kb.principlePath(assertNoteSlug(entry.principle, 'principle'));
+          const rawPrinciple = readFileSync(principlePath, 'utf-8');
+          const createdAtMatch = rawPrinciple.match(/^createdAt:\s*(.+)$/m);
+          if (createdAtMatch === null) {
+            throw new Error(`Principle document is missing createdAt: ${entry.principle}`);
+          }
+
+          const updatedAt = nowIsoString();
+          writeFileAtomic(
+            principlePath,
+            [
+              '---',
+              `createdAt: ${assertNonEmptyText(createdAtMatch[1] ?? '', 'createdAt')}`,
+              `updatedAt: ${updatedAt}`,
+              '---',
+              '',
+              entry.statement,
+              '',
+            ].join('\n'),
+          );
+          kb.recordMutationCommitted();
+          const nextIndex = cloneKbIndex(kb.readIndexOrEmpty());
+          nextIndex.principles[entry.principle] = entry.statement;
+          kb.writeIndex(nextIndex);
+          index = nextIndex;
+          markTextIndexStale(kb.invalidateTextSnapshot, CURATE_STALE_REASON);
         }
 
         const targets = buildPrincipleAssignmentTargets(
           entry.principle,
           entry.notes,
-          kb.readIndexOrEmpty(),
+          index,
           processedThrough,
         );
         if (targets.length > 0) {
           state = await commitMetadataTargetsLocked(targets, state);
+          index = kb.readIndexOrEmpty();
         }
 
         if (pendingDiscoverySatisfied(entry, processedThrough)) {
           state = removePendingDiscoveryLocked(state, entry);
         }
       }
+
+      for (const proposal of proposals) {
+        const absorbs = proposal.absorbs ?? [];
+        if (absorbs.length === 0) {
+          continue;
+        }
+
+        const nextIndex = cloneKbIndex(index);
+        for (const absorbSlug of absorbs) {
+          const absorbedPending = state.pendingDiscoveries
+            .filter((pending) => pending.principle === absorbSlug);
+          for (const pending of absorbedPending) {
+            state = removePendingDiscoveryLocked(state, pending);
+          }
+
+          unlinkSync(kb.principlePath(absorbSlug));
+          delete nextIndex.principles[absorbSlug];
+        }
+        kb.writeIndex(nextIndex);
+        index = nextIndex;
+        markTextIndexStale(kb.invalidateTextSnapshot, CURATE_STALE_REASON);
+
+        const targets: MetadataTarget[] = [];
+        for (const absorbSlug of absorbs) {
+          for (const [note, noteMeta] of Object.entries(index.notes)) {
+            if (!noteMeta.principles.includes(absorbSlug) || noteMeta.mutationSeqAtPromote === undefined) {
+              continue;
+            }
+
+            targets.push({
+              note: assertNoteSlug(note, 'note'),
+              mutationSeqAtPromote: noteMeta.mutationSeqAtPromote,
+              claimTimeUpdatedAt: noteMeta.updatedAt,
+              addPrinciples: [proposal.slug],
+              removePrinciples: [absorbSlug],
+            });
+          }
+        }
+
+        if (targets.length > 0) {
+          state = await commitMetadataTargetsLocked(targets, state);
+          index = kb.readIndexOrEmpty();
+        }
+      }
+
       state = recordDiscoveryAttemptLocked(state, batch.nextHighSeq, batch.nextOffset);
     });
   }

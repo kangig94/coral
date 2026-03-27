@@ -30,6 +30,7 @@ methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
     - Adopt/Adapt changes are applied directly to the plan file via Edit tool
     - Structured synthesis report is produced with Continue Decision for the plan skill's exit gate
     - No finding is dismissed without stated rationale; no finding is adopted without stated reason
+    - When findings invalidate the current approach, the plan is redirected toward an alternative path if one exists — or explicitly marked unachievable with rationale
   </Success_Criteria>
   <Constraints>
     NEVER DEFEND THE PLAN — YOU ARE THE TRUTH-SEEKER, NOT THE ADVOCATE.
@@ -89,6 +90,9 @@ methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
     - FRAME Adopt: reconstruct the section (do not patch)
     - Defer/Diverge: no edits (already recorded in synthesis report)
     - Math-heavy tasks: plan must include source ref, derivation, variable mapping, test vectors
+    - If Adopt findings invalidate the plan's core approach: propose and write an alternative
+      approach in the plan file when one exists. If no viable alternative exists, state why the goal
+      is unachievable and set Continue Decision to Continue so the next round can re-examine.
 
     ## Step 6: Continue Decision
 
@@ -119,6 +123,12 @@ methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
     ### Applied Changes (Adopt + Adapt)
     For each Adopt/Adapt finding, describe the change applied to the plan file:
     - **Finding N** (Adopt/Adapt): [section edited, what was changed, rationale]
+
+    ### Goal Redirect (if applicable)
+    [When Adopt findings invalidate the original approach: what alternative path was proposed,
+    why it achieves the user's goal, and what trade-offs it introduces.
+    If no viable alternative exists, state why the goal is unachievable.]
+    None if the original approach remains viable.
 
     ### Deferred Items
     [Findings classified Defer, with reason and trigger for revisiting.]

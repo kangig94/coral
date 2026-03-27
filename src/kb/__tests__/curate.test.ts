@@ -358,7 +358,7 @@ describe('curate', () => {
       ]);
     });
 
-    it('builds a discovery prompt with corpus file and truncated note bodies', () => {
+    it('builds a discovery prompt with corpus file, truncated note bodies, and merge/refine instructions', () => {
       const longBody = 'x'.repeat(5000);
       const { prompt, corpusPath } = buildDiscoveryPrompt([
         buildClaimedNote({
@@ -371,6 +371,9 @@ describe('curate', () => {
 
       expect(prompt).toContain('- deterministic-ordering: Operations with dependency order');
       expect(prompt).toContain(corpusPath);
+      expect(prompt).toContain('"absorbs": ["<existing-slug>", ...]');
+      expect(prompt).toContain('To improve an existing principle\'s wording, return it with its existing slug and the better statement.');
+      expect(prompt).toContain('To merge similar principles, return the surviving slug with absorbs listing the slugs to fold in. Omit absorbs when creating new principles.');
       const corpus = readFileSync(corpusPath, 'utf-8');
       expect(corpus).toContain('## coral-alpha\nAlpha\n');
       expect(corpus).toContain('x'.repeat(4000));
@@ -384,10 +387,17 @@ describe('curate', () => {
           slug: 'stable-ownership',
           statement: 'Attach payloads to one owner.',
           notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
+          absorbs: ['single-owner'],
         },
         {
           slug: 'missing-notes',
           statement: 'This one is malformed.',
+        },
+        {
+          slug: 'malformed-absorbs',
+          statement: 'This one is malformed too.',
+          notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
+          absorbs: 'single-owner',
         },
       ]);
 
@@ -396,6 +406,7 @@ describe('curate', () => {
           slug: 'stable-ownership',
           statement: 'Attach payloads to one owner.',
           notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
+          absorbs: ['single-owner'],
         },
       ]);
       expect(parseDiscoveryResponse(`\`\`\`json\n${raw}\n\`\`\``)).toEqual([
@@ -403,13 +414,14 @@ describe('curate', () => {
           slug: 'stable-ownership',
           statement: 'Attach payloads to one owner.',
           notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
+          absorbs: ['single-owner'],
         },
       ]);
       expect(parseDiscoveryResponse('{"slug":"not-an-array"}')).toEqual([]);
       expect(parseDiscoveryResponse('[')).toEqual([]);
     });
 
-    it('validates discovery proposals for slug uniqueness, eligibility, and minimum note support', () => {
+    it('validates discovery proposals for slug uniqueness, eligibility, minimum note support, and true duplicates', () => {
       const eligibleNotes = [
         buildClaimedNote({ slug: 'coral-alpha', title: 'Alpha', mutationSeqAtPromote: 1 }),
         buildClaimedNote({ slug: 'coral-beta', title: 'Beta', mutationSeqAtPromote: 2 }),
@@ -433,6 +445,11 @@ describe('curate', () => {
           notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
         },
         {
+          slug: 'refine-principle',
+          statement: 'Refined wording.',
+          notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
+        },
+        {
           slug: 'not valid',
           statement: 'Invalid slug.',
           notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
@@ -449,10 +466,129 @@ describe('curate', () => {
         },
       ];
 
-      expect(validateDiscoveryProposals(proposals, eligibleNotes, ['existing-principle'])).toEqual([
+      expect(validateDiscoveryProposals(proposals, eligibleNotes, {
+        'existing-principle': 'Already exists.',
+        'refine-principle': 'Original wording.',
+      })).toEqual([
         {
           slug: 'shared-context',
           statement: 'Preserve one context owner.',
+          notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
+        },
+        {
+          slug: 'refine-principle',
+          statement: 'Refined wording.',
+          notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
+        },
+      ]);
+    });
+
+    it('validates absorbs, merge caps, refine caps, and slug collisions across discovery proposals', () => {
+      const eligibleNotes = [
+        buildClaimedNote({ slug: 'coral-alpha', title: 'Alpha', mutationSeqAtPromote: 1 }),
+        buildClaimedNote({ slug: 'coral-beta', title: 'Beta', mutationSeqAtPromote: 2 }),
+        buildClaimedNote({ slug: 'coral-gamma', title: 'Gamma', mutationSeqAtPromote: 3 }),
+        buildClaimedNote({ slug: 'coral-delta', title: 'Delta', mutationSeqAtPromote: 4 }),
+      ];
+      const proposals: DiscoveryProposal[] = [
+        {
+          slug: 'merge-survivor',
+          statement: 'Consolidate one rule for the same pattern.',
+          notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
+          absorbs: ['absorbed-a', 'absorbed-b'],
+        },
+        {
+          slug: 'absorbed-a',
+          statement: 'Do not recreate absorbed principles.',
+          notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
+        },
+        {
+          slug: 'duplicate-absorb',
+          statement: 'Do not absorb the same principle twice.',
+          notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
+          absorbs: ['absorbed-b'],
+        },
+        {
+          slug: 'unknown-merge',
+          statement: 'Unknown absorbs are invalid.',
+          notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
+          absorbs: ['missing-principle'],
+        },
+        {
+          slug: 'self-merge',
+          statement: 'A principle cannot absorb itself.',
+          notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
+          absorbs: ['self-merge'],
+        },
+        {
+          slug: 'second-merge',
+          statement: 'A second merge is still allowed.',
+          notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
+          absorbs: ['absorbed-c'],
+        },
+        {
+          slug: 'third-merge',
+          statement: 'A third merge should be rejected.',
+          notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
+          absorbs: ['absorbed-d'],
+        },
+        {
+          slug: 'refine-one',
+          statement: 'Refine one.',
+          notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
+        },
+        {
+          slug: 'refine-two',
+          statement: 'Refine two.',
+          notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
+        },
+        {
+          slug: 'refine-three',
+          statement: 'Refine three.',
+          notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
+        },
+        {
+          slug: 'refine-four',
+          statement: 'Refine four.',
+          notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
+        },
+      ];
+
+      expect(validateDiscoveryProposals(proposals, eligibleNotes, {
+        'absorbed-a': 'Absorbed A.',
+        'absorbed-b': 'Absorbed B.',
+        'absorbed-c': 'Absorbed C.',
+        'absorbed-d': 'Absorbed D.',
+        'refine-one': 'Original refine one.',
+        'refine-two': 'Original refine two.',
+        'refine-three': 'Original refine three.',
+        'refine-four': 'Original refine four.',
+      })).toEqual([
+        {
+          slug: 'merge-survivor',
+          statement: 'Consolidate one rule for the same pattern.',
+          notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
+          absorbs: ['absorbed-a', 'absorbed-b'],
+        },
+        {
+          slug: 'second-merge',
+          statement: 'A second merge is still allowed.',
+          notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
+          absorbs: ['absorbed-c'],
+        },
+        {
+          slug: 'refine-one',
+          statement: 'Refine one.',
+          notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
+        },
+        {
+          slug: 'refine-two',
+          statement: 'Refine two.',
+          notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
+        },
+        {
+          slug: 'refine-three',
+          statement: 'Refine three.',
           notes: ['coral-alpha', 'coral-beta', 'coral-gamma'],
         },
       ]);
@@ -869,6 +1005,43 @@ describe('curate', () => {
         'stable-parent',
       ]);
     });
+
+    it('removes absorbed principles while preserving the remaining live principle list', async () => {
+      writeNote('coral-alpha', {
+        title: 'Alpha',
+        principles: ['old-principle', 'kept-principle'],
+        updatedAt: '2026-03-21T00:00:00.000Z',
+        mutationSeqAtPromote: 4,
+      });
+      runtime.writeIndex({
+        notes: {
+          'coral-alpha': createIndexNote({
+            title: 'Alpha',
+            principles: ['old-principle', 'kept-principle'],
+            updatedAt: '2026-03-21T00:00:00.000Z',
+            mutationSeqAtPromote: 4,
+          }),
+        },
+        principles: {},
+      });
+
+      await internals.commitMetadataTargets([{
+        note: 'coral-alpha',
+        mutationSeqAtPromote: 4,
+        claimTimeUpdatedAt: '2026-03-21T00:00:00.000Z',
+        addPrinciples: ['new-principle'],
+        removePrinciples: ['old-principle'],
+      }]);
+
+      expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-alpha.md'), 'utf-8')).principles).toEqual([
+        'kept-principle',
+        'new-principle',
+      ]);
+      expect(runtime.readIndex()?.notes['coral-alpha']?.principles).toEqual([
+        'kept-principle',
+        'new-principle',
+      ]);
+    });
   });
 
   describe('runtime integration and errors', () => {
@@ -1007,6 +1180,163 @@ describe('curate', () => {
       expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-discovery-07.md'), 'utf-8')).principles).toEqual([
         'verify-at-boundaries',
       ]);
+    });
+
+    it('refines an existing principle in the conflict path and still assigns it to the proposed notes', async () => {
+      const notes: KbIndex['notes'] = {};
+
+      for (let index = 1; index <= 50; index += 1) {
+        const slug = `coral-discovery-${String(index).padStart(2, '0')}`;
+        writeNote(slug, {
+          title: `Discovery ${index}`,
+          mutationSeqAtPromote: index,
+          body: `Discovery body ${index}.`,
+        });
+        notes[slug] = createIndexNote({
+          title: `Discovery ${index}`,
+          mutationSeqAtPromote: index,
+        });
+      }
+
+      mkdirSync(runtime.principlesDir(), { recursive: true });
+      writeFileSync(
+        runtime.principlePath('single-source-of-truth'),
+        [
+          '---',
+          'createdAt: 2026-03-20T00:00:00.000Z',
+          'updatedAt: 2026-03-20T00:00:00.000Z',
+          '---',
+          '',
+          'Keep exactly one source for each fact.',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+      runtime.writeIndex({
+        notes,
+        principles: {
+          'single-source-of-truth': 'Keep exactly one source for each fact.',
+        },
+      });
+      writeCurateState(runtime, createCurateState({
+        processedThrough: {
+          note: 'coral-discovery-50',
+          mutationSeqAtPromote: 50,
+        },
+      }));
+      useScheduler(async () => ({
+        stdout: JSON.stringify([
+          {
+            slug: 'single-source-of-truth',
+            statement: 'Keep one canonical representation for each fact.',
+            notes: ['coral-discovery-05', 'coral-discovery-06', 'coral-discovery-07'],
+          },
+        ]),
+        stderr: '',
+        code: 0,
+        aborted: false,
+      }));
+
+      await internals.runPrincipleDiscovery({
+        note: 'coral-discovery-50',
+        mutationSeqAtPromote: 50,
+      });
+
+      const principleRaw = readFileSync(runtime.principlePath('single-source-of-truth'), 'utf-8');
+      expect(principleRaw).toContain('createdAt: 2026-03-20T00:00:00.000Z');
+      expect(principleRaw).toContain('updatedAt: 2026-03-25T12:00:00.000Z');
+      expect(principleRaw).toContain('Keep one canonical representation for each fact.');
+      expect(runtime.readIndex()?.principles['single-source-of-truth']).toBe(
+        'Keep one canonical representation for each fact.',
+      );
+      expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-discovery-05.md'), 'utf-8')).principles).toEqual([
+        'single-source-of-truth',
+      ]);
+      expect(readCurateState(runtime).pendingDiscoveries).toEqual([]);
+    });
+
+    it('merges absorbed principles after proposal processing without recreating deleted rows', async () => {
+      const notes: KbIndex['notes'] = {};
+
+      for (let index = 1; index <= 51; index += 1) {
+        const slug = `coral-discovery-${String(index).padStart(2, '0')}`;
+        const principles = index >= 8 && index <= 9 ? ['single-owner'] : [];
+        writeNote(slug, {
+          title: `Discovery ${index}`,
+          principles,
+          mutationSeqAtPromote: index,
+          body: `Discovery body ${index}.`,
+        });
+        notes[slug] = createIndexNote({
+          title: `Discovery ${index}`,
+          principles,
+          mutationSeqAtPromote: index,
+        });
+      }
+
+      mkdirSync(runtime.principlesDir(), { recursive: true });
+      writeFileSync(
+        runtime.principlePath('single-owner'),
+        [
+          '---',
+          'createdAt: 2026-03-20T00:00:00.000Z',
+          'updatedAt: 2026-03-20T00:00:00.000Z',
+          '---',
+          '',
+          'Attach payloads to one owner.',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+      runtime.writeIndex({
+        notes,
+        principles: {
+          'single-owner': 'Attach payloads to one owner.',
+        },
+      });
+      writeCurateState(runtime, createCurateState({
+        processedThrough: {
+          note: 'coral-discovery-50',
+          mutationSeqAtPromote: 50,
+        },
+        pendingDiscoveries: [{
+          principle: 'single-owner',
+          statement: 'Attach payloads to one owner.',
+          notes: ['coral-discovery-51'],
+          createdAt: '2026-03-25T11:55:00.000Z',
+        }],
+      }));
+      useScheduler(async () => ({
+        stdout: JSON.stringify([
+          {
+            slug: 'payload-attachment-to-owner',
+            statement: 'Attach payloads to exactly one owner.',
+            notes: ['coral-discovery-05', 'coral-discovery-06', 'coral-discovery-07'],
+            absorbs: ['single-owner'],
+          },
+        ]),
+        stderr: '',
+        code: 0,
+        aborted: false,
+      }));
+
+      await internals.runPrincipleDiscovery({
+        note: 'coral-discovery-50',
+        mutationSeqAtPromote: 50,
+      });
+
+      expect(existsSync(runtime.principlePath('single-owner'))).toBe(false);
+      expect(existsSync(runtime.principlePath('payload-attachment-to-owner'))).toBe(true);
+      expect(runtime.readIndex()?.principles).toEqual({
+        'payload-attachment-to-owner': 'Attach payloads to exactly one owner.',
+      });
+      expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-discovery-08.md'), 'utf-8')).principles).toEqual([
+        'payload-attachment-to-owner',
+      ]);
+      expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-discovery-09.md'), 'utf-8')).principles).toEqual([
+        'payload-attachment-to-owner',
+      ]);
+      expect(readCurateState(runtime).pendingDiscoveries).toEqual([]);
     });
 
     it('writes the KB gitignore block once and leaves it unchanged on a second runtime start', async () => {
