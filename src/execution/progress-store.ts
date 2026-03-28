@@ -419,12 +419,17 @@ export class ProgressStore {
     }
   }
 
-  /** Write workflow-state.json checkpoint. */
+  /** Write workflow-state.json checkpoint. Best-effort — missing job dir is not fatal. */
   writeWorkflowCheckpoint(jobId: string, checkpoint: WorkflowCheckpoint): void {
-    const filePath = join(this.jobDir(jobId), WORKFLOW_STATE_FILE);
-    const tmpPath = filePath + '.tmp';
-    writeFileSync(tmpPath, JSON.stringify(checkpoint, null, 2), 'utf-8');
-    renameSync(tmpPath, filePath);
+    try {
+      const filePath = join(this.jobDir(jobId), WORKFLOW_STATE_FILE);
+      const tmpPath = filePath + '.tmp';
+      writeFileSync(tmpPath, JSON.stringify(checkpoint, null, 2), 'utf-8');
+      renameSync(tmpPath, filePath);
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) return;
+      throw error;
+    }
   }
 
   /** Read workflow-state.json checkpoint. Returns null if not found or corrupt. */
