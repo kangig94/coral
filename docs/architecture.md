@@ -535,6 +535,7 @@ coral/
 │   ├── pre-compact.mjs          # Pre-compact checkpointing
 │   ├── ralph-loop.mjs           # Ralph loop guardrails
 │   ├── session-start.mjs        # SessionStart INJECT.md / project bootstrap
+│   ├── subagent-start.mjs       # SubagentStart INJECT.md (no owner-only blocks)
 │   └── lib/
 │       └── hook-utils.mjs       # Shared stdin/path helpers for hooks
 ├── scripts/

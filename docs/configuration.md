@@ -134,9 +134,10 @@ See [Hooks documentation](./hooks.md) for details.
 ```
 .claude-plugin/plugin.json  -> Claude Code recognizes the plugin
 .mcp.json                   -> Claude Code registers/starts both MCP servers (ax + dc)
-hooks/hooks.json            -> Claude Code configures all 9 hooks
+hooks/hooks.json            -> Claude Code configures all 10 hooks
 hooks/kb-lookup-reminder.mjs  -> PostToolUseFailure/PostToolUse KB hint script
-hooks/kb-memo-reminder.mjs    -> UserPromptSubmit memo reminder script
+hooks/kb-memo-reminder.mjs    -> UserPromptSubmit memo reminder (60 min throttle)
+hooks/subagent-start.mjs      -> SubagentStart INJECT.md injection (read-only KB)
 hooks/kb-promote-gate.mjs -> Stop/Compact promotion script
 hooks/backend-warm-start.mjs  -> SessionStart backend warm-start hook
 hooks/hud-auto-update.mjs    -> SessionStart HUD auto-update hook
