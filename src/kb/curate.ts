@@ -1823,9 +1823,9 @@ export function createCurateScheduler({
           process.stderr.write(`kb_curate: ${errorMessage(error)}\n`);
         }
         if (queuedRun) {
-          queueMicrotask(() => {
+          setTimeout(() => {
             launchQueuedRun();
-          });
+          }, 0);
           return;
         }
         if (lastCompletedThrough !== null) {
@@ -1838,9 +1838,9 @@ export function createCurateScheduler({
           }
         }
         if (queuedRun) {
-          queueMicrotask(() => {
+          setTimeout(() => {
             launchQueuedRun();
-          });
+          }, 0);
         }
       }
     })();
@@ -1857,9 +1857,9 @@ export function createCurateScheduler({
     runtimeStarted = true;
     armRetryWake();
     queuedRun = true;
-    queueMicrotask(() => {
+    setTimeout(() => {
       launchQueuedRun();
-    });
+    }, 0);
   }
 
   function schedule(): void {
@@ -1876,9 +1876,9 @@ export function createCurateScheduler({
       clearTimeout(debounceTimer);
     }
     if (scheduleDebounceMs <= 0) {
-      queueMicrotask(() => {
+      setTimeout(() => {
         launchQueuedRun();
-      });
+      }, 0);
     } else {
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
