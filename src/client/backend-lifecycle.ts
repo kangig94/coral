@@ -178,7 +178,7 @@ async function waitForReplacementBackend(
     await delay(STARTUP_POLL_MS);
   }
 
-  throw new Error('Timed out waiting for Coral backend startup');
+  throw new Error('Timed out waiting for Coral backend startup. Use the backend tool with op: "status" to check backend health.');
 }
 
 export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle> {
@@ -243,5 +243,5 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
     );
   }
 
-  throw new Error('Timed out waiting for Coral backend startup');
+  throw new Error('Timed out waiting for Coral backend startup. Use the backend tool with op: "status" to check backend health.');
 }
