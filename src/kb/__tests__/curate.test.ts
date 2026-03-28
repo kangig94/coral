@@ -171,6 +171,7 @@ function writeNote(
 
 async function settleCurateRuntime(handle: CurateHandle): Promise<void> {
   for (let attempt = 0; attempt < 30; attempt += 1) {
+    vi.advanceTimersByTime(1);
     await Promise.resolve();
     await Promise.resolve();
     if (!handle.isRunning()) {
@@ -1527,6 +1528,8 @@ describe('curate', () => {
 
       await scheduler.start();
       for (let attempt = 0; attempt < 30; attempt += 1) {
+        vi.advanceTimersByTime(1);
+        await Promise.resolve();
         await Promise.resolve();
         if (readCurateState(runtime).consecutiveFailures === 1) {
           break;
