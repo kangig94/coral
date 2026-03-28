@@ -74,7 +74,7 @@ try {
       try { unlinkSync(flag); } catch { /* ignore */ }
     }
     sweepStale(flagDir, FLAG_PREFIX, 24 * 60 * 60_000);
-    if (visibleMemos.length > 0) {
+    if (visibleMemos.length >= 10) {
       const list = visibleMemos.join(', ');
       process.stdout.write(JSON.stringify({
         decision: 'block',
