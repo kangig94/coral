@@ -96,7 +96,7 @@ export function resumeLoop(
 
   setTimeout(() => {
     void continueLoop(ctx, sessionId, callerCtx).catch((error: unknown) => {
-      void forceEndAfterLoopFailure(ctx, sessionId, error);
+      void forceEndAfterLoopFailure(ctx, sessionId, error).catch(() => {});
     });
   }, 0);
 }

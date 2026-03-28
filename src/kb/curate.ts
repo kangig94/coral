@@ -1482,7 +1482,12 @@ export function createCurateScheduler({
     const nextIndex = cloneKbIndex(kb.readIndex());
 
     if (existsSync(principlePath)) {
-      const liveStatement = extractPrincipleStatement(readFileSync(principlePath, 'utf-8'));
+      let liveStatement: string;
+      try {
+        liveStatement = extractPrincipleStatement(readFileSync(principlePath, 'utf-8'));
+      } catch {
+        return { status: 'conflict', state };
+      }
       if (liveStatement !== entry.statement) {
         return {
           status: 'conflict',
@@ -1633,10 +1638,17 @@ export function createCurateScheduler({
           }
 
           const principlePath = kb.principlePath(assertNoteSlug(entry.principle, 'principle'));
-          const rawPrinciple = readFileSync(principlePath, 'utf-8');
+          let rawPrinciple: string;
+          try {
+            rawPrinciple = readFileSync(principlePath, 'utf-8');
+          } catch {
+            state = removePendingDiscoveryLocked(state, entry);
+            continue;
+          }
           const createdAtMatch = rawPrinciple.match(/^createdAt:\s*(.+)$/m);
           if (createdAtMatch === null) {
-            throw new Error(`Principle document is missing createdAt: ${entry.principle}`);
+            state = removePendingDiscoveryLocked(state, entry);
+            continue;
           }
 
           const updatedAt = nowIsoString();
@@ -1690,7 +1702,7 @@ export function createCurateScheduler({
             state = removePendingDiscoveryLocked(state, pending);
           }
 
-          unlinkSync(kb.principlePath(absorbSlug));
+          try { unlinkSync(kb.principlePath(absorbSlug)); } catch (e: unknown) { if (!isNoEntryError(e)) throw e; }
           delete nextIndex.principles[absorbSlug];
         }
         kb.writeIndex(nextIndex);

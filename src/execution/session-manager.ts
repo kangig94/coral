@@ -182,8 +182,13 @@ export class SessionManager {
     const filePath = this.sessionPath(entry.sessionId);
     const tmpPath = filePath + '.tmp';
     entry.version = (entry.version ?? 0) + 1;
-    writeFileSync(tmpPath, JSON.stringify(entry, null, 2), 'utf-8');
-    renameSync(tmpPath, filePath);
+    try {
+      writeFileSync(tmpPath, JSON.stringify(entry, null, 2), 'utf-8');
+      renameSync(tmpPath, filePath);
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) return;
+      throw error;
+    }
     this.shardStamp = SessionManager.bumpShardStamp(this.sessionDir);
     this.populateCache(entry.sessionId, entry);
     const shardHash = basename(this.sessionDir);

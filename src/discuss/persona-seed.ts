@@ -95,7 +95,8 @@ function sampleOriginFromPool(
 ): string {
   if (pool.entries.length === 0) return '';
 
-  while (true) {
+  const MAX_SAMPLE_ATTEMPTS = 100;
+  for (let attempt = 0; attempt < MAX_SAMPLE_ATTEMPTS; attempt++) {
     if (pool.dedupEnabled && pool.entries.every(([origin]) => assignedOrigins.has(origin))) {
       pool.dedupEnabled = false;
       pool.weights = [...pool.originalWeights];
@@ -123,6 +124,9 @@ function sampleOriginFromPool(
       pool.weights = [...pool.originalWeights];
     }
   }
+
+  // Fallback: return first entry if sampling fails to converge
+  return pool.entries[0][0];
 }
 
 export function assignOrigins(
