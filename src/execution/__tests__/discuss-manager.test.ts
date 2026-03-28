@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent } from '../../discuss/events.js';
 import * as discussReaders from '../../client/readers.js';
+import * as discussLoop from '../discuss/loop.js';
+import * as discussSubflows from '../discuss/subflows.js';
 import {
   createDiscussContextRegistry,
   get as getDiscussContext,
@@ -9,11 +11,10 @@ import {
   hasRunningSessions,
 } from '../discuss/context-registry.js';
 import { runPlainTurn } from '../discuss/executor.js';
-import { continueLoop } from '../discuss/loop.js';
 import {
   abortDiscussSession,
   getWatchState,
-  recoverPersistedSessions,
+  recoverPersistedSessionsFromStore,
   startDiscussSession,
 } from '../discuss/operations.js';
 import { detachSession, getSession } from '../discuss/registry.js';
@@ -25,6 +26,7 @@ import {
   createExecutionServiceStub,
   defaultAgents,
   persistSession,
+  type DiscussHarness,
 } from './discuss-test-helpers.js';
 
 afterEach(() => {
@@ -33,6 +35,26 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
+
+async function recoverSessions(harness: DiscussHarness) {
+  return recoverPersistedSessionsFromStore(
+    harness.store,
+    () => harness.context,
+    (snapshot) => ({
+      projectRoot: snapshot.projectRoot,
+      pluginRoot: harness.ctx.pluginRoot,
+      coralEnv: {},
+    }),
+  );
+}
+
+function resumeRecoveredSessions(
+  recovered: Awaited<ReturnType<typeof recoverSessions>>,
+): void {
+  for (const session of recovered) {
+    discussLoop.resumeLoop(session.ctx, session.sessionId, session.callerCtx);
+  }
+}
 
 describe('Discuss context registry', () => {
   it('isolates live sessions by project root', async () => {
@@ -199,7 +221,7 @@ describe('Discuss executor and operations', () => {
     harness.cleanup();
   });
 
-  it('recovery hydrates watch history once and repeated polls stay in memory', async () => {
+  it('keeps fully synthesized ended history persisted-only while getWatchState falls back to disk', async () => {
     const harness = createDiscussHarness();
     await persistSession(harness, {
       sessionId: 'discuss-recovery',
@@ -223,19 +245,83 @@ describe('Discuss executor and operations', () => {
     });
     const readDiscussEventLogSpy = vi.spyOn(discussReaders, 'readDiscussEventLog');
 
-    await recoverPersistedSessions(harness.context);
+    const recovered = await recoverSessions(harness);
     const recoveryReadCount = readDiscussEventLogSpy.mock.calls.length;
 
+    expect(recovered).toHaveLength(0);
     expect(recoveryReadCount).toBeGreaterThan(0);
+    expect(getSession(harness.context, 'discuss-recovery')).toBeUndefined();
     expect(getWatchState(harness.context, 'discuss-recovery')).toMatchObject({
       cursor: 2,
     });
     expect(getWatchState(harness.context, 'discuss-recovery', 1)).toMatchObject({
       cursor: 2,
     });
-    expect(readDiscussEventLogSpy).toHaveBeenCalledTimes(recoveryReadCount);
+    expect(readDiscussEventLogSpy).toHaveBeenCalledTimes(recoveryReadCount + 2);
 
     harness.cleanup();
+  });
+
+  it('recovered observer_wait sessions restart the full bid delay from startup time', async () => {
+    vi.useFakeTimers();
+    const harness = createDiscussHarness();
+    vi.spyOn(discussSubflows, 'collectSpeech').mockResolvedValue({ shouldResume: false });
+    await persistSession(harness, {
+      sessionId: 'discuss-observer-wait',
+      recover: false,
+      minBidDelayMs: 5_000,
+      agents: [
+        { name: 'alpha', persona: '# Alpha', participation: 'required' },
+        { name: 'user', persona: '# User', participation: 'observer' },
+      ],
+      buildTail: (snapshot) => [
+        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.submitted', '2026-03-10T00:01:00.000Z', { agent: 'alpha', score: 88, thought: 'alpha bid' }),
+      ],
+    });
+
+    const recovered = await recoverSessions(harness);
+
+    expect(recovered).toHaveLength(1);
+    resumeRecoveredSessions(recovered);
+
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(harness.store.load('discuss-observer-wait')?.state).toMatchObject({
+      status: 'bidding',
+      current_speaker: null,
+    });
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(harness.store.load('discuss-observer-wait')?.state).toMatchObject({
+      status: 'speaking',
+      current_speaker: 'alpha',
+    });
+  });
+
+  it('recovered bidding sessions with no pending auto work still resume into round-close', async () => {
+    vi.useFakeTimers();
+    const harness = createDiscussHarness();
+    vi.spyOn(discussSubflows, 'collectSpeech').mockResolvedValue({ shouldResume: false });
+    await persistSession(harness, {
+      sessionId: 'discuss-round-close',
+      recover: false,
+      agents: [
+        { name: 'alpha', persona: '# Alpha', participation: 'required' },
+      ],
+      buildTail: (snapshot) => [
+        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.submitted', '2026-03-10T00:01:00.000Z', { agent: 'alpha', score: 88, thought: 'alpha bid' }),
+      ],
+    });
+
+    const recovered = await recoverSessions(harness);
+
+    expect(recovered).toHaveLength(1);
+    resumeRecoveredSessions(recovered);
+    await vi.runAllTimersAsync();
+
+    expect(harness.store.load('discuss-round-close')?.state).toMatchObject({
+      status: 'speaking',
+      current_speaker: 'alpha',
+    });
   });
 
   it('getWatchState returns a fresh events array on each call', async () => {
@@ -330,6 +416,28 @@ describe('Discuss executor and operations', () => {
     await abortDiscussSession(harness.context, 'discuss-abort');
 
     expect(sessionRef?.abortEnded).toBe(true);
+
+    harness.cleanup();
+  });
+
+  it('skips abort-ended snapshots during recovery', async () => {
+    const harness = createDiscussHarness();
+    await persistSession(harness, {
+      sessionId: 'discuss-abort-ended',
+      recover: false,
+      buildTail: (snapshot) => [
+        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'session.ended', '2026-03-10T00:01:00.000Z', {
+          endReasonContent: 'abort',
+          force: true,
+          reason: 'abort',
+        }),
+      ],
+    });
+
+    const recovered = await recoverSessions(harness);
+
+    expect(recovered).toHaveLength(0);
+    expect(getSession(harness.context, 'discuss-abort-ended')).toBeUndefined();
 
     harness.cleanup();
   });

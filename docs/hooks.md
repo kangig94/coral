@@ -9,16 +9,17 @@ Claude Code's hook system executes scripts on specific events. Coral uses hooks 
 **Plugin hooks** (`hooks/hooks.json`):
 1. **SessionStart** (`*`) - Injects INJECT.md behavioral guidelines with `{{CORAL_PROJECTS}}` and `{{PROJECT_SOURCE}}` substituted to the active project path/source, warm-starts the backend daemon, and auto-updates HUD script
 2. **SessionStart** (`compact`) - After context compaction, reminds about memo review plus tool-based KB search/promotion
-3. **UserPromptSubmit** - Creates session-scoped KB flag for `/coral:ralph`|`/coral:bugfix`, creates ralph loop state for `/coral:ralph`|`/ralph`, and periodically reminds about memo writing
-4. **PreToolUse** (`Skill`) - Creates session-scoped KB flag when Claude calls Skill("coral:ralph"|"coral:bugfix"), and creates ralph loop state when Claude calls Skill("coral:ralph")
-5. **PostToolUseFailure** (`*`) - On any non-zero tool exit, reminds Claude to use `kb_search({ query: "..." })` before debugging from scratch
-6. **PostToolUse** (`Bash`) - Detects silent failures in command output when exit codes are masked and injects the same KB lookup reminder context
-7. **Stop** - Enforces KB promotion for unprocessed memos and drives prompt-mode ralph loop iteration
-8. **TeammateIdle** (`dc-*`) - Blocks idle when discuss agents have pending actions (bid/speak/vote)
+3. **SubagentStart** (`*`) - Injects INJECT.md into subagents (without owner-only blocks — no session ID, no memo/promotion commands)
+4. **UserPromptSubmit** - Creates session-scoped KB flag for `/coral:ralph`|`/coral:bugfix`, creates ralph loop state for `/coral:ralph`|`/ralph`, and periodically reminds about memo writing
+5. **PreToolUse** (`Skill`) - Creates session-scoped KB flag when Claude calls Skill("coral:ralph"|"coral:bugfix"), and creates ralph loop state when Claude calls Skill("coral:ralph")
+6. **PostToolUseFailure** (`*`) - On any non-zero tool exit, reminds Claude to search KB before debugging from scratch
+7. **PostToolUse** (`Bash`) - Detects silent failures in command output when exit codes are masked and injects the same KB lookup reminder context
+8. **Stop** - Enforces KB promotion for unprocessed memos and drives prompt-mode ralph loop iteration
+9. **TeammateIdle** (`dc-*`) - Blocks idle when discuss agents have pending actions (bid/speak/vote)
 
 ## Hook Configuration
 
-Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/kb-lookup-reminder.mjs`, `hooks/kb-memo-reminder.mjs`, `hooks/kb-promote-gate.mjs`, `hooks/ralph-loop.mjs`, `hooks/backend-warm-start.mjs`, `hooks/hud-auto-update.mjs`.
+Plugin hooks: `hooks/hooks.json`. Scripts: `hooks/session-start.mjs`, `hooks/subagent-start.mjs`, `hooks/kb-lookup-reminder.mjs`, `hooks/kb-memo-reminder.mjs`, `hooks/kb-promote-gate.mjs`, `hooks/ralph-loop.mjs`, `hooks/backend-warm-start.mjs`, `hooks/hud-auto-update.mjs`.
 
 All hook scripts are **Node.js ESM** (`.mjs`). They read input JSON from stdin, write output JSON to stdout, and **fail-open** via `try/catch { process.exit(0) }` - a crash or timeout never blocks the user.
 
@@ -62,17 +63,19 @@ Fires after context compaction (matcher: `compact`).
 
 **Purpose**: After compaction the model loses prior context. This hook restores KB promotion reminders so work continues seamlessly.
 
-## Removed SubagentStart Hook
+## SubagentStart Hook
 
-The prior `SubagentStart` codex delegation hook has been removed. Codex delegation now uses
-direct MCP tool dispatch (`codex({ op: "coral:<agent>", ... })`) and executor-side
-`ensureMultiAgent()` configuration.
+Script: `hooks/subagent-start.mjs`. Fires when any subagent is spawned via the Agent tool (matcher: `*`, timeout: 3s). Injects INJECT.md behavioral guidelines into the subagent's context.
+
+Unlike SessionStart, this hook always strips `SESSION_ID_ONLY` blocks — subagents receive KB search commands (read-only) but not memo, promotion, or update/delete commands. `{{SESSION_ID}}` is substituted as empty string.
+
+> **Note**: Codex delegation does not trigger SubagentStart. Codex sessions receive INJECT.md through the MCP server's `executeOneShot()` prepend. See [Core Modules](./core-modules.md) for details.
 
 ## UserPromptSubmit Hook (Memo Reminder)
 
-Script: `hooks/kb-memo-reminder.mjs`. Injects `additionalContext` reminding Claude to write memos when discovering non-obvious lessons under `~/.coral/projects/{slug}/memo/`. Fires on every user message (not on every tool call).
+Script: `hooks/kb-memo-reminder.mjs`. Injects `additionalContext` reminding Claude to write memos only for discoveries that would save someone hours (painful root causes, gotchas contradicting docs). Fires on every user message (not on every tool call).
 
-**Throttled (30 min)**: Reads `session_id` from stdin JSON, creates a flag file under `$TMPDIR/coral/<project-slug>/`. Subsequent calls within 30 minutes exit silently; after 30 minutes, the flag refreshes and the reminder fires again. OS temp directory auto-cleans on reboot.
+**Throttled (60 min)**: Reads `session_id` from stdin JSON, creates a flag file under `$TMPDIR/coral/<project-slug>/`. Subsequent calls within 60 minutes exit silently; after 60 minutes, the flag refreshes and the reminder fires again. OS temp directory auto-cleans on reboot.
 
 ## PostToolUseFailure + PostToolUse Hook (KB Lookup Reminder)
 

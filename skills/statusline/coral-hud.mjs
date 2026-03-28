@@ -331,6 +331,7 @@ function parseTranscript(input) {
 
 const CACHE_DIR = join(homedir(), ".claude", "hud");
 const CACHE_FILE = join(CACHE_DIR, ".coral-cache.json");
+const BACKEND_CACHE_FILE = join(CACHE_DIR, ".coral-backend-cache.json");
 const CODEX_FLAG_FILE = join(CACHE_DIR, ".coral-codex-enabled");
 const CACHE_TTL_MS = 180_000;
 const CACHE_FAIL_TTL_MS = 30_000;
@@ -339,7 +340,7 @@ const RATE_LIMIT_MAX_MS = 600_000;
 const API_TIMEOUT_MS = 5_000;
 const LOCK_STALE_MS = 10_000;
 const CORAL_HEALTH_TTL_MS = 5_000;
-const CORAL_HEALTH_TIMEOUT_MS = 800;
+const CORAL_HEALTH_TIMEOUT_MS = 3_000;
 
 // --- session state ---
 
@@ -490,21 +491,30 @@ function releaseFetchLock(lockPath) {
 
 function readBackendSlot() {
   try {
-    const raw = readFullCache().backend;
+    const raw = JSON.parse(readFileSync(BACKEND_CACHE_FILE, "utf-8"));
     if (!raw || !Number.isFinite(raw.ts)) return null;
-    const age = Date.now() - raw.ts;
-    const ttl = CORAL_HEALTH_TTL_MS;
-    if (age > ttl) return null;
+    if (Date.now() - raw.ts > CORAL_HEALTH_TTL_MS) return null;
     return raw;
   } catch {
     return null;
   }
 }
 
+function readStaleBackendLine() {
+  try {
+    return JSON.parse(readFileSync(BACKEND_CACHE_FILE, "utf-8"))?.line ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function writeBackendSlot(line, online) {
-  const all = readFullCache();
-  all.backend = { ts: Date.now(), line, online };
-  writeFullCache(all);
+  try {
+    mkdirSync(CACHE_DIR, { recursive: true });
+    const tmp = `${BACKEND_CACHE_FILE}.tmp-${process.pid}`;
+    writeFileSync(tmp, JSON.stringify({ ts: Date.now(), line, online }), { mode: 0o600 });
+    renameSync(tmp, BACKEND_CACHE_FILE);
+  } catch {}
 }
 
 // --- Claude rate limits ---
@@ -855,6 +865,12 @@ function readReefInfo() {
 }
 
 async function renderCoralLine() {
+  // Migrate: remove legacy backend slot from shared cache
+  try {
+    const shared = readFullCache();
+    if (shared.backend) { delete shared.backend; writeFullCache(shared); }
+  } catch {}
+
   const cached = readBackendSlot();
   if (cached) return cached.line;
 
@@ -871,12 +887,7 @@ async function renderCoralLine() {
 
   const lock = acquireFetchLock("backend");
   if (!lock) {
-    try {
-      const stale = readFullCache().backend;
-      return stale?.line ?? null;
-    } catch {
-      return null;
-    }
+    return readStaleBackendLine();
   }
 
   try {

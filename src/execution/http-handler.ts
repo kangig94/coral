@@ -1,7 +1,7 @@
 /**
  * HTTP request handler for the backend server.
  *
- * Extracted from `createBackendServer()` in server.ts (AC4). All closure
+ * Extracted from `createBackendServer()` in server.ts. All closure
  * dependencies are received through the explicit `HttpHandlerDeps` contract
  * defined in backend-contracts.ts.
  */
@@ -48,18 +48,32 @@ export function readJsonBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let totalSize = 0;
-    req.on('data', (chunk) => {
+    let settled = false;
+
+    function onData(chunk: Buffer | string) {
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       totalSize += buf.length;
       if (totalSize > MAX_BODY_SIZE) {
+        settled = true;
+        req.removeListener('data', onData);
+        req.removeListener('end', onEnd);
+        req.removeListener('error', onError);
         req.destroy();
         reject(new Error('Request body too large'));
         return;
       }
       chunks.push(buf);
-    });
-    req.once('error', reject);
-    req.once('end', () => {
+    }
+
+    function onError(err: Error) {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    }
+
+    function onEnd() {
+      if (settled) return;
+      settled = true;
       if (chunks.length === 0) {
         resolve({});
         return;
@@ -69,7 +83,11 @@ export function readJsonBody(req: IncomingMessage): Promise<unknown> {
       } catch (error) {
         reject(error);
       }
-    });
+    }
+
+    req.on('data', onData);
+    req.once('error', onError);
+    req.once('end', onEnd);
   });
 }
 
@@ -446,7 +464,7 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
 
     if (req.method === 'POST' && req.url === '/admin/shutdown') {
       req.resume();
-      // Behavior fix (AC4): flip drain fence immediately, before lifecycle transitions.
+      // Flip drain fence immediately, before lifecycle transitions.
       // This closes the race window where requests slip through between requestDrain()
       // and lifecycle = 'draining'.
       deps.requestDrain('replaced');
@@ -455,7 +473,7 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
     }
 
     // Drain admission fence: reject work-admitting requests as soon as drain is requested,
-    // even before lifecycle transitions to 'draining'. This is the AC4 behavior fix.
+    // even before lifecycle transitions to 'draining'.
     if (runtimeState.getLifecycle() !== 'running' || deps.isDrainRequested()) {
       req.resume();
       sendJson(res, 503, { error: 'backend_shutting_down' });

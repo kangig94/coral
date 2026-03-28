@@ -1,18 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
-import { request as httpRequest, type IncomingMessage as ClientIncomingMessage } from 'node:http';
+import { createServer, request as httpRequest, type IncomingMessage as ClientIncomingMessage } from 'node:http';
 import { basename, join } from 'node:path';
 import type { WaitStreamEvent } from '../../shared/types.js';
 
+import { readDiscussEventLog } from '../../client/readers.js';
+import { makeEvent } from '../../discuss/events.js';
 import { decideSessionCreate } from '../../discuss/state-machine.js';
 import {
   createDiscussContextRegistry,
+  getOrCreate as getOrCreateDiscussContext,
 } from '../discuss/context-registry.js';
 import { DiscussSessionStore } from '../discuss/session-store.js';
 import { JOBS_DIR, ProgressStore, jobResultPath } from '../progress-store.js';
 import { SessionManager } from '../session-manager.js';
-import { discussSourcesPath, pluginRootNamespace, projectDataDir, resolveProjectSource } from '../../infra/paths.js';
+import { discussEventLogPath, discussSourcesPath, pluginRootNamespace, projectDataDir, resolveProjectSource } from '../../infra/paths.js';
 import type { BackendServerController } from '../server.js';
+import type { MutableBackendRuntimeState } from '../backend-contracts.js';
+import type { LifecycleState } from '../server.js';
 import type { PersistedLaunchRecord } from '../../shared/types.js';
 
 const testBackendNamespace = pluginRootNamespace(process.cwd());
@@ -37,6 +42,7 @@ vi.mock('node:os', async () => {
 type ServerModule = typeof import('../server.js');
 type BackendInfoModule = typeof import('../../infra/backend-info.js');
 type BackendLockModule = typeof import('../backend-lock.js');
+type LifecycleModule = typeof import('../lifecycle.js');
 
 function createDeferred() {
   let resolve!: () => void;
@@ -101,6 +107,8 @@ function createFakeIdleTimer() {
     },
     startWatching: vi.fn(),
     stopWatching: vi.fn(),
+    requestDrain: vi.fn(),
+    isDraining: false,
   };
 }
 
@@ -195,14 +203,16 @@ async function loadExecutionModules(): Promise<{
   serverModule: ServerModule;
   backendInfo: BackendInfoModule;
   backendLock: BackendLockModule;
+  lifecycleModule: LifecycleModule;
 }> {
   vi.resetModules();
-  const [serverModule, backendInfo, backendLock] = await Promise.all([
+  const [serverModule, backendInfo, backendLock, lifecycleModule] = await Promise.all([
     import('../server.js'),
     import('../../infra/backend-info.js'),
     import('../backend-lock.js'),
+    import('../lifecycle.js'),
   ]);
-  return { serverModule, backendInfo, backendLock };
+  return { serverModule, backendInfo, backendLock, lifecycleModule };
 }
 
 function stubLaunchRecord(progressStore: ProgressStore, overrides: {
@@ -230,6 +240,21 @@ function stubLaunchRecord(progressStore: ProgressStore, overrides: {
     createdAt: new Date().toISOString(),
   };
   progressStore.writeLaunchRecord(overrides.jobId, record);
+}
+
+function stubRuntimeRecord(progressStore: ProgressStore, overrides: {
+  jobId: string;
+  pid?: number;
+  stdoutPath?: string;
+  stderrPath?: string;
+  startTime?: string;
+}): void {
+  progressStore.writeRuntimeRecord(overrides.jobId, {
+    pid: overrides.pid ?? process.pid,
+    stdoutPath: overrides.stdoutPath ?? join(JOBS_DIR, overrides.jobId, 'stdout.log'),
+    stderrPath: overrides.stderrPath ?? join(JOBS_DIR, overrides.jobId, 'stderr.log'),
+    startTime: overrides.startTime ?? new Date().toISOString(),
+  });
 }
 
 function parseToolText(body: unknown): unknown {
@@ -274,9 +299,44 @@ describe('execution backend server', () => {
       curateScheduler: {
         start: vi.fn(async () => {}),
         schedule: vi.fn(),
+        scheduleDeferredCommit: vi.fn(),
         isRunning: () => false,
         stop: vi.fn(async () => {}),
       },
+    };
+  }
+
+  function createRuntimeStateMock(): {
+    runtimeState: MutableBackendRuntimeState;
+    setLifecycle: ReturnType<typeof vi.fn>;
+  } {
+    let lifecycle: LifecycleState = 'starting';
+    let startedAt = 0;
+    let kbSubsystem: ReturnType<typeof createMockKbSubsystem> | null = null;
+    let launchFenceActive = false;
+
+    const runtimeState = {
+      getLifecycle: () => lifecycle,
+      getStartedAt: () => startedAt,
+      getKbSubsystem: () => kbSubsystem as never,
+      getLaunchFenceActive: () => launchFenceActive,
+      setLifecycle: vi.fn((state: LifecycleState) => {
+        lifecycle = state;
+      }),
+      setStartedAt: vi.fn((ts: number) => {
+        startedAt = ts;
+      }),
+      setKbSubsystem: vi.fn((kb: ReturnType<typeof createMockKbSubsystem> | null) => {
+        kbSubsystem = kb;
+      }),
+      setLaunchFenceActive: vi.fn((active: boolean) => {
+        launchFenceActive = active;
+      }),
+    } satisfies MutableBackendRuntimeState;
+
+    return {
+      runtimeState,
+      setLifecycle: runtimeState.setLifecycle,
     };
   }
 
@@ -393,6 +453,7 @@ describe('execution backend server', () => {
       curateScheduler: {
         start: vi.fn(async () => {}),
         schedule: vi.fn(),
+        scheduleDeferredCommit: vi.fn(),
         isRunning: () => false,
         stop: vi.fn(async () => {}),
       },
@@ -609,6 +670,7 @@ describe('execution backend server', () => {
         curateScheduler: {
           start: vi.fn(async () => {}),
           schedule: vi.fn(),
+          scheduleDeferredCommit: vi.fn(),
           isRunning: () => false,
         },
       } as never,
@@ -1534,6 +1596,362 @@ describe('execution backend server', () => {
 
       expect(killAllChildrenFn).toHaveBeenCalledTimes(1);
       expect(markJobsAsErrorFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('hard shutdown during blocked startup persists abort markers for persisted-only recovery candidates before restart and skips terminal history', async () => {
+      const { serverModule } = await loadExecutionModules();
+      const topic = 'Should the city pedestrianize the downtown core?';
+      const projectRoot = createProjectRoot('startup-shutdown-discuss');
+      const source = resolveProjectSource(projectRoot);
+      const store = new DiscussSessionStore(source);
+
+      const startupCandidateCreated = decideSessionCreate(
+        {
+          topic,
+          min_bid_delay_ms: 0,
+          agents: [
+            { name: 'alpha', persona: '# Alpha', participation: 'required' },
+            { name: 'beta', persona: '# Beta', participation: 'required' },
+          ],
+        },
+        'startup-candidate',
+        projectRoot,
+        topic,
+        1,
+        '2026-03-11T00:00:00.000Z',
+      );
+      if (!startupCandidateCreated.ok) {
+        throw new Error(startupCandidateCreated.error);
+      }
+      await store.append('startup-candidate', null, startupCandidateCreated.value);
+
+      const terminalHistoryCreated = decideSessionCreate(
+        {
+          topic,
+          min_bid_delay_ms: 0,
+          agents: [
+            { name: 'alpha', persona: '# Alpha', participation: 'required' },
+            { name: 'beta', persona: '# Beta', participation: 'required' },
+          ],
+        },
+        'terminal-history',
+        projectRoot,
+        topic,
+        1,
+        '2026-03-11T00:05:00.000Z',
+      );
+      if (!terminalHistoryCreated.ok) {
+        throw new Error(terminalHistoryCreated.error);
+      }
+      const terminalCreatedSnapshot = await store.append('terminal-history', null, terminalHistoryCreated.value);
+      await store.append('terminal-history', terminalCreatedSnapshot.lastAppliedSeq, [
+        makeEvent('terminal-history', projectRoot, topic, terminalCreatedSnapshot.lastAppliedSeq + 1, 'session.ended', '2026-03-11T00:05:01.000Z', {
+          endReason: 'all_blocked',
+          endReasonContent: 'All blocked.',
+        }),
+        makeEvent('terminal-history', projectRoot, topic, terminalCreatedSnapshot.lastAppliedSeq + 2, 'session.synthesized', '2026-03-11T00:05:02.000Z', {
+          synthesis: 'done',
+        }),
+      ]);
+      store.flushDirtyIndexes();
+      expect(existsSync(discussSourcesPath())).toBe(true);
+
+      const startupBlocked = createDeferred();
+      const releaseStartup = createDeferred();
+      const startupRegistry = createDiscussContextRegistry();
+
+      controller = serverModule.createBackendServer({
+        instanceId: 'execution-backend-instance-1',
+        token: 'test-token',
+        version: '9.9.9',
+        bundleHash: 'testhash1234',
+        log: () => {},
+        createKbSubsystemFn: async () => createMockKbSubsystem(),
+        cleanupStaleJobsFn: () => {},
+        discussRegistry: startupRegistry,
+        acquireLockFn: async () => {
+          startupBlocked.resolve();
+          await releaseStartup.promise;
+          throw new Error('startup interrupted for shutdown test');
+        },
+      });
+
+      const startPromise = controller.start().catch((error: unknown) => error);
+      await startupBlocked.promise;
+      await controller.shutdown('sigint');
+      await controller.waitForShutdown();
+
+      const startupCandidateEvents = readDiscussEventLog(
+        discussEventLogPath(store.resolveSessionDir('startup-candidate')),
+      );
+      expect(startupCandidateEvents.at(-1)).toMatchObject({
+        kind: 'session.ended',
+        payload: { force: true, reason: 'abort' },
+      });
+      expect(store.load('startup-candidate')).toMatchObject({
+        state: { status: 'ended' },
+        runtime: { controlPhase: 'synthesize' },
+      });
+
+      const terminalHistoryEvents = readDiscussEventLog(
+        discussEventLogPath(store.resolveSessionDir('terminal-history')),
+      );
+      expect(terminalHistoryEvents.filter((event) => event.kind === 'session.ended')).toHaveLength(1);
+      expect(terminalHistoryEvents.at(-1)?.kind).toBe('session.synthesized');
+      expect(startupRegistry.contexts.size).toBe(0);
+
+      releaseStartup.resolve();
+      const startResult = await startPromise;
+      expect(startResult).toBeInstanceOf(Error);
+
+      const restartRegistry = createDiscussContextRegistry();
+      const restarted = await startBackendServer({
+        discussRegistry: restartRegistry,
+      });
+      const restartedSessions = [...restartRegistry.contexts.values()].flatMap((context) =>
+        [...context.sessions.keys()]);
+      expect(restartedSessions).not.toContain('startup-candidate');
+      await restarted.controller.shutdown('test');
+      await restarted.controller.waitForShutdown();
+    });
+  });
+
+  describe('startup ordering', () => {
+    it('drops the recovery registry before writing backend info', async () => {
+      const { backendInfo, lifecycleModule } = await loadExecutionModules();
+      const pluginRoot = createProjectRoot('lifecycle-publish-order');
+      const namespace = pluginRootNamespace(pluginRoot);
+      const progressStore = new ProgressStore();
+      const jobId = 'queued-adoption-before-publish';
+      createdJobIds.add(jobId);
+      progressStore.initJob({
+        jobId,
+        sessionId: 'queued-session',
+        provider: 'codex',
+        projectRoot: pluginRoot,
+        backendNamespace: namespace,
+        initialPhase: 'queued',
+      });
+      stubLaunchRecord(progressStore, {
+        jobId,
+        sessionId: 'queued-session',
+        provider: 'codex',
+        projectRoot: pluginRoot,
+        backendNamespace: namespace,
+      });
+
+      const fakeService = {
+        adoptRunningJob: vi.fn(() => ({ cleanup: vi.fn() })),
+        recoverQueuedJob: vi.fn(() => jobId),
+        completeRecoveredJob: vi.fn(),
+      };
+      const fakeIdleTimer = createFakeIdleTimer();
+      const { runtimeState } = createRuntimeStateMock();
+      const sessionIndex = {
+        hydrate: vi.fn(),
+        hasShard: vi.fn(() => true),
+        discoverShard: vi.fn(),
+        invalidate: vi.fn(),
+      };
+      let controller!: ReturnType<LifecycleModule['createLifecycle']>;
+      const writeBackendInfoFn = vi.fn((root: string, info: Parameters<typeof backendInfo.writeBackendInfo>[1]) => {
+        backendInfo.writeBackendInfo(root, info);
+        expect(existsSync(backendInfo.backendInfoPath(root))).toBe(true);
+        expect(controller.getRecoveryRegistry()).toBeNull();
+      });
+
+      controller = lifecycleModule.createLifecycle({
+        identity: {
+          pluginRoot,
+          namespace,
+          version: '9.9.9',
+          bundleHash: 'testhash1234',
+          instanceId: 'lifecycle-instance-1',
+          token: 'test-token',
+          now: () => 1,
+          log: () => {},
+        },
+        runtimeState,
+        idleTimer: fakeIdleTimer as never,
+        progressStore,
+        sessionIndex: sessionIndex as never,
+        streamResponses: new Set(),
+        discussStores: new Map(),
+        discussRegistry: createDiscussContextRegistry(),
+        server: createServer(),
+        getExecutionService: () => fakeService as never,
+        getDiscussStoreForSource: () => {
+          throw new Error('Unexpected discuss store lookup');
+        },
+        knownDiscussSources: () => new Set<string>(),
+        getDiscussContext: () => {
+          throw new Error('Unexpected discuss context lookup');
+        },
+        acquireLockFn: async () => {},
+        writeBackendInfoFn,
+        removeBackendInfoIfOwnerFn: () => {},
+        removeLockIfOwnerFn: () => {},
+        recoverOrphanedJobsFn: () => {},
+        cleanupStaleJobsFn: () => {},
+        markJobsAsErrorFn: () => {},
+        killAllChildrenFn: () => {},
+        createKbSubsystemFn: async () => createMockKbSubsystem(),
+        closeServerFn: async () => {},
+        listenFn: async () => ({ port: 4100, host: '127.0.0.1' }),
+      });
+
+      try {
+        const started = await controller.start();
+
+        expect(started.port).toBe(4100);
+        expect(fakeService.recoverQueuedJob).toHaveBeenCalledWith(expect.objectContaining({ jobId }));
+        expect(writeBackendInfoFn).toHaveBeenCalledTimes(1);
+        const recoverOrder = fakeService.recoverQueuedJob.mock.invocationCallOrder.at(0);
+        const publishOrder = writeBackendInfoFn.mock.invocationCallOrder.at(0);
+        expect(recoverOrder).toBeDefined();
+        expect(publishOrder).toBeDefined();
+        expect(recoverOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(
+          publishOrder ?? Number.POSITIVE_INFINITY,
+        );
+        expect(controller.getRecoveryRegistry()).toBeNull();
+      } finally {
+        await controller.shutdown('test');
+        await controller.waitForShutdown();
+      }
+    });
+
+    it('stops the startup tail when shutdown begins during recovery adoption', async () => {
+      const { lifecycleModule } = await loadExecutionModules();
+      const discussLoop = await import('../discuss/loop.js');
+      const resumeLoopSpy = vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
+      const pluginRoot = createProjectRoot('startup-interrupted-during-adoption');
+      const namespace = pluginRootNamespace(pluginRoot);
+      const progressStore = new ProgressStore();
+      const jobId = 'running-adoption-job';
+      createdJobIds.add(jobId);
+      progressStore.initJob({
+        jobId,
+        sessionId: 'running-session',
+        provider: 'codex',
+        projectRoot: pluginRoot,
+        backendNamespace: namespace,
+        initialPhase: 'running',
+      });
+      stubLaunchRecord(progressStore, {
+        jobId,
+        sessionId: 'running-session',
+        provider: 'codex',
+        projectRoot: pluginRoot,
+        backendNamespace: namespace,
+      });
+      stubRuntimeRecord(progressStore, {
+        jobId,
+        pid: process.pid,
+        startTime: '2026-03-11T00:00:00.000Z',
+      });
+
+      const topic = 'Should the city pedestrianize the downtown core?';
+      const source = resolveProjectSource(pluginRoot);
+      const store = new DiscussSessionStore(source);
+      const created = decideSessionCreate(
+        {
+          topic,
+          min_bid_delay_ms: 0,
+          agents: [
+            { name: 'alpha', persona: '# Alpha', participation: 'required' },
+            { name: 'beta', persona: '# Beta', participation: 'required' },
+          ],
+        },
+        'recoverable-discuss',
+        pluginRoot,
+        topic,
+        1,
+        '2026-03-11T00:00:00.000Z',
+      );
+      if (!created.ok) {
+        throw new Error(created.error);
+      }
+      await store.append('recoverable-discuss', null, created.value);
+      store.flushDirtyIndexes();
+
+      const fakeIdleTimer = createFakeIdleTimer();
+      const { runtimeState, setLifecycle } = createRuntimeStateMock();
+      const sessionIndex = {
+        hydrate: vi.fn(),
+        hasShard: vi.fn(() => true),
+        discoverShard: vi.fn(),
+        invalidate: vi.fn(),
+      };
+      const discussRegistry = createDiscussContextRegistry();
+      const writeBackendInfoFn = vi.fn();
+      let controller!: ReturnType<LifecycleModule['createLifecycle']>;
+      const fakeService = {
+        adoptRunningJob: vi.fn(() => {
+          void controller.shutdown('sigint');
+          return { cleanup: vi.fn() };
+        }),
+        recoverQueuedJob: vi.fn(),
+        completeRecoveredJob: vi.fn(),
+      };
+
+      controller = lifecycleModule.createLifecycle({
+        identity: {
+          pluginRoot,
+          namespace,
+          version: '9.9.9',
+          bundleHash: 'testhash1234',
+          instanceId: 'lifecycle-instance-2',
+          token: 'test-token',
+          now: () => 1,
+          log: () => {},
+        },
+        runtimeState,
+        idleTimer: fakeIdleTimer as never,
+        progressStore,
+        sessionIndex: sessionIndex as never,
+        streamResponses: new Set(),
+        discussStores: new Map([[source, store]]),
+        discussRegistry,
+        server: createServer(),
+        getExecutionService: () => fakeService as never,
+        getDiscussStoreForSource: (requestedSource: string) => {
+          if (requestedSource !== source) {
+            throw new Error(`Unexpected discuss source: ${requestedSource}`);
+          }
+          return store;
+        },
+        knownDiscussSources: () => new Set([source]),
+        getDiscussContext: (ctx) => getOrCreateDiscussContext(
+          discussRegistry,
+          ctx.projectRoot,
+          fakeService as never,
+          store,
+        ),
+        acquireLockFn: async () => {},
+        writeBackendInfoFn,
+        removeBackendInfoIfOwnerFn: () => {},
+        removeLockIfOwnerFn: () => {},
+        recoverOrphanedJobsFn: () => {},
+        cleanupStaleJobsFn: () => {},
+        markJobsAsErrorFn: () => {},
+        killAllChildrenFn: () => {},
+        createKbSubsystemFn: async () => createMockKbSubsystem(),
+        closeServerFn: async () => {},
+        listenFn: async () => ({ port: 4101, host: '127.0.0.1' }),
+      });
+
+      try {
+        const startResult = await controller.start().catch((error: unknown) => error);
+        await controller.waitForShutdown();
+
+        expect(startResult).toBeInstanceOf(lifecycleModule.StartupInterruptedError);
+        expect(fakeService.adoptRunningJob).toHaveBeenCalledTimes(1);
+        expect(writeBackendInfoFn).not.toHaveBeenCalled();
+        expect(setLifecycle).not.toHaveBeenCalledWith('running');
+        expect(resumeLoopSpy).not.toHaveBeenCalled();
+      } finally {
+        await controller.waitForShutdown().catch(() => {});
+      }
     });
   });
 

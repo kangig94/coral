@@ -95,12 +95,12 @@ async function loadListToolsHandler(): Promise<ListToolsHandler> {
   return handler;
 }
 
-async function invokeToolRaw(
+async function invokeCallToolHandler(
+  handler: CallToolHandler,
   name: string,
   argumentsValue: Record<string, unknown>,
   options?: { signal?: AbortSignal },
 ): Promise<McpResult> {
-  const handler = await loadCallToolHandler();
   return handler(
     {
       params: {
@@ -113,6 +113,15 @@ async function invokeToolRaw(
       _meta: {},
     },
   );
+}
+
+async function invokeToolRaw(
+  name: string,
+  argumentsValue: Record<string, unknown>,
+  options?: { signal?: AbortSignal },
+): Promise<McpResult> {
+  const handler = await loadCallToolHandler();
+  return invokeCallToolHandler(handler, name, argumentsValue, options);
 }
 
 async function invokeWaitRaw(argumentsValue: Record<string, unknown>) {
@@ -129,6 +138,25 @@ async function invokeListTools() {
   return handler();
 }
 
+function captureSignalHandlers(): Map<string, () => void> {
+  const handlers = new Map<string, () => void>();
+  vi.spyOn(process, 'on').mockImplementation(((event: string | symbol, listener: (...args: unknown[]) => void) => {
+    if (typeof event === 'string') {
+      handlers.set(event, listener as () => void);
+    }
+    return process;
+  }) as typeof process.on);
+  return handlers;
+}
+
+function requireSignalHandler(handlers: Map<string, () => void>, signal: string): () => void {
+  const handler = handlers.get(signal);
+  if (!handler) {
+    throw new Error(`Missing ${signal} handler`);
+  }
+  return handler;
+}
+
 // @flaky — workflow wait test intermittently times out under full suite (mock timing sensitivity)
 describe('bridge wait handler', { retry: 2 }, () => {
   beforeEach(() => {
@@ -138,12 +166,15 @@ describe('bridge wait handler', { retry: 2 }, () => {
     mockState.handleBackendToolCall.mockReset();
     mockState.buildToolList.mockClear();
     mockState.readFileSync.mockReset();
-    mockState.connect.mockClear();
-    mockState.close.mockClear();
+    mockState.connect.mockReset();
+    mockState.close.mockReset();
+    mockState.connect.mockResolvedValue(undefined);
+    mockState.close.mockResolvedValue(undefined);
     mockState.ensureBackend.mockResolvedValue({ host: '127.0.0.1', port: 4100, token: 'backend-token' });
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     vi.resetModules();
@@ -690,6 +721,132 @@ describe('bridge wait handler', { retry: 2 }, () => {
       runningJobIds: ['job-1'],
     });
     expect(result.isError).toBe(false);
+  });
+
+  it('request abort during retry backoff returns running without another wait iteration', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    mockState.streamWait.mockImplementationOnce(async function* () {
+      throw new TypeError('terminated');
+    });
+
+    const handler = await loadCallToolHandler();
+    const resultPromise = invokeCallToolHandler(
+      handler,
+      'wait',
+      { jobs: ['job-1'] },
+      { signal: controller.signal },
+    );
+
+    await vi.waitFor(() => expect(mockState.streamWait).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    controller.abort();
+
+    const result = await resultPromise;
+
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      state: 'running',
+      runningJobIds: ['job-1'],
+    });
+    expect(mockState.ensureBackend).toHaveBeenCalledTimes(1);
+    expect(mockState.streamWait).toHaveBeenCalledTimes(1);
+  });
+
+  it('SIGTERM during an active wait exits promptly and returns shutdown failure', async () => {
+    vi.useFakeTimers();
+    const signalHandlers = captureSignalHandlers();
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined as never) as typeof process.exit);
+    mockState.streamWait.mockImplementationOnce(async function* (...args: unknown[]) {
+      const signal = args[4] as AbortSignal;
+      await new Promise<never>((_resolve, reject) => {
+        if (signal.aborted) {
+          reject(new TypeError('terminated'));
+          return;
+        }
+        signal.addEventListener('abort', () => reject(new TypeError('terminated')), { once: true });
+      });
+    });
+
+    const handler = await loadCallToolHandler();
+    const resultPromise = invokeCallToolHandler(handler, 'wait', { jobs: ['job-1'] });
+
+    await vi.waitFor(() => expect(mockState.streamWait).toHaveBeenCalledTimes(1));
+    requireSignalHandler(signalHandlers, 'SIGTERM')();
+
+    const result = await resultPromise;
+    await Promise.resolve();
+
+    expect(exitSpy).toHaveBeenCalledWith(0);
+    expect(mockState.close).toHaveBeenCalledTimes(1);
+    expect(mockState.ensureBackend).toHaveBeenCalledTimes(1);
+    expect(mockState.streamWait).toHaveBeenCalledTimes(1);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      error: 'wait_transport_failure',
+      message: 'Bridge shutting down',
+    });
+  });
+
+  it('SIGTERM during retry backoff does not re-enter ensureBackend or streamWait', async () => {
+    vi.useFakeTimers();
+    const signalHandlers = captureSignalHandlers();
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined as never) as typeof process.exit);
+    mockState.streamWait.mockImplementationOnce(async function* () {
+      throw new TypeError('terminated');
+    });
+
+    const handler = await loadCallToolHandler();
+    const resultPromise = invokeCallToolHandler(handler, 'wait', { jobs: ['job-1'] });
+
+    await vi.waitFor(() => expect(mockState.streamWait).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    requireSignalHandler(signalHandlers, 'SIGTERM')();
+
+    const result = await resultPromise;
+    await Promise.resolve();
+
+    expect(exitSpy).toHaveBeenCalledWith(0);
+    expect(mockState.ensureBackend).toHaveBeenCalledTimes(1);
+    expect(mockState.streamWait).toHaveBeenCalledTimes(1);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      error: 'wait_transport_failure',
+      message: 'Bridge shutting down',
+    });
+  });
+
+  it('shutdown exits within 2 seconds even if ensureBackend never resolves', async () => {
+    vi.useRealTimers();
+    const signalHandlers = captureSignalHandlers();
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined as never) as typeof process.exit);
+    let resolveEnsureBackend: ((value: { host: string; port: number; token: string }) => void) | undefined;
+    mockState.ensureBackend.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveEnsureBackend = resolve;
+    }));
+    mockState.close.mockImplementationOnce(() => new Promise(() => {}));
+
+    const handler = await loadCallToolHandler();
+    const waitPromise = invokeCallToolHandler(handler, 'wait', { jobs: ['job-1'] });
+
+    await Promise.resolve();
+    expect(mockState.ensureBackend).toHaveBeenCalledTimes(1);
+
+    requireSignalHandler(signalHandlers, 'SIGTERM')();
+
+    await new Promise((resolve) => setTimeout(resolve, 1_950));
+    expect(exitSpy).not.toHaveBeenCalled();
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(exitSpy).toHaveBeenCalledWith(0);
+
+    resolveEnsureBackend?.({ host: '127.0.0.1', port: 4100, token: 'backend-token' });
+    await expect(waitPromise).resolves.toMatchObject({ isError: true });
+    expect(mockState.streamWait).not.toHaveBeenCalled();
   });
 
   it('passes through backend MCP-shaped tool results unchanged', async () => {

@@ -218,10 +218,14 @@ argument-hint: "<problem descriptions or symptoms>"
   ## Step 8 — Handoff Decision
 
   ```
-  AskUserQuestion({
-    question: "Direction chosen. Proceed to preplan?",
-    options: ["Proceed", "Proceed --codex", "Continue refining"]
-  })
+  AskUserQuestion({ questions: [
+    { question: "Direction chosen. Proceed to preplan?", header: "Next",
+      options: [
+        { label: "Proceed", description: "Start preplan" },
+        { label: "Proceed --codex", description: "Preplan with Codex" },
+        { label: "Continue refining", description: "Keep exploring directions" }
+      ], multiSelect: false }
+  ]})
   ```
 
   If "Continue refining": return to conversation — user may ask questions, request re-scoring,

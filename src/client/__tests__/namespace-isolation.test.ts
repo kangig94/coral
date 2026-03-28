@@ -45,7 +45,7 @@ describe('client namespace isolation', () => {
     expect(readBundleHash(rootB)).toBe('bundle-b');
   });
 
-  it('matches the AC25 namespace hashing algorithm', () => {
+  it('matches the namespace hashing algorithm', () => {
     const pluginRoot = createPluginRoot('coral-namespace');
     const testPath = realpathSync(pluginRoot);
 

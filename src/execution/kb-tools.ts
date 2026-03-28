@@ -80,6 +80,7 @@ export async function handleKbToolCall(
           { memo, title, content, domain, topic },
           () => { kbSubsystem.curateScheduler.schedule(); },
         );
+        kbSubsystem.curateScheduler.scheduleDeferredCommit();
         break;
       }
       case 'kb_update': {
@@ -90,12 +91,14 @@ export async function handleKbToolCall(
           ...(args.title !== undefined ? { title: optionalString(args, 'title') } : {}),
           ...(args.content !== undefined ? { content: optionalString(args, 'content') } : {}),
         });
+        kbSubsystem.curateScheduler.scheduleDeferredCommit();
         break;
       }
       case 'kb_delete': {
         const note = requireString(args, 'note');
         if (note === null) return toolError('invalid_request', { message: 'note is required' });
         result = await kbDeleteFn(kb, { note });
+        kbSubsystem.curateScheduler.scheduleDeferredCommit();
         break;
       }
       case 'kb_reindex':
@@ -176,7 +179,7 @@ export async function handleKbToolCall(
         break;
       }
       case 'kb_memo_purge':
-        result = purgeMemos(ctx.projectRoot);
+        result = purgeMemos(ctx.projectRoot, optionalString(args, 'owner'));
         break;
       default:
         return { statusCode: 404, body: { error: 'unknown_tool', name: request.name } };

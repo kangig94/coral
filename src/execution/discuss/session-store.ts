@@ -5,6 +5,7 @@ import {
   openSync,
   renameSync,
   statSync,
+  unlinkSync,
   writeSync,
 } from 'node:fs';
 import { dirname } from 'node:path';
@@ -135,13 +136,16 @@ function writeAtomicJson(filePath: string, value: unknown): void {
   try {
     writeAllSync(fd, JSON.stringify(value, null, 2));
     fdatasyncSync(fd);
-  } finally {
+  } catch {
     closeSync(fd);
+    try { unlinkSync(tmpPath); } catch { /* best effort */ }
+    return;
   }
+  closeSync(fd);
   try {
     renameSync(tmpPath, filePath);
   } catch {
-    // target directory gone — best-effort
+    try { unlinkSync(tmpPath); } catch { /* best effort */ }
   }
 }
 

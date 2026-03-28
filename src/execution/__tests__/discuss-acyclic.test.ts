@@ -407,14 +407,14 @@ describe('discuss architecture guard', () => {
 
     console.info(
       runtimeSubsystemSccs.length === 0
-        ? 'AC6 runtime subsystem SCCs: none'
-        : `AC6 runtime subsystem SCCs:\n${runtimeSubsystemSccs.map((scc) => `- ${formatScc(scc)}`).join('\n')}`,
+        ? 'Runtime subsystem SCCs: none'
+        : `Runtime subsystem SCCs:\n${runtimeSubsystemSccs.map((scc) => `- ${formatScc(scc)}`).join('\n')}`,
     );
 
     console.info(
       nonDiscussRuntimeSccs.length === 0
-        ? 'AC6 informational non-discuss runtime SCCs: none'
-        : `AC6 informational non-discuss runtime SCCs:\n${nonDiscussRuntimeSccs.map((scc) => `- ${formatScc(scc)}`).join('\n')}`,
+        ? 'Informational non-discuss runtime SCCs: none'
+        : `Informational non-discuss runtime SCCs:\n${nonDiscussRuntimeSccs.map((scc) => `- ${formatScc(scc)}`).join('\n')}`,
     );
 
     const failures: string[] = [];
@@ -442,7 +442,7 @@ describe('discuss architecture guard', () => {
 
     if (deferredDiscussDebt.length > 0) {
       failures.push([
-        'src/discuss must not type-only-import src/client/* or src/execution/discuss/* (AC6 deferred debt must be zero):',
+        'src/discuss must not type-only-import src/client/* or src/execution/discuss/* (deferred debt must be zero):',
         ...deferredDiscussDebt.map((edge) => `- ${formatEdge(edge)}`),
       ].join('\n'));
     }

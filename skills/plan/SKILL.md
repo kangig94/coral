@@ -104,14 +104,13 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
     If ALL criteria pass:
     ```
-    AskUserQuestion({
-      question: "Plan is low-complexity (N lines, M files, localized fixes). Skip review?",
-      header: "Review",
-      options: [
-        { label: "Skip review", description: "Proceed directly to implementation" },
-        { label: "Review anyway", description: "Run full review loop" }
-      ]
-    })
+    AskUserQuestion({ questions: [
+      { question: "Plan is low-complexity (N lines, M files, localized fixes). Skip review?", header: "Review",
+        options: [
+          { label: "Skip review", description: "Proceed directly to implementation" },
+          { label: "Review anyway", description: "Run full review loop" }
+        ], multiSelect: false }
+    ]})
     ```
     If "Skip review" → skip to step 4e (Execution Order), then step 5 (Completion).
     If "Review anyway" → proceed to Review Phases normally.
@@ -291,7 +290,6 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
           { label: "ralph", description: "Claude-native sequential" },
           { label: "ralph --codex", description: "Codex delegation" },
           { label: "ralph --team", description: "Parallel via Agent Teams" },
-          { label: "ralph --team --codex", description: "Parallel + Codex workers" },
           { label: "Skip", description: "No implementation" }
         ], multiSelect: false },
       { question: "Enable adversarial testing?", header: "Red",

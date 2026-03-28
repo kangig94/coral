@@ -1,4 +1,4 @@
-import { type PersistedDiscussSnapshot } from '../../discuss/events.js';
+import { makeEvent, type DiscussDomainEvent, type PersistedDiscussSnapshot } from '../../discuss/events.js';
 import {
   DEFAULT_MAX_EPOCHS,
   decideBid,
@@ -17,6 +17,9 @@ import { nowIsoString } from '../../discuss/util/time.js';
 import type { CallerContext } from '../request-context.js';
 import {
   buildAgentExecutionConfig,
+  hasActiveBidWork,
+  hasPendingAutoBidders,
+  isManualParticipant,
 } from './executor.js';
 import * as discussLoop from './loop.js';
 import {
@@ -31,6 +34,7 @@ import {
 } from './context.js';
 import { attachSession, detachSession, getSession, getWatchState as getRegistryWatchState } from './registry.js';
 import {
+  appendRuntimeEvents,
   afterCommit,
   commitDecision,
   isAbortEnded,
@@ -53,6 +57,88 @@ function requireLiveSession(ctx: DiscussContext, sessionId: string): LiveDiscuss
     throw new DiscussManagerError('session_not_found', { session: sessionId });
   }
   return session;
+}
+
+function isWithinLiveSessionBoundary(snapshot: PersistedDiscussSnapshot): boolean {
+  return snapshot.state.status !== 'ended' || snapshot.runtime.controlPhase !== 'idle';
+}
+
+function shouldAttachRecoveredSession(snapshot: PersistedDiscussSnapshot): boolean {
+  return isWithinLiveSessionBoundary(snapshot);
+}
+
+function shouldResumeRecoveredSession(snapshot: PersistedDiscussSnapshot): boolean {
+  if (snapshot.runtime.controlPhase === 'synthesize') {
+    return true;
+  }
+
+  if (snapshot.runtime.controlPhase === 'evaluate_epoch') {
+    return true;
+  }
+
+  if (snapshot.runtime.controlPhase === 'collect_follow_up') {
+    return true;
+  }
+
+  if (snapshot.state.status === 'ended') {
+    return false;
+  }
+
+  if (snapshot.state.status === 'speaking') {
+    if (!snapshot.state.current_speaker) {
+      return false;
+    }
+    return !isManualParticipant(snapshot, snapshot.state.current_speaker);
+  }
+
+  if (snapshot.runtime.controlPhase === 'observer_wait') {
+    return true;
+  }
+
+  if (snapshot.state.status !== 'bidding') {
+    return false;
+  }
+
+  if (hasActiveBidWork(snapshot)) {
+    return true;
+  }
+
+  if (hasPendingAutoBidders(snapshot)) {
+    return true;
+  }
+
+  return true;
+}
+
+function buildAbortEndEventsForShutdown(
+  ctx: DiscussContext,
+  sessionId: string,
+  snapshot: PersistedDiscussSnapshot,
+): DiscussDomainEvent[] {
+  if (!isWithinLiveSessionBoundary(snapshot) || isAbortEnded(readSessionEvents(ctx, sessionId))) {
+    return [];
+  }
+
+  return [
+    makeEvent(
+      snapshot.sessionId,
+      snapshot.projectRoot,
+      snapshot.state.topic,
+      snapshot.lastAppliedSeq + 1,
+      'session.ended',
+      nowIsoString(),
+      {
+        endReasonContent: ABORT_REASON,
+        force: true,
+        reason: ABORT_REASON,
+      },
+    ),
+  ];
+}
+
+function logShutdownPersistFailure(scope: string, error: unknown): void {
+  const detail = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`Discuss shutdown persist failed for ${scope}: ${detail}\n`);
 }
 
 export async function startDiscussSession(
@@ -205,6 +291,59 @@ export async function abortDiscussSession(
   detachSession(ctx, sessionId);
 }
 
+export async function persistAbortEndForShutdown(
+  ctx: DiscussContext,
+  sessionId: string,
+  _session: LiveDiscussSession,
+): Promise<void> {
+  await appendRuntimeEvents(ctx, sessionId, (current) =>
+    buildAbortEndEventsForShutdown(ctx, sessionId, current));
+}
+
+export async function persistAbortEndForPersistedShutdownCandidates(
+  sources: readonly string[],
+  getDiscussStoreForSource: (source: string) => DiscussSessionStore,
+  resolveContext: (snapshot: PersistedDiscussSnapshot) => DiscussContext,
+): Promise<void> {
+  for (const source of sources) {
+    let store: DiscussSessionStore;
+    try {
+      store = getDiscussStoreForSource(source);
+    } catch (error: unknown) {
+      logShutdownPersistFailure(`source ${source}`, error);
+      continue;
+    }
+
+    let candidates: Array<{ sessionId: string }>;
+    try {
+      candidates = store.listRecoveryCandidates();
+    } catch (error: unknown) {
+      logShutdownPersistFailure(`source ${source}`, error);
+      continue;
+    }
+
+    for (const candidate of candidates) {
+      try {
+        const snapshot = store.load(candidate.sessionId);
+        if (!snapshot || !isWithinLiveSessionBoundary(snapshot)) {
+          continue;
+        }
+
+        const ctx = resolveContext(snapshot);
+        const events = readSessionEvents(ctx, candidate.sessionId);
+        if (isAbortEnded(events)) {
+          continue;
+        }
+
+        await appendRuntimeEvents(ctx, candidate.sessionId, (current) =>
+          buildAbortEndEventsForShutdown(ctx, candidate.sessionId, current));
+      } catch (error: unknown) {
+        logShutdownPersistFailure(candidate.sessionId, error);
+      }
+    }
+  }
+}
+
 export function getWatchState(
   ctx: DiscussContext,
   sessionId: string,
@@ -213,10 +352,19 @@ export function getWatchState(
   return getRegistryWatchState(ctx, sessionId, cursor);
 }
 
+export type RecoveredDiscussResume = {
+  ctx: DiscussContext;
+  sessionId: string;
+  callerCtx: CallerContext;
+};
+
 export async function recoverPersistedSessionsFromStore(
   store: DiscussSessionStore,
   resolveContext: (snapshot: PersistedDiscussSnapshot) => DiscussContext,
-): Promise<void> {
+  resolveCallerContext: (snapshot: PersistedDiscussSnapshot) => CallerContext,
+): Promise<RecoveredDiscussResume[]> {
+  const recovered: RecoveredDiscussResume[] = [];
+
   for (const candidate of store.listRecoveryCandidates()) {
     const snapshot = store.load(candidate.sessionId);
     if (!snapshot) {
@@ -230,15 +378,23 @@ export async function recoverPersistedSessionsFromStore(
       continue;
     }
 
+    if (!shouldAttachRecoveredSession(snapshot)) {
+      continue;
+    }
+
     attachSession(ctx, snapshot, {
       baseCursor: 0,
       events: buildWatchEvents(events),
     }, abortEnded);
-  }
-}
 
-export async function recoverPersistedSessions(
-  ctx: DiscussContext,
-): Promise<void> {
-  await recoverPersistedSessionsFromStore(ctx.store, () => ctx);
+    if (shouldResumeRecoveredSession(snapshot)) {
+      recovered.push({
+        ctx,
+        sessionId: snapshot.sessionId,
+        callerCtx: resolveCallerContext(snapshot),
+      });
+    }
+  }
+
+  return recovered;
 }

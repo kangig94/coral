@@ -1,4 +1,5 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -108,6 +109,7 @@ export type SpawnCliFn = (options: {
   prompt?: string;
   cwd?: string;
   pool?: 'default' | 'discuss' | 'curate';
+  signal?: AbortSignal;
 }) => Promise<SpawnCliResult>;
 
 export type CurateClaimedNote = {
@@ -176,6 +178,7 @@ type ParsedArrayResult = {
 export type CurateHandle = {
   start(): Promise<void>;
   schedule(): void;
+  scheduleDeferredCommit(): void;
   stop(): Promise<void>;
   isRunning(): boolean;
   _testInternals?: {
@@ -937,6 +940,7 @@ export function createCurateScheduler({
   let stopped = false;
   let queuedRun = false;
   let activeRun: Promise<void> | null = null;
+  let activeRunController: AbortController | null = null;
   let retryWakeTimer: NodeJS.Timeout | null = null;
   let debounceTimer: NodeJS.Timeout | null = null;
   let cachedIsGitRepo: boolean | null = null;
@@ -945,7 +949,7 @@ export function createCurateScheduler({
 
   // -- Claude invocation (KB-scoped) --
 
-  async function runClaude(prompt: string, extraArgs?: string[]): Promise<string> {
+  async function runClaude(prompt: string, extraArgs?: string[], signal?: AbortSignal): Promise<string> {
     const result = await spawnCli({
       provider: 'claude',
       command: 'claude',
@@ -953,6 +957,7 @@ export function createCurateScheduler({
       prompt,
       cwd: root,
       pool: 'curate',
+      signal,
     });
 
     if (result.aborted) {
@@ -974,6 +979,17 @@ export function createCurateScheduler({
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: timeoutMs,
     });
+  }
+
+  const execFileP = promisify(execFile);
+
+  async function gitAsync(args: string[], timeoutMs = 15000): Promise<string> {
+    const { stdout } = await execFileP('git', ['-C', root, ...args], {
+      encoding: 'utf-8',
+      timeout: timeoutMs,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return stdout;
   }
 
   function gitCommit(message: string): void {
@@ -1051,7 +1067,7 @@ export function createCurateScheduler({
     }
   }
 
-  async function resolveConflictsWithClaude(): Promise<boolean> {
+  async function resolveConflictsWithClaude(signal?: AbortSignal): Promise<boolean> {
     const prompt = 'Git rebase conflict in KB repository. Resolve all conflicts in the working tree:'
       + ' keep both changes where possible, prefer the incoming (remote) version for'
       + ' frontmatter metadata (tags, principles, updatedAt), and preserve local body'
@@ -1059,7 +1075,7 @@ export function createCurateScheduler({
 
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        await runClaude(prompt, ['--permission-mode', 'bypassPermissions', '--model', 'sonnet']);
+        await runClaude(prompt, ['--permission-mode', 'bypassPermissions', '--model', 'sonnet'], signal);
       } catch {
         return false;
       }
@@ -1078,13 +1094,16 @@ export function createCurateScheduler({
     return false;
   }
 
-  async function gitSync(): Promise<void> {
+  async function gitSync(signal?: AbortSignal): Promise<void> {
     if (!isGitRepo() || !isGitSyncEnabled()) return;
+
+    // Cancel pending deferred commit — gitSync's pre-sync snapshot handles dirty state
+    cancelDeferredCommit();
 
     const branch = getDefaultBranch();
 
     try {
-      git(['fetch', 'origin'], 30000);
+      await gitAsync(['fetch', 'origin'], 30000);
 
       // Commit dirty state (e.g. from Obsidian Sync) instead of stashing.
       try {
@@ -1097,9 +1116,9 @@ export function createCurateScheduler({
       }
 
       try {
-        git(['rebase', `origin/${branch}`]);
+        await gitAsync(['rebase', `origin/${branch}`]);
       } catch {
-        if (!await resolveConflictsWithClaude()) {
+        if (!await resolveConflictsWithClaude(signal)) {
           try { git(['rebase', '--abort'], 5000); } catch { /* no-op */ }
         }
       }
@@ -1108,9 +1127,9 @@ export function createCurateScheduler({
     }
   }
 
-  function gitPush(): void {
+  async function gitPush(): Promise<void> {
     if (!isGitRepo() || !isGitSyncEnabled()) return;
-    try { git(['push', 'origin', getDefaultBranch()], 30000); } catch { /* next cycle */ }
+    try { await gitAsync(['push', 'origin', getDefaultBranch()], 30000); } catch { /* next cycle */ }
   }
 
   function gitAutoCommit(message: string): void {
@@ -1121,6 +1140,39 @@ export function createCurateScheduler({
       gitCommit(message);
     } catch {
       // best-effort
+    }
+  }
+
+  // Debounced async git commit for external mutations (promote/update/delete).
+  // Batches changes within a 60s window into a single commit.
+  const DEFERRED_COMMIT_DELAY_MS = 60_000;
+  let deferredCommitTimer: NodeJS.Timeout | null = null;
+
+  async function gitAutoCommitAsync(message: string): Promise<void> {
+    if (!isGitRepo()) return;
+    try {
+      await gitAsync(['add', 'notes/', 'principles/', '.gitignore'], 10000);
+      if (!hasStagedChanges()) return;
+      gitCommit(message);
+    } catch {
+      // best-effort
+    }
+  }
+
+  function scheduleDeferredCommit(): void {
+    if (!isGitRepo()) return;
+    if (deferredCommitTimer !== null) return; // already scheduled
+    deferredCommitTimer = setTimeout(() => {
+      deferredCommitTimer = null;
+      void gitAutoCommitAsync('auto: kb mutation');
+    }, DEFERRED_COMMIT_DELAY_MS);
+    deferredCommitTimer.unref?.();
+  }
+
+  function cancelDeferredCommit(): void {
+    if (deferredCommitTimer !== null) {
+      clearTimeout(deferredCommitTimer);
+      deferredCommitTimer = null;
     }
   }
 
@@ -1192,6 +1244,9 @@ export function createCurateScheduler({
   function armRetryWake(): void {
     clearRetryWake();
 
+    if (stopped) {
+      return;
+    }
     if (!runtimeStarted) {
       return;
     }
@@ -1278,6 +1333,7 @@ export function createCurateScheduler({
   async function runClassificationBatches(
     claim: CurateClaim,
     index: KbIndex,
+    signal?: AbortSignal,
   ): Promise<ClassificationAssignment[]> {
     const rawAssignments: ClassificationAssignment[] = [];
     const tagVocab = buildTagVocabulary(index);
@@ -1285,7 +1341,7 @@ export function createCurateScheduler({
 
     for (const batch of chunkNotes(claim.notes, CLASSIFICATION_BATCH_SIZE)) {
       const prompt = buildClassificationPrompt(batch, tagVocab, principleNames);
-      const raw = await runClaude(prompt);
+      const raw = await runClaude(prompt, undefined, signal);
       const { entries, parseFailed } = parseJsonArray(raw);
       if (parseFailed) {
         throw new CurateJsonParseError('classification');
@@ -1573,6 +1629,7 @@ export function createCurateScheduler({
 
   async function runPrincipleDiscovery(
     processedThrough: CurateCursor,
+    signal?: AbortSignal,
   ): Promise<void> {
     await drainPendingDiscoveries(processedThrough);
 
@@ -1593,7 +1650,7 @@ export function createCurateScheduler({
     const { prompt, corpusPath } = buildDiscoveryPrompt(eligibleNotes, currentIndex.principles);
     let raw: string;
     try {
-      raw = await runClaude(prompt);
+      raw = await runClaude(prompt, undefined, signal);
     } finally {
       unlinkIfExists(corpusPath);
     }
@@ -1730,12 +1787,12 @@ export function createCurateScheduler({
     });
   }
 
-  async function runScheduledCurate(): Promise<CurateCursor | null> {
-    await gitSync();
+  async function runScheduledCurate(signal: AbortSignal): Promise<CurateCursor | null> {
+    await gitSync(signal);
     let lastCompletedThrough: CurateCursor | null = null;
     const allCohortSlugs: string[] = [];
 
-    while (true) {
+    while (!stopped && !signal.aborted) {
       const claim = await claimCurateRun(nowIsoString().slice(0, 10));
       if (claim === null) {
         break;
@@ -1743,7 +1800,7 @@ export function createCurateScheduler({
 
       try {
         const claimIndex = kb.readIndexOrEmpty();
-        const rawAssignments = await runClassificationBatches(claim, claimIndex);
+        const rawAssignments = await runClassificationBatches(claim, claimIndex, signal);
         const validatedAssignments = validateAssignments(rawAssignments, claimIndex, claim.notes);
         const metadataTargets = buildMetadataTargets(validatedAssignments, claimIndex, claim.notes);
         await commitMetadataTargets(metadataTargets);
@@ -1758,6 +1815,13 @@ export function createCurateScheduler({
     }
 
     if (lastCompletedThrough === null) {
+      // Consume stale retry state so armRetryWake doesn't re-trigger.
+      // Skip if a live claim exists — clearCurateRetryState also clears activeClaim.
+      await kb.withMutationLock(() => {
+        const state = readCurateState(kb);
+        if (state.activeClaim !== null && !isClaimStale(state, nowIsoString())) return;
+        clearCurateRetryStateLocked(state);
+      });
       return null;
     }
 
@@ -1766,9 +1830,9 @@ export function createCurateScheduler({
     const processedThrough = postClassifyState.processedThrough;
     const postClassifyIndex = kb.readIndexOrEmpty();
 
-    if (processedThrough !== null) {
+    if (!stopped && !signal.aborted && processedThrough !== null) {
       try {
-        await runPrincipleDiscovery(processedThrough);
+        await runPrincipleDiscovery(processedThrough, signal);
         gitAutoCommit('curate: discover principles');
       } catch (error: unknown) {
         throw new CurateRunError(lastCompletedThrough, error);
@@ -1776,18 +1840,20 @@ export function createCurateScheduler({
     }
 
     // Tag cleanup runs once over all classified notes.
-    const cleanupResult = cleanupTags(postClassifyIndex, allCohortSlugs);
-    const cleanupTargets = buildCleanupTargets(postClassifyIndex, allCohortSlugs, cleanupResult);
-    if (cleanupTargets.length > 0) {
-      try {
-        await commitMetadataTargets(cleanupTargets);
-        gitAutoCommit(`curate: cleanup tags for ${cleanupTargets.length} notes`);
-      } catch (error: unknown) {
-        throw new CurateRunError(lastCompletedThrough, error);
+    if (!stopped && !signal.aborted) {
+      const cleanupResult = cleanupTags(postClassifyIndex, allCohortSlugs);
+      const cleanupTargets = buildCleanupTargets(postClassifyIndex, allCohortSlugs, cleanupResult);
+      if (cleanupTargets.length > 0) {
+        try {
+          await commitMetadataTargets(cleanupTargets);
+          gitAutoCommit(`curate: cleanup tags for ${cleanupTargets.length} notes`);
+        } catch (error: unknown) {
+          throw new CurateRunError(lastCompletedThrough, error);
+        }
       }
     }
 
-    gitPush();
+    if (!stopped && !signal.aborted) await gitPush();
     return lastCompletedThrough;
   }
 
@@ -1800,12 +1866,22 @@ export function createCurateScheduler({
     }
 
     queuedRun = false;
+    const runController = new AbortController();
+    activeRunController = runController;
     activeRun = (async () => {
       let lastCompletedThrough: CurateCursor | null = null;
 
       try {
-        lastCompletedThrough = await runScheduledCurate();
+        lastCompletedThrough = await runScheduledCurate(runController.signal);
       } catch (error: unknown) {
+        if (stopped && runController.signal.aborted) {
+          try {
+            await clearCurateRetryState();
+          } catch (stateError: unknown) {
+            process.stderr.write(`kb_curate: failed to clear stop state: ${errorMessage(stateError)}\n`);
+          }
+          return;
+        }
         const runError = error instanceof CurateRunError
           ? error
           : new CurateRunError(null, error);
@@ -1817,30 +1893,24 @@ export function createCurateScheduler({
         }
       } finally {
         activeRun = null;
+        if (activeRunController === runController) {
+          activeRunController = null;
+        }
         try {
-          armRetryWake();
+          if (!stopped) {
+            armRetryWake();
+          }
         } catch (error: unknown) {
           process.stderr.write(`kb_curate: ${errorMessage(error)}\n`);
         }
-        if (queuedRun) {
-          setTimeout(() => {
-            launchQueuedRun();
-          }, 0);
-          return;
-        }
-        if (lastCompletedThrough !== null) {
+        if (!stopped && lastCompletedThrough !== null) {
           try {
             if (await hasPendingNotesBeyondCursor(lastCompletedThrough)) {
-              queuedRun = true;
+              schedule();
             }
           } catch (error: unknown) {
             process.stderr.write(`kb_curate: ${errorMessage(error)}\n`);
           }
-        }
-        if (queuedRun) {
-          setTimeout(() => {
-            launchQueuedRun();
-          }, 0);
         }
       }
     })();
@@ -1856,10 +1926,7 @@ export function createCurateScheduler({
     await migrateCurateStateIfNeeded(kb);
     runtimeStarted = true;
     armRetryWake();
-    queuedRun = true;
-    setTimeout(() => {
-      launchQueuedRun();
-    }, 0);
+    schedule();
   }
 
   function schedule(): void {
@@ -1895,8 +1962,20 @@ export function createCurateScheduler({
       clearTimeout(debounceTimer);
       debounceTimer = null;
     }
-    if (activeRun !== null) {
-      await activeRun;
+    cancelDeferredCommit();
+    const run = activeRun;
+    const runController = activeRunController;
+    if (runController !== null) {
+      runController.abort();
+    }
+    if (run !== null) {
+      try {
+        await run;
+      } catch (error: unknown) {
+        if (!(stopped && runController?.signal.aborted)) {
+          throw error;
+        }
+      }
     }
   }
 
@@ -1904,6 +1983,7 @@ export function createCurateScheduler({
     start,
     schedule,
     stop,
+    scheduleDeferredCommit,
     isRunning() {
       return queuedRun || activeRun !== null || retryWakeTimer !== null || debounceTimer !== null;
     },

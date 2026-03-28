@@ -41,3 +41,8 @@ export function getNewProvider(name: string): Provider | undefined {
 export function getAllNewProviders(): Provider[] {
   return [...newProviders.values()];
 }
+
+/** Reset provider registry. Intended for test isolation. */
+export function clearNewProviders(): void {
+  newProviders.clear();
+}

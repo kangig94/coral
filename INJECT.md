@@ -66,20 +66,26 @@ For multi-step tasks, state a brief plan:
 
 # Knowledge Base
 
-**Hard rule: Never write directly to KB files. Use KB tools for all operations.**
-
 CLI: `{{CORAL_CLI}}`
 
 ## Search
-Before debugging from scratch or starting a plan:
+Source code and official docs (via WebFetch) are the source of truth — always start there.
+KB stores past decisions and lessons learned. Search it when you're stuck, not as a first step.
+`kb read` returns note age — older notes may be stale, so verify against current code before acting.
 1. `CLI kb principles` — list principle names (cross-domain decision patterns). Names are self-descriptive (e.g., `atomic-persistence-or-nothing`). Use `--verbose` for statements and referring notes.
 2. `CLI kb search "<keywords>"` — searches filename, principles, tags, title, content. Returns top 20 results ranked by relevance.
 3. `CLI kb read <note-slug>` — read a note or principle by slug. Resolves memo → note → principle precedence. Always use this instead of reading KB files directly.
 
+<!-- OWNER_ONLY:BEGIN -->
+When calling codex/claude with `op: coral:*` or the `workflow` tool, include `owner: "{{SESSION_ID}}"` to propagate session ownership to child agents.
+<!-- OWNER_ONLY:END -->
+
 <!-- SESSION_ID_ONLY:BEGIN -->
+**Hard rule: Never write directly to KB files. Use KB tools for all operations.**
+
 ## Memo
-On non-obvious discovery during any phase (review, planning, implementation), write a memo immediately.
-Also memo Insights worth preserving when Explanatory output style is active.
+Write a memo only when a discovery would save someone hours — painful root causes, gotchas that contradict docs, or decisions not derivable from code.
+Do not memo routine findings, general observations, or things git log can answer.
 
 `CLI kb memo write --owner "{{SESSION_ID}}" --topic "<kebab-case-topic>" --content "one paragraph + context"`
 `CLI kb memo list --owner "{{SESSION_ID}}"`
@@ -87,13 +93,10 @@ Also memo Insights worth preserving when Explanatory output style is active.
 
 Timestamps, paths, and frontmatter are generated automatically.
 
-When calling codex/claude with `op: coral:*` or the `workflow` tool, include `owner: "{{SESSION_ID}}"` to propagate session ownership to child agents.
-
 ## Promotion
-**Who**: top-level orchestrator only, after all work completes (not implementation — after review too).
-Subagents and delegated tasks only write memos, never promote.
-
-**Process**: review all memos, check for duplicates via `CLI kb search`, then promote:
+**Who**: top-level orchestrator only, after all work completes. Subagents never promote.
+Most memos are disposable — only promote if the lesson is reusable across future sessions.
+Check for duplicates via `CLI kb search` before promoting:
 `CLI kb promote --memo "<filename>" --title "..." --content-file /tmp/kb-<uuid>.md --domain d --topic t`
 Write `/tmp/kb-<uuid>.md` first (via the Write tool, replacing `<uuid>` with any unique identifier) with the full markdown body, for example `## Rule\n...\n## Why\n...\n## Pattern\n...`.
 Promote automatically deletes the source memo and creates a new KB note — no separate delete step needed.

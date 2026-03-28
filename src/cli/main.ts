@@ -983,12 +983,13 @@ export function buildProgram(): Command {
   const kbMemoPurgeCommand = kbMemoCommand.command('purge');
   kbMemoPurgeCommand
     .description('Delete all project memos')
-    .action(async () => {
+    .option('--owner <owner>', 'Only purge memos owned by this session')
+    .action(async (opts: { owner?: string }) => {
       const outputFormat = getOutputFormat(kbMemoPurgeCommand);
 
       try {
         const client = makeClient(process.cwd());
-        const result = await client.kbMemoPurge({});
+        const result = await client.kbMemoPurge(opts.owner ? { owner: opts.owner } : {});
         emit(result, outputFormat, formatKbMemoPurge);
       } catch (error) {
         emitError(error, outputFormat);

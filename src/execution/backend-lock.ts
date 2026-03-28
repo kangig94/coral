@@ -1,4 +1,4 @@
-import { readFileSync, unlinkSync } from 'node:fs';
+import { readFileSync, renameSync, unlinkSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { backendLockPath, pluginRootNamespace } from '../infra/paths.js';
 import { readBackendInfo } from '../infra/backend-info.js';
@@ -118,14 +118,31 @@ async function isMatchingHealthyBackend(pluginRoot: string, record: LockRecord):
 }
 
 function removeLockIfSnapshotMatches(pluginRoot: string, snapshot: LockSnapshot): boolean {
-  const current = readLockSnapshot(pluginRoot);
-  if (!current) return true;
-  if (current.raw !== snapshot.raw) return false;
+  const lockPath = backendLockPath(pluginRoot);
+  const stagePath = `${lockPath}.removing`;
+
+  // Atomically move the lock aside, verify ownership, then delete.
+  // If a replacement wrote between our read and rename, rename fails (ENOENT)
+  // or the staged content won't match — we restore in that case.
+  try {
+    renameSync(lockPath, stagePath);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return true; // already gone
+    throw error;
+  }
 
   try {
-    unlinkSync(backendLockPath(pluginRoot));
+    const staged = readFileSync(stagePath, 'utf-8');
+    if (staged !== snapshot.raw) {
+      // Content changed between our read and rename — restore it
+      try { renameSync(stagePath, lockPath); } catch { /* best effort */ }
+      return false;
+    }
+    unlinkSync(stagePath);
     return true;
   } catch (error: unknown) {
+    // Cleanup staged file on unexpected error
+    try { unlinkSync(stagePath); } catch { /* best effort */ }
     if (isNoEntryError(error)) return true;
     throw error;
   }
@@ -192,12 +209,28 @@ export async function acquireLock(pluginRoot: string, instanceId: string, versio
 }
 
 export function removeLockIfOwner(pluginRoot: string, instanceId: string): void {
-  const snapshot = readLockSnapshot(pluginRoot);
-  if (!snapshot?.record || snapshot.record.instanceId !== instanceId) return;
+  const lockPath = backendLockPath(pluginRoot);
+  const stagePath = `${lockPath}.removing`;
+
+  // Atomically stage the lock, verify ownership, then delete.
+  try {
+    renameSync(lockPath, stagePath);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return;
+    throw error;
+  }
 
   try {
-    unlinkSync(backendLockPath(pluginRoot));
+    const raw = readFileSync(stagePath, 'utf-8');
+    const record = parseLockRecord(raw);
+    if (!record || record.instanceId !== instanceId) {
+      // Not ours — restore it
+      try { renameSync(stagePath, lockPath); } catch { /* best effort */ }
+      return;
+    }
+    unlinkSync(stagePath);
   } catch (error: unknown) {
+    try { unlinkSync(stagePath); } catch { /* best effort */ }
     if (isNoEntryError(error)) return;
     throw error;
   }

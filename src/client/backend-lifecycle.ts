@@ -1,7 +1,7 @@
 declare const __PLUGIN_ROOT__: string;
 declare const __VERSION__: string;
 
-import { mkdirSync, openSync, readFileSync, unlinkSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -153,11 +153,16 @@ function spawnBackend(backendBin: string): void {
   } catch {
     // fail-open: spawn without log if dir creation fails
   }
-  const child = spawn(process.execPath, [backendBin], {
-    detached: true,
-    stdio: ['ignore', 'ignore', stderr],
-  });
-  child.unref();
+  try {
+    const child = spawn(process.execPath, [backendBin], {
+      detached: true,
+      stdio: ['ignore', 'ignore', stderr],
+    });
+    child.unref();
+  } finally {
+    // Close fd in parent — child inherits its own copy via spawn
+    if (typeof stderr === 'number') closeSync(stderr);
+  }
 }
 
 async function waitForReplacementBackend(
@@ -199,10 +204,10 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
   }
 
   let replacedInstanceId: string | null = null;
-  let shutdownRequestedFor: string | null = null;
+  const shutdownRequestedFor = new Set<string>();
   if (existingHealthy) {
     replacedInstanceId = existingHealthy.instanceId;
-    shutdownRequestedFor = existingHealthy.instanceId;
+    shutdownRequestedFor.add(existingHealthy.instanceId);
     await requestBackendShutdown(existingHealthy);
   }
 
@@ -218,8 +223,8 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
         return summarizeBackend(healthy);
       }
 
-      if (healthy.bundleHash !== expectedHash && shutdownRequestedFor !== healthy.instanceId) {
-        shutdownRequestedFor = healthy.instanceId;
+      if (healthy.bundleHash !== expectedHash && !shutdownRequestedFor.has(healthy.instanceId)) {
+        shutdownRequestedFor.add(healthy.instanceId);
         await requestBackendShutdown(healthy);
       }
     }

@@ -333,6 +333,8 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
       lastOutputAt = Date.now();
     }
 
+    let abortHandler: (() => void) | null = null;
+
     function finish(): boolean {
       if (settled) return false;
       settled = true;
@@ -342,18 +344,22 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
         releaseLaunch(internalPermitJobId, pool);
         internalPermitJobId = null;
       }
+      if (abortHandler && options.signal) {
+        options.signal.removeEventListener('abort', abortHandler);
+        abortHandler = null;
+      }
       return true;
     }
 
     if (options.signal) {
-      const onAbort = () => {
+      abortHandler = () => {
         if (settled) return;
         abortedBySignal = true;
         clearInterval(idleChecker);
         gracefulKill(child);
       };
-      if (options.signal.aborted) onAbort();
-      else options.signal.addEventListener('abort', onAbort, { once: true });
+      if (options.signal.aborted) abortHandler();
+      else options.signal.addEventListener('abort', abortHandler, { once: true });
     }
 
     let stdout = '';
@@ -400,7 +406,7 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
   });
 }
 
-// ── Durable wrapper spawn (AC2/AC3/AC4) ──────────────────────────────────────
+// ── Durable wrapper spawn ─────────────────────────────────────────────────────
 
 export type DurableSpawnOptions = {
   provider: string;
@@ -425,8 +431,8 @@ const DURABLE_POLL_TIMEOUT_MS = 5_000;
 
 /**
  * Inline Node.js script executed as a detached wrapper child.
- * Opens file-backed stdout/stderr (AC4), writes runtime.json after spawn (AC2),
- * and writes exit.json after CLI exit and output flush (AC3).
+ * Opens file-backed stdout/stderr, writes runtime.json after spawn,
+ * and writes exit.json after CLI exit and output flush.
  *
  * Arguments: jobDir, command, argsJson, envJson, cwd, prompt
  */
@@ -455,7 +461,7 @@ const child = spawn(command, args, {
   shell: process.platform === 'win32',
 });
 
-// AC2: write runtime.json atomically after spawn succeeds
+// Write runtime.json atomically after spawn succeeds
 const runtimeRecord = {
   pid: child.pid,
   stdoutPath,
@@ -471,7 +477,7 @@ renameSync(tmpPath, finalPath);
 if (prompt) child.stdin.write(prompt);
 child.stdin.end();
 
-// AC3: write exit.json atomically after CLI exit and output flush
+// Write exit.json atomically after CLI exit and output flush
 child.on('close', (code, signal) => {
   try { closeSync(stdoutFd); } catch {}
   try { closeSync(stderrFd); } catch {}
@@ -511,7 +517,7 @@ child.on('error', (err) => {
  * Spawn a durable wrapper child that survives backend exit.
  *
  * The wrapper opens file-backed stdout/stderr, spawns the actual CLI,
- * writes runtime.json (AC2), and writes exit.json after CLI exit (AC3).
+ * writes runtime.json, and writes exit.json after CLI exit.
  * The parent polls for runtime.json to confirm spawn success.
  */
 export async function spawnDurableWrapper(options: DurableSpawnOptions): Promise<DurableSpawnResult> {

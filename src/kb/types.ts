@@ -143,7 +143,9 @@ export type KbMemoDeleteResult = {
   count: number;
 };
 
-export type KbMemoPurgeInput = Record<string, never>;
+export type KbMemoPurgeInput = {
+  owner?: string;
+};
 
 export type KbMemoPurgeResult = {
   deleted: number;

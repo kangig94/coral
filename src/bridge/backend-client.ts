@@ -181,7 +181,11 @@ export async function* streamWait(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), fetchTimeoutMs);
   const onExternalAbort = () => controller.abort();
-  signal?.addEventListener('abort', onExternalAbort);
+  if (signal?.aborted) {
+    controller.abort();
+  } else {
+    signal?.addEventListener('abort', onExternalAbort);
+  }
 
   try {
     const response = await fetch(`http://${backendInfo.host}:${backendInfo.port}/wait/stream`, {

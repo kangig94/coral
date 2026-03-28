@@ -45,6 +45,13 @@ export class TypedEventBus {
     this.emitter.removeAllListeners();
     return this;
   }
+
+  /** Remove all listeners and reset max listener count. For test isolation. */
+  reset(): this {
+    this.emitter.removeAllListeners();
+    this.emitter.setMaxListeners(100);
+    return this;
+  }
 }
 
 /** Singleton event bus for execution-layer state changes. */

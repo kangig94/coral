@@ -69,6 +69,7 @@ import {
   cleanupStaleJobs,
   markJobsAsError,
   createLifecycle,
+  StartupInterruptedError,
   type LifecycleDeps,
 } from './lifecycle.js';
 
@@ -359,7 +360,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
 
   // -- Drain admission fence -------------------------------------------------
   // Flipped immediately by /admin/shutdown BEFORE lifecycle transitions to
-  // 'draining'. This closes the pre-existing race window (AC4 behavior fix).
+  // 'draining'. This closes the pre-existing race window.
   let drainRequested = false;
 
   // -- HTTP handler wiring ---------------------------------------------------
@@ -492,6 +493,9 @@ async function main(): Promise<void> {
     if (error instanceof BackendAlreadyRunningError) {
       process.stderr.write(`${error.message}\n`);
       process.exit(0);
+      return;
+    }
+    if (error instanceof StartupInterruptedError) {
       return;
     }
 
