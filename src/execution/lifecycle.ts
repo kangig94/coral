@@ -511,6 +511,12 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     // Sort queued jobs by enqueue sequence for FIFO ordering
     queuedJobs.sort((a, b) => a.launchRecord.enqueueSequence - b.launchRecord.enqueueSequence);
 
+    // Seed counter from max recovered value to prevent ordering collision with new jobs
+    const allRecoverableSeqs = [...queuedJobs, ...runningJobs].map((j) => j.launchRecord.enqueueSequence);
+    if (allRecoverableSeqs.length > 0) {
+      progressStore.seedEnqueueSequence(Math.max(...allRecoverableSeqs));
+    }
+
     // Adopt running jobs first — restore their active permits before fence lifts
     for (const { jobId, launchRecord, runtimeRecord } of runningJobs) {
       try {

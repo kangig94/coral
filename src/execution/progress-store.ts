@@ -371,6 +371,11 @@ export class ProgressStore {
     return ++enqueueSequence;
   }
 
+  /** Seed the enqueue counter from recovered jobs to prevent ordering collision. */
+  seedEnqueueSequence(maxRecovered: number): void {
+    if (maxRecovered > enqueueSequence) enqueueSequence = maxRecovered;
+  }
+
   /** Write launch.json before queue admission. */
   writeLaunchRecord(jobId: string, record: PersistedLaunchRecord): void {
     mkdirSync(this.jobDir(jobId), { recursive: true });

@@ -204,10 +204,10 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
   }
 
   let replacedInstanceId: string | null = null;
-  let shutdownRequestedFor: string | null = null;
+  const shutdownRequestedFor = new Set<string>();
   if (existingHealthy) {
     replacedInstanceId = existingHealthy.instanceId;
-    shutdownRequestedFor = existingHealthy.instanceId;
+    shutdownRequestedFor.add(existingHealthy.instanceId);
     await requestBackendShutdown(existingHealthy);
   }
 
@@ -223,8 +223,8 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
         return summarizeBackend(healthy);
       }
 
-      if (healthy.bundleHash !== expectedHash && shutdownRequestedFor !== healthy.instanceId) {
-        shutdownRequestedFor = healthy.instanceId;
+      if (healthy.bundleHash !== expectedHash && !shutdownRequestedFor.has(healthy.instanceId)) {
+        shutdownRequestedFor.add(healthy.instanceId);
         await requestBackendShutdown(healthy);
       }
     }
