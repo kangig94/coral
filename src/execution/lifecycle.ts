@@ -41,6 +41,7 @@ import {
   ExecutionService as DefaultExecutionService,
 } from './service.js';
 import {
+  belongsToNamespace,
   isLivePhase,
   isTerminalPhase,
   readBackendNamespace,
@@ -704,6 +705,9 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       const runningRecoverable: Array<{ jobId: string; launchRecord: PersistedLaunchRecord; runtimeRecord: PersistedRuntimeRecord }> = [];
 
       for (const jobId of progressStore.listJobIds()) {
+        const preStatus = progressStore.readStatus(jobId);
+        if (preStatus && !belongsToNamespace(preStatus, namespace)) continue;
+
         const classification = classifyRecoverableJob(progressStore, jobId);
         if (classification === 'incompatible') {
           const status = progressStore.readStatus(jobId);
