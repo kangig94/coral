@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { request as httpRequest, type IncomingMessage as ClientIncomingMessage } from 'node:http';
 
 import { makeEvent } from '../../discuss/events.js';
-import type { DiscussDetailResponse, DiscussSummaryDto } from '../../client/discuss.js';
+import type { DiscussDetailResponse, DiscussSummaryDto } from '../../discuss/views.js';
 import * as discussLoop from '../discuss/loop.js';
 import {
   createDiscussContextRegistry,
@@ -137,7 +137,7 @@ describe('server discuss API', () => {
       createExecutionService: () => service as never,
       createKbSubsystemFn: async () => ({
         kb: {} as never,
-        curateScheduler: { start: async () => {}, schedule: () => {}, isRunning: () => false },
+        curateScheduler: { start: async () => {}, schedule: () => {}, isRunning: () => false, stop: async () => {} },
       }),
     });
     const started = await controller.start();

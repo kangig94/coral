@@ -28,7 +28,7 @@ import {
   discussSummaryIndexPathForSource,
   discussStatePath,
 } from '../../infra/paths.js';
-import { type DiscussSummaryDto } from '../../client/discuss.js';
+import { type DiscussSummaryDto } from '../../discuss/views.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../../discuss/events.js';
 import {
   makeEmptySnapshot,

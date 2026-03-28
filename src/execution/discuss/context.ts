@@ -1,7 +1,10 @@
 import type { PersistedDiscussAgentRun, PersistedDiscussSnapshot } from '../../discuss/events.js';
 import type { Result } from '../../discuss/types.js';
+import type { WatchEvent } from '../../discuss/watch.js';
 import type { DiscussSessionStore } from './session-store.js';
 import type { ExecutionService } from '../service.js';
+
+export type { WatchEvent, WatchState } from '../../discuss/watch.js';
 
 export const ABORT_REASON = 'abort';
 
@@ -17,27 +20,11 @@ export type DiscussConfig = {
   min_bid_delay_ms?: number;
 };
 
-export type WatchEvent = {
-  type: 'bid_resolved' | 'speech_done' | 'epoch_transition' | 'session_ended';
-  data: Record<string, unknown>;
-  ts: number;
-};
-
 export type WatchSubscriber = (event: WatchEvent) => void;
 
 export type WatchBuffer = {
   baseCursor: number;
   events: WatchEvent[];
-};
-
-export type WatchState = {
-  session: string;
-  status: string;
-  topic: string;
-  epoch: number;
-  step: number;
-  events: WatchEvent[];
-  cursor: number;
 };
 
 export type LiveDiscussSession = {

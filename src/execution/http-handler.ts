@@ -24,7 +24,7 @@ import type {
 import { belongsToNamespace } from '../shared/types.js';
 import { createReplayCursor } from './progress-store.js';
 import type { ProgressStore } from './progress-store.js';
-import type { DiscussView } from '../client/discuss.js';
+import type { DiscussView } from '../discuss/views.js';
 import type { EventStreamHandlers, HttpHandlerDeps } from './backend-contracts.js';
 
 // ---------------------------------------------------------------------------

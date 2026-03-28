@@ -24,7 +24,7 @@ import type {
   DiscussDetailResponse,
   DiscussSummaryDto,
   DiscussView,
-} from '../client/discuss.js';
+} from '../discuss/views.js';
 import type { LifecycleState } from './server.js';
 
 // ---------------------------------------------------------------------------

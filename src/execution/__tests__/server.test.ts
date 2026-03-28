@@ -275,6 +275,7 @@ describe('execution backend server', () => {
         start: vi.fn(async () => {}),
         schedule: vi.fn(),
         isRunning: () => false,
+        stop: vi.fn(async () => {}),
       },
     };
   }
@@ -393,6 +394,7 @@ describe('execution backend server', () => {
         start: vi.fn(async () => {}),
         schedule: vi.fn(),
         isRunning: () => false,
+        stop: vi.fn(async () => {}),
       },
     }));
 

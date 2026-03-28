@@ -366,7 +366,7 @@ function formatScc(scc: Subsystem[]): string {
 }
 
 describe('discuss architecture guard', () => {
-  it('enforces Batch A discuss runtime boundaries with a TypeScript-aware subsystem graph', () => {
+  it('enforces discuss domain boundary (runtime + type-only) with a TypeScript-aware subsystem graph', () => {
     const productionFilePaths = listProductionSourceFiles(SRC_ROOT);
     const parsedEdges = buildParsedEdges(productionFilePaths);
     const subsystemNodes = new Set<Subsystem>(
@@ -417,15 +417,6 @@ describe('discuss architecture guard', () => {
         : `AC6 informational non-discuss runtime SCCs:\n${nonDiscussRuntimeSccs.map((scc) => `- ${formatScc(scc)}`).join('\n')}`,
     );
 
-    console.info(
-      deferredDiscussDebt.length === 0
-        ? 'AC6 deferred architecture debt: none'
-        : [
-          'AC6 deferred architecture debt outside Batch A runtime enforcement:',
-          ...deferredDiscussDebt.map((edge) => `- ${formatEdge(edge)}`),
-        ].join('\n'),
-    );
-
     const failures: string[] = [];
 
     if (discussRuntimeSccViolations.length > 0) {
@@ -449,9 +440,16 @@ describe('discuss architecture guard', () => {
       ].join('\n'));
     }
 
+    if (deferredDiscussDebt.length > 0) {
+      failures.push([
+        'src/discuss must not type-only-import src/client/* or src/execution/discuss/* (AC6 deferred debt must be zero):',
+        ...deferredDiscussDebt.map((edge) => `- ${formatEdge(edge)}`),
+      ].join('\n'));
+    }
+
     if (failures.length > 0) {
       expect.fail([
-        'Batch A discuss runtime boundary violations:',
+        'Discuss architecture boundary violations:',
         ...failures,
       ].join('\n\n'));
     }
