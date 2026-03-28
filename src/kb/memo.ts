@@ -174,11 +174,21 @@ export function deleteMemos(projectRoot: string, input: KbMemoDeleteInput): KbMe
   return { deleted, count: deleted.length };
 }
 
-export function purgeMemos(projectRoot: string): KbMemoPurgeResult {
+export function purgeMemos(projectRoot: string, owner?: string): KbMemoPurgeResult {
   const dir = memoDir(projectRoot);
   const deleted = readMemoDir(projectRoot)
     .filter((filename) => filename.endsWith('.md'))
     .filter((filename) => { try { return statSync(join(dir, filename)).isFile(); } catch { return false; } })
+    .filter((filename) => {
+      if (owner === undefined) return true;
+      try {
+        const raw = readFileSync(join(dir, filename), 'utf-8');
+        const parsed = parseMemoFrontmatter(raw);
+        return parsed.owner === owner;
+      } catch {
+        return false;
+      }
+    })
     .sort(compareLocale);
 
   for (const filename of deleted) {

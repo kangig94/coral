@@ -176,7 +176,7 @@ export async function handleKbToolCall(
         break;
       }
       case 'kb_memo_purge':
-        result = purgeMemos(ctx.projectRoot);
+        result = purgeMemos(ctx.projectRoot, optionalString(args, 'owner'));
         break;
       default:
         return { statusCode: 404, body: { error: 'unknown_tool', name: request.name } };
