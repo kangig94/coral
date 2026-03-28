@@ -61,11 +61,13 @@ function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest 
 
 function makeRuntime() {
   const controller = new AbortController();
+  const runCli = vi.fn();
   return {
-    signal: controller.signal,
+    runCli,
     runtime: {
       signal: controller.signal,
       onEvent: () => {},
+      runCli,
     },
   };
 }
@@ -152,7 +154,7 @@ describe('codex provider adapter', () => {
   });
 
   it('exec calls executeOneShot with instruction-prefixed prompt', async () => {
-    const { runtime, signal } = makeRuntime();
+    const { runtime, runCli } = makeRuntime();
 
     await codexProvider.execute(makeRequest({
       instruction: { channel: 'prompt', content: 'Follow the repo rules' },
@@ -171,13 +173,13 @@ describe('codex provider adapter', () => {
         effort: 'high',
         bypassSandbox: true,
         onEvent: expect.any(Function),
-        signal,
+        runCli,
       }),
     );
   });
 
   it('exec passes prompt through unchanged when no instruction or systemPrompt is set', async () => {
-    const { runtime } = makeRuntime();
+    const { runtime, runCli } = makeRuntime();
 
     await codexProvider.execute(makeRequest({ prompt: 'Only the user prompt' }), runtime);
 
@@ -189,13 +191,13 @@ describe('codex provider adapter', () => {
         effort: undefined,
         bypassSandbox: false,
         onEvent: expect.any(Function),
-        signal: runtime.signal,
+        runCli,
       }),
     );
   });
 
   it('resume calls executeResume with conversationRef', async () => {
-    const { runtime, signal } = makeRuntime();
+    const { runtime, runCli } = makeRuntime();
 
     await codexProvider.execute(makeRequest({
       action: 'resume',
@@ -212,13 +214,13 @@ describe('codex provider adapter', () => {
         effort: undefined,
         bypassSandbox: false,
         onEvent: expect.any(Function),
-        signal,
+        runCli,
       }),
     );
   });
 
   it('fork calls executeFork with conversationRef', async () => {
-    const { runtime, signal } = makeRuntime();
+    const { runtime, runCli } = makeRuntime();
 
     await codexProvider.execute(makeRequest({
       action: 'fork',
@@ -235,7 +237,7 @@ describe('codex provider adapter', () => {
         effort: undefined,
         bypassSandbox: false,
         onEvent: expect.any(Function),
-        signal,
+        runCli,
       }),
     );
   });
@@ -324,7 +326,7 @@ describe('claude provider adapter', () => {
   });
 
   it('exec combines system-channel instruction with systemPrompt', async () => {
-    const { runtime, signal } = makeRuntime();
+    const { runtime, runCli } = makeRuntime();
 
     await claudeProvider.execute(makeRequest({
       instruction: { channel: 'system', content: 'You are the architect agent' },
@@ -342,13 +344,13 @@ describe('claude provider adapter', () => {
       effort: 'medium',
       bypassPermissions: true,
       environment: {},
-      signal,
+      runCli,
       onEvent: expect.any(Function),
     });
   });
 
   it('exec prepends prompt-channel instruction and keeps systemPrompt separate', async () => {
-    const { runtime, signal } = makeRuntime();
+    const { runtime, runCli } = makeRuntime();
 
     await claudeProvider.execute(makeRequest({
       instruction: { channel: 'prompt', content: 'First follow this instruction' },
@@ -365,14 +367,14 @@ describe('claude provider adapter', () => {
         effort: undefined,
         bypassPermissions: false,
         environment: {},
-        signal,
+        runCli,
         onEvent: expect.any(Function),
       },
     );
   });
 
   it('exec passes systemPrompt through unchanged when no instruction is set', async () => {
-    const { runtime, signal } = makeRuntime();
+    const { runtime, runCli } = makeRuntime();
 
     await claudeProvider.execute(makeRequest({
       systemPrompt: 'Just the system prompt',
@@ -385,13 +387,13 @@ describe('claude provider adapter', () => {
       effort: undefined,
       bypassPermissions: false,
       environment: {},
-      signal,
+      runCli,
       onEvent: expect.any(Function),
     });
   });
 
   it('resume calls executeClaudeResume with conversationRef', async () => {
-    const { runtime, signal } = makeRuntime();
+    const { runtime, runCli } = makeRuntime();
 
     await claudeProvider.execute(makeRequest({
       action: 'resume',
@@ -407,7 +409,7 @@ describe('claude provider adapter', () => {
       effort: undefined,
       bypassPermissions: false,
       environment: {},
-      signal,
+      runCli,
       onEvent: expect.any(Function),
     });
   });
@@ -462,7 +464,7 @@ describe('claude provider adapter', () => {
 
 describe('codex adapter: instruction channel mapping', () => {
   it("channel='system' is treated identically to channel='prompt' — content prepended to prompt", async () => {
-    const { runtime, signal } = makeRuntime();
+    const { runtime, runCli } = makeRuntime();
 
     await codexProvider.execute(makeRequest({
       instruction: { channel: 'system', content: 'System-style instruction' },
@@ -477,13 +479,13 @@ describe('codex adapter: instruction channel mapping', () => {
         effort: undefined,
         bypassSandbox: false,
         onEvent: expect.any(Function),
-        signal,
+        runCli,
       }),
     );
   });
 
   it("channel='system' with systemPrompt also prepends systemPrompt before base prompt", async () => {
-    const { runtime, signal } = makeRuntime();
+    const { runtime, runCli } = makeRuntime();
 
     await codexProvider.execute(makeRequest({
       instruction: { channel: 'system', content: 'Agent rules' },
@@ -499,7 +501,7 @@ describe('codex adapter: instruction channel mapping', () => {
         effort: undefined,
         bypassSandbox: false,
         onEvent: expect.any(Function),
-        signal,
+        runCli,
       }),
     );
   });
@@ -562,7 +564,7 @@ describe('codex adapter: missing conversationRef guard', () => {
 
 describe('codex adapter: effort values', () => {
   it("passes 'max' effort through to executeOneShot", async () => {
-    const { runtime, signal } = makeRuntime();
+    const { runtime, runCli } = makeRuntime();
 
     await codexProvider.execute(makeRequest({ effort: 'max' }), runtime);
 
@@ -574,7 +576,7 @@ describe('codex adapter: effort values', () => {
         effort: 'max',
         bypassSandbox: false,
         onEvent: expect.any(Function),
-        signal,
+        runCli,
       }),
     );
   });
@@ -649,7 +651,7 @@ describe('claude adapter: ClaudeExecParseError handling', () => {
 
 describe('claude adapter: systemPrompt edge cases', () => {
   it('with no instruction and no systemPrompt still includes output-style override', async () => {
-    const { runtime, signal } = makeRuntime();
+    const { runtime, runCli } = makeRuntime();
 
     await claudeProvider.execute(makeRequest({ prompt: 'bare prompt' }), runtime);
 
@@ -660,13 +662,13 @@ describe('claude adapter: systemPrompt edge cases', () => {
       effort: undefined,
       bypassPermissions: false,
       environment: {},
-      signal,
+      runCli,
       onEvent: expect.any(Function),
     });
   });
 
   it('prompt-channel instruction without systemPrompt still includes output-style override', async () => {
-    const { runtime, signal } = makeRuntime();
+    const { runtime, runCli } = makeRuntime();
 
     await claudeProvider.execute(makeRequest({
       instruction: { channel: 'prompt', content: 'Prepend me' },
@@ -676,7 +678,7 @@ describe('claude adapter: systemPrompt edge cases', () => {
       'Prepend me\n\n---\n\nRun checks',
       expect.objectContaining({
         systemPrompt: OUTPUT_STYLE_OVERRIDE,
-        signal,
+        runCli,
       }),
     );
   });

@@ -1,5 +1,6 @@
 import type { ProviderProgressEvent, ProviderRequest, ProviderResult } from '../shared/types.js';
 import { nowIsoString } from '../shared/mcp-utils.js';
+import type { ProviderCliRunner } from './runner-port.js';
 
 /** Recovery metadata persisted at launch time by the provider. */
 export interface ProviderRecoveryMeta {
@@ -64,6 +65,7 @@ export function makeOnEvent<TEvent>(
 export interface ProviderRuntime {
   signal: AbortSignal;
   onEvent: (event: ProviderProgressEvent) => void;
+  runCli: ProviderCliRunner;
 }
 
 export interface Provider {

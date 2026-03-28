@@ -7,11 +7,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { CodexExecResult } from './types.js';
-import { spawnCli, killAllChildren as killAllRunnerChildren } from '../../execution/engine.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 import { parseCodexJsonl } from './output-parser.js';
 import type { CliInfo } from '../cli-detection.js';
 import { resolveInjectMd } from '../inject.js';
+import type { ProviderCliRunner } from '../runner-port.js';
 
 export interface CodexExecOptions {
   model?: string;
@@ -19,7 +19,7 @@ export interface CodexExecOptions {
   effort?: EffortLevel;
   bypassSandbox?: boolean;
   onEvent?: (line: string) => void;
-  signal?: AbortSignal;
+  runCli: ProviderCliRunner;
   preChecked: CliInfo & { available: true };
   environment: Record<string, string>;
 }
@@ -44,8 +44,6 @@ function resolveCodexDefaultEffort(env: Record<string, string>): string {
 function getDefaultModel(env: Record<string, string>): string {
   return env.CORAL_CODEX_MODEL ?? 'gpt-5.4';
 }
-
-export { killAllRunnerChildren as killAllChildren };
 
 /**
  * Shared execution pipeline: detect CLI, spawn, parse JSONL output.
@@ -97,15 +95,13 @@ async function executeCodex(
   if (cli.authState === 'unauthenticated') throw new Error(cli.authError);
 
   const start = Date.now();
-  const { stdout, stderr, code, aborted } = await spawnCli({
-    provider: 'codex',
+  const { stdout, stderr, code, aborted } = await opts.runCli({
     command: 'codex',
     args,
     prompt,
     cwd: opts.workingDirectory,
     extraEnv: opts.environment,
     onEvent: opts.onEvent,
-    signal: opts.signal,
   });
 
   if (code !== 0 && !stdout.trim() && !aborted) {

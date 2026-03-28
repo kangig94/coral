@@ -18,6 +18,7 @@ import {
   type WorkflowResultMeta,
 } from '../shared/types.js';
 import { resolveCoralContent, stripAgentMetadata, parseAgentMeta } from './resolver.js';
+import type { ProviderCliRunner } from '../providers/runner-port.js';
 import { getNewProvider } from '../providers/registry.js';
 import { errorMessage } from '../shared/mcp-utils.js';
 import type { EffortLevel } from '../shared/schemas.js';
@@ -41,6 +42,7 @@ import {
   releaseLaunch,
   restoreActiveLaunch,
   restoreQueuedLaunch,
+  spawnCli,
   type AdmissionResult,
   type LaunchPool,
   type QueuedHandle,
@@ -118,6 +120,26 @@ const QUEUED_ABORT_MESSAGE = 'Aborted while queued.';
 const defaultPluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : process.cwd();
 
 type AcceptedAdmission = Exclude<AdmissionResult, 'queue_full'>;
+
+function bindProviderRunner(
+  provider: string,
+  signal: AbortSignal,
+  pool: LaunchPool,
+): ProviderCliRunner {
+  return (request) =>
+    spawnCli({
+      provider,
+      signal,
+      permitGranted: true,
+      pool,
+      command: request.command,
+      args: request.args,
+      prompt: request.prompt,
+      cwd: request.cwd,
+      extraEnv: request.extraEnv,
+      onEvent: request.onEvent,
+    });
+}
 type ClaimJobOptions = {
   expectedVersion?: number;
   initialPhase?: Extract<JobPhase, 'queued' | 'launching'>;
@@ -904,7 +926,11 @@ export class ExecutionService {
         }
 
         bindLaunchPermit(jobId, signal, pool);
-        const runtime: ProviderRuntime = { signal, onEvent };
+        const runtime: ProviderRuntime = {
+          signal,
+          onEvent,
+          runCli: bindProviderRunner(provider.name, signal, pool),
+        };
         const result = await provider.execute(request, runtime);
 
         if (canAdvanceLaunchState(this.progressStore.readStatus(jobId))) {
@@ -1008,7 +1034,11 @@ export class ExecutionService {
           coralEnv: launchRecord.request.coralEnv,
         };
 
-        const runtime: ProviderRuntime = { signal, onEvent };
+        const runtime: ProviderRuntime = {
+          signal,
+          onEvent,
+          runCli: bindProviderRunner(provider.name, signal, pool),
+        };
         const result = await provider.execute(request, runtime);
 
         if (canAdvanceLaunchState(this.progressStore.readStatus(jobId))) {

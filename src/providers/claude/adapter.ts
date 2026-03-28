@@ -135,8 +135,8 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
     systemPrompt,
     effort,
     bypassPermissions: request.bypassPermissions,
-    signal: runtime.signal,
     onEvent: makeOnEvent(runtime, request.sessionId, extractClaudeProgressMessage, request.cwd),
+    runCli: runtime.runCli,
     environment: request.coralEnv,
   };
 

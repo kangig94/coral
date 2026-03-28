@@ -2,9 +2,6 @@
  * Shared type definitions for the Coral plugin.
  */
 
-export type { CodexExecResult, CodexThreadEvent, CodexThreadItem, CodexThreadItemDetails } from '../providers/codex/types.js';
-export type { ClaudeExecResult, ClaudeJsonOutput, ClaudeExecFailure } from '../providers/claude/types.js';
-
 // ── Execution Service contract types ─────────────────────────────────────────
 
 /** Opaque identifier for a single job attempt. Used for wait/abort. */

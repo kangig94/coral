@@ -3,11 +3,6 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Mock dependencies to isolate the adapter under test
-vi.mock('../../../execution/engine.js', () => ({
-  spawnCli: vi.fn(),
-}));
-
 vi.mock('../../cli-detection.js', () => ({
   detectClaudeCli: vi.fn(async () => ({
     available: true,

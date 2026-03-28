@@ -279,7 +279,7 @@ export function getToolDescriptors(): Array<Record<string, unknown>> {
           expression: { type: 'string', description: 'Pipeline DSL expression' },
           init_prompt: { type: 'string', description: 'Initial prompt fed to the first step' },
           context: { type: 'string', description: 'Shared context prepended to every atom prompt in every step' },
-          provider: { type: 'string', description: 'Default provider for atoms (claude or codex)' },
+          provider: { type: 'string', description: 'Default provider for atoms (any registered provider)' },
           work_dir: { type: 'string', description: 'Working directory for spawned atoms' },
           owner: { type: 'string', description: 'Session owner ID for memo isolation' },
         },

@@ -71,8 +71,14 @@ import {
   parseInputJson,
   type JsonObject,
 } from './parse.js';
+import { registerBuiltInProviders } from '../providers/bootstrap.js';
+import { getAllNewProviders } from '../providers/registry.js';
 
-const providerNames: readonly string[] = ['codex', 'claude'];
+/** Return registered provider names. Built-ins are registered on first call. */
+function getProviderNames(): string[] {
+  registerBuiltInProviders();
+  return getAllNewProviders().map((p) => p.name);
+}
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : (process.env.CLAUDE_PLUGIN_ROOT ?? '');
 
 type ProviderExecOptions = {
@@ -439,7 +445,7 @@ export function normalizeProviderArgv(argv: readonly string[]): string[] {
 
   const [nodePath, scriptPath, provider, dispatchToken] = argv;
 
-  if (!providerNames.includes(provider)) {
+  if (!getProviderNames().includes(provider)) {
     return argv.slice();
   }
 
@@ -452,7 +458,7 @@ export function normalizeProviderArgv(argv: readonly string[]): string[] {
 }
 
 function registerProviderCommands(program: Command): void {
-  for (const providerName of providerNames) {
+  for (const providerName of getProviderNames()) {
     const provider = program
       .command(providerName)
       .description(`${providerName} provider operations`);
@@ -552,7 +558,7 @@ export function buildProgram(): Command {
   program
     .name('coral-cli')
     .version(typeof __VERSION__ === 'string' ? __VERSION__ : '0.0.0')
-    .description('Coral CLI — invoke Codex/Claude providers, monitor jobs, and manage discuss sessions');
+    .description('Coral CLI — invoke providers, monitor jobs, and manage discuss sessions');
   program.addOption(
     new Option('--output-format <format>', 'Output format')
       .choices(['text', 'json'])
@@ -646,7 +652,7 @@ export function buildProgram(): Command {
     .option('--expression <expr>', 'Pipeline DSL expression')
     .option('--init-prompt <text>', 'Initial prompt')
     .option('--context <text>', 'Shared context')
-    .option('--provider <name>', 'Provider (claude or codex)')
+    .option('--provider <name>', 'Provider name (registered provider)')
     .option('--work-dir <path>', 'Working directory')
     .option('--stale-timeout-seconds <seconds>', 'Stale job timeout')
     .option('--input-json <source>', 'JSON payload from stdin (use -)')
