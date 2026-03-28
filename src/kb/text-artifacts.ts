@@ -31,16 +31,20 @@ function loadNotes(kb: KbRuntime): KbReindexNoteRecord[] {
   const notes: KbReindexNoteRecord[] = [];
 
   for (const entry of sortedMarkdownEntries(notesPath)) {
-    const { frontmatter, title, body } = loadKbNote(join(notesPath, entry));
-    const identity = deriveNoteIdentity(entry);
-    notes.push({
-      note: identity.note,
-      path: `notes/${entry}`,
-      domain: identity.domain,
-      title,
-      body,
-      ...frontmatter,
-    });
+    try {
+      const { frontmatter, title, body } = loadKbNote(join(notesPath, entry));
+      const identity = deriveNoteIdentity(entry);
+      notes.push({
+        note: identity.note,
+        path: `notes/${entry}`,
+        domain: identity.domain,
+        title,
+        body,
+        ...frontmatter,
+      });
+    } catch (error: unknown) {
+      process.stderr.write(`Warning: Skipping malformed KB note ${entry}: ${errorMessage(error)}\n`);
+    }
   }
 
   return notes;
@@ -51,9 +55,13 @@ function loadPrinciples(kb: KbRuntime): Array<[string, string]> {
   const principles: Array<[string, string]> = [];
 
   for (const entry of sortedMarkdownEntries(principlesPath)) {
-    const name = entry.slice(0, -3);
-    const content = readFileSync(join(principlesPath, entry), 'utf-8');
-    principles.push([name, extractPrincipleStatement(content)]);
+    try {
+      const name = entry.slice(0, -3);
+      const content = readFileSync(join(principlesPath, entry), 'utf-8');
+      principles.push([name, extractPrincipleStatement(content)]);
+    } catch (error: unknown) {
+      process.stderr.write(`Warning: Skipping malformed KB principle ${entry}: ${errorMessage(error)}\n`);
+    }
   }
 
   return principles;

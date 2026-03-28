@@ -421,7 +421,14 @@ export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promis
 
     const nextIndex = cloneKbIndex(currentIndex);
     const indexState = kb.readIndexState();
-    const scannedNotes = noteNames.map((note) => scanNote(kb, note));
+    const scannedNotes: ScannedNote[] = [];
+    for (const note of noteNames) {
+      try {
+        scannedNotes.push(scanNote(kb, note));
+      } catch (error: unknown) {
+        process.stderr.write(`Warning: Skipping malformed KB note ${note} during migration: ${errorMessage(error)}\n`);
+      }
+    }
     let highestExistingMutationSeq = 0;
     for (const scannedNote of scannedNotes) {
       if (scannedNote.frontmatter.mutationSeqAtPromote !== undefined) {
