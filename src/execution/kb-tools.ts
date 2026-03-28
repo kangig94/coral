@@ -163,13 +163,16 @@ export async function handleKbToolCall(
         result = writeMemo(ctx.projectRoot, { topic, content, owner: normalizedOwner });
         break;
       }
-      case 'kb_memo_list':
-        result = listMemos(ctx.projectRoot);
+      case 'kb_memo_list': {
+        const ownerFilter = optionalString(args, 'owner');
+        result = listMemos(ctx.projectRoot, ownerFilter);
         break;
+      }
       case 'kb_memo_delete': {
         const pattern = requireString(args, 'pattern');
         if (pattern === null) return toolError('invalid_request', { message: 'pattern is required' });
-        result = deleteMemos(ctx.projectRoot, { pattern });
+        const deleteOwner = optionalString(args, 'owner');
+        result = deleteMemos(ctx.projectRoot, { pattern, owner: deleteOwner });
         break;
       }
       case 'kb_memo_purge':

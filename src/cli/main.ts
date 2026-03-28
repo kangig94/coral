@@ -944,12 +944,13 @@ export function buildProgram(): Command {
   const kbMemoListCommand = kbMemoCommand.command('list');
   kbMemoListCommand
     .description('List project memos')
-    .action(async () => {
+    .option('--owner <id>', 'Filter by owner session ID')
+    .action(async (opts: { owner?: string }) => {
       const outputFormat = getOutputFormat(kbMemoListCommand);
 
       try {
         const client = makeClient(process.cwd());
-        const result = await client.kbMemoList({});
+        const result = await client.kbMemoList({ owner: opts.owner });
         emit(result, outputFormat, formatKbMemoList);
       } catch (error) {
         emitError(error, outputFormat);
@@ -960,12 +961,13 @@ export function buildProgram(): Command {
   kbMemoDeleteCommand
     .description('Delete project memos by simple glob pattern')
     .argument('<pattern>', 'Simple glob pattern (supports * and ?)')
-    .action(async (pattern: string) => {
+    .option('--owner <id>', 'Only delete memos owned by this session ID')
+    .action(async (pattern: string, opts: { owner?: string }) => {
       const outputFormat = getOutputFormat(kbMemoDeleteCommand);
 
       try {
         const client = makeClient(process.cwd());
-        const result = await client.kbMemoDelete({ pattern });
+        const result = await client.kbMemoDelete({ pattern, owner: opts.owner });
         emit(result, outputFormat, formatKbMemoDelete);
       } catch (error) {
         emitError(error, outputFormat);
