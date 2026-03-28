@@ -333,6 +333,8 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
       lastOutputAt = Date.now();
     }
 
+    let abortHandler: (() => void) | null = null;
+
     function finish(): boolean {
       if (settled) return false;
       settled = true;
@@ -342,18 +344,22 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
         releaseLaunch(internalPermitJobId, pool);
         internalPermitJobId = null;
       }
+      if (abortHandler && options.signal) {
+        options.signal.removeEventListener('abort', abortHandler);
+        abortHandler = null;
+      }
       return true;
     }
 
     if (options.signal) {
-      const onAbort = () => {
+      abortHandler = () => {
         if (settled) return;
         abortedBySignal = true;
         clearInterval(idleChecker);
         gracefulKill(child);
       };
-      if (options.signal.aborted) onAbort();
-      else options.signal.addEventListener('abort', onAbort, { once: true });
+      if (options.signal.aborted) abortHandler();
+      else options.signal.addEventListener('abort', abortHandler, { once: true });
     }
 
     let stdout = '';

@@ -199,6 +199,9 @@ export function decideBid(
   if (!name) {
     return { ok: false, error: 'agent_not_found', detail: { agent_name: agentName } };
   }
+  if (state.agents[name]?.banned) {
+    return { ok: false, error: 'agent_banned', detail: { agent_name: name } };
+  }
   if (state.current_bids[name] !== null) {
     return {
       ok: false,
@@ -457,6 +460,9 @@ export function decideExpel(
   seq: number,
   ts: string,
 ): Result<DiscussDomainEvent[]> {
+  if (state.status === 'ended') {
+    return { ok: false, error: 'session_ended', detail: { hint: 'Cannot expel agents from an ended session.' } };
+  }
   const isRespawn = state.epoch === 1 && state.step === 1;
   const hint = isRespawn
     ? `Shutdown and respawn: ${pendingAgents.join(', ')}.`

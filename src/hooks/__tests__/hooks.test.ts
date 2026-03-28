@@ -363,7 +363,10 @@ describe('kb-promote-gate.mjs', () => {
     const fixture = createFixture();
     const memoDir = join(coralProjectDir(fixture.root, `local/${basename(fixture.projectRoot)}`), 'memo');
     mkdirSync(memoDir, { recursive: true });
-    writeFileSync(join(memoDir, '20260321-hooks-note.md'), 'memo', 'utf-8');
+    // Gate threshold is 10 — create enough memos to trigger block
+    for (let i = 0; i < 10; i++) {
+      writeFileSync(join(memoDir, `20260321-hooks-note-${i}.md`), 'memo', 'utf-8');
+    }
 
     runHook(
       KB_PROMOTE_GATE_HOOK,
@@ -392,7 +395,7 @@ describe('kb-promote-gate.mjs', () => {
     expect(output.reason).toContain('memo -> review -> promotion');
     expect(output.reason).not.toContain('.coral/kb/notes/');
     expect(output.reason).not.toContain('write directly');
-    expect(output.reason).toContain('20260321-hooks-note.md');
+    expect(output.reason).toContain('20260321-hooks-note-0.md');
   });
 
   it('keeps compact SessionStart guidance on the memo-review workflow', () => {

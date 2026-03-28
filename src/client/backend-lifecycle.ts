@@ -1,7 +1,7 @@
 declare const __PLUGIN_ROOT__: string;
 declare const __VERSION__: string;
 
-import { mkdirSync, openSync, readFileSync, unlinkSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -153,11 +153,16 @@ function spawnBackend(backendBin: string): void {
   } catch {
     // fail-open: spawn without log if dir creation fails
   }
-  const child = spawn(process.execPath, [backendBin], {
-    detached: true,
-    stdio: ['ignore', 'ignore', stderr],
-  });
-  child.unref();
+  try {
+    const child = spawn(process.execPath, [backendBin], {
+      detached: true,
+      stdio: ['ignore', 'ignore', stderr],
+    });
+    child.unref();
+  } finally {
+    // Close fd in parent — child inherits its own copy via spawn
+    if (typeof stderr === 'number') closeSync(stderr);
+  }
 }
 
 async function waitForReplacementBackend(

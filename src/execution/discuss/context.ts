@@ -87,9 +87,20 @@ export function getSubscriberCursorMap(session: LiveDiscussSession): Map<WatchSu
   return created;
 }
 
+const WATCH_BUFFER_CAP = 500;
+
 export function compactLiveWatchBuffer(session: LiveDiscussSession): void {
   const subscriberCursorMap = getSubscriberCursorMap(session);
+
   if (subscriberCursorMap.size === 0) {
+    // No subscribers — trim to cap so buffer doesn't grow unbounded
+    if (session.watchBuffer.events.length > WATCH_BUFFER_CAP) {
+      const excess = session.watchBuffer.events.length - WATCH_BUFFER_CAP;
+      session.watchBuffer = {
+        baseCursor: session.watchBuffer.baseCursor + excess,
+        events: session.watchBuffer.events.slice(excess),
+      };
+    }
     return;
   }
 

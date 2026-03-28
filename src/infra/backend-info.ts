@@ -20,13 +20,11 @@ export type BackendInfo = {
 function isBackendInfo(value: unknown): value is BackendInfo {
   if (!value || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
-  if (record.host === undefined) record.host = '127.0.0.1';
   return Number.isInteger(record.pid)
     && (record.pid as number) > 0
     && Number.isInteger(record.port)
     && (record.port as number) > 0
-    && typeof record.host === 'string'
-    && record.host.length > 0
+    && (record.host === undefined || (typeof record.host === 'string' && record.host.length > 0))
     && typeof record.token === 'string'
     && record.token.length > 0
     && typeof record.version === 'string'
@@ -49,11 +47,11 @@ export function writeBackendInfo(pluginRoot: string, info: BackendInfo): void {
   const payload = JSON.stringify(info);
   try {
     writeFileSync(tmpPath, payload, { encoding: 'utf-8', mode: 0o600 });
-    renameSync(tmpPath, infoPath);
   } catch (error: unknown) {
-    if (isNoEntryError(error)) return;
+    if (isNoEntryError(error)) return; // parent dir removed — not fatal
     throw error;
   }
+  renameSync(tmpPath, infoPath);
 
   if (process.platform !== 'win32') {
     try { chmodSync(infoPath, 0o600); } catch { /* best-effort */ }
@@ -64,7 +62,10 @@ export function readBackendInfo(pluginRoot: string): BackendInfo | null {
   try {
     const raw = readFileSync(backendInfoPath(pluginRoot), 'utf-8');
     const parsed: unknown = JSON.parse(raw);
-    return isBackendInfo(parsed) ? parsed : null;
+    if (!isBackendInfo(parsed)) return null;
+    // Default host for legacy backend.json files written before host field was added
+    if (!parsed.host) (parsed as Record<string, unknown>).host = '127.0.0.1';
+    return parsed;
   } catch (error: unknown) {
     if (isNoEntryError(error) || error instanceof SyntaxError) return null;
     throw error;

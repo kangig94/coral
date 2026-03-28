@@ -477,6 +477,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
   let started = false;
   let sessionIndexSubscribed = false;
   let recoveryRegistry: RecoveryRegistry | null = null;
+  let ownershipCheckerInterval: ReturnType<typeof setInterval> | null = null;
   const adoptedRunningPids = new Map<string, { pid: number; pool: string }>();
   const recoveryPollIntervals = new Set<NodeJS.Timeout>();
 
@@ -649,6 +650,10 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
 
       for (const interval of recoveryPollIntervals) clearInterval(interval);
       recoveryPollIntervals.clear();
+      if (ownershipCheckerInterval) {
+        clearInterval(ownershipCheckerInterval);
+        ownershipCheckerInterval = null;
+      }
       await Promise.race([
         runtimeState.getKbSubsystem()?.curateScheduler.stop?.(),
         new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
@@ -827,20 +832,21 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       // Self-terminate if another backend replaces this one (backend-info.json
       // will point to the replacement's instanceId). Covers the case where
       // ensureBackend's shutdown request is lost during rapid rebuild cycles.
-      const ownershipChecker = setInterval(() => {
+      ownershipCheckerInterval = setInterval(() => {
         if (runtimeState.getLifecycle() !== 'running' || idleTimer.isDraining) return;
         try {
           const current = readBackendInfo(pluginRoot);
           // null means backend.json was deleted (replacement) or corrupt — drain either way
           if (current?.instanceId !== instanceId) {
-            clearInterval(ownershipChecker);
+            clearInterval(ownershipCheckerInterval!);
+            ownershipCheckerInterval = null;
             idleTimer.requestDrain('replaced');
           }
         } catch {
           // read failure — skip this check
         }
       }, 30_000);
-      ownershipChecker.unref();
+      ownershipCheckerInterval.unref();
 
       // Async recovery adoption — runs after we're already serving requests
       if (queuedRecoverable.length > 0 || runningRecoverable.length > 0) {
