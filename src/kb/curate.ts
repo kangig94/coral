@@ -1846,6 +1846,7 @@ export function createCurateScheduler({
     }
 
     ensureKbGitignore();
+    await kb.ensureIndex();
     await migrateCurateStateIfNeeded(kb);
     runtimeStarted = true;
     armRetryWake();
