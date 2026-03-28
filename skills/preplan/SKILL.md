@@ -195,10 +195,15 @@ Strip `--codex` flag before passing the prompt to the execution path.
     3. Call `AskUserQuestion`:
 
     ```
-    AskUserQuestion({
-      question: "Preplan document finalized. Proceed to coral:plan?",
-      options: ["Proceed", "Proceed --deep", "Proceed --deep --codex", "Continue discussion"]
-    })
+    AskUserQuestion({ questions: [
+      { question: "Preplan document finalized. Proceed to coral:plan?", header: "Next",
+        options: [
+          { label: "Proceed", description: "Start planning" },
+          { label: "Proceed --deep", description: "Plan with deep review" },
+          { label: "Proceed --codex", description: "Plan with Codex review" },
+          { label: "Continue discussion", description: "Keep refining preplan" }
+        ], multiSelect: false }
+    ]})
     ```
     If "Continue discussion", return to step 4.
     Otherwise: `Skill({ skill: "coral:plan", args: "{topic} [selected flags]" })`
