@@ -338,9 +338,8 @@ const RATE_LIMIT_BASE_MS = 120_000;
 const RATE_LIMIT_MAX_MS = 600_000;
 const API_TIMEOUT_MS = 5_000;
 const LOCK_STALE_MS = 10_000;
-const CORAL_ONLINE_TTL_MS = 5_000;
-const CORAL_OFFLINE_TTL_MS = 2_000;
-const CORAL_HEALTH_TIMEOUT_MS = 200;
+const CORAL_HEALTH_TTL_MS = 5_000;
+const CORAL_HEALTH_TIMEOUT_MS = 800;
 
 // --- session state ---
 
@@ -494,7 +493,7 @@ function readBackendSlot() {
     const raw = readFullCache().backend;
     if (!raw || !Number.isFinite(raw.ts)) return null;
     const age = Date.now() - raw.ts;
-    const ttl = raw.online ? CORAL_ONLINE_TTL_MS : CORAL_OFFLINE_TTL_MS;
+    const ttl = CORAL_HEALTH_TTL_MS;
     if (age > ttl) return null;
     return raw;
   } catch {
@@ -843,7 +842,7 @@ function resolveBackendInfoPath() {
   }
 }
 
-const BACKEND_INFO_PATH = resolveBackendInfoPath();
+// Resolved dynamically on each cache-miss (not cached at module load)
 const REEF_INFO_PATH = join(homedir(), ".claude", "coral", "reef.json");
 
 function readReefInfo() {
@@ -856,14 +855,15 @@ function readReefInfo() {
 }
 
 async function renderCoralLine() {
-  if (!BACKEND_INFO_PATH) return null;
-
   const cached = readBackendSlot();
   if (cached) return cached.line;
 
+  const backendInfoPath = resolveBackendInfoPath();
+  if (!backendInfoPath) return null;
+
   let info;
   try {
-    info = JSON.parse(readFileSync(BACKEND_INFO_PATH, "utf-8"));
+    info = JSON.parse(readFileSync(backendInfoPath, "utf-8"));
     if (!info?.port || !info?.token) return null;
   } catch {
     return null;
