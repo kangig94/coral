@@ -1,4 +1,5 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -976,6 +977,17 @@ export function createCurateScheduler({
     });
   }
 
+  const execFileP = promisify(execFile);
+
+  async function gitAsync(args: string[], timeoutMs = 15000): Promise<string> {
+    const { stdout } = await execFileP('git', ['-C', root, ...args], {
+      encoding: 'utf-8',
+      timeout: timeoutMs,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return stdout;
+  }
+
   function gitCommit(message: string): void {
     try {
       git(['commit', '-m', message], 10000);
@@ -1084,7 +1096,7 @@ export function createCurateScheduler({
     const branch = getDefaultBranch();
 
     try {
-      git(['fetch', 'origin'], 30000);
+      await gitAsync(['fetch', 'origin'], 30000);
 
       // Commit dirty state (e.g. from Obsidian Sync) instead of stashing.
       try {
@@ -1097,7 +1109,7 @@ export function createCurateScheduler({
       }
 
       try {
-        git(['rebase', `origin/${branch}`]);
+        await gitAsync(['rebase', `origin/${branch}`]);
       } catch {
         if (!await resolveConflictsWithClaude()) {
           try { git(['rebase', '--abort'], 5000); } catch { /* no-op */ }
@@ -1108,9 +1120,9 @@ export function createCurateScheduler({
     }
   }
 
-  function gitPush(): void {
+  async function gitPush(): Promise<void> {
     if (!isGitRepo() || !isGitSyncEnabled()) return;
-    try { git(['push', 'origin', getDefaultBranch()], 30000); } catch { /* next cycle */ }
+    try { await gitAsync(['push', 'origin', getDefaultBranch()], 30000); } catch { /* next cycle */ }
   }
 
   function gitAutoCommit(message: string): void {
@@ -1735,7 +1747,7 @@ export function createCurateScheduler({
     let lastCompletedThrough: CurateCursor | null = null;
     const allCohortSlugs: string[] = [];
 
-    while (true) {
+    while (!stopped) {
       const claim = await claimCurateRun(nowIsoString().slice(0, 10));
       if (claim === null) {
         break;
@@ -1758,6 +1770,13 @@ export function createCurateScheduler({
     }
 
     if (lastCompletedThrough === null) {
+      // Consume stale retry state so armRetryWake doesn't re-trigger.
+      // Skip if a live claim exists — clearCurateRetryState also clears activeClaim.
+      await kb.withMutationLock(() => {
+        const state = readCurateState(kb);
+        if (state.activeClaim !== null && !isClaimStale(state, nowIsoString())) return;
+        clearCurateRetryStateLocked(state);
+      });
       return null;
     }
 
@@ -1766,7 +1785,7 @@ export function createCurateScheduler({
     const processedThrough = postClassifyState.processedThrough;
     const postClassifyIndex = kb.readIndexOrEmpty();
 
-    if (processedThrough !== null) {
+    if (!stopped && processedThrough !== null) {
       try {
         await runPrincipleDiscovery(processedThrough);
         gitAutoCommit('curate: discover principles');
@@ -1776,18 +1795,20 @@ export function createCurateScheduler({
     }
 
     // Tag cleanup runs once over all classified notes.
-    const cleanupResult = cleanupTags(postClassifyIndex, allCohortSlugs);
-    const cleanupTargets = buildCleanupTargets(postClassifyIndex, allCohortSlugs, cleanupResult);
-    if (cleanupTargets.length > 0) {
-      try {
-        await commitMetadataTargets(cleanupTargets);
-        gitAutoCommit(`curate: cleanup tags for ${cleanupTargets.length} notes`);
-      } catch (error: unknown) {
-        throw new CurateRunError(lastCompletedThrough, error);
+    if (!stopped) {
+      const cleanupResult = cleanupTags(postClassifyIndex, allCohortSlugs);
+      const cleanupTargets = buildCleanupTargets(postClassifyIndex, allCohortSlugs, cleanupResult);
+      if (cleanupTargets.length > 0) {
+        try {
+          await commitMetadataTargets(cleanupTargets);
+          gitAutoCommit(`curate: cleanup tags for ${cleanupTargets.length} notes`);
+        } catch (error: unknown) {
+          throw new CurateRunError(lastCompletedThrough, error);
+        }
       }
     }
 
-    gitPush();
+    if (!stopped) await gitPush();
     return lastCompletedThrough;
   }
 
@@ -1822,25 +1843,14 @@ export function createCurateScheduler({
         } catch (error: unknown) {
           process.stderr.write(`kb_curate: ${errorMessage(error)}\n`);
         }
-        if (queuedRun) {
-          setTimeout(() => {
-            launchQueuedRun();
-          }, 0);
-          return;
-        }
         if (lastCompletedThrough !== null) {
           try {
             if (await hasPendingNotesBeyondCursor(lastCompletedThrough)) {
-              queuedRun = true;
+              schedule();
             }
           } catch (error: unknown) {
             process.stderr.write(`kb_curate: ${errorMessage(error)}\n`);
           }
-        }
-        if (queuedRun) {
-          setTimeout(() => {
-            launchQueuedRun();
-          }, 0);
         }
       }
     })();
