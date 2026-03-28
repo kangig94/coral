@@ -11,7 +11,7 @@ import {
   type DiscussContextRegistry,
 } from '../discuss/context-registry.js';
 import { getSession } from '../discuss/registry.js';
-import { routeToolCall } from '../server.js';
+import { routeToolCall } from '../tool-router.js';
 import type { CallerContext, ExecutionService } from '../service.js';
 import {
   DEFAULT_TOPIC,

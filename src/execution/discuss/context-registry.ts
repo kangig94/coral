@@ -68,3 +68,16 @@ export function hasRunningSessions(registry: DiscussContextRegistry): boolean {
   }
   return false;
 }
+
+/** Abort all live sessions and clear every context from the registry. */
+export async function clearAll(registry: DiscussContextRegistry): Promise<void> {
+  for (const context of registry.contexts.values()) {
+    for (const session of context.sessions.values()) {
+      if (!session.controller.signal.aborted) {
+        session.controller.abort();
+      }
+    }
+    context.sessions.clear();
+  }
+  registry.contexts.clear();
+}

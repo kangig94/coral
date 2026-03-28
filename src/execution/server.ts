@@ -3,34 +3,16 @@ declare const __VERSION__: string;
 declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 
 import { randomBytes, randomUUID } from 'node:crypto';
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import { readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { z } from 'zod';
 import {
-  assertOwnerId,
   formatError,
-  collectCoralEnv,
-  errorMessage,
   isNoEntryError,
   isRecord,
-  nowIsoString,
   readBundleHash,
-  textResult,
-  type McpResult,
 } from '../shared/mcp-utils.js';
 import { kbRoot, pluginRootNamespace, resolveProjectSource } from '../infra/paths.js';
-import { internalProviderFieldsShape, sharedExecSchema, sharedForkSchema, sharedResumeSchema } from '../shared/schemas.js';
-import {
-  AgentInputSchema,
-  ControversyAxisSchema,
-  DemographicsSchema,
-  discussParticipateBidSchema,
-  discussParticipateSchema,
-  discussParticipateSpeechSchema,
-  discussSeedSchema,
-  discussStartSchema,
-} from '../discuss/schemas.js';
 import type { ExecutionService } from './service.js';
 import { activeChildren, killAllChildren, queueDepth, spawnCli } from './engine.js';
 import { readBackendInfo, writeBackendInfo, removeBackendInfoIfOwner } from '../infra/backend-info.js';
@@ -40,12 +22,11 @@ import { RecoveryRegistry } from './recovery-registry.js';
 
 import { eventBus, type EventBusEvents } from './event-bus.js';
 import { IdleTimer } from './idle-timer.js';
-import { createReplayCursor, ProgressStore } from './progress-store.js';
-import type { CallerContext, ToolRequest } from './request-context.js';
+import { ProgressStore } from './progress-store.js';
+import type { CallerContext } from './request-context.js';
 import { SessionIndex } from './session-index.js';
 import { SessionManager } from './session-manager.js';
 import {
-  DiscussManagerError,
   type DiscussContext,
 } from './discuss/context.js';
 import {
@@ -70,78 +51,39 @@ import {
 import {
   readDiscussSources,
 } from '../client/readers.js';
-import { getAllNewProviders, getNewProvider } from '../providers/registry.js';
+import { getNewProvider } from '../providers/registry.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
-import { seedPersonas } from '../discuss/persona-seed.js';
 import {
   ExecutionService as DefaultExecutionService,
 } from './service.js';
-import { handleWorkflow } from '../workflow/handler.js';
 import {
   belongsToNamespace,
   isLivePhase,
   isTerminalPhase,
   readBackendNamespace,
   type PersistedLaunchRecord,
-  type PersistedProgressRecord,
   type PersistedRuntimeRecord,
   type PersistedStatusRecord,
   type TerminalResult,
-  type WaitCursor,
-  type WaitRequest,
 } from '../shared/types.js';
-import { createCurateScheduler, type CurateHandle } from '../kb/curate.js';
-import { deleteFn as kbDeleteFn } from '../kb/delete.js';
-import { deleteMemos, listMemos, purgeMemos, writeMemo } from '../kb/memo.js';
+import { createCurateScheduler } from '../kb/curate.js';
 import { kbRuntimeDir } from '../kb/paths.js';
-import { promote as kbPromote } from '../kb/promote.js';
-import { readEntry } from '../kb/read.js';
-import { reindex as kbReindex } from '../kb/reindex.js';
-import { createKbRuntime, type KbRuntime } from '../kb/runtime.js';
-import { searchKb } from '../kb/search.js';
-import { update as kbUpdate } from '../kb/update.js';
-import { compareLocale } from '../kb/validation.js';
+import { createKbRuntime } from '../kb/runtime.js';
+import {
+  routeToolCall,
+  getToolDescriptors,
+  type CreateKbSubsystemFn,
+  type ExecutionServiceLike,
+  type KbSubsystem,
+  type RouteToolCallFn,
+  type ScopeCheckResult,
+} from './tool-router.js';
+import { createHttpHandler, sendJson } from './http-handler.js';
+import type { EventStreamHandlers, HttpHandlerDeps } from './backend-contracts.js';
+
+export { routeToolCall, getToolDescriptors };
 
 export type LifecycleState = 'starting' | 'running' | 'draining' | 'stopped';
-
-type ExecutionServiceLike = Pick<
-  ExecutionService,
-  'start' | 'resume' | 'fork' | 'coralDispatch' | 'executeWorkflow' | 'list' | 'abort' | 'waitStream' | 'waitStreamOnce'
->;
-
-type ToolRouteResponse = {
-  statusCode: number;
-  body: unknown;
-};
-
-type ParsedWaitRequest = WaitRequest & { projectRoot: string };
-type ScopeCheckResult = {
-  valid: string[];
-  missing: string[];
-  mismatch: string[];
-};
-
-
-type RouteToolCallFn = (
-  request: ToolRequest,
-  helpers: {
-    getExecutionService: (ctx: CallerContext) => ExecutionServiceLike;
-    getDiscussContext: (ctx: CallerContext) => DiscussContext;
-    abortJobs: (jobIds: string[]) => AbortResult;
-    scopeCheckJobs: (jobIds: string[], projectRoot: string) => ScopeCheckResult;
-  },
-  kbSubsystem: KbSubsystem | null,
-) => Promise<ToolRouteResponse>;
-
-type KbSubsystem = {
-  kb: KbRuntime;
-  curateScheduler: CurateHandle;
-};
-
-type CreateKbSubsystemFn = (options: {
-  pluginRoot: string;
-  spawnCli: typeof spawnCli;
-}) => Promise<KbSubsystem>;
 
 type BackendServerOptions = {
   progressStore?: ProgressStore;
@@ -207,177 +149,12 @@ function shutdownModeFromReason(reason: string): ShutdownMode {
   if (reason === 'replaced' || reason === 'sigterm') return 'handoff';
   return 'hard';
 }
-const CORAL_OP_PREFIX = 'coral:';
 const defaultPluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
 const globalDiscussRegistry = createDiscussContextRegistry();
-const discussSessionSchema = z.object({
-  session: z.string().min(1),
-});
-const discussWatchSchema = z.object({
-  session: z.string().min(1),
-  cursor: z.number().int().min(0).optional(),
-});
 
-function jsonTextResult(data: unknown, isError = false): McpResult {
-  return textResult(JSON.stringify(data), isError);
-}
-
-function toProviderFields(
-  data: { session?: string; prompt?: string; work_dir?: string; model?: string; system_prompt?: string },
-  bypassPermissions: boolean,
-): { sessionId: string; prompt: string; cwd: string | undefined; model: string | undefined; bypassPermissions: boolean; systemPrompt: string | undefined } {
-  return {
-    sessionId: data.session ?? '',
-    prompt: data.prompt ?? '',
-    cwd: data.work_dir,
-    model: data.model,
-    bypassPermissions,
-    systemPrompt: data.system_prompt,
-  };
-}
-
-function toolValidationError(error: z.ZodError): ToolRouteResponse {
-  return {
-    statusCode: 200,
-    body: jsonTextResult({
-      error: 'invalid_request',
-      message: error.message,
-    }, true),
-  };
-}
-
-function toolError(error: string, detail?: Record<string, unknown>): ToolRouteResponse {
-  return {
-    statusCode: 200,
-    body: jsonTextResult({
-      error,
-      ...(detail === undefined ? {} : detail),
-    }, true),
-  };
-}
-
-function toolSuccess(data: unknown): ToolRouteResponse {
-  return {
-    statusCode: 200,
-    body: jsonTextResult(data),
-  };
-}
-
-function sendJson(res: ServerResponse, statusCode: number, body: unknown): void {
-  const payload = JSON.stringify(body);
-  res.statusCode = statusCode;
-  res.setHeader('Content-Type', 'application/json');
-  res.setHeader('Content-Length', Buffer.byteLength(payload));
-  if (statusCode >= 500 || statusCode === 503) {
-    res.setHeader('Connection', 'close');
-  }
-  res.end(payload);
-}
-
-function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on('data', (chunk) => {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    });
-    req.once('error', reject);
-    req.once('end', () => {
-      if (chunks.length === 0) {
-        resolve({});
-        return;
-      }
-      try {
-        resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8')));
-      } catch (error) {
-        reject(error);
-      }
-    });
-  });
-}
-
-function parseToolRequest(body: unknown, resolvedPluginRoot: string): ToolRequest | null {
-  if (!isRecord(body)) return null;
-  if (typeof body.name !== 'string') return null;
-  if (!isRecord(body.args) || !isRecord(body.context)) return null;
-  if (typeof body.context.projectRoot !== 'string' || body.context.projectRoot.length === 0) return null;
-  if ('pluginRoot' in body.context && body.context.pluginRoot !== undefined && typeof body.context.pluginRoot !== 'string') {
-    return null;
-  }
-  if (!isRecord(body.context.coralEnv)) return null;
-  const RESERVED_CORAL_ENV_KEYS = new Set(['CORAL_CHILD']);
-  const coralEnv: Record<string, string> = {};
-  for (const [key, value] of Object.entries(body.context.coralEnv)) {
-    if (typeof value !== 'string') return null;
-    if (!key.startsWith('CORAL_')) continue;
-    if (RESERVED_CORAL_ENV_KEYS.has(key)) continue;
-    coralEnv[key] = value;
-  }
-  const context: CallerContext = {
-    projectRoot: body.context.projectRoot,
-    pluginRoot: resolvedPluginRoot,
-    coralEnv,
-  };
-  return {
-    name: body.name,
-    args: body.args,
-    context,
-  };
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string' && item.length > 0);
-}
-
-function isWaitCursor(value: unknown): value is WaitCursor {
-  if (!isRecord(value) || !isRecord(value.jobs)) return false;
-  return Object.values(value.jobs).every((eventId) => Number.isInteger(eventId) && (eventId as number) >= 0);
-}
-
-function parseWaitRequest(body: unknown): ParsedWaitRequest | null {
-  if (!isRecord(body)) return null;
-  if (!isStringArray(body.jobIds)) return null;
-  if (typeof body.projectRoot !== 'string' || body.projectRoot.length === 0) return null;
-  if ('timeoutSeconds' in body && body.timeoutSeconds !== undefined && typeof body.timeoutSeconds !== 'number') {
-    return null;
-  }
-  if ('cursor' in body && body.cursor !== undefined && !isWaitCursor(body.cursor)) {
-    return null;
-  }
-  return {
-    jobIds: body.jobIds,
-    timeoutSeconds: typeof body.timeoutSeconds === 'number' ? body.timeoutSeconds : undefined,
-    cursor: isWaitCursor(body.cursor) ? body.cursor : undefined,
-    projectRoot: body.projectRoot,
-  };
-}
-
-function parseLastEventIdCursor(raw: string | undefined): WaitCursor | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(Buffer.from(raw, 'base64url').toString('utf-8')) as unknown;
-    return isWaitCursor(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function serializeWaitCursor(cursor: WaitCursor): string {
-  return Buffer.from(JSON.stringify(cursor)).toString('base64url');
-}
-
-function runOnResponseDone(res: ServerResponse, fn: () => void): void {
-  let called = false;
-  const run = () => {
-    if (called) return;
-    called = true;
-    res.off('finish', run);
-    res.off('close', run);
-    fn();
-  };
-
-  res.once('finish', run);
-  res.once('close', run);
-}
+// sendJson, readJsonBody, parseToolRequest, runOnResponseDone, and request
+// parsers (isStringArray, isWaitCursor, parseWaitRequest, parseLastEventIdCursor,
+// serializeWaitCursor) have moved to http-handler.ts.
 
 function closeServer(server: Server): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -604,174 +381,6 @@ function markJobsAsError(progressStore: ProgressStore, namespace: string, messag
   }
 }
 
-function getToolDescriptors(): Array<Record<string, unknown>> {
-  registerBuiltInProviders();
-
-  const providerTools = getAllNewProviders().map((provider) => ({
-    name: provider.name,
-    description: `Execute prompts with the ${provider.name} provider.`,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        op: { type: 'string' },
-        prompt: { type: 'string' },
-        session: { type: 'string' },
-        work_dir: { type: 'string' },
-        owner: { type: 'string' },
-      },
-      required: ['op'],
-    },
-  }));
-
-  return [
-    ...providerTools,
-    {
-      name: 'discuss_seed',
-      description: 'Generate seeded discussion personas from controversy axes.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          controversy_axes: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                axis: { type: 'string' },
-                positions: { type: 'array', items: { type: 'string' } },
-              },
-              required: ['axis', 'positions'],
-            },
-          },
-          n: { type: 'integer', minimum: 1, maximum: 20 },
-          demographics: {
-            type: 'object',
-            properties: {
-              origin_weights: {
-                type: 'object',
-                additionalProperties: { type: 'number' },
-              },
-              outlier_ratio: { type: 'number' },
-            },
-            required: ['origin_weights'],
-          },
-          seed: { type: 'integer' },
-        },
-        required: ['controversy_axes', 'n', 'seed'],
-      },
-    },
-    {
-      name: 'discuss_start',
-      description: 'Start a backend-managed discussion session.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          topic: { type: 'string', minLength: 1 },
-          agents: {
-            type: 'array',
-            minItems: 2,
-            items: {
-              type: 'object',
-              properties: {
-                name: { type: 'string' },
-                persona: { type: 'string' },
-                participation: { type: 'string', enum: ['required', 'observer'] },
-                provider: { type: 'string' },
-                model: { type: 'string' },
-              },
-              required: ['name', 'persona'],
-            },
-          },
-          config: {
-            type: 'object',
-            properties: {
-              min_bid_delay_ms: { type: 'integer', minimum: 0 },
-            },
-          },
-        },
-        required: ['topic', 'agents'],
-      },
-    },
-    {
-      name: 'discuss_abort',
-      description: 'Abort a live discussion session.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          session: { type: 'string' },
-        },
-        required: ['session'],
-      },
-    },
-    {
-      name: 'discuss_watch',
-      description: 'Poll the current watch-log snapshot for a discussion session.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          session: { type: 'string' },
-          cursor: { type: 'integer', minimum: 0, description: 'Resume from this offset. Omit for full history.' },
-        },
-        required: ['session'],
-      },
-    },
-    {
-      name: 'discuss_participate',
-      description: 'Submit a bid (score + thought) or speech (content) for an active discussion participant. Provide either score+thought or content, not both.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          session: { type: 'string' },
-          agent_name: { type: 'string' },
-          score: { type: 'integer', minimum: 0, maximum: 100 },
-          thought: { type: 'string' },
-          content: { type: 'string' },
-        },
-        required: ['session', 'agent_name'],
-      },
-    },
-    {
-      name: 'wait',
-      description: 'Stream job progress and completion events over POST /wait/stream.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          jobIds: { type: 'array', items: { type: 'string' } },
-          timeoutSeconds: { type: 'number' },
-          cursor: { type: 'object' },
-        },
-        required: ['jobIds'],
-      },
-    },
-    {
-      name: 'abort',
-      description: 'Abort running jobs by job ID.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          jobs: { type: 'array', items: { type: 'string' } },
-        },
-        required: ['jobs'],
-      },
-    },
-    {
-      name: 'workflow',
-      description: 'Execute a workflow pipeline across one or more Coral atoms.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          expression: { type: 'string', description: 'Pipeline DSL expression' },
-          init_prompt: { type: 'string', description: 'Initial prompt fed to the first step' },
-          context: { type: 'string', description: 'Shared context prepended to every atom prompt in every step' },
-          provider: { type: 'string', description: 'Default provider for atoms (claude or codex)' },
-          work_dir: { type: 'string', description: 'Working directory for spawned atoms' },
-          owner: { type: 'string', description: 'Session owner ID for memo isolation' },
-        },
-        required: ['expression', 'init_prompt'],
-      },
-    },
-  ];
-}
-
 async function createKbSubsystem({
   pluginRoot,
   spawnCli: spawnKbCli,
@@ -798,408 +407,7 @@ async function createKbSubsystem({
   };
 }
 
-function requireString(args: Record<string, unknown>, key: string): string | null {
-  const value = args[key];
-  return typeof value === 'string' ? value : null;
-}
-
-function optionalString(args: Record<string, unknown>, key: string): string | undefined {
-  const value = args[key];
-  return typeof value === 'string' ? value : undefined;
-}
-
-function parseOptionalOwner(args: Record<string, unknown>, key: string): string | undefined {
-  const raw = optionalString(args, key);
-  if (raw === undefined) return undefined;
-  return assertOwnerId(raw, key);
-}
-
-export async function routeToolCall(
-  request: ToolRequest,
-  helpers: {
-    getExecutionService: (ctx: CallerContext) => ExecutionServiceLike;
-    getDiscussContext: (ctx: CallerContext) => DiscussContext;
-    abortJobs: (jobIds: string[]) => AbortResult;
-    scopeCheckJobs: (jobIds: string[], projectRoot: string) => ScopeCheckResult;
-  },
-  kbSubsystem: KbSubsystem | null = null,
-): Promise<ToolRouteResponse> {
-  registerBuiltInProviders();
-
-  if (request.name === 'abort') {
-    if (!isStringArray(request.args.jobs)) {
-      return { statusCode: 400, body: { error: 'invalid_request' } };
-    }
-    const scopeCheck = helpers.scopeCheckJobs(request.args.jobs, request.context.projectRoot);
-    if (scopeCheck.mismatch.length > 0) {
-      return { statusCode: 403, body: { error: 'scope_mismatch', jobs: scopeCheck.mismatch } };
-    }
-    return { statusCode: 200, body: helpers.abortJobs(scopeCheck.valid) };
-  }
-
-  if (request.name === 'wait') {
-    return {
-      statusCode: 400,
-      body: { error: 'use_sse', message: 'Use POST /wait/stream for wait operations' },
-    };
-  }
-
-  if (request.name === 'workflow') {
-    const svc = helpers.getExecutionService(request.context);
-    const decision = await handleWorkflow(request.args, svc, request.context);
-    return { statusCode: 200, body: decision };
-  }
-
-  if (request.name === 'discuss_seed') {
-    const parsed = discussSeedSchema.safeParse(request.args);
-    if (!parsed.success) {
-      return toolValidationError(parsed.error);
-    }
-
-    const seeded = seedPersonas(parsed.data);
-    if (!seeded.ok) {
-      return toolError(seeded.error, seeded.detail);
-    }
-    return toolSuccess(seeded.value);
-  }
-
-  if (request.name === 'discuss_start') {
-    const parsed = discussStartSchema.safeParse(request.args);
-    if (!parsed.success) {
-      return toolValidationError(parsed.error);
-    }
-
-    const sessionId = randomUUID();
-    try {
-      await discussOperations.startDiscussSession(
-        helpers.getDiscussContext(request.context),
-        sessionId,
-        parsed.data.topic,
-        parsed.data.agents,
-        parsed.data.config ?? {},
-        request.context,
-      );
-      return toolSuccess({ session: sessionId });
-    } catch (error: unknown) {
-      return toolError('start_failed', {
-        message: errorMessage(error),
-      });
-    }
-  }
-
-  if (request.name === 'discuss_abort') {
-    const parsed = discussSessionSchema.safeParse(request.args);
-    if (!parsed.success) {
-      return toolValidationError(parsed.error);
-    }
-
-    try {
-      await discussOperations.abortDiscussSession(
-        helpers.getDiscussContext(request.context),
-        parsed.data.session,
-      );
-      return toolSuccess({ ok: true, session: parsed.data.session });
-    } catch (error: unknown) {
-      if (error instanceof DiscussManagerError) {
-        return toolError(error.code, error.detail);
-      }
-      throw error;
-    }
-  }
-
-  if (request.name === 'discuss_watch') {
-    const parsed = discussWatchSchema.safeParse(request.args);
-    if (!parsed.success) {
-      return toolValidationError(parsed.error);
-    }
-
-    try {
-      return toolSuccess(discussOperations.getWatchState(
-        helpers.getDiscussContext(request.context),
-        parsed.data.session,
-        parsed.data.cursor,
-      ));
-    } catch (error: unknown) {
-      if (error instanceof DiscussManagerError) {
-        return toolError(error.code, error.detail);
-      }
-      throw error;
-    }
-  }
-
-  if (request.name === 'discuss_participate') {
-    const parsed = discussParticipateSchema.safeParse(request.args);
-    if (!parsed.success) {
-      return toolValidationError(parsed.error);
-    }
-
-    try {
-      if (typeof parsed.data.content === 'string') {
-        return toolSuccess(
-          await discussOperations.submitManualSpeech(
-            helpers.getDiscussContext(request.context),
-            parsed.data.session,
-            parsed.data.agent_name,
-            parsed.data.content,
-            request.context,
-          ),
-        );
-      }
-
-      return toolSuccess(
-        await discussOperations.submitManualBid(
-          helpers.getDiscussContext(request.context),
-          parsed.data.session,
-          parsed.data.agent_name,
-          parsed.data.score,
-          parsed.data.thought,
-          request.context,
-        ),
-      );
-    } catch (error: unknown) {
-      if (error instanceof DiscussManagerError) {
-        return toolError(error.code, error.detail);
-      }
-      throw error;
-    }
-  }
-
-  if (request.name.startsWith('kb_') && kbSubsystem) {
-    const { kb } = kbSubsystem;
-    const args = request.args;
-    const ctx = request.context;
-    try {
-      let result: unknown;
-      switch (request.name) {
-        case 'kb_search': {
-          const query = requireString(args, 'query');
-          if (query === null) return toolError('invalid_request', { message: 'query is required' });
-          result = await searchKb(kb, query, typeof args.top_k === 'number' ? args.top_k : 20);
-          break;
-        }
-        case 'kb_read': {
-          const note = requireString(args, 'note');
-          if (note === null) return toolError('invalid_request', { message: 'note is required' });
-          result = readEntry({ note }, ctx.projectRoot);
-          break;
-        }
-        case 'kb_promote': {
-          const memo = requireString(args, 'memo');
-          const title = requireString(args, 'title');
-          const content = requireString(args, 'content');
-          const domain = requireString(args, 'domain');
-          const topic = requireString(args, 'topic');
-          if (!memo || !title || content === null || !domain || !topic) {
-            return toolError('invalid_request', { message: 'memo, title, content, domain, and topic are required strings' });
-          }
-          result = await kbPromote(
-            kb,
-            ctx.projectRoot,
-            { memo, title, content, domain, topic },
-            () => { kbSubsystem.curateScheduler.schedule(); },
-          );
-          break;
-        }
-        case 'kb_update': {
-          const note = requireString(args, 'note');
-          if (note === null) return toolError('invalid_request', { message: 'note is required' });
-          result = await kbUpdate(kb, {
-            note,
-            ...(args.title !== undefined ? { title: optionalString(args, 'title') } : {}),
-            ...(args.content !== undefined ? { content: optionalString(args, 'content') } : {}),
-          });
-          break;
-        }
-        case 'kb_delete': {
-          const note = requireString(args, 'note');
-          if (note === null) return toolError('invalid_request', { message: 'note is required' });
-          result = await kbDeleteFn(kb, { note });
-          break;
-        }
-        case 'kb_reindex':
-          result = await kbReindex(kb);
-          break;
-        case 'kb_principles': {
-          const index = await kb.ensureIndex();
-          const verbose = args.verbose === true;
-          const allNames = Object.keys(index.principles).sort(compareLocale);
-          const total = allNames.length;
-          const query = optionalString(args, 'query');
-          let names = allNames;
-          if (query?.trim()) {
-            const q = query.toLowerCase();
-            names = allNames.filter((name) => name.toLowerCase().includes(q));
-          }
-          const topK = typeof args.top_k === 'number' ? args.top_k : 100;
-          names = names.slice(0, topK);
-          if (!verbose) {
-            result = { principles: names, total };
-            break;
-          }
-
-          const selected = new Set(names);
-          const notesByPrinciple = new Map(names.map((name) => [name, [] as string[]]));
-          const orphanRefs = new Set<string>();
-
-          for (const slug of Object.keys(index.notes).sort(compareLocale)) {
-            const noteRecord = index.notes[slug];
-            if (!noteRecord) {
-              continue;
-            }
-
-            for (const principle of noteRecord.principles) {
-              if (selected.has(principle)) {
-                notesByPrinciple.get(principle)?.push(slug);
-                continue;
-              }
-              if (!(principle in index.principles)) {
-                orphanRefs.add(principle);
-              }
-            }
-          }
-
-          result = {
-            principles: names.map((name) => ({
-              name,
-              statement: index.principles[name],
-              notes: notesByPrinciple.get(name) ?? [],
-            })),
-            total,
-            ...(orphanRefs.size === 0
-              ? {}
-              : { warning: `Orphan principle refs: ${[...orphanRefs].sort(compareLocale).join(', ')}` }),
-          };
-          break;
-        }
-        case 'kb_memo': {
-          const topic = requireString(args, 'topic');
-          const content = requireString(args, 'content');
-          const owner = requireString(args, 'owner');
-          if (!topic || content === null || owner === null)
-            return toolError('invalid_request', { message: 'topic, content, and owner are required' });
-          const normalizedOwner = assertOwnerId(owner);
-          result = writeMemo(ctx.projectRoot, { topic, content, owner: normalizedOwner });
-          break;
-        }
-        case 'kb_memo_list':
-          result = listMemos(ctx.projectRoot);
-          break;
-        case 'kb_memo_delete': {
-          const pattern = requireString(args, 'pattern');
-          if (pattern === null) return toolError('invalid_request', { message: 'pattern is required' });
-          result = deleteMemos(ctx.projectRoot, { pattern });
-          break;
-        }
-        case 'kb_memo_purge':
-          result = purgeMemos(ctx.projectRoot);
-          break;
-        default:
-          return { statusCode: 404, body: { error: 'unknown_tool', name: request.name } };
-      }
-      return toolSuccess(result);
-    } catch (error: unknown) {
-      return toolError('kb_error', {
-        message: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  if (!getNewProvider(request.name)) {
-    return {
-      statusCode: 404,
-      body: { error: 'not_found', message: `Unknown tool: ${request.name}` },
-    };
-  }
-
-  const service = helpers.getExecutionService(request.context);
-  const op = requireString(request.args, 'op');
-  if (!op) {
-    return { statusCode: 400, body: { error: 'invalid_request' } };
-  }
-
-  const sessionId = optionalString(request.args, 'session');
-  const prompt = optionalString(request.args, 'prompt');
-  const defaultCwd = request.context.projectRoot;
-  const cwd = optionalString(request.args, 'work_dir');
-
-  if (op === 'list') {
-    return { statusCode: 200, body: service.list(request.name) };
-  }
-
-  if (op === 'fork') {
-    const parsed = sharedForkSchema.extend(internalProviderFieldsShape).safeParse(request.args);
-    if (!parsed.success) return { statusCode: 400, body: { error: 'invalid_request' } };
-    return {
-      statusCode: 200,
-      body: await service.fork(request.name, toProviderFields(parsed.data, true), request.context),
-    };
-  }
-
-  if (op === 'resume') {
-    const parsed = sharedResumeSchema.extend(internalProviderFieldsShape).safeParse(request.args);
-    if (!parsed.success) return { statusCode: 400, body: { error: 'invalid_request' } };
-    return {
-      statusCode: 200,
-      body: await service.resume(request.name, toProviderFields(parsed.data, true), request.context),
-    };
-  }
-
-  if (op === 'exec' || op === 'bypass_exec') {
-    const parsed = sharedExecSchema.extend(internalProviderFieldsShape).safeParse(request.args);
-    if (!parsed.success) return { statusCode: 400, body: { error: 'invalid_request' } };
-
-    const bypassPermissions = op === 'bypass_exec';
-
-    if (parsed.data.session) {
-      return {
-        statusCode: 200,
-        body: await service.resume(request.name, toProviderFields(parsed.data, bypassPermissions), request.context),
-      };
-    }
-
-    return {
-      statusCode: 200,
-      body: await service.start(request.name, {
-        ...toProviderFields(parsed.data, bypassPermissions),
-        cwd: parsed.data.work_dir ?? defaultCwd,
-      }, request.context),
-    };
-  }
-
-  if (op.startsWith(CORAL_OP_PREFIX)) {
-    if (typeof prompt !== 'string') {
-      return { statusCode: 400, body: { error: 'invalid_request' } };
-    }
-    const owner = parseOptionalOwner(request.args, 'owner');
-    const effectiveContext = owner
-      ? { ...request.context, coralEnv: { ...request.context.coralEnv, CORAL_OWNER: owner } }
-      : request.context;
-    return {
-      statusCode: 200,
-      body: await service.coralDispatch(request.name, op.slice(CORAL_OP_PREFIX.length), {
-        prompt,
-        sessionId,
-        cwd: sessionId ? cwd : cwd ?? defaultCwd,
-      }, effectiveContext),
-    };
-  }
-
-  return { statusCode: 400, body: { error: 'invalid_request' } };
-}
-
-function writeSseEvent(
-  res: ServerResponse,
-  event: string,
-  data: unknown,
-  cursorId?: string,
-): void {
-  if (res.writableEnded) return;
-  if (cursorId) {
-    res.write(`event: ${event}\nid: ${cursorId}\ndata: ${JSON.stringify(data)}\n\n`);
-    return;
-  }
-  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-}
+// writeSseEvent has moved to http-handler.ts.
 
 /** Returns a URL-ready host: IPv6 addresses are wrapped in brackets. */
 function resolveClientHost(bindHost: string): string {
@@ -1397,29 +605,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     return { valid, missing, mismatch };
   }
 
-  function listAllJobs(store: ProgressStore, currentNamespace: string): Array<{ jobId: string; status: PersistedStatusRecord }> {
-    const results: Array<{ jobId: string; status: PersistedStatusRecord }> = [];
-    for (const jobId of store.listJobIds()) {
-      const status = store.readStatus(jobId);
-      if (status && belongsToNamespace(status, currentNamespace)) {
-        results.push({ jobId, status });
-      }
-    }
-    return results;
-  }
-
-  function getJobDetail(
-    store: ProgressStore,
-    jobId: string,
-    currentNamespace: string,
-  ): { status: PersistedStatusRecord; events: PersistedProgressRecord[] } | null {
-    const status = store.readStatus(jobId);
-    if (!status || !belongsToNamespace(status, currentNamespace)) return null;
-    const cursor = createReplayCursor();
-    const events = store.replayFrom(jobId, 0, cursor);
-    return { status, events };
-  }
-
   function knownDiscussSources(): Set<string> {
     const sources = new Set<string>();
     for (const source of readDiscussSources()) {
@@ -1460,16 +645,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     return false;
   }
 
-  function parseDiscussView(raw: string | null): DiscussView | null {
-    if (raw === null || raw === 'control') {
-      return 'control';
-    }
-    if (raw === 'audit') {
-      return 'audit';
-    }
-    return null;
-  }
-
   function loadDiscussDetail(
     source: string,
     sessionId: string,
@@ -1490,6 +665,68 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       ? buildDiscussDetail(snapshot, 'audit', authority)
       : buildDiscussDetail(snapshot, 'control', authority);
   }
+
+  // -- Drain admission fence -------------------------------------------------
+  // Flipped immediately by /admin/shutdown BEFORE lifecycle transitions to
+  // 'draining'. This closes the pre-existing race window (AC4 behavior fix).
+  let drainRequested = false;
+
+  // -- HTTP handler wiring ---------------------------------------------------
+  const httpHandlerDeps: HttpHandlerDeps = {
+    identity: {
+      pluginRoot: resolvedPluginRoot,
+      namespace,
+      version,
+      bundleHash,
+      instanceId,
+      token,
+      now,
+      log,
+    },
+    runtimeState: {
+      getLifecycle: () => lifecycle,
+      getStartedAt: () => startedAt,
+      getKbSubsystem: () => kbSubsystem,
+      getLaunchFenceActive: () => launchFenceActive,
+    },
+    idleTimer,
+    progressStore,
+    sessionIndex,
+    activeChildren,
+    queueDepth,
+    streamResponses,
+    isDrainRequested: () => drainRequested,
+    requestDrain: (reason: string) => {
+      drainRequested = true;
+      idleTimer.requestDrain(reason);
+    },
+    getExecutionService,
+    getDiscussContext,
+    abortJobs,
+    scopeCheckJobs: (jobIds, projectRoot) => scopeCheckJobs(jobIds, projectRoot, namespace),
+    routeToolCall: routeToolCallFn,
+    getToolDescriptors,
+    subscribeBackendEvents: (handlers: EventStreamHandlers) => {
+      eventBus.on('job:created', handlers.onJobCreated);
+      eventBus.on('job:phase_changed', handlers.onPhaseChanged);
+      eventBus.on('job:progress', handlers.onProgress);
+      eventBus.on('job:completed', handlers.onCompleted);
+      eventBus.on('session:updated', handlers.onSessionUpdated);
+      eventBus.on('discuss:updated', handlers.onDiscussUpdated);
+    },
+    unsubscribeBackendEvents: (handlers: EventStreamHandlers) => {
+      eventBus.off('job:created', handlers.onJobCreated);
+      eventBus.off('job:phase_changed', handlers.onPhaseChanged);
+      eventBus.off('job:progress', handlers.onProgress);
+      eventBus.off('job:completed', handlers.onCompleted);
+      eventBus.off('session:updated', handlers.onSessionUpdated);
+      eventBus.off('discuss:updated', handlers.onDiscussUpdated);
+    },
+    listDiscussSessions,
+    loadDiscussDetail,
+  };
+
+  const handleRequest = createHttpHandler(httpHandlerDeps);
 
   const server = createServer((req, res) => {
     void handleRequest(req, res).catch((error) => {
@@ -1552,349 +789,8 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     return shutdownPromise;
   }
 
-  async function handleWaitStream(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const body = await readJsonBody(req);
-    const parsed = parseWaitRequest(body);
-    if (!parsed) {
-      sendJson(res, 400, { error: 'invalid_request' });
-      return;
-    }
-
-    const lastEventIdHeader = Array.isArray(req.headers['last-event-id'])
-      ? req.headers['last-event-id'][0]
-      : req.headers['last-event-id'];
-    const headerCursor = parseLastEventIdCursor(lastEventIdHeader);
-    if (lastEventIdHeader && !headerCursor) {
-      sendJson(res, 400, { error: 'invalid_request' });
-      return;
-    }
-
-    const scopeCheck = scopeCheckJobs(parsed.jobIds, parsed.projectRoot, namespace);
-    if (scopeCheck.mismatch.length > 0) {
-      sendJson(res, 403, { error: 'scope_mismatch' });
-      return;
-    }
-    if (scopeCheck.missing.length === parsed.jobIds.length) {
-      sendJson(res, 404, { error: 'jobs_not_found' });
-      return;
-    }
-
-    const inputCursor: WaitCursor = {
-      jobs: { ...(headerCursor ?? parsed.cursor ?? { jobs: {} }).jobs },
-    };
-    const currentCursor: WaitCursor = {
-      jobs: { ...inputCursor.jobs },
-    };
-    const waitRequest: WaitRequest = {
-      ...parsed,
-      cursor: inputCursor,
-    };
-    const ctx: CallerContext = { projectRoot: parsed.projectRoot, pluginRoot: resolvedPluginRoot, coralEnv: {} };
-
-    res.statusCode = 200;
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders?.();
-
-    streamResponses.add(res);
-
-    let closed = false;
-    const onClose = () => {
-      closed = true;
-      streamResponses.delete(res);
-      req.off('close', onClose);
-      res.off('close', onClose);
-    };
-    req.once('close', onClose);
-    res.once('close', onClose);
-
-    for await (const event of getExecutionService(ctx).waitStream(waitRequest)) {
-      if (closed || res.writableEnded || res.destroyed) break;
-
-      if (event.type === 'progress') {
-        currentCursor.jobs[event.jobId] = event.eventId;
-        writeSseEvent(res, 'progress', event, serializeWaitCursor(currentCursor));
-        continue;
-      }
-
-      if (event.type === 'terminal') {
-        writeSseEvent(res, 'terminal', event, serializeWaitCursor(currentCursor));
-        continue;
-      }
-
-      if (event.type === 'queued') {
-        // No cursor update: queued events are synthetic (not persisted in JSONL)
-        // and must not advance the replay cursor position.
-        writeSseEvent(res, 'queued', event);
-        continue;
-      }
-
-      writeSseEvent(res, 'timeout', event);
-    }
-
-    if (!closed && !res.writableEnded) {
-      res.end();
-    }
-  }
-
-
-  async function handleEventStream(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const streamId = randomUUID();
-    const filterJobId = parseEventStreamFilter(req.url ?? '');
-
-    res.statusCode = 200;
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders?.();
-
-    streamResponses.add(res);
-    writeSseEvent(res, 'ready', { streamId, startedAt: nowIsoString() });
-
-    let closed = false;
-    const matchesFilter = (jobId: string): boolean => !filterJobId || jobId === filterJobId;
-
-    const onJobCreated = (payload: EventBusEvents['job:created']): void => {
-      if (closed || !matchesFilter(payload.jobId)) return;
-      writeSseEvent(res, 'job:created', payload);
-    };
-    const onPhaseChanged = (payload: EventBusEvents['job:phase_changed']): void => {
-      if (closed || !matchesFilter(payload.jobId)) return;
-      writeSseEvent(res, 'job:phase_changed', payload);
-    };
-    const onProgress = (payload: EventBusEvents['job:progress']): void => {
-      if (closed || !matchesFilter(payload.jobId)) return;
-      writeSseEvent(res, 'job:progress', payload);
-    };
-    const onCompleted = (payload: EventBusEvents['job:completed']): void => {
-      if (closed || !matchesFilter(payload.jobId)) return;
-      writeSseEvent(res, 'job:completed', payload);
-    };
-    const onSessionUpdated = (payload: EventBusEvents['session:updated']): void => {
-      if (closed) return;
-      writeSseEvent(res, 'session:updated', payload);
-    };
-    const onDiscussUpdated = (payload: EventBusEvents['discuss:updated']): void => {
-      if (closed) return;
-      writeSseEvent(res, 'discuss:updated', payload);
-    };
-
-    const onClose = () => {
-      if (closed) return;
-      closed = true;
-      streamResponses.delete(res);
-      res.off('close', onClose);
-      eventBus.off('job:created', onJobCreated);
-      eventBus.off('job:phase_changed', onPhaseChanged);
-      eventBus.off('job:progress', onProgress);
-      eventBus.off('job:completed', onCompleted);
-      eventBus.off('session:updated', onSessionUpdated);
-      eventBus.off('discuss:updated', onDiscussUpdated);
-    };
-    res.once('close', onClose);
-
-    eventBus.on('job:created', onJobCreated);
-    eventBus.on('job:phase_changed', onPhaseChanged);
-    eventBus.on('job:progress', onProgress);
-    eventBus.on('job:completed', onCompleted);
-    eventBus.on('session:updated', onSessionUpdated);
-    eventBus.on('discuss:updated', onDiscussUpdated);
-
-    await new Promise<void>((resolve) => {
-      if (closed) {
-        resolve();
-        return;
-      }
-      res.once('close', resolve);
-    });
-  }
-
-  function parseEventStreamFilter(url: string): string | null {
-    const qIndex = url.indexOf('?');
-    if (qIndex === -1) return null;
-    const params = new URLSearchParams(url.slice(qIndex));
-    const filter = params.get('filter');
-    if (!filter) return null;
-    const jobMatch = filter.match(/^job:(.+)$/);
-    return jobMatch?.[1] ?? null;
-  }
-
-  async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', 'X-Coral-Backend-Token, Content-Type');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-
-    if (req.method === 'OPTIONS') {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
-
-    const authHeader = req.headers['x-coral-backend-token'];
-    if (typeof authHeader !== 'string' || authHeader !== token) {
-      req.resume();
-      sendJson(res, 401, { error: 'unauthorized' });
-      return;
-    }
-
-    if (req.method === 'GET' && req.url === '/health') {
-      const env = collectCoralEnv();
-
-      sendJson(res, 200, {
-        status: idleTimer.isDraining ? 'draining' : (lifecycle === 'running' ? 'ok' : lifecycle),
-        version,
-        bundleHash,
-        namespace,
-        instanceId,
-        uptimeMs: now() - startedAt,
-        activeChildren: activeChildren.size,
-        activeJobs: progressStore.liveJobCount(bundleHash),
-        queueDepth: queueDepth(),
-        inflightRequests: idleTimer.inflightRequests,
-        env,
-      });
-      return;
-    }
-
-    if (req.method === 'POST' && req.url === '/admin/shutdown') {
-      req.resume();
-      idleTimer.requestDrain('replaced');
-      sendJson(res, 200, { status: 'draining', instanceId });
-      return;
-    }
-
-    if (lifecycle !== 'running') {
-      req.resume();
-      sendJson(res, 503, { error: 'backend_shutting_down' });
-      return;
-    }
-
-    if (req.method === 'GET' && req.url?.startsWith('/events/stream')) {
-      req.resume();
-      await handleEventStream(req, res);
-      return;
-    }
-
-    idleTimer.beginRequest();
-    runOnResponseDone(res, () => {
-      idleTimer.endRequest();
-    });
-
-    if (req.method === 'POST' && req.url === '/wait/stream') {
-      await handleWaitStream(req, res);
-      return;
-    }
-
-    if (req.method === 'GET' && req.url === '/tools') {
-      sendJson(res, 200, getToolDescriptors());
-      return;
-    }
-
-    if (req.method === 'POST' && req.url === '/tool') {
-      let request: ToolRequest | null;
-      try {
-        request = parseToolRequest(await readJsonBody(req), resolvedPluginRoot);
-      } catch {
-        sendJson(res, 400, { error: 'invalid_json' });
-        return;
-      }
-      if (!request) {
-        sendJson(res, 400, { error: 'invalid_request' });
-        return;
-      }
-
-      // Launch fence: block new launches while recovery adoption is in progress
-      if (launchFenceActive) {
-        const parsedOp = typeof request.args.op === 'string' ? request.args.op : null;
-        const isLaunchOp = parsedOp !== null && ['exec', 'resume', 'fork', 'bypass_exec'].includes(parsedOp);
-        const isProviderTool = !request.name.startsWith('discuss') && !request.name.startsWith('kb_')
-          && request.name !== 'abort' && request.name !== 'wait' && request.name !== 'workflow';
-        if (isLaunchOp && isProviderTool) {
-          sendJson(res, 200, { content: [{ type: 'text', text: 'recovering — retry after 500ms' }], isError: true });
-          return;
-        }
-      }
-
-      const result = await routeToolCallFn(request, {
-        getExecutionService,
-        getDiscussContext,
-        abortJobs,
-        scopeCheckJobs: (jobIds, projectRoot) => scopeCheckJobs(jobIds, projectRoot, namespace),
-      }, kbSubsystem);
-      sendJson(res, result.statusCode, result.body);
-      return;
-    }
-
-    if (req.method === 'GET' && req.url) {
-      const parsedUrl = new URL(req.url, 'http://localhost');
-      const pathname = parsedUrl.pathname;
-
-      if (pathname === '/api/jobs') {
-        req.resume();
-        const phase = parsedUrl.searchParams.get('phase');
-        let jobs = listAllJobs(progressStore, namespace);
-        if (phase !== null) {
-          jobs = jobs.filter((j) => j.status?.phase === phase);
-        }
-        sendJson(res, 200, { jobs });
-        return;
-      }
-
-      const jobDetailMatch = pathname.match(/^\/api\/jobs\/([^/]+)$/);
-      if (jobDetailMatch) {
-        req.resume();
-        const detail = getJobDetail(progressStore, jobDetailMatch[1], namespace);
-        if (!detail) {
-          sendJson(res, 404, { error: 'job_not_found' });
-          return;
-        }
-        sendJson(res, 200, detail);
-        return;
-      }
-
-      if (pathname === '/api/sessions') {
-        req.resume();
-        sendJson(res, 200, { sessions: sessionIndex.listForNamespace(namespace, progressStore) });
-        return;
-      }
-
-      if (pathname === '/api/discuss') {
-        req.resume();
-        sendJson(res, 200, { sessions: listDiscussSessions() });
-        return;
-      }
-
-      if (pathname === '/api/discuss/detail') {
-        req.resume();
-        const projectRoot = parsedUrl.searchParams.get('projectRoot');
-        const sessionId = parsedUrl.searchParams.get('sessionId');
-        if (!projectRoot || !sessionId) {
-          sendJson(res, 400, { error: 'missing_params', message: 'projectRoot and sessionId are required' });
-          return;
-        }
-        const view = parseDiscussView(parsedUrl.searchParams.get('view'));
-        if (!view) {
-          sendJson(res, 400, { error: 'invalid_view', message: 'view must be control or audit' });
-          return;
-        }
-        const detail = loadDiscussDetail(resolveProjectSource(projectRoot), sessionId, view);
-        if (!detail) {
-          sendJson(res, 404, { error: 'session_not_found' });
-          return;
-        }
-        if (detail === 'audit_requires_ended_session') {
-          sendJson(res, 409, { error: 'audit_requires_ended_session' });
-          return;
-        }
-        sendJson(res, 200, detail);
-        return;
-      }
-    }
-
-    req.resume();
-    sendJson(res, 404, { error: 'not_found' });
-  }
+  // handleWaitStream, handleEventStream, parseEventStreamFilter, and
+  // handleRequest have moved to http-handler.ts (via createHttpHandler).
 
   async function runRecoveryAdoption(
     queuedJobs: Array<{ jobId: string; launchRecord: PersistedLaunchRecord }>,
