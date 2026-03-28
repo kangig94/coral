@@ -96,7 +96,9 @@ export function resumeLoop(
 
   setTimeout(() => {
     void continueLoop(ctx, sessionId, callerCtx).catch((error: unknown) => {
-      void forceEndAfterLoopFailure(ctx, sessionId, error).catch(() => {});
+      void forceEndAfterLoopFailure(ctx, sessionId, error).catch((endErr: unknown) => {
+        process.stderr.write(`Discuss session ${sessionId} force-end also failed: ${endErr}\n`);
+      });
     });
   }, 0);
 }

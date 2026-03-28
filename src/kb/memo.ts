@@ -1,7 +1,7 @@
-import { readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveProjectSource } from '../infra/paths.js';
-import { isNoEntryError } from '../shared/mcp-utils.js';
+import { isNoEntryError, unlinkIfExists } from '../shared/mcp-utils.js';
 import { parseMemoFrontmatter, serializeMemoFrontmatter } from './frontmatter.js';
 import type {
   KbMemoDeleteInput,
@@ -115,25 +115,25 @@ export function listMemos(projectRoot: string, ownerFilter?: string): KbMemoList
         const memo = parseTimestampPrefix(filename);
         const raw = readFileSync(path, 'utf-8');
 
-      let owner: string | undefined;
-      try {
-        const parsed = parseMemoFrontmatter(raw);
-        owner = parsed.owner;
-      } catch {
-        // Legacy memos without valid frontmatter: treat as unowned
-      }
+        let owner: string | undefined;
+        try {
+          const parsed = parseMemoFrontmatter(raw);
+          owner = parsed.owner;
+        } catch {
+          // Legacy memos without valid frontmatter: treat as unowned
+        }
 
-      if (ownerFilter !== undefined && owner !== ownerFilter) {
-        return [];
-      }
+        if (ownerFilter !== undefined && owner !== ownerFilter) {
+          return [];
+        }
 
-      return [{
-        filename,
-        summary: extractSummary(raw),
-        createdAt: memo?.display ?? stat.mtime.toISOString(),
-        sortKey: memo?.sortKey ?? stat.mtimeMs,
-        owner,
-      }];
+        return [{
+          filename,
+          summary: extractSummary(raw),
+          createdAt: memo?.display ?? stat.mtime.toISOString(),
+          sortKey: memo?.sortKey ?? stat.mtimeMs,
+          owner,
+        }];
       } catch {
         return [];
       }
@@ -168,7 +168,7 @@ export function deleteMemos(projectRoot: string, input: KbMemoDeleteInput): KbMe
     .sort(compareLocale);
 
   for (const filename of deleted) {
-    try { unlinkSync(join(dir, filename)); } catch { /* already deleted */ }
+    unlinkIfExists(join(dir, filename));
   }
 
   return { deleted, count: deleted.length };
@@ -178,11 +178,11 @@ export function purgeMemos(projectRoot: string): KbMemoPurgeResult {
   const dir = memoDir(projectRoot);
   const deleted = readMemoDir(projectRoot)
     .filter((filename) => filename.endsWith('.md'))
-    .filter((filename) => statSync(join(dir, filename)).isFile())
+    .filter((filename) => { try { return statSync(join(dir, filename)).isFile(); } catch { return false; } })
     .sort(compareLocale);
 
   for (const filename of deleted) {
-    unlinkSync(join(dir, filename));
+    unlinkIfExists(join(dir, filename));
   }
 
   return { deleted: deleted.length };

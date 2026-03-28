@@ -21,7 +21,11 @@ export type EventBusEvents = {
 
 /** Typed EventEmitter wrapper for execution-layer state changes. */
 export class TypedEventBus {
-  private readonly emitter = new EventEmitter();
+  private readonly emitter = new EventEmitter({ captureRejections: false });
+
+  constructor() {
+    this.emitter.setMaxListeners(100);
+  }
 
   on<K extends keyof EventBusEvents>(event: K, listener: (payload: EventBusEvents[K]) => void): this {
     this.emitter.on(event, listener);

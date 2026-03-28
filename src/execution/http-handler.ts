@@ -42,11 +42,21 @@ export function sendJson(res: ServerResponse, statusCode: number, body: unknown)
   res.end(payload);
 }
 
+const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10 MB
+
 export function readJsonBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
+    let totalSize = 0;
     req.on('data', (chunk) => {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalSize += buf.length;
+      if (totalSize > MAX_BODY_SIZE) {
+        req.destroy();
+        reject(new Error('Request body too large'));
+        return;
+      }
+      chunks.push(buf);
     });
     req.once('error', reject);
     req.once('end', () => {

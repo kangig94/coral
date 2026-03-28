@@ -211,6 +211,12 @@ export class ProgressStore {
   }
 
   rollbackJob(jobId: string): void {
+    this.purgeFromCache(jobId);
+    rmSync(this.jobDir(jobId), { recursive: true, force: true });
+  }
+
+  /** Remove a job from all in-memory caches without touching disk. */
+  purgeFromCache(jobId: string): void {
     const record = this.statusCache.get(jobId);
     if (record && isLivePhase(record.phase)) {
       this.liveCount--;
@@ -219,7 +225,6 @@ export class ProgressStore {
     this.statusCache.delete(jobId);
     this.eventCounters.delete(jobId);
     this.jobStartedAt.delete(jobId);
-    rmSync(this.jobDir(jobId), { recursive: true, force: true });
   }
 
   /** Atomically write status.json (sync to avoid race between consecutive writes). */
@@ -343,14 +348,7 @@ export class ProgressStore {
 
   /** Write result.md as a debugging/recovery artifact. */
   writeResultMd(jobId: string, text: string): void {
-    const tmpPath = `${jobResultPath(jobId)}.tmp`;
-    const finalPath = jobResultPath(jobId);
-    try {
-      writeFileSync(tmpPath, text, 'utf-8');
-      renameSync(tmpPath, finalPath);
-    } catch {
-      /* result.md write must not break execution */
-    }
+    this.writeJobFile(jobResultPath(jobId), text);
   }
 
   writeWorkflowResultMdOrThrow(jobId: string, text: string): void {
