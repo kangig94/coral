@@ -80,6 +80,7 @@ export async function handleKbToolCall(
           { memo, title, content, domain, topic },
           () => { kbSubsystem.curateScheduler.schedule(); },
         );
+        kbSubsystem.curateScheduler.scheduleDeferredCommit();
         break;
       }
       case 'kb_update': {
@@ -90,12 +91,14 @@ export async function handleKbToolCall(
           ...(args.title !== undefined ? { title: optionalString(args, 'title') } : {}),
           ...(args.content !== undefined ? { content: optionalString(args, 'content') } : {}),
         });
+        kbSubsystem.curateScheduler.scheduleDeferredCommit();
         break;
       }
       case 'kb_delete': {
         const note = requireString(args, 'note');
         if (note === null) return toolError('invalid_request', { message: 'note is required' });
         result = await kbDeleteFn(kb, { note });
+        kbSubsystem.curateScheduler.scheduleDeferredCommit();
         break;
       }
       case 'kb_reindex':

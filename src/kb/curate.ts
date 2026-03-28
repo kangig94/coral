@@ -178,6 +178,7 @@ type ParsedArrayResult = {
 export type CurateHandle = {
   start(): Promise<void>;
   schedule(): void;
+  scheduleDeferredCommit(): void;
   stop(): Promise<void>;
   isRunning(): boolean;
   _testInternals?: {
@@ -1096,6 +1097,9 @@ export function createCurateScheduler({
   async function gitSync(signal?: AbortSignal): Promise<void> {
     if (!isGitRepo() || !isGitSyncEnabled()) return;
 
+    // Cancel pending deferred commit — gitSync's pre-sync snapshot handles dirty state
+    cancelDeferredCommit();
+
     const branch = getDefaultBranch();
 
     try {
@@ -1136,6 +1140,39 @@ export function createCurateScheduler({
       gitCommit(message);
     } catch {
       // best-effort
+    }
+  }
+
+  // Debounced async git commit for external mutations (promote/update/delete).
+  // Batches changes within a 60s window into a single commit.
+  const DEFERRED_COMMIT_DELAY_MS = 60_000;
+  let deferredCommitTimer: NodeJS.Timeout | null = null;
+
+  async function gitAutoCommitAsync(message: string): Promise<void> {
+    if (!isGitRepo()) return;
+    try {
+      await gitAsync(['add', 'notes/', 'principles/', '.gitignore'], 10000);
+      if (!hasStagedChanges()) return;
+      gitCommit(message);
+    } catch {
+      // best-effort
+    }
+  }
+
+  function scheduleDeferredCommit(): void {
+    if (!isGitRepo()) return;
+    if (deferredCommitTimer !== null) return; // already scheduled
+    deferredCommitTimer = setTimeout(() => {
+      deferredCommitTimer = null;
+      void gitAutoCommitAsync('auto: kb mutation');
+    }, DEFERRED_COMMIT_DELAY_MS);
+    deferredCommitTimer.unref?.();
+  }
+
+  function cancelDeferredCommit(): void {
+    if (deferredCommitTimer !== null) {
+      clearTimeout(deferredCommitTimer);
+      deferredCommitTimer = null;
     }
   }
 
@@ -1889,10 +1926,7 @@ export function createCurateScheduler({
     await migrateCurateStateIfNeeded(kb);
     runtimeStarted = true;
     armRetryWake();
-    queuedRun = true;
-    setTimeout(() => {
-      launchQueuedRun();
-    }, 0);
+    schedule();
   }
 
   function schedule(): void {
@@ -1928,6 +1962,7 @@ export function createCurateScheduler({
       clearTimeout(debounceTimer);
       debounceTimer = null;
     }
+    cancelDeferredCommit();
     const run = activeRun;
     const runController = activeRunController;
     if (runController !== null) {
@@ -1948,6 +1983,7 @@ export function createCurateScheduler({
     start,
     schedule,
     stop,
+    scheduleDeferredCommit,
     isRunning() {
       return queuedRun || activeRun !== null || retryWakeTimer !== null || debounceTimer !== null;
     },

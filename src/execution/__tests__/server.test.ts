@@ -299,6 +299,7 @@ describe('execution backend server', () => {
       curateScheduler: {
         start: vi.fn(async () => {}),
         schedule: vi.fn(),
+        scheduleDeferredCommit: vi.fn(),
         isRunning: () => false,
         stop: vi.fn(async () => {}),
       },
@@ -452,6 +453,7 @@ describe('execution backend server', () => {
       curateScheduler: {
         start: vi.fn(async () => {}),
         schedule: vi.fn(),
+        scheduleDeferredCommit: vi.fn(),
         isRunning: () => false,
         stop: vi.fn(async () => {}),
       },
@@ -668,6 +670,7 @@ describe('execution backend server', () => {
         curateScheduler: {
           start: vi.fn(async () => {}),
           schedule: vi.fn(),
+          scheduleDeferredCommit: vi.fn(),
           isRunning: () => false,
         },
       } as never,
