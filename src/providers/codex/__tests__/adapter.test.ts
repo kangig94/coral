@@ -1,3 +1,6 @@
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderRequest } from '../../../shared/types.js';
 import type { ProviderRuntime } from '../../types.js';
@@ -120,5 +123,123 @@ describe('codex adapter preflight handoff', () => {
       'Fork this',
       expect.objectContaining({ preChecked: validatedCli }),
     );
+  });
+});
+
+describe('codex adapter recovery contract', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'codex-recovery-'));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    vi.resetModules();
+    vi.restoreAllMocks();
+  });
+
+  it('finalizes from stdout file with valid Codex JSONL output', async () => {
+    const { codexProvider } = await loadProvider();
+
+    const stdoutPath = join(tmpDir, 'stdout.jsonl');
+    const stderrPath = join(tmpDir, 'stderr.log');
+    const jsonlOutput = [
+      '{"type":"thread.started","thread_id":"recovered-thread"}',
+      '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Recovered output"}}',
+    ].join('\n');
+    writeFileSync(stdoutPath, jsonlOutput, 'utf-8');
+    writeFileSync(stderrPath, '', 'utf-8');
+
+    const result = await codexProvider.recovery!.finalizeFromArtifacts({
+      stdoutPath,
+      stderrPath,
+      exitCode: 0,
+      signal: null,
+    });
+
+    expect(result.content).toBe('Recovered output');
+    expect(result.conversationRef).toBe('recovered-thread');
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('falls back to raw content for unparseable stdout', async () => {
+    const { codexProvider } = await loadProvider();
+
+    const stdoutPath = join(tmpDir, 'stdout.jsonl');
+    const stderrPath = join(tmpDir, 'stderr.log');
+    const rawContent = 'This is not JSONL, just plain text output.';
+    writeFileSync(stdoutPath, rawContent, 'utf-8');
+    writeFileSync(stderrPath, '', 'utf-8');
+
+    const result = await codexProvider.recovery!.finalizeFromArtifacts({
+      stdoutPath,
+      stderrPath,
+      exitCode: 1,
+      signal: null,
+    });
+
+    expect(result.content).toBe(rawContent);
+    expect(result.exitCode).toBe(1);
+  });
+
+  it('includes kill signal notice in raw fallback', async () => {
+    const { codexProvider } = await loadProvider();
+
+    const stdoutPath = join(tmpDir, 'stdout.jsonl');
+    const stderrPath = join(tmpDir, 'stderr.log');
+    writeFileSync(stdoutPath, 'raw output', 'utf-8');
+    writeFileSync(stderrPath, '', 'utf-8');
+
+    const result = await codexProvider.recovery!.finalizeFromArtifacts({
+      stdoutPath,
+      stderrPath,
+      exitCode: null,
+      signal: 'SIGTERM',
+    });
+
+    expect(result.content).toBe('raw output');
+    expect(result.notice).toBe('killed by SIGTERM');
+  });
+
+  it('uses fallbackConversationRef when JSONL lacks sessionId', async () => {
+    const { codexProvider } = await loadProvider();
+
+    const stdoutPath = join(tmpDir, 'stdout.jsonl');
+    const stderrPath = join(tmpDir, 'stderr.log');
+    // JSONL with a response but no thread.started event
+    const jsonlOutput = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"No session"}}\n';
+    writeFileSync(stdoutPath, jsonlOutput, 'utf-8');
+    writeFileSync(stderrPath, '', 'utf-8');
+
+    const result = await codexProvider.recovery!.finalizeFromArtifacts({
+      stdoutPath,
+      stderrPath,
+      exitCode: 0,
+      signal: null,
+      fallbackConversationRef: 'fallback-thread',
+    });
+
+    expect(result.content).toBe('No session');
+    expect(result.conversationRef).toBe('fallback-thread');
+  });
+
+  it('captures errors from JSONL in recovered result', async () => {
+    const { codexProvider } = await loadProvider();
+
+    const stdoutPath = join(tmpDir, 'stdout.jsonl');
+    const stderrPath = join(tmpDir, 'stderr.log');
+    const jsonlOutput = '{"type":"error","message":"Rate limit exceeded"}\n';
+    writeFileSync(stdoutPath, jsonlOutput, 'utf-8');
+    writeFileSync(stderrPath, '', 'utf-8');
+
+    const result = await codexProvider.recovery!.finalizeFromArtifacts({
+      stdoutPath,
+      stderrPath,
+      exitCode: 1,
+      signal: null,
+    });
+
+    expect(result.errors).toEqual(['Rate limit exceeded']);
   });
 });

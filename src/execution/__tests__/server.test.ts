@@ -13,6 +13,7 @@ import { JOBS_DIR, ProgressStore, jobResultPath } from '../progress-store.js';
 import { SessionManager } from '../session-manager.js';
 import { discussSourcesPath, pluginRootNamespace, projectDataDir, resolveProjectSource } from '../../infra/paths.js';
 import type { BackendServerController } from '../server.js';
+import type { PersistedLaunchRecord } from '../../shared/types.js';
 
 const testBackendNamespace = pluginRootNamespace(process.cwd());
 const foreignBackendNamespace = 'foreign-namespace-xyz';
@@ -204,6 +205,33 @@ async function loadExecutionModules(): Promise<{
   return { serverModule, backendInfo, backendLock };
 }
 
+function stubLaunchRecord(progressStore: ProgressStore, overrides: {
+  jobId: string;
+  sessionId: string;
+  provider: string;
+  projectRoot: string;
+  backendNamespace: string;
+  pool?: string;
+}): void {
+  const record: PersistedLaunchRecord = {
+    jobId: overrides.jobId,
+    sessionId: overrides.sessionId,
+    provider: overrides.provider,
+    projectRoot: overrides.projectRoot,
+    backendNamespace: overrides.backendNamespace,
+    pool: overrides.pool ?? 'default',
+    enqueueSequence: 0,
+    providerAction: 'exec',
+    request: {
+      prompt: '',
+      bypassPermissions: false,
+      coralEnv: {},
+    },
+    createdAt: new Date().toISOString(),
+  };
+  progressStore.writeLaunchRecord(overrides.jobId, record);
+}
+
 function parseToolText(body: unknown): unknown {
   const text = (body as { content: Array<{ text: string }> }).content[0]?.text;
   if (typeof text !== 'string') {
@@ -317,6 +345,13 @@ describe('execution backend server', () => {
       bundleHash: 'testhash1234',
       initialPhase: 'running',
     });
+    stubLaunchRecord(progressStore, {
+      jobId: 'job-local-health',
+      sessionId: 'session-local-health',
+      provider: 'codex',
+      projectRoot: '/tmp/project',
+      backendNamespace: testBackendNamespace,
+    });
     progressStore.initJob({
       jobId: 'job-stale-health',
       sessionId: 'session-stale-health',
@@ -326,10 +361,16 @@ describe('execution backend server', () => {
       bundleHash: 'oldhash9999',
       initialPhase: 'running',
     });
+    stubLaunchRecord(progressStore, {
+      jobId: 'job-stale-health',
+      sessionId: 'session-stale-health',
+      provider: 'codex',
+      projectRoot: '/tmp/project',
+      backendNamespace: testBackendNamespace,
+    });
 
     const backend = await startBackendServer({
       progressStore,
-      recoverOrphanedJobsFn: () => {},
     });
 
     const response = await fetch(`${backend.baseUrl}/health`, {
@@ -948,10 +989,16 @@ describe('execution backend server', () => {
     progressStore.appendProgress('job-1', 'session-1', 'working');
     progressStore.appendTerminal('job-1', 'session-1', { content: 'done' }, 'completed');
     progressStore.initJob({ jobId: 'job-2', sessionId: 'session-2', provider: 'claude', projectRoot: '/tmp/project', backendNamespace: testBackendNamespace });
+    stubLaunchRecord(progressStore, {
+      jobId: 'job-2',
+      sessionId: 'session-2',
+      provider: 'claude',
+      projectRoot: '/tmp/project',
+      backendNamespace: testBackendNamespace,
+    });
 
     const backend = await startBackendServer({
       progressStore,
-      recoverOrphanedJobsFn: () => {},
     });
 
     const jobsResponse = await fetch(`${backend.baseUrl}/api/jobs`, {
@@ -1026,14 +1073,15 @@ describe('execution backend server', () => {
       createdJobIds.add('job-completed');
 
       progressStore.initJob({ jobId: 'job-running', sessionId: 'session-running', provider: 'codex', projectRoot: '/tmp/project', backendNamespace: testBackendNamespace, initialPhase: 'running' });
+      stubLaunchRecord(progressStore, { jobId: 'job-running', sessionId: 'session-running', provider: 'codex', projectRoot: '/tmp/project', backendNamespace: testBackendNamespace });
       progressStore.initJob({ jobId: 'job-queued', sessionId: 'session-queued', provider: 'claude', projectRoot: '/tmp/project', backendNamespace: testBackendNamespace, initialPhase: 'queued' });
+      stubLaunchRecord(progressStore, { jobId: 'job-queued', sessionId: 'session-queued', provider: 'claude', projectRoot: '/tmp/project', backendNamespace: testBackendNamespace });
       progressStore.initJob({ jobId: 'job-completed', sessionId: 'session-completed', provider: 'codex', projectRoot: '/tmp/project', backendNamespace: testBackendNamespace });
       progressStore.appendTerminal('job-completed', 'session-completed', { content: 'done' }, 'completed');
 
       const backend = await startBackendServer({
         createExecutionService: () => fakeService as never,
         progressStore,
-        recoverOrphanedJobsFn: () => {},
       });
 
       const allResponse = await fetch(`${backend.baseUrl}/api/jobs`, {
@@ -1251,7 +1299,7 @@ describe('execution backend server', () => {
     expect(new SessionManager(projectB).get('codex', sessionB.sessionId)?.activeJobId).toBeUndefined();
   });
 
-  it('leaves active session claims in place when the referenced job dir exists', async () => {
+  it('releases terminal session claims even when the referenced job dir exists', async () => {
     const progressStore = new ProgressStore();
     const projectRoot = createProjectRoot('project-existing-job');
     const session = new SessionManager(projectRoot).allocate('codex', 'alpha', 'gpt-5', projectRoot);
@@ -1264,10 +1312,10 @@ describe('execution backend server', () => {
 
     await startBackendServer({ progressStore });
 
-    expect(new SessionManager(projectRoot).get('codex', session.sessionId)).toMatchObject({
-      sessionId: session.sessionId,
-      activeJobId: jobId,
-    });
+    // Terminal jobs should have their session claims released during startup recovery
+    const recoveredSession = new SessionManager(projectRoot).get('codex', session.sessionId);
+    expect(recoveredSession?.activeJobId).toBeUndefined();
+    expect(recoveredSession?.lastJobId).toBe(jobId);
   });
 
   it('recovers orphaned workflow jobs with an empty artifact, workflow marker, and released session claim', async () => {
@@ -1308,7 +1356,7 @@ describe('execution backend server', () => {
       jobKind: 'workflow',
       result: {
         content: '',
-        notice: 'Unclean shutdown - orphaned job',
+        notice: 'Incompatible job format — missing durable launch record. Job predates the handoff recovery system.',
         workflow: { steps: [] },
       },
     });
@@ -1351,6 +1399,13 @@ describe('execution backend server', () => {
       projectRoot: '/tmp/foreign-project',
       backendNamespace: foreignBackendNamespace,
       initialPhase: 'running',
+    });
+    stubLaunchRecord(progressStore, {
+      jobId: foreignJobId,
+      sessionId: 'session-foreign-drain',
+      provider: 'codex',
+      projectRoot: '/tmp/foreign-project',
+      backendNamespace: foreignBackendNamespace,
     });
 
     const backend = await startBackendServer({ pluginRoot, progressStore });
@@ -1444,6 +1499,131 @@ describe('execution backend server', () => {
 
     expect(response.status).toBe(401);
     expect(await response.json()).toEqual({ error: 'unauthorized' });
+  });
+
+  describe('shutdown policy', () => {
+    it('handoff shutdown preserves children and does not mark jobs as error', async () => {
+      const markJobsAsErrorFn = vi.fn();
+      const killAllChildrenFn = vi.fn();
+
+      const backend = await startBackendServer({
+        markJobsAsErrorFn,
+        killAllChildrenFn,
+      });
+
+      await backend.controller.shutdown('replaced');
+      await backend.controller.waitForShutdown();
+
+      expect(killAllChildrenFn).not.toHaveBeenCalled();
+      expect(markJobsAsErrorFn).not.toHaveBeenCalled();
+    });
+
+    it('hard shutdown kills children and marks jobs as error', async () => {
+      const markJobsAsErrorFn = vi.fn();
+      const killAllChildrenFn = vi.fn();
+
+      const backend = await startBackendServer({
+        markJobsAsErrorFn,
+        killAllChildrenFn,
+      });
+
+      await backend.controller.shutdown('sigint');
+      await backend.controller.waitForShutdown();
+
+      expect(killAllChildrenFn).toHaveBeenCalledTimes(1);
+      expect(markJobsAsErrorFn).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('launch fence', () => {
+    it('allows launch ops after fence lifts on startup completion', async () => {
+      // Seed a recoverable queued job so the recovery scan activates the fence
+      const progressStore = new ProgressStore();
+      const jobId = 'fenced-job';
+      createdJobIds.add(jobId);
+      progressStore.initJob({
+        jobId,
+        sessionId: 'fenced-session',
+        provider: 'codex',
+        projectRoot: '/tmp/project',
+        backendNamespace: testBackendNamespace,
+        initialPhase: 'queued',
+      });
+      stubLaunchRecord(progressStore, {
+        jobId,
+        sessionId: 'fenced-session',
+        provider: 'codex',
+        projectRoot: '/tmp/project',
+        backendNamespace: testBackendNamespace,
+      });
+
+      const fakeService = createFakeExecutionService({
+        start: vi.fn(async () => ({ status: 'running' as const, job: 'j1', session: 's1' })),
+      });
+
+      // startBackendServer awaits start(), which completes the scan and lifts the fence
+      const backend = await startBackendServer({
+        progressStore,
+        createExecutionService: () => fakeService as never,
+      });
+
+      // After fence lifts, exec calls are processed normally
+      const response = await fetch(`${backend.baseUrl}/tool`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Coral-Backend-Token': backend.token,
+        },
+        body: JSON.stringify({
+          name: 'codex',
+          args: { op: 'exec', prompt: 'test' },
+          context: { projectRoot: '/tmp/project', coralEnv: {} },
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.json() as Record<string, unknown>;
+      expect(body).toMatchObject({ status: 'running' });
+      expect(fakeService.start).toHaveBeenCalled();
+    });
+  });
+
+  describe('recovery scan', () => {
+    it('classifies old-format jobs as incompatible', async () => {
+      const progressStore = new ProgressStore();
+      const jobId = 'old-format-job';
+      const projectRoot = createProjectRoot('old-format-project');
+      const session = new SessionManager(projectRoot).allocate('codex', 'alpha', 'gpt-5', projectRoot);
+
+      createdJobIds.add(jobId);
+      // Create a job with live phase (running) but NO launch.json — old format
+      progressStore.initJob({
+        jobId,
+        sessionId: session.sessionId,
+        provider: 'codex',
+        projectRoot,
+        backendNamespace: testBackendNamespace,
+        initialPhase: 'running',
+      });
+      // Do NOT write launch.json — this is the old-format marker
+      new SessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
+
+      const backend = await startBackendServer({ progressStore });
+
+      // After recovery, the old-format job should be marked as error with the OLD_FORMAT_NOTICE
+      const status = progressStore.readStatus(jobId);
+      expect(status).toMatchObject({
+        phase: 'error',
+        result: {
+          content: '',
+          notice: 'Incompatible job format — missing durable launch record. Job predates the handoff recovery system.',
+        },
+      });
+
+      // Session claim should be released
+      const recoveredSession = new SessionManager(projectRoot).get('codex', session.sessionId);
+      expect(recoveredSession?.activeJobId).toBeUndefined();
+    });
   });
 
 });

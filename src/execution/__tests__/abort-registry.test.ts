@@ -30,4 +30,35 @@ describe('execution AbortRegistry', () => {
     expect(registry.getSignal(firstJobId)?.aborted).toBe(true);
     expect(registry.getSignal(secondJobId)?.aborted).toBe(false);
   });
+
+  it('register with onAbort fires callback when job is aborted', () => {
+    const registry = new AbortRegistry();
+    let called = false;
+    const jobId = registry.register(undefined, () => { called = true; });
+
+    expect(called).toBe(false);
+    registry.abort([jobId]);
+    expect(called).toBe(true);
+  });
+
+  it('register with explicit jobId and onAbort uses the given ID', () => {
+    const registry = new AbortRegistry();
+    let called = false;
+    const jobId = registry.register('adopted-42', () => { called = true; });
+
+    expect(jobId).toBe('adopted-42');
+    expect(registry.has('adopted-42')).toBe(true);
+    registry.abort(['adopted-42']);
+    expect(called).toBe(true);
+  });
+
+  it('register without onAbort still works normally', () => {
+    const registry = new AbortRegistry();
+    const jobId = registry.register('plain-job');
+
+    expect(jobId).toBe('plain-job');
+    expect(registry.has('plain-job')).toBe(true);
+    const result = registry.abort(['plain-job']);
+    expect(result.aborted).toEqual(['plain-job']);
+  });
 });

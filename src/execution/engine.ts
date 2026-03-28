@@ -1,5 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import type { PersistedRuntimeRecord } from '../shared/types.js';
 
 const IDLE_TIMEOUT = 10 * 60 * 1000; // 10 minutes of inactivity
 const IDLE_CHECK_INTERVAL = 30_000; // poll interval for idle detection
@@ -394,6 +397,208 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
     }
     child.stdin.end();
   });
+}
+
+// ── Durable wrapper spawn (AC2/AC3/AC4) ──────────────────────────────────────
+
+export type DurableSpawnOptions = {
+  provider: string;
+  command: string;
+  args: string[];
+  prompt?: string;
+  cwd?: string;
+  jobDir: string;
+  signal?: AbortSignal;
+  pool?: LaunchPool;
+  env?: Record<string, string>;
+};
+
+export type DurableSpawnResult = {
+  pid: number;
+  stdoutPath: string;
+  stderrPath: string;
+};
+
+const DURABLE_POLL_INTERVAL_MS = 100;
+const DURABLE_POLL_TIMEOUT_MS = 5_000;
+
+/**
+ * Inline Node.js script executed as a detached wrapper child.
+ * Opens file-backed stdout/stderr (AC4), writes runtime.json after spawn (AC2),
+ * and writes exit.json after CLI exit and output flush (AC3).
+ *
+ * Arguments: jobDir, command, argsJson, envJson, cwd, prompt
+ */
+const WRAPPER_SCRIPT = `
+const { spawn } = require('child_process');
+const { openSync, closeSync, writeFileSync, renameSync } = require('fs');
+const { join } = require('path');
+
+const jobDir = process.argv[2];
+const command = process.argv[3];
+const args = JSON.parse(process.argv[4]);
+const env = JSON.parse(process.argv[5]);
+const cwd = process.argv[6] || undefined;
+const prompt = process.argv[7] || '';
+
+const stdoutPath = join(jobDir, 'stdout');
+const stderrPath = join(jobDir, 'stderr');
+
+const stdoutFd = openSync(stdoutPath, 'w');
+const stderrFd = openSync(stderrPath, 'w');
+
+const child = spawn(command, args, {
+  stdio: ['pipe', stdoutFd, stderrFd],
+  cwd,
+  env,
+  shell: process.platform === 'win32',
+});
+
+// AC2: write runtime.json atomically after spawn succeeds
+const runtimeRecord = {
+  pid: child.pid,
+  stdoutPath,
+  stderrPath,
+  startTime: new Date().toISOString(),
+};
+const tmpPath = join(jobDir, 'runtime.json.tmp');
+const finalPath = join(jobDir, 'runtime.json');
+writeFileSync(tmpPath, JSON.stringify(runtimeRecord, null, 2));
+renameSync(tmpPath, finalPath);
+
+// Write prompt to stdin, then close
+if (prompt) child.stdin.write(prompt);
+child.stdin.end();
+
+// AC3: write exit.json atomically after CLI exit and output flush
+child.on('close', (code, signal) => {
+  try { closeSync(stdoutFd); } catch {}
+  try { closeSync(stderrFd); } catch {}
+
+  const exitRecord = {
+    exitCode: code,
+    signal: signal || null,
+    endTime: new Date().toISOString(),
+  };
+  const exitTmp = join(jobDir, 'exit.json.tmp');
+  const exitFinal = join(jobDir, 'exit.json');
+  writeFileSync(exitTmp, JSON.stringify(exitRecord, null, 2));
+  renameSync(exitTmp, exitFinal);
+
+  process.exit(0);
+});
+
+child.on('error', (err) => {
+  try { closeSync(stdoutFd); } catch {}
+  try { closeSync(stderrFd); } catch {}
+
+  const exitRecord = {
+    exitCode: null,
+    signal: null,
+    endTime: new Date().toISOString(),
+  };
+  const exitTmp = join(jobDir, 'exit.json.tmp');
+  const exitFinal = join(jobDir, 'exit.json');
+  writeFileSync(exitTmp, JSON.stringify(exitRecord, null, 2));
+  renameSync(exitTmp, exitFinal);
+
+  process.exit(1);
+});
+`.trim();
+
+/**
+ * Spawn a durable wrapper child that survives backend exit.
+ *
+ * The wrapper opens file-backed stdout/stderr, spawns the actual CLI,
+ * writes runtime.json (AC2), and writes exit.json after CLI exit (AC3).
+ * The parent polls for runtime.json to confirm spawn success.
+ */
+export async function spawnDurableWrapper(options: DurableSpawnOptions): Promise<DurableSpawnResult> {
+  const { command, args, prompt, cwd, jobDir, signal, env: extraEnv } = options;
+
+  const mergedEnv: Record<string, string> = {
+    ...process.env as Record<string, string>,
+    CORAL_CHILD: '1',
+    ...extraEnv,
+  };
+
+  const wrapper = spawn(
+    process.execPath,
+    [
+      '-e',
+      WRAPPER_SCRIPT,
+      jobDir,
+      command,
+      JSON.stringify(args),
+      JSON.stringify(mergedEnv),
+      cwd ?? '',
+      prompt ?? '',
+    ],
+    {
+      detached: true,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    },
+  );
+
+  // Fire-and-forget — wrapper survives backend exit.
+  // Not added to activeChildren; the wrapper manages its own lifecycle.
+  wrapper.unref();
+
+  // Poll for runtime.json existence with ~100ms intervals, 5s timeout.
+  const runtimePath = join(jobDir, 'runtime.json');
+  const deadline = Date.now() + DURABLE_POLL_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    if (signal?.aborted) {
+      throw new Error('Durable spawn aborted while waiting for runtime.json');
+    }
+
+    try {
+      statSync(runtimePath);
+      // runtime.json exists — read and return the record
+      const data = readFileSync(runtimePath, 'utf-8');
+      const record = JSON.parse(data) as PersistedRuntimeRecord;
+      return {
+        pid: record.pid,
+        stdoutPath: record.stdoutPath,
+        stderrPath: record.stderrPath,
+      };
+    } catch {
+      // Not yet written — wait and retry
+    }
+
+    await new Promise<void>((resolve) => setTimeout(resolve, DURABLE_POLL_INTERVAL_MS));
+  }
+
+  throw new Error(`Durable wrapper failed to write runtime.json within ${DURABLE_POLL_TIMEOUT_MS}ms (jobDir: ${jobDir})`);
+}
+
+// ── Recovery helpers ──────────────────────────────────────────────────────────
+
+/** Directly insert a job into a pool's activeLaunches map. Recovery-only. */
+export function restoreActiveLaunch(jobId: string, provider: string, pool: LaunchPool = 'default'): void {
+  getActiveMap(pool).set(jobId, provider);
+}
+
+/** Insert a queue entry at the tail. Recovery calls this in sequence order. */
+export function restoreQueuedLaunch(
+  jobId: string,
+  provider: string,
+  pool: LaunchPool = 'default',
+): QueuedHandle {
+  const queuedLaunches = getQueue(pool);
+
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+
+  const entry: QueuedLaunchEntry = { jobId, provider, promise, resolve, reject };
+  queuedLaunches.push(entry);
+
+  return queuedHandle(entry, pool);
 }
 
 export function killAllChildren(): void {

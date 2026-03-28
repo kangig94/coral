@@ -35,6 +35,7 @@ import { activeChildren, killAllChildren, queueDepth, spawnCli } from './engine.
 import { readBackendInfo, writeBackendInfo, removeBackendInfoIfOwner } from '../infra/backend-info.js';
 import { acquireLock, BackendAlreadyRunningError, removeLockIfOwner } from './backend-lock.js';
 import type { AbortResult } from './abort-registry.js';
+import { RecoveryRegistry } from './recovery-registry.js';
 
 import { eventBus, type EventBusEvents } from './event-bus.js';
 import { IdleTimer } from './idle-timer.js';
@@ -80,7 +81,9 @@ import {
   isLivePhase,
   isTerminalPhase,
   readBackendNamespace,
+  type PersistedLaunchRecord,
   type PersistedProgressRecord,
+  type PersistedRuntimeRecord,
   type PersistedStatusRecord,
   type TerminalResult,
   type WaitCursor,
@@ -187,8 +190,22 @@ export type BackendServerController = {
 };
 
 const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
+const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
 const SHUTDOWN_POLL_MS = 50;
 const ORPHANED_JOB_NOTICE = 'Unclean shutdown - orphaned job';
+const OLD_FORMAT_NOTICE = 'Incompatible job format — missing durable launch record. Job predates the handoff recovery system.';
+
+/**
+ * Shutdown mode derived from reason. Determines child process and job handling:
+ * - handoff: preserve wrappers/children for recovery; do NOT mark jobs as error or kill children
+ * - hard: kill children and mark jobs as error (current behavior)
+ */
+type ShutdownMode = 'handoff' | 'hard';
+
+function shutdownModeFromReason(reason: string): ShutdownMode {
+  if (reason === 'replaced' || reason === 'sigterm') return 'handoff';
+  return 'hard';
+}
 const CORAL_OP_PREFIX = 'coral:';
 const defaultPluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
 const globalDiscussRegistry = createDiscussContextRegistry();
@@ -455,6 +472,49 @@ function readSessionRefs(shardDir: string): Array<{ sessionId: string; provider:
   }
 }
 
+type RecoveryClass = 'incompatible' | 'queued' | 'running' | 'terminal' | 'incomplete' | 'stale_dead' | null;
+
+/**
+ * Classify a job for recovery purposes.
+ * - 'incompatible': live phase but missing launch.json (predates durable snapshot system)
+ * - 'terminal': already finished, no recovery needed
+ * - 'incomplete': launch.json exists but no status record (partial admission)
+ * - 'queued': launch.json exists, phase is queued, no runtime.json yet
+ * - 'running': launch.json + runtime.json exist, phase is running/launching, process may be alive
+ * - 'stale_dead': like running but exit.json already written (process exited uncleanly)
+ * - null: unrecognized state
+ */
+function classifyRecoverableJob(
+  progressStore: ProgressStore,
+  jobId: string,
+): RecoveryClass {
+  const status = progressStore.readStatus(jobId);
+  const hasLaunch = progressStore.hasLaunchRecord(jobId);
+
+  // Incomplete admission: launch.json exists but no status.json (crash between writes)
+  if (!status) return hasLaunch ? 'incomplete' : null;
+
+  const hasRuntime = progressStore.hasRuntimeRecord(jobId);
+  const hasExit = progressStore.hasExitRecord(jobId);
+
+  // Terminal jobs need no recovery
+  if (isTerminalPhase(status.phase)) return 'terminal';
+
+  // Incompatible old-format: live phase but no launch.json
+  if (isLivePhase(status.phase) && !hasLaunch) return 'incompatible';
+
+  // Queued recoverable: launch.json exists, phase is queued, no runtime.json
+  if (hasLaunch && status.phase === 'queued' && !hasRuntime) return 'queued';
+
+  // Running recoverable: launch.json and runtime.json exist, phase is running/launching
+  if (hasLaunch && hasRuntime && (status.phase === 'running' || status.phase === 'launching')) {
+    if (hasExit) return 'stale_dead';
+    return 'running';
+  }
+
+  return null;
+}
+
 function markJobAsError(
   progressStore: ProgressStore,
   status: PersistedStatusRecord,
@@ -501,7 +561,10 @@ function recoverOrphanedJobs(progressStore: ProgressStore, namespace: string, lo
 
   for (const status of listLiveJobs(progressStore, namespace)) {
     try {
-      markJobAsError(progressStore, status, ORPHANED_JOB_NOTICE, log);
+      const notice = progressStore.hasLaunchRecord(status.jobId)
+        ? ORPHANED_JOB_NOTICE
+        : OLD_FORMAT_NOTICE;
+      markJobAsError(progressStore, status, notice, log);
       const sessionManager = new SessionManager(status.projectRoot);
       sessionManager.releaseJob(status.sessionId, status.jobId);
       log(`Recovered orphaned job: ${status.jobId}\n`);
@@ -1186,6 +1249,9 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   let started = false;
   let sessionIndexSubscribed = false;
   let kbSubsystem: KbSubsystem | null = null;
+  let recoveryRegistry: RecoveryRegistry | null = null;
+  let launchFenceActive = false;
+  const adoptedRunningPids = new Map<string, { pid: number; pool: string }>();
 
   const onSessionIndexUpdated = (payload: EventBusEvents['session:updated']): void => {
     if (!sessionIndex.hasShard(payload.shardHash)) {
@@ -1250,6 +1316,18 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     const pending = new Set(jobIds);
     const aborted: string[] = [];
 
+    // Check recovery registry first
+    if (recoveryRegistry && recoveryRegistry.size > 0) {
+      const registryJobIds = [...pending].filter(id => recoveryRegistry!.has(id));
+      if (registryJobIds.length > 0) {
+        const result = recoveryRegistry.abort(registryJobIds);
+        for (const jobId of result.aborted) {
+          pending.delete(jobId);
+          aborted.push(jobId);
+        }
+      }
+    }
+
     for (const service of services.values()) {
       if (pending.size === 0) break;
       const result = service.abort([...pending]);
@@ -1276,12 +1354,25 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         continue;
       }
 
-      if (status.projectRoot !== projectRoot || !belongsToNamespace(status, currentNamespace)) {
+      // projectRoot must match — never bypassed by recovery registry
+      if (status.projectRoot !== projectRoot) {
         mismatch.push(jobId);
         continue;
       }
 
-      valid.push(jobId);
+      // Namespace check with recovery registry fallback
+      if (belongsToNamespace(status, currentNamespace)) {
+        valid.push(jobId);
+        continue;
+      }
+
+      // Recovery registry fallback: job's projectRoot matches but namespace doesn't yet
+      if (recoveryRegistry?.has(jobId)) {
+        valid.push(jobId);
+        continue;
+      }
+
+      mismatch.push(jobId);
     }
 
     return { valid, missing, mismatch };
@@ -1398,23 +1489,31 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     shutdownPromise = (async () => {
       if (lifecycle === 'stopped') return;
 
-      log(`Coral backend shutting down (${reason})...\n`);
+      const mode = shutdownModeFromReason(reason);
+      const drainTimeout = mode === 'handoff' ? HANDOFF_DRAIN_TIMEOUT_MS : SHUTDOWN_DRAIN_TIMEOUT_MS;
+
+      log(`Coral backend shutting down (${reason}, mode=${mode})...\n`);
       lifecycle = 'draining';
       idleTimer.stopWatching();
 
       const serverClosed = closeServerFn(server);
-      await waitForInflightDrain(idleTimer, SHUTDOWN_DRAIN_TIMEOUT_MS);
+      await waitForInflightDrain(idleTimer, drainTimeout);
       server.closeAllConnections?.();
       for (const stream of streamResponses) {
         stream.end();
       }
       await Promise.race([
         serverClosed,
-        new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_DRAIN_TIMEOUT_MS)),
+        new Promise<void>((resolve) => setTimeout(resolve, drainTimeout)),
       ]);
 
-      markJobsAsErrorFn(namespace, 'Backend shutting down');
-      killAllChildrenFn();
+      if (mode === 'hard') {
+        markJobsAsErrorFn(namespace, 'Backend shutting down');
+        killAllChildrenFn();
+      }
+      // handoff mode: detached wrappers continue, jobs remain in their current
+      // phase for recovery by the replacement backend.
+
       unsubscribeSessionIndex();
       for (const store of discussStores.values()) {
         store.dispose();
@@ -1685,6 +1784,19 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         sendJson(res, 400, { error: 'invalid_request' });
         return;
       }
+
+      // Launch fence: block new launches while recovery adoption is in progress
+      if (launchFenceActive) {
+        const parsedOp = typeof request.args.op === 'string' ? request.args.op : null;
+        const isLaunchOp = parsedOp !== null && ['exec', 'resume', 'fork', 'bypass_exec'].includes(parsedOp);
+        const isProviderTool = !request.name.startsWith('discuss') && !request.name.startsWith('kb_')
+          && request.name !== 'abort' && request.name !== 'wait' && request.name !== 'workflow';
+        if (isLaunchOp && isProviderTool) {
+          sendJson(res, 200, { content: [{ type: 'text', text: 'recovering — retry after 500ms' }], isError: true });
+          return;
+        }
+      }
+
       const result = await routeToolCallFn(request, {
         getExecutionService,
         getDiscussContext,
@@ -1765,6 +1877,114 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     sendJson(res, 404, { error: 'not_found' });
   }
 
+  async function runRecoveryAdoption(
+    queuedJobs: Array<{ jobId: string; launchRecord: PersistedLaunchRecord }>,
+    runningJobs: Array<{ jobId: string; launchRecord: PersistedLaunchRecord; runtimeRecord: PersistedRuntimeRecord }>,
+  ): Promise<void> {
+    // Sort queued jobs by enqueue sequence for FIFO ordering
+    queuedJobs.sort((a, b) => a.launchRecord.enqueueSequence - b.launchRecord.enqueueSequence);
+
+    // Adopt running jobs first — restore their active permits before fence lifts
+    for (const { jobId, launchRecord, runtimeRecord } of runningJobs) {
+      try {
+        const ctx: CallerContext = { projectRoot: launchRecord.projectRoot, pluginRoot: resolvedPluginRoot, coralEnv: {} };
+        const service = getExecutionService(ctx) as DefaultExecutionService;
+        const { cleanup } = service.adoptRunningJob(launchRecord, runtimeRecord);
+
+        // Track adopted PID
+        adoptedRunningPids.set(jobId, { pid: runtimeRecord.pid, pool: launchRecord.pool });
+
+        // Install PID poller to detect termination
+        const pollInterval = setInterval(() => {
+          let alive = false;
+          try {
+            process.kill(runtimeRecord.pid, 0);
+            alive = true;
+          } catch { /* pid already exited */ }
+
+          if (!alive) {
+            clearInterval(pollInterval);
+            adoptedRunningPids.delete(jobId);
+
+            const exitRecord = progressStore.readExitRecord(jobId);
+            if (exitRecord) {
+              // Finalize from durable artifacts via provider recovery
+              const provider = getNewProvider(launchRecord.provider);
+              if (provider?.recovery) {
+                void provider.recovery.finalizeFromArtifacts({
+                  stdoutPath: runtimeRecord.stdoutPath,
+                  stderrPath: runtimeRecord.stderrPath,
+                  exitCode: exitRecord.exitCode,
+                  signal: exitRecord.signal,
+                }).then((result) => {
+                  const phase = result.aborted ? 'aborted' as const : 'completed' as const;
+                  service.completeRecoveredJob(jobId, launchRecord.sessionId, {
+                    content: result.content,
+                    durationMs: result.durationMs,
+                    aborted: result.aborted,
+                    nonResumable: result.nonResumable,
+                    exitCode: result.exitCode,
+                    notice: result.notice,
+                    errors: result.errors,
+                    warnings: result.warnings,
+                    usage: result.usage,
+                  }, phase, {
+                    conversationRef: result.conversationRef,
+                    nonResumable: result.nonResumable,
+                  });
+                }).catch(() => {
+                  service.completeRecoveredJob(jobId, launchRecord.sessionId, {
+                    content: '',
+                    notice: 'Provider recovery failed',
+                  }, 'error');
+                });
+              } else {
+                service.completeRecoveredJob(jobId, launchRecord.sessionId, {
+                  content: '',
+                  exitCode: exitRecord.exitCode,
+                }, exitRecord.exitCode === 0 ? 'completed' : 'error');
+              }
+            } else {
+              // PID dead + no exit.json = wrapper lost
+              service.completeRecoveredJob(jobId, launchRecord.sessionId, {
+                content: '',
+                notice: 'Wrapper process lost — no exit.json found',
+              }, 'error');
+            }
+
+            cleanup();
+          }
+        }, 5_000);
+        pollInterval.unref?.();
+
+        recoveryRegistry?.remove(jobId);
+        log(`Adopted running job: ${jobId} (pid=${runtimeRecord.pid})\n`);
+      } catch (err) {
+        log(`Failed to adopt running job ${jobId}: ${formatError(err)}\n`);
+        recoveryRegistry?.remove(jobId);
+      }
+    }
+
+    // Recover queued jobs in FIFO order
+    for (const { jobId, launchRecord } of queuedJobs) {
+      try {
+        const ctx: CallerContext = { projectRoot: launchRecord.projectRoot, pluginRoot: resolvedPluginRoot, coralEnv: {} };
+        const service = getExecutionService(ctx) as DefaultExecutionService;
+        service.recoverQueuedJob(launchRecord);
+        recoveryRegistry?.remove(jobId);
+        log(`Recovered queued job: ${jobId}\n`);
+      } catch (err) {
+        log(`Failed to recover queued job ${jobId}: ${formatError(err)}\n`);
+        recoveryRegistry?.remove(jobId);
+      }
+    }
+
+    // All entries migrated — dissolve registry and lift launch fence
+    recoveryRegistry = null;
+    launchFenceActive = false;
+    log(`Recovery adoption complete. Launch fence lifted.\n`);
+  }
+
   async function start(): Promise<BackendServerInfo> {
     if (started) {
       throw new Error('Backend server already started');
@@ -1779,11 +1999,93 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       });
       subscribeSessionIndex();
       sessionIndex.hydrate(SessionManager.listShards());
-      recoverOrphanedJobsFn(namespace);
-      cleanupStaleJobsFn(bundleHash);
+
+      // Listen first so we're reachable during recovery
       const bindHost = process.env.CORAL_BACKEND_BIND ?? '127.0.0.1';
       const { port, host } = await listen(server, bindHost);
       startedAt = now();
+
+      // Scan recoverable jobs and install recovery registry + launch fence
+      launchFenceActive = true;
+      recoveryRegistry = new RecoveryRegistry();
+      const incompatibleJobs: PersistedStatusRecord[] = [];
+      const queuedRecoverable: Array<{ jobId: string; launchRecord: PersistedLaunchRecord }> = [];
+      const runningRecoverable: Array<{ jobId: string; launchRecord: PersistedLaunchRecord; runtimeRecord: PersistedRuntimeRecord }> = [];
+
+      for (const jobId of progressStore.listJobIds()) {
+        const classification = classifyRecoverableJob(progressStore, jobId);
+        if (classification === 'incompatible') {
+          const status = progressStore.readStatus(jobId);
+          if (status) incompatibleJobs.push(status);
+          continue;
+        }
+        if (classification === 'incomplete') {
+          // Crash between launch.json write and status.json — delete directory
+          try { rmSync(progressStore.jobDir(jobId), { recursive: true, force: true }); } catch { /* best-effort */ }
+          log(`Deleted incomplete admission: ${jobId}\n`);
+          continue;
+        }
+        if (classification === 'queued') {
+          const launchRecord = progressStore.readLaunchRecord(jobId);
+          if (launchRecord) {
+            queuedRecoverable.push({ jobId, launchRecord });
+            recoveryRegistry.register(jobId, launchRecord);
+          }
+          continue;
+        }
+        if (classification === 'running' || classification === 'stale_dead') {
+          const launchRecord = progressStore.readLaunchRecord(jobId);
+          const runtimeRecord = progressStore.readRuntimeRecord(jobId);
+          if (launchRecord && runtimeRecord) {
+            runningRecoverable.push({ jobId, launchRecord, runtimeRecord });
+            recoveryRegistry.register(jobId, launchRecord, runtimeRecord);
+          }
+          continue;
+        }
+        // 'terminal' or null — no action needed
+      }
+
+      // Mark incompatible old-format jobs and release their session claims
+      for (const status of incompatibleJobs) {
+        try {
+          markJobAsError(progressStore, status, OLD_FORMAT_NOTICE, log);
+          const sessionManager = new SessionManager(status.projectRoot);
+          sessionManager.releaseJob(status.sessionId, status.jobId);
+          log(`Marked incompatible old-format job: ${status.jobId}\n`);
+        } catch (err) {
+          log(`Failed to handle incompatible job ${status.jobId}: ${formatError(err)}\n`);
+        }
+      }
+
+      // Release terminal-but-still-claimed sessions
+      for (const shardDir of SessionManager.listShards()) {
+        try {
+          const sessionManager = SessionManager.openShard(shardDir);
+          for (const sessionRef of readSessionRefs(shardDir)) {
+            try {
+              const session = sessionManager.get(sessionRef.provider, sessionRef.sessionId);
+              if (!session?.activeJobId) continue;
+              const jobStatus = progressStore.readStatus(session.activeJobId);
+              if (jobStatus && isTerminalPhase(jobStatus.phase)) {
+                sessionManager.releaseJob(session.sessionId, session.activeJobId);
+                log(`Released terminal session claim: ${session.sessionId}\n`);
+              } else if (!hasJobDir(progressStore, session.activeJobId)) {
+                sessionManager.releaseJob(session.sessionId, session.activeJobId);
+                log(`Released orphaned session claim: ${session.sessionId}\n`);
+              }
+            } catch (err) {
+              log(`Failed to check session ${sessionRef.sessionId}: ${formatError(err)}\n`);
+            }
+          }
+        } catch (err) {
+          log(`Failed to scan session shard ${shardDir}: ${formatError(err)}\n`);
+        }
+      }
+
+      // Cleanup stale terminal jobs (old terminal data from previous bundle hashes)
+      cleanupStaleJobsFn(bundleHash);
+
+      // Publish backend info (now reachable for wait/list/detail/abort via recovery registry)
       writeBackendInfoFn(resolvedPluginRoot, {
         pid: process.pid,
         port,
@@ -1796,6 +2098,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         startedAt,
       });
 
+      // Discuss session recovery
       for (const source of knownDiscussSources()) {
         await discussOperations.recoverPersistedSessionsFromStore(
           getDiscussStoreForSource(source),
@@ -1809,11 +2112,15 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
 
       lifecycle = 'running';
       started = true;
+
+      // Idle timer with namespace-based counting (AC10)
       idleTimer.startWatching(
         () => lifecycle === 'running'
           && activeChildren.size === 0
-          && progressStore.liveJobCount(bundleHash) === 0
+          && adoptedRunningPids.size === 0
+          && progressStore.liveJobCountByNamespace(namespace) === 0
           && idleTimer.inflightRequests === 0
+          && (recoveryRegistry === null || recoveryRegistry.size === 0)
           && !hasRunningSessions(discussRegistry)
           && !(kbSubsystem?.curateScheduler.isRunning() ?? false),
         (reason) => {
@@ -1837,6 +2144,20 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
         }
       }, 30_000);
       ownershipChecker.unref();
+
+      // Async recovery adoption — runs after we're already serving requests
+      if (queuedRecoverable.length > 0 || runningRecoverable.length > 0) {
+        void runRecoveryAdoption(queuedRecoverable, runningRecoverable).catch((err) => {
+          log(`Recovery adoption failed: ${formatError(err)}\n`);
+          // On failure, dissolve registry and lift fence so fresh launches can proceed
+          recoveryRegistry = null;
+          launchFenceActive = false;
+        });
+      } else {
+        // No recoverable jobs — dissolve immediately
+        recoveryRegistry = null;
+        launchFenceActive = false;
+      }
 
       return {
         port,

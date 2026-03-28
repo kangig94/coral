@@ -4,18 +4,20 @@
 export const OUTPUT_STYLE_OVERRIDE =
   'Ignore any output-style instructions (e.g. Explanatory, Learning). No insight blocks. Be concise and direct.';
 
+import { readFileSync } from 'node:fs';
 import {
   executeClaudeOneShot,
   executeClaudeResume,
   executeClaudeFork,
   ClaudeExecParseError,
 } from './claude-executor.js';
+import { parseClaudeStreamJson } from './output-parser.js';
 import { detectClaudeCli } from '../cli-detection.js';
 import { resolveInjectMd } from '../inject.js';
 import { extractClaudeProgressMessage } from './progress.js';
 import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
 import { mapProviderResultBase } from '../result-mapping.js';
-import { makeOnEvent, requireConversationRef, type Provider, type ProviderRuntime } from '../types.js';
+import { makeOnEvent, requireConversationRef, type Provider, type ProviderRecoveryContract, type ProviderRuntime } from '../types.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 import type { ClaudeExecResult } from './types.js';
 
@@ -83,6 +85,32 @@ function parseError(error: unknown, fallbackModel: string): ProviderResult {
   throw error;
 }
 
+const claudeRecovery: ProviderRecoveryContract = {
+  async finalizeFromArtifacts({ stdoutPath, exitCode, signal, fallbackConversationRef }) {
+    const stdout = readFileSync(stdoutPath, 'utf-8');
+    const parsed = parseClaudeStreamJson(stdout);
+    if (!parsed.isError || parsed.response) {
+      return mapResult(
+        {
+          response: parsed.response,
+          sessionId: parsed.sessionId,
+          model: parsed.model ?? '',
+          durationMs: parsed.durationMs ?? 0,
+          costUsd: parsed.costUsd,
+          aborted: false,
+        },
+        fallbackConversationRef,
+      );
+    }
+    // Fallback: raw content when stream-JSON parsing yields nothing useful
+    return {
+      content: stdout,
+      exitCode,
+      notice: signal ? `killed by ${signal}` : undefined,
+    };
+  },
+};
+
 const TIER_RANK: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3 };
 
 function resolveModelCap(env: Record<string, string>): string {
@@ -137,4 +165,5 @@ export const claudeProvider: Provider = {
   name: 'claude',
   execute,
   preflight,
+  recovery: claudeRecovery,
 };

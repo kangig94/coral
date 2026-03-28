@@ -6,6 +6,8 @@ import {
   type JobPhase,
   type LaunchDecision,
   type LaunchState,
+  type PersistedLaunchRecord,
+  type PersistedRuntimeRecord,
   type PersistedStatusRecord,
   type ProviderInstruction,
   type ProviderProgressEvent,
@@ -22,6 +24,7 @@ import type { EffortLevel } from '../shared/schemas.js';
 import type { Provider, ProviderRuntime } from '../providers/types.js';
 import {
   executePipeline,
+  resumePipeline,
   type PipelineResult,
   type StepDetail,
   WorkflowExecutionError,
@@ -36,6 +39,8 @@ import {
   queuePosition,
   requestLaunch,
   releaseLaunch,
+  restoreActiveLaunch,
+  restoreQueuedLaunch,
   type AdmissionResult,
   type LaunchPool,
   type QueuedHandle,
@@ -62,6 +67,8 @@ export interface ExecInput {
   bypassPermissions?: boolean;
   systemPrompt?: string;
   instruction?: ProviderInstruction;
+  /** Parent workflow job ID for atom launches. */
+  parentWorkflowJobId?: string;
 }
 
 export interface ResumeInput {
@@ -76,6 +83,8 @@ export interface ResumeInput {
   bypassPermissions?: boolean;
   systemPrompt?: string;
   instruction?: ProviderInstruction;
+  /** Parent workflow job ID for atom launches. */
+  parentWorkflowJobId?: string;
 }
 
 export interface ForkInput {
@@ -96,6 +105,8 @@ export interface CoralInput {
   sessionId?: string;
   cwd?: string;
   effort?: EffortLevel;
+  /** Parent workflow job ID for atom launches. */
+  parentWorkflowJobId?: string;
 }
 
 export interface ListResult {
@@ -279,8 +290,37 @@ export class ExecutionService {
     request: ProviderRequest,
     admission: AcceptedAdmission,
     pool: LaunchPool = 'default',
+    projectRoot?: string,
+    parentWorkflowJobId?: string,
   ): LaunchDecision {
     this.abortRegistry.register(jobId);
+
+    // Write durable launch record before queue admission / execution
+    this.progressStore.writeLaunchRecord(jobId, {
+      jobId,
+      sessionId,
+      provider: provider.name,
+      projectRoot: projectRoot ?? request.cwd ?? '',
+      backendNamespace: this.backendNamespace,
+      bundleHash: this.bundleHash,
+      pool,
+      enqueueSequence: this.progressStore.nextEnqueueSequence(),
+      providerAction: request.action,
+      request: {
+        prompt: request.prompt,
+        name: request.name,
+        model: request.model,
+        cwd: request.cwd,
+        effort: request.effort,
+        bypassPermissions: request.bypassPermissions,
+        systemPrompt: request.systemPrompt,
+        conversationRef: request.conversationRef,
+        instruction: request.instruction,
+        coralEnv: request.coralEnv,
+      },
+      parentWorkflowJobId,
+      createdAt: new Date().toISOString(),
+    });
 
     const decisionStatus = admission.type === 'queued' ? 'queued' : 'running';
     if (admission.type === 'queued') {
@@ -335,6 +375,8 @@ export class ExecutionService {
       request,
       admitted.admission,
       pool,
+      ctx.projectRoot,
+      input.parentWorkflowJobId,
     );
   }
 
@@ -394,6 +436,8 @@ export class ExecutionService {
       request,
       admitted.admission,
       pool,
+      ctx.projectRoot,
+      input.parentWorkflowJobId,
     );
   }
 
@@ -460,6 +504,8 @@ export class ExecutionService {
         admitted.jobId,
         request,
         admitted.admission,
+        'default',
+        ctx.projectRoot,
       );
     } finally {
       this.sessionManager.releaseJob(sourceSession.sessionId, sourceClaimId);
@@ -493,6 +539,7 @@ export class ExecutionService {
           effort,
           bypassPermissions: true,
           instruction,
+          parentWorkflowJobId: input.parentWorkflowJobId,
         },
         ctx,
       );
@@ -508,6 +555,7 @@ export class ExecutionService {
         effort,
         bypassPermissions: true,
         instruction,
+        parentWorkflowJobId: input.parentWorkflowJobId,
       },
       ctx,
     );
@@ -576,6 +624,107 @@ export class ExecutionService {
     }
 
     return { aborted, notFound };
+  }
+
+  // ── Recovery adoption APIs ──────────────────────────────────────────────────
+
+  /**
+   * Recover a queued job from a persisted launch record.
+   * Restores pool mapping, hydrates the event counter, inserts into the queue
+   * via `restoreQueuedLaunch` (FIFO order preserved by caller invocation order),
+   * and wires up the async execution path for when the permit is granted.
+   */
+  recoverQueuedJob(launchRecord: PersistedLaunchRecord): string {
+    const pool = (launchRecord.pool || 'default') as LaunchPool;
+    const jobId = launchRecord.jobId;
+
+    this.jobPools.set(jobId, pool);
+    this.progressStore.hydrateEventCounter(jobId);
+
+    // Restore queue entry and register abort with cancel callback
+    const queuedHandle = restoreQueuedLaunch(jobId, launchRecord.provider, pool);
+    this.abortRegistry.register(jobId, () => {
+      queuedHandle.cancel();
+    });
+
+    // Rebind namespace to current backend instance
+    this.progressStore.rebindNamespace(jobId, this.backendNamespace, this.bundleHash);
+
+    // Wire up the async execution path
+    const provider = getNewProvider(launchRecord.provider);
+    if (provider) {
+      this.runRecoveredQueuedJob(provider, launchRecord, queuedHandle, pool);
+    }
+
+    return jobId;
+  }
+
+  /**
+   * Adopt a running job that has a live PID from a previous backend instance.
+   * Restores pool mapping, hydrates counters, restores the active launch permit,
+   * rebinds namespace, and registers abort with a PID-kill callback.
+   * Returns a cleanup handle for the PID poller to call when the job terminates.
+   */
+  adoptRunningJob(
+    launchRecord: PersistedLaunchRecord,
+    runtimeRecord: PersistedRuntimeRecord,
+  ): { cleanup: () => void } {
+    const pool = (launchRecord.pool || 'default') as LaunchPool;
+    const jobId = launchRecord.jobId;
+
+    this.jobPools.set(jobId, pool);
+    this.progressStore.hydrateEventCounter(jobId);
+    this.progressStore.hydrateJobStartedAt(jobId, runtimeRecord.startTime);
+
+    // Restore active permit before fence lifts
+    restoreActiveLaunch(jobId, launchRecord.provider, pool);
+
+    // Rebind namespace to current backend instance
+    this.progressStore.rebindNamespace(jobId, this.backendNamespace, this.bundleHash);
+
+    // Register abort with PID-kill delegate
+    const pid = runtimeRecord.pid;
+    this.abortRegistry.register(jobId, () => {
+      try { process.kill(pid, 'SIGTERM'); } catch { /* already dead */ }
+    });
+
+    // Return cleanup handle for the PID poller
+    let cleaned = false;
+    return {
+      cleanup: () => {
+        if (cleaned) return;
+        cleaned = true;
+        this.abortRegistry.remove(jobId);
+        releaseLaunch(jobId, pool);
+        this.jobPools.delete(jobId);
+      },
+    };
+  }
+
+  /**
+   * Finalize a recovered job with a terminal result.
+   * Writes the result, updates session state, releases the launch permit, and frees session/abort state.
+   */
+  completeRecoveredJob(
+    jobId: string,
+    sessionId: string,
+    result: TerminalResult,
+    phase: JobPhase,
+    options?: { conversationRef?: string; nonResumable?: boolean },
+  ): void {
+    this.writeTerminalResult(jobId, sessionId, result, phase);
+    this.progressStore.writeResultMd(jobId, result.content);
+    this.abortRegistry.remove(jobId);
+    const pool = this.jobPools.get(jobId) ?? 'default';
+    releaseLaunch(jobId, pool);
+    this.jobPools.delete(jobId);
+
+    if (options?.conversationRef) {
+      this.sessionManager.setConversationRef(sessionId, options.conversationRef);
+    } else if (options?.nonResumable) {
+      this.sessionManager.setNonResumable(sessionId);
+    }
+    this.sessionManager.releaseJob(sessionId, jobId);
   }
 
   /**
@@ -805,6 +954,108 @@ export class ExecutionService {
     })();
   }
 
+  /**
+   * Async execution path for a recovered queued job.
+   * Similar to `runAsync` but starts from a persisted launch record rather
+   * than a freshly admitted request.
+   */
+  private runRecoveredQueuedJob(
+    provider: Provider,
+    launchRecord: PersistedLaunchRecord,
+    admission: QueuedHandle,
+    pool: LaunchPool,
+  ): void {
+    const jobId = launchRecord.jobId;
+    const sessionId = launchRecord.sessionId;
+    const signal = this.abortRegistry.getSignal(jobId);
+    if (!signal) {
+      admission.cancel();
+      return;
+    }
+
+    const onEvent = (event: ProviderProgressEvent): void => {
+      const currentStatus = this.progressStore.readStatus(jobId);
+      if (canAdvanceLaunchState(currentStatus)) {
+        this.markJobRunning(jobId);
+      }
+      this.progressStore.appendProgress(jobId, sessionId, event.message);
+    };
+
+    void (async () => {
+      try {
+        const queueOutcome = await this.waitForQueuedPermit(admission, signal);
+        if (queueOutcome === 'aborted') {
+          this.finishQueuedAbort(jobId, sessionId, QUEUED_ABORT_MESSAGE);
+          return;
+        }
+
+        this.markJobLaunching(jobId);
+        this.progressStore.appendProgress(jobId, sessionId, 'dequeued, launching');
+
+        bindLaunchPermit(jobId, signal, pool);
+        const request: ProviderRequest = {
+          action: launchRecord.providerAction,
+          sessionId: launchRecord.sessionId,
+          name: launchRecord.request.name,
+          prompt: launchRecord.request.prompt,
+          conversationRef: launchRecord.request.conversationRef,
+          model: launchRecord.request.model,
+          cwd: launchRecord.request.cwd,
+          effort: launchRecord.request.effort,
+          bypassPermissions: launchRecord.request.bypassPermissions,
+          systemPrompt: launchRecord.request.systemPrompt,
+          instruction: launchRecord.request.instruction,
+          coralEnv: launchRecord.request.coralEnv,
+        };
+
+        const runtime: ProviderRuntime = { signal, onEvent };
+        const result = await provider.execute(request, runtime);
+
+        if (canAdvanceLaunchState(this.progressStore.readStatus(jobId))) {
+          this.markJobReady(jobId);
+        }
+
+        const phase: JobPhase = result.aborted ? 'aborted' : 'completed';
+        const terminalResult: TerminalResult = {
+          content: result.content,
+          durationMs: result.durationMs,
+          aborted: result.aborted,
+          nonResumable: result.nonResumable,
+          exitCode: result.exitCode,
+          notice: result.notice,
+          errors: result.errors,
+          warnings: result.warnings,
+          usage: result.usage,
+        };
+
+        this.writeTerminalResult(jobId, sessionId, terminalResult, phase);
+        this.progressStore.writeResultMd(jobId, result.content);
+        this.abortRegistry.remove(jobId);
+        this.jobPools.delete(jobId);
+
+        if (result.conversationRef) {
+          this.sessionManager.setConversationRef(sessionId, result.conversationRef);
+        } else if (result.nonResumable) {
+          this.sessionManager.setNonResumable(sessionId);
+        }
+        this.sessionManager.releaseJob(sessionId, jobId);
+      } catch (err: unknown) {
+        const currentStatus = this.progressStore.readStatus(jobId);
+        if (!currentStatus || isTerminalPhase(currentStatus.phase)) return;
+
+        if (err instanceof CliBusyError) {
+          this.failJob(jobId, sessionId, 'busy', err.message);
+          return;
+        }
+
+        const message = err instanceof Error ? err.message : String(err);
+        this.failJob(jobId, sessionId, 'error', message);
+      } finally {
+        releaseLaunch(jobId, pool);
+      }
+    })();
+  }
+
   private markJobQueued(jobId: string, sessionId: string, queuePosition: number): void {
     this.progressStore.updateLaunchState(jobId, 'queued');
     this.progressStore.appendProgress(jobId, sessionId, `queued (position ${queuePosition})`);
@@ -929,6 +1180,8 @@ export class ExecutionService {
         onProgress: (message) => {
           this.progressStore.appendProgress(jobId, sessionId, message);
         },
+        workflowJobId: jobId,
+        progressStore: this.progressStore,
       },
     )
       .then((result: PipelineResult) => {
@@ -964,6 +1217,71 @@ export class ExecutionService {
               notice: message,
               workflow: serialized.workflow,
             };
+          this.finishWorkflowJob(sessionId, jobId, phase, terminalResult, serialized.markdown);
+        } catch {
+          const emptyResult: TerminalResult = aborted
+            ? { content: '', aborted: true, notice: message, workflow: { steps: [] } }
+            : { content: '', notice: message, workflow: { steps: [] } };
+          this.finishWorkflowJob(sessionId, jobId, phase, emptyResult, '');
+        }
+      });
+  }
+
+  /**
+   * Resume a workflow coordinator from a persisted checkpoint.
+   * Reads the checkpoint, reconstructs the active step, and re-enters the
+   * pipeline via `resumePipeline`.
+   */
+  resumeWorkflowCoordinator(
+    jobId: string,
+    sessionId: string,
+    ast: PipelineAST,
+    providerName: string,
+    ctx: CallerContext,
+    options: { atoms?: Record<string, { instruction?: string }>; context?: string; workDir?: string; staleTimeoutMs?: number },
+  ): void {
+    const checkpoint = this.progressStore.readWorkflowCheckpoint(jobId);
+    if (!checkpoint) return;
+
+    const signal = this.abortRegistry.getSignal(jobId);
+    if (!signal) return;
+
+    void resumePipeline(
+      checkpoint,
+      ast,
+      providerName,
+      this,
+      ctx,
+      {
+        atoms: options.atoms,
+        context: options.context,
+        workDir: options.workDir,
+        signal,
+        staleTimeoutMs: options.staleTimeoutMs ?? 0,
+        workflowJobId: jobId,
+        progressStore: this.progressStore,
+        onProgress: (message) => {
+          this.progressStore.appendProgress(jobId, sessionId, message);
+        },
+      },
+    )
+      .then((result: PipelineResult) => {
+        const serialized = serializeWorkflowResult(result.stepDetails);
+        this.finishWorkflowJob(sessionId, jobId, 'completed', {
+          content: result.finalOutput,
+          workflow: serialized.workflow,
+        }, serialized.markdown);
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        const aborted = err instanceof WorkflowExecutionError ? err.aborted : signal.aborted;
+        const phase: Extract<JobPhase, 'error' | 'aborted'> = aborted ? 'aborted' : 'error';
+        const stepDetailsList = err instanceof WorkflowExecutionError ? err.stepDetails : [];
+        try {
+          const serialized = serializeWorkflowResult(stepDetailsList);
+          const terminalResult: TerminalResult = aborted
+            ? { content: '', aborted: true, notice: message, workflow: serialized.workflow }
+            : { content: '', notice: message, workflow: serialized.workflow };
           this.finishWorkflowJob(sessionId, jobId, phase, terminalResult, serialized.markdown);
         } catch {
           const emptyResult: TerminalResult = aborted

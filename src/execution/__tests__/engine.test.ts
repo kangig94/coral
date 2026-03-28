@@ -246,3 +246,101 @@ describe('engine admission queue', () => {
     expect(engine.queuePosition('job-3')).toBeNull();
   });
 });
+
+describe('recovery helpers', () => {
+  let engine: EngineModule;
+
+  beforeEach(async () => {
+    process.env.CORAL_MAX_SESSIONS = '2';
+    process.env.CORAL_DISCUSS_MAX_SESSIONS = '2';
+    engine = await loadEngine();
+  });
+
+  afterEach(() => {
+    restoreEnv('CORAL_MAX_SESSIONS', ORIGINAL_MAX_CHILDREN);
+    restoreEnv('CORAL_DISCUSS_MAX_SESSIONS', ORIGINAL_DISCUSS_MAX_CHILDREN);
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  it('restoreActiveLaunch inserts directly into active map', () => {
+    engine.restoreActiveLaunch('job-1', 'codex', 'default');
+    expect(engine.getActiveJobIds('default')).toContain('job-1');
+    engine.releaseLaunch('job-1', 'default'); // cleanup
+  });
+
+  it('restoreActiveLaunch works for discuss pool', () => {
+    engine.restoreActiveLaunch('discuss-job-1', 'codex', 'discuss');
+    expect(engine.getActiveJobIds('discuss')).toContain('discuss-job-1');
+    engine.releaseLaunch('discuss-job-1', 'discuss'); // cleanup
+  });
+
+  it('restoreActiveLaunch counts toward capacity', () => {
+    // MAX_ACTIVE_SESSIONS = 2 for this test suite
+    engine.restoreActiveLaunch('restored-1', 'codex', 'default');
+    engine.restoreActiveLaunch('restored-2', 'codex', 'default');
+
+    // Third launch should be queued since capacity is 2
+    const result = engine.requestLaunch('job-3', 'codex', 'default');
+    expect(result).toMatchObject({ type: 'queued' });
+
+    // Cleanup
+    if (result !== 'queue_full' && result.type === 'queued') {
+      void result.waitForPermit().catch(() => null);
+      result.cancel();
+    }
+    engine.releaseLaunch('restored-1', 'default');
+    engine.releaseLaunch('restored-2', 'default');
+  });
+
+  it('restoreQueuedLaunch creates a queued handle', async () => {
+    // Fill capacity
+    engine.restoreActiveLaunch('fill-1', 'codex', 'default');
+    engine.restoreActiveLaunch('fill-2', 'codex', 'default');
+
+    const handle = engine.restoreQueuedLaunch('queued-1', 'codex', 'default');
+    expect(handle.type).toBe('queued');
+    expect(engine.queueDepth('default')).toBe(1);
+    expect(engine.queuePosition('queued-1', 'default')).toBe(1);
+
+    // Catch the rejection before canceling to avoid unhandled rejection
+    const rejected = handle.waitForPermit().then(
+      () => null,
+      (error: unknown) => error as Error,
+    );
+    handle.cancel();
+    expect((await rejected)?.message).toBe('Launch canceled while queued');
+
+    engine.releaseLaunch('fill-1', 'default');
+    engine.releaseLaunch('fill-2', 'default');
+  });
+
+  it('restoreQueuedLaunch entries are admitted in order on release', async () => {
+    engine.restoreActiveLaunch('fill-1', 'codex', 'default');
+    engine.restoreActiveLaunch('fill-2', 'codex', 'default');
+
+    const handleA = engine.restoreQueuedLaunch('queued-a', 'codex', 'default');
+    const handleB = engine.restoreQueuedLaunch('queued-b', 'codex', 'default');
+    expect(engine.queueDepth('default')).toBe(2);
+
+    let bGranted = false;
+    const permitA = handleA.waitForPermit();
+    const permitB = handleB.waitForPermit().then(() => { bGranted = true; });
+
+    // Release one slot — first queued entry should be admitted
+    engine.releaseLaunch('fill-1', 'default');
+    await permitA;
+    expect(engine.getActiveJobIds('default')).toContain('queued-a');
+    expect(bGranted).toBe(false);
+
+    // Release another slot — second queued entry should be admitted
+    engine.releaseLaunch('fill-2', 'default');
+    await permitB;
+    expect(bGranted).toBe(true);
+    expect(engine.getActiveJobIds('default')).toContain('queued-b');
+
+    // Cleanup
+    engine.releaseLaunch('queued-a', 'default');
+    engine.releaseLaunch('queued-b', 'default');
+  });
+});
