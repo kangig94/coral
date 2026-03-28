@@ -6,6 +6,7 @@ import {
   sessionRefSchema,
   cwdSchema,
 } from '../../shared/schemas.js';
+import { identPattern } from '../../shared/mcp-utils.js';
 
 export const claudeOpSchema = providerOpSchema;
 
@@ -20,6 +21,7 @@ export const coralClaudeSchema = z.object({
   prompt: promptSchema,
   session: sessionRefSchema.optional(),
   work_dir: cwdSchema,
+  owner: z.string().regex(identPattern, 'Owner must be token-safe').optional(),
 });
 
 export type ClaudeCoralInput = z.infer<typeof coralClaudeSchema>;

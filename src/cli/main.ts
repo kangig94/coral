@@ -9,7 +9,7 @@ import {
   BackendToolHttpError,
   type CallerContext,
 } from '../client/http-client.js';
-import { collectCoralEnv } from '../shared/mcp-utils.js';
+import { assertOwnerId, collectCoralEnv } from '../shared/mcp-utils.js';
 import { ensureBackend } from '../client/backend-lifecycle.js';
 import {
   getBackendStatusFull,
@@ -30,7 +30,7 @@ import type {
   SpeechResult,
 } from '../discuss/types.js';
 import { MAX_INLINE } from '../shared/schemas.js';
-import type { LaunchDecision, WaitStreamEvent } from '../types.js';
+import type { LaunchDecision, WaitStreamEvent } from '../shared/types.js';
 import {
   type DiscussAbortResult,
   type DiscussStartResult,
@@ -95,6 +95,7 @@ type ProviderCoralOptions = {
   prompt: string;
   session?: string;
   workDir?: string;
+  owner?: string;
   detach?: boolean;
 };
 
@@ -119,6 +120,7 @@ type WorkflowOptions = {
   inputJson?: string;
   atoms?: string;
   detach?: boolean;
+  owner?: string;
 };
 
 type DiscussSeedOptions = {
@@ -515,6 +517,7 @@ function registerProviderCommands(program: Command): void {
       .requiredOption('--prompt <text>', 'Prompt text')
       .option('--session <id>', 'Optional session ID')
       .option('--work-dir <path>', 'Working directory')
+      .option('--owner <id>', 'Session owner ID for memo isolation')
       .option('-d, --detach', 'Return launch decision without waiting')
       .action(async (agent: string, opts: ProviderCoralOptions) => {
         const outputFormat = getOutputFormat(coralCommand);
@@ -524,6 +527,7 @@ function registerProviderCommands(program: Command): void {
           const result = await client.providerCoralDispatch(providerName, agent, opts.prompt, {
             session: opts.session,
             work_dir: opts.workDir,
+            owner: opts.owner,
           });
           await handleLaunchResult(result, opts.detach, outputFormat, client);
         } catch (error) {
@@ -638,6 +642,7 @@ export function buildProgram(): Command {
     .option('--stale-timeout-seconds <seconds>', 'Stale job timeout')
     .option('--input-json <source>', 'JSON payload from stdin (use -)')
     .option('--atoms <json>', 'Atoms JSON object (replaces atoms from stdin)')
+    .option('--owner <id>', 'Session owner ID for memo isolation')
     .option('-d, --detach', 'Return launch decision without waiting')
     .action(async (opts: WorkflowOptions) => {
       const outputFormat = getOutputFormat(workflowCommand);
@@ -668,6 +673,7 @@ export function buildProgram(): Command {
             ? { stale_timeout_seconds: parseIntegerFlag('--stale-timeout-seconds', opts.staleTimeoutSeconds) }
             : {}),
           ...(opts.atoms !== undefined ? { atoms: JSON.parse(opts.atoms) } : {}),
+          ...(opts.owner !== undefined ? { owner: opts.owner } : {}),
           init_prompt: initPrompt,
         };
 
@@ -902,7 +908,8 @@ export function buildProgram(): Command {
     .requiredOption('--topic <slug>', 'Kebab-case topic slug (e.g. orama-threshold)')
     .option('--content <text>', 'Memo body text')
     .option('--content-file <path>', 'Read memo body from file')
-    .action(async (opts: { topic: string; content?: string; contentFile?: string }) => {
+    .option('--owner <id>', 'Session owner ID (falls back to CORAL_OWNER env var)')
+    .action(async (opts: { topic: string; content?: string; contentFile?: string; owner?: string }) => {
       const outputFormat = getOutputFormat(kbMemoWriteCommand);
 
       try {
@@ -912,8 +919,13 @@ export function buildProgram(): Command {
         if (content === undefined) {
           throw new Error('Either --content or --content-file is required');
         }
+        const rawOwner = opts.owner ?? process.env.CORAL_OWNER;
+        if (!rawOwner) {
+          throw new Error('--owner is required (or set CORAL_OWNER env var)');
+        }
+        const owner = assertOwnerId(rawOwner, 'owner');
         const client = makeClient(process.cwd());
-        const result = await client.kbMemo({ topic: opts.topic, content });
+        const result = await client.kbMemo({ topic: opts.topic, content, owner });
         emit(result, outputFormat, formatKbMemo);
       } catch (error) {
         emitError(error, outputFormat);

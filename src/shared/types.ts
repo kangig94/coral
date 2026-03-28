@@ -2,8 +2,8 @@
  * Shared type definitions for the Coral plugin.
  */
 
-export type { CodexExecResult, CodexThreadEvent, CodexThreadItem, CodexThreadItemDetails } from './providers/codex/types.js';
-export type { ClaudeExecResult, ClaudeJsonOutput, ClaudeExecFailure } from './providers/claude/types.js';
+export type { CodexExecResult, CodexThreadEvent, CodexThreadItem, CodexThreadItemDetails } from '../providers/codex/types.js';
+export type { ClaudeExecResult, ClaudeJsonOutput, ClaudeExecFailure } from '../providers/claude/types.js';
 
 // ── Execution Service contract types ─────────────────────────────────────────
 
@@ -161,6 +161,97 @@ export interface PersistedStatusRecord {
     updatedAt: string;
   };
   result?: TerminalResult;
+}
+
+/** Durable launch record written before queue admission. Contains all data needed to reproduce the job after restart. */
+export interface PersistedLaunchRecord {
+  jobId: string;
+  sessionId: string;
+  provider: string;
+  projectRoot: string;
+  backendNamespace: string;
+  bundleHash?: string;
+  jobKind?: JobKind;
+  pool: string; // LaunchPool as string for persistence
+  enqueueSequence: number; // Monotonic counter for FIFO recovery ordering
+  providerAction: ProviderAction;
+  /** Normalized request fields needed to reproduce the launch. */
+  request: {
+    prompt: string;
+    name?: string;
+    model?: string;
+    cwd?: string;
+    effort?: string;
+    bypassPermissions: boolean;
+    systemPrompt?: string;
+    conversationRef?: string;
+    instruction?: ProviderInstruction;
+    coralEnv: Record<string, string>;
+  };
+  /** Parent workflow job ID — set when this job is an atom launched by a workflow coordinator. */
+  parentWorkflowJobId?: string;
+  createdAt: string;
+}
+
+/** Durable runtime record written by the wrapper after spawn succeeds. */
+export interface PersistedRuntimeRecord {
+  pid: number;
+  stdoutPath: string;
+  stderrPath: string;
+  startTime: string;
+  /** Provider-specific recovery metadata for reattaching live progress. */
+  providerMeta?: Record<string, unknown>;
+  /** Byte offset watermark for stable tail replay without duplicated progress. */
+  tailWatermark?: number;
+}
+
+/** Durable completion sentinel written after output flush and exit. */
+export interface PersistedExitRecord {
+  exitCode: number | null;
+  signal: string | null;
+  endTime: string;
+}
+
+/** Workflow coordinator checkpoint for active-step resume. */
+export interface WorkflowCheckpoint {
+  jobId: string;
+  sessionId: string;
+  provider: string;
+  stepIndex: number;
+  stepPrompt: string;
+  atoms: Array<{
+    jobId: string;
+    sessionId: string;
+    providerName: string;
+    coralOp: string;
+    agent: string;
+    tagName: string;
+    stepIndex: number;
+    atomIndex: number;
+    atomKey: string;
+    kind: 'agent' | 'prompt';
+  }>;
+  completedOutputs: Record<string, string>; // atomKey -> output
+  completedStepDetails: Array<{
+    stepIndex: number;
+    atomIndex: number;
+    kind: 'agent' | 'prompt';
+    label: string;
+    provider: string;
+    tagName: string;
+    output: string;
+  }>;
+  cursor: Record<string, number>; // jobId -> last eventId
+  lastActivityAt: Record<string, number>; // atomKey -> timestamp
+  staleRetries: Record<string, number>; // atomKey -> retry count
+  expectedStaleAborts: string[]; // jobIds
+  failureDrain?: {
+    firstFailureMessage: string;
+    aborted: boolean;
+    abortRequested: boolean;
+    drainDeadline: number;
+  };
+  updatedAt: string;
 }
 
 /** Append-only progress record persisted in progress.jsonl. */

@@ -175,6 +175,7 @@ type ParsedArrayResult = {
 export type CurateHandle = {
   start(): Promise<void>;
   schedule(): void;
+  stop(): Promise<void>;
   isRunning(): boolean;
   _testInternals?: {
     claimCurateRun(today: string): Promise<CurateClaim | null>;
@@ -932,6 +933,7 @@ export function createCurateScheduler({
   scheduleDebounceMs?: number;
 }): CurateHandle {
   let runtimeStarted = false;
+  let stopped = false;
   let queuedRun = false;
   let activeRun: Promise<void> | null = null;
   let retryWakeTimer: NodeJS.Timeout | null = null;
@@ -1784,7 +1786,7 @@ export function createCurateScheduler({
   }
 
   function launchQueuedRun(): void {
-    if (!runtimeStarted || activeRun !== null || !queuedRun) {
+    if (stopped || !runtimeStarted || activeRun !== null || !queuedRun) {
       return;
     }
     if (isUsageBudgetExhausted()) {
@@ -1854,6 +1856,9 @@ export function createCurateScheduler({
   }
 
   function schedule(): void {
+    if (stopped) {
+      return;
+    }
     queuedRun = true;
     if (!runtimeStarted) {
       return;
@@ -1875,9 +1880,23 @@ export function createCurateScheduler({
     }
   }
 
+  async function stop(): Promise<void> {
+    stopped = true;
+    queuedRun = false;
+    clearRetryWake();
+    if (debounceTimer !== null) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+    if (activeRun !== null) {
+      await activeRun;
+    }
+  }
+
   return {
     start,
     schedule,
+    stop,
     isRunning() {
       return queuedRun || activeRun !== null || retryWakeTimer !== null || debounceTimer !== null;
     },

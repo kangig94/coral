@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CallerContext } from '../../execution/service.js';
-import type { TerminalResult, WaitRequest, WaitStreamEvent } from '../../types.js';
+import type { TerminalResult, WaitRequest, WaitStreamEvent, WorkflowCheckpoint } from '../../shared/types.js';
+import type { ProgressStore } from '../../execution/progress-store.js';
 import { parseExpression } from '../pipe-parser.js';
 import {
   BOOTSTRAP_TIMEOUT_MS,
@@ -909,5 +910,119 @@ describe('waitForAtoms', () => {
         },
       ),
     ).rejects.toBeInstanceOf(WorkflowExecutionError);
+  });
+});
+
+describe('checkpoint persistence', () => {
+  function createMockProgressStore(): ProgressStore & { writeWorkflowCheckpoint: ReturnType<typeof vi.fn> } {
+    return {
+      writeWorkflowCheckpoint: vi.fn(),
+    } as unknown as ProgressStore & { writeWorkflowCheckpoint: ReturnType<typeof vi.fn> };
+  }
+
+  it('writes initial checkpoint at coordinator start', async () => {
+    const mockStore = createMockProgressStore();
+    const executionSvc = createExecutionService({
+      coralDispatch: vi.fn(async () => running('job-1', 'session-1')),
+      waitStream: vi.fn(() => emit([terminal('job-1', 'session-1', { content: 'DONE' })])),
+    });
+
+    await executePipeline(
+      parseExpression('architect'),
+      'seed',
+      'codex',
+      executionSvc,
+      ctx,
+      {
+        workflowJobId: 'wf-1',
+        progressStore: mockStore,
+      },
+    );
+
+    // writeWorkflowCheckpoint is called via fire-and-forget promise
+    // Wait a tick to allow the mutex-serialized writes to flush
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(mockStore.writeWorkflowCheckpoint).toHaveBeenCalled();
+
+    // First call is the initial checkpoint (empty state at coordinator start)
+    const firstCallArgs = mockStore.writeWorkflowCheckpoint.mock.calls[0];
+    expect(firstCallArgs[0]).toBe('wf-1');
+    const initialCheckpoint: WorkflowCheckpoint = firstCallArgs[1];
+    expect(initialCheckpoint.jobId).toBe('wf-1');
+    expect(initialCheckpoint.stepIndex).toBe(0);
+    expect(initialCheckpoint.stepPrompt).toBe('seed');
+    expect(initialCheckpoint.atoms).toEqual([]);
+    expect(initialCheckpoint.completedOutputs).toEqual({});
+    expect(initialCheckpoint.provider).toBe('codex');
+  });
+
+  it('does not write checkpoints when workflowJobId or progressStore is missing', async () => {
+    const mockStore = createMockProgressStore();
+    const executionSvc = createExecutionService({
+      coralDispatch: vi.fn(async () => running('job-1', 'session-1')),
+      waitStream: vi.fn(() => emit([terminal('job-1', 'session-1', { content: 'DONE' })])),
+    });
+
+    // Case 1: no workflowJobId
+    await executePipeline(
+      parseExpression('architect'),
+      'seed',
+      'codex',
+      executionSvc,
+      ctx,
+      { progressStore: mockStore },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(mockStore.writeWorkflowCheckpoint).not.toHaveBeenCalled();
+
+    // Case 2: no progressStore
+    await executePipeline(
+      parseExpression('architect'),
+      'seed',
+      'codex',
+      executionSvc,
+      ctx,
+      { workflowJobId: 'wf-1' },
+    );
+    // Still not called (from previous assertion baseline)
+    expect(mockStore.writeWorkflowCheckpoint).not.toHaveBeenCalled();
+  });
+
+  it('writes multiple checkpoints across a multi-step pipeline', async () => {
+    const mockStore = createMockProgressStore();
+    const executionSvc = createExecutionService({
+      coralDispatch: vi.fn(async (_provider, coralName) => {
+        return coralName === 'architect' ? running('job-1', 'session-1') : running('job-2', 'session-2');
+      }),
+      waitStream: vi.fn((req: WaitRequest) => {
+        if (req.jobIds[0] === 'job-1') {
+          return emit([terminal('job-1', 'session-1', { content: 'ARCH' })]);
+        }
+        return emit([terminal('job-2', 'session-2', { content: 'FINAL' })]);
+      }),
+    });
+
+    await executePipeline(
+      parseExpression('architect -> resolver'),
+      'seed',
+      'codex',
+      executionSvc,
+      ctx,
+      {
+        workflowJobId: 'wf-multi',
+        progressStore: mockStore,
+      },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Should have at least the initial checkpoint + per-step checkpoints
+    expect(mockStore.writeWorkflowCheckpoint.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+    // All checkpoints reference the same workflowJobId
+    for (const call of mockStore.writeWorkflowCheckpoint.mock.calls) {
+      expect(call[0]).toBe('wf-multi');
+    }
   });
 });

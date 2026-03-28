@@ -462,9 +462,11 @@ describe('cli main routing', () => {
       'kb-routing',
       '--content',
       'Memo body',
+      '--owner',
+      'test-owner',
     ]);
 
-    expect(mockState.kbMemo).toHaveBeenCalledWith({ topic: 'kb-routing', content: 'Memo body' });
+    expect(mockState.kbMemo).toHaveBeenCalledWith({ topic: 'kb-routing', content: 'Memo body', owner: 'test-owner' });
     expect(stdout).toBe('Memo: 20260327-184939-kb-routing.md\n');
   });
 

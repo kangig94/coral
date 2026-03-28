@@ -3,8 +3,8 @@ import type {
   DiscussAuditView,
   DiscussControlTranscriptEntryDto,
   DiscussControlView,
-} from '../client/discuss.js';
-import type { WatchEvent } from '../execution/discuss-context.js';
+} from './views.js';
+import type { WatchEvent } from './watch.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from './events.js';
 import type { TranscriptEntry } from './types.js';
 

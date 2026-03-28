@@ -8,28 +8,39 @@ import {
   readSync,
   rmSync,
   renameSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { JOBS_DIR } from '../client/paths.js';
+import { JOBS_DIR } from '../infra/paths.js';
 import {
   isLivePhase,
   type JobKind,
   type JobPhase,
   type LaunchState,
+  type PersistedExitRecord,
+  type PersistedLaunchRecord,
   type PersistedProgressRecord,
+  type PersistedRuntimeRecord,
   type PersistedStatusRecord,
   type TerminalResult,
-} from '../types.js';
+  type WorkflowCheckpoint,
+} from '../shared/types.js';
 import { isNoEntryError, nowIsoString } from '../shared/mcp-utils.js';
 import { formatElapsed } from '../shared/format-progress.js';
 import { eventBus } from './event-bus.js';
 
-export { JOBS_DIR } from '../client/paths.js';
+export { JOBS_DIR } from '../infra/paths.js';
 
 const STATUS_FILE = 'status.json';
 const PROGRESS_FILE = 'progress.jsonl';
+const LAUNCH_FILE = 'launch.json';
+const RUNTIME_FILE = 'runtime.json';
+const EXIT_FILE = 'exit.json';
+const WORKFLOW_STATE_FILE = 'workflow-state.json';
 const READ_CHUNK = 8 * 1024;
+
+let enqueueSequence = 0;
 
 export type ReplayCursor = { lastOffset: number; remainder: string };
 
@@ -344,6 +355,165 @@ export class ProgressStore {
       rmSync(tmpPath, { force: true });
     }
   }
+
+  // ── Durable launch/runtime/exit records ──────────────────────────────────
+
+  /** Returns the next enqueue sequence number for FIFO recovery ordering. */
+  nextEnqueueSequence(): number {
+    return ++enqueueSequence;
+  }
+
+  /** Write launch.json before queue admission. */
+  writeLaunchRecord(jobId: string, record: PersistedLaunchRecord): void {
+    const dir = this.jobDir(jobId);
+    mkdirSync(dir, { recursive: true });
+    const filePath = join(dir, LAUNCH_FILE);
+    const tmpPath = filePath + '.tmp';
+    writeFileSync(tmpPath, JSON.stringify(record, null, 2), 'utf-8');
+    renameSync(tmpPath, filePath);
+  }
+
+  /** Read launch.json. Returns null if not found or corrupt. */
+  readLaunchRecord(jobId: string): PersistedLaunchRecord | null {
+    try {
+      const data = readFileSync(join(this.jobDir(jobId), LAUNCH_FILE), 'utf-8');
+      return JSON.parse(data) as PersistedLaunchRecord;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Write runtime.json as the spawn-to-runtime commit. */
+  writeRuntimeRecord(jobId: string, record: PersistedRuntimeRecord): void {
+    const filePath = join(this.jobDir(jobId), RUNTIME_FILE);
+    const tmpPath = filePath + '.tmp';
+    writeFileSync(tmpPath, JSON.stringify(record, null, 2), 'utf-8');
+    renameSync(tmpPath, filePath);
+  }
+
+  /** Read runtime.json. Returns null if not found or corrupt. */
+  readRuntimeRecord(jobId: string): PersistedRuntimeRecord | null {
+    try {
+      const data = readFileSync(join(this.jobDir(jobId), RUNTIME_FILE), 'utf-8');
+      return JSON.parse(data) as PersistedRuntimeRecord;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Write exit.json as the completion sentinel. */
+  writeExitRecord(jobId: string, record: PersistedExitRecord): void {
+    const filePath = join(this.jobDir(jobId), EXIT_FILE);
+    const tmpPath = filePath + '.tmp';
+    writeFileSync(tmpPath, JSON.stringify(record, null, 2), 'utf-8');
+    renameSync(tmpPath, filePath);
+  }
+
+  /** Read exit.json. Returns null if not found or corrupt. */
+  readExitRecord(jobId: string): PersistedExitRecord | null {
+    try {
+      const data = readFileSync(join(this.jobDir(jobId), EXIT_FILE), 'utf-8');
+      return JSON.parse(data) as PersistedExitRecord;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Write workflow-state.json checkpoint. */
+  writeWorkflowCheckpoint(jobId: string, checkpoint: WorkflowCheckpoint): void {
+    const filePath = join(this.jobDir(jobId), WORKFLOW_STATE_FILE);
+    const tmpPath = filePath + '.tmp';
+    writeFileSync(tmpPath, JSON.stringify(checkpoint, null, 2), 'utf-8');
+    renameSync(tmpPath, filePath);
+  }
+
+  /** Read workflow-state.json checkpoint. Returns null if not found or corrupt. */
+  readWorkflowCheckpoint(jobId: string): WorkflowCheckpoint | null {
+    try {
+      const data = readFileSync(join(this.jobDir(jobId), WORKFLOW_STATE_FILE), 'utf-8');
+      return JSON.parse(data) as WorkflowCheckpoint;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Rebind a job's namespace after service adoption. */
+  rebindNamespace(jobId: string, newNamespace: string, newBundleHash?: string): void {
+    const record = this.readStatus(jobId);
+    if (!record) return;
+    record.backendNamespace = newNamespace;
+    if (newBundleHash !== undefined) {
+      record.bundleHash = newBundleHash;
+    }
+    this.writeStatus(jobId, record);
+  }
+
+  /** Count live jobs belonging to a specific namespace (not filtered by bundleHash). */
+  liveJobCountByNamespace(namespace: string): number {
+    let count = 0;
+    for (const record of this.statusCache.values()) {
+      if (isLivePhase(record.phase) && record.backendNamespace === namespace) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Hydrate the event counter from persisted progress.jsonl so the next
+   * appended event is exactly lastPersistedEventId + 1.
+   */
+  hydrateEventCounter(jobId: string): void {
+    const cursor = createReplayCursor();
+    const events = this.replayFrom(jobId, 0, cursor);
+    let maxEventId = 0;
+    for (const event of events) {
+      if (event.eventId > maxEventId) maxEventId = event.eventId;
+    }
+    if (maxEventId > 0) {
+      this.eventCounters.set(jobId, maxEventId);
+    }
+  }
+
+  /** Hydrate jobStartedAt for adopted running jobs from a PersistedRuntimeRecord. */
+  hydrateJobStartedAt(jobId: string, startTime: string): void {
+    const ts = new Date(startTime).getTime();
+    if (!Number.isNaN(ts)) {
+      this.jobStartedAt.set(jobId, ts);
+    }
+  }
+
+  /** Check if a launch.json exists for a job. */
+  hasLaunchRecord(jobId: string): boolean {
+    try {
+      statSync(join(this.jobDir(jobId), LAUNCH_FILE));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Check if a runtime.json exists for a job. */
+  hasRuntimeRecord(jobId: string): boolean {
+    try {
+      statSync(join(this.jobDir(jobId), RUNTIME_FILE));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Check if an exit.json exists for a job. */
+  hasExitRecord(jobId: string): boolean {
+    try {
+      statSync(join(this.jobDir(jobId), EXIT_FILE));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // ── Progress replay ─────────────────────────────────────────────────────
 
   /**
    * Replay progress events from a job starting after fromEventId (exclusive).

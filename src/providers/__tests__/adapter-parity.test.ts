@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ProviderRequest } from '../../types.js';
+import type { ProviderRequest } from '../../shared/types.js';
 
 vi.mock('../codex/codex-executor.js', () => ({
   executeOneShot: vi.fn(),

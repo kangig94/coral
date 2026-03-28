@@ -4,12 +4,14 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
+  PersistedLaunchRecord,
   PersistedProgressRecord,
+  PersistedRuntimeRecord,
   PersistedStatusRecord,
   ProviderRequest,
   ProviderResult,
   WaitStreamEvent,
-} from '../../types.js';
+} from '../../shared/types.js';
 
 import type { Provider } from '../../providers/types.js';
 import { parseExpression } from '../../workflow/pipe-parser.js';
@@ -20,6 +22,7 @@ import {
   killAllChildren,
   queueDepth,
   releaseLaunch,
+  restoreActiveLaunch,
 } from '../engine.js';
 import { AbortRegistry } from '../abort-registry.js';
 import { JOBS_DIR, jobResultPath, type ProgressStore } from '../progress-store.js';
@@ -47,8 +50,8 @@ vi.mock('../../providers/registry.js', () => ({
   getNewProvider: mockState.getNewProvider,
 }));
 
-vi.mock('../../coral/resolver.js', async () => {
-  const actual = await vi.importActual<typeof import('../../coral/resolver.js')>('../../coral/resolver.js');
+vi.mock('../resolver.js', async () => {
+  const actual = await vi.importActual<typeof import('../resolver.js')>('../resolver.js');
   return {
     ...actual,
     resolveCoralContent: mockState.resolveCoralContent,
@@ -1198,6 +1201,300 @@ describe('ExecutionService', () => {
     expect(order).toEqual(['artifact', 'terminal', 'non_resumable']);
     expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(markdown);
     expect(sessionManager.get('codex', session.sessionId)?.state).toBe('non_resumable');
+  });
+
+  describe('recovery adoption APIs', () => {
+    function makeLaunchRecord(overrides: Partial<PersistedLaunchRecord> & { jobId: string; sessionId: string }): PersistedLaunchRecord {
+      return {
+        provider: 'codex',
+        projectRoot: '/tmp/project',
+        backendNamespace: 'old-backend-ns',
+        pool: 'default',
+        enqueueSequence: 0,
+        providerAction: 'exec',
+        request: {
+          prompt: 'recover me',
+          bypassPermissions: false,
+          coralEnv: {},
+        },
+        createdAt: new Date().toISOString(),
+        ...overrides,
+      };
+    }
+
+    function makeRuntimeRecord(overrides?: Partial<PersistedRuntimeRecord>): PersistedRuntimeRecord {
+      return {
+        pid: process.pid,
+        stdoutPath: '/dev/null',
+        stderrPath: '/dev/null',
+        startTime: new Date().toISOString(),
+        ...overrides,
+      };
+    }
+
+    describe('recoverQueuedJob', () => {
+      it('recovers a queued job from a persisted launch record and preserves the original jobId', async () => {
+        const { provider } = makeProvider();
+        mockState.getNewProvider.mockReturnValue(provider);
+        const service = new ExecutionService(ctx);
+        const { progressStore } = getInternals(service);
+
+        const jobId = `recover-queued-${randomUUID()}`;
+        const sessionId = `session-recover-${randomUUID()}`;
+        trackJob(jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: 'old-backend-ns',
+          initialPhase: 'queued',
+        });
+
+        const launchRecord = makeLaunchRecord({ jobId, sessionId });
+        progressStore.writeLaunchRecord(jobId, launchRecord);
+
+        const recovered = service.recoverQueuedJob(launchRecord);
+
+        expect(recovered).toBe(jobId);
+        expect(queueDepth()).toBeGreaterThanOrEqual(1);
+      });
+
+      it('rebinds namespace to current backend', async () => {
+        const { provider } = makeProvider();
+        mockState.getNewProvider.mockReturnValue(provider);
+        const service = new ExecutionService(ctx);
+        const { progressStore } = getInternals(service);
+
+        const jobId = `recover-rebind-${randomUUID()}`;
+        const sessionId = `session-rebind-${randomUUID()}`;
+        trackJob(jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: 'old-backend-ns',
+          initialPhase: 'queued',
+        });
+
+        const launchRecord = makeLaunchRecord({ jobId, sessionId });
+        progressStore.writeLaunchRecord(jobId, launchRecord);
+
+        service.recoverQueuedJob(launchRecord);
+
+        const status = progressStore.readStatus(jobId);
+        expect(status?.backendNamespace).not.toBe('old-backend-ns');
+      });
+
+      it('hydrates event counter before new appends', () => {
+        const { provider } = makeProvider();
+        mockState.getNewProvider.mockReturnValue(provider);
+        const service = new ExecutionService(ctx);
+        const { progressStore } = getInternals(service);
+
+        const jobId = `recover-hydrate-${randomUUID()}`;
+        const sessionId = `session-hydrate-${randomUUID()}`;
+        trackJob(jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: 'old-backend-ns',
+          initialPhase: 'queued',
+        });
+        // Write some progress so the counter has something to hydrate
+        progressStore.appendProgress(jobId, sessionId, 'step-1');
+        progressStore.appendProgress(jobId, sessionId, 'step-2');
+
+        const launchRecord = makeLaunchRecord({ jobId, sessionId });
+        progressStore.writeLaunchRecord(jobId, launchRecord);
+
+        const hydrateSpy = vi.spyOn(progressStore, 'hydrateEventCounter');
+        service.recoverQueuedJob(launchRecord);
+
+        expect(hydrateSpy).toHaveBeenCalledWith(jobId);
+      });
+
+      it('job eventually executes when queue capacity opens', async () => {
+        const never = new Promise<ProviderResult>(() => {});
+        const { provider } = makeProvider({ execute: () => never });
+        mockState.getNewProvider.mockReturnValue(provider);
+        const service = new ExecutionService(ctx);
+        const { progressStore } = getInternals(service);
+        const occupyIds = await occupyProviderSlots(service, ctx, 'codex');
+
+        const jobId = `recover-exec-${randomUUID()}`;
+        const mgr = new SessionManager(ctx.projectRoot);
+        const session = mgr.allocate('codex', 'recover', 'gpt-5', ctx.projectRoot);
+        trackJob(jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: 'old-backend-ns',
+          initialPhase: 'queued',
+        });
+
+        const launchRecord = makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot });
+        progressStore.writeLaunchRecord(jobId, launchRecord);
+
+        service.recoverQueuedJob(launchRecord);
+
+        expect(queueDepth()).toBeGreaterThanOrEqual(1);
+
+        // Release an occupied slot to trigger queue drain
+        const releasedJob = occupyIds[0]!;
+        releaseLaunch(releasedJob);
+
+        // Give the async drain a tick to process
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        // The recovered job should have been dequeued (queue depth should decrease)
+        expect(queueDepth()).toBe(0);
+      });
+    });
+
+    describe('adoptRunningJob', () => {
+      it('adopts a running job with a live PID and returns a cleanup handle', () => {
+        const service = new ExecutionService(ctx);
+        const { progressStore } = getInternals(service);
+
+        const jobId = `adopt-running-${randomUUID()}`;
+        const sessionId = `session-adopt-${randomUUID()}`;
+        trackJob(jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: 'old-backend-ns',
+          initialPhase: 'running',
+        });
+
+        const launchRecord = makeLaunchRecord({ jobId, sessionId });
+        progressStore.writeLaunchRecord(jobId, launchRecord);
+
+        const runtimeRecord = makeRuntimeRecord();
+        progressStore.writeRuntimeRecord(jobId, runtimeRecord);
+
+        const { cleanup } = service.adoptRunningJob(launchRecord, runtimeRecord);
+
+        expect(typeof cleanup).toBe('function');
+        expect(getActiveJobIds()).toContain(jobId);
+
+        // Cleanup should release the resources
+        cleanup();
+        expect(getActiveJobIds()).not.toContain(jobId);
+      });
+
+      it('restores pool mapping and active permit', () => {
+        const service = new ExecutionService(ctx);
+        const { progressStore } = getInternals(service);
+
+        const jobId = `adopt-pool-${randomUUID()}`;
+        const sessionId = `session-pool-${randomUUID()}`;
+        trackJob(jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: 'old-backend-ns',
+          initialPhase: 'running',
+        });
+
+        const launchRecord = makeLaunchRecord({ jobId, sessionId, pool: 'default' });
+        progressStore.writeLaunchRecord(jobId, launchRecord);
+
+        const runtimeRecord = makeRuntimeRecord();
+        progressStore.writeRuntimeRecord(jobId, runtimeRecord);
+
+        const activeIdsBefore = getActiveJobIds();
+        expect(activeIdsBefore).not.toContain(jobId);
+
+        const { cleanup } = service.adoptRunningJob(launchRecord, runtimeRecord);
+
+        expect(getActiveJobIds()).toContain(jobId);
+        cleanup();
+      });
+
+      it('rebinds namespace', () => {
+        const service = new ExecutionService(ctx);
+        const { progressStore } = getInternals(service);
+
+        const jobId = `adopt-rebind-${randomUUID()}`;
+        const sessionId = `session-rebind-${randomUUID()}`;
+        trackJob(jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: 'old-backend-ns',
+          initialPhase: 'running',
+        });
+
+        const launchRecord = makeLaunchRecord({ jobId, sessionId });
+        progressStore.writeLaunchRecord(jobId, launchRecord);
+
+        const runtimeRecord = makeRuntimeRecord();
+        progressStore.writeRuntimeRecord(jobId, runtimeRecord);
+
+        const { cleanup } = service.adoptRunningJob(launchRecord, runtimeRecord);
+
+        const status = progressStore.readStatus(jobId);
+        expect(status?.backendNamespace).not.toBe('old-backend-ns');
+        cleanup();
+      });
+    });
+
+    describe('completeRecoveredJob', () => {
+      it('writes terminal result and releases session', () => {
+        const service = new ExecutionService(ctx);
+        const { progressStore, sessionManager } = getInternals(service);
+
+        const jobId = `complete-recovered-${randomUUID()}`;
+        trackJob(jobId);
+
+        const session = sessionManager.allocate('codex', 'recover-complete', 'gpt-5', ctx.projectRoot);
+        progressStore.initJob({
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: TEST_BACKEND_NAMESPACE,
+          initialPhase: 'running',
+        });
+
+        // Simulate a running job being adopted: register active launch + claim session
+        restoreActiveLaunch(jobId, 'codex');
+        sessionManager.claimForJobSync(session.sessionId, jobId);
+
+        service.completeRecoveredJob(jobId, session.sessionId, { content: 'recovered done' }, 'completed');
+
+        const status = progressStore.readStatus(jobId);
+        expect(status).toMatchObject({
+          phase: 'completed',
+          result: { content: 'recovered done' },
+        });
+        expect(existsSync(jobResultPath(jobId))).toBe(true);
+        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe('recovered done');
+
+        const updatedSession = sessionManager.get('codex', session.sessionId);
+        expect(updatedSession?.activeJobId).toBeUndefined();
+        expect(updatedSession?.lastJobId).toBe(jobId);
+      });
+    });
   });
 });
 

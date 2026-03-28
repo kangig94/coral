@@ -8,8 +8,12 @@ export type AbortResult = {
 export class AbortRegistry {
   private readonly controllers = new Map<string, AbortController>();
 
-  register(jobId: string = randomUUID()): string {
-    this.controllers.set(jobId, new AbortController());
+  register(jobId: string = randomUUID(), onAbort?: () => void): string {
+    const controller = new AbortController();
+    if (onAbort) {
+      controller.signal.addEventListener('abort', onAbort);
+    }
+    this.controllers.set(jobId, controller);
     return jobId;
   }
 

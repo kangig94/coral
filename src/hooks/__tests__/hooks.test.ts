@@ -354,7 +354,7 @@ describe('kb-memo-reminder.mjs', () => {
 
     const output = expectHookOutput(result);
     expect(output.hookSpecificOutput.hookEventName).toBe('UserPromptSubmit');
-    expect(output.hookSpecificOutput.additionalContext).toContain(`${coralProjectDir(fixture.root, 'subgroup/repo')}/memo/<timestamp>-<topic>.md`);
+    expect(output.hookSpecificOutput.additionalContext).toContain('kb memo write --owner "sess-1"');
   });
 });
 

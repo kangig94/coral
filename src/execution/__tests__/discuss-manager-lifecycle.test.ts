@@ -6,8 +6,8 @@ import {
   getOrCreate as getOrCreateDiscussContext,
   hasRunningSessions,
   listAttachedSessions,
-} from '../discuss-context-registry.js';
-import { detachSession } from '../discuss-registry.js';
+} from '../discuss/context-registry.js';
+import { detachSession } from '../discuss/registry.js';
 import {
   attachPersistedSession,
   cleanupDiscussHarnesses,

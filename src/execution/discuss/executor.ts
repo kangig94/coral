@@ -1,15 +1,15 @@
-import { makeEvent, type PersistedDiscussAgentRun, type SessionCreatedAgentExecutionConfig } from '../discuss/events.js';
-import type { PersistedDiscussSnapshot } from '../discuss/events.js';
-import { nowIsoString } from '../discuss/util/time.js';
-import { isLivePhase } from '../types.js';
-import { errorMessage } from '../shared/mcp-utils.js';
-import { readStatusRecord } from '../client/readers.js';
-import type { CallerContext } from './request-context.js';
+import { makeEvent, type PersistedDiscussAgentRun, type SessionCreatedAgentExecutionConfig } from '../../discuss/events.js';
+import type { PersistedDiscussSnapshot } from '../../discuss/events.js';
+import { nowIsoString } from '../../discuss/util/time.js';
+import { isLivePhase } from '../../shared/types.js';
+import { errorMessage } from '../../shared/mcp-utils.js';
+import { readStatusRecord } from '../../client/readers.js';
+import type { CallerContext } from '../request-context.js';
 import {
   appendRuntimeEvents,
   loadAttachedOrPersistedSnapshot,
-} from './discuss-persistence.js';
-import type { AgentConfig, DiscussContext } from './discuss-context.js';
+} from './persistence.js';
+import type { AgentConfig, DiscussContext } from './context.js';
 
 export const DEFAULT_DISCUSS_PROVIDER = 'claude';
 const RETRYABLE_ATTEMPT_OUTCOMES = new Set([

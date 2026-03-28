@@ -3,15 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeEvent } from '../../discuss/events.js';
 import type { BidResult, SpeechResult } from '../../discuss/types.js';
 import type { McpResult } from '../../shared/mcp-utils.js';
-import * as discussLoop from '../discuss-loop.js';
+import * as discussLoop from '../discuss/loop.js';
 import {
   createDiscussContextRegistry,
   get as getDiscussContext,
   getOrCreate as getOrCreateDiscussContext,
   type DiscussContextRegistry,
-} from '../discuss-context-registry.js';
-import { getSession } from '../discuss-registry.js';
-import { routeToolCall } from '../server.js';
+} from '../discuss/context-registry.js';
+import { getSession } from '../discuss/registry.js';
+import { routeToolCall } from '../tool-router.js';
 import type { CallerContext, ExecutionService } from '../service.js';
 import {
   DEFAULT_TOPIC,

@@ -9,10 +9,10 @@
  * Fail-open: any error exits silently.
  */
 
-import { existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { exitIfChildProcess, readStdin, coralProjectDir, sweepStale } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, readStdin, coralProjectDir, sweepStale, isOwnerId, readMemoOwnerFromFrontmatter } from './lib/hook-utils.mjs';
 exitIfChildProcess();
 
 const FLAG_PREFIX = 'kb-active-';
@@ -50,9 +50,23 @@ try {
   const memoDir = join(coralProjectDir(projectDir), 'memo');
   if (!existsSync(memoDir)) process.exit(0);
 
-  const memos = readdirSync(memoDir).filter(f => !f.startsWith('.'));
+  const memoFiles = readdirSync(memoDir)
+    .filter(name => name.endsWith('.md'))
+    .filter(name => { try { return statSync(join(memoDir, name)).isFile(); } catch { return false; } });
 
-  // Stop: check session-scoped flag OR high memo count
+  // Derive session-visible memos: owner matches session or unowned (legacy)
+  const validSession = isOwnerId(sessionId);
+  const visibleMemos = validSession ? memoFiles.filter(name => {
+    try {
+      const content = readFileSync(join(memoDir, name), 'utf-8');
+      const memoOwner = readMemoOwnerFromFrontmatter(content);
+      return memoOwner === undefined || memoOwner === sessionId;
+    } catch {
+      return false; // per-file isolation — do not disable the whole gate
+    }
+  }) : [];
+
+  // Stop: check session-scoped flag; use visibleMemos for blocking
   if (event === 'Stop') {
     const flag = sessionId && join(flagDir, `${FLAG_PREFIX}${sessionId}`);
     const hasFlag = flag && existsSync(flag);
@@ -60,31 +74,53 @@ try {
       try { unlinkSync(flag); } catch { /* ignore */ }
     }
     sweepStale(flagDir, FLAG_PREFIX, 24 * 60 * 60_000);
-    if (!hasFlag && memos.length < 10) process.exit(0);
-  }
-
-  const list = memos.join(', ');
-  const sessionKb = 'If you learned anything during this session that would be useful in future sessions, preserve the memo -> review -> promotion workflow and promote only durable knowledge via CLI kb promote after reviewing memos. Use CLI kb search to check for duplicates first. Do not bypass memo review.';
-
-  if (event === 'Stop') {
-    process.stdout.write(JSON.stringify({
-      decision: 'block',
-      reason: memos.length > 0
-        ? `Review each memo, use CLI kb search to check for duplicates, then promote only durable knowledge via CLI kb promote if it is useful across sessions. Delete all processed memos regardless of promotion. Preserve the memo -> review -> promotion workflow; do not bypass memo review. Memos: ${list}`
-        : `No memos to process, but ${sessionKb}`,
-      systemMessage: memos.length > 0
-        ? `📋 KB: promoting ${memos.length} memo(s)`
-        : '📋 KB: checking session knowledge',
-    }) + '\n');
+    if (visibleMemos.length > 0) {
+      const list = visibleMemos.join(', ');
+      process.stdout.write(JSON.stringify({
+        decision: 'block',
+        reason: `Review each memo, use CLI kb search to check for duplicates, then promote only durable knowledge via CLI kb promote if it is useful across sessions. Delete all processed memos regardless of promotion. Preserve the memo -> review -> promotion workflow; do not bypass memo review. Memos: ${list}`,
+        systemMessage: `📋 KB: promoting ${visibleMemos.length} memo(s)`,
+      }) + '\n');
+    } else if (hasFlag) {
+      const sessionKb = 'If you learned anything during this session that would be useful in future sessions, preserve the memo -> review -> promotion workflow and promote only durable knowledge via CLI kb promote after reviewing memos. Use CLI kb search to check for duplicates first. Do not bypass memo review.';
+      process.stdout.write(JSON.stringify({
+        decision: 'block',
+        reason: `No memos to process, but ${sessionKb}`,
+        systemMessage: '📋 KB: checking session knowledge',
+      }) + '\n');
+    } else {
+      process.exit(0);
+    }
   } else {
-    process.stdout.write(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'SessionStart',
-        additionalContext: memos.length > 0
-          ? `KB promotion reminder: promote only if useful across sessions. Also, ${sessionKb} Memos: ${list}`
-          : sessionKb,
-      },
-    }) + '\n');
+    // SessionStart (compact)
+    const sessionKb = 'If you learned anything during this session that would be useful in future sessions, preserve the memo -> review -> promotion workflow and promote only durable knowledge via CLI kb promote after reviewing memos. Use CLI kb search to check for duplicates first. Do not bypass memo review.';
+
+    if (!validSession) {
+      // Degraded path: no valid session_id — emit generic reminder without listing memo names
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'SessionStart',
+          additionalContext: memoFiles.length > 0
+            ? `KB promotion reminder: unprocessed memos exist. Promote only if useful across sessions. Also, ${sessionKb}`
+            : sessionKb,
+        },
+      }) + '\n');
+    } else if (visibleMemos.length > 0) {
+      const list = visibleMemos.join(', ');
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'SessionStart',
+          additionalContext: `KB promotion reminder: promote only if useful across sessions. Also, ${sessionKb} Memos: ${list}`,
+        },
+      }) + '\n');
+    } else {
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'SessionStart',
+          additionalContext: sessionKb,
+        },
+      }) + '\n');
+    }
   }
 } catch {
   process.exit(0);

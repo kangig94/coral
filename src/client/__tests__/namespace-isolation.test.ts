@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
-import { backendInfoPath, backendLockPath, installationDir, pluginRootNamespace } from '../paths.js';
+import { backendInfoPath, backendLockPath, installationDir, pluginRootNamespace } from '../../infra/paths.js';
 import { readBundleHash } from '../../shared/mcp-utils.js';
 
 const tempRoots: string[] = [];

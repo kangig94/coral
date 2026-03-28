@@ -10,8 +10,8 @@ import {
   discussStatePath,
   discussSummaryIndexPathForSource,
   resolveProjectSource,
-} from './paths.js';
-import type { PersistedProgressRecord, PersistedStatusRecord } from '../types.js';
+} from '../infra/paths.js';
+import type { PersistedProgressRecord, PersistedStatusRecord } from '../shared/types.js';
 import type { SessionEntry } from '../execution/session-manager.js';
 import type { DiscussState } from '../discuss/types.js';
 import { discussStatuses, participationTypes, speakerTypes, transcriptResolveTypes, sessionEventKinds, resolveReasons } from '../discuss/types.js';

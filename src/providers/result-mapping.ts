@@ -1,4 +1,4 @@
-import type { ProviderResult } from '../types.js';
+import type { ProviderResult } from '../shared/types.js';
 
 /**
  * Raw execution result shape common to both Codex and Claude executors.

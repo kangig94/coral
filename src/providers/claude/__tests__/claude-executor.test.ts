@@ -67,6 +67,7 @@ describe('claude-executor', () => {
       ],
       prompt: 'Say hello',
       cwd: '/tmp/work',
+      extraEnv: {},
       signal: undefined,
       onEvent: undefined,
     });
@@ -105,6 +106,7 @@ describe('claude-executor', () => {
       ],
       prompt: 'Continue',
       cwd: '/tmp/project',
+      extraEnv: {},
       signal: undefined,
       onEvent: undefined,
     });

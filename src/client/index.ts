@@ -2,24 +2,11 @@
  * Public client surface for coral consumers (coral-reef, external tools).
  *
  * IMPORT DISCIPLINE: Backend-side modules (src/execution/server.ts, etc.)
- * must import from specific client sub-modules (client/paths.js, client/readers.js),
+ * must import from specific modules (infra/paths.js, client/readers.js),
  * NEVER from client/index.js — the barrel re-exports backend-lifecycle.ts and
  * other client-facing helpers, so bundling it into coral-backend.cjs would
  * pull in code that the backend intentionally imports directly elsewhere.
  */
-
-// ./paths.js
-export {
-  JOBS_DIR,
-  sessionBase,
-  pluginRootNamespace,
-  installationDir,
-  backendInfoPath,
-  backendLockPath,
-  discussBaseDir,
-  discussDiscoveryPath,
-  discussEventLogPath,
-} from './paths.js';
 
 // ./readers.js
 export {
@@ -64,7 +51,7 @@ export type { BackendHandle } from './backend-lifecycle.js';
 export { BackendClient, BackendToolHttpError, isBackendHealth } from './http-client.js';
 export type { CallerContext, BackendHealth } from './http-client.js';
 
-// ../types.js
+// ../shared/types.js
 export type {
   PersistedStatusRecord,
   PersistedProgressRecord,
@@ -78,7 +65,7 @@ export type {
   WorkflowResultMeta,
   WorkflowStepMeta,
   UsageSummary,
-} from '../types.js';
+} from '../shared/types.js';
 
 // ../execution/session-manager.js
 export type { SessionEntry } from '../execution/session-manager.js';

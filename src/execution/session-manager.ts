@@ -1,8 +1,8 @@
 import { readFileSync, statSync, writeFileSync, mkdirSync, readdirSync, renameSync, rmdirSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { pluginRootNamespace, sessionBase } from '../client/paths.js';
-import type { SessionState } from '../types.js';
+import { pluginRootNamespace, sessionBase } from '../infra/paths.js';
+import type { SessionState } from '../shared/types.js';
 import { isNoEntryError, nowIsoString, providerIdentPattern } from '../shared/mcp-utils.js';
 import { isValidSessionEntry } from '../client/readers.js';
 import { eventBus } from './event-bus.js';

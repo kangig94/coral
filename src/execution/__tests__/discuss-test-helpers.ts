@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { vi } from 'vitest';
 
-import { resolveProjectSource } from '../../client/paths.js';
+import { resolveProjectSource } from '../../infra/paths.js';
 import type {
   DiscussDomainEvent,
   PersistedDiscussSnapshot,
@@ -15,19 +15,19 @@ import {
   createDiscussContextRegistry,
   getOrCreate as getOrCreateDiscussContext,
   type DiscussContextRegistry,
-} from '../discuss-context-registry.js';
-import type { DiscussContext } from '../discuss-context.js';
+} from '../discuss/context-registry.js';
+import type { DiscussContext } from '../discuss/context.js';
 import { buildWatchEvents } from '../../discuss/projections.js';
-import { DiscussSessionStore } from '../discuss-session-store.js';
+import { DiscussSessionStore } from '../discuss/session-store.js';
 import {
   attachSession,
   detachSession,
   listSessions,
-} from '../discuss-registry.js';
+} from '../discuss/registry.js';
 import {
   isAbortEnded,
   readSessionEvents,
-} from '../discuss-persistence.js';
+} from '../discuss/persistence.js';
 import type { CallerContext, ExecutionService } from '../service.js';
 
 export const DEFAULT_TOPIC = 'Should the city pedestrianize the downtown core?';

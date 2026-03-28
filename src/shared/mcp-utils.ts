@@ -21,6 +21,19 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 
 export const identPattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
+/** Check whether a value is a valid token-safe owner identifier. */
+export function isOwnerId(value: unknown): value is string {
+  return typeof value === 'string' && identPattern.test(value);
+}
+
+/** Validate and return a token-safe owner identifier, or throw on invalid/blank values. */
+export function assertOwnerId(value: unknown, label = 'owner'): string {
+  if (!isOwnerId(value)) {
+    throw new Error(`${label} must be a non-empty token-safe identifier (alphanumeric, '.', '_', '-'; must start with alphanumeric)`);
+  }
+  return value;
+}
+
 export const providerIdentPattern = /^[a-z][a-z0-9-]*$/;
 
 export function textResult(text: string, isError = false): McpResult {

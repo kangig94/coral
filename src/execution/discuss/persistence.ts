@@ -1,9 +1,9 @@
-import { discussEventLogPath } from '../client/paths.js';
-import { readDiscussEventLog } from '../client/readers.js';
-import { buildWatchEvents } from '../discuss/projections.js';
-import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../discuss/events.js';
-import type { Result } from '../discuss/types.js';
-import { DiscussStaleWriteError } from './discuss-session-store.js';
+import { discussEventLogPath } from '../../infra/paths.js';
+import { readDiscussEventLog } from '../../client/readers.js';
+import { buildWatchEvents } from '../../discuss/projections.js';
+import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../../discuss/events.js';
+import type { Result } from '../../discuss/types.js';
+import { DiscussStaleWriteError } from './session-store.js';
 import {
   ABORT_REASON,
   DiscussManagerError,
@@ -13,7 +13,7 @@ import {
   type DiscussContext,
   type WatchState,
   watchBufferCursor,
-} from './discuss-context.js';
+} from './context.js';
 
 function syncLiveSnapshot(ctx: DiscussContext, sessionId: string): void {
   const latest = ctx.store.load(sessionId);

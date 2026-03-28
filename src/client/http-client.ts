@@ -38,6 +38,7 @@ interface ProviderCoralDispatchOptions {
   context?: CallerContext;
   session?: string;
   work_dir?: string;
+  owner?: string;
 }
 
 interface WorkflowOptions {
@@ -47,6 +48,7 @@ interface WorkflowOptions {
   work_dir?: string;
   stale_timeout_seconds?: number;
   atoms?: Record<string, { instruction?: string }>;
+  owner?: string;
 }
 
 export { isBackendHealth };

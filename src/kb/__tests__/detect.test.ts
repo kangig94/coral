@@ -17,15 +17,15 @@ vi.mock('node:os', async () => {
 
 async function loadKbModules() {
   vi.resetModules();
-  const [runtime, paths, clientPaths] = await Promise.all([
+  const [runtime, paths, infraPaths] = await Promise.all([
     import('../runtime.js'),
     import('../paths.js'),
-    import('../../client/paths.js'),
+    import('../../infra/paths.js'),
   ]);
   return {
     createKbRuntime: runtime.createKbRuntime,
     paths,
-    clientPaths,
+    infraPaths,
   };
 }
 
@@ -44,10 +44,10 @@ describe('kb detection and paths', () => {
 
   it('uses the process-level KB root when creating a runtime', async () => {
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'configured-kb');
-    const { createKbRuntime, paths, clientPaths } = await loadKbModules();
+    const { createKbRuntime, paths, infraPaths } = await loadKbModules();
 
     const kb = createKbRuntime({
-      markdownRoot: clientPaths.kbRoot(),
+      markdownRoot: infraPaths.kbRoot(),
       runtimeDir: paths.kbRuntimeDir(),
     });
 

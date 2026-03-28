@@ -2,7 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { streamWait, type WaitCursorRef } from '../bridge/backend-client.js';
 import { ensureBackend } from '../client/backend-lifecycle.js';
-import type { LaunchDecision, TerminalResult, WaitStreamEvent } from '../types.js';
+import type { LaunchDecision, TerminalResult, WaitStreamEvent } from '../shared/types.js';
 import {
   formatError,
   formatLaunchDecision,

@@ -1,22 +1,22 @@
-import { decideBidRoundClose, decideEnd } from '../discuss/state-machine.js';
-import { nowIsoString } from '../discuss/util/time.js';
-import { errorMessage } from '../shared/mcp-utils.js';
-import type { CallerContext } from './request-context.js';
+import { decideBidRoundClose, decideEnd } from '../../discuss/state-machine.js';
+import { nowIsoString } from '../../discuss/util/time.js';
+import { errorMessage } from '../../shared/mcp-utils.js';
+import type { CallerContext } from '../request-context.js';
 import {
   hasActiveBidWork,
   hasPendingAutoBidders,
   isManualParticipant,
-} from './discuss-executor.js';
-import { type DiscussContext, DiscussManagerError } from './discuss-context.js';
-import { commitDecision } from './discuss-persistence.js';
+} from './executor.js';
+import { type DiscussContext, DiscussManagerError } from './context.js';
+import { commitDecision } from './persistence.js';
 import {
   collectBids,
   collectSpeech,
   handleEpochTransition,
   handleSynthesis,
   runFollowUpTurns,
-} from './discuss-subflows.js';
-import { getSession } from './discuss-registry.js';
+} from './subflows.js';
+import { getSession } from './registry.js';
 
 async function waitForObserverBidWindow(delayMs: number, signal: AbortSignal): Promise<void> {
   if (delayMs <= 0) {

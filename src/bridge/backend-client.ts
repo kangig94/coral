@@ -2,7 +2,7 @@ declare const __PLUGIN_ROOT__: string;
 
 import { ensureBackend, withAbortTimeout } from '../client/backend-lifecycle.js';
 import { isBackendHealth } from '../client/backend-health.js';
-import { readBackendInfo } from '../execution/backend-info.js';
+import { readBackendInfo } from '../infra/backend-info.js';
 import { collectCoralEnv, isProcessAlive, isRecord } from '../shared/mcp-utils.js';
 import {
   describeHttpError,
@@ -14,7 +14,7 @@ import {
   TOOL_TIMEOUT_MS,
   WAIT_FETCH_MARGIN_MS,
 } from '../shared/sse-parser.js';
-import type { WaitStreamEvent } from '../types.js';
+import type { WaitStreamEvent } from '../shared/types.js';
 
 export { ensureBackend } from '../client/backend-lifecycle.js';
 

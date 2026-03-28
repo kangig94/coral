@@ -9,7 +9,7 @@
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { exitIfChildProcess, readStdin, coralProjectDir, sweepStale } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, readStdin, coralProjectDir, sweepStale, isOwnerId } from './lib/hook-utils.mjs';
 exitIfChildProcess();
 
 const THROTTLE_MIN = 30;
@@ -19,8 +19,11 @@ try {
   const input = JSON.parse(await readStdin());
   const sessionId = input.session_id;
   if (!sessionId) process.exit(0);
+  if (!isOwnerId(sessionId)) process.exit(0);
 
   const projectDir = process.env.CLAUDE_PROJECT_DIR || '.';
+  const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || '';
+  const cliPath = `node "${join(PLUGIN_ROOT, 'bridge', 'coral-cli.cjs')}"`;
   const projectSlug = projectDir.replace(/\//g, '-');
   const flagDir = join(tmpdir(), 'coral', projectSlug);
   const flag = join(flagDir, `${FLAG_PREFIX}${sessionId}`);
@@ -34,11 +37,10 @@ try {
   sweepStale(flagDir, FLAG_PREFIX, 2 * 60 * 60_000);
   writeFileSync(flag, '');
 
-  const memoDir = join(coralProjectDir(projectDir), 'memo');
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',
-      additionalContext: `Memo reminder: When you discover something non-obvious during this task (painful root cause, unexpected gotcha, clever solution), write immediately to ${memoDir}/<timestamp>-<topic>.md. Keep brief - one paragraph + context.`,
+      additionalContext: `Memo reminder: When you discover something non-obvious during this task (painful root cause, unexpected gotcha, clever solution), write immediately with ${cliPath} kb memo write --owner "${sessionId}" --topic "<kebab-case-topic>" --content "one paragraph + context".`,
     },
   }));
 } catch {

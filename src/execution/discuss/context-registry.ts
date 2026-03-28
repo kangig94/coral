@@ -1,6 +1,6 @@
-import type { DiscussSessionStore } from './discuss-session-store.js';
-import type { ExecutionService } from './service.js';
-import type { DiscussContext, LiveDiscussSession } from './discuss-context.js';
+import type { DiscussSessionStore } from './session-store.js';
+import type { ExecutionService } from '../service.js';
+import type { DiscussContext, LiveDiscussSession } from './context.js';
 
 export type AttachedDiscussSession = {
   projectRoot: string;
@@ -67,4 +67,17 @@ export function hasRunningSessions(registry: DiscussContextRegistry): boolean {
     }
   }
   return false;
+}
+
+/** Abort all live sessions and clear every context from the registry. */
+export async function clearAll(registry: DiscussContextRegistry): Promise<void> {
+  for (const context of registry.contexts.values()) {
+    for (const session of context.sessions.values()) {
+      if (!session.controller.signal.aborted) {
+        session.controller.abort();
+      }
+    }
+    context.sessions.clear();
+  }
+  registry.contexts.clear();
 }

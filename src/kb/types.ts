@@ -122,12 +122,13 @@ export type KbPrinciplesResult = {
 export type KbMemoInput = {
   topic: string;
   content: string;
+  owner: string;
 };
 
 export type KbMemoListInput = Record<string, never>;
 
 export type KbMemoListResult = {
-  memos: Array<{ filename: string; summary: string; createdAt: string }>;
+  memos: Array<{ filename: string; summary: string; createdAt: string; owner?: string }>;
 };
 
 export type KbMemoDeleteInput = {

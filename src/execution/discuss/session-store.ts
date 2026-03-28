@@ -19,7 +19,7 @@ import {
   type DiscussDiscoverySession,
   type DiscussSummaryIndexData,
   type DiscussSummaryIndexRow,
-} from '../client/readers.js';
+} from '../../client/readers.js';
 import {
   discussSourcesPath,
   discussDiscoveryPathForSource,
@@ -27,14 +27,14 @@ import {
   discussSessionDirForSource,
   discussSummaryIndexPathForSource,
   discussStatePath,
-} from '../client/paths.js';
-import { type DiscussSummaryDto } from '../client/discuss.js';
-import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../discuss/events.js';
+} from '../../infra/paths.js';
+import { type DiscussSummaryDto } from '../../discuss/views.js';
+import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../../discuss/events.js';
 import {
   makeEmptySnapshot,
   reduceDiscussEvent,
   replayDiscussEvents,
-} from '../discuss/reducer.js';
+} from '../../discuss/reducer.js';
 
 const sessionAppendLocks = new Map<string, Promise<void>>();
 const projectDiscoveryLocks = new Map<string, Promise<void>>();

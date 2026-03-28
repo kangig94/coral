@@ -1,11 +1,13 @@
 /** Codex provider adapter for the execution service. */
 
+import { readFileSync } from 'node:fs';
 import { executeOneShot, executeResume, executeFork } from './codex-executor.js';
+import { parseCodexJsonl } from './output-parser.js';
 import { detectCodexCli, type CliInfo } from '../cli-detection.js';
 import { extractProgressMessage } from './progress.js';
-import type { ProviderRequest, ProviderResult } from '../../types.js';
+import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
 import { mapProviderResultBase } from '../result-mapping.js';
-import { makeOnEvent, requireConversationRef, type Provider, type ProviderRuntime } from '../types.js';
+import { makeOnEvent, requireConversationRef, type Provider, type ProviderRecoveryContract, type ProviderRuntime } from '../types.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 
 /** Raw result type returned by Codex executors. */
@@ -38,6 +40,34 @@ function toProviderResult(result: CodexRawResult, fallbackConversationRef?: stri
     warnings: result.warnings.length > 0 ? result.warnings : undefined,
   };
 }
+
+const codexRecovery: ProviderRecoveryContract = {
+  async finalizeFromArtifacts({ stdoutPath, exitCode, signal, fallbackConversationRef }) {
+    const stdout = readFileSync(stdoutPath, 'utf-8');
+    const parsed = parseCodexJsonl(stdout);
+    if (parsed.response || parsed.errors.length > 0 || parsed.sessionId) {
+      return toProviderResult(
+        {
+          response: parsed.response,
+          sessionId: parsed.sessionId,
+          model: '',
+          durationMs: 0,
+          exitCode,
+          errors: parsed.errors,
+          warnings: parsed.warnings,
+          aborted: false,
+        },
+        fallbackConversationRef,
+      );
+    }
+    // Fallback: raw content when JSONL parsing yields nothing useful
+    return {
+      content: stdout,
+      exitCode,
+      notice: signal ? `killed by ${signal}` : undefined,
+    };
+  },
+};
 
 /**
  * Build the final prompt for Codex by prepending any instruction/systemPrompt.
@@ -94,4 +124,5 @@ export const codexProvider: Provider = {
   name: 'codex',
   execute,
   preflight,
+  recovery: codexRecovery,
 };

@@ -25,7 +25,7 @@ import {
   discussSummaryIndexPath,
   discussStatePath,
   resolveProjectSource,
-} from '../../client/paths.js';
+} from '../../infra/paths.js';
 import { replayDiscussEvents } from '../../discuss/reducer.js';
 import {
   decideBid,
@@ -37,7 +37,7 @@ import type { DiscussCreateInput, Result } from '../../discuss/types.js';
 import {
   DiscussSessionStore,
   DiscussStaleWriteError,
-} from '../discuss-session-store.js';
+} from '../discuss/session-store.js';
 
 const SESSION_ID = 'session-1';
 const SECOND_SESSION_ID = 'session-2';

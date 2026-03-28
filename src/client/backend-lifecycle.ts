@@ -5,9 +5,9 @@ import { mkdirSync, openSync, readFileSync, unlinkSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { backendInfoPath, backendLockPath, installationDir, pluginRootNamespace } from './paths.js';
+import { backendInfoPath, backendLockPath, installationDir, pluginRootNamespace } from '../infra/paths.js';
 import { isBackendHealth, type BackendHealth } from './backend-health.js';
-import { readBackendInfo, type BackendInfo } from '../execution/backend-info.js';
+import { readBackendInfo, type BackendInfo } from '../infra/backend-info.js';
 import { isNoEntryError, isRecord, readBundleHash, tryExclusiveWrite } from '../shared/mcp-utils.js';
 import { HEALTH_TIMEOUT_MS } from '../shared/sse-parser.js';
 

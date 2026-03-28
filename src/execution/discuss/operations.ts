@@ -1,24 +1,24 @@
-import { type PersistedDiscussSnapshot } from '../discuss/events.js';
+import { type PersistedDiscussSnapshot } from '../../discuss/events.js';
 import {
   DEFAULT_MAX_EPOCHS,
   decideBid,
   decideEnd,
   decideSessionCreate,
   decideSpeech,
-} from '../discuss/state-machine.js';
+} from '../../discuss/state-machine.js';
 import type {
   BidResult,
   DiscussCreateInput,
   Result,
   SpeechResult,
-} from '../discuss/types.js';
-import { buildWatchEvents } from '../discuss/projections.js';
-import { nowIsoString } from '../discuss/util/time.js';
-import type { CallerContext } from './request-context.js';
+} from '../../discuss/types.js';
+import { buildWatchEvents } from '../../discuss/projections.js';
+import { nowIsoString } from '../../discuss/util/time.js';
+import type { CallerContext } from '../request-context.js';
 import {
   buildAgentExecutionConfig,
-} from './discuss-executor.js';
-import * as discussLoop from './discuss-loop.js';
+} from './executor.js';
+import * as discussLoop from './loop.js';
 import {
   ABORT_REASON,
   DiscussManagerError,
@@ -28,16 +28,16 @@ import {
   type LiveDiscussSession,
   type WatchState,
   unwrapResult,
-} from './discuss-context.js';
-import { attachSession, detachSession, getSession, getWatchState as getRegistryWatchState } from './discuss-registry.js';
+} from './context.js';
+import { attachSession, detachSession, getSession, getWatchState as getRegistryWatchState } from './registry.js';
 import {
   afterCommit,
   commitDecision,
   isAbortEnded,
   readSessionEvents,
-} from './discuss-persistence.js';
-import type { DiscussSessionStore } from './discuss-session-store.js';
-import { collectBids } from './discuss-subflows.js';
+} from './persistence.js';
+import type { DiscussSessionStore } from './session-store.js';
+import { collectBids } from './subflows.js';
 
 function readDiscussMaxEpochs(): number {
   const raw = Number.parseInt(process.env.CORAL_DISCUSS_MAX_EPOCHS ?? '', 10);
