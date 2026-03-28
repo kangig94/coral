@@ -1,6 +1,6 @@
 import { basename } from 'node:path';
 import yaml from 'yaml';
-import { isRecord, isStringArray } from '../shared/mcp-utils.js';
+import { identPattern, isRecord, isStringArray } from '../shared/mcp-utils.js';
 import type { KbNoteFrontmatter, KbNoteIdentity } from './types.js';
 import { NOTE_SLUG_PATTERN, assertNonEmptyText } from './validation.js';
 
@@ -89,18 +89,40 @@ export function parseFrontmatter(content: string): KbNoteFrontmatter {
   };
 }
 
-export function parseMemoFrontmatter(content: string): { source: string[] } {
+export function parseMemoFrontmatter(content: string): { source: string[]; owner?: string } {
   const record = parseFrontmatterRecord(content);
-  const { source } = record;
+  const { source, owner } = record;
 
+  let parsedSource: string[];
   if (typeof source === 'string') {
-    return { source: [assertNonEmptyText(source, 'source')] };
-  }
-  if (isStringArray(source) && source.length > 0) {
-    return { source: source.map((entry) => assertNonEmptyText(entry, 'source')) };
+    parsedSource = [assertNonEmptyText(source, 'source')];
+  } else if (isStringArray(source) && source.length > 0) {
+    parsedSource = source.map((entry) => assertNonEmptyText(entry, 'source'));
+  } else {
+    throw new Error('Memo frontmatter must include source as a string or non-empty string array');
   }
 
-  throw new Error('Memo frontmatter must include source as a string or non-empty string array');
+  if (owner === undefined) {
+    return { source: parsedSource };
+  }
+
+  if (typeof owner !== 'string' || !identPattern.test(owner)) {
+    throw new Error('Memo frontmatter owner must be a non-empty token-safe identifier');
+  }
+
+  return { source: parsedSource, owner };
+}
+
+/** Serialize memo frontmatter (source + owner) using YAML output for safety. */
+export function serializeMemoFrontmatter(fields: { source: string; owner: string }): string {
+  const serialized = yaml.stringify({
+    source: fields.source,
+    owner: fields.owner,
+  }, {
+    lineWidth: 0,
+  }).trimEnd();
+
+  return `---\n${serialized}\n---`;
 }
 
 export function serializeFrontmatter(meta: KbNoteFrontmatter): string {

@@ -1,5 +1,6 @@
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { getNewProvider } from '../providers/registry.js';
+import { isOwnerId } from '../shared/mcp-utils.js';
 import type { LaunchDecision } from '../shared/types.js';
 import type { CallerContext } from '../execution/service.js';
 import { parseExpression } from './pipe-parser.js';
@@ -110,5 +111,9 @@ export async function handleWorkflow(
     return unknownProviderDecision(unknownProviders);
   }
 
-  return executionSvc.executeWorkflow(input.provider, normalizedAst, input, ctx, input.work_dir);
+  const owner = isOwnerId(input.owner) ? input.owner : undefined;
+  const effectiveContext = owner
+    ? { ...ctx, coralEnv: { ...ctx.coralEnv, CORAL_OWNER: owner } }
+    : ctx;
+  return executionSvc.executeWorkflow(input.provider, normalizedAst, input, effectiveContext, input.work_dir);
 }

@@ -100,4 +100,37 @@ describe('coralAgentSchema', () => {
   it('rejects double-colon coral::scanner', () => {
     expectCoralParseError('coral::scanner');
   });
+
+  it('accepts optional owner field with valid token-safe value', () => {
+    const result = coralAgentSchema.parse({
+      op: 'coral:scanner',
+      prompt: 'analyze',
+      owner: 'session-abc.123',
+    });
+    expect(result.owner).toBe('session-abc.123');
+  });
+
+  it('accepts missing owner field', () => {
+    const result = coralAgentSchema.parse({
+      op: 'coral:scanner',
+      prompt: 'analyze',
+    });
+    expect(result.owner).toBeUndefined();
+  });
+
+  it('rejects owner with invalid characters', () => {
+    expect(() => coralAgentSchema.parse({
+      op: 'coral:scanner',
+      prompt: 'analyze',
+      owner: '../bad',
+    })).toThrow(ZodError);
+  });
+
+  it('rejects empty string owner', () => {
+    expect(() => coralAgentSchema.parse({
+      op: 'coral:scanner',
+      prompt: 'analyze',
+      owner: '',
+    })).toThrow(ZodError);
+  });
 });

@@ -69,4 +69,43 @@ describe('claude schemas', () => {
     }).success).toBe(true);
   });
 
+  it('accepts optional owner field with valid token-safe value', () => {
+    const result = coralClaudeSchema.safeParse({
+      op: 'coral:architect',
+      prompt: 'Do it',
+      owner: 'session-abc.123',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.owner).toBe('session-abc.123');
+    }
+  });
+
+  it('accepts missing owner field', () => {
+    const result = coralClaudeSchema.safeParse({
+      op: 'coral:architect',
+      prompt: 'Do it',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.owner).toBeUndefined();
+    }
+  });
+
+  it('rejects owner with invalid characters', () => {
+    expect(coralClaudeSchema.safeParse({
+      op: 'coral:architect',
+      prompt: 'Do it',
+      owner: '../bad',
+    }).success).toBe(false);
+  });
+
+  it('rejects empty string owner', () => {
+    expect(coralClaudeSchema.safeParse({
+      op: 'coral:architect',
+      prompt: 'Do it',
+      owner: '',
+    }).success).toBe(false);
+  });
+
 });

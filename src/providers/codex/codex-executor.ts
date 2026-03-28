@@ -103,6 +103,7 @@ async function executeCodex(
     args,
     prompt,
     cwd: opts.workingDirectory,
+    extraEnv: opts.environment,
     onEvent: opts.onEvent,
     signal: opts.signal,
   });
@@ -128,8 +129,8 @@ async function executeCodex(
   };
 }
 
-function prependInjectMd(prompt: string, workingDirectory?: string): string {
-  const md = resolveInjectMd(workingDirectory);
+function prependInjectMd(prompt: string, workingDirectory?: string, ownerSessionId?: string): string {
+  const md = resolveInjectMd(workingDirectory, ownerSessionId);
   if (!md) return prompt;
   return `${md}\n\n---\n\n${prompt}`;
 }
@@ -172,7 +173,7 @@ export async function executeOneShot(
   const resolvedModel = resolveModel(opts);
   return executeCodex(
     buildExecutionArgs(['exec'], resolvedModel, opts),
-    prependInjectMd(prompt, opts.workingDirectory),
+    prependInjectMd(prompt, opts.workingDirectory, opts.environment.CORAL_OWNER),
     resolvedModel,
     opts,
   );

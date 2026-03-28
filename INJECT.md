@@ -74,7 +74,11 @@ CLI: `{{CORAL_CLI}}`
 On non-obvious discovery during any phase (review, planning, implementation), write a memo immediately.
 Also memo Insights worth preserving when Explanatory output style is active.
 
-`CLI kb memo write --topic "<kebab-case-topic>" --content "one paragraph + context"`
+<!-- SESSION_ID_ONLY:BEGIN -->
+`CLI kb memo write --owner "{{SESSION_ID}}" --topic "<kebab-case-topic>" --content "one paragraph + context"`
+
+When calling codex/claude with `op: coral:*` or the `workflow` tool, include `owner: "{{SESSION_ID}}"` to propagate session ownership to child agents.
+<!-- SESSION_ID_ONLY:END -->
 
 Timestamps, paths, and frontmatter are generated automatically.
 

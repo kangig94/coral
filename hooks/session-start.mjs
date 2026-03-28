@@ -2,8 +2,12 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { exitIfChildProcess, readStdin, resolveProjectSource, coralProjectDir, resolveKbRoot } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, readStdin, resolveProjectSource, coralProjectDir, resolveKbRoot, isOwnerId } from './lib/hook-utils.mjs';
 exitIfChildProcess();
+
+function stripOwnerOnlyBlock(text) {
+  return text.replace(/<!-- SESSION_ID_ONLY:BEGIN -->[\s\S]*?<!-- SESSION_ID_ONLY:END -->\n?/g, '');
+}
 
 try {
   const input = JSON.parse(await readStdin());
@@ -17,12 +21,15 @@ try {
 
   if (projectDir) ensureCliPermission(projectDir);
 
+  const ownerSessionId = isOwnerId(sessionId) ? sessionId : undefined;
   const injectText = readFileSync(join(PLUGIN_ROOT, 'INJECT.md'), 'utf-8');
-  const injectContent = injectText
+  const substituted = injectText
     .replaceAll('{{CORAL_KB}}', resolveKbRoot())
     .replaceAll('{{CORAL_CLI}}', cliPath)
+    .replaceAll('{{SESSION_ID}}', ownerSessionId || '')
     .replaceAll('{{CORAL_PROJECTS}}', projectDir ? coralProjectDir(projectDir) : '{{CORAL_PROJECTS}}')
     .replaceAll('{{PROJECT_SOURCE}}', projectDir ? resolveProjectSource(projectDir) : '{{PROJECT_SOURCE}}');
+  const injectContent = ownerSessionId ? substituted : stripOwnerOnlyBlock(substituted);
   const additionalContext = sessionId
     ? `SessionStart:session_id=${sessionId}\n\n${injectContent}`
     : injectContent;

@@ -97,6 +97,7 @@ async function executeClaude(
     args,
     prompt,
     cwd: options.workingDirectory,
+    extraEnv: options.environment,
     signal: options.signal,
     onEvent: options.onEvent,
   });

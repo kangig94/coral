@@ -8,6 +8,7 @@ import { readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import {
+  assertOwnerId,
   formatError,
   collectCoralEnv,
   errorMessage,
@@ -303,9 +304,12 @@ function parseToolRequest(body: unknown, resolvedPluginRoot: string): ToolReques
     return null;
   }
   if (!isRecord(body.context.coralEnv)) return null;
+  const RESERVED_CORAL_ENV_KEYS = new Set(['CORAL_CHILD']);
   const coralEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(body.context.coralEnv)) {
     if (typeof value !== 'string') return null;
+    if (!key.startsWith('CORAL_')) continue;
+    if (RESERVED_CORAL_ENV_KEYS.has(key)) continue;
     coralEnv[key] = value;
   }
   const context: CallerContext = {
@@ -613,6 +617,7 @@ function getToolDescriptors(): Array<Record<string, unknown>> {
         prompt: { type: 'string' },
         session: { type: 'string' },
         work_dir: { type: 'string' },
+        owner: { type: 'string' },
       },
       required: ['op'],
     },
@@ -759,6 +764,7 @@ function getToolDescriptors(): Array<Record<string, unknown>> {
           context: { type: 'string', description: 'Shared context prepended to every atom prompt in every step' },
           provider: { type: 'string', description: 'Default provider for atoms (claude or codex)' },
           work_dir: { type: 'string', description: 'Working directory for spawned atoms' },
+          owner: { type: 'string', description: 'Session owner ID for memo isolation' },
         },
         required: ['expression', 'init_prompt'],
       },
@@ -800,6 +806,12 @@ function requireString(args: Record<string, unknown>, key: string): string | nul
 function optionalString(args: Record<string, unknown>, key: string): string | undefined {
   const value = args[key];
   return typeof value === 'string' ? value : undefined;
+}
+
+function parseOptionalOwner(args: Record<string, unknown>, key: string): string | undefined {
+  const raw = optionalString(args, key);
+  if (raw === undefined) return undefined;
+  return assertOwnerId(raw, key);
 }
 
 export async function routeToolCall(
@@ -1062,8 +1074,11 @@ export async function routeToolCall(
         case 'kb_memo': {
           const topic = requireString(args, 'topic');
           const content = requireString(args, 'content');
-          if (!topic || content === null) return toolError('invalid_request', { message: 'topic and content are required strings' });
-          result = writeMemo(ctx.projectRoot, { topic, content });
+          const owner = requireString(args, 'owner');
+          if (!topic || content === null || owner === null)
+            return toolError('invalid_request', { message: 'topic, content, and owner are required' });
+          const normalizedOwner = assertOwnerId(owner);
+          result = writeMemo(ctx.projectRoot, { topic, content, owner: normalizedOwner });
           break;
         }
         case 'kb_memo_list':
@@ -1155,13 +1170,17 @@ export async function routeToolCall(
     if (typeof prompt !== 'string') {
       return { statusCode: 400, body: { error: 'invalid_request' } };
     }
+    const owner = parseOptionalOwner(request.args, 'owner');
+    const effectiveContext = owner
+      ? { ...request.context, coralEnv: { ...request.context.coralEnv, CORAL_OWNER: owner } }
+      : request.context;
     return {
       statusCode: 200,
       body: await service.coralDispatch(request.name, op.slice(CORAL_OP_PREFIX.length), {
         prompt,
         sessionId,
         cwd: sessionId ? cwd : cwd ?? defaultCwd,
-      }, request.context),
+      }, effectiveContext),
     };
   }
 

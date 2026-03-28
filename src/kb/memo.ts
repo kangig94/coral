@@ -2,6 +2,7 @@ import { readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveProjectSource } from '../infra/paths.js';
 import { isNoEntryError } from '../shared/mcp-utils.js';
+import { parseMemoFrontmatter, serializeMemoFrontmatter } from './frontmatter.js';
 import type {
   KbMemoDeleteInput,
   KbMemoDeleteResult,
@@ -34,7 +35,8 @@ export function writeMemo(projectRoot: string, input: KbMemoInput): { filename: 
   const filename = `${timestamp}-${input.topic}.md`;
   const path = join(dir, filename);
 
-  const body = `---\nsource: ${source}\n---\n\n${input.content.trim()}\n`;
+  const frontmatter = serializeMemoFrontmatter({ source, owner: input.owner });
+  const body = `${frontmatter}\n\n${input.content.trim()}\n`;
   writeFileAtomic(path, body);
 
   return { filename, path };
@@ -112,11 +114,20 @@ export function listMemos(projectRoot: string): KbMemoListResult {
       const memo = parseTimestampPrefix(filename);
       const raw = readFileSync(path, 'utf-8');
 
+      let owner: string | undefined;
+      try {
+        const parsed = parseMemoFrontmatter(raw);
+        owner = parsed.owner;
+      } catch {
+        // Legacy memos without valid frontmatter: treat as unowned
+      }
+
       return [{
         filename,
         summary: extractSummary(raw),
         createdAt: memo?.display ?? stat.mtime.toISOString(),
         sortKey: memo?.sortKey ?? stat.mtimeMs,
+        owner,
       }];
     });
 
@@ -125,7 +136,7 @@ export function listMemos(projectRoot: string): KbMemoListResult {
     || compareLocale(left.filename, right.filename));
 
   return {
-    memos: memos.map(({ filename, summary, createdAt }) => ({ filename, summary, createdAt })),
+    memos: memos.map(({ filename, summary, createdAt, owner }) => ({ filename, summary, createdAt, owner })),
   };
 }
 

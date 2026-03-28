@@ -263,6 +263,7 @@ export type SpawnCliOptions = {
   signal?: AbortSignal;
   permitGranted?: boolean;
   pool?: LaunchPool;
+  extraEnv?: Record<string, string>;
 };
 
 export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
@@ -295,7 +296,7 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: options.cwd || undefined,
       shell: process.platform === 'win32',
-      env: { ...process.env, CORAL_CHILD: '1' },
+      env: { ...process.env, ...options.extraEnv, CORAL_CHILD: '1' },
     });
     const entry: ActiveChild = { provider: options.provider, child };
     activeChildren.add(entry);
@@ -518,8 +519,8 @@ export async function spawnDurableWrapper(options: DurableSpawnOptions): Promise
 
   const mergedEnv: Record<string, string> = {
     ...process.env as Record<string, string>,
-    CORAL_CHILD: '1',
     ...extraEnv,
+    CORAL_CHILD: '1',
   };
 
   const wrapper = spawn(

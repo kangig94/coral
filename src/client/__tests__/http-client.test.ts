@@ -44,9 +44,9 @@ describe('client http-client', () => {
     },
     {
       method: 'kbMemo',
-      invoke: (client: BackendClient) => client.kbMemo({ topic: 'kb-routing', content: 'Memo body' }),
+      invoke: (client: BackendClient) => client.kbMemo({ topic: 'kb-routing', content: 'Memo body', owner: 'test-session' }),
       toolName: 'kb_memo',
-      args: { topic: 'kb-routing', content: 'Memo body' },
+      args: { topic: 'kb-routing', content: 'Memo body', owner: 'test-session' },
     },
     {
       method: 'kbMemoList',

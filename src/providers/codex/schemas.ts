@@ -12,6 +12,7 @@ import {
   sessionRefSchema,
   cwdSchema,
 } from '../../shared/schemas.js';
+import { identPattern } from '../../shared/mcp-utils.js';
 
 export const codexOpSchema = providerOpSchema;
 
@@ -25,6 +26,7 @@ export const coralAgentSchema = z.object({
   prompt: promptSchema,
   session: sessionRefSchema.optional(),
   work_dir: cwdSchema,
+  owner: z.string().regex(identPattern, 'Owner must be token-safe').optional(),
 });
 
 export type CoralAgentInput = z.infer<typeof coralAgentSchema>;

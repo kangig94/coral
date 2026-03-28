@@ -43,6 +43,22 @@ export function resolveKbRoot() {
   return join(homedir(), '.coral', 'kb');
 }
 
+const IDENT_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+
+export function isOwnerId(value) {
+  return typeof value === 'string' && value.length > 0 && IDENT_PATTERN.test(value);
+}
+
+export function readMemoOwnerFromFrontmatter(content) {
+  const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!fmMatch) return undefined;
+  const ownerMatch = fmMatch[1].match(/^owner:\s*(.+)$/m);
+  if (!ownerMatch) return undefined;
+  const raw = ownerMatch[1].trim();
+  if (!IDENT_PATTERN.test(raw)) throw new Error('Invalid owner in frontmatter');
+  return raw;
+}
+
 export function sweepStale(dir, prefix, ttlMs) {
   try {
     const now = Date.now();

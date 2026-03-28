@@ -38,7 +38,7 @@ function buildClaudeArgs(request: ProviderRequest): { prompt: string; systemProm
   const systemParts: string[] = [];
   let prompt = request.prompt;
 
-  const injectMd = resolveInjectMd(request.cwd);
+  const injectMd = resolveInjectMd(request.cwd, request.coralEnv?.CORAL_OWNER);
   if (injectMd) systemParts.push(injectMd);
 
   if (request.instruction) {
