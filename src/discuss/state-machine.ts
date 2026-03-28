@@ -192,6 +192,9 @@ export function decideBid(
   seq: number,
   ts: string,
 ): Result<DiscussDomainEvent[]> {
+  if (state.status !== 'bidding') {
+    return { ok: false, error: 'invalid_phase', detail: { status: state.status, hint: 'Bids can only be submitted during the bidding phase.' } };
+  }
   const name = resolveAgentName(state.agents, agentName);
   if (!name) {
     return { ok: false, error: 'agent_not_found', detail: { agent_name: agentName } };

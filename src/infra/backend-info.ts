@@ -47,11 +47,16 @@ export function writeBackendInfo(pluginRoot: string, info: BackendInfo): void {
 
   const tmpPath = `${infoPath}.tmp`;
   const payload = JSON.stringify(info);
-  writeFileSync(tmpPath, payload, { encoding: 'utf-8', mode: 0o600 });
-  renameSync(tmpPath, infoPath);
+  try {
+    writeFileSync(tmpPath, payload, { encoding: 'utf-8', mode: 0o600 });
+    renameSync(tmpPath, infoPath);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return;
+    throw error;
+  }
 
   if (process.platform !== 'win32') {
-    chmodSync(infoPath, 0o600);
+    try { chmodSync(infoPath, 0o600); } catch { /* best-effort */ }
   }
 }
 

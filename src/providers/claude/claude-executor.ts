@@ -1,7 +1,7 @@
-import { spawnCli } from '../../execution/engine.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 import { parseClaudeStreamJson, type ParsedClaudeStreamOutput } from './output-parser.js';
 import type { ClaudeExecFailure, ClaudeExecResult } from './types.js';
+import type { ProviderCliRunner } from '../runner-port.js';
 
 export type ClaudeExecOptions = {
   model?: string;
@@ -10,8 +10,8 @@ export type ClaudeExecOptions = {
   effort?: EffortLevel;
   sessionId?: string;
   bypassPermissions?: boolean;
-  signal?: AbortSignal;
   onEvent?: (line: string) => void;
+  runCli: ProviderCliRunner;
   environment: Record<string, string>;
 };
 
@@ -91,14 +91,12 @@ async function executeClaude(
   options: ClaudeExecOptions,
 ): Promise<ClaudeExecResult> {
   const start = Date.now();
-  const { stdout, stderr, code, aborted } = await spawnCli({
-    provider: 'claude',
+  const { stdout, stderr, code, aborted } = await options.runCli({
     command: 'claude',
     args,
     prompt,
     cwd: options.workingDirectory,
     extraEnv: options.environment,
-    signal: options.signal,
     onEvent: options.onEvent,
   });
 

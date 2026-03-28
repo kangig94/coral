@@ -256,7 +256,7 @@ export function readCurateState(target: CurateStateTarget): CurateState {
   try {
     return parseCurateState(JSON.parse(readFileSync(curateStatePath(target), 'utf-8')) as unknown);
   } catch (error: unknown) {
-    if (isNoEntryError(error)) {
+    if (isNoEntryError(error) || error instanceof SyntaxError) {
       return defaultCurateState();
     }
     throw error;

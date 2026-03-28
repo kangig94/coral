@@ -1,8 +1,6 @@
 import {
   DiscussManagerError,
-  compactLiveWatchBuffer,
   createWatchBuffer,
-  getSubscriberCursorMap,
   type DiscussContext,
   type LiveDiscussSession,
   type WatchBuffer,
@@ -54,29 +52,6 @@ export function getSession(
 
 export function listSessions(ctx: DiscussContext): Array<[string, LiveDiscussSession]> {
   return [...ctx.sessions.entries()];
-}
-
-export function hasLiveSessions(ctx: DiscussContext): boolean {
-  return ctx.sessions.size > 0;
-}
-
-export function subscribe(
-  ctx: DiscussContext,
-  sessionId: string,
-  callback: WatchSubscriber,
-): () => void {
-  const session = ctx.sessions.get(sessionId);
-  if (!session) {
-    return () => {};
-  }
-
-  session.watchSubscribers.add(callback);
-  getSubscriberCursorMap(session).set(callback, watchBufferCursor(session.watchBuffer));
-  return () => {
-    session.watchSubscribers.delete(callback);
-    getSubscriberCursorMap(session).delete(callback);
-    compactLiveWatchBuffer(session);
-  };
 }
 
 export function getWatchState(

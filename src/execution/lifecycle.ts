@@ -29,6 +29,7 @@ import { SessionManager } from './session-manager.js';
 import type { DiscussContext } from './discuss/context.js';
 import type { DiscussSessionStore } from './discuss/session-store.js';
 import {
+  clearAll as clearAllDiscuss,
   hasRunningSessions,
   type DiscussContextRegistry,
 } from './discuss/context-registry.js';
@@ -40,6 +41,7 @@ import {
   ExecutionService as DefaultExecutionService,
 } from './service.js';
 import {
+  belongsToNamespace,
   isLivePhase,
   isTerminalPhase,
   readBackendNamespace,
@@ -300,6 +302,7 @@ export function cleanupStaleJobs(progressStore: ProgressStore, currentBundleHash
 
     try {
       rmSync(progressStore.jobDir(jobId), { recursive: true, force: true });
+      progressStore.purgeFromCache(jobId);
       log(`Cleaned up stale job: ${jobId}\n`);
     } catch {
       // best-effort
@@ -475,6 +478,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
   let sessionIndexSubscribed = false;
   let recoveryRegistry: RecoveryRegistry | null = null;
   const adoptedRunningPids = new Map<string, { pid: number; pool: string }>();
+  const recoveryPollIntervals = new Set<NodeJS.Timeout>();
 
   // -- Session index subscription -------------------------------------------
 
@@ -517,7 +521,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         adoptedRunningPids.set(jobId, { pid: runtimeRecord.pid, pool: launchRecord.pool });
 
         // Install PID poller to detect termination
-        const pollInterval = setInterval(() => {
+        const pollInterval: NodeJS.Timeout = setInterval(() => {
           let alive = false;
           try {
             process.kill(runtimeRecord.pid, 0);
@@ -526,6 +530,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
 
           if (!alive) {
             clearInterval(pollInterval);
+            recoveryPollIntervals.delete(pollInterval);
             adoptedRunningPids.delete(jobId);
 
             const exitRecord = progressStore.readExitRecord(jobId);
@@ -554,10 +559,11 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
                     conversationRef: result.conversationRef,
                     nonResumable: result.nonResumable,
                   });
-                }).catch(() => {
+                }).catch((recoverErr: unknown) => {
+                  log(`Provider recovery failed for job ${jobId}: ${formatError(recoverErr)}\n`);
                   service.completeRecoveredJob(jobId, launchRecord.sessionId, {
                     content: '',
-                    notice: 'Provider recovery failed',
+                    notice: `Provider recovery failed: ${formatError(recoverErr)}`,
                   }, 'error');
                 });
               } else {
@@ -578,6 +584,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
           }
         }, 5_000);
         pollInterval.unref?.();
+        recoveryPollIntervals.add(pollInterval);
 
         recoveryRegistry?.remove(jobId);
         log(`Adopted running job: ${jobId} (pid=${runtimeRecord.pid})\n`);
@@ -640,20 +647,28 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       // handoff mode: detached wrappers continue, jobs remain in their current
       // phase for recovery by the replacement backend.
 
+      for (const interval of recoveryPollIntervals) clearInterval(interval);
+      recoveryPollIntervals.clear();
+      await Promise.race([
+        runtimeState.getKbSubsystem()?.curateScheduler.stop?.(),
+        new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+      ]);
+      await clearAllDiscuss(discussRegistry);
       unsubscribeSessionIndex();
       for (const store of discussStores.values()) {
         store.dispose();
       }
-
-      removeBackendInfoIfOwnerFn(pluginRoot, instanceId);
-      removeLockIfOwnerFn(pluginRoot, instanceId);
+      eventBus.removeAllListeners();
 
       runtimeState.setLifecycle('stopped');
       onStopped?.();
     })().catch((error) => {
-      runtimeState.setLifecycle('stopped');
       onFatalShutdownError?.(error);
       throw error;
+    }).finally(() => {
+      runtimeState.setLifecycle('stopped');
+      removeBackendInfoIfOwnerFn(pluginRoot, instanceId);
+      removeLockIfOwnerFn(pluginRoot, instanceId);
     });
 
     return shutdownPromise;
@@ -662,7 +677,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
   // -- start ----------------------------------------------------------------
 
   async function start(): Promise<BackendServerInfo> {
-    if (started) {
+    if (started || runtimeState.getLifecycle() !== 'starting') {
       throw new Error('Backend server already started');
     }
 
@@ -690,6 +705,9 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       const runningRecoverable: Array<{ jobId: string; launchRecord: PersistedLaunchRecord; runtimeRecord: PersistedRuntimeRecord }> = [];
 
       for (const jobId of progressStore.listJobIds()) {
+        const preStatus = progressStore.readStatus(jobId);
+        if (preStatus && !belongsToNamespace(preStatus, namespace)) continue;
+
         const classification = classifyRecoverableJob(progressStore, jobId);
         if (classification === 'incompatible') {
           const status = progressStore.readStatus(jobId);
@@ -828,7 +846,14 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       if (queuedRecoverable.length > 0 || runningRecoverable.length > 0) {
         void runRecoveryAdoption(queuedRecoverable, runningRecoverable).catch((err) => {
           log(`Recovery adoption failed: ${formatError(err)}\n`);
-          // On failure, dissolve registry and lift fence so fresh launches can proceed
+          // Mark all recoverable jobs as errored so they don't appear "running" forever
+          const allRecoverable = [...queuedRecoverable, ...runningRecoverable];
+          for (const { jobId } of allRecoverable) {
+            try {
+              const status = progressStore.readStatus(jobId);
+              if (status) markJobAsError(progressStore, status, `Recovery adoption failed: ${formatError(err)}`, log);
+            } catch { /* best-effort */ }
+          }
           recoveryRegistry = null;
           runtimeState.setLaunchFenceActive(false);
         });

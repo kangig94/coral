@@ -54,6 +54,7 @@ function makeRuntime(): ProviderRuntime {
   return {
     signal: new AbortController().signal,
     onEvent: vi.fn(),
+    runCli: vi.fn(),
   };
 }
 
@@ -85,7 +86,7 @@ describe('codex adapter preflight handoff', () => {
     expect(mockState.detectCodexCli).toHaveBeenCalledTimes(1);
     expect(mockState.executeOneShot).toHaveBeenCalledWith(
       'Run checks',
-      expect.objectContaining({ preChecked: validatedCli }),
+      expect.objectContaining({ preChecked: validatedCli, runCli: expect.any(Function) }),
     );
   });
 
@@ -103,7 +104,7 @@ describe('codex adapter preflight handoff', () => {
     expect(mockState.executeResume).toHaveBeenCalledWith(
       'thread-resume',
       'Continue',
-      expect.objectContaining({ preChecked: validatedCli }),
+      expect.objectContaining({ preChecked: validatedCli, runCli: expect.any(Function) }),
     );
   });
 
@@ -121,7 +122,7 @@ describe('codex adapter preflight handoff', () => {
     expect(mockState.executeFork).toHaveBeenCalledWith(
       'thread-fork',
       'Fork this',
-      expect.objectContaining({ preChecked: validatedCli }),
+      expect.objectContaining({ preChecked: validatedCli, runCli: expect.any(Function) }),
     );
   });
 });

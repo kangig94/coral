@@ -165,11 +165,21 @@ export class ProgressStore {
     }
   }
 
+  /** Atomic write to a job file. Tolerates missing job dir (deleted by cleanup). */
+  private writeJobFile(filePath: string, content: string): boolean {
+    try {
+      const tmpPath = filePath + '.tmp';
+      writeFileSync(tmpPath, content, 'utf-8');
+      renameSync(tmpPath, filePath);
+      return true;
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) return false;
+      throw error;
+    }
+  }
+
   private persistStatusSync(jobId: string, record: PersistedStatusRecord): void {
-    const filePath = this.statusPath(jobId);
-    const tmpPath = filePath + '.tmp';
-    writeFileSync(tmpPath, JSON.stringify(record, null, 2), 'utf-8');
-    renameSync(tmpPath, filePath);
+    this.writeJobFile(this.statusPath(jobId), JSON.stringify(record, null, 2));
   }
 
   /** Create the job directory and write initial status.json. */
@@ -195,12 +205,18 @@ export class ProgressStore {
     this.persistStatusSync(jobId, record);
     this.knownJobIds.add(jobId);
     this.applyStatusRecord(jobId, record);
-    writeFileSync(this.progressPath(jobId), '');
+    this.writeJobFile(this.progressPath(jobId), '');
     eventBus.emit('job:created', { jobId, sessionId, provider, projectRoot });
     this.jobStartedAt.set(jobId, Date.now());
   }
 
   rollbackJob(jobId: string): void {
+    this.purgeFromCache(jobId);
+    rmSync(this.jobDir(jobId), { recursive: true, force: true });
+  }
+
+  /** Remove a job from all in-memory caches without touching disk. */
+  purgeFromCache(jobId: string): void {
     const record = this.statusCache.get(jobId);
     if (record && isLivePhase(record.phase)) {
       this.liveCount--;
@@ -209,7 +225,6 @@ export class ProgressStore {
     this.statusCache.delete(jobId);
     this.eventCounters.delete(jobId);
     this.jobStartedAt.delete(jobId);
-    rmSync(this.jobDir(jobId), { recursive: true, force: true });
   }
 
   /** Atomically write status.json (sync to avoid race between consecutive writes). */
@@ -333,14 +348,7 @@ export class ProgressStore {
 
   /** Write result.md as a debugging/recovery artifact. */
   writeResultMd(jobId: string, text: string): void {
-    const tmpPath = `${jobResultPath(jobId)}.tmp`;
-    const finalPath = jobResultPath(jobId);
-    try {
-      writeFileSync(tmpPath, text, 'utf-8');
-      renameSync(tmpPath, finalPath);
-    } catch {
-      /* result.md write must not break execution */
-    }
+    this.writeJobFile(jobResultPath(jobId), text);
   }
 
   writeWorkflowResultMdOrThrow(jobId: string, text: string): void {
@@ -365,12 +373,8 @@ export class ProgressStore {
 
   /** Write launch.json before queue admission. */
   writeLaunchRecord(jobId: string, record: PersistedLaunchRecord): void {
-    const dir = this.jobDir(jobId);
-    mkdirSync(dir, { recursive: true });
-    const filePath = join(dir, LAUNCH_FILE);
-    const tmpPath = filePath + '.tmp';
-    writeFileSync(tmpPath, JSON.stringify(record, null, 2), 'utf-8');
-    renameSync(tmpPath, filePath);
+    mkdirSync(this.jobDir(jobId), { recursive: true });
+    this.writeJobFile(join(this.jobDir(jobId), LAUNCH_FILE), JSON.stringify(record, null, 2));
   }
 
   /** Read launch.json. Returns null if not found or corrupt. */
@@ -385,10 +389,7 @@ export class ProgressStore {
 
   /** Write runtime.json as the spawn-to-runtime commit. */
   writeRuntimeRecord(jobId: string, record: PersistedRuntimeRecord): void {
-    const filePath = join(this.jobDir(jobId), RUNTIME_FILE);
-    const tmpPath = filePath + '.tmp';
-    writeFileSync(tmpPath, JSON.stringify(record, null, 2), 'utf-8');
-    renameSync(tmpPath, filePath);
+    this.writeJobFile(join(this.jobDir(jobId), RUNTIME_FILE), JSON.stringify(record, null, 2));
   }
 
   /** Read runtime.json. Returns null if not found or corrupt. */
@@ -403,10 +404,7 @@ export class ProgressStore {
 
   /** Write exit.json as the completion sentinel. */
   writeExitRecord(jobId: string, record: PersistedExitRecord): void {
-    const filePath = join(this.jobDir(jobId), EXIT_FILE);
-    const tmpPath = filePath + '.tmp';
-    writeFileSync(tmpPath, JSON.stringify(record, null, 2), 'utf-8');
-    renameSync(tmpPath, filePath);
+    this.writeJobFile(join(this.jobDir(jobId), EXIT_FILE), JSON.stringify(record, null, 2));
   }
 
   /** Read exit.json. Returns null if not found or corrupt. */
@@ -421,15 +419,7 @@ export class ProgressStore {
 
   /** Write workflow-state.json checkpoint. Best-effort — missing job dir is not fatal. */
   writeWorkflowCheckpoint(jobId: string, checkpoint: WorkflowCheckpoint): void {
-    try {
-      const filePath = join(this.jobDir(jobId), WORKFLOW_STATE_FILE);
-      const tmpPath = filePath + '.tmp';
-      writeFileSync(tmpPath, JSON.stringify(checkpoint, null, 2), 'utf-8');
-      renameSync(tmpPath, filePath);
-    } catch (error: unknown) {
-      if (isNoEntryError(error)) return;
-      throw error;
-    }
+    this.writeJobFile(join(this.jobDir(jobId), WORKFLOW_STATE_FILE), JSON.stringify(checkpoint, null, 2));
   }
 
   /** Read workflow-state.json checkpoint. Returns null if not found or corrupt. */

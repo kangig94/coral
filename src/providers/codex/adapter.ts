@@ -93,7 +93,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
     effort,
     bypassSandbox: request.bypassPermissions,
     onEvent: makeOnEvent(runtime, request.sessionId, extractProgressMessage, request.cwd),
-    signal: runtime.signal,
+    runCli: runtime.runCli,
     preChecked: lastValidatedCli!,
     environment: request.coralEnv,
   };

@@ -126,14 +126,23 @@ function writeAllSync(fd: number, content: string): void {
 function writeAtomicJson(filePath: string, value: unknown): void {
   mkdirSync(dirname(filePath), { recursive: true });
   const tmpPath = `${filePath}.tmp`;
-  const fd = openSync(tmpPath, 'w');
+  let fd: number;
+  try {
+    fd = openSync(tmpPath, 'w');
+  } catch {
+    return; // directory deleted between mkdirSync and openSync
+  }
   try {
     writeAllSync(fd, JSON.stringify(value, null, 2));
     fdatasyncSync(fd);
   } finally {
     closeSync(fd);
   }
-  renameSync(tmpPath, filePath);
+  try {
+    renameSync(tmpPath, filePath);
+  } catch {
+    // target directory gone — best-effort
+  }
 }
 
 function appendEventBatch(logPath: string, events: DiscussDomainEvent[]): void {
@@ -142,7 +151,12 @@ function appendEventBatch(logPath: string, events: DiscussDomainEvent[]): void {
   }
 
   mkdirSync(dirname(logPath), { recursive: true });
-  const fd = openSync(logPath, 'a');
+  let fd: number;
+  try {
+    fd = openSync(logPath, 'a');
+  } catch {
+    return; // directory deleted between mkdirSync and openSync
+  }
   try {
     writeAllSync(fd, events.map((event) => JSON.stringify(event)).join('\n') + '\n');
     fdatasyncSync(fd);

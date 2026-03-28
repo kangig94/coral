@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import {
@@ -9,6 +9,7 @@ import {
   isRecord,
   isStringArray,
   nowIsoString,
+  unlinkIfExists,
 } from '../shared/mcp-utils.js';
 import {
   applyAddPendingDiscovery,
@@ -1481,13 +1482,10 @@ export function createCurateScheduler({
     const principlePath = kb.principlePath(assertNoteSlug(entry.principle, 'principle'));
     const nextIndex = cloneKbIndex(kb.readIndex());
 
-    if (existsSync(principlePath)) {
+    try {
       const liveStatement = extractPrincipleStatement(readFileSync(principlePath, 'utf-8'));
       if (liveStatement !== entry.statement) {
-        return {
-          status: 'conflict',
-          state,
-        };
+        return { status: 'conflict', state };
       }
 
       if (nextIndex.principles[entry.principle] !== entry.statement) {
@@ -1496,10 +1494,11 @@ export function createCurateScheduler({
         markTextIndexStale(kb.invalidateTextSnapshot, CURATE_STALE_REASON);
       }
 
-      return {
-        status: 'ready',
-        state,
-      };
+      return { status: 'ready', state };
+    } catch (error: unknown) {
+      if (!isNoEntryError(error)) {
+        return { status: 'conflict', state };
+      }
     }
 
     kb.recordMutationCommitted();
@@ -1596,7 +1595,7 @@ export function createCurateScheduler({
     try {
       raw = await runClaude(prompt);
     } finally {
-      try { unlinkSync(corpusPath); } catch {}
+      unlinkIfExists(corpusPath);
     }
     const { entries, parseFailed } = parseJsonArray(raw);
     if (parseFailed) {
@@ -1633,10 +1632,17 @@ export function createCurateScheduler({
           }
 
           const principlePath = kb.principlePath(assertNoteSlug(entry.principle, 'principle'));
-          const rawPrinciple = readFileSync(principlePath, 'utf-8');
+          let rawPrinciple: string;
+          try {
+            rawPrinciple = readFileSync(principlePath, 'utf-8');
+          } catch {
+            state = removePendingDiscoveryLocked(state, entry);
+            continue;
+          }
           const createdAtMatch = rawPrinciple.match(/^createdAt:\s*(.+)$/m);
           if (createdAtMatch === null) {
-            throw new Error(`Principle document is missing createdAt: ${entry.principle}`);
+            state = removePendingDiscoveryLocked(state, entry);
+            continue;
           }
 
           const updatedAt = nowIsoString();
@@ -1690,7 +1696,7 @@ export function createCurateScheduler({
             state = removePendingDiscoveryLocked(state, pending);
           }
 
-          unlinkSync(kb.principlePath(absorbSlug));
+          unlinkIfExists(kb.principlePath(absorbSlug));
           delete nextIndex.principles[absorbSlug];
         }
         kb.writeIndex(nextIndex);

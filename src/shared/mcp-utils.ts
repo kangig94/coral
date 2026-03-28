@@ -1,10 +1,20 @@
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 export type McpResult = { content: [{ type: 'text'; text: string }]; isError: boolean };
 
 export function isNoEntryError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
+/** Delete a file, ignoring ENOENT (already deleted). */
+export function unlinkIfExists(filePath: string): void {
+  try {
+    unlinkSync(filePath);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return;
+    throw error;
+  }
 }
 
 /** Classify transient SSE/connection errors eligible for cursor-based retry. */
