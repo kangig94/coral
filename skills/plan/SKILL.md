@@ -70,7 +70,8 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
     ### 4. Review Loop
 
-    Three phases. Phase 0 always runs first. Phase 1 runs only when `--codex` flag is set. Phase 2 always runs.
+    Phase 0 always runs first. Phase 0b (Complexity Gate) may skip review phases.
+    Phase 1 runs only when `--codex` flag is set. Phase 2 always runs (unless skipped by Complexity Gate).
 
     **Task registration**: Before starting Phase 0, register one Task per applicable phase:
     - `TaskCreate({ subject: "Phase 0 — Frame Gate" })`
@@ -89,6 +90,33 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     - [ ] No fundamental constraints violated
     - [ ] Approach viable given actual codebase structure
     - [ ] Preplan Success Criteria satisfied (if they exist)
+
+    #### Phase 0b — Complexity Gate (after Frame Gate passes)
+
+    Evaluate whether the plan warrants full review. ALL of the following must hold
+    to qualify as low-complexity:
+    - Total implementation ≤ ~30 lines changed across all files
+    - No new files created
+    - No public API or interface changes
+    - No new abstractions, patterns, or architectural decisions
+    - Each change is a localized fix (not cross-cutting)
+    - Root cause and fix are already confirmed (e.g., from debugger, preplan, or prior analysis)
+
+    If ALL criteria pass:
+    ```
+    AskUserQuestion({
+      question: "Plan is low-complexity (N lines, M files, localized fixes). Skip review?",
+      header: "Review",
+      options: [
+        { label: "Skip review", description: "Proceed directly to implementation" },
+        { label: "Review anyway", description: "Run full review loop" }
+      ]
+    })
+    ```
+    If "Skip review" → skip to step 4e (Execution Order), then step 5 (Completion).
+    If "Review anyway" → proceed to Review Phases normally.
+
+    If ANY criterion fails → proceed to Review Phases (no prompt).
 
     #### Review Phases
 

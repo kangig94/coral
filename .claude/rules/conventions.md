@@ -24,6 +24,9 @@ PR procedure (dev → main):
    ```
    This finds the last squash-merged PR's head SHA on dev and replays only commits after it.
    If dev is already rebased (no prior squash-merged PR exists), use `git rebase origin/main` instead.
+   This works even when main moved forward from other sources (hotfix, other contributor) —
+   the rebase places new commits on top of the latest main regardless of divergence.
+   On conflict: resolve, `git add`, `git rebase --continue`.
 4. Verify: `git log --oneline origin/main..dev` should show only new commits
 5. `npm run build && npm test` - re-verify after rebase
 6. `git push origin dev --force-with-lease`

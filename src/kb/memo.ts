@@ -101,7 +101,7 @@ function parseTimestampPrefix(filename: string): { display: string; sortKey: num
   return { display: match[1], sortKey };
 }
 
-export function listMemos(projectRoot: string): KbMemoListResult {
+export function listMemos(projectRoot: string, ownerFilter?: string): KbMemoListResult {
   const dir = memoDir(projectRoot);
   const memos = readMemoDir(projectRoot)
     .filter((filename) => filename.endsWith('.md'))
@@ -120,6 +120,10 @@ export function listMemos(projectRoot: string): KbMemoListResult {
         owner = parsed.owner;
       } catch {
         // Legacy memos without valid frontmatter: treat as unowned
+      }
+
+      if (ownerFilter !== undefined && owner !== ownerFilter) {
+        return [];
       }
 
       return [{
@@ -147,6 +151,16 @@ export function deleteMemos(projectRoot: string, input: KbMemoDeleteInput): KbMe
     .filter((filename) => filename.endsWith('.md'))
     .filter((filename) => statSync(join(dir, filename)).isFile())
     .filter((filename) => matcher.test(filename))
+    .filter((filename) => {
+      if (input.owner === undefined) return true;
+      try {
+        const raw = readFileSync(join(dir, filename), 'utf-8');
+        const parsed = parseMemoFrontmatter(raw);
+        return parsed.owner === input.owner;
+      } catch {
+        return false;
+      }
+    })
     .sort(compareLocale);
 
   for (const filename of deleted) {

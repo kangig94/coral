@@ -70,23 +70,24 @@ For multi-step tasks, state a brief plan:
 
 CLI: `{{CORAL_CLI}}`
 
-## Memo
-On non-obvious discovery during any phase (review, planning, implementation), write a memo immediately.
-Also memo Insights worth preserving when Explanatory output style is active.
-
-<!-- SESSION_ID_ONLY:BEGIN -->
-`CLI kb memo write --owner "{{SESSION_ID}}" --topic "<kebab-case-topic>" --content "one paragraph + context"`
-
-When calling codex/claude with `op: coral:*` or the `workflow` tool, include `owner: "{{SESSION_ID}}"` to propagate session ownership to child agents.
-<!-- SESSION_ID_ONLY:END -->
-
-Timestamps, paths, and frontmatter are generated automatically.
-
 ## Search
 Before debugging from scratch or starting a plan:
 1. `CLI kb principles` — list principle names (cross-domain decision patterns). Names are self-descriptive (e.g., `atomic-persistence-or-nothing`). Use `--verbose` for statements and referring notes.
 2. `CLI kb search "<keywords>"` — searches filename, principles, tags, title, content. Returns top 20 results ranked by relevance.
 3. `CLI kb read <note-slug>` — read a note or principle by slug. Resolves memo → note → principle precedence. Always use this instead of reading KB files directly.
+
+<!-- SESSION_ID_ONLY:BEGIN -->
+## Memo
+On non-obvious discovery during any phase (review, planning, implementation), write a memo immediately.
+Also memo Insights worth preserving when Explanatory output style is active.
+
+`CLI kb memo write --owner "{{SESSION_ID}}" --topic "<kebab-case-topic>" --content "one paragraph + context"`
+`CLI kb memo list --owner "{{SESSION_ID}}"`
+`CLI kb memo delete "<pattern>" --owner "{{SESSION_ID}}"`
+
+Timestamps, paths, and frontmatter are generated automatically.
+
+When calling codex/claude with `op: coral:*` or the `workflow` tool, include `owner: "{{SESSION_ID}}"` to propagate session ownership to child agents.
 
 ## Promotion
 **Who**: top-level orchestrator only, after all work completes (not implementation — after review too).
@@ -104,3 +105,4 @@ Promote automatically deletes the source memo and creates a new KB note — no s
 ## Invalidation
 If a kb entry contradicts current code:
 `CLI kb update <note-slug> ...` or `CLI kb delete <note-slug>`
+<!-- SESSION_ID_ONLY:END -->

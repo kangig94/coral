@@ -125,7 +125,9 @@ export type KbMemoInput = {
   owner: string;
 };
 
-export type KbMemoListInput = Record<string, never>;
+export type KbMemoListInput = {
+  owner?: string;
+};
 
 export type KbMemoListResult = {
   memos: Array<{ filename: string; summary: string; createdAt: string; owner?: string }>;
@@ -133,6 +135,7 @@ export type KbMemoListResult = {
 
 export type KbMemoDeleteInput = {
   pattern: string;
+  owner?: string;
 };
 
 export type KbMemoDeleteResult = {
