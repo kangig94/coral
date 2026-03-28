@@ -1,0 +1,32 @@
+#!/usr/bin/env node
+
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { readStdin, resolveProjectSource, coralProjectDir, resolveKbRoot } from './lib/hook-utils.mjs';
+
+function stripOwnerOnlyBlock(text) {
+  return text.replace(/<!-- SESSION_ID_ONLY:BEGIN -->[\s\S]*?<!-- SESSION_ID_ONLY:END -->\n?/g, '');
+}
+
+try {
+  await readStdin();
+  const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || '';
+  const projectDir = process.env.CLAUDE_PROJECT_DIR;
+  const cliPath = `node "${join(PLUGIN_ROOT, 'bridge', 'coral-cli.cjs')}"`;
+
+  if (!PLUGIN_ROOT || !existsSync(PLUGIN_ROOT)) process.exit(0);
+
+  const injectText = readFileSync(join(PLUGIN_ROOT, 'INJECT.md'), 'utf-8');
+  const substituted = stripOwnerOnlyBlock(injectText)
+    .replaceAll('{{CORAL_CLI}}', cliPath)
+    .replaceAll('{{CORAL_KB}}', resolveKbRoot())
+    .replaceAll('{{SESSION_ID}}', '')
+    .replaceAll('{{CORAL_PROJECTS}}', projectDir ? coralProjectDir(projectDir) : '{{CORAL_PROJECTS}}')
+    .replaceAll('{{PROJECT_SOURCE}}', projectDir ? resolveProjectSource(projectDir) : '{{PROJECT_SOURCE}}');
+
+  console.log(JSON.stringify({
+    hookSpecificOutput: { hookEventName: 'SubagentStart', additionalContext: substituted },
+  }));
+} catch {
+  process.exit(0);
+}

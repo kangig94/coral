@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { exitIfChildProcess, readStdin, coralProjectDir, sweepStale, isOwnerId } from './lib/hook-utils.mjs';
 exitIfChildProcess();
 
-const THROTTLE_MIN = 30;
+const THROTTLE_MIN = 60;
 const FLAG_PREFIX = 'memo-reminded-';
 
 try {
@@ -40,7 +40,7 @@ try {
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',
-      additionalContext: `Memo reminder: When you discover something non-obvious during this task (painful root cause, unexpected gotcha, clever solution), write immediately with ${cliPath} kb memo write --owner "${sessionId}" --topic "<kebab-case-topic>" --content "one paragraph + context".`,
+      additionalContext: `Memo reminder: When you discover something that would save someone hours (painful root cause, gotcha contradicting docs), write with ${cliPath} kb memo write --owner "${sessionId}" --topic "<kebab-case-topic>" --content "one paragraph + context". Do not memo routine findings.`,
     },
   }));
 } catch {
