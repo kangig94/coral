@@ -1,6 +1,11 @@
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { coralRoot, kbRoot, projectDataDir } from '../infra/paths.js';
 
+/** Strip trailing `.md` extension if present. Idempotent. */
+export function stripMdExt(name: string): string {
+  return name.endsWith('.md') ? name.slice(0, -3) : name;
+}
+
 export function assertWithin(root: string, candidate: string, label: string): string {
   const resolvedRoot = resolve(root);
   const resolvedCandidate = resolve(candidate);
@@ -12,7 +17,7 @@ export function assertWithin(root: string, candidate: string, label: string): st
 }
 
 function markdownPath(root: string, name: string, label: string): string {
-  return assertWithin(root, resolve(root, `${name}.md`), label);
+  return assertWithin(root, resolve(root, `${stripMdExt(name)}.md`), label);
 }
 
 export function notesDir(root: string = kbRoot()): string {

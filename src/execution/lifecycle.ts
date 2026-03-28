@@ -813,7 +813,8 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         if (runtimeState.getLifecycle() !== 'running' || idleTimer.isDraining) return;
         try {
           const current = readBackendInfo(pluginRoot);
-          if (current !== null && current.instanceId !== instanceId) {
+          // null means backend.json was deleted (replacement) or corrupt — drain either way
+          if (current?.instanceId !== instanceId) {
             clearInterval(ownershipChecker);
             idleTimer.requestDrain('replaced');
           }

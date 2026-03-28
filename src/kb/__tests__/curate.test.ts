@@ -1545,4 +1545,23 @@ describe('curate', () => {
       expect(readCurateState(runtime).retryNotBefore).not.toBeNull();
     });
   });
+
+  describe('start with missing index', () => {
+    it('should rebuild index and complete migration when index.json is missing but notes exist', async () => {
+      writeNote('test-note', { title: 'Test Note' });
+
+      // No index written — ensureIndex inside start() should rebuild it
+      expect(runtime.readIndex()).toBeNull();
+
+      await scheduler.start();
+      await settleCurateRuntime(scheduler);
+
+      // Index rebuilt
+      expect(runtime.readIndex()).not.toBeNull();
+
+      // Curate state initialized
+      const state = readCurateState(runtime);
+      expect(state.initialized).toBe(true);
+    });
+  });
 });

@@ -1,7 +1,7 @@
 declare const __PLUGIN_ROOT__: string;
 declare const __VERSION__: string;
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { Command, Option } from 'commander';
 
 import {
@@ -176,6 +176,15 @@ type KbUpdateOptions = {
   title?: string;
   contentFile?: string;
 };
+
+function resolveFilePath(filePath: string): string {
+  if (existsSync(filePath)) return filePath;
+  if (!filePath.endsWith('.md')) {
+    const withMd = `${filePath}.md`;
+    if (existsSync(withMd)) return withMd;
+  }
+  return filePath;
+}
 
 function makeClient(projectRoot: string): BackendClient {
   const defaultContext: CallerContext = { pluginRoot, projectRoot, coralEnv: collectCoralEnv() };
@@ -914,7 +923,7 @@ export function buildProgram(): Command {
 
       try {
         const content = opts.contentFile !== undefined
-          ? readFileSync(opts.contentFile, 'utf8')
+          ? readFileSync(resolveFilePath(opts.contentFile), 'utf8')
           : opts.content;
         if (content === undefined) {
           throw new Error('Either --content or --content-file is required');
@@ -1007,7 +1016,7 @@ export function buildProgram(): Command {
 
       try {
         const content = opts.contentFile !== undefined
-          ? readFileSync(opts.contentFile, 'utf8')
+          ? readFileSync(resolveFilePath(opts.contentFile), 'utf8')
           : undefined;
         const args = {
           ...(opts.memo !== undefined ? { memo: opts.memo } : {}),
@@ -1039,7 +1048,7 @@ export function buildProgram(): Command {
         const args = {
           note,
           ...(opts.title !== undefined ? { title: opts.title } : {}),
-          ...(opts.contentFile !== undefined ? { content: readFileSync(opts.contentFile, 'utf8') } : {}),
+          ...(opts.contentFile !== undefined ? { content: readFileSync(resolveFilePath(opts.contentFile), 'utf8') } : {}),
         };
         const client = makeClient(process.cwd());
         const result = await client.kbUpdate(args);

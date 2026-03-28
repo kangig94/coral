@@ -168,6 +168,32 @@ memo body
     expect(lockSpy).not.toHaveBeenCalled();
   });
 
+  it('resolves memo without .md extension when a matching .md file exists', async () => {
+    const { promote, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    const projectRoot = join(mockState.tmpHome, 'project');
+    mkdirSync(projectRoot, { recursive: true });
+    mkdirSync(paths.memoDir(projectRoot), { recursive: true });
+
+    const memoPath = join(paths.memoDir(projectRoot), '2026-03-23-no-ext.md');
+    writeFileSync(memoPath, `---
+source: kangig94/coral
+---
+memo body
+`, 'utf-8');
+
+    const result = await promote(kb, projectRoot, {
+      memo: '2026-03-23-no-ext',
+      title: 'No Extension',
+      content: '## Rule\nExtension fallback works.',
+      domain: 'coral',
+      topic: 'no-ext',
+    });
+
+    expect(result.path).toContain('coral-no-ext.md');
+    expect(existsSync(memoPath)).toBe(false);
+  });
+
   it('rejects memo paths outside the active project memo directory before touching files', async () => {
     const { promote, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);

@@ -6,6 +6,7 @@ import { isNoEntryError, isProcessAlive, tryExclusiveWrite } from '../shared/mcp
 
 export { backendLockPath } from '../infra/paths.js';
 export const STARTUP_DEADLINE = 30_000;
+export const CONTENDER_BUDGET = 90_000;
 
 const RETRY_DELAY_MS = 200;
 const HEALTHCHECK_TIMEOUT_MS = 1_000;
@@ -141,8 +142,14 @@ export async function acquireLock(pluginRoot: string, instanceId: string, versio
 
   let observedKey: string | null = null;
   let observedAt = Date.now();
+  const contenderStartedAt = Date.now();
 
   while (true) {
+    if (Date.now() - contenderStartedAt >= CONTENDER_BUDGET) {
+      process.stderr.write(`Coral backend lock acquisition timed out after ${CONTENDER_BUDGET}ms\n`);
+      throw new Error('Coral backend lock acquisition timed out');
+    }
+
     if (writeLockFile(pluginRoot, record)) return;
 
     const snapshot = readLockSnapshot(pluginRoot);
