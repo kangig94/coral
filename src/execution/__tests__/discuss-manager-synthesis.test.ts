@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent } from '../../discuss/events.js';
 import * as discussLoop from '../discuss/loop.js';
-import { recoverPersistedSessions } from '../discuss/operations.js';
+import { recoverPersistedSessionsFromStore } from '../discuss/operations.js';
 import { getSession } from '../discuss/registry.js';
 import { handleSynthesis } from '../discuss/subflows.js';
 import {
@@ -10,13 +10,35 @@ import {
   createDiscussHarness,
   createExecutionServiceStub,
   persistSession,
+  type DiscussHarness,
 } from './discuss-test-helpers.js';
 
 afterEach(() => {
   cleanupDiscussHarnesses();
   vi.clearAllTimers();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
+
+async function recoverSessions(harness: DiscussHarness) {
+  return recoverPersistedSessionsFromStore(
+    harness.store,
+    () => harness.context,
+    (snapshot) => ({
+      projectRoot: snapshot.projectRoot,
+      pluginRoot: harness.ctx.pluginRoot,
+      coralEnv: {},
+    }),
+  );
+}
+
+function resumeRecoveredSessions(
+  recovered: Awaited<ReturnType<typeof recoverSessions>>,
+): void {
+  for (const session of recovered) {
+    discussLoop.resumeLoop(session.ctx, session.sessionId, session.callerCtx);
+  }
+}
 
 describe('Discuss synthesis', () => {
   it('records a single synthesis entry from a terminal session', async () => {
@@ -60,10 +82,10 @@ describe('Discuss synthesis', () => {
     });
 
     vi.useFakeTimers();
-    await recoverPersistedSessions(harness.context);
-    discussLoop.resumeLoop(harness.context, 'discuss-1', harness.ctx);
+    const recovered = await recoverSessions(harness);
+    expect(recovered).toHaveLength(1);
+    resumeRecoveredSessions(recovered);
     await vi.runAllTimersAsync();
-    vi.useRealTimers();
 
     const snapshot = harness.store.load('discuss-1');
     expect(snapshot?.state.transcript.at(-1)).toMatchObject({

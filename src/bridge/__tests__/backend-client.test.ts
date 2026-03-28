@@ -564,4 +564,32 @@ describe('bridge backend-client', () => {
 
     expect(cursorRef.lastEventId).toBe('cursor-final');
   });
+
+  it('streamWait aborts fetch immediately when the external signal is already aborted', async () => {
+    const client = await loadBackendClientModule();
+    const controller = new AbortController();
+    controller.abort();
+    let fetchSignal: AbortSignal | undefined;
+    fetchMock.mockImplementationOnce(async (_url, init) => {
+      fetchSignal = init?.signal as AbortSignal | undefined;
+      throw new DOMException('The operation was aborted.', 'AbortError');
+    });
+
+    const consumeWait = async () => {
+      for await (const _event of client.streamWait(
+        ['job-1'],
+        5,
+        { host: '127.0.0.1', port: 4100, token: 'backend-token' },
+        undefined,
+        controller.signal,
+        '/tmp/project',
+      )) {
+        // consume
+      }
+    };
+
+    await expect(consumeWait()).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchSignal?.aborted).toBe(true);
+  });
 });

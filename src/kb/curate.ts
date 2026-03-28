@@ -109,6 +109,7 @@ export type SpawnCliFn = (options: {
   prompt?: string;
   cwd?: string;
   pool?: 'default' | 'discuss' | 'curate';
+  signal?: AbortSignal;
 }) => Promise<SpawnCliResult>;
 
 export type CurateClaimedNote = {
@@ -938,6 +939,7 @@ export function createCurateScheduler({
   let stopped = false;
   let queuedRun = false;
   let activeRun: Promise<void> | null = null;
+  let activeRunController: AbortController | null = null;
   let retryWakeTimer: NodeJS.Timeout | null = null;
   let debounceTimer: NodeJS.Timeout | null = null;
   let cachedIsGitRepo: boolean | null = null;
@@ -946,7 +948,7 @@ export function createCurateScheduler({
 
   // -- Claude invocation (KB-scoped) --
 
-  async function runClaude(prompt: string, extraArgs?: string[]): Promise<string> {
+  async function runClaude(prompt: string, extraArgs?: string[], signal?: AbortSignal): Promise<string> {
     const result = await spawnCli({
       provider: 'claude',
       command: 'claude',
@@ -954,6 +956,7 @@ export function createCurateScheduler({
       prompt,
       cwd: root,
       pool: 'curate',
+      signal,
     });
 
     if (result.aborted) {
@@ -1063,7 +1066,7 @@ export function createCurateScheduler({
     }
   }
 
-  async function resolveConflictsWithClaude(): Promise<boolean> {
+  async function resolveConflictsWithClaude(signal?: AbortSignal): Promise<boolean> {
     const prompt = 'Git rebase conflict in KB repository. Resolve all conflicts in the working tree:'
       + ' keep both changes where possible, prefer the incoming (remote) version for'
       + ' frontmatter metadata (tags, principles, updatedAt), and preserve local body'
@@ -1071,7 +1074,7 @@ export function createCurateScheduler({
 
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        await runClaude(prompt, ['--permission-mode', 'bypassPermissions', '--model', 'sonnet']);
+        await runClaude(prompt, ['--permission-mode', 'bypassPermissions', '--model', 'sonnet'], signal);
       } catch {
         return false;
       }
@@ -1090,7 +1093,7 @@ export function createCurateScheduler({
     return false;
   }
 
-  async function gitSync(): Promise<void> {
+  async function gitSync(signal?: AbortSignal): Promise<void> {
     if (!isGitRepo() || !isGitSyncEnabled()) return;
 
     const branch = getDefaultBranch();
@@ -1111,7 +1114,7 @@ export function createCurateScheduler({
       try {
         await gitAsync(['rebase', `origin/${branch}`]);
       } catch {
-        if (!await resolveConflictsWithClaude()) {
+        if (!await resolveConflictsWithClaude(signal)) {
           try { git(['rebase', '--abort'], 5000); } catch { /* no-op */ }
         }
       }
@@ -1204,6 +1207,9 @@ export function createCurateScheduler({
   function armRetryWake(): void {
     clearRetryWake();
 
+    if (stopped) {
+      return;
+    }
     if (!runtimeStarted) {
       return;
     }
@@ -1290,6 +1296,7 @@ export function createCurateScheduler({
   async function runClassificationBatches(
     claim: CurateClaim,
     index: KbIndex,
+    signal?: AbortSignal,
   ): Promise<ClassificationAssignment[]> {
     const rawAssignments: ClassificationAssignment[] = [];
     const tagVocab = buildTagVocabulary(index);
@@ -1297,7 +1304,7 @@ export function createCurateScheduler({
 
     for (const batch of chunkNotes(claim.notes, CLASSIFICATION_BATCH_SIZE)) {
       const prompt = buildClassificationPrompt(batch, tagVocab, principleNames);
-      const raw = await runClaude(prompt);
+      const raw = await runClaude(prompt, undefined, signal);
       const { entries, parseFailed } = parseJsonArray(raw);
       if (parseFailed) {
         throw new CurateJsonParseError('classification');
@@ -1585,6 +1592,7 @@ export function createCurateScheduler({
 
   async function runPrincipleDiscovery(
     processedThrough: CurateCursor,
+    signal?: AbortSignal,
   ): Promise<void> {
     await drainPendingDiscoveries(processedThrough);
 
@@ -1605,7 +1613,7 @@ export function createCurateScheduler({
     const { prompt, corpusPath } = buildDiscoveryPrompt(eligibleNotes, currentIndex.principles);
     let raw: string;
     try {
-      raw = await runClaude(prompt);
+      raw = await runClaude(prompt, undefined, signal);
     } finally {
       unlinkIfExists(corpusPath);
     }
@@ -1742,12 +1750,12 @@ export function createCurateScheduler({
     });
   }
 
-  async function runScheduledCurate(): Promise<CurateCursor | null> {
-    await gitSync();
+  async function runScheduledCurate(signal: AbortSignal): Promise<CurateCursor | null> {
+    await gitSync(signal);
     let lastCompletedThrough: CurateCursor | null = null;
     const allCohortSlugs: string[] = [];
 
-    while (!stopped) {
+    while (!stopped && !signal.aborted) {
       const claim = await claimCurateRun(nowIsoString().slice(0, 10));
       if (claim === null) {
         break;
@@ -1755,7 +1763,7 @@ export function createCurateScheduler({
 
       try {
         const claimIndex = kb.readIndexOrEmpty();
-        const rawAssignments = await runClassificationBatches(claim, claimIndex);
+        const rawAssignments = await runClassificationBatches(claim, claimIndex, signal);
         const validatedAssignments = validateAssignments(rawAssignments, claimIndex, claim.notes);
         const metadataTargets = buildMetadataTargets(validatedAssignments, claimIndex, claim.notes);
         await commitMetadataTargets(metadataTargets);
@@ -1785,9 +1793,9 @@ export function createCurateScheduler({
     const processedThrough = postClassifyState.processedThrough;
     const postClassifyIndex = kb.readIndexOrEmpty();
 
-    if (!stopped && processedThrough !== null) {
+    if (!stopped && !signal.aborted && processedThrough !== null) {
       try {
-        await runPrincipleDiscovery(processedThrough);
+        await runPrincipleDiscovery(processedThrough, signal);
         gitAutoCommit('curate: discover principles');
       } catch (error: unknown) {
         throw new CurateRunError(lastCompletedThrough, error);
@@ -1795,7 +1803,7 @@ export function createCurateScheduler({
     }
 
     // Tag cleanup runs once over all classified notes.
-    if (!stopped) {
+    if (!stopped && !signal.aborted) {
       const cleanupResult = cleanupTags(postClassifyIndex, allCohortSlugs);
       const cleanupTargets = buildCleanupTargets(postClassifyIndex, allCohortSlugs, cleanupResult);
       if (cleanupTargets.length > 0) {
@@ -1808,7 +1816,7 @@ export function createCurateScheduler({
       }
     }
 
-    if (!stopped) await gitPush();
+    if (!stopped && !signal.aborted) await gitPush();
     return lastCompletedThrough;
   }
 
@@ -1821,12 +1829,22 @@ export function createCurateScheduler({
     }
 
     queuedRun = false;
+    const runController = new AbortController();
+    activeRunController = runController;
     activeRun = (async () => {
       let lastCompletedThrough: CurateCursor | null = null;
 
       try {
-        lastCompletedThrough = await runScheduledCurate();
+        lastCompletedThrough = await runScheduledCurate(runController.signal);
       } catch (error: unknown) {
+        if (stopped && runController.signal.aborted) {
+          try {
+            await clearCurateRetryState();
+          } catch (stateError: unknown) {
+            process.stderr.write(`kb_curate: failed to clear stop state: ${errorMessage(stateError)}\n`);
+          }
+          return;
+        }
         const runError = error instanceof CurateRunError
           ? error
           : new CurateRunError(null, error);
@@ -1838,12 +1856,17 @@ export function createCurateScheduler({
         }
       } finally {
         activeRun = null;
+        if (activeRunController === runController) {
+          activeRunController = null;
+        }
         try {
-          armRetryWake();
+          if (!stopped) {
+            armRetryWake();
+          }
         } catch (error: unknown) {
           process.stderr.write(`kb_curate: ${errorMessage(error)}\n`);
         }
-        if (lastCompletedThrough !== null) {
+        if (!stopped && lastCompletedThrough !== null) {
           try {
             if (await hasPendingNotesBeyondCursor(lastCompletedThrough)) {
               schedule();
@@ -1905,8 +1928,19 @@ export function createCurateScheduler({
       clearTimeout(debounceTimer);
       debounceTimer = null;
     }
-    if (activeRun !== null) {
-      await activeRun;
+    const run = activeRun;
+    const runController = activeRunController;
+    if (runController !== null) {
+      runController.abort();
+    }
+    if (run !== null) {
+      try {
+        await run;
+      } catch (error: unknown) {
+        if (!(stopped && runController?.signal.aborted)) {
+          throw error;
+        }
+      }
     }
   }
 

@@ -223,7 +223,7 @@ describe('server discuss API', () => {
 
     expect(controlResponse.status).toBe(200);
     expect(controlBody.view).toBe('control');
-    expect(controlBody.authority).toBe('live');
+    expect(controlBody.authority).toBe('persisted');
     expect(Array.isArray(controlBody.transcript)).toBe(true);
     expect('transcript' in controlBody.session).toBe(false);
     expect(controlBody.transcript.find((entry) => entry.type === 'bids')).toEqual({

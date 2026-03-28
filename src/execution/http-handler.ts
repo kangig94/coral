@@ -1,7 +1,7 @@
 /**
  * HTTP request handler for the backend server.
  *
- * Extracted from `createBackendServer()` in server.ts (AC4). All closure
+ * Extracted from `createBackendServer()` in server.ts. All closure
  * dependencies are received through the explicit `HttpHandlerDeps` contract
  * defined in backend-contracts.ts.
  */
@@ -464,7 +464,7 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
 
     if (req.method === 'POST' && req.url === '/admin/shutdown') {
       req.resume();
-      // Behavior fix (AC4): flip drain fence immediately, before lifecycle transitions.
+      // Flip drain fence immediately, before lifecycle transitions.
       // This closes the race window where requests slip through between requestDrain()
       // and lifecycle = 'draining'.
       deps.requestDrain('replaced');
@@ -473,7 +473,7 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
     }
 
     // Drain admission fence: reject work-admitting requests as soon as drain is requested,
-    // even before lifecycle transitions to 'draining'. This is the AC4 behavior fix.
+    // even before lifecycle transitions to 'draining'.
     if (runtimeState.getLifecycle() !== 'running' || deps.isDrainRequested()) {
       req.resume();
       sendJson(res, 503, { error: 'backend_shutting_down' });

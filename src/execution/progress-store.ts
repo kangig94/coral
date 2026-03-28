@@ -70,7 +70,6 @@ export class ProgressStore {
   private readonly jobStartedAt = new Map<string, number>();
   private readonly statusCache = new Map<string, PersistedStatusRecord>();
   private readonly knownJobIds = new Set<string>();
-  private readonly readBuf = Buffer.alloc(READ_CHUNK);
   private liveCount = 0;
   private changeSeq = 0;
   private waiters: Array<() => void> = [];
@@ -545,7 +544,7 @@ export class ProgressStore {
     }
     try {
       const chunks: string[] = [];
-      const buf = this.readBuf;
+      const buf = Buffer.alloc(READ_CHUNK);
       let nextOffset = cursor.lastOffset;
       while (true) {
         const bytesRead = readSync(fd, buf, 0, READ_CHUNK, nextOffset);

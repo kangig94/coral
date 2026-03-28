@@ -1,5 +1,5 @@
 /**
- * AC18: coral-hud.mjs canonicalization edge cases.
+ * coral-hud.mjs canonicalization edge cases.
  *
  * Attack surface: the plan requires realpathSync() before hashing
  * CLAUDE_PLUGIN_ROOT.  If realpathSync() fails (broken symlink, path does not
@@ -14,7 +14,7 @@
  *   3. A missing CLAUDE_PLUGIN_ROOT env var causes graceful skip.
  *
  * NOTE: coral-hud.mjs is a standalone ESM script, not a TypeScript module.
- * We test the algorithm equivalence (AC25) and the failure modes here using the
+ * We test the algorithm equivalence and the failure modes here using the
  * same inline SHA-256 logic that the hook embeds, cross-checked against paths.ts.
  */
 import { createHash } from 'node:crypto';
@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-// Replica of the inline algorithm that coral-hud.mjs will embed after AC18.
+// Replica of the inline algorithm that coral-hud.mjs embeds.
 function hudNamespace(rawPluginRoot: string): string {
   // Must call realpathSync — the hook does this before hashing
   const canonical = realpathSync(rawPluginRoot);
@@ -35,7 +35,7 @@ function hudNamespaceUnsafe(rawPluginRoot: string): string {
   return createHash('sha256').update(rawPluginRoot).digest('hex').slice(0, 12);
 }
 
-describe('coral-hud AC18 — CLAUDE_PLUGIN_ROOT canonicalization', () => {
+describe('coral-hud CLAUDE_PLUGIN_ROOT canonicalization', () => {
   let tmpDir: string;
   const createdDirs: string[] = [];
 
@@ -121,9 +121,9 @@ describe('coral-hud AC18 — CLAUDE_PLUGIN_ROOT canonicalization', () => {
   });
 });
 
-describe('coral-hud AC20 — hud-auto-update marketplace path guard', () => {
+describe('coral-hud hud-auto-update marketplace path guard', () => {
   it('marketplace path pattern matches expected plugin directory structure', () => {
-    // AC20: hud-auto-update.mjs only copies when CLAUDE_PLUGIN_ROOT contains /.claude/plugins/marketplaces/
+    // hud-auto-update.mjs only copies when CLAUDE_PLUGIN_ROOT contains /.claude/plugins/marketplaces/
     const marketplacePath = '/home/user/.claude/plugins/marketplaces/coral/coral/1.0.0';
     const devPath1 = '/home/user/workspace/coral';
     const devPath2 = '/home/user/projects/my-coral-fork';

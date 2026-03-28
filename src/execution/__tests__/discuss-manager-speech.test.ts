@@ -5,20 +5,42 @@ import { makeEvent } from '../../discuss/events.js';
 import * as discussPrompts from '../discuss/prompts.js';
 import * as discussLoop from '../discuss/loop.js';
 import * as discussSubflows from '../discuss/subflows.js';
-import { getWatchState, recoverPersistedSessions } from '../discuss/operations.js';
+import { getWatchState, recoverPersistedSessionsFromStore } from '../discuss/operations.js';
 import { getSession } from '../discuss/registry.js';
 import {
   cleanupDiscussHarnesses,
   createDiscussHarness,
   createExecutionServiceStub,
   persistSession,
+  type DiscussHarness,
 } from './discuss-test-helpers.js';
 
 afterEach(() => {
   cleanupDiscussHarnesses();
   vi.clearAllTimers();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
+
+async function recoverSessions(harness: DiscussHarness) {
+  return recoverPersistedSessionsFromStore(
+    harness.store,
+    () => harness.context,
+    (snapshot) => ({
+      projectRoot: snapshot.projectRoot,
+      pluginRoot: harness.ctx.pluginRoot,
+      coralEnv: {},
+    }),
+  );
+}
+
+function resumeRecoveredSessions(
+  recovered: Awaited<ReturnType<typeof recoverSessions>>,
+): void {
+  for (const session of recovered) {
+    discussLoop.resumeLoop(session.ctx, session.sessionId, session.callerCtx);
+  }
+}
 
 describe('Discuss speech collection', { retry: 2 }, () => {
   it('records a successful speech and emits a derived speech_done watch event', async () => {
@@ -148,10 +170,10 @@ describe('Discuss speech collection', { retry: 2 }, () => {
     });
 
     vi.useFakeTimers();
-    await recoverPersistedSessions(harness.context);
-    discussLoop.resumeLoop(harness.context, 'discuss-1', harness.ctx);
+    const recovered = await recoverSessions(harness);
+    expect(recovered).toHaveLength(1);
+    resumeRecoveredSessions(recovered);
     await vi.runAllTimersAsync();
-    vi.useRealTimers();
 
     const snapshot = harness.store.load('discuss-1');
     expect(resume).toHaveBeenCalledWith('codex', expect.objectContaining({
@@ -163,6 +185,37 @@ describe('Discuss speech collection', { retry: 2 }, () => {
       type: 'speech',
       agent: 'alpha',
       content: 'Start with the transit-heavy core.',
+    });
+  });
+
+  it('attaches a recovered manual-observer speaker without adding it to the resume set', async () => {
+    const harness = createDiscussHarness();
+    await persistSession(harness, {
+      sessionId: 'discuss-manual-speaker',
+      recover: false,
+      agents: [
+        { name: 'alpha', persona: '# Alpha', participation: 'required' },
+        { name: 'user', persona: '# User', participation: 'observer' },
+      ],
+      buildTail: (snapshot) => [
+        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.submitted', '2026-03-10T00:01:00.000Z', { agent: 'alpha', score: 80, thought: 'alpha' }),
+        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'bid.submitted', '2026-03-10T00:01:01.000Z', { agent: 'user', score: 95, thought: 'observer bid' }),
+        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 3, 'bid.round.closed', '2026-03-10T00:01:02.000Z', {
+          allBids: { alpha: 80, user: 95 },
+          effectiveBids: { alpha: 80, user: 95 },
+          thoughts: { alpha: 'alpha', user: 'observer bid' },
+          outcome: { winner: 'user', speaker_type: 'cold_start' as const },
+          stateMutations: { cold_start: false },
+        }),
+      ],
+    });
+
+    const recovered = await recoverSessions(harness);
+
+    expect(recovered).toHaveLength(0);
+    expect(getSession(harness.context, 'discuss-manual-speaker')?.snapshot.state).toMatchObject({
+      status: 'speaking',
+      current_speaker: 'user',
     });
   });
 });

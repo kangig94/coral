@@ -27,6 +27,22 @@ import type { KbIndex } from '../types.js';
 const DEFAULT_CREATED_AT = '2026-03-20T00:00:00.000Z';
 const DEFAULT_UPDATED_AT = '2026-03-20T00:00:00.000Z';
 
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+};
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+  return { promise, resolve, reject };
+}
+
 function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
   return {
     processedThrough: null,
@@ -1426,6 +1442,89 @@ describe('curate', () => {
         note: 'coral-note-10',
         mutationSeqAtPromote: 10,
       });
+    });
+
+    it('aborts the active spawn on stop() without leaving retry state or an active claim', async () => {
+      const notes: KbIndex['notes'] = {};
+      const spawnStarted = createDeferred<void>();
+      const spawnAborted = createDeferred<void>();
+      const spawn = vi.fn<SpawnCliFn>(async ({ signal }) => {
+        if (signal === undefined) {
+          throw new Error('Expected curate stop signal.');
+        }
+
+        spawnStarted.resolve();
+        return new Promise((resolve) => {
+          const finish = () => {
+            spawnAborted.resolve();
+            resolve({
+              stdout: '',
+              stderr: '',
+              code: null,
+              aborted: true,
+            });
+          };
+
+          if (signal.aborted) {
+            finish();
+            return;
+          }
+
+          signal.addEventListener('abort', finish, { once: true });
+        });
+      });
+
+      for (let index = 1; index <= 10; index += 1) {
+        const slug = `coral-stop-${String(index).padStart(2, '0')}`;
+        writeNote(slug, {
+          title: `Stop ${index}`,
+          mutationSeqAtPromote: index,
+        });
+        notes[slug] = createIndexNote({
+          title: `Stop ${index}`,
+          mutationSeqAtPromote: index,
+        });
+      }
+
+      runtime.writeIndex({ notes, principles: {} });
+      writeCurateState(runtime, createCurateState({ initialized: true }));
+      useScheduler(spawn);
+
+      await scheduler.start();
+      vi.advanceTimersByTime(0);
+      await Promise.resolve();
+      await Promise.resolve();
+      await spawnStarted.promise;
+
+      expect(readCurateState(runtime)).toMatchObject({
+        lastAttemptedThrough: {
+          note: 'coral-stop-10',
+          mutationSeqAtPromote: 10,
+        },
+        activeClaim: {
+          through: {
+            note: 'coral-stop-10',
+            mutationSeqAtPromote: 10,
+          },
+        },
+      });
+
+      const stopPromise = scheduler.stop();
+      await spawnAborted.promise;
+      await expect(stopPromise).resolves.toBeUndefined();
+
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(readCurateState(runtime)).toMatchObject({
+        lastAttemptedThrough: {
+          note: 'coral-stop-10',
+          mutationSeqAtPromote: 10,
+        },
+        retryNotBefore: null,
+        activeClaim: null,
+        consecutiveFailures: 0,
+      });
+      expect(vi.getTimerCount()).toBe(0);
+      expect(scheduler.isRunning()).toBe(false);
     });
 
     it('throws a CurateJsonParseError when classification returns malformed JSON', async () => {

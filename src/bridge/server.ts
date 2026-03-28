@@ -14,6 +14,9 @@ import { waitInputSchema, MAX_INLINE } from '../shared/schemas.js';
 
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
 const version = typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0';
+const BRIDGE_SHUTDOWN_TIMEOUT_MS = 2_000;
+const bridgeLifetime = new AbortController();
+let bridgeShuttingDown = false;
 
 export type ToolDescriptor = {
   name: string;
@@ -124,6 +127,48 @@ function waitFailureResult(error: unknown): ReturnType<typeof mcpError> {
   });
 }
 
+function isBridgeShuttingDown(): boolean {
+  return bridgeShuttingDown || bridgeLifetime.signal.aborted;
+}
+
+function waitRunningResult(jobIds: string[]): McpResult {
+  return jsonResult({
+    state: 'running',
+    runningJobIds: jobIds,
+  });
+}
+
+function waitExitResult(requestSignal: AbortSignal, jobIds: string[]): McpResult | null {
+  if (isBridgeShuttingDown()) {
+    return waitFailureResult(new Error('Bridge shutting down'));
+  }
+  if (requestSignal.aborted) {
+    return waitRunningResult(jobIds);
+  }
+  return null;
+}
+
+function createWaitSignal(requestSignal: AbortSignal): { signal: AbortSignal; cleanup: () => void } {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+
+  if (bridgeLifetime.signal.aborted || requestSignal.aborted) {
+    controller.abort();
+    return { signal: controller.signal, cleanup: () => {} };
+  }
+
+  bridgeLifetime.signal.addEventListener('abort', abort, { once: true });
+  requestSignal.addEventListener('abort', abort, { once: true });
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      bridgeLifetime.signal.removeEventListener('abort', abort);
+      requestSignal.removeEventListener('abort', abort);
+    },
+  };
+}
+
 
 function isMcpTextResult(value: unknown): value is McpResult {
   return isRecord(value)
@@ -162,74 +207,89 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       let retriesLeft = 2;
 
       while (true) {
+        const initialExitResult = waitExitResult(extra.signal, parsed.jobs);
+        if (initialExitResult) {
+          return initialExitResult;
+        }
+
         const backendInfo = await ensureBackend(pluginRoot);
+        const postEnsureExitResult = waitExitResult(extra.signal, parsed.jobs);
+        if (postEnsureExitResult) {
+          return postEnsureExitResult;
+        }
+        const { signal: waitSignal, cleanup } = createWaitSignal(extra.signal);
 
         try {
-          for await (const event of streamWait(
-            parsed.jobs,
-            parsed.timeout_seconds,
-            backendInfo,
-            cursorRef.lastEventId,
-            extra.signal,
-            process.cwd(),
-            cursorRef,
-          )) {
-            switch (event.type) {
-              case 'progress':
-                sendProgress(notify, progressToken, ++progressCount, event.message);
-                continue;
-              case 'queued':
-                sendProgress(notify, progressToken, ++progressCount, `queued (position ${event.queuePosition})`);
-                continue;
-              case 'terminal': {
-                const { content: rawContent, ...resultMeta } = event.result;
-                const isWorkflow = event.result.workflow !== undefined;
-                let text: string | undefined;
-                if (isWorkflow) {
-                  try { text = readFileSync(event.resultPath, 'utf-8'); } catch { /* fall through to path-only */ }
-                } else {
-                  text = rawContent;
-                }
+          try {
+            for await (const event of streamWait(
+              parsed.jobs,
+              parsed.timeout_seconds,
+              backendInfo,
+              cursorRef.lastEventId,
+              waitSignal,
+              process.cwd(),
+              cursorRef,
+            )) {
+              switch (event.type) {
+                case 'progress':
+                  sendProgress(notify, progressToken, ++progressCount, event.message);
+                  continue;
+                case 'queued':
+                  sendProgress(notify, progressToken, ++progressCount, `queued (position ${event.queuePosition})`);
+                  continue;
+                case 'terminal': {
+                  const { content: rawContent, ...resultMeta } = event.result;
+                  const isWorkflow = event.result.workflow !== undefined;
+                  let text: string | undefined;
+                  if (isWorkflow) {
+                    try { text = readFileSync(event.resultPath, 'utf-8'); } catch { /* fall through to path-only */ }
+                  } else {
+                    text = rawContent;
+                  }
 
-                const responseBase = {
-                  state: 'ended' as const,
-                  completedJobId: event.completedJobId,
-                  sessionId: event.sessionId,
-                  remainingJobIds: event.remainingJobIds,
-                };
-                const pathFirstResult = { ...resultMeta, path: event.resultPath };
-                const embeddedPayload = { ...responseBase, result: { ...pathFirstResult, content: text } };
+                  const responseBase = {
+                    state: 'ended' as const,
+                    completedJobId: event.completedJobId,
+                    sessionId: event.sessionId,
+                    remainingJobIds: event.remainingJobIds,
+                  };
+                  const pathFirstResult = { ...resultMeta, path: event.resultPath };
+                  const embeddedPayload = { ...responseBase, result: { ...pathFirstResult, content: text } };
 
-                if (text !== undefined && fitsInlineWaitPayload(embeddedPayload)) {
-                  return jsonResult(embeddedPayload);
+                  if (text !== undefined && fitsInlineWaitPayload(embeddedPayload)) {
+                    return jsonResult(embeddedPayload);
+                  }
+                  return jsonResult({ ...responseBase, result: pathFirstResult });
                 }
-                return jsonResult({ ...responseBase, result: pathFirstResult });
+                case 'timeout':
+                  return waitRunningResult(event.runningJobIds);
               }
-              case 'timeout':
-                return jsonResult({
-                  state: 'running',
-                  runningJobIds: event.runningJobIds,
-                });
+            }
+
+            return mcpError({
+              error: 'wait_transport_failure',
+              message: 'wait stream ended without a terminal event',
+            });
+          } catch (waitError) {
+            const abortedExitResult = waitExitResult(extra.signal, parsed.jobs);
+            if (abortedExitResult) {
+              return abortedExitResult;
+            }
+            if (retriesLeft-- <= 0 || !isTransientStreamError(waitError)) {
+              return waitFailureResult(waitError);
+            }
+            try {
+              await delay(500, undefined, { signal: waitSignal });
+            } catch (backoffError) {
+              const backoffExitResult = waitExitResult(extra.signal, parsed.jobs);
+              if (backoffExitResult) {
+                return backoffExitResult;
+              }
+              return waitFailureResult(backoffError);
             }
           }
-
-          return mcpError({
-            error: 'wait_transport_failure',
-            message: 'wait stream ended without a terminal event',
-          });
-        } catch (waitError) {
-          // Abort signal is authoritative — covers both AbortError and undici TypeError("terminated")
-          if (extra.signal.aborted) {
-            return jsonResult({
-              state: 'running',
-              runningJobIds: parsed.jobs,
-            });
-          }
-          // ensureBackend failures are not transient SSE errors — surface immediately
-          if (retriesLeft-- <= 0 || !isTransientStreamError(waitError)) {
-            return waitFailureResult(waitError);
-          }
-          await delay(500);
+        } finally {
+          cleanup();
         }
       }
     }
@@ -261,7 +321,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 });
 
 function shutdown(): void {
-  void server.close().finally(() => process.exit(0));
+  if (bridgeShuttingDown) {
+    return;
+  }
+  bridgeShuttingDown = true;
+  bridgeLifetime.abort();
+  void Promise.race([
+    server.close(),
+    delay(BRIDGE_SHUTDOWN_TIMEOUT_MS),
+  ]).catch(() => {}).finally(() => process.exit(0));
 }
 
 process.on('SIGTERM', shutdown);

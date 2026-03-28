@@ -69,10 +69,33 @@ export function hasRunningSessions(registry: DiscussContextRegistry): boolean {
   return false;
 }
 
+function isWithinLiveSessionBoundary(session: LiveDiscussSession): boolean {
+  return session.snapshot.state.status !== 'ended'
+    || session.snapshot.runtime.controlPhase !== 'idle';
+}
+
 /** Abort all live sessions and clear every context from the registry. */
-export async function clearAll(registry: DiscussContextRegistry): Promise<void> {
+export async function clearAllDiscuss(
+  registry: DiscussContextRegistry,
+  mode: 'handoff' | 'hard',
+  persistAbortEnd: (
+    ctx: DiscussContext,
+    sessionId: string,
+    session: LiveDiscussSession,
+  ) => Promise<void>,
+): Promise<void> {
   for (const context of registry.contexts.values()) {
-    for (const session of context.sessions.values()) {
+    for (const [sessionId, session] of context.sessions.entries()) {
+      if (mode === 'hard' && !session.abortEnded && isWithinLiveSessionBoundary(session)) {
+        try {
+          await persistAbortEnd(context, sessionId, session);
+        } catch (error: unknown) {
+          const detail = error instanceof Error ? error.message : String(error);
+          process.stderr.write(
+            `Discuss shutdown persist failed for ${sessionId}: ${detail}\n`,
+          );
+        }
+      }
       if (!session.controller.signal.aborted) {
         session.controller.abort();
       }
