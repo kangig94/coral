@@ -220,9 +220,16 @@ describe('coral-resolver resolveCoralContent name validation', () => {
     expect(() => resolveCoralContent('MyAgent')).toThrow('Invalid coral target name');
   });
 
-  it('rejects name with dot (path extension attempt)', async () => {
+  it('strips .md extension and resolves normally', async () => {
     const { resolveCoralContent } = await loadResolver(tmpDir);
-    expect(() => resolveCoralContent('agent.md')).toThrow('Invalid coral target name');
+    writeFileSync(join(tmpDir, 'agents', 'agent.md'), 'agent content', 'utf-8');
+    const result = resolveCoralContent('agent.md');
+    expect(result).toEqual({ type: 'agent', content: 'agent content', path: join(tmpDir, 'agents', 'agent.md') });
+  });
+
+  it('rejects name with non-.md dot (path extension attempt)', async () => {
+    const { resolveCoralContent } = await loadResolver(tmpDir);
+    expect(() => resolveCoralContent('agent.txt')).toThrow('Invalid coral target name');
   });
 
   it('rejects name with forward slash', async () => {

@@ -26,7 +26,10 @@ export async function promote(
   const domain = assertSlug(input.domain, 'domain');
   const topic = assertNoteSlug(input.topic, 'topic');
 
-  const memoPath = memoPathFromContext(projectRoot, memo);
+  let memoPath = memoPathFromContext(projectRoot, memo);
+  if (!existsSync(memoPath) && !memo.endsWith('.md')) {
+    memoPath = memoPathFromContext(projectRoot, `${memo}.md`);
+  }
   const note = `${domain}-${topic}`;
   const notePath = rt.notePath(note);
   if (!existsSync(memoPath)) {

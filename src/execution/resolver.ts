@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
+import { stripMdExt } from '../kb/paths.js';
 import { isNoEntryError } from '../shared/mcp-utils.js';
 
 declare const __PLUGIN_ROOT__: string;
@@ -29,12 +30,13 @@ export function parseAgentMeta(content: string): AgentMeta {
 }
 
 export function resolveCoralContent(name: string): CoralContent {
-  if (!isValidName(name)) {
+  const normalized = stripMdExt(name);
+  if (!isValidName(normalized)) {
     throw new Error(`Invalid coral target name: ${name}`);
   }
 
   const agentsDir = join(pluginRoot, 'agents');
-  const agentPath = resolve(agentsDir, `${name}.md`);
+  const agentPath = resolve(agentsDir, `${normalized}.md`);
   ensureContained(agentsDir, agentPath);
   const agentContent = readFileIfExists(agentPath);
   if (agentContent !== null) {
@@ -42,14 +44,14 @@ export function resolveCoralContent(name: string): CoralContent {
   }
 
   const skillsDir = join(pluginRoot, 'skills');
-  const skillPath = resolve(skillsDir, name, 'SKILL.md');
+  const skillPath = resolve(skillsDir, normalized, 'SKILL.md');
   ensureContained(skillsDir, skillPath);
   const skillContent = readFileIfExists(skillPath);
   if (skillContent !== null) {
     return { type: 'skill', content: skillContent, path: skillPath };
   }
 
-  throw new Error(`Coral content not found: ${name} (expected agents/${name}.md or skills/${name}/SKILL.md)`);
+  throw new Error(`Coral content not found: ${normalized} (expected agents/${normalized}.md or skills/${normalized}/SKILL.md)`);
 }
 
 export function stripAgentMetadata(content: string): string {
