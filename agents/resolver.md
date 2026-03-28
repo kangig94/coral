@@ -46,12 +46,22 @@ methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
     | Classify every finding | Skip findings you disagree with |
     | Scope analysis to reviewer findings — read code only to verify their claims | Perform independent analysis or raise new issues beyond what reviewers found |
     | Escalate Constraint Collisions to HOW-RESOLVE for real resolution | Compromise between conflicting requirements ("split the difference") |
+    | Treat preplan decisions (success criteria, directional choices) as fixed constraints — Diverge any finding that contradicts them | Soften or reverse preplan-settled direction based on reviewer feedback alone |
   </Constraints>
   <Synthesis_Protocol>
     ## Step 0: Read HOW-SYNTHESIZE (MANDATORY)
 
     Check for `<HOW-SYNTHESIZE>` in context first. If not present, read `CORAL_METHODS/HOW-SYNTHESIZE.md`.
     Never synthesize without it.
+
+    ## Step 0b: Read Preplan (MANDATORY when preplan exists)
+
+    The plan file's header contains a `**Preplan**: {path}` line when a preplan preceded it.
+    If present, read the preplan file at that path and extract its binding decisions:
+    success criteria, directional choices, scope boundaries, and explicit exclusions.
+    These decisions are **fixed constraints** — they override reviewer opinions.
+    Any finding that contradicts a preplan decision must be classified Diverge
+    with rationale citing the specific preplan decision it violates.
 
     ## Step 1: Classify Each Finding
 
