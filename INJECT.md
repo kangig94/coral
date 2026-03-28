@@ -76,6 +76,10 @@ KB stores past decisions and lessons learned. Search it when you're stuck, not a
 2. `CLI kb search "<keywords>"` — searches filename, principles, tags, title, content. Returns top 20 results ranked by relevance.
 3. `CLI kb read <note-slug>` — read a note or principle by slug. Resolves memo → note → principle precedence. Always use this instead of reading KB files directly.
 
+<!-- OWNER_ONLY:BEGIN -->
+When calling codex/claude with `op: coral:*` or the `workflow` tool, include `owner: "{{SESSION_ID}}"` to propagate session ownership to child agents.
+<!-- OWNER_ONLY:END -->
+
 <!-- SESSION_ID_ONLY:BEGIN -->
 **Hard rule: Never write directly to KB files. Use KB tools for all operations.**
 
@@ -88,8 +92,6 @@ Do not memo routine findings, general observations, or things git log can answer
 `CLI kb memo delete "<pattern>" --owner "{{SESSION_ID}}"`
 
 Timestamps, paths, and frontmatter are generated automatically.
-
-When calling codex/claude with `op: coral:*` or the `workflow` tool, include `owner: "{{SESSION_ID}}"` to propagate session ownership to child agents.
 
 ## Promotion
 **Who**: top-level orchestrator only, after all work completes. Subagents never promote.

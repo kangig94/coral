@@ -4,8 +4,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readStdin, resolveProjectSource, coralProjectDir, resolveKbRoot } from './lib/hook-utils.mjs';
 
-function stripOwnerOnlyBlock(text) {
+function stripSessionIdOnly(text) {
   return text.replace(/<!-- SESSION_ID_ONLY:BEGIN -->[\s\S]*?<!-- SESSION_ID_ONLY:END -->\n?/g, '');
+}
+
+function stripOwnerOnly(text) {
+  return text.replace(/<!-- OWNER_ONLY:BEGIN -->[\s\S]*?<!-- OWNER_ONLY:END -->\n?/g, '');
 }
 
 try {
@@ -17,7 +21,7 @@ try {
   if (!PLUGIN_ROOT || !existsSync(PLUGIN_ROOT)) process.exit(0);
 
   const injectText = readFileSync(join(PLUGIN_ROOT, 'INJECT.md'), 'utf-8');
-  const substituted = stripOwnerOnlyBlock(injectText)
+  const substituted = stripOwnerOnly(stripSessionIdOnly(injectText))
     .replaceAll('{{CORAL_CLI}}', cliPath)
     .replaceAll('{{CORAL_KB}}', resolveKbRoot())
     .replaceAll('{{SESSION_ID}}', '')

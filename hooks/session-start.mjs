@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { exitIfChildProcess, readStdin, resolveProjectSource, coralProjectDir, resolveKbRoot, isOwnerId } from './lib/hook-utils.mjs';
 exitIfChildProcess();
 
-function stripOwnerOnlyBlock(text) {
+function stripSessionIdOnly(text) {
   return text.replace(/<!-- SESSION_ID_ONLY:BEGIN -->[\s\S]*?<!-- SESSION_ID_ONLY:END -->\n?/g, '');
 }
 
@@ -29,7 +29,7 @@ try {
     .replaceAll('{{SESSION_ID}}', ownerSessionId || '')
     .replaceAll('{{CORAL_PROJECTS}}', projectDir ? coralProjectDir(projectDir) : '{{CORAL_PROJECTS}}')
     .replaceAll('{{PROJECT_SOURCE}}', projectDir ? resolveProjectSource(projectDir) : '{{PROJECT_SOURCE}}');
-  const injectContent = ownerSessionId ? substituted : stripOwnerOnlyBlock(substituted);
+  const injectContent = ownerSessionId ? substituted : stripSessionIdOnly(substituted);
   const additionalContext = sessionId
     ? `SessionStart:session_id=${sessionId}\n\n${injectContent}`
     : injectContent;

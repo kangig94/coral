@@ -13,6 +13,7 @@ import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const SESSION_START_HOOK = join(process.cwd(), 'hooks', 'session-start.mjs');
+const SUBAGENT_START_HOOK = join(process.cwd(), 'hooks', 'subagent-start.mjs');
 const KB_MEMO_REMINDER_HOOK = join(process.cwd(), 'hooks', 'kb-memo-reminder.mjs');
 const KB_PROMOTE_GATE_HOOK = join(process.cwd(), 'hooks', 'kb-promote-gate.mjs');
 const KB_LOOKUP_REMINDER_HOOK = join(process.cwd(), 'hooks', 'kb-lookup-reminder.mjs');
@@ -327,6 +328,114 @@ describe('session-start.mjs', () => {
   it('exits cleanly when CLAUDE_PLUGIN_ROOT unset', () => {
     const result = runHook(
       SESSION_START_HOOK,
+      {},
+      { CLAUDE_PLUGIN_ROOT: undefined },
+    );
+
+    expect(result.status).toBe(0);
+    expect(parseHookOutput(result.stdout)).toBeNull();
+  });
+
+  it('strips SESSION_ID_ONLY block when session_id is missing', () => {
+    const fixture = createFixture();
+    writeInjectMd(fixture.pluginRoot, 'visible\n<!-- SESSION_ID_ONLY:BEGIN -->\nsecret\n<!-- SESSION_ID_ONLY:END -->\nafter');
+
+    const result = runHook(
+      SESSION_START_HOOK,
+      {},
+      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
+    );
+
+    const output = expectHookOutput(result);
+    expect(output.hookSpecificOutput.additionalContext).toContain('visible');
+    expect(output.hookSpecificOutput.additionalContext).not.toContain('secret');
+    expect(output.hookSpecificOutput.additionalContext).toContain('after');
+  });
+
+  it('keeps OWNER_ONLY block for top-level sessions', () => {
+    const fixture = createFixture();
+    writeInjectMd(fixture.pluginRoot, 'base\n<!-- OWNER_ONLY:BEGIN -->\nowner instruction\n<!-- OWNER_ONLY:END -->\nrest');
+
+    const result = runHook(
+      SESSION_START_HOOK,
+      { session_id: 'sess-owner' },
+      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
+    );
+
+    const output = expectHookOutput(result);
+    expect(output.hookSpecificOutput.additionalContext).toContain('owner instruction');
+  });
+});
+
+describe('subagent-start.mjs', () => {
+  it('outputs INJECT.md with SubagentStart hookEventName', () => {
+    const fixture = createFixture();
+    writeInjectMd(fixture.pluginRoot, 'Guidelines for subagent');
+
+    const result = runHook(
+      SUBAGENT_START_HOOK,
+      { session_id: 'sess-parent' },
+      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
+    );
+
+    expect(result.status).toBe(0);
+
+    const output = expectHookOutput(result);
+    expect(output.hookSpecificOutput.hookEventName).toBe('SubagentStart');
+    expect(output.hookSpecificOutput.additionalContext).toContain('Guidelines for subagent');
+  });
+
+  it('strips SESSION_ID_ONLY blocks', () => {
+    const fixture = createFixture();
+    writeInjectMd(fixture.pluginRoot, 'visible\n<!-- SESSION_ID_ONLY:BEGIN -->\nmemo commands\n<!-- SESSION_ID_ONLY:END -->\nafter');
+
+    const result = runHook(
+      SUBAGENT_START_HOOK,
+      { session_id: 'sess-parent' },
+      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
+    );
+
+    const output = expectHookOutput(result);
+    expect(output.hookSpecificOutput.additionalContext).toContain('visible');
+    expect(output.hookSpecificOutput.additionalContext).not.toContain('memo commands');
+    expect(output.hookSpecificOutput.additionalContext).toContain('after');
+  });
+
+  it('strips OWNER_ONLY blocks', () => {
+    const fixture = createFixture();
+    writeInjectMd(fixture.pluginRoot, 'base\n<!-- OWNER_ONLY:BEGIN -->\npropagate owner\n<!-- OWNER_ONLY:END -->\nrest');
+
+    const result = runHook(
+      SUBAGENT_START_HOOK,
+      { session_id: 'sess-parent' },
+      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
+    );
+
+    const output = expectHookOutput(result);
+    expect(output.hookSpecificOutput.additionalContext).toContain('base');
+    expect(output.hookSpecificOutput.additionalContext).not.toContain('propagate owner');
+    expect(output.hookSpecificOutput.additionalContext).toContain('rest');
+  });
+
+  it('replaces {{CORAL_CLI}} with bridge path', () => {
+    const fixture = createFixture();
+    writeInjectMd(fixture.pluginRoot, 'CLI: {{CORAL_CLI}}');
+
+    const result = runHook(
+      SUBAGENT_START_HOOK,
+      {},
+      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
+    );
+
+    const output = expectHookOutput(result);
+    expect(output.hookSpecificOutput.additionalContext).toBe(
+      `CLI: node "${join(fixture.pluginRoot, 'bridge', 'coral-cli.cjs')}"`,
+    );
+  });
+
+  it('exits cleanly when CLAUDE_PLUGIN_ROOT unset', () => {
+    const result = runHook(
+      SUBAGENT_START_HOOK,
       {},
       { CLAUDE_PLUGIN_ROOT: undefined },
     );

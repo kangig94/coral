@@ -19,8 +19,12 @@ function getInjectMd(): string {
   return injectMdCache;
 }
 
-function stripOwnerOnlyBlock(text: string): string {
+function stripSessionIdOnly(text: string): string {
   return text.replace(/<!-- SESSION_ID_ONLY:BEGIN -->[\s\S]*?<!-- SESSION_ID_ONLY:END -->\n?/g, '');
+}
+
+function stripOwnerOnly(text: string): string {
+  return text.replace(/<!-- OWNER_ONLY:BEGIN -->[\s\S]*?<!-- OWNER_ONLY:END -->\n?/g, '');
 }
 
 export function resolveInjectMd(workingDirectory?: string, ownerSessionId?: string): string {
@@ -35,5 +39,6 @@ export function resolveInjectMd(workingDirectory?: string, ownerSessionId?: stri
     .replaceAll('{{SESSION_ID}}', normalizedOwner || '')
     .replaceAll('{{CORAL_PROJECTS}}', workingDirectory ? projectDataDir(workingDirectory) : '{{CORAL_PROJECTS}}')
     .replaceAll('{{PROJECT_SOURCE}}', workingDirectory ? resolveProjectSource(workingDirectory) : '{{PROJECT_SOURCE}}');
-  return normalizedOwner ? rendered : stripOwnerOnlyBlock(rendered);
+  const withoutOwner = stripOwnerOnly(rendered);
+  return normalizedOwner ? withoutOwner : stripSessionIdOnly(withoutOwner);
 }
