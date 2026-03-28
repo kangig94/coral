@@ -401,7 +401,6 @@ export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promis
 
     const state = readCurateState(kb);
     if (state.initialized) {
-      writeCurateState(kb, state);
       return;
     }
 

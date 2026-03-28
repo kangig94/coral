@@ -145,7 +145,6 @@ function useScheduler(spawnCli: SpawnCliFn = noopSpawnCli): void {
   scheduler = createCurateScheduler({
     kb: runtime,
     spawnCli,
-    scheduleDebounceMs: 0,
   });
   internals = scheduler._testInternals!;
 }
@@ -1358,7 +1357,6 @@ describe('curate', () => {
       const secondScheduler = createCurateScheduler({
         kb: secondRuntime,
         spawnCli: noopSpawnCli,
-        scheduleDebounceMs: 0,
       });
       await secondScheduler.start();
       await settleCurateRuntime(secondScheduler);
