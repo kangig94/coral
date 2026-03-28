@@ -121,40 +121,39 @@ describe('coral-hud AC18 — CLAUDE_PLUGIN_ROOT canonicalization', () => {
   });
 });
 
-describe('coral-hud AC20 — hud-auto-update cache path guard', () => {
-  it('cache path pattern matches expected plugin cache directory structure', () => {
-    // AC20: hud-auto-update.mjs only copies when CLAUDE_PLUGIN_ROOT contains /.claude/plugins/cache/
-    const cachePath = '/home/user/.claude/plugins/cache/coral/coral/1.0.0';
+describe('coral-hud AC20 — hud-auto-update marketplace path guard', () => {
+  it('marketplace path pattern matches expected plugin directory structure', () => {
+    // AC20: hud-auto-update.mjs only copies when CLAUDE_PLUGIN_ROOT contains /.claude/plugins/marketplaces/
+    const marketplacePath = '/home/user/.claude/plugins/marketplaces/coral/coral/1.0.0';
     const devPath1 = '/home/user/workspace/coral';
     const devPath2 = '/home/user/projects/my-coral-fork';
     const devPath3 = '~/workspace/coral';
-    const tricky1 = '/home/user/.claude/plugins/cache-backup/coral/1.0.0'; // 'cache-backup' not 'cache/'
-    const tricky2 = '/home/user/.cache/plugins/cache/coral/1.0.0'; // different prefix
+    const tricky1 = '/home/user/.claude/plugins/marketplaces-backup/coral/1.0.0'; // not 'marketplaces/'
+    const tricky2 = '/home/user/.cache/plugins/marketplaces/coral/1.0.0'; // different prefix
 
-    function isCachePath(p: string): boolean {
-      return p.includes('/.claude/plugins/cache/');
+    function isMarketplacePath(p: string): boolean {
+      return p.includes('/.claude/plugins/marketplaces/');
     }
 
-    expect(isCachePath(cachePath)).toBe(true);
-    expect(isCachePath(devPath1)).toBe(false);
-    expect(isCachePath(devPath2)).toBe(false);
-    expect(isCachePath(devPath3)).toBe(false);
-    // Edge case: 'cache-backup' should NOT match
-    expect(isCachePath(tricky1)).toBe(false);
+    expect(isMarketplacePath(marketplacePath)).toBe(true);
+    expect(isMarketplacePath(devPath1)).toBe(false);
+    expect(isMarketplacePath(devPath2)).toBe(false);
+    expect(isMarketplacePath(devPath3)).toBe(false);
+    // Edge case: 'marketplaces-backup' should NOT match
+    expect(isMarketplacePath(tricky1)).toBe(false);
     // Edge case: different prefix '.cache' should NOT match
-    expect(isCachePath(tricky2)).toBe(false);
+    expect(isMarketplacePath(tricky2)).toBe(false);
   });
 
-  it('cache path guard uses exact substring match not prefix match', () => {
-    // A path that starts with cache-like text but is not the real cache dir
-    const notCache = '/.claude/plugins/cache';    // missing trailing slash
-    const isCache = '/.claude/plugins/cache/coral'; // has trailing slash → is cache
+  it('marketplace path guard uses exact substring match not prefix match', () => {
+    const notMarketplace = '/.claude/plugins/marketplaces';    // missing trailing slash
+    const isMarketplace = '/.claude/plugins/marketplaces/coral'; // has trailing slash
 
-    function isCachePath(p: string): boolean {
-      return p.includes('/.claude/plugins/cache/');
+    function isMarketplacePath(p: string): boolean {
+      return p.includes('/.claude/plugins/marketplaces/');
     }
 
-    expect(isCachePath(notCache)).toBe(false); // no trailing slash — not a cache path
-    expect(isCachePath(isCache)).toBe(true);
+    expect(isMarketplacePath(notMarketplace)).toBe(false);
+    expect(isMarketplacePath(isMarketplace)).toBe(true);
   });
 });
