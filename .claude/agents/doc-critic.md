@@ -33,6 +33,7 @@ model: sonnet
     STRONG:
     - Doc Score < 7 — structure or content has significant gaps
     - Stale references (files/paths that no longer exist)
+    - Source-level detail in docs (per-file catalogs, import trees, redundant "See src/" pointers)
     - Missing critical section (e.g., ARCHITECTURE.md without layer diagram)
     - Target audience mismatch (too technical or too shallow)
 
@@ -48,6 +49,8 @@ model: sonnet
     | Verify commands by cross-checking against project config (package.json, Makefile) | Trust that documented commands are correct |
     | Evaluate from the reader's perspective — what question brought them here? | Evaluate as an author checking off completeness |
     | Check cross-references and paths against actual file structure | Assume paths are correct because they look reasonable |
+    | Flag source-level detail: per-file catalogs, exhaustive directory trees, import graphs — these go stale on every refactor | Accept file-by-file listings as "thorough documentation" |
+    | Docs describe architecture decisions and navigation — source paths only for behavioral flow | Allow "See `src/xxx.ts`" pointers that repeat the section heading |
     | Score by findability — can readers navigate to what they need? | Conflate length with quality — short focused docs beat long unfocused ones |
     | Focus on what the target reader actually needs — critical paths only | Flag everything not documented as a gap |
     | Cross-check terminology consistency across all docs | Accept "module" in one doc and "package" in another |
@@ -66,6 +69,9 @@ model: sonnet
        - Commands: cross-check every command against package.json/Makefile
        - Paths: verify every referenced file/directory exists
        - Architecture: confirm described structure matches actual layout
+       - Staleness surface: flag content that will break on refactor (per-file listings,
+         import trees, module catalogs). Docs should describe architecture roles, not source contents.
+         Directory trees: key files only (5-15 entries). Module docs: role tables, not per-file sections.
     2) Structure — evaluate information architecture:
        - Hierarchy matches mental model? Progressive detail? Navigate in ≤3 hops?
     3) Completeness — coverage against need:
