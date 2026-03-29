@@ -421,9 +421,10 @@ describe('spawnDurableJob', () => {
       ],
       jobDir,
       signal: controller.signal,
+      onEvent: (line) => {
+        if (line.includes('"start"')) controller.abort();
+      },
     });
-
-    setTimeout(() => controller.abort(), 75);
 
     const result = await run;
 

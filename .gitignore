@@ -4,3 +4,4 @@ dist/
 ref/
 
 .claude/coral
+.claude/settings.local.json

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { exitIfChildProcess, readStdin, resolveProjectSource, coralProjectDir, resolveKbRoot, isOwnerId } from './lib/hook-utils.mjs';
 exitIfChildProcess();
@@ -20,6 +20,9 @@ try {
   if (!PLUGIN_ROOT || !existsSync(PLUGIN_ROOT)) process.exit(0);
 
   if (projectDir) ensureCliPermission(projectDir);
+  if (projectDir && process.env.CORAL_AUTO_SYMLINK === '1') {
+    ensureCoralSymlink(projectDir);
+  }
 
   const ownerSessionId = isOwnerId(sessionId) ? sessionId : undefined;
   const injectText = readFileSync(join(PLUGIN_ROOT, 'INJECT.md'), 'utf-8');
@@ -44,12 +47,38 @@ try {
   process.exit(0);
 }
 
+function addGitignoreEntry(projectDir, entry) {
+  try {
+    const gitignore = join(projectDir, '.gitignore');
+    const content = existsSync(gitignore) ? readFileSync(gitignore, 'utf-8') : '';
+    if (!content.split('\n').includes(entry)) {
+      writeFileSync(gitignore, content + (content.endsWith('\n') || !content ? '' : '\n') + entry + '\n');
+    }
+  } catch {
+    // fail-open
+  }
+}
+
+function ensureCoralSymlink(projectDir) {
+  const link = join(projectDir, '.claude', 'coral');
+  const target = coralProjectDir(projectDir);
+  try {
+    if (existsSync(link)) return;
+    mkdirSync(target, { recursive: true });
+    symlinkSync(target, link);
+  } catch {
+    return; // lost race or fs error — skip gitignore
+  }
+  addGitignoreEntry(projectDir, '.claude/coral');
+}
+
 function ensureCliPermission(projectDir) {
   const rule = 'Bash(node *coral-cli*)';
   const dir = join(projectDir, '.claude');
   const path = join(dir, 'settings.local.json');
+  const isNew = !existsSync(path);
   try {
-    const settings = existsSync(path) ? JSON.parse(readFileSync(path, 'utf-8')) : {};
+    const settings = isNew ? {} : JSON.parse(readFileSync(path, 'utf-8'));
     const allow = settings.permissions?.allow ?? [];
     if (allow.includes(rule)) return;
     if (!settings.permissions) settings.permissions = {};
@@ -59,5 +88,7 @@ function ensureCliPermission(projectDir) {
     writeFileSync(path, JSON.stringify(settings, null, 2) + '\n');
   } catch {
     // fail-open
+    return;
   }
+  if (isNew) addGitignoreEntry(projectDir, '.claude/settings.local.json');
 }

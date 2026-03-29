@@ -17,6 +17,7 @@ Environment variables, config files, and the plugin manifest.
 | `CORAL_DISCUSS_QUOTA_PER_EPOCH` | `3` | Speaking turns per agent per epoch (1–10). Stored per-session at creation time. |
 | `CORAL_DISCUSS_TTL_DAYS` | `0` | Days before completed discuss sessions are eligible for pruning (0 = disabled) |
 | `CORAL_BACKEND_IDLE_MS` | `21600000` | Backend daemon idle timeout in milliseconds (default 6 hours) |
+| `CORAL_AUTO_SYMLINK` | `0` | Auto-create `.claude/coral → ~/.coral/projects/{slug}/` symlink on session start and add it to `.gitignore` |
 | `CORAL_KB_PATH` | `~/.coral/kb` | Custom KB storage path |
 | `CORAL_KB_GIT_SYNC` | `0` | Enable KB git sync with remote (`1` = auto fetch/rebase/push during curate). **Off by default** — KB notes may contain knowledge derived from proprietary codebases; only enable if the remote is authorized for that content. |
 

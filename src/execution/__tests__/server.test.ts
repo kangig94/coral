@@ -387,6 +387,7 @@ describe('execution backend server', () => {
       instanceId: 'execution-backend-instance-1',
       activeChildren: 0,
       activeJobs: 0,
+      liveDiscuss: 0,
       inflightRequests: 0,
       queueDepth: 0,
     });
