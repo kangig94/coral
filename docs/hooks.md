@@ -7,7 +7,7 @@ Hooks provide automatic context injection, agent routing, HUD auto-update, error
 Claude Code's hook system executes scripts on specific events. Coral uses hooks at two levels:
 
 **Plugin hooks** (`hooks/hooks.json`):
-1. **SessionStart** (`*`) - Injects INJECT.md behavioral guidelines with `{{CORAL_PROJECTS}}` and `{{PROJECT_SOURCE}}` substituted to the active project path/source, warm-starts the backend daemon, and auto-updates HUD script
+1. **SessionStart** (`*`) - Injects INJECT.md behavioral guidelines with `{{CORAL_PROJECTS}}` and `{{PROJECT_SOURCE}}` substituted to the active project path/source, warm-starts the backend daemon, auto-updates HUD script, creates `.claude/coral` symlink when `CORAL_AUTO_SYMLINK=1`, and auto-adds `.claude/settings.local.json` to `.gitignore` when newly created
 2. **SessionStart** (`compact`) - After context compaction, reminds about memo review plus tool-based KB search/promotion
 3. **SubagentStart** (`*`) - Injects INJECT.md into subagents (without owner-only blocks — no session ID, no memo/promotion commands)
 4. **UserPromptSubmit** - Creates session-scoped KB flag for `/coral:ralph`|`/coral:bugfix`, creates ralph loop state for `/coral:ralph`|`/ralph`, and periodically reminds about memo writing
@@ -27,7 +27,9 @@ All hook scripts are **Node.js ESM** (`.mjs`). They read input JSON from stdin, 
 
 Injects the plugin's INJECT.md content into Claude's context at the start of every session. This ensures Claude always receives the behavioral guidelines (Clarity First, Surgical Changes, etc.) and KB system instructions.
 
-Implementation: `hooks/session-start.mjs` reads `INJECT.md` from the plugin root, resolves the active source slug from `CLAUDE_PROJECT_DIR`, substitutes the project-specific placeholders, and returns the result via `hookSpecificOutput.additionalContext`.
+Implementation: `hooks/session-start.mjs` reads `INJECT.md` from the plugin root, resolves the active source slug from `CLAUDE_PROJECT_DIR`, substitutes the project-specific placeholders, and returns the result via `hookSpecificOutput.additionalContext`. Additionally:
+- Adds the `Bash(node *coral-cli*)` permission to `.claude/settings.local.json` (auto-adds the file to `.gitignore` if newly created)
+- When `CORAL_AUTO_SYMLINK=1`: creates a `.claude/coral → ~/.coral/projects/{slug}/` symlink and adds `.claude/coral` to `.gitignore` (race-safe — only the symlink creator updates gitignore)
 
 > **Note**: Codex sessions receive INJECT.md through a separate mechanism - the MCP server prepends it to the prompt in `executeOneShot()`. See [Core Modules](./core-modules.md) for details.
 
