@@ -8,6 +8,8 @@
 | hook-safety | `.claude/agents/hook-safety.md` | sonnet | 2 | Hook timeout safety, Node.js ESM conventions |
 | skill-quality | `.claude/agents/skill-quality.md` | sonnet | 2 | SKILL.md quality, frontmatter correctness |
 | code-critic | `.claude/agents/code-critic.md` | sonnet | 3 | Code quality, elegance, complexity |
+| doc-critic | `.claude/agents/doc-critic.md` | sonnet | 3 | Documentation quality, accuracy, structure |
+| test-critic | `.claude/agents/test-critic.md` | sonnet | 3 | Test quality, coverage architecture, assertions |
 | ux-critic | `.claude/agents/ux-critic.md` | sonnet | 3 | Plugin UX, skill discoverability, MCP tool ergonomics |
 
 ## Consultation Matrix
@@ -23,6 +25,8 @@
 | Output parser changes | mcp-guardian | code-critic | JSONL contract correctness |
 | State machine changes | mcp-guardian, code-critic | -- | Pure function correctness + discuss protocol |
 | New MCP tool addition | mcp-guardian, ux-critic | code-critic | Protocol + ergonomics + quality |
+| Documentation changes | doc-critic | -- | Documentation accuracy + structure |
+| Test changes | test-critic | code-critic | Test quality + coverage architecture |
 | Any implementation complete | `Skill(tier-review)` | -- | Final validation gate (runs in main context, spawns agents) |
 
 ## Invocation Protocol
@@ -37,7 +41,7 @@ Examples:
 @hook-safety Check discuss-idle-guard.mjs for timeout safety
 @skill-quality Validate frontmatter in skills/discuss/SKILL.md
 @code-critic Review elegance of state-machine.ts resolveWinner function
-@ux-critic Check argument ergonomics for discuss_lead tool (_3_step op)
+@ux-critic Check argument ergonomics for discuss_start tool
 ```
 
 Provide file paths and specific concerns. Consult agents early (before implementation) for guidance and late (after implementation) for validation.

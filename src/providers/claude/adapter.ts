@@ -15,11 +15,12 @@ import { parseClaudeStreamJson } from './output-parser.js';
 import { detectClaudeCli } from '../cli-detection.js';
 import { resolveInjectMd } from '../inject.js';
 import { extractClaudeProgressMessage } from './progress.js';
+import { readAppendedLines } from '../../shared/file-tail.js';
 import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
 import { mapProviderResultBase } from '../result-mapping.js';
 import { makeOnEvent, requireConversationRef, type Provider, type ProviderRecoveryContract, type ProviderRuntime } from '../types.js';
 import type { EffortLevel } from '../../shared/schemas.js';
-import type { ClaudeExecResult } from './types.js';
+import type { ClaudeExecResult, ClaudeStreamEvent } from './types.js';
 
 async function preflight(): Promise<void> {
   const cli = await detectClaudeCli();
@@ -89,6 +90,7 @@ const claudeRecovery: ProviderRecoveryContract = {
   async finalizeFromArtifacts({ stdoutPath, exitCode, signal, fallbackConversationRef }) {
     const stdout = readFileSync(stdoutPath, 'utf-8');
     const parsed = parseClaudeStreamJson(stdout);
+    const aborted = signal !== null;
     if (!parsed.isError || parsed.response) {
       return mapResult(
         {
@@ -97,7 +99,7 @@ const claudeRecovery: ProviderRecoveryContract = {
           model: parsed.model ?? '',
           durationMs: parsed.durationMs ?? 0,
           costUsd: parsed.costUsd,
-          aborted: false,
+          aborted,
         },
         fallbackConversationRef,
       );
@@ -106,8 +108,22 @@ const claudeRecovery: ProviderRecoveryContract = {
     return {
       content: stdout,
       exitCode,
+      aborted,
       notice: signal ? `killed by ${signal}` : undefined,
     };
+  },
+  extractProgress({ stdoutPath, fromOffset }) {
+    const { lines, newOffset } = readAppendedLines(stdoutPath, fromOffset);
+    const messages = lines.flatMap((line) => {
+      try {
+        const event = JSON.parse(line) as ClaudeStreamEvent;
+        const message = extractClaudeProgressMessage(event);
+        return message ? [message] : [];
+      } catch {
+        return [];
+      }
+    });
+    return { messages, newOffset };
   },
 };
 

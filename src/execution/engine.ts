@@ -1,8 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFileSync, statSync } from 'node:fs';
+import { closeSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { PersistedRuntimeRecord } from '../shared/types.js';
+import { readAppendedLines } from '../shared/file-tail.js';
+import type { PersistedExitRecord, PersistedRuntimeRecord } from '../shared/types.js';
 
 const IDLE_TIMEOUT = 10 * 60 * 1000; // 10 minutes of inactivity
 const IDLE_CHECK_INTERVAL = 30_000; // poll interval for idle detection
@@ -47,6 +48,7 @@ type QueuedLaunchEntry = {
 };
 
 export const activeChildren = new Set<ActiveChild>();
+const activeDurablePids = new Set<number>();
 
 const activeLaunchesDefault = new Map<string, string>();
 const activeLaunchesDiscuss = new Map<string, string>();
@@ -266,6 +268,10 @@ export type SpawnCliOptions = {
   extraEnv?: Record<string, string>;
 };
 
+export type SpawnDurableJobOptions = SpawnCliOptions & {
+  jobDir: string;
+};
+
 export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
   const pool = options.pool ?? 'default';
   const usingReservedPermit = options.permitGranted || (options.signal ? consumeSignalPermit(options.signal, options.provider) : false);
@@ -415,7 +421,6 @@ export type DurableSpawnOptions = {
   prompt?: string;
   cwd?: string;
   jobDir: string;
-  signal?: AbortSignal;
   pool?: LaunchPool;
   env?: Record<string, string>;
 };
@@ -424,6 +429,7 @@ export type DurableSpawnResult = {
   pid: number;
   stdoutPath: string;
   stderrPath: string;
+  runtimeRecord: PersistedRuntimeRecord;
 };
 
 const DURABLE_POLL_INTERVAL_MS = 100;
@@ -441,12 +447,12 @@ const { spawn } = require('child_process');
 const { openSync, closeSync, writeFileSync, renameSync } = require('fs');
 const { join } = require('path');
 
-const jobDir = process.argv[2];
-const command = process.argv[3];
-const args = JSON.parse(process.argv[4]);
-const env = JSON.parse(process.argv[5]);
-const cwd = process.argv[6] || undefined;
-const prompt = process.argv[7] || '';
+const jobDir = process.argv[1];
+const command = process.argv[2];
+const args = JSON.parse(process.argv[3]);
+const env = JSON.parse(process.argv[4]);
+const cwd = process.argv[5] || undefined;
+const prompt = process.argv[6] || '';
 
 const stdoutPath = join(jobDir, 'stdout');
 const stderrPath = join(jobDir, 'stderr');
@@ -521,7 +527,7 @@ child.on('error', (err) => {
  * The parent polls for runtime.json to confirm spawn success.
  */
 export async function spawnDurableWrapper(options: DurableSpawnOptions): Promise<DurableSpawnResult> {
-  const { command, args, prompt, cwd, jobDir, signal, env: extraEnv } = options;
+  const { command, args, prompt, cwd, jobDir, env: extraEnv } = options;
 
   const mergedEnv: Record<string, string> = {
     ...process.env as Record<string, string>,
@@ -556,10 +562,6 @@ export async function spawnDurableWrapper(options: DurableSpawnOptions): Promise
   const deadline = Date.now() + DURABLE_POLL_TIMEOUT_MS;
 
   while (Date.now() < deadline) {
-    if (signal?.aborted) {
-      throw new Error('Durable spawn aborted while waiting for runtime.json');
-    }
-
     try {
       statSync(runtimePath);
       // runtime.json exists — read and return the record
@@ -569,6 +571,7 @@ export async function spawnDurableWrapper(options: DurableSpawnOptions): Promise
         pid: record.pid,
         stdoutPath: record.stdoutPath,
         stderrPath: record.stderrPath,
+        runtimeRecord: record,
       };
     } catch {
       // Not yet written — wait and retry
@@ -578,6 +581,212 @@ export async function spawnDurableWrapper(options: DurableSpawnOptions): Promise
   }
 
   throw new Error(`Durable wrapper failed to write runtime.json within ${DURABLE_POLL_TIMEOUT_MS}ms (jobDir: ${jobDir})`);
+}
+
+const DURABLE_RUNTIME_POLL_INTERVAL_MS = 500;
+const DURABLE_EXIT_GRACE_MS = 5_000;
+const RUNTIME_FILE = 'runtime.json';
+const EXIT_FILE = 'exit.json';
+
+function safeKillPid(pid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(pid, signal);
+  } catch {
+    /* already dead */
+  }
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readOutputFile(path: string): string {
+  try {
+    const stats = statSync(path);
+    const bytesToRead = Math.min(stats.size, MAX_BUFFER + 1);
+    const fd = openSync(path, 'r');
+    try {
+      const buffer = Buffer.alloc(bytesToRead);
+      const bytesRead = readSync(fd, buffer, 0, bytesToRead, 0);
+      const output = buffer.subarray(0, bytesRead).toString('utf-8');
+      if (stats.size > MAX_BUFFER) {
+        return output.slice(0, MAX_BUFFER) + '\n[output truncated at 10MB]';
+      }
+      return output;
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return '';
+  }
+}
+
+function readExitRecord(jobDir: string): PersistedExitRecord | null {
+  try {
+    const raw = readFileSync(join(jobDir, EXIT_FILE), 'utf-8');
+    return JSON.parse(raw) as PersistedExitRecord;
+  } catch {
+    return null;
+  }
+}
+
+function writeRuntimeRecord(jobDir: string, record: PersistedRuntimeRecord): void {
+  const runtimePath = join(jobDir, RUNTIME_FILE);
+  const tmpPath = `${runtimePath}.tmp`;
+  writeFileSync(tmpPath, JSON.stringify(record, null, 2));
+  renameSync(tmpPath, runtimePath);
+}
+
+export async function spawnDurableJob(options: SpawnDurableJobOptions): Promise<CliExecResult> {
+  const pool = options.pool ?? 'default';
+  const usingReservedPermit = options.permitGranted || (options.signal ? consumeSignalPermit(options.signal, options.provider) : false);
+  let internalPermitJobId: string | null = null;
+
+  if (!usingReservedPermit) {
+    const activeLaunches = getActiveMap(pool);
+    const queuedLaunches = getQueue(pool);
+    const globalActive = activeLaunches.size;
+    const globalLimit = getActiveLimit(pool);
+    if (queuedLaunches.length > 0 || globalActive >= globalLimit) {
+      return Promise.reject(new CliBusyError({
+        error: 'busy',
+        provider: options.provider,
+        globalActive,
+        globalLimit,
+      }));
+    }
+    internalPermitJobId = `spawndurable-${randomUUID()}`;
+    activeLaunches.set(internalPermitJobId, options.provider);
+  }
+
+  let abortHandler: (() => void) | null = null;
+  let killTimer: NodeJS.Timeout | null = null;
+  let durablePid: number | null = null;
+
+  try {
+    if (options.signal?.aborted) {
+      return { stdout: '', stderr: '', code: null, aborted: true };
+    }
+
+    const durable = await spawnDurableWrapper({
+      provider: options.provider,
+      command: options.command,
+      args: options.args,
+      prompt: options.prompt,
+      cwd: options.cwd,
+      jobDir: options.jobDir,
+      pool,
+      env: options.extraEnv,
+    });
+    durablePid = durable.pid;
+    activeDurablePids.add(durable.pid);
+
+    let abortedBySignal = false;
+    let runtimeRecord = durable.runtimeRecord;
+    let tailOffset = runtimeRecord.tailWatermark ?? 0;
+    let pidExitedAt: number | null = null;
+    let lastOutputAt = Date.now();
+    let lastTickAt = Date.now();
+
+    const drainStdout = (): void => {
+      const { lines, newOffset } = readAppendedLines(durable.stdoutPath, tailOffset);
+      if (newOffset === tailOffset) {
+        return;
+      }
+
+      tailOffset = newOffset;
+      lastOutputAt = Date.now();
+      runtimeRecord = { ...runtimeRecord, tailWatermark: newOffset };
+      try {
+        writeRuntimeRecord(options.jobDir, runtimeRecord);
+      } catch {
+        /* best effort */
+      }
+
+      for (const line of lines) {
+        options.onEvent?.(line);
+      }
+    };
+
+    if (options.signal) {
+      abortHandler = () => {
+        if (abortedBySignal) return;
+        abortedBySignal = true;
+        safeKillPid(durable.pid, 'SIGTERM');
+        killTimer = setTimeout(() => {
+          safeKillPid(durable.pid, 'SIGKILL');
+        }, SIGTERM_GRACE_MS);
+        killTimer.unref?.();
+      };
+
+      if (options.signal.aborted) abortHandler();
+      else options.signal.addEventListener('abort', abortHandler, { once: true });
+    }
+
+    while (true) {
+      drainStdout();
+
+      const exitRecord = readExitRecord(options.jobDir);
+      if (exitRecord) {
+        drainStdout();
+        return {
+          stdout: readOutputFile(durable.stdoutPath),
+          stderr: readOutputFile(durable.stderrPath),
+          code: exitRecord.exitCode,
+          aborted: abortedBySignal,
+        };
+      }
+
+      if (!isPidAlive(durable.pid)) {
+        drainStdout();
+        const lateExitRecord = readExitRecord(options.jobDir);
+        if (lateExitRecord) {
+          return {
+            stdout: readOutputFile(durable.stdoutPath),
+            stderr: readOutputFile(durable.stderrPath),
+            code: lateExitRecord.exitCode,
+            aborted: abortedBySignal,
+          };
+        }
+        pidExitedAt ??= Date.now();
+        if (Date.now() - pidExitedAt >= DURABLE_EXIT_GRACE_MS) {
+          throw new Error(`Durable process ${durable.pid} exited before exit.json was written`);
+        }
+      } else {
+        pidExitedAt = null;
+      }
+
+      // Idle timeout — mirrors spawnCli's 10-minute inactivity kill
+      const now = Date.now();
+      const tickGap = now - lastTickAt;
+      lastTickAt = now;
+      if (tickGap > IDLE_CHECK_INTERVAL * 3) {
+        // System likely woke from sleep — reset baseline
+        lastOutputAt = now;
+      } else if (now - lastOutputAt >= IDLE_TIMEOUT) {
+        safeKillPid(durable.pid, 'SIGTERM');
+        throw new Error(`Durable process ${durable.pid} killed after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`);
+      }
+
+      await new Promise<void>((resolve) => setTimeout(resolve, DURABLE_RUNTIME_POLL_INTERVAL_MS));
+    }
+  } finally {
+    if (durablePid !== null) {
+      activeDurablePids.delete(durablePid);
+    }
+    if (killTimer) clearTimeout(killTimer);
+    if (abortHandler && options.signal) {
+      options.signal.removeEventListener('abort', abortHandler);
+    }
+    if (internalPermitJobId) {
+      releaseLaunch(internalPermitJobId, pool);
+    }
+  }
 }
 
 // ── Recovery helpers ──────────────────────────────────────────────────────────
@@ -614,4 +823,10 @@ export function killAllChildren(): void {
     gracefulKill(child);
   }
   activeChildren.clear();
+  for (const pid of activeDurablePids) {
+    safeKillPid(pid, 'SIGTERM');
+    const escalation = setTimeout(() => safeKillPid(pid, 'SIGKILL'), SIGTERM_GRACE_MS);
+    escalation.unref?.();
+  }
+  activeDurablePids.clear();
 }

@@ -395,6 +395,10 @@ describe('execution backend server', () => {
 
   it('reports only matching bundleHash live jobs from /health when mixed hashes are seeded', async () => {
     const progressStore = new ProgressStore();
+    const backend = await startBackendServer({
+      progressStore,
+    });
+
     createdJobIds.add('job-local-health');
     createdJobIds.add('job-stale-health');
     progressStore.initJob({
@@ -413,6 +417,7 @@ describe('execution backend server', () => {
       projectRoot: '/tmp/project',
       backendNamespace: testBackendNamespace,
     });
+    stubRuntimeRecord(progressStore, { jobId: 'job-local-health' });
     progressStore.initJob({
       jobId: 'job-stale-health',
       sessionId: 'session-stale-health',
@@ -429,10 +434,7 @@ describe('execution backend server', () => {
       projectRoot: '/tmp/project',
       backendNamespace: testBackendNamespace,
     });
-
-    const backend = await startBackendServer({
-      progressStore,
-    });
+    stubRuntimeRecord(progressStore, { jobId: 'job-stale-health' });
 
     const response = await fetch(`${backend.baseUrl}/health`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
@@ -1047,6 +1049,10 @@ describe('execution backend server', () => {
 
   it('lists jobs and returns replayed job detail', async () => {
     const progressStore = new ProgressStore();
+    const backend = await startBackendServer({
+      progressStore,
+    });
+
     createdJobIds.add('job-1');
     createdJobIds.add('job-2');
     progressStore.initJob({ jobId: 'job-1', sessionId: 'session-1', provider: 'codex', projectRoot: '/tmp/project', backendNamespace: testBackendNamespace });
@@ -1060,10 +1066,7 @@ describe('execution backend server', () => {
       projectRoot: '/tmp/project',
       backendNamespace: testBackendNamespace,
     });
-
-    const backend = await startBackendServer({
-      progressStore,
-    });
+    stubRuntimeRecord(progressStore, { jobId: 'job-2' });
 
     const jobsResponse = await fetch(`${backend.baseUrl}/api/jobs`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
@@ -1132,21 +1135,22 @@ describe('execution backend server', () => {
     it('filters collection responses by phase and preserves job detail lookups', async () => {
       const fakeService = createFakeExecutionService();
       const progressStore = new ProgressStore();
+      const backend = await startBackendServer({
+        createExecutionService: () => fakeService as never,
+        progressStore,
+      });
+
       createdJobIds.add('job-running');
       createdJobIds.add('job-queued');
       createdJobIds.add('job-completed');
 
       progressStore.initJob({ jobId: 'job-running', sessionId: 'session-running', provider: 'codex', projectRoot: '/tmp/project', backendNamespace: testBackendNamespace, initialPhase: 'running' });
       stubLaunchRecord(progressStore, { jobId: 'job-running', sessionId: 'session-running', provider: 'codex', projectRoot: '/tmp/project', backendNamespace: testBackendNamespace });
+      stubRuntimeRecord(progressStore, { jobId: 'job-running' });
       progressStore.initJob({ jobId: 'job-queued', sessionId: 'session-queued', provider: 'claude', projectRoot: '/tmp/project', backendNamespace: testBackendNamespace, initialPhase: 'queued' });
       stubLaunchRecord(progressStore, { jobId: 'job-queued', sessionId: 'session-queued', provider: 'claude', projectRoot: '/tmp/project', backendNamespace: testBackendNamespace });
       progressStore.initJob({ jobId: 'job-completed', sessionId: 'session-completed', provider: 'codex', projectRoot: '/tmp/project', backendNamespace: testBackendNamespace });
       progressStore.appendTerminal('job-completed', 'session-completed', { content: 'done' }, 'completed');
-
-      const backend = await startBackendServer({
-        createExecutionService: () => fakeService as never,
-        progressStore,
-      });
 
       const allResponse = await fetch(`${backend.baseUrl}/api/jobs`, {
         headers: { 'X-Coral-Backend-Token': backend.token },
@@ -2043,6 +2047,47 @@ describe('execution backend server', () => {
       // Session claim should be released
       const recoveredSession = new SessionManager(projectRoot).get('codex', session.sessionId);
       expect(recoveredSession?.activeJobId).toBeUndefined();
+    });
+
+    it('marks ghost launch jobs as error when runtime.json was never written', async () => {
+      const progressStore = new ProgressStore();
+      const jobId = 'ghost-launch-job';
+      const projectRoot = createProjectRoot('ghost-launch-project');
+      const session = new SessionManager(projectRoot).allocate('codex', 'alpha', 'gpt-5', projectRoot);
+
+      createdJobIds.add(jobId);
+      progressStore.initJob({
+        jobId,
+        sessionId: session.sessionId,
+        provider: 'codex',
+        projectRoot,
+        backendNamespace: testBackendNamespace,
+        initialPhase: 'launching',
+      });
+      stubLaunchRecord(progressStore, {
+        jobId,
+        sessionId: session.sessionId,
+        provider: 'codex',
+        projectRoot,
+        backendNamespace: testBackendNamespace,
+      });
+      new SessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
+
+      const backend = await startBackendServer({ progressStore });
+
+      const status = progressStore.readStatus(jobId);
+      expect(status).toMatchObject({
+        phase: 'error',
+        result: {
+          content: '',
+          notice: 'Launch record exists but runtime.json was never written. The durable wrapper did not start successfully.',
+        },
+      });
+
+      const recoveredSession = new SessionManager(projectRoot).get('codex', session.sessionId);
+      expect(recoveredSession?.activeJobId).toBeUndefined();
+      await backend.controller.shutdown('test');
+      await backend.controller.waitForShutdown();
     });
   });
 

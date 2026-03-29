@@ -46,8 +46,8 @@ PR procedure (dev → main):
 - **Types/Interfaces**: PascalCase (`SessionEntry`, `CodexExecResult`)
 - **Functions**: camelCase (`parseCodexJsonl`, `detectCodexCli`)
 - **Constants**: UPPER_SNAKE for true constants (`MAX_BUFFER`, `DEFAULT_TIMEOUT`), camelCase for derived values
-- **Zod schemas**: camelCase with `Schema` suffix (`codexOpSchema`, `discussLeadOpSchema`)
-- **MCP tool names**: unified MCP tool name (`codex`, `discuss`, `discuss_lead`) plus required `op` field for command selection
+- **Zod schemas**: camelCase with `Schema` suffix (`codexOpSchema`, `discussSeedSchema`)
+- **MCP tool names**: snake_case (`codex`, `claude`, `discuss_seed`, `discuss_start`, `discuss_watch`, `discuss_participate`, `discuss_abort`, `kb_search`, `kb_read`)
 - **Agent files**: kebab-case markdown (`mcp-guardian.md`)
 - **Skill directories**: kebab-case (`code-simplify/`)
 

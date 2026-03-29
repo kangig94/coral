@@ -15,7 +15,7 @@ Claude Code's hook system executes scripts on specific events. Coral uses hooks 
 6. **PostToolUseFailure** (`*`) - On any non-zero tool exit, reminds Claude to search KB before debugging from scratch
 7. **PostToolUse** (`Bash`) - Detects silent failures in command output when exit codes are masked and injects the same KB lookup reminder context
 8. **Stop** - Enforces KB promotion for unprocessed memos and drives prompt-mode ralph loop iteration
-9. **TeammateIdle** (`dc-*`) - Blocks idle when discuss agents have pending actions (bid/speak/vote)
+
 
 ## Hook Configuration
 
@@ -75,7 +75,7 @@ Unlike SessionStart, this hook always strips `SESSION_ID_ONLY` blocks — subage
 
 Script: `hooks/kb-memo-reminder.mjs`. Injects `additionalContext` reminding Claude to write memos only for discoveries that would save someone hours (painful root causes, gotchas contradicting docs). Fires on every user message (not on every tool call).
 
-**Throttled (60 min)**: Reads `session_id` from stdin JSON, creates a flag file under `$TMPDIR/coral/<project-slug>/`. Subsequent calls within 60 minutes exit silently; after 60 minutes, the flag refreshes and the reminder fires again. OS temp directory auto-cleans on reboot.
+**Throttled (60 min)**: Reads `session_id` from stdin JSON, creates a flag file under `<os-tmpdir>/coral/<project-slug>/`. Subsequent calls within 60 minutes exit silently; after 60 minutes, the flag refreshes and the reminder fires again. OS temp directory auto-cleans on reboot.
 
 ## PostToolUseFailure + PostToolUse Hook (KB Lookup Reminder)
 
@@ -94,7 +94,7 @@ The two events are complementary — `PostToolUseFailure` covers non-zero exits,
 
 Script: `hooks/kb-promote-gate.mjs`.
 
-Creates a session-scoped flag file `$TMPDIR/coral/<project-slug>/kb-active-{session_id}` when the user types `/coral:ralph` or `/coral:bugfix` directly. User-typed slash commands are expanded by the CLI before reaching Claude, so they do not trigger PreToolUse — this hook covers that path.
+Creates a session-scoped flag file `<os-tmpdir>/coral/<project-slug>/kb-active-{session_id}` when the user types `/coral:ralph` or `/coral:bugfix` directly. User-typed slash commands are expanded by the CLI before reaching Claude, so they do not trigger PreToolUse — this hook covers that path.
 
 ## PreToolUse Hook (Skill KB Flag — Claude-Initiated)
 
@@ -106,7 +106,7 @@ Creates the same session-scoped flag when Claude internally calls `Skill("coral:
 
 Script: `hooks/kb-promote-gate.mjs`. Session-scoped via flag file.
 
-**Flag file pattern**: The UserPromptSubmit and PreToolUse(Skill) hooks create `$TMPDIR/coral/<project-slug>/kb-active-{session_id}` for KB-producing skills. The Stop hook checks for its own session's flag — if absent, exits silently (normal conversation unaffected). Flag files auto-clean on OS reboot.
+**Flag file pattern**: The UserPromptSubmit and PreToolUse(Skill) hooks create `<os-tmpdir>/coral/<project-slug>/kb-active-{session_id}` for KB-producing skills. The Stop hook checks for its own session's flag — if absent, exits silently (normal conversation unaffected). Flag files auto-clean on OS reboot.
 
 When flag exists:
 1. Delete session's flag file
@@ -119,7 +119,7 @@ When flag exists:
 Script: `hooks/ralph-loop.mjs`. Enables prompt-mode iteration for `coral:ralph` while leaving plan-mode execution unchanged.
 
 Handles three events:
-- **UserPromptSubmit** — detects `/coral:ralph` or `/ralph`, creates `$TMPDIR/coral/<project-slug>/ralph-state-{session_id}.json`, and injects the absolute state path through `hookSpecificOutput.additionalContext`
+- **UserPromptSubmit** — detects `/coral:ralph` or `/ralph`, creates `<os-tmpdir>/coral/<project-slug>/ralph-state-{session_id}.json`, and injects the absolute state path through `hookSpecificOutput.additionalContext`
 - **PreToolUse** (`Skill`) — detects `Skill("coral:ralph")`, creates the same defaulted state file, and injects the same context
 - **Stop** — checks the session-scoped state file and either allows exit or blocks stop to re-inject the stored prompt
 

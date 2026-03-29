@@ -243,4 +243,46 @@ describe('codex adapter recovery contract', () => {
 
     expect(result.errors).toEqual(['Rate limit exceeded']);
   });
+
+  it('marks parsed recovered output as aborted when the wrapper exited by signal', async () => {
+    const { codexProvider } = await loadProvider();
+
+    const stdoutPath = join(tmpDir, 'stdout.jsonl');
+    const stderrPath = join(tmpDir, 'stderr.log');
+    const jsonlOutput = [
+      '{"type":"thread.started","thread_id":"recovered-thread"}',
+      '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Recovered output"}}',
+    ].join('\n');
+    writeFileSync(stdoutPath, jsonlOutput, 'utf-8');
+    writeFileSync(stderrPath, '', 'utf-8');
+
+    const result = await codexProvider.recovery!.finalizeFromArtifacts({
+      stdoutPath,
+      stderrPath,
+      exitCode: null,
+      signal: 'SIGTERM',
+    });
+
+    expect(result.aborted).toBe(true);
+    expect(result.conversationRef).toBe('recovered-thread');
+  });
+
+  it('extracts progress from complete appended lines only', async () => {
+    const { codexProvider } = await loadProvider();
+
+    const stdoutPath = join(tmpDir, 'stdout.jsonl');
+    const firstLine = '{"type":"turn.started"}\n';
+    const partialLine = '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Recovered output"}}';
+    writeFileSync(stdoutPath, `${firstLine}${partialLine}`, 'utf-8');
+
+    const first = codexProvider.recovery!.extractProgress!({ stdoutPath, fromOffset: 0 });
+    expect(first.messages).toEqual(['Processing...']);
+    expect(first.newOffset).toBe(Buffer.byteLength(firstLine));
+
+    writeFileSync(stdoutPath, `${firstLine}${partialLine}\n`, 'utf-8');
+
+    const second = codexProvider.recovery!.extractProgress!({ stdoutPath, fromOffset: first.newOffset });
+    expect(second.messages).toEqual(['Generating response...']);
+    expect(second.newOffset).toBeGreaterThan(first.newOffset);
+  });
 });

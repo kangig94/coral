@@ -97,12 +97,12 @@ Timestamps, paths, and frontmatter are generated automatically.
 **Who**: top-level orchestrator only, after all work completes. Subagents never promote.
 Most memos are disposable — only promote if the lesson is reusable across future sessions.
 Check for duplicates via `CLI kb search` before promoting:
-`CLI kb promote --memo "<filename>" --title "..." --content-file /tmp/kb-<uuid>.md --domain d --topic t`
-Write `/tmp/kb-<uuid>.md` first (via the Write tool, replacing `<uuid>` with any unique identifier) with the full markdown body, for example `## Rule\n...\n## Why\n...\n## Pattern\n...`.
+`CLI kb promote --memo "<filename>" --title "..." --content-file <temp-file> --domain d --topic t`
+Write the full markdown body (e.g., `## Rule\n...\n## Why\n...\n## Pattern\n...`) to a temporary file first via the Write tool, then pass its path as `--content-file`. Use any writable temp path.
 Promote automatically deletes the source memo and creates a new KB note — no separate delete step needed.
 
 ## Update / Delete
-`CLI kb update <note-slug> --content-file /tmp/kb-<uuid>.md`
+`CLI kb update <note-slug> --content-file <temp-file>`
 `CLI kb delete <note-slug>`
 
 ## Invalidation

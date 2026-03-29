@@ -1,3 +1,6 @@
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 type EngineModule = typeof import('../engine.js');
@@ -342,5 +345,92 @@ describe('recovery helpers', () => {
     // Cleanup
     engine.releaseLaunch('queued-a', 'default');
     engine.releaseLaunch('queued-b', 'default');
+  });
+});
+
+describe('spawnDurableJob', () => {
+  let engine: EngineModule;
+  let tmpRoot: string;
+
+  beforeEach(async () => {
+    process.env.CORAL_MAX_SESSIONS = '1';
+    process.env.CORAL_DISCUSS_MAX_SESSIONS = '1';
+    engine = await loadEngine();
+    tmpRoot = mkdtempSync(join(tmpdir(), 'coral-engine-durable-'));
+  });
+
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+    restoreEnv('CORAL_MAX_SESSIONS', ORIGINAL_MAX_CHILDREN);
+    restoreEnv('CORAL_DISCUSS_MAX_SESSIONS', ORIGINAL_DISCUSS_MAX_CHILDREN);
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  it('streams progress from stdout and persists runtime and exit artifacts', async () => {
+    const jobDir = join(tmpRoot, 'job-1');
+    mkdirSync(jobDir, { recursive: true });
+    const onEvent = vi.fn();
+
+    const result = await engine.spawnDurableJob({
+      provider: 'codex',
+      command: process.execPath,
+      args: [
+        '-e',
+        [
+          "process.stdout.write('{\"step\":\"one\"}\\n');",
+          "setTimeout(() => process.stdout.write('{\"step\":\"two\"}\\n'), 25);",
+          "setTimeout(() => process.stderr.write('warn\\n'), 35);",
+          'setTimeout(() => process.exit(0), 50);',
+        ].join(''),
+      ],
+      jobDir,
+      onEvent,
+    });
+
+    expect(result).toMatchObject({
+      code: 0,
+      aborted: false,
+    });
+    expect(result.stdout).toContain('{"step":"one"}');
+    expect(result.stdout).toContain('{"step":"two"}');
+    expect(result.stderr).toContain('warn');
+    expect(onEvent).toHaveBeenCalledWith('{"step":"one"}');
+    expect(onEvent).toHaveBeenCalledWith('{"step":"two"}');
+    expect(existsSync(join(jobDir, 'runtime.json'))).toBe(true);
+    expect(existsSync(join(jobDir, 'exit.json'))).toBe(true);
+
+    const runtimeRecord = JSON.parse(readFileSync(join(jobDir, 'runtime.json'), 'utf-8')) as { tailWatermark?: number };
+    expect(runtimeRecord.tailWatermark).toBeGreaterThan(0);
+  });
+
+  it('terminates the durable child when aborted', async () => {
+    const jobDir = join(tmpRoot, 'job-2');
+    mkdirSync(jobDir, { recursive: true });
+    const controller = new AbortController();
+
+    const run = engine.spawnDurableJob({
+      provider: 'codex',
+      command: process.execPath,
+      args: [
+        '-e',
+        [
+          "process.stdout.write('{\"step\":\"start\"}\\n');",
+          "setInterval(() => process.stdout.write('{\"step\":\"tick\"}\\n'), 20);",
+        ].join(''),
+      ],
+      jobDir,
+      signal: controller.signal,
+    });
+
+    setTimeout(() => controller.abort(), 75);
+
+    const result = await run;
+
+    expect(result.aborted).toBe(true);
+    expect(result.code).toBeNull();
+    expect(result.stdout).toContain('{"step":"start"}');
+    const exitRecord = JSON.parse(readFileSync(join(jobDir, 'exit.json'), 'utf-8')) as { signal: string | null };
+    expect(exitRecord.signal).toBe('SIGTERM');
   });
 });

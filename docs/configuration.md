@@ -145,7 +145,7 @@ hooks/hud-auto-update.mjs    -> SessionStart HUD auto-update hook
 ~/.claude/coral/sessions/<project-hash>/*.json  -> Runtime AX session files (Codex + Claude, auto-created)
 ~/.claude/coral/backend.json                    -> Runtime backend connection info (auto-created)
 ~/.claude/coral/backend.lock                    -> Runtime backend singleton lock (auto-created)
-/tmp/coral-jobs/<jobId>/                        -> Runtime job directories (temporary)
+<os-tmpdir>/coral-jobs/<jobId>/                  -> Runtime job directories (temporary, resolved by node:os tmpdir())
 ~/.coral/discuss-sources.json                   -> Shared discuss source registry (auto-created)
 ~/.coral/projects/<source-slug>/discuss/<session-dir>/  -> Runtime discuss session dirs (auto-created)
 

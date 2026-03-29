@@ -116,7 +116,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
     Claude-native execution.
 
     **`--red`**: Before starting, spawn `Agent("coral:red-attacker", { run_in_background: true })`
-    with prompt: plan file path + acceptance criteria. Staging: `$TMPDIR/coral/<project-slug>/red/`.
+    with prompt: plan file path + acceptance criteria. Write tests to a temp directory.
 
     ⛔ **AC integrity rule**: Implement each AC fully as written — no stubs, no placeholders,
     no "simplified version first". When delegating to subagents, copy the assigned ACs
@@ -135,7 +135,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
     Codex-delegated execution. Replaces step-by-step Claude work with Codex calls.
 
     **`--red`**: Before starting, spawn `Agent("coral:red-attacker", { run_in_background: true })`
-    with prompt: plan file path + acceptance criteria. Staging: `$TMPDIR/coral/<project-slug>/red/`.
+    with prompt: plan file path + acceptance criteria. Write tests to a temp directory.
 
     **Prompt construction** — each Codex call receives a single prompt with this structure:
     ```
@@ -194,7 +194,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
        ```
 
     3. **`--red`**: Spawn red-attacker as teammate in `ralph-workers` team.
-       Prompt: plan file path + acceptance criteria. Staging: `$TMPDIR/coral/<project-slug>/red/`.
+       Prompt: plan file path + acceptance criteria. Staging: `CORAL_PROJECT/red/`.
 
     **Batch loop** — for each batch in Execution Order (sequentially):
     1. **Assign**: SendMessage to each worker with their AC assignment for this batch.

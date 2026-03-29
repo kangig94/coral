@@ -221,6 +221,66 @@ describe('ExecutionService', () => {
     }
   });
 
+  it('runs provider CLI jobs through the durable runner and persists runtime artifacts', async () => {
+    const provider: Provider = {
+      name: 'codex',
+      execute: async (request, runtime): Promise<ProviderResult> => {
+        const result = await runtime.runCli({
+          command: process.execPath,
+          args: [
+            '-e',
+            [
+              "process.stdout.write('{\"message\":\"step-1\"}\\n');",
+              "setTimeout(() => process.stdout.write('{\"message\":\"step-2\"}\\n'), 20);",
+              "setTimeout(() => process.stdout.write('final output\\n'), 30);",
+              'setTimeout(() => process.exit(0), 40);',
+            ].join(''),
+          ],
+          onEvent: (line) => {
+            try {
+              const parsed = JSON.parse(line) as { message?: string };
+              if (!parsed.message) return;
+              runtime.onEvent({
+                jobId: request.sessionId,
+                message: parsed.message,
+                ts: new Date().toISOString(),
+              });
+            } catch {
+              /* ignore non-JSON progress lines */
+            }
+          },
+        });
+
+        return { content: result.stdout };
+      },
+    };
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = new ExecutionService(ctx);
+
+    const decision = await service.start('codex', { prompt: 'hello' }, ctx);
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') {
+      throw new Error('expected running launch');
+    }
+    trackJob(decision.job);
+
+    const terminal = await waitForTerminalEvent(service, decision.job);
+    const jobDir = join(JOBS_DIR, decision.job);
+    const runtimeRecord = JSON.parse(readFileSync(join(jobDir, 'runtime.json'), 'utf-8')) as {
+      pid: number;
+      tailWatermark?: number;
+    };
+
+    expect(terminal.result.content).toContain('final output');
+    expect(existsSync(join(jobDir, 'runtime.json'))).toBe(true);
+    expect(existsSync(join(jobDir, 'exit.json'))).toBe(true);
+    expect(runtimeRecord.pid).toBeGreaterThan(0);
+    expect(runtimeRecord.tailWatermark).toBeGreaterThan(0);
+    expect(readFileSync(join(jobDir, 'progress.jsonl'), 'utf-8')).toContain('step-1');
+    expect(readFileSync(join(jobDir, 'progress.jsonl'), 'utf-8')).toContain('step-2');
+  });
+
   it('start rejects unknown providers', async () => {
     mockState.getNewProvider.mockReturnValue(undefined);
     const service = new ExecutionService(ctx);
