@@ -409,6 +409,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       eventBus.off('session:updated', handlers.onSessionUpdated);
       eventBus.off('discuss:updated', handlers.onDiscussUpdated);
     },
+    liveDiscussCount: () => listAttachedSessions(discussRegistry).length,
     listDiscussSessions,
     loadDiscussDetail,
   };

@@ -96,6 +96,7 @@ export interface HttpHandlerDeps {
   readonly unsubscribeBackendEvents: (handlers: EventStreamHandlers) => void;
 
   // Discuss read ports (narrowed — no registry internals)
+  readonly liveDiscussCount: () => number;
   readonly listDiscussSessions: () => DiscussSummaryDto[];
   readonly loadDiscussDetail: (source: string, sessionId: string, view: DiscussView) => DiscussDetailResponse | 'audit_requires_ended_session' | null;
 }
