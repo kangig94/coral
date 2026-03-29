@@ -82,7 +82,7 @@ Returns immediately. Codex runs in background. Accepted launches return one of:
 
 `status: "queued"` is a normal accepted launch outcome, not an error. The job will auto-execute when a launch slot frees up.
 
-`job` is the job ID used with `wait` and `abort`. `session` is the session ID for resume/fork continuity. Use the `wait` tool to stream progress, then `Read` the result from `/tmp/coral-jobs/<job>/result.md`.
+`job` is the job ID used with `wait` and `abort`. `session` is the session ID for resume/fork continuity. Use the `wait` tool to stream progress, then `Read` the result from `<os-tmpdir>/coral-jobs/<job>/result.md`.
 
 ---
 
@@ -304,7 +304,7 @@ Provider-agnostic wait for background jobs from any AX adapter. Wait returns whe
   "completedJobId": "job-uuid",
   "sessionId": "session-uuid",
   "remainingJobIds": [],
-  "result": { "durationMs": 1234, "path": "/tmp/coral-jobs/job-uuid/result.md", "content": "..." }
+  "result": { "durationMs": 1234, "path": "<os-tmpdir>/coral-jobs/job-uuid/result.md", "content": "..." }
 }
 ```
 
@@ -331,7 +331,7 @@ Workflow jobs follow the same contract — `result.path` is always present and `
         }
       ]
     },
-    "path": "/tmp/coral-jobs/workflow-job/result.md",
+    "path": "<os-tmpdir>/coral-jobs/workflow-job/result.md",
     "content": "..."
   }
 }

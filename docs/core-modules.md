@@ -22,7 +22,7 @@ Three esbuild entry points produce the system's processes:
 | `service.ts` | `ExecutionService` — provider-launch orchestration (start/resume/fork/coralDispatch), wait/abort coordination, workflow delegation. Owns SessionManager, AbortRegistry, ProgressStore. |
 | `engine.ts` | CLI spawn with idle timeout, bounded output buffering (10MB), FIFO job queue (`MAX_ACTIVE_SESSIONS` default 10), graceful kill (SIGTERM → SIGKILL). |
 | `session-manager.ts` | Persisted session registry under `~/.claude/coral/sessions/`. Atomic writes, single-active-job invariant. |
-| `progress-store.ts` | File-based event storage under `/tmp/coral-jobs/`. Per-job `status.json` + `progress.jsonl` + `result.md`. |
+| `progress-store.ts` | File-based event storage under `<os-tmpdir>/coral-jobs/`. Per-job `status.json` + `progress.jsonl` + `result.md`. |
 | `resolver.ts` | Resolves `coral:<name>` content from `agents/` then `skills/` with path traversal rejection. |
 
 ## Discuss Runtime (`src/execution/discuss/`)

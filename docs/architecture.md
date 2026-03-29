@@ -55,7 +55,7 @@
 │  ├── Singleton lock    (~/.claude/coral/backend.lock)                     │
 │  ├── Connection info   (~/.claude/coral/backend.json)                     │
 │  ├── Idle auto-shutdown (CORAL_BACKEND_IDLE_MS, default 6h)               │
-│  ├── Job storage       (/tmp/coral-jobs/<jobId>/)                         │
+│  ├── Job storage       (<os-tmpdir>/coral-jobs/<jobId>/)                  │
 │  ├── Session storage   (~/.claude/coral/sessions/)                        │
 │  ├── Discuss storage   ~/.coral/projects/{slug}/discuss/                  │
 │  └── Routes:                                                              │
@@ -220,27 +220,27 @@ handleWorkflow()                              workflow/handler.ts
               └────────┬───┘             │          │          │          │
                        │                 │          │          │          │
          src/bridge/server.ts (MCP proxy)│          │          │          │
-              │                          │          │          │   (bridge-local,
-              ▼                          ▼          ▼          ▼   no HTTP)  │
-         ┌────────────────────────────────────────────────────────┐
-         │  HTTP → execution/server.ts (backend daemon)           │
-         │                                                        │
-         │  routeToolCall()                                       │
-         │  ├─ provider op → ExecutionService                     │
-         │  │   ├─ coral:<name> → coralDispatch()                 │
-         │  │   │               → resolver + instruction          │
-         │  │   │               → start() or resume()             │
-         │  │   └─ exec/resume/fork/list → direct                 │
-         │  │                      ↓                              │
-         │  │               Provider.execute()                    │
-         │  │               → spawn CLI (background)              │
-         │  │               → write progress to /tmp/coral-jobs/  │
-         │  │                                                     │
-         │  ├─ abort → abortJobs() / ExecutionService.abort()     │
-         │  ├─ workflow → executeWorkflow → executePipeline       │
-         │  └─ wait → SSE stream from waitStream()                │
-         │           → poll /tmp/coral-jobs/ for events           │
-         └────────────────────────────────────────────────────────┘
+              │                          │          │          │ (bridge-local,no HTTP)
+              ▼                          ▼          ▼          ▼          │
+         ┌───────────────────────────────────────────────────────────────┐
+         │  HTTP → execution/server.ts (backend daemon)                  │
+         │                                                               │
+         │  routeToolCall()                                              │
+         │  ├─ provider op → ExecutionService                            │
+         │  │   ├─ coral:<name> → coralDispatch()                        │
+         │  │   │               → resolver + instruction                 │
+         │  │   │               → start() or resume()                    │
+         │  │   └─ exec/resume/fork/list → direct                        │
+         │  │                      ↓                                     │
+         │  │               Provider.execute()                           │
+         │  │               → spawn CLI (background)                     │
+         │  │               → write progress to <os-tmpdir>/coral-jobs/  │
+         │  │                                                            │
+         │  ├─ abort → abortJobs() / ExecutionService.abort()            │
+         │  ├─ workflow → executeWorkflow → executePipeline              │
+         │  └─ wait → SSE stream from waitStream()                       │
+         │           → poll <os-tmpdir>/coral-jobs/ for events           │
+         └───────────────────────────────────────────────────────────────┘
 ```
 
 ## Data Flow
@@ -324,7 +324,7 @@ User/Skill → workflow({ expression: "(architect, critic) -> resolver", init_pr
               Step 2: launchAtomWithRetry(resolver) with step 1 XML output as prompt
               → waitForAllAtoms
               → readAtomOutput(result.md)
-           → Final output written to /tmp/coral-jobs/<jobId>/result.md
+           → Final output written to <os-tmpdir>/coral-jobs/<jobId>/result.md
            → wait({ jobs: [job] }) returns result.path (+ optional result.content)
            → workflow caller uses result.content ?? Read(result.path)
 ```
@@ -344,7 +344,7 @@ User → codex({ op: "exec", name: "review", prompt: "analyze auth.ts" })
 ### 7. Job Storage Layout
 
 ```
-/tmp/coral-jobs/
+<os-tmpdir>/coral-jobs/
 └── <jobId>/                      # one dir per job attempt
     ├── status.json               # phase, launch state, sessionId, provider
     ├── progress.jsonl            # append-only progress events
