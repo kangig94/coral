@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 function createFixture(): Fixture {
-  const root = mkdtempSync(join(tmpdir(), 'coral-equip-install-'));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'coral-equip-install-')));
   const fixture = {
     root,
     homeDir: join(root, 'home'),
