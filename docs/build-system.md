@@ -13,7 +13,7 @@ TypeScript compilation and esbuild bundling pipeline.
 
 ## Bundle Commit Policy
 
-Both bundles (`bridge/coral-ax.cjs` and `bridge/coral-backend.cjs`) are committed to the repository. This means users can use the plugin by pointing to the plugin directory without running `npm install` + `npm run build`:
+All three bundles (`bridge/coral-ax.cjs`, `bridge/coral-backend.cjs`, and `bridge/coral-cli.cjs`) are committed to the repository. This means users can use the plugin by pointing to the plugin directory without running `npm install` + `npm run build`:
 
 ```bash
 claude --plugin-dir /path/to/coral
@@ -29,9 +29,10 @@ src/**/*.ts
     v  tsc (TypeScript compilation)
 dist/**/*.js + dist/**/*.d.ts
     |
-    v  esbuild (bundling, 2 entry points)
+    v  esbuild (bundling, 3 entry points)
 bridge/coral-ax.cjs        (src/bridge/server.ts)
 bridge/coral-backend.cjs   (src/execution/server.ts)
+bridge/coral-cli.cjs       (src/cli/bootstrap.ts)
 ```
 
 ### Step 1: TypeScript Compilation
@@ -40,7 +41,7 @@ bridge/coral-backend.cjs   (src/execution/server.ts)
 
 ### Step 2: esbuild Bundling
 
-`scripts/build-server.mjs` runs esbuild to produce three CJS bundles — two MCP servers and one HTTP backend daemon.
+`scripts/build-server.mjs` runs esbuild to produce three CJS bundles — one MCP stdio proxy, one HTTP backend daemon, and one CLI client.
 
 The build script performs two tasks before bundling: version sync and manifest update.
 
@@ -52,12 +53,12 @@ The build script performs two tasks before bundling: version sync and manifest u
 
 | Setting | Value | Reason |
 |---|---|---|
-| `entryPoints` | `src/bridge/server.ts`, `src/execution/server.ts` | Two entry points (MCP stdio proxy + HTTP backend daemon) |
+| `entryPoints` | `src/bridge/server.ts`, `src/execution/server.ts`, `src/cli/bootstrap.ts` | Three entry points (MCP stdio proxy + HTTP backend daemon + CLI client) |
 | `bundle` | `true` | Bundle all dependencies into a single file |
 | `platform` | `node` | Target Node.js environment |
 | `target` | `node18` | Generate Node 18+ compatible code |
 | `format` | `cjs` | CommonJS format (matches `.cjs` extension) |
-| `outfile` | `bridge/coral-ax.cjs`, `bridge/coral-backend.cjs` | Bundle output paths |
+| `outfile` | `bridge/coral-ax.cjs`, `bridge/coral-backend.cjs`, `bridge/coral-cli.cjs` | Bundle output paths |
 | `external` | `['node:*']` | Externalize Node.js built-in modules |
 | `minify` | `true` | Minimize bundle size |
 | `banner` | `var __PLUGIN_ROOT__=...` | Resolve plugin root at runtime via CJS `__dirname` |
@@ -81,7 +82,7 @@ Run tests with vitest:
 npm test
 ```
 
-Tests live in `src/bridge/__tests__/`, `src/execution/__tests__/`, `src/providers/__tests__/`, `src/providers/codex/__tests__/`, `src/providers/claude/__tests__/`, `src/coral/__tests__/`, `src/shared/__tests__/`, `src/workflow/__tests__/`, and `src/discuss/__tests__/`. See `vitest.config.ts`.
+Tests live in `src/bridge/__tests__/`, `src/execution/__tests__/`, `src/providers/__tests__/`, `src/providers/codex/__tests__/`, `src/providers/claude/__tests__/`, `src/shared/__tests__/`, `src/workflow/__tests__/`, `src/kb/__tests__/`, and `src/discuss/__tests__/`. See `vitest.config.ts`.
 
 One test file per source module. External dependencies (Codex CLI, filesystem) are mocked — real Codex is never called in tests.
 

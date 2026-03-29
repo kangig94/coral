@@ -820,33 +820,33 @@ The moderator (`discuss-lead`) uses `_1_seed` within a 3-phase setup:
 
 ---
 
-# ax ↔ dc Integration
+# Discuss ↔ Provider Integration
 
-The `ax` (Codex) and `dc` (Discuss) MCP servers do **not** communicate directly at runtime. They are independent processes with no shared state or IPC.
+All tools (codex, claude, discuss, kb, workflow) are served through a single MCP server (`ax`), which proxies to the persistent backend daemon via HTTP.
 
 ## Coupling Points
 
-The coupling is through the **agent protocol layer**, not the MCP servers themselves:
+The coupling is through the **backend tool router**, not separate MCP servers:
 
 | Component | Role |
 |-----------|------|
-| `discuss-lead.md` | Spawns `persona-generator` agents (via Task tool) and `discussant` teammates for discussions |
-| `codex({ op: "coral:<agent>" })` | Direct Codex agent delegation path that reads `agents/<agent>.md` and prepends it to prompts |
+| `src/execution/tool-router.ts` | Routes discuss_* and kb_* tool calls from the backend's `routeToolCall()` |
+| `src/execution/discuss/operations.ts` | Primary discuss runtime entry — uses `ExecutionService` to launch provider turns |
+| `codex({ op: "coral:<agent>" })` | Direct Codex/Claude agent delegation path that reads `agents/<agent>.md` and prepends it to prompts |
 
-The discuss system itself does **not** call Codex tools unless a skill/workflow explicitly asks for it.
+The discuss system uses provider turns (codex/claude) for agent speech/bids but does not call provider tools directly — it delegates through `ExecutionService`.
 
 ## Session Naming Convention
 
-- Discuss session IDs: `yymmdd-HHmm-xxxx` (managed by dc)
-- Discuss session dirs: `{session_id}-{topic_slug}` (managed by dc)
-- Discuss teams: `coral-dc-{session_id}` (managed by Claude Code Agent Teams)
-- Codex sessions: `session-{timestamp}` or user-provided name (managed by ax)
+- Discuss session IDs: `yymmdd-HHmm-xxxx` (managed by backend)
+- Discuss session dirs: `{session_id}-{topic_slug}` (managed by backend)
+- Codex sessions: `session-{timestamp}` or user-provided name (managed by backend)
 
 These namespaces do not overlap. Collision risk is between discuss sessions only (mitigated by 4-char random suffix per timestamp-minute).
 
 ## Contract
 
-1. **dc never calls ax tools** - the discuss MCP server has no dependency on the codex MCP server
-2. **ax never reads dc state** - Codex sessions have no awareness of discuss sessions
-3. **Agent delegation is explicit** - Codex delegation uses `codex({ op: "coral:<agent>" })`; no hook bridge is involved
-4. **Modifying either server independently is safe** - as long as tool input/output contracts are preserved
+1. **Discuss uses providers through ExecutionService** — not direct CLI calls
+2. **Provider tools have no awareness of discuss sessions** — session isolation is maintained
+3. **Agent delegation is explicit** — Codex/Claude delegation uses `codex/claude({ op: "coral:<agent>" })`; no hook bridge is involved
+4. **All tools share the same backend daemon** — tool input/output contracts must be preserved across all tool types

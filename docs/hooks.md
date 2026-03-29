@@ -15,7 +15,7 @@ Claude Code's hook system executes scripts on specific events. Coral uses hooks 
 6. **PostToolUseFailure** (`*`) - On any non-zero tool exit, reminds Claude to search KB before debugging from scratch
 7. **PostToolUse** (`Bash`) - Detects silent failures in command output when exit codes are masked and injects the same KB lookup reminder context
 8. **Stop** - Enforces KB promotion for unprocessed memos and drives prompt-mode ralph loop iteration
-9. **TeammateIdle** (`dc-*`) - Blocks idle when discuss agents have pending actions (bid/speak/vote)
+
 
 ## Hook Configuration
 

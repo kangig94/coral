@@ -83,10 +83,10 @@ disallowedTools: Write, Edit
     4) Verify protocol clarity — numbered steps with clear outcomes:
        ```markdown
        <!-- CORRECT: Step-by-step with explicit tool calls and branching -->
-       1. **Load protocol**: Read `agents/discuss-lead.md`
-       2. **Check environment**: If CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS not set, inform user and STOP
-       3. **Initialize**: Call `discuss_lead({ op: "_2_create", ... })` → get session_id
-       4. **Spawn teammates**: Create Agent Team coral-dc-{session_id}
+       1. **Seed personas**: Call `discuss_seed({ controversy_axes, n, seed })` → persona assignments
+       2. **Generate personas**: Spawn persona-generator agents in parallel → full personas
+       3. **Start session**: Call `discuss_start({ topic, agents })` → session_id
+       4. **Monitor**: Call `discuss_watch({ session: session_id })` → poll for events
 
        <!-- WRONG: Vague instructions without tool calls or outcomes -->
        Do the discussion thing and return the result.

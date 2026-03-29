@@ -75,7 +75,7 @@ disallowedTools: Write, Edit
     4) Convention adherence check against `.claude/rules/conventions.md`:
        ```typescript
        // CORRECT: kebab-case files, camelCase functions, PascalCase types
-       // src/runner/session-manager.ts
+       // src/execution/session-manager.ts
        export class SessionManager { ... }
        export function parseCodexJsonl() { ... }
 
@@ -117,12 +117,13 @@ disallowedTools: Write, Edit
     Key files:
     | File | Concern |
     |------|---------|
-    | `src/providers/codex/server-handlers.ts` | Handler patterns, job dispatch and wait logic |
+    | `src/execution/tool-router.ts` | Tool dispatch patterns, route registration |
+    | `src/execution/service.ts` | Job dispatch, wait logic, provider orchestration |
     | `src/providers/codex/schemas.ts` | Zod schema conventions |
     | `src/providers/codex/codex-executor.ts` | Process management patterns |
-    | `src/runner/session-manager.ts` | File I/O patterns |
+    | `src/execution/session-manager.ts` | File I/O patterns, atomic writes |
     | `src/discuss/state-machine.ts` | Pure function patterns (no I/O) |
-    | `src/discuss/session-store.ts` | Lock + atomic write patterns |
+    | `src/execution/discuss/session-store.ts` | Lock + atomic write patterns |
     | `.claude/rules/conventions.md` | Naming and style rules |
   </Tool_Usage>
   <Output_Format>
