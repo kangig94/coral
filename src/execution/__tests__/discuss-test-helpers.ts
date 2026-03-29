@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { vi } from 'vitest';
 
-import { resolveProjectSource } from '../../infra/paths.js';
+import { resolveProjectSource, sourceToSlug } from '../../infra/paths.js';
 import type {
   DiscussDomainEvent,
   PersistedDiscussSnapshot,
@@ -111,6 +111,7 @@ function disableDiscussTestHome(): void {
   if (!usingDiscussTestHome || activeHarnesses.size > 0) {
     return;
   }
+  // Restore HOME before cleanup so rmSync targets are deterministic
   if (originalHome === undefined) {
     delete process.env.HOME;
   } else {
@@ -150,8 +151,15 @@ export function createDiscussHarness(service = createExecutionServiceStub(), sou
         return;
       }
       cleaned = true;
+      store.dispose();
       cleanupLiveSessions(context);
       rmSync(tmpRoot, { recursive: true, force: true });
+      // Clean project data dir under both fake and real home (threads pool HOME pollution)
+      const slug = sourceToSlug(source);
+      rmSync(join(discussTestHomeRoot, '.coral', 'projects', slug), { recursive: true, force: true });
+      if (originalHome) {
+        rmSync(join(originalHome, '.coral', 'projects', slug), { recursive: true, force: true });
+      }
       activeHarnesses.delete(harness);
       disableDiscussTestHome();
     },

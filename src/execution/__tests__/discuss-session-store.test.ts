@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -25,6 +25,7 @@ import {
   discussSummaryIndexPath,
   discussStatePath,
   resolveProjectSource,
+  sourceToSlug,
 } from '../../infra/paths.js';
 import { replayDiscussEvents } from '../../discuss/reducer.js';
 import {
@@ -47,6 +48,13 @@ let projectRoot = '';
 let homeRoot = '';
 let source = '';
 const originalHome = process.env.HOME;
+const activeStores: DiscussSessionStore[] = [];
+
+function createStore(src: string): DiscussSessionStore {
+  const store = new DiscussSessionStore(src);
+  activeStores.push(store);
+  return store;
+}
 
 function unwrap<T>(result: Result<T>): T {
   if (result.ok) {
@@ -179,18 +187,26 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(projectRoot, { recursive: true, force: true });
-  rmSync(homeRoot, { recursive: true, force: true });
+  // Dispose stores to cancel pending flush timers before restoring HOME
+  for (const store of activeStores.splice(0)) {
+    store.dispose();
+  }
+  // Restore HOME first, then clean leaked dirs under real home
   if (originalHome === undefined) {
     delete process.env.HOME;
   } else {
     process.env.HOME = originalHome;
   }
+  const slug = sourceToSlug(source);
+  rmSync(join(homedir(), '.coral', 'projects', slug), { recursive: true, force: true });
+  rmSync(join(homedir(), '.coral', 'projects', 'local-project'), { recursive: true, force: true });
+  rmSync(projectRoot, { recursive: true, force: true });
+  rmSync(homeRoot, { recursive: true, force: true });
 });
 
 describe('DiscussSessionStore', () => {
   it('appends events and loads the same snapshot back', async () => {
-    const store = new DiscussSessionStore(source);
+    const store = createStore(source);
     const { finalSnapshot } = await appendRoundTripHistory(store);
 
     expect(store.load(SESSION_ID)).toEqual(finalSnapshot);
@@ -217,7 +233,7 @@ describe('DiscussSessionStore', () => {
   });
 
   it('recovers the full session state by replaying the event log when state.json is deleted', async () => {
-    const store = new DiscussSessionStore(source);
+    const store = createStore(source);
     const { finalSnapshot } = await appendRoundTripHistory(store);
     const statePath = discussStatePath(store.resolveSessionDir(SESSION_ID));
 
@@ -231,7 +247,7 @@ describe('DiscussSessionStore', () => {
   });
 
   it('replays only the tail past snapshot.lastAppliedSeq and matches full replay', async () => {
-    const store = new DiscussSessionStore(source);
+    const store = createStore(source);
     const { finalSnapshot } = await appendRoundTripHistory(store);
     const sessionDir = store.resolveSessionDir(SESSION_ID);
     const logEvents = readDiscussEventLog(discussEventLogPath(sessionDir));
@@ -247,7 +263,7 @@ describe('DiscussSessionStore', () => {
   });
 
   it('rejects compare-and-append when expectedSeq is stale', async () => {
-    const store = new DiscussSessionStore(source);
+    const store = createStore(source);
     const input = makeInput();
     const createEvents = unwrap(
       decideSessionCreate(
@@ -283,7 +299,7 @@ describe('DiscussSessionStore', () => {
   });
 
   it('updates discovery.json after each committed append', async () => {
-    const store = new DiscussSessionStore(source);
+    const store = createStore(source);
     const input = makeInput();
     const createEvents = unwrap(
       decideSessionCreate(
@@ -337,8 +353,8 @@ describe('DiscussSessionStore', () => {
   });
 
   it('preserves both discovery rows when different sessions append concurrently', async () => {
-    const firstStore = new DiscussSessionStore(source);
-    const secondStore = new DiscussSessionStore(source);
+    const firstStore = createStore(source);
+    const secondStore = createStore(source);
     const input = makeInput();
 
     const firstCreate = unwrap(
@@ -391,8 +407,8 @@ describe('DiscussSessionStore', () => {
     const secondSource = resolveProjectSource(secondProjectRoot);
     expect(secondSource).toBe(firstSource);
 
-    const firstStore = new DiscussSessionStore(firstSource);
-    const secondStore = new DiscussSessionStore(secondSource);
+    const firstStore = createStore(firstSource);
+    const secondStore = createStore(secondSource);
 
     const created = await firstStore.append(
       SESSION_ID,
@@ -455,7 +471,7 @@ describe('DiscussSessionStore', () => {
   });
 
   it('falls back from missing, stale, or corrupt discovery data when listing and loading committed sessions', async () => {
-    const store = new DiscussSessionStore(source);
+    const store = createStore(source);
     await appendRoundTripHistory(store, SESSION_ID);
     await appendRoundTripHistory(store, SECOND_SESSION_ID);
     store.flushDirtyIndexes();
@@ -499,7 +515,7 @@ describe('DiscussSessionStore', () => {
   });
 
   it('hydrates summary-index.json and repairs the source registry on first index listing', async () => {
-    const store = new DiscussSessionStore(source);
+    const store = createStore(source);
     const { finalSnapshot: firstSnapshot } = await appendRoundTripHistory(store, SESSION_ID);
     const { finalSnapshot: secondSnapshot } = await appendRoundTripHistory(store, SECOND_SESSION_ID);
     store.flushDirtyIndexes();
@@ -510,7 +526,7 @@ describe('DiscussSessionStore', () => {
       sources: [],
     });
 
-    const coldStartStore = new DiscussSessionStore(source);
+    const coldStartStore = createStore(source);
 
     expect(coldStartStore.listSummariesFromIndex().map((summary) => summary.sessionId).sort()).toEqual([
       SESSION_ID,
@@ -531,7 +547,7 @@ describe('DiscussSessionStore', () => {
   });
 
   it('repairs stale summary-index.json rows from persisted sessions on first index listing', async () => {
-    const store = new DiscussSessionStore(source);
+    const store = createStore(source);
     const { finalSnapshot: firstSnapshot } = await appendRoundTripHistory(store, SESSION_ID);
     const { finalSnapshot: secondSnapshot } = await appendRoundTripHistory(store, SECOND_SESSION_ID);
     store.flushDirtyIndexes();
@@ -542,7 +558,7 @@ describe('DiscussSessionStore', () => {
       sessions: [buildExpectedSummaryRow(firstSnapshot)],
     });
 
-    const coldStartStore = new DiscussSessionStore(source);
+    const coldStartStore = createStore(source);
 
     expect(coldStartStore.listSummariesFromIndex().map((summary) => summary.sessionId).sort()).toEqual([
       SESSION_ID,
@@ -559,7 +575,7 @@ describe('DiscussSessionStore', () => {
   });
 
   it('skips corrupt event-log lines without breaking load', async () => {
-    const store = new DiscussSessionStore(source);
+    const store = createStore(source);
     const { finalSnapshot } = await appendRoundTripHistory(store);
     const logPath = discussEventLogPath(store.resolveSessionDir(SESSION_ID));
 
@@ -569,7 +585,7 @@ describe('DiscussSessionStore', () => {
   });
 
   it('writes the committed event batch to the session log', async () => {
-    const store = new DiscussSessionStore(source);
+    const store = createStore(source);
     await appendRoundTripHistory(store);
     const logPath = discussEventLogPath(store.resolveSessionDir(SESSION_ID));
 
@@ -589,7 +605,7 @@ describe('DiscussSessionStore', () => {
   });
 
   it('returns correct data from listing methods immediately after append (flush-before-read)', async () => {
-    const store = new DiscussSessionStore(source);
+    const store = createStore(source);
     const { finalSnapshot } = await appendRoundTripHistory(store);
 
     const summaries = store.listSummaries();
@@ -613,7 +629,7 @@ describe('DiscussSessionStore', () => {
   });
 
   it('flushes dirty indexes to disk on dispose (shutdown flush)', async () => {
-    const store = new DiscussSessionStore(source);
+    const store = createStore(source);
     const { finalSnapshot } = await appendRoundTripHistory(store);
 
     expect(readDiscussDiscovery(projectRoot)).toBeNull();
