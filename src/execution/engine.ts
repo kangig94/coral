@@ -690,6 +690,8 @@ export async function spawnDurableJob(options: SpawnDurableJobOptions): Promise<
     let runtimeRecord = durable.runtimeRecord;
     let tailOffset = runtimeRecord.tailWatermark ?? 0;
     let pidExitedAt: number | null = null;
+    let lastOutputAt = Date.now();
+    let lastTickAt = Date.now();
 
     const drainStdout = (): void => {
       const { lines, newOffset } = readAppendedLines(durable.stdoutPath, tailOffset);
@@ -698,6 +700,7 @@ export async function spawnDurableJob(options: SpawnDurableJobOptions): Promise<
       }
 
       tailOffset = newOffset;
+      lastOutputAt = Date.now();
       runtimeRecord = { ...runtimeRecord, tailWatermark: newOffset };
       try {
         writeRuntimeRecord(options.jobDir, runtimeRecord);
@@ -758,6 +761,18 @@ export async function spawnDurableJob(options: SpawnDurableJobOptions): Promise<
         pidExitedAt = null;
       }
 
+      // Idle timeout — mirrors spawnCli's 10-minute inactivity kill
+      const now = Date.now();
+      const tickGap = now - lastTickAt;
+      lastTickAt = now;
+      if (tickGap > IDLE_CHECK_INTERVAL * 3) {
+        // System likely woke from sleep — reset baseline
+        lastOutputAt = now;
+      } else if (now - lastOutputAt >= IDLE_TIMEOUT) {
+        safeKillPid(durable.pid, 'SIGTERM');
+        throw new Error(`Durable process ${durable.pid} killed after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`);
+      }
+
       await new Promise<void>((resolve) => setTimeout(resolve, DURABLE_RUNTIME_POLL_INTERVAL_MS));
     }
   } finally {
@@ -810,6 +825,8 @@ export function killAllChildren(): void {
   activeChildren.clear();
   for (const pid of activeDurablePids) {
     safeKillPid(pid, 'SIGTERM');
+    const escalation = setTimeout(() => safeKillPid(pid, 'SIGKILL'), SIGTERM_GRACE_MS);
+    escalation.unref?.();
   }
   activeDurablePids.clear();
 }
