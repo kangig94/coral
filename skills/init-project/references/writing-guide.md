@@ -120,6 +120,18 @@ Quality rules:
 3. **Standard formats** - `model-card.md` follows Google Model Cards format, `api-reference.md` follows OpenAPI-style structure, `data-dictionary.md` uses source/table/column hierarchy.
 4. **Architecture Sections** - domain-specific sections listed in references are appended to `ARCHITECTURE.md`, not created as separate files.
 
+### Module Doc Requirements
+
+Module docs (e.g., core-modules.md) describe **architectural roles**, not source contents:
+
+1. **Role tables by subsystem** — group modules by architectural layer/subsystem, one table per group
+2. **Module name + responsibility** — each row is `module.ts` + one-line role description
+3. **No per-file sections** — a section-per-file catalog goes stale on every refactor. Tables are scannable and maintainable.
+4. **No export listings** — function signatures and parameter details belong in source JSDoc
+5. **No "See `src/...`" pointers** — the table row already names the file; a separate pointer is redundant
+
+**Staleness test**: if the content needs updating when a file is renamed, a function signature changes, or an import is added — it belongs in source code, not docs.
+
 ### General Doc Quality
 
 - Use **tables** for structured information (agent lists, layer rules, checklists)
@@ -128,6 +140,12 @@ Quality rules:
 - Keep sections **clear** - structure information to reduce cognitive load, not just save space. Numbered steps over walls of text, tables over prose lists
 - Include **examples** where patterns are non-obvious
 - **Docs describe architecture decisions and navigation - not source contents.** Any content that becomes stale when a function signature or schema field changes belongs in source code, not docs.
+
+Anti-patterns (staleness amplifiers):
+- Exhaustive directory trees listing every file (use 5-15 key files)
+- Per-file module sections with export catalogs (use role tables)
+- Import dependency graphs enumerating every edge (use layer diagrams)
+- Redundant "See `src/xxx.ts`" lines repeating the section heading
 
 ### Enhance Mode Rules
 

@@ -13,7 +13,7 @@ argument-hint: "[existing|new]"
   Responsible for: project analysis, domain identification, writing the plan, running the review loop, generating artifacts (following ralph protocol directly), and final reporting.
   Not responsible for: reviewing the plan (architect/critic do that).
 
-  **Autonomy**: Execute all phases (1→2→3→3.5→4) end-to-end without pausing for user confirmation.
+  **Autonomy**: Execute all phases (1→2→3→4→5→6) end-to-end without pausing for user confirmation.
   Evidence gates are self-checks, not user approval points. Do not ask "shall I continue?" between phases.
 </Role>
 <Protocol>
@@ -144,11 +144,14 @@ argument-hint: "[existing|new]"
        * **Doc content drafts** (existing projects): Phase 3 executes the plan as-is, so the plan must
          contain the actual content for each doc - not just "generate ARCHITECTURE.md". Include:
          - ARCHITECTURE.md: layer diagram (from the analysis document's Scan Report — dependency graph section), dependency rules,
-           modification policy per directory, domain Architecture Sections. List only critical and
-           non-obvious files (5-15 entries, not exhaustive).
+           modification policy per directory, domain Architecture Sections. Directory tree: key files only
+           (5-15 entries, not exhaustive). Dependency graph: layer-level, not per-file imports.
+         - Module docs (core-modules.md): role tables by subsystem — `module | responsibility` rows,
+           not per-file sections with export catalogs. See writing-guide Module Doc Requirements.
          - DEV_GUIDE.md: exact build/test/lint commands (from the analysis document's Scan Report — build/test config section), workflow phases, conventions
          - Domain docs (api-reference, database-schema, etc.): architecture-level content - design
            conventions, patterns, and principles. Not endpoint catalogs or table definitions.
+         - **Staleness test for all docs**: if content needs updating when a file is renamed or an import changes, it belongs in source code (JSDoc), not docs.
        * For new projects, mark uncertain sections with "to be updated" per writing-guide.
 
   **Evidence gate**: Phase 2 is complete ONLY when a plan file exists at `CORAL_PROJECT/plans/init-*.md`.
@@ -165,11 +168,11 @@ argument-hint: "[existing|new]"
   `.claude/rules/` is auto-loaded by Claude Code. Writing files there incrementally exposes
   partial state. Stage all `.claude/` files in a temp directory, then move atomically.
 
-  **Staging directory**: `$TMPDIR/coral/<project-slug>/init-staging/`
-  (`<project-slug>` = project dir path with `/` replaced by `-`, e.g. `-home-user-workspace-myapp`)
+  **Staging directory**: `CORAL_PROJECT/init-staging/`
+  Already outside the project tree (`~/.coral/projects/{slug}/`), no platform-specific temp dir needed.
 
   ```bash
-  STAGING="$TMPDIR/coral/$(echo "$CLAUDE_PROJECT_DIR" | tr '/' '-')/init-staging"
+  STAGING="CORAL_PROJECT/init-staging"
   rm -rf "$STAGING" && mkdir -p "$STAGING"
   ```
 
@@ -195,9 +198,48 @@ argument-hint: "[existing|new]"
   Also write `$STAGING/dot-claude/skills/tier-review/SKILL.md` by copying from
   `{skill_base_dir}/templates/skills/tier-review/SKILL.md` — fixed artifact, not plan-dependent.
 
-  ### 3c. Atomic Move
+  **Evidence gate**: Phase 3 is complete ONLY when all artifacts exist in staging (`$STAGING/dot-claude/`)
+  and directly-written locations (`docs/`). Do NOT move staged files yet — verification comes first.
 
-  After all files are generated, move staged files to their final location:
+  ## Phase 4: Verify Artifacts
+
+  **Verify BEFORE moving to final locations.** `.claude/rules/` is auto-loaded — placing
+  unverified files there exposes partial or incorrect state to Claude Code.
+
+  `Agent("coral:architect")` and `Agent("coral:critic")` in parallel to verify generated artifacts. Pass `--deep` in the prompt.
+  Provide each with: plan file path, list of generated/enhanced/updated files from Phase 3.
+  For `.claude/` files, point reviewers to the **staging paths** (`$STAGING/dot-claude/...`).
+  For `docs/` files, point to their actual paths (written directly in Phase 3b).
+  Each outputs a findings table with severity (CRITICAL/HIGH/MEDIUM/LOW) and file:line references.
+
+  **Architect** — structural correctness and content fidelity:
+  - Read `{skill_base_dir}/references/writing-guide.md` for structural standards
+  - Read analysis document for content fidelity check (analysis ↔ generated output)
+  - Agents: `<Agent_Prompt>` XML with required sections, no `{placeholder}` text, protocols reference real project patterns
+  - Rules: `paths:` frontmatter for domain-specific, validation items trace to analysis findings
+  - Docs: layer diagram in ARCHITECTURE.md, exact commands in DEV_GUIDE.md, paths and architecture match analysis
+  - Docs staleness surface: flag per-file catalogs, exhaustive directory trees (>15 entries),
+    import dependency graphs, redundant "See src/" pointers. Module docs must use role tables, not per-file sections.
+  - CLAUDE.md: build commands match analysis, key docs list matches generated files
+  - Enhanced files: existing content NOT modified, new sections appended only
+  - Updated files: only cited stale content changed, all other content preserved
+
+  **Critic** — plan adherence and completeness:
+  - Every artifact in the plan's Artifact Manifest was generated, enhanced, or updated
+  - No extra files beyond what the plan specified
+  - Merge rules followed (missing → created, existing → enhanced or updated per plan, never overwritten)
+  - Doc content matches what the plan drafted
+  - Enhancement boundaries respected (only planned sections added)
+  - Update boundaries respected (only cited stale content changed, all else preserved)
+
+  **Remediation**: Synthesize both reports. For CRITICAL/HIGH findings, fix directly (read → edit).
+  Fix `.claude/` files in staging, `docs/` files in place.
+
+  **Evidence gate**: Phase 4 is complete when neither reviewer has unresolved CRITICAL/HIGH findings.
+
+  ## Phase 5: Apply
+
+  **Only after Phase 4 passes**, move staged files to their final location:
 
   ```bash
   cp -r "$STAGING/dot-claude/"* .claude/ && rm -rf "$STAGING"
@@ -215,39 +257,7 @@ argument-hint: "[existing|new]"
   grep -qxF '.claude/coral' .gitignore 2>/dev/null || echo '.claude/coral' >> .gitignore
   ```
 
-  **Evidence gate**: Phase 3 is complete ONLY when generated files exist in their final locations.
-  If no files were created, Phase 3 did not execute correctly.
-
-  ## Phase 3.5: Verify Artifacts
-
-  `Agent("coral:architect")` and `Agent("coral:critic")` in parallel to verify generated artifacts. Pass `--deep` in the prompt.
-  Provide each with: plan file path, list of generated/enhanced/updated files from Phase 3.
-  Each outputs a findings table with severity (CRITICAL/HIGH/MEDIUM/LOW) and file:line references.
-
-  **Architect** — structural correctness and content fidelity:
-  - Read `{skill_base_dir}/references/writing-guide.md` for structural standards
-  - Read analysis document for content fidelity check (analysis ↔ generated output)
-  - Agents: `<Agent_Prompt>` XML with required sections, no `{placeholder}` text, protocols reference real project patterns
-  - Rules: `paths:` frontmatter for domain-specific, validation items trace to analysis findings
-  - Docs: layer diagram in ARCHITECTURE.md, exact commands in DEV_GUIDE.md, paths and architecture match analysis
-  - CLAUDE.md: build commands match analysis, key docs list matches generated files
-  - Enhanced files: existing content NOT modified, new sections appended only
-  - Updated files: only cited stale content changed, all other content preserved
-
-  **Critic** — plan adherence and completeness:
-  - Every artifact in the plan's Artifact Manifest was generated, enhanced, or updated
-  - No extra files beyond what the plan specified
-  - Merge rules followed (missing → created, existing → enhanced or updated per plan, never overwritten)
-  - Doc content matches what the plan drafted
-  - Enhancement boundaries respected (only planned sections added)
-  - Update boundaries respected (only cited stale content changed, all else preserved)
-
-  **Remediation**: Synthesize both reports. For CRITICAL/HIGH findings, fix directly (read → edit).
-  Fix spot issues directly (read → edit).
-
-  **Evidence gate**: Phase 3.5 is complete when neither reviewer has unresolved CRITICAL/HIGH findings.
-
-  ## Phase 4: Report
+  ## Phase 6: Report
 
   Summarize:
 
@@ -273,7 +283,7 @@ argument-hint: "[existing|new]"
   ```
 </Protocol>
 <Output_Manifest>
-  After Phase 3 completes and Phase 3.5 verification passes, confirm these files exist with correct content. Missing files or failed content checks indicate protocol failure.
+  After Phase 5 (Apply) completes, confirm these files exist with correct content. Missing files or failed content checks indicate protocol failure.
 
   | Category | File | Condition | Content Check |
   |----------|------|-----------|---------------|
@@ -305,12 +315,12 @@ argument-hint: "[existing|new]"
   | Read merge-policy.md and writing-guide.md before generating | Decide merge policy ad-hoc |
   | Report everything (created + enhanced + updated) | Hide enhanced/updated files from the user |
   | Follow merge policy exactly | Overwrite existing user files |
-  | Execute phases in order (analyze→plan→execute→verify) | Skip to file generation without plan |
+  | Execute phases in order (1→2→3→4→5→6) | Skip to file generation without plan |
 </Constraints>
 <Error_Handling>
   | Scenario | Action |
   |----------|--------|
-  | Scanner subagent fails or returns insufficient output | Fall back to direct file reading (metadata, README, directory structure) and write a minimal analysis file. Note gaps in Phase 4 report |
+  | Scanner subagent fails or returns insufficient output | Fall back to direct file reading (metadata, README, directory structure) and write a minimal analysis file. Note gaps in Phase 6 report |
   | Reviewer spawn fails | Proceed with other reviewer's feedback; if both fail, do single self-review |
   | Phase 3 generation fails partway | Report error with partial results |
   | Domain reference file not found | Proceed with available references, note the missing domain |
