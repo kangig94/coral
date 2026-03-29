@@ -72,8 +72,10 @@ import type { BackendServerInfo } from './server.js';
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
 export const SHUTDOWN_POLL_MS = 50;
+export const RECOVERY_POLL_MS = 500;
 export const ORPHANED_JOB_NOTICE = 'Unclean shutdown - orphaned job';
 export const OLD_FORMAT_NOTICE = 'Incompatible job format — missing durable launch record. Job predates the handoff recovery system.';
+export const GHOST_LAUNCH_NOTICE = 'Launch record exists but runtime.json was never written. The durable wrapper did not start successfully.';
 
 // ---------------------------------------------------------------------------
 // ShutdownMode / RecoveryClass
@@ -98,7 +100,7 @@ export class StartupInterruptedError extends Error {
   }
 }
 
-export type RecoveryClass = 'incompatible' | 'queued' | 'running' | 'terminal' | 'incomplete' | 'stale_dead' | null;
+export type RecoveryClass = 'incompatible' | 'queued' | 'running' | 'terminal' | 'incomplete' | 'stale_dead' | 'stale_running' | null;
 
 // ---------------------------------------------------------------------------
 // Standalone helpers (pure functions, no closure state)
@@ -209,6 +211,7 @@ export function readSessionRefs(shardDir: string): Array<{ sessionId: string; pr
  * - 'queued': launch.json exists, phase is queued, no runtime.json yet
  * - 'running': launch.json + runtime.json exist, phase is running/launching, process may be alive
  * - 'stale_dead': like running but exit.json already written (process exited uncleanly)
+ * - 'stale_running': launch.json exists, phase is launching/running, but runtime.json was never written
  * - null: unrecognized state
  */
 export function classifyRecoverableJob(
@@ -232,6 +235,11 @@ export function classifyRecoverableJob(
 
   // Queued recoverable: launch.json exists, phase is queued, no runtime.json
   if (hasLaunch && status.phase === 'queued' && !hasRuntime) return 'queued';
+
+  // Ghost launch: launch.json exists, job entered a live launch phase, but wrapper never committed runtime.json
+  if (hasLaunch && !hasRuntime && (status.phase === 'launching' || status.phase === 'running')) {
+    return 'stale_running';
+  }
 
   // Running recoverable: launch.json and runtime.json exist, phase is running/launching
   if (hasLaunch && hasRuntime && (status.phase === 'running' || status.phase === 'launching')) {
@@ -532,6 +540,9 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       try {
         const ctx: CallerContext = { projectRoot: launchRecord.projectRoot, pluginRoot, coralEnv: {} };
         const service = getExecutionService(ctx) as DefaultExecutionService;
+        const provider = getNewProvider(launchRecord.provider);
+        const recovery = provider?.recovery;
+        let adoptedRuntimeRecord = runtimeRecord;
         assertStartupStillActive();
         ({ cleanup } = service.adoptRunningJob(launchRecord, runtimeRecord));
         assertStartupStillActive();
@@ -539,8 +550,45 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         // Track adopted PID
         adoptedRunningPids.set(jobId, { pid: runtimeRecord.pid, pool: launchRecord.pool });
 
+        const drainRecoveredProgress = (): void => {
+          if (!recovery?.extractProgress) {
+            return;
+          }
+
+          try {
+            const { messages, newOffset } = recovery.extractProgress({
+              stdoutPath: adoptedRuntimeRecord.stdoutPath,
+              fromOffset: adoptedRuntimeRecord.tailWatermark ?? 0,
+              providerMeta: adoptedRuntimeRecord.providerMeta,
+            });
+
+            if (newOffset !== (adoptedRuntimeRecord.tailWatermark ?? 0)) {
+              adoptedRuntimeRecord = { ...adoptedRuntimeRecord, tailWatermark: newOffset };
+              progressStore.writeRuntimeRecord(jobId, adoptedRuntimeRecord);
+            }
+
+            if (messages.length === 0) {
+              return;
+            }
+
+            const status = progressStore.readStatus(jobId);
+            if (status && !isTerminalPhase(status.phase) && status.launch.state !== 'ready') {
+              progressStore.updateLaunchState(jobId, 'ready');
+              progressStore.updatePhase(jobId, 'running');
+            }
+
+            for (const message of messages) {
+              progressStore.appendProgress(jobId, launchRecord.sessionId, message);
+            }
+          } catch (err) {
+            log(`Failed to tail recovered progress for job ${jobId}: ${formatError(err)}\n`);
+          }
+        };
+
         // Install PID poller to detect termination
         const pollInterval: NodeJS.Timeout = setInterval(() => {
+          drainRecoveredProgress();
+
           let alive = false;
           try {
             process.kill(runtimeRecord.pid, 0);
@@ -554,14 +602,16 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
 
             const exitRecord = progressStore.readExitRecord(jobId);
             if (exitRecord) {
+              drainRecoveredProgress();
+
               // Finalize from durable artifacts via provider recovery
-              const provider = getNewProvider(launchRecord.provider);
               if (provider?.recovery) {
                 void provider.recovery.finalizeFromArtifacts({
                   stdoutPath: runtimeRecord.stdoutPath,
                   stderrPath: runtimeRecord.stderrPath,
                   exitCode: exitRecord.exitCode,
                   signal: exitRecord.signal,
+                  fallbackConversationRef: launchRecord.request.conversationRef,
                 }).then((result) => {
                   const phase = result.aborted ? 'aborted' as const : 'completed' as const;
                   service.completeRecoveredJob(jobId, launchRecord.sessionId, {
@@ -601,7 +651,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
 
             cleanup?.();
           }
-        }, 5_000);
+        }, RECOVERY_POLL_MS);
         pollInterval.unref?.();
         recoveryPollIntervals.add(pollInterval);
 
@@ -759,6 +809,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       runtimeState.setLaunchFenceActive(true);
       recoveryRegistry = new RecoveryRegistry();
       const incompatibleJobs: PersistedStatusRecord[] = [];
+      const ghostLaunchJobs: PersistedStatusRecord[] = [];
       const queuedRecoverable: Array<{ jobId: string; launchRecord: PersistedLaunchRecord }> = [];
       const runningRecoverable: Array<{ jobId: string; launchRecord: PersistedLaunchRecord; runtimeRecord: PersistedRuntimeRecord }> = [];
 
@@ -770,6 +821,11 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         if (classification === 'incompatible') {
           const status = progressStore.readStatus(jobId);
           if (status) incompatibleJobs.push(status);
+          continue;
+        }
+        if (classification === 'stale_running') {
+          const status = progressStore.readStatus(jobId);
+          if (status) ghostLaunchJobs.push(status);
           continue;
         }
         if (classification === 'incomplete') {
@@ -807,6 +863,17 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
           log(`Marked incompatible old-format job: ${status.jobId}\n`);
         } catch (err) {
           log(`Failed to handle incompatible job ${status.jobId}: ${formatError(err)}\n`);
+        }
+      }
+
+      for (const status of ghostLaunchJobs) {
+        try {
+          markJobAsError(progressStore, status, GHOST_LAUNCH_NOTICE, log);
+          const sessionManager = new SessionManager(status.projectRoot);
+          sessionManager.releaseJob(status.sessionId, status.jobId);
+          log(`Marked ghost launch job: ${status.jobId}\n`);
+        } catch (err) {
+          log(`Failed to handle ghost launch job ${status.jobId}: ${formatError(err)}\n`);
         }
       }
 

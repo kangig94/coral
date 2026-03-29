@@ -161,4 +161,46 @@ describe('claude adapter recovery contract', () => {
     // Empty stdout → parser returns isError=true, no response → raw fallback
     expect(result.content).toBe('');
   });
+
+  it('marks parsed recovered output as aborted when the wrapper exited by signal', async () => {
+    const { claudeProvider } = await loadProvider();
+
+    const stdoutPath = join(tmpDir, 'stdout.json');
+    const stderrPath = join(tmpDir, 'stderr.log');
+    const streamOutput = [
+      '{"type":"assistant","message":{"model":"claude-sonnet-4-20250514","content":[{"type":"text","text":"Recovered answer"}]}}',
+      '{"type":"result","result":"Recovered answer","session_id":"sess-recovered","total_cost_usd":0.05,"duration_ms":3200}',
+    ].join('\n');
+    writeFileSync(stdoutPath, streamOutput, 'utf-8');
+    writeFileSync(stderrPath, '', 'utf-8');
+
+    const result = await claudeProvider.recovery!.finalizeFromArtifacts({
+      stdoutPath,
+      stderrPath,
+      exitCode: null,
+      signal: 'SIGTERM',
+    });
+
+    expect(result.aborted).toBe(true);
+    expect(result.conversationRef).toBe('sess-recovered');
+  });
+
+  it('extracts progress from complete appended lines only', async () => {
+    const { claudeProvider } = await loadProvider();
+
+    const stdoutPath = join(tmpDir, 'stdout.json');
+    const firstLine = '{"type":"assistant","message":{"content":[{"type":"text","text":"first"}]}}\n';
+    const partialLine = '{"type":"assistant","message":{"content":[{"type":"text","text":"second"}]}}';
+    writeFileSync(stdoutPath, `${firstLine}${partialLine}`, 'utf-8');
+
+    const first = claudeProvider.recovery!.extractProgress!({ stdoutPath, fromOffset: 0 });
+    expect(first.messages).toEqual(['Generating response...']);
+    expect(first.newOffset).toBe(Buffer.byteLength(firstLine));
+
+    writeFileSync(stdoutPath, `${firstLine}${partialLine}\n`, 'utf-8');
+
+    const second = claudeProvider.recovery!.extractProgress!({ stdoutPath, fromOffset: first.newOffset });
+    expect(second.messages).toEqual(['Generating response...']);
+    expect(second.newOffset).toBeGreaterThan(first.newOffset);
+  });
 });

@@ -42,7 +42,7 @@ import {
   releaseLaunch,
   restoreActiveLaunch,
   restoreQueuedLaunch,
-  spawnCli,
+  spawnDurableJob,
   type AdmissionResult,
   type LaunchPool,
   type QueuedHandle,
@@ -125,13 +125,15 @@ function bindProviderRunner(
   provider: string,
   signal: AbortSignal,
   pool: LaunchPool,
+  jobDir: string,
 ): ProviderCliRunner {
   return (request) =>
-    spawnCli({
+    spawnDurableJob({
       provider,
       signal,
       permitGranted: true,
       pool,
+      jobDir,
       command: request.command,
       args: request.args,
       prompt: request.prompt,
@@ -929,7 +931,7 @@ export class ExecutionService {
         const runtime: ProviderRuntime = {
           signal,
           onEvent,
-          runCli: bindProviderRunner(provider.name, signal, pool),
+          runCli: bindProviderRunner(provider.name, signal, pool, this.progressStore.jobDir(jobId)),
         };
         const result = await provider.execute(request, runtime);
 
@@ -1037,7 +1039,7 @@ export class ExecutionService {
         const runtime: ProviderRuntime = {
           signal,
           onEvent,
-          runCli: bindProviderRunner(provider.name, signal, pool),
+          runCli: bindProviderRunner(provider.name, signal, pool, this.progressStore.jobDir(jobId)),
         };
         const result = await provider.execute(request, runtime);
 

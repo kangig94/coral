@@ -5,10 +5,12 @@ import { executeOneShot, executeResume, executeFork } from './codex-executor.js'
 import { parseCodexJsonl } from './output-parser.js';
 import { detectCodexCli, type CliInfo } from '../cli-detection.js';
 import { extractProgressMessage } from './progress.js';
+import { readAppendedLines } from '../../shared/file-tail.js';
 import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
 import { mapProviderResultBase } from '../result-mapping.js';
 import { makeOnEvent, requireConversationRef, type Provider, type ProviderRecoveryContract, type ProviderRuntime } from '../types.js';
 import type { EffortLevel } from '../../shared/schemas.js';
+import type { CodexThreadEvent } from './types.js';
 
 /** Raw result type returned by Codex executors. */
 type CodexRawResult = Awaited<ReturnType<typeof executeOneShot>>;
@@ -45,6 +47,7 @@ const codexRecovery: ProviderRecoveryContract = {
   async finalizeFromArtifacts({ stdoutPath, exitCode, signal, fallbackConversationRef }) {
     const stdout = readFileSync(stdoutPath, 'utf-8');
     const parsed = parseCodexJsonl(stdout);
+    const aborted = signal !== null;
     if (parsed.response || parsed.errors.length > 0 || parsed.sessionId) {
       return toProviderResult(
         {
@@ -55,7 +58,7 @@ const codexRecovery: ProviderRecoveryContract = {
           exitCode,
           errors: parsed.errors,
           warnings: parsed.warnings,
-          aborted: false,
+          aborted,
         },
         fallbackConversationRef,
       );
@@ -64,8 +67,22 @@ const codexRecovery: ProviderRecoveryContract = {
     return {
       content: stdout,
       exitCode,
+      aborted,
       notice: signal ? `killed by ${signal}` : undefined,
     };
+  },
+  extractProgress({ stdoutPath, fromOffset }) {
+    const { lines, newOffset } = readAppendedLines(stdoutPath, fromOffset);
+    const messages = lines.flatMap((line) => {
+      try {
+        const event = JSON.parse(line) as CodexThreadEvent;
+        const message = extractProgressMessage(event);
+        return message ? [message] : [];
+      } catch {
+        return [];
+      }
+    });
+    return { messages, newOffset };
   },
 };
 
