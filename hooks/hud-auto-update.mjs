@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, copyFileSync } from 'node:fs';
+import { readFileSync, copyFileSync, readdirSync, unlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -10,6 +10,16 @@ function fileHash(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
+function cleanRuntimeFiles(hudDir) {
+  let entries;
+  try { entries = readdirSync(hudDir); } catch { return; }
+  for (const name of entries) {
+    if (name.startsWith('.coral-')) {
+      try { unlinkSync(join(hudDir, name)); } catch {}
+    }
+  }
+}
+
 try {
   await readStdin();
 
@@ -17,7 +27,8 @@ try {
   if (!pluginRoot) process.exit(0);
   if (!pluginRoot.includes('/.claude/plugins/marketplaces/')) process.exit(0);
 
-  const installed = join(homedir(), '.claude', 'hud', 'coral-hud.mjs');
+  const hudDir = join(homedir(), '.claude', 'hud');
+  const installed = join(hudDir, 'coral-hud.mjs');
   const source = join(pluginRoot, 'skills', 'statusline', 'coral-hud.mjs');
 
   let currentHash;
@@ -25,5 +36,6 @@ try {
 
   if (currentHash === fileHash(source)) process.exit(0);
 
+  cleanRuntimeFiles(hudDir);
   copyFileSync(source, installed);
 } catch {}
