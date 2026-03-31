@@ -240,10 +240,8 @@ describe('claude adapter: non-fork requests use the persistent path', () => {
     expect(runtime.checkpointRecovery).toHaveBeenCalledWith(
       expect.objectContaining({
         providerMeta: expect.objectContaining({
-          serverKey: 'claude',
           envHash: expect.stringMatching(/^sha256:/),
           providerContinuity: expect.objectContaining({
-            serverKey: 'claude',
             brokerSessionKey: BROKER_SESSION_KEY,
             envHash: expect.stringMatching(/^sha256:/),
           }),
@@ -263,7 +261,6 @@ describe('claude adapter: app-server recovery preserves live broker continuity b
     const { claudeProvider } = await loadProvider();
     const appServer = claudeProvider.appServer!;
     const continuity = {
-      serverKey: 'claude',
       brokerSessionKey: BROKER_SESSION_KEY,
       bootstrapSignature: {
         cwd: '/workspace',
@@ -563,7 +560,7 @@ describe('request-mapping: spec.key is stable and must not be replaced', () => {
     );
 
     expect(spec).toMatchObject({
-      key: 'claude',
+      provider: 'claude',
       cwd: process.cwd(),
       shared: true,
     });
@@ -576,8 +573,8 @@ describe('request-mapping: spec.key is stable and must not be replaced', () => {
     const spec1 = buildClaudeProviderServerSpec(makeRequest({ sessionId: 'session-a' }), 'sha256:hash', undefined);
     const spec2 = buildClaudeProviderServerSpec(makeRequest({ sessionId: 'session-b' }), 'sha256:hash', undefined);
 
-    expect(spec1.key).toBe('claude');
-    expect(spec2.key).toBe('claude');
+    expect(spec1.provider).toBe('claude');
+    expect(spec2.provider).toBe('claude');
   });
 
   it('buildClaudeProviderServerSpec key stays fixed across bootstrap signatures', async () => {
@@ -586,8 +583,8 @@ describe('request-mapping: spec.key is stable and must not be replaced', () => {
     const spec1 = buildClaudeProviderServerSpec(makeRequest({ sessionId: 'session-c' }), 'sha256:hash', undefined);
     const spec2 = buildClaudeProviderServerSpec(makeRequest({ sessionId: 'session-c' }), 'sha256:other-hash', undefined);
 
-    expect(spec1.key).toBe('claude');
-    expect(spec2.key).toBe('claude');
+    expect(spec1.provider).toBe('claude');
+    expect(spec2.provider).toBe('claude');
   });
 });
 

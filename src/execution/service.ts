@@ -143,7 +143,7 @@ type ProviderServerWaiter = {
 };
 
 type ProviderServerRegistryEntry = {
-  key: string;
+  provider: string;
   spec: ProviderServerSpec;
   handle: ProviderServerHandle | null;
   spawnPromise: Promise<ProviderServerHandle> | null;
@@ -328,7 +328,7 @@ export class ExecutionService {
   ): Promise<ProviderServerLease> {
     const entry = this.getOrCreateProviderServerEntry(spec);
     if (options?.jobId) {
-      this.writeAppServerRuntimeRecord(options.jobId, entry.key, { leaseState: 'waiting' });
+      this.writeAppServerRuntimeRecord(options.jobId, entry.provider, { leaseState: 'waiting' });
     }
 
     if (entry.spec.shared === true) {
@@ -340,7 +340,7 @@ export class ExecutionService {
     try {
       const handle = await this.ensureProviderServerHandle(entry);
       if (options?.jobId) {
-        this.writeAppServerRuntimeRecord(options.jobId, entry.key, {
+        this.writeAppServerRuntimeRecord(options.jobId, entry.provider, {
           leaseState: 'acquired',
           serverGeneration: handle.generation,
         });
@@ -403,7 +403,7 @@ export class ExecutionService {
     }
 
     const spec = provider.appServer.buildServerSpec(continuity, toProviderRequest(launchRecord));
-    const liveEntry = this.providerServers.get(runtimeRecord.providerMeta.serverKey);
+    const liveEntry = this.providerServers.get(runtimeRecord.providerMeta.provider);
     const liveHandle = liveEntry ? this.getLiveProviderServerHandle(liveEntry) : null;
     if (spec.shared !== true && liveHandle && liveEntry) {
       await provider.appServer.interrupt(this.createProviderServerLease(liveHandle, liveEntry), continuity);
@@ -585,12 +585,12 @@ export class ExecutionService {
   }
 
   private getOrCreateProviderServerEntry(spec: ProviderServerSpec): ProviderServerRegistryEntry {
-    const key = spec.key;
-    const existing = this.providerServers.get(key);
+    const provider = spec.provider;
+    const existing = this.providerServers.get(provider);
     if (existing) return existing;
 
     const created: ProviderServerRegistryEntry = {
-      key,
+      provider,
       spec: { ...spec },
       handle: null,
       spawnPromise: null,
@@ -598,7 +598,7 @@ export class ExecutionService {
       sharedLeaseCount: 0,
       waiters: [],
     };
-    this.providerServers.set(key, created);
+    this.providerServers.set(provider, created);
     return created;
   }
 
@@ -642,8 +642,8 @@ export class ExecutionService {
 
     const legacyMeta = runtimeRecord.providerMeta as Record<string, unknown>;
     const continuity: ProviderContinuityBlob = {};
-    if (typeof runtimeRecord.providerMeta.serverKey === 'string' && runtimeRecord.providerMeta.serverKey.length > 0) {
-      continuity.serverKey = runtimeRecord.providerMeta.serverKey;
+    if (typeof runtimeRecord.providerMeta.provider === 'string' && runtimeRecord.providerMeta.provider.length > 0) {
+      continuity.provider = runtimeRecord.providerMeta.provider;
     }
     if (typeof legacyMeta.threadId === 'string' && legacyMeta.threadId.length > 0) {
       continuity.threadId = legacyMeta.threadId;
@@ -755,8 +755,8 @@ export class ExecutionService {
   }
 
   private async closeProviderServerEntry(entry: ProviderServerRegistryEntry, detail: string): Promise<void> {
-    this.providerServers.delete(entry.key);
-    const error = new Error(`Provider server ${entry.key} ${detail}`);
+    this.providerServers.delete(entry.provider);
+    const error = new Error(`Provider server ${entry.provider} ${detail}`);
     const waiters = entry.waiters.splice(0, entry.waiters.length);
     for (const waiter of waiters) {
       waiter.reject(error);
@@ -784,7 +784,7 @@ export class ExecutionService {
 
   private writeAppServerRuntimeRecord(
     jobId: string,
-    serverKey: string,
+    providerName: string,
     update: Partial<AppServerRuntimeRecord['providerMeta']>,
   ): void {
     const current = this.progressStore.readRuntimeRecord(jobId);
@@ -793,7 +793,7 @@ export class ExecutionService {
       transport: 'app-server',
       startTime: appRuntime?.startTime ?? new Date().toISOString(),
       providerMeta: {
-        serverKey,
+        provider: providerName,
         leaseState: update.leaseState ?? appRuntime?.providerMeta.leaseState ?? 'waiting',
         serverGeneration: update.serverGeneration ?? appRuntime?.providerMeta.serverGeneration,
         providerContinuity:

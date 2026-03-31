@@ -245,7 +245,6 @@ function makeCodexAppServerProvider(): Provider {
 
 function makeSharedClaudeAppServerProvider(spec: {
   provider: string;
-  key: string;
   command: string;
   args: string[];
   cwd: string;
@@ -458,7 +457,7 @@ describe('ExecutionService', () => {
     expect(firstRuntime).toMatchObject({
       transport: 'app-server',
       providerMeta: {
-        serverKey: 'codex',
+        provider: 'codex',
         leaseState: 'acquired',
         serverGeneration: 41,
         recoveryPolicy: 'session_continuity_only',
@@ -479,7 +478,6 @@ describe('ExecutionService', () => {
     expect(waitingRuntime).toMatchObject({
       transport: 'app-server',
       providerMeta: {
-        serverKey: 'codex',
         leaseState: 'waiting',
         recoveryPolicy: 'session_continuity_only',
       },
@@ -497,7 +495,7 @@ describe('ExecutionService', () => {
     expect(acquiredRuntime).toMatchObject({
       transport: 'app-server',
       providerMeta: {
-        serverKey: 'codex',
+        provider: 'codex',
         leaseState: 'acquired',
         serverGeneration: 41,
         recoveryPolicy: 'session_continuity_only',
@@ -514,7 +512,6 @@ describe('ExecutionService', () => {
     const { progressStore } = getInternals(service);
     const spec = {
       provider: 'claude',
-      key: 'claude',
       command: process.execPath,
       args: ['broker.js'],
       cwd: process.cwd(),
@@ -573,7 +570,7 @@ describe('ExecutionService', () => {
     expect(secondRuntime).toMatchObject({
       transport: 'app-server',
       providerMeta: {
-        serverKey: 'claude',
+        provider: 'claude',
         leaseState: 'acquired',
         serverGeneration: 41,
         recoveryPolicy: 'session_continuity_only',
@@ -623,11 +620,10 @@ describe('ExecutionService', () => {
       transport: 'app-server',
       startTime: new Date().toISOString(),
       providerMeta: {
-        serverKey: 'codex',
+        provider: 'codex',
         leaseState: 'acquired',
         serverGeneration: 7,
         providerContinuity: {
-          serverKey: 'codex',
           threadId: 'thread-1',
           turnId: 'turn-1',
         },
@@ -672,7 +668,6 @@ describe('ExecutionService', () => {
     const service = new ExecutionService(ctx);
     const spec = {
       provider: 'claude',
-      key: 'claude',
       command: process.execPath,
       args: ['broker.js'],
       cwd: process.cwd(),
@@ -707,11 +702,10 @@ describe('ExecutionService', () => {
       transport: 'app-server',
       startTime: new Date().toISOString(),
       providerMeta: {
-        serverKey: 'claude',
+        provider: 'codex',
         leaseState: 'acquired',
         serverGeneration: 7,
         providerContinuity: {
-          serverKey: 'claude',
           brokerSessionKey: 'broker-session-1',
           brokerTurnId: 'broker-turn-1',
           bootstrapSignature: {
@@ -772,7 +766,6 @@ describe('ExecutionService', () => {
     expect(waitingRuntime).toMatchObject({
       transport: 'app-server',
       providerMeta: {
-        serverKey: 'codex',
         leaseState: 'waiting',
       },
     });
@@ -1887,7 +1880,7 @@ describe('ExecutionService', () => {
         transport: 'app-server',
         startTime: new Date().toISOString(),
         providerMeta: {
-          serverKey: 'codex',
+          provider: 'codex',
           leaseState: 'acquired',
           recoveryPolicy: 'session_continuity_only',
           ...overrides,
@@ -2169,7 +2162,6 @@ describe('ExecutionService', () => {
         const session = sessionManager.allocate('codex', 'recover-waiting', 'gpt-5', ctx.projectRoot);
         sessionManager.checkpointProviderContinuity(session.sessionId, {
           providerContinuity: {
-            serverKey: 'codex',
             threadId: 'thread-existing',
           },
           conversationRef: 'thread-existing',
@@ -2255,7 +2247,6 @@ describe('ExecutionService', () => {
           }),
           makeAppServerRuntimeRecord({
             providerContinuity: {
-              serverKey: 'codex',
               threadId: 'thread-recovered',
             },
           }),
@@ -2289,7 +2280,6 @@ describe('ExecutionService', () => {
         const session = sessionManager.allocate('codex', 'recover-missing', 'gpt-5', ctx.projectRoot);
         sessionManager.checkpointProviderContinuity(session.sessionId, {
           providerContinuity: {
-            serverKey: 'codex',
             threadId: 'thread-stale',
           },
           conversationRef: 'thread-stale',
@@ -2319,7 +2309,6 @@ describe('ExecutionService', () => {
           }),
           makeAppServerRuntimeRecord({
             providerContinuity: {
-              serverKey: 'codex',
               threadId: 'thread-stale',
             },
           }),
@@ -2376,7 +2365,6 @@ describe('ExecutionService', () => {
           }),
           makeAppServerRuntimeRecord({
             providerContinuity: {
-              serverKey: 'codex',
               threadId: 'thread-unverified',
             },
           }),

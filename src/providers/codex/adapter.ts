@@ -45,7 +45,6 @@ const CODEX_APP_SERVER_UPGRADE_MESSAGE = 'Codex CLI does not support app-server.
 const CODEX_AUTH_ERROR_MESSAGE = 'Codex CLI is not authenticated. Run "codex login" to create ~/.codex/auth.json.';
 
 type CodexContinuity = {
-  serverKey?: string;
   cwd?: string;
   threadId?: string;
   turnId?: string;
@@ -349,26 +348,24 @@ function readContinuityString(
 
 function toCodexContinuity(continuity: ProviderContinuityBlob | undefined): CodexContinuity {
   return {
-    serverKey: readContinuityString(continuity, 'serverKey'),
     cwd: readContinuityString(continuity, 'cwd'),
     threadId: readContinuityString(continuity, 'threadId'),
     turnId: readContinuityString(continuity, 'turnId'),
   };
 }
 
-function buildCodexContinuity(serverKey: string, cwd: string, threadId: string, turnId?: string | null): ProviderContinuityBlob {
+function buildCodexContinuity(cwd: string, threadId: string, turnId?: string | null): ProviderContinuityBlob {
   return turnId
-    ? { serverKey, cwd, threadId, turnId }
-    : { serverKey, cwd, threadId };
+    ? { cwd, threadId, turnId }
+    : { cwd, threadId };
 }
 
 function continuityWithClearedTurnId(continuity: ProviderContinuityBlob | undefined): ProviderContinuityBlob | undefined {
-  const { serverKey, cwd, threadId } = toCodexContinuity(continuity);
-  if (!serverKey && !threadId) {
+  const { cwd, threadId } = toCodexContinuity(continuity);
+  if (!threadId) {
     return undefined;
   }
   return {
-    ...(serverKey ? { serverKey } : {}),
     ...(cwd ? { cwd } : {}),
     ...(threadId ? { threadId } : {}),
   };
@@ -631,7 +628,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
     checkpointRecovery({
       conversationRef: threadId,
       providerMeta: {
-        providerContinuity: buildCodexContinuity(spec.key, request.cwd ?? process.cwd(), threadId),
+        providerContinuity: buildCodexContinuity(request.cwd ?? process.cwd(), threadId),
       },
     });
     runtime.onEvent(createProgressEvent(request.sessionId, `Thread ready (${threadId}).`));
@@ -652,7 +649,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
         checkpointRecovery({
           conversationRef: threadId,
           providerMeta: {
-            providerContinuity: buildCodexContinuity(spec.key, request.cwd ?? process.cwd(), threadId, turnId),
+            providerContinuity: buildCodexContinuity(request.cwd ?? process.cwd(), threadId, turnId),
           },
         });
       },
@@ -661,7 +658,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
       checkpointRecovery({
         conversationRef: threadId,
         providerMeta: {
-          providerContinuity: buildCodexContinuity(spec.key, request.cwd ?? process.cwd(), threadId, turnState.turnId),
+          providerContinuity: buildCodexContinuity(request.cwd ?? process.cwd(), threadId, turnState.turnId),
         },
       });
     }
@@ -673,7 +670,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
     checkpointRecovery({
       conversationRef: threadId,
       providerMeta: {
-        providerContinuity: buildCodexContinuity(spec.key, request.cwd ?? process.cwd(), threadId),
+        providerContinuity: buildCodexContinuity(request.cwd ?? process.cwd(), threadId),
       },
     });
 

@@ -33,7 +33,7 @@ function makeAppServerRuntimeRecord(overrides: Partial<AppServerRuntimeRecord['p
     transport: 'app-server',
     startTime: new Date().toISOString(),
     providerMeta: {
-      serverKey: 'codex',
+      provider: 'codex',
       leaseState: 'acquired',
       recoveryPolicy: 'session_continuity_only',
       ...overrides,

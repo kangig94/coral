@@ -12,7 +12,6 @@ export interface ProviderRecoveryMeta {
 
 export interface ProviderServerSpec {
   provider: string;
-  key: string;
   command: string;
   args: string[];
   cwd: string;

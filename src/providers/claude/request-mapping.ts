@@ -15,15 +15,12 @@ import type {
 } from '../claude-appserver/protocol.js';
 
 export interface ClaudePersistedContinuity extends ProviderContinuityBlob {
-  serverKey?: string;
   brokerSessionKey?: string;
   bootstrapSignature?: ClaudeBootstrapSignature;
   envHash?: string;
   conversationRef?: string;
   brokerTurnId?: string;
 }
-
-export const CLAUDE_PROVIDER_SERVER_KEY = 'claude';
 
 const pluginRoot =
   typeof __PLUGIN_ROOT__ === 'string'
@@ -39,7 +36,6 @@ export function readClaudePersistedContinuity(
 
   const bootstrapSignature = readBootstrapSignature(persistedContinuity.bootstrapSignature);
   return {
-    serverKey: readString(persistedContinuity.serverKey),
     brokerSessionKey: readString(persistedContinuity.brokerSessionKey),
     bootstrapSignature,
     envHash: readString(persistedContinuity.envHash),
@@ -53,12 +49,11 @@ export function hasClaudePersistentContinuity(
 ): boolean {
   const continuity = readClaudePersistedContinuity(persistedContinuity);
   return Boolean(
-    continuity.serverKey ??
-      continuity.brokerSessionKey ??
-      continuity.bootstrapSignature ??
-      continuity.envHash ??
-      continuity.conversationRef ??
-      continuity.brokerTurnId,
+    continuity.brokerSessionKey ??
+    continuity.bootstrapSignature ??
+    continuity.envHash ??
+    continuity.conversationRef ??
+    continuity.brokerTurnId,
   );
 }
 
@@ -80,7 +75,6 @@ export function buildClaudeProviderServerSpec(
 ): ProviderServerSpec {
   return {
     provider: 'claude',
-    key: CLAUDE_PROVIDER_SERVER_KEY,
     command: process.execPath,
     args: [resolveClaudeBrokerEntrypoint()],
     cwd: process.cwd(),
@@ -149,7 +143,6 @@ export function findClaudeBootstrapDrift(
 }
 
 export function buildClaudeContinuity(update: {
-  serverKey: string;
   brokerSessionKey?: string;
   bootstrapSignature: ClaudeBootstrapSignature;
   envHash?: string;
@@ -157,7 +150,6 @@ export function buildClaudeContinuity(update: {
   brokerTurnId?: string;
 }): ClaudePersistedContinuity {
   return {
-    serverKey: update.serverKey,
     ...(update.brokerSessionKey ? { brokerSessionKey: update.brokerSessionKey } : {}),
     bootstrapSignature: update.bootstrapSignature,
     ...(update.envHash ? { envHash: update.envHash } : {}),
@@ -169,7 +161,6 @@ export function buildClaudeContinuity(update: {
 export function withClaudeContinuity(
   persistedContinuity: ProviderContinuityBlob | undefined,
   update: {
-    serverKey?: string;
     brokerSessionKey?: string;
     bootstrapSignature?: ClaudeBootstrapSignature;
     envHash?: string;
@@ -179,7 +170,6 @@ export function withClaudeContinuity(
 ): ClaudePersistedContinuity {
   const continuity = readClaudePersistedContinuity(persistedContinuity);
   return {
-    ...(continuity.serverKey || update.serverKey ? { serverKey: update.serverKey ?? continuity.serverKey } : {}),
     ...(continuity.brokerSessionKey || update.brokerSessionKey
       ? { brokerSessionKey: update.brokerSessionKey ?? continuity.brokerSessionKey }
       : {}),

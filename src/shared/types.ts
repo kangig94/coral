@@ -215,7 +215,7 @@ export interface AppServerRuntimeRecord {
   transport: 'app-server';
   startTime: string;
   providerMeta: {
-    serverKey: string;
+    provider: string;
     leaseState: 'waiting' | 'acquired';
     serverGeneration?: number;
     providerContinuity?: ProviderContinuityBlob;

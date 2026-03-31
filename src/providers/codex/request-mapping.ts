@@ -33,7 +33,6 @@ export function buildCodexProviderServerSpec(
 ): ProviderServerSpec {
   return {
     provider: 'codex',
-    key: 'codex',
     command: 'codex',
     args: ['app-server'],
     cwd: projectRoot,

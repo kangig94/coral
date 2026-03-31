@@ -1746,10 +1746,10 @@ describe('execution backend server', () => {
         transport: 'app-server',
         startTime: '2026-03-31T00:00:00.000Z',
         providerMeta: {
-          serverKey: `codex:${pluginRoot}`,
+          provider: 'codex',
           leaseState: 'acquired',
           providerContinuity: {
-            serverKey: `codex:${pluginRoot}`,
+            provider: 'codex',
             threadId: 'thread-1',
           },
           recoveryPolicy: 'session_continuity_only',
@@ -2110,10 +2110,10 @@ describe('execution backend server', () => {
         transport: 'app-server',
         startTime: '2026-03-31T00:00:00.000Z',
         providerMeta: {
-          serverKey: `codex:${pluginRoot}`,
+          provider: 'codex',
           leaseState: 'acquired',
           providerContinuity: {
-            serverKey: `codex:${pluginRoot}`,
+            provider: 'codex',
             threadId: 'thread-1',
           },
           recoveryPolicy: 'session_continuity_only',

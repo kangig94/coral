@@ -24,7 +24,6 @@ import {
   buildClaudeEnvHash,
   buildClaudeContinuity,
   buildClaudeProviderServerSpec,
-  CLAUDE_PROVIDER_SERVER_KEY,
   findClaudeBootstrapDrift,
   hasClaudePersistentContinuity,
   mapInterruptParams,
@@ -241,7 +240,6 @@ async function executePersistent(
     }
 
     const providerContinuity = buildClaudeContinuity({
-      serverKey: CLAUDE_PROVIDER_SERVER_KEY,
       ...(brokerSessionKey ? { brokerSessionKey } : {}),
       bootstrapSignature,
       envHash,
@@ -252,7 +250,6 @@ async function executePersistent(
     checkpointRecovery({
       ...(conversationRef ? { conversationRef } : {}),
       providerMeta: {
-        serverKey: CLAUDE_PROVIDER_SERVER_KEY,
         ...(brokerSessionKey ? { brokerSessionKey } : {}),
         bootstrapSignature,
         envHash,
@@ -515,7 +512,6 @@ const claudeAppServer: ProviderAppServerContract = {
     return {
       resumable: result.status === 'available',
       updatedContinuity: withClaudeContinuity(continuity, {
-        serverKey: CLAUDE_PROVIDER_SERVER_KEY,
         brokerSessionKey: result.brokerSessionKey ?? persistedContinuity.brokerSessionKey,
         bootstrapSignature: result.bootstrapSignature ?? persistedContinuity.bootstrapSignature,
         envHash: persistedContinuity.envHash,
@@ -528,7 +524,6 @@ const claudeAppServer: ProviderAppServerContract = {
     const continuityMutation =
       persistedContinuity.bootstrapSignature
         ? buildClaudeContinuity({
-            serverKey: CLAUDE_PROVIDER_SERVER_KEY,
             ...(persistedContinuity.brokerSessionKey ? { brokerSessionKey: persistedContinuity.brokerSessionKey } : {}),
             bootstrapSignature: persistedContinuity.bootstrapSignature,
             ...(persistedContinuity.envHash ? { envHash: persistedContinuity.envHash } : {}),
