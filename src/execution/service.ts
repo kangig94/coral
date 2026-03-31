@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { pluginRootNamespace } from '../infra/paths.js';
 import {
+  isAppServerRuntime,
   isDurableCliRuntime,
   isTerminalPhase,
+  type AppServerRuntimeRecord,
   type JobKind,
   type JobPhase,
   type LaunchDecision,
@@ -23,7 +25,7 @@ import type { ProviderCliRunner } from '../providers/runner-port.js';
 import { getNewProvider } from '../providers/registry.js';
 import { errorMessage } from '../shared/mcp-utils.js';
 import type { EffortLevel } from '../shared/schemas.js';
-import type { Provider, ProviderRuntime } from '../providers/types.js';
+import type { Provider, ProviderRecoveryMeta, ProviderRuntime, ProviderServerLease, ProviderServerSpec } from '../providers/types.js';
 import {
   executePipeline,
   resumePipeline,
@@ -38,12 +40,15 @@ import {
   cancelQueued,
   CliBusyError,
   getActiveJobIds,
+  getProviderServerGeneration,
   queuePosition,
   requestLaunch,
   releaseLaunch,
   restoreActiveLaunch,
   restoreQueuedLaunch,
+  spawnProviderServer,
   spawnDurableJob,
+  type ProviderServerHandle,
   type AdmissionResult,
   type LaunchPool,
   type QueuedHandle,
@@ -53,6 +58,7 @@ import { buildCoralInstruction } from './instruction.js';
 import { ProgressStore, createReplayCursor, jobResultPath } from './progress-store.js';
 import { SessionManager } from './session-manager.js';
 import type { SessionEntry } from './session-manager.js';
+import { buildCodexProviderServerSpec } from '../providers/codex/request-mapping.js';
 
 import type { CallerContext } from './request-context.js';
 export type { CallerContext } from './request-context.js';
@@ -122,6 +128,25 @@ const defaultPluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ 
 
 type AcceptedAdmission = Exclude<AdmissionResult, 'queue_full'>;
 
+type ProviderServerWaiter = {
+  resolve: () => void;
+  reject: (error: Error) => void;
+  cleanup: () => void;
+};
+
+type ProviderServerRegistryEntry = {
+  key: string;
+  spec: ProviderServerSpec;
+  handle: ProviderServerHandle | null;
+  spawnPromise: Promise<ProviderServerHandle> | null;
+  leaseHeld: boolean;
+  waiters: ProviderServerWaiter[];
+};
+
+type ProbeConversationRefResult = 'available' | 'missing' | 'unavailable';
+
+const APP_SERVER_RECOVERY_POLICY = 'session_continuity_only' as const;
+
 function bindProviderRunner(
   provider: string,
   signal: AbortSignal,
@@ -168,6 +193,27 @@ function resolveBackendNamespace(pluginRoot: string): string {
   } catch {
     return pluginRootNamespace(defaultPluginRoot);
   }
+}
+
+function createAbortError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
+}
+
+function createProviderServerRegistryKey(provider: string, projectRoot: string): string {
+  return `${provider}:${projectRoot}`;
+}
+
+function isMissingConversationError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return (
+    message.includes('not found') ||
+    message.includes('missing thread') ||
+    message.includes('unknown thread') ||
+    message.includes('does not exist') ||
+    message.includes('no such thread')
+  );
 }
 
 export function serializeWorkflowResult(details: StepDetail[]): {
@@ -225,14 +271,107 @@ export class ExecutionService {
   private readonly backendNamespace: string;
   private readonly bundleHash: string;
   private readonly progressStore: ProgressStore;
+  private readonly projectRoot: string;
   private readonly jobPools = new Map<string, LaunchPool>();
+  private readonly providerServers = new Map<string, ProviderServerRegistryEntry>();
 
   constructor(ctx: CallerContext, progressStore?: ProgressStore, bundleHash?: string) {
+    this.projectRoot = ctx.projectRoot;
     this.sessionManager = new SessionManager(ctx.projectRoot);
     this.abortRegistry = new AbortRegistry();
     this.backendNamespace = resolveBackendNamespace(ctx.pluginRoot);
     this.bundleHash = bundleHash ?? 'unknown';
     this.progressStore = progressStore ?? new ProgressStore();
+  }
+
+  async acquireServer(
+    spec: ProviderServerSpec,
+    options?: { jobId?: string; signal?: AbortSignal },
+  ): Promise<ProviderServerLease> {
+    const entry = this.getOrCreateProviderServerEntry(spec);
+    if (options?.jobId) {
+      this.writeAppServerRuntimeRecord(options.jobId, entry.key, { leaseState: 'waiting' });
+    }
+
+    await this.waitForProviderServerLease(entry, options?.signal);
+
+    let released = false;
+    try {
+      const handle = await this.ensureProviderServerHandle(entry);
+      if (options?.jobId) {
+        this.writeAppServerRuntimeRecord(options.jobId, entry.key, {
+          leaseState: 'acquired',
+          serverGeneration: handle.generation,
+        });
+      }
+
+      return {
+        rpc: <R = unknown>(method: string, params: Record<string, unknown>) => handle.rpc.request<R>(method, params),
+        subscribe: (handler: (msg: { method: string; params?: Record<string, unknown> }) => void) =>
+          handle.onNotification(handler),
+        release: () => {
+          if (released) return;
+          released = true;
+          this.releaseProviderServerLease(entry);
+        },
+      };
+    } catch (error) {
+      if (!released) {
+        released = true;
+        this.releaseProviderServerLease(entry);
+      }
+      throw error;
+    }
+  }
+
+  checkpointRecovery(jobId: string, update: { conversationRef?: string; providerMeta: ProviderRecoveryMeta }): void {
+    const runtimeRecord = this.progressStore.readRuntimeRecord(jobId);
+    if (!isAppServerRuntime(runtimeRecord)) {
+      throw new Error(`checkpointRecovery(${jobId}) requires an app-server runtime record`);
+    }
+    const providerMetaUpdate = update.providerMeta as Partial<AppServerRuntimeRecord['providerMeta']>;
+
+    const nextRecord: AppServerRuntimeRecord = {
+      ...runtimeRecord,
+      providerMeta: {
+        ...runtimeRecord.providerMeta,
+        ...providerMetaUpdate,
+        recoveryPolicy: APP_SERVER_RECOVERY_POLICY,
+      },
+    };
+    this.progressStore.writeRuntimeRecord(jobId, nextRecord);
+
+    if (!update.conversationRef) {
+      return;
+    }
+
+    const status = this.progressStore.readStatus(jobId);
+    if (status) {
+      this.sessionManager.setConversationRef(status.sessionId, update.conversationRef);
+    }
+  }
+
+  async probeConversationRef(threadId: string): Promise<ProbeConversationRefResult> {
+    const lease = await this.acquireServer(buildCodexProviderServerSpec(this.projectRoot));
+    try {
+      await lease.rpc('thread/resume', {
+        threadId,
+        cwd: this.projectRoot,
+        model: null,
+        approvalPolicy: 'never',
+        sandbox: 'workspace-write',
+      });
+      return 'available';
+    } catch (error) {
+      return isMissingConversationError(error) ? 'missing' : 'unavailable';
+    } finally {
+      lease.release();
+    }
+  }
+
+  async drainProviderServers(): Promise<void> {
+    const entries = [...this.providerServers.values()];
+    await Promise.all(entries.map((entry) => this.closeProviderServerEntry(entry, 'drained')));
   }
 
   private async claimJobAtomic(
@@ -267,6 +406,160 @@ export class ExecutionService {
       this.progressStore.rollbackJob(jobId);
       throw error;
     }
+  }
+
+  private getOrCreateProviderServerEntry(spec: ProviderServerSpec): ProviderServerRegistryEntry {
+    const key = createProviderServerRegistryKey(spec.provider, this.projectRoot);
+    const existing = this.providerServers.get(key);
+    if (existing) return existing;
+
+    const created: ProviderServerRegistryEntry = {
+      key,
+      spec: { ...spec, key },
+      handle: null,
+      spawnPromise: null,
+      leaseHeld: false,
+      waiters: [],
+    };
+    this.providerServers.set(key, created);
+    return created;
+  }
+
+  private getLiveProviderServerHandle(entry: ProviderServerRegistryEntry): ProviderServerHandle | null {
+    const handle = entry.handle;
+    if (!handle) return null;
+    if (getProviderServerGeneration(handle.pid) !== handle.generation) {
+      entry.handle = null;
+      return null;
+    }
+    return handle;
+  }
+
+  private async ensureProviderServerHandle(entry: ProviderServerRegistryEntry): Promise<ProviderServerHandle> {
+    const existing = this.getLiveProviderServerHandle(entry);
+    if (existing) return existing;
+
+    if (entry.spawnPromise) {
+      return entry.spawnPromise;
+    }
+
+    entry.spawnPromise = spawnProviderServer({
+      provider: entry.spec.provider,
+      command: entry.spec.command,
+      args: entry.spec.args,
+      cwd: entry.spec.cwd,
+      extraEnv: entry.spec.env,
+    });
+
+    try {
+      const handle = await entry.spawnPromise;
+      entry.handle = handle;
+      return handle;
+    } finally {
+      entry.spawnPromise = null;
+    }
+  }
+
+  private async waitForProviderServerLease(entry: ProviderServerRegistryEntry, signal?: AbortSignal): Promise<void> {
+    if (!entry.leaseHeld) {
+      entry.leaseHeld = true;
+      return;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const waiter: ProviderServerWaiter = {
+        resolve: () => {
+          if (settled) return;
+          settled = true;
+          waiter.cleanup();
+          resolve();
+        },
+        reject: (error: Error) => {
+          if (settled) return;
+          settled = true;
+          waiter.cleanup();
+          reject(error);
+        },
+        cleanup: () => {
+          signal?.removeEventListener('abort', onAbort);
+          const index = entry.waiters.indexOf(waiter);
+          if (index !== -1) {
+            entry.waiters.splice(index, 1);
+          }
+        },
+      };
+
+      const onAbort = () => {
+        waiter.reject(createAbortError('Aborted while waiting for a provider server lease'));
+      };
+
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+
+      signal?.addEventListener('abort', onAbort, { once: true });
+      entry.waiters.push(waiter);
+    });
+  }
+
+  private releaseProviderServerLease(entry: ProviderServerRegistryEntry): void {
+    const next = entry.waiters.shift();
+    if (next) {
+      next.resolve();
+      return;
+    }
+    entry.leaseHeld = false;
+  }
+
+  private async closeProviderServerEntry(entry: ProviderServerRegistryEntry, detail: string): Promise<void> {
+    this.providerServers.delete(entry.key);
+    const error = new Error(`Provider server ${entry.key} ${detail}`);
+    const waiters = entry.waiters.splice(0, entry.waiters.length);
+    for (const waiter of waiters) {
+      waiter.reject(error);
+    }
+    entry.leaseHeld = false;
+
+    const handle = this.getLiveProviderServerHandle(entry);
+    entry.handle = null;
+    if (handle) {
+      await handle.close().catch(() => {});
+      return;
+    }
+
+    const pendingSpawn = entry.spawnPromise;
+    if (!pendingSpawn) {
+      return;
+    }
+
+    const spawnedHandle = await pendingSpawn.catch(() => null);
+    if (spawnedHandle) {
+      await spawnedHandle.close().catch(() => {});
+    }
+  }
+
+  private writeAppServerRuntimeRecord(
+    jobId: string,
+    serverKey: string,
+    update: Partial<AppServerRuntimeRecord['providerMeta']>,
+  ): void {
+    const current = this.progressStore.readRuntimeRecord(jobId);
+    const appRuntime = isAppServerRuntime(current) ? current : null;
+    const record: AppServerRuntimeRecord = {
+      transport: 'app-server',
+      startTime: appRuntime?.startTime ?? new Date().toISOString(),
+      providerMeta: {
+        serverKey,
+        leaseState: update.leaseState ?? appRuntime?.providerMeta.leaseState ?? 'waiting',
+        serverGeneration: update.serverGeneration ?? appRuntime?.providerMeta.serverGeneration,
+        threadId: update.threadId ?? appRuntime?.providerMeta.threadId,
+        turnId: update.turnId ?? appRuntime?.providerMeta.turnId,
+        recoveryPolicy: APP_SERVER_RECOVERY_POLICY,
+      },
+    };
+    this.progressStore.writeRuntimeRecord(jobId, record);
   }
 
   private async claimAndAdmitJob(
@@ -941,11 +1234,7 @@ export class ExecutionService {
         }
 
         bindLaunchPermit(jobId, signal, pool);
-        const runtime: ProviderRuntime = {
-          signal,
-          onEvent,
-          runCli: bindProviderRunner(provider.name, signal, pool, this.progressStore.jobDir(jobId)),
-        };
+        const runtime = this.createProviderRuntime(provider.name, jobId, signal, pool, onEvent);
         const result = await provider.execute(request, runtime);
 
         if (canAdvanceLaunchState(this.progressStore.readStatus(jobId))) {
@@ -1049,11 +1338,7 @@ export class ExecutionService {
           coralEnv: launchRecord.request.coralEnv,
         };
 
-        const runtime: ProviderRuntime = {
-          signal,
-          onEvent,
-          runCli: bindProviderRunner(provider.name, signal, pool, this.progressStore.jobDir(jobId)),
-        };
+        const runtime = this.createProviderRuntime(provider.name, jobId, signal, pool, onEvent);
         const result = await provider.execute(request, runtime);
 
         if (canAdvanceLaunchState(this.progressStore.readStatus(jobId))) {
@@ -1104,6 +1389,24 @@ export class ExecutionService {
   private markJobQueued(jobId: string, sessionId: string, queuePosition: number): void {
     this.progressStore.updateLaunchState(jobId, 'queued');
     this.progressStore.appendProgress(jobId, sessionId, `queued (position ${queuePosition})`);
+  }
+
+  private createProviderRuntime(
+    providerName: string,
+    jobId: string,
+    signal: AbortSignal,
+    pool: LaunchPool,
+    onEvent: (event: ProviderProgressEvent) => void,
+  ): ProviderRuntime {
+    return {
+      signal,
+      onEvent,
+      runCli: bindProviderRunner(providerName, signal, pool, this.progressStore.jobDir(jobId)),
+      acquireServer: (spec) => this.acquireServer(spec, { jobId, signal }),
+      checkpointRecovery: (update) => {
+        this.checkpointRecovery(jobId, update);
+      },
+    };
   }
 
   private markJobLaunching(jobId: string): void {

@@ -1,152 +1,493 @@
-/** Codex provider adapter for the execution service. */
-
-import { readFileSync } from 'node:fs';
-import { executeOneShot, executeResume, executeFork } from './codex-executor.js';
-import { parseCodexJsonl } from './output-parser.js';
-import { detectCodexCli, type CliInfo } from '../cli-detection.js';
-import { extractProgressMessage } from './progress.js';
-import { readAppendedLines } from '../../shared/file-tail.js';
+import { detectCodexCli } from '../cli-detection.js';
 import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
-import { mapProviderResultBase } from '../result-mapping.js';
+import type { ProviderRuntime, ProviderServerLease, Provider } from '../types.js';
+import { requireConversationRef } from '../types.js';
 import {
-  makeOnEvent,
-  requireConversationRef,
-  type Provider,
-  type ProviderRecoveryContract,
-  type ProviderRuntime,
-} from '../types.js';
-import type { EffortLevel } from '../../shared/schemas.js';
-import type { CodexThreadEvent } from './types.js';
+  buildCodexProviderServerSpec,
+  mapThreadResumeParams,
+  mapThreadStartParams,
+  mapTurnStartParams,
+  resolveCodexModel,
+} from './request-mapping.js';
+import type {
+  AppServerMethod,
+  AppServerNotification,
+  AppServerRequestParams,
+  AppServerResponse,
+  Turn,
+} from './protocol.js';
 
-/** Raw result type returned by Codex executors. */
-type CodexRawResult = Awaited<ReturnType<typeof executeOneShot>>;
+type CaptureState = {
+  threadId: string;
+  threadIds: Set<string>;
+  threadTurnIds: Map<string, string>;
+  turnId: string | null;
+  bufferedNotifications: AppServerNotification[];
+  completion: Promise<CaptureState>;
+  resolveCompletion: (state: CaptureState) => void;
+  rejectCompletion: (error: unknown) => void;
+  finalTurn: Turn | null;
+  completed: boolean;
+  finalAnswerSeen: boolean;
+  pendingCollaborations: Set<string>;
+  activeSubagentTurns: Set<string>;
+  completionTimer: ReturnType<typeof setTimeout> | null;
+  lastAgentMessage: string;
+  error: { message?: string } | null;
+  runtime: ProviderRuntime;
+  sessionId: string;
+};
 
-/** Abstract model tiers from agent frontmatter — all map to the default Codex model. */
-const ABSTRACT_MODEL_TIERS = new Set(['opus', 'sonnet', 'haiku']);
-
-function resolveModel(model: string | undefined): string | undefined {
-  if (model !== undefined && ABSTRACT_MODEL_TIERS.has(model)) return undefined;
-  return model;
+function createProgressEvent(sessionId: string, message: string): { jobId: string; message: string; ts: string } {
+  return {
+    jobId: sessionId,
+    message,
+    ts: new Date().toISOString(),
+  };
 }
 
-let lastValidatedCli: (CliInfo & { available: true }) | undefined;
+function emitProgress(state: CaptureState, message: string | null | undefined): void {
+  if (!message) return;
+  state.runtime.onEvent(createProgressEvent(state.sessionId, message));
+}
+
+function stringifyValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value);
+  }
+  if (value === null || value === undefined) {
+    return '';
+  }
+  try {
+    return JSON.stringify(value) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function shorten(text: unknown, limit = 72): string {
+  const normalized = stringifyValue(text).trim().replace(/\s+/g, ' ');
+  if (!normalized) return '';
+  if (normalized.length <= limit) return normalized;
+  return `${normalized.slice(0, limit - 3)}...`;
+}
+
+function extractThreadId(message: AppServerNotification): string | null {
+  return (message as { params?: { threadId?: string } }).params?.threadId ?? null;
+}
+
+function extractTurnId(message: AppServerNotification): string | null {
+  const params = (message as { params?: { turnId?: string; turn?: { id?: string } } }).params;
+  if (params?.turnId) return params.turnId;
+  if (params?.turn?.id) return params.turn.id;
+  return null;
+}
+
+function registerThread(state: CaptureState, threadId: string | null): void {
+  if (!threadId) return;
+  state.threadIds.add(threadId);
+}
+
+function createCaptureState(threadId: string, runtime: ProviderRuntime, sessionId: string): CaptureState {
+  let resolveCompletion!: (state: CaptureState) => void;
+  let rejectCompletion!: (error: unknown) => void;
+  const completion = new Promise<CaptureState>((resolve, reject) => {
+    resolveCompletion = resolve;
+    rejectCompletion = reject;
+  });
+
+  return {
+    threadId,
+    threadIds: new Set([threadId]),
+    threadTurnIds: new Map(),
+    turnId: null,
+    bufferedNotifications: [],
+    completion,
+    resolveCompletion,
+    rejectCompletion,
+    finalTurn: null,
+    completed: false,
+    finalAnswerSeen: false,
+    pendingCollaborations: new Set(),
+    activeSubagentTurns: new Set(),
+    completionTimer: null,
+    lastAgentMessage: '',
+    error: null,
+    runtime,
+    sessionId,
+  };
+}
+
+function clearCompletionTimer(state: CaptureState): void {
+  if (!state.completionTimer) return;
+  clearTimeout(state.completionTimer);
+  state.completionTimer = null;
+}
+
+function completeTurn(state: CaptureState, turn: Turn | null = null): void {
+  if (state.completed) return;
+  clearCompletionTimer(state);
+  state.completed = true;
+  if (turn) {
+    state.finalTurn = turn;
+    state.turnId ??= turn.id;
+  } else {
+    state.finalTurn ??= {
+      id: state.turnId ?? 'inferred-turn',
+      status: 'completed',
+    };
+  }
+  state.resolveCompletion(state);
+}
+
+function scheduleInferredCompletion(state: CaptureState): void {
+  if (state.completed || state.finalTurn || !state.finalAnswerSeen) return;
+  if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0) return;
+
+  clearCompletionTimer(state);
+  state.completionTimer = setTimeout(() => {
+    state.completionTimer = null;
+    if (state.completed || state.finalTurn || !state.finalAnswerSeen) return;
+    if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0) return;
+    completeTurn(state);
+  }, 250);
+  state.completionTimer.unref?.();
+}
+
+function belongsToTurn(state: CaptureState, message: AppServerNotification): boolean {
+  const messageThreadId = extractThreadId(message);
+  if (!messageThreadId || !state.threadIds.has(messageThreadId)) {
+    return false;
+  }
+  const trackedTurnId = state.threadTurnIds.get(messageThreadId) ?? null;
+  const messageTurnId = extractTurnId(message);
+  return trackedTurnId === null || messageTurnId === null || trackedTurnId === messageTurnId;
+}
+
+function describeStartedItem(item: Record<string, unknown>): string | null {
+  switch (item.type) {
+    case 'commandExecution':
+      return `Running command: ${shorten(item.command, 96)}`;
+    case 'fileChange':
+      return `Applying ${Array.isArray(item.changes) ? item.changes.length : 0} file change(s).`;
+    case 'mcpToolCall':
+      return `Calling ${item.server}/${item.tool}.`;
+    case 'dynamicToolCall':
+      return `Running tool: ${item.tool}.`;
+    case 'webSearch':
+      return `Searching: ${shorten(item.query, 96)}`;
+    default:
+      return null;
+  }
+}
+
+function describeCompletedItem(item: Record<string, unknown>): string | null {
+  switch (item.type) {
+    case 'commandExecution': {
+      const exitCode = item.exitCode ?? '?';
+      const status = item.status === 'completed' ? 'completed' : item.status;
+      return `Command ${stringifyValue(status)}: ${shorten(item.command, 96)} (exit ${stringifyValue(exitCode)})`;
+    }
+    case 'fileChange':
+      return `File changes ${item.status}.`;
+    case 'mcpToolCall':
+      return `Tool ${item.server}/${item.tool} ${item.status}.`;
+    case 'dynamicToolCall':
+      return `Tool ${item.tool} ${item.status}.`;
+    default:
+      return null;
+  }
+}
+
+function recordItem(
+  state: CaptureState,
+  item: Record<string, unknown>,
+  lifecycle: 'started' | 'completed',
+  threadId: string | null,
+): void {
+  if (item.type === 'collabAgentToolCall') {
+    const itemId = typeof item.id === 'string' ? item.id : null;
+    if (threadId === state.threadId && itemId) {
+      if (lifecycle === 'started' || item.status === 'inProgress') {
+        state.pendingCollaborations.add(itemId);
+      } else if (lifecycle === 'completed') {
+        state.pendingCollaborations.delete(itemId);
+        scheduleInferredCompletion(state);
+      }
+    }
+    if (Array.isArray(item.receiverThreadIds)) {
+      for (const receiverThreadId of item.receiverThreadIds) {
+        if (typeof receiverThreadId === 'string') {
+          registerThread(state, receiverThreadId);
+        }
+      }
+    }
+    return;
+  }
+
+  if (item.type === 'agentMessage') {
+    if (threadId === null || threadId === state.threadId) {
+      if (typeof item.text === 'string') {
+        state.lastAgentMessage = item.text;
+      }
+      if (lifecycle === 'completed' && item.phase === 'final_answer') {
+        state.finalAnswerSeen = true;
+        scheduleInferredCompletion(state);
+      }
+    }
+  }
+}
+
+function applyNotification(state: CaptureState, message: AppServerNotification): void {
+  const notification = message as { method: string; params?: Record<string, unknown> };
+
+  switch (notification.method) {
+    case 'thread/started': {
+      const thread = notification.params?.thread as { id?: string } | undefined;
+      registerThread(state, thread?.id ?? null);
+      return;
+    }
+    case 'thread/name/updated':
+      registerThread(state, extractThreadId(message));
+      return;
+    case 'turn/started': {
+      const threadId = extractThreadId(message);
+      const turnId = extractTurnId(message);
+      registerThread(state, threadId);
+      if (threadId && turnId) {
+        state.threadTurnIds.set(threadId, turnId);
+      }
+      if (threadId && threadId !== state.threadId) {
+        state.activeSubagentTurns.add(threadId);
+      }
+      emitProgress(state, `Turn started (${turnId ?? 'unknown'}).`);
+      return;
+    }
+    case 'item/started': {
+      const params = notification.params as { item?: Record<string, unknown>; threadId?: string } | undefined;
+      if (!params?.item) return;
+      recordItem(state, params.item, 'started', params.threadId ?? null);
+      const messageText = describeStartedItem(params.item);
+      if (messageText) {
+        emitProgress(state, messageText);
+      }
+      return;
+    }
+    case 'item/completed': {
+      const params = notification.params as { item?: Record<string, unknown>; threadId?: string } | undefined;
+      if (!params?.item) return;
+      recordItem(state, params.item, 'completed', params.threadId ?? null);
+      const messageText = describeCompletedItem(params.item);
+      if (messageText) {
+        emitProgress(state, messageText);
+      }
+      return;
+    }
+    case 'error': {
+      const params = notification.params as { error?: { message?: string } } | undefined;
+      state.error = params?.error ?? { message: 'Codex app-server turn failed.' };
+      emitProgress(state, `Codex error: ${state.error.message ?? 'unknown error'}`);
+      return;
+    }
+    case 'turn/completed': {
+      const threadId = extractThreadId(message);
+      const turn = (notification.params as { turn?: Turn } | undefined)?.turn ?? null;
+      if (threadId && threadId !== state.threadId) {
+        state.activeSubagentTurns.delete(threadId);
+        scheduleInferredCompletion(state);
+        return;
+      }
+      emitProgress(state, `Turn ${turn?.status === 'completed' ? 'completed' : (turn?.status ?? 'finished')}.`);
+      completeTurn(state, turn);
+      return;
+    }
+    default:
+      return;
+  }
+}
+
+function isMissingConversationError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return (
+    message.includes('not found') ||
+    message.includes('missing thread') ||
+    message.includes('unknown thread') ||
+    message.includes('does not exist') ||
+    message.includes('no such thread')
+  );
+}
+
+function isSuccessfulTurn(status: string | undefined): boolean {
+  return status === undefined || status === 'completed';
+}
+
+function isAbortedTurn(status: string | undefined): boolean {
+  return status === 'aborted' || status === 'cancelled' || status === 'canceled' || status === 'interrupted';
+}
+
+function requireAppServerRuntime(runtime: ProviderRuntime): {
+  acquireServer: NonNullable<ProviderRuntime['acquireServer']>;
+  checkpointRecovery: NonNullable<ProviderRuntime['checkpointRecovery']>;
+} {
+  if (!runtime.acquireServer) {
+    throw new Error('Codex provider requires ProviderRuntime.acquireServer()');
+  }
+  if (!runtime.checkpointRecovery) {
+    throw new Error('Codex provider requires ProviderRuntime.checkpointRecovery()');
+  }
+  return {
+    acquireServer: runtime.acquireServer,
+    checkpointRecovery: runtime.checkpointRecovery,
+  };
+}
+
+async function rpc<M extends AppServerMethod>(
+  lease: ProviderServerLease,
+  method: M,
+  params: AppServerRequestParams<M>,
+): Promise<AppServerResponse<M>> {
+  return lease.rpc<AppServerResponse<M>>(method, params as Record<string, unknown>);
+}
+
+async function captureTurn(
+  lease: ProviderServerLease,
+  threadId: string,
+  request: ProviderRequest,
+  runtime: ProviderRuntime,
+): Promise<CaptureState> {
+  const state = createCaptureState(threadId, runtime, request.sessionId);
+  const unsubscribe = lease.subscribe((message) => {
+    if (!state.turnId) {
+      state.bufferedNotifications.push(message);
+      return;
+    }
+
+    if (message.method === 'thread/started' || message.method === 'thread/name/updated') {
+      applyNotification(state, message);
+      return;
+    }
+
+    if (!belongsToTurn(state, message)) {
+      return;
+    }
+
+    applyNotification(state, message);
+  });
+
+  try {
+    const response = await rpc(lease, 'turn/start', mapTurnStartParams(request, threadId));
+    state.turnId = response.turn?.id ?? null;
+    if (state.turnId) {
+      state.threadTurnIds.set(threadId, state.turnId);
+    }
+
+    for (const buffered of state.bufferedNotifications) {
+      if (belongsToTurn(state, buffered)) {
+        applyNotification(state, buffered);
+      }
+    }
+    state.bufferedNotifications.length = 0;
+
+    if (response.turn?.status && response.turn.status !== 'inProgress') {
+      completeTurn(state, response.turn);
+    }
+
+    return await state.completion;
+  } finally {
+    clearCompletionTimer(state);
+    unsubscribe();
+  }
+}
 
 async function preflight(): Promise<void> {
   const cli = await detectCodexCli();
-  if (!cli.available) throw new Error(`Codex CLI not available: ${cli.error}`);
-  if (cli.authState === 'unauthenticated') throw new Error(`Codex CLI unauthenticated: ${cli.authError}`);
-  lastValidatedCli = cli;
-}
-
-function toProviderResult(result: CodexRawResult, fallbackConversationRef?: string): ProviderResult {
-  return {
-    ...mapProviderResultBase(result),
-    conversationRef: result.sessionId ?? fallbackConversationRef,
-    nonResumable: result.sessionId === null || result.sessionId === undefined ? true : undefined,
-    exitCode: result.exitCode,
-    errors: result.errors.length > 0 ? result.errors : undefined,
-    warnings: result.warnings.length > 0 ? result.warnings : undefined,
-  };
-}
-
-const codexRecovery: ProviderRecoveryContract = {
-  async finalizeFromArtifacts({ stdoutPath, exitCode, signal, fallbackConversationRef }) {
-    const stdout = readFileSync(stdoutPath, 'utf-8');
-    const parsed = parseCodexJsonl(stdout);
-    const aborted = signal !== null;
-    if (parsed.response || parsed.errors.length > 0 || parsed.sessionId) {
-      return toProviderResult(
-        {
-          response: parsed.response,
-          sessionId: parsed.sessionId,
-          model: '',
-          durationMs: 0,
-          exitCode,
-          errors: parsed.errors,
-          warnings: parsed.warnings,
-          aborted,
-        },
-        fallbackConversationRef,
-      );
-    }
-    // Fallback: raw content when JSONL parsing yields nothing useful
-    return {
-      content: stdout,
-      exitCode,
-      aborted,
-      notice: signal ? `killed by ${signal}` : undefined,
-    };
-  },
-  extractProgress({ stdoutPath, fromOffset }) {
-    const { lines, newOffset } = readAppendedLines(stdoutPath, fromOffset);
-    const messages = lines.flatMap((line) => {
-      try {
-        const event = JSON.parse(line) as CodexThreadEvent;
-        const message = extractProgressMessage(event);
-        return message ? [message] : [];
-      } catch {
-        return [];
-      }
-    });
-    return { messages, newOffset };
-  },
-};
-
-/**
- * Build the final prompt for Codex by prepending any instruction/systemPrompt.
- * Both channels map to prompt prepend (Codex has no system prompt flag).
- * For exec, executeOneShot will additionally wrap the result with INJECT.md.
- */
-function buildPrompt(request: ProviderRequest): string {
-  const parts: string[] = [];
-  // Skip instruction on resume: Codex prepends to prompt (persisted in history),
-  // unlike Claude which uses --append-system-prompt (re-injected each call).
-  if (request.instruction && request.action !== 'resume') parts.push(request.instruction.content);
-  if (request.systemPrompt) parts.push(request.systemPrompt);
-  parts.push(request.prompt);
-  return parts.join('\n\n---\n\n');
+  if (!cli.available) {
+    throw new Error(`Codex CLI not available: ${cli.error}`);
+  }
+  if (cli.authState === 'unauthenticated') {
+    throw new Error(`Codex CLI unauthenticated: ${cli.authError}`);
+  }
 }
 
 async function execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult> {
-  const prompt = buildPrompt(request);
-  const effort = request.effort as EffortLevel | undefined;
-  const options = {
-    model: resolveModel(request.model),
-    workingDirectory: request.cwd,
-    effort,
-    bypassSandbox: request.bypassPermissions,
-    onEvent: makeOnEvent(runtime, request.sessionId, extractProgressMessage, request.cwd),
-    runCli: runtime.runCli,
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- always set by preflight() before execute()
-    preChecked: lastValidatedCli!,
-    environment: request.coralEnv,
-  };
-
-  switch (request.action) {
-    case 'exec': {
-      // executeOneShot internally prepends INJECT.md to the prompt
-      const result = await executeOneShot(prompt, options);
-      return toProviderResult(result);
-    }
-    case 'resume': {
-      const conversationRef = requireConversationRef(request, 'resume');
-      const result = await executeResume(conversationRef, prompt, options);
-      return toProviderResult(result, conversationRef);
-    }
-    case 'fork': {
-      const conversationRef = requireConversationRef(request, 'fork');
-      const result = await executeFork(conversationRef, prompt, options);
-      return toProviderResult(result);
-    }
+  if (request.action === 'fork') {
+    throw new Error('Codex app-server does not support fork');
   }
 
-  const exhaustive: never = request.action;
-  throw new Error(`Unsupported action: ${exhaustive}`);
+  const { acquireServer, checkpointRecovery } = requireAppServerRuntime(runtime);
+  const startedAt = Date.now();
+  const lease = await acquireServer(buildCodexProviderServerSpec(request.cwd ?? process.cwd(), request.coralEnv));
+
+  try {
+    let threadId: string;
+
+    if (request.action === 'resume') {
+      const conversationRef = requireConversationRef(request, 'resume');
+      try {
+        const response = await rpc(lease, 'thread/resume', mapThreadResumeParams(request, conversationRef));
+        threadId = response.thread.id;
+      } catch (error) {
+        if (isMissingConversationError(error)) {
+          return {
+            content: '',
+            durationMs: Date.now() - startedAt,
+            nonResumable: true,
+            notice: `Conversation ${conversationRef} is no longer resumable.`,
+            errors: [error instanceof Error ? error.message : String(error)],
+          };
+        }
+        throw error;
+      }
+    } else {
+      const response = await rpc(lease, 'thread/start', mapThreadStartParams(request));
+      threadId = response.thread.id;
+    }
+
+    checkpointRecovery({
+      conversationRef: threadId,
+      providerMeta: {
+        threadId,
+      },
+    });
+    runtime.onEvent(createProgressEvent(request.sessionId, `Thread ready (${threadId}).`));
+
+    const turnState = await captureTurn(lease, threadId, request, runtime);
+    if (turnState.turnId) {
+      checkpointRecovery({
+        conversationRef: threadId,
+        providerMeta: {
+          threadId,
+          turnId: turnState.turnId,
+        },
+      });
+    }
+
+    const turnStatus = turnState.finalTurn?.status;
+    const turnFailed = !isSuccessfulTurn(turnStatus);
+    const turnAborted = isAbortedTurn(turnStatus);
+
+    if (turnFailed && !turnAborted && !turnState.lastAgentMessage.trim() && turnState.error?.message) {
+      throw new Error(turnState.error.message);
+    }
+
+    return {
+      content: turnState.lastAgentMessage,
+      conversationRef: threadId,
+      model: resolveCodexModel(request.model),
+      durationMs: Date.now() - startedAt,
+      aborted: turnAborted || undefined,
+      exitCode: turnFailed ? 1 : 0,
+      notice: turnFailed && turnState.error?.message ? turnState.error.message : undefined,
+      errors: turnState.error?.message ? [turnState.error.message] : undefined,
+    };
+  } finally {
+    lease.release();
+  }
 }
 
 export const codexProvider: Provider = {
   name: 'codex',
   execute,
   preflight,
-  recovery: codexRecovery,
 };

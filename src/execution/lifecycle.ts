@@ -13,7 +13,7 @@ import { readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { formatError, isNoEntryError, isRecord } from '../shared/mcp-utils.js';
 import { kbRoot } from '../infra/paths.js';
-import { activeChildren, spawnCli } from './engine.js';
+import { activeChildren as activeCliChildren, spawnCli } from './engine.js';
 import { readBackendInfo, type writeBackendInfo, type removeBackendInfoIfOwner } from '../infra/backend-info.js';
 import { RecoveryRegistry } from './recovery-registry.js';
 import { eventBus, type EventBusEvents } from './event-bus.js';
@@ -401,6 +401,7 @@ export type LifecycleDeps = {
 
   // Service factories (shared with HTTP handler / tool router)
   readonly getExecutionService: (ctx: CallerContext) => ExecutionServiceLike;
+  readonly listExecutionServices: () => ExecutionServiceLike[];
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly knownDiscussSources: () => Set<string>;
   readonly getDiscussContext: (ctx: CallerContext) => DiscussContext;
@@ -458,6 +459,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     discussRegistry,
     server,
     getExecutionService,
+    listExecutionServices: _listExecutionServices,
     getDiscussStoreForSource,
     knownDiscussSources,
     getDiscussContext,
@@ -995,7 +997,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       idleTimer.startWatching(
         () =>
           runtimeState.getLifecycle() === 'running' &&
-          activeChildren.size === 0 &&
+          activeCliChildren.size === 0 &&
           adoptedRunningPids.size === 0 &&
           progressStore.liveJobCountByNamespace(namespace) === 0 &&
           idleTimer.inflightRequests === 0 &&

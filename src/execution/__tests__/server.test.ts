@@ -120,6 +120,16 @@ function createFakeIdleTimer() {
   };
 }
 
+function createProviderServerScript(): string {
+  return [
+    "const interval = setInterval(() => {}, 1_000);",
+    "process.on('SIGTERM', () => {",
+    '  clearInterval(interval);',
+    '  process.exit(0);',
+    '});',
+  ].join('');
+}
+
 async function _closeHttpServer(server: HttpServer): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     if (!server.listening) {
@@ -581,6 +591,35 @@ describe('execution backend server', () => {
     expect(setSpy).not.toHaveBeenCalled();
     expect(discussRegistry.contexts.size).toBe(0);
     expect(fakeIdleTimer.startWatching).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats warm provider servers as idle in the backend idle predicate', async () => {
+    const fakeIdleTimer = createFakeIdleTimer();
+    const backend = await startBackendServer({
+      createIdleTimer: () => fakeIdleTimer as never,
+    });
+    expect(fakeIdleTimer.startWatching).toHaveBeenCalledTimes(1);
+
+    const [checkIdle] = fakeIdleTimer.startWatching.mock.calls[0] ?? [];
+    if (typeof checkIdle !== 'function') {
+      throw new Error('Expected idle watcher callback');
+    }
+
+    const engine = await import('../engine.js');
+    const handle = await engine.spawnProviderServer({
+      provider: 'codex',
+      command: process.execPath,
+      args: ['-e', createProviderServerScript()],
+    });
+
+    try {
+      expect(engine.activeChildren.size).toBe(0);
+      expect(checkIdle()).toBe(true);
+    } finally {
+      await handle.close();
+      await backend.controller.shutdown('test');
+      await backend.controller.waitForShutdown();
+    }
   });
 
   it('returns 404 for unknown /tool requests', async () => {
@@ -1890,6 +1929,7 @@ describe('execution backend server', () => {
         discussRegistry: createDiscussContextRegistry(),
         server: createServer(),
         getExecutionService: () => fakeService as never,
+        listExecutionServices: () => [fakeService as never],
         getDiscussStoreForSource: () => {
           throw new Error('Unexpected discuss store lookup');
         },
@@ -2023,6 +2063,7 @@ describe('execution backend server', () => {
         discussRegistry,
         server: createServer(),
         getExecutionService: () => fakeService as never,
+        listExecutionServices: () => [fakeService as never],
         getDiscussStoreForSource: (requestedSource: string) => {
           if (requestedSource !== source) {
             throw new Error(`Unexpected discuss source: ${requestedSource}`);

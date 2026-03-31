@@ -116,6 +116,12 @@ export type BackendServerController = {
 const defaultPluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
 const globalDiscussRegistry = createDiscussContextRegistry();
 
+export function listInstantiatedExecutionServices(
+  services: ReadonlyMap<string, ExecutionServiceLike>,
+): ExecutionServiceLike[] {
+  return [...services.values()];
+}
+
 export function createBackendServer(options: BackendServerOptions = {}): BackendServerController {
   const resolvedPluginRoot = options.pluginRoot ?? defaultPluginRoot;
   const namespace = pluginRootNamespace(resolvedPluginRoot);
@@ -201,6 +207,10 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     const created = createExecutionService(ctx);
     services.set(key, created);
     return created;
+  }
+
+  function listExecutionServices(): ExecutionServiceLike[] {
+    return listInstantiatedExecutionServices(services);
   }
 
   function getDiscussStoreForSource(source: string): DiscussSessionStore {
@@ -444,6 +454,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     discussRegistry,
     server,
     getExecutionService,
+    listExecutionServices,
     getDiscussStoreForSource,
     knownDiscussSources,
     getDiscussContext,
