@@ -204,10 +204,7 @@ function makeCodexAppServerProvider(): Provider {
         if (typeof threadId !== 'string') {
           return { resumable: false, updatedContinuity: continuity };
         }
-        const cwd =
-          typeof continuity.serverKey === 'string' && continuity.serverKey.startsWith('codex:')
-            ? continuity.serverKey.slice('codex:'.length)
-            : process.cwd();
+        const cwd = typeof continuity.cwd === 'string' ? continuity.cwd : process.cwd();
         try {
           await lease.rpc('thread/resume', {
             threadId,
@@ -426,7 +423,7 @@ describe('ExecutionService', () => {
     expect(firstRuntime).toMatchObject({
       transport: 'app-server',
       providerMeta: {
-        serverKey: `codex:${ctx.projectRoot}`,
+        serverKey: 'codex',
         leaseState: 'acquired',
         serverGeneration: 41,
         recoveryPolicy: 'session_continuity_only',
@@ -447,7 +444,7 @@ describe('ExecutionService', () => {
     expect(waitingRuntime).toMatchObject({
       transport: 'app-server',
       providerMeta: {
-        serverKey: `codex:${ctx.projectRoot}`,
+        serverKey: 'codex',
         leaseState: 'waiting',
         recoveryPolicy: 'session_continuity_only',
       },
@@ -465,7 +462,7 @@ describe('ExecutionService', () => {
     expect(acquiredRuntime).toMatchObject({
       transport: 'app-server',
       providerMeta: {
-        serverKey: `codex:${ctx.projectRoot}`,
+        serverKey: 'codex',
         leaseState: 'acquired',
         serverGeneration: 41,
         recoveryPolicy: 'session_continuity_only',
@@ -507,11 +504,11 @@ describe('ExecutionService', () => {
       transport: 'app-server',
       startTime: new Date().toISOString(),
       providerMeta: {
-        serverKey: `codex:${ctx.projectRoot}`,
+        serverKey: 'codex',
         leaseState: 'acquired',
         serverGeneration: 7,
         providerContinuity: {
-          serverKey: `codex:${ctx.projectRoot}`,
+          serverKey: 'codex',
           threadId: 'thread-1',
           turnId: 'turn-1',
         },
@@ -586,7 +583,7 @@ describe('ExecutionService', () => {
     expect(waitingRuntime).toMatchObject({
       transport: 'app-server',
       providerMeta: {
-        serverKey: `codex:${ctx.projectRoot}`,
+        serverKey: 'codex',
         leaseState: 'waiting',
       },
     });
@@ -1701,7 +1698,7 @@ describe('ExecutionService', () => {
         transport: 'app-server',
         startTime: new Date().toISOString(),
         providerMeta: {
-          serverKey: `codex:${ctx.projectRoot}`,
+          serverKey: 'codex',
           leaseState: 'acquired',
           recoveryPolicy: 'session_continuity_only',
           ...overrides,
@@ -1983,7 +1980,7 @@ describe('ExecutionService', () => {
         const session = sessionManager.allocate('codex', 'recover-waiting', 'gpt-5', ctx.projectRoot);
         sessionManager.checkpointProviderContinuity(session.sessionId, {
           providerContinuity: {
-            serverKey: `codex:${ctx.projectRoot}`,
+            serverKey: 'codex',
             threadId: 'thread-existing',
           },
           conversationRef: 'thread-existing',
@@ -2069,7 +2066,7 @@ describe('ExecutionService', () => {
           }),
           makeAppServerRuntimeRecord({
             providerContinuity: {
-              serverKey: `codex:${ctx.projectRoot}`,
+              serverKey: 'codex',
               threadId: 'thread-recovered',
             },
           }),
@@ -2103,7 +2100,7 @@ describe('ExecutionService', () => {
         const session = sessionManager.allocate('codex', 'recover-missing', 'gpt-5', ctx.projectRoot);
         sessionManager.checkpointProviderContinuity(session.sessionId, {
           providerContinuity: {
-            serverKey: `codex:${ctx.projectRoot}`,
+            serverKey: 'codex',
             threadId: 'thread-stale',
           },
           conversationRef: 'thread-stale',
@@ -2133,7 +2130,7 @@ describe('ExecutionService', () => {
           }),
           makeAppServerRuntimeRecord({
             providerContinuity: {
-              serverKey: `codex:${ctx.projectRoot}`,
+              serverKey: 'codex',
               threadId: 'thread-stale',
             },
           }),
@@ -2190,7 +2187,7 @@ describe('ExecutionService', () => {
           }),
           makeAppServerRuntimeRecord({
             providerContinuity: {
-              serverKey: `codex:${ctx.projectRoot}`,
+              serverKey: 'codex',
               threadId: 'thread-unverified',
             },
           }),

@@ -46,6 +46,7 @@ const CODEX_AUTH_ERROR_MESSAGE = 'Codex CLI is not authenticated. Run "codex log
 
 type CodexContinuity = {
   serverKey?: string;
+  cwd?: string;
   threadId?: string;
   turnId?: string;
 };
@@ -349,34 +350,33 @@ function readContinuityString(
 function toCodexContinuity(continuity: ProviderContinuityBlob | undefined): CodexContinuity {
   return {
     serverKey: readContinuityString(continuity, 'serverKey'),
+    cwd: readContinuityString(continuity, 'cwd'),
     threadId: readContinuityString(continuity, 'threadId'),
     turnId: readContinuityString(continuity, 'turnId'),
   };
 }
 
-function buildCodexContinuity(serverKey: string, threadId: string, turnId?: string | null): ProviderContinuityBlob {
+function buildCodexContinuity(serverKey: string, cwd: string, threadId: string, turnId?: string | null): ProviderContinuityBlob {
   return turnId
-    ? { serverKey, threadId, turnId }
-    : { serverKey, threadId };
+    ? { serverKey, cwd, threadId, turnId }
+    : { serverKey, cwd, threadId };
 }
 
 function continuityWithClearedTurnId(continuity: ProviderContinuityBlob | undefined): ProviderContinuityBlob | undefined {
-  const { serverKey, threadId } = toCodexContinuity(continuity);
+  const { serverKey, cwd, threadId } = toCodexContinuity(continuity);
   if (!serverKey && !threadId) {
     return undefined;
   }
   return {
     ...(serverKey ? { serverKey } : {}),
+    ...(cwd ? { cwd } : {}),
     ...(threadId ? { threadId } : {}),
   };
 }
 
 function resolveProbeCwd(continuity: ProviderContinuityBlob): string {
-  const { serverKey } = toCodexContinuity(continuity);
-  if (!serverKey || !serverKey.startsWith('codex:')) {
-    return process.cwd();
-  }
-  return serverKey.slice('codex:'.length) || process.cwd();
+  const { cwd } = toCodexContinuity(continuity);
+  return cwd || process.cwd();
 }
 
 function requireAppServerRuntime(runtime: ProviderRuntime): {
@@ -537,11 +537,8 @@ function hasCodexAuthTokens(value: unknown): boolean {
 
 const codexAppServer: ProviderAppServerContract = {
   buildServerSpec(persistedContinuity, request) {
-    const { serverKey } = toCodexContinuity(persistedContinuity);
-    if (serverKey && serverKey.startsWith('codex:')) {
-      return buildCodexProviderServerSpec(serverKey.slice('codex:'.length), request.coralEnv);
-    }
-    return buildCodexProviderServerSpec(request.cwd ?? process.cwd(), request.coralEnv);
+    const { cwd } = toCodexContinuity(persistedContinuity);
+    return buildCodexProviderServerSpec(cwd ?? request.cwd ?? process.cwd(), request.coralEnv);
   },
   async interrupt(lease, continuity) {
     const { threadId, turnId } = toCodexContinuity(continuity);
@@ -634,7 +631,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
     checkpointRecovery({
       conversationRef: threadId,
       providerMeta: {
-        providerContinuity: buildCodexContinuity(spec.key, threadId),
+        providerContinuity: buildCodexContinuity(spec.key, request.cwd ?? process.cwd(), threadId),
       },
     });
     runtime.onEvent(createProgressEvent(request.sessionId, `Thread ready (${threadId}).`));
@@ -655,7 +652,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
         checkpointRecovery({
           conversationRef: threadId,
           providerMeta: {
-            providerContinuity: buildCodexContinuity(spec.key, threadId, turnId),
+            providerContinuity: buildCodexContinuity(spec.key, request.cwd ?? process.cwd(), threadId, turnId),
           },
         });
       },
@@ -664,7 +661,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
       checkpointRecovery({
         conversationRef: threadId,
         providerMeta: {
-          providerContinuity: buildCodexContinuity(spec.key, threadId, turnState.turnId),
+          providerContinuity: buildCodexContinuity(spec.key, request.cwd ?? process.cwd(), threadId, turnState.turnId),
         },
       });
     }
@@ -676,7 +673,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
     checkpointRecovery({
       conversationRef: threadId,
       providerMeta: {
-        providerContinuity: buildCodexContinuity(spec.key, threadId),
+        providerContinuity: buildCodexContinuity(spec.key, request.cwd ?? process.cwd(), threadId),
       },
     });
 

@@ -169,7 +169,8 @@ describe('codex adapter app-server flow', () => {
       conversationRef: 'thread-1',
       providerMeta: {
         providerContinuity: {
-          serverKey: `codex:${process.cwd()}`,
+          serverKey: 'codex',
+          cwd: process.cwd(),
           threadId: 'thread-1',
         },
       },
@@ -178,7 +179,8 @@ describe('codex adapter app-server flow', () => {
       conversationRef: 'thread-1',
       providerMeta: {
         providerContinuity: {
-          serverKey: `codex:${process.cwd()}`,
+          serverKey: 'codex',
+          cwd: process.cwd(),
           threadId: 'thread-1',
           turnId: 'turn-1',
         },
@@ -215,7 +217,8 @@ describe('codex adapter app-server flow', () => {
       conversationRef: 'thread-1',
       providerMeta: {
         providerContinuity: {
-          serverKey: `codex:${process.cwd()}`,
+          serverKey: 'codex',
+          cwd: process.cwd(),
           threadId: 'thread-1',
         },
       },
@@ -253,7 +256,8 @@ describe('codex adapter app-server flow', () => {
         conversationRef: 'thread-1',
         providerMeta: {
           providerContinuity: {
-            serverKey: `codex:${process.cwd()}`,
+            serverKey: 'codex',
+            cwd: process.cwd(),
             threadId: 'thread-1',
             turnId: 'turn-1',
           },
