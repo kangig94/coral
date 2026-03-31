@@ -39,7 +39,7 @@ import { loadKbNote } from './read.js';
 import { assertNonEmptyText, assertNoteSlug, compareLocale } from './validation.js';
 import { buildNoteIndexEntry, cloneKbIndex, markTextIndexStale, writeFileAtomic } from './mutation-helpers.js';
 import type { KbRuntime } from './runtime.js';
-import { isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from './types.js';
+import { getEntry, isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from './types.js';
 import { backendLog } from '../shared/backend-log.js';
 
 // -- Schedule debounce --
@@ -274,7 +274,7 @@ function buildPrincipleNames(index: KbIndex): string[] {
 }
 
 function getIndexNote(index: KbIndex, note: string): NoteEntry | undefined {
-  const entry = index.entries[noteEntryId(note)];
+  const entry = getEntry(index, noteEntryId(note));
   return entry !== undefined && isNoteEntry(entry) ? entry : undefined;
 }
 

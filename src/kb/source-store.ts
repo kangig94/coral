@@ -4,7 +4,7 @@ import { parseSourceFrontmatter } from './frontmatter.js';
 import { buildSourceIndexEntry, commitIndexUpdate, writeFileAtomic } from './mutation-helpers.js';
 import { assertWithin } from './paths.js';
 import type { KbRuntime } from './runtime.js';
-import { isSourceEntry, sourceEntryId, type KbSourceDeleteInput, type KbSourceFrontmatter, type KbSourceListResult } from './types.js';
+import { deleteEntry, isSourceEntry, setEntry, sourceEntryId, type KbSourceDeleteInput, type KbSourceFrontmatter, type KbSourceListResult } from './types.js';
 import { compareLocale, assertSourceSlug } from './validation.js';
 
 function resolvePreparedSourceStagePath(kb: KbRuntime, candidate: string): string {
@@ -57,10 +57,10 @@ export async function persistPreparedSource(
       commitIndexUpdate(
         kb,
         (index) => {
-          index.entries[sourceEntryId(normalizedSlug)] = buildSourceIndexEntry({
+          setEntry(index, sourceEntryId(normalizedSlug), buildSourceIndexEntry({
             slug: normalizedSlug,
             ...parsedMeta,
-          });
+          }));
         },
         'KB text snapshot is stale after kb_source_import.',
       );
@@ -90,7 +90,7 @@ export async function deleteSource(rt: KbRuntime, input: KbSourceDeleteInput): P
     commitIndexUpdate(
       rt,
       (index) => {
-        delete index.entries[sourceEntryId(slug)];
+        deleteEntry(index, sourceEntryId(slug));
       },
       'KB text snapshot is stale after kb_source_delete.',
     );

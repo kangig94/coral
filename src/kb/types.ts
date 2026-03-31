@@ -209,6 +209,20 @@ export function sourceEntryId(slug: string): KbEntryId {
   return `source:${slug}`;
 }
 
+export function getEntry(index: KbIndex, id: KbEntryId): EntryRecord | undefined {
+  return index.entries[id];
+}
+
+export function setEntry(index: KbIndex, id: KbEntryId, entry: EntryRecord): void {
+  index.entries[id] = entry;
+}
+
+export function deleteEntry(index: KbIndex, id: KbEntryId): boolean {
+  if (!(id in index.entries)) return false;
+  delete index.entries[id];
+  return true;
+}
+
 export function isNoteEntry(entry: EntryRecord): entry is NoteEntry {
   return entry.kind === 'note';
 }

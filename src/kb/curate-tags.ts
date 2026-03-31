@@ -1,5 +1,5 @@
 import { deriveNoteIdentity } from './frontmatter.js';
-import { isNoteEntry, noteEntryId, type KbIndex } from './types.js';
+import { getEntry, isNoteEntry, noteEntryId, type KbIndex } from './types.js';
 import { compareLocale } from './validation.js';
 
 const PATTERN_SUFFIXES = new Set(['pattern', 'architecture', 'design', 'contract', 'strategy']);
@@ -31,7 +31,7 @@ export function cleanupTags(index: KbIndex, cohortNotes: string[]): TagCleanupRe
   const cohortTags = new Set<string>();
 
   for (const note of cohortNotes) {
-    const entry = index.entries[noteEntryId(note)];
+    const entry = getEntry(index, noteEntryId(note));
     const noteMeta = entry !== undefined && isNoteEntry(entry) ? entry : undefined;
     if (noteMeta === undefined) {
       continue;

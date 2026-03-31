@@ -2,7 +2,7 @@ import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { nowIsoString } from '../shared/mcp-utils.js';
 import { parseMemoFrontmatter, serializeNote } from './frontmatter.js';
 import { memoPathFromContext } from './paths.js';
-import { noteEntryId, type KbPromoteInput } from './types.js';
+import { noteEntryId, setEntry, type KbPromoteInput } from './types.js';
 import { assertNonEmptyText, assertNoteSlug, assertSlug } from './validation.js';
 import { buildNoteIndexEntry, commitIndexUpdate, writeFileAtomic } from './mutation-helpers.js';
 import type { KbRuntime } from './runtime.js';
@@ -56,11 +56,11 @@ export async function promote(
     commitIndexUpdate(
       rt,
       (index) => {
-        index.entries[noteEntryId(note)] = buildNoteIndexEntry({
+        setEntry(index, noteEntryId(note), buildNoteIndexEntry({
           slug: note,
           ...noteMeta,
           title,
-        });
+        }));
       },
       'KB text snapshot is stale after kb_promote.',
     );

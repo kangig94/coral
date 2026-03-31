@@ -10,7 +10,9 @@ import {
 } from './orama-factory.js';
 import type { KbRuntime } from './runtime.js';
 import {
+  getEntry,
   isNoteEntry,
+  type KbEntryId,
   type KbIndex,
   type KbMatchSurface,
   type KbResult,
@@ -184,7 +186,7 @@ function extractSnippet(
 }
 
 function resolveHit(hit: KbSearchHit, index: KbIndex): ResolvedKbSearchHit {
-  const entry = index.entries[hit.document.entryId as keyof KbIndex['entries']];
+  const entry = getEntry(index, hit.document.entryId as KbEntryId);
   const slug = entry?.slug ?? denormalizeSlug(hit.document.slug);
 
   return {
