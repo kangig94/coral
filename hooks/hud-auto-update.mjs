@@ -10,11 +10,13 @@ function fileHash(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
+const PRESERVE = new Set(['.coral-codex-enabled']);
+
 function cleanRuntimeFiles(hudDir) {
   let entries;
   try { entries = readdirSync(hudDir); } catch { return; }
   for (const name of entries) {
-    if (name.startsWith('.coral-')) {
+    if (name.startsWith('.coral-') && !PRESERVE.has(name)) {
       try { unlinkSync(join(hudDir, name)); } catch {}
     }
   }
