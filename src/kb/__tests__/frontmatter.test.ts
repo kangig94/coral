@@ -4,9 +4,11 @@ import {
   extractTitle,
   parseFrontmatter,
   parseMemoFrontmatter,
+  parseSourceFrontmatter,
   replaceFrontmatter,
   serializeFrontmatter,
   serializeNote,
+  serializeSourceFrontmatter,
 } from '../frontmatter.js';
 
 describe('kb frontmatter', () => {
@@ -71,6 +73,24 @@ updatedAt: 2026-03-23
       source: ['kangig94/coral'],
       createdAt: '2026-03-23',
       updatedAt: '2026-03-23',
+    });
+  });
+
+  it('parses and serializes source frontmatter separately from note frontmatter', () => {
+    const serialized = serializeSourceFrontmatter({
+      title: 'SQLite Query Planner Overview',
+      type: 'spec',
+      tags: ['database', 'query-planning'],
+      url: 'https://sqlite.org/queryplanner.html',
+      importedAt: '2026-03-23T00:00:00.000Z',
+    });
+
+    expect(parseSourceFrontmatter(`${serialized}# SQLite Query Planner Overview\n\nBody.\n`)).toEqual({
+      title: 'SQLite Query Planner Overview',
+      type: 'spec',
+      tags: ['database', 'query-planning'],
+      url: 'https://sqlite.org/queryplanner.html',
+      importedAt: '2026-03-23T00:00:00.000Z',
     });
   });
 
@@ -180,6 +200,7 @@ updatedAt: 2026-03-23
     });
     expect(
       buildNoteIndexEntry({
+        slug: 'coral-test',
         title: 'Test',
         tags: ['coral'],
         principles: [],

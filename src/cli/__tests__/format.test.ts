@@ -345,6 +345,7 @@ describe('cli format', () => {
           results: [
             {
               note: 'cli-kb-tooling',
+              kind: 'note',
               title: 'KB CLI Tooling',
               matchedBy: ['filename', 'content'],
               snippet: 'Use kb_reindex after stale writes.',
@@ -359,6 +360,7 @@ describe('cli format', () => {
       const parsed = JSON.parse(formatted);
       expect(parsed.count).toBe(1);
       expect(parsed.results[0].note).toBe('cli-kb-tooling');
+      expect(parsed.results[0].kind).toBe('note');
       expect(parsed.warning).toContain('node "/tmp/coral-cli.cjs" kb reindex');
     });
 
@@ -470,6 +472,7 @@ describe('cli format', () => {
       const formatted = formatKbReindex(
         {
           notes: 4,
+          sources: 0,
           principles: 2,
           tags: 3,
           duration_ms: 25,

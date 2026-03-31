@@ -1,10 +1,12 @@
 import { components, create, type AnyOrama, type DefaultTokenizer } from '@orama/orama';
-import type { KbReindexNoteRecord } from './types.js';
+import { noteEntryId, sourceEntryId, type KbReindexNoteRecord, type KbReindexSourceRecord } from './types.js';
 
 const ORAMA_LANGUAGE = 'english';
 
 export const ORAMA_SCHEMA = {
+  entryId: 'string',
   slug: 'string',
+  kind: 'string',
   title: 'string',
   body: 'string',
   tags: 'string[]',
@@ -12,7 +14,9 @@ export const ORAMA_SCHEMA = {
 } as const;
 
 export type KbOramaDocument = {
+  entryId: string;
   slug: string;
+  kind: 'note' | 'source';
   title: string;
   body: string;
   tags: string[];
@@ -55,13 +59,17 @@ export function tokenizeField(value: string, tokenizer: KbOramaTokenizer): strin
   return uniqueTokens(tokenizer.tokenize(normalized, ORAMA_LANGUAGE));
 }
 
-export function toOramaDocument(note: KbReindexNoteRecord): KbOramaDocument {
+export function toOramaDocument(record: KbReindexNoteRecord | KbReindexSourceRecord): KbOramaDocument {
+  const isNote = 'note' in record;
+
   return {
-    slug: normalizeHyphens(note.note),
-    title: note.title,
-    body: note.body,
-    tags: note.tags.map(normalizeHyphens),
-    principles: note.principles.map(normalizeHyphens),
+    entryId: isNote ? noteEntryId(record.note) : sourceEntryId(record.slug),
+    slug: normalizeHyphens(isNote ? record.note : record.slug),
+    kind: isNote ? 'note' : 'source',
+    title: record.title,
+    body: record.body,
+    tags: record.tags.map(normalizeHyphens),
+    principles: isNote ? record.principles.map(normalizeHyphens) : [],
   };
 }
 

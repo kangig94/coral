@@ -1,5 +1,5 @@
 import { deriveNoteIdentity } from './frontmatter.js';
-import type { KbIndex } from './types.js';
+import { isNoteEntry, noteEntryId, type KbIndex } from './types.js';
 import { compareLocale } from './validation.js';
 
 const PATTERN_SUFFIXES = new Set(['pattern', 'architecture', 'design', 'contract', 'strategy']);
@@ -12,7 +12,7 @@ export type TagCleanupResult = {
 export function countTagSupport(index: KbIndex): Map<string, number> {
   const counts = new Map<string, number>();
 
-  for (const note of Object.values(index.notes)) {
+  for (const note of Object.values(index.entries).filter(isNoteEntry)) {
     for (const tag of note.tags) {
       counts.set(tag, (counts.get(tag) ?? 0) + 1);
     }
@@ -31,7 +31,8 @@ export function cleanupTags(index: KbIndex, cohortNotes: string[]): TagCleanupRe
   const cohortTags = new Set<string>();
 
   for (const note of cohortNotes) {
-    const noteMeta = index.notes[note];
+    const entry = index.entries[noteEntryId(note)];
+    const noteMeta = entry !== undefined && isNoteEntry(entry) ? entry : undefined;
     if (noteMeta === undefined) {
       continue;
     }

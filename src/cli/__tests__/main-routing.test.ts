@@ -313,6 +313,7 @@ describe('cli main routing', () => {
       results: [
         {
           note: 'cli-kb-tooling',
+          kind: 'note',
           title: 'KB CLI Tooling',
           matchedBy: ['filename', 'content'],
           snippet: 'Use the read surface.',
@@ -582,6 +583,7 @@ describe('cli main routing', () => {
 
     mockState.kbReindex.mockResolvedValueOnce({
       notes: 4,
+      sources: 0,
       principles: 2,
       tags: 3,
       duration_ms: 25,

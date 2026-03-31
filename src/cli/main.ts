@@ -29,6 +29,9 @@ import {
   formatKbRead,
   formatKbReindex,
   formatKbSearch,
+  formatKbSourceDelete,
+  formatKbSourceImport,
+  formatKbSourceList,
   formatKbUpdate,
   formatDiscussAbort,
   formatDiscussParticipate,
@@ -50,6 +53,8 @@ import { launchAndFollow } from './follow.js';
 import { isJsonObject, parseAgentSpec, parseAxisSpec, parseInputJson, type JsonObject } from './parse.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { getAllNewProviders } from '../providers/registry.js';
+import { prepareSourceImport } from '../kb/source-import.js';
+import { assertSourceSlug } from '../kb/validation.js';
 
 /** Return registered provider names. Built-ins are registered on first call. */
 function getProviderNames(): string[] {
@@ -139,6 +144,7 @@ type DiscussAbortOptions = {
 
 type KbSearchOptions = {
   topK?: string;
+  scope?: string;
 };
 
 type KbPrinciplesOptions = {
@@ -158,6 +164,10 @@ type KbPromoteOptions = {
 type KbUpdateOptions = {
   title?: string;
   contentFile?: string;
+};
+
+type KbSourceImportOptions = {
+  slug?: string;
 };
 
 function resolveFilePath(filePath: string): string {
@@ -809,9 +819,10 @@ export function buildProgram(): Command {
 
   const kbSearchCommand = kb.command('search');
   kbSearchCommand
-    .description('Search KB notes')
+    .description('Search KB entries')
     .argument('<query>', 'Search query')
     .option('--top-k <n>', 'Maximum results')
+    .addOption(new Option('--scope <scope>', 'Limit results to notes, sources, or both').choices(['notes', 'sources', 'all']))
     .action(async (query: string, opts: KbSearchOptions) => {
       const outputFormat = getOutputFormat(kbSearchCommand);
 
@@ -819,6 +830,7 @@ export function buildProgram(): Command {
         const args = {
           query,
           ...(opts.topK !== undefined ? { top_k: parseIntegerFlag('--top-k', opts.topK) } : {}),
+          ...(opts.scope !== undefined ? { scope: opts.scope as 'notes' | 'sources' | 'all' } : {}),
         };
         const client = makeClient(process.cwd());
         const result = await client.kbSearch(args);
@@ -846,6 +858,63 @@ export function buildProgram(): Command {
         const client = makeClient(process.cwd());
         const result = await client.kbPrinciples(args);
         emit(result, outputFormat, (data) => formatKbPrinciples(data, cliPrefix));
+      } catch (error) {
+        emitError(error, outputFormat);
+      }
+    });
+
+  const kbSourceCommand = kb.command('source').description('Manage KB sources');
+
+  const kbSourceImportCommand = kbSourceCommand.command('import');
+  kbSourceImportCommand
+    .description('Import a source file into the KB')
+    .argument('<file>', 'File to import')
+    .option('--slug <slug>', 'Override source slug')
+    .action(async (file: string, opts: KbSourceImportOptions) => {
+      const outputFormat = getOutputFormat(kbSourceImportCommand);
+
+      try {
+        const prepared = await prepareSourceImport(
+          resolveFilePath(file),
+          opts.slug,
+          (line) => process.stderr.write(`${line}\n`),
+        );
+        const client = makeClient(process.cwd());
+        const result = await client.kbSourceImport({
+          slug: prepared.slug,
+          stagedPath: prepared.stagedPath,
+          meta: prepared.meta,
+        });
+        emit(result, outputFormat, formatKbSourceImport);
+      } catch (error) {
+        emitError(error, outputFormat);
+      }
+    });
+
+  const kbSourceListCommand = kbSourceCommand.command('list');
+  kbSourceListCommand.description('List KB sources').action(async () => {
+    const outputFormat = getOutputFormat(kbSourceListCommand);
+
+    try {
+      const client = makeClient(process.cwd());
+      const result = await client.kbSourceList();
+      emit(result, outputFormat, formatKbSourceList);
+    } catch (error) {
+      emitError(error, outputFormat);
+    }
+  });
+
+  const kbSourceDeleteCommand = kbSourceCommand.command('delete');
+  kbSourceDeleteCommand
+    .description('Delete a KB source')
+    .argument('<slug>', 'Source slug without extension')
+    .action(async (slug: string) => {
+      const outputFormat = getOutputFormat(kbSourceDeleteCommand);
+
+      try {
+        const client = makeClient(process.cwd());
+        const result = await client.kbSourceDelete({ slug: assertSourceSlug(slug, 'source') });
+        emit(result, outputFormat, formatKbSourceDelete);
       } catch (error) {
         emitError(error, outputFormat);
       }

@@ -4,20 +4,15 @@ import { errorMessage, isNoEntryError } from '../shared/mcp-utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import type { KbIndexState } from './runtime.js';
 import type { KbRuntime } from './runtime.js';
-import type { KbIndex } from './types.js';
+import { isNoteEntry, type KbIndex, type NoteEntry, type SourceEntry } from './types.js';
 
-type NoteIndexEntrySource = {
-  title: string;
-  tags: readonly string[];
-  principles: readonly string[];
-  source: readonly string[];
-  createdAt: string;
-  updatedAt: string;
-  mutationSeqAtPromote?: number;
-};
+type NoteIndexEntrySource = Omit<NoteEntry, 'kind'>;
+type SourceIndexEntrySource = Omit<SourceEntry, 'kind'>;
 
-export function buildNoteIndexEntry(meta: NoteIndexEntrySource): KbIndex['notes'][string] {
-  const entry: KbIndex['notes'][string] = {
+export function buildNoteIndexEntry(meta: NoteIndexEntrySource): NoteEntry {
+  const entry: NoteEntry = {
+    kind: 'note',
+    slug: meta.slug,
     title: meta.title,
     tags: [...meta.tags],
     principles: [...meta.principles],
@@ -31,6 +26,18 @@ export function buildNoteIndexEntry(meta: NoteIndexEntrySource): KbIndex['notes'
   }
 
   return entry;
+}
+
+export function buildSourceIndexEntry(meta: SourceIndexEntrySource): SourceEntry {
+  return {
+    kind: 'source',
+    slug: meta.slug,
+    title: meta.title,
+    type: meta.type,
+    tags: [...meta.tags],
+    ...(meta.url === undefined ? {} : { url: meta.url }),
+    importedAt: meta.importedAt,
+  };
 }
 
 const ensuredDirs = new Set<string>();
@@ -70,13 +77,18 @@ export function writeFileAtomic(filePath: string, payload: string): void {
 export function cloneKbIndex(index: KbIndex | null): KbIndex {
   if (index === null) {
     return {
-      notes: {},
+      entries: {},
       principles: {},
     };
   }
 
   return {
-    notes: Object.fromEntries(Object.entries(index.notes).map(([note, meta]) => [note, buildNoteIndexEntry(meta)])),
+    entries: Object.fromEntries(
+      Object.entries(index.entries).map(([entryId, entry]) => [
+        entryId,
+        isNoteEntry(entry) ? buildNoteIndexEntry(entry) : buildSourceIndexEntry(entry),
+      ]),
+    ),
     principles: { ...index.principles },
   };
 }

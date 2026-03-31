@@ -6,7 +6,7 @@ import { buildNoteIndexEntry, cloneKbIndex, writeFileAtomic } from './mutation-h
 import { loadKbNote } from './read.js';
 import type { KbRuntime } from './runtime.js';
 import { sortedMarkdownEntries } from './text-artifacts.js';
-import type { KbNoteFrontmatter } from './types.js';
+import { isNoteEntry, noteEntryId, type KbNoteFrontmatter } from './types.js';
 import { backendLog } from '../shared/backend-log.js';
 
 export const CURATE_STATE_FILE = 'curate-state.json';
@@ -234,9 +234,15 @@ function syncIndexNote(
   mutationSeqAtPromote: number,
   nextIndex: ReturnType<typeof cloneKbIndex>,
 ): boolean {
-  const existing = nextIndex.notes[note];
+  const existingEntry = nextIndex.entries[noteEntryId(note)];
+  const existing = existingEntry !== undefined && isNoteEntry(existingEntry) ? existingEntry : undefined;
   if (existing === undefined) {
-    nextIndex.notes[note] = buildNoteIndexEntry({ ...frontmatter, title, mutationSeqAtPromote });
+    nextIndex.entries[noteEntryId(note)] = buildNoteIndexEntry({
+      slug: note,
+      ...frontmatter,
+      title,
+      mutationSeqAtPromote,
+    });
     return true;
   }
 
@@ -244,7 +250,16 @@ function syncIndexNote(
     return false;
   }
 
-  nextIndex.notes[note] = buildNoteIndexEntry({ ...existing, mutationSeqAtPromote });
+  nextIndex.entries[noteEntryId(note)] = buildNoteIndexEntry({
+    slug: existing.slug,
+    title: existing.title,
+    tags: existing.tags,
+    principles: existing.principles,
+    source: existing.source,
+    createdAt: existing.createdAt,
+    updatedAt: existing.updatedAt,
+    mutationSeqAtPromote,
+  });
   return true;
 }
 

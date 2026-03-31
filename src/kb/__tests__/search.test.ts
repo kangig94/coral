@@ -266,7 +266,7 @@ describe('kb search', () => {
       mode: 'text',
     });
     expect(kb.readIndex()).toEqual({
-      notes: {},
+      entries: {},
       principles: {},
     });
   });

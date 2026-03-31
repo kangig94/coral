@@ -685,8 +685,10 @@ describe('execution backend server', () => {
       {
         kb: {
           ensureIndex: vi.fn(async () => ({
-            notes: {
-              'b-note': {
+            entries: {
+              'note:b-note': {
+                kind: 'note',
+                slug: 'b-note',
                 title: 'B',
                 tags: ['coral'],
                 principles: ['contract-first-design'],
@@ -694,7 +696,9 @@ describe('execution backend server', () => {
                 createdAt: '2026-03-20T00:00:00.000Z',
                 updatedAt: '2026-03-20T00:00:00.000Z',
               },
-              'a-note': {
+              'note:a-note': {
+                kind: 'note',
+                slug: 'a-note',
                 title: 'A',
                 tags: ['coral'],
                 principles: ['missing-principle', 'contract-first-design'],
@@ -702,7 +706,9 @@ describe('execution backend server', () => {
                 createdAt: '2026-03-20T00:00:00.000Z',
                 updatedAt: '2026-03-20T00:00:00.000Z',
               },
-              'z-note': {
+              'note:z-note': {
+                kind: 'note',
+                slug: 'z-note',
                 title: 'Z',
                 tags: ['coral'],
                 principles: ['single-source-of-truth'],

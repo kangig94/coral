@@ -2,6 +2,7 @@ export type KbMatchSurface = 'filename' | 'principle' | 'tag' | 'title' | 'conte
 
 export interface KbResult {
   note: string;
+  kind: 'note' | 'source';
   title: string;
   matchedBy: KbMatchSurface[];
   tags: string[];
@@ -9,10 +10,49 @@ export interface KbResult {
   snippet?: string;
 }
 
-export type KbNoteIndexRecord = KbNoteFrontmatter & { title: string };
+export type KbEntryId = `note:${string}` | `source:${string}`;
+
+export type NoteEntry = KbNoteFrontmatter & {
+  kind: 'note';
+  slug: string;
+  title: string;
+};
+
+export interface KbSourceFrontmatter {
+  title: string;
+  type: string;
+  tags: string[];
+  url?: string;
+  importedAt: string;
+}
+
+export type KbSourcePersistInput = {
+  slug: string;
+  stagedPath: string;
+  meta: KbSourceFrontmatter;
+};
+
+export type KbSourceDeleteInput = {
+  slug: string;
+};
+
+export type KbSourceListItem = KbSourceFrontmatter & {
+  slug: string;
+};
+
+export type KbSourceListResult = {
+  sources: KbSourceListItem[];
+};
+
+export type SourceEntry = KbSourceFrontmatter & {
+  kind: 'source';
+  slug: string;
+};
+
+export type EntryRecord = NoteEntry | SourceEntry;
 
 export interface KbIndex {
-  notes: Record<string, KbNoteIndexRecord>;
+  entries: Record<string, EntryRecord>;
   principles: Record<string, string>;
 }
 
@@ -24,6 +64,7 @@ export interface KbSearchResponse {
 
 export type ReindexResult = {
   notes: number;
+  sources: number;
   principles: number;
   tags: number;
   duration_ms: number;
@@ -54,6 +95,12 @@ export type KbReindexNoteRecord = KbNoteFrontmatter & {
   body: string;
 };
 
+export type KbReindexSourceRecord = KbSourceFrontmatter & {
+  slug: string;
+  path: string;
+  body: string;
+};
+
 export interface KbLanceDbAdapter {
   getDb(): Promise<unknown>;
   ensureTables(): Promise<void>;
@@ -64,7 +111,10 @@ export interface KbLanceDbAdapter {
 export type KbSearchInput = {
   query: string;
   top_k?: number;
+  scope?: KbSearchScope;
 };
+
+export type KbSearchScope = 'notes' | 'sources' | 'all';
 
 export type KbPromoteInput = {
   memo: string;
@@ -85,7 +135,7 @@ export type KbReadInput = {
 };
 
 export type KbReadResult = {
-  kind: 'memo' | 'note' | 'principle';
+  kind: 'memo' | 'note' | 'source' | 'principle';
   note: string;
   title: string;
   content: string;
@@ -150,3 +200,19 @@ export type KbMemoPurgeInput = {
 export type KbMemoPurgeResult = {
   deleted: number;
 };
+
+export function noteEntryId(slug: string): KbEntryId {
+  return `note:${slug}`;
+}
+
+export function sourceEntryId(slug: string): KbEntryId {
+  return `source:${slug}`;
+}
+
+export function isNoteEntry(entry: EntryRecord): entry is NoteEntry {
+  return entry.kind === 'note';
+}
+
+export function isSourceEntry(entry: EntryRecord): entry is SourceEntry {
+  return entry.kind === 'source';
+}

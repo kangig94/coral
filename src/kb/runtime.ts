@@ -13,9 +13,13 @@ import {
   notesDir as pathsNotesDir,
   principlePathFromName,
   principlesDir as pathsPrinciplesDir,
+  sourceImportStageDir as pathsSourceImportStageDir,
+  sourcePathFromName,
+  sourcesDir as pathsSourcesDir,
 } from './paths.js';
 import { rebuildTextArtifacts } from './text-artifacts.js';
-import type { KbIndex, KbLanceDbAdapter } from './types.js';
+import { noteEntryId, sourceEntryId, type KbIndex, type KbLanceDbAdapter, type NoteEntry, type SourceEntry } from './types.js';
+import { assertNonEmptyText, assertNoteSlug, assertSourceSlug } from './validation.js';
 
 const INDEX_STATE_FILE = 'index-state.json';
 const INDEX_FILE = 'index.json';
@@ -60,9 +64,12 @@ export type KbRuntime = {
   installRebuiltArtifacts(index: KbIndex, orama: KbCachedOramaIndex): KbIndex;
   persistOramaSnapshot(db: KbOramaDb): void;
   notesDir(): string;
+  sourcesDir(): string;
   principlesDir(): string;
   notePath(note: string): string;
+  sourcePath(source: string): string;
   principlePath(principle: string): string;
+  sourceImportStageDir(): string;
   curateStatePath(): string;
 };
 
@@ -72,47 +79,94 @@ function defaultIndexState(): KbIndexState {
 
 function emptyIndex(): KbIndex {
   return {
-    notes: {},
+    entries: {},
     principles: {},
   };
 }
 
-function parseIndex(value: unknown): KbIndex {
-  if (!isRecord(value) || !isRecord(value.notes) || !isRecord(value.principles)) {
+function parseMutationSeqAtPromote(value: unknown): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
     throw new Error('Invalid KB index');
   }
 
-  const notes: KbIndex['notes'] = {};
-  for (const [note, rawMeta] of Object.entries(value.notes)) {
-    if (!isRecord(rawMeta)) {
+  return value;
+}
+
+function parseStringArray(value: unknown): string[] {
+  if (!isStringArray(value)) {
+    throw new Error('Invalid KB index');
+  }
+
+  return [...value];
+}
+
+function parseNoteIndexEntry(entryId: string, value: Record<string, unknown>): NoteEntry {
+  const mutationSeqAtPromote = parseMutationSeqAtPromote(value.mutationSeqAtPromote);
+  const slug = assertNoteSlug(value.slug, 'KB index entry slug');
+  if (entryId !== noteEntryId(slug)) {
+    throw new Error('Invalid KB index');
+  }
+
+  return {
+    kind: 'note',
+    slug,
+    title: assertNonEmptyText(value.title, 'KB index entry title'),
+    tags: parseStringArray(value.tags),
+    principles: parseStringArray(value.principles),
+    source: parseStringArray(value.source),
+    createdAt: assertNonEmptyText(value.createdAt, 'KB index entry createdAt'),
+    updatedAt: assertNonEmptyText(value.updatedAt, 'KB index entry updatedAt'),
+    ...(mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote }),
+  };
+}
+
+function parseSourceIndexEntry(entryId: string, value: Record<string, unknown>): SourceEntry {
+  const slug = assertSourceSlug(value.slug, 'KB index entry slug');
+  if (entryId !== sourceEntryId(slug)) {
+    throw new Error('Invalid KB index');
+  }
+  const url = value.url;
+  if (url !== undefined && typeof url !== 'string') {
+    throw new Error('Invalid KB index');
+  }
+
+  return {
+    kind: 'source',
+    slug,
+    title: assertNonEmptyText(value.title, 'KB index entry title'),
+    type: assertNonEmptyText(value.type, 'KB index entry type'),
+    tags: parseStringArray(value.tags),
+    ...(url === undefined ? {} : { url: assertNonEmptyText(url, 'KB index entry url') }),
+    importedAt: assertNonEmptyText(value.importedAt, 'KB index entry importedAt'),
+  };
+}
+
+function parseIndex(value: unknown): KbIndex {
+  if (!isRecord(value) || !isRecord(value.entries) || !isRecord(value.principles)) {
+    throw new Error('Invalid KB index');
+  }
+
+  const entries: KbIndex['entries'] = {};
+  for (const [entryId, rawEntry] of Object.entries(value.entries)) {
+    if (!isRecord(rawEntry)) {
       throw new Error('Invalid KB index');
     }
 
-    const { title, tags, principles, source, createdAt, updatedAt, mutationSeqAtPromote } = rawMeta;
-    if (
-      typeof title !== 'string' ||
-      !isStringArray(tags) ||
-      !isStringArray(principles) ||
-      !isStringArray(source) ||
-      typeof createdAt !== 'string' ||
-      typeof updatedAt !== 'string' ||
-      (mutationSeqAtPromote !== undefined &&
-        (typeof mutationSeqAtPromote !== 'number' ||
-          !Number.isInteger(mutationSeqAtPromote) ||
-          mutationSeqAtPromote < 1))
-    ) {
-      throw new Error('Invalid KB index');
+    if (rawEntry.kind === 'note') {
+      entries[entryId as keyof KbIndex['entries']] = parseNoteIndexEntry(entryId, rawEntry);
+      continue;
     }
 
-    notes[note] = {
-      title,
-      tags: [...tags],
-      principles: [...principles],
-      source: [...source],
-      createdAt,
-      updatedAt,
-      ...(mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote }),
-    };
+    if (rawEntry.kind === 'source') {
+      entries[entryId as keyof KbIndex['entries']] = parseSourceIndexEntry(entryId, rawEntry);
+      continue;
+    }
+
+    throw new Error('Invalid KB index');
   }
 
   const principles: KbIndex['principles'] = {};
@@ -123,7 +177,7 @@ function parseIndex(value: unknown): KbIndex {
     principles[name] = statement;
   }
 
-  return { notes, principles };
+  return { entries, principles };
 }
 
 function parseIndexState(value: unknown): KbIndexState {
@@ -175,12 +229,24 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     return pathsPrinciplesDir(markdownRoot);
   }
 
+  function sourcesDir(): string {
+    return pathsSourcesDir(markdownRoot);
+  }
+
   function notePath(note: string): string {
     return notePathFromName(note, markdownRoot);
   }
 
+  function sourcePath(source: string): string {
+    return sourcePathFromName(source, markdownRoot);
+  }
+
   function principlePath(principle: string): string {
     return principlePathFromName(principle, markdownRoot);
+  }
+
+  function sourceImportStageDir(): string {
+    return pathsSourceImportStageDir(runtimeDir);
   }
 
   function curateStatePath(): string {
@@ -243,16 +309,18 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     try {
       const currentNotesDir = notesDir();
       const currentPrinciplesDir = principlesDir();
-      if (!existsSync(currentNotesDir)) {
-        return false;
-      }
+      const currentSourcesDir = sourcesDir();
 
       const indexMtime = cachedIndexMtime || statSync(currentIndexPath).mtimeMs;
-      if (statSync(currentNotesDir).mtimeMs > indexMtime) {
+      if (existsSync(currentNotesDir) && statSync(currentNotesDir).mtimeMs > indexMtime) {
         return true;
       }
 
       if (existsSync(currentPrinciplesDir) && statSync(currentPrinciplesDir).mtimeMs > indexMtime) {
+        return true;
+      }
+
+      if (existsSync(currentSourcesDir) && statSync(currentSourcesDir).mtimeMs > indexMtime) {
         return true;
       }
 
@@ -372,7 +440,14 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
 
       try {
         const raw = readFileSync(indexPath(), 'utf-8');
-        cachedIndex = parseIndex(JSON.parse(raw) as unknown);
+        try {
+          cachedIndex = parseIndex(JSON.parse(raw) as unknown);
+        } catch {
+          cachedIndex = null;
+          cachedIndexMtime = 0;
+          rmSync(indexPath(), { force: true });
+          return null;
+        }
         cachedIndexMtime = statSync(indexPath()).mtimeMs;
         return cachedIndex;
       } catch (error: unknown) {
@@ -476,9 +551,12 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
       writeJsonAtomic(oramaIndexPath(), snapshot);
     },
     notesDir,
+    sourcesDir,
     principlesDir,
     notePath,
+    sourcePath,
     principlePath,
+    sourceImportStageDir,
     curateStatePath,
   };
 

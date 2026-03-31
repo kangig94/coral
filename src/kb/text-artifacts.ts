@@ -3,13 +3,20 @@ import { join } from 'node:path';
 import { insertMultiple } from '@orama/orama';
 import { errorMessage, isNoEntryError } from '../shared/mcp-utils.js';
 import { backendLog } from '../shared/backend-log.js';
-import { deriveNoteIdentity, extractPrincipleStatement } from './frontmatter.js';
-import { buildNoteIndexEntry } from './mutation-helpers.js';
+import { deriveNoteIdentity, extractBody, extractPrincipleStatement, parseSourceFrontmatter } from './frontmatter.js';
+import { buildNoteIndexEntry, buildSourceIndexEntry } from './mutation-helpers.js';
 import { loadKbNote } from './read.js';
-import { compareLocale } from './validation.js';
+import { assertSourceSlug, compareLocale } from './validation.js';
 import { createOramaDb, toOramaDocument } from './orama-factory.js';
 import type { KbRuntime } from './runtime.js';
-import type { KbIndex, KbReindexNoteRecord, ReindexResult } from './types.js';
+import {
+  noteEntryId,
+  sourceEntryId,
+  type KbIndex,
+  type KbReindexNoteRecord,
+  type KbReindexSourceRecord,
+  type ReindexResult,
+} from './types.js';
 
 export function sortedMarkdownEntries(dirPath: string): string[] {
   try {
@@ -48,6 +55,27 @@ function loadNotes(kb: KbRuntime): KbReindexNoteRecord[] {
   return notes;
 }
 
+function loadSources(kb: KbRuntime): KbReindexSourceRecord[] {
+  const sourcesPath = kb.sourcesDir();
+  const sources: KbReindexSourceRecord[] = [];
+
+  for (const entry of sortedMarkdownEntries(sourcesPath)) {
+    try {
+      const raw = readFileSync(join(sourcesPath, entry), 'utf-8');
+      sources.push({
+        slug: assertSourceSlug(entry.slice(0, -3), 'KB source name'),
+        path: `sources/${entry}`,
+        body: extractBody(raw),
+        ...parseSourceFrontmatter(raw),
+      });
+    } catch (error: unknown) {
+      backendLog.warn(`Skipping malformed KB source ${entry}: ${errorMessage(error)}`);
+    }
+  }
+
+  return sources;
+}
+
 function loadPrinciples(kb: KbRuntime): Array<[string, string]> {
   const principlesPath = kb.principlesDir();
   const principles: Array<[string, string]> = [];
@@ -65,28 +93,60 @@ function loadPrinciples(kb: KbRuntime): Array<[string, string]> {
   return principles;
 }
 
-function buildKbIndex(notes: KbReindexNoteRecord[], principles: Array<[string, string]>): KbIndex {
+function buildKbIndex(
+  notes: KbReindexNoteRecord[],
+  sources: KbReindexSourceRecord[],
+  principles: Array<[string, string]>,
+): KbIndex {
+  const entries: KbIndex['entries'] = {};
+
+  for (const note of notes) {
+    entries[noteEntryId(note.note)] = buildNoteIndexEntry({
+      slug: note.note,
+      title: note.title,
+      tags: note.tags,
+      principles: note.principles,
+      source: note.source,
+      createdAt: note.createdAt,
+      updatedAt: note.updatedAt,
+      ...(note.mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote: note.mutationSeqAtPromote }),
+    });
+  }
+
+  for (const source of sources) {
+    entries[sourceEntryId(source.slug)] = buildSourceIndexEntry({
+      slug: source.slug,
+      title: source.title,
+      type: source.type,
+      tags: source.tags,
+      ...(source.url === undefined ? {} : { url: source.url }),
+      importedAt: source.importedAt,
+    });
+  }
+
   return {
-    notes: Object.fromEntries(notes.map((note) => [note.note, buildNoteIndexEntry(note)])),
+    entries,
     principles: Object.fromEntries(principles),
   };
 }
 
 function buildCounts(
   notes: KbReindexNoteRecord[],
+  sources: KbReindexSourceRecord[],
   principles: Array<[string, string]>,
-): Pick<ReindexResult, 'notes' | 'principles' | 'tags'> {
+): Pick<ReindexResult, 'notes' | 'sources' | 'principles' | 'tags'> {
   return {
     notes: notes.length,
+    sources: sources.length,
     principles: principles.length,
-    tags: new Set(notes.flatMap((note) => note.tags)).size,
+    tags: new Set([...notes.flatMap((note) => note.tags), ...sources.flatMap((source) => source.tags)]).size,
   };
 }
 
 export class TextSnapshotRebuildError extends Error {
-  readonly counts: Pick<ReindexResult, 'notes' | 'principles' | 'tags'>;
+  readonly counts: Pick<ReindexResult, 'notes' | 'sources' | 'principles' | 'tags'>;
 
-  constructor(message: string, counts: Pick<ReindexResult, 'notes' | 'principles' | 'tags'>) {
+  constructor(message: string, counts: Pick<ReindexResult, 'notes' | 'sources' | 'principles' | 'tags'>) {
     super(message);
     this.name = 'TextSnapshotRebuildError';
     this.counts = counts;
@@ -101,16 +161,18 @@ export async function rebuildTextArtifacts(
   startSeq: number,
 ): Promise<{
   notes: KbReindexNoteRecord[];
+  sources: KbReindexSourceRecord[];
   principles: Array<[string, string]>;
-  counts: Pick<ReindexResult, 'notes' | 'principles' | 'tags'>;
+  counts: Pick<ReindexResult, 'notes' | 'sources' | 'principles' | 'tags'>;
 }> {
   const notes = loadNotes(kb);
+  const sources = loadSources(kb);
   const principles = loadPrinciples(kb);
-  const counts = buildCounts(notes, principles);
-  const index = buildKbIndex(notes, principles);
+  const counts = buildCounts(notes, sources, principles);
+  const index = buildKbIndex(notes, sources, principles);
   const { db, tokenizer } = await createOramaDb();
 
-  await insertMultiple(db, notes.map(toOramaDocument));
+  await insertMultiple(db, [...notes.map(toOramaDocument), ...sources.map(toOramaDocument)]);
   kb.persistIndexToDisk(index);
 
   try {
@@ -134,6 +196,7 @@ export async function rebuildTextArtifacts(
 
   return {
     notes,
+    sources,
     principles,
     counts,
   };

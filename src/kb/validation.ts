@@ -43,3 +43,7 @@ export function assertNoteSlug(value: unknown, label: string): string {
   }
   return normalized;
 }
+
+export function assertSourceSlug(value: unknown, label: string): string {
+  return assertNoteSlug(value, label);
+}

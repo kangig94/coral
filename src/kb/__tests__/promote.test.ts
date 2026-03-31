@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
+import { noteEntryId } from '../types.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -113,7 +114,9 @@ memo body
     expect(frontmatter.extractTitle(note)).toBe('KB Promotion');
     expect(note).toContain('## Rule\nPromote through the tool.\n');
 
-    expect(kb.readIndex()?.notes['coral-kb-promotion']).toEqual({
+    expect(kb.readIndex()?.entries[noteEntryId('coral-kb-promotion')]).toEqual({
+      kind: 'note',
+      slug: 'coral-kb-promotion',
       title: 'KB Promotion',
       tags: ['coral'],
       principles: [],
@@ -265,8 +268,10 @@ Original body.
     );
 
     kb.writeIndex({
-      notes: {
-        'coral-kb-promotion': {
+      entries: {
+        [noteEntryId('coral-kb-promotion')]: {
+          kind: 'note',
+          slug: 'coral-kb-promotion',
           title: 'Original Title',
           tags: ['coral'],
           principles: ['contract-first-design'],
@@ -301,7 +306,9 @@ Original body.
     expect(frontmatter.extractTitle(note)).toBe('Updated Title');
     expect(note).toContain('Updated body.\n');
 
-    expect(kb.readIndex()?.notes['coral-kb-promotion']).toEqual({
+    expect(kb.readIndex()?.entries[noteEntryId('coral-kb-promotion')]).toEqual({
+      kind: 'note',
+      slug: 'coral-kb-promotion',
       title: 'Updated Title',
       tags: ['coral'],
       principles: ['contract-first-design'],
@@ -319,8 +326,10 @@ Original body.
     const notePath = join(paths.notesDir(), 'coral-kb-promotion.md');
     writeFileSync(notePath, 'note body', 'utf-8');
     kb.writeIndex({
-      notes: {
-        'coral-kb-promotion': {
+      entries: {
+        [noteEntryId('coral-kb-promotion')]: {
+          kind: 'note',
+          slug: 'coral-kb-promotion',
           title: 'Updated Title',
           tags: ['coral'],
           principles: ['lenient-read-strict-write'],
@@ -335,7 +344,7 @@ Original body.
     const result = await deleteFn(kb, { note: 'coral-kb-promotion' });
     expect(result).toEqual({ deleted: notePath });
     expect(existsSync(notePath)).toBe(false);
-    expect(kb.readIndex()?.notes['coral-kb-promotion']).toBeUndefined();
+    expect(kb.readIndex()?.entries[noteEntryId('coral-kb-promotion')]).toBeUndefined();
   });
 
   it('reads a note by slug and returns structured content without timestamps', async () => {

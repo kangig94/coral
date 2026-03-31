@@ -11,6 +11,8 @@ import type {
   KbReadInput,
   KbReindexInput,
   KbSearchInput,
+  KbSourceDeleteInput,
+  KbSourcePersistInput,
   KbUpdateInput,
 } from '../kb/types.js';
 import { isRecord } from '../shared/mcp-utils.js';
@@ -247,6 +249,18 @@ export class BackendClient {
 
   async kbDelete(args: KbDeleteInput, context?: CallerContext): Promise<unknown> {
     return this.proxyToolCall('kb_delete', args, this.resolveContext(context));
+  }
+
+  async kbSourceImport(args: KbSourcePersistInput, context?: CallerContext): Promise<unknown> {
+    return this.proxyToolCall('kb_source_import', args, this.resolveContext(context));
+  }
+
+  async kbSourceList(context?: CallerContext): Promise<unknown> {
+    return this.proxyToolCall('kb_source_list', {}, this.resolveContext(context));
+  }
+
+  async kbSourceDelete(args: KbSourceDeleteInput, context?: CallerContext): Promise<unknown> {
+    return this.proxyToolCall('kb_source_delete', args, this.resolveContext(context));
   }
 
   async kbMemo(args: KbMemoInput, context?: CallerContext): Promise<unknown> {

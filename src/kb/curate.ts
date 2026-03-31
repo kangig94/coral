@@ -39,7 +39,7 @@ import { loadKbNote } from './read.js';
 import { assertNonEmptyText, assertNoteSlug, compareLocale } from './validation.js';
 import { buildNoteIndexEntry, cloneKbIndex, markTextIndexStale, writeFileAtomic } from './mutation-helpers.js';
 import type { KbRuntime } from './runtime.js';
-import type { KbIndex } from './types.js';
+import { isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from './types.js';
 import { backendLog } from '../shared/backend-log.js';
 
 // -- Schedule debounce --
@@ -273,6 +273,15 @@ function buildPrincipleNames(index: KbIndex): string[] {
   return Object.keys(index.principles).sort(compareLocale);
 }
 
+function getIndexNote(index: KbIndex, note: string): NoteEntry | undefined {
+  const entry = index.entries[noteEntryId(note)];
+  return entry !== undefined && isNoteEntry(entry) ? entry : undefined;
+}
+
+function getIndexNotes(index: KbIndex): NoteEntry[] {
+  return Object.values(index.entries).filter(isNoteEntry);
+}
+
 function compareOptionalCursor(left: CurateCursor | null, right: CurateCursor): number {
   if (left === null) {
     return -1;
@@ -300,17 +309,17 @@ function compareCursorDates(target: string | null, now: string): number {
 }
 
 function collectClaimCandidates(index: KbIndex): ClaimCandidate[] {
-  return Object.entries(index.notes)
-    .flatMap(([slug, noteMeta]) =>
+  return getIndexNotes(index)
+    .flatMap((noteMeta) =>
       noteMeta.mutationSeqAtPromote === undefined
         ? []
         : [
             {
-              slug,
+              slug: noteMeta.slug,
               title: noteMeta.title,
               updatedAt: noteMeta.updatedAt,
               cursor: {
-                note: slug,
+                note: noteMeta.slug,
                 mutationSeqAtPromote: noteMeta.mutationSeqAtPromote,
               },
             },
@@ -457,7 +466,7 @@ function buildCleanupTargets(index: KbIndex, cohortNotes: string[], cleanup: Tag
   const targets: MetadataTarget[] = [];
 
   for (const slug of cohortNotes) {
-    const noteMeta = index.notes[slug];
+    const noteMeta = getIndexNote(index, slug);
     if (noteMeta === undefined || noteMeta.mutationSeqAtPromote === undefined) {
       continue;
     }
@@ -556,7 +565,7 @@ function buildPrincipleAssignmentTargets(
   const targets: MetadataTarget[] = [];
 
   for (const note of notes) {
-    const noteMeta = index.notes[note];
+    const noteMeta = getIndexNote(index, note);
     if (noteMeta === undefined || noteMeta.mutationSeqAtPromote === undefined) {
       continue;
     }
@@ -656,7 +665,7 @@ export function validateAssignments(
   const mergedByNote = new Map<string, ClassificationAssignment>();
 
   for (const proposal of proposals) {
-    if (!claimedSet.has(proposal.note) || index.notes[proposal.note] === undefined) {
+    if (!claimedSet.has(proposal.note) || getIndexNote(index, proposal.note) === undefined) {
       continue;
     }
 
@@ -721,7 +730,7 @@ export function buildMetadataTargets(
 
   return claimedNotes
     .map((claimedNote) => {
-      const claimTimeMeta = index.notes[claimedNote.slug];
+      const claimTimeMeta = getIndexNote(index, claimedNote.slug);
       const existingTags = new Set(claimTimeMeta?.tags ?? []);
       const existingPrinciples = new Set(claimTimeMeta?.principles ?? []);
       const assignment = assignmentsByNote.get(claimedNote.slug);
@@ -1376,8 +1385,11 @@ export function createCurateScheduler({
       kb.recordMutationCommitted();
       wroteMarkdown = true;
 
-      const existingIndexNote = nextIndex.notes[target.note];
-      nextIndex.notes[target.note] = buildNoteIndexEntry({
+      const existingIndexEntry = nextIndex.entries[noteEntryId(target.note)];
+      const existingIndexNote =
+        existingIndexEntry !== undefined && isNoteEntry(existingIndexEntry) ? existingIndexEntry : undefined;
+      nextIndex.entries[noteEntryId(target.note)] = buildNoteIndexEntry({
+        slug: target.note,
         title: existingIndexNote?.title ?? extractTitle(raw),
         tags: metadataDecision.nextTags,
         principles: metadataDecision.nextPrinciples,
@@ -1523,7 +1535,7 @@ export function createCurateScheduler({
     const index = kb.readIndexOrEmpty();
 
     return entry.notes.every((note) => {
-      const noteMeta = index.notes[note];
+      const noteMeta = getIndexNote(index, note);
       if (noteMeta === undefined) {
         return true;
       }
@@ -1703,7 +1715,8 @@ export function createCurateScheduler({
 
         const targets: MetadataTarget[] = [];
         for (const absorbSlug of absorbs) {
-          for (const [note, noteMeta] of Object.entries(index.notes)) {
+          for (const noteMeta of getIndexNotes(index)) {
+            const note = noteMeta.slug;
             if (!noteMeta.principles.includes(absorbSlug) || noteMeta.mutationSeqAtPromote === undefined) {
               continue;
             }

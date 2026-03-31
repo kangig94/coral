@@ -2,7 +2,7 @@ import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { nowIsoString } from '../shared/mcp-utils.js';
 import { parseMemoFrontmatter, serializeNote } from './frontmatter.js';
 import { memoPathFromContext } from './paths.js';
-import type { KbPromoteInput } from './types.js';
+import { noteEntryId, type KbPromoteInput } from './types.js';
 import { assertNonEmptyText, assertNoteSlug, assertSlug } from './validation.js';
 import { buildNoteIndexEntry, commitIndexUpdate, writeFileAtomic } from './mutation-helpers.js';
 import type { KbRuntime } from './runtime.js';
@@ -56,7 +56,8 @@ export async function promote(
     commitIndexUpdate(
       rt,
       (index) => {
-        index.notes[note] = buildNoteIndexEntry({
+        index.entries[noteEntryId(note)] = buildNoteIndexEntry({
+          slug: note,
           ...noteMeta,
           title,
         });

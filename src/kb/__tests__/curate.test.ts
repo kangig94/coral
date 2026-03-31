@@ -22,7 +22,7 @@ import {
 import { readCurateState, writeCurateState, type CurateState } from '../curate-state.js';
 import { parseFrontmatter } from '../frontmatter.js';
 import { createKbRuntime, type KbRuntime } from '../runtime.js';
-import type { KbIndex } from '../types.js';
+import { noteEntryId, type KbIndex, type NoteEntry } from '../types.js';
 
 const DEFAULT_CREATED_AT = '2026-03-20T00:00:00.000Z';
 const DEFAULT_UPDATED_AT = '2026-03-20T00:00:00.000Z';
@@ -111,7 +111,7 @@ function createIndexNote({
   createdAt?: string;
   updatedAt?: string;
   mutationSeqAtPromote?: number;
-}): KbIndex['notes'][string] {
+}): Omit<NoteEntry, 'kind' | 'slug'> {
   return {
     title,
     tags,
@@ -121,6 +121,19 @@ function createIndexNote({
     updatedAt,
     ...(mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote }),
   };
+}
+
+function createIndexEntries(notes: Record<string, ReturnType<typeof createIndexNote>>): KbIndex['entries'] {
+  return Object.fromEntries(
+    Object.entries(notes).map(([slug, note]) => [
+      noteEntryId(slug),
+      {
+        kind: 'note',
+        slug,
+        ...note,
+      },
+    ]),
+  );
 }
 
 function buildClaimedNote({
@@ -314,7 +327,7 @@ describe('curate', () => {
 
     it('validates assignments by dropping unknown notes and principles while requiring new-tag support', () => {
       const index: KbIndex = {
-        notes: {
+        entries: createIndexEntries({
           'coral-alpha': createIndexNote({
             title: 'Alpha',
             tags: ['coral', 'existing-tag'],
@@ -328,7 +341,7 @@ describe('curate', () => {
             title: 'Gamma',
             mutationSeqAtPromote: 3,
           }),
-        },
+        }),
         principles: {
           'deterministic-ordering': 'Sort once before assigning metadata.',
         },
@@ -647,7 +660,7 @@ describe('curate', () => {
         mutationSeqAtPromote: 2,
       });
       runtime.writeIndex({
-        notes: {
+        entries: createIndexEntries({
           'coral-alpha': createIndexNote({
             title: 'Alpha',
             mutationSeqAtPromote: 1,
@@ -656,7 +669,7 @@ describe('curate', () => {
             title: 'Beta',
             mutationSeqAtPromote: 2,
           }),
-        },
+        }),
         principles: {},
       });
       writeCurateState(
@@ -673,7 +686,7 @@ describe('curate', () => {
     });
 
     it('returns null when pending notes stay below the first-pass threshold', async () => {
-      const notes: KbIndex['notes'] = {};
+      const notes: Record<string, ReturnType<typeof createIndexNote>> = {};
 
       for (let index = 1; index <= 9; index += 1) {
         const slug = `coral-note-${String(index).padStart(2, '0')}`;
@@ -688,7 +701,7 @@ describe('curate', () => {
         });
       }
 
-      runtime.writeIndex({ notes, principles: {} });
+      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {} });
 
       await expect(internals.claimCurateRun('2026-03-25')).resolves.toBeNull();
     });
@@ -706,7 +719,7 @@ describe('curate', () => {
         ['coral-eight', 8],
         ['coral-five', 5],
       ];
-      const notes: KbIndex['notes'] = {};
+      const notes: Record<string, ReturnType<typeof createIndexNote>> = {};
 
       for (const [slug, seq] of specs) {
         writeNote(slug, {
@@ -722,7 +735,7 @@ describe('curate', () => {
         });
       }
 
-      runtime.writeIndex({ notes, principles: {} });
+      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {} });
       writeCurateState(
         runtime,
         createCurateState({
@@ -766,7 +779,7 @@ describe('curate', () => {
     });
 
     it('claims at most one hundred notes when the max-size threshold is reached', async () => {
-      const notes: KbIndex['notes'] = {};
+      const notes: Record<string, ReturnType<typeof createIndexNote>> = {};
 
       for (let index = 101; index >= 1; index -= 1) {
         const slug = `coral-note-${String(index).padStart(3, '0')}`;
@@ -780,7 +793,7 @@ describe('curate', () => {
         });
       }
 
-      runtime.writeIndex({ notes, principles: {} });
+      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {} });
       writeCurateState(
         runtime,
         createCurateState({
@@ -819,7 +832,7 @@ describe('curate', () => {
   describe('metadata targets and commit', () => {
     it('builds metadata targets for every claimed note including no-op targets', () => {
       const index: KbIndex = {
-        notes: {
+        entries: createIndexEntries({
           'coral-alpha': createIndexNote({
             title: 'Alpha',
             tags: ['coral'],
@@ -834,7 +847,7 @@ describe('curate', () => {
             updatedAt: '2026-03-20T00:00:02.000Z',
             mutationSeqAtPromote: 1,
           }),
-        },
+        }),
         principles: {},
       };
       const assignments: ClassificationAssignment[] = [
@@ -887,7 +900,7 @@ describe('curate', () => {
         body: 'Alpha body.',
       });
       runtime.writeIndex({
-        notes: {
+        entries: createIndexEntries({
           'coral-alpha': createIndexNote({
             title: 'Alpha',
             tags: ['coral', 'existing-tag'],
@@ -895,7 +908,7 @@ describe('curate', () => {
             updatedAt,
             mutationSeqAtPromote: 4,
           }),
-        },
+        }),
         principles: {},
       });
 
@@ -918,7 +931,9 @@ describe('curate', () => {
         updatedAt,
         mutationSeqAtPromote: 4,
       });
-      expect(runtime.readIndex()?.notes['coral-alpha']).toEqual({
+      expect(runtime.readIndex()?.entries[noteEntryId('coral-alpha')]).toEqual({
+        kind: 'note',
+        slug: 'coral-alpha',
         title: 'Alpha',
         tags: ['coral', 'existing-tag', 'kb'],
         principles: ['existing-principle', 'deterministic-ordering'],
@@ -950,7 +965,7 @@ describe('curate', () => {
         mutationSeqAtPromote: 3,
       });
       runtime.writeIndex({
-        notes: {
+        entries: createIndexEntries({
           'coral-missing': createIndexNote({
             title: 'Missing',
             updatedAt: '2026-03-21T00:00:00.000Z',
@@ -966,7 +981,7 @@ describe('curate', () => {
             updatedAt: '2026-03-23T00:00:00.000Z',
             mutationSeqAtPromote: 3,
           }),
-        },
+        }),
         principles: {},
       });
 
@@ -999,8 +1014,8 @@ describe('curate', () => {
         'coral',
         'kb',
       ]);
-      expect(runtime.readIndex()?.notes['coral-stale']?.tags).toEqual(['coral']);
-      expect(runtime.readIndex()?.notes['coral-fresh']?.tags).toEqual(['coral', 'kb']);
+      expect(runtime.readIndex()?.entries[noteEntryId('coral-stale')]?.tags).toEqual(['coral']);
+      expect(runtime.readIndex()?.entries[noteEntryId('coral-fresh')]?.tags).toEqual(['coral', 'kb']);
       expect(runtime.readIndexState()).toMatchObject({
         mutationSeq: 1,
       });
@@ -1027,7 +1042,7 @@ describe('curate', () => {
         mutationSeqAtPromote: 3,
       });
       runtime.writeIndex({
-        notes: {
+        entries: createIndexEntries({
           'coral-parent-child': createIndexNote({
             title: 'Parent Child',
             tags: ['coral', 'stable-parent', 'stable-parent-child'],
@@ -1043,7 +1058,7 @@ describe('curate', () => {
             tags: ['coral', 'stable-parent'],
             mutationSeqAtPromote: 3,
           }),
-        },
+        }),
         principles: {},
       });
 
@@ -1061,7 +1076,10 @@ describe('curate', () => {
         'coral',
         'stable-parent',
       ]);
-      expect(runtime.readIndex()?.notes['coral-parent-child']?.tags).toEqual(['coral', 'stable-parent']);
+      expect(runtime.readIndex()?.entries[noteEntryId('coral-parent-child')]?.tags).toEqual([
+        'coral',
+        'stable-parent',
+      ]);
     });
 
     it('removes absorbed principles while preserving the remaining live principle list', async () => {
@@ -1072,14 +1090,14 @@ describe('curate', () => {
         mutationSeqAtPromote: 4,
       });
       runtime.writeIndex({
-        notes: {
+        entries: createIndexEntries({
           'coral-alpha': createIndexNote({
             title: 'Alpha',
             principles: ['old-principle', 'kept-principle'],
             updatedAt: '2026-03-21T00:00:00.000Z',
             mutationSeqAtPromote: 4,
           }),
-        },
+        }),
         principles: {},
       });
 
@@ -1097,7 +1115,9 @@ describe('curate', () => {
         'kept-principle',
         'new-principle',
       ]);
-      expect(runtime.readIndex()?.notes['coral-alpha']?.principles).toEqual(['kept-principle', 'new-principle']);
+      expect(runtime.readIndex()?.entries[noteEntryId('coral-alpha')]).toMatchObject({
+        principles: ['kept-principle', 'new-principle'],
+      });
     });
   });
 
@@ -1163,7 +1183,7 @@ describe('curate', () => {
     });
 
     it('keeps mutation lock acquisition flat while discovery drains pending entries and processes new proposals', async () => {
-      const notes: KbIndex['notes'] = {};
+      const notes: Record<string, ReturnType<typeof createIndexNote>> = {};
       const pendingDiscoveries = [
         {
           principle: 'deterministic-ordering',
@@ -1192,7 +1212,7 @@ describe('curate', () => {
         });
       }
 
-      runtime.writeIndex({ notes, principles: {} });
+      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {} });
       writeCurateState(
         runtime,
         createCurateState({
@@ -1246,7 +1266,7 @@ describe('curate', () => {
     });
 
     it('refines an existing principle in the conflict path and still assigns it to the proposed notes', async () => {
-      const notes: KbIndex['notes'] = {};
+      const notes: Record<string, ReturnType<typeof createIndexNote>> = {};
 
       for (let index = 1; index <= 50; index += 1) {
         const slug = `coral-discovery-${String(index).padStart(2, '0')}`;
@@ -1276,7 +1296,7 @@ describe('curate', () => {
         'utf-8',
       );
       runtime.writeIndex({
-        notes,
+        entries: createIndexEntries(notes),
         principles: {
           'single-source-of-truth': 'Keep exactly one source for each fact.',
         },
@@ -1322,7 +1342,7 @@ describe('curate', () => {
     });
 
     it('merges absorbed principles after proposal processing without recreating deleted rows', async () => {
-      const notes: KbIndex['notes'] = {};
+      const notes: Record<string, ReturnType<typeof createIndexNote>> = {};
 
       for (let index = 1; index <= 51; index += 1) {
         const slug = `coral-discovery-${String(index).padStart(2, '0')}`;
@@ -1355,7 +1375,7 @@ describe('curate', () => {
         'utf-8',
       );
       runtime.writeIndex({
-        notes,
+        entries: createIndexEntries(notes),
         principles: {
           'single-owner': 'Attach payloads to one owner.',
         },
@@ -1437,7 +1457,7 @@ describe('curate', () => {
     });
 
     it('runs cleanup successfully in a non-git KB root while removing cleanup tags', async () => {
-      const notes: KbIndex['notes'] = {};
+      const notes: Record<string, ReturnType<typeof createIndexNote>> = {};
       const spawn = vi.fn<SpawnCliFn>(async () => ({
         stdout: '[]',
         stderr: '',
@@ -1472,7 +1492,7 @@ describe('curate', () => {
       }
 
       runtime.writeIndex({
-        notes,
+        entries: createIndexEntries(notes),
         principles: {},
       });
       writeCurateState(runtime, { ...readCurateState(runtime), initialized: true });
@@ -1489,8 +1509,11 @@ describe('curate', () => {
         'coral',
         'stable-parent',
       ]);
-      expect(runtime.readIndex()?.notes['coral-pattern-note']?.tags).toEqual(['coral']);
-      expect(runtime.readIndex()?.notes['coral-parent-child']?.tags).toEqual(['coral', 'stable-parent']);
+      expect(runtime.readIndex()?.entries[noteEntryId('coral-pattern-note')]?.tags).toEqual(['coral']);
+      expect(runtime.readIndex()?.entries[noteEntryId('coral-parent-child')]?.tags).toEqual([
+        'coral',
+        'stable-parent',
+      ]);
       expect(readCurateState(runtime).processedThrough).toEqual({
         note: 'coral-note-10',
         mutationSeqAtPromote: 10,
@@ -1498,7 +1521,7 @@ describe('curate', () => {
     });
 
     it('aborts the active spawn on stop() without leaving retry state or an active claim', async () => {
-      const notes: KbIndex['notes'] = {};
+      const notes: Record<string, ReturnType<typeof createIndexNote>> = {};
       const spawnStarted = createDeferred<void>();
       const spawnAborted = createDeferred<void>();
       const spawn = vi.fn<SpawnCliFn>(async ({ signal }) => {
@@ -1539,7 +1562,7 @@ describe('curate', () => {
         });
       }
 
-      runtime.writeIndex({ notes, principles: {} });
+      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {} });
       writeCurateState(runtime, createCurateState({ initialized: true }));
       useScheduler(spawn);
 
@@ -1603,12 +1626,12 @@ describe('curate', () => {
 
       await expect(
         internals.runClassificationBatches(claim, {
-          notes: {
+          entries: createIndexEntries({
             'coral-alpha': createIndexNote({
               title: 'Alpha',
               mutationSeqAtPromote: 1,
             }),
-          },
+          }),
           principles: {},
         }),
       ).rejects.toMatchObject({
@@ -1618,7 +1641,7 @@ describe('curate', () => {
     });
 
     it('throws a CurateJsonParseError when principle discovery returns malformed JSON', async () => {
-      const notes: KbIndex['notes'] = {};
+      const notes: Record<string, ReturnType<typeof createIndexNote>> = {};
 
       for (let index = 1; index <= 50; index += 1) {
         const slug = `coral-discovery-${String(index).padStart(2, '0')}`;
@@ -1633,7 +1656,7 @@ describe('curate', () => {
         });
       }
 
-      runtime.writeIndex({ notes, principles: {} });
+      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {} });
       writeCurateState(
         runtime,
         createCurateState({
@@ -1663,7 +1686,7 @@ describe('curate', () => {
 
     it('records retry state from scheduled failures using the claimed through cursor', async () => {
       const stderrSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
-      const notes: KbIndex['notes'] = {};
+      const notes: Record<string, ReturnType<typeof createIndexNote>> = {};
 
       for (let index = 1; index <= 10; index += 1) {
         const slug = `coral-failure-${String(index).padStart(2, '0')}`;
@@ -1677,7 +1700,7 @@ describe('curate', () => {
         });
       }
 
-      runtime.writeIndex({ notes, principles: {} });
+      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {} });
       useScheduler(async () => ({
         stdout: '[',
         stderr: '',

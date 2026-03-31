@@ -1,7 +1,7 @@
 import { basename } from 'node:path';
 import yaml from 'yaml';
 import { identPattern, isRecord, isStringArray } from '../shared/mcp-utils.js';
-import type { KbNoteFrontmatter, KbNoteIdentity } from './types.js';
+import type { KbNoteFrontmatter, KbNoteIdentity, KbSourceFrontmatter } from './types.js';
 import { NOTE_SLUG_PATTERN, assertNonEmptyText } from './validation.js';
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
@@ -59,6 +59,14 @@ function normalizeOptionalMutationSeqAtPromote(value: unknown): number | undefin
   return value;
 }
 
+function normalizeOptionalNonEmptyText(value: unknown, field: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return assertNonEmptyText(value, field);
+}
+
 export function normalizePrincipleReference(value: string): string {
   const trimmed = value.trim();
   const wrapped = trimmed.match(/^\[\[(.+)\]\]$/)?.[1];
@@ -83,6 +91,19 @@ export function parseFrontmatter(content: string): KbNoteFrontmatter {
     createdAt: assertNonEmptyText(record.createdAt, 'createdAt'),
     updatedAt: assertNonEmptyText(record.updatedAt, 'updatedAt'),
     ...(mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote }),
+  };
+}
+
+export function parseSourceFrontmatter(content: string): KbSourceFrontmatter {
+  const record = parseFrontmatterRecord(content);
+  const url = normalizeOptionalNonEmptyText(record.url, 'url');
+
+  return {
+    title: assertNonEmptyText(record.title, 'title'),
+    type: assertNonEmptyText(record.type, 'type'),
+    tags: normalizeStringList(record.tags, 'tags'),
+    ...(url === undefined ? {} : { url }),
+    importedAt: assertNonEmptyText(record.importedAt, 'importedAt'),
   };
 }
 
@@ -138,6 +159,26 @@ export function serializeFrontmatter(meta: KbNoteFrontmatter): string {
         createdAt: assertNonEmptyText(meta.createdAt, 'createdAt'),
         updatedAt: assertNonEmptyText(meta.updatedAt, 'updatedAt'),
         ...(mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote }),
+      },
+      {
+        lineWidth: 0,
+      },
+    )
+    .trimEnd();
+
+  return `---\n${serialized}\n---\n`;
+}
+
+export function serializeSourceFrontmatter(meta: KbSourceFrontmatter): string {
+  const url = normalizeOptionalNonEmptyText(meta.url, 'url');
+  const serialized = yaml
+    .stringify(
+      {
+        title: assertNonEmptyText(meta.title, 'title'),
+        type: assertNonEmptyText(meta.type, 'type'),
+        tags: normalizeStringList(meta.tags, 'tags'),
+        ...(url === undefined ? {} : { url }),
+        importedAt: assertNonEmptyText(meta.importedAt, 'importedAt'),
       },
       {
         lineWidth: 0,

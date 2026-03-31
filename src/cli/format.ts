@@ -265,7 +265,7 @@ export function formatKbSearch(data: unknown, cliPrefix = 'coral-cli'): string {
   const warning = normalizeKbWarning(data.warning, cliPrefix);
   const results = data.results.map((result) => {
     if (!isRecord(result)) {
-      return { note: '-', title: '-', matched: [] as string[], snippet: '-' };
+      return { note: '-', kind: '-', title: '-', matched: [] as string[], snippet: '-' };
     }
 
     const matched = Array.isArray(result.matchedBy)
@@ -274,6 +274,7 @@ export function formatKbSearch(data: unknown, cliPrefix = 'coral-cli'): string {
 
     return {
       note: typeof result.note === 'string' ? result.note : '-',
+      kind: typeof result.kind === 'string' ? result.kind : '-',
       title: typeof result.title === 'string' ? result.title : '-',
       matched,
       snippet: typeof result.snippet === 'string' ? result.snippet : '-',
@@ -427,6 +428,52 @@ export function formatKbUpdate(data: unknown): string {
 }
 
 export function formatKbDelete(data: unknown): string {
+  if (!isRecord(data) || typeof data.deleted !== 'string') {
+    return formatUnknown(data);
+  }
+
+  return `Deleted: ${data.deleted}`;
+}
+
+export function formatKbSourceImport(data: unknown): string {
+  if (!isRecord(data) || typeof data.path !== 'string') {
+    return formatUnknown(data);
+  }
+
+  return `Imported: ${data.path}`;
+}
+
+export function formatKbSourceList(data: unknown): string {
+  if (!isRecord(data) || !Array.isArray(data.sources)) {
+    return formatUnknown(data);
+  }
+
+  const rows = data.sources.flatMap((source) => {
+    if (
+      !isRecord(source) ||
+      typeof source.slug !== 'string' ||
+      typeof source.title !== 'string' ||
+      typeof source.type !== 'string' ||
+      typeof source.importedAt !== 'string'
+    ) {
+      return [];
+    }
+
+    return [[source.slug, source.title, source.type, source.importedAt]];
+  });
+
+  if (rows.length !== data.sources.length) {
+    return formatUnknown(data);
+  }
+
+  if (rows.length === 0) {
+    return 'No sources';
+  }
+
+  return formatTable(['SLUG', 'TITLE', 'TYPE', 'IMPORTED AT'], rows);
+}
+
+export function formatKbSourceDelete(data: unknown): string {
   if (!isRecord(data) || typeof data.deleted !== 'string') {
     return formatUnknown(data);
   }

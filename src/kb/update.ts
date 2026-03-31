@@ -1,7 +1,7 @@
 import { nowIsoString } from '../shared/mcp-utils.js';
 import { serializeNote } from './frontmatter.js';
 import { loadKbNote } from './read.js';
-import type { KbUpdateInput } from './types.js';
+import { noteEntryId, type KbUpdateInput } from './types.js';
 import { assertNonEmptyText, assertNoteSlug } from './validation.js';
 import { buildNoteIndexEntry, commitIndexUpdate, writeFileAtomic } from './mutation-helpers.js';
 import type { KbRuntime } from './runtime.js';
@@ -28,7 +28,8 @@ export async function applyNoteUpdateLocked(
   commitIndexUpdate(
     rt,
     (index) => {
-      index.notes[input.note] = buildNoteIndexEntry({
+      index.entries[noteEntryId(input.note)] = buildNoteIndexEntry({
+        slug: input.note,
         ...nextFrontmatter,
         title: nextTitle,
       });

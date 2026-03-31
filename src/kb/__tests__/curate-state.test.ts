@@ -18,7 +18,7 @@ import {
 } from '../curate-state.js';
 import { parseFrontmatter } from '../frontmatter.js';
 import { createKbRuntime, type KbRuntime } from '../runtime.js';
-import type { KbIndex } from '../types.js';
+import { noteEntryId, type KbIndex, type NoteEntry } from '../types.js';
 
 function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
   return {
@@ -72,7 +72,7 @@ function renderNote({
   return `${lines.join('\n')}\n`;
 }
 
-function createIndexNote(title: string, mutationSeqAtPromote?: number): KbIndex['notes'][string] {
+function createIndexNote(title: string, mutationSeqAtPromote?: number): Omit<NoteEntry, 'kind' | 'slug'> {
   return {
     title,
     tags: ['coral'],
@@ -82,6 +82,19 @@ function createIndexNote(title: string, mutationSeqAtPromote?: number): KbIndex[
     updatedAt: '2026-03-20T00:00:00.000Z',
     ...(mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote }),
   };
+}
+
+function createIndexEntries(notes: Record<string, ReturnType<typeof createIndexNote>>): KbIndex['entries'] {
+  return Object.fromEntries(
+    Object.entries(notes).map(([slug, note]) => [
+      noteEntryId(slug),
+      {
+        kind: 'note',
+        slug,
+        ...note,
+      },
+    ]),
+  );
 }
 
 function noopSpawnCli() {
@@ -346,11 +359,11 @@ describe('curate state', () => {
     writeFileSync(join(runtime.notesDir(), 'coral-first.md'), renderNote({ title: 'Coral First' }), 'utf-8');
 
     runtime.writeIndex({
-      notes: {
+      entries: createIndexEntries({
         'coral-first': createIndexNote('Coral First'),
         'coral-second': createIndexNote('Coral Second'),
         'coral-third': createIndexNote('Coral Third', 11),
-      },
+      }),
       principles: {},
     });
     runtime.writeIndexState({
@@ -373,11 +386,11 @@ describe('curate state', () => {
     ).toBe(11);
     expect(readFileSync(join(runtime.notesDir(), 'coral-third.md'), 'utf-8')).toBe(existingContent);
     expect(runtime.readIndex()).toEqual({
-      notes: {
+      entries: createIndexEntries({
         'coral-first': createIndexNote('Coral First', 12),
         'coral-second': createIndexNote('Coral Second', 13),
         'coral-third': createIndexNote('Coral Third', 11),
-      },
+      }),
       principles: {},
     });
     expect(runtime.readIndexState()).toEqual({
@@ -415,11 +428,11 @@ describe('curate state', () => {
     );
 
     runtime.writeIndex({
-      notes: {
+      entries: createIndexEntries({
         'coral-current-floor': createIndexNote('Current Floor', 9),
         'coral-late-existing': createIndexNote('Late Existing', 11),
         'coral-needs-seq': createIndexNote('Needs Seq'),
-      },
+      }),
       principles: {},
     });
     runtime.writeIndexState({
@@ -440,11 +453,11 @@ describe('curate state', () => {
       parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-needs-seq.md'), 'utf-8')).mutationSeqAtPromote,
     ).toBe(21);
     expect(runtime.readIndex()).toEqual({
-      notes: {
+      entries: createIndexEntries({
         'coral-current-floor': createIndexNote('Current Floor', 9),
         'coral-late-existing': createIndexNote('Late Existing', 11),
         'coral-needs-seq': createIndexNote('Needs Seq', 21),
-      },
+      }),
       principles: {},
     });
     expect(runtime.readIndexState()).toEqual({
@@ -458,9 +471,9 @@ describe('curate state', () => {
 
     writeFileSync(join(runtime.notesDir(), 'coral-skip.md'), renderNote({ title: 'Skip Migration' }), 'utf-8');
     runtime.writeIndex({
-      notes: {
+      entries: createIndexEntries({
         'coral-skip': createIndexNote('Skip Migration'),
-      },
+      }),
       principles: {},
     });
     runtime.writeIndexState({
@@ -481,9 +494,9 @@ describe('curate state', () => {
       parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-skip.md'), 'utf-8')).mutationSeqAtPromote,
     ).toBeUndefined();
     expect(runtime.readIndex()).toEqual({
-      notes: {
+      entries: createIndexEntries({
         'coral-skip': createIndexNote('Skip Migration'),
-      },
+      }),
       principles: {},
     });
     expect(runtime.readIndexState()).toEqual({

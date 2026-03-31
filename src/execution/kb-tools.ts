@@ -1,10 +1,12 @@
-import { assertOwnerId } from '../shared/mcp-utils.js';
+import { assertOwnerId, isRecord } from '../shared/mcp-utils.js';
 import { deleteFn as kbDeleteFn } from '../kb/delete.js';
 import { deleteMemos, listMemos, purgeMemos, writeMemo } from '../kb/memo.js';
 import { promote as kbPromote } from '../kb/promote.js';
 import { readEntry } from '../kb/read.js';
 import { reindex as kbReindex } from '../kb/reindex.js';
 import { searchKb } from '../kb/search.js';
+import { deleteSource, listSources, persistPreparedSource } from '../kb/source-store.js';
+import { isNoteEntry, type KbSearchScope, type KbSourceFrontmatter } from '../kb/types.js';
 import { update as kbUpdate } from '../kb/update.js';
 import { compareLocale } from '../kb/validation.js';
 import type { ToolRequest } from './request-context.js';
@@ -44,6 +46,24 @@ function optionalString(args: Record<string, unknown>, key: string): string | un
   return typeof value === 'string' ? value : undefined;
 }
 
+function requireRecord(args: Record<string, unknown>, key: string): Record<string, unknown> | null {
+  const value = args[key];
+  return isRecord(value) ? value : null;
+}
+
+function optionalKbSearchScope(args: Record<string, unknown>): KbSearchScope | null | undefined {
+  const scope = optionalString(args, 'scope');
+  if (scope === undefined) {
+    return undefined;
+  }
+
+  if (scope === 'notes' || scope === 'sources' || scope === 'all') {
+    return scope;
+  }
+
+  return null;
+}
+
 export async function handleKbToolCall(request: ToolRequest, kbSubsystem: KbSubsystem): Promise<ToolRouteResponse> {
   const { kb } = kbSubsystem;
   const args = request.args;
@@ -54,7 +74,12 @@ export async function handleKbToolCall(request: ToolRequest, kbSubsystem: KbSubs
       case 'kb_search': {
         const query = requireString(args, 'query');
         if (query === null) return toolError('invalid_request', { message: 'query is required' });
-        result = await searchKb(kb, query, typeof args.top_k === 'number' ? args.top_k : 20);
+        const scope = optionalKbSearchScope(args);
+        if (scope === null) {
+          return toolError('invalid_request', { message: 'scope must be one of notes, sources, all' });
+        }
+
+        result = await searchKb(kb, query, typeof args.top_k === 'number' ? args.top_k : 20, scope ?? 'all');
         break;
       }
       case 'kb_read': {
@@ -98,6 +123,30 @@ export async function handleKbToolCall(request: ToolRequest, kbSubsystem: KbSubs
         kbSubsystem.curateScheduler.scheduleDeferredCommit();
         break;
       }
+      case 'kb_source_import': {
+        const slug = requireString(args, 'slug');
+        const stagedPath = requireString(args, 'stagedPath');
+        const meta = requireRecord(args, 'meta');
+        if (slug === null || stagedPath === null || meta === null) {
+          return toolError('invalid_request', {
+            message: 'slug, stagedPath, and meta are required',
+          });
+        }
+
+        result = await persistPreparedSource(kb, stagedPath, slug, meta as unknown as KbSourceFrontmatter);
+        kbSubsystem.curateScheduler.scheduleDeferredCommit();
+        break;
+      }
+      case 'kb_source_list':
+        result = await listSources(kb);
+        break;
+      case 'kb_source_delete': {
+        const slug = requireString(args, 'slug');
+        if (slug === null) return toolError('invalid_request', { message: 'slug is required' });
+        result = await deleteSource(kb, { slug });
+        kbSubsystem.curateScheduler.scheduleDeferredCommit();
+        break;
+      }
       case 'kb_reindex':
         result = await kbReindex(kb);
         break;
@@ -123,15 +172,12 @@ export async function handleKbToolCall(request: ToolRequest, kbSubsystem: KbSubs
         const notesByPrinciple = new Map(names.map((name) => [name, [] as string[]]));
         const orphanRefs = new Set<string>();
 
-        for (const slug of Object.keys(index.notes).sort(compareLocale)) {
-          const noteRecord = index.notes[slug];
-          if (!noteRecord) {
-            continue;
-          }
-
+        for (const noteRecord of Object.values(index.entries).filter(isNoteEntry).sort((left, right) =>
+          compareLocale(left.slug, right.slug),
+        )) {
           for (const principle of noteRecord.principles) {
             if (selected.has(principle)) {
-              notesByPrinciple.get(principle)?.push(slug);
+              notesByPrinciple.get(principle)?.push(noteRecord.slug);
               continue;
             }
             if (!(principle in index.principles)) {

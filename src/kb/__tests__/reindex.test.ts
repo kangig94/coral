@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
+import { noteEntryId } from '../types.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -142,8 +143,10 @@ Make the contract explicit first.
       'utf-8',
     );
     kb.writeIndex({
-      notes: {
-        stale: {
+      entries: {
+        [noteEntryId('stale')]: {
+          kind: 'note',
+          slug: 'stale',
           title: 'Stale',
           tags: ['old'],
           principles: ['old-principle'],
@@ -165,8 +168,10 @@ Make the contract explicit first.
     });
     expect(result.warning).toBeUndefined();
     expect(kb.readIndex()).toEqual({
-      notes: {
-        'coral-kb-mode': {
+      entries: {
+        [noteEntryId('coral-kb-mode')]: {
+          kind: 'note',
+          slug: 'coral-kb-mode',
           title: 'KB Mode',
           tags: ['coral', 'kb'],
           principles: ['contract-first-design'],
@@ -350,7 +355,7 @@ This note has source as a bare string.
 
     expect(result.notes).toBe(1); // only the valid note indexed
     const index = kb.readIndex();
-    expect(index?.notes['valid-note']).toBeDefined();
-    expect(index?.notes['bad-source']).toBeUndefined();
+    expect(index?.entries[noteEntryId('valid-note')]).toBeDefined();
+    expect(index?.entries[noteEntryId('bad-source')]).toBeUndefined();
   });
 });
