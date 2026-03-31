@@ -306,7 +306,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
         try {
           await rebuildTextArtifacts(kbRuntime, startSeq);
         } catch (error: unknown) {
-          throw new Error(`KB text search is unavailable: ${errorMessage(error)}`);
+          throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
         }
       } else if (cachedOramaIndex === null) {
         try {
@@ -315,7 +315,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
           try {
             await rebuildTextArtifacts(kbRuntime, startSeq);
           } catch (error: unknown) {
-            throw new Error(`KB text search is unavailable: ${errorMessage(error)}`);
+            throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
           }
         }
       }

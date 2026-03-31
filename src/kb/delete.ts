@@ -14,7 +14,7 @@ export async function deleteFn(rt: KbRuntime, input: KbDeleteInput): Promise<{ d
       rmSync(notePath);
     } catch (error: unknown) {
       if (isNoEntryError(error)) {
-        throw new Error(`KB note not found: ${note}`);
+        throw new Error(`KB note not found: ${note}`, { cause: error });
       }
       throw error;
     }

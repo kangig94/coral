@@ -59,8 +59,8 @@ export default tseslint.config(
         ignoreRestSiblings: true,
       }],
 
-      // Demote to warn for initial adoption — fix incrementally
-      'preserve-caught-error': 'warn',
+      // Ensure re-thrown errors preserve the original cause for debugging
+      'preserve-caught-error': 'error',
 
       // -- Principle 5: Safe Type Boundaries --
       // JSON.parse and dynamic patterns make no-unsafe-* too noisy.

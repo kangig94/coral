@@ -338,7 +338,7 @@ export class BackendClient {
       });
     } catch (error) {
       if (error instanceof Error) throw error;
-      throw new Error(`Backend communication error: ${String(error)}`);
+      throw new Error(`Backend communication error: ${String(error)}`, { cause: error });
     }
   }
 
@@ -391,7 +391,7 @@ export class BackendClient {
       });
     } catch (error) {
       if (error instanceof Error) throw error;
-      throw new Error(`Backend communication error: ${String(error)}`);
+      throw new Error(`Backend communication error: ${String(error)}`, { cause: error });
     }
   }
 }
