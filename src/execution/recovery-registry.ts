@@ -1,4 +1,4 @@
-import type { PersistedLaunchRecord, PersistedRuntimeRecord } from '../shared/types.js';
+import { isDurableCliRuntime, type PersistedLaunchRecord, type PersistedRuntimeRecord } from '../shared/types.js';
 import type { AbortResult } from './abort-registry.js';
 
 export interface RecoveryEntry {
@@ -21,7 +21,8 @@ export class RecoveryRegistry {
 
     // Install abort delegate: queued → noop (cancel handled by service after adoption),
     // running → kill PID from runtimeRecord
-    if (runtimeRecord) {
+    // TODO(AC2-AC10): handle app-server abort without assuming a per-job PID.
+    if (isDurableCliRuntime(runtimeRecord)) {
       const pid = runtimeRecord.pid;
       this.abortHandlers.set(jobId, () => {
         try {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { RecoveryRegistry } from '../recovery-registry.js';
-import type { PersistedLaunchRecord, PersistedRuntimeRecord } from '../../shared/types.js';
+import type { DurableCliRuntimeRecord, PersistedLaunchRecord } from '../../shared/types.js';
 
 function makeLaunchRecord(overrides: Partial<PersistedLaunchRecord> = {}): PersistedLaunchRecord {
   return {
@@ -18,7 +18,7 @@ function makeLaunchRecord(overrides: Partial<PersistedLaunchRecord> = {}): Persi
   };
 }
 
-function makeRuntimeRecord(overrides: Partial<PersistedRuntimeRecord> = {}): PersistedRuntimeRecord {
+function makeRuntimeRecord(overrides: Partial<DurableCliRuntimeRecord> = {}): DurableCliRuntimeRecord {
   return {
     pid: 12345,
     stdoutPath: '/tmp/stdout',

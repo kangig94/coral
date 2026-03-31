@@ -19,6 +19,41 @@ async function loadEngine(): Promise<EngineModule> {
   return import('../engine.js');
 }
 
+function createProviderServerScript(): string {
+  return [
+    "const { createInterface } = require('node:readline');",
+    'const rl = createInterface({ input: process.stdin });',
+    "rl.on('line', (line) => {",
+    '  const msg = JSON.parse(line);',
+    "  if (typeof msg.id === 'number' && msg.method === 'ping') {",
+    "    process.stdout.write(JSON.stringify({ id: msg.id, result: { pong: msg.params?.value ?? null } }) + '\\n');",
+    '    return;',
+    '  }',
+    "  if (msg.method === 'notify-back') {",
+    "    process.stdout.write(JSON.stringify({ method: 'tick', params: msg.params ?? {} }) + '\\n');",
+    '    return;',
+    '  }',
+    "  if (typeof msg.id === 'number' && msg.method === 'hang') {",
+    '    return;',
+    '  }',
+    "  if (typeof msg.id === 'number') {",
+    "    process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32601, message: 'unknown method' } }) + '\\n');",
+    '  }',
+    '});',
+    "process.on('SIGTERM', () => process.exit(0));",
+  ].join('');
+}
+
+async function waitForValue<T>(read: () => T | null, timeoutMs = 2_000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = read();
+    if (value !== null) return value;
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out after ${timeoutMs}ms`);
+}
+
 describe('engine admission queue', () => {
   let engine: EngineModule;
 
@@ -440,5 +475,71 @@ describe('spawnDurableJob', () => {
     expect(result.stdout).toContain('{"step":"start"}');
     const exitRecord = JSON.parse(readFileSync(join(jobDir, 'exit.json'), 'utf-8')) as { signal: string | null };
     expect(exitRecord.signal).toBe('SIGTERM');
+  });
+});
+
+describe('provider servers', () => {
+  let engine: EngineModule;
+
+  beforeEach(async () => {
+    process.env.CORAL_MAX_SESSIONS = '1';
+    process.env.CORAL_DISCUSS_MAX_SESSIONS = '1';
+    engine = await loadEngine();
+  });
+
+  afterEach(() => {
+    engine.killAllChildren();
+    restoreEnv('CORAL_MAX_SESSIONS', ORIGINAL_MAX_CHILDREN);
+    restoreEnv('CORAL_DISCUSS_MAX_SESSIONS', ORIGINAL_DISCUSS_MAX_CHILDREN);
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  it('spawns a provider server with JSON-RPC transport and separate generation/count tracking', async () => {
+    const handle = await engine.spawnProviderServer({
+      provider: 'codex',
+      command: process.execPath,
+      args: ['-e', createProviderServerScript()],
+    });
+
+    expect(handle.pid).toBeGreaterThan(0);
+    expect(handle.generation).toBe(1);
+    expect(engine.getProviderServerGeneration(handle.pid)).toBe(1);
+    expect(engine.getProviderServerCount()).toBe(1);
+    expect(engine.activeChildren.size).toBe(0);
+
+    const notifications: Array<{ method: string; params?: Record<string, unknown> }> = [];
+    const unsubscribe = handle.onNotification((message) => {
+      notifications.push(message);
+    });
+
+    await expect(handle.rpc.request('ping', { value: 'pong' })).resolves.toEqual({ pong: 'pong' });
+    handle.rpc.notify('notify-back', { ready: true });
+
+    expect(await waitForValue(() => notifications[0] ?? null)).toEqual({
+      method: 'tick',
+      params: { ready: true },
+    });
+
+    unsubscribe();
+    await handle.close();
+    expect(engine.getProviderServerCount()).toBe(0);
+    expect(engine.getProviderServerGeneration(handle.pid)).toBeNull();
+  });
+
+  it('killAllChildren drains provider servers and rejects pending RPC requests', async () => {
+    const handle = await engine.spawnProviderServer({
+      provider: 'codex',
+      command: process.execPath,
+      args: ['-e', createProviderServerScript()],
+    });
+
+    const pending = handle.rpc.request('hang', {});
+
+    engine.killAllChildren();
+
+    expect(engine.getProviderServerCount()).toBe(0);
+    await expect(pending).rejects.toThrow('Provider server codex killed during backend shutdown');
+    await handle.close();
   });
 });

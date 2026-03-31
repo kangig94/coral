@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { pluginRootNamespace } from '../infra/paths.js';
 import {
+  isDurableCliRuntime,
   isTerminalPhase,
   type JobKind,
   type JobPhase,
@@ -701,6 +702,11 @@ export class ExecutionService {
   adoptRunningJob(launchRecord: PersistedLaunchRecord, runtimeRecord: PersistedRuntimeRecord): { cleanup: () => void } {
     const pool = (launchRecord.pool || 'default') as LaunchPool;
     const jobId = launchRecord.jobId;
+
+    // TODO(AC2-AC10): branch on runtime transport during startup recovery instead of assuming a durable PID.
+    if (!isDurableCliRuntime(runtimeRecord)) {
+      throw new Error(`Unsupported runtime transport for adoptRunningJob(${jobId}): ${runtimeRecord.transport}`);
+    }
 
     this.jobPools.set(jobId, pool);
     this.progressStore.hydrateEventCounter(jobId);

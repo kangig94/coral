@@ -2,6 +2,7 @@ node_modules/
 dist/
 *.tsbuildinfo
 ref/
+tmp/
 
 .claude/coral
 .claude/settings.local.json

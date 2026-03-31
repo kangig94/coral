@@ -8,6 +8,22 @@ export interface ProviderRecoveryMeta {
   [key: string]: unknown;
 }
 
+export interface ProviderServerSpec {
+  provider: string;
+  key: string;
+  command: string;
+  args: string[];
+  cwd: string;
+  env?: Record<string, string>;
+  idleTtlMs?: number;
+}
+
+export interface ProviderServerLease {
+  rpc<R = unknown>(method: string, params: Record<string, unknown>): Promise<R>;
+  subscribe(handler: (msg: { method: string; params?: Record<string, unknown> }) => void): () => void;
+  release(): void;
+}
+
 /** Contract for provider-owned recovery after backend replacement. */
 export interface ProviderRecoveryContract {
   /**
@@ -65,6 +81,11 @@ export interface ProviderRuntime {
   signal: AbortSignal;
   onEvent: (event: ProviderProgressEvent) => void;
   runCli: ProviderCliRunner;
+  acquireServer?: (spec: ProviderServerSpec) => Promise<ProviderServerLease>;
+  checkpointRecovery?: (update: {
+    conversationRef?: string;
+    providerMeta: ProviderRecoveryMeta;
+  }) => void;
 }
 
 export interface Provider {

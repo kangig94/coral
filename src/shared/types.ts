@@ -193,7 +193,10 @@ export interface PersistedLaunchRecord {
 }
 
 /** Durable runtime record written by the wrapper after spawn succeeds. */
-export interface PersistedRuntimeRecord {
+export type PersistedRuntimeRecord = DurableCliRuntimeRecord | AppServerRuntimeRecord;
+
+export interface DurableCliRuntimeRecord {
+  transport?: 'durable-cli';
   pid: number;
   stdoutPath: string;
   stderrPath: string;
@@ -202,6 +205,32 @@ export interface PersistedRuntimeRecord {
   providerMeta?: Record<string, unknown>;
   /** Byte offset watermark for stable tail replay without duplicated progress. */
   tailWatermark?: number;
+}
+
+/** Durable runtime record written before an app-server lease is granted. */
+export interface AppServerRuntimeRecord {
+  transport: 'app-server';
+  startTime: string;
+  providerMeta: {
+    serverKey: string;
+    leaseState: 'waiting' | 'acquired';
+    serverGeneration?: number;
+    threadId?: string;
+    turnId?: string;
+    recoveryPolicy: 'session_continuity_only';
+  };
+}
+
+export function isDurableCliRuntime(
+  record: PersistedRuntimeRecord | null | undefined,
+): record is DurableCliRuntimeRecord {
+  return record !== null && record !== undefined && record.transport !== 'app-server';
+}
+
+export function isAppServerRuntime(
+  record: PersistedRuntimeRecord | null | undefined,
+): record is AppServerRuntimeRecord {
+  return record?.transport === 'app-server';
 }
 
 /** Durable completion sentinel written after output flush and exit. */

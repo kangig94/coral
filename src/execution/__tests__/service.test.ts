@@ -6,9 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as ResolverMod from '../resolver.js';
 import type {
+  DurableCliRuntimeRecord,
   PersistedLaunchRecord,
   PersistedProgressRecord,
-  PersistedRuntimeRecord,
   PersistedStatusRecord,
   ProviderRequest,
   ProviderResult,
@@ -1313,7 +1313,7 @@ describe('ExecutionService', () => {
       };
     }
 
-    function makeRuntimeRecord(overrides?: Partial<PersistedRuntimeRecord>): PersistedRuntimeRecord {
+    function makeRuntimeRecord(overrides?: Partial<DurableCliRuntimeRecord>): DurableCliRuntimeRecord {
       return {
         pid: process.pid,
         stdoutPath: '/dev/null',

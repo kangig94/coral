@@ -33,6 +33,7 @@ import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { type ExecutionService as DefaultExecutionService } from './service.js';
 import {
   belongsToNamespace,
+  isDurableCliRuntime,
   isLivePhase,
   isTerminalPhase,
   readBackendNamespace,
@@ -530,6 +531,10 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         const service = getExecutionService(ctx) as DefaultExecutionService;
         const provider = getNewProvider(launchRecord.provider);
         const recovery = provider?.recovery;
+        // TODO(AC2-AC10): route app-server runtime recovery through transport-aware continuity handling.
+        if (!isDurableCliRuntime(runtimeRecord)) {
+          throw new Error(`Unsupported runtime transport for recovered job ${jobId}: ${runtimeRecord.transport}`);
+        }
         let adoptedRuntimeRecord = runtimeRecord;
         assertStartupStillActive();
         ({ cleanup } = service.adoptRunningJob(launchRecord, runtimeRecord));
