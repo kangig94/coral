@@ -1,4 +1,7 @@
-import { detectCodexCli } from '../cli-detection.js';
+import { spawnSync } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
 import type { ProviderRuntime, ProviderServerLease, Provider } from '../types.js';
 import { requireConversationRef } from '../types.js';
@@ -37,6 +40,9 @@ type CaptureState = {
   runtime: ProviderRuntime;
   sessionId: string;
 };
+
+const CODEX_APP_SERVER_UPGRADE_MESSAGE = 'Codex CLI does not support app-server. Update with: npm update -g @openai/codex';
+const CODEX_AUTH_ERROR_MESSAGE = 'Codex CLI is not authenticated. Run "codex login" to create ~/.codex/auth.json.';
 
 function createProgressEvent(sessionId: string, message: string): { jobId: string; message: string; ts: string } {
   return {
@@ -432,13 +438,44 @@ async function captureTurn(
 }
 
 async function preflight(): Promise<void> {
-  const cli = await detectCodexCli();
-  if (!cli.available) {
-    throw new Error(`Codex CLI not available: ${cli.error}`);
+  assertCodexAppServerAvailable();
+  await assertCodexAuthTokens();
+}
+
+function assertCodexAppServerAvailable(): void {
+  const result = spawnSync('codex', ['app-server', '--help'], {
+    encoding: 'utf8',
+    timeout: 10_000,
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error(CODEX_APP_SERVER_UPGRADE_MESSAGE);
   }
-  if (cli.authState === 'unauthenticated') {
-    throw new Error(`Codex CLI unauthenticated: ${cli.authError}`);
+}
+
+async function assertCodexAuthTokens(): Promise<void> {
+  const authPath = join(homedir(), '.codex', 'auth.json');
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(await readFile(authPath, 'utf8')) as unknown;
+  } catch {
+    throw new Error(CODEX_AUTH_ERROR_MESSAGE);
   }
+
+  if (!hasCodexAuthTokens(parsed)) {
+    throw new Error(CODEX_AUTH_ERROR_MESSAGE);
+  }
+}
+
+function hasCodexAuthTokens(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const tokens = (value as { tokens?: unknown }).tokens;
+  if (!tokens || typeof tokens !== 'object') return false;
+
+  return ['access_token', 'refresh_token', 'id_token'].some((key) => {
+    const token = (tokens as Record<string, unknown>)[key];
+    return typeof token === 'string' && token.trim().length > 0;
+  });
 }
 
 async function execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult> {
