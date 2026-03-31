@@ -1,0 +1,4 @@
+dist/
+bridge/
+node_modules/
+*.cjs
