@@ -110,7 +110,7 @@ function baseForkResult(
   return {
     response: 'ok',
     sessionId: 'claude-thread',
-    model: 'sonnet',
+    
     durationMs: 15,
     costUsd: 0,
     aborted: false,
@@ -162,7 +162,7 @@ describe('claude provider adapter', () => {
       makeRequest({
         instruction: { channel: 'system', content: 'You are the architect agent' },
         systemPrompt: 'Honor repository policy',
-        model: 'sonnet',
+        
         cwd: '/repo',
         effort: 'medium',
         bypassPermissions: true,
@@ -178,7 +178,7 @@ describe('claude provider adapter', () => {
       }));
       expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.objectContaining({
         prompt: 'Run checks',
-        model: 'sonnet',
+        
       }));
     });
     lease.emit({
@@ -215,7 +215,7 @@ describe('claude provider adapter', () => {
       makeRequest({
         instruction: { channel: 'prompt', content: 'First follow this instruction' },
         systemPrompt: 'System stays separate',
-        model: 'sonnet',
+        
       }),
       runtime,
     );
@@ -226,7 +226,7 @@ describe('claude provider adapter', () => {
       }));
       expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.objectContaining({
         prompt: 'First follow this instruction\n\n---\n\nRun checks',
-        model: 'sonnet',
+        
       }));
     });
     lease.emit({
@@ -398,7 +398,7 @@ describe('claude provider adapter', () => {
         brokerTurnId: 'turn-result',
         result: 'mapped claude text',
         sessionId: 'claude-session-9',
-        model: 'sonnet',
+        
         durationMs: 18,
         costUsd: 0.42,
       },
@@ -408,7 +408,7 @@ describe('claude provider adapter', () => {
     expect(result).toMatchObject({
       content: 'mapped claude text',
       conversationRef: 'claude-session-9',
-      model: 'sonnet',
+      
       durationMs: 18,
       exitCode: 0,
       usage: { costUsd: 0.42 },

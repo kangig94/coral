@@ -1,14 +1,10 @@
 import type { ProviderRequest } from '../../shared/types.js';
+import { resolveModelTier } from '../../shared/schemas.js';
 import type { ProviderServerSpec } from '../types.js';
 import type { ThreadResumeParams, ThreadStartParams, TurnStartParams, UserInput } from './protocol.js';
 
-const ABSTRACT_MODEL_TIERS = new Set(['opus', 'sonnet', 'haiku']);
-
 export function resolveCodexModel(model: string | undefined): string | undefined {
-  if (model !== undefined && ABSTRACT_MODEL_TIERS.has(model)) {
-    return undefined;
-  }
-  return model;
+  return resolveModelTier(model);
 }
 
 export function buildCodexPrompt(request: Pick<ProviderRequest, 'action' | 'instruction' | 'systemPrompt' | 'prompt'>): string {

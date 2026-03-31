@@ -18,7 +18,7 @@ import {
   type ProviderAppServerContract,
   type ProviderRuntime,
 } from '../types.js';
-import type { EffortLevel } from '../../shared/schemas.js';
+import { resolveModelTier, type EffortLevel } from '../../shared/schemas.js';
 import type { ClaudeBootstrapSignature, SessionProbeResult } from '../claude-appserver/protocol.js';
 import {
   buildClaudeEnvHash,
@@ -84,7 +84,7 @@ function mapResult(result: ClaudeExecResult, fallbackConversationRef?: string): 
   };
 }
 
-function parseError(error: unknown, fallbackModel: string): ProviderResult {
+function parseError(error: unknown, fallbackModel: string): ProviderResult | null {
   if (error instanceof ClaudeExecParseError) {
     return {
       content: '',
@@ -95,22 +95,12 @@ function parseError(error: unknown, fallbackModel: string): ProviderResult {
       errors: [error.failure],
     };
   }
-  throw error;
+  return null;
 }
 
-const TIER_RANK: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3 };
-
-function resolveModelCap(env: Record<string, string>): string {
-  return env.CORAL_CLAUDE_MODEL_CAP ?? 'opus';
-}
-
-function capModel(model: string | undefined, env: Record<string, string>): string | undefined {
-  const cap = resolveModelCap(env);
-  if (!model) return model;
-  const modelRank = TIER_RANK[model];
-  const capRank = TIER_RANK[cap];
-  if (modelRank === undefined || capRank === undefined) return model;
-  return modelRank > capRank ? cap : model;
+function resolveClaudeModel(model: string | undefined, env: Record<string, string>): string | undefined {
+  const cap = env.CORAL_CLAUDE_MODEL_CAP ?? 'opus';
+  return resolveModelTier(model, cap);
 }
 
 function requirePersistentRuntime(runtime: ProviderRuntime): {
@@ -136,7 +126,7 @@ function buildPreparedRequest(
   return {
     prompt,
     systemPrompt,
-    model: capModel(request.model, request.coralEnv),
+    model: resolveClaudeModel(request.model, request.coralEnv),
     effort: request.effort as EffortLevel | undefined,
   };
 }
@@ -144,7 +134,7 @@ function buildPreparedRequest(
 function buildNewSessionRequiredResult(request: ProviderRequest, reason: string): ProviderResult {
   return {
     content: '',
-    model: capModel(request.model, request.coralEnv),
+    model: resolveClaudeModel(request.model, request.coralEnv),
     nonResumable: true,
     notice: reason,
     errors: [reason],
@@ -197,7 +187,9 @@ async function executeFork(
     const conversationRef = requireConversationRef(request, 'fork');
     return mapResult(await executeClaudeFork(conversationRef, prepared.prompt, options));
   } catch (error) {
-    return parseError(error, request.model ?? 'unknown');
+    const result = parseError(error, request.model ?? 'unknown');
+    if (result) return result;
+    throw error;
   }
 }
 

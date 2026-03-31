@@ -19,6 +19,43 @@ export const cwdSchema = z.string().optional();
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
 
+const VALID_EFFORT_LEVELS = new Set<string>(['low', 'medium', 'high', 'max']);
+const ABSTRACT_MODEL_TIERS: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3 };
+
+/** Validate and resolve effort level from request + environment. */
+export function resolveEffort(
+  requestEffort: string | undefined,
+  env?: Record<string, string>,
+  defaultEffort: EffortLevel = 'high',
+): EffortLevel {
+  if (requestEffort !== undefined) {
+    if (!VALID_EFFORT_LEVELS.has(requestEffort)) {
+      throw new Error(`Invalid effort="${requestEffort}". Valid values: low, medium, high, max`);
+    }
+    return requestEffort as EffortLevel;
+  }
+  const envEffort = env?.CORAL_EFFORT;
+  if (envEffort !== undefined) {
+    if (!VALID_EFFORT_LEVELS.has(envEffort)) {
+      throw new Error(`Invalid CORAL_EFFORT="${envEffort}". Valid values: low, medium, high, max`);
+    }
+    return envEffort as EffortLevel;
+  }
+  return defaultEffort;
+}
+
+/** Resolve abstract model tiers. Returns undefined for abstract tiers (provider decides). */
+export function resolveModelTier(model: string | undefined, cap?: string): string | undefined {
+  if (model === undefined) return undefined;
+  const modelRank = ABSTRACT_MODEL_TIERS[model];
+  if (modelRank === undefined) return model;
+  if (cap !== undefined) {
+    const capRank = ABSTRACT_MODEL_TIERS[cap];
+    if (capRank !== undefined && modelRank > capRank) return cap;
+  }
+  return undefined;
+}
+
 export const coralOpSchema = z
   .string()
   .regex(/^coral:[a-z0-9][a-z0-9-]*$/, 'Op must be coral:<agent-name> (lowercase letters, digits, hyphens)');

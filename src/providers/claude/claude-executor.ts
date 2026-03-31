@@ -1,4 +1,4 @@
-import type { EffortLevel } from '../../shared/schemas.js';
+import { resolveEffort, type EffortLevel } from '../../shared/schemas.js';
 import { parseClaudeStreamJson, type ParsedClaudeStreamOutput } from './output-parser.js';
 import type { ClaudeExecFailure, ClaudeExecResult } from './types.js';
 import type { ProviderCliRunner } from '../runner-port.js';
@@ -23,26 +23,6 @@ export class ClaudeExecParseError extends Error {
     this.name = 'ClaudeExecParseError';
     this.failure = failure;
   }
-}
-
-const VALID_CLAUDE_EFFORT = new Set(['low', 'medium', 'high', 'max']);
-
-function resolveClaudeDefaultEffort(env: Record<string, string>): NonNullable<EffortLevel> {
-  const raw = env.CORAL_CLAUDE_EFFORT;
-  if (raw !== undefined) {
-    if (!VALID_CLAUDE_EFFORT.has(raw)) {
-      throw new Error(`Invalid CORAL_CLAUDE_EFFORT="${raw}". Valid values: low, medium, high, max`);
-    }
-    return raw as NonNullable<EffortLevel>;
-  }
-  const shared = env.CORAL_EFFORT;
-  if (shared !== undefined) {
-    if (!VALID_CLAUDE_EFFORT.has(shared)) {
-      throw new Error(`Invalid CORAL_EFFORT="${shared}". Valid values: low, medium, high, max`);
-    }
-    return shared as NonNullable<EffortLevel>;
-  }
-  return 'high';
 }
 
 const STREAM_JSON_ARGS = ['-p', '--verbose', '--output-format', 'stream-json'];
@@ -78,7 +58,7 @@ function appendSharedArgs(args: string[], options: ClaudeExecOptions): void {
   if (options.bypassPermissions) args.push('--dangerously-skip-permissions');
   if (options.systemPrompt) args.push('--append-system-prompt', options.systemPrompt);
   if (options.model) args.push('--model', options.model);
-  const effort = options.effort ?? resolveClaudeDefaultEffort(options.environment);
+  const effort = resolveEffort(options.effort, options.environment);
   args.push('--effort', effort);
 }
 
