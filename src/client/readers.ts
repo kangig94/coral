@@ -500,7 +500,7 @@ function parseDiscussDiscoveryData(value: unknown, source: string): DiscussDisco
   return {
     source,
     updatedAt: value.updatedAt,
-    sessions: value.sessions as DiscussDiscoverySession[],
+    sessions: value.sessions,
   };
 }
 
@@ -521,7 +521,7 @@ function parseDiscussSummaryIndexData(value: unknown, source: string): DiscussSu
   return {
     source,
     updatedAt: value.updatedAt,
-    sessions: value.sessions as DiscussSummaryIndexRow[],
+    sessions: value.sessions,
   };
 }
 

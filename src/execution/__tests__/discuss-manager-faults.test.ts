@@ -6,7 +6,6 @@ import * as discussSubflows from '../discuss/subflows.js';
 import { recoverPersistedSessionsFromStore } from '../discuss/operations.js';
 import { getSession } from '../discuss/registry.js';
 import {
-  DEFAULT_TOPIC,
   cleanupDiscussHarnesses,
   createDiscussHarness,
   createExecutionServiceStub,

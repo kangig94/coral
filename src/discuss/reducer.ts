@@ -4,7 +4,7 @@ import type {
   AgentRunBoundEvent,
   BidRoundClosedEvent,
   DiscussDomainEvent,
-  FollowUpAnsweredEvent,
+
   PersistedDiscussAgentRun,
   PersistedDiscussRuntime,
   PersistedDiscussSnapshot,

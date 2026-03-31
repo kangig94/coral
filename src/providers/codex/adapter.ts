@@ -42,7 +42,7 @@ function toProviderResult(result: CodexRawResult, fallbackConversationRef?: stri
   return {
     ...mapProviderResultBase(result),
     conversationRef: result.sessionId ?? fallbackConversationRef,
-    nonResumable: result.sessionId == null ? true : undefined,
+    nonResumable: result.sessionId === null || result.sessionId === undefined ? true : undefined,
     exitCode: result.exitCode,
     errors: result.errors.length > 0 ? result.errors : undefined,
     warnings: result.warnings.length > 0 ? result.warnings : undefined,

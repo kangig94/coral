@@ -76,7 +76,7 @@ function truncateSnippet(snippet: string, matchOffset: number): string {
 
   const windowSize = 200;
   let start = Math.max(0, matchOffset - 80);
-  let end = Math.min(snippet.length, start + windowSize);
+  const end = Math.min(snippet.length, start + windowSize);
   if (end - start < windowSize) {
     start = Math.max(0, end - windowSize);
   }

@@ -153,8 +153,8 @@ Keep the body stable.
     markTextIndexStale(alwaysThrows, 'stale after promote');
 
     expect(stderrSpy).toHaveBeenCalledOnce();
-    expect(stderrSpy.mock.calls[0]![0]).toContain('markTextIndexStale');
-    expect(stderrSpy.mock.calls[0]![0]).toContain('disk full');
+    expect(stderrSpy.mock.calls[0][0]).toContain('markTextIndexStale');
+    expect(stderrSpy.mock.calls[0][0]).toContain('disk full');
     stderrSpy.mockRestore();
   });
 

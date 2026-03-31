@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { type z } from 'zod';
 import { assertOwnerId, textResult, type McpResult } from '../shared/mcp-utils.js';
 import {
   internalProviderFieldsShape,
@@ -82,7 +82,7 @@ function toProviderFields(
   };
 }
 
-function toolValidationError(error: z.ZodError): ToolRouteResponse {
+function _toolValidationError(error: z.ZodError): ToolRouteResponse {
   return {
     statusCode: 200,
     body: jsonTextResult(
@@ -95,7 +95,7 @@ function toolValidationError(error: z.ZodError): ToolRouteResponse {
   };
 }
 
-function toolError(error: string, detail?: Record<string, unknown>): ToolRouteResponse {
+function _toolError(error: string, detail?: Record<string, unknown>): ToolRouteResponse {
   return {
     statusCode: 200,
     body: jsonTextResult(
@@ -108,7 +108,7 @@ function toolError(error: string, detail?: Record<string, unknown>): ToolRouteRe
   };
 }
 
-function toolSuccess(data: unknown): ToolRouteResponse {
+function _toolSuccess(data: unknown): ToolRouteResponse {
   return {
     statusCode: 200,
     body: jsonTextResult(data),

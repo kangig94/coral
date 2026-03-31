@@ -274,6 +274,8 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
     }
   } finally {
     process.off('SIGINT', onSigint);
-    await abortPromise;
+    if (abortPromise !== null) {
+      await (abortPromise as Promise<void>);
+    }
   }
 }

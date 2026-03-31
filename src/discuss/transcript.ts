@@ -74,7 +74,7 @@ function renderBidRows(
   agents: Record<string, AgentState>,
   effectiveBids?: Record<string, number>,
 ): string {
-  const hasEffectiveBids = effectiveBids != null;
+  const hasEffectiveBids = effectiveBids !== null && effectiveBids !== undefined;
   const rows = Object.entries(bids)
     .sort(([lhsName, lhsRaw], [rhsName, rhsRaw]) => {
       const lhs = effectiveBids?.[lhsName] ?? lhsRaw;

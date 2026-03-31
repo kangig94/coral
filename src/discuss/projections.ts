@@ -1,5 +1,4 @@
 import type {
-  DiscussAuditTranscriptEntryDto,
   DiscussAuditView,
   DiscussControlTranscriptEntryDto,
   DiscussControlView,
@@ -54,7 +53,7 @@ export function buildAuditView(snapshot: PersistedDiscussSnapshot): DiscussAudit
   return {
     transcript: snapshot.state.transcript.map((entry) =>
       cloneTranscriptEntry(entry),
-    ) as DiscussAuditTranscriptEntryDto[],
+    ),
     lastSeq: snapshot.lastAppliedSeq,
   };
 }

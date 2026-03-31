@@ -73,8 +73,8 @@ function mapResult(result: ClaudeExecResult, fallbackConversationRef?: string): 
   return {
     ...mapProviderResultBase(result),
     conversationRef: result.sessionId ?? fallbackConversationRef,
-    nonResumable: result.sessionId == null ? true : undefined,
-    usage: result.costUsd != null ? { costUsd: result.costUsd } : undefined,
+    nonResumable: result.sessionId === null || result.sessionId === undefined ? true : undefined,
+    usage: result.costUsd !== null && result.costUsd !== undefined ? { costUsd: result.costUsd } : undefined,
   };
 }
 

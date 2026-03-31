@@ -140,7 +140,7 @@ function parseHookOutput(stdout: string): HookOutput | null {
   try {
     const parsed = JSON.parse(trimmed) as Partial<HookOutput>;
     if (
-      parsed.hookSpecificOutput == null ||
+      parsed.hookSpecificOutput === null || parsed.hookSpecificOutput === undefined ||
       typeof parsed.hookSpecificOutput.hookEventName !== 'string' ||
       typeof parsed.hookSpecificOutput.additionalContext !== 'string'
     ) {
@@ -166,7 +166,7 @@ function parseJsonOutput<T>(stdout: string): T | null {
 
 function expectHookOutput(result: HookRunResult): HookOutput {
   const output = parseHookOutput(result.stdout);
-  if (output == null) {
+  if (output === null || output === undefined) {
     throw new Error(
       `Expected hookSpecificOutput JSON, received stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`,
     );
@@ -178,7 +178,7 @@ function expectHookOutput(result: HookRunResult): HookOutput {
 function expectStopOutput(result: HookRunResult): StopHookOutput {
   const output = parseJsonOutput<Partial<StopHookOutput>>(result.stdout);
   if (
-    output == null ||
+    output === null || output === undefined ||
     typeof output.decision !== 'string' ||
     typeof output.reason !== 'string' ||
     typeof output.systemMessage !== 'string'

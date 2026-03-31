@@ -30,7 +30,7 @@ import * as discussOperations from './discuss/operations.js';
 import type { removeLockIfOwner } from './backend-lock.js';
 import { getNewProvider } from '../providers/registry.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
-import { ExecutionService as DefaultExecutionService } from './service.js';
+import { type ExecutionService as DefaultExecutionService } from './service.js';
 import {
   belongsToNamespace,
   isLivePhase,
@@ -464,7 +464,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     writeBackendInfoFn,
     removeBackendInfoIfOwnerFn,
     removeLockIfOwnerFn,
-    recoverOrphanedJobsFn,
+    recoverOrphanedJobsFn: _recoverOrphanedJobsFn,
     cleanupStaleJobsFn,
     markJobsAsErrorFn,
     killAllChildrenFn,

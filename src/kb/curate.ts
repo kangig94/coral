@@ -324,7 +324,7 @@ function pendingExtendsBeyondCursor(pendingNotes: ClaimCandidate[], cursor: Cura
     return false;
   }
 
-  return compareCursor(pendingNotes[pendingNotes.length - 1]!.cursor, cursor) > 0;
+  return compareCursor(pendingNotes[pendingNotes.length - 1].cursor, cursor) > 0;
 }
 
 function cursorFromTarget(target: MetadataTarget): CurateCursor {
@@ -537,7 +537,7 @@ function selectDiscoveryBatch(allClassified: ClaimCandidate[], highSeq: number, 
     const fill = Math.min(DISCOVERY_BATCH_SIZE - selected.length, oldNotes.length);
     const start = offset % oldNotes.length;
     for (let i = 0; i < fill; i++) {
-      selected.push(oldNotes[(start + i) % oldNotes.length]!);
+      selected.push(oldNotes[(start + i) % oldNotes.length]);
     }
     nextOffset = (start + fill) % oldNotes.length;
   }
@@ -1421,7 +1421,8 @@ export function createCurateScheduler({
     }
 
     if (failure !== null) {
-      throw failure;
+      if (failure instanceof Error) throw failure;
+      throw new Error(typeof failure === 'string' ? failure : 'Unknown error');
     }
 
     return nextState;

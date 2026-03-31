@@ -37,7 +37,11 @@ export const backendLog = {
   },
 
   error(message: string, cause?: unknown): void {
-    const suffix = cause instanceof Error ? `: ${cause.message}` : cause ? `: ${String(cause)}` : '';
+    let suffix = '';
+    if (cause instanceof Error) suffix = `: ${cause.message}`;
+    else if (typeof cause === 'string') suffix = `: ${cause}`;
+    else if (typeof cause === 'number' || typeof cause === 'boolean') suffix = `: ${String(cause)}`;
+    else if (cause !== undefined && cause !== null) suffix = `: [object]`;
     write('ERROR', `${message}${suffix}`);
   },
 

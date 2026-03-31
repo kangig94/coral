@@ -59,6 +59,9 @@ export default tseslint.config(
         ignoreRestSiblings: true,
       }],
 
+      // Demote to warn for initial adoption — fix incrementally
+      'preserve-caught-error': 'warn',
+
       // -- Principle 5: Safe Type Boundaries --
       // JSON.parse and dynamic patterns make no-unsafe-* too noisy.
       // Zod handles boundary validation. Relax these.
@@ -113,6 +116,8 @@ export default tseslint.config(
       '@typescript-eslint/no-floating-promises': 'off',
       '@typescript-eslint/no-non-null-assertion': 'off',
       'no-console': 'off',
+      'no-useless-escape': 'off',
+      'require-yield': 'off',
     },
   },
 

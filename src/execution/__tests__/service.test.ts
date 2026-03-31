@@ -24,7 +24,7 @@ import {
   releaseLaunch,
   restoreActiveLaunch,
 } from '../engine.js';
-import { AbortRegistry } from '../abort-registry.js';
+import { type AbortRegistry } from '../abort-registry.js';
 import { JOBS_DIR, jobResultPath, type ProgressStore } from '../progress-store.js';
 import { SessionManager } from '../session-manager.js';
 import { ExecutionService, type CallerContext } from '../service.js';
@@ -1439,7 +1439,7 @@ describe('ExecutionService', () => {
         expect(queueDepth()).toBeGreaterThanOrEqual(1);
 
         // Release an occupied slot to trigger queue drain
-        const releasedJob = occupyIds[0]!;
+        const releasedJob = occupyIds[0];
         releaseLaunch(releasedJob);
 
         // Give the async drain a tick to process

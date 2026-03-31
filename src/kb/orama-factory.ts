@@ -70,7 +70,7 @@ export async function createOramaDb(): Promise<{ db: KbOramaDb; tokenizer: KbOra
     language: ORAMA_LANGUAGE,
     stemming: true,
   });
-  const db = await create({
+  const db = create({
     schema: ORAMA_SCHEMA,
     components: { tokenizer },
   });

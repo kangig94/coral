@@ -190,7 +190,7 @@ function stripElapsedPrefix(message: string): string {
 }
 
 function readAtomConfig(stepIndex: number, atomName: string, rawConfig: unknown): { instruction?: string } {
-  if (rawConfig == null) return {};
+  if (rawConfig === null || rawConfig === undefined) return {};
   if (typeof rawConfig !== 'object' || Array.isArray(rawConfig)) {
     throw new Error(`Step ${stepIndex}, atom '${atomName}' atoms config must be an object`);
   }
@@ -287,7 +287,6 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
 
   let coralName: string;
   let atomPrompt: string;
-  let config: { instruction?: string } = {};
 
   if (atom.kind === 'agent') {
     const namespace = atom.namespace ?? 'coral';
@@ -295,7 +294,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
       throw new Error(`Step ${stepIndex}, atom '${label}' launch failed: unsupported namespace "${namespace}"`);
     }
 
-    config = readAtomConfig(stepIndex, atom.agent, atoms?.[atom.agent]);
+    const config = readAtomConfig(stepIndex, atom.agent, atoms?.[atom.agent]);
     coralName = atom.agent;
     atomPrompt = [sharedContext, stepPrompt, config.instruction].filter(Boolean).join('\n\n');
   } else {
@@ -865,7 +864,7 @@ export async function resumePipeline(
           onProgress,
         });
         const baseStepDetails = launchError instanceof WorkflowExecutionError ? launchError.stepDetails : stepDetails;
-        const message = launchError instanceof Error ? launchError.message : String(launchError);
+        const message = launchError instanceof Error ? launchError.message : typeof launchError === 'string' ? launchError : 'Unknown error';
         const aborted = launchError instanceof WorkflowExecutionError ? launchError.aborted : false;
         throw createWorkflowExecutionError(message, aborted, [...baseStepDetails, ...drainedStepDetails]);
       }
@@ -1051,7 +1050,7 @@ export async function executePipeline(
           onProgress,
         });
         const baseStepDetails = launchError instanceof WorkflowExecutionError ? launchError.stepDetails : stepDetails;
-        const message = launchError instanceof Error ? launchError.message : String(launchError);
+        const message = launchError instanceof Error ? launchError.message : typeof launchError === 'string' ? launchError : 'Unknown error';
         const aborted = launchError instanceof WorkflowExecutionError ? launchError.aborted : false;
         throw createWorkflowExecutionError(message, aborted, [...baseStepDetails, ...drainedStepDetails]);
       }

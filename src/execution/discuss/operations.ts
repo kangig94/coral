@@ -6,7 +6,7 @@ import {
   decideSessionCreate,
   decideSpeech,
 } from '../../discuss/state-machine.js';
-import type { BidResult, DiscussCreateInput, Result, SpeechResult } from '../../discuss/types.js';
+import type { BidResult, DiscussCreateInput, SpeechResult } from '../../discuss/types.js';
 import { buildWatchEvents } from '../../discuss/projections.js';
 import { nowIsoString } from '../../discuss/util/time.js';
 import type { CallerContext } from '../request-context.js';

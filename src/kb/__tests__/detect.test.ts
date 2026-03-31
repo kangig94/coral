@@ -58,7 +58,7 @@ describe('kb detection and paths', () => {
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
     const { createKbRuntime, paths } = await loadKbModules();
     const kb = createKbRuntime({
-      markdownRoot: process.env.CORAL_KB_PATH!,
+      markdownRoot: process.env.CORAL_KB_PATH,
       runtimeDir: paths.kbRuntimeDir(),
     });
     const pluginRoot = join(mockState.tmpHome, 'plugin');
@@ -74,7 +74,7 @@ describe('kb detection and paths', () => {
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
     const { createKbRuntime, paths } = await loadKbModules();
     const kb = createKbRuntime({
-      markdownRoot: process.env.CORAL_KB_PATH!,
+      markdownRoot: process.env.CORAL_KB_PATH,
       runtimeDir: paths.kbRuntimeDir(),
     });
     const projectRoot = join(mockState.tmpHome, 'project');

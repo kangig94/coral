@@ -115,7 +115,7 @@ function createFakeIdleTimer() {
   };
 }
 
-async function closeHttpServer(server: import('node:http').Server): Promise<void> {
+async function _closeHttpServer(server: import('node:http').Server): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     if (!server.listening) {
       resolve();
@@ -130,7 +130,7 @@ async function closeHttpServer(server: import('node:http').Server): Promise<void
   });
 }
 
-async function waitForCondition(check: () => boolean, timeoutMs = 2_000): Promise<void> {
+async function _waitForCondition(check: () => boolean, timeoutMs = 2_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (check()) return;
@@ -724,7 +724,7 @@ describe('execution backend server', () => {
 
     expect(listResponse.status).toBe(200);
     const listBody = (await listResponse.json()) as { content: Array<{ text: string }> };
-    expect(JSON.parse(listBody.content[0]!.text)).toEqual({
+    expect(JSON.parse(listBody.content[0].text)).toEqual({
       memos: [
         { filename: 'b.md', summary: 'Bravo summary', createdAt: expect.any(String) },
         { filename: 'a.md', summary: 'Alpha summary', createdAt: expect.any(String) },
@@ -746,7 +746,7 @@ describe('execution backend server', () => {
 
     expect(deleteResponse.status).toBe(200);
     const deleteBody = (await deleteResponse.json()) as { content: Array<{ text: string }> };
-    expect(JSON.parse(deleteBody.content[0]!.text)).toEqual({
+    expect(JSON.parse(deleteBody.content[0].text)).toEqual({
       deleted: ['a.md'],
       count: 1,
     });
@@ -766,7 +766,7 @@ describe('execution backend server', () => {
 
     expect(purgeResponse.status).toBe(200);
     const purgeBody = (await purgeResponse.json()) as { content: Array<{ text: string }> };
-    expect(JSON.parse(purgeBody.content[0]!.text)).toEqual({ deleted: 1 });
+    expect(JSON.parse(purgeBody.content[0].text)).toEqual({ deleted: 1 });
   });
 
   it('returns 400 use_sse for wait tool calls sent to /tool', async () => {
@@ -1857,6 +1857,7 @@ describe('execution backend server', () => {
         discoverShard: vi.fn(),
         invalidate: vi.fn(),
       };
+      // eslint-disable-next-line prefer-const -- circular: writeBackendInfoFn closure reads controller, but controller assignment needs writeBackendInfoFn
       let controller!: ReturnType<LifecycleModule['createLifecycle']>;
       const writeBackendInfoFn = vi.fn((root: string, info: Parameters<typeof backendInfo.writeBackendInfo>[1]) => {
         backendInfo.writeBackendInfo(root, info);
@@ -1986,6 +1987,7 @@ describe('execution backend server', () => {
       };
       const discussRegistry = createDiscussContextRegistry();
       const writeBackendInfoFn = vi.fn();
+      // eslint-disable-next-line prefer-const -- circular: fakeService closure reads controller, but controller assignment needs fakeService
       let controller!: ReturnType<LifecycleModule['createLifecycle']>;
       const fakeService = {
         adoptRunningJob: vi.fn(() => {
@@ -2126,7 +2128,7 @@ describe('execution backend server', () => {
       // Do NOT write launch.json — this is the old-format marker
       new SessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
 
-      const backend = await startBackendServer({ progressStore });
+      const _backend = await startBackendServer({ progressStore });
 
       // After recovery, the old-format job should be marked as error with the OLD_FORMAT_NOTICE
       const status = progressStore.readStatus(jobId);

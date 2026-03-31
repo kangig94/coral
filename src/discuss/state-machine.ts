@@ -13,7 +13,7 @@ import type {
   TranscriptEntry,
   ResolveResult,
 } from './types.js';
-import { parseDisplayName } from './util/string.js';
+
 
 export const DEFAULT_BID_THRESHOLD = 30;
 export const DEFAULT_MAX_EPOCHS = 2;
@@ -233,7 +233,7 @@ export function decideBidRoundClose(
   const requiredAgents = Object.entries(state.agents).filter(
     ([, agent]) => !agent.banned && agent.participation === 'required',
   );
-  const missing = requiredAgents.map(([name]) => name).filter((name) => state.current_bids[name] == null);
+  const missing = requiredAgents.map(([name]) => name).filter((name) => state.current_bids[name] === null || state.current_bids[name] === undefined);
 
   if (missing.length > 0) {
     return { ok: false, error: 'quorum_not_met', detail: { missing } };

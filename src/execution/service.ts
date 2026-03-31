@@ -1137,7 +1137,7 @@ export class ExecutionService {
           if (settled) return;
           settled = true;
           cleanup();
-          reject(error);
+          reject(error instanceof Error ? error : new Error(String(error)));
         });
     });
   }

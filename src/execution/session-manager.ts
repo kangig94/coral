@@ -112,7 +112,7 @@ export class SessionManager {
         return () => {
           try {
             rmdirSync(lockDir);
-          } catch {}
+          } catch { /* empty */ }
         };
       } catch (error: unknown) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
@@ -121,10 +121,10 @@ export class SessionManager {
           if (Date.now() - stats.mtimeMs > 30000) {
             try {
               rmdirSync(lockDir);
-            } catch {}
+            } catch { /* empty */ }
             continue;
           }
-        } catch {}
+        } catch { /* empty */ }
         await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 50));
       }
     }
