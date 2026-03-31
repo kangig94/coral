@@ -20,7 +20,7 @@ function toolError(error: string, detail?: Record<string, unknown>): ToolRouteRe
     body: jsonTextResult(
       {
         error,
-        ...(detail === undefined ? {} : detail),
+        ...(detail ?? {}),
       },
       true,
     ),

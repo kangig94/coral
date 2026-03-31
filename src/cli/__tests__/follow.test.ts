@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { LaunchDecision, TerminalResult, WaitStreamEvent } from '../../shared/types.js';
+import type * as FollowMod from '../follow.js';
 
 const mockState = vi.hoisted(() => ({
   ensureBackend: vi.fn(),
@@ -15,7 +16,7 @@ vi.mock('../../bridge/backend-client.js', () => ({
   streamWait: mockState.streamWait,
 }));
 
-type FollowModule = typeof import('../follow.js');
+type FollowModule = typeof FollowMod;
 
 type Deferred<T> = {
   promise: Promise<T>;

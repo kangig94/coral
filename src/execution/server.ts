@@ -59,6 +59,7 @@ import {
   createLifecycle,
   StartupInterruptedError,
   type LifecycleDeps,
+  type LifecycleController,
 } from './lifecycle.js';
 
 export { routeToolCall, getToolDescriptors };
@@ -162,7 +163,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
 
   // Late-bound lifecycle controller — assigned after httpHandlerDeps (which
   // references abortJobs/scopeCheckJobs) but before any request-time call.
-  let lifecycleController: import('./lifecycle.js').LifecycleController | null = null;
+  let lifecycleController: LifecycleController | null = null;
 
   // -- Shared runtime state (composition root owns the mutable cell) --------
   const services = new Map<string, ExecutionServiceLike>();

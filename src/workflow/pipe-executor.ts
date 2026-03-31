@@ -592,6 +592,7 @@ export async function waitForAtoms(
           workDir: options.workDir,
           onProgress: options.onProgress,
           buildPartialStepDetails,
+          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by ternary check
           onStaleSwap: options.onStaleSwap ? () => options.onStaleSwap!(snapshotWaitState()) : undefined,
         },
       );
@@ -731,6 +732,7 @@ export async function resumePipeline(
     failureDrain?: CheckpointState['failureDrain'],
   ): void => {
     if (!canCheckpoint) return;
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by canCheckpoint (both defined)
     writeCheckpoint(options.progressStore!, options.workflowJobId!, checkpointMutex, {
       sessionId: checkpoint.sessionId,
       provider: defaultProviderName,
@@ -982,6 +984,7 @@ export async function executePipeline(
     failureDrain?: CheckpointState['failureDrain'],
   ): void => {
     if (!canCheckpoint) return;
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by canCheckpoint (both defined)
     writeCheckpoint(options.progressStore!, options.workflowJobId!, checkpointMutex, {
       sessionId: '',
       provider: defaultProviderName,

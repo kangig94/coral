@@ -802,6 +802,7 @@ export class ExecutionService {
       const seq = this.progressStore.getChangeSeq();
 
       for (const jobId of [...pending]) {
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- fileCursors initialized from same jobIds as pending
         const fileCursor = fileCursors.get(jobId)!;
         const fromEventId = fromEventIds[jobId] ?? 0;
         const status = this.progressStore.readStatus(jobId);

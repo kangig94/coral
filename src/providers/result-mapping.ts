@@ -24,6 +24,7 @@ export function mapProviderResultBase(
     content: raw.response,
     model: raw.model,
     durationMs: raw.durationMs,
+    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- intentional: false should map to undefined (omit field)
     aborted: raw.aborted || undefined,
   };
 }

@@ -2,12 +2,13 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import type * as NodeOs from 'node:os';
 
 let tmpHome = '';
-const tmpRoot = vi.hoisted(() => `${process.env.TMPDIR || '/tmp'}/coral-session-index-test-tmp`);
+const tmpRoot = vi.hoisted(() => `${process.env.TMPDIR ?? '/tmp'}/coral-session-index-test-tmp`);
 
 vi.mock('node:os', async () => {
-  const actual = await vi.importActual<typeof import('node:os')>('node:os');
+  const actual = await vi.importActual<typeof NodeOs>('node:os');
   return {
     ...actual,
     homedir: () => tmpHome,

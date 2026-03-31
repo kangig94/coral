@@ -44,11 +44,11 @@ export default tseslint.config(
       'eqeqeq': ['error', 'always'],
       'prefer-const': 'error',
       'no-var': 'error',
-      '@typescript-eslint/consistent-type-imports': ['warn', {
+      '@typescript-eslint/consistent-type-imports': ['error', {
         prefer: 'type-imports',
         fixStyle: 'inline-type-imports',
       }],
-      '@typescript-eslint/no-explicit-any': 'warn',
+      '@typescript-eslint/no-explicit-any': 'error',
 
       // -- Principle 4: Dead Code Lies --
       '@typescript-eslint/no-unused-vars': ['error', {
@@ -72,10 +72,10 @@ export default tseslint.config(
       '@typescript-eslint/no-unsafe-argument': 'off',
 
       // Prefer ?? over || to avoid falsy traps (0, "")
-      '@typescript-eslint/prefer-nullish-coalescing': 'warn',
+      '@typescript-eslint/prefer-nullish-coalescing': 'error',
 
       // Allow non-null assertion with awareness (warn, not error)
-      '@typescript-eslint/no-non-null-assertion': 'warn',
+      '@typescript-eslint/no-non-null-assertion': 'error',
 
       // -- Relaxations --
       // These fire too often in valid patterns:

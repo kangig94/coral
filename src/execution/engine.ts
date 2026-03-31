@@ -278,6 +278,7 @@ export type SpawnDurableJobOptions = SpawnCliOptions & {
 export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
   const pool = options.pool ?? 'default';
   const usingReservedPermit =
+    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- boolean OR: false must fall through
     options.permitGranted || (options.signal ? consumeSignalPermit(options.signal, options.provider) : false);
   let internalPermitJobId: string | null = null;
 
@@ -306,6 +307,7 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
 
     const child = spawn(options.command, options.args, {
       stdio: ['pipe', 'pipe', 'pipe'],
+      // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- empty string is not a valid cwd
       cwd: options.cwd || undefined,
       shell: process.platform === 'win32',
       env: { ...process.env, ...options.extraEnv, CORAL_CHILD: '1' },
@@ -385,6 +387,7 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
       if (options.onEvent) {
         lineBuffer += chunk;
         const parts = lineBuffer.split('\n');
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- split() always returns at least one element
         lineBuffer = parts.pop()!;
         for (const line of parts) {
           if (line.trim()) options.onEvent(line);
@@ -644,6 +647,7 @@ function writeRuntimeRecord(jobDir: string, record: PersistedRuntimeRecord): voi
 export async function spawnDurableJob(options: SpawnDurableJobOptions): Promise<CliExecResult> {
   const pool = options.pool ?? 'default';
   const usingReservedPermit =
+    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- boolean OR: false must fall through
     options.permitGranted || (options.signal ? consumeSignalPermit(options.signal, options.provider) : false);
   let internalPermitJobId: string | null = null;
 

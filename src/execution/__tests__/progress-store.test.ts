@@ -3,6 +3,8 @@ import * as fs from 'node:fs';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import type * as NodeOs from 'node:os';
+import type * as NodeFs from 'node:fs';
 import type {
   PersistedExitRecord,
   PersistedLaunchRecord,
@@ -19,11 +21,11 @@ const projectRoot = '/tmp/project';
 const TEST_BACKEND_NAMESPACE = 'test-namespace';
 const renameCalls = vi.hoisted(() => [] as Array<[unknown, unknown]>);
 const mockState = vi.hoisted(() => ({
-  tmpRoot: `${process.env.TMPDIR || '/tmp'}/coral-progress-store-test-tmp`,
+  tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-progress-store-test-tmp`,
 }));
 
 vi.mock('node:os', async () => {
-  const actual = await vi.importActual<typeof import('node:os')>('node:os');
+  const actual = await vi.importActual<typeof NodeOs>('node:os');
   return {
     ...actual,
     tmpdir: () => mockState.tmpRoot,
@@ -31,7 +33,7 @@ vi.mock('node:os', async () => {
 });
 
 vi.mock('node:fs', async () => {
-  const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+  const actual = await vi.importActual<typeof NodeFs>('node:fs');
   return {
     ...actual,
     renameSync: (...args: Parameters<typeof actual.renameSync>) => {

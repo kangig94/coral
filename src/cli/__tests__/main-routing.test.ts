@@ -2,6 +2,7 @@ import { writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as MainMod from '../main.js';
 
 const mockState = vi.hoisted(() => ({
   providerExec: vi.fn(),
@@ -84,7 +85,7 @@ vi.mock('../follow.js', () => ({
   launchAndFollow: mockState.launchAndFollow,
 }));
 
-type MainModule = typeof import('../main.js');
+type MainModule = typeof MainMod;
 
 function toText(chunk: string | Uint8Array): string {
   return typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');

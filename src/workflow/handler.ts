@@ -2,12 +2,12 @@ import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { getNewProvider } from '../providers/registry.js';
 import { isOwnerId } from '../shared/mcp-utils.js';
 import type { LaunchDecision } from '../shared/types.js';
-import type { CallerContext } from '../execution/service.js';
+import type { CallerContext, ExecutionService } from '../execution/service.js';
 import { parseExpression } from './pipe-parser.js';
 import { workflowInputSchema } from './schemas.js';
 import type { PipelineAST } from './types.js';
 
-type WorkflowService = Pick<import('../execution/service.js').ExecutionService, 'executeWorkflow'>;
+type WorkflowService = Pick<ExecutionService, 'executeWorkflow'>;
 
 function validateAtomConfigKeys(atoms: Record<string, Record<string, unknown>>, ast: PipelineAST): void {
   const atomNames = new Set<string>();

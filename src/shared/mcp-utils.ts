@@ -87,8 +87,9 @@ export function isStringArray(value: unknown): value is string[] {
 export function collectCoralEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const key of Object.keys(process.env)) {
-    if (!key.startsWith('CORAL_') || process.env[key] === undefined) continue;
-    env[key] = process.env[key]!;
+    const value = process.env[key];
+    if (!key.startsWith('CORAL_') || value === undefined) continue;
+    env[key] = value;
   }
   return env;
 }

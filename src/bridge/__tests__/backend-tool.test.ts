@@ -1,5 +1,6 @@
 // @flaky — vi.resetModules() + dynamic import contention under parallel suite execution; run with retry
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as BackendToolMod from '../backend-tool.js';
 
 const {
   getBackendStatusMock,
@@ -15,7 +16,7 @@ vi.mock('../backend-client.js', () => ({
   shutdownBackend: shutdownBackendMock,
 }));
 
-type BridgeBackendToolModule = typeof import('../backend-tool.js');
+type BridgeBackendToolModule = typeof BackendToolMod;
 
 async function loadBackendToolModule(): Promise<BridgeBackendToolModule> {
   vi.resetModules();

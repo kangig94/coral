@@ -6,6 +6,7 @@ import { executeClaudeOneShot, executeClaudeResume } from '../claude-executor.js
 const runCli: ProviderCliRunner = (request: ProviderCliRequest) =>
   new Promise((resolve, reject) => {
     const child = spawn(request.command, request.args, {
+      // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- empty string is not a valid cwd
       cwd: request.cwd || undefined,
       env: { ...process.env, ...request.extraEnv, CORAL_CHILD: '1' },
       shell: process.platform === 'win32',

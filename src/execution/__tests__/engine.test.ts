@@ -2,8 +2,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as EngineMod from '../engine.js';
 
-type EngineModule = typeof import('../engine.js');
+type EngineModule = typeof EngineMod;
 
 const ORIGINAL_MAX_CHILDREN = process.env.CORAL_MAX_SESSIONS;
 const ORIGINAL_DISCUSS_MAX_CHILDREN = process.env.CORAL_DISCUSS_MAX_SESSIONS;

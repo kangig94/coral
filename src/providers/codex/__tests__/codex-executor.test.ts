@@ -4,8 +4,9 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CodexExecOptions } from '../codex-executor.js';
 import type { ProviderCliResult } from '../../runner-port.js';
+import type * as CodexExecutorMod from '../codex-executor.js';
 
-type ExecutorModule = typeof import('../codex-executor.js');
+type ExecutorModule = typeof CodexExecutorMod;
 
 let executeOneShot: ExecutorModule['executeOneShot'];
 let executeResume: ExecutorModule['executeResume'];

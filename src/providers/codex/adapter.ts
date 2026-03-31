@@ -117,6 +117,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
     bypassSandbox: request.bypassPermissions,
     onEvent: makeOnEvent(runtime, request.sessionId, extractProgressMessage, request.cwd),
     runCli: runtime.runCli,
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- always set by preflight() before execute()
     preChecked: lastValidatedCli!,
     environment: request.coralEnv,
   };

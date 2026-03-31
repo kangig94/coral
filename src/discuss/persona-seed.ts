@@ -148,6 +148,7 @@ export function assignOrigins(
   const outlierEntries = validEntries.slice(splitIndex);
 
   if (outlierCount > 0 && outlierEntries.length === 0 && mainEntries.length > 0) {
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by mainEntries.length > 0
     outlierEntries.push(mainEntries.pop()!);
   }
 

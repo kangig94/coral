@@ -3,6 +3,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as NodeOs from 'node:os';
+import type * as ResolverMod from '../resolver.js';
 import type {
   PersistedLaunchRecord,
   PersistedProgressRecord,
@@ -31,14 +33,14 @@ import { ExecutionService, type CallerContext } from '../service.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
-  tmpRoot: `${process.env.TMPDIR || '/tmp'}/coral-execution-service-test-tmp`,
+  tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-execution-service-test-tmp`,
   getNewProvider: vi.fn(),
   resolveCoralContent: vi.fn(),
 }));
 const TEST_BACKEND_NAMESPACE = 'test-namespace';
 
 vi.mock('node:os', async () => {
-  const actual = await vi.importActual<typeof import('node:os')>('node:os');
+  const actual = await vi.importActual<typeof NodeOs>('node:os');
   return {
     ...actual,
     homedir: () => mockState.tmpHome,
@@ -51,7 +53,7 @@ vi.mock('../../providers/registry.js', () => ({
 }));
 
 vi.mock('../resolver.js', async () => {
-  const actual = await vi.importActual<typeof import('../resolver.js')>('../resolver.js');
+  const actual = await vi.importActual<typeof ResolverMod>('../resolver.js');
   return {
     ...actual,
     resolveCoralContent: mockState.resolveCoralContent,

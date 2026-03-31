@@ -36,7 +36,7 @@ export function resolveInjectMd(workingDirectory?: string, ownerSessionId?: stri
   const rendered = md
     .replaceAll('{{CORAL_KB}}', kbRoot())
     .replaceAll('{{CORAL_CLI}}', cliPath)
-    .replaceAll('{{SESSION_ID}}', normalizedOwner || '')
+    .replaceAll('{{SESSION_ID}}', normalizedOwner ?? '')
     .replaceAll('{{CORAL_PROJECTS}}', workingDirectory ? projectDataDir(workingDirectory) : '{{CORAL_PROJECTS}}')
     .replaceAll('{{PROJECT_SOURCE}}', workingDirectory ? resolveProjectSource(workingDirectory) : '{{PROJECT_SOURCE}}');
   const withoutOwner = stripOwnerOnly(rendered);

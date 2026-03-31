@@ -1,8 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
-import { createServer, request as httpRequest, type IncomingMessage as ClientIncomingMessage } from 'node:http';
+import { createServer, request as httpRequest, type IncomingMessage as ClientIncomingMessage, type Server as HttpServer } from 'node:http';
 import { basename, join } from 'node:path';
 import type { WaitStreamEvent } from '../../shared/types.js';
+import type * as NodeOs from 'node:os';
+import type * as ServerMod from '../server.js';
+import type * as BackendInfoMod from '../../infra/backend-info.js';
+import type * as BackendLockMod from '../backend-lock.js';
+import type * as LifecycleMod from '../lifecycle.js';
 
 import { readDiscussEventLog } from '../../client/readers.js';
 import { makeEvent } from '../../discuss/events.js';
@@ -28,13 +33,13 @@ const foreignBackendNamespace = 'foreign-namespace-xyz';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
-  tmpRoot: `${process.env.TMPDIR || '/tmp'}/coral-execution-backend-test-tmp`,
+  tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-execution-backend-test-tmp`,
 }));
 
 const createdJobIds = new Set<string>();
 
 vi.mock('node:os', async () => {
-  const actual = await vi.importActual<typeof import('node:os')>('node:os');
+  const actual = await vi.importActual<typeof NodeOs>('node:os');
   return {
     ...actual,
     homedir: () => mockState.tmpHome,
@@ -42,10 +47,10 @@ vi.mock('node:os', async () => {
   };
 });
 
-type ServerModule = typeof import('../server.js');
-type BackendInfoModule = typeof import('../../infra/backend-info.js');
-type BackendLockModule = typeof import('../backend-lock.js');
-type LifecycleModule = typeof import('../lifecycle.js');
+type ServerModule = typeof ServerMod;
+type BackendInfoModule = typeof BackendInfoMod;
+type BackendLockModule = typeof BackendLockMod;
+type LifecycleModule = typeof LifecycleMod;
 
 function createDeferred() {
   let resolve!: () => void;
@@ -115,7 +120,7 @@ function createFakeIdleTimer() {
   };
 }
 
-async function _closeHttpServer(server: import('node:http').Server): Promise<void> {
+async function _closeHttpServer(server: HttpServer): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     if (!server.listening) {
       resolve();

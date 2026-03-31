@@ -51,7 +51,7 @@ function formatUnknown(value: unknown): string {
 
   try {
     const text = JSON.stringify(value);
-    return text === undefined ? String(value) : text;
+    return text ?? String(value);
   } catch {
     return String(value);
   }

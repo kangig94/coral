@@ -1011,6 +1011,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
           const current = readBackendInfo(pluginRoot);
           // null means backend.json was deleted (replacement) or corrupt — drain either way
           if (current?.instanceId !== instanceId) {
+            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- always set: callback runs inside the setInterval that assigned it
             clearInterval(ownershipCheckerInterval!);
             ownershipCheckerInterval = null;
             idleTimer.requestDrain('replaced');

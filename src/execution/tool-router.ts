@@ -1,5 +1,6 @@
 import { type z } from 'zod';
 import { assertOwnerId, textResult, type McpResult } from '../shared/mcp-utils.js';
+import type * as EngineMod from './engine.js';
 import {
   internalProviderFieldsShape,
   sharedExecSchema,
@@ -52,7 +53,7 @@ export type KbSubsystem = {
 
 export type CreateKbSubsystemFn = (options: {
   pluginRoot: string;
-  spawnCli: typeof import('./engine.js').spawnCli;
+  spawnCli: typeof EngineMod.spawnCli;
 }) => Promise<KbSubsystem>;
 
 const CORAL_OP_PREFIX = 'coral:';
@@ -101,7 +102,7 @@ function _toolError(error: string, detail?: Record<string, unknown>): ToolRouteR
     body: jsonTextResult(
       {
         error,
-        ...(detail === undefined ? {} : detail),
+        ...(detail ?? {}),
       },
       true,
     ),
