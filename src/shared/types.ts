@@ -46,6 +46,9 @@ export interface ProviderProgressEvent {
   ts: string;
 }
 
+/** Opaque provider-owned continuity data persisted by the execution layer. */
+export type ProviderContinuityBlob = Record<string, unknown>;
+
 /** Provider action type — the three launch operations a provider handles. */
 export type ProviderAction = 'exec' | 'resume' | 'fork';
 
@@ -215,8 +218,7 @@ export interface AppServerRuntimeRecord {
     serverKey: string;
     leaseState: 'waiting' | 'acquired';
     serverGeneration?: number;
-    threadId?: string;
-    turnId?: string;
+    providerContinuity?: ProviderContinuityBlob;
     recoveryPolicy: 'session_continuity_only';
   };
 }

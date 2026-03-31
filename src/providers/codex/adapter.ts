@@ -2,8 +2,8 @@ import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
-import type { ProviderRuntime, ProviderServerLease, Provider } from '../types.js';
+import type { ProviderContinuityBlob, ProviderRequest, ProviderResult } from '../../shared/types.js';
+import type { ProviderAppServerContract, ProviderRuntime, ProviderServerLease, Provider } from '../types.js';
 import { requireConversationRef } from '../types.js';
 import {
   buildCodexProviderServerSpec,
@@ -43,6 +43,12 @@ type CaptureState = {
 
 const CODEX_APP_SERVER_UPGRADE_MESSAGE = 'Codex CLI does not support app-server. Update with: npm update -g @openai/codex';
 const CODEX_AUTH_ERROR_MESSAGE = 'Codex CLI is not authenticated. Run "codex login" to create ~/.codex/auth.json.';
+
+type CodexContinuity = {
+  serverKey?: string;
+  threadId?: string;
+  turnId?: string;
+};
 
 function createProgressEvent(sessionId: string, message: string): { jobId: string; message: string; ts: string } {
   return {
@@ -332,6 +338,47 @@ function isAbortedTurn(status: string | undefined): boolean {
   return status === 'aborted' || status === 'cancelled' || status === 'canceled' || status === 'interrupted';
 }
 
+function readContinuityString(
+  continuity: ProviderContinuityBlob | undefined,
+  key: keyof CodexContinuity,
+): string | undefined {
+  const value = continuity?.[key];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function toCodexContinuity(continuity: ProviderContinuityBlob | undefined): CodexContinuity {
+  return {
+    serverKey: readContinuityString(continuity, 'serverKey'),
+    threadId: readContinuityString(continuity, 'threadId'),
+    turnId: readContinuityString(continuity, 'turnId'),
+  };
+}
+
+function buildCodexContinuity(serverKey: string, threadId: string, turnId?: string | null): ProviderContinuityBlob {
+  return turnId
+    ? { serverKey, threadId, turnId }
+    : { serverKey, threadId };
+}
+
+function continuityWithClearedTurnId(continuity: ProviderContinuityBlob | undefined): ProviderContinuityBlob | undefined {
+  const { serverKey, threadId } = toCodexContinuity(continuity);
+  if (!serverKey && !threadId) {
+    return undefined;
+  }
+  return {
+    ...(serverKey ? { serverKey } : {}),
+    ...(threadId ? { threadId } : {}),
+  };
+}
+
+function resolveProbeCwd(continuity: ProviderContinuityBlob): string {
+  const { serverKey } = toCodexContinuity(continuity);
+  if (!serverKey || !serverKey.startsWith('codex:')) {
+    return process.cwd();
+  }
+  return serverKey.slice('codex:'.length) || process.cwd();
+}
+
 function requireAppServerRuntime(runtime: ProviderRuntime): {
   acquireServer: NonNullable<ProviderRuntime['acquireServer']>;
   checkpointRecovery: NonNullable<ProviderRuntime['checkpointRecovery']>;
@@ -371,6 +418,16 @@ async function captureTurn(
 ): Promise<CaptureState> {
   const state = createCaptureState(threadId, runtime, request.sessionId);
   let interruptRequested: Promise<void> | null = null;
+  const transportClosed = lease.closed.then((outcome) => {
+    if (state.completed) {
+      return state;
+    }
+    const error =
+      outcome instanceof Error ? outcome : new Error('Codex app-server transport closed before the turn completed.');
+    state.rejectCompletion(error);
+    throw error;
+  });
+  void transportClosed.catch(() => {});
   const unsubscribe = lease.subscribe((message) => {
     if (!state.turnId) {
       state.bufferedNotifications.push(message);
@@ -429,7 +486,7 @@ async function captureTurn(
       completeTurn(state, response.turn);
     }
 
-    return await state.completion;
+    return await Promise.race([state.completion, transportClosed]);
   } finally {
     clearCompletionTimer(state);
     runtime.signal.removeEventListener('abort', onAbort);
@@ -478,6 +535,66 @@ function hasCodexAuthTokens(value: unknown): boolean {
   });
 }
 
+const codexAppServer: ProviderAppServerContract = {
+  buildServerSpec(persistedContinuity, request) {
+    const { serverKey } = toCodexContinuity(persistedContinuity);
+    if (serverKey && serverKey.startsWith('codex:')) {
+      return buildCodexProviderServerSpec(serverKey.slice('codex:'.length), request.coralEnv);
+    }
+    return buildCodexProviderServerSpec(request.cwd ?? process.cwd(), request.coralEnv);
+  },
+  async interrupt(lease, continuity) {
+    const { threadId, turnId } = toCodexContinuity(continuity);
+    if (!threadId || !turnId) {
+      return;
+    }
+    await interruptTurn(lease, threadId, turnId);
+  },
+  async probe(lease, continuity) {
+    const { threadId } = toCodexContinuity(continuity);
+    const updatedContinuity = continuityWithClearedTurnId(continuity);
+    if (!threadId) {
+      return { resumable: false, updatedContinuity };
+    }
+
+    try {
+      await rpc(lease, 'thread/resume', {
+        threadId,
+        cwd: resolveProbeCwd(continuity),
+        model: null,
+        approvalPolicy: 'never',
+        sandbox: 'workspace-write',
+      });
+      return {
+        resumable: true,
+        updatedContinuity,
+      };
+    } catch (error) {
+      if (!isMissingConversationError(error)) {
+        throw error;
+      }
+      return {
+        resumable: false,
+        updatedContinuity,
+      };
+    }
+  },
+  finalizeInterrupted(probeResult, continuity) {
+    const nextContinuity = probeResult.updatedContinuity ?? continuityWithClearedTurnId(continuity);
+    const { threadId } = toCodexContinuity(nextContinuity ?? continuity);
+    if (probeResult.resumable && threadId) {
+      return {
+        conversationRef: threadId,
+        ...(nextContinuity ? { continuityMutation: nextContinuity } : {}),
+      };
+    }
+    return {
+      nonResumable: true,
+      ...(nextContinuity ? { continuityMutation: nextContinuity } : {}),
+    };
+  },
+};
+
 async function execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult> {
   if (request.action === 'fork') {
     throw new Error('Codex app-server fork is unsupported until clone/fork RPC is available.');
@@ -485,7 +602,8 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
 
   const { acquireServer, checkpointRecovery } = requireAppServerRuntime(runtime);
   const startedAt = Date.now();
-  const lease = await acquireServer(buildCodexProviderServerSpec(request.cwd ?? process.cwd(), request.coralEnv));
+  const spec = codexAppServer.buildServerSpec(runtime.persistedContinuity, request);
+  const lease = await acquireServer(spec);
 
   try {
     let threadId: string;
@@ -516,7 +634,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
     checkpointRecovery({
       conversationRef: threadId,
       providerMeta: {
-        threadId,
+        providerContinuity: buildCodexContinuity(spec.key, threadId),
       },
     });
     runtime.onEvent(createProgressEvent(request.sessionId, `Thread ready (${threadId}).`));
@@ -537,8 +655,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
         checkpointRecovery({
           conversationRef: threadId,
           providerMeta: {
-            threadId,
-            turnId,
+            providerContinuity: buildCodexContinuity(spec.key, threadId, turnId),
           },
         });
       },
@@ -547,8 +664,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
       checkpointRecovery({
         conversationRef: threadId,
         providerMeta: {
-          threadId,
-          turnId: turnState.turnId,
+          providerContinuity: buildCodexContinuity(spec.key, threadId, turnState.turnId),
         },
       });
     }
@@ -556,6 +672,13 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
     const turnStatus = turnState.finalTurn?.status;
     const turnFailed = !isSuccessfulTurn(turnStatus);
     const turnAborted = isAbortedTurn(turnStatus);
+
+    checkpointRecovery({
+      conversationRef: threadId,
+      providerMeta: {
+        providerContinuity: buildCodexContinuity(spec.key, threadId),
+      },
+    });
 
     if (turnFailed && !turnAborted && !turnState.lastAgentMessage.trim() && turnState.error?.message) {
       throw new Error(turnState.error.message);
@@ -580,4 +703,5 @@ export const codexProvider: Provider = {
   name: 'codex',
   execute,
   preflight,
+  appServer: codexAppServer,
 };

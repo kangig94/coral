@@ -3,7 +3,7 @@ import { basename, join, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { pluginRootNamespace, sessionBase } from '../infra/paths.js';
 import { backendLog } from '../shared/backend-log.js';
-import type { SessionState } from '../shared/types.js';
+import type { ProviderContinuityBlob, SessionState } from '../shared/types.js';
 import { isNoEntryError, nowIsoString, providerIdentPattern } from '../shared/mcp-utils.js';
 import { isValidSessionEntry } from '../client/readers.js';
 import { eventBus } from './event-bus.js';
@@ -16,6 +16,7 @@ export interface SessionEntry {
   activeJobId?: string;
   lastJobId?: string;
   conversationRef?: string;
+  providerContinuity?: ProviderContinuityBlob;
   model: string;
   cwd: string;
   projectRoot?: string;
@@ -25,8 +26,9 @@ export interface SessionEntry {
 }
 
 export type SessionContinuityMutation =
-  | { type: 'set_resumable'; conversationRef: string }
-  | { type: 'clear_non_resumable' };
+  | { type: 'set_resumable'; conversationRef: string; providerContinuity?: ProviderContinuityBlob }
+  | { type: 'clear_non_resumable'; providerContinuity?: ProviderContinuityBlob }
+  | { type: 'preserve'; providerContinuity?: ProviderContinuityBlob };
 
 type CachedSession = {
   entry: SessionEntry;
@@ -234,6 +236,21 @@ export class SessionManager {
     this.writeEntry(entry);
   }
 
+  checkpointProviderContinuity(
+    sessionId: string,
+    update: { providerContinuity: ProviderContinuityBlob; conversationRef?: string },
+  ): void {
+    const entry = this.readEntry(sessionId);
+    if (!entry) return;
+    entry.providerContinuity = update.providerContinuity;
+    if (update.conversationRef) {
+      entry.conversationRef = update.conversationRef;
+      entry.state = 'ready';
+    }
+    entry.lastUsedAt = nowIsoString();
+    this.writeEntry(entry);
+  }
+
   /** Transition session to non_resumable (provider completed without yielding a conversationRef). */
   setNonResumable(sessionId: string): void {
     const entry = this.readEntry(sessionId);
@@ -276,11 +293,14 @@ export class SessionManager {
       entry.activeJobId = undefined;
       entry.lastJobId = options.expectedActiveJobId;
       entry.lastUsedAt = nowIsoString();
+      if (options.mutation.providerContinuity) {
+        entry.providerContinuity = options.mutation.providerContinuity;
+      }
 
       if (options.mutation.type === 'set_resumable') {
         entry.conversationRef = options.mutation.conversationRef;
         entry.state = 'ready';
-      } else {
+      } else if (options.mutation.type === 'clear_non_resumable') {
         entry.conversationRef = undefined;
         entry.state = 'non_resumable';
       }

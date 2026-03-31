@@ -137,6 +137,7 @@ function createFakeProviderServerHandle(options?: {
     };
   });
   const closeMock = vi.fn(async () => {});
+  const closePromise = new Promise<Error | void>(() => {});
 
   return {
     handle: {
@@ -148,6 +149,7 @@ function createFakeProviderServerHandle(options?: {
         notify: notifyMock,
       },
       onNotification: onNotificationMock as unknown as ProviderServerHandle['onNotification'],
+      closePromise,
       close: closeMock,
     } satisfies ProviderServerHandle,
     requestMock,
@@ -180,6 +182,68 @@ function makeProvider(options?: { execute?: Provider['execute']; preflight?: Pro
     ...(preflight ? { preflight } : {}),
   };
   return { provider, execute, preflight };
+}
+
+function makeCodexAppServerProvider(): Provider {
+  return {
+    name: 'codex',
+    execute: vi.fn(async () => ({ content: 'ok' })),
+    appServer: {
+      buildServerSpec: (_continuity, request) =>
+        buildCodexProviderServerSpec(request.cwd ?? process.cwd(), request.coralEnv),
+      interrupt: async (lease, continuity) => {
+        const threadId = continuity.threadId;
+        const turnId = continuity.turnId;
+        if (typeof threadId !== 'string' || typeof turnId !== 'string') {
+          return;
+        }
+        await lease.rpc('turn/interrupt', { threadId, turnId });
+      },
+      probe: async (lease, continuity) => {
+        const threadId = continuity.threadId;
+        if (typeof threadId !== 'string') {
+          return { resumable: false, updatedContinuity: continuity };
+        }
+        const cwd =
+          typeof continuity.serverKey === 'string' && continuity.serverKey.startsWith('codex:')
+            ? continuity.serverKey.slice('codex:'.length)
+            : process.cwd();
+        try {
+          await lease.rpc('thread/resume', {
+            threadId,
+            cwd,
+            model: null,
+            approvalPolicy: 'never',
+            sandbox: 'workspace-write',
+          });
+          return { resumable: true, updatedContinuity: continuity };
+        } catch (error) {
+          const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+          if (
+            message.includes('not found') ||
+            message.includes('missing thread') ||
+            message.includes('unknown thread') ||
+            message.includes('does not exist') ||
+            message.includes('no such thread')
+          ) {
+            return { resumable: false, updatedContinuity: continuity };
+          }
+          throw error;
+        }
+      },
+      finalizeInterrupted: (probeResult, continuity) =>
+        probeResult.resumable
+          ? {
+              conversationRef:
+                typeof continuity.threadId === 'string' ? continuity.threadId : undefined,
+              continuityMutation: continuity,
+            }
+          : {
+              nonResumable: true,
+              continuityMutation: continuity,
+            },
+    },
+  };
 }
 
 async function occupyProviderSlots(
@@ -369,8 +433,7 @@ describe('ExecutionService', () => {
       },
     });
     expect(firstRuntime.startTime).toEqual(expect.any(String));
-    expect(firstRuntime.providerMeta.threadId).toBeUndefined();
-    expect(firstRuntime.providerMeta.turnId).toBeUndefined();
+    expect(firstRuntime.providerMeta.providerContinuity).toBeUndefined();
 
     let secondSettled = false;
     const secondLeasePromise = service.acquireServer(spec, { jobId: jobId2 }).then((lease) => {
@@ -391,8 +454,7 @@ describe('ExecutionService', () => {
     });
     expect(waitingRuntime.startTime).toEqual(expect.any(String));
     expect(waitingRuntime.providerMeta.serverGeneration).toBeUndefined();
-    expect(waitingRuntime.providerMeta.threadId).toBeUndefined();
-    expect(waitingRuntime.providerMeta.turnId).toBeUndefined();
+    expect(waitingRuntime.providerMeta.providerContinuity).toBeUndefined();
     expect(secondSettled).toBe(false);
     expect(spawnProviderServer).toHaveBeenCalledTimes(1);
 
@@ -410,8 +472,7 @@ describe('ExecutionService', () => {
       },
     });
     expect(acquiredRuntime.startTime).toEqual(expect.any(String));
-    expect(acquiredRuntime.providerMeta.threadId).toBeUndefined();
-    expect(acquiredRuntime.providerMeta.turnId).toBeUndefined();
+    expect(acquiredRuntime.providerMeta.providerContinuity).toBeUndefined();
 
     secondLease.release();
   });
@@ -432,6 +493,7 @@ describe('ExecutionService', () => {
       },
     });
     trackJob(jobId);
+    mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
 
     progressStore.initJob({
       jobId,
@@ -448,10 +510,30 @@ describe('ExecutionService', () => {
         serverKey: `codex:${ctx.projectRoot}`,
         leaseState: 'acquired',
         serverGeneration: 7,
-        threadId: 'thread-1',
-        turnId: 'turn-1',
+        providerContinuity: {
+          serverKey: `codex:${ctx.projectRoot}`,
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+        },
         recoveryPolicy: 'session_continuity_only',
       },
+    });
+    progressStore.writeLaunchRecord(jobId, {
+      jobId,
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+      pool: 'default',
+      enqueueSequence: 0,
+      providerAction: 'exec',
+      request: {
+        prompt: 'abort me',
+        cwd: ctx.projectRoot,
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      createdAt: new Date().toISOString(),
     });
     abortRegistry.register(jobId);
 
@@ -1895,12 +1977,19 @@ describe('ExecutionService', () => {
       it('skips the probe for lease-waiting jobs and preserves an existing conversationRef', async () => {
         const service = new ExecutionService(ctx);
         const { progressStore, sessionManager } = getInternals(service);
-        const probeSpy = vi.spyOn(service, 'probeConversationRef');
+        const spawnProviderServer = vi.spyOn(engineModule, 'spawnProviderServer');
         const jobId = `app-server-waiting-${randomUUID()}`;
         trackJob(jobId);
         const session = sessionManager.allocate('codex', 'recover-waiting', 'gpt-5', ctx.projectRoot);
-        sessionManager.setConversationRef(session.sessionId, 'thread-existing');
+        sessionManager.checkpointProviderContinuity(session.sessionId, {
+          providerContinuity: {
+            serverKey: `codex:${ctx.projectRoot}`,
+            threadId: 'thread-existing',
+          },
+          conversationRef: 'thread-existing',
+        });
         sessionManager.claimForJobSync(session.sessionId, jobId);
+        mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
 
         progressStore.initJob({
           jobId,
@@ -1929,7 +2018,7 @@ describe('ExecutionService', () => {
           { reason: 'restart' },
         );
 
-        expect(probeSpy).not.toHaveBeenCalled();
+        expect(spawnProviderServer).not.toHaveBeenCalled();
         expect(progressStore.readStatus(jobId)).toMatchObject({
           phase: 'error',
           result: {
@@ -1947,7 +2036,17 @@ describe('ExecutionService', () => {
       it('stores the recovered threadId when continuity is verified', async () => {
         const service = new ExecutionService(ctx);
         const { progressStore, sessionManager } = getInternals(service);
-        vi.spyOn(service, 'probeConversationRef').mockResolvedValue('available');
+        mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
+        vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(
+          createFakeProviderServerHandle({
+            request: async (method) => {
+              if (method === 'thread/resume') {
+                return { thread: { id: 'thread-recovered' } };
+              }
+              return {};
+            },
+          }).handle,
+        );
         const jobId = `app-server-verified-${randomUUID()}`;
         trackJob(jobId);
         const session = sessionManager.allocate('codex', 'recover-verified', 'gpt-5', ctx.projectRoot);
@@ -1968,7 +2067,12 @@ describe('ExecutionService', () => {
             sessionId: session.sessionId,
             projectRoot: ctx.projectRoot,
           }),
-          makeAppServerRuntimeRecord({ threadId: 'thread-recovered' }),
+          makeAppServerRuntimeRecord({
+            providerContinuity: {
+              serverKey: `codex:${ctx.projectRoot}`,
+              threadId: 'thread-recovered',
+            },
+          }),
           { reason: 'restart' },
         );
 
@@ -1983,11 +2087,27 @@ describe('ExecutionService', () => {
       it('clears conversationRef and marks the session non_resumable when the thread is definitively missing', async () => {
         const service = new ExecutionService(ctx);
         const { progressStore, sessionManager } = getInternals(service);
-        vi.spyOn(service, 'probeConversationRef').mockResolvedValue('missing');
+        mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
+        vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(
+          createFakeProviderServerHandle({
+            request: async (method) => {
+              if (method === 'thread/resume') {
+                throw new Error('No such thread');
+              }
+              return {};
+            },
+          }).handle,
+        );
         const jobId = `app-server-missing-${randomUUID()}`;
         trackJob(jobId);
         const session = sessionManager.allocate('codex', 'recover-missing', 'gpt-5', ctx.projectRoot);
-        sessionManager.setConversationRef(session.sessionId, 'thread-stale');
+        sessionManager.checkpointProviderContinuity(session.sessionId, {
+          providerContinuity: {
+            serverKey: `codex:${ctx.projectRoot}`,
+            threadId: 'thread-stale',
+          },
+          conversationRef: 'thread-stale',
+        });
         sessionManager.claimForJobSync(session.sessionId, jobId);
 
         progressStore.initJob({
@@ -2011,7 +2131,12 @@ describe('ExecutionService', () => {
               coralEnv: {},
             },
           }),
-          makeAppServerRuntimeRecord({ threadId: 'thread-stale' }),
+          makeAppServerRuntimeRecord({
+            providerContinuity: {
+              serverKey: `codex:${ctx.projectRoot}`,
+              threadId: 'thread-stale',
+            },
+          }),
           { reason: 'restart' },
         );
 
@@ -2032,7 +2157,17 @@ describe('ExecutionService', () => {
       it('preserves or seeds conversationRef with an explicit notice when the probe is unavailable', async () => {
         const service = new ExecutionService(ctx);
         const { progressStore, sessionManager } = getInternals(service);
-        vi.spyOn(service, 'probeConversationRef').mockResolvedValue('unavailable');
+        mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
+        vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(
+          createFakeProviderServerHandle({
+            request: async (method) => {
+              if (method === 'thread/resume') {
+                throw new Error('transport unavailable');
+              }
+              return {};
+            },
+          }).handle,
+        );
         const jobId = `app-server-unavailable-${randomUUID()}`;
         trackJob(jobId);
         const session = sessionManager.allocate('codex', 'recover-unavailable', 'gpt-5', ctx.projectRoot);
@@ -2053,7 +2188,12 @@ describe('ExecutionService', () => {
             sessionId: session.sessionId,
             projectRoot: ctx.projectRoot,
           }),
-          makeAppServerRuntimeRecord({ threadId: 'thread-unverified' }),
+          makeAppServerRuntimeRecord({
+            providerContinuity: {
+              serverKey: `codex:${ctx.projectRoot}`,
+              threadId: 'thread-unverified',
+            },
+          }),
           { reason: 'handoff' },
         );
 

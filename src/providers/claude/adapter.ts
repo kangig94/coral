@@ -16,16 +16,30 @@ import { detectClaudeCli } from '../cli-detection.js';
 import { resolveInjectMd } from '../inject.js';
 import { extractClaudeProgressMessage } from './progress.js';
 import { readAppendedLines } from '../../shared/file-tail.js';
+import { isRecord, nowIsoString } from '../../shared/mcp-utils.js';
 import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
 import { mapProviderResultBase } from '../result-mapping.js';
 import {
   makeOnEvent,
   requireConversationRef,
   type Provider,
+  type ProviderAppServerContract,
   type ProviderRecoveryContract,
   type ProviderRuntime,
 } from '../types.js';
 import type { EffortLevel } from '../../shared/schemas.js';
+import type { ClaudeBootstrapSignature, SessionProbeResult } from '../claude-appserver/protocol.js';
+import {
+  buildClaudeContinuity,
+  buildClaudeProviderServerSpec,
+  findClaudeBootstrapDrift,
+  hasClaudePersistentContinuity,
+  mapInterruptParams,
+  mapSessionEnsureParams,
+  mapTurnStartParams,
+  readClaudePersistedContinuity,
+  withClaudeContinuity,
+} from './request-mapping.js';
 import type { ClaudeExecResult, ClaudeStreamEvent } from './types.js';
 
 async function preflight(): Promise<void> {
@@ -148,14 +162,98 @@ function capModel(model: string | undefined, env: Record<string, string>): strin
   return modelRank > capRank ? cap : model;
 }
 
-async function execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult> {
+function requirePersistentRuntime(runtime: ProviderRuntime): {
+  acquireServer: NonNullable<ProviderRuntime['acquireServer']>;
+  checkpointRecovery: NonNullable<ProviderRuntime['checkpointRecovery']>;
+} {
+  if (!runtime.acquireServer) {
+    throw new Error('Claude persistent provider requires ProviderRuntime.acquireServer().');
+  }
+  if (!runtime.checkpointRecovery) {
+    throw new Error('Claude persistent provider requires ProviderRuntime.checkpointRecovery().');
+  }
+  return {
+    acquireServer: runtime.acquireServer,
+    checkpointRecovery: runtime.checkpointRecovery,
+  };
+}
+
+function buildPreparedRequest(
+  request: ProviderRequest,
+): { prompt: string; systemPrompt?: string; model?: string; effort?: EffortLevel } {
   const { prompt, systemPrompt } = buildClaudeArgs(request);
+  return {
+    prompt,
+    systemPrompt,
+    model: capModel(request.model, request.coralEnv),
+    effort: request.effort as EffortLevel | undefined,
+  };
+}
+
+function canUsePersistentClaude(
+  request: ProviderRequest,
+  runtime: ProviderRuntime,
+  derivedSystemPrompt?: string,
+): boolean {
+  return (
+    runtime.acquireServer !== undefined &&
+    runtime.checkpointRecovery !== undefined &&
+    request.action !== 'fork' &&
+    request.bypassPermissions === true &&
+    findClaudeBootstrapDrift(request, derivedSystemPrompt, runtime.persistedContinuity) === null
+  );
+}
+
+function buildNewSessionRequiredResult(request: ProviderRequest, reason: string): ProviderResult {
+  return {
+    content: '',
+    model: capModel(request.model, request.coralEnv),
+    nonResumable: true,
+    notice: reason,
+    errors: [reason],
+  };
+}
+
+function getPersistentRedirectReason(
+  request: ProviderRequest,
+  runtime: ProviderRuntime,
+  derivedSystemPrompt?: string,
+): string | null {
+  if (!hasClaudePersistentContinuity(runtime.persistedContinuity)) {
+    return null;
+  }
+
+  if (!runtime.acquireServer || !runtime.checkpointRecovery) {
+    return 'This Claude session already established persistent continuity and cannot fall back to one-shot execution. Start a new Coral session.';
+  }
+
+  if (request.action === 'fork') {
+    return 'This Claude session already established persistent continuity. Start a new Coral session before forking.';
+  }
+
+  if (request.bypassPermissions !== true) {
+    return 'This Claude session already established persistent continuity with brokered auto-allow permissions. Start a new Coral session for bypassPermissions=false.';
+  }
+
+  const drift = findClaudeBootstrapDrift(request, derivedSystemPrompt, runtime.persistedContinuity);
+  if (!drift) {
+    return null;
+  }
+
+  return `This Claude session already established persistent continuity with cwd=${drift.expected.cwd}, systemPromptHash=${drift.expected.systemPromptHash}, permissionMode=${drift.expected.permissionMode}. Start a new Coral session before changing that bootstrap signature.`;
+}
+
+async function executeOneShot(
+  request: ProviderRequest,
+  runtime: ProviderRuntime,
+  prepared: { prompt: string; systemPrompt?: string; model?: string; effort?: EffortLevel },
+): Promise<ProviderResult> {
   const effort = request.effort as EffortLevel | undefined;
   const options = {
-    model: capModel(request.model, request.coralEnv),
+    model: prepared.model,
     workingDirectory: request.cwd,
-    systemPrompt,
-    effort,
+    systemPrompt: prepared.systemPrompt,
+    effort: prepared.effort ?? effort,
     bypassPermissions: request.bypassPermissions,
     onEvent: makeOnEvent(runtime, request.sessionId, extractClaudeProgressMessage, request.cwd),
     runCli: runtime.runCli,
@@ -165,14 +263,14 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
   try {
     switch (request.action) {
       case 'exec':
-        return mapResult(await executeClaudeOneShot(prompt, options));
+        return mapResult(await executeClaudeOneShot(prepared.prompt, options));
       case 'resume': {
         const conversationRef = requireConversationRef(request, 'resume');
-        return mapResult(await executeClaudeResume(conversationRef, prompt, options), conversationRef);
+        return mapResult(await executeClaudeResume(conversationRef, prepared.prompt, options), conversationRef);
       }
       case 'fork': {
         const conversationRef = requireConversationRef(request, 'fork');
-        return mapResult(await executeClaudeFork(conversationRef, prompt, options));
+        return mapResult(await executeClaudeFork(conversationRef, prepared.prompt, options));
       }
     }
   } catch (error) {
@@ -183,9 +281,370 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
   throw new Error(`Unsupported action: ${exhaustive}`);
 }
 
+async function executePersistent(
+  request: ProviderRequest,
+  runtime: ProviderRuntime,
+  prepared: { prompt: string; systemPrompt?: string; model?: string },
+): Promise<ProviderResult> {
+  const startedAt = Date.now();
+  const { acquireServer, checkpointRecovery } = requirePersistentRuntime(runtime);
+  const spec = buildClaudeProviderServerSpec(request, prepared.systemPrompt, runtime.persistedContinuity);
+  const lease = await acquireServer(spec);
+  const persistedContinuity = readClaudePersistedContinuity(runtime.persistedContinuity);
+
+  let bootstrapSignature = persistedContinuity.bootstrapSignature;
+  let conversationRef = persistedContinuity.conversationRef;
+  let brokerTurnId: string | undefined;
+  let completed = false;
+  let interruptRequested = false;
+  let turnRequested = false;
+  let resolveTerminal!: (result: ProviderResult) => void;
+
+  const resolveOnce = (result: ProviderResult): void => {
+    if (completed) {
+      return;
+    }
+    completed = true;
+    resolveTerminal(result);
+  };
+
+  const terminal = new Promise<ProviderResult>((resolve) => {
+    resolveTerminal = resolve;
+  });
+
+  const checkpoint = (): void => {
+    if (!bootstrapSignature) {
+      return;
+    }
+
+    const providerContinuity = buildClaudeContinuity({
+      serverKey: spec.key,
+      bootstrapSignature,
+      ...(conversationRef ? { conversationRef } : {}),
+      ...(brokerTurnId ? { brokerTurnId } : {}),
+    });
+
+    checkpointRecovery({
+      ...(conversationRef ? { conversationRef } : {}),
+      providerMeta: {
+        serverKey: spec.key,
+        bootstrapSignature,
+        ...(conversationRef ? { conversationRef, sessionId: conversationRef } : {}),
+        ...(brokerTurnId ? { brokerTurnId } : {}),
+        providerContinuity,
+      },
+    });
+  };
+
+  const requestInterrupt = (): void => {
+    if (!turnRequested || interruptRequested) {
+      return;
+    }
+    interruptRequested = true;
+    void lease.rpc('turn/interrupt', mapInterruptParams(brokerTurnId)).catch(() => {});
+  };
+
+  const onAbort = (): void => {
+    requestInterrupt();
+  };
+
+  const transportClosed = lease.closed.then((outcome) => {
+    if (completed) {
+      return undefined;
+    }
+    const message =
+      outcome instanceof Error
+        ? outcome.message
+        : 'Claude broker transport closed before the turn completed.';
+    resolveOnce({
+      content: '',
+      conversationRef,
+      model: prepared.model,
+      durationMs: Date.now() - startedAt,
+      exitCode: 1,
+      notice: message,
+      errors: [message],
+    });
+    return undefined;
+  });
+  void transportClosed.catch(() => {});
+
+  const unsubscribe = lease.subscribe((message) => {
+    if (!isRecord(message)) {
+      return;
+    }
+
+    if (message.method === 'session/updated') {
+      const params = isRecord(message.params) ? message.params : {};
+      const updatedSignature = readBootstrapSignature(params.bootstrapSignature);
+      if (updatedSignature) {
+        bootstrapSignature = updatedSignature;
+      }
+      const updatedConversationRef = readTurnConversationRef(params);
+      if (updatedConversationRef) {
+        conversationRef = updatedConversationRef;
+      }
+      checkpoint();
+      return;
+    }
+
+    if (message.method === 'turn/progress') {
+      const params = isRecord(message.params) ? message.params : {};
+      if (brokerTurnId && typeof params.brokerTurnId === 'string' && params.brokerTurnId !== brokerTurnId) {
+        return;
+      }
+      if (typeof params.message === 'string' && params.message.length > 0) {
+        runtime.onEvent({
+          jobId: request.sessionId,
+          message: params.message,
+          ts: nowIsoString(),
+        });
+      }
+      const updatedConversationRef = readTurnConversationRef(params);
+      if (updatedConversationRef) {
+        conversationRef = updatedConversationRef;
+      }
+      return;
+    }
+
+    if (message.method === 'turn/completed') {
+      const params = isRecord(message.params) ? message.params : {};
+      if (brokerTurnId && typeof params.brokerTurnId === 'string' && params.brokerTurnId !== brokerTurnId) {
+        return;
+      }
+
+      const updatedConversationRef = readTurnConversationRef(params);
+      if (updatedConversationRef) {
+        conversationRef = updatedConversationRef;
+      }
+      brokerTurnId = undefined;
+      checkpoint();
+
+      const costUsd = typeof params.costUsd === 'number' ? params.costUsd : undefined;
+      const content = typeof params.result === 'string' ? params.result : '';
+      const model = typeof params.model === 'string' ? params.model : prepared.model;
+      const isError = params.isError === true;
+      const errors = readErrors(params.errors);
+      resolveOnce({
+        content,
+        conversationRef,
+        model,
+        durationMs: typeof params.durationMs === 'number' ? params.durationMs : Date.now() - startedAt,
+        exitCode: isError ? 1 : 0,
+        notice: isError && errors.length > 0 ? errors.join(' ') : undefined,
+        errors: errors.length > 0 ? errors : undefined,
+        usage: costUsd !== undefined ? { costUsd } : undefined,
+      });
+      return;
+    }
+
+    if (message.method === 'turn/failed') {
+      const params = isRecord(message.params) ? message.params : {};
+      if (brokerTurnId && typeof params.brokerTurnId === 'string' && params.brokerTurnId !== brokerTurnId) {
+        return;
+      }
+
+      const updatedConversationRef = readTurnConversationRef(params);
+      if (updatedConversationRef) {
+        conversationRef = updatedConversationRef;
+      }
+      brokerTurnId = undefined;
+      checkpoint();
+
+      const failureMessage =
+        typeof params.message === 'string' && params.message.length > 0
+          ? params.message
+          : 'Claude broker turn failed.';
+      resolveOnce({
+        content: '',
+        conversationRef,
+        model: prepared.model,
+        durationMs: Date.now() - startedAt,
+        exitCode: 1,
+        notice: failureMessage,
+        errors: [failureMessage],
+      });
+    }
+  });
+
+  runtime.signal.addEventListener('abort', onAbort, { once: true });
+
+  try {
+    const ensureResult = await lease.rpc<Record<string, unknown>>(
+      'session/ensure',
+      mapSessionEnsureParams(request, prepared.systemPrompt, runtime.persistedContinuity),
+    );
+    bootstrapSignature = readBootstrapSignature(ensureResult.bootstrapSignature);
+    conversationRef = readTurnConversationRef(ensureResult) ?? conversationRef;
+    checkpoint();
+
+    if (runtime.signal.aborted) {
+      return {
+        content: '',
+        conversationRef,
+        model: prepared.model,
+        durationMs: Date.now() - startedAt,
+        aborted: true,
+      };
+    }
+
+    turnRequested = true;
+    const startParams = mapTurnStartParams(
+      {
+        ...request,
+        model: prepared.model,
+      },
+      prepared.prompt,
+    );
+    const startResult = await lease.rpc<Record<string, unknown>>('turn/start', startParams);
+    brokerTurnId = readString(startResult.brokerTurnId) ?? startParams.brokerTurnId;
+    conversationRef = readTurnConversationRef(startResult) ?? conversationRef;
+    checkpoint();
+
+    if (runtime.signal.aborted) {
+      requestInterrupt();
+    }
+
+    return await Promise.race([terminal, transportClosed.then(() => terminal)]);
+  } catch (error) {
+    if (runtime.signal.aborted) {
+      return {
+        content: '',
+        conversationRef,
+        model: prepared.model,
+        durationMs: Date.now() - startedAt,
+        aborted: true,
+      };
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      content: '',
+      conversationRef,
+      model: prepared.model,
+      durationMs: Date.now() - startedAt,
+      exitCode: 1,
+      notice: message,
+      errors: [message],
+    };
+  } finally {
+    runtime.signal.removeEventListener('abort', onAbort);
+    unsubscribe();
+    lease.release();
+  }
+}
+
+const claudeAppServer: ProviderAppServerContract = {
+  buildServerSpec(persistedContinuity, request) {
+    const { systemPrompt } = buildClaudeArgs(request);
+    return buildClaudeProviderServerSpec(request, systemPrompt, persistedContinuity);
+  },
+  async interrupt(lease, continuity) {
+    const persistedContinuity = readClaudePersistedContinuity(continuity);
+    await lease.rpc('turn/interrupt', mapInterruptParams(persistedContinuity.brokerTurnId));
+  },
+  async probe(lease, continuity) {
+    const persistedContinuity = readClaudePersistedContinuity(continuity);
+    const result = await lease.rpc<SessionProbeResult>('session/probe', {
+      conversationRef: persistedContinuity.conversationRef,
+    });
+    if (result.status === 'unavailable') {
+      throw new Error('Claude broker session is unavailable.');
+    }
+
+    const updatedConversationRef = readTurnConversationRef(result) ?? persistedContinuity.conversationRef;
+    return {
+      resumable: result.status === 'available' && Boolean(updatedConversationRef),
+      updatedContinuity: withClaudeContinuity(continuity, {
+        serverKey: persistedContinuity.serverKey,
+        bootstrapSignature: result.bootstrapSignature ?? persistedContinuity.bootstrapSignature,
+        conversationRef: updatedConversationRef,
+      }),
+    };
+  },
+  finalizeInterrupted(probeResult, continuity) {
+    const persistedContinuity = readClaudePersistedContinuity(probeResult.updatedContinuity ?? continuity);
+    const continuityMutation =
+      persistedContinuity.serverKey && persistedContinuity.bootstrapSignature
+        ? buildClaudeContinuity({
+            serverKey: persistedContinuity.serverKey,
+            bootstrapSignature: persistedContinuity.bootstrapSignature,
+            ...(persistedContinuity.conversationRef ? { conversationRef: persistedContinuity.conversationRef } : {}),
+          })
+        : undefined;
+
+    if (probeResult.resumable && persistedContinuity.conversationRef) {
+      return {
+        conversationRef: persistedContinuity.conversationRef,
+        ...(continuityMutation ? { continuityMutation } : {}),
+      };
+    }
+
+    if (continuityMutation) {
+      return {
+        nonResumable: true,
+        continuityMutation,
+      };
+    }
+
+    return {
+      nonResumable: true,
+    };
+  },
+};
+
+async function execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult> {
+  const prepared = buildPreparedRequest(request);
+  const redirectReason = getPersistentRedirectReason(request, runtime, prepared.systemPrompt);
+  if (redirectReason) {
+    return buildNewSessionRequiredResult(request, redirectReason);
+  }
+
+  if (canUsePersistentClaude(request, runtime, prepared.systemPrompt)) {
+    return executePersistent(request, runtime, prepared);
+  }
+
+  return executeOneShot(request, runtime, prepared);
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function readTurnConversationRef(value: unknown): string | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  return readString(value.conversationRef) ?? readString(value.sessionId);
+}
+
+function readBootstrapSignature(value: unknown): ClaudeBootstrapSignature | undefined {
+  if (
+    !isRecord(value) ||
+    typeof value.cwd !== 'string' ||
+    typeof value.systemPromptHash !== 'string' ||
+    typeof value.permissionMode !== 'string'
+  ) {
+    return undefined;
+  }
+  return {
+    cwd: value.cwd,
+    systemPromptHash: value.systemPromptHash,
+    permissionMode: value.permissionMode,
+  };
+}
+
+function readErrors(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
+}
+
 export const claudeProvider: Provider = {
   name: 'claude',
   execute,
   preflight,
   recovery: claudeRecovery,
+  appServer: claudeAppServer,
 };

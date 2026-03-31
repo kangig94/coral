@@ -50,11 +50,13 @@ function makeLease(
     return unsubscribe;
   });
   const releaseMock = vi.fn();
+  const closed = new Promise<Error | void>(() => {});
 
   return {
     rpc: rpcMock as unknown as ProviderServerLease['rpc'],
     subscribe: subscribeMock as unknown as ProviderServerLease['subscribe'],
     release: releaseMock,
+    closed,
     rpcMock,
     subscribeMock,
     releaseMock,
@@ -166,14 +168,20 @@ describe('codex adapter app-server flow', () => {
     expect(runtime.checkpointRecovery).toHaveBeenNthCalledWith(1, {
       conversationRef: 'thread-1',
       providerMeta: {
-        threadId: 'thread-1',
+        providerContinuity: {
+          serverKey: `codex:${process.cwd()}`,
+          threadId: 'thread-1',
+        },
       },
     });
     expect(runtime.checkpointRecovery).toHaveBeenNthCalledWith(2, {
       conversationRef: 'thread-1',
       providerMeta: {
-        threadId: 'thread-1',
-        turnId: 'turn-1',
+        providerContinuity: {
+          serverKey: `codex:${process.cwd()}`,
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+        },
       },
     });
     expect(lease.unsubscribe).not.toHaveBeenCalled();
@@ -202,6 +210,15 @@ describe('codex adapter app-server flow', () => {
     await expect(execution).resolves.toMatchObject({
       content: 'Final answer',
       conversationRef: 'thread-1',
+    });
+    expect(runtime.checkpointRecovery).toHaveBeenLastCalledWith({
+      conversationRef: 'thread-1',
+      providerMeta: {
+        providerContinuity: {
+          serverKey: `codex:${process.cwd()}`,
+          threadId: 'thread-1',
+        },
+      },
     });
     expect(lease.unsubscribe).toHaveBeenCalledTimes(1);
     expect(lease.releaseMock).toHaveBeenCalledTimes(1);
@@ -235,8 +252,11 @@ describe('codex adapter app-server flow', () => {
       expect(runtime.checkpointRecovery).toHaveBeenCalledWith({
         conversationRef: 'thread-1',
         providerMeta: {
-          threadId: 'thread-1',
-          turnId: 'turn-1',
+          providerContinuity: {
+            serverKey: `codex:${process.cwd()}`,
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+          },
         },
       });
     });

@@ -66,6 +66,7 @@ export type ProviderServerHandle = {
   generation: number;
   rpc: ProviderServerRpc;
   onNotification: (handler: (message: ProviderServerNotification) => void) => () => void;
+  closePromise: Promise<Error | void>;
   close: () => Promise<void>;
 };
 
@@ -86,8 +87,9 @@ type ProviderServerEntry = {
   stderr: string;
   closed: boolean;
   closeRequested: boolean;
-  closePromise: Promise<void>;
-  resolveClose: () => void;
+  closePromise: Promise<Error | void>;
+  resolveClose: (outcome: Error | void) => void;
+  closeOutcome: Error | void;
 };
 
 type QueuedLaunchEntry = {
@@ -342,6 +344,9 @@ function rejectPendingProviderRequests(entry: ProviderServerEntry, error: Error)
 function detachProviderServer(entry: ProviderServerEntry, error?: Error): void {
   if (entry.closed) return;
   entry.closed = true;
+  if (error) {
+    entry.closeOutcome = error;
+  }
   providerServers.delete(entry);
   entry.notificationHandlers.clear();
   rejectPendingProviderRequests(
@@ -647,8 +652,8 @@ export async function spawnProviderServer(options: SpawnProviderServerOptions): 
   child.stdout.setEncoding('utf8');
   child.stderr.setEncoding('utf8');
 
-  let resolveClose!: () => void;
-  const closePromise = new Promise<void>((resolve) => {
+  let resolveClose!: (outcome: Error | void) => void;
+  const closePromise = new Promise<Error | void>((resolve) => {
     resolveClose = resolve;
   });
 
@@ -666,12 +671,16 @@ export async function spawnProviderServer(options: SpawnProviderServerOptions): 
     closeRequested: false,
     closePromise,
     resolveClose,
+    closeOutcome: undefined,
   };
   providerServers.add(entry);
 
-  const finalizeClose = (): void => {
-    detachProviderServer(entry);
-    entry.resolveClose();
+  const finalizeClose = (outcome?: Error): void => {
+    if (outcome) {
+      entry.closeOutcome = outcome;
+    }
+    detachProviderServer(entry, outcome);
+    entry.resolveClose(entry.closeRequested ? undefined : entry.closeOutcome);
   };
 
   entry.readline.on('line', (line: string) => {
@@ -693,22 +702,24 @@ export async function spawnProviderServer(options: SpawnProviderServerOptions): 
   });
 
   child.on('error', (error: Error) => {
+    const closeError = createProviderServerError(options.provider, `failed: ${error.message}`, { stderr: entry.stderr });
     if (!entry.closeRequested) {
       backendLog.error(`Provider server ${options.provider} failed`, error);
     }
-    detachProviderServer(
-      entry,
-      createProviderServerError(options.provider, `failed: ${error.message}`, { stderr: entry.stderr }),
-    );
-    entry.resolveClose();
+    detachProviderServer(entry, closeError);
+    entry.resolveClose(entry.closeRequested ? undefined : closeError);
   });
 
   child.on('close', (code, signal) => {
-    if (!entry.closeRequested && (code !== 0 || signal !== null)) {
+    let closeError: Error | undefined;
+    if (!entry.closeRequested) {
       const detail = signal ? `exited unexpectedly (signal ${signal})` : `exited unexpectedly (exit ${code})`;
-      backendLog.error(createProviderServerError(options.provider, detail, { stderr: entry.stderr }).message);
+      closeError = createProviderServerError(options.provider, detail, { stderr: entry.stderr });
+      if (code !== 0 || signal !== null) {
+        backendLog.error(closeError.message);
+      }
     }
-    finalizeClose();
+    finalizeClose(closeError);
   });
 
   const rpc: ProviderServerRpc = {
@@ -756,6 +767,7 @@ export async function spawnProviderServer(options: SpawnProviderServerOptions): 
         entry.notificationHandlers.delete(handler);
       };
     },
+    closePromise,
     close: async () => {
       beginProviderServerShutdown(entry, 'closed');
       await entry.closePromise;

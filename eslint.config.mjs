@@ -5,7 +5,7 @@ import prettierConfig from 'eslint-config-prettier';
 export default tseslint.config(
   // --- Global ignores ---
   {
-    ignores: ['dist/', 'bridge/', 'node_modules/', '**/*.cjs', '**/*.mjs', 'src/providers/codex-appserver/'],
+    ignores: ['dist/', 'bridge/', 'node_modules/', '**/*.cjs', '**/*.mjs'],
   },
 
   // --- Base: JS recommended + TS type-checked ---

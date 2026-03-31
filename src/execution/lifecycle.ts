@@ -911,14 +911,9 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
             runningRecoverable.push({ jobId, launchRecord, runtimeRecord });
             if (isAppServerRuntime(runtimeRecord)) {
               recoveryRegistry.register(jobId, launchRecord, runtimeRecord, () => {
-                const { threadId, turnId } = runtimeRecord.providerMeta;
-                if (!threadId || !turnId) {
-                  return;
-                }
-
                 const ctx: CallerContext = { projectRoot: launchRecord.projectRoot, pluginRoot, coralEnv: {} };
                 const service = getExecutionService(ctx) as DefaultExecutionService;
-                void service.interruptAppServerJob(runtimeRecord).catch((error: unknown) => {
+                void service.interruptAppServerJob(launchRecord, runtimeRecord).catch((error: unknown) => {
                   log(`Failed to interrupt recovered app-server job ${jobId}: ${formatError(error)}\n`);
                 });
               });

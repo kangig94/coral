@@ -1,6 +1,8 @@
-import type { ProviderProgressEvent, ProviderRequest, ProviderResult } from '../shared/types.js';
+import type { ProviderContinuityBlob, ProviderProgressEvent, ProviderRequest, ProviderResult } from '../shared/types.js';
 import { nowIsoString } from '../shared/mcp-utils.js';
 import type { ProviderCliRunner } from './runner-port.js';
+
+export type { ProviderContinuityBlob } from '../shared/types.js';
 
 /** Recovery metadata persisted at launch time by the provider. */
 export interface ProviderRecoveryMeta {
@@ -22,6 +24,27 @@ export interface ProviderServerLease {
   rpc<R = unknown>(method: string, params: Record<string, unknown>): Promise<R>;
   subscribe(handler: (msg: { method: string; params?: Record<string, unknown> }) => void): () => void;
   release(): void;
+  closed: Promise<Error | void>;
+}
+
+export interface ProviderAppServerContract {
+  buildServerSpec(
+    persistedContinuity: ProviderContinuityBlob | undefined,
+    request: ProviderRequest,
+  ): ProviderServerSpec;
+  interrupt(lease: ProviderServerLease, continuity: ProviderContinuityBlob): Promise<void>;
+  probe(
+    lease: ProviderServerLease,
+    continuity: ProviderContinuityBlob,
+  ): Promise<{ resumable: boolean; updatedContinuity?: ProviderContinuityBlob }>;
+  finalizeInterrupted(
+    probeResult: { resumable: boolean; updatedContinuity?: ProviderContinuityBlob },
+    continuity: ProviderContinuityBlob,
+  ): {
+    conversationRef?: string;
+    nonResumable?: boolean;
+    continuityMutation?: ProviderContinuityBlob;
+  };
 }
 
 /** Contract for provider-owned recovery after backend replacement. */
@@ -82,6 +105,7 @@ export interface ProviderRuntime {
   onEvent: (event: ProviderProgressEvent) => void;
   runCli: ProviderCliRunner;
   acquireServer?: (spec: ProviderServerSpec) => Promise<ProviderServerLease>;
+  persistedContinuity?: ProviderContinuityBlob;
   checkpointRecovery?: (update: {
     conversationRef?: string;
     providerMeta: ProviderRecoveryMeta;
@@ -95,6 +119,7 @@ export interface Provider {
   preflight?(): Promise<void>;
   /** Recovery contract for durable execution handoff. */
   recovery?: ProviderRecoveryContract;
+  appServer?: ProviderAppServerContract;
 }
 
 export function requireConversationRef(request: ProviderRequest, action: 'resume' | 'fork'): string {

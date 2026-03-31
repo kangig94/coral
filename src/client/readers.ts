@@ -187,6 +187,7 @@ export function isValidSessionEntry(value: unknown): value is SessionEntry {
     (v.state === 'pending' || v.state === 'ready' || v.state === 'non_resumable') &&
     typeof v.model === 'string' &&
     typeof v.cwd === 'string' &&
+    (v.providerContinuity === undefined || isRecord(v.providerContinuity)) &&
     typeof v.version === 'number'
   );
 }
@@ -563,6 +564,7 @@ export interface LenientSessionEntry {
   activeJobId?: string;
   lastJobId?: string;
   conversationRef?: string;
+  providerContinuity?: Record<string, unknown>;
   model?: string;
   cwd?: string;
   projectRoot?: string;
@@ -664,6 +666,7 @@ export function readSessionEntryLenient(sessionPath: string): LenientSessionEntr
   if (typeof entry.activeJobId === 'string') lenientEntry.activeJobId = entry.activeJobId;
   if (typeof entry.lastJobId === 'string') lenientEntry.lastJobId = entry.lastJobId;
   if (typeof entry.conversationRef === 'string') lenientEntry.conversationRef = entry.conversationRef;
+  if (isRecord(entry.providerContinuity)) lenientEntry.providerContinuity = entry.providerContinuity;
   if (typeof entry.model === 'string') lenientEntry.model = entry.model;
   if (typeof entry.cwd === 'string') lenientEntry.cwd = entry.cwd;
   if (projectRoot !== undefined) lenientEntry.projectRoot = projectRoot;

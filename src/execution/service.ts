@@ -27,7 +27,14 @@ import { getNewProvider } from '../providers/registry.js';
 import { errorMessage } from '../shared/mcp-utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import type { EffortLevel } from '../shared/schemas.js';
-import type { Provider, ProviderRecoveryMeta, ProviderRuntime, ProviderServerLease, ProviderServerSpec } from '../providers/types.js';
+import type {
+  Provider,
+  ProviderContinuityBlob,
+  ProviderRecoveryMeta,
+  ProviderRuntime,
+  ProviderServerLease,
+  ProviderServerSpec,
+} from '../providers/types.js';
 import {
   executePipeline,
   resumePipeline,
@@ -60,7 +67,6 @@ import { buildCoralInstruction } from './instruction.js';
 import { ProgressStore, createReplayCursor, jobResultPath } from './progress-store.js';
 import { SessionManager } from './session-manager.js';
 import type { SessionEntry } from './session-manager.js';
-import { buildCodexProviderServerSpec } from '../providers/codex/request-mapping.js';
 
 import type { CallerContext } from './request-context.js';
 export type { CallerContext } from './request-context.js';
@@ -145,17 +151,22 @@ type ProviderServerRegistryEntry = {
   waiters: ProviderServerWaiter[];
 };
 
-type ProbeConversationRefResult = 'available' | 'missing' | 'unavailable';
 type InterruptedAppServerReason = 'restart' | 'handoff';
+type InterruptedProbeOutcome = 'verified' | 'missing' | 'unavailable' | 'waiting';
+type InterruptedAppServerFinalization = {
+  conversationRef?: string;
+  nonResumable?: boolean;
+  continuityMutation?: ProviderContinuityBlob;
+};
 
 const APP_SERVER_RECOVERY_POLICY = 'session_continuity_only' as const;
-const APP_SERVER_RESTART_NOTICE = 'Backend restarted during the Codex turn. The interrupted turn was not replayed.';
-const APP_SERVER_HANDOFF_NOTICE = 'Backend handoff interrupted the Codex turn. The interrupted turn was not replayed.';
+const APP_SERVER_RESTART_NOTICE = 'Backend restarted during the app-server turn. The interrupted turn was not replayed.';
+const APP_SERVER_HANDOFF_NOTICE = 'Backend handoff interrupted the app-server turn. The interrupted turn was not replayed.';
 const APP_SERVER_INTERRUPTED_BEFORE_CONTINUITY_NOTICE =
   'The job ended before a resumable conversation checkpoint for this turn was written.';
-const APP_SERVER_CONTINUITY_VERIFIED_NOTICE = 'Session continuity was verified for the saved conversation thread.';
+const APP_SERVER_CONTINUITY_VERIFIED_NOTICE = 'Session continuity was verified for the saved conversation reference.';
 const APP_SERVER_CONTINUITY_MISSING_NOTICE =
-  'The saved conversation thread is no longer available, so the session is non-resumable.';
+  'The saved conversation reference is no longer available, so the session is non-resumable.';
 const APP_SERVER_CONTINUITY_UNVERIFIED_NOTICE =
   'Session continuity could not be verified because the recovery probe was unavailable.';
 
@@ -221,19 +232,25 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
 }
 
-function createProviderServerRegistryKey(provider: string, projectRoot: string): string {
-  return `${provider}:${projectRoot}`;
+function isProviderContinuityBlob(value: unknown): value is ProviderContinuityBlob {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function isMissingConversationError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  return (
-    message.includes('not found') ||
-    message.includes('missing thread') ||
-    message.includes('unknown thread') ||
-    message.includes('does not exist') ||
-    message.includes('no such thread')
-  );
+function toProviderRequest(launchRecord: PersistedLaunchRecord): ProviderRequest {
+  return {
+    action: launchRecord.providerAction,
+    sessionId: launchRecord.sessionId,
+    name: launchRecord.request.name,
+    prompt: launchRecord.request.prompt,
+    conversationRef: launchRecord.request.conversationRef,
+    model: launchRecord.request.model,
+    cwd: launchRecord.request.cwd,
+    effort: launchRecord.request.effort,
+    bypassPermissions: launchRecord.request.bypassPermissions,
+    systemPrompt: launchRecord.request.systemPrompt,
+    instruction: launchRecord.request.instruction,
+    coralEnv: launchRecord.request.coralEnv,
+  };
 }
 
 export function serializeWorkflowResult(details: StepDetail[]): {
@@ -315,7 +332,6 @@ export class ExecutionService {
 
     await this.waitForProviderServerLease(entry, options?.signal);
 
-    let released = false;
     try {
       const handle = await this.ensureProviderServerHandle(entry);
       if (options?.jobId) {
@@ -325,21 +341,9 @@ export class ExecutionService {
         });
       }
 
-      return {
-        rpc: <R = unknown>(method: string, params: Record<string, unknown>) => handle.rpc.request<R>(method, params),
-        subscribe: (handler: (msg: { method: string; params?: Record<string, unknown> }) => void) =>
-          handle.onNotification(handler),
-        release: () => {
-          if (released) return;
-          released = true;
-          this.releaseProviderServerLease(entry);
-        },
-      };
+      return this.createProviderServerLease(handle, entry);
     } catch (error) {
-      if (!released) {
-        released = true;
-        this.releaseProviderServerLease(entry);
-      }
+      this.releaseProviderServerLease(entry);
       throw error;
     }
   }
@@ -361,50 +365,44 @@ export class ExecutionService {
     };
     this.progressStore.writeRuntimeRecord(jobId, nextRecord);
 
-    if (!update.conversationRef) {
+    const status = this.progressStore.readStatus(jobId);
+    if (status && isProviderContinuityBlob(nextRecord.providerMeta.providerContinuity)) {
+      this.sessionManager.checkpointProviderContinuity(status.sessionId, {
+        providerContinuity: nextRecord.providerMeta.providerContinuity,
+        conversationRef: update.conversationRef,
+      });
       return;
     }
 
-    const status = this.progressStore.readStatus(jobId);
-    if (status) {
+    if (status && update.conversationRef) {
       this.sessionManager.setConversationRef(status.sessionId, update.conversationRef);
     }
   }
 
-  async interruptAppServerJob(runtimeRecord: AppServerRuntimeRecord): Promise<void> {
-    const { serverKey, threadId, turnId } = runtimeRecord.providerMeta;
-    if (!threadId || !turnId) {
+  async interruptAppServerJob(
+    launchRecord: PersistedLaunchRecord,
+    runtimeRecord: AppServerRuntimeRecord,
+  ): Promise<void> {
+    const provider = getNewProvider(launchRecord.provider);
+    if (!provider?.appServer) {
+      return;
+    }
+    const session = this.sessionManager.get(launchRecord.provider, launchRecord.sessionId);
+    const continuity = this.resolveAppServerContinuity(launchRecord.provider, runtimeRecord, session);
+    if (!continuity) {
       return;
     }
 
-    const liveEntry = this.providerServers.get(serverKey);
+    const liveEntry = this.providerServers.get(runtimeRecord.providerMeta.serverKey);
     const liveHandle = liveEntry ? this.getLiveProviderServerHandle(liveEntry) : null;
-    if (liveHandle) {
-      await liveHandle.rpc.request('turn/interrupt', { threadId, turnId });
+    if (liveHandle && liveEntry) {
+      await provider.appServer.interrupt(this.createProviderServerLease(liveHandle, liveEntry), continuity);
       return;
     }
 
-    const lease = await this.acquireServer(buildCodexProviderServerSpec(this.projectRoot));
+    const lease = await this.acquireServer(provider.appServer.buildServerSpec(continuity, toProviderRequest(launchRecord)));
     try {
-      await lease.rpc('turn/interrupt', { threadId, turnId });
-    } finally {
-      lease.release();
-    }
-  }
-
-  async probeConversationRef(threadId: string): Promise<ProbeConversationRefResult> {
-    const lease = await this.acquireServer(buildCodexProviderServerSpec(this.projectRoot));
-    try {
-      await lease.rpc('thread/resume', {
-        threadId,
-        cwd: this.projectRoot,
-        model: null,
-        approvalPolicy: 'never',
-        sandbox: 'workspace-write',
-      });
-      return 'available';
-    } catch (error) {
-      return isMissingConversationError(error) ? 'missing' : 'unavailable';
+      await provider.appServer.interrupt(lease, continuity);
     } finally {
       lease.release();
     }
@@ -427,52 +425,106 @@ export class ExecutionService {
 
     const baseNotice =
       options.reason === 'restart' ? APP_SERVER_RESTART_NOTICE : APP_SERVER_HANDOFF_NOTICE;
+    const provider = getNewProvider(launchRecord.provider);
     const session =
       this.sessionManager.get(launchRecord.provider, launchRecord.sessionId) ??
-      ({ conversationRef: launchRecord.request.conversationRef } as Pick<SessionEntry, 'conversationRef'>);
-    const preservedConversationRef = session.conversationRef;
+      ({
+        conversationRef: launchRecord.request.conversationRef,
+      } as Pick<SessionEntry, 'conversationRef' | 'providerContinuity'>);
+    const preservedConversationRef = session.conversationRef ?? launchRecord.request.conversationRef;
+    const continuity = this.resolveAppServerContinuity(launchRecord.provider, runtimeRecord, session);
 
-    const { leaseState, threadId } = runtimeRecord.providerMeta;
+    const toMutation = (finalization: InterruptedAppServerFinalization) => {
+      if (finalization.nonResumable) {
+        return {
+          type: 'clear_non_resumable',
+          ...(finalization.continuityMutation ? { providerContinuity: finalization.continuityMutation } : {}),
+        } as const;
+      }
+
+      const conversationRef = finalization.conversationRef ?? preservedConversationRef;
+      if (conversationRef) {
+        return {
+          type: 'set_resumable',
+          conversationRef,
+          ...(finalization.continuityMutation ? { providerContinuity: finalization.continuityMutation } : {}),
+        } as const;
+      }
+
+      return {
+        type: 'preserve',
+        ...(finalization.continuityMutation ? { providerContinuity: finalization.continuityMutation } : {}),
+      } as const;
+    };
+
     let mutation:
-      | { type: 'set_resumable'; conversationRef: string }
-      | { type: 'clear_non_resumable' };
-    let notice: string;
+      | { type: 'set_resumable'; conversationRef: string; providerContinuity?: ProviderContinuityBlob }
+      | { type: 'clear_non_resumable'; providerContinuity?: ProviderContinuityBlob }
+      | { type: 'preserve'; providerContinuity?: ProviderContinuityBlob };
+    let probeOutcome: InterruptedProbeOutcome;
 
-    if (leaseState === 'waiting' || !threadId) {
-      if (preservedConversationRef) {
-        mutation = {
-          type: 'set_resumable',
-          conversationRef: preservedConversationRef,
-        };
-        notice = joinNotice(
-          baseNotice,
-          APP_SERVER_INTERRUPTED_BEFORE_CONTINUITY_NOTICE,
-          'The existing conversation reference was preserved.',
+    if (provider?.appServer && continuity) {
+      if (runtimeRecord.providerMeta.leaseState === 'waiting') {
+        probeOutcome = 'waiting';
+        mutation = toMutation(
+          provider.appServer.finalizeInterrupted(
+            {
+              resumable: Boolean(preservedConversationRef ?? continuity),
+              updatedContinuity: continuity,
+            },
+            continuity,
+          ),
         );
       } else {
-        mutation = { type: 'clear_non_resumable' };
-        notice = joinNotice(
-          baseNotice,
-          APP_SERVER_INTERRUPTED_BEFORE_CONTINUITY_NOTICE,
-          'No resumable conversation was available.',
-        );
+        const spec = provider.appServer.buildServerSpec(continuity, toProviderRequest(launchRecord));
+
+        try {
+          const lease = await this.acquireServer(spec);
+          try {
+            const probeResult = await provider.appServer.probe(lease, continuity);
+            probeOutcome = probeResult.resumable ? 'verified' : 'missing';
+            mutation = toMutation(provider.appServer.finalizeInterrupted(probeResult, continuity));
+          } finally {
+            lease.release();
+          }
+        } catch {
+          probeOutcome = 'unavailable';
+          mutation = toMutation(
+            provider.appServer.finalizeInterrupted(
+              {
+                resumable: Boolean(preservedConversationRef ?? continuity),
+                updatedContinuity: continuity,
+              },
+              continuity,
+            ),
+          );
+        }
       }
+    } else if (preservedConversationRef) {
+      probeOutcome = 'waiting';
+      mutation = {
+        type: 'set_resumable',
+        conversationRef: preservedConversationRef,
+      };
     } else {
-      const probeResult = await this.probeConversationRef(threadId);
-      if (probeResult === 'available') {
-        mutation = { type: 'set_resumable', conversationRef: threadId };
-        notice = joinNotice(baseNotice, APP_SERVER_CONTINUITY_VERIFIED_NOTICE);
-      } else if (probeResult === 'missing') {
-        mutation = { type: 'clear_non_resumable' };
-        notice = joinNotice(baseNotice, APP_SERVER_CONTINUITY_MISSING_NOTICE);
-      } else {
-        mutation = {
-          type: 'set_resumable',
-          conversationRef: preservedConversationRef ?? threadId,
-        };
-        notice = joinNotice(baseNotice, APP_SERVER_CONTINUITY_UNVERIFIED_NOTICE);
-      }
+      probeOutcome = 'waiting';
+      mutation = { type: 'clear_non_resumable' };
     }
+
+    const notice =
+      probeOutcome === 'waiting'
+        ? joinNotice(
+            baseNotice,
+            APP_SERVER_INTERRUPTED_BEFORE_CONTINUITY_NOTICE,
+            mutation.type === 'clear_non_resumable'
+              ? 'No resumable conversation was available.'
+              : 'The existing conversation reference was preserved.',
+          )
+        : probeOutcome === 'verified'
+          ? joinNotice(baseNotice, APP_SERVER_CONTINUITY_VERIFIED_NOTICE)
+          : probeOutcome === 'missing'
+            ? joinNotice(baseNotice, APP_SERVER_CONTINUITY_MISSING_NOTICE)
+            : joinNotice(baseNotice, APP_SERVER_CONTINUITY_UNVERIFIED_NOTICE);
 
     this.progressStore.updateLaunchState(launchRecord.jobId, 'error', notice);
     this.writeTerminalResult(launchRecord.jobId, launchRecord.sessionId, { content: '', notice }, 'error');
@@ -523,13 +575,13 @@ export class ExecutionService {
   }
 
   private getOrCreateProviderServerEntry(spec: ProviderServerSpec): ProviderServerRegistryEntry {
-    const key = createProviderServerRegistryKey(spec.provider, this.projectRoot);
+    const key = spec.key;
     const existing = this.providerServers.get(key);
     if (existing) return existing;
 
     const created: ProviderServerRegistryEntry = {
       key,
-      spec: { ...spec, key },
+      spec: { ...spec },
       handle: null,
       spawnPromise: null,
       leaseHeld: false,
@@ -537,6 +589,55 @@ export class ExecutionService {
     };
     this.providerServers.set(key, created);
     return created;
+  }
+
+  private createProviderServerLease(
+    handle: ProviderServerHandle,
+    entry: ProviderServerRegistryEntry,
+  ): ProviderServerLease {
+    let released = false;
+    return {
+      rpc: <R = unknown>(method: string, params: Record<string, unknown>) => handle.rpc.request<R>(method, params),
+      subscribe: (handler: (msg: { method: string; params?: Record<string, unknown> }) => void) =>
+        handle.onNotification(handler),
+      release: () => {
+        if (released) return;
+        released = true;
+        this.releaseProviderServerLease(entry);
+      },
+      closed: handle.closePromise,
+    };
+  }
+
+  private resolveAppServerContinuity(
+    providerName: string,
+    runtimeRecord: AppServerRuntimeRecord,
+    session?: Pick<SessionEntry, 'providerContinuity'> | null,
+  ): ProviderContinuityBlob | undefined {
+    if (isProviderContinuityBlob(runtimeRecord.providerMeta.providerContinuity)) {
+      return runtimeRecord.providerMeta.providerContinuity;
+    }
+    if (isProviderContinuityBlob(session?.providerContinuity)) {
+      return session.providerContinuity;
+    }
+
+    if (providerName !== 'codex') {
+      return undefined;
+    }
+
+    const legacyMeta = runtimeRecord.providerMeta as Record<string, unknown>;
+    const continuity: ProviderContinuityBlob = {};
+    if (typeof runtimeRecord.providerMeta.serverKey === 'string' && runtimeRecord.providerMeta.serverKey.length > 0) {
+      continuity.serverKey = runtimeRecord.providerMeta.serverKey;
+    }
+    if (typeof legacyMeta.threadId === 'string' && legacyMeta.threadId.length > 0) {
+      continuity.threadId = legacyMeta.threadId;
+    }
+    if (typeof legacyMeta.turnId === 'string' && legacyMeta.turnId.length > 0) {
+      continuity.turnId = legacyMeta.turnId;
+    }
+
+    return Object.keys(continuity).length > 0 ? continuity : undefined;
   }
 
   private getLiveProviderServerHandle(entry: ProviderServerRegistryEntry): ProviderServerHandle | null {
@@ -668,8 +769,8 @@ export class ExecutionService {
         serverKey,
         leaseState: update.leaseState ?? appRuntime?.providerMeta.leaseState ?? 'waiting',
         serverGeneration: update.serverGeneration ?? appRuntime?.providerMeta.serverGeneration,
-        threadId: update.threadId ?? appRuntime?.providerMeta.threadId,
-        turnId: update.turnId ?? appRuntime?.providerMeta.turnId,
+        providerContinuity:
+          update.providerContinuity ?? appRuntime?.providerMeta.providerContinuity,
         recoveryPolicy: APP_SERVER_RECOVERY_POLICY,
       },
     };
@@ -1061,12 +1162,9 @@ export class ExecutionService {
       }
 
       const runtimeRecord = this.progressStore.readRuntimeRecord(jobId);
-      if (
-        isAppServerRuntime(runtimeRecord) &&
-        runtimeRecord.providerMeta.threadId &&
-        runtimeRecord.providerMeta.turnId
-      ) {
-        void this.interruptAppServerJob(runtimeRecord).catch((error: unknown) => {
+      const launchRecord = this.progressStore.readLaunchRecord(jobId);
+      if (launchRecord && isAppServerRuntime(runtimeRecord)) {
+        void this.interruptAppServerJob(launchRecord, runtimeRecord).catch((error: unknown) => {
           backendLog.error(`Failed to interrupt app-server job ${jobId}: ${errorMessage(error)}`);
         });
       }
@@ -1190,8 +1288,9 @@ export class ExecutionService {
     sessionId: string,
     jobId: string,
     mutation:
-      | { type: 'set_resumable'; conversationRef: string }
-      | { type: 'clear_non_resumable' },
+      | { type: 'set_resumable'; conversationRef: string; providerContinuity?: ProviderContinuityBlob }
+      | { type: 'clear_non_resumable'; providerContinuity?: ProviderContinuityBlob }
+      | { type: 'preserve'; providerContinuity?: ProviderContinuityBlob },
   ): Promise<boolean> {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const session = this.sessionManager.get(providerName, sessionId);
@@ -1199,18 +1298,11 @@ export class ExecutionService {
         return false;
       }
 
-      const finalized =
-        mutation.type === 'clear_non_resumable'
-          ? await this.sessionManager.clearConversationRefAndMarkNonResumableAtomic(
-              sessionId,
-              jobId,
-              session.version,
-            )
-          : await this.sessionManager.finalizeJobContinuityAtomic(sessionId, {
-              expectedActiveJobId: jobId,
-              expectedVersion: session.version,
-              mutation,
-            });
+      const finalized = await this.sessionManager.finalizeJobContinuityAtomic(sessionId, {
+        expectedActiveJobId: jobId,
+        expectedVersion: session.version,
+        mutation,
+      });
       if (finalized) {
         return true;
       }
@@ -1226,6 +1318,36 @@ export class ExecutionService {
     jobId: string,
     result: ProviderResult,
   ): Promise<void> {
+    const provider = getNewProvider(providerName);
+    const runtimeRecord = this.progressStore.readRuntimeRecord(jobId);
+    if (provider?.appServer && isAppServerRuntime(runtimeRecord)) {
+      const continuity = this.resolveAppServerContinuity(
+        providerName,
+        runtimeRecord,
+        this.sessionManager.get(providerName, sessionId),
+      );
+
+      if (request.action === 'resume' && result.nonResumable && !continuity) {
+        await this.finalizeSessionContinuityMutation(providerName, sessionId, jobId, {
+          type: 'clear_non_resumable',
+        });
+        return;
+      }
+
+      if (result.conversationRef && !continuity) {
+        await this.finalizeSessionContinuityMutation(providerName, sessionId, jobId, {
+          type: 'set_resumable',
+          conversationRef: result.conversationRef,
+        });
+        return;
+      }
+
+      await this.finalizeSessionContinuityMutation(providerName, sessionId, jobId, {
+        type: 'preserve',
+      });
+      return;
+    }
+
     if (request.action === 'resume' && result.nonResumable) {
       await this.finalizeSessionContinuityMutation(providerName, sessionId, jobId, {
         type: 'clear_non_resumable',
@@ -1415,7 +1537,7 @@ export class ExecutionService {
         }
 
         bindLaunchPermit(jobId, signal, pool);
-        const runtime = this.createProviderRuntime(provider.name, jobId, signal, pool, onEvent);
+        const runtime = this.createProviderRuntime(provider.name, sessionId, jobId, signal, pool, onEvent);
         const result = await provider.execute(request, runtime);
 
         if (canAdvanceLaunchState(this.progressStore.readStatus(jobId))) {
@@ -1502,22 +1624,9 @@ export class ExecutionService {
         this.progressStore.appendProgress(jobId, sessionId, 'dequeued, launching');
 
         bindLaunchPermit(jobId, signal, pool);
-        const request: ProviderRequest = {
-          action: launchRecord.providerAction,
-          sessionId: launchRecord.sessionId,
-          name: launchRecord.request.name,
-          prompt: launchRecord.request.prompt,
-          conversationRef: launchRecord.request.conversationRef,
-          model: launchRecord.request.model,
-          cwd: launchRecord.request.cwd,
-          effort: launchRecord.request.effort,
-          bypassPermissions: launchRecord.request.bypassPermissions,
-          systemPrompt: launchRecord.request.systemPrompt,
-          instruction: launchRecord.request.instruction,
-          coralEnv: launchRecord.request.coralEnv,
-        };
+        const request = toProviderRequest(launchRecord);
 
-        const runtime = this.createProviderRuntime(provider.name, jobId, signal, pool, onEvent);
+        const runtime = this.createProviderRuntime(provider.name, sessionId, jobId, signal, pool, onEvent);
         const result = await provider.execute(request, runtime);
 
         if (canAdvanceLaunchState(this.progressStore.readStatus(jobId))) {
@@ -1570,6 +1679,7 @@ export class ExecutionService {
 
   private createProviderRuntime(
     providerName: string,
+    sessionId: string,
     jobId: string,
     signal: AbortSignal,
     pool: LaunchPool,
@@ -1580,6 +1690,7 @@ export class ExecutionService {
       onEvent,
       runCli: bindProviderRunner(providerName, signal, pool, this.progressStore.jobDir(jobId)),
       acquireServer: (spec) => this.acquireServer(spec, { jobId, signal }),
+      persistedContinuity: this.sessionManager.get(providerName, sessionId)?.providerContinuity,
       checkpointRecovery: (update) => {
         this.checkpointRecovery(jobId, update);
       },

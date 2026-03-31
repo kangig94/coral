@@ -1742,7 +1742,10 @@ describe('execution backend server', () => {
         providerMeta: {
           serverKey: `codex:${pluginRoot}`,
           leaseState: 'acquired',
-          threadId: 'thread-1',
+          providerContinuity: {
+            serverKey: `codex:${pluginRoot}`,
+            threadId: 'thread-1',
+          },
           recoveryPolicy: 'session_continuity_only',
         },
       });
@@ -1808,7 +1811,9 @@ describe('execution backend server', () => {
         expect.objectContaining({ jobId }),
         expect.objectContaining({
           transport: 'app-server',
-          providerMeta: expect.objectContaining({ threadId: 'thread-1' }),
+          providerMeta: expect.objectContaining({
+            providerContinuity: expect.objectContaining({ threadId: 'thread-1' }),
+          }),
         }),
         { reason: 'handoff' },
       );
@@ -2101,7 +2106,10 @@ describe('execution backend server', () => {
         providerMeta: {
           serverKey: `codex:${pluginRoot}`,
           leaseState: 'acquired',
-          threadId: 'thread-1',
+          providerContinuity: {
+            serverKey: `codex:${pluginRoot}`,
+            threadId: 'thread-1',
+          },
           recoveryPolicy: 'session_continuity_only',
         },
       });
@@ -2170,7 +2178,9 @@ describe('execution backend server', () => {
           expect.objectContaining({ jobId }),
           expect.objectContaining({
             transport: 'app-server',
-            providerMeta: expect.objectContaining({ threadId: 'thread-1' }),
+            providerMeta: expect.objectContaining({
+              providerContinuity: expect.objectContaining({ threadId: 'thread-1' }),
+            }),
           }),
           { reason: 'restart' },
         );
