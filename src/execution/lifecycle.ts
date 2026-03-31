@@ -32,6 +32,7 @@ import { getNewProvider } from '../providers/registry.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { type ExecutionService as DefaultExecutionService } from './service.js';
 import {
+  isAppServerRuntime,
   belongsToNamespace,
   isDurableCliRuntime,
   isLivePhase,
@@ -870,7 +871,22 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
           const runtimeRecord = progressStore.readRuntimeRecord(jobId);
           if (launchRecord && runtimeRecord) {
             runningRecoverable.push({ jobId, launchRecord, runtimeRecord });
-            recoveryRegistry.register(jobId, launchRecord, runtimeRecord);
+            if (isAppServerRuntime(runtimeRecord)) {
+              recoveryRegistry.register(jobId, launchRecord, runtimeRecord, () => {
+                const { threadId, turnId } = runtimeRecord.providerMeta;
+                if (!threadId || !turnId) {
+                  return;
+                }
+
+                const ctx: CallerContext = { projectRoot: launchRecord.projectRoot, pluginRoot, coralEnv: {} };
+                const service = getExecutionService(ctx) as DefaultExecutionService;
+                void service.interruptAppServerJob(runtimeRecord).catch((error: unknown) => {
+                  log(`Failed to interrupt recovered app-server job ${jobId}: ${formatError(error)}\n`);
+                });
+              });
+            } else {
+              recoveryRegistry.register(jobId, launchRecord, runtimeRecord);
+            }
           }
           continue;
         }

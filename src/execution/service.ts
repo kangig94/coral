@@ -24,6 +24,7 @@ import { resolveCoralContent, stripAgentMetadata, parseAgentMeta } from './resol
 import type { ProviderCliRunner } from '../providers/runner-port.js';
 import { getNewProvider } from '../providers/registry.js';
 import { errorMessage } from '../shared/mcp-utils.js';
+import { backendLog } from '../shared/backend-log.js';
 import type { EffortLevel } from '../shared/schemas.js';
 import type { Provider, ProviderRecoveryMeta, ProviderRuntime, ProviderServerLease, ProviderServerSpec } from '../providers/types.js';
 import {
@@ -201,6 +202,10 @@ function createAbortError(message: string): Error {
   return error;
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
 function createProviderServerRegistryKey(provider: string, projectRoot: string): string {
   return `${provider}:${projectRoot}`;
 }
@@ -348,6 +353,27 @@ export class ExecutionService {
     const status = this.progressStore.readStatus(jobId);
     if (status) {
       this.sessionManager.setConversationRef(status.sessionId, update.conversationRef);
+    }
+  }
+
+  async interruptAppServerJob(runtimeRecord: AppServerRuntimeRecord): Promise<void> {
+    const { serverKey, threadId, turnId } = runtimeRecord.providerMeta;
+    if (!threadId || !turnId) {
+      return;
+    }
+
+    const liveEntry = this.providerServers.get(serverKey);
+    const liveHandle = liveEntry ? this.getLiveProviderServerHandle(liveEntry) : null;
+    if (liveHandle) {
+      await liveHandle.rpc.request('turn/interrupt', { threadId, turnId });
+      return;
+    }
+
+    const lease = await this.acquireServer(buildCodexProviderServerSpec(this.projectRoot));
+    try {
+      await lease.rpc('turn/interrupt', { threadId, turnId });
+    } finally {
+      lease.release();
     }
   }
 
@@ -946,6 +972,17 @@ export class ExecutionService {
         continue;
       }
 
+      const runtimeRecord = this.progressStore.readRuntimeRecord(jobId);
+      if (
+        isAppServerRuntime(runtimeRecord) &&
+        runtimeRecord.providerMeta.threadId &&
+        runtimeRecord.providerMeta.turnId
+      ) {
+        void this.interruptAppServerJob(runtimeRecord).catch((error: unknown) => {
+          backendLog.error(`Failed to interrupt app-server job ${jobId}: ${errorMessage(error)}`);
+        });
+      }
+
       this.abortRegistry.abort([jobId]);
       aborted.push(jobId);
     }
@@ -1277,6 +1314,10 @@ export class ExecutionService {
         }
 
         const message = err instanceof Error ? err.message : String(err);
+        if (signal.aborted || isAbortError(err)) {
+          this.finishAbortedJob(jobId, sessionId, message);
+          return;
+        }
         this.failJob(jobId, sessionId, 'error', message);
       } finally {
         if (permitAcquired) releaseLaunch(jobId, pool);
@@ -1379,6 +1420,10 @@ export class ExecutionService {
         }
 
         const message = err instanceof Error ? err.message : String(err);
+        if (signal.aborted || isAbortError(err)) {
+          this.finishAbortedJob(jobId, sessionId, message);
+          return;
+        }
         this.failJob(jobId, sessionId, 'error', message);
       } finally {
         releaseLaunch(jobId, pool);
@@ -1472,6 +1517,14 @@ export class ExecutionService {
   private failJob(jobId: string, sessionId: string, launchState: LaunchState, message: string): void {
     this.progressStore.updateLaunchState(jobId, launchState, message);
     this.writeTerminalResult(jobId, sessionId, { content: '', notice: message }, 'error');
+    this.abortRegistry.remove(jobId);
+    this.jobPools.delete(jobId);
+    this.sessionManager.releaseJob(sessionId, jobId);
+  }
+
+  private finishAbortedJob(jobId: string, sessionId: string, message: string): void {
+    this.progressStore.updateLaunchState(jobId, 'error', message);
+    this.writeTerminalResult(jobId, sessionId, { content: '', aborted: true, notice: message }, 'aborted');
     this.abortRegistry.remove(jobId);
     this.jobPools.delete(jobId);
     this.sessionManager.releaseJob(sessionId, jobId);

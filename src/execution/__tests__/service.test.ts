@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as ResolverMod from '../resolver.js';
 import type {
+  AppServerRuntimeRecord,
   DurableCliRuntimeRecord,
   PersistedLaunchRecord,
   PersistedProgressRecord,
@@ -16,7 +17,9 @@ import type {
 } from '../../shared/types.js';
 
 import type { Provider } from '../../providers/types.js';
+import { buildCodexProviderServerSpec } from '../../providers/codex/request-mapping.js';
 import { parseExpression } from '../../workflow/pipe-parser.js';
+import * as engineModule from '../engine.js';
 import {
   MAX_ACTIVE_SESSIONS,
   cancelQueued,
@@ -25,6 +28,7 @@ import {
   queueDepth,
   releaseLaunch,
   restoreActiveLaunch,
+  type ProviderServerHandle,
 } from '../engine.js';
 import { type AbortRegistry } from '../abort-registry.js';
 import { JOBS_DIR, jobResultPath, type ProgressStore } from '../progress-store.js';
@@ -112,6 +116,50 @@ function createDeferred<T = void>(): {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+function createFakeProviderServerHandle(options?: {
+  generation?: number;
+  request?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+}) {
+  const handlers = new Set<(message: { method: string; params?: Record<string, unknown> }) => void>();
+  const request =
+    options?.request ??
+    (async (_method: string, _params: Record<string, unknown>) => {
+      return {};
+    });
+  const requestMock = vi.fn((method: string, params: Record<string, unknown> = {}) => request(method, params));
+  const notifyMock = vi.fn();
+  const onNotificationMock = vi.fn((handler: (message: { method: string; params?: Record<string, unknown> }) => void) => {
+    handlers.add(handler);
+    return () => {
+      handlers.delete(handler);
+    };
+  });
+  const closeMock = vi.fn(async () => {});
+
+  return {
+    handle: {
+      pid: 43210,
+      child: {} as never,
+      generation: options?.generation ?? 7,
+      rpc: {
+        request: requestMock as unknown as ProviderServerHandle['rpc']['request'],
+        notify: notifyMock,
+      },
+      onNotification: onNotificationMock as unknown as ProviderServerHandle['onNotification'],
+      close: closeMock,
+    } satisfies ProviderServerHandle,
+    requestMock,
+    notifyMock,
+    onNotificationMock,
+    closeMock,
+    emit(message: { method: string; params?: Record<string, unknown> }) {
+      for (const handler of handlers) {
+        handler(message);
+      }
+    },
+  };
 }
 
 function makeProvider(options?: { execute?: Provider['execute']; preflight?: Provider['preflight'] }): {
@@ -279,6 +327,209 @@ describe('ExecutionService', () => {
     expect(runtimeRecord.tailWatermark).toBeGreaterThan(0);
     expect(readFileSync(join(jobDir, 'progress.jsonl'), 'utf-8')).toContain('step-1');
     expect(readFileSync(join(jobDir, 'progress.jsonl'), 'utf-8')).toContain('step-2');
+  });
+
+  it('writes app-server runtime waiting before lease grant and upgrades the same record on acquisition', async () => {
+    const service = new ExecutionService(ctx);
+    const { progressStore } = getInternals(service);
+    const spec = buildCodexProviderServerSpec(ctx.projectRoot);
+    const server = createFakeProviderServerHandle({ generation: 41 });
+    const spawnProviderServer = vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(server.handle);
+    const jobId1 = `app-server-runtime-${randomUUID()}`;
+    const jobId2 = `app-server-runtime-${randomUUID()}`;
+    trackJob(jobId1);
+    trackJob(jobId2);
+
+    progressStore.initJob({
+      jobId: jobId1,
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+      initialPhase: 'running',
+    });
+    progressStore.initJob({
+      jobId: jobId2,
+      sessionId: 'session-2',
+      provider: 'codex',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+      initialPhase: 'running',
+    });
+
+    const firstLease = await service.acquireServer(spec, { jobId: jobId1 });
+    const firstRuntime = progressStore.readRuntimeRecord(jobId1) as AppServerRuntimeRecord;
+    expect(firstRuntime).toMatchObject({
+      transport: 'app-server',
+      providerMeta: {
+        serverKey: `codex:${ctx.projectRoot}`,
+        leaseState: 'acquired',
+        serverGeneration: 41,
+        recoveryPolicy: 'session_continuity_only',
+      },
+    });
+    expect(firstRuntime.startTime).toEqual(expect.any(String));
+    expect(firstRuntime.providerMeta.threadId).toBeUndefined();
+    expect(firstRuntime.providerMeta.turnId).toBeUndefined();
+
+    let secondSettled = false;
+    const secondLeasePromise = service.acquireServer(spec, { jobId: jobId2 }).then((lease) => {
+      secondSettled = true;
+      return lease;
+    });
+
+    await Promise.resolve();
+
+    const waitingRuntime = progressStore.readRuntimeRecord(jobId2) as AppServerRuntimeRecord;
+    expect(waitingRuntime).toMatchObject({
+      transport: 'app-server',
+      providerMeta: {
+        serverKey: `codex:${ctx.projectRoot}`,
+        leaseState: 'waiting',
+        recoveryPolicy: 'session_continuity_only',
+      },
+    });
+    expect(waitingRuntime.startTime).toEqual(expect.any(String));
+    expect(waitingRuntime.providerMeta.serverGeneration).toBeUndefined();
+    expect(waitingRuntime.providerMeta.threadId).toBeUndefined();
+    expect(waitingRuntime.providerMeta.turnId).toBeUndefined();
+    expect(secondSettled).toBe(false);
+    expect(spawnProviderServer).toHaveBeenCalledTimes(1);
+
+    firstLease.release();
+    const secondLease = await secondLeasePromise;
+
+    const acquiredRuntime = progressStore.readRuntimeRecord(jobId2) as AppServerRuntimeRecord;
+    expect(acquiredRuntime).toMatchObject({
+      transport: 'app-server',
+      providerMeta: {
+        serverKey: `codex:${ctx.projectRoot}`,
+        leaseState: 'acquired',
+        serverGeneration: 41,
+        recoveryPolicy: 'session_continuity_only',
+      },
+    });
+    expect(acquiredRuntime.startTime).toEqual(expect.any(String));
+    expect(acquiredRuntime.providerMeta.threadId).toBeUndefined();
+    expect(acquiredRuntime.providerMeta.turnId).toBeUndefined();
+
+    secondLease.release();
+  });
+
+  it('abort sends turn/interrupt for checkpointed app-server jobs', async () => {
+    const service = new ExecutionService(ctx);
+    const { progressStore, abortRegistry } = getInternals(service);
+    const jobId = `app-server-abort-${randomUUID()}`;
+    const server = createFakeProviderServerHandle({
+      request: async (method, params) => {
+        if (method === 'turn/interrupt') {
+          return {
+            threadId: params.threadId,
+            turnId: params.turnId,
+          };
+        }
+        return {};
+      },
+    });
+    trackJob(jobId);
+
+    progressStore.initJob({
+      jobId,
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+      initialPhase: 'running',
+    });
+    progressStore.writeRuntimeRecord(jobId, {
+      transport: 'app-server',
+      startTime: new Date().toISOString(),
+      providerMeta: {
+        serverKey: `codex:${ctx.projectRoot}`,
+        leaseState: 'acquired',
+        serverGeneration: 7,
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        recoveryPolicy: 'session_continuity_only',
+      },
+    });
+    abortRegistry.register(jobId);
+
+    vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(server.handle);
+
+    expect(service.abort([jobId])).toEqual({
+      aborted: [jobId],
+      notFound: [],
+    });
+
+    await vi.waitFor(() => {
+      expect(server.requestMock).toHaveBeenCalledWith('turn/interrupt', {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+      });
+    });
+  });
+
+  it('persists app-server lease-wait aborts as aborted instead of error', async () => {
+    const spec = buildCodexProviderServerSpec(ctx.projectRoot);
+    const server = createFakeProviderServerHandle();
+    const spawnProviderServer = vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(server.handle);
+    const firstLeaseHeld = createDeferred<void>();
+    const { provider } = makeProvider({
+      execute: async (_request, runtime): Promise<ProviderResult> => {
+        const lease = await runtime.acquireServer!(spec);
+        await firstLeaseHeld.promise;
+        lease.release();
+        return { content: 'done' };
+      },
+    });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = new ExecutionService(ctx);
+
+    const first = await service.start('codex', { prompt: 'hold lease' }, ctx);
+    const second = await service.start('codex', { prompt: 'wait for lease' }, ctx);
+
+    expect(first.status).toBe('running');
+    expect(second.status).toBe('running');
+    if (first.status !== 'running' || second.status !== 'running') {
+      throw new Error('expected running launches');
+    }
+    trackJob(first.job);
+    trackJob(second.job);
+
+    await Promise.resolve();
+
+    const { progressStore } = getInternals(service);
+    const waitingRuntime = progressStore.readRuntimeRecord(second.job) as AppServerRuntimeRecord;
+    expect(waitingRuntime).toMatchObject({
+      transport: 'app-server',
+      providerMeta: {
+        serverKey: `codex:${ctx.projectRoot}`,
+        leaseState: 'waiting',
+      },
+    });
+
+    expect(service.abort([second.job])).toEqual({
+      aborted: [second.job],
+      notFound: [],
+    });
+
+    const terminal = await waitForTerminalEvent(service, second.job);
+    expect(terminal.result).toMatchObject({
+      aborted: true,
+      notice: 'Aborted while waiting for a provider server lease',
+    });
+    expect(progressStore.readStatus(second.job)).toMatchObject({
+      phase: 'aborted',
+      result: {
+        aborted: true,
+        notice: 'Aborted while waiting for a provider server lease',
+      },
+    });
+
+    firstLeaseHeld.resolve();
+    await waitForTerminalEvent(service, first.job);
+    expect(spawnProviderServer).toHaveBeenCalledTimes(1);
   });
 
   it('start rejects unknown providers', async () => {

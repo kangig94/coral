@@ -350,13 +350,21 @@ async function rpc<M extends AppServerMethod>(
   return lease.rpc<AppServerResponse<M>>(method, params as Record<string, unknown>);
 }
 
+async function interruptTurn(lease: ProviderServerLease, threadId: string, turnId: string): Promise<void> {
+  await rpc(lease, 'turn/interrupt', { threadId, turnId });
+}
+
 async function captureTurn(
   lease: ProviderServerLease,
   threadId: string,
   request: ProviderRequest,
   runtime: ProviderRuntime,
+  options?: {
+    onTurnStarted?: (turnId: string) => void;
+  },
 ): Promise<CaptureState> {
   const state = createCaptureState(threadId, runtime, request.sessionId);
+  let interruptRequested: Promise<void> | null = null;
   const unsubscribe = lease.subscribe((message) => {
     if (!state.turnId) {
       state.bufferedNotifications.push(message);
@@ -374,12 +382,34 @@ async function captureTurn(
 
     applyNotification(state, message);
   });
+  const requestInterrupt = (): void => {
+    if (!state.turnId || interruptRequested) {
+      return;
+    }
+    interruptRequested = interruptTurn(lease, threadId, state.turnId).catch(() => {});
+  };
+  const onAbort = () => {
+    requestInterrupt();
+  };
+  runtime.signal.addEventListener('abort', onAbort, { once: true });
 
   try {
+    if (runtime.signal.aborted) {
+      completeTurn(state, {
+        id: 'interrupted-before-turn-start',
+        status: 'interrupted',
+      });
+      return await state.completion;
+    }
+
     const response = await rpc(lease, 'turn/start', mapTurnStartParams(request, threadId));
     state.turnId = response.turn?.id ?? null;
     if (state.turnId) {
       state.threadTurnIds.set(threadId, state.turnId);
+      options?.onTurnStarted?.(state.turnId);
+      if (runtime.signal.aborted) {
+        requestInterrupt();
+      }
     }
 
     for (const buffered of state.bufferedNotifications) {
@@ -396,6 +426,7 @@ async function captureTurn(
     return await state.completion;
   } finally {
     clearCompletionTimer(state);
+    runtime.signal.removeEventListener('abort', onAbort);
     unsubscribe();
   }
 }
@@ -421,6 +452,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
 
   try {
     let threadId: string;
+    let checkpointedTurnId: string | null = null;
 
     if (request.action === 'resume') {
       const conversationRef = requireConversationRef(request, 'resume');
@@ -452,8 +484,29 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
     });
     runtime.onEvent(createProgressEvent(request.sessionId, `Thread ready (${threadId}).`));
 
-    const turnState = await captureTurn(lease, threadId, request, runtime);
-    if (turnState.turnId) {
+    if (runtime.signal.aborted) {
+      return {
+        content: '',
+        conversationRef: threadId,
+        model: resolveCodexModel(request.model),
+        durationMs: Date.now() - startedAt,
+        aborted: true,
+      };
+    }
+
+    const turnState = await captureTurn(lease, threadId, request, runtime, {
+      onTurnStarted: (turnId) => {
+        checkpointedTurnId = turnId;
+        checkpointRecovery({
+          conversationRef: threadId,
+          providerMeta: {
+            threadId,
+            turnId,
+          },
+        });
+      },
+    });
+    if (turnState.turnId && turnState.turnId !== checkpointedTurnId) {
       checkpointRecovery({
         conversationRef: threadId,
         providerMeta: {

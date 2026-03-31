@@ -16,12 +16,21 @@ export class RecoveryRegistry {
   private readonly entries = new Map<string, RecoveryEntry>();
   private readonly abortHandlers = new Map<string, () => void>();
 
-  register(jobId: string, launchRecord: PersistedLaunchRecord, runtimeRecord?: PersistedRuntimeRecord): void {
+  register(
+    jobId: string,
+    launchRecord: PersistedLaunchRecord,
+    runtimeRecord?: PersistedRuntimeRecord,
+    abortHandler?: () => void,
+  ): void {
     this.entries.set(jobId, { launchRecord, runtimeRecord });
+
+    if (abortHandler) {
+      this.abortHandlers.set(jobId, abortHandler);
+      return;
+    }
 
     // Install abort delegate: queued → noop (cancel handled by service after adoption),
     // running → kill PID from runtimeRecord
-    // TODO(AC2-AC10): handle app-server abort without assuming a per-job PID.
     if (isDurableCliRuntime(runtimeRecord)) {
       const pid = runtimeRecord.pid;
       this.abortHandlers.set(jobId, () => {
