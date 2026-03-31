@@ -146,7 +146,7 @@ describe('coral-hud hud-auto-update marketplace path guard', () => {
   });
 
   it('marketplace path guard uses exact substring match not prefix match', () => {
-    const notMarketplace = '/.claude/plugins/marketplaces';    // missing trailing slash
+    const notMarketplace = '/.claude/plugins/marketplaces'; // missing trailing slash
     const isMarketplace = '/.claude/plugins/marketplaces/coral'; // has trailing slash
 
     function isMarketplacePath(p: string): boolean {

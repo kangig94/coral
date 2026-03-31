@@ -1,8 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import {
-  detectCodexCli, resetCodexCliCache,
-  detectClaudeCli, resetClaudeCliCache,
-} from '../cli-detection.js';
+import { detectCodexCli, resetCodexCliCache, detectClaudeCli, resetClaudeCliCache } from '../cli-detection.js';
 
 vi.mock('node:child_process', () => ({
   execFile: vi.fn(),
@@ -58,7 +55,7 @@ describe('detectCodexCli', () => {
   it('returns authenticated when whoami exits 0', async () => {
     mockExecByArgs({
       '--version': (cb) => cb(null, 'codex 1.2.3\n', ''),
-      'whoami': (cb) => cb(null, 'user@example.com\n', ''),
+      whoami: (cb) => cb(null, 'user@example.com\n', ''),
     });
 
     const result = await detectCodexCli();
@@ -69,22 +66,24 @@ describe('detectCodexCli', () => {
   it('returns unauthenticated when stderr matches auth pattern', async () => {
     mockExecByArgs({
       '--version': (cb) => cb(null, 'codex 1.2.3\n', ''),
-      'whoami': (cb) => cb(new Error('exit 1'), '', 'Not logged in'),
+      whoami: (cb) => cb(new Error('exit 1'), '', 'Not logged in'),
     });
 
     const result = await detectCodexCli();
 
-    expect(result).toEqual(expect.objectContaining({
-      available: true,
-      authState: 'unauthenticated',
-      authError: expect.stringContaining('codex login'),
-    }));
+    expect(result).toEqual(
+      expect.objectContaining({
+        available: true,
+        authState: 'unauthenticated',
+        authError: expect.stringContaining('codex login'),
+      }),
+    );
   });
 
   it('returns unauthenticated when stdout alone matches auth pattern', async () => {
     mockExecByArgs({
       '--version': (cb) => cb(null, 'codex 1.2.3\n', ''),
-      'whoami': (cb) => cb(new Error('exit 1'), 'Missing API key', ''),
+      whoami: (cb) => cb(new Error('exit 1'), 'Missing API key', ''),
     });
 
     const result = await detectCodexCli();
@@ -98,7 +97,7 @@ describe('detectCodexCli', () => {
   it('returns unknown when whoami fails without auth-pattern output', async () => {
     mockExecByArgs({
       '--version': (cb) => cb(null, 'codex 1.2.3\n', ''),
-      'whoami': (cb) => cb(new Error('exit 1'), '', 'unsupported command'),
+      whoami: (cb) => cb(new Error('exit 1'), '', 'unsupported command'),
     });
 
     const result = await detectCodexCli();
@@ -110,7 +109,7 @@ describe('detectCodexCli', () => {
     const timeoutError = Object.assign(new Error('ETIMEDOUT'), { killed: true });
     mockExecByArgs({
       '--version': (cb) => cb(null, 'codex 1.2.3\n', ''),
-      'whoami': (cb) => cb(timeoutError, '', ''),
+      whoami: (cb) => cb(timeoutError, '', ''),
     });
 
     const result = await detectCodexCli();
@@ -125,10 +124,12 @@ describe('detectCodexCli', () => {
 
     const result = await detectCodexCli();
 
-    expect(result).toEqual(expect.objectContaining({
-      available: false,
-      error: expect.stringContaining('not found'),
-    }));
+    expect(result).toEqual(
+      expect.objectContaining({
+        available: false,
+        error: expect.stringContaining('not found'),
+      }),
+    );
     expect(mockExecFile).toHaveBeenCalledTimes(1);
     expect(mockExecFile.mock.calls[0]?.[1]).toEqual(['--version']);
   });
@@ -136,7 +137,7 @@ describe('detectCodexCli', () => {
   it('caches positive auth permanently', async () => {
     mockExecByArgs({
       '--version': (cb) => cb(null, 'codex 1.0.0\n', ''),
-      'whoami': (cb) => cb(null, 'user@example.com\n', ''),
+      whoami: (cb) => cb(null, 'user@example.com\n', ''),
     });
 
     await detectCodexCli();
@@ -150,7 +151,7 @@ describe('detectCodexCli', () => {
     let whoamiCalls = 0;
     mockExecByArgs({
       '--version': (cb) => cb(null, 'codex 1.0.0\n', ''),
-      'whoami': (cb) => {
+      whoami: (cb) => {
         whoamiCalls += 1;
         cb(new Error('exit 1'), '', 'authentication required');
       },
@@ -169,7 +170,7 @@ describe('detectCodexCli', () => {
     let whoamiCalls = 0;
     mockExecByArgs({
       '--version': (cb) => cb(null, 'codex 1.0.0\n', ''),
-      'whoami': (cb) => {
+      whoami: (cb) => {
         whoamiCalls += 1;
         cb(new Error('exit 1'), '', 'network unstable');
       },
@@ -192,7 +193,7 @@ describe('detectCodexCli', () => {
         versionCalls += 1;
         setTimeout(() => cb(null, 'codex 1.0.0\n', ''), 5);
       },
-      'whoami': (cb) => {
+      whoami: (cb) => {
         whoamiCalls += 1;
         setTimeout(() => cb(new Error('exit 1'), '', 'no api key'), 5);
       },
@@ -210,7 +211,7 @@ describe('detectCodexCli', () => {
     process.env.OPENAI_API_KEY = '   ';
     mockExecByArgs({
       '--version': (cb) => cb(null, 'codex 1.0.0\n', ''),
-      'whoami': (cb) => cb(new Error('exit 1'), '', 'not logged in'),
+      whoami: (cb) => cb(new Error('exit 1'), '', 'not logged in'),
     });
 
     const result = await detectCodexCli();
@@ -225,7 +226,7 @@ describe('detectCodexCli', () => {
     process.env.OPENAI_API_KEY = '';
     mockExecByArgs({
       '--version': (cb) => cb(null, 'codex 1.0.0\n', ''),
-      'whoami': (cb) => cb(null, 'user@example.com', ''),
+      whoami: (cb) => cb(null, 'user@example.com', ''),
     });
 
     const result = await detectCodexCli();
@@ -239,7 +240,7 @@ describe('detectCodexCli', () => {
   it('AUTH_ERROR_PATTERN is case-insensitive', async () => {
     mockExecByArgs({
       '--version': (cb) => cb(null, 'codex 1.0.0\n', ''),
-      'whoami': (cb) => cb(new Error('exit 1'), '', 'UNAUTHORIZED'),
+      whoami: (cb) => cb(new Error('exit 1'), '', 'UNAUTHORIZED'),
     });
 
     const result = await detectCodexCli();
@@ -253,7 +254,7 @@ describe('detectCodexCli', () => {
   it('auth phrase matched mid-sentence triggers unauthenticated', async () => {
     mockExecByArgs({
       '--version': (cb) => cb(null, 'codex 1.0.0\n', ''),
-      'whoami': (cb) => cb(new Error('exit 1'), '', 'Request failed: user is not logged in to the platform'),
+      whoami: (cb) => cb(new Error('exit 1'), '', 'Request failed: user is not logged in to the platform'),
     });
 
     const result = await detectCodexCli();
@@ -267,8 +268,11 @@ describe('detectCodexCli', () => {
   it('resetCodexCliCache then fresh call re-probes from scratch', async () => {
     let versionCallCount = 0;
     mockExecByArgs({
-      '--version': (cb) => { versionCallCount += 1; cb(null, 'codex 1.0.0\n', ''); },
-      'whoami': (cb) => cb(null, 'user@example.com', ''),
+      '--version': (cb) => {
+        versionCallCount += 1;
+        cb(null, 'codex 1.0.0\n', '');
+      },
+      whoami: (cb) => cb(null, 'user@example.com', ''),
     });
 
     await detectCodexCli();
@@ -282,7 +286,10 @@ describe('detectCodexCli', () => {
     let whoamiCalls = 0;
     mockExecByArgs({
       '--version': (cb) => cb(null, 'codex 1.0.0\n', ''),
-      'whoami': (cb) => { whoamiCalls += 1; cb(new Error('exit 1'), '', 'network error'); },
+      whoami: (cb) => {
+        whoamiCalls += 1;
+        cb(new Error('exit 1'), '', 'network error');
+      },
     });
 
     await Promise.all([detectCodexCli(), detectCodexCli()]);
@@ -296,7 +303,7 @@ describe('detectCodexCli', () => {
     process.env.OPENAI_API_KEY = 'sk-test';
     mockExecByArgs({
       '--version': (cb) => cb(null, 'codex 1.0.0\n', ''),
-      'whoami': (cb) => cb(new Error('exit 1'), '', 'not logged in'),
+      whoami: (cb) => cb(new Error('exit 1'), '', 'not logged in'),
     });
 
     const first = await detectCodexCli();
@@ -385,10 +392,12 @@ describe('detectClaudeCli', () => {
 
     const result = await detectClaudeCli();
 
-    expect(result).toEqual(expect.objectContaining({
-      available: false,
-      error: expect.stringContaining('not found'),
-    }));
+    expect(result).toEqual(
+      expect.objectContaining({
+        available: false,
+        error: expect.stringContaining('not found'),
+      }),
+    );
     expect(mockExecFile).toHaveBeenCalledTimes(1);
   });
 });

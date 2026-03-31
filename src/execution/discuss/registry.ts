@@ -43,10 +43,7 @@ export function detachSession(ctx: DiscussContext, sessionId: string): void {
   ctx.sessions.delete(sessionId);
 }
 
-export function getSession(
-  ctx: DiscussContext,
-  sessionId: string,
-): LiveDiscussSession | undefined {
+export function getSession(ctx: DiscussContext, sessionId: string): LiveDiscussSession | undefined {
   return ctx.sessions.get(sessionId);
 }
 
@@ -54,11 +51,7 @@ export function listSessions(ctx: DiscussContext): Array<[string, LiveDiscussSes
   return [...ctx.sessions.entries()];
 }
 
-export function getWatchState(
-  ctx: DiscussContext,
-  sessionId: string,
-  cursor?: number,
-): WatchState {
+export function getWatchState(ctx: DiscussContext, sessionId: string, cursor?: number): WatchState {
   const session = ctx.sessions.get(sessionId);
   if (!session) {
     return buildPersistedWatchState(ctx, sessionId, cursor);

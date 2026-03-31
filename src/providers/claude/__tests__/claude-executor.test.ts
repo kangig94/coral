@@ -1,10 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ClaudeExecOptions } from '../claude-executor.js';
-import {
-  executeClaudeOneShot,
-  executeClaudeResume,
-  ClaudeExecParseError,
-} from '../claude-executor.js';
+import { executeClaudeOneShot, executeClaudeResume, ClaudeExecParseError } from '../claude-executor.js';
 
 const baseArgs = ['-p', '--verbose', '--output-format', 'stream-json'];
 const defaultEffort = process.env.CORAL_CLAUDE_EFFORT ?? process.env.CORAL_EFFORT ?? 'high';
@@ -43,17 +39,22 @@ describe('claude-executor', () => {
   });
 
   it('sends one-shot prompt via the injected runner with stream-json output args', async () => {
-    mockCliResult(stream(
-      '{"type":"assistant","message":{"model":"claude-3-5-sonnet","content":[{"type":"text","text":"hello"}]}}',
-      '{"type":"result","result":"hello","session_id":"sess-1","total_cost_usd":0.02}',
-    ));
+    mockCliResult(
+      stream(
+        '{"type":"assistant","message":{"model":"claude-3-5-sonnet","content":[{"type":"text","text":"hello"}]}}',
+        '{"type":"result","result":"hello","session_id":"sess-1","total_cost_usd":0.02}',
+      ),
+    );
 
-    const result = await executeClaudeOneShot('Say hello', withRunner({
-      model: 'claude-3-5-sonnet',
-      systemPrompt: 'You are precise',
-      workingDirectory: '/tmp/work',
-      sessionId: 'bootstrap-id',
-    }));
+    const result = await executeClaudeOneShot(
+      'Say hello',
+      withRunner({
+        model: 'claude-3-5-sonnet',
+        systemPrompt: 'You are precise',
+        workingDirectory: '/tmp/work',
+        sessionId: 'bootstrap-id',
+      }),
+    );
 
     expect(mockRunCli).toHaveBeenCalledWith({
       command: 'claude',
@@ -85,11 +86,15 @@ describe('claude-executor', () => {
   it('adds --resume and optional --append-system-prompt when resuming', async () => {
     mockCliResult('{"type":"result","result":"done","session_id":"sess-2"}');
 
-    const result = await executeClaudeResume('sess-1', 'Continue', withRunner({
-      model: 'claude-sonnet',
-      systemPrompt: 'Resume mode',
-      workingDirectory: '/tmp/project',
-    }));
+    const result = await executeClaudeResume(
+      'sess-1',
+      'Continue',
+      withRunner({
+        model: 'claude-sonnet',
+        systemPrompt: 'Resume mode',
+        workingDirectory: '/tmp/project',
+      }),
+    );
 
     expect(mockRunCli).toHaveBeenCalledWith({
       command: 'claude',
@@ -118,13 +123,11 @@ describe('claude-executor', () => {
 
     await executeClaudeOneShot('Use effort', withRunner({ effort: 'high' }));
 
-    expect(mockRunCli).toHaveBeenCalledWith(expect.objectContaining({
-      args: [
-        ...baseArgs,
-        '--effort',
-        'high',
-      ],
-    }));
+    expect(mockRunCli).toHaveBeenCalledWith(
+      expect.objectContaining({
+        args: [...baseArgs, '--effort', 'high'],
+      }),
+    );
   });
 
   it('passes max effort to --effort max', async () => {
@@ -132,13 +135,11 @@ describe('claude-executor', () => {
 
     await executeClaudeOneShot('Use max effort', withRunner({ effort: 'max' }));
 
-    expect(mockRunCli).toHaveBeenCalledWith(expect.objectContaining({
-      args: [
-        ...baseArgs,
-        '--effort',
-        'max',
-      ],
-    }));
+    expect(mockRunCli).toHaveBeenCalledWith(
+      expect.objectContaining({
+        args: [...baseArgs, '--effort', 'max'],
+      }),
+    );
   });
 
   it('includes --dangerously-skip-permissions for one-shot when bypassPermissions is true', async () => {
@@ -146,13 +147,11 @@ describe('claude-executor', () => {
 
     await executeClaudeOneShot('Bypass one-shot', withRunner({ bypassPermissions: true }));
 
-    expect(mockRunCli).toHaveBeenCalledWith(expect.objectContaining({
-      args: [
-        ...baseArgs,
-        '--dangerously-skip-permissions',
-        ...defaultEffortArgs,
-      ],
-    }));
+    expect(mockRunCli).toHaveBeenCalledWith(
+      expect.objectContaining({
+        args: [...baseArgs, '--dangerously-skip-permissions', ...defaultEffortArgs],
+      }),
+    );
   });
 
   it('includes --dangerously-skip-permissions for resume when bypassPermissions is true', async () => {
@@ -160,22 +159,20 @@ describe('claude-executor', () => {
 
     await executeClaudeResume('sess-6', 'Bypass resume', withRunner({ bypassPermissions: true }));
 
-    expect(mockRunCli).toHaveBeenCalledWith(expect.objectContaining({
-      args: [
-        ...baseArgs,
-        '--resume',
-        'sess-6',
-        '--dangerously-skip-permissions',
-        ...defaultEffortArgs,
-      ],
-    }));
+    expect(mockRunCli).toHaveBeenCalledWith(
+      expect.objectContaining({
+        args: [...baseArgs, '--resume', 'sess-6', '--dangerously-skip-permissions', ...defaultEffortArgs],
+      }),
+    );
   });
 
   it('parses assistant text blocks when result event has no response text', async () => {
-    mockCliResult(stream(
-      '{"type":"assistant","message":{"content":[{"type":"text","text":"line one\\nline two"}]}}',
-      '{"type":"result","session_id":"sess-3","total_cost_usd":0.01}',
-    ));
+    mockCliResult(
+      stream(
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"line one\\nline two"}]}}',
+        '{"type":"result","session_id":"sess-3","total_cost_usd":0.01}',
+      ),
+    );
 
     const result = await executeClaudeOneShot('Emit lines', withRunner());
 
@@ -208,12 +205,14 @@ describe('claude-executor', () => {
 
     expect(error).toBeInstanceOf(ClaudeExecParseError);
     if (!(error instanceof ClaudeExecParseError)) return;
-    expect(error.failure).toEqual(expect.objectContaining({
-      exitCode: 17,
-      stdout: 'not-json-output',
-      stderr: 'stderr text',
-      parseError: 'Fully unparseable stream-json output',
-    }));
+    expect(error.failure).toEqual(
+      expect.objectContaining({
+        exitCode: 17,
+        stdout: 'not-json-output',
+        stderr: 'stderr text',
+        parseError: 'Fully unparseable stream-json output',
+      }),
+    );
   });
 
   it('throws structured ClaudeExecParseError when stdout is empty', async () => {
@@ -223,11 +222,13 @@ describe('claude-executor', () => {
 
     expect(error).toBeInstanceOf(ClaudeExecParseError);
     if (!(error instanceof ClaudeExecParseError)) return;
-    expect(error.failure).toEqual(expect.objectContaining({
-      exitCode: 0,
-      stdout: '',
-      stderr: 'stderr text',
-      parseError: 'Fully unparseable stream-json output',
-    }));
+    expect(error.failure).toEqual(
+      expect.objectContaining({
+        exitCode: 0,
+        stdout: '',
+        stderr: 'stderr text',
+        parseError: 'Fully unparseable stream-json output',
+      }),
+    );
   });
 });

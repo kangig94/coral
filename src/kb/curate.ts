@@ -37,14 +37,10 @@ import {
 } from './frontmatter.js';
 import { loadKbNote } from './read.js';
 import { assertNonEmptyText, assertNoteSlug, compareLocale } from './validation.js';
-import {
-  buildNoteIndexEntry,
-  cloneKbIndex,
-  markTextIndexStale,
-  writeFileAtomic,
-} from './mutation-helpers.js';
+import { buildNoteIndexEntry, cloneKbIndex, markTextIndexStale, writeFileAtomic } from './mutation-helpers.js';
 import type { KbRuntime } from './runtime.js';
 import type { KbIndex } from './types.js';
+import { backendLog } from '../shared/backend-log.js';
 
 // -- Schedule debounce --
 const CURATE_SCHEDULE_DEBOUNCE_MS = 60 * 1000;
@@ -74,7 +70,9 @@ function isUsageBudgetExhausted(): boolean {
   try {
     const cachePath = join(homedir(), '.claude', 'hud', '.coral-cache.json');
     const raw = JSON.parse(readFileSync(cachePath, 'utf-8')) as Record<string, unknown>;
-    const entry = raw.claude as { ts?: number; data?: { fiveHour?: number; weekly?: number }; error?: boolean } | undefined;
+    const entry = raw.claude as
+      | { ts?: number; data?: { fiveHour?: number; weekly?: number }; error?: boolean }
+      | undefined;
     if (!entry?.ts || !entry.data || entry.error) {
       return false;
     }
@@ -303,29 +301,30 @@ function compareCursorDates(target: string | null, now: string): number {
 
 function collectClaimCandidates(index: KbIndex): ClaimCandidate[] {
   return Object.entries(index.notes)
-    .flatMap(([slug, noteMeta]) => noteMeta.mutationSeqAtPromote === undefined
-      ? []
-      : [{
-        slug,
-        title: noteMeta.title,
-        updatedAt: noteMeta.updatedAt,
-        cursor: {
-          note: slug,
-          mutationSeqAtPromote: noteMeta.mutationSeqAtPromote,
-        },
-      }])
+    .flatMap(([slug, noteMeta]) =>
+      noteMeta.mutationSeqAtPromote === undefined
+        ? []
+        : [
+            {
+              slug,
+              title: noteMeta.title,
+              updatedAt: noteMeta.updatedAt,
+              cursor: {
+                note: slug,
+                mutationSeqAtPromote: noteMeta.mutationSeqAtPromote,
+              },
+            },
+          ],
+    )
     .sort((left, right) => compareCursor(left.cursor, right.cursor));
 }
 
-function pendingExtendsBeyondCursor(
-  pendingNotes: ClaimCandidate[],
-  cursor: CurateCursor | null,
-): boolean {
+function pendingExtendsBeyondCursor(pendingNotes: ClaimCandidate[], cursor: CurateCursor | null): boolean {
   if (cursor === null || pendingNotes.length === 0) {
     return false;
   }
 
-  return compareCursor(pendingNotes[pendingNotes.length - 1]!.cursor, cursor) > 0;
+  return compareCursor(pendingNotes[pendingNotes.length - 1].cursor, cursor) > 0;
 }
 
 function cursorFromTarget(target: MetadataTarget): CurateCursor {
@@ -372,22 +371,14 @@ function parentAbsorptionTarget(
   return core;
 }
 
-function hasParentAbsorptionCandidate(
-  note: string,
-  tags: string[],
-  tagSupport: ReadonlyMap<string, number>,
-): boolean {
+function hasParentAbsorptionCandidate(note: string, tags: string[], tagSupport: ReadonlyMap<string, number>): boolean {
   const domain = deriveNoteIdentity(note).domain;
   const noteTagSet = new Set(tags);
 
   return tags.some((tag) => tag !== domain && parentAbsorptionTarget(tag, noteTagSet, tagSupport) !== null);
 }
 
-function applyParentAbsorption(
-  note: string,
-  tags: string[],
-  tagSupport: ReadonlyMap<string, number>,
-): string[] {
+function applyParentAbsorption(note: string, tags: string[], tagSupport: ReadonlyMap<string, number>): string[] {
   const domain = deriveNoteIdentity(note).domain;
   const noteTagSet = new Set(tags);
   const nextTags = tags.map((tag) => {
@@ -411,9 +402,7 @@ function buildLiveMetadataDecision(
   const addPrinciples = uniqueTrimmedList(target.addPrinciples ?? []);
   const removePrinciples = uniqueTrimmedList(target.removePrinciples ?? []);
   const removeTags = uniqueTrimmedList(target.removeTags ?? []);
-  const desiredTags = target.desiredTags === undefined
-    ? undefined
-    : uniqueTrimmedList(target.desiredTags);
+  const desiredTags = target.desiredTags === undefined ? undefined : uniqueTrimmedList(target.desiredTags);
 
   if (target.cleanup && removeTags.length > 0 && removeTags.some((tag) => !liveTags.includes(tag))) {
     return {
@@ -424,19 +413,15 @@ function buildLiveMetadataDecision(
   }
 
   const removeTagSet = new Set(removeTags);
-  let nextTags = desiredTags ?? uniqueTrimmedList([
-    ...liveTags,
-    ...addTags,
-  ]).filter((tag) => !removeTagSet.has(tag));
+  let nextTags = desiredTags ?? uniqueTrimmedList([...liveTags, ...addTags]).filter((tag) => !removeTagSet.has(tag));
   if (target.cleanup) {
     nextTags = applyParentAbsorption(target.note, nextTags, cleanupTagSupport);
   }
 
   const removePrincipleSet = new Set(removePrinciples);
-  const nextPrinciples = uniqueTrimmedList([
-    ...livePrinciples,
-    ...addPrinciples,
-  ]).filter((principle) => !removePrincipleSet.has(principle));
+  const nextPrinciples = uniqueTrimmedList([...livePrinciples, ...addPrinciples]).filter(
+    (principle) => !removePrincipleSet.has(principle),
+  );
 
   return {
     shouldWrite: !sameStringList(nextTags, liveTags) || !sameStringList(nextPrinciples, livePrinciples),
@@ -445,35 +430,29 @@ function buildLiveMetadataDecision(
   };
 }
 
-function applyGlobalCleanup(
-  note: string,
-  tags: string[],
-  cleanup: TagCleanupResult,
-): string[] {
+function applyGlobalCleanup(note: string, tags: string[], cleanup: TagCleanupResult): string[] {
   const domain = deriveNoteIdentity(note).domain;
 
-  return uniqueTrimmedList(tags.flatMap((tag) => {
-    if (tag === domain) {
+  return uniqueTrimmedList(
+    tags.flatMap((tag) => {
+      if (tag === domain) {
+        return [tag];
+      }
+
+      const replacement = cleanup.globalReplacements.get(tag);
+      if (replacement !== undefined) {
+        return [replacement];
+      }
+      if (cleanup.globalDeletions.has(tag)) {
+        return [];
+      }
+
       return [tag];
-    }
-
-    const replacement = cleanup.globalReplacements.get(tag);
-    if (replacement !== undefined) {
-      return [replacement];
-    }
-    if (cleanup.globalDeletions.has(tag)) {
-      return [];
-    }
-
-    return [tag];
-  }));
+    }),
+  );
 }
 
-function buildCleanupTargets(
-  index: KbIndex,
-  cohortNotes: string[],
-  cleanup: TagCleanupResult,
-): MetadataTarget[] {
+function buildCleanupTargets(index: KbIndex, cohortNotes: string[], cleanup: TagCleanupResult): MetadataTarget[] {
   const tagSupport = countTagSupport(index);
   const targets: MetadataTarget[] = [];
 
@@ -513,11 +492,11 @@ function extractDiscoveryProposals(entries: unknown[]): DiscoveryProposal[] {
   const proposals: DiscoveryProposal[] = [];
   for (const entry of entries) {
     if (
-      !isRecord(entry)
-      || typeof entry.slug !== 'string'
-      || typeof entry.statement !== 'string'
-      || !isStringArray(entry.notes)
-      || (entry.absorbs !== undefined && !isStringArray(entry.absorbs))
+      !isRecord(entry) ||
+      typeof entry.slug !== 'string' ||
+      typeof entry.statement !== 'string' ||
+      !isStringArray(entry.notes) ||
+      (entry.absorbs !== undefined && !isStringArray(entry.absorbs))
     ) {
       continue;
     }
@@ -547,11 +526,7 @@ export type DiscoveryBatch = {
   nextOffset: number;
 };
 
-function selectDiscoveryBatch(
-  allClassified: ClaimCandidate[],
-  highSeq: number,
-  offset: number,
-): DiscoveryBatch {
+function selectDiscoveryBatch(allClassified: ClaimCandidate[], highSeq: number, offset: number): DiscoveryBatch {
   const newNotes = allClassified.filter((c) => c.cursor.mutationSeqAtPromote > highSeq);
   const oldNotes = allClassified.filter((c) => c.cursor.mutationSeqAtPromote <= highSeq);
 
@@ -562,14 +537,12 @@ function selectDiscoveryBatch(
     const fill = Math.min(DISCOVERY_BATCH_SIZE - selected.length, oldNotes.length);
     const start = offset % oldNotes.length;
     for (let i = 0; i < fill; i++) {
-      selected.push(oldNotes[(start + i) % oldNotes.length]!);
+      selected.push(oldNotes[(start + i) % oldNotes.length]);
     }
     nextOffset = (start + fill) % oldNotes.length;
   }
 
-  const nextHighSeq = selected.reduce(
-    (max, c) => Math.max(max, c.cursor.mutationSeqAtPromote), highSeq,
-  );
+  const nextHighSeq = selected.reduce((max, c) => Math.max(max, c.cursor.mutationSeqAtPromote), highSeq);
 
   return { selected, nextHighSeq, nextOffset };
 }
@@ -629,20 +602,17 @@ export function buildClassificationPrompt(
   ].join('\n');
 }
 
-function classifyParsedEntries(
-  entries: unknown[],
-  noteMap: Map<string, true>,
-): ClassificationAssignment[] {
+function classifyParsedEntries(entries: unknown[], noteMap: Map<string, true>): ClassificationAssignment[] {
   const assignments: ClassificationAssignment[] = [];
   for (const entry of entries) {
     if (!isRecord(entry)) {
       continue;
     }
     if (
-      typeof entry.note !== 'string'
-      || !isStringArray(entry.tags)
-      || !isStringArray(entry.principles)
-      || !noteMap.has(entry.note)
+      typeof entry.note !== 'string' ||
+      !isStringArray(entry.tags) ||
+      !isStringArray(entry.principles) ||
+      !noteMap.has(entry.note)
     ) {
       continue;
     }
@@ -656,10 +626,7 @@ function classifyParsedEntries(
   return assignments;
 }
 
-export function parseClassificationResponse(
-  raw: string,
-  noteMap: Map<string, true>,
-): ClassificationAssignment[] {
+export function parseClassificationResponse(raw: string, noteMap: Map<string, true>): ClassificationAssignment[] {
   const { entries, parseFailed } = parseJsonArray(raw);
   return parseFailed ? [] : classifyParsedEntries(entries, noteMap);
 }
@@ -676,7 +643,6 @@ export function chunkNotes<T>(notes: T[], batchSize = CLASSIFICATION_BATCH_SIZE)
 
   return chunks;
 }
-
 
 export function validateAssignments(
   proposals: ClassificationAssignment[],
@@ -751,9 +717,7 @@ export function buildMetadataTargets(
   index: KbIndex,
   claimedNotes: CurateClaimedNote[],
 ): MetadataTarget[] {
-  const assignmentsByNote = new Map(
-    validatedAssignments.map((assignment) => [assignment.note, assignment] as const),
-  );
+  const assignmentsByNote = new Map(validatedAssignments.map((assignment) => [assignment.note, assignment] as const));
 
   return claimedNotes
     .map((claimedNote) => {
@@ -761,9 +725,7 @@ export function buildMetadataTargets(
       const existingTags = new Set(claimTimeMeta?.tags ?? []);
       const existingPrinciples = new Set(claimTimeMeta?.principles ?? []);
       const assignment = assignmentsByNote.get(claimedNote.slug);
-      const addTags = uniqueTrimmedList(
-        (assignment?.tags ?? []).filter((tag) => !existingTags.has(tag)),
-      );
+      const addTags = uniqueTrimmedList((assignment?.tags ?? []).filter((tag) => !existingTags.has(tag)));
       const addPrinciples = uniqueTrimmedList(
         (assignment?.principles ?? []).filter((principle) => !existingPrinciples.has(principle)),
       );
@@ -805,7 +767,7 @@ export function buildDiscoveryPrompt(
     '- Seen independently in at least 3 notes',
     '- One sentence',
     '',
-    'Look for recurring mistakes, structural patterns, or decision heuristics that appear across multiple unrelated notes. Do not propose principles that merely restate a single note\'s content.',
+    "Look for recurring mistakes, structural patterns, or decision heuristics that appear across multiple unrelated notes. Do not propose principles that merely restate a single note's content.",
     '',
     'Existing principles (name: statement). Do not duplicate or propose semantically equivalent ones:',
     ...principleEntries,
@@ -813,7 +775,7 @@ export function buildDiscoveryPrompt(
     `Read the note corpus from ${corpusPath} before responding.`,
     '',
     'Return a JSON array: [{ "slug": "<kebab-case>", "statement": "<one-sentence principle>", "notes": ["<slug>", ...], "absorbs": ["<existing-slug>", ...] }]',
-    'To improve an existing principle\'s wording, return it with its existing slug and the better statement.',
+    "To improve an existing principle's wording, return it with its existing slug and the better statement.",
     'To merge similar principles, return the surviving slug with absorbs listing the slugs to fold in. Omit absorbs when creating new principles.',
   ].join('\n');
 
@@ -848,9 +810,7 @@ export function validateDiscoveryProposals(
       continue;
     }
 
-    const notes = uniqueTrimmedList(
-      proposal.notes.filter((note) => eligibleSet.has(note)),
-    );
+    const notes = uniqueTrimmedList(proposal.notes.filter((note) => eligibleSet.has(note)));
     if (notes.length < 3) {
       continue;
     }
@@ -862,11 +822,11 @@ export function validateDiscoveryProposals(
     for (const rawAbsorb of absorbs) {
       const absorbSlug = normalizeDiscoverySlug(rawAbsorb);
       if (
-        absorbSlug === null
-        || existingPrinciples[absorbSlug] === undefined
-        || absorbSlug === slug
-        || seenSlugs.has(absorbSlug)
-        || seenAbsorbedSlugs.has(absorbSlug)
+        absorbSlug === null ||
+        existingPrinciples[absorbSlug] === undefined ||
+        absorbSlug === slug ||
+        seenSlugs.has(absorbSlug) ||
+        seenAbsorbedSlugs.has(absorbSlug)
       ) {
         invalidAbsorption = true;
         break;
@@ -965,7 +925,9 @@ export function createCurateScheduler({
     }
     if (result.code !== 0) {
       const stderr = result.stderr.trim();
-      throw new Error(stderr ? `Claude exited with code ${result.code}: ${stderr}` : `Claude exited with code ${result.code}`);
+      throw new Error(
+        stderr ? `Claude exited with code ${result.code}: ${stderr}` : `Claude exited with code ${result.code}`,
+      );
     }
 
     return result.stdout;
@@ -996,8 +958,7 @@ export function createCurateScheduler({
     try {
       git(['commit', '-m', message], 10000);
     } catch {
-      git(['-c', 'user.name=Claude', '-c', 'user.email=noreply@anthropic.com',
-        'commit', '-m', message], 10000);
+      git(['-c', 'user.name=Claude', '-c', 'user.email=noreply@anthropic.com', 'commit', '-m', message], 10000);
     }
   }
 
@@ -1052,7 +1013,11 @@ export function createCurateScheduler({
     const gitignorePath = join(root, '.gitignore');
     try {
       let existing = '';
-      try { existing = readFileSync(gitignorePath, 'utf-8'); } catch { /* no file */ }
+      try {
+        existing = readFileSync(gitignorePath, 'utf-8');
+      } catch {
+        /* no file */
+      }
       const lines = existing.split('\n');
       const missing = GITIGNORE_ENTRIES.filter((entry) => !lines.some((line) => line.trim() === entry));
       if (missing.length === 0) return;
@@ -1068,10 +1033,11 @@ export function createCurateScheduler({
   }
 
   async function resolveConflictsWithClaude(signal?: AbortSignal): Promise<boolean> {
-    const prompt = 'Git rebase conflict in KB repository. Resolve all conflicts in the working tree:'
-      + ' keep both changes where possible, prefer the incoming (remote) version for'
-      + ' frontmatter metadata (tags, principles, updatedAt), and preserve local body'
-      + ' content. Stage all resolved files with git add.';
+    const prompt =
+      'Git rebase conflict in KB repository. Resolve all conflicts in the working tree:' +
+      ' keep both changes where possible, prefer the incoming (remote) version for' +
+      ' frontmatter metadata (tags, principles, updatedAt), and preserve local body' +
+      ' content. Stage all resolved files with git add.';
 
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -1084,8 +1050,7 @@ export function createCurateScheduler({
 
       try {
         git(['add', '-A'], 5000);
-        git(['-c', 'user.name=Claude', '-c', 'user.email=noreply@anthropic.com',
-          'rebase', '--continue'], 30000);
+        git(['-c', 'user.name=Claude', '-c', 'user.email=noreply@anthropic.com', 'rebase', '--continue'], 30000);
         return true;
       } catch {
         // rebase --continue failed — may have another conflicting commit
@@ -1118,8 +1083,12 @@ export function createCurateScheduler({
       try {
         await gitAsync(['rebase', `origin/${branch}`]);
       } catch {
-        if (!await resolveConflictsWithClaude(signal)) {
-          try { git(['rebase', '--abort'], 5000); } catch { /* no-op */ }
+        if (!(await resolveConflictsWithClaude(signal))) {
+          try {
+            git(['rebase', '--abort'], 5000);
+          } catch {
+            /* no-op */
+          }
         }
       }
     } catch {
@@ -1129,7 +1098,11 @@ export function createCurateScheduler({
 
   async function gitPush(): Promise<void> {
     if (!isGitRepo() || !isGitSyncEnabled()) return;
-    try { await gitAsync(['push', 'origin', getDefaultBranch()], 30000); } catch { /* next cycle */ }
+    try {
+      await gitAsync(['push', 'origin', getDefaultBranch()], 30000);
+    } catch {
+      /* next cycle */
+    }
   }
 
   function gitAutoCommit(message: string): void {
@@ -1197,11 +1170,7 @@ export function createCurateScheduler({
     return next;
   }
 
-  function recordCurateFailureLocked(
-    state: CurateState,
-    through: CurateCursor | null,
-    error: unknown,
-  ): CurateState {
+  function recordCurateFailureLocked(state: CurateState, through: CurateCursor | null, error: unknown): CurateState {
     return persistCurateState(state, applyRecordCurateFailure(state, through, error));
   }
 
@@ -1282,21 +1251,20 @@ export function createCurateScheduler({
         return null;
       }
 
-      const pendingNotes = collectClaimCandidates(index)
-        .filter((candidate) => compareOptionalCursor(state.processedThrough, candidate.cursor) < 0);
+      const pendingNotes = collectClaimCandidates(index).filter(
+        (candidate) => compareOptionalCursor(state.processedThrough, candidate.cursor) < 0,
+      );
       if (pendingNotes.length === 0) {
         return null;
       }
 
-      const firstPassClaim = (
-        (today !== state.lastRunDay && pendingNotes.length >= CURATE_MIN_CLAIM_SIZE)
-        || pendingNotes.length >= CURATE_IMMEDIATE_CLAIM_SIZE
-      );
-      const retryBlocked = compareCursorDates(state.retryNotBefore, now) > 0
-        && !pendingExtendsBeyondCursor(pendingNotes, state.lastAttemptedThrough);
-      const retryClaim = state.lastAttemptedThrough !== null
-        && state.retryNotBefore !== null
-        && !retryBlocked;
+      const firstPassClaim =
+        (today !== state.lastRunDay && pendingNotes.length >= CURATE_MIN_CLAIM_SIZE) ||
+        pendingNotes.length >= CURATE_IMMEDIATE_CLAIM_SIZE;
+      const retryBlocked =
+        compareCursorDates(state.retryNotBefore, now) > 0 &&
+        !pendingExtendsBeyondCursor(pendingNotes, state.lastAttemptedThrough);
+      const retryClaim = state.lastAttemptedThrough !== null && state.retryNotBefore !== null && !retryBlocked;
 
       if (!firstPassClaim && !retryClaim) {
         return null;
@@ -1353,10 +1321,7 @@ export function createCurateScheduler({
     return rawAssignments;
   }
 
-  async function commitMetadataTargetsLocked(
-    targets: MetadataTarget[],
-    state: CurateState,
-  ): Promise<CurateState> {
+  async function commitMetadataTargetsLocked(targets: MetadataTarget[], state: CurateState): Promise<CurateState> {
     const sortedTargets = [...targets].sort(compareMetadataTarget);
     const currentIndex = kb.readIndexOrEmpty();
     const nextIndex = cloneKbIndex(currentIndex);
@@ -1456,7 +1421,8 @@ export function createCurateScheduler({
     }
 
     if (failure !== null) {
-      throw failure;
+      if (failure instanceof Error) throw failure;
+      throw new Error(typeof failure === 'string' ? failure : 'Unknown error');
     }
 
     return nextState;
@@ -1469,9 +1435,7 @@ export function createCurateScheduler({
     });
   }
 
-  function loadEligibleDiscoveryNotes(
-    candidates: ClaimCandidate[],
-  ): CurateClaimedNote[] {
+  function loadEligibleDiscoveryNotes(candidates: ClaimCandidate[]): CurateClaimedNote[] {
     const eligible: CurateClaimedNote[] = [];
 
     for (const candidate of candidates) {
@@ -1488,11 +1452,7 @@ export function createCurateScheduler({
     return eligible;
   }
 
-  function recordDiscoveryAttemptLocked(
-    state: CurateState,
-    highSeq: number,
-    nextOffset: number,
-  ): CurateState {
+  function recordDiscoveryAttemptLocked(state: CurateState, highSeq: number, nextOffset: number): CurateState {
     return persistCurateState(state, applyRecordDiscoveryAttempt(state, highSeq, nextOffset));
   }
 
@@ -1503,10 +1463,7 @@ export function createCurateScheduler({
     });
   }
 
-  function addPendingDiscoveryLocked(
-    state: CurateState,
-    entry: PendingDiscovery,
-  ): CurateState {
+  function addPendingDiscoveryLocked(state: CurateState, entry: PendingDiscovery): CurateState {
     return persistCurateState(state, applyAddPendingDiscovery(state, entry));
   }
 
@@ -1517,10 +1474,7 @@ export function createCurateScheduler({
     });
   }
 
-  function removePendingDiscoveryLocked(
-    state: CurateState,
-    entry: PendingDiscovery,
-  ): CurateState {
+  function removePendingDiscoveryLocked(state: CurateState, entry: PendingDiscovery): CurateState {
     return persistCurateState(state, applyRemovePendingDiscovery(state, entry));
   }
 
@@ -1531,10 +1485,7 @@ export function createCurateScheduler({
     });
   }
 
-  function ensurePrincipleDocumentLocked(
-    entry: PendingDiscovery,
-    state: CurateState,
-  ): EnsurePrincipleDocumentResult {
+  function ensurePrincipleDocumentLocked(entry: PendingDiscovery, state: CurateState): EnsurePrincipleDocumentResult {
     const principlePath = kb.principlePath(assertNoteSlug(entry.principle, 'principle'));
     const nextIndex = cloneKbIndex(kb.readIndex());
 
@@ -1558,10 +1509,7 @@ export function createCurateScheduler({
     }
 
     kb.recordMutationCommitted();
-    writeFileAtomic(
-      principlePath,
-      serializePrincipleDocument(entry.statement, entry.createdAt),
-    );
+    writeFileAtomic(principlePath, serializePrincipleDocument(entry.statement, entry.createdAt));
     nextIndex.principles[entry.principle] = entry.statement;
     kb.writeIndex(nextIndex);
     markTextIndexStale(kb.invalidateTextSnapshot, CURATE_STALE_REASON);
@@ -1571,10 +1519,7 @@ export function createCurateScheduler({
     };
   }
 
-  function pendingDiscoverySatisfied(
-    entry: PendingDiscovery,
-    processedThrough: CurateCursor,
-  ): boolean {
+  function pendingDiscoverySatisfied(entry: PendingDiscovery, processedThrough: CurateCursor): boolean {
     const index = kb.readIndexOrEmpty();
 
     return entry.notes.every((note) => {
@@ -1585,10 +1530,15 @@ export function createCurateScheduler({
       if (noteMeta.mutationSeqAtPromote === undefined) {
         return false;
       }
-      if (compareCursor({
-        note,
-        mutationSeqAtPromote: noteMeta.mutationSeqAtPromote,
-      }, processedThrough) > 0) {
+      if (
+        compareCursor(
+          {
+            note,
+            mutationSeqAtPromote: noteMeta.mutationSeqAtPromote,
+          },
+          processedThrough,
+        ) > 0
+      ) {
         return false;
       }
 
@@ -1627,17 +1577,15 @@ export function createCurateScheduler({
     });
   }
 
-  async function runPrincipleDiscovery(
-    processedThrough: CurateCursor,
-    signal?: AbortSignal,
-  ): Promise<void> {
+  async function runPrincipleDiscovery(processedThrough: CurateCursor, signal?: AbortSignal): Promise<void> {
     await drainPendingDiscoveries(processedThrough);
 
     const currentIndex = kb.readIndexOrEmpty();
     let state = readCurateState(kb);
 
-    const allClassified = collectClaimCandidates(currentIndex)
-      .filter((c) => compareCursor(c.cursor, processedThrough) <= 0);
+    const allClassified = collectClaimCandidates(currentIndex).filter(
+      (c) => compareCursor(c.cursor, processedThrough) <= 0,
+    );
     const newNotes = allClassified.filter((c) => c.cursor.mutationSeqAtPromote > state.discoveryHighSeq);
 
     if (newNotes.length < DISCOVERY_NEW_NOTE_THRESHOLD) {
@@ -1676,8 +1624,7 @@ export function createCurateScheduler({
         };
 
         state = addPendingDiscoveryLocked(state, entry);
-        const isRefineProposal = index.principles[proposal.slug] !== undefined
-          && (proposal.absorbs?.length ?? 0) === 0;
+        const isRefineProposal = index.principles[proposal.slug] !== undefined && (proposal.absorbs?.length ?? 0) === 0;
         const principleDocument = ensurePrincipleDocumentLocked(entry, state);
         state = principleDocument.state;
         index = kb.readIndexOrEmpty();
@@ -1723,12 +1670,7 @@ export function createCurateScheduler({
           markTextIndexStale(kb.invalidateTextSnapshot, CURATE_STALE_REASON);
         }
 
-        const targets = buildPrincipleAssignmentTargets(
-          entry.principle,
-          entry.notes,
-          index,
-          processedThrough,
-        );
+        const targets = buildPrincipleAssignmentTargets(entry.principle, entry.notes, index, processedThrough);
         if (targets.length > 0) {
           state = await commitMetadataTargetsLocked(targets, state);
           index = kb.readIndexOrEmpty();
@@ -1747,8 +1689,7 @@ export function createCurateScheduler({
 
         const nextIndex = cloneKbIndex(index);
         for (const absorbSlug of absorbs) {
-          const absorbedPending = state.pendingDiscoveries
-            .filter((pending) => pending.principle === absorbSlug);
+          const absorbedPending = state.pendingDiscoveries.filter((pending) => pending.principle === absorbSlug);
           for (const pending of absorbedPending) {
             state = removePendingDiscoveryLocked(state, pending);
           }
@@ -1878,18 +1819,16 @@ export function createCurateScheduler({
           try {
             await clearCurateRetryState();
           } catch (stateError: unknown) {
-            process.stderr.write(`kb_curate: failed to clear stop state: ${errorMessage(stateError)}\n`);
+            backendLog.error('kb_curate: failed to clear stop state', stateError);
           }
           return;
         }
-        const runError = error instanceof CurateRunError
-          ? error
-          : new CurateRunError(null, error);
-        process.stderr.write(`kb_curate: ${errorMessage(runError.cause)}\n`);
+        const runError = error instanceof CurateRunError ? error : new CurateRunError(null, error);
+        backendLog.error('kb_curate: run failed', runError.cause);
         try {
           await recordCurateFailure(runError.through, runError.cause);
         } catch (stateError: unknown) {
-          process.stderr.write(`kb_curate: failed to persist retry state: ${errorMessage(stateError)}\n`);
+          backendLog.error('kb_curate: failed to persist retry state', stateError);
         }
       } finally {
         activeRun = null;
@@ -1901,7 +1840,7 @@ export function createCurateScheduler({
             armRetryWake();
           }
         } catch (error: unknown) {
-          process.stderr.write(`kb_curate: ${errorMessage(error)}\n`);
+          backendLog.error('kb_curate', error);
         }
         if (!stopped && lastCompletedThrough !== null) {
           try {
@@ -1909,7 +1848,7 @@ export function createCurateScheduler({
               schedule();
             }
           } catch (error: unknown) {
-            process.stderr.write(`kb_curate: ${errorMessage(error)}\n`);
+            backendLog.error('kb_curate', error);
           }
         }
       }

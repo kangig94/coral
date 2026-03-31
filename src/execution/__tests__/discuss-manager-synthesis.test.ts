@@ -32,9 +32,7 @@ async function recoverSessions(harness: DiscussHarness) {
   );
 }
 
-function resumeRecoveredSessions(
-  recovered: Awaited<ReturnType<typeof recoverSessions>>,
-): void {
+function resumeRecoveredSessions(recovered: Awaited<ReturnType<typeof recoverSessions>>): void {
   for (const session of recovered) {
     discussLoop.resumeLoop(session.ctx, session.sessionId, session.callerCtx);
   }
@@ -52,7 +50,15 @@ describe('Discuss synthesis', () => {
       sessionId: 'discuss-1',
       recover: true,
       buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'session.ended', '2026-03-10T00:01:00.000Z', { endReason: 'all_blocked', endReasonContent: 'All blocked.' }),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'session.ended',
+          '2026-03-10T00:01:00.000Z',
+          { endReason: 'all_blocked', endReasonContent: 'All blocked.' },
+        ),
       ],
     });
 
@@ -77,7 +83,15 @@ describe('Discuss synthesis', () => {
       sessionId: 'discuss-1',
       recover: false,
       buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'session.ended', '2026-03-10T00:01:00.000Z', { endReason: 'all_blocked', endReasonContent: 'All blocked.' }),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'session.ended',
+          '2026-03-10T00:01:00.000Z',
+          { endReason: 'all_blocked', endReasonContent: 'All blocked.' },
+        ),
       ],
     });
 

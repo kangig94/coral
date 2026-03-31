@@ -23,21 +23,21 @@ export function parseWaitStreamEvent(eventType: string | undefined, rawData: str
   switch (eventType) {
     case 'progress':
       if (
-        typeof parsed.jobId === 'string'
-        && typeof parsed.sessionId === 'string'
-        && Number.isInteger(parsed.eventId)
-        && typeof parsed.message === 'string'
+        typeof parsed.jobId === 'string' &&
+        typeof parsed.sessionId === 'string' &&
+        Number.isInteger(parsed.eventId) &&
+        typeof parsed.message === 'string'
       ) {
         return parsed as WaitStreamEvent;
       }
       throw new Error('Invalid progress wait stream event');
     case 'terminal':
       if (
-        typeof parsed.completedJobId === 'string'
-        && typeof parsed.sessionId === 'string'
-        && isStringArray(parsed.remainingJobIds)
-        && typeof parsed.resultPath === 'string'
-        && isRecord(parsed.result)
+        typeof parsed.completedJobId === 'string' &&
+        typeof parsed.sessionId === 'string' &&
+        isStringArray(parsed.remainingJobIds) &&
+        typeof parsed.resultPath === 'string' &&
+        isRecord(parsed.result)
       ) {
         return parsed as WaitStreamEvent;
       }
@@ -49,10 +49,10 @@ export function parseWaitStreamEvent(eventType: string | undefined, rawData: str
       throw new Error('Invalid timeout wait stream event');
     case 'queued':
       if (
-        typeof parsed.jobId === 'string'
-        && typeof parsed.sessionId === 'string'
-        && typeof parsed.queuePosition === 'number'
-        && isStringArray(parsed.runningJobIds)
+        typeof parsed.jobId === 'string' &&
+        typeof parsed.sessionId === 'string' &&
+        typeof parsed.queuePosition === 'number' &&
+        isStringArray(parsed.runningJobIds)
       ) {
         return parsed as WaitStreamEvent;
       }

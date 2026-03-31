@@ -81,7 +81,7 @@ function sendProgress(
   progress: number,
   message: string,
 ): void {
-  if (!notify || progressToken == null) return;
+  if (!notify || progressToken === null || progressToken === undefined) return;
   void notify({
     method: 'notifications/progress',
     params: { progressToken, progress, message },
@@ -197,7 +197,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const { name } = request.params;
   const rawArgs = isRecord(request.params.arguments) ? request.params.arguments : {};
   const progressToken = extra._meta?.progressToken;
-  const notify = progressToken == null ? undefined : extra.sendNotification?.bind(extra);
+  const notify = progressToken === null || progressToken === undefined ? undefined : extra.sendNotification?.bind(extra);
 
   try {
     if (name === 'wait') {

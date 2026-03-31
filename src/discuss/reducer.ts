@@ -4,7 +4,7 @@ import type {
   AgentRunBoundEvent,
   BidRoundClosedEvent,
   DiscussDomainEvent,
-  FollowUpAnsweredEvent,
+
   PersistedDiscussAgentRun,
   PersistedDiscussRuntime,
   PersistedDiscussSnapshot,
@@ -15,11 +15,7 @@ import type {
   SpeechRecordedEvent,
   SpeechTimedOutEvent,
 } from './events.js';
-import type {
-  AgentState,
-  DiscussState,
-  TranscriptEntry,
-} from './types.js';
+import type { AgentState, DiscussState, TranscriptEntry } from './types.js';
 import { appendEntry, resetBids } from './state-helpers.js';
 import { parseDisplayName } from './util/string.js';
 
@@ -70,10 +66,8 @@ function deriveBiddingControlPhase(state: DiscussState): PersistedDiscussRuntime
     return 'idle';
   }
 
-  const hasPendingObserver = Object.entries(state.agents).some(([name, agent]) =>
-    !agent.banned
-    && agent.participation === 'observer'
-    && state.current_bids[name] === null,
+  const hasPendingObserver = Object.entries(state.agents).some(
+    ([name, agent]) => !agent.banned && agent.participation === 'observer' && state.current_bids[name] === null,
   );
 
   return hasPendingObserver ? 'observer_wait' : 'idle';
@@ -156,10 +150,7 @@ function applyAgentMutations(
   }
 
   const nextAgents: Record<string, AgentState> = { ...agents };
-  const names = new Set([
-    ...Object.keys(fallbackUsed ?? {}),
-    ...Object.keys(quotaRemaining ?? {}),
-  ]);
+  const names = new Set([...Object.keys(fallbackUsed ?? {}), ...Object.keys(quotaRemaining ?? {})]);
 
   for (const name of names) {
     const agent = agents[name];
@@ -176,9 +167,7 @@ function applyAgentMutations(
 
 function buildBidEntry(state: DiscussState, event: BidRoundClosedEvent): TranscriptEntry {
   const { outcome } = event.payload;
-  const thoughts = Object.keys(event.payload.thoughts).length > 0
-    ? { thoughts: { ...event.payload.thoughts } }
-    : {};
+  const thoughts = Object.keys(event.payload.thoughts).length > 0 ? { thoughts: { ...event.payload.thoughts } } : {};
 
   return {
     type: 'bids',
@@ -189,16 +178,12 @@ function buildBidEntry(state: DiscussState, event: BidRoundClosedEvent): Transcr
     effective_bids: { ...event.payload.effectiveBids },
     ...thoughts,
     winner: 'winner' in outcome ? outcome.winner : null,
-    resolve_type: 'winner' in outcome
-      ? (outcome.speaker_type === 'quota' ? 'normal' : outcome.speaker_type)
-      : 'no_winner',
+    resolve_type:
+      'winner' in outcome ? (outcome.speaker_type === 'quota' ? 'normal' : outcome.speaker_type) : 'no_winner',
   };
 }
 
-function buildSpeechState(
-  state: DiscussState,
-  event: SpeechRecordedEvent | SpeechTimedOutEvent,
-): DiscussState {
+function buildSpeechState(state: DiscussState, event: SpeechRecordedEvent | SpeechTimedOutEvent): DiscussState {
   const agentState = state.agents[event.payload.agent];
   const speechEntry: TranscriptEntry = {
     type: 'speech',
@@ -216,9 +201,7 @@ function buildSpeechState(
       ...state.agents,
       [event.payload.agent]: {
         ...agentState,
-        quota_remaining: event.payload.decrementQuota
-          ? agentState.quota_remaining - 1
-          : agentState.quota_remaining,
+        quota_remaining: event.payload.decrementQuota ? agentState.quota_remaining - 1 : agentState.quota_remaining,
         total_speaks: agentState.total_speaks + 1,
       },
     },
@@ -235,10 +218,7 @@ function buildSpeechState(
   return nextState;
 }
 
-function ensureAgentRun(
-  runtime: PersistedDiscussRuntime,
-  agent: string,
-): PersistedDiscussAgentRun {
+function ensureAgentRun(runtime: PersistedDiscussRuntime, agent: string): PersistedDiscussAgentRun {
   return runtime.agentRuns[agent] ?? { provider: '', model: '' };
 }
 
@@ -264,10 +244,7 @@ function withAgentRunState(
   };
 }
 
-function reduceSessionEnded(
-  snapshot: PersistedDiscussSnapshot,
-  event: SessionEndedEvent,
-): PersistedDiscussSnapshot {
+function reduceSessionEnded(snapshot: PersistedDiscussSnapshot, event: SessionEndedEvent): PersistedDiscussSnapshot {
   const state = snapshot.state;
   const runtime: PersistedDiscussRuntime = {
     ...snapshot.runtime,
@@ -283,11 +260,12 @@ function reduceSessionEnded(
     };
   }
 
-  const endReasonContent = event.payload.endReasonContent !== undefined
-    ? event.payload.endReasonContent
-    : event.payload.force
-      ? (event.payload.reason ?? state.end_reason_content)
-      : state.end_reason_content;
+  const endReasonContent =
+    event.payload.endReasonContent !== undefined
+      ? event.payload.endReasonContent
+      : event.payload.force
+        ? (event.payload.reason ?? state.end_reason_content)
+        : state.end_reason_content;
 
   let nextState: DiscussState = {
     ...state,
@@ -357,10 +335,7 @@ function reduceSessionSynthesized(
   };
 }
 
-function reduceAgentRunBound(
-  snapshot: PersistedDiscussSnapshot,
-  event: AgentRunBoundEvent,
-): PersistedDiscussSnapshot {
+function reduceAgentRunBound(snapshot: PersistedDiscussSnapshot, event: AgentRunBoundEvent): PersistedDiscussSnapshot {
   return withAgentRunState(snapshot, event.payload.agent, event.ts, event.seq, (existing) => ({
     ...existing,
     executionSessionId: event.payload.executionSessionId,
@@ -392,10 +367,7 @@ function reduceAgentJobFinished(
   }));
 }
 
-export function makeEmptySnapshot(
-  sessionId: string,
-  projectRoot: string,
-): PersistedDiscussSnapshot {
+export function makeEmptySnapshot(sessionId: string, projectRoot: string): PersistedDiscussSnapshot {
   return {
     schemaVersion: 2,
     sessionId,
@@ -678,8 +650,8 @@ export function reduceDiscussEvent(
         runtime: {
           ...snapshot.runtime,
           controlPhase: 'collect_follow_up',
-          followUpQueue: snapshot.runtime.followUpQueue.filter((item) =>
-            item.agent !== event.payload.agent || item.question !== event.payload.question,
+          followUpQueue: snapshot.runtime.followUpQueue.filter(
+            (item) => item.agent !== event.payload.agent || item.question !== event.payload.question,
           ),
         },
       };
@@ -706,11 +678,7 @@ export function replayDiscussEvents(
   events: DiscussDomainEvent[],
   seed?: PersistedDiscussSnapshot,
 ): PersistedDiscussSnapshot {
-  const baseSnapshot = seed
-    ?? makeEmptySnapshot(events[0]?.sessionId ?? '', events[0]?.projectRoot ?? '');
+  const baseSnapshot = seed ?? makeEmptySnapshot(events[0]?.sessionId ?? '', events[0]?.projectRoot ?? '');
 
-  return events.reduce(
-    (snapshot, event) => reduceDiscussEvent(snapshot, event),
-    baseSnapshot,
-  );
+  return events.reduce((snapshot, event) => reduceDiscussEvent(snapshot, event), baseSnapshot);
 }

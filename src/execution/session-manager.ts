@@ -2,6 +2,7 @@ import { readFileSync, statSync, writeFileSync, mkdirSync, readdirSync, renameSy
 import { basename, join, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { pluginRootNamespace, sessionBase } from '../infra/paths.js';
+import { backendLog } from '../shared/backend-log.js';
 import type { SessionState } from '../shared/types.js';
 import { isNoEntryError, nowIsoString, providerIdentPattern } from '../shared/mcp-utils.js';
 import { isValidSessionEntry } from '../client/readers.js';
@@ -111,7 +112,7 @@ export class SessionManager {
         return () => {
           try {
             rmdirSync(lockDir);
-          } catch {}
+          } catch { /* empty */ }
         };
       } catch (error: unknown) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
@@ -120,10 +121,10 @@ export class SessionManager {
           if (Date.now() - stats.mtimeMs > 30000) {
             try {
               rmdirSync(lockDir);
-            } catch {}
+            } catch { /* empty */ }
             continue;
           }
-        } catch {}
+        } catch { /* empty */ }
         await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 50));
       }
     }
@@ -161,7 +162,7 @@ export class SessionManager {
         return { ...parsed };
       }
       this.cache.delete(sessionId);
-      process.stderr.write(`Warning: Session file ${sessionId}.json has unexpected shape, skipping\n`);
+      backendLog.warn(`Session file ${sessionId}.json has unexpected shape, skipping`);
       return null;
     } catch (error: unknown) {
       this.cache.delete(sessionId);
@@ -170,7 +171,7 @@ export class SessionManager {
         return null;
       }
       if (error instanceof SyntaxError) {
-        process.stderr.write(`Warning: Corrupt session file ${sessionId}.json, skipping\n`);
+        backendLog.warn(`Corrupt session file ${sessionId}.json, skipping`);
         return null;
       }
       throw error;

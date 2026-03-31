@@ -1,9 +1,4 @@
-import {
-  buildProgram,
-  emitError,
-  getOutputFormat,
-  normalizeProviderArgv,
-} from './main.js';
+import { buildProgram, emitError, getOutputFormat, normalizeProviderArgv } from './main.js';
 
 const program = buildProgram();
 

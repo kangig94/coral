@@ -1,13 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -148,9 +140,9 @@ function parseHookOutput(stdout: string): HookOutput | null {
   try {
     const parsed = JSON.parse(trimmed) as Partial<HookOutput>;
     if (
-      parsed.hookSpecificOutput == null
-      || typeof parsed.hookSpecificOutput.hookEventName !== 'string'
-      || typeof parsed.hookSpecificOutput.additionalContext !== 'string'
+      parsed.hookSpecificOutput === null || parsed.hookSpecificOutput === undefined ||
+      typeof parsed.hookSpecificOutput.hookEventName !== 'string' ||
+      typeof parsed.hookSpecificOutput.additionalContext !== 'string'
     ) {
       return null;
     }
@@ -174,8 +166,10 @@ function parseJsonOutput<T>(stdout: string): T | null {
 
 function expectHookOutput(result: HookRunResult): HookOutput {
   const output = parseHookOutput(result.stdout);
-  if (output == null) {
-    throw new Error(`Expected hookSpecificOutput JSON, received stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`);
+  if (output === null || output === undefined) {
+    throw new Error(
+      `Expected hookSpecificOutput JSON, received stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`,
+    );
   }
 
   return output;
@@ -184,12 +178,14 @@ function expectHookOutput(result: HookRunResult): HookOutput {
 function expectStopOutput(result: HookRunResult): StopHookOutput {
   const output = parseJsonOutput<Partial<StopHookOutput>>(result.stdout);
   if (
-    output == null
-    || typeof output.decision !== 'string'
-    || typeof output.reason !== 'string'
-    || typeof output.systemMessage !== 'string'
+    output === null || output === undefined ||
+    typeof output.decision !== 'string' ||
+    typeof output.reason !== 'string' ||
+    typeof output.systemMessage !== 'string'
   ) {
-    throw new Error(`Expected stop-hook JSON, received stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`);
+    throw new Error(
+      `Expected stop-hook JSON, received stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`,
+    );
   }
 
   return output as StopHookOutput;
@@ -230,10 +226,7 @@ function writeResultArtifact(jobsDir: string, jobId: string, content = '# result
 function writeSnapshot(snapshotDir: string, snapshot: SnapshotRecord, suffix = 'fixture'): string {
   mkdirSync(snapshotDir, { recursive: true });
 
-  const snapshotPath = join(
-    snapshotDir,
-    `active-jobs-${snapshot.capturedAtMs}-${suffix}.json`,
-  );
+  const snapshotPath = join(snapshotDir, `active-jobs-${snapshot.capturedAtMs}-${suffix}.json`);
 
   writeFileSync(snapshotPath, JSON.stringify(snapshot), 'utf-8');
   return snapshotPath;
@@ -254,11 +247,7 @@ describe('session-start.mjs', () => {
     const injectMd = 'Project instructions\nSecond line';
     writeInjectMd(fixture.pluginRoot, injectMd);
 
-    const result = runHook(
-      SESSION_START_HOOK,
-      { session_id: 'sess-123' },
-      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
-    );
+    const result = runHook(SESSION_START_HOOK, { session_id: 'sess-123' }, { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot });
 
     expect(result.status).toBe(0);
 
@@ -286,18 +275,16 @@ describe('session-start.mjs', () => {
     expect(result.status).toBe(0);
 
     const output = expectHookOutput(result);
-    expect(output.hookSpecificOutput.additionalContext).toContain(`Memo dir: ${coralProjectDir(fixture.root, 'acme/my.repo')}/memo`);
+    expect(output.hookSpecificOutput.additionalContext).toContain(
+      `Memo dir: ${coralProjectDir(fixture.root, 'acme/my.repo')}/memo`,
+    );
   });
 
   it('replaces {{CORAL_CLI}} with the shell-quoted coral-cli bridge path', () => {
     const fixture = createFixture();
     writeInjectMd(fixture.pluginRoot, 'KB: {{CORAL_CLI}} kb principles');
 
-    const result = runHook(
-      SESSION_START_HOOK,
-      {},
-      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
-    );
+    const result = runHook(SESSION_START_HOOK, {}, { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot });
 
     expect(result.status).toBe(0);
 
@@ -312,11 +299,7 @@ describe('session-start.mjs', () => {
     const injectMd = 'Only CLAUDE content';
     writeInjectMd(fixture.pluginRoot, injectMd);
 
-    const result = runHook(
-      SESSION_START_HOOK,
-      {},
-      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
-    );
+    const result = runHook(SESSION_START_HOOK, {}, { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot });
 
     expect(result.status).toBe(0);
 
@@ -326,11 +309,7 @@ describe('session-start.mjs', () => {
   });
 
   it('exits cleanly when CLAUDE_PLUGIN_ROOT unset', () => {
-    const result = runHook(
-      SESSION_START_HOOK,
-      {},
-      { CLAUDE_PLUGIN_ROOT: undefined },
-    );
+    const result = runHook(SESSION_START_HOOK, {}, { CLAUDE_PLUGIN_ROOT: undefined });
 
     expect(result.status).toBe(0);
     expect(parseHookOutput(result.stdout)).toBeNull();
@@ -338,13 +317,12 @@ describe('session-start.mjs', () => {
 
   it('strips SESSION_ID_ONLY block when session_id is missing', () => {
     const fixture = createFixture();
-    writeInjectMd(fixture.pluginRoot, 'visible\n<!-- SESSION_ID_ONLY:BEGIN -->\nsecret\n<!-- SESSION_ID_ONLY:END -->\nafter');
-
-    const result = runHook(
-      SESSION_START_HOOK,
-      {},
-      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
+    writeInjectMd(
+      fixture.pluginRoot,
+      'visible\n<!-- SESSION_ID_ONLY:BEGIN -->\nsecret\n<!-- SESSION_ID_ONLY:END -->\nafter',
     );
+
+    const result = runHook(SESSION_START_HOOK, {}, { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot });
 
     const output = expectHookOutput(result);
     expect(output.hookSpecificOutput.additionalContext).toContain('visible');
@@ -354,7 +332,10 @@ describe('session-start.mjs', () => {
 
   it('keeps OWNER_ONLY block for top-level sessions', () => {
     const fixture = createFixture();
-    writeInjectMd(fixture.pluginRoot, 'base\n<!-- OWNER_ONLY:BEGIN -->\nowner instruction\n<!-- OWNER_ONLY:END -->\nrest');
+    writeInjectMd(
+      fixture.pluginRoot,
+      'base\n<!-- OWNER_ONLY:BEGIN -->\nowner instruction\n<!-- OWNER_ONLY:END -->\nrest',
+    );
 
     const result = runHook(
       SESSION_START_HOOK,
@@ -387,7 +368,10 @@ describe('subagent-start.mjs', () => {
 
   it('strips SESSION_ID_ONLY blocks', () => {
     const fixture = createFixture();
-    writeInjectMd(fixture.pluginRoot, 'visible\n<!-- SESSION_ID_ONLY:BEGIN -->\nmemo commands\n<!-- SESSION_ID_ONLY:END -->\nafter');
+    writeInjectMd(
+      fixture.pluginRoot,
+      'visible\n<!-- SESSION_ID_ONLY:BEGIN -->\nmemo commands\n<!-- SESSION_ID_ONLY:END -->\nafter',
+    );
 
     const result = runHook(
       SUBAGENT_START_HOOK,
@@ -403,7 +387,10 @@ describe('subagent-start.mjs', () => {
 
   it('strips OWNER_ONLY blocks', () => {
     const fixture = createFixture();
-    writeInjectMd(fixture.pluginRoot, 'base\n<!-- OWNER_ONLY:BEGIN -->\npropagate owner\n<!-- OWNER_ONLY:END -->\nrest');
+    writeInjectMd(
+      fixture.pluginRoot,
+      'base\n<!-- OWNER_ONLY:BEGIN -->\npropagate owner\n<!-- OWNER_ONLY:END -->\nrest',
+    );
 
     const result = runHook(
       SUBAGENT_START_HOOK,
@@ -421,11 +408,7 @@ describe('subagent-start.mjs', () => {
     const fixture = createFixture();
     writeInjectMd(fixture.pluginRoot, 'CLI: {{CORAL_CLI}}');
 
-    const result = runHook(
-      SUBAGENT_START_HOOK,
-      {},
-      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
-    );
+    const result = runHook(SUBAGENT_START_HOOK, {}, { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot });
 
     const output = expectHookOutput(result);
     expect(output.hookSpecificOutput.additionalContext).toBe(
@@ -434,11 +417,7 @@ describe('subagent-start.mjs', () => {
   });
 
   it('exits cleanly when CLAUDE_PLUGIN_ROOT unset', () => {
-    const result = runHook(
-      SUBAGENT_START_HOOK,
-      {},
-      { CLAUDE_PLUGIN_ROOT: undefined },
-    );
+    const result = runHook(SUBAGENT_START_HOOK, {}, { CLAUDE_PLUGIN_ROOT: undefined });
 
     expect(result.status).toBe(0);
     expect(parseHookOutput(result.stdout)).toBeNull();
@@ -542,11 +521,7 @@ describe('kb-lookup-reminder.mjs', () => {
     writeFileSync(join(kbDir, 'hooks-paths.md'), '# Hooks', 'utf-8');
     writeFileSync(join(kbDir, 'codex-placeholder.md'), '# Codex', 'utf-8');
 
-    const result = runHook(
-      KB_LOOKUP_REMINDER_HOOK,
-      { hook_event_name: 'PostToolUseFailure' },
-      { HOME: fixture.root },
-    );
+    const result = runHook(KB_LOOKUP_REMINDER_HOOK, { hook_event_name: 'PostToolUseFailure' }, { HOME: fixture.root });
 
     expect(result.status).toBe(0);
 
@@ -720,14 +695,16 @@ describe('post-compact.mjs', () => {
 
   it('outputs terminal guidance for completed provider job with no artifact', () => {
     const fixture = createFixture();
-    writeSnapshot(fixture.snapshotDir, {
-      capturedAtMs: Date.now(),
-      projectRoot: fixture.projectRoot,
-      sourceSessionId: 'sess-1',
-      jobs: [
-        { jobId: 'test-job-complete-no-artifact', phase: 'running', provider: 'codex', sessionId: 'sess-1' },
-      ],
-    }, 'provider-terminal');
+    writeSnapshot(
+      fixture.snapshotDir,
+      {
+        capturedAtMs: Date.now(),
+        projectRoot: fixture.projectRoot,
+        sourceSessionId: 'sess-1',
+        jobs: [{ jobId: 'test-job-complete-no-artifact', phase: 'running', provider: 'codex', sessionId: 'sess-1' }],
+      },
+      'provider-terminal',
+    );
     writeStatus(fixture.jobsDir, {
       jobId: 'test-job-complete-no-artifact',
       phase: 'completed',
@@ -750,19 +727,23 @@ describe('post-compact.mjs', () => {
     const output = expectHookOutput(result);
     expect(output.hookSpecificOutput.additionalContext).toContain('Completed during compaction:');
     expect(output.hookSpecificOutput.additionalContext).toContain('wait({ jobs: [');
-    expect(output.hookSpecificOutput.additionalContext).toContain('Read result.content if present, otherwise Read(result.path) for the full artifact.');
+    expect(output.hookSpecificOutput.additionalContext).toContain(
+      'Read result.content if present, otherwise Read(result.path) for the full artifact.',
+    );
   });
 
   it('outputs Read path for completed job with result.md', () => {
     const fixture = createFixture();
-    writeSnapshot(fixture.snapshotDir, {
-      capturedAtMs: Date.now(),
-      projectRoot: fixture.projectRoot,
-      sourceSessionId: 'sess-1',
-      jobs: [
-        { jobId: 'test-job-with-result', phase: 'running', provider: 'codex', sessionId: 'sess-1' },
-      ],
-    }, 'artifact');
+    writeSnapshot(
+      fixture.snapshotDir,
+      {
+        capturedAtMs: Date.now(),
+        projectRoot: fixture.projectRoot,
+        sourceSessionId: 'sess-1',
+        jobs: [{ jobId: 'test-job-with-result', phase: 'running', provider: 'codex', sessionId: 'sess-1' }],
+      },
+      'artifact',
+    );
     writeStatus(fixture.jobsDir, {
       jobId: 'test-job-with-result',
       phase: 'completed',
@@ -791,14 +772,16 @@ describe('post-compact.mjs', () => {
 
   it('outputs missing bucket for ENOENT job', () => {
     const fixture = createFixture();
-    writeSnapshot(fixture.snapshotDir, {
-      capturedAtMs: Date.now(),
-      projectRoot: fixture.projectRoot,
-      sourceSessionId: 'sess-1',
-      jobs: [
-        { jobId: 'test-job-missing', phase: 'running', provider: 'codex', sessionId: 'sess-1' },
-      ],
-    }, 'missing');
+    writeSnapshot(
+      fixture.snapshotDir,
+      {
+        capturedAtMs: Date.now(),
+        projectRoot: fixture.projectRoot,
+        sourceSessionId: 'sess-1',
+        jobs: [{ jobId: 'test-job-missing', phase: 'running', provider: 'codex', sessionId: 'sess-1' }],
+      },
+      'missing',
+    );
 
     const result = runHook(
       POST_COMPACT_HOOK,
@@ -818,14 +801,16 @@ describe('post-compact.mjs', () => {
 
   it('deletes stale snapshots (>10min old)', () => {
     const fixture = createFixture();
-    const staleSnapshotPath = writeSnapshot(fixture.snapshotDir, {
-      capturedAtMs: Date.now() - 15 * 60_000,
-      projectRoot: fixture.projectRoot,
-      sourceSessionId: 'sess-1',
-      jobs: [
-        { jobId: 'test-job-stale', phase: 'running', provider: 'codex', sessionId: 'sess-1' },
-      ],
-    }, 'stale');
+    const staleSnapshotPath = writeSnapshot(
+      fixture.snapshotDir,
+      {
+        capturedAtMs: Date.now() - 15 * 60_000,
+        projectRoot: fixture.projectRoot,
+        sourceSessionId: 'sess-1',
+        jobs: [{ jobId: 'test-job-stale', phase: 'running', provider: 'codex', sessionId: 'sess-1' }],
+      },
+      'stale',
+    );
 
     const result = runHook(
       POST_COMPACT_HOOK,

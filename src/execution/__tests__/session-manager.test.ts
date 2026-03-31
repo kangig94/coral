@@ -3,11 +3,12 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, 
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import type * as NodeOs from 'node:os';
 
 let tmpHome = '';
 
 vi.mock('node:os', async () => {
-  const actual = await vi.importActual<typeof import('node:os')>('node:os');
+  const actual = await vi.importActual<typeof NodeOs>('node:os');
   return {
     ...actual,
     homedir: () => tmpHome,

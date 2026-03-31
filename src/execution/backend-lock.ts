@@ -3,6 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { backendLockPath, pluginRootNamespace } from '../infra/paths.js';
 import { readBackendInfo } from '../infra/backend-info.js';
 import { isNoEntryError, isProcessAlive, tryExclusiveWrite } from '../shared/mcp-utils.js';
+import { backendLog } from '../shared/backend-log.js';
 
 export { backendLockPath } from '../infra/paths.js';
 export const STARTUP_DEADLINE = 30_000;
@@ -34,17 +35,18 @@ export class BackendAlreadyRunningError extends Error {
 function isLockRecord(value: unknown): value is LockRecord {
   if (!value || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
-  return typeof record.instanceId === 'string'
-    && record.instanceId.length > 0
-    && Number.isInteger(record.pid)
-    && (record.pid as number) > 0
-    && typeof record.version === 'string'
-    && record.version.length > 0
-    && typeof record.bundleHash === 'string'
-    && record.bundleHash.length > 0
-    && Number.isFinite(record.startedAt)
-
-    && (record.startedAt as number) > 0;
+  return (
+    typeof record.instanceId === 'string' &&
+    record.instanceId.length > 0 &&
+    Number.isInteger(record.pid) &&
+    (record.pid as number) > 0 &&
+    typeof record.version === 'string' &&
+    record.version.length > 0 &&
+    typeof record.bundleHash === 'string' &&
+    record.bundleHash.length > 0 &&
+    Number.isFinite(record.startedAt) &&
+    (record.startedAt as number) > 0
+  );
 }
 
 function parseLockRecord(raw: string): LockRecord | null {
@@ -82,10 +84,10 @@ async function isMatchingHealthyBackend(pluginRoot: string, record: LockRecord):
   const info = readBackendInfo(pluginRoot);
   if (!info) return false;
   if (
-    info.instanceId !== record.instanceId
-    || info.pid !== record.pid
-    || info.bundleHash !== record.bundleHash
-    || info.namespace !== expectedNamespace
+    info.instanceId !== record.instanceId ||
+    info.pid !== record.pid ||
+    info.bundleHash !== record.bundleHash ||
+    info.namespace !== expectedNamespace
   ) {
     return false;
   }
@@ -106,10 +108,12 @@ async function isMatchingHealthyBackend(pluginRoot: string, record: LockRecord):
     if (!body || typeof body !== 'object') return false;
 
     const payload = body as Record<string, unknown>;
-    return payload.status === 'ok'
-      && payload.bundleHash === record.bundleHash
-      && payload.instanceId === record.instanceId
-      && payload.namespace === expectedNamespace;
+    return (
+      payload.status === 'ok' &&
+      payload.bundleHash === record.bundleHash &&
+      payload.instanceId === record.instanceId &&
+      payload.namespace === expectedNamespace
+    );
   } catch {
     return false;
   } finally {
@@ -135,20 +139,33 @@ function removeLockIfSnapshotMatches(pluginRoot: string, snapshot: LockSnapshot)
     const staged = readFileSync(stagePath, 'utf-8');
     if (staged !== snapshot.raw) {
       // Content changed between our read and rename — restore it
-      try { renameSync(stagePath, lockPath); } catch { /* best effort */ }
+      try {
+        renameSync(stagePath, lockPath);
+      } catch {
+        /* best effort */
+      }
       return false;
     }
     unlinkSync(stagePath);
     return true;
   } catch (error: unknown) {
     // Cleanup staged file on unexpected error
-    try { unlinkSync(stagePath); } catch { /* best effort */ }
+    try {
+      unlinkSync(stagePath);
+    } catch {
+      /* best effort */
+    }
     if (isNoEntryError(error)) return true;
     throw error;
   }
 }
 
-export async function acquireLock(pluginRoot: string, instanceId: string, version: string, bundleHash: string): Promise<void> {
+export async function acquireLock(
+  pluginRoot: string,
+  instanceId: string,
+  version: string,
+  bundleHash: string,
+): Promise<void> {
   const record: LockRecord = {
     instanceId,
     pid: process.pid,
@@ -163,7 +180,7 @@ export async function acquireLock(pluginRoot: string, instanceId: string, versio
 
   while (true) {
     if (Date.now() - contenderStartedAt >= CONTENDER_BUDGET) {
-      process.stderr.write(`Coral backend lock acquisition timed out after ${CONTENDER_BUDGET}ms\n`);
+      backendLog.error(`Lock acquisition timed out after ${CONTENDER_BUDGET}ms`);
       throw new Error('Coral backend lock acquisition timed out');
     }
 
@@ -225,12 +242,20 @@ export function removeLockIfOwner(pluginRoot: string, instanceId: string): void 
     const record = parseLockRecord(raw);
     if (!record || record.instanceId !== instanceId) {
       // Not ours — restore it
-      try { renameSync(stagePath, lockPath); } catch { /* best effort */ }
+      try {
+        renameSync(stagePath, lockPath);
+      } catch {
+        /* best effort */
+      }
       return;
     }
     unlinkSync(stagePath);
   } catch (error: unknown) {
-    try { unlinkSync(stagePath); } catch { /* best effort */ }
+    try {
+      unlinkSync(stagePath);
+    } catch {
+      /* best effort */
+    }
     if (isNoEntryError(error)) return;
     throw error;
   }

@@ -106,7 +106,9 @@ function createAsyncMutex(): { acquire: () => Promise<() => void> } {
   return {
     acquire: () => {
       let release!: () => void;
-      const next = new Promise<void>((resolve) => { release = resolve; });
+      const next = new Promise<void>((resolve) => {
+        release = resolve;
+      });
       const wait = chain;
       chain = chain.then(() => next);
       return wait.then(() => release);
@@ -141,40 +143,43 @@ function writeCheckpoint(
   mutex: ReturnType<typeof createAsyncMutex>,
   data: CheckpointState,
 ): void {
-  void mutex.acquire().then((release) => {
-    try {
-      const checkpoint: WorkflowCheckpoint = {
-        jobId: workflowJobId,
-        sessionId: data.sessionId,
-        provider: data.provider,
-        stepIndex: data.stepIndex,
-        stepPrompt: data.stepPrompt,
-        atoms: data.launchedAtoms.map((a) => ({
-          jobId: a.jobId,
-          sessionId: a.sessionId,
-          providerName: a.providerName,
-          coralOp: a.coralOp,
-          agent: a.agent,
-          tagName: a.tagName,
-          stepIndex: a.stepIndex,
-          atomIndex: a.atomIndex,
-          atomKey: a.atomKey,
-          kind: a.kind,
-        })),
-        completedOutputs: Object.fromEntries(data.completedOutputs),
-        completedStepDetails: [...data.completedStepDetails],
-        cursor: { ...data.cursor.jobs },
-        lastActivityAt: Object.fromEntries(data.lastActivityAt),
-        staleRetries: Object.fromEntries(data.staleRetries),
-        expectedStaleAborts: [...data.expectedStaleAborts],
-        failureDrain: data.failureDrain,
-        updatedAt: new Date().toISOString(),
-      };
-      progressStore.writeWorkflowCheckpoint(workflowJobId, checkpoint);
-    } finally {
-      release();
-    }
-  });
+  void mutex
+    .acquire()
+    .then((release) => {
+      try {
+        const checkpoint: WorkflowCheckpoint = {
+          jobId: workflowJobId,
+          sessionId: data.sessionId,
+          provider: data.provider,
+          stepIndex: data.stepIndex,
+          stepPrompt: data.stepPrompt,
+          atoms: data.launchedAtoms.map((a) => ({
+            jobId: a.jobId,
+            sessionId: a.sessionId,
+            providerName: a.providerName,
+            coralOp: a.coralOp,
+            agent: a.agent,
+            tagName: a.tagName,
+            stepIndex: a.stepIndex,
+            atomIndex: a.atomIndex,
+            atomKey: a.atomKey,
+            kind: a.kind,
+          })),
+          completedOutputs: Object.fromEntries(data.completedOutputs),
+          completedStepDetails: [...data.completedStepDetails],
+          cursor: { ...data.cursor.jobs },
+          lastActivityAt: Object.fromEntries(data.lastActivityAt),
+          staleRetries: Object.fromEntries(data.staleRetries),
+          expectedStaleAborts: [...data.expectedStaleAborts],
+          failureDrain: data.failureDrain,
+          updatedAt: new Date().toISOString(),
+        };
+        progressStore.writeWorkflowCheckpoint(workflowJobId, checkpoint);
+      } finally {
+        release();
+      }
+    })
+    .catch(() => {}); // best-effort: checkpoint writes must not crash the process
 }
 
 function stripElapsedPrefix(message: string): string {
@@ -184,12 +189,8 @@ function stripElapsedPrefix(message: string): string {
   return message.slice(closeBracket + 2);
 }
 
-function readAtomConfig(
-  stepIndex: number,
-  atomName: string,
-  rawConfig: unknown,
-): { instruction?: string } {
-  if (rawConfig == null) return {};
+function readAtomConfig(stepIndex: number, atomName: string, rawConfig: unknown): { instruction?: string } {
+  if (rawConfig === null || rawConfig === undefined) return {};
   if (typeof rawConfig !== 'object' || Array.isArray(rawConfig)) {
     throw new Error(`Step ${stepIndex}, atom '${atomName}' atoms config must be an object`);
   }
@@ -286,7 +287,6 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
 
   let coralName: string;
   let atomPrompt: string;
-  let config: { instruction?: string } = {};
 
   if (atom.kind === 'agent') {
     const namespace = atom.namespace ?? 'coral';
@@ -294,7 +294,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
       throw new Error(`Step ${stepIndex}, atom '${label}' launch failed: unsupported namespace "${namespace}"`);
     }
 
-    config = readAtomConfig(stepIndex, atom.agent, atoms?.[atom.agent]);
+    const config = readAtomConfig(stepIndex, atom.agent, atoms?.[atom.agent]);
     coralName = atom.agent;
     atomPrompt = [sharedContext, stepPrompt, config.instruction].filter(Boolean).join('\n\n');
   } else {
@@ -302,17 +302,16 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     // First-step prompt literals use the literal as the instruction body; shared
     // context still prepends when present. Later prompt literals prepend the
     // literal before the previous step output so instruction comes first.
-    atomPrompt = stepIndex === 0
-      ? (sharedContext ? `${sharedContext}\n\n${atom.text}` : atom.text)
-      : [sharedContext, atom.text, stepPrompt].filter(Boolean).join('\n\n');
+    atomPrompt =
+      stepIndex === 0
+        ? sharedContext
+          ? `${sharedContext}\n\n${atom.text}`
+          : atom.text
+        : [sharedContext, atom.text, stepPrompt].filter(Boolean).join('\n\n');
   }
 
   if (signal?.aborted) {
-    throw createWorkflowExecutionError(
-      'Pipeline aborted (launched atoms may continue)',
-      true,
-      completedStepDetails,
-    );
+    throw createWorkflowExecutionError('Pipeline aborted (launched atoms may continue)', true, completedStepDetails);
   }
 
   const decision = await executionSvc.coralDispatch(
@@ -500,9 +499,10 @@ export async function waitForAtoms(
     lastActivityAt,
     staleRetries,
     expectedStaleAborts,
-    failureDrain: firstFailure !== null
-      ? { firstFailureMessage: firstFailure.message, aborted: firstFailure.aborted, abortRequested, drainDeadline }
-      : undefined,
+    failureDrain:
+      firstFailure !== null
+        ? { firstFailureMessage: firstFailure.message, aborted: firstFailure.aborted, abortRequested, drainDeadline }
+        : undefined,
   });
 
   const buildPartialStepDetails = (): StepDetail[] => [
@@ -592,6 +592,7 @@ export async function waitForAtoms(
           workDir: options.workDir,
           onProgress: options.onProgress,
           buildPartialStepDetails,
+          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by ternary check
           onStaleSwap: options.onStaleSwap ? () => options.onStaleSwap!(snapshotWaitState()) : undefined,
         },
       );
@@ -731,6 +732,7 @@ export async function resumePipeline(
     failureDrain?: CheckpointState['failureDrain'],
   ): void => {
     if (!canCheckpoint) return;
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by canCheckpoint (both defined)
     writeCheckpoint(options.progressStore!, options.workflowJobId!, checkpointMutex, {
       sessionId: checkpoint.sessionId,
       provider: defaultProviderName,
@@ -754,10 +756,15 @@ export async function resumePipeline(
 
       const checkpointFromWaitState = (waitState: WaitInternalState): void => {
         persistCheckpoint(
-          activeStepIndex, stepPrompt, activeAtoms,
-          waitState.completedOutputs, waitState.cursor,
-          waitState.lastActivityAt, waitState.staleRetries,
-          waitState.expectedStaleAborts, waitState.failureDrain,
+          activeStepIndex,
+          stepPrompt,
+          activeAtoms,
+          waitState.completedOutputs,
+          waitState.cursor,
+          waitState.lastActivityAt,
+          waitState.staleRetries,
+          waitState.expectedStaleAborts,
+          waitState.failureDrain,
         );
       };
 
@@ -780,25 +787,35 @@ export async function resumePipeline(
       // Build step details from all atoms in the active step
       const orderedStepDetails = buildStepDetailsForAtoms(activeAtoms, alreadyCompleted);
       stepDetails.push(...orderedStepDetails);
-      stepPrompt = formatStepOutput(activeAtoms.map((atom) => ({
-        tagName: atom.tagName,
-        output: alreadyCompleted.get(atom.atomKey) ?? '',
-      })));
+      stepPrompt = formatStepOutput(
+        activeAtoms.map((atom) => ({
+          tagName: atom.tagName,
+          output: alreadyCompleted.get(atom.atomKey) ?? '',
+        })),
+      );
 
       // Checkpoint: active step completed
       persistCheckpoint(
-        activeStepIndex, stepPrompt, activeAtoms, alreadyCompleted,
-        { jobs: {} }, new Map(), new Map(), new Set(),
+        activeStepIndex,
+        stepPrompt,
+        activeAtoms,
+        alreadyCompleted,
+        { jobs: {} },
+        new Map(),
+        new Map(),
+        new Set(),
       );
       onProgress(`step ${activeStepIndex} completed (resumed)`);
     } else if (activeAtoms.length > 0) {
       // All atoms were already completed before restart — just rebuild the step output
       const orderedStepDetails = buildStepDetailsForAtoms(activeAtoms, alreadyCompleted);
       stepDetails.push(...orderedStepDetails);
-      stepPrompt = formatStepOutput(activeAtoms.map((atom) => ({
-        tagName: atom.tagName,
-        output: alreadyCompleted.get(atom.atomKey) ?? '',
-      })));
+      stepPrompt = formatStepOutput(
+        activeAtoms.map((atom) => ({
+          tagName: atom.tagName,
+          output: alreadyCompleted.get(atom.atomKey) ?? '',
+        })),
+      );
       onProgress(`step ${activeStepIndex} already completed, skipping`);
     }
 
@@ -810,36 +827,35 @@ export async function resumePipeline(
       const launchedAtoms: LaunchedAtom[] = [];
       let launchError: unknown = null;
 
-      await Promise.all(step.map(async (atom, atomIndex) => {
-        try {
-          const launched = await launchAtomWithRetry({
-            atom,
-            atomIndex,
-            stepIndex,
-            stepPrompt,
-            context: options.context,
-            workDir: options.workDir,
-            defaultProviderName,
-            executionSvc,
-            ctx,
-            atoms: options.atoms,
-            signal: options.signal,
-            completedStepDetails: stepDetails,
-            workflowJobId: options.workflowJobId,
-          });
-          launchedAtoms.push(launched);
-        } catch (error) {
-          launchError ??= error;
-        }
-      }));
+      await Promise.all(
+        step.map(async (atom, atomIndex) => {
+          try {
+            const launched = await launchAtomWithRetry({
+              atom,
+              atomIndex,
+              stepIndex,
+              stepPrompt,
+              context: options.context,
+              workDir: options.workDir,
+              defaultProviderName,
+              executionSvc,
+              ctx,
+              atoms: options.atoms,
+              signal: options.signal,
+              completedStepDetails: stepDetails,
+              workflowJobId: options.workflowJobId,
+            });
+            launchedAtoms.push(launched);
+          } catch (error) {
+            launchError ??= error;
+          }
+        }),
+      );
 
       launchedAtoms.sort((left, right) => left.atomIndex - right.atomIndex);
       allLaunchedAtoms.push(...launchedAtoms);
 
-      persistCheckpoint(
-        stepIndex, stepPrompt, launchedAtoms, new Map(),
-        { jobs: {} }, new Map(), new Map(), new Set(),
-      );
+      persistCheckpoint(stepIndex, stepPrompt, launchedAtoms, new Map(), { jobs: {} }, new Map(), new Map(), new Set());
 
       if (launchError !== null) {
         const drainedStepDetails = await drainLaunchedAtoms(launchedAtoms, executionSvc, ctx, {
@@ -849,10 +865,8 @@ export async function resumePipeline(
           workDir: options.workDir,
           onProgress,
         });
-        const baseStepDetails = launchError instanceof WorkflowExecutionError
-          ? launchError.stepDetails
-          : stepDetails;
-        const message = launchError instanceof Error ? launchError.message : String(launchError);
+        const baseStepDetails = launchError instanceof WorkflowExecutionError ? launchError.stepDetails : stepDetails;
+        const message = launchError instanceof Error ? launchError.message : typeof launchError === 'string' ? launchError : 'Unknown error';
         const aborted = launchError instanceof WorkflowExecutionError ? launchError.aborted : false;
         throw createWorkflowExecutionError(message, aborted, [...baseStepDetails, ...drainedStepDetails]);
       }
@@ -860,10 +874,15 @@ export async function resumePipeline(
       try {
         const checkpointFromWaitState = (waitState: WaitInternalState): void => {
           persistCheckpoint(
-            stepIndex, stepPrompt, launchedAtoms,
-            waitState.completedOutputs, waitState.cursor,
-            waitState.lastActivityAt, waitState.staleRetries,
-            waitState.expectedStaleAborts, waitState.failureDrain,
+            stepIndex,
+            stepPrompt,
+            launchedAtoms,
+            waitState.completedOutputs,
+            waitState.cursor,
+            waitState.lastActivityAt,
+            waitState.staleRetries,
+            waitState.expectedStaleAborts,
+            waitState.failureDrain,
           );
         };
         const stepResults = await waitForAtoms(launchedAtoms, executionSvc, ctx, {
@@ -879,14 +898,22 @@ export async function resumePipeline(
 
         const orderedStepDetails = buildStepDetailsForAtoms(launchedAtoms, stepResults);
         stepDetails.push(...orderedStepDetails);
-        stepPrompt = formatStepOutput(launchedAtoms.map((atom) => ({
-          tagName: atom.tagName,
-          output: requireStepResult(stepIndex, atom, stepResults),
-        })));
+        stepPrompt = formatStepOutput(
+          launchedAtoms.map((atom) => ({
+            tagName: atom.tagName,
+            output: requireStepResult(stepIndex, atom, stepResults),
+          })),
+        );
 
         persistCheckpoint(
-          stepIndex, stepPrompt, launchedAtoms, stepResults,
-          { jobs: {} }, new Map(), new Map(), new Set(),
+          stepIndex,
+          stepPrompt,
+          launchedAtoms,
+          stepResults,
+          { jobs: {} },
+          new Map(),
+          new Map(),
+          new Set(),
         );
         onProgress(`step ${stepIndex} completed`);
       } catch (error) {
@@ -957,6 +984,7 @@ export async function executePipeline(
     failureDrain?: CheckpointState['failureDrain'],
   ): void => {
     if (!canCheckpoint) return;
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by canCheckpoint (both defined)
     writeCheckpoint(options.progressStore!, options.workflowJobId!, checkpointMutex, {
       sessionId: '',
       provider: defaultProviderName,
@@ -985,37 +1013,36 @@ export async function executePipeline(
       const launchedAtoms: LaunchedAtom[] = [];
       let launchError: unknown = null;
 
-      await Promise.all(step.map(async (atom, atomIndex) => {
-        try {
-          const launched = await launchAtomWithRetry({
-            atom,
-            atomIndex,
-            stepIndex,
-            stepPrompt,
-            context: options.context,
-            workDir: options.workDir,
-            defaultProviderName,
-            executionSvc,
-            ctx,
-            atoms: options.atoms,
-            signal: options.signal,
-            completedStepDetails: stepDetails,
-            workflowJobId: options.workflowJobId,
-          });
-          launchedAtoms.push(launched);
-        } catch (error) {
-          launchError ??= error;
-        }
-      }));
+      await Promise.all(
+        step.map(async (atom, atomIndex) => {
+          try {
+            const launched = await launchAtomWithRetry({
+              atom,
+              atomIndex,
+              stepIndex,
+              stepPrompt,
+              context: options.context,
+              workDir: options.workDir,
+              defaultProviderName,
+              executionSvc,
+              ctx,
+              atoms: options.atoms,
+              signal: options.signal,
+              completedStepDetails: stepDetails,
+              workflowJobId: options.workflowJobId,
+            });
+            launchedAtoms.push(launched);
+          } catch (error) {
+            launchError ??= error;
+          }
+        }),
+      );
 
       launchedAtoms.sort((left, right) => left.atomIndex - right.atomIndex);
       allLaunchedAtoms.push(...launchedAtoms);
 
       // Checkpoint: after atom launch
-      persistCheckpoint(
-        stepIndex, stepPrompt, launchedAtoms, new Map(),
-        { jobs: {} }, new Map(), new Map(), new Set(),
-      );
+      persistCheckpoint(stepIndex, stepPrompt, launchedAtoms, new Map(), { jobs: {} }, new Map(), new Map(), new Set());
 
       if (launchError !== null) {
         const drainedStepDetails = await drainLaunchedAtoms(launchedAtoms, executionSvc, ctx, {
@@ -1025,10 +1052,8 @@ export async function executePipeline(
           workDir: options.workDir,
           onProgress,
         });
-        const baseStepDetails = launchError instanceof WorkflowExecutionError
-          ? launchError.stepDetails
-          : stepDetails;
-        const message = launchError instanceof Error ? launchError.message : String(launchError);
+        const baseStepDetails = launchError instanceof WorkflowExecutionError ? launchError.stepDetails : stepDetails;
+        const message = launchError instanceof Error ? launchError.message : typeof launchError === 'string' ? launchError : 'Unknown error';
         const aborted = launchError instanceof WorkflowExecutionError ? launchError.aborted : false;
         throw createWorkflowExecutionError(message, aborted, [...baseStepDetails, ...drainedStepDetails]);
       }
@@ -1036,10 +1061,15 @@ export async function executePipeline(
       try {
         const checkpointFromWaitState = (waitState: WaitInternalState): void => {
           persistCheckpoint(
-            stepIndex, stepPrompt, launchedAtoms,
-            waitState.completedOutputs, waitState.cursor,
-            waitState.lastActivityAt, waitState.staleRetries,
-            waitState.expectedStaleAborts, waitState.failureDrain,
+            stepIndex,
+            stepPrompt,
+            launchedAtoms,
+            waitState.completedOutputs,
+            waitState.cursor,
+            waitState.lastActivityAt,
+            waitState.staleRetries,
+            waitState.expectedStaleAborts,
+            waitState.failureDrain,
           );
         };
         const stepResults = await waitForAtoms(launchedAtoms, executionSvc, ctx, {
@@ -1055,15 +1085,23 @@ export async function executePipeline(
 
         const orderedStepDetails = buildStepDetailsForAtoms(launchedAtoms, stepResults);
         stepDetails.push(...orderedStepDetails);
-        stepPrompt = formatStepOutput(launchedAtoms.map((atom) => ({
-          tagName: atom.tagName,
-          output: requireStepResult(stepIndex, atom, stepResults),
-        })));
+        stepPrompt = formatStepOutput(
+          launchedAtoms.map((atom) => ({
+            tagName: atom.tagName,
+            output: requireStepResult(stepIndex, atom, stepResults),
+          })),
+        );
 
         // Checkpoint: after step completion
         persistCheckpoint(
-          stepIndex, stepPrompt, launchedAtoms, stepResults,
-          { jobs: {} }, new Map(), new Map(), new Set(),
+          stepIndex,
+          stepPrompt,
+          launchedAtoms,
+          stepResults,
+          { jobs: {} },
+          new Map(),
+          new Map(),
+          new Set(),
         );
         onProgress(`step ${stepIndex} completed`);
       } catch (error) {

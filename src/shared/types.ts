@@ -20,7 +20,9 @@ export function isLivePhase(phase: JobPhase | string): phase is Extract<JobPhase
   return phase === 'queued' || phase === 'launching' || phase === 'running';
 }
 
-export function isTerminalPhase(phase: JobPhase | string): phase is Extract<JobPhase, 'completed' | 'error' | 'aborted'> {
+export function isTerminalPhase(
+  phase: JobPhase | string,
+): phase is Extract<JobPhase, 'completed' | 'error' | 'aborted'> {
   return phase === 'completed' || phase === 'error' || phase === 'aborted';
 }
 
@@ -274,18 +276,18 @@ export interface WaitRequest {
 export type WaitStreamEvent =
   | { type: 'progress'; jobId: string; sessionId: string; eventId: number; message: string }
   | {
-    type: 'queued';
-    jobId: string;
-    sessionId: string;
-    queuePosition: number;
-    runningJobIds: string[];
-  }
+      type: 'queued';
+      jobId: string;
+      sessionId: string;
+      queuePosition: number;
+      runningJobIds: string[];
+    }
   | {
-    type: 'terminal';
-    completedJobId: string;
-    sessionId: string;
-    remainingJobIds: string[];
-    resultPath: string;
-    result: TerminalResult;
-  }
+      type: 'terminal';
+      completedJobId: string;
+      sessionId: string;
+      remainingJobIds: string[];
+      resultPath: string;
+      result: TerminalResult;
+    }
   | { type: 'timeout'; runningJobIds: string[] };

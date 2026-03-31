@@ -5,10 +5,7 @@
  * `client/discuss.ts` re-exports them for the public `./client` surface.
  */
 
-import {
-  buildAuditView,
-  buildControlView,
-} from './projections.js';
+import { buildAuditView, buildControlView } from './projections.js';
 import type { PersistedDiscussSnapshot } from './events.js';
 import type { DiscussState, TranscriptEntry } from './types.js';
 
@@ -31,9 +28,7 @@ export type DiscussControlBidsTranscriptEntryDto = Omit<
   'bids' | 'effective_bids' | 'thoughts'
 >;
 
-export type DiscussControlTranscriptEntryDto =
-  | DiscussControlBidsTranscriptEntryDto
-  | DiscussNonBidTranscriptEntry;
+export type DiscussControlTranscriptEntryDto = DiscussControlBidsTranscriptEntryDto | DiscussNonBidTranscriptEntry;
 
 export type DiscussAuditTranscriptEntryDto = TranscriptEntry;
 
@@ -119,9 +114,7 @@ export type DiscussAuditDetailResponse = {
   lastSeq: number;
 };
 
-export type DiscussDetailResponse =
-  | DiscussControlDetailResponse
-  | DiscussAuditDetailResponse;
+export type DiscussDetailResponse = DiscussControlDetailResponse | DiscussAuditDetailResponse;
 
 // ---------------------------------------------------------------------------
 // Builder functions

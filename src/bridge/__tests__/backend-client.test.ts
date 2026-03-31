@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import type * as InfraPathsMod from '../../infra/paths.js';
+import type * as BackendClientMod from '../backend-client.js';
 import type { WaitStreamEvent } from '../../shared/types.js';
 
 let tmpDir = '';
@@ -56,7 +58,7 @@ vi.mock('../../execution/backend-lock.js', () => ({
 }));
 
 vi.mock('../../infra/paths.js', async (importOriginal) => {
-  const original = await importOriginal<typeof import('../../infra/paths.js')>();
+  const original = await importOriginal<typeof InfraPathsMod>();
   return {
     ...original,
     backendInfoPath,
@@ -68,7 +70,7 @@ vi.mock('node:child_process', () => ({
   spawn: spawnMock,
 }));
 
-type BridgeBackendClientModule = typeof import('../backend-client.js');
+type BridgeBackendClientModule = typeof BackendClientMod;
 
 function makeInfo(overrides: Partial<{
   pid: number;

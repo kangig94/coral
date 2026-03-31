@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type {
-  DiscussDomainEvent,
-  PersistedDiscussSnapshot,
-  SessionCreatedEvent,
-} from '../events.js';
+import type { DiscussDomainEvent, PersistedDiscussSnapshot, SessionCreatedEvent } from '../events.js';
 import { replayDiscussEvents } from '../reducer.js';
 import {
   decideBid,
@@ -33,21 +29,25 @@ function nextSeq(snapshot: PersistedDiscussSnapshot): number {
 }
 
 function createBiddingSnapshot(): PersistedDiscussSnapshot {
-  return replayDiscussEvents(unwrap(decideSessionCreate(
-    {
-      topic: 'Should the city pedestrianize the downtown core?',
-      agents: [
-        { name: 'alpha', persona: 'Alpha', participation: 'required' },
-        { name: 'beta', persona: 'Beta', participation: 'observer' },
-      ],
-      min_bid_delay_ms: 0,
-    },
-    SESSION_ID,
-    PROJECT_ROOT,
-    'Should the city pedestrianize the downtown core?',
-    1,
-    NOW,
-  )));
+  return replayDiscussEvents(
+    unwrap(
+      decideSessionCreate(
+        {
+          topic: 'Should the city pedestrianize the downtown core?',
+          agents: [
+            { name: 'alpha', persona: 'Alpha', participation: 'required' },
+            { name: 'beta', persona: 'Beta', participation: 'observer' },
+          ],
+          min_bid_delay_ms: 0,
+        },
+        SESSION_ID,
+        PROJECT_ROOT,
+        'Should the city pedestrianize the downtown core?',
+        1,
+        NOW,
+      ),
+    ),
+  );
 }
 
 function appendDecision(
@@ -60,28 +60,34 @@ function appendDecision(
 describe('state-machine deciders', () => {
   it('allows an observer with a submitted bid to win cold start', () => {
     let snapshot = createBiddingSnapshot();
-    snapshot = appendDecision(snapshot, decideBid(
-      snapshot.state,
-      'alpha',
-      10,
-      'I can go later.',
-      SESSION_ID,
-      PROJECT_ROOT,
-      snapshot.state.topic,
-      nextSeq(snapshot),
-      NOW,
-    ));
-    snapshot = appendDecision(snapshot, decideBid(
-      snapshot.state,
-      'beta',
-      20,
-      'I should break the tie now.',
-      SESSION_ID,
-      PROJECT_ROOT,
-      snapshot.state.topic,
-      nextSeq(snapshot),
-      NOW,
-    ));
+    snapshot = appendDecision(
+      snapshot,
+      decideBid(
+        snapshot.state,
+        'alpha',
+        10,
+        'I can go later.',
+        SESSION_ID,
+        PROJECT_ROOT,
+        snapshot.state.topic,
+        nextSeq(snapshot),
+        NOW,
+      ),
+    );
+    snapshot = appendDecision(
+      snapshot,
+      decideBid(
+        snapshot.state,
+        'beta',
+        20,
+        'I should break the tie now.',
+        SESSION_ID,
+        PROJECT_ROOT,
+        snapshot.state.topic,
+        nextSeq(snapshot),
+        NOW,
+      ),
+    );
 
     const decided = decideBidRoundClose(
       snapshot.state,
@@ -115,17 +121,20 @@ describe('state-machine deciders', () => {
         },
       },
     };
-    snapshot = appendDecision(snapshot, decideBid(
-      snapshot.state,
-      'alpha',
-      10,
-      'I should handle this round.',
-      SESSION_ID,
-      PROJECT_ROOT,
-      snapshot.state.topic,
-      nextSeq(snapshot),
-      NOW,
-    ));
+    snapshot = appendDecision(
+      snapshot,
+      decideBid(
+        snapshot.state,
+        'alpha',
+        10,
+        'I should handle this round.',
+        SESSION_ID,
+        PROJECT_ROOT,
+        snapshot.state.topic,
+        nextSeq(snapshot),
+        NOW,
+      ),
+    );
 
     const decided = decideBidRoundClose(
       snapshot.state,
@@ -197,28 +206,26 @@ describe('state-machine deciders', () => {
       min_bid_delay_ms: 50,
     };
 
-    const events = unwrap(decideSessionCreate(
-      input,
-      SESSION_ID,
-      PROJECT_ROOT,
-      'Topic',
-      12,
-      NOW,
-      {
+    const events = unwrap(
+      decideSessionCreate(input, SESSION_ID, PROJECT_ROOT, 'Topic', 12, NOW, {
         bidThreshold: 30,
         maxEpochs: 2,
         quotaPerEpoch: 3,
         agentExecution: { alpha: { manual: false, provider: 'codex', model: 'gpt-5' } },
-      },
-    ));
+      }),
+    );
 
     expect(events.map((event) => event.kind)).toEqual(['session.created', 'bidding.opened']);
     expect(events.map((event) => event.seq)).toEqual([12, 13]);
-    expect(events.every((event) =>
-      event.sessionId === SESSION_ID
-      && event.projectRoot === PROJECT_ROOT
-      && event.topic === 'Topic'
-      && event.ts === NOW)).toBe(true);
+    expect(
+      events.every(
+        (event) =>
+          event.sessionId === SESSION_ID &&
+          event.projectRoot === PROJECT_ROOT &&
+          event.topic === 'Topic' &&
+          event.ts === NOW,
+      ),
+    ).toBe(true);
 
     const created = events[0] as SessionCreatedEvent;
     expect(created.payload.agentExecution.alpha).toEqual({
@@ -242,45 +249,50 @@ describe('state-machine deciders', () => {
         pending_bidders: ['alpha', 'beta'],
       },
     };
-    snapshot = appendDecision(snapshot, decideBid(
-      snapshot.state,
-      'alpha',
-      10,
-      'Low urgency.',
-      SESSION_ID,
-      PROJECT_ROOT,
-      snapshot.state.topic,
-      nextSeq(snapshot),
-      NOW,
-    ));
-    snapshot = appendDecision(snapshot, decideBid(
-      snapshot.state,
-      'beta',
-      20,
-      'Still low urgency.',
-      SESSION_ID,
-      PROJECT_ROOT,
-      snapshot.state.topic,
-      nextSeq(snapshot),
-      NOW,
-    ));
+    snapshot = appendDecision(
+      snapshot,
+      decideBid(
+        snapshot.state,
+        'alpha',
+        10,
+        'Low urgency.',
+        SESSION_ID,
+        PROJECT_ROOT,
+        snapshot.state.topic,
+        nextSeq(snapshot),
+        NOW,
+      ),
+    );
+    snapshot = appendDecision(
+      snapshot,
+      decideBid(
+        snapshot.state,
+        'beta',
+        20,
+        'Still low urgency.',
+        SESSION_ID,
+        PROJECT_ROOT,
+        snapshot.state.topic,
+        nextSeq(snapshot),
+        NOW,
+      ),
+    );
 
-    const events = unwrap(decideBidRoundClose(
-      snapshot.state,
-      SESSION_ID,
-      PROJECT_ROOT,
-      snapshot.state.topic,
-      nextSeq(snapshot),
-      NOW,
-    ));
+    const events = unwrap(
+      decideBidRoundClose(snapshot.state, SESSION_ID, PROJECT_ROOT, snapshot.state.topic, nextSeq(snapshot), NOW),
+    );
 
     expect(events.map((event) => event.kind)).toEqual(['bid.round.closed', 'session.ended']);
     expect(events.map((event) => event.seq)).toEqual([5, 6]);
-    expect(events.every((event: DiscussDomainEvent) =>
-      event.sessionId === SESSION_ID
-      && event.projectRoot === PROJECT_ROOT
-      && event.topic === snapshot.state.topic
-      && event.ts === NOW)).toBe(true);
+    expect(
+      events.every(
+        (event: DiscussDomainEvent) =>
+          event.sessionId === SESSION_ID &&
+          event.projectRoot === PROJECT_ROOT &&
+          event.topic === snapshot.state.topic &&
+          event.ts === NOW,
+      ),
+    ).toBe(true);
   });
 
   it('returns an empty batch when decideEnd is called on an already-ended state', () => {
@@ -289,15 +301,9 @@ describe('state-machine deciders', () => {
       status: 'ended' as const,
     };
 
-    expect(decideEnd(
-      endedState,
-      { endReason: 'all_blocked' },
-      SESSION_ID,
-      PROJECT_ROOT,
-      endedState.topic,
-      30,
-      NOW,
-    )).toEqual({
+    expect(
+      decideEnd(endedState, { endReason: 'all_blocked' }, SESSION_ID, PROJECT_ROOT, endedState.topic, 30, NOW),
+    ).toEqual({
       ok: true,
       value: [],
     });

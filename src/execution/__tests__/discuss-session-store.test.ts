@@ -12,11 +12,7 @@ import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import {
-  readDiscussDiscovery,
-  readDiscussEventLog,
-  readDiscussSummaryIndex,
-} from '../../client/readers.js';
+import { readDiscussDiscovery, readDiscussEventLog, readDiscussSummaryIndex } from '../../client/readers.js';
 import {
   discussSourcesPath,
   discussDiscoveryPath,
@@ -28,17 +24,9 @@ import {
   sourceToSlug,
 } from '../../infra/paths.js';
 import { replayDiscussEvents } from '../../discuss/reducer.js';
-import {
-  decideBid,
-  decideBidRoundClose,
-  decideSessionCreate,
-  decideSpeech,
-} from '../../discuss/state-machine.js';
+import { decideBid, decideBidRoundClose, decideSessionCreate, decideSpeech } from '../../discuss/state-machine.js';
 import type { DiscussCreateInput, Result } from '../../discuss/types.js';
-import {
-  DiscussSessionStore,
-  DiscussStaleWriteError,
-} from '../discuss/session-store.js';
+import { DiscussSessionStore, DiscussStaleWriteError } from '../discuss/session-store.js';
 
 const SESSION_ID = 'session-1';
 const SECOND_SESSION_ID = 'session-2';
@@ -80,20 +68,14 @@ function writeJsonAtomic(filePath: string, value: unknown): void {
   renameSync(tmpPath, filePath);
 }
 
-async function appendRoundTripHistory(store: DiscussSessionStore, sessionId = SESSION_ID): Promise<{
+async function appendRoundTripHistory(
+  store: DiscussSessionStore,
+  sessionId = SESSION_ID,
+): Promise<{
   finalSnapshot: Awaited<ReturnType<DiscussSessionStore['append']>>;
 }> {
   const input = makeInput();
-  const createEvents = unwrap(
-    decideSessionCreate(
-      input,
-      sessionId,
-      projectRoot,
-      TOPIC,
-      1,
-      '2026-03-11T00:00:00.000Z',
-    ),
-  );
+  const createEvents = unwrap(decideSessionCreate(input, sessionId, projectRoot, TOPIC, 1, '2026-03-11T00:00:00.000Z'));
   const created = await store.append(sessionId, 0, createEvents);
 
   const bidAlpha = unwrap(
@@ -127,14 +109,7 @@ async function appendRoundTripHistory(store: DiscussSessionStore, sessionId = SE
   const afterBeta = await store.append(sessionId, afterAlpha.lastAppliedSeq, bidBeta);
 
   const closeRound = unwrap(
-    decideBidRoundClose(
-      afterBeta.state,
-      sessionId,
-      projectRoot,
-      TOPIC,
-      5,
-      '2026-03-11T00:00:03.000Z',
-    ),
+    decideBidRoundClose(afterBeta.state, sessionId, projectRoot, TOPIC, 5, '2026-03-11T00:00:03.000Z'),
   );
   const afterClose = await store.append(sessionId, afterBeta.lastAppliedSeq, closeRound);
 
@@ -155,9 +130,7 @@ async function appendRoundTripHistory(store: DiscussSessionStore, sessionId = SE
   return { finalSnapshot };
 }
 
-function buildExpectedSummaryRow(
-  snapshot: Awaited<ReturnType<DiscussSessionStore['append']>>,
-): {
+function buildExpectedSummaryRow(snapshot: Awaited<ReturnType<DiscussSessionStore['append']>>): {
   sessionId: string;
   projectRoot: string;
   topic: string;
@@ -266,14 +239,7 @@ describe('DiscussSessionStore', () => {
     const store = createStore(source);
     const input = makeInput();
     const createEvents = unwrap(
-      decideSessionCreate(
-        input,
-        SESSION_ID,
-        projectRoot,
-        TOPIC,
-        1,
-        '2026-03-11T00:00:00.000Z',
-      ),
+      decideSessionCreate(input, SESSION_ID, projectRoot, TOPIC, 1, '2026-03-11T00:00:00.000Z'),
     );
     const created = await store.append(SESSION_ID, 0, createEvents);
 
@@ -302,14 +268,7 @@ describe('DiscussSessionStore', () => {
     const store = createStore(source);
     const input = makeInput();
     const createEvents = unwrap(
-      decideSessionCreate(
-        input,
-        SESSION_ID,
-        projectRoot,
-        TOPIC,
-        1,
-        '2026-03-11T00:00:00.000Z',
-      ),
+      decideSessionCreate(input, SESSION_ID, projectRoot, TOPIC, 1, '2026-03-11T00:00:00.000Z'),
     );
     const created = await store.append(SESSION_ID, 0, createEvents);
     store.flushDirtyIndexes();
@@ -318,12 +277,14 @@ describe('DiscussSessionStore', () => {
     expect(firstDiscovery).toEqual({
       source,
       updatedAt: created.updatedAt,
-      sessions: [{
-        sessionId: SESSION_ID,
-        topic: TOPIC,
-        sessionDir: discussSessionDir(projectRoot, SESSION_ID),
-        createdAt: created.state.created_at,
-      }],
+      sessions: [
+        {
+          sessionId: SESSION_ID,
+          topic: TOPIC,
+          sessionDir: discussSessionDir(projectRoot, SESSION_ID),
+          createdAt: created.state.created_at,
+        },
+      ],
     });
 
     const bidEvents = unwrap(
@@ -358,24 +319,10 @@ describe('DiscussSessionStore', () => {
     const input = makeInput();
 
     const firstCreate = unwrap(
-      decideSessionCreate(
-        input,
-        SESSION_ID,
-        projectRoot,
-        TOPIC,
-        1,
-        '2026-03-11T00:00:00.000Z',
-      ),
+      decideSessionCreate(input, SESSION_ID, projectRoot, TOPIC, 1, '2026-03-11T00:00:00.000Z'),
     );
     const secondCreate = unwrap(
-      decideSessionCreate(
-        input,
-        SECOND_SESSION_ID,
-        projectRoot,
-        `${TOPIC} (session 2)`,
-        1,
-        '2026-03-11T00:00:00.500Z',
-      ),
+      decideSessionCreate(input, SECOND_SESSION_ID, projectRoot, `${TOPIC} (session 2)`, 1, '2026-03-11T00:00:00.500Z'),
     );
 
     await Promise.all([
@@ -387,14 +334,12 @@ describe('DiscussSessionStore', () => {
     secondStore.flushDirtyIndexes();
 
     const discovery = readDiscussDiscovery(projectRoot);
-    expect(discovery?.sessions.map((session) => session.sessionId).sort()).toEqual([
-      SESSION_ID,
-      SECOND_SESSION_ID,
-    ]);
-    expect(readDiscussSummaryIndex(projectRoot)?.sessions.map((session) => session.sessionId).sort()).toEqual([
-      SESSION_ID,
-      SECOND_SESSION_ID,
-    ]);
+    expect(discovery?.sessions.map((session) => session.sessionId).sort()).toEqual([SESSION_ID, SECOND_SESSION_ID]);
+    expect(
+      readDiscussSummaryIndex(projectRoot)
+        ?.sessions.map((session) => session.sessionId)
+        .sort(),
+    ).toEqual([SESSION_ID, SECOND_SESSION_ID]);
   });
 
   it('loads and appends shared sessions from another checkout of the same source', async () => {
@@ -413,16 +358,7 @@ describe('DiscussSessionStore', () => {
     const created = await firstStore.append(
       SESSION_ID,
       0,
-      unwrap(
-        decideSessionCreate(
-          makeInput(),
-          SESSION_ID,
-          firstProjectRoot,
-          TOPIC,
-          1,
-          '2026-03-11T00:00:00.000Z',
-        ),
-      ),
+      unwrap(decideSessionCreate(makeInput(), SESSION_ID, firstProjectRoot, TOPIC, 1, '2026-03-11T00:00:00.000Z')),
     );
 
     expect(secondStore.load(SESSION_ID)).toMatchObject({
@@ -463,10 +399,12 @@ describe('DiscussSessionStore', () => {
     });
     expect(readDiscussSummaryIndex(firstProjectRoot)).toMatchObject({
       source: firstSource,
-      sessions: [expect.objectContaining({
-        sessionId: SESSION_ID,
-        projectRoot: firstProjectRoot,
-      })],
+      sessions: [
+        expect.objectContaining({
+          sessionId: SESSION_ID,
+          projectRoot: firstProjectRoot,
+        }),
+      ],
     });
   });
 
@@ -484,34 +422,42 @@ describe('DiscussSessionStore', () => {
     writeJsonAtomic(discussDiscoveryPath(projectRoot), {
       source,
       updatedAt: '2026-03-11T00:00:05.000Z',
-      sessions: [{
-        sessionId: SESSION_ID,
-        topic: TOPIC,
-        sessionDir: discussSessionDir(projectRoot, SESSION_ID),
-        createdAt: '2026-03-11T00:00:00.000Z',
-      }],
+      sessions: [
+        {
+          sessionId: SESSION_ID,
+          topic: TOPIC,
+          sessionDir: discussSessionDir(projectRoot, SESSION_ID),
+          createdAt: '2026-03-11T00:00:00.000Z',
+        },
+      ],
     });
 
-    expect(store.listRecoveryCandidates().map((session) => session.sessionId).sort()).toEqual([
-      SESSION_ID,
-      SECOND_SESSION_ID,
-    ]);
+    expect(
+      store
+        .listRecoveryCandidates()
+        .map((session) => session.sessionId)
+        .sort(),
+    ).toEqual([SESSION_ID, SECOND_SESSION_ID]);
     expect(store.load(SECOND_SESSION_ID)).toEqual(secondSnapshot);
 
     unlinkSync(discussDiscoveryPath(projectRoot));
 
-    expect(store.listRecoveryCandidates().map((session) => session.sessionId).sort()).toEqual([
-      SESSION_ID,
-      SECOND_SESSION_ID,
-    ]);
+    expect(
+      store
+        .listRecoveryCandidates()
+        .map((session) => session.sessionId)
+        .sort(),
+    ).toEqual([SESSION_ID, SECOND_SESSION_ID]);
     expect(store.load(SESSION_ID)).toEqual(firstSnapshot);
 
     writeFileSync(discussDiscoveryPath(projectRoot), '{ not valid json }', 'utf8');
 
-    expect(store.listRecoveryCandidates().map((session) => session.sessionId).sort()).toEqual([
-      SESSION_ID,
-      SECOND_SESSION_ID,
-    ]);
+    expect(
+      store
+        .listRecoveryCandidates()
+        .map((session) => session.sessionId)
+        .sort(),
+    ).toEqual([SESSION_ID, SECOND_SESSION_ID]);
   });
 
   it('hydrates summary-index.json and repairs the source registry on first index listing', async () => {
@@ -528,17 +474,16 @@ describe('DiscussSessionStore', () => {
 
     const coldStartStore = createStore(source);
 
-    expect(coldStartStore.listSummariesFromIndex().map((summary) => summary.sessionId).sort()).toEqual([
-      SESSION_ID,
-      SECOND_SESSION_ID,
-    ]);
+    expect(
+      coldStartStore
+        .listSummariesFromIndex()
+        .map((summary) => summary.sessionId)
+        .sort(),
+    ).toEqual([SESSION_ID, SECOND_SESSION_ID]);
     expect(readDiscussSummaryIndex(projectRoot)).toEqual({
       source,
       updatedAt: secondSnapshot.updatedAt,
-      sessions: [
-        buildExpectedSummaryRow(firstSnapshot),
-        buildExpectedSummaryRow(secondSnapshot),
-      ],
+      sessions: [buildExpectedSummaryRow(firstSnapshot), buildExpectedSummaryRow(secondSnapshot)],
     });
     expect(JSON.parse(readFileSync(discussSourcesPath(), 'utf8'))).toEqual({
       updatedAt: secondSnapshot.updatedAt,
@@ -560,17 +505,16 @@ describe('DiscussSessionStore', () => {
 
     const coldStartStore = createStore(source);
 
-    expect(coldStartStore.listSummariesFromIndex().map((summary) => summary.sessionId).sort()).toEqual([
-      SESSION_ID,
-      SECOND_SESSION_ID,
-    ]);
+    expect(
+      coldStartStore
+        .listSummariesFromIndex()
+        .map((summary) => summary.sessionId)
+        .sort(),
+    ).toEqual([SESSION_ID, SECOND_SESSION_ID]);
     expect(readDiscussSummaryIndex(projectRoot)).toEqual({
       source,
       updatedAt: secondSnapshot.updatedAt,
-      sessions: [
-        buildExpectedSummaryRow(firstSnapshot),
-        buildExpectedSummaryRow(secondSnapshot),
-      ],
+      sessions: [buildExpectedSummaryRow(firstSnapshot), buildExpectedSummaryRow(secondSnapshot)],
     });
   });
 
@@ -589,9 +533,7 @@ describe('DiscussSessionStore', () => {
     await appendRoundTripHistory(store);
     const logPath = discussEventLogPath(store.resolveSessionDir(SESSION_ID));
 
-    const lines = readFileSync(logPath, 'utf8')
-      .trim()
-      .split('\n');
+    const lines = readFileSync(logPath, 'utf8').trim().split('\n');
 
     expect(lines).toHaveLength(6);
     expect(JSON.parse(lines[0]) as { kind: string; seq: number }).toMatchObject({

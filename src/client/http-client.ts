@@ -14,12 +14,7 @@ import type {
   KbUpdateInput,
 } from '../kb/types.js';
 import { isRecord } from '../shared/mcp-utils.js';
-import {
-  describeHttpError,
-  HEALTH_TIMEOUT_MS,
-  parseJsonResponse,
-  TOOL_TIMEOUT_MS,
-} from '../shared/sse-parser.js';
+import { describeHttpError, HEALTH_TIMEOUT_MS, parseJsonResponse, TOOL_TIMEOUT_MS } from '../shared/sse-parser.js';
 import { isBackendHealth, type BackendHealth } from './backend-health.js';
 
 interface ProviderToolOptions {
@@ -55,10 +50,12 @@ export { isBackendHealth };
 export type { CallerContext, BackendHealth };
 
 function isCallerContext(value: unknown): value is CallerContext {
-  return isRecord(value)
-    && typeof value.projectRoot === 'string'
-    && typeof value.pluginRoot === 'string'
-    && isRecord(value.coralEnv);
+  return (
+    isRecord(value) &&
+    typeof value.projectRoot === 'string' &&
+    typeof value.pluginRoot === 'string' &&
+    isRecord(value.coralEnv)
+  );
 }
 
 export class BackendToolHttpError extends Error {
@@ -80,14 +77,16 @@ export class BackendClient {
   private readonly ensureBackendHandle: (pluginRoot?: string) => Promise<BackendHandle>;
   private readonly defaultContext?: CallerContext;
 
-  constructor(options: {
-    ensureBackend?: (pluginRoot?: string) => Promise<BackendHandle>;
-    defaultContext?: CallerContext;
-  } = {}) {
+  constructor(
+    options: {
+      ensureBackend?: (pluginRoot?: string) => Promise<BackendHandle>;
+      defaultContext?: CallerContext;
+    } = {},
+  ) {
     this.defaultContext = options.defaultContext;
     const defaultPluginRoot = this.defaultContext?.pluginRoot;
-    this.ensureBackendHandle = options.ensureBackend
-      ?? ((pluginRoot?: string) => defaultEnsureBackend(pluginRoot ?? defaultPluginRoot));
+    this.ensureBackendHandle =
+      options.ensureBackend ?? ((pluginRoot?: string) => defaultEnsureBackend(pluginRoot ?? defaultPluginRoot));
   }
 
   /**
@@ -169,11 +168,7 @@ export class BackendClient {
     options: ProviderCoralDispatchOptions = {},
   ): Promise<unknown> {
     const { context, ...args } = options;
-    return this.proxyToolCall(
-      provider,
-      { op: `coral:${agentName}`, prompt, ...args },
-      this.resolveContext(context),
-    );
+    return this.proxyToolCall(provider, { op: `coral:${agentName}`, prompt, ...args }, this.resolveContext(context));
   }
 
   async discussSeed(
@@ -281,11 +276,13 @@ export class BackendClient {
     const { port, host, token } = await this.resolveBackendHandle();
 
     try {
-      const response = await withAbortTimeout(HEALTH_TIMEOUT_MS, (signal) => fetch(`http://${host}:${port}/health`, {
-        method: 'GET',
-        headers: { 'X-Coral-Backend-Token': token },
-        signal,
-      }));
+      const response = await withAbortTimeout(HEALTH_TIMEOUT_MS, (signal) =>
+        fetch(`http://${host}:${port}/health`, {
+          method: 'GET',
+          headers: { 'X-Coral-Backend-Token': token },
+          signal,
+        }),
+      );
 
       if (!response.ok) {
         return null;
@@ -305,11 +302,13 @@ export class BackendClient {
     const { port, host, token } = await this.resolveBackendHandle();
 
     try {
-      const response = await withAbortTimeout(HEALTH_TIMEOUT_MS, (signal) => fetch(`http://${host}:${port}/admin/shutdown`, {
-        method: 'POST',
-        headers: { 'X-Coral-Backend-Token': token },
-        signal,
-      }));
+      const response = await withAbortTimeout(HEALTH_TIMEOUT_MS, (signal) =>
+        fetch(`http://${host}:${port}/admin/shutdown`, {
+          method: 'POST',
+          headers: { 'X-Coral-Backend-Token': token },
+          signal,
+        }),
+      );
 
       return { ok: response.ok };
     } catch {
@@ -339,7 +338,7 @@ export class BackendClient {
       });
     } catch (error) {
       if (error instanceof Error) throw error;
-      throw new Error(`Backend communication error: ${String(error)}`);
+      throw new Error(`Backend communication error: ${String(error)}`, { cause: error });
     }
   }
 
@@ -354,11 +353,7 @@ export class BackendClient {
     return this.ensureBackendHandle(pluginRoot);
   }
 
-  private async proxyToolCall(
-    name: string,
-    args: Record<string, unknown>,
-    ctx: CallerContext,
-  ): Promise<unknown> {
+  private async proxyToolCall(name: string, args: Record<string, unknown>, ctx: CallerContext): Promise<unknown> {
     const { port, host, token } = await this.resolveBackendHandle(ctx);
     const body = JSON.stringify({
       name,
@@ -396,7 +391,7 @@ export class BackendClient {
       });
     } catch (error) {
       if (error instanceof Error) throw error;
-      throw new Error(`Backend communication error: ${String(error)}`);
+      throw new Error(`Backend communication error: ${String(error)}`, { cause: error });
     }
   }
 }

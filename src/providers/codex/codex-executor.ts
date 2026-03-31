@@ -137,14 +137,12 @@ function baseFlags(bypassSandbox: boolean): string[] {
     '--json',
     '--skip-git-repo-check',
     bypassSandbox ? '--dangerously-bypass-approvals-and-sandbox' : '--full-auto',
-    '-c', 'web_search=live',
+    '-c',
+    'web_search=live',
   ];
 
   if (!bypassSandbox) {
-    flags.push(
-      '-c', 'sandbox_mode=workspace-write',
-      '-c', 'sandbox_workspace_write.network_access=true',
-    );
+    flags.push('-c', 'sandbox_mode=workspace-write', '-c', 'sandbox_workspace_write.network_access=true');
   }
 
   return flags;
@@ -162,10 +160,7 @@ function reasoningEffortFlags(effort: EffortLevel | undefined, env: Record<strin
 }
 
 /** One-shot execution: codex exec -m MODEL --json --full-auto */
-export async function executeOneShot(
-  prompt: string,
-  opts: CodexExecOptions,
-): Promise<CodexExecResult> {
+export async function executeOneShot(prompt: string, opts: CodexExecOptions): Promise<CodexExecResult> {
   const resolvedModel = resolveModel(opts);
   return executeCodex(
     buildExecutionArgs(['exec'], resolvedModel, opts),
@@ -191,11 +186,7 @@ export async function executeResume(
 }
 
 /** Fork a session by resuming with a new prompt (codex fork is TUI-only). */
-export async function executeFork(
-  threadId: string,
-  prompt: string,
-  opts: CodexExecOptions,
-): Promise<CodexExecResult> {
+export async function executeFork(threadId: string, prompt: string, opts: CodexExecOptions): Promise<CodexExecResult> {
   return executeResume(threadId, prompt, opts);
 }
 
@@ -203,11 +194,7 @@ function resolveModel(opts: CodexExecOptions): string {
   return opts.model ?? getDefaultModel(opts.environment);
 }
 
-function buildExecutionArgs(
-  command: string[],
-  model: string,
-  opts: CodexExecOptions,
-): string[] {
+function buildExecutionArgs(command: string[], model: string, opts: CodexExecOptions): string[] {
   return [
     ...command,
     '-m',

@@ -71,40 +71,48 @@ describe('discuss prompts', () => {
     const prompt = buildFirstTurnInstruction(createPromptContext());
 
     expect(prompt).toContain('Respond with ONLY valid JSON in this exact shape: {"score": 0-100, "thought": "..."}');
-    expect(prompt).toContain('You are Alpha Analyst.\n\nSupports strict traffic limits.\nFocuses on emissions and transit throughput.');
+    expect(prompt).toContain(
+      'You are Alpha Analyst.\n\nSupports strict traffic limits.\nFocuses on emissions and transit throughput.',
+    );
     expect(prompt).toContain('Other participants:');
     expect(prompt).toContain('- Beta Builder (beta): Prefers market incentives over bans.');
     expect(prompt).toContain('- Gamma Skeptic (gamma): Worries about small business disruption.');
   });
 
   it('includes prior speech content for listener bids', () => {
-    const prompt = buildBidPrompt(createPromptContext({
-      priorSpeech: {
-        speaker: 'beta',
-        content: 'A total ban is too blunt; phase it in block by block.',
-      },
-    }));
+    const prompt = buildBidPrompt(
+      createPromptContext({
+        priorSpeech: {
+          speaker: 'beta',
+          content: 'A total ban is too blunt; phase it in block by block.',
+        },
+      }),
+    );
 
     expect(prompt).toContain('Most recent speech from beta:');
     expect(prompt).toContain('A total ban is too blunt; phase it in block by block.');
   });
 
   it('does not echo the agent’s own prior speech back in speaker bids', () => {
-    const prompt = buildBidPrompt(createPromptContext({
-      priorSpeech: {
-        speaker: 'alpha',
-        content: 'My own previous speech should not appear here.',
-      },
-    }));
+    const prompt = buildBidPrompt(
+      createPromptContext({
+        priorSpeech: {
+          speaker: 'alpha',
+          content: 'My own previous speech should not appear here.',
+        },
+      }),
+    );
 
     expect(prompt).not.toContain('My own previous speech should not appear here.');
     expect(prompt).not.toContain('Most recent speech from alpha:');
   });
 
   it('builds speech prompts as turn-to-speak text without bid JSON scaffolding', () => {
-    const prompt = buildSpeechPrompt(createPromptContext({
-      mustAnswer: 'Address whether delivery vehicles get an exemption.',
-    }));
+    const prompt = buildSpeechPrompt(
+      createPromptContext({
+        mustAnswer: 'Address whether delivery vehicles get an exemption.',
+      }),
+    );
 
     expect(prompt).toContain('It is your turn to speak now.');
     expect(prompt).toContain('Respond with your speech text only.');

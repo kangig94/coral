@@ -150,7 +150,9 @@ export function parseAxisSpec(spec: string): ControversyAxis {
 
       const trimmedValue = rawValue.trim();
       if (trimmedValue.startsWith('"')) {
-        positions = parseScalarValue(trimmedValue).split(',').map((position) => position.trim());
+        positions = parseScalarValue(trimmedValue)
+          .split(',')
+          .map((position) => position.trim());
         collectingPositions = false;
         continue;
       }
@@ -183,7 +185,7 @@ export async function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = '';
     process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (chunk) => {
+    process.stdin.on('data', (chunk: string) => {
       data += chunk;
     });
     process.stdin.on('end', () => resolve(data));

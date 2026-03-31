@@ -25,10 +25,10 @@ const PRINCIPLES_TABLE = 'principles';
 
 function asConnection(value: unknown): LanceDbConnection {
   if (
-    typeof value !== 'object'
-    || value === null
-    || typeof (value as Partial<LanceDbConnection>).dropTable !== 'function'
-    || typeof (value as Partial<LanceDbConnection>).createTable !== 'function'
+    typeof value !== 'object' ||
+    value === null ||
+    typeof (value as Partial<LanceDbConnection>).dropTable !== 'function' ||
+    typeof (value as Partial<LanceDbConnection>).createTable !== 'function'
   ) {
     throw new Error('Invalid LanceDB connection');
   }
@@ -107,16 +107,20 @@ export async function rebuildEnhancedIndex(
     created: note.createdAt,
     updated: note.updatedAt,
   }));
-  const tagRows = notes.flatMap((note) => note.tags.map((tag) => ({
-    note_id: note.note,
-    tag,
-    tag_norm: normalized(tag),
-  })));
-  const principleRows = notes.flatMap((note) => note.principles.map((principle) => ({
-    note_id: note.note,
-    principle,
-    principle_norm: normalized(principle),
-  })));
+  const tagRows = notes.flatMap((note) =>
+    note.tags.map((tag) => ({
+      note_id: note.note,
+      tag,
+      tag_norm: normalized(tag),
+    })),
+  );
+  const principleRows = notes.flatMap((note) =>
+    note.principles.map((principle) => ({
+      note_id: note.note,
+      principle,
+      principle_norm: normalized(principle),
+    })),
+  );
 
   await Promise.all([
     dropTableIfPresent(db, NOTES_TABLE),
@@ -125,23 +129,20 @@ export async function rebuildEnhancedIndex(
   ]);
 
   await Promise.all([
-    createTable(
-      db,
-      NOTES_TABLE,
-      noteRows,
-      ['id', 'path', 'note_slug', 'note_slug_norm', 'domain', 'title', 'title_norm', 'body', 'body_norm', 'created', 'updated'],
-    ),
-    createTable(
-      db,
-      TAGS_TABLE,
-      tagRows,
-      ['note_id', 'tag', 'tag_norm'],
-    ),
-    createTable(
-      db,
-      PRINCIPLES_TABLE,
-      principleRows,
-      ['note_id', 'principle', 'principle_norm'],
-    ),
+    createTable(db, NOTES_TABLE, noteRows, [
+      'id',
+      'path',
+      'note_slug',
+      'note_slug_norm',
+      'domain',
+      'title',
+      'title_norm',
+      'body',
+      'body_norm',
+      'created',
+      'updated',
+    ]),
+    createTable(db, TAGS_TABLE, tagRows, ['note_id', 'tag', 'tag_norm']),
+    createTable(db, PRINCIPLES_TABLE, principleRows, ['note_id', 'principle', 'principle_norm']),
   ]);
 }

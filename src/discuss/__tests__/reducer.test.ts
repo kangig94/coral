@@ -1,15 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  makeEvent,
-  type DiscussDomainEvent,
-  type PersistedDiscussSnapshot,
-} from '../events.js';
-import {
-  makeEmptySnapshot,
-  reduceDiscussEvent,
-  replayDiscussEvents,
-} from '../reducer.js';
+import { makeEvent, type DiscussDomainEvent, type PersistedDiscussSnapshot } from '../events.js';
+import { makeEmptySnapshot, reduceDiscussEvent, replayDiscussEvents } from '../reducer.js';
 import {
   decideBid,
   decideBidRoundClose,
@@ -30,10 +22,7 @@ function unwrap<T>(result: Result<T>): T {
   throw new Error(result.error);
 }
 
-function applyEvents(
-  snapshot: PersistedDiscussSnapshot,
-  events: DiscussDomainEvent[],
-): PersistedDiscussSnapshot {
+function applyEvents(snapshot: PersistedDiscussSnapshot, events: DiscussDomainEvent[]): PersistedDiscussSnapshot {
   return events.reduce((current, event) => reduceDiscussEvent(current, event), snapshot);
 }
 
@@ -48,10 +37,7 @@ function nextSeq(snapshot: PersistedDiscussSnapshot): number {
   return snapshot.lastAppliedSeq + 1;
 }
 
-function makeInput(
-  agents: DiscussCreateInput['agents'],
-  minBidDelayMs = 0,
-): DiscussCreateInput {
+function makeInput(agents: DiscussCreateInput['agents'], minBidDelayMs = 0): DiscussCreateInput {
   return {
     topic: 'Should the city pedestrianize the downtown core?',
     agents,
@@ -63,15 +49,19 @@ function createSnapshot(
   input: DiscussCreateInput,
   agentExecution?: SessionCreateOptions['agentExecution'],
 ): PersistedDiscussSnapshot {
-  return replayDiscussEvents(unwrap(decideSessionCreate(
-    input,
-    SESSION_ID,
-    PROJECT_ROOT,
-    input.topic,
-    1,
-    NOW,
-    agentExecution ? { agentExecution } : {},
-  )));
+  return replayDiscussEvents(
+    unwrap(
+      decideSessionCreate(
+        input,
+        SESSION_ID,
+        PROJECT_ROOT,
+        input.topic,
+        1,
+        NOW,
+        agentExecution ? { agentExecution } : {},
+      ),
+    ),
+  );
 }
 
 describe('discuss reducer', () => {
@@ -84,66 +74,60 @@ describe('discuss reducer', () => {
     const history: DiscussDomainEvent[] = [];
     let snapshot = makeEmptySnapshot(SESSION_ID, PROJECT_ROOT);
 
-    const created = unwrap(decideSessionCreate(
-      input,
-      SESSION_ID,
-      PROJECT_ROOT,
-      input.topic,
-      1,
-      NOW,
-    ));
+    const created = unwrap(decideSessionCreate(input, SESSION_ID, PROJECT_ROOT, input.topic, 1, NOW));
     history.push(...created);
     snapshot = replay(snapshot, created);
 
-    const alphaBid = unwrap(decideBid(
-      snapshot.state,
-      'alpha',
-      10,
-      'I can go later.',
-      SESSION_ID,
-      PROJECT_ROOT,
-      input.topic,
-      nextSeq(snapshot),
-      NOW,
-    ));
+    const alphaBid = unwrap(
+      decideBid(
+        snapshot.state,
+        'alpha',
+        10,
+        'I can go later.',
+        SESSION_ID,
+        PROJECT_ROOT,
+        input.topic,
+        nextSeq(snapshot),
+        NOW,
+      ),
+    );
     history.push(...alphaBid);
     snapshot = replay(snapshot, alphaBid);
 
-    const betaBid = unwrap(decideBid(
-      snapshot.state,
-      'beta',
-      20,
-      'I should break the tie now.',
-      SESSION_ID,
-      PROJECT_ROOT,
-      input.topic,
-      nextSeq(snapshot),
-      NOW,
-    ));
+    const betaBid = unwrap(
+      decideBid(
+        snapshot.state,
+        'beta',
+        20,
+        'I should break the tie now.',
+        SESSION_ID,
+        PROJECT_ROOT,
+        input.topic,
+        nextSeq(snapshot),
+        NOW,
+      ),
+    );
     history.push(...betaBid);
     snapshot = replay(snapshot, betaBid);
 
-    const closed = unwrap(decideBidRoundClose(
-      snapshot.state,
-      SESSION_ID,
-      PROJECT_ROOT,
-      input.topic,
-      nextSeq(snapshot),
-      NOW,
-    ));
+    const closed = unwrap(
+      decideBidRoundClose(snapshot.state, SESSION_ID, PROJECT_ROOT, input.topic, nextSeq(snapshot), NOW),
+    );
     history.push(...closed);
     snapshot = replay(snapshot, closed);
 
-    const speech = unwrap(decideSpeech(
-      snapshot.state,
-      'beta',
-      'I will open the discussion.',
-      SESSION_ID,
-      PROJECT_ROOT,
-      input.topic,
-      nextSeq(snapshot),
-      NOW,
-    ));
+    const speech = unwrap(
+      decideSpeech(
+        snapshot.state,
+        'beta',
+        'I will open the discussion.',
+        SESSION_ID,
+        PROJECT_ROOT,
+        input.topic,
+        nextSeq(snapshot),
+        NOW,
+      ),
+    );
     history.push(...speech);
 
     const fullReplay = replay(undefined, history);
@@ -174,37 +158,42 @@ describe('discuss reducer', () => {
       },
     };
 
-    snapshot = replay(snapshot, unwrap(decideBid(
-      snapshot.state,
-      'alpha',
-      10,
-      'Not enough urgency.',
-      SESSION_ID,
-      PROJECT_ROOT,
-      input.topic,
-      nextSeq(snapshot),
-      NOW,
-    )));
-    snapshot = replay(snapshot, unwrap(decideBid(
-      snapshot.state,
-      'beta',
-      20,
-      'Still below threshold.',
-      SESSION_ID,
-      PROJECT_ROOT,
-      input.topic,
-      nextSeq(snapshot),
-      NOW,
-    )));
+    snapshot = replay(
+      snapshot,
+      unwrap(
+        decideBid(
+          snapshot.state,
+          'alpha',
+          10,
+          'Not enough urgency.',
+          SESSION_ID,
+          PROJECT_ROOT,
+          input.topic,
+          nextSeq(snapshot),
+          NOW,
+        ),
+      ),
+    );
+    snapshot = replay(
+      snapshot,
+      unwrap(
+        decideBid(
+          snapshot.state,
+          'beta',
+          20,
+          'Still below threshold.',
+          SESSION_ID,
+          PROJECT_ROOT,
+          input.topic,
+          nextSeq(snapshot),
+          NOW,
+        ),
+      ),
+    );
 
-    const terminalBatch = unwrap(decideBidRoundClose(
-      snapshot.state,
-      SESSION_ID,
-      PROJECT_ROOT,
-      input.topic,
-      nextSeq(snapshot),
-      NOW,
-    ));
+    const terminalBatch = unwrap(
+      decideBidRoundClose(snapshot.state, SESSION_ID, PROJECT_ROOT, input.topic, nextSeq(snapshot), NOW),
+    );
     const ended = replay(snapshot, terminalBatch);
 
     expect(terminalBatch.map((event) => event.kind)).toEqual(['bid.round.closed', 'session.ended']);
@@ -245,14 +234,7 @@ describe('discuss reducer', () => {
         ...baseSnapshot,
         state: biddingState,
       },
-      unwrap(decideBidRoundClose(
-        biddingState,
-        SESSION_ID,
-        PROJECT_ROOT,
-        input.topic,
-        3,
-        NOW,
-      )),
+      unwrap(decideBidRoundClose(biddingState, SESSION_ID, PROJECT_ROOT, input.topic, 3, NOW)),
     );
 
     expect(snapshot.state.status).toBe('bidding');
@@ -272,24 +254,27 @@ describe('discuss reducer', () => {
       user: { manual: true },
     });
 
-    const afterBound = replayDiscussEvents([
-      makeEvent(SESSION_ID, PROJECT_ROOT, input.topic, 3, 'agent.run.bound', NOW, {
-        agent: 'alpha',
-        executionSessionId: 'exec-1',
-      }),
-      makeEvent(SESSION_ID, PROJECT_ROOT, input.topic, 4, 'agent.job.started', NOW, {
-        agent: 'alpha',
-        jobId: 'job-1',
-        purpose: 'bid',
-        attempt: 2,
-      }),
-      makeEvent(SESSION_ID, PROJECT_ROOT, input.topic, 5, 'agent.job.finished', NOW, {
-        agent: 'alpha',
-        jobId: 'job-1',
-        outcome: 'retryable_parse_error',
-        attempt: 2,
-      }),
-    ], created);
+    const afterBound = replayDiscussEvents(
+      [
+        makeEvent(SESSION_ID, PROJECT_ROOT, input.topic, 3, 'agent.run.bound', NOW, {
+          agent: 'alpha',
+          executionSessionId: 'exec-1',
+        }),
+        makeEvent(SESSION_ID, PROJECT_ROOT, input.topic, 4, 'agent.job.started', NOW, {
+          agent: 'alpha',
+          jobId: 'job-1',
+          purpose: 'bid',
+          attempt: 2,
+        }),
+        makeEvent(SESSION_ID, PROJECT_ROOT, input.topic, 5, 'agent.job.finished', NOW, {
+          agent: 'alpha',
+          jobId: 'job-1',
+          outcome: 'retryable_parse_error',
+          attempt: 2,
+        }),
+      ],
+      created,
+    );
 
     expect(created.runtime.agentRuns).toEqual({
       alpha: {

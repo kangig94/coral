@@ -30,25 +30,49 @@ describe('DiscussContext lifecycle boundaries', () => {
     const registry = createDiscussContextRegistry();
     const context = getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
 
-    const liveSnapshot = await persistSession({ ...harness, context }, {
-      sessionId: 'live-session',
-      recover: false,
-    });
+    const liveSnapshot = await persistSession(
+      { ...harness, context },
+      {
+        sessionId: 'live-session',
+        recover: false,
+      },
+    );
     attachPersistedSession({ ...harness, context }, liveSnapshot);
-    await persistSession({ ...harness, context }, {
-      sessionId: 'ended-session',
-      recover: false,
-      buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'session.ended', '2026-03-10T00:01:00.000Z', { endReason: 'all_blocked', endReasonContent: 'All blocked.' }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'session.synthesized', '2026-03-10T00:01:01.000Z', { synthesis: 'done' }),
-      ],
-    });
+    await persistSession(
+      { ...harness, context },
+      {
+        sessionId: 'ended-session',
+        recover: false,
+        buildTail: (snapshot) => [
+          makeEvent(
+            snapshot.sessionId,
+            harness.projectRoot,
+            snapshot.state.topic,
+            snapshot.lastAppliedSeq + 1,
+            'session.ended',
+            '2026-03-10T00:01:00.000Z',
+            { endReason: 'all_blocked', endReasonContent: 'All blocked.' },
+          ),
+          makeEvent(
+            snapshot.sessionId,
+            harness.projectRoot,
+            snapshot.state.topic,
+            snapshot.lastAppliedSeq + 2,
+            'session.synthesized',
+            '2026-03-10T00:01:01.000Z',
+            { synthesis: 'done' },
+          ),
+        ],
+      },
+    );
 
     expect(listAttachedSessions(registry).map((session) => session.sessionId)).toEqual(['live-session']);
-    expect(harness.store.listSummaries().map((summary) => summary.sessionId).sort()).toEqual([
-      'ended-session',
-      'live-session',
-    ]);
+    expect(
+      harness.store
+        .listSummaries()
+        .map((summary) => summary.sessionId)
+        .sort(),
+    ).toEqual(['ended-session', 'live-session']);
 
     detachSession(context, 'live-session');
     expect(hasRunningSessions(registry)).toBe(false);
@@ -63,8 +87,24 @@ describe('DiscussContext lifecycle boundaries', () => {
       sessionId: 'ended-session',
       recover: false,
       buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'session.ended', '2026-03-10T00:01:00.000Z', { endReason: 'all_blocked', endReasonContent: 'All blocked.' }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'session.synthesized', '2026-03-10T00:01:01.000Z', { synthesis: 'done' }),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'session.ended',
+          '2026-03-10T00:01:00.000Z',
+          { endReason: 'all_blocked', endReasonContent: 'All blocked.' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 2,
+          'session.synthesized',
+          '2026-03-10T00:01:01.000Z',
+          { synthesis: 'done' },
+        ),
       ],
     });
 
@@ -78,37 +118,70 @@ describe('DiscussContext lifecycle boundaries', () => {
     const registry = createDiscussContextRegistry();
     const context = getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
 
-    const liveSnapshot = await persistSession({ ...harness, context }, {
-      sessionId: 'live-session',
-      recover: false,
-    });
+    const liveSnapshot = await persistSession(
+      { ...harness, context },
+      {
+        sessionId: 'live-session',
+        recover: false,
+      },
+    );
     attachPersistedSession({ ...harness, context }, liveSnapshot);
 
-    const synthSnapshot = await persistSession({ ...harness, context }, {
-      sessionId: 'ended-synthesize-session',
-      recover: false,
-      buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'session.ended', '2026-03-10T00:01:00.000Z', {
-          endReason: 'all_blocked',
-          endReasonContent: 'All blocked.',
-        }),
-      ],
-    });
+    const synthSnapshot = await persistSession(
+      { ...harness, context },
+      {
+        sessionId: 'ended-synthesize-session',
+        recover: false,
+        buildTail: (snapshot) => [
+          makeEvent(
+            snapshot.sessionId,
+            harness.projectRoot,
+            snapshot.state.topic,
+            snapshot.lastAppliedSeq + 1,
+            'session.ended',
+            '2026-03-10T00:01:00.000Z',
+            {
+              endReason: 'all_blocked',
+              endReasonContent: 'All blocked.',
+            },
+          ),
+        ],
+      },
+    );
     attachPersistedSession({ ...harness, context }, synthSnapshot);
 
-    const terminalSnapshot = await persistSession({ ...harness, context }, {
-      sessionId: 'terminal-ended-session',
-      recover: false,
-      buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'session.ended', '2026-03-10T00:02:00.000Z', {
-          endReason: 'all_blocked',
-          endReasonContent: 'All blocked.',
-        }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'session.synthesized', '2026-03-10T00:02:01.000Z', {
-          synthesis: 'done',
-        }),
-      ],
-    });
+    const terminalSnapshot = await persistSession(
+      { ...harness, context },
+      {
+        sessionId: 'terminal-ended-session',
+        recover: false,
+        buildTail: (snapshot) => [
+          makeEvent(
+            snapshot.sessionId,
+            harness.projectRoot,
+            snapshot.state.topic,
+            snapshot.lastAppliedSeq + 1,
+            'session.ended',
+            '2026-03-10T00:02:00.000Z',
+            {
+              endReason: 'all_blocked',
+              endReasonContent: 'All blocked.',
+            },
+          ),
+          makeEvent(
+            snapshot.sessionId,
+            harness.projectRoot,
+            snapshot.state.topic,
+            snapshot.lastAppliedSeq + 2,
+            'session.synthesized',
+            '2026-03-10T00:02:01.000Z',
+            {
+              synthesis: 'done',
+            },
+          ),
+        ],
+      },
+    );
     attachPersistedSession({ ...harness, context }, terminalSnapshot);
 
     const liveSession = context.sessions.get('live-session');
@@ -145,10 +218,13 @@ describe('DiscussContext lifecycle boundaries', () => {
     const registry = createDiscussContextRegistry();
     const context = getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
 
-    const liveSnapshot = await persistSession({ ...harness, context }, {
-      sessionId: 'handoff-session',
-      recover: false,
-    });
+    const liveSnapshot = await persistSession(
+      { ...harness, context },
+      {
+        sessionId: 'handoff-session',
+        recover: false,
+      },
+    );
     attachPersistedSession({ ...harness, context }, liveSnapshot);
 
     const liveSession = context.sessions.get('handoff-session');
@@ -168,10 +244,18 @@ describe('DiscussContext lifecycle boundaries', () => {
       sessionId: 'stale-retry-session',
       recover: false,
       buildTail: (current) => [
-        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 1, 'session.ended', '2026-03-10T00:03:00.000Z', {
-          endReason: 'all_blocked',
-          endReasonContent: 'All blocked.',
-        }),
+        makeEvent(
+          current.sessionId,
+          harness.projectRoot,
+          current.state.topic,
+          current.lastAppliedSeq + 1,
+          'session.ended',
+          '2026-03-10T00:03:00.000Z',
+          {
+            endReason: 'all_blocked',
+            endReasonContent: 'All blocked.',
+          },
+        ),
       ],
     });
     attachPersistedSession(harness, snapshot);
@@ -191,9 +275,17 @@ describe('DiscussContext lifecycle boundaries', () => {
           throw new Error(`Session not found: ${sessionId}`);
         }
         await originalAppend(sessionId, current.lastAppliedSeq, [
-          makeEvent(sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 1, 'session.synthesized', '2026-03-10T00:03:01.000Z', {
-            synthesis: 'done',
-          }),
+          makeEvent(
+            sessionId,
+            harness.projectRoot,
+            current.state.topic,
+            current.lastAppliedSeq + 1,
+            'session.synthesized',
+            '2026-03-10T00:03:01.000Z',
+            {
+              synthesis: 'done',
+            },
+          ),
         ]);
       }
       return originalAppend(sessionId, expectedSeq, events);

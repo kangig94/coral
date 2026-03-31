@@ -2,13 +2,14 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync }
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as NodeOs from 'node:os';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
 }));
 
 vi.mock('node:os', async () => {
-  const actual = await vi.importActual<typeof import('node:os')>('node:os');
+  const actual = await vi.importActual<typeof NodeOs>('node:os');
   return {
     ...actual,
     homedir: () => mockState.tmpHome,
@@ -17,10 +18,7 @@ vi.mock('node:os', async () => {
 
 async function loadMemoModules() {
   vi.resetModules();
-  const [memo, paths] = await Promise.all([
-    import('../memo.js'),
-    import('../paths.js'),
-  ]);
+  const [memo, paths] = await Promise.all([import('../memo.js'), import('../paths.js')]);
   return { ...memo, paths };
 }
 
@@ -46,13 +44,17 @@ describe('kb memo operations', () => {
     const timestampedMemo = join(dir, '20260323-010203-alpha.md');
     const legacyMemo = join(dir, 'legacy.md');
 
-    writeFileSync(timestampedMemo, `---
+    writeFileSync(
+      timestampedMemo,
+      `---
 source: local/project
 ---
 
 First summary line
 Second line
-`, 'utf-8');
+`,
+      'utf-8',
+    );
     writeFileSync(legacyMemo, '\nLegacy summary\nSecond line\n', 'utf-8');
 
     const timestampedTime = new Date('2026-03-23T01:02:03.000Z');

@@ -7,11 +7,7 @@ import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared
 import { CURATE_STATE_FILE } from './curate-state.js';
 import { loadKbLanceDb } from './lancedb-runtime.js';
 import { writeFileAtomic } from './mutation-helpers.js';
-import {
-  createOramaDb,
-  type KbOramaDb,
-  type KbOramaTokenizer,
-} from './orama-factory.js';
+import { createOramaDb, type KbOramaDb, type KbOramaTokenizer } from './orama-factory.js';
 import {
   notePathFromName,
   notesDir as pathsNotesDir,
@@ -92,26 +88,18 @@ function parseIndex(value: unknown): KbIndex {
       throw new Error('Invalid KB index');
     }
 
-    const {
-      title,
-      tags,
-      principles,
-      source,
-      createdAt,
-      updatedAt,
-      mutationSeqAtPromote,
-    } = rawMeta;
+    const { title, tags, principles, source, createdAt, updatedAt, mutationSeqAtPromote } = rawMeta;
     if (
-      typeof title !== 'string'
-      || !isStringArray(tags)
-      || !isStringArray(principles)
-      || !isStringArray(source)
-      || typeof createdAt !== 'string'
-      || typeof updatedAt !== 'string'
-      || (
-        mutationSeqAtPromote !== undefined
-        && (typeof mutationSeqAtPromote !== 'number' || !Number.isInteger(mutationSeqAtPromote) || mutationSeqAtPromote < 1)
-      )
+      typeof title !== 'string' ||
+      !isStringArray(tags) ||
+      !isStringArray(principles) ||
+      !isStringArray(source) ||
+      typeof createdAt !== 'string' ||
+      typeof updatedAt !== 'string' ||
+      (mutationSeqAtPromote !== undefined &&
+        (typeof mutationSeqAtPromote !== 'number' ||
+          !Number.isInteger(mutationSeqAtPromote) ||
+          mutationSeqAtPromote < 1))
     ) {
       throw new Error('Invalid KB index');
     }
@@ -318,7 +306,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
         try {
           await rebuildTextArtifacts(kbRuntime, startSeq);
         } catch (error: unknown) {
-          throw new Error(`KB text search is unavailable: ${errorMessage(error)}`);
+          throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
         }
       } else if (cachedOramaIndex === null) {
         try {
@@ -327,7 +315,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
           try {
             await rebuildTextArtifacts(kbRuntime, startSeq);
           } catch (error: unknown) {
-            throw new Error(`KB text search is unavailable: ${errorMessage(error)}`);
+            throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
           }
         }
       }

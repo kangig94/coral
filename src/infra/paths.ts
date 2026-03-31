@@ -18,7 +18,10 @@ function fallbackProjectSource(projectRoot: string): string {
 }
 
 function parseRemoteSource(remote: string): string | null {
-  const normalized = remote.trim().replace(/\/+$/, '').replace(/\.git$/, '');
+  const normalized = remote
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\.git$/, '');
   if (!normalized) return null;
 
   const sshPath = normalized.match(/^[^@]+@[^:]+:(.+)$/)?.[1];

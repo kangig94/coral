@@ -52,9 +52,7 @@ export function buildKernel(pool: string[][], sigma: number): number[][] {
 }
 
 function identityMatrix(size: number): number[][] {
-  return Array.from({ length: size }, (_, r) =>
-    Array.from({ length: size }, (_, c) => (r === c ? 1 : 0)),
-  );
+  return Array.from({ length: size }, (_, r) => Array.from({ length: size }, (_, c) => (r === c ? 1 : 0)));
 }
 
 export function eigendecompose(matrix: number[][]): { eigenvalues: number[]; eigenvectors: number[][] } {
@@ -100,8 +98,8 @@ export function eigendecompose(matrix: number[][]): { eigenvalues: number[]; eig
       a[q][i] = a[i][q];
     }
 
-    a[p][p] = (cos * cos * app) - (2 * sin * cos * apq) + (sin * sin * aqq);
-    a[q][q] = (sin * sin * app) + (2 * sin * cos * apq) + (cos * cos * aqq);
+    a[p][p] = cos * cos * app - 2 * sin * cos * apq + sin * sin * aqq;
+    a[q][q] = sin * sin * app + 2 * sin * cos * apq + cos * cos * aqq;
     a[p][q] = 0;
     a[q][p] = 0;
 
@@ -134,7 +132,7 @@ function computeEsp(eigenvalues: number[], k: number): number[][] {
 
   for (let l = 1; l <= k; l += 1) {
     for (let i = 1; i <= n; i += 1) {
-      esp[l][i] = esp[l][i - 1] + (Math.max(0, eigenvalues[i - 1]) * esp[l - 1][i - 1]);
+      esp[l][i] = esp[l][i - 1] + Math.max(0, eigenvalues[i - 1]) * esp[l - 1][i - 1];
     }
   }
   return esp;
@@ -180,12 +178,7 @@ function orthonormalizeColumns(columns: number[][], forceZeroRow: number): numbe
   return basis;
 }
 
-export function sampleKDpp(
-  eigenvalues: number[],
-  eigenvectors: number[][],
-  k: number,
-  rng: () => number,
-): number[] {
+export function sampleKDpp(eigenvalues: number[], eigenvectors: number[][], k: number, rng: () => number): number[] {
   if (k <= 0 || eigenvalues.length === 0) return [];
 
   const n = eigenvalues.length;
@@ -243,7 +236,7 @@ export function sampleKDpp(
       const factor = col[chosen] / pivot[chosen];
       const nextCol = new Array<number>(n);
       for (let r = 0; r < n; r += 1) {
-        nextCol[r] = col[r] - (factor * pivot[r]);
+        nextCol[r] = col[r] - factor * pivot[r];
       }
       nextCol[chosen] = 0;
       reduced.push(nextCol);

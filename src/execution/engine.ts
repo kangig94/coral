@@ -12,7 +12,10 @@ const SIGTERM_GRACE_MS = 5_000; // grace period before escalating to SIGKILL
 
 export const MAX_ACTIVE_SESSIONS = Math.min(Math.max(parsePositiveInt(process.env.CORAL_MAX_SESSIONS, 10), 1), 10);
 export type LaunchPool = 'default' | 'discuss' | 'curate';
-export const DISCUSS_MAX_ACTIVE_SESSIONS = Math.min(Math.max(parsePositiveInt(process.env.CORAL_DISCUSS_MAX_SESSIONS, 5), 1), 10);
+export const DISCUSS_MAX_ACTIVE_SESSIONS = Math.min(
+  Math.max(parsePositiveInt(process.env.CORAL_DISCUSS_MAX_SESSIONS, 5), 1),
+  10,
+);
 export const CURATE_MAX_ACTIVE_SESSIONS = 1;
 const MAX_QUEUE_SIZE = 20;
 
@@ -274,7 +277,9 @@ export type SpawnDurableJobOptions = SpawnCliOptions & {
 
 export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
   const pool = options.pool ?? 'default';
-  const usingReservedPermit = options.permitGranted || (options.signal ? consumeSignalPermit(options.signal, options.provider) : false);
+  const usingReservedPermit =
+    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- boolean OR: false must fall through
+    options.permitGranted || (options.signal ? consumeSignalPermit(options.signal, options.provider) : false);
   let internalPermitJobId: string | null = null;
 
   if (!usingReservedPermit) {
@@ -283,12 +288,14 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
     const globalActive = activeLaunches.size;
     const globalLimit = getActiveLimit(pool);
     if (queuedLaunches.length > 0 || globalActive >= globalLimit) {
-      return Promise.reject(new CliBusyError({
-        error: 'busy',
-        provider: options.provider,
-        globalActive,
-        globalLimit,
-      }));
+      return Promise.reject(
+        new CliBusyError({
+          error: 'busy',
+          provider: options.provider,
+          globalActive,
+          globalLimit,
+        }),
+      );
     }
     internalPermitJobId = `spawncli-${randomUUID()}`;
     activeLaunches.set(internalPermitJobId, options.provider);
@@ -300,6 +307,7 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
 
     const child = spawn(options.command, options.args, {
       stdio: ['pipe', 'pipe', 'pipe'],
+      // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- empty string is not a valid cwd
       cwd: options.cwd || undefined,
       shell: process.platform === 'win32',
       env: { ...process.env, ...options.extraEnv, CORAL_CHILD: '1' },
@@ -379,6 +387,7 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
       if (options.onEvent) {
         lineBuffer += chunk;
         const parts = lineBuffer.split('\n');
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- split() always returns at least one element
         lineBuffer = parts.pop()!;
         for (const line of parts) {
           if (line.trim()) options.onEvent(line);
@@ -530,23 +539,14 @@ export async function spawnDurableWrapper(options: DurableSpawnOptions): Promise
   const { command, args, prompt, cwd, jobDir, env: extraEnv } = options;
 
   const mergedEnv: Record<string, string> = {
-    ...process.env as Record<string, string>,
+    ...(process.env as Record<string, string>),
     ...extraEnv,
     CORAL_CHILD: '1',
   };
 
   const wrapper = spawn(
     process.execPath,
-    [
-      '-e',
-      WRAPPER_SCRIPT,
-      jobDir,
-      command,
-      JSON.stringify(args),
-      JSON.stringify(mergedEnv),
-      cwd ?? '',
-      prompt ?? '',
-    ],
+    ['-e', WRAPPER_SCRIPT, jobDir, command, JSON.stringify(args), JSON.stringify(mergedEnv), cwd ?? '', prompt ?? ''],
     {
       detached: true,
       stdio: ['ignore', 'ignore', 'ignore'],
@@ -580,7 +580,9 @@ export async function spawnDurableWrapper(options: DurableSpawnOptions): Promise
     await new Promise<void>((resolve) => setTimeout(resolve, DURABLE_POLL_INTERVAL_MS));
   }
 
-  throw new Error(`Durable wrapper failed to write runtime.json within ${DURABLE_POLL_TIMEOUT_MS}ms (jobDir: ${jobDir})`);
+  throw new Error(
+    `Durable wrapper failed to write runtime.json within ${DURABLE_POLL_TIMEOUT_MS}ms (jobDir: ${jobDir})`,
+  );
 }
 
 const DURABLE_RUNTIME_POLL_INTERVAL_MS = 500;
@@ -644,7 +646,9 @@ function writeRuntimeRecord(jobDir: string, record: PersistedRuntimeRecord): voi
 
 export async function spawnDurableJob(options: SpawnDurableJobOptions): Promise<CliExecResult> {
   const pool = options.pool ?? 'default';
-  const usingReservedPermit = options.permitGranted || (options.signal ? consumeSignalPermit(options.signal, options.provider) : false);
+  const usingReservedPermit =
+    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- boolean OR: false must fall through
+    options.permitGranted || (options.signal ? consumeSignalPermit(options.signal, options.provider) : false);
   let internalPermitJobId: string | null = null;
 
   if (!usingReservedPermit) {
@@ -653,12 +657,14 @@ export async function spawnDurableJob(options: SpawnDurableJobOptions): Promise<
     const globalActive = activeLaunches.size;
     const globalLimit = getActiveLimit(pool);
     if (queuedLaunches.length > 0 || globalActive >= globalLimit) {
-      return Promise.reject(new CliBusyError({
-        error: 'busy',
-        provider: options.provider,
-        globalActive,
-        globalLimit,
-      }));
+      return Promise.reject(
+        new CliBusyError({
+          error: 'busy',
+          provider: options.provider,
+          globalActive,
+          globalLimit,
+        }),
+      );
     }
     internalPermitJobId = `spawndurable-${randomUUID()}`;
     activeLaunches.set(internalPermitJobId, options.provider);
@@ -797,11 +803,7 @@ export function restoreActiveLaunch(jobId: string, provider: string, pool: Launc
 }
 
 /** Insert a queue entry at the tail. Recovery calls this in sequence order. */
-export function restoreQueuedLaunch(
-  jobId: string,
-  provider: string,
-  pool: LaunchPool = 'default',
-): QueuedHandle {
+export function restoreQueuedLaunch(jobId: string, provider: string, pool: LaunchPool = 'default'): QueuedHandle {
   const queuedLaunches = getQueue(pool);
 
   let resolve!: () => void;

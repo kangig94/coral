@@ -1,13 +1,4 @@
-import {
-  closeSync,
-  fdatasyncSync,
-  mkdirSync,
-  openSync,
-  renameSync,
-  statSync,
-  unlinkSync,
-  writeSync,
-} from 'node:fs';
+import { closeSync, fdatasyncSync, mkdirSync, openSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
   readDiscussSources,
@@ -31,11 +22,7 @@ import {
 } from '../../infra/paths.js';
 import { type DiscussSummaryDto } from '../../discuss/views.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../../discuss/events.js';
-import {
-  makeEmptySnapshot,
-  reduceDiscussEvent,
-  replayDiscussEvents,
-} from '../../discuss/reducer.js';
+import { makeEmptySnapshot, reduceDiscussEvent, replayDiscussEvents } from '../../discuss/reducer.js';
 
 const sessionAppendLocks = new Map<string, Promise<void>>();
 const projectDiscoveryLocks = new Map<string, Promise<void>>();
@@ -91,11 +78,7 @@ async function withPromiseChainLock<T>(
   }
 }
 
-function tryWithPromiseChainLockSync<T>(
-  locks: Map<string, Promise<void>>,
-  key: string,
-  work: () => T,
-): T | null {
+function tryWithPromiseChainLockSync<T>(locks: Map<string, Promise<void>>, key: string, work: () => T): T | null {
   if (locks.has(key)) {
     return null;
   }
@@ -138,14 +121,22 @@ function writeAtomicJson(filePath: string, value: unknown): void {
     fdatasyncSync(fd);
   } catch {
     closeSync(fd);
-    try { unlinkSync(tmpPath); } catch { /* best effort */ }
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      /* best effort */
+    }
     return;
   }
   closeSync(fd);
   try {
     renameSync(tmpPath, filePath);
   } catch {
-    try { unlinkSync(tmpPath); } catch { /* best effort */ }
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      /* best effort */
+    }
   }
 }
 
@@ -169,11 +160,7 @@ function appendEventBatch(logPath: string, events: DiscussDomainEvent[]): void {
   }
 }
 
-function validateAppendBatch(
-  sessionId: string,
-  lastAppliedSeq: number,
-  events: DiscussDomainEvent[],
-): void {
+function validateAppendBatch(sessionId: string, lastAppliedSeq: number, events: DiscussDomainEvent[]): void {
   let expectedSeq = lastAppliedSeq + 1;
   for (const event of events) {
     if (event.sessionId !== sessionId) {
@@ -186,10 +173,7 @@ function validateAppendBatch(
   }
 }
 
-function toDiscoverySession(
-  sessionDir: string,
-  snapshot: PersistedDiscussSnapshot,
-): DiscussDiscoverySession {
+function toDiscoverySession(sessionDir: string, snapshot: PersistedDiscussSnapshot): DiscussDiscoverySession {
   return {
     sessionId: snapshot.sessionId,
     topic: snapshot.state.topic,
@@ -198,10 +182,7 @@ function toDiscoverySession(
   };
 }
 
-function compareSummaryIndexRows(
-  left: DiscussSummaryIndexRow,
-  right: DiscussSummaryIndexRow,
-): number {
+function compareSummaryIndexRows(left: DiscussSummaryIndexRow, right: DiscussSummaryIndexRow): number {
   if (left.createdAt !== right.createdAt) {
     return left.createdAt.localeCompare(right.createdAt);
   }
@@ -212,15 +193,9 @@ function sortSummaryIndexRows(rows: DiscussSummaryIndexRow[]): DiscussSummaryInd
   return [...rows].sort(compareSummaryIndexRows);
 }
 
-function buildSummaryIndexData(
-  source: string,
-  rows: DiscussSummaryIndexRow[],
-): DiscussSummaryIndexData {
+function buildSummaryIndexData(source: string, rows: DiscussSummaryIndexRow[]): DiscussSummaryIndexData {
   const sessions = sortSummaryIndexRows(rows);
-  const updatedAt = sessions.reduce(
-    (latest, session) => (session.updatedAt > latest ? session.updatedAt : latest),
-    '',
-  );
+  const updatedAt = sessions.reduce((latest, session) => (session.updatedAt > latest ? session.updatedAt : latest), '');
 
   return {
     source,
@@ -229,29 +204,30 @@ function buildSummaryIndexData(
   };
 }
 
-function summaryIndexDataEquals(
-  left: DiscussSummaryIndexData | null,
-  right: DiscussSummaryIndexData,
-): boolean {
+function summaryIndexDataEquals(left: DiscussSummaryIndexData | null, right: DiscussSummaryIndexData): boolean {
   if (!left) {
     return false;
   }
-  if (left.source !== right.source
-    || left.updatedAt !== right.updatedAt
-    || left.sessions.length !== right.sessions.length) {
+  if (
+    left.source !== right.source ||
+    left.updatedAt !== right.updatedAt ||
+    left.sessions.length !== right.sessions.length
+  ) {
     return false;
   }
 
   return left.sessions.every((session, index) => {
     const expected = right.sessions[index];
-    return session.sessionId === expected.sessionId
-      && session.projectRoot === expected.projectRoot
-      && session.topic === expected.topic
-      && session.status === expected.status
-      && session.createdAt === expected.createdAt
-      && session.agentCount === expected.agentCount
-      && session.updatedAt === expected.updatedAt
-      && session.lastSeq === expected.lastSeq;
+    return (
+      session.sessionId === expected.sessionId &&
+      session.projectRoot === expected.projectRoot &&
+      session.topic === expected.topic &&
+      session.status === expected.status &&
+      session.createdAt === expected.createdAt &&
+      session.agentCount === expected.agentCount &&
+      session.updatedAt === expected.updatedAt &&
+      session.lastSeq === expected.lastSeq
+    );
   });
 }
 
@@ -308,47 +284,40 @@ export class DiscussSessionStore {
     expectedSeq: number | null,
     events: DiscussDomainEvent[],
   ): Promise<PersistedDiscussSnapshot> {
-    return withPromiseChainLock(
-      sessionAppendLocks,
-      sessionLockKey(this.source, sessionId),
-      async () => {
-        const sessionDir = discussSessionDirForSource(this.source, sessionId);
-        const logPath = discussEventLogPath(sessionDir);
-        const statePath = discussStatePath(sessionDir);
+    return withPromiseChainLock(sessionAppendLocks, sessionLockKey(this.source, sessionId), async () => {
+      const sessionDir = discussSessionDirForSource(this.source, sessionId);
+      const logPath = discussEventLogPath(sessionDir);
+      const statePath = discussStatePath(sessionDir);
 
-        mkdirSync(sessionDir, { recursive: true });
+      mkdirSync(sessionDir, { recursive: true });
 
-        const currentSnapshot = this.loadFromSessionDir(sessionId, sessionDir)
-          ?? makeEmptySnapshot(sessionId, events[0]?.projectRoot ?? '');
+      const currentSnapshot =
+        this.loadFromSessionDir(sessionId, sessionDir) ?? makeEmptySnapshot(sessionId, events[0]?.projectRoot ?? '');
 
-        if (expectedSeq !== null && expectedSeq !== currentSnapshot.lastAppliedSeq) {
-          throw new DiscussStaleWriteError(expectedSeq, currentSnapshot.lastAppliedSeq);
-        }
+      if (expectedSeq !== null && expectedSeq !== currentSnapshot.lastAppliedSeq) {
+        throw new DiscussStaleWriteError(expectedSeq, currentSnapshot.lastAppliedSeq);
+      }
 
-        if (events.length === 0) {
-          return currentSnapshot;
-        }
+      if (events.length === 0) {
+        return currentSnapshot;
+      }
 
-        validateAppendBatch(sessionId, currentSnapshot.lastAppliedSeq, events);
+      validateAppendBatch(sessionId, currentSnapshot.lastAppliedSeq, events);
 
-        appendEventBatch(logPath, events);
-        const logByteOffset = statSync(logPath).size;
+      appendEventBatch(logPath, events);
+      const logByteOffset = statSync(logPath).size;
 
-        const nextSnapshot = events.reduce(
-          (snapshot, event) => reduceDiscussEvent(snapshot, event),
-          currentSnapshot,
-        );
-        nextSnapshot.logByteOffset = logByteOffset;
+      const nextSnapshot = events.reduce((snapshot, event) => reduceDiscussEvent(snapshot, event), currentSnapshot);
+      nextSnapshot.logByteOffset = logByteOffset;
 
-        writeAtomicJson(statePath, nextSnapshot);
+      writeAtomicJson(statePath, nextSnapshot);
 
-        this.pendingSnapshots.set(sessionId, { sessionDir, snapshot: nextSnapshot });
-        this.markIndexesDirty();
+      this.pendingSnapshots.set(sessionId, { sessionDir, snapshot: nextSnapshot });
+      this.markIndexesDirty();
 
-        this.onCommit?.(nextSnapshot, events);
-        return nextSnapshot;
-      },
-    );
+      this.onCommit?.(nextSnapshot, events);
+      return nextSnapshot;
+    });
   }
 
   listSummaries(): DiscussSummaryDto[] {
@@ -455,19 +424,15 @@ export class DiscussSessionStore {
           (latest, { snapshot }) => (snapshot.updatedAt > latest.updatedAt ? snapshot : latest),
           { updatedAt: '' } as { updatedAt: string },
         );
-        const wroteSources = tryWithPromiseChainLockSync(
-          discussSourcesRegistryLocks,
-          discussSourcesPath(),
-          () => {
-            const sources = new Set(readDiscussSources());
-            sources.add(this.source);
-            writeAtomicJson(discussSourcesPath(), {
-              updatedAt: latestSnapshot.updatedAt,
-              sources: [...sources].sort(),
-            });
-            return true;
-          },
-        );
+        const wroteSources = tryWithPromiseChainLockSync(discussSourcesRegistryLocks, discussSourcesPath(), () => {
+          const sources = new Set(readDiscussSources());
+          sources.add(this.source);
+          writeAtomicJson(discussSourcesPath(), {
+            updatedAt: latestSnapshot.updatedAt,
+            sources: [...sources].sort(),
+          });
+          return true;
+        });
         if (wroteSources !== null) {
           this.dirtySources = false;
         }
@@ -500,10 +465,7 @@ export class DiscussSessionStore {
     }
   }
 
-  private loadFromSessionDir(
-    sessionId: string,
-    sessionDir: string,
-  ): PersistedDiscussSnapshot | null {
+  private loadFromSessionDir(sessionId: string, sessionDir: string): PersistedDiscussSnapshot | null {
     const statePath = discussStatePath(sessionDir);
     const logPath = discussEventLogPath(sessionDir);
     const snapshot = this.readSessionSnapshot(sessionId, statePath);
@@ -520,9 +482,7 @@ export class DiscussSessionStore {
     }
 
     // Fallback: read log and replay (crash recovery, legacy snapshots without logByteOffset, stat failure)
-    const eventLog = readDiscussEventLog(logPath).filter((event) =>
-      event.sessionId === sessionId,
-    );
+    const eventLog = readDiscussEventLog(logPath).filter((event) => event.sessionId === sessionId);
 
     if (snapshot) {
       const tailEvents = eventLog.filter((event) => event.seq > snapshot.lastAppliedSeq);
@@ -539,10 +499,7 @@ export class DiscussSessionStore {
     return replayDiscussEvents(eventLog, makeEmptySnapshot(sessionId, eventLog[0]?.projectRoot ?? ''));
   }
 
-  private readSessionSnapshot(
-    sessionId: string,
-    statePath: string,
-  ): PersistedDiscussSnapshot | null {
+  private readSessionSnapshot(sessionId: string, statePath: string): PersistedDiscussSnapshot | null {
     const snapshot = readDiscussSnapshot(statePath);
     if (!snapshot) {
       return null;
@@ -579,18 +536,14 @@ export class DiscussSessionStore {
   private persistPersistedSummaryRepair(repair: PersistedSummaryRepair): boolean {
     const currentIndex = readDiscussSummaryIndexForSource(this.source);
     if (!summaryIndexDataEquals(currentIndex, repair.index)) {
-      const wroteSummaryIndex = tryWithPromiseChainLockSync(
-        projectDiscoveryLocks,
-        this.source,
-        () => {
-          const latestIndex = readDiscussSummaryIndexForSource(this.source);
-          if (summaryIndexDataEquals(latestIndex, repair.index)) {
-            return true;
-          }
-          writeAtomicJson(discussSummaryIndexPathForSource(this.source), repair.index);
+      const wroteSummaryIndex = tryWithPromiseChainLockSync(projectDiscoveryLocks, this.source, () => {
+        const latestIndex = readDiscussSummaryIndexForSource(this.source);
+        if (summaryIndexDataEquals(latestIndex, repair.index)) {
           return true;
-        },
-      );
+        }
+        writeAtomicJson(discussSummaryIndexPathForSource(this.source), repair.index);
+        return true;
+      });
       if (wroteSummaryIndex === null) {
         return false;
       }
@@ -600,22 +553,18 @@ export class DiscussSessionStore {
       return true;
     }
 
-    const updatedRegistry = tryWithPromiseChainLockSync(
-      discussSourcesRegistryLocks,
-      discussSourcesPath(),
-      () => {
-        const sources = new Set(readDiscussSources());
-        if (sources.has(this.source)) {
-          return true;
-        }
-        sources.add(this.source);
-        writeAtomicJson(discussSourcesPath(), {
-          updatedAt: repair.index.updatedAt,
-          sources: [...sources].sort(),
-        });
+    const updatedRegistry = tryWithPromiseChainLockSync(discussSourcesRegistryLocks, discussSourcesPath(), () => {
+      const sources = new Set(readDiscussSources());
+      if (sources.has(this.source)) {
         return true;
-      },
-    );
+      }
+      sources.add(this.source);
+      writeAtomicJson(discussSourcesPath(), {
+        updatedAt: repair.index.updatedAt,
+        sources: [...sources].sort(),
+      });
+      return true;
+    });
 
     return updatedRegistry !== null;
   }

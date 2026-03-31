@@ -8,7 +8,13 @@ import { extractProgressMessage } from './progress.js';
 import { readAppendedLines } from '../../shared/file-tail.js';
 import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
 import { mapProviderResultBase } from '../result-mapping.js';
-import { makeOnEvent, requireConversationRef, type Provider, type ProviderRecoveryContract, type ProviderRuntime } from '../types.js';
+import {
+  makeOnEvent,
+  requireConversationRef,
+  type Provider,
+  type ProviderRecoveryContract,
+  type ProviderRuntime,
+} from '../types.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 import type { CodexThreadEvent } from './types.js';
 
@@ -36,7 +42,7 @@ function toProviderResult(result: CodexRawResult, fallbackConversationRef?: stri
   return {
     ...mapProviderResultBase(result),
     conversationRef: result.sessionId ?? fallbackConversationRef,
-    nonResumable: result.sessionId == null ? true : undefined,
+    nonResumable: result.sessionId === null || result.sessionId === undefined ? true : undefined,
     exitCode: result.exitCode,
     errors: result.errors.length > 0 ? result.errors : undefined,
     warnings: result.warnings.length > 0 ? result.warnings : undefined,
@@ -111,6 +117,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
     bypassSandbox: request.bypassPermissions,
     onEvent: makeOnEvent(runtime, request.sessionId, extractProgressMessage, request.cwd),
     runCli: runtime.runCli,
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- always set by preflight() before execute()
     preChecked: lastValidatedCli!,
     environment: request.coralEnv,
   };

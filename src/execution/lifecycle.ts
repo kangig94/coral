@@ -11,11 +11,7 @@
 import type { Server, ServerResponse } from 'node:http';
 import { readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import {
-  formatError,
-  isNoEntryError,
-  isRecord,
-} from '../shared/mcp-utils.js';
+import { formatError, isNoEntryError, isRecord } from '../shared/mcp-utils.js';
 import { kbRoot } from '../infra/paths.js';
 import { activeChildren, spawnCli } from './engine.js';
 import { readBackendInfo, type writeBackendInfo, type removeBackendInfoIfOwner } from '../infra/backend-info.js';
@@ -28,19 +24,13 @@ import type { SessionIndex } from './session-index.js';
 import { SessionManager } from './session-manager.js';
 import type { DiscussContext } from './discuss/context.js';
 import type { DiscussSessionStore } from './discuss/session-store.js';
-import {
-  clearAllDiscuss,
-  hasRunningSessions,
-  type DiscussContextRegistry,
-} from './discuss/context-registry.js';
+import { clearAllDiscuss, hasRunningSessions, type DiscussContextRegistry } from './discuss/context-registry.js';
 import * as discussLoop from './discuss/loop.js';
 import * as discussOperations from './discuss/operations.js';
 import type { removeLockIfOwner } from './backend-lock.js';
 import { getNewProvider } from '../providers/registry.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
-import {
-  ExecutionService as DefaultExecutionService,
-} from './service.js';
+import { type ExecutionService as DefaultExecutionService } from './service.js';
 import {
   belongsToNamespace,
   isLivePhase,
@@ -54,15 +44,8 @@ import {
 import { createCurateScheduler } from '../kb/curate.js';
 import { kbRuntimeDir } from '../kb/paths.js';
 import { createKbRuntime } from '../kb/runtime.js';
-import type {
-  BackendIdentity,
-  MutableBackendRuntimeState,
-} from './backend-contracts.js';
-import type {
-  CreateKbSubsystemFn,
-  ExecutionServiceLike,
-  KbSubsystem,
-} from './tool-router.js';
+import type { BackendIdentity, MutableBackendRuntimeState } from './backend-contracts.js';
+import type { CreateKbSubsystemFn, ExecutionServiceLike, KbSubsystem } from './tool-router.js';
 import type { BackendServerInfo } from './server.js';
 
 // ---------------------------------------------------------------------------
@@ -74,8 +57,10 @@ export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
 export const SHUTDOWN_POLL_MS = 50;
 export const RECOVERY_POLL_MS = 500;
 export const ORPHANED_JOB_NOTICE = 'Unclean shutdown - orphaned job';
-export const OLD_FORMAT_NOTICE = 'Incompatible job format — missing durable launch record. Job predates the handoff recovery system.';
-export const GHOST_LAUNCH_NOTICE = 'Launch record exists but runtime.json was never written. The durable wrapper did not start successfully.';
+export const OLD_FORMAT_NOTICE =
+  'Incompatible job format — missing durable launch record. Job predates the handoff recovery system.';
+export const GHOST_LAUNCH_NOTICE =
+  'Launch record exists but runtime.json was never written. The durable wrapper did not start successfully.';
 
 // ---------------------------------------------------------------------------
 // ShutdownMode / RecoveryClass
@@ -100,7 +85,15 @@ export class StartupInterruptedError extends Error {
   }
 }
 
-export type RecoveryClass = 'incompatible' | 'queued' | 'running' | 'terminal' | 'incomplete' | 'stale_dead' | 'stale_running' | null;
+export type RecoveryClass =
+  | 'incompatible'
+  | 'queued'
+  | 'running'
+  | 'terminal'
+  | 'incomplete'
+  | 'stale_dead'
+  | 'stale_running'
+  | null;
 
 // ---------------------------------------------------------------------------
 // Standalone helpers (pure functions, no closure state)
@@ -138,10 +131,7 @@ export function waitForInflightDrain(idleTimer: IdleTimer, timeoutMs: number): P
   });
 }
 
-export function withBackendNamespace(
-  status: PersistedStatusRecord,
-  namespace: string,
-): PersistedStatusRecord {
+export function withBackendNamespace(status: PersistedStatusRecord, namespace: string): PersistedStatusRecord {
   return {
     ...status,
     backendNamespace: namespace,
@@ -214,10 +204,7 @@ export function readSessionRefs(shardDir: string): Array<{ sessionId: string; pr
  * - 'stale_running': launch.json exists, phase is launching/running, but runtime.json was never written
  * - null: unrecognized state
  */
-export function classifyRecoverableJob(
-  progressStore: ProgressStore,
-  jobId: string,
-): RecoveryClass {
+export function classifyRecoverableJob(progressStore: ProgressStore, jobId: string): RecoveryClass {
   const status = progressStore.readStatus(jobId);
   const hasLaunch = progressStore.hasLaunchRecord(jobId);
 
@@ -256,9 +243,8 @@ export function markJobAsError(
   notice: string,
   log: (message: string) => void,
 ): void {
-  const terminalResult: TerminalResult = status.jobKind === 'workflow'
-    ? { content: '', notice, workflow: { steps: [] } }
-    : { content: '', notice };
+  const terminalResult: TerminalResult =
+    status.jobKind === 'workflow' ? { content: '', notice, workflow: { steps: [] } } : { content: '', notice };
   progressStore.updateLaunchState(status.jobId, 'error', notice);
   if (status.jobKind === 'workflow') {
     try {
@@ -274,7 +260,11 @@ export function markJobAsError(
   }
 }
 
-export function recoverOrphanedJobs(progressStore: ProgressStore, namespace: string, log: (message: string) => void): void {
+export function recoverOrphanedJobs(
+  progressStore: ProgressStore,
+  namespace: string,
+  log: (message: string) => void,
+): void {
   for (const shardDir of SessionManager.listShards()) {
     try {
       const sessionManager = SessionManager.openShard(shardDir);
@@ -296,9 +286,7 @@ export function recoverOrphanedJobs(progressStore: ProgressStore, namespace: str
 
   for (const status of listLiveJobs(progressStore, namespace)) {
     try {
-      const notice = progressStore.hasLaunchRecord(status.jobId)
-        ? ORPHANED_JOB_NOTICE
-        : OLD_FORMAT_NOTICE;
+      const notice = progressStore.hasLaunchRecord(status.jobId) ? ORPHANED_JOB_NOTICE : OLD_FORMAT_NOTICE;
       markJobAsError(progressStore, status, notice, log);
       const sessionManager = new SessionManager(status.projectRoot);
       sessionManager.releaseJob(status.sessionId, status.jobId);
@@ -309,7 +297,11 @@ export function recoverOrphanedJobs(progressStore: ProgressStore, namespace: str
   }
 }
 
-export function cleanupStaleJobs(progressStore: ProgressStore, currentBundleHash: string, log: (message: string) => void): void {
+export function cleanupStaleJobs(
+  progressStore: ProgressStore,
+  currentBundleHash: string,
+  log: (message: string) => void,
+): void {
   for (const jobId of progressStore.listJobIds()) {
     const status = progressStore.readStatus(jobId);
     if (!status) continue;
@@ -365,8 +357,7 @@ export async function createKbSubsystem({
 /** Returns a URL-ready host: IPv6 addresses are wrapped in brackets. */
 export function resolveClientHost(bindHost: string): string {
   const override = process.env.CORAL_BACKEND_ADVERTISE_HOST;
-  const host = override
-    ?? (bindHost === '0.0.0.0' ? '127.0.0.1' : bindHost === '::' ? '::1' : bindHost);
+  const host = override ?? (bindHost === '0.0.0.0' ? '127.0.0.1' : bindHost === '::' ? '::1' : bindHost);
   return host.includes(':') ? `[${host}]` : host;
 }
 
@@ -414,7 +405,12 @@ export type LifecycleDeps = {
   readonly getDiscussContext: (ctx: CallerContext) => DiscussContext;
 
   // Backend info / lock lifecycle hooks
-  readonly acquireLockFn: (pluginRoot: string, instanceId: string, version: string, bundleHash: string) => Promise<void>;
+  readonly acquireLockFn: (
+    pluginRoot: string,
+    instanceId: string,
+    version: string,
+    bundleHash: string,
+  ) => Promise<void>;
   readonly writeBackendInfoFn: typeof writeBackendInfo;
   readonly removeBackendInfoIfOwnerFn: typeof removeBackendInfoIfOwner;
   readonly removeLockIfOwnerFn: typeof removeLockIfOwner;
@@ -468,7 +464,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     writeBackendInfoFn,
     removeBackendInfoIfOwnerFn,
     removeLockIfOwnerFn,
-    recoverOrphanedJobsFn,
+    recoverOrphanedJobsFn: _recoverOrphanedJobsFn,
     cleanupStaleJobsFn,
     markJobsAsErrorFn,
     killAllChildrenFn,
@@ -479,15 +475,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     onFatalShutdownError,
   } = deps;
 
-  const {
-    pluginRoot,
-    namespace,
-    version,
-    bundleHash,
-    instanceId,
-    now,
-    log,
-  } = identity;
+  const { pluginRoot, namespace, version, bundleHash, instanceId, now, log } = identity;
 
   let shutdownPromise: Promise<void> | null = null;
   let started = false;
@@ -593,7 +581,9 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
           try {
             process.kill(runtimeRecord.pid, 0);
             alive = true;
-          } catch { /* pid already exited */ }
+          } catch {
+            /* pid already exited */
+          }
 
           if (!alive) {
             clearInterval(pollInterval);
@@ -606,47 +596,71 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
 
               // Finalize from durable artifacts via provider recovery
               if (provider?.recovery) {
-                void provider.recovery.finalizeFromArtifacts({
-                  stdoutPath: runtimeRecord.stdoutPath,
-                  stderrPath: runtimeRecord.stderrPath,
-                  exitCode: exitRecord.exitCode,
-                  signal: exitRecord.signal,
-                  fallbackConversationRef: launchRecord.request.conversationRef,
-                }).then((result) => {
-                  const phase = result.aborted ? 'aborted' as const : 'completed' as const;
-                  service.completeRecoveredJob(jobId, launchRecord.sessionId, {
-                    content: result.content,
-                    durationMs: result.durationMs,
-                    aborted: result.aborted,
-                    nonResumable: result.nonResumable,
-                    exitCode: result.exitCode,
-                    notice: result.notice,
-                    errors: result.errors,
-                    warnings: result.warnings,
-                    usage: result.usage,
-                  }, phase, {
-                    conversationRef: result.conversationRef,
-                    nonResumable: result.nonResumable,
+                void provider.recovery
+                  .finalizeFromArtifacts({
+                    stdoutPath: runtimeRecord.stdoutPath,
+                    stderrPath: runtimeRecord.stderrPath,
+                    exitCode: exitRecord.exitCode,
+                    signal: exitRecord.signal,
+                    fallbackConversationRef: launchRecord.request.conversationRef,
+                  })
+                  .then((result) => {
+                    const phase = result.aborted ? ('aborted' as const) : ('completed' as const);
+                    service.completeRecoveredJob(
+                      jobId,
+                      launchRecord.sessionId,
+                      {
+                        content: result.content,
+                        durationMs: result.durationMs,
+                        aborted: result.aborted,
+                        nonResumable: result.nonResumable,
+                        exitCode: result.exitCode,
+                        notice: result.notice,
+                        errors: result.errors,
+                        warnings: result.warnings,
+                        usage: result.usage,
+                      },
+                      phase,
+                      {
+                        conversationRef: result.conversationRef,
+                        nonResumable: result.nonResumable,
+                      },
+                    );
+                  })
+                  .catch((recoverErr: unknown) => {
+                    log(`Provider recovery failed for job ${jobId}: ${formatError(recoverErr)}\n`);
+                    service.completeRecoveredJob(
+                      jobId,
+                      launchRecord.sessionId,
+                      {
+                        content: '',
+                        notice: `Provider recovery failed: ${formatError(recoverErr)}`,
+                      },
+                      'error',
+                    );
                   });
-                }).catch((recoverErr: unknown) => {
-                  log(`Provider recovery failed for job ${jobId}: ${formatError(recoverErr)}\n`);
-                  service.completeRecoveredJob(jobId, launchRecord.sessionId, {
-                    content: '',
-                    notice: `Provider recovery failed: ${formatError(recoverErr)}`,
-                  }, 'error');
-                });
               } else {
-                service.completeRecoveredJob(jobId, launchRecord.sessionId, {
-                  content: '',
-                  exitCode: exitRecord.exitCode,
-                }, exitRecord.exitCode === 0 ? 'completed' : 'error');
+                service.completeRecoveredJob(
+                  jobId,
+                  launchRecord.sessionId,
+                  {
+                    content: '',
+                    exitCode: exitRecord.exitCode,
+                  },
+                  exitRecord.exitCode === 0 ? 'completed' : 'error',
+                );
               }
             } else {
               // PID dead + no exit.json = wrapper lost
-              service.completeRecoveredJob(jobId, launchRecord.sessionId, {
-                content: '',
-                notice: 'Wrapper process lost — no exit.json found',
-              }, 'error');
+              service.completeRecoveredJob(
+                jobId,
+                launchRecord.sessionId,
+                {
+                  content: '',
+                  notice: 'Wrapper process lost — no exit.json found',
+                },
+                'error',
+              );
             }
 
             cleanup?.();
@@ -699,9 +713,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       if (runtimeState.getLifecycle() === 'stopped') return;
 
       const mode = shutdownModeFromReason(reason);
-      const discussSourcesAtShutdown = mode === 'hard'
-        ? [...knownDiscussSources()]
-        : [];
+      const discussSourcesAtShutdown = mode === 'hard' ? [...knownDiscussSources()] : [];
       const drainTimeout = mode === 'handoff' ? HANDOFF_DRAIN_TIMEOUT_MS : SHUTDOWN_DRAIN_TIMEOUT_MS;
 
       log(`Coral backend shutting down (${reason}, mode=${mode})...\n`);
@@ -714,10 +726,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       for (const stream of streamResponses) {
         stream.end();
       }
-      await Promise.race([
-        serverClosed,
-        new Promise<void>((resolve) => setTimeout(resolve, drainTimeout)),
-      ]);
+      await Promise.race([serverClosed, new Promise<void>((resolve) => setTimeout(resolve, drainTimeout))]);
 
       if (mode === 'hard') {
         markJobsAsErrorFn(namespace, 'Backend shutting down');
@@ -736,20 +745,17 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         runtimeState.getKbSubsystem()?.curateScheduler.stop?.(),
         new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
       ]);
-      await clearAllDiscuss(
-        discussRegistry,
-        mode,
-        discussOperations.persistAbortEndForShutdown,
-      );
+      await clearAllDiscuss(discussRegistry, mode, discussOperations.persistAbortEndForShutdown);
       if (mode === 'hard') {
         await discussOperations.persistAbortEndForPersistedShutdownCandidates(
           discussSourcesAtShutdown,
           getDiscussStoreForSource,
-          (snapshot) => getDiscussContext({
-            projectRoot: snapshot.projectRoot,
-            pluginRoot,
-            coralEnv: {},
-          }),
+          (snapshot) =>
+            getDiscussContext({
+              projectRoot: snapshot.projectRoot,
+              pluginRoot,
+              coralEnv: {},
+            }),
         );
         discussRegistry.contexts.clear();
       }
@@ -761,14 +767,16 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
 
       runtimeState.setLifecycle('stopped');
       onStopped?.();
-    })().catch((error) => {
-      onFatalShutdownError?.(error);
-      throw error;
-    }).finally(() => {
-      runtimeState.setLifecycle('stopped');
-      removeBackendInfoIfOwnerFn(pluginRoot, instanceId);
-      removeLockIfOwnerFn(pluginRoot, instanceId);
-    });
+    })()
+      .catch((error) => {
+        onFatalShutdownError?.(error);
+        throw error;
+      })
+      .finally(() => {
+        runtimeState.setLifecycle('stopped');
+        removeBackendInfoIfOwnerFn(pluginRoot, instanceId);
+        removeLockIfOwnerFn(pluginRoot, instanceId);
+      });
 
     return shutdownPromise;
   }
@@ -811,7 +819,11 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       const incompatibleJobs: PersistedStatusRecord[] = [];
       const ghostLaunchJobs: PersistedStatusRecord[] = [];
       const queuedRecoverable: Array<{ jobId: string; launchRecord: PersistedLaunchRecord }> = [];
-      const runningRecoverable: Array<{ jobId: string; launchRecord: PersistedLaunchRecord; runtimeRecord: PersistedRuntimeRecord }> = [];
+      const runningRecoverable: Array<{
+        jobId: string;
+        launchRecord: PersistedLaunchRecord;
+        runtimeRecord: PersistedRuntimeRecord;
+      }> = [];
 
       for (const jobId of progressStore.listJobIds()) {
         const preStatus = progressStore.readStatus(jobId);
@@ -830,7 +842,11 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         }
         if (classification === 'incomplete') {
           // Crash between launch.json write and status.json — delete directory
-          try { rmSync(progressStore.jobDir(jobId), { recursive: true, force: true }); } catch { /* best-effort */ }
+          try {
+            rmSync(progressStore.jobDir(jobId), { recursive: true, force: true });
+          } catch {
+            /* best-effort */
+          }
           log(`Deleted incomplete admission: ${jobId}\n`);
           continue;
         }
@@ -909,29 +925,28 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
 
       // Discuss session recovery
       for (const source of knownDiscussSources()) {
-        recoveredDiscussResumes.push(...await discussOperations.recoverPersistedSessionsFromStore(
-          getDiscussStoreForSource(source),
-          (snapshot) => getDiscussContext({
-            projectRoot: snapshot.projectRoot,
-            pluginRoot,
-            coralEnv: {},
-          }),
-          (snapshot) => ({
-            projectRoot: snapshot.projectRoot,
-            pluginRoot,
-            coralEnv: {},
-          }),
-        ));
+        recoveredDiscussResumes.push(
+          ...(await discussOperations.recoverPersistedSessionsFromStore(
+            getDiscussStoreForSource(source),
+            (snapshot) =>
+              getDiscussContext({
+                projectRoot: snapshot.projectRoot,
+                pluginRoot,
+                coralEnv: {},
+              }),
+            (snapshot) => ({
+              projectRoot: snapshot.projectRoot,
+              pluginRoot,
+              coralEnv: {},
+            }),
+          )),
+        );
         assertStartupStillActive();
       }
 
       if (queuedRecoverable.length > 0 || runningRecoverable.length > 0) {
         try {
-          await runRecoveryAdoption(
-            queuedRecoverable,
-            runningRecoverable,
-            assertStartupStillActive,
-          );
+          await runRecoveryAdoption(queuedRecoverable, runningRecoverable, assertStartupStillActive);
         } catch (err) {
           if (err instanceof StartupInterruptedError) {
             throw err;
@@ -942,7 +957,9 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
             try {
               const status = progressStore.readStatus(jobId);
               if (status) markJobAsError(progressStore, status, `Recovery adoption failed: ${formatError(err)}`, log);
-            } catch { /* best-effort */ }
+            } catch {
+              /* best-effort */
+            }
           }
           recoveryRegistry = null;
           runtimeState.setLaunchFenceActive(false);
@@ -971,14 +988,15 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
 
       // Idle timer with namespace-based counting
       idleTimer.startWatching(
-        () => runtimeState.getLifecycle() === 'running'
-          && activeChildren.size === 0
-          && adoptedRunningPids.size === 0
-          && progressStore.liveJobCountByNamespace(namespace) === 0
-          && idleTimer.inflightRequests === 0
-          && (recoveryRegistry === null || recoveryRegistry.size === 0)
-          && !hasRunningSessions(discussRegistry)
-          && !(runtimeState.getKbSubsystem()?.curateScheduler.isRunning() ?? false),
+        () =>
+          runtimeState.getLifecycle() === 'running' &&
+          activeChildren.size === 0 &&
+          adoptedRunningPids.size === 0 &&
+          progressStore.liveJobCountByNamespace(namespace) === 0 &&
+          idleTimer.inflightRequests === 0 &&
+          (recoveryRegistry === null || recoveryRegistry.size === 0) &&
+          !hasRunningSessions(discussRegistry) &&
+          !(runtimeState.getKbSubsystem()?.curateScheduler.isRunning() ?? false),
         (reason) => {
           void shutdown(reason).catch(() => {});
         },
@@ -993,6 +1011,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
           const current = readBackendInfo(pluginRoot);
           // null means backend.json was deleted (replacement) or corrupt — drain either way
           if (current?.instanceId !== instanceId) {
+            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- always set: callback runs inside the setInterval that assigned it
             clearInterval(ownershipCheckerInterval!);
             ownershipCheckerInterval = null;
             idleTimer.requestDrain('replaced');

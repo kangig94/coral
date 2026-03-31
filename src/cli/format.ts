@@ -2,12 +2,7 @@ import { MAX_INLINE } from '../shared/schemas.js';
 import { isRecord } from '../shared/mcp-utils.js';
 import type { BackendToolHttpError } from '../client/http-client.js';
 import type { BackendStatusFull, ShutdownResult } from '../bridge/backend-client.js';
-import type {
-  BidResult,
-  PersonaAssignment,
-  PersonaSeedOutput,
-  SpeechResult,
-} from '../discuss/types.js';
+import type { BidResult, PersonaAssignment, PersonaSeedOutput, SpeechResult } from '../discuss/types.js';
 import type { AbortResult } from '../execution/abort-registry.js';
 import type { ListResult } from '../execution/service.js';
 import type { LaunchDecision, TerminalResult, WaitStreamEvent } from '../shared/types.js';
@@ -56,7 +51,7 @@ function formatUnknown(value: unknown): string {
 
   try {
     const text = JSON.stringify(value);
-    return text === undefined ? String(value) : text;
+    return text ?? String(value);
   } catch {
     return String(value);
   }
@@ -79,17 +74,11 @@ function isKbSearchMode(value: unknown): value is 'text' | 'hybrid' {
 }
 
 function formatTable(headers: string[], rows: string[][]): string {
-  const widths = headers.map((header, index) =>
-    Math.max(header.length, ...rows.map((row) => row[index]?.length ?? 0)));
+  const widths = headers.map((header, index) => Math.max(header.length, ...rows.map((row) => row[index]?.length ?? 0)));
 
-  const formatRow = (row: string[]) =>
-    row.map((cell, index) => cell.padEnd(widths[index])).join('  ');
+  const formatRow = (row: string[]) => row.map((cell, index) => cell.padEnd(widths[index])).join('  ');
 
-  return [
-    formatRow(headers),
-    formatRow(widths.map((width) => '-'.repeat(width))),
-    ...rows.map(formatRow),
-  ].join('\n');
+  return [formatRow(headers), formatRow(widths.map((width) => '-'.repeat(width))), ...rows.map(formatRow)].join('\n');
 }
 
 function formatPersonaAssignment(index: number, assignment: PersonaAssignment): string {
@@ -97,10 +86,7 @@ function formatPersonaAssignment(index: number, assignment: PersonaAssignment): 
     .map(([axis, position]) => `${axis}=${position}`)
     .join(' | ');
   const tone = `${assignment.tone.formality}/${assignment.tone.evidence}/${assignment.tone.pace}`;
-  const details = [
-    `tone ${tone}`,
-    `seed ${assignment.persona_seed}`,
-  ];
+  const details = [`tone ${tone}`, `seed ${assignment.persona_seed}`];
 
   if (assignment.shared_position_with !== undefined) {
     details.push(`shared_with ${assignment.shared_position_with}`);
@@ -123,21 +109,22 @@ function formatDiscussEnded(result: { reason?: string; content?: string }): stri
 }
 
 function isDiscussWatchResult(value: unknown): value is DiscussWatchResult {
-  return isRecord(value)
-    && typeof value.session === 'string'
-    && typeof value.status === 'string'
-    && typeof value.topic === 'string'
-    && Number.isInteger(value.epoch)
-    && Number.isInteger(value.step)
-    && Array.isArray(value.events)
-    && Number.isInteger(value.cursor);
+  return (
+    isRecord(value) &&
+    typeof value.session === 'string' &&
+    typeof value.status === 'string' &&
+    typeof value.topic === 'string' &&
+    Number.isInteger(value.epoch) &&
+    Number.isInteger(value.step) &&
+    Array.isArray(value.events) &&
+    Number.isInteger(value.cursor)
+  );
 }
 
 function isBackendToolHttpError(value: unknown): value is BackendToolHttpError {
-  return isRecord(value)
-    && typeof value.statusCode === 'number'
-    && 'body' in value
-    && typeof value.message === 'string';
+  return (
+    isRecord(value) && typeof value.statusCode === 'number' && 'body' in value && typeof value.message === 'string'
+  );
 }
 
 function truncatePreview(text: string): string {
@@ -184,12 +171,8 @@ export function formatLaunchDecision(result: LaunchDecision): string {
 
 export function formatAbortResult(result: AbortResult): string {
   return joinLines([
-    result.aborted.length > 0
-      ? `Aborted jobs: ${result.aborted.join(', ')}`
-      : 'No jobs aborted',
-    result.notFound.length > 0
-      ? `Not found: ${result.notFound.join(', ')}`
-      : undefined,
+    result.aborted.length > 0 ? `Aborted jobs: ${result.aborted.join(', ')}` : 'No jobs aborted',
+    result.notFound.length > 0 ? `Not found: ${result.notFound.join(', ')}` : undefined,
   ]);
 }
 
@@ -210,11 +193,12 @@ export function formatProviderList(result: ListResult): string {
 }
 
 export function formatPersonaSeed(result: PersonaSeedOutput): string {
-  const subsampledLine = result.subsampled === undefined
-    ? undefined
-    : result.subsampled
-      ? `Subsampled: yes${result.original_pool_size === undefined ? '' : ` (from ${result.original_pool_size})`}`
-      : 'Subsampled: no';
+  const subsampledLine =
+    result.subsampled === undefined
+      ? undefined
+      : result.subsampled
+        ? `Subsampled: yes${result.original_pool_size === undefined ? '' : ` (from ${result.original_pool_size})`}`
+        : 'Subsampled: no';
 
   return joinLines([
     `Seed used: ${result.seed_used}`,
@@ -232,9 +216,7 @@ export function formatDiscussStart(result: DiscussStartResult): string {
 }
 
 export function formatDiscussAbort(result: DiscussAbortResult): string {
-  return result.ok
-    ? `Session aborted: ${result.session}`
-    : `Abort failed: ${result.session}`;
+  return result.ok ? `Session aborted: ${result.session}` : `Abort failed: ${result.session}`;
 }
 
 export function formatDiscussParticipate(result: BidResult | SpeechResult): string {
@@ -331,11 +313,11 @@ export function formatKbPrinciples(data: unknown, cliPrefix = 'coral-cli'): stri
 
   const rows = principles.flatMap((value) => {
     if (
-      !isRecord(value)
-      || typeof value.name !== 'string'
-      || typeof value.statement !== 'string'
-      || !Array.isArray(value.notes)
-      || !value.notes.every((note) => typeof note === 'string')
+      !isRecord(value) ||
+      typeof value.name !== 'string' ||
+      typeof value.statement !== 'string' ||
+      !Array.isArray(value.notes) ||
+      !value.notes.every((note) => typeof note === 'string')
     ) {
       return [];
     }
@@ -353,10 +335,10 @@ export function formatKbPrinciples(data: unknown, cliPrefix = 'coral-cli'): stri
 
 export function formatKbRead(data: unknown): string {
   if (
-    !isRecord(data)
-    || typeof data.note !== 'string'
-    || typeof data.title !== 'string'
-    || typeof data.content !== 'string'
+    !isRecord(data) ||
+    typeof data.note !== 'string' ||
+    typeof data.title !== 'string' ||
+    typeof data.content !== 'string'
   ) {
     return formatUnknown(data);
   }
@@ -364,7 +346,7 @@ export function formatKbRead(data: unknown): string {
   if (typeof data.updatedAt === 'string') {
     const ms = Date.now() - Date.parse(data.updatedAt);
     const days = Math.floor(ms / 86_400_000);
-    (data as Record<string, unknown>).age = days === 0 ? 'today' : days === 1 ? '1 day ago' : `${days} days ago`;
+    (data).age = days === 0 ? 'today' : days === 1 ? '1 day ago' : `${days} days ago`;
   }
 
   return JSON.stringify(data);
@@ -385,10 +367,10 @@ export function formatKbMemoList(data: unknown): string {
 
   const rows = data.memos.flatMap((memo) => {
     if (
-      !isRecord(memo)
-      || typeof memo.filename !== 'string'
-      || typeof memo.summary !== 'string'
-      || typeof memo.createdAt !== 'string'
+      !isRecord(memo) ||
+      typeof memo.filename !== 'string' ||
+      typeof memo.summary !== 'string' ||
+      typeof memo.createdAt !== 'string'
     ) {
       return [];
     }
@@ -409,18 +391,15 @@ export function formatKbMemoList(data: unknown): string {
 
 export function formatKbMemoDelete(data: unknown): string {
   if (
-    !isRecord(data)
-    || !Array.isArray(data.deleted)
-    || !data.deleted.every((entry) => typeof entry === 'string')
-    || typeof data.count !== 'number'
+    !isRecord(data) ||
+    !Array.isArray(data.deleted) ||
+    !data.deleted.every((entry) => typeof entry === 'string') ||
+    typeof data.count !== 'number'
   ) {
     return formatUnknown(data);
   }
 
-  return joinLines([
-    data.deleted.length === 0 ? 'No memos deleted' : data.deleted.join('\n'),
-    `Count: ${data.count}`,
-  ]);
+  return joinLines([data.deleted.length === 0 ? 'No memos deleted' : data.deleted.join('\n'), `Count: ${data.count}`]);
 }
 
 export function formatKbMemoPurge(data: unknown): string {
@@ -457,12 +436,12 @@ export function formatKbDelete(data: unknown): string {
 
 export function formatKbReindex(data: unknown, cliPrefix = 'coral-cli'): string {
   if (
-    !isRecord(data)
-    || typeof data.notes !== 'number'
-    || typeof data.principles !== 'number'
-    || typeof data.tags !== 'number'
-    || typeof data.duration_ms !== 'number'
-    || !isKbSearchMode(data.mode)
+    !isRecord(data) ||
+    typeof data.notes !== 'number' ||
+    typeof data.principles !== 'number' ||
+    typeof data.tags !== 'number' ||
+    typeof data.duration_ms !== 'number' ||
+    !isKbSearchMode(data.mode)
   ) {
     return formatUnknown(data);
   }
@@ -497,14 +476,12 @@ export function formatBackendStatus(result: BackendStatusFull): string {
 }
 
 export function formatShutdown(result: ShutdownResult): string {
-  return result.ok
-    ? 'Backend shutdown initiated'
-    : `Shutdown failed: ${result.reason}`;
+  return result.ok ? 'Backend shutdown initiated' : `Shutdown failed: ${result.reason}`;
 }
 
 export function formatError(error: unknown): string {
   if (isBackendToolHttpError(error)) {
-    const detail = error.body == null ? error.message : formatUnknown(error.body);
+    const detail = error.body === null || error.body === undefined ? error.message : formatUnknown(error.body);
     return `HTTP ${error.statusCode}: ${detail}`;
   }
 
@@ -523,11 +500,7 @@ export function formatWaitQueued(event: WaitQueuedEvent, cursor: string | null):
   return appendCursor(`[${event.jobId}] queued at position ${event.queuePosition}`, cursor);
 }
 
-export function formatWaitTerminal(
-  event: WaitTerminalEvent,
-  cursor: string | null,
-  inline: boolean,
-): string {
+export function formatWaitTerminal(event: WaitTerminalEvent, cursor: string | null, inline: boolean): string {
   if (!inline) {
     return joinLines([
       `[${event.completedJobId}] completed`,
@@ -545,9 +518,7 @@ export function formatWaitTerminal(
 }
 
 export function formatWaitTimeout(event: WaitTimeoutEvent, cursor: string | null): string {
-  const running = event.runningJobIds.length > 0
-    ? event.runningJobIds.join(', ')
-    : 'none';
+  const running = event.runningJobIds.length > 0 ? event.runningJobIds.join(', ') : 'none';
 
   return appendCursor(`Wait timed out; running jobs: ${running}`, cursor);
 }

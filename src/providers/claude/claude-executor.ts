@@ -47,10 +47,7 @@ function resolveClaudeDefaultEffort(env: Record<string, string>): NonNullable<Ef
 
 const STREAM_JSON_ARGS = ['-p', '--verbose', '--output-format', 'stream-json'];
 
-export async function executeClaudeOneShot(
-  prompt: string,
-  options: ClaudeExecOptions,
-): Promise<ClaudeExecResult> {
+export async function executeClaudeOneShot(prompt: string, options: ClaudeExecOptions): Promise<ClaudeExecResult> {
   const args = [...STREAM_JSON_ARGS];
   appendSharedArgs(args, options);
   if (options.sessionId) args.push('--session-id', options.sessionId);
@@ -85,11 +82,7 @@ function appendSharedArgs(args: string[], options: ClaudeExecOptions): void {
   args.push('--effort', effort);
 }
 
-async function executeClaude(
-  args: string[],
-  prompt: string,
-  options: ClaudeExecOptions,
-): Promise<ClaudeExecResult> {
+async function executeClaude(args: string[], prompt: string, options: ClaudeExecOptions): Promise<ClaudeExecResult> {
   const start = Date.now();
   const { stdout, stderr, code, aborted } = await options.runCli({
     command: 'claude',
@@ -116,7 +109,7 @@ async function executeClaude(
     response: parsed.response,
     sessionId: parsed.sessionId,
     model: extractModel(parsed, options.model),
-    durationMs: parsed.durationMs ?? (Date.now() - start),
+    durationMs: parsed.durationMs ?? Date.now() - start,
     costUsd: parsed.costUsd,
     aborted,
   };

@@ -39,10 +39,7 @@ function currentVersion(root: string): string {
   }
 }
 
-export async function withAbortTimeout<T>(
-  timeoutMs: number,
-  run: (signal: AbortSignal) => Promise<T>,
-): Promise<T> {
+export async function withAbortTimeout<T>(timeoutMs: number, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -78,33 +75,30 @@ async function readHealthyBackendInfo(root: string, info = readBackendInfo(root)
   if (!health) return null;
 
   const expectedNamespace = pluginRootNamespace(root);
-  const hasMismatch = (
-    health.namespace !== expectedNamespace
-    || health.namespace !== info.namespace
-    || health.bundleHash !== info.bundleHash
-    || health.instanceId !== info.instanceId
-  );
+  const hasMismatch =
+    health.namespace !== expectedNamespace ||
+    health.namespace !== info.namespace ||
+    health.bundleHash !== info.bundleHash ||
+    health.instanceId !== info.instanceId;
 
   return hasMismatch ? null : info;
 }
 
 async function requestBackendShutdown(info: BackendInfo): Promise<void> {
   try {
-    await withAbortTimeout(HEALTH_TIMEOUT_MS, (signal) => fetch(`http://${info.host}:${info.port}/admin/shutdown`, {
-      method: 'POST',
-      headers: { 'X-Coral-Backend-Token': info.token },
-      signal,
-    }));
+    await withAbortTimeout(HEALTH_TIMEOUT_MS, (signal) =>
+      fetch(`http://${info.host}:${info.port}/admin/shutdown`, {
+        method: 'POST',
+        headers: { 'X-Coral-Backend-Token': info.token },
+        signal,
+      }),
+    );
   } catch {
     /* best effort */
   }
 }
 
-function tryAcquireReplacementLock(
-  root: string,
-  version: string,
-  bundleHash: string,
-): ReplacementLock | null {
+function tryAcquireReplacementLock(root: string, version: string, bundleHash: string): ReplacementLock | null {
   const payload = JSON.stringify({
     instanceId: `proxy-replacement-${process.pid}-${Date.now()}`,
     pid: process.pid,
@@ -173,17 +167,15 @@ async function waitForReplacementBackend(
 ): Promise<BackendInfo> {
   while (Date.now() < deadline) {
     const info = await readHealthyBackendInfo(root);
-    if (
-      info
-      && info.bundleHash === expectedHash
-      && (oldInstanceId === null || info.instanceId !== oldInstanceId)
-    ) {
+    if (info && info.bundleHash === expectedHash && (oldInstanceId === null || info.instanceId !== oldInstanceId)) {
       return info;
     }
     await delay(STARTUP_POLL_MS);
   }
 
-  throw new Error('Timed out waiting for Coral backend startup. Use the backend tool with op: "status" to check backend health.');
+  throw new Error(
+    'Timed out waiting for Coral backend startup. Use the backend tool with op: "status" to check backend health.',
+  );
 }
 
 export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle> {
@@ -217,8 +209,8 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
     const healthy = await readHealthyBackendInfo(root);
     if (healthy) {
       if (
-        healthy.bundleHash === expectedHash
-        && (replacedInstanceId === null || healthy.instanceId !== replacedInstanceId)
+        healthy.bundleHash === expectedHash &&
+        (replacedInstanceId === null || healthy.instanceId !== replacedInstanceId)
       ) {
         return summarizeBackend(healthy);
       }
@@ -248,5 +240,7 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
     );
   }
 
-  throw new Error('Timed out waiting for Coral backend startup. Use the backend tool with op: "status" to check backend health.');
+  throw new Error(
+    'Timed out waiting for Coral backend startup. Use the backend tool with op: "status" to check backend health.',
+  );
 }

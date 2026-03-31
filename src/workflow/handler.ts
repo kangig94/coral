@@ -2,12 +2,12 @@ import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { getNewProvider } from '../providers/registry.js';
 import { isOwnerId } from '../shared/mcp-utils.js';
 import type { LaunchDecision } from '../shared/types.js';
-import type { CallerContext } from '../execution/service.js';
+import type { CallerContext, ExecutionService } from '../execution/service.js';
 import { parseExpression } from './pipe-parser.js';
 import { workflowInputSchema } from './schemas.js';
 import type { PipelineAST } from './types.js';
 
-type WorkflowService = Pick<import('../execution/service.js').ExecutionService, 'executeWorkflow'>;
+type WorkflowService = Pick<ExecutionService, 'executeWorkflow'>;
 
 function validateAtomConfigKeys(atoms: Record<string, Record<string, unknown>>, ast: PipelineAST): void {
   const atomNames = new Set<string>();
@@ -24,29 +24,29 @@ function validateAtomConfigKeys(atoms: Record<string, Record<string, unknown>>, 
 }
 
 function normalizeAst(ast: PipelineAST, defaultProviderName: string): PipelineAST {
-  return ast.map((step) => step.map((atom) => {
-    if (atom.kind === 'prompt') {
+  return ast.map((step) =>
+    step.map((atom) => {
+      if (atom.kind === 'prompt') {
+        return {
+          ...atom,
+          provider: atom.provider ?? defaultProviderName,
+        };
+      }
+
       return {
         ...atom,
+        namespace: atom.namespace ?? 'coral',
         provider: atom.provider ?? defaultProviderName,
       };
-    }
-
-    return {
-      ...atom,
-      namespace: atom.namespace ?? 'coral',
-      provider: atom.provider ?? defaultProviderName,
-    };
-  }));
+    }),
+  );
 }
 
 function validateNamespaces(ast: PipelineAST): void {
   for (let stepIndex = 0; stepIndex < ast.length; stepIndex += 1) {
     for (const atom of ast[stepIndex]) {
       if (atom.kind !== 'agent' || atom.namespace === 'coral') continue;
-      throw new Error(
-        `Step ${stepIndex}, atom '${atom.agent}' has unsupported namespace '${atom.namespace}'`,
-      );
+      throw new Error(`Step ${stepIndex}, atom '${atom.agent}' has unsupported namespace '${atom.namespace}'`);
     }
   }
 }
@@ -112,8 +112,6 @@ export async function handleWorkflow(
   }
 
   const owner = isOwnerId(input.owner) ? input.owner : undefined;
-  const effectiveContext = owner
-    ? { ...ctx, coralEnv: { ...ctx.coralEnv, CORAL_OWNER: owner } }
-    : ctx;
+  const effectiveContext = owner ? { ...ctx, coralEnv: { ...ctx.coralEnv, CORAL_OWNER: owner } } : ctx;
   return executionSvc.executeWorkflow(input.provider, normalizedAst, input, effectiveContext, input.work_dir);
 }

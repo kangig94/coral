@@ -5,13 +5,7 @@
  */
 
 import { z } from 'zod';
-import {
-  providerOpSchema,
-  coralOpSchema,
-  promptSchema,
-  sessionRefSchema,
-  cwdSchema,
-} from '../../shared/schemas.js';
+import { providerOpSchema, coralOpSchema, promptSchema, sessionRefSchema, cwdSchema } from '../../shared/schemas.js';
 import { identPattern } from '../../shared/mcp-utils.js';
 
 export const codexOpSchema = providerOpSchema;

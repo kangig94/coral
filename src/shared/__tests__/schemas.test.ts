@@ -43,28 +43,36 @@ describe('shared schemas', () => {
   });
 
   it('sharedResumeSchema requires session', () => {
-    expect(() => sharedResumeSchema.parse({
-      op: 'resume',
-      prompt: 'Continue',
-    })).toThrow();
+    expect(() =>
+      sharedResumeSchema.parse({
+        op: 'resume',
+        prompt: 'Continue',
+      }),
+    ).toThrow();
   });
 
   it('sharedForkSchema requires session', () => {
-    expect(() => sharedForkSchema.parse({
-      op: 'fork',
-    })).toThrow();
+    expect(() =>
+      sharedForkSchema.parse({
+        op: 'fork',
+      }),
+    ).toThrow();
   });
 
   it('waitInputSchema rejects empty jobs array', () => {
-    expect(() => waitInputSchema.parse({
-      jobs: [],
-    })).toThrow('At least one job required');
+    expect(() =>
+      waitInputSchema.parse({
+        jobs: [],
+      }),
+    ).toThrow('At least one job required');
   });
 
   it('abortInputSchema rejects empty jobs array', () => {
-    expect(() => abortInputSchema.parse({
-      jobs: [],
-    })).toThrow('At least one job required');
+    expect(() =>
+      abortInputSchema.parse({
+        jobs: [],
+      }),
+    ).toThrow('At least one job required');
   });
 });
 

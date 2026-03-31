@@ -14,7 +14,14 @@ import {
 import type { PersistedProgressRecord, PersistedStatusRecord } from '../shared/types.js';
 import type { SessionEntry } from '../execution/session-manager.js';
 import type { DiscussState } from '../discuss/types.js';
-import { discussStatuses, participationTypes, speakerTypes, transcriptResolveTypes, sessionEventKinds, resolveReasons } from '../discuss/types.js';
+import {
+  discussStatuses,
+  participationTypes,
+  speakerTypes,
+  transcriptResolveTypes,
+  sessionEventKinds,
+  resolveReasons,
+} from '../discuss/types.js';
 import {
   type DiscussDomainEvent,
   type PersistedDiscussSnapshot,
@@ -50,10 +57,7 @@ function readTextFile(filePath: string): string | null {
   }
 }
 
-function parseJsonLines<T>(
-  text: string,
-  parseLine: (value: unknown) => T | null,
-): T[] {
+function parseJsonLines<T>(text: string, parseLine: (value: unknown) => T | null): T[] {
   const entries: T[] = [];
   for (const rawLine of text.split('\n')) {
     if (rawLine.trim().length === 0) continue;
@@ -76,7 +80,6 @@ function readDirectoryEntries(baseDir: string): Array<{ name: string; isDirector
     throw error;
   }
 }
-
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
@@ -108,14 +111,16 @@ function isNullableNumberRecord(value: unknown): value is Record<string, number 
 
 function isValidDiscussAgentState(value: unknown): boolean {
   if (!isRecord(value)) return false;
-  return typeof value.persona === 'string'
-    && typeof value.display_name === 'string'
-    && typeof value.participation === 'string'
-    && participationSet.has(value.participation)
-    && isFiniteNumber(value.quota_remaining)
-    && isFiniteNumber(value.total_speaks)
-    && typeof value.fallback_used === 'boolean'
-    && typeof value.banned === 'boolean';
+  return (
+    typeof value.persona === 'string' &&
+    typeof value.display_name === 'string' &&
+    typeof value.participation === 'string' &&
+    participationSet.has(value.participation) &&
+    isFiniteNumber(value.quota_remaining) &&
+    isFiniteNumber(value.total_speaks) &&
+    typeof value.fallback_used === 'boolean' &&
+    typeof value.banned === 'boolean'
+  );
 }
 
 function isValidTranscriptEntry(value: unknown): boolean {
@@ -123,42 +128,48 @@ function isValidTranscriptEntry(value: unknown): boolean {
 
   switch (value.type) {
     case 'bids':
-      return isFiniteNumber(value.step)
-        && isFiniteNumber(value.epoch)
-        && typeof value.ts === 'string'
-        && isNumberRecord(value.bids)
-        && (value.effective_bids === undefined || isNumberRecord(value.effective_bids))
-        && (value.thoughts === undefined || isStringRecord(value.thoughts))
-        && (value.winner === null || typeof value.winner === 'string')
-        && typeof value.resolve_type === 'string'
-        && transcriptResolveTypeSet.has(value.resolve_type);
+      return (
+        isFiniteNumber(value.step) &&
+        isFiniteNumber(value.epoch) &&
+        typeof value.ts === 'string' &&
+        isNumberRecord(value.bids) &&
+        (value.effective_bids === undefined || isNumberRecord(value.effective_bids)) &&
+        (value.thoughts === undefined || isStringRecord(value.thoughts)) &&
+        (value.winner === null || typeof value.winner === 'string') &&
+        typeof value.resolve_type === 'string' &&
+        transcriptResolveTypeSet.has(value.resolve_type)
+      );
 
     case 'speech':
-      return isFiniteNumber(value.step)
-        && isFiniteNumber(value.epoch)
-        && typeof value.ts === 'string'
-        && typeof value.agent === 'string'
-        && typeof value.display_name === 'string'
-        && typeof value.content === 'string';
+      return (
+        isFiniteNumber(value.step) &&
+        isFiniteNumber(value.epoch) &&
+        typeof value.ts === 'string' &&
+        typeof value.agent === 'string' &&
+        typeof value.display_name === 'string' &&
+        typeof value.content === 'string'
+      );
 
     case 'follow_up':
-      return isFiniteNumber(value.epoch)
-        && typeof value.ts === 'string'
-        && typeof value.agent === 'string'
-        && typeof value.question === 'string'
-        && typeof value.answer === 'string';
+      return (
+        isFiniteNumber(value.epoch) &&
+        typeof value.ts === 'string' &&
+        typeof value.agent === 'string' &&
+        typeof value.question === 'string' &&
+        typeof value.answer === 'string'
+      );
 
     case 'epoch_summary':
-      return isFiniteNumber(value.epoch)
-        && typeof value.ts === 'string'
-        && typeof value.summary === 'string';
+      return isFiniteNumber(value.epoch) && typeof value.ts === 'string' && typeof value.summary === 'string';
 
     case 'session_event':
-      return isFiniteNumber(value.epoch)
-        && typeof value.ts === 'string'
-        && typeof value.event === 'string'
-        && transcriptEventSet.has(value.event)
-        && typeof value.detail === 'string';
+      return (
+        isFiniteNumber(value.epoch) &&
+        typeof value.ts === 'string' &&
+        typeof value.event === 'string' &&
+        transcriptEventSet.has(value.event) &&
+        typeof value.detail === 'string'
+      );
 
     default:
       return false;
@@ -168,42 +179,47 @@ function isValidTranscriptEntry(value: unknown): boolean {
 export function isValidSessionEntry(value: unknown): value is SessionEntry {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
-  return typeof v.sessionId === 'string'
-    && typeof v.provider === 'string'
-    && typeof v.name === 'string'
-    && typeof v.state === 'string'
-    && (v.state === 'pending' || v.state === 'ready' || v.state === 'non_resumable')
-    && typeof v.model === 'string'
-    && typeof v.cwd === 'string'
-    && typeof v.version === 'number';
+  return (
+    typeof v.sessionId === 'string' &&
+    typeof v.provider === 'string' &&
+    typeof v.name === 'string' &&
+    typeof v.state === 'string' &&
+    (v.state === 'pending' || v.state === 'ready' || v.state === 'non_resumable') &&
+    typeof v.model === 'string' &&
+    typeof v.cwd === 'string' &&
+    typeof v.version === 'number'
+  );
 }
 
 function isValidDiscussState(value: unknown): value is DiscussState {
   if (!isRecord(value)) return false;
-  return typeof value.session_id === 'string'
-    && typeof value.topic === 'string'
-    && typeof value.status === 'string'
-    && isRecord(value.agents);
+  return (
+    typeof value.session_id === 'string' &&
+    typeof value.topic === 'string' &&
+    typeof value.status === 'string' &&
+    isRecord(value.agents)
+  );
 }
 
 function isValidSessionCreatedInput(value: unknown): boolean {
   if (!isRecord(value) || !Array.isArray(value.agents)) return false;
-  return typeof value.topic === 'string'
-    && isFiniteNumber(value.min_bid_delay_ms)
-    && value.agents.every((agent) =>
-      isRecord(agent)
-      && typeof agent.name === 'string'
-      && typeof agent.persona === 'string'
-      && typeof agent.participation === 'string'
-      && participationSet.has(agent.participation),
-    );
+  return (
+    typeof value.topic === 'string' &&
+    isFiniteNumber(value.min_bid_delay_ms) &&
+    value.agents.every(
+      (agent) =>
+        isRecord(agent) &&
+        typeof agent.name === 'string' &&
+        typeof agent.persona === 'string' &&
+        typeof agent.participation === 'string' &&
+        participationSet.has(agent.participation),
+    )
+  );
 }
 
 function isValidSessionCreatedConfig(value: unknown): boolean {
   if (!isRecord(value)) return false;
-  return isFiniteNumber(value.bidThreshold)
-    && isFiniteNumber(value.maxEpochs)
-    && isFiniteNumber(value.quotaPerEpoch);
+  return isFiniteNumber(value.bidThreshold) && isFiniteNumber(value.maxEpochs) && isFiniteNumber(value.quotaPerEpoch);
 }
 
 function isValidSessionCreatedAgentExecution(value: unknown): boolean {
@@ -224,17 +240,17 @@ function isValidBidRoundClosedOutcome(value: unknown): boolean {
   if (typeof value.winner === 'string') {
     return typeof value.speaker_type === 'string' && speakerTypeSet.has(value.speaker_type);
   }
-  return value.no_winner === true
-    && typeof value.reason === 'string'
-    && resolveReasonSet.has(value.reason);
+  return value.no_winner === true && typeof value.reason === 'string' && resolveReasonSet.has(value.reason);
 }
 
 function isValidBidRoundClosedStateMutations(value: unknown): boolean {
   if (!isRecord(value)) return false;
-  return (value.cold_start === undefined || typeof value.cold_start === 'boolean')
-    && (value.fallback_used === undefined || isBooleanRecord(value.fallback_used))
-    && (value.quota_remaining === undefined || isNumberRecord(value.quota_remaining))
-    && (value.epoch === undefined || isFiniteNumber(value.epoch));
+  return (
+    (value.cold_start === undefined || typeof value.cold_start === 'boolean') &&
+    (value.fallback_used === undefined || isBooleanRecord(value.fallback_used)) &&
+    (value.quota_remaining === undefined || isNumberRecord(value.quota_remaining)) &&
+    (value.epoch === undefined || isFiniteNumber(value.epoch))
+  );
 }
 
 function isValidDiscussEventPayload(kind: DiscussDomainEvent['kind'], payload: unknown): boolean {
@@ -242,41 +258,47 @@ function isValidDiscussEventPayload(kind: DiscussDomainEvent['kind'], payload: u
 
   switch (kind) {
     case 'session.created':
-      return isValidSessionCreatedInput(payload.input)
-        && isValidSessionCreatedConfig(payload.config)
-        && isRecord(payload.agentExecution)
-        && Object.values(payload.agentExecution).every(isValidSessionCreatedAgentExecution);
+      return (
+        isValidSessionCreatedInput(payload.input) &&
+        isValidSessionCreatedConfig(payload.config) &&
+        isRecord(payload.agentExecution) &&
+        Object.values(payload.agentExecution).every(isValidSessionCreatedAgentExecution)
+      );
 
     case 'bidding.opened':
       return true;
 
     case 'bid.submitted':
-      return typeof payload.agent === 'string'
-        && isFiniteNumber(payload.score)
-        && typeof payload.thought === 'string';
+      return typeof payload.agent === 'string' && isFiniteNumber(payload.score) && typeof payload.thought === 'string';
 
     case 'participants.expelled':
-      return isStringArray(payload.agents)
-        && typeof payload.isRespawn === 'boolean'
-        && typeof payload.hint === 'string';
+      return (
+        isStringArray(payload.agents) && typeof payload.isRespawn === 'boolean' && typeof payload.hint === 'string'
+      );
 
     case 'bid.round.closed':
-      return isNumberRecord(payload.allBids)
-        && isNumberRecord(payload.effectiveBids)
-        && isStringRecord(payload.thoughts)
-        && isValidBidRoundClosedOutcome(payload.outcome)
-        && isValidBidRoundClosedStateMutations(payload.stateMutations);
+      return (
+        isNumberRecord(payload.allBids) &&
+        isNumberRecord(payload.effectiveBids) &&
+        isStringRecord(payload.thoughts) &&
+        isValidBidRoundClosedOutcome(payload.outcome) &&
+        isValidBidRoundClosedStateMutations(payload.stateMutations)
+      );
 
     case 'speech.recorded':
-      return typeof payload.agent === 'string'
-        && typeof payload.content === 'string'
-        && typeof payload.decrementQuota === 'boolean'
-        && (payload.recordLastSpeechStep === undefined || isInteger(payload.recordLastSpeechStep));
+      return (
+        typeof payload.agent === 'string' &&
+        typeof payload.content === 'string' &&
+        typeof payload.decrementQuota === 'boolean' &&
+        (payload.recordLastSpeechStep === undefined || isInteger(payload.recordLastSpeechStep))
+      );
 
     case 'speech.timed_out':
-      return typeof payload.agent === 'string'
-        && typeof payload.content === 'string'
-        && typeof payload.decrementQuota === 'boolean';
+      return (
+        typeof payload.agent === 'string' &&
+        typeof payload.content === 'string' &&
+        typeof payload.decrementQuota === 'boolean'
+      );
 
     case 'epoch.summary.recorded':
       return typeof payload.summary === 'string';
@@ -288,15 +310,19 @@ function isValidDiscussEventPayload(kind: DiscussDomainEvent['kind'], payload: u
       return Array.isArray(payload.queue) && payload.queue.every(isValidFollowUpQueueItem);
 
     case 'follow_up.answered':
-      return typeof payload.agent === 'string'
-        && typeof payload.question === 'string'
-        && typeof payload.answer === 'string';
+      return (
+        typeof payload.agent === 'string' && typeof payload.question === 'string' && typeof payload.answer === 'string'
+      );
 
     case 'session.ended':
-      return (payload.endReason === undefined || typeof payload.endReason === 'string')
-        && (payload.endReasonContent === undefined || payload.endReasonContent === null || typeof payload.endReasonContent === 'string')
-        && (payload.force === undefined || typeof payload.force === 'boolean')
-        && (payload.reason === undefined || typeof payload.reason === 'string');
+      return (
+        (payload.endReason === undefined || typeof payload.endReason === 'string') &&
+        (payload.endReasonContent === undefined ||
+          payload.endReasonContent === null ||
+          typeof payload.endReasonContent === 'string') &&
+        (payload.force === undefined || typeof payload.force === 'boolean') &&
+        (payload.reason === undefined || typeof payload.reason === 'string')
+      );
 
     case 'session.synthesized':
       return typeof payload.synthesis === 'string';
@@ -305,51 +331,60 @@ function isValidDiscussEventPayload(kind: DiscussDomainEvent['kind'], payload: u
       return typeof payload.agent === 'string' && typeof payload.executionSessionId === 'string';
 
     case 'agent.job.started':
-      return typeof payload.agent === 'string'
-        && typeof payload.jobId === 'string'
-        && typeof payload.purpose === 'string'
-        && isInteger(payload.attempt);
+      return (
+        typeof payload.agent === 'string' &&
+        typeof payload.jobId === 'string' &&
+        typeof payload.purpose === 'string' &&
+        isInteger(payload.attempt)
+      );
 
     case 'agent.job.finished':
-      return typeof payload.agent === 'string'
-        && typeof payload.jobId === 'string'
-        && typeof payload.outcome === 'string'
-        && isInteger(payload.attempt);
+      return (
+        typeof payload.agent === 'string' &&
+        typeof payload.jobId === 'string' &&
+        typeof payload.outcome === 'string' &&
+        isInteger(payload.attempt)
+      );
   }
 }
 
 function isValidDiscussDomainEvent(value: unknown): value is DiscussDomainEvent {
   if (!isRecord(value)) return false;
-  return value.v === 1
-    && typeof value.sessionId === 'string'
-    && typeof value.projectRoot === 'string'
-    && typeof value.topic === 'string'
-    && isInteger(value.seq)
-    && value.seq > 0
-    && typeof value.kind === 'string'
-    && discussEventKindSet.has(value.kind)
-    && typeof value.ts === 'string'
-    && isValidDiscussEventPayload(value.kind as DiscussDomainEvent['kind'], value.payload);
+  return (
+    value.v === 1 &&
+    typeof value.sessionId === 'string' &&
+    typeof value.projectRoot === 'string' &&
+    typeof value.topic === 'string' &&
+    isInteger(value.seq) &&
+    value.seq > 0 &&
+    typeof value.kind === 'string' &&
+    discussEventKindSet.has(value.kind) &&
+    typeof value.ts === 'string' &&
+    isValidDiscussEventPayload(value.kind as DiscussDomainEvent['kind'], value.payload)
+  );
 }
 
 function isValidPersistedDiscussRuntime(value: unknown): value is PersistedDiscussSnapshot['runtime'] {
   if (!isRecord(value)) return false;
-  return typeof value.controlPhase === 'string'
-    && controlPhaseSet.has(value.controlPhase)
-    && isStringArray(value.carryForwardMustAnswer)
-    && Array.isArray(value.followUpQueue)
-    && value.followUpQueue.every(isValidFollowUpQueueItem)
-    && isRecord(value.agentRuns)
-    && Object.values(value.agentRuns).every((run) =>
-      isRecord(run)
-      && typeof run.provider === 'string'
-      && typeof run.model === 'string'
-      && (run.executionSessionId === undefined || typeof run.executionSessionId === 'string')
-      && (run.currentJobId === undefined || typeof run.currentJobId === 'string')
-      && (run.currentJobPurpose === undefined || typeof run.currentJobPurpose === 'string')
-      && (run.currentAttempt === undefined || isInteger(run.currentAttempt))
-      && (run.lastAttemptOutcome === undefined || typeof run.lastAttemptOutcome === 'string'),
-    );
+  return (
+    typeof value.controlPhase === 'string' &&
+    controlPhaseSet.has(value.controlPhase) &&
+    isStringArray(value.carryForwardMustAnswer) &&
+    Array.isArray(value.followUpQueue) &&
+    value.followUpQueue.every(isValidFollowUpQueueItem) &&
+    isRecord(value.agentRuns) &&
+    Object.values(value.agentRuns).every(
+      (run) =>
+        isRecord(run) &&
+        typeof run.provider === 'string' &&
+        typeof run.model === 'string' &&
+        (run.executionSessionId === undefined || typeof run.executionSessionId === 'string') &&
+        (run.currentJobId === undefined || typeof run.currentJobId === 'string') &&
+        (run.currentJobPurpose === undefined || typeof run.currentJobPurpose === 'string') &&
+        (run.currentAttempt === undefined || isInteger(run.currentAttempt)) &&
+        (run.lastAttemptOutcome === undefined || typeof run.lastAttemptOutcome === 'string'),
+    )
+  );
 }
 
 function isValidPersistedDiscussState(value: unknown): value is DiscussState {
@@ -359,47 +394,51 @@ function isValidPersistedDiscussState(value: unknown): value is DiscussState {
   const currentSpeaker = value.current_speaker;
   const speakerType = value.speaker_type;
 
-  return typeof value.session_id === 'string'
-    && typeof value.topic === 'string'
-    && typeof value.status === 'string'
-    && discussStatusSet.has(value.status)
-    && isInteger(value.step)
-    && isInteger(value.epoch)
-    && isInteger(value.max_epochs)
-    && isFiniteNumber(value.quota_per_epoch)
-    && typeof value.cold_start === 'boolean'
-    && Object.values(value.agents).every(isValidDiscussAgentState)
-    && isNullableNumberRecord(value.current_bids)
-    && Object.keys(value.current_bids).every((name) => agentNames.has(name))
-    && isStringRecord(value.current_thoughts)
-    && Object.keys(value.current_thoughts).every((name) => agentNames.has(name))
-    && isStringArray(value.pending_bidders)
-    && value.pending_bidders.every((name) => agentNames.has(name))
-    && (currentSpeaker === null || (typeof currentSpeaker === 'string' && agentNames.has(currentSpeaker)))
-    && (speakerType === null || (typeof speakerType === 'string' && speakerTypeSet.has(speakerType)))
-    && (value.epoch_summary_written === null || isInteger(value.epoch_summary_written))
-    && typeof value.created_at === 'string'
-    && typeof value.last_activity_at === 'string'
-    && isInteger(value.last_speech_step)
-    && (value.pending_since_ts === null || isFiniteNumber(value.pending_since_ts))
-    && isInteger(value.bid_release_step)
-    && (value.end_reason_content === null || typeof value.end_reason_content === 'string')
-    && Array.isArray(value.transcript)
-    && value.transcript.every(isValidTranscriptEntry)
-    && isFiniteNumber(value.bid_threshold)
-    && isFiniteNumber(value.min_bid_delay_ms)
-    && (value.status !== 'speaking' || (currentSpeaker !== null && speakerType !== null));
+  return (
+    typeof value.session_id === 'string' &&
+    typeof value.topic === 'string' &&
+    typeof value.status === 'string' &&
+    discussStatusSet.has(value.status) &&
+    isInteger(value.step) &&
+    isInteger(value.epoch) &&
+    isInteger(value.max_epochs) &&
+    isFiniteNumber(value.quota_per_epoch) &&
+    typeof value.cold_start === 'boolean' &&
+    Object.values(value.agents).every(isValidDiscussAgentState) &&
+    isNullableNumberRecord(value.current_bids) &&
+    Object.keys(value.current_bids).every((name) => agentNames.has(name)) &&
+    isStringRecord(value.current_thoughts) &&
+    Object.keys(value.current_thoughts).every((name) => agentNames.has(name)) &&
+    isStringArray(value.pending_bidders) &&
+    value.pending_bidders.every((name) => agentNames.has(name)) &&
+    (currentSpeaker === null || (typeof currentSpeaker === 'string' && agentNames.has(currentSpeaker))) &&
+    (speakerType === null || (typeof speakerType === 'string' && speakerTypeSet.has(speakerType))) &&
+    (value.epoch_summary_written === null || isInteger(value.epoch_summary_written)) &&
+    typeof value.created_at === 'string' &&
+    typeof value.last_activity_at === 'string' &&
+    isInteger(value.last_speech_step) &&
+    (value.pending_since_ts === null || isFiniteNumber(value.pending_since_ts)) &&
+    isInteger(value.bid_release_step) &&
+    (value.end_reason_content === null || typeof value.end_reason_content === 'string') &&
+    Array.isArray(value.transcript) &&
+    value.transcript.every(isValidTranscriptEntry) &&
+    isFiniteNumber(value.bid_threshold) &&
+    isFiniteNumber(value.min_bid_delay_ms) &&
+    (value.status !== 'speaking' || (currentSpeaker !== null && speakerType !== null))
+  );
 }
 
 function isValidPersistedDiscussSnapshot(value: unknown): value is PersistedDiscussSnapshot {
   if (!isRecord(value)) return false;
-  if (value.schemaVersion !== 2
-    || typeof value.sessionId !== 'string'
-    || typeof value.projectRoot !== 'string'
-    || typeof value.updatedAt !== 'string'
-    || !isInteger(value.lastAppliedSeq)
-    || value.lastAppliedSeq < 0
-    || (value.logByteOffset !== undefined && (!isInteger(value.logByteOffset) || value.logByteOffset < 0))) {
+  if (
+    value.schemaVersion !== 2 ||
+    typeof value.sessionId !== 'string' ||
+    typeof value.projectRoot !== 'string' ||
+    typeof value.updatedAt !== 'string' ||
+    !isInteger(value.lastAppliedSeq) ||
+    value.lastAppliedSeq < 0 ||
+    (value.logByteOffset !== undefined && (!isInteger(value.logByteOffset) || value.logByteOffset < 0))
+  ) {
     return false;
   }
 
@@ -409,31 +448,34 @@ function isValidPersistedDiscussSnapshot(value: unknown): value is PersistedDisc
     return false;
   }
 
-  return state.session_id === value.sessionId
-    && Object.keys(runtime.agentRuns).every((name) => name in state.agents);
+  return state.session_id === value.sessionId && Object.keys(runtime.agentRuns).every((name) => name in state.agents);
 }
 
 function isValidDiscussDiscoverySession(value: unknown): value is DiscussDiscoverySession {
   if (!isRecord(value)) return false;
-  return typeof value.sessionId === 'string'
-    && typeof value.topic === 'string'
-    && typeof value.sessionDir === 'string'
-    && typeof value.createdAt === 'string';
+  return (
+    typeof value.sessionId === 'string' &&
+    typeof value.topic === 'string' &&
+    typeof value.sessionDir === 'string' &&
+    typeof value.createdAt === 'string'
+  );
 }
 
 function isValidDiscussSummaryIndexRow(value: unknown): value is DiscussSummaryIndexRow {
   if (!isRecord(value)) return false;
-  return typeof value.sessionId === 'string'
-    && typeof value.projectRoot === 'string'
-    && typeof value.topic === 'string'
-    && typeof value.status === 'string'
-    && discussStatusSet.has(value.status)
-    && typeof value.createdAt === 'string'
-    && isInteger(value.agentCount)
-    && value.agentCount >= 0
-    && typeof value.updatedAt === 'string'
-    && isInteger(value.lastSeq)
-    && value.lastSeq >= 0;
+  return (
+    typeof value.sessionId === 'string' &&
+    typeof value.projectRoot === 'string' &&
+    typeof value.topic === 'string' &&
+    typeof value.status === 'string' &&
+    discussStatusSet.has(value.status) &&
+    typeof value.createdAt === 'string' &&
+    isInteger(value.agentCount) &&
+    value.agentCount >= 0 &&
+    typeof value.updatedAt === 'string' &&
+    isInteger(value.lastSeq) &&
+    value.lastSeq >= 0
+  );
 }
 
 type DiscussSourcesRegistryData = {
@@ -441,53 +483,45 @@ type DiscussSourcesRegistryData = {
   sources: string[];
 };
 
-function parseDiscussDiscoveryData(
-  value: unknown,
-  source: string,
-): DiscussDiscoveryData | null {
+function parseDiscussDiscoveryData(value: unknown, source: string): DiscussDiscoveryData | null {
   if (!isRecord(value) || !Array.isArray(value.sessions)) return null;
 
-  const fileSource = typeof value.source === 'string'
-    ? value.source
-    : typeof value.projectRoot === 'string'
-      ? source
-      : null;
+  const fileSource =
+    typeof value.source === 'string' ? value.source : typeof value.projectRoot === 'string' ? source : null;
 
-  if (fileSource !== source
-    || typeof value.updatedAt !== 'string'
-    || !value.sessions.every(isValidDiscussDiscoverySession)) {
+  if (
+    fileSource !== source ||
+    typeof value.updatedAt !== 'string' ||
+    !value.sessions.every(isValidDiscussDiscoverySession)
+  ) {
     return null;
   }
 
   return {
     source,
     updatedAt: value.updatedAt,
-    sessions: value.sessions as DiscussDiscoverySession[],
+    sessions: value.sessions,
   };
 }
 
-function parseDiscussSummaryIndexData(
-  value: unknown,
-  source: string,
-): DiscussSummaryIndexData | null {
+function parseDiscussSummaryIndexData(value: unknown, source: string): DiscussSummaryIndexData | null {
   if (!isRecord(value) || !Array.isArray(value.sessions)) return null;
 
-  const fileSource = typeof value.source === 'string'
-    ? value.source
-    : typeof value.projectRoot === 'string'
-      ? source
-      : null;
+  const fileSource =
+    typeof value.source === 'string' ? value.source : typeof value.projectRoot === 'string' ? source : null;
 
-  if (fileSource !== source
-    || typeof value.updatedAt !== 'string'
-    || !value.sessions.every(isValidDiscussSummaryIndexRow)) {
+  if (
+    fileSource !== source ||
+    typeof value.updatedAt !== 'string' ||
+    !value.sessions.every(isValidDiscussSummaryIndexRow)
+  ) {
     return null;
   }
 
   return {
     source,
     updatedAt: value.updatedAt,
-    sessions: value.sessions as DiscussSummaryIndexRow[],
+    sessions: value.sessions,
   };
 }
 
@@ -590,7 +624,7 @@ export interface DiscussSummaryIndexData {
  */
 export function readStatusRecord(jobId: string): PersistedStatusRecord | null {
   const record = readJsonFile(join(JOBS_DIR, jobId, 'status.json'));
-  return record === null ? null : record as PersistedStatusRecord;
+  return record === null ? null : (record as PersistedStatusRecord);
 }
 
 /**
@@ -664,8 +698,7 @@ export function readDiscussSnapshot(statePath: string): PersistedDiscussSnapshot
 export function readDiscussEventLog(logPath: string): DiscussDomainEvent[] {
   const log = readTextFile(logPath);
   if (log === null) return [];
-  return parseJsonLines(log, (lineValue) =>
-    isValidDiscussDomainEvent(lineValue) ? lineValue : null);
+  return parseJsonLines(log, (lineValue) => (isValidDiscussDomainEvent(lineValue) ? lineValue : null));
 }
 
 /**

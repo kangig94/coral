@@ -37,7 +37,9 @@ describe('extractProgressMessage', () => {
   });
 
   it('formats created file_change as Write', () => {
-    expect(extractProgressMessage(fileChangeEvent('/repo/src/new.ts', 'created'), projectRoot)).toBe('Write(src/new.ts)');
+    expect(extractProgressMessage(fileChangeEvent('/repo/src/new.ts', 'created'), projectRoot)).toBe(
+      'Write(src/new.ts)',
+    );
   });
 
   it('formats file_change path outside projectRoot as absolute', () => {
@@ -62,8 +64,9 @@ describe('extractProgressMessage', () => {
   });
 
   it('keeps non-file command_execution progress unchanged', () => {
-    expect(extractProgressMessage(commandEvent('rg -n "extractProgressMessage" src'), projectRoot))
-      .toBe('Grep(extractProgressMessage)');
+    expect(extractProgressMessage(commandEvent('rg -n "extractProgressMessage" src'), projectRoot)).toBe(
+      'Grep(extractProgressMessage)',
+    );
     expect(extractProgressMessage(commandEvent('ls -la'), projectRoot)).toBe('Bash(ls -la)');
   });
 });

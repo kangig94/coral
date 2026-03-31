@@ -1,10 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import {
-  extractBody,
-  extractPrincipleStatement,
-  extractTitle,
-  parseFrontmatter,
-} from './frontmatter.js';
+import { extractBody, extractPrincipleStatement, extractTitle, parseFrontmatter } from './frontmatter.js';
 import { memoDir, notePathFromName, principlePathFromName } from './paths.js';
 import type { KbNoteFrontmatter, KbReadInput, KbReadResult } from './types.js';
 import { assertNoteSlug } from './validation.js';

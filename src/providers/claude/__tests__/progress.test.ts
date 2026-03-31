@@ -12,7 +12,10 @@ function assistantEvent(contentBlocks: Array<{ type: string; [key: string]: unkn
   };
 }
 
-function toolUseBlock(name: string, input: Record<string, unknown> = {}): { type: 'tool_use'; name: string; id: string; input: Record<string, unknown> } {
+function toolUseBlock(
+  name: string,
+  input: Record<string, unknown> = {},
+): { type: 'tool_use'; name: string; id: string; input: Record<string, unknown> } {
   return { type: 'tool_use', name, id: 'tu-1', input };
 }
 
@@ -150,7 +153,9 @@ describe('extractClaudeProgressMessage — adversarial', () => {
       const event: ClaudeStreamEvent = {
         type: 'assistant',
         message: {
-          content: [{ type: 'tool_use', name: 'Read', id: 'tu-3', input: 'bad-input' as unknown as Record<string, unknown> }],
+          content: [
+            { type: 'tool_use', name: 'Read', id: 'tu-3', input: 'bad-input' as unknown as Record<string, unknown> },
+          ],
         },
       };
       expectNoThrow(event);

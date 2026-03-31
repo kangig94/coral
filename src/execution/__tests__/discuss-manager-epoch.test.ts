@@ -86,9 +86,7 @@ describe('Discuss epoch evaluation', () => {
     const updated = harness.store.load('discuss-1');
     expect(updated?.state.epoch).toBe(2);
     expect(updated?.state.epoch_summary_written).toBe(2);
-    expect(updated?.runtime.carryForwardMustAnswer).toEqual([
-      'alpha\u0000What freight exemption would you accept?',
-    ]);
+    expect(updated?.runtime.carryForwardMustAnswer).toEqual(['alpha\u0000What freight exemption would you accept?']);
     expect(getWatchState(harness.context, 'discuss-1').events).toContainEqual(
       expect.objectContaining({ type: 'epoch_transition', data: { epoch: 2 } }),
     );
@@ -106,7 +104,8 @@ describe('Discuss epoch evaluation', () => {
       launchCount += 1;
       return { status: 'running', job: `job-${launchCount}`, session: 'session-2' };
     });
-    const waitStreamOnce = vi.fn()
+    const waitStreamOnce = vi
+      .fn()
       .mockResolvedValueOnce({
         content: JSON.stringify({
           convergence: 9,
@@ -120,7 +119,10 @@ describe('Discuss epoch evaluation', () => {
       })
       .mockResolvedValueOnce({ content: 'Allow timed morning freight windows.', nonResumable: false })
       .mockResolvedValueOnce({ content: 'Start with the transit core and expand quarterly.', nonResumable: false })
-      .mockResolvedValueOnce({ content: 'The discussion converged after clarifying freight access and rollout timing.', nonResumable: false });
+      .mockResolvedValueOnce({
+        content: 'The discussion converged after clarifying freight access and rollout timing.',
+        nonResumable: false,
+      });
     const harness = createDiscussHarness(createExecutionServiceStub({ start, resume, waitStreamOnce }));
     const snapshot = await persistSession(harness, {
       sessionId: 'discuss-1',

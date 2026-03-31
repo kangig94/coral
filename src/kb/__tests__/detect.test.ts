@@ -2,13 +2,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as NodeOs from 'node:os';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
 }));
 
 vi.mock('node:os', async () => {
-  const actual = await vi.importActual<typeof import('node:os')>('node:os');
+  const actual = await vi.importActual<typeof NodeOs>('node:os');
   return {
     ...actual,
     homedir: () => mockState.tmpHome,
@@ -58,7 +59,7 @@ describe('kb detection and paths', () => {
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
     const { createKbRuntime, paths } = await loadKbModules();
     const kb = createKbRuntime({
-      markdownRoot: process.env.CORAL_KB_PATH!,
+      markdownRoot: process.env.CORAL_KB_PATH,
       runtimeDir: paths.kbRuntimeDir(),
     });
     const pluginRoot = join(mockState.tmpHome, 'plugin');
@@ -74,7 +75,7 @@ describe('kb detection and paths', () => {
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
     const { createKbRuntime, paths } = await loadKbModules();
     const kb = createKbRuntime({
-      markdownRoot: process.env.CORAL_KB_PATH!,
+      markdownRoot: process.env.CORAL_KB_PATH,
       runtimeDir: paths.kbRuntimeDir(),
     });
     const projectRoot = join(mockState.tmpHome, 'project');

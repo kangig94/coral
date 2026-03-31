@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs';
+import { writeFileSync, rmSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -94,11 +94,14 @@ describe('codex adapter preflight handoff', () => {
     const { codexProvider } = await loadProvider();
 
     await codexProvider.preflight?.();
-    await codexProvider.execute(makeRequest({
-      action: 'resume',
-      conversationRef: 'thread-resume',
-      prompt: 'Continue',
-    }), makeRuntime());
+    await codexProvider.execute(
+      makeRequest({
+        action: 'resume',
+        conversationRef: 'thread-resume',
+        prompt: 'Continue',
+      }),
+      makeRuntime(),
+    );
 
     expect(mockState.detectCodexCli).toHaveBeenCalledTimes(1);
     expect(mockState.executeResume).toHaveBeenCalledWith(
@@ -112,11 +115,14 @@ describe('codex adapter preflight handoff', () => {
     const { codexProvider } = await loadProvider();
 
     await codexProvider.preflight?.();
-    await codexProvider.execute(makeRequest({
-      action: 'fork',
-      conversationRef: 'thread-fork',
-      prompt: 'Fork this',
-    }), makeRuntime());
+    await codexProvider.execute(
+      makeRequest({
+        action: 'fork',
+        conversationRef: 'thread-fork',
+        prompt: 'Fork this',
+      }),
+      makeRuntime(),
+    );
 
     expect(mockState.detectCodexCli).toHaveBeenCalledTimes(1);
     expect(mockState.executeFork).toHaveBeenCalledWith(

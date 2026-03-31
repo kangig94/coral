@@ -3,11 +3,7 @@ import { serializeNote } from './frontmatter.js';
 import { loadKbNote } from './read.js';
 import type { KbUpdateInput } from './types.js';
 import { assertNonEmptyText, assertNoteSlug } from './validation.js';
-import {
-  buildNoteIndexEntry,
-  commitIndexUpdate,
-  writeFileAtomic,
-} from './mutation-helpers.js';
+import { buildNoteIndexEntry, commitIndexUpdate, writeFileAtomic } from './mutation-helpers.js';
 import type { KbRuntime } from './runtime.js';
 
 export async function applyNoteUpdateLocked(
@@ -51,9 +47,11 @@ export async function update(rt: KbRuntime, input: KbUpdateInput): Promise<{ pat
     throw new Error('content must be a string');
   }
 
-  return rt.withMutationLock(async () => applyNoteUpdateLocked(rt, {
-    note,
-    ...(requestedTitle === undefined ? {} : { title: requestedTitle }),
-    ...(requestedContent === undefined ? {} : { content: requestedContent }),
-  }));
+  return rt.withMutationLock(async () =>
+    applyNoteUpdateLocked(rt, {
+      note,
+      ...(requestedTitle === undefined ? {} : { title: requestedTitle }),
+      ...(requestedContent === undefined ? {} : { content: requestedContent }),
+    }),
+  );
 }

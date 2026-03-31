@@ -115,56 +115,44 @@ describe('cli main — workflow --input-json merge', () => {
   });
 
   it('reads expression and init_prompt from --input-json stdin', () => {
-    const { stderr } = runCli(
-      ['workflow', '--input-json', '-', '--detach'],
-      {
-        env: { HOME: tmpDir },
-        input: JSON.stringify({
-          expression: '(architect, critic)',
-          init_prompt: 'test',
-        }),
-      },
-    );
+    const { stderr } = runCli(['workflow', '--input-json', '-', '--detach'], {
+      env: { HOME: tmpDir },
+      input: JSON.stringify({
+        expression: '(architect, critic)',
+        init_prompt: 'test',
+      }),
+    });
 
     expect(stderr).not.toContain('--expression is required');
     expect(stderr).not.toContain('--init-prompt is required');
   });
 
   it('exits 1 with validation error when expression is missing', () => {
-    const { stderr, status } = runCli(
-      ['workflow', '--input-json', '-'],
-      {
-        input: JSON.stringify({ init_prompt: 'test' }),
-      },
-    );
+    const { stderr, status } = runCli(['workflow', '--input-json', '-'], {
+      input: JSON.stringify({ init_prompt: 'test' }),
+    });
 
     expect(status).toBe(1);
     expect(stderr).toContain('--expression is required');
   });
 
   it('exits 1 with validation error when init-prompt is missing', () => {
-    const { stderr, status } = runCli(
-      ['workflow', '--input-json', '-'],
-      {
-        input: JSON.stringify({ expression: '(architect)' }),
-      },
-    );
+    const { stderr, status } = runCli(['workflow', '--input-json', '-'], {
+      input: JSON.stringify({ expression: '(architect)' }),
+    });
 
     expect(status).toBe(1);
     expect(stderr).toContain('--init-prompt is required');
   });
 
   it('accepts explicit flags alongside --input-json stdin', () => {
-    const { stderr } = runCli(
-      ['workflow', '--expression', 'from-flag', '--input-json', '-', '--detach'],
-      {
-        env: { HOME: tmpDir },
-        input: JSON.stringify({
-          expression: 'from-json',
-          init_prompt: 'from-json',
-        }),
-      },
-    );
+    const { stderr } = runCli(['workflow', '--expression', 'from-flag', '--input-json', '-', '--detach'], {
+      env: { HOME: tmpDir },
+      input: JSON.stringify({
+        expression: 'from-json',
+        init_prompt: 'from-json',
+      }),
+    });
 
     expect(stderr).not.toContain('--expression is required');
     expect(stderr).not.toContain('--init-prompt is required');
@@ -183,67 +171,54 @@ describe('cli main — discuss stdin input redesign', () => {
   });
 
   it('accepts discuss seed payload from --input-json stdin', () => {
-    const { stderr } = runCli(
-      ['discuss', 'seed', '--input-json', '-'],
-      {
-        env: { HOME: tmpDir },
-        input: JSON.stringify({
-          controversy_axes: [{ axis: 'risk', positions: ['low', 'high'] }],
-          n: 2,
-          seed: 1,
-        }),
-      },
-    );
+    const { stderr } = runCli(['discuss', 'seed', '--input-json', '-'], {
+      env: { HOME: tmpDir },
+      input: JSON.stringify({
+        controversy_axes: [{ axis: 'risk', positions: ['low', 'high'] }],
+        n: 2,
+        seed: 1,
+      }),
+    });
 
     expect(stderr).not.toContain('controversy_axes');
     expect(stderr).not.toContain('Array must contain at least 1 element(s)');
   });
 
   it('accepts discuss start payload from --input-json stdin', () => {
-    const { stderr } = runCli(
-      ['discuss', 'start', '--input-json', '-'],
-      {
-        input: JSON.stringify({
-          agents: [
-            { name: 'alice', persona: 'One' },
-          ],
-        }),
-      },
-    );
+    const { stderr } = runCli(['discuss', 'start', '--input-json', '-'], {
+      input: JSON.stringify({
+        agents: [{ name: 'alice', persona: 'One' }],
+      }),
+    });
 
     expect(stderr).not.toContain("required option '--json <file>'");
     expect(stderr).toContain('Array must contain at least 2 element(s)');
   });
 
   it('collects repeated --agent flags for discuss start', () => {
-    const { stderr } = runCli(
-      [
-        'discuss',
-        'start',
-        '--agent',
-        'name=alice,persona=One',
-        '--agent',
-        'name=bob,persona=Two',
-      ],
-    );
+    const { stderr } = runCli([
+      'discuss',
+      'start',
+      '--agent',
+      'name=alice,persona=One',
+      '--agent',
+      'name=bob,persona=Two',
+    ]);
 
     expect(stderr).not.toContain('Array must contain at least 2 element(s)');
     expect(stderr).toContain('Required');
   });
 
   it('accepts discuss participate payload from --input-json stdin', () => {
-    const { stderr } = runCli(
-      ['discuss', 'participate', '--input-json', '-'],
-      {
-        env: { HOME: tmpDir },
-        input: JSON.stringify({
-          session: 'session-1',
-          agent_name: 'alice',
-          score: 42,
-          thought: 'I should speak now.',
-        }),
-      },
-    );
+    const { stderr } = runCli(['discuss', 'participate', '--input-json', '-'], {
+      env: { HOME: tmpDir },
+      input: JSON.stringify({
+        session: 'session-1',
+        agent_name: 'alice',
+        score: 42,
+        thought: 'I should speak now.',
+      }),
+    });
 
     expect(stderr).not.toContain("required option '--session <id>'");
     expect(stderr).not.toContain("required option '--agent-name <name>'");

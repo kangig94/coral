@@ -10,10 +10,7 @@ function makeProvider(name: string): Provider {
 
 async function loadProviderModules() {
   vi.resetModules();
-  const [registry, bootstrap] = await Promise.all([
-    import('../registry.js'),
-    import('../bootstrap.js'),
-  ]);
+  const [registry, bootstrap] = await Promise.all([import('../registry.js'), import('../bootstrap.js')]);
   return { registry, bootstrap };
 }
 

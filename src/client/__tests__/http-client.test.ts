@@ -44,7 +44,8 @@ describe('client http-client', () => {
     },
     {
       method: 'kbMemo',
-      invoke: (client: BackendClient) => client.kbMemo({ topic: 'kb-routing', content: 'Memo body', owner: 'test-session' }),
+      invoke: (client: BackendClient) =>
+        client.kbMemo({ topic: 'kb-routing', content: 'Memo body', owner: 'test-session' }),
       toolName: 'kb_memo',
       args: { topic: 'kb-routing', content: 'Memo body', owner: 'test-session' },
     },
@@ -68,13 +69,14 @@ describe('client http-client', () => {
     },
     {
       method: 'kbPromote',
-      invoke: (client: BackendClient) => client.kbPromote({
-        memo: 'memo/example.md',
-        title: 'KB note',
-        content: 'Promoted content',
-        domain: 'cli',
-        topic: 'kb-tooling',
-      }),
+      invoke: (client: BackendClient) =>
+        client.kbPromote({
+          memo: 'memo/example.md',
+          title: 'KB note',
+          content: 'Promoted content',
+          domain: 'cli',
+          topic: 'kb-tooling',
+        }),
       toolName: 'kb_promote',
       args: {
         memo: 'memo/example.md',
@@ -86,10 +88,11 @@ describe('client http-client', () => {
     },
     {
       method: 'kbUpdate',
-      invoke: (client: BackendClient) => client.kbUpdate({
-        note: 'cli-kb-tooling',
-        content: 'Updated content',
-      }),
+      invoke: (client: BackendClient) =>
+        client.kbUpdate({
+          note: 'cli-kb-tooling',
+          content: 'Updated content',
+        }),
       toolName: 'kb_update',
       args: {
         note: 'cli-kb-tooling',
@@ -114,24 +117,29 @@ describe('client http-client', () => {
       defaultContext,
     });
 
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    }));
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
 
     await expect(invoke(client)).resolves.toEqual({ ok: true });
-    expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:4100/tool', expect.objectContaining({
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Coral-Backend-Token': 'backend-token',
-      },
-      body: JSON.stringify({
-        name: toolName,
-        args,
-        context: defaultContext,
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:4100/tool',
+      expect.objectContaining({
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Coral-Backend-Token': 'backend-token',
+        },
+        body: JSON.stringify({
+          name: toolName,
+          args,
+          context: defaultContext,
+        }),
       }),
-    }));
+    );
   });
 
   it('preserves structured JSON error bodies from /tool failures', async () => {
@@ -141,11 +149,13 @@ describe('client http-client', () => {
     });
     const errorBody = { error: 'scope_mismatch', jobs: ['job-1'] };
 
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(errorBody), {
-      status: 403,
-      statusText: 'Forbidden',
-      headers: { 'Content-Type': 'application/json' },
-    }));
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(errorBody), {
+        status: 403,
+        statusText: 'Forbidden',
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
 
     let caught: unknown;
     try {
@@ -158,17 +168,20 @@ describe('client http-client', () => {
     expect((caught as BackendToolHttpError).message).toBe('Backend request failed: 403 Forbidden');
     expect((caught as BackendToolHttpError).statusCode).toBe(403);
     expect((caught as BackendToolHttpError).body).toEqual(errorBody);
-    expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:4100/tool', expect.objectContaining({
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Coral-Backend-Token': 'backend-token',
-      },
-      body: JSON.stringify({
-        name: 'abort',
-        args: { jobs: ['job-1'] },
-        context: defaultContext,
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:4100/tool',
+      expect.objectContaining({
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Coral-Backend-Token': 'backend-token',
+        },
+        body: JSON.stringify({
+          name: 'abort',
+          args: { jobs: ['job-1'] },
+          context: defaultContext,
+        }),
       }),
-    }));
+    );
   });
 });

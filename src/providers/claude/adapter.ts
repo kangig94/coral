@@ -18,7 +18,13 @@ import { extractClaudeProgressMessage } from './progress.js';
 import { readAppendedLines } from '../../shared/file-tail.js';
 import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
 import { mapProviderResultBase } from '../result-mapping.js';
-import { makeOnEvent, requireConversationRef, type Provider, type ProviderRecoveryContract, type ProviderRuntime } from '../types.js';
+import {
+  makeOnEvent,
+  requireConversationRef,
+  type Provider,
+  type ProviderRecoveryContract,
+  type ProviderRuntime,
+} from '../types.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 import type { ClaudeExecResult, ClaudeStreamEvent } from './types.js';
 
@@ -67,8 +73,8 @@ function mapResult(result: ClaudeExecResult, fallbackConversationRef?: string): 
   return {
     ...mapProviderResultBase(result),
     conversationRef: result.sessionId ?? fallbackConversationRef,
-    nonResumable: result.sessionId == null ? true : undefined,
-    usage: result.costUsd != null ? { costUsd: result.costUsd } : undefined,
+    nonResumable: result.sessionId === null || result.sessionId === undefined ? true : undefined,
+    usage: result.costUsd !== null && result.costUsd !== undefined ? { costUsd: result.costUsd } : undefined,
   };
 }
 

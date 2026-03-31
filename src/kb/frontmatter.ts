@@ -11,10 +11,7 @@ export const FRONTMATTER_BLOCK = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/;
 const TOP_LEVEL_TITLE = /^# .+(?:\r?\n){1,2}/;
 
 export function extractBody(content: string): string {
-  return content
-    .replace(FRONTMATTER_BLOCK, '')
-    .replace(TOP_LEVEL_TITLE, '')
-    .trim();
+  return content.replace(FRONTMATTER_BLOCK, '').replace(TOP_LEVEL_TITLE, '').trim();
 }
 
 export function extractPrincipleStatement(content: string): string {
@@ -115,28 +112,38 @@ export function parseMemoFrontmatter(content: string): { source: string[]; owner
 
 /** Serialize memo frontmatter (source + owner) using YAML output for safety. */
 export function serializeMemoFrontmatter(fields: { source: string; owner: string }): string {
-  const serialized = yaml.stringify({
-    source: fields.source,
-    owner: fields.owner,
-  }, {
-    lineWidth: 0,
-  }).trimEnd();
+  const serialized = yaml
+    .stringify(
+      {
+        source: fields.source,
+        owner: fields.owner,
+      },
+      {
+        lineWidth: 0,
+      },
+    )
+    .trimEnd();
 
   return `---\n${serialized}\n---`;
 }
 
 export function serializeFrontmatter(meta: KbNoteFrontmatter): string {
   const mutationSeqAtPromote = normalizeOptionalMutationSeqAtPromote(meta.mutationSeqAtPromote);
-  const serialized = yaml.stringify({
-    tags: normalizeStringList(meta.tags, 'tags'),
-    principles: normalizePrincipleList(meta.principles),
-    source: normalizeStringList(meta.source, 'source'),
-    createdAt: assertNonEmptyText(meta.createdAt, 'createdAt'),
-    updatedAt: assertNonEmptyText(meta.updatedAt, 'updatedAt'),
-    ...(mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote }),
-  }, {
-    lineWidth: 0,
-  }).trimEnd();
+  const serialized = yaml
+    .stringify(
+      {
+        tags: normalizeStringList(meta.tags, 'tags'),
+        principles: normalizePrincipleList(meta.principles),
+        source: normalizeStringList(meta.source, 'source'),
+        createdAt: assertNonEmptyText(meta.createdAt, 'createdAt'),
+        updatedAt: assertNonEmptyText(meta.updatedAt, 'updatedAt'),
+        ...(mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote }),
+      },
+      {
+        lineWidth: 0,
+      },
+    )
+    .trimEnd();
 
   return `---\n${serialized}\n---\n`;
 }

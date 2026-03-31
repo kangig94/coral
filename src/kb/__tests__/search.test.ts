@@ -2,13 +2,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as NodeOs from 'node:os';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
 }));
 
 vi.mock('node:os', async () => {
-  const actual = await vi.importActual<typeof import('node:os')>('node:os');
+  const actual = await vi.importActual<typeof NodeOs>('node:os');
   return {
     ...actual,
     homedir: () => mockState.tmpHome,
@@ -56,7 +57,9 @@ function writeNote(
     body: string;
   },
 ): void {
-  writeFileSync(join(noteDir, `${slug}.md`), `---
+  writeFileSync(
+    join(noteDir, `${slug}.md`),
+    `---
 tags: [${tags.join(', ')}]
 principles: [${principles.join(', ')}]
 source:
@@ -67,7 +70,9 @@ updatedAt: 2026-03-23
 # ${title}
 
 ${body}
-`, 'utf-8');
+`,
+    'utf-8',
+  );
 }
 
 function resultNotes(results: { note: string }[]): string[] {
@@ -153,10 +158,10 @@ describe('kb search', () => {
     const response = await searchKb(kb, 'rendering guiding contracts', 10);
     const notesByRank = resultNotes(response.results);
 
-    expect(position(notesByRank, 'rendering-guiding-contracts'))
-      .toBeLessThan(position(notesByRank, 'rendering-guiding'));
-    expect(position(notesByRank, 'rendering-guiding'))
-      .toBeLessThan(position(notesByRank, 'contracts-only'));
+    expect(position(notesByRank, 'rendering-guiding-contracts')).toBeLessThan(
+      position(notesByRank, 'rendering-guiding'),
+    );
+    expect(position(notesByRank, 'rendering-guiding')).toBeLessThan(position(notesByRank, 'contracts-only'));
   });
 
   it('returns subset hits at threshold 1, ranks stronger matches first, and keeps snippets for subset content hits', async () => {
@@ -185,10 +190,8 @@ describe('kb search', () => {
     expect(notesByRank).toContain('wfpg-cone-aperture');
     expect(notesByRank).toContain('wfpg-aperture-notes');
     expect(notesByRank).toContain('single-term');
-    expect(position(notesByRank, 'wfpg-cone-aperture'))
-      .toBeLessThan(position(notesByRank, 'wfpg-aperture-notes'));
-    expect(position(notesByRank, 'wfpg-aperture-notes'))
-      .toBeLessThan(position(notesByRank, 'single-term'));
+    expect(position(notesByRank, 'wfpg-cone-aperture')).toBeLessThan(position(notesByRank, 'wfpg-aperture-notes'));
+    expect(position(notesByRank, 'wfpg-aperture-notes')).toBeLessThan(position(notesByRank, 'single-term'));
 
     const subsetMatch = resultFor(response.results, 'wfpg-aperture-notes');
     expect(subsetMatch.snippet).toBeDefined();

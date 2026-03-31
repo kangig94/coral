@@ -48,9 +48,7 @@ async function recoverSessions(harness: DiscussHarness) {
   );
 }
 
-function resumeRecoveredSessions(
-  recovered: Awaited<ReturnType<typeof recoverSessions>>,
-): void {
+function resumeRecoveredSessions(recovered: Awaited<ReturnType<typeof recoverSessions>>): void {
   for (const session of recovered) {
     discussLoop.resumeLoop(session.ctx, session.sessionId, session.callerCtx);
   }
@@ -112,17 +110,21 @@ describe('Discuss executor and operations', () => {
       purpose: 'turn',
     });
 
-    expect(start).toHaveBeenCalledWith('codex', {
-      prompt: 'Bid now',
-      model: 'gpt-5',
-      pool: 'discuss',
-      cwd: '/repo',
-      bypassPermissions: true,
-      instruction: {
-        channel: 'system',
-        content: 'System turn contract',
+    expect(start).toHaveBeenCalledWith(
+      'codex',
+      {
+        prompt: 'Bid now',
+        model: 'gpt-5',
+        pool: 'discuss',
+        cwd: '/repo',
+        bypassPermissions: true,
+        instruction: {
+          channel: 'system',
+          content: 'System turn contract',
+        },
       },
-    }, harness.ctx);
+      harness.ctx,
+    );
     expect(waitStreamOnce).toHaveBeenCalledWith('job-1', undefined);
     expect(result).toEqual({ content: 'bid result', nonResumable: false });
     expect(getSession(harness.context, 'discuss-1')?.snapshot.runtime.agentRuns.alpha).toMatchObject({
@@ -175,14 +177,18 @@ describe('Discuss executor and operations', () => {
       purpose: 'turn',
     });
 
-    expect(resume).toHaveBeenCalledWith('claude', {
-      sessionId: 'exec-session-1',
-      prompt: 'Resume turn contract\n\n---\n\nSpeak now',
-      model: 'sonnet',
-      pool: 'discuss',
-      cwd: '/repo',
-      bypassPermissions: true,
-    }, harness.ctx);
+    expect(resume).toHaveBeenCalledWith(
+      'claude',
+      {
+        sessionId: 'exec-session-1',
+        prompt: 'Resume turn contract\n\n---\n\nSpeak now',
+        model: 'sonnet',
+        pool: 'discuss',
+        cwd: '/repo',
+        bypassPermissions: true,
+      },
+      harness.ctx,
+    );
     expect(result).toEqual({ content: 'speech result', nonResumable: true });
     expect(getSession(harness.context, 'discuss-1')?.snapshot.runtime.agentRuns.alpha).toMatchObject({
       executionSessionId: 'exec-session-1',
@@ -196,10 +202,12 @@ describe('Discuss executor and operations', () => {
 
   it('schedules the loop after start completes initial bid collection', async () => {
     vi.useFakeTimers();
-    const start = vi.fn()
+    const start = vi
+      .fn()
       .mockResolvedValueOnce({ status: 'running', job: 'job-1', session: 'exec-alpha' })
       .mockResolvedValueOnce({ status: 'running', job: 'job-2', session: 'exec-beta' });
-    const waitStreamOnce = vi.fn()
+    const waitStreamOnce = vi
+      .fn()
       .mockResolvedValueOnce({ content: '{"score": 61, "thought": "alpha"}', nonResumable: false })
       .mockResolvedValueOnce({ content: '{"score": 37, "thought": "beta"}', nonResumable: false });
     const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
@@ -227,20 +235,44 @@ describe('Discuss executor and operations', () => {
       sessionId: 'discuss-recovery',
       recover: false,
       buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.round.closed', '2026-03-10T00:01:00.000Z', {
-          allBids: { alpha: 88, beta: 42 },
-          effectiveBids: { alpha: 88, beta: 42 },
-          thoughts: { alpha: 'keep sealed', beta: 'also sealed' },
-          outcome: { winner: 'alpha', speaker_type: 'quota' as const },
-          stateMutations: { cold_start: false },
-        }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'session.ended', '2026-03-10T00:01:01.000Z', {
-          endReason: 'all_blocked',
-          endReasonContent: 'All blocked.',
-        }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 3, 'session.synthesized', '2026-03-10T00:01:02.000Z', {
-          synthesis: 'The discussion ended without consensus.',
-        }),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'bid.round.closed',
+          '2026-03-10T00:01:00.000Z',
+          {
+            allBids: { alpha: 88, beta: 42 },
+            effectiveBids: { alpha: 88, beta: 42 },
+            thoughts: { alpha: 'keep sealed', beta: 'also sealed' },
+            outcome: { winner: 'alpha', speaker_type: 'quota' as const },
+            stateMutations: { cold_start: false },
+          },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 2,
+          'session.ended',
+          '2026-03-10T00:01:01.000Z',
+          {
+            endReason: 'all_blocked',
+            endReasonContent: 'All blocked.',
+          },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 3,
+          'session.synthesized',
+          '2026-03-10T00:01:02.000Z',
+          {
+            synthesis: 'The discussion ended without consensus.',
+          },
+        ),
       ],
     });
     const readDiscussEventLogSpy = vi.spyOn(discussReaders, 'readDiscussEventLog');
@@ -275,7 +307,15 @@ describe('Discuss executor and operations', () => {
         { name: 'user', persona: '# User', participation: 'observer' },
       ],
       buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.submitted', '2026-03-10T00:01:00.000Z', { agent: 'alpha', score: 88, thought: 'alpha bid' }),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'bid.submitted',
+          '2026-03-10T00:01:00.000Z',
+          { agent: 'alpha', score: 88, thought: 'alpha bid' },
+        ),
       ],
     });
 
@@ -304,11 +344,17 @@ describe('Discuss executor and operations', () => {
     await persistSession(harness, {
       sessionId: 'discuss-round-close',
       recover: false,
-      agents: [
-        { name: 'alpha', persona: '# Alpha', participation: 'required' },
-      ],
+      agents: [{ name: 'alpha', persona: '# Alpha', participation: 'required' }],
       buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.submitted', '2026-03-10T00:01:00.000Z', { agent: 'alpha', score: 88, thought: 'alpha bid' }),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'bid.submitted',
+          '2026-03-10T00:01:00.000Z',
+          { agent: 'alpha', score: 88, thought: 'alpha bid' },
+        ),
       ],
     });
 
@@ -330,19 +376,35 @@ describe('Discuss executor and operations', () => {
       sessionId: 'discuss-copy',
       recover: true,
       buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.round.closed', '2026-03-10T00:01:00.000Z', {
-          allBids: { alpha: 88, beta: 42 },
-          effectiveBids: { alpha: 88, beta: 42 },
-          thoughts: { alpha: 'keep sealed', beta: 'also sealed' },
-          outcome: { winner: 'alpha', speaker_type: 'quota' as const },
-          stateMutations: { cold_start: false },
-        }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'speech.recorded', '2026-03-10T00:01:01.000Z', {
-          agent: 'alpha',
-          content: 'Open the street to buses and bikes first.',
-          decrementQuota: true,
-          recordLastSpeechStep: 1,
-        }),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'bid.round.closed',
+          '2026-03-10T00:01:00.000Z',
+          {
+            allBids: { alpha: 88, beta: 42 },
+            effectiveBids: { alpha: 88, beta: 42 },
+            thoughts: { alpha: 'keep sealed', beta: 'also sealed' },
+            outcome: { winner: 'alpha', speaker_type: 'quota' as const },
+            stateMutations: { cold_start: false },
+          },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 2,
+          'speech.recorded',
+          '2026-03-10T00:01:01.000Z',
+          {
+            agent: 'alpha',
+            content: 'Open the street to buses and bikes first.',
+            decrementQuota: true,
+            recordLastSpeechStep: 1,
+          },
+        ),
       ],
     });
 
@@ -362,19 +424,35 @@ describe('Discuss executor and operations', () => {
       sessionId: 'discuss-ended',
       recover: true,
       buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.round.closed', '2026-03-10T00:01:00.000Z', {
-          allBids: { alpha: 88, beta: 42 },
-          effectiveBids: { alpha: 88, beta: 42 },
-          thoughts: { alpha: 'keep sealed', beta: 'also sealed' },
-          outcome: { winner: 'alpha', speaker_type: 'quota' as const },
-          stateMutations: { cold_start: false },
-        }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'speech.recorded', '2026-03-10T00:01:01.000Z', {
-          agent: 'alpha',
-          content: 'Final speech before end.',
-          decrementQuota: true,
-          recordLastSpeechStep: 1,
-        }),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'bid.round.closed',
+          '2026-03-10T00:01:00.000Z',
+          {
+            allBids: { alpha: 88, beta: 42 },
+            effectiveBids: { alpha: 88, beta: 42 },
+            thoughts: { alpha: 'keep sealed', beta: 'also sealed' },
+            outcome: { winner: 'alpha', speaker_type: 'quota' as const },
+            stateMutations: { cold_start: false },
+          },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 2,
+          'speech.recorded',
+          '2026-03-10T00:01:01.000Z',
+          {
+            agent: 'alpha',
+            content: 'Final speech before end.',
+            decrementQuota: true,
+            recordLastSpeechStep: 1,
+          },
+        ),
       ],
     });
 
@@ -426,11 +504,19 @@ describe('Discuss executor and operations', () => {
       sessionId: 'discuss-abort-ended',
       recover: false,
       buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'session.ended', '2026-03-10T00:01:00.000Z', {
-          endReasonContent: 'abort',
-          force: true,
-          reason: 'abort',
-        }),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'session.ended',
+          '2026-03-10T00:01:00.000Z',
+          {
+            endReasonContent: 'abort',
+            force: true,
+            reason: 'abort',
+          },
+        ),
       ],
     });
 

@@ -53,7 +53,7 @@ function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
     retryNotBefore: null,
     activeClaim: null,
     pendingDiscoveries: [],
-        consecutiveFailures: 0,
+    consecutiveFailures: 0,
     initialized: false,
     ...overrides,
   };
@@ -219,20 +219,24 @@ afterEach(() => {
 describe('curate', () => {
   describe('prompt building and response parsing', () => {
     it('builds a classification prompt with every note, tag, and principle', () => {
-      const prompt = buildClassificationPrompt([
-        buildClaimedNote({
-          slug: 'coral-alpha',
-          title: 'Alpha',
-          body: 'Alpha body.',
-          mutationSeqAtPromote: 1,
-        }),
-        buildClaimedNote({
-          slug: 'coral-beta',
-          title: 'Beta',
-          body: 'Beta body.',
-          mutationSeqAtPromote: 2,
-        }),
-      ], ['coral', 'kb', 'ui-pattern'], ['contract-first-design', 'deterministic-ordering']);
+      const prompt = buildClassificationPrompt(
+        [
+          buildClaimedNote({
+            slug: 'coral-alpha',
+            title: 'Alpha',
+            body: 'Alpha body.',
+            mutationSeqAtPromote: 1,
+          }),
+          buildClaimedNote({
+            slug: 'coral-beta',
+            title: 'Beta',
+            body: 'Beta body.',
+            mutationSeqAtPromote: 2,
+          }),
+        ],
+        ['coral', 'kb', 'ui-pattern'],
+        ['contract-first-design', 'deterministic-ordering'],
+      );
 
       expect(prompt).toContain('Tag vocabulary:\n- coral\n- kb\n- ui-pattern');
       expect(prompt).toContain('Principle names:\n- contract-first-design\n- deterministic-ordering');
@@ -290,11 +294,16 @@ describe('curate', () => {
 
       expect(parseClassificationResponse('{"note":"coral-alpha"}', noteMap)).toEqual([]);
       expect(parseClassificationResponse('[', noteMap)).toEqual([]);
-      expect(parseClassificationResponse(JSON.stringify([
-        { note: 'coral-alpha', tags: ['coral'] },
-        { note: 'coral-missing', tags: ['coral'], principles: [] },
-        { note: 'coral-alpha', tags: ['coral'], principles: [] },
-      ]), noteMap)).toEqual([
+      expect(
+        parseClassificationResponse(
+          JSON.stringify([
+            { note: 'coral-alpha', tags: ['coral'] },
+            { note: 'coral-missing', tags: ['coral'], principles: [] },
+            { note: 'coral-alpha', tags: ['coral'], principles: [] },
+          ]),
+          noteMap,
+        ),
+      ).toEqual([
         {
           note: 'coral-alpha',
           tags: ['coral'],
@@ -378,20 +387,30 @@ describe('curate', () => {
 
     it('builds a discovery prompt with corpus file, truncated note bodies, and merge/refine instructions', () => {
       const longBody = 'x'.repeat(5000);
-      const { prompt, corpusPath } = buildDiscoveryPrompt([
-        buildClaimedNote({
-          slug: 'coral-alpha',
-          title: 'Alpha',
-          body: longBody,
-          mutationSeqAtPromote: 1,
-        }),
-      ], { 'deterministic-ordering': 'Operations with dependency order must use explicit declaration order or sequencing.' });
+      const { prompt, corpusPath } = buildDiscoveryPrompt(
+        [
+          buildClaimedNote({
+            slug: 'coral-alpha',
+            title: 'Alpha',
+            body: longBody,
+            mutationSeqAtPromote: 1,
+          }),
+        ],
+        {
+          'deterministic-ordering':
+            'Operations with dependency order must use explicit declaration order or sequencing.',
+        },
+      );
 
       expect(prompt).toContain('- deterministic-ordering: Operations with dependency order');
       expect(prompt).toContain(corpusPath);
       expect(prompt).toContain('"absorbs": ["<existing-slug>", ...]');
-      expect(prompt).toContain('To improve an existing principle\'s wording, return it with its existing slug and the better statement.');
-      expect(prompt).toContain('To merge similar principles, return the surviving slug with absorbs listing the slugs to fold in. Omit absorbs when creating new principles.');
+      expect(prompt).toContain(
+        "To improve an existing principle's wording, return it with its existing slug and the better statement.",
+      );
+      expect(prompt).toContain(
+        'To merge similar principles, return the surviving slug with absorbs listing the slugs to fold in. Omit absorbs when creating new principles.',
+      );
       const corpus = readFileSync(corpusPath, 'utf-8');
       expect(corpus).toContain('## coral-alpha\nAlpha\n');
       expect(corpus).toContain('x'.repeat(4000));
@@ -484,10 +503,12 @@ describe('curate', () => {
         },
       ];
 
-      expect(validateDiscoveryProposals(proposals, eligibleNotes, {
-        'existing-principle': 'Already exists.',
-        'refine-principle': 'Original wording.',
-      })).toEqual([
+      expect(
+        validateDiscoveryProposals(proposals, eligibleNotes, {
+          'existing-principle': 'Already exists.',
+          'refine-principle': 'Original wording.',
+        }),
+      ).toEqual([
         {
           slug: 'shared-context',
           statement: 'Preserve one context owner.',
@@ -572,16 +593,18 @@ describe('curate', () => {
         },
       ];
 
-      expect(validateDiscoveryProposals(proposals, eligibleNotes, {
-        'absorbed-a': 'Absorbed A.',
-        'absorbed-b': 'Absorbed B.',
-        'absorbed-c': 'Absorbed C.',
-        'absorbed-d': 'Absorbed D.',
-        'refine-one': 'Original refine one.',
-        'refine-two': 'Original refine two.',
-        'refine-three': 'Original refine three.',
-        'refine-four': 'Original refine four.',
-      })).toEqual([
+      expect(
+        validateDiscoveryProposals(proposals, eligibleNotes, {
+          'absorbed-a': 'Absorbed A.',
+          'absorbed-b': 'Absorbed B.',
+          'absorbed-c': 'Absorbed C.',
+          'absorbed-d': 'Absorbed D.',
+          'refine-one': 'Original refine one.',
+          'refine-two': 'Original refine two.',
+          'refine-three': 'Original refine three.',
+          'refine-four': 'Original refine four.',
+        }),
+      ).toEqual([
         {
           slug: 'merge-survivor',
           statement: 'Consolidate one rule for the same pattern.',
@@ -636,12 +659,15 @@ describe('curate', () => {
         },
         principles: {},
       });
-      writeCurateState(runtime, createCurateState({
-        processedThrough: {
-          note: 'coral-beta',
-          mutationSeqAtPromote: 2,
-        },
-      }));
+      writeCurateState(
+        runtime,
+        createCurateState({
+          processedThrough: {
+            note: 'coral-beta',
+            mutationSeqAtPromote: 2,
+          },
+        }),
+      );
 
       await expect(internals.claimCurateRun('2026-03-25')).resolves.toBeNull();
     });
@@ -697,9 +723,12 @@ describe('curate', () => {
       }
 
       runtime.writeIndex({ notes, principles: {} });
-      writeCurateState(runtime, createCurateState({
-        lastRunDay: '2026-03-24',
-      }));
+      writeCurateState(
+        runtime,
+        createCurateState({
+          lastRunDay: '2026-03-24',
+        }),
+      );
 
       const claim = await internals.claimCurateRun('2026-03-25');
 
@@ -752,9 +781,12 @@ describe('curate', () => {
       }
 
       runtime.writeIndex({ notes, principles: {} });
-      writeCurateState(runtime, createCurateState({
-        lastRunDay: '2026-03-25',
-      }));
+      writeCurateState(
+        runtime,
+        createCurateState({
+          lastRunDay: '2026-03-25',
+        }),
+      );
 
       const claim = await internals.claimCurateRun('2026-03-25');
 
@@ -769,13 +801,18 @@ describe('curate', () => {
 
     it('chunks notes at the requested batch size including edge cases', () => {
       expect(chunkNotes([], 10)).toEqual([]);
-      expect(chunkNotes(Array.from({ length: 10 }, (_, index) => index + 1), 10)).toEqual([
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-      ]);
-      expect(chunkNotes(Array.from({ length: 11 }, (_, index) => index + 1), 10)).toEqual([
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-        [11],
-      ]);
+      expect(
+        chunkNotes(
+          Array.from({ length: 10 }, (_, index) => index + 1),
+          10,
+        ),
+      ).toEqual([[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]]);
+      expect(
+        chunkNotes(
+          Array.from({ length: 11 }, (_, index) => index + 1),
+          10,
+        ),
+      ).toEqual([[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], [11]]);
     });
   });
 
@@ -800,11 +837,13 @@ describe('curate', () => {
         },
         principles: {},
       };
-      const assignments: ClassificationAssignment[] = [{
-        note: 'coral-alpha',
-        tags: ['coral', 'kb'],
-        principles: ['deterministic-ordering'],
-      }];
+      const assignments: ClassificationAssignment[] = [
+        {
+          note: 'coral-alpha',
+          tags: ['coral', 'kb'],
+          principles: ['deterministic-ordering'],
+        },
+      ];
       const claimedNotes = [
         buildClaimedNote({
           slug: 'coral-alpha',
@@ -860,13 +899,15 @@ describe('curate', () => {
         principles: {},
       });
 
-      await internals.commitMetadataTargets([{
-        note: 'coral-alpha',
-        mutationSeqAtPromote: 4,
-        claimTimeUpdatedAt: updatedAt,
-        addTags: ['kb'],
-        addPrinciples: ['deterministic-ordering'],
-      }]);
+      await internals.commitMetadataTargets([
+        {
+          note: 'coral-alpha',
+          mutationSeqAtPromote: 4,
+          claimTimeUpdatedAt: updatedAt,
+          addTags: ['kb'],
+          addPrinciples: ['deterministic-ordering'],
+        },
+      ]);
 
       const raw = readFileSync(join(runtime.notesDir(), 'coral-alpha.md'), 'utf-8');
       expect(parseFrontmatter(raw)).toEqual({
@@ -1006,22 +1047,21 @@ describe('curate', () => {
         principles: {},
       });
 
-      await internals.commitMetadataTargets([{
-        note: 'coral-parent-child',
-        mutationSeqAtPromote: 1,
-        claimTimeUpdatedAt: DEFAULT_UPDATED_AT,
-        desiredTags: ['coral', 'stable-parent', 'stable-parent-child'],
-        cleanup: true,
-      }]);
+      await internals.commitMetadataTargets([
+        {
+          note: 'coral-parent-child',
+          mutationSeqAtPromote: 1,
+          claimTimeUpdatedAt: DEFAULT_UPDATED_AT,
+          desiredTags: ['coral', 'stable-parent', 'stable-parent-child'],
+          cleanup: true,
+        },
+      ]);
 
       expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-parent-child.md'), 'utf-8')).tags).toEqual([
         'coral',
         'stable-parent',
       ]);
-      expect(runtime.readIndex()?.notes['coral-parent-child']?.tags).toEqual([
-        'coral',
-        'stable-parent',
-      ]);
+      expect(runtime.readIndex()?.notes['coral-parent-child']?.tags).toEqual(['coral', 'stable-parent']);
     });
 
     it('removes absorbed principles while preserving the remaining live principle list', async () => {
@@ -1043,22 +1083,21 @@ describe('curate', () => {
         principles: {},
       });
 
-      await internals.commitMetadataTargets([{
-        note: 'coral-alpha',
-        mutationSeqAtPromote: 4,
-        claimTimeUpdatedAt: '2026-03-21T00:00:00.000Z',
-        addPrinciples: ['new-principle'],
-        removePrinciples: ['old-principle'],
-      }]);
+      await internals.commitMetadataTargets([
+        {
+          note: 'coral-alpha',
+          mutationSeqAtPromote: 4,
+          claimTimeUpdatedAt: '2026-03-21T00:00:00.000Z',
+          addPrinciples: ['new-principle'],
+          removePrinciples: ['old-principle'],
+        },
+      ]);
 
       expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-alpha.md'), 'utf-8')).principles).toEqual([
         'kept-principle',
         'new-principle',
       ]);
-      expect(runtime.readIndex()?.notes['coral-alpha']?.principles).toEqual([
-        'kept-principle',
-        'new-principle',
-      ]);
+      expect(runtime.readIndex()?.notes['coral-alpha']?.principles).toEqual(['kept-principle', 'new-principle']);
     });
   });
 
@@ -1086,20 +1125,23 @@ describe('curate', () => {
     });
 
     it('persists failure and retry clearing through the standalone wrappers', async () => {
-      writeCurateState(runtime, createCurateState({
-        lastAttemptedThrough: {
-          note: 'coral-retry',
-          mutationSeqAtPromote: 9,
-        },
-        activeClaim: {
-          through: {
+      writeCurateState(
+        runtime,
+        createCurateState({
+          lastAttemptedThrough: {
             note: 'coral-retry',
             mutationSeqAtPromote: 9,
           },
-          startedAt: '2026-03-25T11:58:00.000Z',
-        },
-        consecutiveFailures: 1,
-      }));
+          activeClaim: {
+            through: {
+              note: 'coral-retry',
+              mutationSeqAtPromote: 9,
+            },
+            startedAt: '2026-03-25T11:58:00.000Z',
+          },
+          consecutiveFailures: 1,
+        }),
+      );
 
       await internals.recordCurateFailure(null, new Error('Failed to spawn claude: ENOENT'));
       expect(readCurateState(runtime)).toMatchObject({
@@ -1151,13 +1193,16 @@ describe('curate', () => {
       }
 
       runtime.writeIndex({ notes, principles: {} });
-      writeCurateState(runtime, createCurateState({
-        processedThrough: {
-          note: 'coral-discovery-54',
-          mutationSeqAtPromote: 54,
-        },
-        pendingDiscoveries,
-      }));
+      writeCurateState(
+        runtime,
+        createCurateState({
+          processedThrough: {
+            note: 'coral-discovery-54',
+            mutationSeqAtPromote: 54,
+          },
+          pendingDiscoveries,
+        }),
+      );
       useScheduler(async () => ({
         stdout: JSON.stringify([
           {
@@ -1190,14 +1235,14 @@ describe('curate', () => {
       readSpy.mockRestore();
 
       expect(readCurateState(runtime)).toMatchObject({
-                pendingDiscoveries: [],
+        pendingDiscoveries: [],
       });
-      expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-discovery-05.md'), 'utf-8')).principles).toEqual([
-        'single-source-of-truth',
-      ]);
-      expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-discovery-07.md'), 'utf-8')).principles).toEqual([
-        'verify-at-boundaries',
-      ]);
+      expect(
+        parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-discovery-05.md'), 'utf-8')).principles,
+      ).toEqual(['single-source-of-truth']);
+      expect(
+        parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-discovery-07.md'), 'utf-8')).principles,
+      ).toEqual(['verify-at-boundaries']);
     });
 
     it('refines an existing principle in the conflict path and still assigns it to the proposed notes', async () => {
@@ -1236,12 +1281,15 @@ describe('curate', () => {
           'single-source-of-truth': 'Keep exactly one source for each fact.',
         },
       });
-      writeCurateState(runtime, createCurateState({
-        processedThrough: {
-          note: 'coral-discovery-50',
-          mutationSeqAtPromote: 50,
-        },
-      }));
+      writeCurateState(
+        runtime,
+        createCurateState({
+          processedThrough: {
+            note: 'coral-discovery-50',
+            mutationSeqAtPromote: 50,
+          },
+        }),
+      );
       useScheduler(async () => ({
         stdout: JSON.stringify([
           {
@@ -1267,9 +1315,9 @@ describe('curate', () => {
       expect(runtime.readIndex()?.principles['single-source-of-truth']).toBe(
         'Keep one canonical representation for each fact.',
       );
-      expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-discovery-05.md'), 'utf-8')).principles).toEqual([
-        'single-source-of-truth',
-      ]);
+      expect(
+        parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-discovery-05.md'), 'utf-8')).principles,
+      ).toEqual(['single-source-of-truth']);
       expect(readCurateState(runtime).pendingDiscoveries).toEqual([]);
     });
 
@@ -1312,18 +1360,23 @@ describe('curate', () => {
           'single-owner': 'Attach payloads to one owner.',
         },
       });
-      writeCurateState(runtime, createCurateState({
-        processedThrough: {
-          note: 'coral-discovery-50',
-          mutationSeqAtPromote: 50,
-        },
-        pendingDiscoveries: [{
-          principle: 'single-owner',
-          statement: 'Attach payloads to one owner.',
-          notes: ['coral-discovery-51'],
-          createdAt: '2026-03-25T11:55:00.000Z',
-        }],
-      }));
+      writeCurateState(
+        runtime,
+        createCurateState({
+          processedThrough: {
+            note: 'coral-discovery-50',
+            mutationSeqAtPromote: 50,
+          },
+          pendingDiscoveries: [
+            {
+              principle: 'single-owner',
+              statement: 'Attach payloads to one owner.',
+              notes: ['coral-discovery-51'],
+              createdAt: '2026-03-25T11:55:00.000Z',
+            },
+          ],
+        }),
+      );
       useScheduler(async () => ({
         stdout: JSON.stringify([
           {
@@ -1348,12 +1401,12 @@ describe('curate', () => {
       expect(runtime.readIndex()?.principles).toEqual({
         'payload-attachment-to-owner': 'Attach payloads to exactly one owner.',
       });
-      expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-discovery-08.md'), 'utf-8')).principles).toEqual([
-        'payload-attachment-to-owner',
-      ]);
-      expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-discovery-09.md'), 'utf-8')).principles).toEqual([
-        'payload-attachment-to-owner',
-      ]);
+      expect(
+        parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-discovery-08.md'), 'utf-8')).principles,
+      ).toEqual(['payload-attachment-to-owner']);
+      expect(
+        parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-discovery-09.md'), 'utf-8')).principles,
+      ).toEqual(['payload-attachment-to-owner']);
       expect(readCurateState(runtime).pendingDiscoveries).toEqual([]);
     });
 
@@ -1548,15 +1601,17 @@ describe('curate', () => {
         },
       };
 
-      await expect(internals.runClassificationBatches(claim, {
-        notes: {
-          'coral-alpha': createIndexNote({
-            title: 'Alpha',
-            mutationSeqAtPromote: 1,
-          }),
-        },
-        principles: {},
-      })).rejects.toMatchObject({
+      await expect(
+        internals.runClassificationBatches(claim, {
+          notes: {
+            'coral-alpha': createIndexNote({
+              title: 'Alpha',
+              mutationSeqAtPromote: 1,
+            }),
+          },
+          principles: {},
+        }),
+      ).rejects.toMatchObject({
         name: 'CurateJsonParseError',
         message: 'Curate classification returned invalid JSON.',
       });
@@ -1579,12 +1634,15 @@ describe('curate', () => {
       }
 
       runtime.writeIndex({ notes, principles: {} });
-      writeCurateState(runtime, createCurateState({
-        processedThrough: {
-          note: 'coral-discovery-50',
-          mutationSeqAtPromote: 50,
-        },
-      }));
+      writeCurateState(
+        runtime,
+        createCurateState({
+          processedThrough: {
+            note: 'coral-discovery-50',
+            mutationSeqAtPromote: 50,
+          },
+        }),
+      );
       useScheduler(async () => ({
         stdout: '[',
         stderr: '',
@@ -1592,10 +1650,12 @@ describe('curate', () => {
         aborted: false,
       }));
 
-      await expect(internals.runPrincipleDiscovery({
-        note: 'coral-discovery-50',
-        mutationSeqAtPromote: 50,
-      })).rejects.toMatchObject({
+      await expect(
+        internals.runPrincipleDiscovery({
+          note: 'coral-discovery-50',
+          mutationSeqAtPromote: 50,
+        }),
+      ).rejects.toMatchObject({
         name: 'CurateJsonParseError',
         message: 'Curate discovery returned invalid JSON.',
       });

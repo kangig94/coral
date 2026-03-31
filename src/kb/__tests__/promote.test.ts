@@ -2,13 +2,14 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as NodeOs from 'node:os';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
 }));
 
 vi.mock('node:os', async () => {
-  const actual = await vi.importActual<typeof import('node:os')>('node:os');
+  const actual = await vi.importActual<typeof NodeOs>('node:os');
   return {
     ...actual,
     homedir: () => mockState.tmpHome,
@@ -77,11 +78,15 @@ describe('kb mutations', () => {
     mkdirSync(paths.memoDir(projectRoot), { recursive: true });
 
     const memoPath = join(paths.memoDir(projectRoot), '2026-03-23-kb.md');
-    writeFileSync(memoPath, `---
+    writeFileSync(
+      memoPath,
+      `---
 source: kangig94/coral
 ---
 memo body
-`, 'utf-8');
+`,
+      'utf-8',
+    );
 
     const result = await promote(kb, projectRoot, {
       memo: '2026-03-23-kb.md',
@@ -128,22 +133,28 @@ memo body
     mkdirSync(paths.notesDir(), { recursive: true });
 
     const memoPath = join(paths.memoDir(projectRoot), 'dup.md');
-    writeFileSync(memoPath, `---
+    writeFileSync(
+      memoPath,
+      `---
 source: kangig94/coral
 ---
 memo body
-`, 'utf-8');
+`,
+      'utf-8',
+    );
 
     const notePath = join(paths.notesDir(), 'coral-kb-promotion.md');
     writeFileSync(notePath, 'original note', 'utf-8');
 
-    await expect(promote(kb, projectRoot, {
-      memo: 'dup.md',
-      title: 'KB Promotion',
-      content: '## Rule\nPromote through the tool.',
-      domain: 'coral',
-      topic: 'kb-promotion',
-    })).rejects.toThrow(`KB note already exists: ${notePath}`);
+    await expect(
+      promote(kb, projectRoot, {
+        memo: 'dup.md',
+        title: 'KB Promotion',
+        content: '## Rule\nPromote through the tool.',
+        domain: 'coral',
+        topic: 'kb-promotion',
+      }),
+    ).rejects.toThrow(`KB note already exists: ${notePath}`);
 
     expect(readFileSync(notePath, 'utf-8')).toBe('original note');
     expect(existsSync(memoPath)).toBe(true);
@@ -157,13 +168,15 @@ memo body
 
     const lockSpy = vi.spyOn(kb, 'withMutationLock');
 
-    await expect(promote(kb, projectRoot, {
-      memo: 'missing.md',
-      title: 'KB Promotion',
-      content: '## Rule\nPromote through the tool.',
-      domain: 'coral',
-      topic: 'kb-promotion',
-    })).rejects.toThrow('Memo file not found');
+    await expect(
+      promote(kb, projectRoot, {
+        memo: 'missing.md',
+        title: 'KB Promotion',
+        content: '## Rule\nPromote through the tool.',
+        domain: 'coral',
+        topic: 'kb-promotion',
+      }),
+    ).rejects.toThrow('Memo file not found');
 
     expect(lockSpy).not.toHaveBeenCalled();
   });
@@ -176,11 +189,15 @@ memo body
     mkdirSync(paths.memoDir(projectRoot), { recursive: true });
 
     const memoPath = join(paths.memoDir(projectRoot), '2026-03-23-no-ext.md');
-    writeFileSync(memoPath, `---
+    writeFileSync(
+      memoPath,
+      `---
 source: kangig94/coral
 ---
 memo body
-`, 'utf-8');
+`,
+      'utf-8',
+    );
 
     const result = await promote(kb, projectRoot, {
       memo: '2026-03-23-no-ext',
@@ -201,19 +218,25 @@ memo body
     mkdirSync(projectRoot, { recursive: true });
 
     const outsideMemo = join(mockState.tmpHome, 'outside.md');
-    writeFileSync(outsideMemo, `---
+    writeFileSync(
+      outsideMemo,
+      `---
 source: kangig94/coral
 ---
 memo body
-`, 'utf-8');
+`,
+      'utf-8',
+    );
 
-    await expect(promote(kb, projectRoot, {
-      memo: '../outside.md',
-      title: 'KB Promotion',
-      content: '## Rule\nPromote through the tool.',
-      domain: 'coral',
-      topic: 'kb-promotion',
-    })).rejects.toThrow();
+    await expect(
+      promote(kb, projectRoot, {
+        memo: '../outside.md',
+        title: 'KB Promotion',
+        content: '## Rule\nPromote through the tool.',
+        domain: 'coral',
+        topic: 'kb-promotion',
+      }),
+    ).rejects.toThrow();
 
     expect(existsSync(outsideMemo)).toBe(true);
   });
@@ -223,7 +246,9 @@ memo body
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
     const notePath = join(paths.notesDir(), 'coral-kb-promotion.md');
-    writeFileSync(notePath, `---
+    writeFileSync(
+      notePath,
+      `---
 tags: [coral]
 principles: [contract-first-design]
 source:
@@ -235,7 +260,9 @@ mutationSeqAtPromote: 7
 # Original Title
 
 Original body.
-`, 'utf-8');
+`,
+      'utf-8',
+    );
 
     kb.writeIndex({
       notes: {
@@ -314,7 +341,9 @@ Original body.
   it('reads a note by slug and returns structured content without timestamps', async () => {
     const { readEntry, paths } = await loadKbModules();
     mkdirSync(paths.notesDir(), { recursive: true });
-    writeFileSync(join(paths.notesDir(), 'coral-kb-read.md'), `---
+    writeFileSync(
+      join(paths.notesDir(), 'coral-kb-read.md'),
+      `---
 tags: [coral, kb]
 principles: [contract-first-design]
 source:
@@ -326,7 +355,9 @@ updatedAt: 2026-03-20T00:00:00.000Z
 
 ## Rule
 Content here.
-`, 'utf-8');
+`,
+      'utf-8',
+    );
 
     const result = readEntry({ note: 'coral-kb-read' });
     expect(result).toEqual({
@@ -347,12 +378,18 @@ Content here.
     mkdirSync(paths.memoDir(projectRoot), { recursive: true });
     mkdirSync(paths.notesDir(), { recursive: true });
 
-    writeFileSync(join(paths.memoDir(projectRoot), '20260323-010203-shared-slug.md'), `---
+    writeFileSync(
+      join(paths.memoDir(projectRoot), '20260323-010203-shared-slug.md'),
+      `---
 source: kangig94/coral
 ---
 Memo body
-`, 'utf-8');
-    writeFileSync(join(paths.notesDir(), '20260323-010203-shared-slug.md'), `---
+`,
+      'utf-8',
+    );
+    writeFileSync(
+      join(paths.notesDir(), '20260323-010203-shared-slug.md'),
+      `---
 tags: [coral]
 principles: [contract-first-design]
 source:
@@ -363,7 +400,9 @@ updatedAt: 2026-03-20T00:00:00.000Z
 # Note Title
 
 Note body.
-`, 'utf-8');
+`,
+      'utf-8',
+    );
 
     expect(readEntry({ note: '20260323-010203-shared-slug' }, projectRoot)).toEqual({
       kind: 'memo',
@@ -403,7 +442,9 @@ Note body.
       '---\ncreatedAt: 2026-03-23\nupdatedAt: 2026-03-23\n---\nPrinciple statement.\n',
       'utf-8',
     );
-    writeFileSync(join(paths.notesDir(), 'contract-first-design.md'), `---
+    writeFileSync(
+      join(paths.notesDir(), 'contract-first-design.md'),
+      `---
 tags: [coral]
 principles: [single-source-of-truth]
 source:
@@ -414,7 +455,9 @@ updatedAt: 2026-03-20T00:00:00.000Z
 # Note Title
 
 Note body.
-`, 'utf-8');
+`,
+      'utf-8',
+    );
 
     expect(readEntry({ note: 'contract-first-design' })).toEqual({
       kind: 'note',

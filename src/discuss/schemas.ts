@@ -32,9 +32,11 @@ export type AgentInput = z.infer<typeof AgentInputSchema>;
 export const discussStartSchema = z.object({
   topic: z.string().min(1),
   agents: z.array(AgentInputSchema).min(2),
-  config: z.object({
-    min_bid_delay_ms: z.number().int().min(0).optional(),
-  }).optional(),
+  config: z
+    .object({
+      min_bid_delay_ms: z.number().int().min(0).optional(),
+    })
+    .optional(),
 });
 export type DiscussStartInput = z.infer<typeof discussStartSchema>;
 
@@ -56,8 +58,5 @@ export const discussParticipateSpeechSchema = z.object({
 });
 export type DiscussParticipateSpeechInput = z.infer<typeof discussParticipateSpeechSchema>;
 
-export const discussParticipateSchema = z.union([
-  discussParticipateBidSchema,
-  discussParticipateSpeechSchema,
-]);
+export const discussParticipateSchema = z.union([discussParticipateBidSchema, discussParticipateSpeechSchema]);
 export type DiscussParticipateInput = z.infer<typeof discussParticipateSchema>;

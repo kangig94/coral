@@ -18,6 +18,10 @@
     "build": "tsc && node scripts/build-server.mjs",
     "build:server": "node scripts/build-server.mjs",
     "dev": "tsc --watch",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --write 'src/**/*.ts'",
+    "format:check": "prettier --check 'src/**/*.ts'",
     "test": "node scripts/test.mjs",
     "test:integration": "vitest run --config vitest.integration.config.ts"
   },
@@ -29,10 +33,15 @@
     "zod-to-json-schema": "^3.25.1"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^22.19.7",
     "commander": "^14.0.3",
     "esbuild": "^0.27.2",
+    "eslint": "^10.1.0",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.8.1",
     "typescript": "^5.7.2",
+    "typescript-eslint": "^8.58.0",
     "vitest": "^4.0.17"
   }
 }

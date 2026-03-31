@@ -47,7 +47,9 @@ function createFixture(): Fixture {
 
 function writeFakeNpm(binDir: string): void {
   const fakeNpm = join(binDir, 'npm');
-  writeFileSync(fakeNpm, `#!/bin/sh
+  writeFileSync(
+    fakeNpm,
+    `#!/bin/sh
 echo "$PWD|$*" >> "$FAKE_NPM_LOG"
 if [ "$1" = "view" ] && [ "$2" = "@lancedb/lancedb" ] && [ "$3" = "version" ]; then
   printf '%s\\n' "\${FAKE_NPM_VIEW_VERSION:-0.0.0}"
@@ -65,7 +67,9 @@ if [ "$1" = "install" ]; then
 fi
 echo "unexpected npm args: $*" >&2
 exit 1
-`, 'utf-8');
+`,
+    'utf-8',
+  );
   chmodSync(fakeNpm, 0o755);
 }
 

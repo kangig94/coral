@@ -34,9 +34,7 @@ async function recoverSessions(harness: DiscussHarness) {
   );
 }
 
-function resumeRecoveredSessions(
-  recovered: Awaited<ReturnType<typeof recoverSessions>>,
-): void {
+function resumeRecoveredSessions(recovered: Awaited<ReturnType<typeof recoverSessions>>): void {
   for (const session of recovered) {
     discussLoop.resumeLoop(session.ctx, session.sessionId, session.callerCtx);
   }
@@ -54,15 +52,39 @@ describe('Discuss speech collection', { retry: 2 }, () => {
       sessionId: 'discuss-1',
       recover: true,
       buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.submitted', '2026-03-10T00:01:00.000Z', { agent: 'alpha', score: 80, thought: 'alpha' }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'bid.submitted', '2026-03-10T00:01:01.000Z', { agent: 'beta', score: 70, thought: 'beta' }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 3, 'bid.round.closed', '2026-03-10T00:01:02.000Z', {
-          allBids: { alpha: 80, beta: 70 },
-          effectiveBids: { alpha: 80, beta: 70 },
-          thoughts: { alpha: 'alpha', beta: 'beta' },
-          outcome: { winner: 'alpha', speaker_type: 'quota' as const },
-          stateMutations: { cold_start: false },
-        }),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'bid.submitted',
+          '2026-03-10T00:01:00.000Z',
+          { agent: 'alpha', score: 80, thought: 'alpha' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 2,
+          'bid.submitted',
+          '2026-03-10T00:01:01.000Z',
+          { agent: 'beta', score: 70, thought: 'beta' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 3,
+          'bid.round.closed',
+          '2026-03-10T00:01:02.000Z',
+          {
+            allBids: { alpha: 80, beta: 70 },
+            effectiveBids: { alpha: 80, beta: 70 },
+            thoughts: { alpha: 'alpha', beta: 'beta' },
+            outcome: { winner: 'alpha', speaker_type: 'quota' as const },
+            stateMutations: { cold_start: false },
+          },
+        ),
       ],
     });
 
@@ -86,10 +108,12 @@ describe('Discuss speech collection', { retry: 2 }, () => {
   });
 
   it('passes prior speech only to listeners during the next bid collection', async () => {
-    const start = vi.fn()
+    const start = vi
+      .fn()
       .mockResolvedValueOnce({ status: 'running', job: 'job-1', session: 'exec-alpha' })
       .mockResolvedValueOnce({ status: 'running', job: 'job-2', session: 'exec-beta' });
-    const waitStreamOnce = vi.fn()
+    const waitStreamOnce = vi
+      .fn()
       .mockResolvedValueOnce({ content: '{"score": 44, "thought": "alpha"}', nonResumable: false })
       .mockResolvedValueOnce({ content: '{"score": 58, "thought": "beta"}', nonResumable: false });
     const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
@@ -97,28 +121,60 @@ describe('Discuss speech collection', { retry: 2 }, () => {
       sessionId: 'discuss-1',
       recover: true,
       buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.submitted', '2026-03-10T00:01:00.000Z', { agent: 'alpha', score: 80, thought: 'alpha' }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'bid.submitted', '2026-03-10T00:01:01.000Z', { agent: 'beta', score: 70, thought: 'beta' }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 3, 'bid.round.closed', '2026-03-10T00:01:02.000Z', {
-          allBids: { alpha: 80, beta: 70 },
-          effectiveBids: { alpha: 80, beta: 70 },
-          thoughts: { alpha: 'alpha', beta: 'beta' },
-          outcome: { winner: 'alpha', speaker_type: 'quota' as const },
-          stateMutations: { cold_start: false },
-        }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 4, 'speech.recorded', '2026-03-10T00:01:03.000Z', {
-          agent: 'alpha',
-          content: 'We need to talk about freight access before setting a ban.',
-          decrementQuota: true,
-          recordLastSpeechStep: 1,
-        }),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'bid.submitted',
+          '2026-03-10T00:01:00.000Z',
+          { agent: 'alpha', score: 80, thought: 'alpha' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 2,
+          'bid.submitted',
+          '2026-03-10T00:01:01.000Z',
+          { agent: 'beta', score: 70, thought: 'beta' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 3,
+          'bid.round.closed',
+          '2026-03-10T00:01:02.000Z',
+          {
+            allBids: { alpha: 80, beta: 70 },
+            effectiveBids: { alpha: 80, beta: 70 },
+            thoughts: { alpha: 'alpha', beta: 'beta' },
+            outcome: { winner: 'alpha', speaker_type: 'quota' as const },
+            stateMutations: { cold_start: false },
+          },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 4,
+          'speech.recorded',
+          '2026-03-10T00:01:03.000Z',
+          {
+            agent: 'alpha',
+            content: 'We need to talk about freight access before setting a ban.',
+            decrementQuota: true,
+            recordLastSpeechStep: 1,
+          },
+        ),
       ],
     });
 
     const realBuildBidPrompt = discussPrompts.buildBidPrompt;
-    const buildBidPromptSpy = vi.spyOn(discussPrompts, 'buildBidPrompt').mockImplementation((promptCtx) =>
-      realBuildBidPrompt(promptCtx),
-    );
+    const buildBidPromptSpy = vi
+      .spyOn(discussPrompts, 'buildBidPrompt')
+      .mockImplementation((promptCtx) => realBuildBidPrompt(promptCtx));
 
     await discussSubflows.collectBids(harness.context, 'discuss-1', harness.ctx);
 
@@ -151,17 +207,57 @@ describe('Discuss speech collection', { retry: 2 }, () => {
       sessionId: 'discuss-1',
       recover: false,
       buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.submitted', '2026-03-10T00:01:00.000Z', { agent: 'alpha', score: 80, thought: 'alpha' }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'bid.submitted', '2026-03-10T00:01:01.000Z', { agent: 'beta', score: 70, thought: 'beta' }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 3, 'bid.round.closed', '2026-03-10T00:01:02.000Z', {
-          allBids: { alpha: 80, beta: 70 },
-          effectiveBids: { alpha: 80, beta: 70 },
-          thoughts: { alpha: 'alpha', beta: 'beta' },
-          outcome: { winner: 'alpha', speaker_type: 'quota' as const },
-          stateMutations: { cold_start: false },
-        }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 4, 'agent.run.bound', '2026-03-10T00:01:03.000Z', { agent: 'alpha', executionSessionId: 'exec-alpha' }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 5, 'agent.job.started', '2026-03-10T00:01:04.000Z', { agent: 'alpha', jobId: 'job-1', purpose: 'speech', attempt: 1 }),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'bid.submitted',
+          '2026-03-10T00:01:00.000Z',
+          { agent: 'alpha', score: 80, thought: 'alpha' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 2,
+          'bid.submitted',
+          '2026-03-10T00:01:01.000Z',
+          { agent: 'beta', score: 70, thought: 'beta' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 3,
+          'bid.round.closed',
+          '2026-03-10T00:01:02.000Z',
+          {
+            allBids: { alpha: 80, beta: 70 },
+            effectiveBids: { alpha: 80, beta: 70 },
+            thoughts: { alpha: 'alpha', beta: 'beta' },
+            outcome: { winner: 'alpha', speaker_type: 'quota' as const },
+            stateMutations: { cold_start: false },
+          },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 4,
+          'agent.run.bound',
+          '2026-03-10T00:01:03.000Z',
+          { agent: 'alpha', executionSessionId: 'exec-alpha' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 5,
+          'agent.job.started',
+          '2026-03-10T00:01:04.000Z',
+          { agent: 'alpha', jobId: 'job-1', purpose: 'speech', attempt: 1 },
+        ),
       ],
     });
     vi.spyOn(discussSubflows, 'collectBids').mockImplementation(async () => {
@@ -176,10 +272,14 @@ describe('Discuss speech collection', { retry: 2 }, () => {
     await vi.runAllTimersAsync();
 
     const snapshot = harness.store.load('discuss-1');
-    expect(resume).toHaveBeenCalledWith('codex', expect.objectContaining({
-      sessionId: 'exec-alpha',
-      pool: 'discuss',
-    }), harness.ctx);
+    expect(resume).toHaveBeenCalledWith(
+      'codex',
+      expect.objectContaining({
+        sessionId: 'exec-alpha',
+        pool: 'discuss',
+      }),
+      harness.ctx,
+    );
     expect(snapshot?.state.status).toBe('bidding');
     expect(snapshot?.state.transcript.at(-1)).toMatchObject({
       type: 'speech',
@@ -198,15 +298,39 @@ describe('Discuss speech collection', { retry: 2 }, () => {
         { name: 'user', persona: '# User', participation: 'observer' },
       ],
       buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.submitted', '2026-03-10T00:01:00.000Z', { agent: 'alpha', score: 80, thought: 'alpha' }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'bid.submitted', '2026-03-10T00:01:01.000Z', { agent: 'user', score: 95, thought: 'observer bid' }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 3, 'bid.round.closed', '2026-03-10T00:01:02.000Z', {
-          allBids: { alpha: 80, user: 95 },
-          effectiveBids: { alpha: 80, user: 95 },
-          thoughts: { alpha: 'alpha', user: 'observer bid' },
-          outcome: { winner: 'user', speaker_type: 'cold_start' as const },
-          stateMutations: { cold_start: false },
-        }),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'bid.submitted',
+          '2026-03-10T00:01:00.000Z',
+          { agent: 'alpha', score: 80, thought: 'alpha' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 2,
+          'bid.submitted',
+          '2026-03-10T00:01:01.000Z',
+          { agent: 'user', score: 95, thought: 'observer bid' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 3,
+          'bid.round.closed',
+          '2026-03-10T00:01:02.000Z',
+          {
+            allBids: { alpha: 80, user: 95 },
+            effectiveBids: { alpha: 80, user: 95 },
+            thoughts: { alpha: 'alpha', user: 'observer bid' },
+            outcome: { winner: 'user', speaker_type: 'cold_start' as const },
+            stateMutations: { cold_start: false },
+          },
+        ),
       ],
     });
 

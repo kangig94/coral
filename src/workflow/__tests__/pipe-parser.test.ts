@@ -3,9 +3,9 @@ import { parseExpression } from '../pipe-parser.js';
 
 describe('workflow pipe parser', () => {
   it('parses a single atom', () => {
-    expect(parseExpression('architect')).toEqual([[
-      { kind: 'agent', namespace: undefined, agent: 'architect', provider: undefined },
-    ]]);
+    expect(parseExpression('architect')).toEqual([
+      [{ kind: 'agent', namespace: undefined, agent: 'architect', provider: undefined }],
+    ]);
   });
 
   it('parses sequential atoms', () => {
@@ -72,39 +72,37 @@ describe('workflow pipe parser', () => {
   });
 
   it('allows same agent name with different providers in parallel group', () => {
-    expect(parseExpression('(architect, architect@claude)')).toEqual([[
-      { kind: 'agent', namespace: undefined, agent: 'architect', provider: undefined },
-      { kind: 'agent', namespace: undefined, agent: 'architect', provider: 'claude' },
-    ]]);
+    expect(parseExpression('(architect, architect@claude)')).toEqual([
+      [
+        { kind: 'agent', namespace: undefined, agent: 'architect', provider: undefined },
+        { kind: 'agent', namespace: undefined, agent: 'architect', provider: 'claude' },
+      ],
+    ]);
   });
 
   it('parses single-quoted prompt literal', () => {
-    expect(parseExpression('\'summarize\'')).toEqual([[
-      { kind: 'prompt', text: 'summarize', provider: undefined },
-    ]]);
+    expect(parseExpression("'summarize'")).toEqual([[{ kind: 'prompt', text: 'summarize', provider: undefined }]]);
   });
 
   it('parses double-quoted prompt literal', () => {
-    expect(parseExpression('"summarize"')).toEqual([[
-      { kind: 'prompt', text: 'summarize', provider: undefined },
-    ]]);
+    expect(parseExpression('"summarize"')).toEqual([[{ kind: 'prompt', text: 'summarize', provider: undefined }]]);
   });
 
   it('parses prompt literal with @provider override', () => {
-    expect(parseExpression('\'text\'@claude')).toEqual([[
-      { kind: 'prompt', text: 'text', provider: 'claude' },
-    ]]);
+    expect(parseExpression("'text'@claude")).toEqual([[{ kind: 'prompt', text: 'text', provider: 'claude' }]]);
   });
 
   it('parses prompt literal in parallel group with agent', () => {
-    expect(parseExpression('(architect, \'summarize\')')).toEqual([[
-      { kind: 'agent', namespace: undefined, agent: 'architect', provider: undefined },
-      { kind: 'prompt', text: 'summarize', provider: undefined },
-    ]]);
+    expect(parseExpression("(architect, 'summarize')")).toEqual([
+      [
+        { kind: 'agent', namespace: undefined, agent: 'architect', provider: undefined },
+        { kind: 'prompt', text: 'summarize', provider: undefined },
+      ],
+    ]);
   });
 
   it('parses prompt literal as middle step in chain', () => {
-    const ast = parseExpression('architect -> \'summarize\' -> resolver');
+    const ast = parseExpression("architect -> 'summarize' -> resolver");
     expect(ast).toHaveLength(3);
     expect(ast[1][0]).toEqual({ kind: 'prompt', text: 'summarize', provider: undefined });
   });
@@ -115,26 +113,28 @@ describe('workflow pipe parser', () => {
   });
 
   it('handles commas inside quoted prompt literal in parallel group', () => {
-    expect(parseExpression('(\'do a, b\', architect)')).toEqual([[
-      { kind: 'prompt', text: 'do a, b', provider: undefined },
-      { kind: 'agent', namespace: undefined, agent: 'architect', provider: undefined },
-    ]]);
+    expect(parseExpression("('do a, b', architect)")).toEqual([
+      [
+        { kind: 'prompt', text: 'do a, b', provider: undefined },
+        { kind: 'agent', namespace: undefined, agent: 'architect', provider: undefined },
+      ],
+    ]);
   });
 
   it('handles commas inside quoted prompt literal in single-step chain', () => {
-    const ast = parseExpression('\'do a, b\' -> resolver');
+    const ast = parseExpression("'do a, b' -> resolver");
     expect(ast).toHaveLength(2);
     expect(ast[0][0]).toEqual({ kind: 'prompt', text: 'do a, b', provider: undefined });
   });
 
   it('handles -> inside quoted prompt literal', () => {
-    const ast = parseExpression('\'use -> arrows\' -> architect');
+    const ast = parseExpression("'use -> arrows' -> architect");
     expect(ast).toHaveLength(2);
     expect(ast[0][0]).toEqual({ kind: 'prompt', text: 'use -> arrows', provider: undefined });
   });
 
   it('handles parentheses inside quoted prompt literal in parallel group', () => {
-    const ast = parseExpression('(\'run (debug)\', architect)');
+    const ast = parseExpression("('run (debug)', architect)");
     expect(ast[0][0]).toEqual({ kind: 'prompt', text: 'run (debug)', provider: undefined });
   });
 
@@ -149,10 +149,12 @@ describe('workflow pipe parser', () => {
   });
 
   it('handles escaped quote in parallel group', () => {
-    expect(parseExpression("('it\\'s ok', architect)")).toEqual([[
-      { kind: 'prompt', text: "it's ok", provider: undefined },
-      { kind: 'agent', namespace: undefined, agent: 'architect', provider: undefined },
-    ]]);
+    expect(parseExpression("('it\\'s ok', architect)")).toEqual([
+      [
+        { kind: 'prompt', text: "it's ok", provider: undefined },
+        { kind: 'agent', namespace: undefined, agent: 'architect', provider: undefined },
+      ],
+    ]);
   });
 
   it('handles escaped quote in chained step', () => {
@@ -167,7 +169,7 @@ describe('workflow pipe parser', () => {
   });
 
   it('rejects empty prompt literal (single quote)', () => {
-    expect(() => parseExpression('\'\'')).toThrow('Empty prompt literal');
+    expect(() => parseExpression("''")).toThrow('Empty prompt literal');
   });
 
   it('rejects empty prompt literal (double quote)', () => {
@@ -175,7 +177,7 @@ describe('workflow pipe parser', () => {
   });
 
   it('rejects unclosed quote', () => {
-    expect(() => parseExpression('\'unclosed')).toThrow('Unclosed quote');
+    expect(() => parseExpression("'unclosed")).toThrow('Unclosed quote');
   });
 
   it('rejects empty expressions', () => {
@@ -203,9 +205,9 @@ describe('workflow pipe parser', () => {
   });
 
   it('accepts agent names that start with digits', () => {
-    expect(parseExpression('3-step')).toEqual([[
-      { kind: 'agent', namespace: undefined, agent: '3-step', provider: undefined },
-    ]]);
+    expect(parseExpression('3-step')).toEqual([
+      [{ kind: 'agent', namespace: undefined, agent: '3-step', provider: undefined }],
+    ]);
   });
 
   it('rejects underscores in names', () => {

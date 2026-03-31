@@ -51,8 +51,7 @@ export function loadAttachedOrPersistedSnapshot(
 export function readSessionEvents(ctx: DiscussContext, sessionId: string): DiscussDomainEvent[] {
   try {
     const sessionDir = ctx.store.resolveSessionDir(sessionId);
-    return readDiscussEventLog(discussEventLogPath(sessionDir)).filter((event) =>
-      event.sessionId === sessionId);
+    return readDiscussEventLog(discussEventLogPath(sessionDir)).filter((event) => event.sessionId === sessionId);
   } catch {
     return [];
   }
@@ -176,11 +175,7 @@ export async function appendRuntimeEvents(
   }
 }
 
-export function buildPersistedWatchState(
-  ctx: DiscussContext,
-  sessionId: string,
-  cursor?: number,
-): WatchState {
+export function buildPersistedWatchState(ctx: DiscussContext, sessionId: string, cursor?: number): WatchState {
   const snapshot = ctx.store.load(sessionId);
   if (!snapshot) {
     throw new DiscussManagerError('session_not_found', { session: sessionId });

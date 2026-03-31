@@ -228,9 +228,17 @@ function parseSourceEdges(sourceFilePath: string, productionFiles: Set<string>):
 
   function visit(node: ts.Node): void {
     if (ts.isImportDeclaration(node)) {
-      recordEdge(getRelativeModuleSpecifier(node.moduleSpecifier), 'ImportDeclaration', classifyImportDeclaration(node));
+      recordEdge(
+        getRelativeModuleSpecifier(node.moduleSpecifier),
+        'ImportDeclaration',
+        classifyImportDeclaration(node),
+      );
     } else if (ts.isExportDeclaration(node)) {
-      recordEdge(getRelativeModuleSpecifier(node.moduleSpecifier), 'ExportDeclaration', classifyExportDeclaration(node));
+      recordEdge(
+        getRelativeModuleSpecifier(node.moduleSpecifier),
+        'ExportDeclaration',
+        classifyExportDeclaration(node),
+      );
     } else if (ts.isImportTypeNode(node)) {
       recordEdge(getRelativeImportTypeSpecifier(node), 'ImportTypeNode', { runtime: false, typeOnly: true });
     }
@@ -377,30 +385,38 @@ describe('discuss architecture guard', () => {
     const runtimeSubsystemSccs = findStronglyConnectedComponents(runtimeSubsystemGraph).filter((scc) => scc.length > 1);
 
     const discussRuntimeImports = crossSubsystemEdges.filter((edge) => {
-      return edge.sourceSubsystem === 'discuss'
-        && edge.runtimeVia.size > 0
-        && (edge.targetSubsystem === 'client'
-          || edge.targetSubsystem === 'execution'
-          || edge.targetSubsystem === 'execution/discuss');
+      return (
+        edge.sourceSubsystem === 'discuss' &&
+        edge.runtimeVia.size > 0 &&
+        (edge.targetSubsystem === 'client' ||
+          edge.targetSubsystem === 'execution' ||
+          edge.targetSubsystem === 'execution/discuss')
+      );
     });
 
     const invalidDiscussExecutionTypeOnlyImports = crossSubsystemEdges.filter((edge) => {
-      return edge.sourceSubsystem === 'discuss'
-        && edge.runtimeVia.size === 0
-        && edge.typeOnlyVia.size > 0
-        && edge.targetSubsystem === 'execution';
+      return (
+        edge.sourceSubsystem === 'discuss' &&
+        edge.runtimeVia.size === 0 &&
+        edge.typeOnlyVia.size > 0 &&
+        edge.targetSubsystem === 'execution'
+      );
     });
 
     const deferredDiscussDebt = crossSubsystemEdges.filter((edge) => {
-      return edge.sourceSubsystem === 'discuss'
-        && edge.runtimeVia.size === 0
-        && edge.typeOnlyVia.size > 0
-        && (edge.targetSubsystem === 'client' || edge.targetSubsystem === 'execution/discuss');
+      return (
+        edge.sourceSubsystem === 'discuss' &&
+        edge.runtimeVia.size === 0 &&
+        edge.typeOnlyVia.size > 0 &&
+        (edge.targetSubsystem === 'client' || edge.targetSubsystem === 'execution/discuss')
+      );
     });
 
     const discussRuntimeSccViolations = runtimeSubsystemSccs.filter((scc) => {
-      return scc.includes('discuss')
-        && (scc.includes('client') || scc.includes('execution') || scc.includes('execution/discuss'));
+      return (
+        scc.includes('discuss') &&
+        (scc.includes('client') || scc.includes('execution') || scc.includes('execution/discuss'))
+      );
     });
 
     const nonDiscussRuntimeSccs = runtimeSubsystemSccs.filter((scc) => !scc.includes('discuss'));
@@ -420,38 +436,43 @@ describe('discuss architecture guard', () => {
     const failures: string[] = [];
 
     if (discussRuntimeSccViolations.length > 0) {
-      failures.push([
-        'src/discuss participates in a forbidden runtime subsystem SCC:',
-        ...discussRuntimeSccViolations.map((scc) => `- ${formatScc(scc)}`),
-      ].join('\n'));
+      failures.push(
+        [
+          'src/discuss participates in a forbidden runtime subsystem SCC:',
+          ...discussRuntimeSccViolations.map((scc) => `- ${formatScc(scc)}`),
+        ].join('\n'),
+      );
     }
 
     if (discussRuntimeImports.length > 0) {
-      failures.push([
-        'src/discuss must not runtime-import src/client/* or src/execution/*:',
-        ...discussRuntimeImports.map((edge) => `- ${formatEdge(edge)}`),
-      ].join('\n'));
+      failures.push(
+        [
+          'src/discuss must not runtime-import src/client/* or src/execution/*:',
+          ...discussRuntimeImports.map((edge) => `- ${formatEdge(edge)}`),
+        ].join('\n'),
+      );
     }
 
     if (invalidDiscussExecutionTypeOnlyImports.length > 0) {
-      failures.push([
-        'src/discuss type-only imports from src/execution/* must target src/execution/discuss/*:',
-        ...invalidDiscussExecutionTypeOnlyImports.map((edge) => `- ${formatEdge(edge)}`),
-      ].join('\n'));
+      failures.push(
+        [
+          'src/discuss type-only imports from src/execution/* must target src/execution/discuss/*:',
+          ...invalidDiscussExecutionTypeOnlyImports.map((edge) => `- ${formatEdge(edge)}`),
+        ].join('\n'),
+      );
     }
 
     if (deferredDiscussDebt.length > 0) {
-      failures.push([
-        'src/discuss must not type-only-import src/client/* or src/execution/discuss/* (deferred debt must be zero):',
-        ...deferredDiscussDebt.map((edge) => `- ${formatEdge(edge)}`),
-      ].join('\n'));
+      failures.push(
+        [
+          'src/discuss must not type-only-import src/client/* or src/execution/discuss/* (deferred debt must be zero):',
+          ...deferredDiscussDebt.map((edge) => `- ${formatEdge(edge)}`),
+        ].join('\n'),
+      );
     }
 
     if (failures.length > 0) {
-      expect.fail([
-        'Discuss architecture boundary violations:',
-        ...failures,
-      ].join('\n\n'));
+      expect.fail(['Discuss architecture boundary violations:', ...failures].join('\n\n'));
     }
   });
 });

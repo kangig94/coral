@@ -1,6 +1,7 @@
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { errorMessage, isNoEntryError } from '../shared/mcp-utils.js';
+import { backendLog } from '../shared/backend-log.js';
 import type { KbIndexState } from './runtime.js';
 import type { KbRuntime } from './runtime.js';
 import type { KbIndex } from './types.js';
@@ -75,9 +76,7 @@ export function cloneKbIndex(index: KbIndex | null): KbIndex {
   }
 
   return {
-    notes: Object.fromEntries(
-      Object.entries(index.notes).map(([note, meta]) => [note, buildNoteIndexEntry(meta)]),
-    ),
+    notes: Object.fromEntries(Object.entries(index.notes).map(([note, meta]) => [note, buildNoteIndexEntry(meta)])),
     principles: { ...index.principles },
   };
 }
@@ -98,13 +97,10 @@ export function commitIndexUpdate(
   markTextIndexStale(rt.invalidateTextSnapshot, reason);
 }
 
-export function markTextIndexStale(
-  invalidate: (reason: string) => KbIndexState,
-  reason: string,
-): void {
+export function markTextIndexStale(invalidate: (reason: string) => KbIndexState, reason: string): void {
   try {
     invalidate(reason);
   } catch (error: unknown) {
-    process.stderr.write(`markTextIndexStale: ${errorMessage(error)}\n`);
+    backendLog.warn(`markTextIndexStale: ${errorMessage(error)}`);
   }
 }

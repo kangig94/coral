@@ -6,10 +6,10 @@ export type CliStreamEvent =
   | { type: 'progress'; jobId: string; sessionId: string; message: string }
   | { type: 'queued'; jobId: string; sessionId: string; queuePosition: number; runningJobIds: string[] }
   | {
-    type: 'terminal';
-    completedJobId: string;
-    sessionId: string;
-    remainingJobIds: string[];
-    result: Omit<TerminalResult, 'content'> & { path: string };
-  }
+      type: 'terminal';
+      completedJobId: string;
+      sessionId: string;
+      remainingJobIds: string[];
+      result: Omit<TerminalResult, 'content'> & { path: string };
+    }
   | { type: 'timeout'; runningJobIds: string[] };

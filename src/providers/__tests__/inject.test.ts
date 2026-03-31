@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as NodeFs from 'node:fs';
 
 let mockInjectMd = '';
 
 vi.mock('node:fs', async () => {
-  const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+  const actual = await vi.importActual<typeof NodeFs>('node:fs');
   return {
     ...actual,
     readFileSync: vi.fn((path: string, encoding?: string) => {

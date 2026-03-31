@@ -71,9 +71,4 @@ export type {
 export type { SessionEntry } from '../execution/session-manager.js';
 
 // ../discuss/types.js
-export type {
-  DiscussState,
-  TranscriptEntry,
-  AgentState,
-  EndReason,
-} from '../discuss/types.js';
+export type { DiscussState, TranscriptEntry, AgentState, EndReason } from '../discuss/types.js';

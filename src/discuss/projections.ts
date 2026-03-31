@@ -1,5 +1,4 @@
 import type {
-  DiscussAuditTranscriptEntryDto,
   DiscussAuditView,
   DiscussControlTranscriptEntryDto,
   DiscussControlView,
@@ -52,7 +51,9 @@ export function buildControlView(snapshot: PersistedDiscussSnapshot): DiscussCon
 
 export function buildAuditView(snapshot: PersistedDiscussSnapshot): DiscussAuditView {
   return {
-    transcript: snapshot.state.transcript.map((entry) => cloneTranscriptEntry(entry)) as DiscussAuditTranscriptEntryDto[],
+    transcript: snapshot.state.transcript.map((entry) =>
+      cloneTranscriptEntry(entry),
+    ),
     lastSeq: snapshot.lastAppliedSeq,
   };
 }
@@ -101,12 +102,12 @@ export function buildWatchEvents(events: DiscussDomainEvent[]): WatchEvent[] {
           type: 'session_ended',
           data: event.payload.force
             ? {
-              reason: 'force_end',
-              detail: event.payload.reason ?? event.payload.endReasonContent ?? null,
-            }
+                reason: 'force_end',
+                detail: event.payload.reason ?? event.payload.endReasonContent ?? null,
+              }
             : {
-              reason: event.payload.endReason ?? null,
-            },
+                reason: event.payload.endReason ?? null,
+              },
           ts,
         });
         break;

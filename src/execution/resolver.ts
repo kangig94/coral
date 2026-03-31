@@ -4,9 +4,7 @@ import { stripMdExt } from '../kb/paths.js';
 import { isNoEntryError } from '../shared/mcp-utils.js';
 
 declare const __PLUGIN_ROOT__: string;
-const pluginRoot = typeof __PLUGIN_ROOT__ === 'string'
-  ? __PLUGIN_ROOT__
-  : join(__dirname, '..');
+const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..');
 
 export type CoralContent =
   | { type: 'agent'; content: string; path: string }
@@ -51,7 +49,9 @@ export function resolveCoralContent(name: string): CoralContent {
     return { type: 'skill', content: skillContent, path: skillPath };
   }
 
-  throw new Error(`Coral content not found: ${normalized} (expected agents/${normalized}.md or skills/${normalized}/SKILL.md)`);
+  throw new Error(
+    `Coral content not found: ${normalized} (expected agents/${normalized}.md or skills/${normalized}/SKILL.md)`,
+  );
 }
 
 export function stripAgentMetadata(content: string): string {

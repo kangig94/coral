@@ -1,11 +1,7 @@
-import type {
-  DiscussCreateInput,
-  DiscussState,
-  ResolveReason,
-} from './types.js';
+import type { DiscussCreateInput, DiscussState, ResolveReason } from './types.js';
 
 export const controlPhases = ['idle', 'observer_wait', 'evaluate_epoch', 'collect_follow_up', 'synthesize'] as const;
-export type ControlPhase = typeof controlPhases[number];
+export type ControlPhase = (typeof controlPhases)[number];
 
 export const discussEventKinds = [
   'session.created',
@@ -26,7 +22,7 @@ export const discussEventKinds = [
   'agent.job.finished',
 ] as const;
 
-export type DiscussEventKind = typeof discussEventKinds[number];
+export type DiscussEventKind = (typeof discussEventKinds)[number];
 
 export interface DiscussEventEnvelope<K extends DiscussEventKind, P> {
   v: 1;
@@ -160,7 +156,10 @@ export type BidRoundClosedEvent = DiscussEventEnvelope<'bid.round.closed', BidRo
 export type SpeechRecordedEvent = DiscussEventEnvelope<'speech.recorded', SpeechRecordedPayload>;
 export type SpeechTimedOutEvent = DiscussEventEnvelope<'speech.timed_out', SpeechTimedOutPayload>;
 export type EpochSummaryRecordedEvent = DiscussEventEnvelope<'epoch.summary.recorded', EpochSummaryRecordedPayload>;
-export type MustAnswerCarryForwardSetEvent = DiscussEventEnvelope<'must_answer.carry_forward.set', MustAnswerCarryForwardSetPayload>;
+export type MustAnswerCarryForwardSetEvent = DiscussEventEnvelope<
+  'must_answer.carry_forward.set',
+  MustAnswerCarryForwardSetPayload
+>;
 export type FollowUpQueueSetEvent = DiscussEventEnvelope<'follow_up.queue.set', FollowUpQueueSetPayload>;
 export type FollowUpAnsweredEvent = DiscussEventEnvelope<'follow_up.answered', FollowUpAnsweredPayload>;
 export type SessionEndedEvent = DiscussEventEnvelope<'session.ended', SessionEndedPayload>;

@@ -159,7 +159,7 @@ export async function proxyToolCall(
     });
   } catch (error) {
     if (error instanceof Error) throw error;
-    throw new Error(`Backend communication error: ${String(error)}`);
+    throw new Error(`Backend communication error: ${String(error)}`, { cause: error });
   }
 }
 
@@ -237,7 +237,7 @@ export async function* streamWait(
     if (finalEvent) yield finalEvent;
   } catch (error) {
     if (error instanceof Error) throw error;
-    throw new Error(`Backend communication error: ${String(error)}`);
+    throw new Error(`Backend communication error: ${String(error)}`, { cause: error });
   } finally {
     clearTimeout(timeout);
     signal?.removeEventListener('abort', onExternalAbort);

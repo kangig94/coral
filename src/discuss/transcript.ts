@@ -74,7 +74,7 @@ function renderBidRows(
   agents: Record<string, AgentState>,
   effectiveBids?: Record<string, number>,
 ): string {
-  const hasEffectiveBids = effectiveBids != null;
+  const hasEffectiveBids = effectiveBids !== null && effectiveBids !== undefined;
   const rows = Object.entries(bids)
     .sort(([lhsName, lhsRaw], [rhsName, rhsRaw]) => {
       const lhs = effectiveBids?.[lhsName] ?? lhsRaw;
@@ -95,10 +95,7 @@ function renderBidRows(
   return rows.join('\n');
 }
 
-export function renderEntries(
-  entries: TranscriptEntry[],
-  agents: Record<string, AgentState>,
-): string {
+export function renderEntries(entries: TranscriptEntry[], agents: Record<string, AgentState>): string {
   return entries.map((e) => renderEntry(e, agents)).join('');
 }
 
@@ -146,10 +143,7 @@ export function renderEntry(e: TranscriptEntry, agents: Record<string, AgentStat
 function renderPanelists(agents: Record<string, AgentState>): string {
   const sections: string[] = [];
   for (const agent of Object.values(agents)) {
-    const downgraded = agent.persona
-      .replace(/^### /gm, '##### ')
-      .replace(/^## /gm, '#### ')
-      .replace(/^# /gm, '### ');
+    const downgraded = agent.persona.replace(/^### /gm, '##### ').replace(/^## /gm, '#### ').replace(/^# /gm, '### ');
     sections.push(wrapText(downgraded));
   }
   return '## Panelists\n\n' + sections.join('\n\n');
@@ -182,17 +176,14 @@ export function formatAgentView(entries: TranscriptEntry[], agents: Record<strin
   return renderHeader('') + agentView;
 }
 
-export function formatRecent(
-  entries: TranscriptEntry[],
-  lastN: number,
-  agents: Record<string, AgentState>,
-): string {
+export function formatRecent(entries: TranscriptEntry[], lastN: number, agents: Record<string, AgentState>): string {
   const speeches = entries.filter(isSpeechEntry);
   if (speeches.length === 0) return '';
 
   const recentStart = Math.max(0, speeches.length - lastN);
 
-  const olderSummaries = speeches.slice(0, recentStart)
+  const olderSummaries = speeches
+    .slice(0, recentStart)
     .map((speech) => summarizeSpeech(speech.display_name, speech.content));
   const recentParts = speeches.slice(recentStart).map((speech) => renderEntry(speech, agents));
 
@@ -206,9 +197,7 @@ export function formatRecent(
   return parts.join('\n\n');
 }
 
-export function formatSummary(
-  entries: TranscriptEntry[],
-): string {
+export function formatSummary(entries: TranscriptEntry[]): string {
   return entries
     .filter(isSpeechEntry)
     .map((e) => summarizeSpeech(e.display_name, e.content))

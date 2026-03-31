@@ -2,8 +2,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as EngineMod from '../engine.js';
 
-type EngineModule = typeof import('../engine.js');
+type EngineModule = typeof EngineMod;
 
 const ORIGINAL_MAX_CHILDREN = process.env.CORAL_MAX_SESSIONS;
 const ORIGINAL_DISCUSS_MAX_CHILDREN = process.env.CORAL_DISCUSS_MAX_SESSIONS;
@@ -71,8 +72,10 @@ describe('engine admission queue', () => {
     expect(engine.queueDepth()).toBe(1);
     expect(engine.queueDepth('discuss')).toBe(1);
 
-    if (queuedDefault === 'queue_full' || queuedDefault.type !== 'queued') throw new Error('expected queued default job');
-    if (queuedDiscuss === 'queue_full' || queuedDiscuss.type !== 'queued') throw new Error('expected queued discuss job');
+    if (queuedDefault === 'queue_full' || queuedDefault.type !== 'queued')
+      throw new Error('expected queued default job');
+    if (queuedDiscuss === 'queue_full' || queuedDiscuss.type !== 'queued')
+      throw new Error('expected queued discuss job');
 
     const defaultPermit = queuedDefault.waitForPermit();
     const discussPermit = queuedDiscuss.waitForPermit();
@@ -97,12 +100,14 @@ describe('engine admission queue', () => {
     const controller = new AbortController();
     engine.bindLaunchPermit('discuss-1', controller.signal, 'discuss');
 
-    await expect(engine.spawnCli({
-      provider: 'codex',
-      command: process.execPath,
-      args: ['-e', 'process.exit(0)'],
-      signal: controller.signal,
-    })).resolves.toMatchObject({
+    await expect(
+      engine.spawnCli({
+        provider: 'codex',
+        command: process.execPath,
+        args: ['-e', 'process.exit(0)'],
+        signal: controller.signal,
+      }),
+    ).resolves.toMatchObject({
       code: 0,
       aborted: false,
     });
@@ -328,7 +333,9 @@ describe('recovery helpers', () => {
 
     let bGranted = false;
     const permitA = handleA.waitForPermit();
-    const permitB = handleB.waitForPermit().then(() => { bGranted = true; });
+    const permitB = handleB.waitForPermit().then(() => {
+      bGranted = true;
+    });
 
     // Release one slot — first queued entry should be admitted
     engine.releaseLaunch('fill-1', 'default');
@@ -378,8 +385,8 @@ describe('spawnDurableJob', () => {
       args: [
         '-e',
         [
-          "process.stdout.write('{\"step\":\"one\"}\\n');",
-          "setTimeout(() => process.stdout.write('{\"step\":\"two\"}\\n'), 25);",
+          'process.stdout.write(\'{"step":"one"}\\n\');',
+          'setTimeout(() => process.stdout.write(\'{"step":"two"}\\n\'), 25);',
           "setTimeout(() => process.stderr.write('warn\\n'), 35);",
           'setTimeout(() => process.exit(0), 50);',
         ].join(''),
@@ -415,8 +422,8 @@ describe('spawnDurableJob', () => {
       args: [
         '-e',
         [
-          "process.stdout.write('{\"step\":\"start\"}\\n');",
-          "setInterval(() => process.stdout.write('{\"step\":\"tick\"}\\n'), 20);",
+          'process.stdout.write(\'{"step":"start"}\\n\');',
+          'setInterval(() => process.stdout.write(\'{"step":"tick"}\\n\'), 20);',
         ].join(''),
       ],
       jobDir,
