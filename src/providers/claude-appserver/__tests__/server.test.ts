@@ -4,7 +4,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { isRecord } from '../../../shared/mcp-utils.js';
 import { buildClaudeChildArgs, createClaudeBrokerServer } from '../server.js';
-import { createBrokerSession, type ClaudeBrokerChild, type ClaudeBrokerSession } from '../session.js';
+import {
+  buildClaudeChildEnv,
+  createBrokerSession,
+  hashClaudeChildEnv,
+  type ClaudeBrokerChild,
+  type ClaudeBrokerSession,
+} from '../session.js';
 import {
   CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
   CLAUDE_BROKER_BUSY_RPC_CODE,
@@ -92,6 +98,27 @@ class FakeClaudeChild implements ClaudeBrokerChild {
     for (const handler of this.stdoutHandlers) {
       handler(line);
     }
+  }
+
+  emitControlSuccess(requestId: string, subtype?: string): void {
+    this.emit({
+      type: 'control_response',
+      response: {
+        subtype: 'success',
+        request_id: requestId,
+        response:
+          subtype === 'initialize'
+            ? {
+                commands: [],
+                output_style: 'normal',
+                available_output_styles: ['normal'],
+                models: [],
+                account: {},
+                pid: 1234,
+              }
+            : {},
+      },
+    });
   }
 
   emitSystemInit(sessionId: string): void {
@@ -281,6 +308,34 @@ function countControlRequests(child: FakeClaudeChild, subtype: string): number {
   }).length;
 }
 
+async function ensureSession(
+  session: ClaudeBrokerSession,
+  params: Partial<SessionEnsureParams> = {},
+) {
+  return session.sessionEnsure({
+    ...BOOTSTRAP,
+    ...params,
+  });
+}
+
+function probeParams(brokerSessionKey: string, conversationRef?: string) {
+  return conversationRef ? { brokerSessionKey, conversationRef } : { brokerSessionKey };
+}
+
+function startParams(
+  brokerSessionKey: string,
+  params: Omit<Record<string, unknown>, 'brokerSessionKey'> & { brokerTurnId: string; prompt: string },
+) {
+  return {
+    brokerSessionKey,
+    ...params,
+  };
+}
+
+function interruptParams(brokerSessionKey: string, brokerTurnId?: string) {
+  return brokerTurnId ? { brokerSessionKey, brokerTurnId } : { brokerSessionKey };
+}
+
 function countControlResponses(child: FakeClaudeChild, requestId: string): number {
   return child.writes.filter((message) => {
     return (
@@ -305,6 +360,20 @@ function readAllowBehavior(child: FakeClaudeChild, requestId: string): string | 
     return undefined;
   }
   return typeof response.response.response.behavior === 'string' ? response.response.response.behavior : undefined;
+}
+
+function findControlRequestId(child: FakeClaudeChild, subtype: string): string | undefined {
+  const request = child.writes.find((message) => {
+    return (
+      isRecord(message) &&
+      message.type === 'control_request' &&
+      typeof message.request_id === 'string' &&
+      isRecord(message.request) &&
+      message.request.subtype === subtype
+    );
+  });
+
+  return isRecord(request) && typeof request.request_id === 'string' ? request.request_id : undefined;
 }
 
 afterEach(() => {
@@ -353,12 +422,13 @@ describe('Claude broker session', () => {
     const session = createBrokerSession({ spawnChild });
     const notifications = collectNotifications(session);
 
-    const firstEnsure = await session.sessionEnsure(BOOTSTRAP);
+    const firstEnsure = await ensureSession(session);
     expect(firstEnsure.bootstrapSignature).toEqual({
       cwd: '/workspace',
       systemPromptHash: 'sha256:abc123',
       permissionMode: 'bypassPermissions',
     });
+    expect(firstEnsure.brokerSessionKey).toEqual(expect.any(String));
     expect(firstEnsure.initialized).toBe(true);
     expect(firstEnsure.sessionId).toBeNull();
     expect(spawnChild).toHaveBeenCalledTimes(1);
@@ -366,8 +436,12 @@ describe('Claude broker session', () => {
     child.emitSystemInit('sess-1');
     await flush();
 
-    const secondEnsure = await session.sessionEnsure(BOOTSTRAP);
+    const secondEnsure = await ensureSession(session, {
+      brokerSessionKey: firstEnsure.brokerSessionKey,
+      conversationRef: 'sess-1',
+    });
     expect(secondEnsure.sessionId).toBe('sess-1');
+    expect(secondEnsure.brokerSessionKey).toBe(firstEnsure.brokerSessionKey);
     expect(spawnChild).toHaveBeenCalledTimes(1);
 
     const initializeRequests = child.writes.filter(
@@ -382,17 +456,20 @@ describe('Claude broker session', () => {
     expect(notifications).toContainEqual({
       method: 'session/updated',
       params: {
+        brokerSessionKey: firstEnsure.brokerSessionKey,
         bootstrapSignature: firstEnsure.bootstrapSignature,
         sessionId: 'sess-1',
         conversationRef: 'sess-1',
       },
     });
 
-    await expect(session.sessionProbe({ conversationRef: 'sess-1' })).resolves.toMatchObject({
+    await expect(session.sessionProbe(probeParams(firstEnsure.brokerSessionKey, 'sess-1'))).resolves.toMatchObject({
+      brokerSessionKey: firstEnsure.brokerSessionKey,
       status: 'available',
       conversationRef: 'sess-1',
     });
-    await expect(session.sessionProbe({ conversationRef: 'sess-other' })).resolves.toMatchObject({
+    await expect(session.sessionProbe(probeParams(firstEnsure.brokerSessionKey, 'sess-other'))).resolves.toMatchObject({
+      brokerSessionKey: firstEnsure.brokerSessionKey,
       status: 'missing',
     });
   });
@@ -402,37 +479,38 @@ describe('Claude broker session', () => {
     const session = createBrokerSession({ spawnChild: async () => child });
     const notifications = collectNotifications(session);
 
-    await session.sessionEnsure(BOOTSTRAP);
+    const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-turn');
     await flush();
 
     await expect(
-      session.turnStart({
+      session.turnStart(startParams(ensureResult.brokerSessionKey, {
         brokerTurnId: 'turn-1',
         prompt: 'hello',
         model: 'claude-sonnet-4-6',
         maxThinkingTokens: 256,
-      }),
+      })),
     ).resolves.toEqual({
+      brokerSessionKey: ensureResult.brokerSessionKey,
       brokerTurnId: 'turn-1',
       sessionId: 'sess-turn',
       conversationRef: 'sess-turn',
     });
 
     await expect(
-      session.turnStart({
+      session.turnStart(startParams(ensureResult.brokerSessionKey, {
         brokerTurnId: 'turn-2',
         prompt: 'overlap',
-      }),
+      })),
     ).rejects.toMatchObject({
       code: CLAUDE_BROKER_BUSY_RPC_CODE,
     });
 
-    await expect(session.turnInterrupt({})).resolves.toEqual({
+    await expect(session.turnInterrupt(interruptParams(ensureResult.brokerSessionKey))).resolves.toEqual({
       brokerTurnId: 'turn-1',
       interrupted: true,
     });
-    await expect(session.turnInterrupt({ brokerTurnId: 'stale-turn' })).resolves.toEqual({
+    await expect(session.turnInterrupt(interruptParams(ensureResult.brokerSessionKey, 'stale-turn'))).resolves.toEqual({
       brokerTurnId: 'turn-1',
       interrupted: false,
     });
@@ -448,7 +526,7 @@ describe('Claude broker session', () => {
     expect(subtypes).toContain('set_max_thinking_tokens');
     expect(subtypes.filter((subtype) => subtype === 'interrupt')).toHaveLength(1);
 
-    await expect(session.turnInterrupt({ brokerTurnId: 'turn-1' })).resolves.toEqual({
+    await expect(session.turnInterrupt(interruptParams(ensureResult.brokerSessionKey, 'turn-1'))).resolves.toEqual({
       brokerTurnId: 'turn-1',
       interrupted: false,
     });
@@ -456,6 +534,7 @@ describe('Claude broker session', () => {
     expect(notifications).toContainEqual({
       method: 'turn/completed',
       params: {
+        brokerSessionKey: ensureResult.brokerSessionKey,
         brokerTurnId: 'turn-1',
         sessionId: 'sess-turn',
         conversationRef: 'sess-turn',
@@ -477,10 +556,10 @@ describe('Claude broker session', () => {
     const session = createBrokerSession({ spawnChild: async () => child });
     const notifications = collectNotifications(session);
 
-    await session.sessionEnsure(BOOTSTRAP);
+    const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-progress');
     await flush();
-    await session.turnStart({ brokerTurnId: 'turn-progress', prompt: 'work' });
+    await session.turnStart(startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-progress', prompt: 'work' }));
 
     child.emitPermissionRequest('req-1', 'Write', { file_path: '/workspace/out.txt' });
     child.emitAssistantTool('sess-progress', 'Read', { file_path: '/workspace/in.txt' });
@@ -503,22 +582,20 @@ describe('Claude broker session', () => {
     const session = createBrokerSession({ spawnChild: async () => child });
     const notifications = collectNotifications(session);
 
-    await session.sessionEnsure(BOOTSTRAP);
+    const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-fail');
     await flush();
-    await session.turnStart({ brokerTurnId: 'turn-fail', prompt: 'long run' });
+    await session.turnStart(startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-fail', prompt: 'long run' }));
 
     child.emitStderr('fatal stderr chunk');
     child.emitExit({ code: 1, signal: null });
-
-    const closed = await session.closed;
-    expect(closed).toBeInstanceOf(Error);
 
     await flush();
     const failed = notifications.find((notification) => notification.method === 'turn/failed');
     expect(failed).toEqual({
       method: 'turn/failed',
       params: {
+        brokerSessionKey: ensureResult.brokerSessionKey,
         brokerTurnId: 'turn-fail',
         message: 'Claude child exited unexpectedly (exit 1).',
         sessionId: 'sess-fail',
@@ -526,6 +603,12 @@ describe('Claude broker session', () => {
         stderr: 'fatal stderr chunk',
       },
     });
+
+    const closed = await Promise.race([
+      session.closed,
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 50)),
+    ]);
+    expect(closed).toBe('timeout');
   });
 });
 
@@ -547,13 +630,13 @@ describe('broker: duplicate turn/start rejection', () => {
       },
     });
 
-    await session.sessionEnsure(BOOTSTRAP);
+    const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-pending');
     await flush();
 
-    const first = session.turnStart({ brokerTurnId: 'turn-1', prompt: 'hello' });
+    const first = session.turnStart(startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-1', prompt: 'hello' }));
     await firstInFlight;
-    const second = session.turnStart({ brokerTurnId: 'turn-2', prompt: 'world' });
+    const second = session.turnStart(startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-2', prompt: 'world' }));
 
     await expect(second).rejects.toMatchObject({
       code: CLAUDE_BROKER_BUSY_RPC_CODE,
@@ -570,15 +653,18 @@ describe('broker: duplicate turn/start rejection', () => {
     const child = new FakeClaudeChild();
     const session = createBrokerSession({ spawnChild: async () => child });
 
-    await session.sessionEnsure(BOOTSTRAP);
+    const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-seq');
     await flush();
 
-    await session.turnStart({ brokerTurnId: 'turn-1', prompt: 'first' });
+    await session.turnStart(startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-1', prompt: 'first' }));
     child.emitResult('sess-seq', 'first done');
     await flush();
 
-    await expect(session.turnStart({ brokerTurnId: 'turn-2', prompt: 'second' })).resolves.toMatchObject({
+    await expect(
+      session.turnStart(startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-2', prompt: 'second' })),
+    ).resolves.toMatchObject({
+      brokerSessionKey: ensureResult.brokerSessionKey,
       brokerTurnId: 'turn-2',
       sessionId: 'sess-seq',
       conversationRef: 'sess-seq',
@@ -594,8 +680,8 @@ describe('broker: turn/interrupt timing contracts', () => {
     const child = new FakeClaudeChild();
     const session = createBrokerSession({ spawnChild: async () => child });
 
-    await session.sessionEnsure(BOOTSTRAP);
-    await expect(session.turnInterrupt({})).resolves.toEqual({
+    const ensureResult = await ensureSession(session);
+    await expect(session.turnInterrupt(interruptParams(ensureResult.brokerSessionKey))).resolves.toEqual({
       brokerTurnId: null,
       interrupted: false,
     });
@@ -618,14 +704,16 @@ describe('broker: turn/interrupt timing contracts', () => {
       },
     });
 
-    await session.sessionEnsure(BOOTSTRAP);
+    const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-preack');
     await flush();
 
-    const turnStart = session.turnStart({ brokerTurnId: 'turn-1', prompt: 'long task' });
+    const turnStart = session.turnStart(
+      startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-1', prompt: 'long task' }),
+    );
     await turnStarted;
 
-    await expect(session.turnInterrupt({})).resolves.toEqual({
+    await expect(session.turnInterrupt(interruptParams(ensureResult.brokerSessionKey))).resolves.toEqual({
       brokerTurnId: 'turn-1',
       interrupted: true,
     });
@@ -644,12 +732,18 @@ describe('broker: session/ensure during active turn is a read, not a respawn', (
     const spawnChild = vi.fn(async () => child);
     const session = createBrokerSession({ spawnChild });
 
-    await session.sessionEnsure(BOOTSTRAP);
+    const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-concurrent');
     await flush();
-    await session.turnStart({ brokerTurnId: 'turn-1', prompt: 'busy' });
+    await session.turnStart(startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-1', prompt: 'busy' }));
 
-    await expect(session.sessionEnsure(BOOTSTRAP)).resolves.toMatchObject({
+    await expect(
+      ensureSession(session, {
+        brokerSessionKey: ensureResult.brokerSessionKey,
+        conversationRef: 'sess-concurrent',
+      }),
+    ).resolves.toMatchObject({
+      brokerSessionKey: ensureResult.brokerSessionKey,
       sessionId: 'sess-concurrent',
       conversationRef: 'sess-concurrent',
       activeTurnId: 'turn-1',
@@ -665,12 +759,18 @@ describe('broker: session/ensure during active turn is a read, not a respawn', (
     const child = new FakeClaudeChild();
     const session = createBrokerSession({ spawnChild: async () => child });
 
-    await session.sessionEnsure(BOOTSTRAP);
+    const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-drift');
     await flush();
-    await session.turnStart({ brokerTurnId: 'turn-1', prompt: 'running' });
+    await session.turnStart(startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-1', prompt: 'running' }));
 
-    await expect(session.sessionEnsure({ ...BOOTSTRAP, cwd: '/different/path' })).rejects.toMatchObject({
+    await expect(
+      ensureSession(session, {
+        brokerSessionKey: ensureResult.brokerSessionKey,
+        conversationRef: 'sess-drift',
+        cwd: '/different/path',
+      }),
+    ).rejects.toMatchObject({
       code: CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
       message: expect.stringMatching(/mismatch/i),
     });
@@ -688,7 +788,7 @@ describe('broker: initialize sent exactly once per child lifecycle', () => {
     const spawnChild = vi.fn(async () => activeChild);
     const session = createBrokerSession({ spawnChild });
 
-    await session.sessionEnsure(BOOTSTRAP);
+    const firstEnsure = await ensureSession(session);
     child1.emitSystemInit('sess-first');
     await flush();
 
@@ -696,38 +796,55 @@ describe('broker: initialize sent exactly once per child lifecycle', () => {
     child1.crash(1);
     await flush();
 
-    const secondEnsure = session.sessionEnsure({ ...BOOTSTRAP, conversationRef: 'sess-first' });
+    const secondEnsure = ensureSession(session, {
+      brokerSessionKey: firstEnsure.brokerSessionKey,
+      conversationRef: 'sess-first',
+    });
+    await vi.waitFor(() => {
+      expect(countControlRequests(child2, 'initialize')).toBe(1);
+    });
     child2.emitSystemInit('sess-first');
 
     await expect(secondEnsure).resolves.toMatchObject({
-      sessionId: 'sess-first',
+      brokerSessionKey: firstEnsure.brokerSessionKey,
       conversationRef: 'sess-first',
       initialized: true,
     });
     expect(spawnChild).toHaveBeenCalledTimes(2);
     expect(countControlRequests(child2, 'initialize')).toBe(1);
+
+    await flush();
+    await expect(
+      ensureSession(session, {
+        brokerSessionKey: firstEnsure.brokerSessionKey,
+        conversationRef: 'sess-first',
+      }),
+    ).resolves.toMatchObject({
+      brokerSessionKey: firstEnsure.brokerSessionKey,
+      sessionId: 'sess-first',
+      conversationRef: 'sess-first',
+    });
   });
 });
 
 describe('broker: child crash during active turn produces terminal failure, not a hung wait', () => {
-  it('resolves the closed signal quickly when the child exits unexpectedly mid-turn', async () => {
+  it('keeps the broker transport open when one controller exits unexpectedly mid-turn', async () => {
     const child = new FakeClaudeChild();
     const session = createBrokerSession({ spawnChild: async () => child });
 
-    await session.sessionEnsure(BOOTSTRAP);
+    const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-crash');
     await flush();
-    await session.turnStart({ brokerTurnId: 'turn-crash', prompt: 'long op' });
+    await session.turnStart(startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-crash', prompt: 'long op' }));
 
     child.crash(1);
 
     const closed = await Promise.race([
       session.closed,
-      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 500)),
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 50)),
     ]);
 
-    expect(closed).not.toBe('timeout');
-    expect(closed).toBeInstanceOf(Error);
+    expect(closed).toBe('timeout');
   });
 });
 
@@ -736,7 +853,7 @@ describe('broker: child exits before first session_id emission', () => {
     const child = new FakeClaudeChild(false);
     const session = createBrokerSession({ spawnChild: async () => child });
 
-    const ensure = session.sessionEnsure(BOOTSTRAP);
+    const ensure = ensureSession(session);
     await vi.waitFor(() => {
       expect(countControlRequests(child, 'initialize')).toBe(1);
     });
@@ -753,7 +870,7 @@ describe('broker: child exits before first session_id emission', () => {
       spawnChild: async () => activeChild,
     });
 
-    const firstEnsure = session.sessionEnsure(BOOTSTRAP);
+    const firstEnsure = ensureSession(session);
     await vi.waitFor(() => {
       expect(countControlRequests(child1, 'initialize')).toBe(1);
     });
@@ -761,7 +878,7 @@ describe('broker: child exits before first session_id emission', () => {
     await expect(firstEnsure).rejects.toThrow();
 
     activeChild = child2;
-    const secondEnsure = session.sessionEnsure(BOOTSTRAP);
+    const secondEnsure = ensureSession(session);
     await expect(secondEnsure).resolves.toMatchObject({
       initialized: true,
     });
@@ -769,7 +886,12 @@ describe('broker: child exits before first session_id emission', () => {
     child2.emitSystemInit('sess-recovered');
     await flush();
 
-    await expect(session.sessionEnsure(BOOTSTRAP)).resolves.toMatchObject({
+    await expect(
+      ensureSession(session, {
+        brokerSessionKey: (await secondEnsure).brokerSessionKey,
+        conversationRef: 'sess-recovered',
+      }),
+    ).resolves.toMatchObject({
       sessionId: 'sess-recovered',
       conversationRef: 'sess-recovered',
       initialized: true,
@@ -782,10 +904,10 @@ describe('broker: permission auto-allow for can_use_tool', () => {
     const child = new FakeClaudeChild();
     const session = createBrokerSession({ spawnChild: async () => child });
 
-    await session.sessionEnsure(BOOTSTRAP);
+    const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-unknown-ctrl');
     await flush();
-    await session.turnStart({ brokerTurnId: 'turn-1', prompt: 'work' });
+    await session.turnStart(startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-1', prompt: 'work' }));
 
     child.emitUnknownControlRequest('req-unknown-1');
     await flush();
@@ -802,11 +924,17 @@ describe('broker: session/ensure bootstrap signature mismatch', () => {
     const child = new FakeClaudeChild();
     const session = createBrokerSession({ spawnChild: async () => child });
 
-    await session.sessionEnsure(BOOTSTRAP);
+    const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-live');
     await flush();
 
-    await expect(session.sessionEnsure({ ...BOOTSTRAP, cwd: '/completely/different' })).rejects.toMatchObject({
+    await expect(
+      ensureSession(session, {
+        brokerSessionKey: ensureResult.brokerSessionKey,
+        conversationRef: 'sess-live',
+        cwd: '/completely/different',
+      }),
+    ).rejects.toMatchObject({
       code: CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
       message: expect.stringMatching(/mismatch/i),
     });
@@ -816,12 +944,16 @@ describe('broker: session/ensure bootstrap signature mismatch', () => {
     const child = new FakeClaudeChild();
     const session = createBrokerSession({ spawnChild: async () => child });
 
-    await session.sessionEnsure(BOOTSTRAP);
+    const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-hash-live');
     await flush();
 
     await expect(
-      session.sessionEnsure({ ...BOOTSTRAP, systemPromptHash: 'sha256:differenthash' }),
+      ensureSession(session, {
+        brokerSessionKey: ensureResult.brokerSessionKey,
+        conversationRef: 'sess-hash-live',
+        systemPromptHash: 'sha256:differenthash',
+      }),
     ).rejects.toMatchObject({
       code: CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
       message: expect.stringMatching(/mismatch/i),
@@ -833,11 +965,17 @@ describe('broker: session/ensure bootstrap signature mismatch', () => {
     const spawnChild = vi.fn(async () => child);
     const session = createBrokerSession({ spawnChild });
 
-    await session.sessionEnsure(BOOTSTRAP);
+    const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-no-respawn');
     await flush();
 
-    await expect(session.sessionEnsure({ ...BOOTSTRAP, cwd: '/drift' })).rejects.toThrow();
+    await expect(
+      ensureSession(session, {
+        brokerSessionKey: ensureResult.brokerSessionKey,
+        conversationRef: 'sess-no-respawn',
+        cwd: '/drift',
+      }),
+    ).rejects.toThrow();
     expect(spawnChild).toHaveBeenCalledTimes(1);
   });
 });
@@ -848,16 +986,18 @@ describe('broker: turn/completed notification carries cost metadata', () => {
     const session = createBrokerSession({ spawnChild: async () => child });
     const notifications = collectNotifications(session);
 
-    await session.sessionEnsure(BOOTSTRAP);
+    const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-nocost');
     await flush();
-    await session.turnStart({ brokerTurnId: 'turn-nocost', prompt: 'work' });
+    await session.turnStart(startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-nocost', prompt: 'work' }));
 
     child.emitResultWithoutCost('sess-nocost', 'ok');
     await flush();
 
     expect(notifications.find((notification) => notification.method === 'turn/completed')).toBeUndefined();
-    await expect(session.turnStart({ brokerTurnId: 'turn-overlap', prompt: 'still busy' })).rejects.toMatchObject({
+    await expect(
+      session.turnStart(startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-overlap', prompt: 'still busy' })),
+    ).rejects.toMatchObject({
       code: CLAUDE_BROKER_BUSY_RPC_CODE,
     });
 
@@ -867,11 +1007,11 @@ describe('broker: turn/completed notification carries cost metadata', () => {
 });
 
 describe('broker: transport-close signal', () => {
-  it('exposes a closed promise that resolves on child crash', async () => {
+  it('leaves the broker transport open when a single controller crashes', async () => {
     const child = new FakeClaudeChild(false);
     const session = createBrokerSession({ spawnChild: async () => child });
 
-    const ensure = session.sessionEnsure(BOOTSTRAP);
+    const ensure = ensureSession(session);
     await vi.waitFor(() => {
       expect(countControlRequests(child, 'initialize')).toBe(1);
     });
@@ -880,11 +1020,229 @@ describe('broker: transport-close signal', () => {
 
     const closed = await Promise.race([
       session.closed,
-      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 500)),
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 50)),
     ]);
 
-    expect(closed).not.toBe('timeout');
-    expect(closed).toBeInstanceOf(Error);
+    expect(closed).toBe('timeout');
+  });
+});
+
+describe('broker: pooled controller routing', () => {
+  it('allocates distinct brokerSessionKey values for fresh sessions with the same bootstrap', async () => {
+    const firstChild = new FakeClaudeChild();
+    const secondChild = new FakeClaudeChild();
+    const spawnChild = vi
+      .fn<() => Promise<FakeClaudeChild>>()
+      .mockResolvedValueOnce(firstChild)
+      .mockResolvedValueOnce(secondChild);
+    const session = createBrokerSession({ spawnChild });
+
+    const firstEnsure = await ensureSession(session);
+    const secondEnsure = await ensureSession(session);
+
+    expect(firstEnsure.brokerSessionKey).not.toBe(secondEnsure.brokerSessionKey);
+    expect(spawnChild).toHaveBeenCalledTimes(2);
+
+    firstChild.emitSystemInit('sess-a');
+    secondChild.emitSystemInit('sess-b');
+    await flush();
+
+    await expect(
+      session.turnStart(startParams(firstEnsure.brokerSessionKey, { brokerTurnId: 'turn-a', prompt: 'alpha' })),
+    ).resolves.toMatchObject({
+      brokerSessionKey: firstEnsure.brokerSessionKey,
+      brokerTurnId: 'turn-a',
+    });
+    await expect(
+      session.turnStart(startParams(secondEnsure.brokerSessionKey, { brokerTurnId: 'turn-b', prompt: 'beta' })),
+    ).resolves.toMatchObject({
+      brokerSessionKey: secondEnsure.brokerSessionKey,
+      brokerTurnId: 'turn-b',
+    });
+  });
+
+  it('holds first-contact notifications until session/ensure returns the generated brokerSessionKey', async () => {
+    const child = new FakeClaudeChild(false);
+    const session = createBrokerSession({ spawnChild: async () => child });
+    const notifications = collectNotifications(session);
+
+    const ensurePromise = ensureSession(session);
+    await vi.waitFor(() => {
+      expect(countControlRequests(child, 'initialize')).toBe(1);
+    });
+
+    child.emitSystemInit('sess-held');
+    expect(notifications).toEqual([]);
+
+    const initializeRequestId = findControlRequestId(child, 'initialize');
+    expect(initializeRequestId).toBeDefined();
+    child.emitControlSuccess(initializeRequestId!, 'initialize');
+
+    const ensureResult = await ensurePromise;
+    expect(notifications).toEqual([]);
+
+    await flush();
+    expect(notifications).toContainEqual({
+      method: 'session/updated',
+      params: {
+        brokerSessionKey: ensureResult.brokerSessionKey,
+        bootstrapSignature: ensureResult.bootstrapSignature,
+        sessionId: 'sess-held',
+        conversationRef: 'sess-held',
+      },
+    });
+  });
+
+  it('evicts only the crashed controller and keeps other sessions available', async () => {
+    const firstChild = new FakeClaudeChild();
+    const secondChild = new FakeClaudeChild();
+    const spawnChild = vi
+      .fn<() => Promise<FakeClaudeChild>>()
+      .mockResolvedValueOnce(firstChild)
+      .mockResolvedValueOnce(secondChild);
+    const session = createBrokerSession({ spawnChild });
+    const notifications = collectNotifications(session);
+
+    const firstEnsure = await ensureSession(session);
+    const secondEnsure = await ensureSession(session);
+    firstChild.emitSystemInit('sess-a');
+    secondChild.emitSystemInit('sess-b');
+    await flush();
+
+    await session.turnStart(startParams(firstEnsure.brokerSessionKey, { brokerTurnId: 'turn-a', prompt: 'alpha' }));
+    await session.turnStart(startParams(secondEnsure.brokerSessionKey, { brokerTurnId: 'turn-b', prompt: 'beta' }));
+
+    firstChild.crash(1);
+    await flush();
+
+    await expect(session.sessionProbe(probeParams(firstEnsure.brokerSessionKey, 'sess-a'))).resolves.toMatchObject({
+      brokerSessionKey: firstEnsure.brokerSessionKey,
+      status: 'missing',
+    });
+    await expect(session.sessionProbe(probeParams(secondEnsure.brokerSessionKey, 'sess-b'))).resolves.toMatchObject({
+      brokerSessionKey: secondEnsure.brokerSessionKey,
+      status: 'available',
+    });
+
+    secondChild.emitResult('sess-b', 'still alive');
+    await flush();
+
+    expect(notifications).toContainEqual({
+      method: 'turn/failed',
+      params: {
+        brokerSessionKey: firstEnsure.brokerSessionKey,
+        brokerTurnId: 'turn-a',
+        message: 'Claude child exited unexpectedly (exit 1).',
+        sessionId: 'sess-a',
+        conversationRef: 'sess-a',
+      },
+    });
+    expect(notifications).toContainEqual(
+      expect.objectContaining({
+        method: 'turn/completed',
+        params: expect.objectContaining({
+          brokerSessionKey: secondEnsure.brokerSessionKey,
+          brokerTurnId: 'turn-b',
+        }),
+      }),
+    );
+  });
+});
+
+describe('broker: per-controller env', () => {
+  it('builds child env from the stripped broker env plus the controller overlay', () => {
+    const originalCoral = process.env.CORAL_TEST_STRIP_ME;
+    const originalBase = process.env.TEST_BASE_ENV;
+
+    process.env.CORAL_TEST_STRIP_ME = 'remove-me';
+    process.env.TEST_BASE_ENV = 'keep-me';
+
+    try {
+      const childEnv = buildClaudeChildEnv({
+        TEST_CONTROLLER_ONLY: 'present',
+        CORAL_SESSION_VALUE: 'allowed',
+      });
+
+      expect(childEnv.TEST_BASE_ENV).toBe('keep-me');
+      expect(childEnv.CORAL_TEST_STRIP_ME).toBeUndefined();
+      expect(childEnv.TEST_CONTROLLER_ONLY).toBe('present');
+      expect(childEnv.CORAL_SESSION_VALUE).toBe('allowed');
+      expect(childEnv.CORAL_CHILD).toBe('1');
+      expect(hashClaudeChildEnv(childEnv)).toMatch(/^sha256:/);
+    } finally {
+      if (originalCoral === undefined) {
+        delete process.env.CORAL_TEST_STRIP_ME;
+      } else {
+        process.env.CORAL_TEST_STRIP_ME = originalCoral;
+      }
+      if (originalBase === undefined) {
+        delete process.env.TEST_BASE_ENV;
+      } else {
+        process.env.TEST_BASE_ENV = originalBase;
+      }
+    }
+  });
+
+  it('passes controller env per spawn and rejects env drift only for the same brokerSessionKey', async () => {
+    const firstChild = new FakeClaudeChild();
+    const secondChild = new FakeClaudeChild();
+    const spawnChild = vi
+      .fn<() => Promise<FakeClaudeChild>>()
+      .mockResolvedValueOnce(firstChild)
+      .mockResolvedValueOnce(secondChild);
+    const session = createBrokerSession({ spawnChild });
+
+    const firstEnsure = await ensureSession(session, {
+      controllerEnv: {
+        TEST_SESSION_ALPHA: 'alpha',
+      },
+    });
+    const secondEnsure = await ensureSession(session, {
+      controllerEnv: {
+        TEST_SESSION_BETA: 'beta',
+      },
+    });
+    const spawnCalls = spawnChild.mock.calls as unknown as Array<Array<unknown>>;
+    const firstSpawnOptions = spawnCalls[0]?.[0] as { env?: Record<string, string> } | undefined;
+    const secondSpawnOptions = spawnCalls[1]?.[0] as { env?: Record<string, string> } | undefined;
+
+    expect(firstSpawnOptions).toMatchObject({
+      env: expect.objectContaining({
+        TEST_SESSION_ALPHA: 'alpha',
+        CORAL_CHILD: '1',
+      }),
+    });
+    expect(secondSpawnOptions).toMatchObject({
+      env: expect.objectContaining({
+        TEST_SESSION_BETA: 'beta',
+        CORAL_CHILD: '1',
+      }),
+    });
+    expect(secondSpawnOptions?.env).not.toHaveProperty('TEST_SESSION_ALPHA');
+
+    await expect(
+      ensureSession(session, {
+        brokerSessionKey: firstEnsure.brokerSessionKey,
+        controllerEnv: {
+          TEST_SESSION_ALPHA: 'changed',
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
+      message: expect.stringMatching(/mismatch/i),
+    });
+
+    await expect(
+      ensureSession(session, {
+        brokerSessionKey: secondEnsure.brokerSessionKey,
+        controllerEnv: {
+          TEST_SESSION_BETA: 'beta',
+        },
+      }),
+    ).resolves.toMatchObject({
+      brokerSessionKey: secondEnsure.brokerSessionKey,
+      initialized: true,
+    });
   });
 });
 
@@ -903,6 +1261,7 @@ describe('Claude broker JSON-RPC server', () => {
     const session: ClaudeBrokerSession = {
       closed: Promise.resolve(),
       sessionEnsure: vi.fn(async () => ({
+        brokerSessionKey: 'broker-session-1',
         bootstrapSignature: {
           cwd: '/workspace',
           systemPromptHash: 'sha256:abc123',
@@ -914,6 +1273,7 @@ describe('Claude broker JSON-RPC server', () => {
         initialized: true,
       })),
       sessionProbe: vi.fn(async () => ({
+        brokerSessionKey: 'broker-session-1',
         status: 'available' as const,
         bootstrapSignature: {
           cwd: '/workspace',
@@ -925,6 +1285,7 @@ describe('Claude broker JSON-RPC server', () => {
         activeTurnId: null,
       })),
       turnStart: vi.fn(async () => ({
+        brokerSessionKey: 'broker-session-1',
         brokerTurnId: 'turn-1',
         sessionId: 'sess-1',
         conversationRef: 'sess-1',
@@ -964,6 +1325,7 @@ describe('Claude broker JSON-RPC server', () => {
     expect(parseLines(outputText)[0]).toMatchObject({
       id: 1,
       result: {
+        brokerSessionKey: 'broker-session-1',
         initialized: true,
       },
     });
@@ -972,6 +1334,7 @@ describe('Claude broker JSON-RPC server', () => {
     notificationHandler!({
       method: 'turn/progress',
       params: {
+        brokerSessionKey: 'broker-session-1',
         brokerTurnId: 'turn-1',
         message: 'Read(src/app.ts)',
         sessionId: 'sess-1',
@@ -982,6 +1345,7 @@ describe('Claude broker JSON-RPC server', () => {
     expect(parseLines(outputText)[0]).toEqual({
       method: 'turn/progress',
       params: {
+        brokerSessionKey: 'broker-session-1',
         brokerTurnId: 'turn-1',
         message: 'Read(src/app.ts)',
         sessionId: 'sess-1',

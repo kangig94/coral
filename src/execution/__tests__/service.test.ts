@@ -243,6 +243,41 @@ function makeCodexAppServerProvider(): Provider {
   };
 }
 
+function makeSharedClaudeAppServerProvider(spec: {
+  provider: string;
+  key: string;
+  command: string;
+  args: string[];
+  cwd: string;
+  shared: true;
+}): Provider {
+  return {
+    name: 'claude',
+    execute: vi.fn(async () => ({ content: 'ok' })),
+    appServer: {
+      buildServerSpec: () => spec,
+      interrupt: async (lease, continuity) => {
+        const brokerSessionKey =
+          typeof continuity.brokerSessionKey === 'string' ? continuity.brokerSessionKey : undefined;
+        if (!brokerSessionKey) {
+          return;
+        }
+        await lease.rpc('turn/interrupt', {
+          brokerSessionKey,
+          ...(typeof continuity.brokerTurnId === 'string' ? { brokerTurnId: continuity.brokerTurnId } : {}),
+        });
+      },
+      probe: async (_lease, continuity) => ({
+        resumable: true,
+        updatedContinuity: continuity,
+      }),
+      finalizeInterrupted: (probeResult) => ({
+        continuityMutation: probeResult.updatedContinuity,
+      }),
+    },
+  };
+}
+
 async function occupyProviderSlots(
   service: ExecutionService,
   ctx: CallerContext,
@@ -474,6 +509,90 @@ describe('ExecutionService', () => {
     secondLease.release();
   });
 
+  it('allows shared app-server leases to overlap on the same handle', async () => {
+    const service = new ExecutionService(ctx);
+    const { progressStore } = getInternals(service);
+    const spec = {
+      provider: 'claude',
+      key: 'claude',
+      command: process.execPath,
+      args: ['broker.js'],
+      cwd: process.cwd(),
+      shared: true as const,
+    };
+    const requestGate = createDeferred<void>();
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const server = createFakeProviderServerHandle({
+      generation: 41,
+      request: async (_method, params) => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await requestGate.promise;
+        inFlight -= 1;
+        return params;
+      },
+    });
+    const spawnProviderServer = vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(server.handle);
+    vi.spyOn(engineModule, 'getProviderServerGeneration').mockReturnValue(41);
+    const jobId1 = `shared-app-server-${randomUUID()}`;
+    const jobId2 = `shared-app-server-${randomUUID()}`;
+    trackJob(jobId1);
+    trackJob(jobId2);
+
+    progressStore.initJob({
+      jobId: jobId1,
+      sessionId: 'session-1',
+      provider: 'claude',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+      initialPhase: 'running',
+    });
+    progressStore.initJob({
+      jobId: jobId2,
+      sessionId: 'session-2',
+      provider: 'claude',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+      initialPhase: 'running',
+    });
+
+    const firstLease = await service.acquireServer(spec, { jobId: jobId1 });
+
+    let secondSettled = false;
+    const secondLeasePromise = service.acquireServer(spec, { jobId: jobId2 }).then((lease) => {
+      secondSettled = true;
+      return lease;
+    });
+    await vi.waitFor(() => {
+      expect(secondSettled).toBe(true);
+    });
+    const secondLease = await secondLeasePromise;
+
+    const secondRuntime = progressStore.readRuntimeRecord(jobId2) as AppServerRuntimeRecord;
+    expect(secondRuntime).toMatchObject({
+      transport: 'app-server',
+      providerMeta: {
+        serverKey: 'claude',
+        leaseState: 'acquired',
+        serverGeneration: 41,
+        recoveryPolicy: 'session_continuity_only',
+      },
+    });
+
+    const firstRpc = firstLease.rpc('turn/start', { brokerSessionKey: 'broker-1', brokerTurnId: 'turn-1' });
+    const secondRpc = secondLease.rpc('turn/start', { brokerSessionKey: 'broker-2', brokerTurnId: 'turn-2' });
+    await Promise.resolve();
+
+    expect(maxInFlight).toBe(2);
+    requestGate.resolve();
+    await Promise.all([firstRpc, secondRpc]);
+
+    firstLease.release();
+    secondLease.release();
+    expect(spawnProviderServer).toHaveBeenCalledTimes(1);
+  });
+
   it('abort sends turn/interrupt for checkpointed app-server jobs', async () => {
     const service = new ExecutionService(ctx);
     const { progressStore, abortRegistry } = getInternals(service);
@@ -547,6 +666,76 @@ describe('ExecutionService', () => {
         turnId: 'turn-1',
       });
     });
+  });
+
+  it('routes shared app-server interrupts through acquireServer while a live lease is active', async () => {
+    const service = new ExecutionService(ctx);
+    const spec = {
+      provider: 'claude',
+      key: 'claude',
+      command: process.execPath,
+      args: ['broker.js'],
+      cwd: process.cwd(),
+      shared: true as const,
+    };
+    const server = createFakeProviderServerHandle();
+    const spawnProviderServer = vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(server.handle);
+    vi.spyOn(engineModule, 'getProviderServerGeneration').mockReturnValue(server.handle.generation);
+    mockState.getNewProvider.mockReturnValue(makeSharedClaudeAppServerProvider(spec));
+
+    const firstLease = await service.acquireServer(spec);
+    const acquireServerSpy = vi.spyOn(service, 'acquireServer');
+
+    const launchRecord: PersistedLaunchRecord = {
+      jobId: `shared-interrupt-${randomUUID()}`,
+      sessionId: 'session-1',
+      provider: 'claude',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+      pool: 'default',
+      enqueueSequence: 0,
+      providerAction: 'exec',
+      request: {
+        prompt: 'interrupt me',
+        cwd: ctx.projectRoot,
+        bypassPermissions: true,
+        coralEnv: {},
+      },
+      createdAt: new Date().toISOString(),
+    };
+    const runtimeRecord: AppServerRuntimeRecord = {
+      transport: 'app-server',
+      startTime: new Date().toISOString(),
+      providerMeta: {
+        serverKey: 'claude',
+        leaseState: 'acquired',
+        serverGeneration: 7,
+        providerContinuity: {
+          serverKey: 'claude',
+          brokerSessionKey: 'broker-session-1',
+          brokerTurnId: 'broker-turn-1',
+          bootstrapSignature: {
+            cwd: '/workspace',
+            systemPromptHash: 'sha256:bootstrap',
+            permissionMode: 'bypass',
+          },
+          envHash: 'sha256:env',
+        },
+        recoveryPolicy: 'session_continuity_only',
+      },
+    };
+
+    await service.interruptAppServerJob(launchRecord, runtimeRecord);
+
+    expect(acquireServerSpy).toHaveBeenCalledTimes(1);
+    expect(server.requestMock).toHaveBeenCalledWith('turn/interrupt', {
+      brokerSessionKey: 'broker-session-1',
+      brokerTurnId: 'broker-turn-1',
+    });
+    expect(spawnProviderServer).toHaveBeenCalledTimes(1);
+
+    acquireServerSpy.mockRestore();
+    firstLease.release();
   });
 
   it('persists app-server lease-wait aborts as aborted instead of error', async () => {

@@ -17,6 +17,7 @@ export interface ProviderServerSpec {
   args: string[];
   cwd: string;
   env?: Record<string, string>;
+  shared?: boolean;
   idleTtlMs?: number;
 }
 

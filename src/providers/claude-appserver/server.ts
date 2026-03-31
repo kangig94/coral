@@ -18,6 +18,7 @@ import {
   type TurnStartParams,
 } from './protocol.js';
 import {
+  buildClaudeChildEnv,
   createBrokerSession,
   type ClaudeBrokerChild,
   type ClaudeBrokerSession,
@@ -173,7 +174,7 @@ export function createNodeClaudeChildFactory(
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: options.cwd || undefined,
       shell: process.platform === 'win32',
-      env: { ...process.env, CORAL_CHILD: '1' },
+      env: buildClaudeChildEnv(options.env),
     });
 
     if (!child.stdin || !child.stdout || !child.stderr) {
@@ -282,29 +283,35 @@ function requireSessionEnsureParams(params: unknown): SessionEnsureParams {
     cwd: params.cwd,
     systemPromptHash: params.systemPromptHash,
     permissionMode: params.permissionMode,
+    brokerSessionKey: typeof params.brokerSessionKey === 'string' ? params.brokerSessionKey : undefined,
     conversationRef: typeof params.conversationRef === 'string' ? params.conversationRef : undefined,
+    controllerEnv: readControllerEnv(params.controllerEnv),
     systemPrompt: typeof params.systemPrompt === 'string' ? params.systemPrompt : undefined,
   };
 }
 
 function requireSessionProbeParams(params: unknown): SessionProbeParams {
-  if (params === undefined) {
-    return {};
-  }
-  if (!isRecord(params)) {
+  if (!isRecord(params) || typeof params.brokerSessionKey !== 'string') {
     throw new ClaudeBrokerRpcError(-32602, 'Invalid params for session/probe.');
   }
   return {
+    brokerSessionKey: params.brokerSessionKey,
     conversationRef: typeof params.conversationRef === 'string' ? params.conversationRef : undefined,
   };
 }
 
 function requireTurnStartParams(params: unknown): TurnStartParams {
-  if (!isRecord(params) || typeof params.brokerTurnId !== 'string' || typeof params.prompt !== 'string') {
+  if (
+    !isRecord(params) ||
+    typeof params.brokerSessionKey !== 'string' ||
+    typeof params.brokerTurnId !== 'string' ||
+    typeof params.prompt !== 'string'
+  ) {
     throw new ClaudeBrokerRpcError(-32602, 'Invalid params for turn/start.');
   }
 
   return {
+    brokerSessionKey: params.brokerSessionKey,
     brokerTurnId: params.brokerTurnId,
     prompt: params.prompt,
     model: typeof params.model === 'string' ? params.model : undefined,
@@ -316,15 +323,29 @@ function requireTurnStartParams(params: unknown): TurnStartParams {
 }
 
 function requireTurnInterruptParams(params: unknown): TurnInterruptParams {
-  if (params === undefined) {
-    return {};
-  }
-  if (!isRecord(params)) {
+  if (!isRecord(params) || typeof params.brokerSessionKey !== 'string') {
     throw new ClaudeBrokerRpcError(-32602, 'Invalid params for turn/interrupt.');
   }
   return {
+    brokerSessionKey: params.brokerSessionKey,
     brokerTurnId: typeof params.brokerTurnId === 'string' ? params.brokerTurnId : undefined,
   };
+}
+
+function readControllerEnv(value: unknown): Record<string, string> | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    throw new ClaudeBrokerRpcError(-32602, 'Invalid params for session/ensure.');
+  }
+
+  const entries = Object.entries(value);
+  if (entries.some(([, entryValue]) => typeof entryValue !== 'string')) {
+    throw new ClaudeBrokerRpcError(-32602, 'Invalid params for session/ensure.');
+  }
+
+  return Object.fromEntries(entries) as Record<string, string>;
 }
 
 function bypassesPermissions(permissionMode: string): boolean {

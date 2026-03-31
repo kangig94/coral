@@ -16,10 +16,14 @@ import type {
 
 export interface ClaudePersistedContinuity extends ProviderContinuityBlob {
   serverKey?: string;
+  brokerSessionKey?: string;
   bootstrapSignature?: ClaudeBootstrapSignature;
+  envHash?: string;
   conversationRef?: string;
   brokerTurnId?: string;
 }
+
+export const CLAUDE_PROVIDER_SERVER_KEY = 'claude';
 
 const pluginRoot =
   typeof __PLUGIN_ROOT__ === 'string'
@@ -36,7 +40,9 @@ export function readClaudePersistedContinuity(
   const bootstrapSignature = readBootstrapSignature(persistedContinuity.bootstrapSignature);
   return {
     serverKey: readString(persistedContinuity.serverKey),
+    brokerSessionKey: readString(persistedContinuity.brokerSessionKey),
     bootstrapSignature,
+    envHash: readString(persistedContinuity.envHash),
     conversationRef: readString(persistedContinuity.conversationRef),
     brokerTurnId: readString(persistedContinuity.brokerTurnId),
   };
@@ -47,7 +53,12 @@ export function hasClaudePersistentContinuity(
 ): boolean {
   const continuity = readClaudePersistedContinuity(persistedContinuity);
   return Boolean(
-    continuity.serverKey ?? continuity.bootstrapSignature ?? continuity.conversationRef ?? continuity.brokerTurnId,
+    continuity.serverKey ??
+      continuity.brokerSessionKey ??
+      continuity.bootstrapSignature ??
+      continuity.envHash ??
+      continuity.conversationRef ??
+      continuity.brokerTurnId,
   );
 }
 
@@ -62,41 +73,23 @@ export function buildClaudeBootstrapSignature(
   };
 }
 
-export function buildClaudeSessionKey(
-  request: Pick<ProviderRequest, 'sessionId' | 'cwd' | 'bypassPermissions'>,
-  derivedSystemPrompt?: string,
-  persistedContinuity?: ProviderContinuityBlob,
-): string {
-  const continuity = readClaudePersistedContinuity(persistedContinuity);
-  if (continuity.serverKey && continuity.serverKey.startsWith(`claude:${request.sessionId}:`)) {
-    return continuity.serverKey;
-  }
-
-  const signature = continuity.bootstrapSignature ?? buildClaudeBootstrapSignature(request, derivedSystemPrompt);
-  const fingerprint = createHash('sha256')
-    .update(JSON.stringify(signature))
-    .digest('hex')
-    .slice(0, 16);
-  return `claude:${request.sessionId}:${fingerprint}`;
-}
-
 export function buildClaudeProviderServerSpec(
-  request: Pick<ProviderRequest, 'sessionId' | 'cwd' | 'bypassPermissions' | 'coralEnv'>,
-  derivedSystemPrompt?: string,
-  persistedContinuity?: ProviderContinuityBlob,
+  _request: Pick<ProviderRequest, 'sessionId' | 'cwd' | 'bypassPermissions' | 'coralEnv'>,
+  _derivedSystemPrompt?: string,
+  _persistedContinuity?: ProviderContinuityBlob,
 ): ProviderServerSpec {
   return {
     provider: 'claude',
-    key: buildClaudeSessionKey(request, derivedSystemPrompt, persistedContinuity),
+    key: CLAUDE_PROVIDER_SERVER_KEY,
     command: process.execPath,
     args: [resolveClaudeBrokerEntrypoint()],
-    cwd: request.cwd ?? process.cwd(),
-    env: request.coralEnv,
+    cwd: process.cwd(),
+    shared: true,
   };
 }
 
 export function mapSessionEnsureParams(
-  request: Pick<ProviderRequest, 'cwd' | 'bypassPermissions' | 'conversationRef'>,
+  request: Pick<ProviderRequest, 'cwd' | 'bypassPermissions' | 'conversationRef' | 'coralEnv'>,
   derivedSystemPrompt?: string,
   persistedContinuity?: ProviderContinuityBlob,
 ): SessionEnsureParams {
@@ -104,7 +97,9 @@ export function mapSessionEnsureParams(
   const bootstrapSignature = buildClaudeBootstrapSignature(request, derivedSystemPrompt);
   return {
     ...bootstrapSignature,
+    brokerSessionKey: continuity.brokerSessionKey,
     conversationRef: continuity.conversationRef ?? request.conversationRef,
+    controllerEnv: normalizeClaudeControllerEnv(request.coralEnv),
     systemPrompt: derivedSystemPrompt,
   };
 }
@@ -112,16 +107,21 @@ export function mapSessionEnsureParams(
 export function mapTurnStartParams(
   request: Pick<ProviderRequest, 'model'>,
   prompt: string,
+  brokerSessionKey: string,
 ): TurnStartParams {
   return {
+    brokerSessionKey,
     brokerTurnId: randomUUID(),
     prompt,
     model: request.model,
   };
 }
 
-export function mapInterruptParams(brokerTurnId?: string): TurnInterruptParams {
-  return brokerTurnId ? { brokerTurnId } : {};
+export function mapInterruptParams(
+  brokerSessionKey: string,
+  brokerTurnId?: string,
+): TurnInterruptParams {
+  return brokerTurnId ? { brokerSessionKey, brokerTurnId } : { brokerSessionKey };
 }
 
 export function findClaudeBootstrapDrift(
@@ -150,13 +150,17 @@ export function findClaudeBootstrapDrift(
 
 export function buildClaudeContinuity(update: {
   serverKey: string;
+  brokerSessionKey?: string;
   bootstrapSignature: ClaudeBootstrapSignature;
+  envHash?: string;
   conversationRef?: string;
   brokerTurnId?: string;
 }): ClaudePersistedContinuity {
   return {
     serverKey: update.serverKey,
+    ...(update.brokerSessionKey ? { brokerSessionKey: update.brokerSessionKey } : {}),
     bootstrapSignature: update.bootstrapSignature,
+    ...(update.envHash ? { envHash: update.envHash } : {}),
     ...(update.conversationRef ? { conversationRef: update.conversationRef } : {}),
     ...(update.brokerTurnId ? { brokerTurnId: update.brokerTurnId } : {}),
   };
@@ -166,7 +170,9 @@ export function withClaudeContinuity(
   persistedContinuity: ProviderContinuityBlob | undefined,
   update: {
     serverKey?: string;
+    brokerSessionKey?: string;
     bootstrapSignature?: ClaudeBootstrapSignature;
+    envHash?: string;
     conversationRef?: string;
     brokerTurnId?: string;
   },
@@ -174,11 +180,15 @@ export function withClaudeContinuity(
   const continuity = readClaudePersistedContinuity(persistedContinuity);
   return {
     ...(continuity.serverKey || update.serverKey ? { serverKey: update.serverKey ?? continuity.serverKey } : {}),
+    ...(continuity.brokerSessionKey || update.brokerSessionKey
+      ? { brokerSessionKey: update.brokerSessionKey ?? continuity.brokerSessionKey }
+      : {}),
     ...(continuity.bootstrapSignature || update.bootstrapSignature
       ? {
           bootstrapSignature: update.bootstrapSignature ?? continuity.bootstrapSignature,
         }
       : {}),
+    ...(continuity.envHash || update.envHash ? { envHash: update.envHash ?? continuity.envHash } : {}),
     ...(continuity.conversationRef || update.conversationRef
       ? { conversationRef: update.conversationRef ?? continuity.conversationRef }
       : {}),
@@ -207,6 +217,20 @@ function buildSystemPromptSignature(derivedSystemPrompt?: string): string {
     return derivedSystemPrompt;
   }
   return `sha256:${createHash('sha256').update(derivedSystemPrompt ?? '').digest('hex')}`;
+}
+
+export function buildClaudeEnvHash(controllerEnv?: Record<string, string>): string {
+  const childEnv = {
+    ...Object.fromEntries(
+      Object.entries(process.env).filter(([key, value]) => typeof value === 'string' && !key.startsWith('CORAL_')),
+    ),
+    ...normalizeClaudeControllerEnv(controllerEnv),
+    CORAL_CHILD: '1',
+  };
+  const sortedEntries = Object.entries(childEnv)
+    .filter(([key]) => key !== 'CORAL_CHILD')
+    .sort(([left], [right]) => left.localeCompare(right));
+  return `sha256:${createHash('sha256').update(JSON.stringify(sortedEntries)).digest('hex')}`;
 }
 
 function resolveClaudePermissionMode(bypassPermissions: boolean): string {
@@ -240,4 +264,14 @@ function readBootstrapSignature(value: unknown): ClaudeBootstrapSignature | unde
 
 function readString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function normalizeClaudeControllerEnv(controllerEnv?: Record<string, string>): Record<string, string> {
+  if (!controllerEnv) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(controllerEnv).filter(([, value]) => typeof value === 'string'),
+  );
 }

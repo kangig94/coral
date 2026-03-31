@@ -148,6 +148,7 @@ type ProviderServerRegistryEntry = {
   handle: ProviderServerHandle | null;
   spawnPromise: Promise<ProviderServerHandle> | null;
   leaseHeld: boolean;
+  sharedLeaseCount: number;
   waiters: ProviderServerWaiter[];
 };
 
@@ -330,7 +331,11 @@ export class ExecutionService {
       this.writeAppServerRuntimeRecord(options.jobId, entry.key, { leaseState: 'waiting' });
     }
 
-    await this.waitForProviderServerLease(entry, options?.signal);
+    if (entry.spec.shared === true) {
+      this.acquireSharedProviderServerLease(entry);
+    } else {
+      await this.waitForProviderServerLease(entry, options?.signal);
+    }
 
     try {
       const handle = await this.ensureProviderServerHandle(entry);
@@ -343,7 +348,11 @@ export class ExecutionService {
 
       return this.createProviderServerLease(handle, entry);
     } catch (error) {
-      this.releaseProviderServerLease(entry);
+      if (entry.spec.shared === true) {
+        this.releaseSharedProviderServerLease(entry);
+      } else {
+        this.releaseProviderServerLease(entry);
+      }
       throw error;
     }
   }
@@ -393,14 +402,15 @@ export class ExecutionService {
       return;
     }
 
+    const spec = provider.appServer.buildServerSpec(continuity, toProviderRequest(launchRecord));
     const liveEntry = this.providerServers.get(runtimeRecord.providerMeta.serverKey);
     const liveHandle = liveEntry ? this.getLiveProviderServerHandle(liveEntry) : null;
-    if (liveHandle && liveEntry) {
+    if (spec.shared !== true && liveHandle && liveEntry) {
       await provider.appServer.interrupt(this.createProviderServerLease(liveHandle, liveEntry), continuity);
       return;
     }
 
-    const lease = await this.acquireServer(provider.appServer.buildServerSpec(continuity, toProviderRequest(launchRecord)));
+    const lease = await this.acquireServer(spec);
     try {
       await provider.appServer.interrupt(lease, continuity);
     } finally {
@@ -585,6 +595,7 @@ export class ExecutionService {
       handle: null,
       spawnPromise: null,
       leaseHeld: false,
+      sharedLeaseCount: 0,
       waiters: [],
     };
     this.providerServers.set(key, created);
@@ -603,6 +614,10 @@ export class ExecutionService {
       release: () => {
         if (released) return;
         released = true;
+        if (entry.spec.shared === true) {
+          this.releaseSharedProviderServerLease(entry);
+          return;
+        }
         this.releaseProviderServerLease(entry);
       },
       closed: handle.closePromise,
@@ -719,6 +734,17 @@ export class ExecutionService {
     });
   }
 
+  private acquireSharedProviderServerLease(entry: ProviderServerRegistryEntry): void {
+    entry.sharedLeaseCount += 1;
+  }
+
+  private releaseSharedProviderServerLease(entry: ProviderServerRegistryEntry): void {
+    if (entry.sharedLeaseCount === 0) {
+      return;
+    }
+    entry.sharedLeaseCount -= 1;
+  }
+
   private releaseProviderServerLease(entry: ProviderServerRegistryEntry): void {
     const next = entry.waiters.shift();
     if (next) {
@@ -736,6 +762,7 @@ export class ExecutionService {
       waiter.reject(error);
     }
     entry.leaseHeld = false;
+    entry.sharedLeaseCount = 0;
 
     const handle = this.getLiveProviderServerHandle(entry);
     entry.handle = null;

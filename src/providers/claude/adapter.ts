@@ -4,18 +4,10 @@
 export const OUTPUT_STYLE_OVERRIDE =
   'Ignore any output-style instructions (e.g. Explanatory, Learning). No insight blocks. Be concise and direct.';
 
-import { readFileSync } from 'node:fs';
-import {
-  executeClaudeOneShot,
-  executeClaudeResume,
-  executeClaudeFork,
-  ClaudeExecParseError,
-} from './claude-executor.js';
-import { parseClaudeStreamJson } from './output-parser.js';
+import { executeClaudeFork, ClaudeExecParseError } from './claude-executor.js';
 import { detectClaudeCli } from '../cli-detection.js';
 import { resolveInjectMd } from '../inject.js';
 import { extractClaudeProgressMessage } from './progress.js';
-import { readAppendedLines } from '../../shared/file-tail.js';
 import { isRecord, nowIsoString } from '../../shared/mcp-utils.js';
 import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
 import { mapProviderResultBase } from '../result-mapping.js';
@@ -24,14 +16,15 @@ import {
   requireConversationRef,
   type Provider,
   type ProviderAppServerContract,
-  type ProviderRecoveryContract,
   type ProviderRuntime,
 } from '../types.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 import type { ClaudeBootstrapSignature, SessionProbeResult } from '../claude-appserver/protocol.js';
 import {
+  buildClaudeEnvHash,
   buildClaudeContinuity,
   buildClaudeProviderServerSpec,
+  CLAUDE_PROVIDER_SERVER_KEY,
   findClaudeBootstrapDrift,
   hasClaudePersistentContinuity,
   mapInterruptParams,
@@ -40,7 +33,7 @@ import {
   readClaudePersistedContinuity,
   withClaudeContinuity,
 } from './request-mapping.js';
-import type { ClaudeExecResult, ClaudeStreamEvent } from './types.js';
+import type { ClaudeExecResult } from './types.js';
 
 async function preflight(): Promise<void> {
   const cli = await detectClaudeCli();
@@ -106,47 +99,6 @@ function parseError(error: unknown, fallbackModel: string): ProviderResult {
   throw error;
 }
 
-const claudeRecovery: ProviderRecoveryContract = {
-  async finalizeFromArtifacts({ stdoutPath, exitCode, signal, fallbackConversationRef }) {
-    const stdout = readFileSync(stdoutPath, 'utf-8');
-    const parsed = parseClaudeStreamJson(stdout);
-    const aborted = signal !== null;
-    if (!parsed.isError || parsed.response) {
-      return mapResult(
-        {
-          response: parsed.response,
-          sessionId: parsed.sessionId,
-          model: parsed.model ?? '',
-          durationMs: parsed.durationMs ?? 0,
-          costUsd: parsed.costUsd,
-          aborted,
-        },
-        fallbackConversationRef,
-      );
-    }
-    // Fallback: raw content when stream-JSON parsing yields nothing useful
-    return {
-      content: stdout,
-      exitCode,
-      aborted,
-      notice: signal ? `killed by ${signal}` : undefined,
-    };
-  },
-  extractProgress({ stdoutPath, fromOffset }) {
-    const { lines, newOffset } = readAppendedLines(stdoutPath, fromOffset);
-    const messages = lines.flatMap((line) => {
-      try {
-        const event = JSON.parse(line) as ClaudeStreamEvent;
-        const message = extractClaudeProgressMessage(event);
-        return message ? [message] : [];
-      } catch {
-        return [];
-      }
-    });
-    return { messages, newOffset };
-  },
-};
-
 const TIER_RANK: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3 };
 
 function resolveModelCap(env: Record<string, string>): string {
@@ -190,20 +142,6 @@ function buildPreparedRequest(
   };
 }
 
-function canUsePersistentClaude(
-  request: ProviderRequest,
-  runtime: ProviderRuntime,
-  derivedSystemPrompt?: string,
-): boolean {
-  return (
-    runtime.acquireServer !== undefined &&
-    runtime.checkpointRecovery !== undefined &&
-    request.action !== 'fork' &&
-    request.bypassPermissions === true &&
-    findClaudeBootstrapDrift(request, derivedSystemPrompt, runtime.persistedContinuity) === null
-  );
-}
-
 function buildNewSessionRequiredResult(request: ProviderRequest, reason: string): ProviderResult {
   return {
     content: '',
@@ -231,10 +169,6 @@ function getPersistentRedirectReason(
     return 'This Claude session already established persistent continuity. Start a new Coral session before forking.';
   }
 
-  if (request.bypassPermissions !== true) {
-    return 'This Claude session already established persistent continuity with brokered auto-allow permissions. Start a new Coral session for bypassPermissions=false.';
-  }
-
   const drift = findClaudeBootstrapDrift(request, derivedSystemPrompt, runtime.persistedContinuity);
   if (!drift) {
     return null;
@@ -243,7 +177,7 @@ function getPersistentRedirectReason(
   return `This Claude session already established persistent continuity with cwd=${drift.expected.cwd}, systemPromptHash=${drift.expected.systemPromptHash}, permissionMode=${drift.expected.permissionMode}. Start a new Coral session before changing that bootstrap signature.`;
 }
 
-async function executeOneShot(
+async function executeFork(
   request: ProviderRequest,
   runtime: ProviderRuntime,
   prepared: { prompt: string; systemPrompt?: string; model?: string; effort?: EffortLevel },
@@ -261,24 +195,11 @@ async function executeOneShot(
   };
 
   try {
-    switch (request.action) {
-      case 'exec':
-        return mapResult(await executeClaudeOneShot(prepared.prompt, options));
-      case 'resume': {
-        const conversationRef = requireConversationRef(request, 'resume');
-        return mapResult(await executeClaudeResume(conversationRef, prepared.prompt, options), conversationRef);
-      }
-      case 'fork': {
-        const conversationRef = requireConversationRef(request, 'fork');
-        return mapResult(await executeClaudeFork(conversationRef, prepared.prompt, options));
-      }
-    }
+    const conversationRef = requireConversationRef(request, 'fork');
+    return mapResult(await executeClaudeFork(conversationRef, prepared.prompt, options));
   } catch (error) {
     return parseError(error, request.model ?? 'unknown');
   }
-
-  const exhaustive: never = request.action;
-  throw new Error(`Unsupported action: ${exhaustive}`);
 }
 
 async function executePersistent(
@@ -292,7 +213,9 @@ async function executePersistent(
   const lease = await acquireServer(spec);
   const persistedContinuity = readClaudePersistedContinuity(runtime.persistedContinuity);
 
+  let brokerSessionKey = persistedContinuity.brokerSessionKey;
   let bootstrapSignature = persistedContinuity.bootstrapSignature;
+  const envHash = buildClaudeEnvHash(request.coralEnv);
   let conversationRef = persistedContinuity.conversationRef;
   let brokerTurnId: string | undefined;
   let completed = false;
@@ -318,8 +241,10 @@ async function executePersistent(
     }
 
     const providerContinuity = buildClaudeContinuity({
-      serverKey: spec.key,
+      serverKey: CLAUDE_PROVIDER_SERVER_KEY,
+      ...(brokerSessionKey ? { brokerSessionKey } : {}),
       bootstrapSignature,
+      envHash,
       ...(conversationRef ? { conversationRef } : {}),
       ...(brokerTurnId ? { brokerTurnId } : {}),
     });
@@ -327,8 +252,10 @@ async function executePersistent(
     checkpointRecovery({
       ...(conversationRef ? { conversationRef } : {}),
       providerMeta: {
-        serverKey: spec.key,
+        serverKey: CLAUDE_PROVIDER_SERVER_KEY,
+        ...(brokerSessionKey ? { brokerSessionKey } : {}),
         bootstrapSignature,
+        envHash,
         ...(conversationRef ? { conversationRef, sessionId: conversationRef } : {}),
         ...(brokerTurnId ? { brokerTurnId } : {}),
         providerContinuity,
@@ -337,12 +264,12 @@ async function executePersistent(
   };
 
   const requestInterrupt = (): void => {
-    if (!turnRequested || interruptRequested) {
+    if (!turnRequested || interruptRequested || !brokerSessionKey) {
       return;
     }
     interruptRequested = true;
     void lease
-      .rpc('turn/interrupt', mapInterruptParams(brokerTurnId) as Record<string, unknown>)
+      .rpc('turn/interrupt', mapInterruptParams(brokerSessionKey, brokerTurnId) as unknown as Record<string, unknown>)
       .catch(() => {});
   };
 
@@ -378,6 +305,9 @@ async function executePersistent(
 
     if (message.method === 'session/updated') {
       const params = isRecord(message.params) ? message.params : {};
+      if (brokerSessionKey && readString(params.brokerSessionKey) && params.brokerSessionKey !== brokerSessionKey) {
+        return;
+      }
       const updatedSignature = readBootstrapSignature(params.bootstrapSignature);
       if (updatedSignature) {
         bootstrapSignature = updatedSignature;
@@ -392,6 +322,9 @@ async function executePersistent(
 
     if (message.method === 'turn/progress') {
       const params = isRecord(message.params) ? message.params : {};
+      if (brokerSessionKey && readString(params.brokerSessionKey) && params.brokerSessionKey !== brokerSessionKey) {
+        return;
+      }
       if (brokerTurnId && typeof params.brokerTurnId === 'string' && params.brokerTurnId !== brokerTurnId) {
         return;
       }
@@ -411,6 +344,9 @@ async function executePersistent(
 
     if (message.method === 'turn/completed') {
       const params = isRecord(message.params) ? message.params : {};
+      if (brokerSessionKey && readString(params.brokerSessionKey) && params.brokerSessionKey !== brokerSessionKey) {
+        return;
+      }
       if (brokerTurnId && typeof params.brokerTurnId === 'string' && params.brokerTurnId !== brokerTurnId) {
         return;
       }
@@ -442,6 +378,9 @@ async function executePersistent(
 
     if (message.method === 'turn/failed') {
       const params = isRecord(message.params) ? message.params : {};
+      if (brokerSessionKey && readString(params.brokerSessionKey) && params.brokerSessionKey !== brokerSessionKey) {
+        return;
+      }
       if (brokerTurnId && typeof params.brokerTurnId === 'string' && params.brokerTurnId !== brokerTurnId) {
         return;
       }
@@ -476,8 +415,12 @@ async function executePersistent(
       'session/ensure',
       mapSessionEnsureParams(request, prepared.systemPrompt, runtime.persistedContinuity) as unknown as Record<string, unknown>,
     );
+    brokerSessionKey = readString(ensureResult.brokerSessionKey) ?? brokerSessionKey;
     bootstrapSignature = readBootstrapSignature(ensureResult.bootstrapSignature);
     conversationRef = readTurnConversationRef(ensureResult) ?? conversationRef;
+    if (!brokerSessionKey) {
+      throw new Error('Claude broker session key missing from session/ensure response.');
+    }
     checkpoint();
 
     if (runtime.signal.aborted) {
@@ -497,6 +440,7 @@ async function executePersistent(
         model: prepared.model,
       },
       prepared.prompt,
+      brokerSessionKey,
     );
     const startResult = await lease.rpc<Record<string, unknown>>(
       'turn/start',
@@ -546,14 +490,21 @@ const claudeAppServer: ProviderAppServerContract = {
   },
   async interrupt(lease, continuity) {
     const persistedContinuity = readClaudePersistedContinuity(continuity);
+    if (!persistedContinuity.brokerSessionKey) {
+      throw new Error('Claude broker session key missing from continuity.');
+    }
     await lease.rpc(
       'turn/interrupt',
-      mapInterruptParams(persistedContinuity.brokerTurnId) as unknown as Record<string, unknown>,
+      mapInterruptParams(persistedContinuity.brokerSessionKey, persistedContinuity.brokerTurnId) as unknown as Record<string, unknown>,
     );
   },
   async probe(lease, continuity) {
     const persistedContinuity = readClaudePersistedContinuity(continuity);
+    if (!persistedContinuity.brokerSessionKey) {
+      throw new Error('Claude broker session key missing from continuity.');
+    }
     const result = await lease.rpc<SessionProbeResult>('session/probe', {
+      brokerSessionKey: persistedContinuity.brokerSessionKey,
       conversationRef: persistedContinuity.conversationRef,
     });
     if (result.status === 'unavailable') {
@@ -562,10 +513,12 @@ const claudeAppServer: ProviderAppServerContract = {
 
     const updatedConversationRef = readTurnConversationRef(result) ?? persistedContinuity.conversationRef;
     return {
-      resumable: result.status === 'available' && Boolean(updatedConversationRef),
+      resumable: result.status === 'available',
       updatedContinuity: withClaudeContinuity(continuity, {
-        serverKey: persistedContinuity.serverKey,
+        serverKey: CLAUDE_PROVIDER_SERVER_KEY,
+        brokerSessionKey: result.brokerSessionKey ?? persistedContinuity.brokerSessionKey,
         bootstrapSignature: result.bootstrapSignature ?? persistedContinuity.bootstrapSignature,
+        envHash: persistedContinuity.envHash,
         conversationRef: updatedConversationRef,
       }),
     };
@@ -573,10 +526,12 @@ const claudeAppServer: ProviderAppServerContract = {
   finalizeInterrupted(probeResult, continuity) {
     const persistedContinuity = readClaudePersistedContinuity(probeResult.updatedContinuity ?? continuity);
     const continuityMutation =
-      persistedContinuity.serverKey && persistedContinuity.bootstrapSignature
+      persistedContinuity.bootstrapSignature
         ? buildClaudeContinuity({
-            serverKey: persistedContinuity.serverKey,
+            serverKey: CLAUDE_PROVIDER_SERVER_KEY,
+            ...(persistedContinuity.brokerSessionKey ? { brokerSessionKey: persistedContinuity.brokerSessionKey } : {}),
             bootstrapSignature: persistedContinuity.bootstrapSignature,
+            ...(persistedContinuity.envHash ? { envHash: persistedContinuity.envHash } : {}),
             ...(persistedContinuity.conversationRef ? { conversationRef: persistedContinuity.conversationRef } : {}),
           })
         : undefined;
@@ -589,6 +544,11 @@ const claudeAppServer: ProviderAppServerContract = {
     }
 
     if (continuityMutation) {
+      if (probeResult.resumable) {
+        return {
+          continuityMutation,
+        };
+      }
       return {
         nonResumable: true,
         continuityMutation,
@@ -608,11 +568,11 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
     return buildNewSessionRequiredResult(request, redirectReason);
   }
 
-  if (canUsePersistentClaude(request, runtime, prepared.systemPrompt)) {
-    return executePersistent(request, runtime, prepared);
+  if (request.action === 'fork') {
+    return executeFork(request, runtime, prepared);
   }
 
-  return executeOneShot(request, runtime, prepared);
+  return executePersistent(request, runtime, prepared);
 }
 
 function readString(value: unknown): string | undefined {
@@ -653,6 +613,5 @@ export const claudeProvider: Provider = {
   name: 'claude',
   execute,
   preflight,
-  recovery: claudeRecovery,
   appServer: claudeAppServer,
 };

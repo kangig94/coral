@@ -41,11 +41,14 @@ export interface ClaudeBootstrapSignature {
 }
 
 export interface SessionEnsureParams extends ClaudeBootstrapSignature {
+  brokerSessionKey?: string;
   conversationRef?: string;
+  controllerEnv?: Record<string, string>;
   systemPrompt?: string;
 }
 
 export interface SessionEnsureResult {
+  brokerSessionKey: string;
   bootstrapSignature: ClaudeBootstrapSignature;
   sessionId: string | null;
   conversationRef: string | null;
@@ -54,10 +57,12 @@ export interface SessionEnsureResult {
 }
 
 export interface SessionProbeParams {
+  brokerSessionKey: string;
   conversationRef?: string;
 }
 
 export interface SessionProbeResult {
+  brokerSessionKey: string;
   status: 'available' | 'missing' | 'unavailable';
   bootstrapSignature: ClaudeBootstrapSignature | null;
   sessionId: string | null;
@@ -66,6 +71,7 @@ export interface SessionProbeResult {
 }
 
 export interface TurnStartParams {
+  brokerSessionKey: string;
   brokerTurnId: string;
   prompt: string;
   model?: string;
@@ -73,12 +79,14 @@ export interface TurnStartParams {
 }
 
 export interface TurnStartResult {
+  brokerSessionKey: string;
   brokerTurnId: string;
   sessionId: string | null;
   conversationRef: string | null;
 }
 
 export interface TurnInterruptParams {
+  brokerSessionKey: string;
   brokerTurnId?: string;
 }
 
@@ -92,12 +100,14 @@ export interface BrokerShutdownResult {
 }
 
 export interface SessionUpdatedParams {
+  brokerSessionKey: string;
   bootstrapSignature: ClaudeBootstrapSignature;
   sessionId: string;
   conversationRef: string;
 }
 
 export interface TurnProgressParams {
+  brokerSessionKey: string;
   brokerTurnId: string;
   message: string;
   sessionId: string | null;
@@ -105,6 +115,7 @@ export interface TurnProgressParams {
 }
 
 export interface TurnCompletedParams {
+  brokerSessionKey: string;
   brokerTurnId: string;
   sessionId: string | null;
   conversationRef: string | null;
@@ -120,6 +131,7 @@ export interface TurnCompletedParams {
 }
 
 export interface TurnFailedParams {
+  brokerSessionKey: string;
   brokerTurnId: string | null;
   message: string;
   sessionId: string | null;

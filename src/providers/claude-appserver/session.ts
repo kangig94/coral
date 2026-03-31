@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { formatToolProgress, truncate } from '../../shared/format-progress.js';
 import { isRecord } from '../../shared/mcp-utils.js';
@@ -35,6 +35,7 @@ import {
   type SessionEnsureResult,
   type SessionProbeParams,
   type SessionProbeResult,
+  type SessionUpdatedParams,
   type TurnCompletedParams,
   type TurnFailedParams,
   type TurnInterruptParams,
@@ -74,6 +75,39 @@ type ActiveTurnState = {
   model: string | null;
 };
 
+type ControllerSessionEnsureResult = Omit<SessionEnsureResult, 'brokerSessionKey'>;
+type ControllerSessionProbeResult = Omit<SessionProbeResult, 'brokerSessionKey'>;
+type ControllerTurnStartResult = Omit<TurnStartResult, 'brokerSessionKey'>;
+type ControllerSessionProbeParams = Omit<SessionProbeParams, 'brokerSessionKey'>;
+type ControllerTurnStartParams = Omit<TurnStartParams, 'brokerSessionKey'>;
+type ControllerTurnInterruptParams = Omit<TurnInterruptParams, 'brokerSessionKey'>;
+
+type ControllerNotificationMap = {
+  'session/updated': Omit<SessionUpdatedParams, 'brokerSessionKey'>;
+  'turn/progress': Omit<TurnProgressParams, 'brokerSessionKey'>;
+  'turn/completed': Omit<TurnCompletedParams, 'brokerSessionKey'>;
+  'turn/failed': Omit<TurnFailedParams, 'brokerSessionKey'>;
+};
+
+type ControllerNotification = {
+  [TMethod in keyof ControllerNotificationMap]: {
+    method: TMethod;
+    params: ControllerNotificationMap[TMethod];
+  };
+}[keyof ControllerNotificationMap];
+
+type ChildBinding = {
+  child: ClaudeBrokerChild;
+  dispose: () => void;
+};
+
+type ControllerEntry = {
+  controller: SingleSessionController;
+  dispose: () => void;
+  holdNotifications: boolean;
+  pendingNotifications: ClaudeBrokerNotification[];
+};
+
 export interface ClaudeBrokerChild {
   writeLine(line: string): void;
   kill(signal?: NodeJS.Signals): void;
@@ -87,6 +121,7 @@ export interface SpawnClaudeChildOptions {
   conversationRef?: string;
   systemPrompt?: string;
   permissionMode: string;
+  env?: Record<string, string>;
 }
 
 export interface CreateBrokerSessionOptions {
@@ -98,32 +133,30 @@ export interface CreateBrokerSessionOptions {
 export interface ClaudeBrokerSession {
   readonly closed: Promise<Error | void>;
   sessionEnsure(params: SessionEnsureParams): Promise<SessionEnsureResult>;
-  sessionProbe(params?: SessionProbeParams): Promise<SessionProbeResult>;
+  sessionProbe(params: SessionProbeParams): Promise<SessionProbeResult>;
   turnStart(params: TurnStartParams): Promise<TurnStartResult>;
-  turnInterrupt(params?: TurnInterruptParams): Promise<TurnInterruptResult>;
+  turnInterrupt(params: TurnInterruptParams): Promise<TurnInterruptResult>;
   shutdown(): Promise<void>;
   subscribeNotifications(handler: (notification: ClaudeBrokerNotification) => void): () => void;
 }
 
-type ChildBinding = {
-  child: ClaudeBrokerChild;
-  dispose: () => void;
+type SingleSessionControllerOptions = CreateBrokerSessionOptions & {
+  onUnexpectedExit?: () => void;
 };
 
-class BrokerSessionController implements ClaudeBrokerSession {
-  readonly closed: Promise<Error | void>;
-
+class SingleSessionController {
   private readonly spawnChild: CreateBrokerSessionOptions['spawnChild'];
   private readonly onTurnStarted: CreateBrokerSessionOptions['onTurnStarted'];
   private readonly stderrLimit: number;
-  private readonly notificationHandlers = new Set<(notification: ClaudeBrokerNotification) => void>();
+  private readonly onUnexpectedExit: (() => void) | undefined;
+  private readonly notificationHandlers = new Set<(notification: ControllerNotification) => void>();
   private readonly pendingControlRequests = new Map<string, PendingControlRequest>();
 
-  private resolveClosed!: (value: Error | void) => void;
   private childBinding: ChildBinding | null = null;
   private bootstrapSignature: ClaudeBootstrapSignature | null = null;
-  private bootstrapConfig: SessionEnsureParams | null = null;
-  private ensurePromise: Promise<SessionEnsureResult> | null = null;
+  private bootstrapConfig: Omit<SessionEnsureParams, 'brokerSessionKey'> | null = null;
+  private controllerEnvHash: string | null = null;
+  private ensurePromise: Promise<ControllerSessionEnsureResult> | null = null;
   private initialized = false;
   private bootstrapEstablished = false;
   private latestSessionId: string | null = null;
@@ -133,25 +166,24 @@ class BrokerSessionController implements ClaudeBrokerSession {
   private shuttingDown = false;
   private defaultModel: string | null = null;
 
-  constructor(options: CreateBrokerSessionOptions) {
+  constructor(options: SingleSessionControllerOptions) {
     this.spawnChild = options.spawnChild;
     this.onTurnStarted = options.onTurnStarted;
     this.stderrLimit = options.stderrLimit ?? DEFAULT_STDERR_RING_LIMIT;
-    this.closed = new Promise<Error | void>((resolve) => {
-      this.resolveClosed = resolve;
-    });
+    this.onUnexpectedExit = options.onUnexpectedExit;
   }
 
-  subscribeNotifications(handler: (notification: ClaudeBrokerNotification) => void): () => void {
+  subscribeNotifications(handler: (notification: ControllerNotification) => void): () => void {
     this.notificationHandlers.add(handler);
     return () => {
       this.notificationHandlers.delete(handler);
     };
   }
 
-  async sessionEnsure(params: SessionEnsureParams): Promise<SessionEnsureResult> {
+  async sessionEnsure(params: Omit<SessionEnsureParams, 'brokerSessionKey'>): Promise<ControllerSessionEnsureResult> {
     const signature = toBootstrapSignature(params);
-    this.assertBootstrapCompatibility(signature);
+    const controllerEnvHash = hashClaudeChildEnv(buildClaudeChildEnv(params.controllerEnv));
+    this.assertCompatibility(signature, controllerEnvHash);
 
     if (this.ensurePromise) {
       return this.ensurePromise;
@@ -161,7 +193,7 @@ class BrokerSessionController implements ClaudeBrokerSession {
       return this.snapshot();
     }
 
-    const ensurePromise = this.ensureInitializedSession(params, signature);
+    const ensurePromise = this.ensureInitializedSession(params, signature, controllerEnvHash);
     this.ensurePromise = ensurePromise;
 
     try {
@@ -173,7 +205,7 @@ class BrokerSessionController implements ClaudeBrokerSession {
     }
   }
 
-  async sessionProbe(params: SessionProbeParams = {}): Promise<SessionProbeResult> {
+  async sessionProbe(params: ControllerSessionProbeParams = {}): Promise<ControllerSessionProbeResult> {
     const conversationRef = this.currentConversationRef();
     if (this.bootstrapSignature === null) {
       return {
@@ -204,7 +236,7 @@ class BrokerSessionController implements ClaudeBrokerSession {
     };
   }
 
-  async turnStart(params: TurnStartParams): Promise<TurnStartResult> {
+  async turnStart(params: ControllerTurnStartParams): Promise<ControllerTurnStartResult> {
     if (!this.childBinding || !this.initialized || this.bootstrapSignature === null) {
       throw new ClaudeBrokerRpcError(
         CLAUDE_BROKER_STATE_RPC_CODE,
@@ -273,7 +305,7 @@ class BrokerSessionController implements ClaudeBrokerSession {
     }
   }
 
-  async turnInterrupt(params: TurnInterruptParams = {}): Promise<TurnInterruptResult> {
+  async turnInterrupt(params: ControllerTurnInterruptParams = {}): Promise<TurnInterruptResult> {
     const turn = this.activeTurn;
     if (turn === null) {
       return {
@@ -304,7 +336,6 @@ class BrokerSessionController implements ClaudeBrokerSession {
     this.shuttingDown = true;
 
     if (!this.childBinding) {
-      this.resolveClosed();
       return;
     }
 
@@ -316,16 +347,17 @@ class BrokerSessionController implements ClaudeBrokerSession {
     );
     childBinding.child.kill('SIGTERM');
     childBinding.dispose();
-    this.resolveClosed();
   }
 
   private async ensureInitializedSession(
-    params: SessionEnsureParams,
+    params: Omit<SessionEnsureParams, 'brokerSessionKey'>,
     signature: ClaudeBootstrapSignature,
-  ): Promise<SessionEnsureResult> {
+    controllerEnvHash: string,
+  ): Promise<ControllerSessionEnsureResult> {
     if (!this.childBinding) {
       const conversationRef = params.conversationRef ?? this.latestSessionId ?? undefined;
       this.bootstrapSignature = signature;
+      this.controllerEnvHash = controllerEnvHash;
       this.bootstrapConfig = {
         ...params,
         conversationRef,
@@ -351,7 +383,7 @@ class BrokerSessionController implements ClaudeBrokerSession {
   }
 
   private async attachNewChild(
-    params: SessionEnsureParams,
+    params: Omit<SessionEnsureParams, 'brokerSessionKey'>,
     signature: ClaudeBootstrapSignature,
   ): Promise<void> {
     const conversationRef = this.bootstrapConfig?.conversationRef ?? params.conversationRef ?? this.latestSessionId ?? undefined;
@@ -360,6 +392,7 @@ class BrokerSessionController implements ClaudeBrokerSession {
       conversationRef,
       systemPrompt: params.systemPrompt,
       permissionMode: params.permissionMode,
+      env: buildClaudeChildEnv(this.bootstrapConfig?.controllerEnv ?? params.controllerEnv),
     });
 
     const offStdout = child.onStdoutLine((line) => {
@@ -535,7 +568,7 @@ class BrokerSessionController implements ClaudeBrokerSession {
       return;
     }
 
-    const completed: TurnCompletedParams = {
+    const completed: ControllerNotificationMap['turn/completed'] = {
       brokerTurnId: turn.brokerTurnId,
       sessionId: this.latestSessionId,
       conversationRef: this.currentConversationRef(),
@@ -569,10 +602,8 @@ class BrokerSessionController implements ClaudeBrokerSession {
     this.childBinding = null;
     this.initialized = false;
 
-    const cleanExit = this.shuttingDown;
-    if (cleanExit) {
+    if (this.shuttingDown) {
       this.clearPendingControlRequests();
-      this.resolveClosed();
       return;
     }
 
@@ -581,7 +612,7 @@ class BrokerSessionController implements ClaudeBrokerSession {
 
     const turn = this.activeTurn;
     if (turn) {
-      const failed: TurnFailedParams = {
+      const failed: ControllerNotificationMap['turn/failed'] = {
         brokerTurnId: turn.brokerTurnId,
         message: exitError.message,
         sessionId: this.latestSessionId,
@@ -596,7 +627,7 @@ class BrokerSessionController implements ClaudeBrokerSession {
       });
     }
 
-    this.resolveClosed(exitError);
+    this.onUnexpectedExit?.();
   }
 
   private maybeUpdateSessionId(sessionId: string | null): void {
@@ -687,26 +718,32 @@ class BrokerSessionController implements ClaudeBrokerSession {
     }
   }
 
-  private assertBootstrapCompatibility(signature: ClaudeBootstrapSignature): void {
-    if (this.bootstrapSignature === null) {
+  private assertCompatibility(signature: ClaudeBootstrapSignature, controllerEnvHash: string): void {
+    if (this.bootstrapSignature === null || this.controllerEnvHash === null) {
       return;
     }
 
-    if (sameBootstrapSignature(this.bootstrapSignature, signature)) {
+    if (sameBootstrapSignature(this.bootstrapSignature, signature) && this.controllerEnvHash === controllerEnvHash) {
       return;
     }
 
     throw new ClaudeBrokerRpcError(
       CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
-      'Claude broker bootstrap signature mismatch.',
+      'Claude broker controller compatibility mismatch.',
       this.errorData({
-        expected: this.bootstrapSignature,
-        actual: signature,
+        expected: {
+          bootstrapSignature: this.bootstrapSignature,
+          envHash: this.controllerEnvHash,
+        },
+        actual: {
+          bootstrapSignature: signature,
+          envHash: controllerEnvHash,
+        },
       }),
     );
   }
 
-  private snapshot(): SessionEnsureResult {
+  private snapshot(): ControllerSessionEnsureResult {
     if (this.bootstrapSignature === null) {
       throw new ClaudeBrokerRpcError(
         CLAUDE_BROKER_STATE_RPC_CODE,
@@ -728,7 +765,7 @@ class BrokerSessionController implements ClaudeBrokerSession {
     return this.latestSessionId ?? this.bootstrapConfig?.conversationRef ?? null;
   }
 
-  private buildTurnProgress(brokerTurnId: string, message: string): TurnProgressParams {
+  private buildTurnProgress(brokerTurnId: string, message: string): ControllerNotificationMap['turn/progress'] {
     return {
       brokerTurnId,
       message,
@@ -776,6 +813,7 @@ class BrokerSessionController implements ClaudeBrokerSession {
     this.initialized = false;
     this.bootstrapSignature = null;
     this.bootstrapConfig = null;
+    this.controllerEnvHash = null;
     this.latestSessionId = null;
     this.rejectPendingControlRequests(
       new ClaudeBrokerRpcError(CLAUDE_BROKER_STATE_RPC_CODE, 'Claude bootstrap failed.', this.errorData()),
@@ -802,23 +840,293 @@ class BrokerSessionController implements ClaudeBrokerSession {
     return Object.keys(data).length > 0 ? data : undefined;
   }
 
-  private emitNotification(notification: ClaudeBrokerNotification): void {
+  private emitNotification(notification: ControllerNotification): void {
     for (const handler of this.notificationHandlers) {
       handler(notification);
     }
   }
 }
 
-export function createBrokerSession(options: CreateBrokerSessionOptions): ClaudeBrokerSession {
-  return new BrokerSessionController(options);
+class BrokerSessionPool implements ClaudeBrokerSession {
+  readonly closed: Promise<Error | void>;
+
+  private readonly spawnChild: CreateBrokerSessionOptions['spawnChild'];
+  private readonly onTurnStarted: CreateBrokerSessionOptions['onTurnStarted'];
+  private readonly stderrLimit: number;
+  private readonly notificationHandlers = new Set<(notification: ClaudeBrokerNotification) => void>();
+  private readonly controllers = new Map<string, ControllerEntry>();
+
+  private resolveClosed!: (value: Error | void) => void;
+  private shuttingDown = false;
+  private closedResolved = false;
+
+  constructor(options: CreateBrokerSessionOptions) {
+    this.spawnChild = options.spawnChild;
+    this.onTurnStarted = options.onTurnStarted;
+    this.stderrLimit = options.stderrLimit ?? DEFAULT_STDERR_RING_LIMIT;
+    this.closed = new Promise<Error | void>((resolve) => {
+      this.resolveClosed = resolve;
+    });
+  }
+
+  subscribeNotifications(handler: (notification: ClaudeBrokerNotification) => void): () => void {
+    this.notificationHandlers.add(handler);
+    return () => {
+      this.notificationHandlers.delete(handler);
+    };
+  }
+
+  async sessionEnsure(params: SessionEnsureParams): Promise<SessionEnsureResult> {
+    const brokerSessionKey = params.brokerSessionKey ?? randomUUID();
+    let entry = this.controllers.get(brokerSessionKey);
+    const generatedBrokerSessionKey = params.brokerSessionKey === undefined;
+    const createdEntry = entry === undefined;
+
+    if (!entry) {
+      if (params.brokerSessionKey && !params.conversationRef) {
+        throw new ClaudeBrokerRpcError(
+          CLAUDE_BROKER_STATE_RPC_CODE,
+          'Claude broker session is missing and cannot be recovered without a conversation reference.',
+        );
+      }
+
+      entry = this.createControllerEntry(brokerSessionKey, generatedBrokerSessionKey);
+    }
+
+    try {
+      const result = await entry.controller.sessionEnsure(stripBrokerSessionKey(params));
+      if (entry.holdNotifications) {
+        this.releaseHeldNotificationsAfterEnsure(brokerSessionKey, entry);
+      }
+      return {
+        ...result,
+        brokerSessionKey,
+      };
+    } catch (error) {
+      if (createdEntry) {
+        this.removeController(brokerSessionKey);
+      } else if (entry.holdNotifications) {
+        entry.holdNotifications = false;
+        entry.pendingNotifications = [];
+      }
+      throw error;
+    }
+  }
+
+  async sessionProbe(params: SessionProbeParams): Promise<SessionProbeResult> {
+    const entry = this.controllers.get(params.brokerSessionKey);
+    if (!entry) {
+      return {
+        brokerSessionKey: params.brokerSessionKey,
+        status: 'missing',
+        bootstrapSignature: null,
+        sessionId: null,
+        conversationRef: null,
+        activeTurnId: null,
+      };
+    }
+
+    return {
+      ...(await entry.controller.sessionProbe({
+        conversationRef: params.conversationRef,
+      })),
+      brokerSessionKey: params.brokerSessionKey,
+    };
+  }
+
+  async turnStart(params: TurnStartParams): Promise<TurnStartResult> {
+    const entry = this.controllers.get(params.brokerSessionKey);
+    if (!entry) {
+      throw new ClaudeBrokerRpcError(
+        CLAUDE_BROKER_STATE_RPC_CODE,
+        'Claude broker session is not initialized. Call session/ensure first.',
+      );
+    }
+
+    return {
+      ...(await entry.controller.turnStart({
+        brokerTurnId: params.brokerTurnId,
+        prompt: params.prompt,
+        model: params.model,
+        maxThinkingTokens: params.maxThinkingTokens,
+      })),
+      brokerSessionKey: params.brokerSessionKey,
+    };
+  }
+
+  async turnInterrupt(params: TurnInterruptParams): Promise<TurnInterruptResult> {
+    const entry = this.controllers.get(params.brokerSessionKey);
+    if (!entry) {
+      return {
+        brokerTurnId: params.brokerTurnId ?? null,
+        interrupted: false,
+      };
+    }
+
+    return entry.controller.turnInterrupt({
+      brokerTurnId: params.brokerTurnId,
+    });
+  }
+
+  async shutdown(): Promise<void> {
+    if (this.shuttingDown) {
+      return;
+    }
+    this.shuttingDown = true;
+
+    const entries = [...this.controllers.values()];
+    this.controllers.clear();
+    await Promise.all(
+      entries.map(async (entry) => {
+        entry.dispose();
+        entry.pendingNotifications = [];
+        await entry.controller.shutdown();
+      }),
+    );
+    this.resolvePoolClosed();
+  }
+
+  private createControllerEntry(brokerSessionKey: string, holdNotifications: boolean): ControllerEntry {
+    const controller = new SingleSessionController({
+      spawnChild: this.spawnChild,
+      onTurnStarted: this.onTurnStarted,
+      stderrLimit: this.stderrLimit,
+      onUnexpectedExit: () => {
+        if (this.shuttingDown) {
+          return;
+        }
+        this.removeController(brokerSessionKey);
+      },
+    });
+
+    const entry: ControllerEntry = {
+      controller,
+      dispose: () => {},
+      holdNotifications,
+      pendingNotifications: [],
+    };
+
+    entry.dispose = controller.subscribeNotifications((notification) => {
+      this.handleControllerNotification(brokerSessionKey, notification);
+    });
+
+    this.controllers.set(brokerSessionKey, entry);
+    return entry;
+  }
+
+  private handleControllerNotification(brokerSessionKey: string, notification: ControllerNotification): void {
+    const entry = this.controllers.get(brokerSessionKey);
+    if (!entry) {
+      return;
+    }
+
+    const routed = withBrokerSessionKey(brokerSessionKey, notification);
+    if (entry.holdNotifications) {
+      entry.pendingNotifications.push(routed);
+      return;
+    }
+
+    this.emitNotification(routed);
+  }
+
+  private releaseHeldNotificationsAfterEnsure(brokerSessionKey: string, entry: ControllerEntry): void {
+    setImmediate(() => {
+      const currentEntry = this.controllers.get(brokerSessionKey);
+      if (currentEntry !== entry) {
+        return;
+      }
+
+      currentEntry.holdNotifications = false;
+      const queued = currentEntry.pendingNotifications;
+      currentEntry.pendingNotifications = [];
+      for (const notification of queued) {
+        this.emitNotification(notification);
+      }
+    });
+  }
+
+  private removeController(brokerSessionKey: string): void {
+    const entry = this.controllers.get(brokerSessionKey);
+    if (!entry) {
+      return;
+    }
+
+    entry.dispose();
+    this.controllers.delete(brokerSessionKey);
+  }
+
+  private emitNotification(notification: ClaudeBrokerNotification): void {
+    for (const handler of this.notificationHandlers) {
+      handler(notification);
+    }
+  }
+
+  private resolvePoolClosed(error?: Error): void {
+    if (this.closedResolved) {
+      return;
+    }
+    this.closedResolved = true;
+    this.resolveClosed(error);
+  }
 }
 
-function toBootstrapSignature(params: SessionEnsureParams): ClaudeBootstrapSignature {
+export function createBrokerSession(options: CreateBrokerSessionOptions): ClaudeBrokerSession {
+  return new BrokerSessionPool(options);
+}
+
+export function buildClaudeChildEnv(controllerEnv?: Record<string, string>): Record<string, string> {
+  const baseEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([key, value]) => typeof value === 'string' && !key.startsWith('CORAL_')),
+  );
+
+  return {
+    ...baseEnv,
+    ...normalizeControllerEnv(controllerEnv),
+    CORAL_CHILD: '1',
+  };
+}
+
+export function hashClaudeChildEnv(childEnv: Record<string, string>): string {
+  const sortedEntries = Object.entries(childEnv)
+    .filter(([key]) => key !== 'CORAL_CHILD')
+    .sort(([left], [right]) => left.localeCompare(right));
+  return `sha256:${createHash('sha256').update(JSON.stringify(sortedEntries)).digest('hex')}`;
+}
+
+function toBootstrapSignature(params: Omit<SessionEnsureParams, 'brokerSessionKey'>): ClaudeBootstrapSignature {
   return {
     cwd: params.cwd,
     systemPromptHash: params.systemPromptHash,
     permissionMode: params.permissionMode,
   };
+}
+
+function stripBrokerSessionKey(params: SessionEnsureParams): Omit<SessionEnsureParams, 'brokerSessionKey'> {
+  const { brokerSessionKey: _brokerSessionKey, ...rest } = params;
+  return rest;
+}
+
+function withBrokerSessionKey(
+  brokerSessionKey: string,
+  notification: ControllerNotification,
+): ClaudeBrokerNotification {
+  return {
+    method: notification.method,
+    params: {
+      ...notification.params,
+      brokerSessionKey,
+    },
+  } as ClaudeBrokerNotification;
+}
+
+function normalizeControllerEnv(controllerEnv?: Record<string, string>): Record<string, string> {
+  if (!controllerEnv) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(controllerEnv).filter(([, value]) => typeof value === 'string'),
+  );
 }
 
 function sameBootstrapSignature(left: ClaudeBootstrapSignature, right: ClaudeBootstrapSignature): boolean {
