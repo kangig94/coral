@@ -91,15 +91,17 @@ function makeTerminalEvent(
   };
 }
 
-function makeOptions(overrides: Partial<{
-  launchResult: Extract<LaunchDecision, { status: 'running' | 'queued' }>;
-  abortJob: (jobId: string) => Promise<unknown>;
-  pluginRoot: string;
-  projectRoot: string;
-  outputFormat: 'text' | 'json';
-  isTTY: boolean;
-  columns: number;
-}> = {}) {
+function makeOptions(
+  overrides: Partial<{
+    launchResult: Extract<LaunchDecision, { status: 'running' | 'queued' }>;
+    abortJob: (jobId: string) => Promise<unknown>;
+    pluginRoot: string;
+    projectRoot: string;
+    outputFormat: 'text' | 'json';
+    isTTY: boolean;
+    columns: number;
+  }> = {},
+) {
   return {
     launchResult: {
       status: 'running',
@@ -176,10 +178,10 @@ describe('cli follow', () => {
     await expect(launchAndFollow(makeOptions())).resolves.toBe(0);
 
     expect(stdout).toBe(
-      'Job job-1 running (session session-1)\n'
-      + '[job-1] completed\n'
-      + 'Result path: /tmp/result.md\n'
-      + 'Remaining jobs: 0\n',
+      'Job job-1 running (session session-1)\n' +
+        '[job-1] completed\n' +
+        'Result path: /tmp/result.md\n' +
+        'Remaining jobs: 0\n',
     );
     expect(stderr).toBe('');
     expect(mockState.ensureBackend).toHaveBeenCalledWith('/plugin/root');
@@ -256,16 +258,23 @@ describe('cli follow', () => {
         });
       });
 
-    await expect(launchAndFollow(makeOptions({
-      launchResult: {
-        status: 'queued',
-        job: 'job-1',
-        session: 'session-1',
-      },
-      outputFormat: 'json',
-    }))).resolves.toBe(0);
+    await expect(
+      launchAndFollow(
+        makeOptions({
+          launchResult: {
+            status: 'queued',
+            job: 'job-1',
+            session: 'session-1',
+          },
+          outputFormat: 'json',
+        }),
+      ),
+    ).resolves.toBe(0);
 
-    const records = stdout.trim().split('\n').map((line) => JSON.parse(line));
+    const records = stdout
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
 
     expect(records).toEqual([
       {
@@ -362,7 +371,10 @@ describe('cli follow', () => {
 
     await expect(followPromise).resolves.toBe(7);
 
-    const records = stdout.trim().split('\n').map((line) => JSON.parse(line));
+    const records = stdout
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
     expect(records).toEqual([
       {
         type: 'launch',
@@ -414,18 +426,21 @@ describe('cli follow', () => {
     const abortJob = vi.fn().mockResolvedValue(undefined);
 
     mockState.ensureBackend.mockResolvedValueOnce(makeBackend());
-    mockState.streamWait.mockImplementationOnce((
-      _jobIds: string[],
-      _timeoutSeconds: number,
-      _backend: unknown,
-      _lastEventId: string | undefined,
-      signal: AbortSignal | undefined,
-    ) => (async function* () {
-      started.resolve();
-      await new Promise<never>((_resolve, reject) => {
-        signal?.addEventListener('abort', () => reject(new TypeError('terminated')), { once: true });
-      });
-    })());
+    mockState.streamWait.mockImplementationOnce(
+      (
+        _jobIds: string[],
+        _timeoutSeconds: number,
+        _backend: unknown,
+        _lastEventId: string | undefined,
+        signal: AbortSignal | undefined,
+      ) =>
+        (async function* () {
+          started.resolve();
+          await new Promise<never>((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(new TypeError('terminated')), { once: true });
+          });
+        })(),
+    );
 
     const followPromise = launchAndFollow(makeOptions({ abortJob }));
     await started.promise;

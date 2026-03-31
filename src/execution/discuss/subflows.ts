@@ -22,11 +22,7 @@ import type { DiscussState, TranscriptEntry } from '../../discuss/types.js';
 import { renderEntries, renderHeader } from '../../discuss/transcript.js';
 import { nowIsoString } from '../../discuss/util/time.js';
 import type { CallerContext } from '../request-context.js';
-import {
-  buildBidPrompt,
-  buildFirstTurnInstruction,
-  buildSpeechPrompt,
-} from './prompts.js';
+import { buildBidPrompt, buildFirstTurnInstruction, buildSpeechPrompt } from './prompts.js';
 import {
   CONTINUE_TURN_INSTRUCTION,
   DEFAULT_DISCUSS_PROVIDER,
@@ -44,15 +40,8 @@ import {
   recordJobFinished,
   runFacilitatorTurn,
 } from './executor.js';
-import {
-  DiscussManagerError,
-  type DiscussContext,
-  unwrapResult,
-} from './context.js';
-import {
-  commitDecision,
-  loadAttachedOrPersistedSnapshot,
-} from './persistence.js';
+import { DiscussManagerError, type DiscussContext, unwrapResult } from './context.js';
+import { commitDecision, loadAttachedOrPersistedSnapshot } from './persistence.js';
 import { detachSession } from './registry.js';
 
 const BID_ATTEMPT_TIMEOUT_MS = 3 * 60 * 1000;
@@ -71,10 +60,12 @@ const BidSchema = z.object({
 const EpochEvaluationSchema = z.object({
   convergence: z.number().min(0).max(10),
   summary: z.string(),
-  must_answer: z.array(z.object({
-    to: z.string(),
-    question: z.string(),
-  })),
+  must_answer: z.array(
+    z.object({
+      to: z.string(),
+      question: z.string(),
+    }),
+  ),
 });
 
 type MustAnswerItem = {
@@ -268,10 +259,7 @@ function buildFollowUpPrompt(state: DiscussState, agentName: string, question: s
   ].join('\n\n');
 }
 
-function buildBidBatch(
-  snapshot: PersistedDiscussSnapshot,
-  outcomes: BidOutcome[],
-): DiscussDomainEvent[] {
+function buildBidBatch(snapshot: PersistedDiscussSnapshot, outcomes: BidOutcome[]): DiscussDomainEvent[] {
   if (snapshot.state.status !== 'bidding') {
     return [];
   }
@@ -354,8 +342,7 @@ function buildBidBatch(
   }
 
   const hadExistingBid = Object.values(snapshot.state.current_bids).some((value) => value !== null);
-  const allPendingAgentsFailed =
-    outcomes.length > 0 && outcomes.every((outcome) => outcome.executionFailure);
+  const allPendingAgentsFailed = outcomes.length > 0 && outcomes.every((outcome) => outcome.executionFailure);
 
   if (!hadExistingBid && allPendingAgentsFailed) {
     const endEvents = unwrapResult(
@@ -382,15 +369,9 @@ async function collectBidOutcome(
   agentName: string,
   callerCtx: CallerContext,
 ): Promise<BidOutcome> {
-  const run = currentAgentRun(
-    snapshot,
-    agentName,
-    DEFAULT_DISCUSS_PROVIDER,
-    undefined,
-  );
+  const run = currentAgentRun(snapshot, agentName, DEFAULT_DISCUSS_PROVIDER, undefined);
   const priorSpeech = lastSpeech(snapshot.state.transcript);
-  const priorSpeechForAgent =
-    priorSpeech !== null && priorSpeech.speaker !== agentName ? priorSpeech : null;
+  const priorSpeechForAgent = priorSpeech !== null && priorSpeech.speaker !== agentName ? priorSpeech : null;
   const mustAnswer = mustAnswerText(snapshot, agentName);
   const basePrompt = buildBidPrompt({
     selfName: agentName,
@@ -398,20 +379,21 @@ async function collectBidOutcome(
     priorSpeech: priorSpeechForAgent,
     mustAnswer,
   });
-  const instruction = run.executionSessionId === undefined
-    ? buildFirstTurnInstruction({
-      selfName: agentName,
-      state: snapshot.state,
-      priorSpeech: priorSpeechForAgent,
-      mustAnswer,
-    })
-    : CONTINUE_TURN_INSTRUCTION;
+  const instruction =
+    run.executionSessionId === undefined
+      ? buildFirstTurnInstruction({
+          selfName: agentName,
+          state: snapshot.state,
+          priorSpeech: priorSpeechForAgent,
+          mustAnswer,
+        })
+      : CONTINUE_TURN_INSTRUCTION;
 
   const latestRun = loadAttachedOrPersistedSnapshot(ctx, sessionId)?.runtime.agentRuns[agentName] ?? run;
   if (
-    latestRun.currentJobId === undefined
-    && latestRun.lastAttemptOutcome === 'retryable_parse_error'
-    && (latestRun.currentAttempt ?? 0) >= MAX_BID_ATTEMPTS
+    latestRun.currentJobId === undefined &&
+    latestRun.lastAttemptOutcome === 'retryable_parse_error' &&
+    (latestRun.currentAttempt ?? 0) >= MAX_BID_ATTEMPTS
   ) {
     return {
       agentName,
@@ -445,7 +427,8 @@ async function collectBidOutcome(
         score: 0,
         thought: '',
         executionFailure: true,
-        shouldExpel: loadAttachedOrPersistedSnapshot(ctx, sessionId)?.state.agents[agentName]?.participation === 'required',
+        shouldExpel:
+          loadAttachedOrPersistedSnapshot(ctx, sessionId)?.state.agents[agentName]?.participation === 'required',
         answeredCarryForward: false,
       };
     }
@@ -525,17 +508,12 @@ async function collectFollowUpAnswer(
     return '';
   }
 
-  const run = currentAgentRun(
-    snapshot,
-    item.agent,
-    DEFAULT_DISCUSS_PROVIDER,
-    undefined,
-  );
+  const run = currentAgentRun(snapshot, item.agent, DEFAULT_DISCUSS_PROVIDER, undefined);
   const latestRun = snapshot.runtime.agentRuns[item.agent] ?? run;
   if (
-    latestRun.currentJobId === undefined
-    && latestRun.lastAttemptOutcome === 'retryable_parse_error'
-    && (latestRun.currentAttempt ?? 0) >= MAX_FOLLOW_UP_ATTEMPTS
+    latestRun.currentJobId === undefined &&
+    latestRun.lastAttemptOutcome === 'retryable_parse_error' &&
+    (latestRun.currentAttempt ?? 0) >= MAX_FOLLOW_UP_ATTEMPTS
   ) {
     return '';
   }
@@ -612,10 +590,9 @@ export async function collectBids(
   }
 
   const bidders = Object.entries(snapshot.state.current_bids)
-    .filter(([agentName, score]) =>
-      score === null
-      && !snapshot.state.agents[agentName]?.banned
-      && !isManualParticipant(snapshot, agentName),
+    .filter(
+      ([agentName, score]) =>
+        score === null && !snapshot.state.agents[agentName]?.banned && !isManualParticipant(snapshot, agentName),
     )
     .map(([agentName]) => agentName);
 
@@ -649,12 +626,7 @@ export async function collectSpeech(
     return { shouldResume: false };
   }
 
-  const agentRun = currentAgentRun(
-    snapshot,
-    winnerName,
-    DEFAULT_DISCUSS_PROVIDER,
-    undefined,
-  );
+  const agentRun = currentAgentRun(snapshot, winnerName, DEFAULT_DISCUSS_PROVIDER, undefined);
   const prompt = buildSpeechPrompt({
     selfName: winnerName,
     state: snapshot.state,
@@ -693,7 +665,8 @@ export async function collectSpeech(
         current.state.topic,
         current.lastAppliedSeq + 1,
         nowIsoString(),
-      ));
+      ),
+    );
     if (!committed.ok && committed.error !== 'session_not_found') {
       throw new DiscussManagerError(committed.error, committed.detail);
     }
@@ -718,7 +691,8 @@ export async function collectSpeech(
       current.state.topic,
       current.lastAppliedSeq + 1,
       nowIsoString(),
-    ));
+    ),
+  );
   if (!committed.ok && committed.error !== 'session_not_found') {
     throw new DiscussManagerError(committed.error, committed.detail);
   }
@@ -756,7 +730,8 @@ export async function evaluateEpoch(
     const result = await runFacilitatorTurn(ctx, {
       sessionId,
       prompt,
-      instruction: 'You are evaluating convergence in a discussion. Return only valid JSON that matches the requested schema.',
+      instruction:
+        'You are evaluating convergence in a discussion. Return only valid JSON that matches the requested schema.',
       callerCtx,
       timeoutMs: EPOCH_EVAL_TIMEOUT_MS,
       purpose: PURPOSE_EPOCH_EVALUATION,
@@ -825,20 +800,12 @@ export async function handleEpochTransition(
       return {
         ok: true,
         value: [
-          makeEvent(
-            sessionId,
-            ctx.projectRoot,
-            current.state.topic,
-            nextSeq,
-            'follow_up.queue.set',
-            ts,
-            {
-              queue: evaluation.mustAnswer.map((item) => ({
-                agent: item.to,
-                question: item.question,
-              })),
-            },
-          ),
+          makeEvent(sessionId, ctx.projectRoot, current.state.topic, nextSeq, 'follow_up.queue.set', ts, {
+            queue: evaluation.mustAnswer.map((item) => ({
+              agent: item.to,
+              question: item.question,
+            })),
+          }),
         ],
       };
     }
@@ -882,7 +849,8 @@ export async function runFollowUpTurns(
           current.state.topic,
           current.lastAppliedSeq + 1,
           nowIsoString(),
-        ));
+        ),
+      );
       if (!ended.ok && ended.error !== 'session_not_found') {
         throw new DiscussManagerError(ended.error, ended.detail);
       }
@@ -963,7 +931,8 @@ export async function handleSynthesis(
         current.state.topic,
         current.lastAppliedSeq + 1,
         nowIsoString(),
-      ));
+      ),
+    );
     if (!committed.ok && committed.error !== 'session_not_found') {
       throw new DiscussManagerError(committed.error, committed.detail);
     }

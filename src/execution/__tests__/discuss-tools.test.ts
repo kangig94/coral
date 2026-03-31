@@ -60,27 +60,62 @@ async function createWatchToolFixture(sessionId = 'discuss-1') {
   const registry = createDiscussContextRegistry();
   const context = getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
   const stores = new Map([[harness.projectRoot, harness.store]]);
-  await persistSession({ ...harness, context }, {
-    sessionId,
-    recover: true,
-    buildTail: (snapshot) => [
-      makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.submitted', '2026-03-10T00:01:00.000Z', { agent: 'alpha', score: 88, thought: 'keep sealed' }),
-      makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'bid.submitted', '2026-03-10T00:01:01.000Z', { agent: 'beta', score: 42, thought: 'also sealed' }),
-      makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 3, 'bid.round.closed', '2026-03-10T00:01:02.000Z', {
-        allBids: { alpha: 88, beta: 42 },
-        effectiveBids: { alpha: 88, beta: 42 },
-        thoughts: { alpha: 'keep sealed', beta: 'also sealed' },
-        outcome: { winner: 'alpha', speaker_type: 'quota' as const },
-        stateMutations: { cold_start: false },
-      }),
-      makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 4, 'speech.recorded', '2026-03-10T00:01:03.000Z', {
-        agent: 'alpha',
-        content: 'Open the street to buses and bikes first.',
-        decrementQuota: true,
-        recordLastSpeechStep: 1,
-      }),
-    ],
-    });
+  await persistSession(
+    { ...harness, context },
+    {
+      sessionId,
+      recover: true,
+      buildTail: (snapshot) => [
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'bid.submitted',
+          '2026-03-10T00:01:00.000Z',
+          { agent: 'alpha', score: 88, thought: 'keep sealed' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 2,
+          'bid.submitted',
+          '2026-03-10T00:01:01.000Z',
+          { agent: 'beta', score: 42, thought: 'also sealed' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 3,
+          'bid.round.closed',
+          '2026-03-10T00:01:02.000Z',
+          {
+            allBids: { alpha: 88, beta: 42 },
+            effectiveBids: { alpha: 88, beta: 42 },
+            thoughts: { alpha: 'keep sealed', beta: 'also sealed' },
+            outcome: { winner: 'alpha', speaker_type: 'quota' as const },
+            stateMutations: { cold_start: false },
+          },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 4,
+          'speech.recorded',
+          '2026-03-10T00:01:03.000Z',
+          {
+            agent: 'alpha',
+            content: 'Open the street to buses and bikes first.',
+            decrementQuota: true,
+            recordLastSpeechStep: 1,
+          },
+        ),
+      ],
+    },
+  );
   return { harness, registry, stores };
 }
 
@@ -97,27 +132,34 @@ describe('execution discuss tools', () => {
   });
 
   it('discuss_start creates a live session and returns its id', async () => {
-    const harness = createDiscussHarness(createExecutionServiceStub({
-      start: vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'exec-1' }),
-      waitStreamOnce: vi.fn().mockResolvedValue({ content: '{"score": 61, "thought": "alpha"}', nonResumable: false }),
-    }));
+    const harness = createDiscussHarness(
+      createExecutionServiceStub({
+        start: vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'exec-1' }),
+        waitStreamOnce: vi
+          .fn()
+          .mockResolvedValue({ content: '{"score": 61, "thought": "alpha"}', nonResumable: false }),
+      }),
+    );
     const registry = createDiscussContextRegistry();
     getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
     vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
     const stores = new Map([[harness.projectRoot, harness.store]]);
 
-    const result = await routeToolCall({
-      name: 'discuss_start',
-      args: {
-        topic: DEFAULT_TOPIC,
-        agents: [
-          { name: 'alpha', persona: '# Alpha', provider: 'codex' },
-          { name: 'beta', persona: '# Beta', provider: 'codex' },
-          { name: 'user', persona: '# User', participation: 'observer' },
-        ],
+    const result = await routeToolCall(
+      {
+        name: 'discuss_start',
+        args: {
+          topic: DEFAULT_TOPIC,
+          agents: [
+            { name: 'alpha', persona: '# Alpha', provider: 'codex' },
+            { name: 'beta', persona: '# Beta', provider: 'codex' },
+            { name: 'user', persona: '# User', participation: 'observer' },
+          ],
+        },
+        context: harness.ctx,
       },
-      context: harness.ctx,
-    }, createHelpers(registry, stores, harness.service));
+      createHelpers(registry, stores, harness.service),
+    );
 
     const parsed = parseMcpBody<{ session: string }>(result);
     expect(parsed.session).toMatch(/^[0-9a-f-]{36}$/i);
@@ -133,11 +175,14 @@ describe('execution discuss tools', () => {
     const stores = new Map([[harness.projectRoot, harness.store]]);
     await persistSession({ ...harness, context }, { sessionId: 'discuss-1', recover: true });
 
-    const result = await routeToolCall({
-      name: 'discuss_abort',
-      args: { session: 'discuss-1' },
-      context: harness.ctx,
-    }, createHelpers(registry, stores, harness.service));
+    const result = await routeToolCall(
+      {
+        name: 'discuss_abort',
+        args: { session: 'discuss-1' },
+        context: harness.ctx,
+      },
+      createHelpers(registry, stores, harness.service),
+    );
 
     expect(parseMcpBody<{ ok: boolean; session: string }>(result)).toEqual({
       ok: true,
@@ -152,11 +197,14 @@ describe('execution discuss tools', () => {
   it('discuss_watch returns the committed watch history', async () => {
     const { harness, registry, stores } = await createWatchToolFixture();
 
-    const result = await routeToolCall({
-      name: 'discuss_watch',
-      args: { session: 'discuss-1' },
-      context: harness.ctx,
-    }, createHelpers(registry, stores, harness.service));
+    const result = await routeToolCall(
+      {
+        name: 'discuss_watch',
+        args: { session: 'discuss-1' },
+        context: harness.ctx,
+      },
+      createHelpers(registry, stores, harness.service),
+    );
 
     const parsed = parseMcpBody<{
       session: string;
@@ -197,34 +245,56 @@ describe('execution discuss tools', () => {
     const registry = createDiscussContextRegistry();
     const context = getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
     const stores = new Map([[harness.projectRoot, harness.store]]);
-    await persistSession({ ...harness, context }, {
-      sessionId: 'discuss-epoch',
-      recover: true,
-      buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.round.closed', '2026-03-10T00:02:00.000Z', {
-          allBids: { alpha: 4, beta: 3 },
-          effectiveBids: { alpha: 4, beta: 3 },
-          thoughts: { alpha: 'spent', beta: 'spent' },
-          outcome: { no_winner: true as const, reason: 'epoch_transition' as const },
-          stateMutations: {
-            epoch: 2,
-            cold_start: false,
-            fallback_used: { alpha: true, beta: true },
-            quota_remaining: { alpha: 0, beta: 0 },
-          },
-        }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'session.ended', '2026-03-10T00:02:01.000Z', {
-          force: true,
-          reason: 'abort',
-        }),
-      ],
-    });
+    await persistSession(
+      { ...harness, context },
+      {
+        sessionId: 'discuss-epoch',
+        recover: true,
+        buildTail: (snapshot) => [
+          makeEvent(
+            snapshot.sessionId,
+            harness.projectRoot,
+            snapshot.state.topic,
+            snapshot.lastAppliedSeq + 1,
+            'bid.round.closed',
+            '2026-03-10T00:02:00.000Z',
+            {
+              allBids: { alpha: 4, beta: 3 },
+              effectiveBids: { alpha: 4, beta: 3 },
+              thoughts: { alpha: 'spent', beta: 'spent' },
+              outcome: { no_winner: true as const, reason: 'epoch_transition' as const },
+              stateMutations: {
+                epoch: 2,
+                cold_start: false,
+                fallback_used: { alpha: true, beta: true },
+                quota_remaining: { alpha: 0, beta: 0 },
+              },
+            },
+          ),
+          makeEvent(
+            snapshot.sessionId,
+            harness.projectRoot,
+            snapshot.state.topic,
+            snapshot.lastAppliedSeq + 2,
+            'session.ended',
+            '2026-03-10T00:02:01.000Z',
+            {
+              force: true,
+              reason: 'abort',
+            },
+          ),
+        ],
+      },
+    );
 
-    const result = await routeToolCall({
-      name: 'discuss_watch',
-      args: { session: 'discuss-epoch' },
-      context: harness.ctx,
-    }, createHelpers(registry, stores, harness.service));
+    const result = await routeToolCall(
+      {
+        name: 'discuss_watch',
+        args: { session: 'discuss-epoch' },
+        context: harness.ctx,
+      },
+      createHelpers(registry, stores, harness.service),
+    );
 
     const parsed = parseMcpBody<{
       session: string;
@@ -262,11 +332,14 @@ describe('execution discuss tools', () => {
   it('discuss_watch with cursor=0 returns full history and cursor count', async () => {
     const { harness, registry, stores } = await createWatchToolFixture();
 
-    const result = await routeToolCall({
-      name: 'discuss_watch',
-      args: { session: 'discuss-1', cursor: 0 },
-      context: harness.ctx,
-    }, createHelpers(registry, stores, harness.service));
+    const result = await routeToolCall(
+      {
+        name: 'discuss_watch',
+        args: { session: 'discuss-1', cursor: 0 },
+        context: harness.ctx,
+      },
+      createHelpers(registry, stores, harness.service),
+    );
 
     const parsed = parseMcpBody<{
       session: string;
@@ -305,11 +378,14 @@ describe('execution discuss tools', () => {
   it('discuss_watch with cursor=N returns only incremental events', async () => {
     const { harness, registry, stores } = await createWatchToolFixture();
 
-    const result = await routeToolCall({
-      name: 'discuss_watch',
-      args: { session: 'discuss-1', cursor: 1 },
-      context: harness.ctx,
-    }, createHelpers(registry, stores, harness.service));
+    const result = await routeToolCall(
+      {
+        name: 'discuss_watch',
+        args: { session: 'discuss-1', cursor: 1 },
+        context: harness.ctx,
+      },
+      createHelpers(registry, stores, harness.service),
+    );
 
     const parsed = parseMcpBody<{
       session: string;
@@ -343,11 +419,14 @@ describe('execution discuss tools', () => {
   it('discuss_watch with cursor equal to events length returns empty events and same cursor', async () => {
     const { harness, registry, stores } = await createWatchToolFixture();
 
-    const result = await routeToolCall({
-      name: 'discuss_watch',
-      args: { session: 'discuss-1', cursor: 2 },
-      context: harness.ctx,
-    }, createHelpers(registry, stores, harness.service));
+    const result = await routeToolCall(
+      {
+        name: 'discuss_watch',
+        args: { session: 'discuss-1', cursor: 2 },
+        context: harness.ctx,
+      },
+      createHelpers(registry, stores, harness.service),
+    );
 
     const parsed = parseMcpBody<{
       session: string;
@@ -375,11 +454,14 @@ describe('execution discuss tools', () => {
   it('discuss_watch with cursor greater than events length returns invalid_cursor error', async () => {
     const { harness, registry, stores } = await createWatchToolFixture();
 
-    const result = await routeToolCall({
-      name: 'discuss_watch',
-      args: { session: 'discuss-1', cursor: 3 },
-      context: harness.ctx,
-    }, createHelpers(registry, stores, harness.service));
+    const result = await routeToolCall(
+      {
+        name: 'discuss_watch',
+        args: { session: 'discuss-1', cursor: 3 },
+        context: harness.ctx,
+      },
+      createHelpers(registry, stores, harness.service),
+    );
 
     expect(parseMcpError(result)).toEqual({
       error: 'invalid_cursor',
@@ -393,11 +475,14 @@ describe('execution discuss tools', () => {
   it('discuss_watch with cursor=-1 returns Zod validation error (invalid_request)', async () => {
     const { harness, registry, stores } = await createWatchToolFixture();
 
-    const result = await routeToolCall({
-      name: 'discuss_watch',
-      args: { session: 'discuss-1', cursor: -1 },
-      context: harness.ctx,
-    }, createHelpers(registry, stores, harness.service));
+    const result = await routeToolCall(
+      {
+        name: 'discuss_watch',
+        args: { session: 'discuss-1', cursor: -1 },
+        context: harness.ctx,
+      },
+      createHelpers(registry, stores, harness.service),
+    );
     const error = parseMcpError(result);
 
     expect(error).toMatchObject({ error: 'invalid_request' });
@@ -409,11 +494,14 @@ describe('execution discuss tools', () => {
   it('discuss_watch with cursor=1.5 returns Zod validation error (invalid_request)', async () => {
     const { harness, registry, stores } = await createWatchToolFixture();
 
-    const result = await routeToolCall({
-      name: 'discuss_watch',
-      args: { session: 'discuss-1', cursor: 1.5 },
-      context: harness.ctx,
-    }, createHelpers(registry, stores, harness.service));
+    const result = await routeToolCall(
+      {
+        name: 'discuss_watch',
+        args: { session: 'discuss-1', cursor: 1.5 },
+        context: harness.ctx,
+      },
+      createHelpers(registry, stores, harness.service),
+    );
     const error = parseMcpError(result);
 
     expect(error).toMatchObject({ error: 'invalid_request' });
@@ -427,29 +515,48 @@ describe('execution discuss tools', () => {
     const registry = createDiscussContextRegistry();
     const context = getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
     const stores = new Map([[harness.projectRoot, harness.store]]);
-    await persistSession({ ...harness, context }, {
-      sessionId: 'discuss-1',
-      recover: true,
-      agents: [
-        ...defaultAgents(),
-        { name: 'user', persona: '# User', participation: 'observer' },
-      ],
-      buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.submitted', '2026-03-10T00:01:00.000Z', { agent: 'alpha', score: 71, thought: 'alpha' }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'bid.submitted', '2026-03-10T00:01:01.000Z', { agent: 'beta', score: 44, thought: 'beta' }),
-      ],
-    });
-
-    const result = await routeToolCall({
-      name: 'discuss_participate',
-      args: {
-        session: 'discuss-1',
-        agent_name: 'user',
-        score: 63,
-        thought: 'I need to answer the accessibility concern.',
+    await persistSession(
+      { ...harness, context },
+      {
+        sessionId: 'discuss-1',
+        recover: true,
+        agents: [...defaultAgents(), { name: 'user', persona: '# User', participation: 'observer' }],
+        buildTail: (snapshot) => [
+          makeEvent(
+            snapshot.sessionId,
+            harness.projectRoot,
+            snapshot.state.topic,
+            snapshot.lastAppliedSeq + 1,
+            'bid.submitted',
+            '2026-03-10T00:01:00.000Z',
+            { agent: 'alpha', score: 71, thought: 'alpha' },
+          ),
+          makeEvent(
+            snapshot.sessionId,
+            harness.projectRoot,
+            snapshot.state.topic,
+            snapshot.lastAppliedSeq + 2,
+            'bid.submitted',
+            '2026-03-10T00:01:01.000Z',
+            { agent: 'beta', score: 44, thought: 'beta' },
+          ),
+        ],
       },
-      context: harness.ctx,
-    }, createHelpers(registry, stores, harness.service));
+    );
+
+    const result = await routeToolCall(
+      {
+        name: 'discuss_participate',
+        args: {
+          session: 'discuss-1',
+          agent_name: 'user',
+          score: 63,
+          thought: 'I need to answer the accessibility concern.',
+        },
+        context: harness.ctx,
+      },
+      createHelpers(registry, stores, harness.service),
+    );
 
     expect(parseMcpBody<BidResult>(result)).toEqual({
       action: 'listen',
@@ -466,59 +573,119 @@ describe('execution discuss tools', () => {
     const registry = createDiscussContextRegistry();
     const context = getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
     const stores = new Map([[harness.projectRoot, harness.store]]);
-    await persistSession({ ...harness, context }, {
-      sessionId: 'discuss-valid',
-      recover: true,
-      agents: [
-        { name: 'alpha', persona: '# Alpha', participation: 'required' },
-        { name: 'user', persona: '# User', participation: 'observer' },
-      ],
-      buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.submitted', '2026-03-10T00:01:00.000Z', { agent: 'alpha', score: 40, thought: 'alpha' }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'bid.submitted', '2026-03-10T00:01:01.000Z', { agent: 'user', score: 80, thought: 'user' }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 3, 'bid.round.closed', '2026-03-10T00:01:02.000Z', {
-          allBids: { alpha: 40, user: 80 },
-          effectiveBids: { alpha: 40, user: 80 },
-          thoughts: { alpha: 'alpha', user: 'user' },
-          outcome: { winner: 'user', speaker_type: 'quota' as const },
-          stateMutations: { cold_start: false },
-        }),
-      ],
-    });
-    await persistSession({ ...harness, context }, {
-      sessionId: 'discuss-invalid',
-      recover: true,
-      buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.submitted', '2026-03-10T00:02:00.000Z', { agent: 'alpha', score: 80, thought: 'alpha' }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'bid.submitted', '2026-03-10T00:02:01.000Z', { agent: 'beta', score: 70, thought: 'beta' }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 3, 'bid.round.closed', '2026-03-10T00:02:02.000Z', {
-          allBids: { alpha: 80, beta: 70 },
-          effectiveBids: { alpha: 80, beta: 70 },
-          thoughts: { alpha: 'alpha', beta: 'beta' },
-          outcome: { winner: 'alpha', speaker_type: 'quota' as const },
-          stateMutations: { cold_start: false },
-        }),
-      ],
-    });
+    await persistSession(
+      { ...harness, context },
+      {
+        sessionId: 'discuss-valid',
+        recover: true,
+        agents: [
+          { name: 'alpha', persona: '# Alpha', participation: 'required' },
+          { name: 'user', persona: '# User', participation: 'observer' },
+        ],
+        buildTail: (snapshot) => [
+          makeEvent(
+            snapshot.sessionId,
+            harness.projectRoot,
+            snapshot.state.topic,
+            snapshot.lastAppliedSeq + 1,
+            'bid.submitted',
+            '2026-03-10T00:01:00.000Z',
+            { agent: 'alpha', score: 40, thought: 'alpha' },
+          ),
+          makeEvent(
+            snapshot.sessionId,
+            harness.projectRoot,
+            snapshot.state.topic,
+            snapshot.lastAppliedSeq + 2,
+            'bid.submitted',
+            '2026-03-10T00:01:01.000Z',
+            { agent: 'user', score: 80, thought: 'user' },
+          ),
+          makeEvent(
+            snapshot.sessionId,
+            harness.projectRoot,
+            snapshot.state.topic,
+            snapshot.lastAppliedSeq + 3,
+            'bid.round.closed',
+            '2026-03-10T00:01:02.000Z',
+            {
+              allBids: { alpha: 40, user: 80 },
+              effectiveBids: { alpha: 40, user: 80 },
+              thoughts: { alpha: 'alpha', user: 'user' },
+              outcome: { winner: 'user', speaker_type: 'quota' as const },
+              stateMutations: { cold_start: false },
+            },
+          ),
+        ],
+      },
+    );
+    await persistSession(
+      { ...harness, context },
+      {
+        sessionId: 'discuss-invalid',
+        recover: true,
+        buildTail: (snapshot) => [
+          makeEvent(
+            snapshot.sessionId,
+            harness.projectRoot,
+            snapshot.state.topic,
+            snapshot.lastAppliedSeq + 1,
+            'bid.submitted',
+            '2026-03-10T00:02:00.000Z',
+            { agent: 'alpha', score: 80, thought: 'alpha' },
+          ),
+          makeEvent(
+            snapshot.sessionId,
+            harness.projectRoot,
+            snapshot.state.topic,
+            snapshot.lastAppliedSeq + 2,
+            'bid.submitted',
+            '2026-03-10T00:02:01.000Z',
+            { agent: 'beta', score: 70, thought: 'beta' },
+          ),
+          makeEvent(
+            snapshot.sessionId,
+            harness.projectRoot,
+            snapshot.state.topic,
+            snapshot.lastAppliedSeq + 3,
+            'bid.round.closed',
+            '2026-03-10T00:02:02.000Z',
+            {
+              allBids: { alpha: 80, beta: 70 },
+              effectiveBids: { alpha: 80, beta: 70 },
+              thoughts: { alpha: 'alpha', beta: 'beta' },
+              outcome: { winner: 'alpha', speaker_type: 'quota' as const },
+              stateMutations: { cold_start: false },
+            },
+          ),
+        ],
+      },
+    );
 
-    const validResult = await routeToolCall({
-      name: 'discuss_participate',
-      args: {
-        session: 'discuss-valid',
-        agent_name: 'user',
-        content: 'My speech answers the accessibility concern directly.',
+    const validResult = await routeToolCall(
+      {
+        name: 'discuss_participate',
+        args: {
+          session: 'discuss-valid',
+          agent_name: 'user',
+          content: 'My speech answers the accessibility concern directly.',
+        },
+        context: harness.ctx,
       },
-      context: harness.ctx,
-    }, createHelpers(registry, stores, harness.service));
-    const invalidResult = await routeToolCall({
-      name: 'discuss_participate',
-      args: {
-        session: 'discuss-invalid',
-        agent_name: 'user',
-        content: 'This should be rejected.',
+      createHelpers(registry, stores, harness.service),
+    );
+    const invalidResult = await routeToolCall(
+      {
+        name: 'discuss_participate',
+        args: {
+          session: 'discuss-invalid',
+          agent_name: 'user',
+          content: 'This should be rejected.',
+        },
+        context: harness.ctx,
       },
-      context: harness.ctx,
-    }, createHelpers(registry, stores, harness.service));
+      createHelpers(registry, stores, harness.service),
+    );
 
     expect(parseMcpBody<SpeechResult>(validResult)).toEqual({ action: 'speech_recorded' });
     expect(parseMcpBody<SpeechResult>(invalidResult)).toEqual({
@@ -534,11 +701,14 @@ describe('execution discuss tools', () => {
     const registry = createDiscussContextRegistry();
     const stores = new Map([[harness.projectRoot, harness.store]]);
 
-    const result = await routeToolCall({
-      name: 'discuss_watch',
-      args: { session: 'missing' },
-      context: harness.ctx,
-    }, createHelpers(registry, stores, harness.service));
+    const result = await routeToolCall(
+      {
+        name: 'discuss_watch',
+        args: { session: 'missing' },
+        context: harness.ctx,
+      },
+      createHelpers(registry, stores, harness.service),
+    );
 
     expect(parseMcpError(result)).toEqual({
       error: 'session_not_found',

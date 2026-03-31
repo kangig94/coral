@@ -28,11 +28,7 @@ function running(job: string, session: string) {
   };
 }
 
-function terminal(
-  jobId: string,
-  sessionId: string,
-  result: TerminalResult,
-): WaitStreamEvent {
+function terminal(jobId: string, sessionId: string, result: TerminalResult): WaitStreamEvent {
   return {
     type: 'terminal',
     completedJobId: jobId,
@@ -109,13 +105,7 @@ describe('workflow pipe executor', () => {
       }),
     });
 
-    const result = await executePipeline(
-      parseExpression('architect -> resolver'),
-      'seed',
-      'codex',
-      executionSvc,
-      ctx,
-    );
+    const result = await executePipeline(parseExpression('architect -> resolver'), 'seed', 'codex', executionSvc, ctx);
 
     expect(result.finalOutput).toBe('FINAL');
     expect(result.stepDetails).toEqual([
@@ -330,22 +320,12 @@ describe('workflow pipe executor', () => {
         }
         return emit([]);
       }),
-      getConversationRef: vi.fn((_provider, sessionId) => (
-        sessionId === 'session-1' ? 'conv-ref-1' : undefined
-      )),
+      getConversationRef: vi.fn((_provider, sessionId) => (sessionId === 'session-1' ? 'conv-ref-1' : undefined)),
     });
 
-    const result = await executePipeline(
-      parseExpression('(architect, critic)'),
-      'seed',
-      'claude',
-      executionSvc,
-      ctx,
-    );
+    const result = await executePipeline(parseExpression('(architect, critic)'), 'seed', 'claude', executionSvc, ctx);
 
-    expect(result.finalOutput).toBe(
-      '<architect>\nARCH\n</architect>\n\n<critic>\nCRIT\n</critic>',
-    );
+    expect(result.finalOutput).toBe('<architect>\nARCH\n</architect>\n\n<critic>\nCRIT\n</critic>');
     expect(executionSvc.coralDispatch).toHaveBeenNthCalledWith(
       1,
       'claude',
@@ -379,14 +359,9 @@ describe('workflow pipe executor', () => {
       }),
     });
 
-    await expect(executePipeline(
-      parseExpression('architect'),
-      'seed',
-      'claude',
-      executionSvc,
-      ctx,
-      { signal: controller.signal },
-    )).rejects.toMatchObject({
+    await expect(
+      executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx, { signal: controller.signal }),
+    ).rejects.toMatchObject({
       message: 'Pipeline aborted (launched atoms may continue)',
       aborted: true,
     });
@@ -406,13 +381,9 @@ describe('workflow pipe executor', () => {
       }),
     });
 
-    await expect(executePipeline(
-      parseExpression('architect'),
-      'seed',
-      'claude',
-      executionSvc,
-      ctx,
-    )).rejects.toMatchObject({
+    await expect(
+      executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx),
+    ).rejects.toMatchObject({
       message: "Step 0, atom 'architect' failed: error msg",
       aborted: false,
     });
@@ -428,14 +399,9 @@ describe('workflow pipe executor', () => {
       getConversationRef: vi.fn(() => 'conv-ref-skipped'),
     });
 
-    await expect(executePipeline(
-      parseExpression('architect'),
-      'seed',
-      'claude',
-      executionSvc,
-      ctx,
-      { signal: controller.signal },
-    )).rejects.toMatchObject({ aborted: true });
+    await expect(
+      executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx, { signal: controller.signal }),
+    ).rejects.toMatchObject({ aborted: true });
 
     expect(executionSvc.getConversationRef).not.toHaveBeenCalled();
     expect(executionSvc.coralDispatch).not.toHaveBeenCalled();
@@ -453,13 +419,7 @@ describe('workflow pipe executor', () => {
       getConversationRef: vi.fn(() => 'conv-ref-codex'),
     });
 
-    const result = await executePipeline(
-      parseExpression('architect'),
-      'seed',
-      'codex',
-      executionSvc,
-      ctx,
-    );
+    const result = await executePipeline(parseExpression('architect'), 'seed', 'codex', executionSvc, ctx);
 
     expect(result.finalOutput).toBe('DONE');
     expect(executionSvc.getConversationRef).not.toHaveBeenCalled();
@@ -482,21 +442,15 @@ describe('workflow pipe executor', () => {
           firstCycle = false;
           return emit([timeout(['job-1'])]);
         }
-        return emit([
-          terminal('job-resumed', 'session-1', { content: 'DONE' }),
-        ]);
+        return emit([terminal('job-resumed', 'session-1', { content: 'DONE' })]);
       }),
     });
 
     try {
-      const result = await executePipeline(
-        parseExpression('architect'),
-        'seed',
-        'claude',
-        executionSvc,
-        ctx,
-        { staleTimeoutMs: 1, pollIntervalMs: 1 },
-      );
+      const result = await executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx, {
+        staleTimeoutMs: 1,
+        pollIntervalMs: 1,
+      });
 
       expect(result.finalOutput).toBe('DONE');
       expect(executionSvc.resume).toHaveBeenCalledWith(
@@ -534,13 +488,9 @@ describe('workflow pipe executor', () => {
       }),
     });
 
-    await expect(executePipeline(
-      parseExpression('(architect, critic)'),
-      'seed',
-      'codex',
-      executionSvc,
-      ctx,
-    )).rejects.toMatchObject({
+    await expect(
+      executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', executionSvc, ctx),
+    ).rejects.toMatchObject({
       message: "Step 0, atom 'critic' launch failed: launch blocked",
       aborted: false,
       stepDetails: [
@@ -565,19 +515,17 @@ describe('workflow pipe executor', () => {
         if (coralName === 'architect') return running('job-a', 'session-a');
         return running('job-b', 'session-b');
       }),
-      waitStream: vi.fn(() => emit([
-        terminal('job-a', 'session-a', { content: 'ARCH' }),
-        terminal('job-b', 'session-b', { content: '', notice: 'primary failure' }),
-      ])),
+      waitStream: vi.fn(() =>
+        emit([
+          terminal('job-a', 'session-a', { content: 'ARCH' }),
+          terminal('job-b', 'session-b', { content: '', notice: 'primary failure' }),
+        ]),
+      ),
     });
 
-    await expect(executePipeline(
-      parseExpression('(architect, critic)'),
-      'seed',
-      'codex',
-      executionSvc,
-      ctx,
-    )).rejects.toMatchObject({
+    await expect(
+      executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', executionSvc, ctx),
+    ).rejects.toMatchObject({
       message: "Step 0, atom 'critic' failed: primary failure",
       aborted: false,
       stepDetails: [
@@ -615,14 +563,11 @@ describe('workflow pipe executor', () => {
       }),
     });
 
-    await expect(executePipeline(
-      parseExpression('architect -> resolver'),
-      'seed',
-      'codex',
-      executionSvc,
-      ctx,
-      { signal: controller.signal },
-    )).rejects.toMatchObject({
+    await expect(
+      executePipeline(parseExpression('architect -> resolver'), 'seed', 'codex', executionSvc, ctx, {
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({
       message: 'Pipeline aborted (launched atoms may continue)',
       aborted: true,
       stepDetails: [
@@ -658,13 +603,7 @@ describe('workflow pipe executor', () => {
       }),
     });
 
-    await executePipeline(
-      parseExpression('architect -> "Apply this fixup"'),
-      'seed',
-      'codex',
-      executionSvc,
-      ctx,
-    );
+    await executePipeline(parseExpression('architect -> "Apply this fixup"'), 'seed', 'codex', executionSvc, ctx);
 
     const step2 = capturedPrompts[1];
     expect(step2).toContain('Apply this fixup');
@@ -781,32 +720,36 @@ describe('launchAtomWithRetry', () => {
 
     const [atom] = parseExpression('architect')[0];
 
-    await expect(launchAtomWithRetry({
-      atom,
-      atomIndex: 0,
-      stepIndex: 0,
-      stepPrompt: 'do work',
-      defaultProviderName: 'codex',
-      executionSvc,
-      ctx,
-      completedStepDetails: [],
-    })).rejects.toThrow("Step 0, atom 'architect' launch failed: Unknown provider: ghost");
+    await expect(
+      launchAtomWithRetry({
+        atom,
+        atomIndex: 0,
+        stepIndex: 0,
+        stepPrompt: 'do work',
+        defaultProviderName: 'codex',
+        executionSvc,
+        ctx,
+        completedStepDetails: [],
+      }),
+    ).rejects.toThrow("Step 0, atom 'architect' launch failed: Unknown provider: ghost");
   });
 
   it('throws with unsupported namespace error immediately without calling coralDispatch', async () => {
     const executionSvc = createExecutionService();
     const badAtom = { kind: 'agent' as const, agent: 'architect', namespace: 'custom-ns', provider: 'codex' };
 
-    await expect(launchAtomWithRetry({
-      atom: badAtom,
-      atomIndex: 0,
-      stepIndex: 2,
-      stepPrompt: 'test',
-      defaultProviderName: 'codex',
-      executionSvc,
-      ctx,
-      completedStepDetails: [],
-    })).rejects.toThrow('unsupported namespace "custom-ns"');
+    await expect(
+      launchAtomWithRetry({
+        atom: badAtom,
+        atomIndex: 0,
+        stepIndex: 2,
+        stepPrompt: 'test',
+        defaultProviderName: 'codex',
+        executionSvc,
+        ctx,
+        completedStepDetails: [],
+      }),
+    ).rejects.toThrow('unsupported namespace "custom-ns"');
 
     expect(executionSvc.coralDispatch).not.toHaveBeenCalled();
   });
@@ -816,28 +759,25 @@ describe('waitForAtoms', () => {
   it('treats queued wait events as progress and keeps waiting for completion', async () => {
     const progress = vi.fn();
     const executionSvc = createExecutionService({
-      waitStream: vi.fn(() => emit([
-        {
-          type: 'queued',
-          jobId: 'job-1',
-          sessionId: 'session-1',
-          queuePosition: 2,
-          runningJobIds: ['job-a'],
-        },
-        terminal('job-1', 'session-1', { content: 'ARCH' }),
-      ])),
+      waitStream: vi.fn(() =>
+        emit([
+          {
+            type: 'queued',
+            jobId: 'job-1',
+            sessionId: 'session-1',
+            queuePosition: 2,
+            runningJobIds: ['job-a'],
+          },
+          terminal('job-1', 'session-1', { content: 'ARCH' }),
+        ]),
+      ),
     });
 
-    const results = await waitForAtoms(
-      [launchedAtom()],
-      executionSvc,
-      ctx,
-      {
-        staleTimeoutMs: 0,
-        pollIntervalMs: 500,
-        onProgress: progress,
-      },
-    );
+    const results = await waitForAtoms([launchedAtom()], executionSvc, ctx, {
+      staleTimeoutMs: 0,
+      pollIntervalMs: 500,
+      onProgress: progress,
+    });
 
     expect(results.get('0:0')).toBe('ARCH');
     expect(progress).toHaveBeenCalledWith('0-arc queued (position 2)');
@@ -846,10 +786,12 @@ describe('waitForAtoms', () => {
 
   it('treats notice on terminal result as a failure and preserves completed details', async () => {
     const executionSvc = createExecutionService({
-      waitStream: vi.fn(() => emit([
-        terminal('job-1', 'session-1', { content: 'ARCH' }),
-        terminal('job-2', 'session-2', { content: '', notice: 'process killed' }),
-      ])),
+      waitStream: vi.fn(() =>
+        emit([
+          terminal('job-1', 'session-1', { content: 'ARCH' }),
+          terminal('job-2', 'session-2', { content: '', notice: 'process killed' }),
+        ]),
+      ),
     });
 
     await expect(
@@ -893,22 +835,15 @@ describe('waitForAtoms', () => {
 
   it('throws WorkflowExecutionError on aborted terminal results', async () => {
     const executionSvc = createExecutionService({
-      waitStream: vi.fn(() => emit([
-        terminal('job-1', 'session-1', { content: '', aborted: true }),
-      ])),
+      waitStream: vi.fn(() => emit([terminal('job-1', 'session-1', { content: '', aborted: true })])),
     });
 
     await expect(
-      waitForAtoms(
-        [launchedAtom()],
-        executionSvc,
-        ctx,
-        {
-          staleTimeoutMs: 0,
-          pollIntervalMs: 500,
-          onProgress: vi.fn(),
-        },
-      ),
+      waitForAtoms([launchedAtom()], executionSvc, ctx, {
+        staleTimeoutMs: 0,
+        pollIntervalMs: 500,
+        onProgress: vi.fn(),
+      }),
     ).rejects.toBeInstanceOf(WorkflowExecutionError);
   });
 });
@@ -927,17 +862,10 @@ describe('checkpoint persistence', () => {
       waitStream: vi.fn(() => emit([terminal('job-1', 'session-1', { content: 'DONE' })])),
     });
 
-    await executePipeline(
-      parseExpression('architect'),
-      'seed',
-      'codex',
-      executionSvc,
-      ctx,
-      {
-        workflowJobId: 'wf-1',
-        progressStore: mockStore,
-      },
-    );
+    await executePipeline(parseExpression('architect'), 'seed', 'codex', executionSvc, ctx, {
+      workflowJobId: 'wf-1',
+      progressStore: mockStore,
+    });
 
     // writeWorkflowCheckpoint is called via fire-and-forget promise
     // Wait a tick to allow the mutex-serialized writes to flush
@@ -965,26 +893,14 @@ describe('checkpoint persistence', () => {
     });
 
     // Case 1: no workflowJobId
-    await executePipeline(
-      parseExpression('architect'),
-      'seed',
-      'codex',
-      executionSvc,
-      ctx,
-      { progressStore: mockStore },
-    );
+    await executePipeline(parseExpression('architect'), 'seed', 'codex', executionSvc, ctx, {
+      progressStore: mockStore,
+    });
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(mockStore.writeWorkflowCheckpoint).not.toHaveBeenCalled();
 
     // Case 2: no progressStore
-    await executePipeline(
-      parseExpression('architect'),
-      'seed',
-      'codex',
-      executionSvc,
-      ctx,
-      { workflowJobId: 'wf-1' },
-    );
+    await executePipeline(parseExpression('architect'), 'seed', 'codex', executionSvc, ctx, { workflowJobId: 'wf-1' });
     // Still not called (from previous assertion baseline)
     expect(mockStore.writeWorkflowCheckpoint).not.toHaveBeenCalled();
   });
@@ -1003,17 +919,10 @@ describe('checkpoint persistence', () => {
       }),
     });
 
-    await executePipeline(
-      parseExpression('architect -> resolver'),
-      'seed',
-      'codex',
-      executionSvc,
-      ctx,
-      {
-        workflowJobId: 'wf-multi',
-        progressStore: mockStore,
-      },
-    );
+    await executePipeline(parseExpression('architect -> resolver'), 'seed', 'codex', executionSvc, ctx, {
+      workflowJobId: 'wf-multi',
+      progressStore: mockStore,
+    });
 
     await new Promise((resolve) => setTimeout(resolve, 50));
 

@@ -116,18 +116,29 @@ describe('execution SessionIndex', () => {
     manager.claimForJobSync(orphaned.sessionId, 'job-orphaned');
 
     const progressStore = new ProgressStore();
-    progressStore.initJob({ jobId: 'job-visible', sessionId: visible.sessionId, provider: 'codex', projectRoot, backendNamespace: 'ns-visible' });
-    progressStore.initJob({ jobId: 'job-foreign', sessionId: foreign.sessionId, provider: 'codex', projectRoot, backendNamespace: 'ns-foreign' });
+    progressStore.initJob({
+      jobId: 'job-visible',
+      sessionId: visible.sessionId,
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: 'ns-visible',
+    });
+    progressStore.initJob({
+      jobId: 'job-foreign',
+      sessionId: foreign.sessionId,
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: 'ns-foreign',
+    });
 
     const index = new SessionIndex();
     index.hydrate(SessionManager.listShards());
 
     const visibleSessions = index.listForNamespace('ns-visible', progressStore);
     expect(visibleSessions).toHaveLength(1);
-    expect(visibleSessions[0]?.sessions.map((session) => session.sessionId).sort()).toEqual([
-      idle.sessionId,
-      visible.sessionId,
-    ].sort());
+    expect(visibleSessions[0]?.sessions.map((session) => session.sessionId).sort()).toEqual(
+      [idle.sessionId, visible.sessionId].sort(),
+    );
   });
 
   it('hydrates shards created after startup on demand', () => {
@@ -149,9 +160,11 @@ describe('execution SessionIndex', () => {
       }
     }
 
-    expect(index.listAll().flatMap((row) => row.sessions.map((session) => session.sessionId)).sort()).toEqual([
-      sessionA.sessionId,
-      sessionB.sessionId,
-    ].sort());
+    expect(
+      index
+        .listAll()
+        .flatMap((row) => row.sessions.map((session) => session.sessionId))
+        .sort(),
+    ).toEqual([sessionA.sessionId, sessionB.sessionId].sort());
   });
 });

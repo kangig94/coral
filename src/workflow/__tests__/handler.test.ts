@@ -110,11 +110,7 @@ describe('workflow handler', () => {
     const { handleWorkflow } = await loadWorkflowHandler();
     const executionSvc = createExecutionService();
 
-    await expect(handleWorkflow(
-      { expression: 'architect' },
-      executionSvc,
-      ctx,
-    )).rejects.toThrow();
+    await expect(handleWorkflow({ expression: 'architect' }, executionSvc, ctx)).rejects.toThrow();
   });
 
   it('rejected LaunchDecision has no job or session properties', async () => {
@@ -141,15 +137,17 @@ describe('workflow handler', () => {
     const { handleWorkflow } = await loadWorkflowHandler();
     const executionSvc = createExecutionService();
 
-    await expect(handleWorkflow(
-      {
-        expression: '(architect, architect)',
-        init_prompt: 'test',
-        provider: 'claude',
-      },
-      executionSvc,
-      ctx,
-    )).rejects.toThrow('Duplicate atom');
+    await expect(
+      handleWorkflow(
+        {
+          expression: '(architect, architect)',
+          init_prompt: 'test',
+          provider: 'claude',
+        },
+        executionSvc,
+        ctx,
+      ),
+    ).rejects.toThrow('Duplicate atom');
 
     expect(executionSvc.executeWorkflow).not.toHaveBeenCalled();
   });
@@ -158,16 +156,18 @@ describe('workflow handler', () => {
     const { handleWorkflow } = await loadWorkflowHandler();
     const executionSvc = createExecutionService();
 
-    await expect(handleWorkflow(
-      {
-        expression: 'architect',
-        init_prompt: 'test',
-        provider: 'claude',
-        atoms: { 'ghost-agent': { instruction: 'focus' } },
-      },
-      executionSvc,
-      ctx,
-    )).rejects.toThrow('Unknown atoms keys: ghost-agent');
+    await expect(
+      handleWorkflow(
+        {
+          expression: 'architect',
+          init_prompt: 'test',
+          provider: 'claude',
+          atoms: { 'ghost-agent': { instruction: 'focus' } },
+        },
+        executionSvc,
+        ctx,
+      ),
+    ).rejects.toThrow('Unknown atoms keys: ghost-agent');
 
     expect(executionSvc.executeWorkflow).not.toHaveBeenCalled();
   });
@@ -176,11 +176,7 @@ describe('workflow handler', () => {
     const { handleWorkflow } = await loadWorkflowHandler();
     const executionSvc = createExecutionService();
 
-    await expect(handleWorkflow(
-      { init_prompt: 'no expression' },
-      executionSvc,
-      ctx,
-    )).rejects.toThrow();
+    await expect(handleWorkflow({ init_prompt: 'no expression' }, executionSvc, ctx)).rejects.toThrow();
   });
 
   it('rejected message names multiple unknown providers', async () => {

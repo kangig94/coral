@@ -22,7 +22,8 @@ export const DEFAULT_QUOTA_PER_EPOCH = 3;
 const END_REASON_CONTENT: Record<Exclude<EndReason, 'already_ended'>, string> = {
   all_below_threshold: 'All participants bid below the threshold. Ending discussion.',
   max_epochs_reached: 'Maximum epochs reached. Ending discussion.',
-  all_blocked: 'Discussion is structurally deadlocked. Agents who want to speak have no quota, and agents with quota do not want to speak.',
+  all_blocked:
+    'Discussion is structurally deadlocked. Agents who want to speak have no quota, and agents with quota do not want to speak.',
   no_participants: 'No eligible agents remaining. Ending discussion.',
 };
 
@@ -30,10 +31,7 @@ export function endContent(reason: Exclude<EndReason, 'already_ended'>): string 
   return END_REASON_CONTENT[reason];
 }
 
-export function resolveAgentName(
-  agents: Record<string, AgentState>,
-  name: string,
-): string | null {
+export function resolveAgentName(agents: Record<string, AgentState>, name: string): string | null {
   if (agents[name]) return name;
   const baseName = name.replace(/-\d+$/, '');
   return baseName !== name && agents[baseName] ? baseName : null;
@@ -99,10 +97,8 @@ function compareBidCandidates(
 
 function coldStartPick(state: DiscussState): string | null {
   const eligible = Object.entries(state.agents)
-    .filter(([name, agent]) =>
-      !agent.banned
-      && agent.quota_remaining > 0
-      && typeof state.current_bids[name] === 'number',
+    .filter(
+      ([name, agent]) => !agent.banned && agent.quota_remaining > 0 && typeof state.current_bids[name] === 'number',
     )
     .sort(([aName, a], [bName, b]) => {
       if (a.total_speaks !== b.total_speaks) return a.total_speaks - b.total_speaks;
@@ -134,30 +130,23 @@ export function decideSessionCreate(
     bidThreshold = DEFAULT_BID_THRESHOLD,
     maxEpochs = DEFAULT_MAX_EPOCHS,
     quotaPerEpoch = DEFAULT_QUOTA_PER_EPOCH,
-    agentExecution = Object.fromEntries(
-      input.agents.map((agent) => [agent.name, { manual: true }]),
-    ) as Record<string, SessionCreatedAgentExecutionConfig>,
+    agentExecution = Object.fromEntries(input.agents.map((agent) => [agent.name, { manual: true }])) as Record<
+      string,
+      SessionCreatedAgentExecutionConfig
+    >,
   } = opts;
   return {
     ok: true,
     value: [
-      makeEvent(
-        sessionId,
-        projectRoot,
-        topic,
-        seq,
-        'session.created',
-        ts,
-        {
-          input,
-          config: {
-            bidThreshold,
-            maxEpochs,
-            quotaPerEpoch,
-          },
-          agentExecution,
+      makeEvent(sessionId, projectRoot, topic, seq, 'session.created', ts, {
+        input,
+        config: {
+          bidThreshold,
+          maxEpochs,
+          quotaPerEpoch,
         },
-      ),
+        agentExecution,
+      }),
       makeEvent(sessionId, projectRoot, topic, seq + 1, 'bidding.opened', ts, {}),
     ],
   };
@@ -193,7 +182,11 @@ export function decideBid(
   ts: string,
 ): Result<DiscussDomainEvent[]> {
   if (state.status !== 'bidding') {
-    return { ok: false, error: 'invalid_phase', detail: { status: state.status, hint: 'Bids can only be submitted during the bidding phase.' } };
+    return {
+      ok: false,
+      error: 'invalid_phase',
+      detail: { status: state.status, hint: 'Bids can only be submitted during the bidding phase.' },
+    };
   }
   const name = resolveAgentName(state.agents, agentName);
   if (!name) {
@@ -237,12 +230,10 @@ export function decideBidRoundClose(
     return { ok: false, error: 'invalid_status', detail: { current: state.status } };
   }
 
-  const requiredAgents = Object.entries(state.agents).filter(([, agent]) =>
-    !agent.banned && agent.participation === 'required',
+  const requiredAgents = Object.entries(state.agents).filter(
+    ([, agent]) => !agent.banned && agent.participation === 'required',
   );
-  const missing = requiredAgents
-    .map(([name]) => name)
-    .filter((name) => state.current_bids[name] == null);
+  const missing = requiredAgents.map(([name]) => name).filter((name) => state.current_bids[name] == null);
 
   if (missing.length > 0) {
     return { ok: false, error: 'quorum_not_met', detail: { missing } };
@@ -257,14 +248,9 @@ export function decideBidRoundClose(
   const bidEntries = Object.entries(allBids);
 
   const createBidPool = (qualifier: (name: string, score: number) => boolean): Array<[string, number]> =>
-    bidEntries
-      .filter(([name, score]) => qualifier(name, score))
-      .sort(compare);
+    bidEntries.filter(([name, score]) => qualifier(name, score)).sort(compare);
 
-  const makeBidRoundClosedEvent = (
-    outcome: ResolveResult,
-    stateMutations: BidRoundClosedStateMutations,
-  ) =>
+  const makeBidRoundClosedEvent = (outcome: ResolveResult, stateMutations: BidRoundClosedStateMutations) =>
     makeEvent(sessionId, projectRoot, topic, seq, 'bid.round.closed', ts, {
       allBids,
       effectiveBids,
@@ -273,9 +259,7 @@ export function decideBidRoundClose(
       stateMutations,
     });
 
-  const makeNoWinnerTerminalEvent = (
-    reason: 'all_below_threshold' | 'all_blocked' | 'max_epochs_reached',
-  ) => [
+  const makeNoWinnerTerminalEvent = (reason: 'all_below_threshold' | 'all_blocked' | 'max_epochs_reached') => [
     makeBidRoundClosedEvent({ no_winner: true as const, reason }, {}),
     makeEvent(sessionId, projectRoot, topic, seq + 1, 'session.ended', ts, {
       endReason: reason,
@@ -283,26 +267,18 @@ export function decideBidRoundClose(
     }),
   ];
 
-  const primaryPool = createBidPool(
-    (name, score) => score >= threshold && state.agents[name].quota_remaining > 0,
-  );
+  const primaryPool = createBidPool((name, score) => score >= threshold && state.agents[name].quota_remaining > 0);
   if (primaryPool.length > 0) {
     const [winner] = primaryPool[0];
     return {
       ok: true,
-      value: [
-        makeBidRoundClosedEvent(
-          { winner, speaker_type: 'quota' as const },
-          { cold_start: false },
-        ),
-      ],
+      value: [makeBidRoundClosedEvent({ winner, speaker_type: 'quota' as const }, { cold_start: false })],
     };
   }
 
-  const fallbackPool = createBidPool((name, score) =>
-    score >= threshold
-    && state.agents[name].quota_remaining === 0
-    && !state.agents[name].fallback_used,
+  const fallbackPool = createBidPool(
+    (name, score) =>
+      score >= threshold && state.agents[name].quota_remaining === 0 && !state.agents[name].fallback_used,
   );
   if (fallbackPool.length > 0) {
     const [winner] = fallbackPool[0];
@@ -328,10 +304,7 @@ export function decideBidRoundClose(
         return {
           ok: true,
           value: [
-            makeBidRoundClosedEvent(
-              { winner: picked, speaker_type: 'cold_start' as const },
-              { cold_start: false },
-            ),
+            makeBidRoundClosedEvent({ winner: picked, speaker_type: 'cold_start' as const }, { cold_start: false }),
           ],
         };
       }
@@ -508,9 +481,7 @@ export function decideEpochSummary(
 
   return {
     ok: true,
-    value: [
-      makeEvent(sessionId, projectRoot, topic, seq, 'epoch.summary.recorded', ts, { summary }),
-    ],
+    value: [makeEvent(sessionId, projectRoot, topic, seq, 'epoch.summary.recorded', ts, { summary })],
   };
 }
 
@@ -529,14 +500,19 @@ export function decideEnd(
 
   const { force = false, reason, endReason } = opts;
   if (state.status === 'speaking' && !force) {
-    return { ok: false, error: 'requires_force', detail: { hint: 'set force=true with reason to end during active speech' } };
+    return {
+      ok: false,
+      error: 'requires_force',
+      detail: { hint: 'set force=true with reason to end during active speech' },
+    };
   }
 
-  const endReasonContent = endReason !== undefined
-    ? endContent(endReason)
-    : force
-      ? (reason ?? state.end_reason_content)
-      : state.end_reason_content;
+  const endReasonContent =
+    endReason !== undefined
+      ? endContent(endReason)
+      : force
+        ? (reason ?? state.end_reason_content)
+        : state.end_reason_content;
 
   return {
     ok: true,
@@ -573,8 +549,6 @@ export function decideSynthesis(
 
   return {
     ok: true,
-    value: [
-      makeEvent(sessionId, projectRoot, topic, seq, 'session.synthesized', ts, { synthesis }),
-    ],
+    value: [makeEvent(sessionId, projectRoot, topic, seq, 'session.synthesized', ts, { synthesis })],
   };
 }

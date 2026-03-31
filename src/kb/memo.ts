@@ -127,21 +127,21 @@ export function listMemos(projectRoot: string, ownerFilter?: string): KbMemoList
           return [];
         }
 
-        return [{
-          filename,
-          summary: extractSummary(raw),
-          createdAt: memo?.display ?? stat.mtime.toISOString(),
-          sortKey: memo?.sortKey ?? stat.mtimeMs,
-          owner,
-        }];
+        return [
+          {
+            filename,
+            summary: extractSummary(raw),
+            createdAt: memo?.display ?? stat.mtime.toISOString(),
+            sortKey: memo?.sortKey ?? stat.mtimeMs,
+            owner,
+          },
+        ];
       } catch {
         return [];
       }
     });
 
-  memos.sort((left, right) =>
-    right.sortKey - left.sortKey
-    || compareLocale(left.filename, right.filename));
+  memos.sort((left, right) => right.sortKey - left.sortKey || compareLocale(left.filename, right.filename));
 
   return {
     memos: memos.map(({ filename, summary, createdAt, owner }) => ({ filename, summary, createdAt, owner })),
@@ -153,7 +153,13 @@ export function deleteMemos(projectRoot: string, input: KbMemoDeleteInput): KbMe
   const matcher = globToRegex(input.pattern);
   const deleted = readMemoDir(projectRoot)
     .filter((filename) => filename.endsWith('.md'))
-    .filter((filename) => { try { return statSync(join(dir, filename)).isFile(); } catch { return false; } })
+    .filter((filename) => {
+      try {
+        return statSync(join(dir, filename)).isFile();
+      } catch {
+        return false;
+      }
+    })
     .filter((filename) => matcher.test(filename))
     .filter((filename) => {
       if (input.owner === undefined) return true;
@@ -178,7 +184,13 @@ export function purgeMemos(projectRoot: string, owner?: string): KbMemoPurgeResu
   const dir = memoDir(projectRoot);
   const deleted = readMemoDir(projectRoot)
     .filter((filename) => filename.endsWith('.md'))
-    .filter((filename) => { try { return statSync(join(dir, filename)).isFile(); } catch { return false; } })
+    .filter((filename) => {
+      try {
+        return statSync(join(dir, filename)).isFile();
+      } catch {
+        return false;
+      }
+    })
     .filter((filename) => {
       if (owner === undefined) return true;
       try {

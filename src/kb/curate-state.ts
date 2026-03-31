@@ -18,7 +18,15 @@ const CURATE_MAX_RETRY_MS = 4 * 60 * 60 * 1000;
 type CurateStateTarget = Pick<KbRuntime, 'curateStatePath'> | string;
 type CurateStateRuntime = Pick<
   KbRuntime,
-  'markdownRoot' | 'curateStatePath' | 'notesDir' | 'notePath' | 'withMutationLock' | 'readIndex' | 'writeIndex' | 'readIndexState' | 'writeIndexState'
+  | 'markdownRoot'
+  | 'curateStatePath'
+  | 'notesDir'
+  | 'notePath'
+  | 'withMutationLock'
+  | 'readIndex'
+  | 'writeIndex'
+  | 'readIndexState'
+  | 'writeIndexState'
 >;
 
 export type CurateCursor = {
@@ -82,12 +90,11 @@ function retryBaseCooldownMs(error: unknown): number {
 }
 
 function calculateRetryCooldownMs(baseCooldownMs: number, consecutiveFailures: number): number {
-  return Math.min(baseCooldownMs * (2 ** consecutiveFailures), CURATE_MAX_RETRY_MS);
+  return Math.min(baseCooldownMs * 2 ** consecutiveFailures, CURATE_MAX_RETRY_MS);
 }
 
 function samePendingDiscovery(left: PendingDiscovery, right: PendingDiscovery): boolean {
-  return left.principle === right.principle
-    && left.statement === right.statement;
+  return left.principle === right.principle && left.statement === right.statement;
 }
 
 function parsePositiveInteger(value: unknown, label: string): number {
@@ -192,28 +199,28 @@ function parseCurateState(value: unknown): CurateState {
 
   return {
     processedThrough: parseCursor(value.processedThrough, 'processedThrough'),
-    discoveryHighSeq: value.discoveryHighSeq === undefined
-      ? (parseCursor(value.discoveredThrough, 'discoveredThrough')?.mutationSeqAtPromote ?? 0)
-      : parseNonNegativeInteger(value.discoveryHighSeq, 'discoveryHighSeq'),
-    discoveryOffset: value.discoveryOffset === undefined
-      ? 0
-      : parseNonNegativeInteger(value.discoveryOffset, 'discoveryOffset'),
+    discoveryHighSeq:
+      value.discoveryHighSeq === undefined
+        ? (parseCursor(value.discoveredThrough, 'discoveredThrough')?.mutationSeqAtPromote ?? 0)
+        : parseNonNegativeInteger(value.discoveryHighSeq, 'discoveryHighSeq'),
+    discoveryOffset:
+      value.discoveryOffset === undefined ? 0 : parseNonNegativeInteger(value.discoveryOffset, 'discoveryOffset'),
     lastRunDay: parseOptionalString(value.lastRunDay, 'lastRunDay'),
     lastAttemptedThrough: parseCursor(value.lastAttemptedThrough, 'lastAttemptedThrough'),
     retryNotBefore: parseOptionalString(value.retryNotBefore, 'retryNotBefore'),
     activeClaim: parseActiveClaim(value.activeClaim),
     pendingDiscoveries: parsePendingDiscoveries(value.pendingDiscoveries),
-    consecutiveFailures: value.consecutiveFailures === undefined
-      ? 0
-      : parseNonNegativeInteger(value.consecutiveFailures, 'consecutiveFailures'),
-    initialized: value.initialized === true || (typeof value.migrationVersion === 'number' && value.migrationVersion >= 1),
+    consecutiveFailures:
+      value.consecutiveFailures === undefined
+        ? 0
+        : parseNonNegativeInteger(value.consecutiveFailures, 'consecutiveFailures'),
+    initialized:
+      value.initialized === true || (typeof value.migrationVersion === 'number' && value.migrationVersion >= 1),
   };
 }
 
 export function curateStatePath(target: CurateStateTarget): string {
-  return typeof target === 'string'
-    ? join(target, CURATE_STATE_FILE)
-    : target.curateStatePath();
+  return typeof target === 'string' ? join(target, CURATE_STATE_FILE) : target.curateStatePath();
 }
 
 function sortedNoteNames(kb: Pick<KbRuntime, 'notesDir'>): string[] {
@@ -300,8 +307,8 @@ export function applyRecordCurateFailure(
     };
   }
 
-  const sameAttempt = state.lastAttemptedThrough !== null
-    && compareCursor(state.lastAttemptedThrough, attemptedThrough) === 0;
+  const sameAttempt =
+    state.lastAttemptedThrough !== null && compareCursor(state.lastAttemptedThrough, attemptedThrough) === 0;
   const priorFailures = sameAttempt ? state.consecutiveFailures : 0;
 
   return {
@@ -328,11 +335,7 @@ export function applyClearCurateRetryState(state: CurateState): CurateState | nu
   };
 }
 
-export function applyRecordDiscoveryAttempt(
-  state: CurateState,
-  highSeq: number,
-  nextOffset: number,
-): CurateState {
+export function applyRecordDiscoveryAttempt(state: CurateState, highSeq: number, nextOffset: number): CurateState {
   return {
     ...state,
     discoveryHighSeq: Math.max(state.discoveryHighSeq, highSeq),
@@ -340,14 +343,10 @@ export function applyRecordDiscoveryAttempt(
   };
 }
 
-export function applyAddPendingDiscovery(
-  state: CurateState,
-  entry: PendingDiscovery,
-): CurateState | null {
-  const alreadyPending = state.pendingDiscoveries.some((pending) => (
-    pending.principle === entry.principle
-    && pending.statement === entry.statement
-  ));
+export function applyAddPendingDiscovery(state: CurateState, entry: PendingDiscovery): CurateState | null {
+  const alreadyPending = state.pendingDiscoveries.some(
+    (pending) => pending.principle === entry.principle && pending.statement === entry.statement,
+  );
   if (alreadyPending) {
     return null;
   }
@@ -358,10 +357,7 @@ export function applyAddPendingDiscovery(
   };
 }
 
-export function applyRemovePendingDiscovery(
-  state: CurateState,
-  entry: PendingDiscovery,
-): CurateState | null {
+export function applyRemovePendingDiscovery(state: CurateState, entry: PendingDiscovery): CurateState | null {
   const nextPendingDiscoveries = state.pendingDiscoveries.filter((pending) => !samePendingDiscovery(pending, entry));
   if (nextPendingDiscoveries.length === state.pendingDiscoveries.length) {
     return null;
@@ -397,7 +393,11 @@ export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promis
     const legacyPath = join(kb.markdownRoot, CURATE_STATE_FILE);
     const currentPath = kb.curateStatePath();
     if (legacyPath !== currentPath && existsSync(legacyPath) && !existsSync(currentPath)) {
-      try { renameSync(legacyPath, currentPath); } catch { /* best-effort */ }
+      try {
+        renameSync(legacyPath, currentPath);
+      } catch {
+        /* best-effort */
+      }
     }
 
     const state = readCurateState(kb);
@@ -434,10 +434,7 @@ export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promis
     let highestExistingMutationSeq = 0;
     for (const scannedNote of scannedNotes) {
       if (scannedNote.frontmatter.mutationSeqAtPromote !== undefined) {
-        highestExistingMutationSeq = Math.max(
-          highestExistingMutationSeq,
-          scannedNote.frontmatter.mutationSeqAtPromote,
-        );
+        highestExistingMutationSeq = Math.max(highestExistingMutationSeq, scannedNote.frontmatter.mutationSeqAtPromote);
       }
     }
 
@@ -455,20 +452,13 @@ export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promis
           ...scannedNote.frontmatter,
           mutationSeqAtPromote,
         };
-        writeFileAtomic(
-          scannedNote.path,
-          replaceFrontmatter(scannedNote.content, scannedNote.frontmatter),
-        );
+        writeFileAtomic(scannedNote.path, replaceFrontmatter(scannedNote.content, scannedNote.frontmatter));
       }
 
       highestAssignedMutationSeq = Math.max(highestAssignedMutationSeq, mutationSeqAtPromote);
-      indexChanged = syncIndexNote(
-        scannedNote.note,
-        scannedNote.title,
-        scannedNote.frontmatter,
-        mutationSeqAtPromote,
-        nextIndex,
-      ) || indexChanged;
+      indexChanged =
+        syncIndexNote(scannedNote.note, scannedNote.title, scannedNote.frontmatter, mutationSeqAtPromote, nextIndex) ||
+        indexChanged;
     }
 
     if (indexChanged) {

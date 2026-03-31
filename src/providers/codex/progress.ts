@@ -21,8 +21,9 @@ export function extractProgressMessage(event: CodexThreadEvent, projectRoot?: st
     case 'command_execution': {
       if (typeof item.command !== 'string') return null;
       const stripped = stripShellWrapper(item.command);
-      return matchCommandPattern(stripped, projectRoot)
-        ?? formatToolProgress('Bash', { command: stripped }, projectRoot);
+      return (
+        matchCommandPattern(stripped, projectRoot) ?? formatToolProgress('Bash', { command: stripped }, projectRoot)
+      );
     }
     case 'file_change': {
       const firstChange = Array.isArray(item.changes) ? item.changes[0] : undefined;

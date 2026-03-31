@@ -76,9 +76,7 @@ export function cloneKbIndex(index: KbIndex | null): KbIndex {
   }
 
   return {
-    notes: Object.fromEntries(
-      Object.entries(index.notes).map(([note, meta]) => [note, buildNoteIndexEntry(meta)]),
-    ),
+    notes: Object.fromEntries(Object.entries(index.notes).map(([note, meta]) => [note, buildNoteIndexEntry(meta)])),
     principles: { ...index.principles },
   };
 }
@@ -99,10 +97,7 @@ export function commitIndexUpdate(
   markTextIndexStale(rt.invalidateTextSnapshot, reason);
 }
 
-export function markTextIndexStale(
-  invalidate: (reason: string) => KbIndexState,
-  reason: string,
-): void {
+export function markTextIndexStale(invalidate: (reason: string) => KbIndexState, reason: string): void {
   try {
     invalidate(reason);
   } catch (error: unknown) {

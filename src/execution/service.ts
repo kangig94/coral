@@ -284,7 +284,8 @@ export class ExecutionService {
       return rejectLaunch('busy', QUEUE_FULL_MESSAGE);
     }
 
-    const initialPhase: Extract<JobPhase, 'queued' | 'launching'> = admission.type === 'queued' ? 'queued' : 'launching';
+    const initialPhase: Extract<JobPhase, 'queued' | 'launching'> =
+      admission.type === 'queued' ? 'queued' : 'launching';
 
     try {
       await this.claimJobAtomic(session, jobId, providerName, projectRoot, { expectedVersion, initialPhase });
@@ -410,10 +411,11 @@ export class ExecutionService {
 
     const busyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
     const session = this.sessionManager.get(providerName, input.sessionId);
-    if (!session) return rejectLaunch(
-      'session_not_found',
-      `Session not found: ${input.sessionId}. Use exec to start a new session.`,
-    );
+    if (!session)
+      return rejectLaunch(
+        'session_not_found',
+        `Session not found: ${input.sessionId}. Use exec to start a new session.`,
+      );
     if (session.state === 'non_resumable') {
       return rejectLaunch(
         'non_resumable',
@@ -471,10 +473,11 @@ export class ExecutionService {
 
     const sourceBusyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
     const sourceSession = this.sessionManager.get(providerName, input.sessionId);
-    if (!sourceSession) return rejectLaunch(
-      'session_not_found',
-      `Session not found: ${input.sessionId}. Use exec to start a new session.`,
-    );
+    if (!sourceSession)
+      return rejectLaunch(
+        'session_not_found',
+        `Session not found: ${input.sessionId}. Use exec to start a new session.`,
+      );
     if (sourceSession.activeJobId) {
       return rejectLaunch('session_busy', sourceBusyMessage);
     }
@@ -594,7 +597,13 @@ export class ExecutionService {
   ): Promise<LaunchDecision> {
     if (!getNewProvider(providerName)) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
-    const session = this.sessionManager.allocate(providerName, `workflow-${Date.now()}`, 'workflow', ctx.projectRoot, ctx.projectRoot);
+    const session = this.sessionManager.allocate(
+      providerName,
+      `workflow-${Date.now()}`,
+      'workflow',
+      ctx.projectRoot,
+      ctx.projectRoot,
+    );
     // Workflow jobs bypass the admission queue: the workflow coordinator itself
     // does not occupy a child-process slot — only the individual atoms it launches do.
     const jobId = this.abortRegistry.register();
@@ -689,10 +698,7 @@ export class ExecutionService {
    * rebinds namespace, and registers abort with a PID-kill callback.
    * Returns a cleanup handle for the PID poller to call when the job terminates.
    */
-  adoptRunningJob(
-    launchRecord: PersistedLaunchRecord,
-    runtimeRecord: PersistedRuntimeRecord,
-  ): { cleanup: () => void } {
+  adoptRunningJob(launchRecord: PersistedLaunchRecord, runtimeRecord: PersistedRuntimeRecord): { cleanup: () => void } {
     const pool = (launchRecord.pool || 'default') as LaunchPool;
     const jobId = launchRecord.jobId;
 
@@ -709,7 +715,11 @@ export class ExecutionService {
     // Register abort with PID-kill delegate
     const pid = runtimeRecord.pid;
     this.abortRegistry.register(jobId, () => {
-      try { process.kill(pid, 'SIGTERM'); } catch { /* already dead */ }
+      try {
+        process.kill(pid, 'SIGTERM');
+      } catch {
+        /* already dead */
+      }
     });
 
     // Return cleanup handle for the PID poller
@@ -838,11 +848,7 @@ export class ExecutionService {
         }
 
         const currentStatus = this.progressStore.readStatus(jobId);
-        if (
-          pending.has(jobId)
-          && currentStatus
-          && isTerminalPhase(currentStatus.phase)
-        ) {
+        if (pending.has(jobId) && currentStatus && isTerminalPhase(currentStatus.phase)) {
           const remainingJobIds = jobIds.filter((id) => id !== jobId && pending.has(id));
           yield {
             type: 'terminal',
@@ -1097,10 +1103,7 @@ export class ExecutionService {
     this.progressStore.updatePhase(jobId, 'launching');
   }
 
-  private async waitForQueuedPermit(
-    admission: QueuedHandle,
-    signal: AbortSignal,
-  ): Promise<'granted' | 'aborted'> {
+  private async waitForQueuedPermit(admission: QueuedHandle, signal: AbortSignal): Promise<'granted' | 'aborted'> {
     return new Promise<'granted' | 'aborted'>((resolve, reject) => {
       let settled = false;
 
@@ -1122,7 +1125,8 @@ export class ExecutionService {
       }
 
       signal.addEventListener('abort', onAbort, { once: true });
-      admission.waitForPermit()
+      admission
+        .waitForPermit()
         .then(() => {
           if (settled) return;
           settled = true;
@@ -1197,25 +1201,18 @@ export class ExecutionService {
     const signal = this.abortRegistry.getSignal(jobId);
     if (!signal) return;
 
-    void executePipeline(
-      ast,
-      input.init_prompt,
-      providerName,
-      this,
-      ctx,
-      {
-        atoms: input.atoms,
-        context: input.context,
-        workDir,
-        signal,
-        staleTimeoutMs: input.stale_timeout_seconds * 1000,
-        onProgress: (message) => {
-          this.progressStore.appendProgress(jobId, sessionId, message);
-        },
-        workflowJobId: jobId,
-        progressStore: this.progressStore,
+    void executePipeline(ast, input.init_prompt, providerName, this, ctx, {
+      atoms: input.atoms,
+      context: input.context,
+      workDir,
+      signal,
+      staleTimeoutMs: input.stale_timeout_seconds * 1000,
+      onProgress: (message) => {
+        this.progressStore.appendProgress(jobId, sessionId, message);
       },
-    )
+      workflowJobId: jobId,
+      progressStore: this.progressStore,
+    })
       .then((result: PipelineResult) => {
         const serialized = serializeWorkflowResult(result.stepDetails);
         this.finishWorkflowJob(
@@ -1239,16 +1236,16 @@ export class ExecutionService {
           const serialized = serializeWorkflowResult(stepDetails);
           const terminalResult: TerminalResult = aborted
             ? {
-              content: '',
-              aborted: true,
-              notice: message,
-              workflow: serialized.workflow,
-            }
+                content: '',
+                aborted: true,
+                notice: message,
+                workflow: serialized.workflow,
+              }
             : {
-              content: '',
-              notice: message,
-              workflow: serialized.workflow,
-            };
+                content: '',
+                notice: message,
+                workflow: serialized.workflow,
+              };
           this.finishWorkflowJob(sessionId, jobId, phase, terminalResult, serialized.markdown);
         } catch {
           const emptyResult: TerminalResult = aborted
@@ -1270,7 +1267,12 @@ export class ExecutionService {
     ast: PipelineAST,
     providerName: string,
     ctx: CallerContext,
-    options: { atoms?: Record<string, { instruction?: string }>; context?: string; workDir?: string; staleTimeoutMs?: number },
+    options: {
+      atoms?: Record<string, { instruction?: string }>;
+      context?: string;
+      workDir?: string;
+      staleTimeoutMs?: number;
+    },
   ): void {
     const checkpoint = this.progressStore.readWorkflowCheckpoint(jobId);
     if (!checkpoint) return;
@@ -1278,31 +1280,30 @@ export class ExecutionService {
     const signal = this.abortRegistry.getSignal(jobId);
     if (!signal) return;
 
-    void resumePipeline(
-      checkpoint,
-      ast,
-      providerName,
-      this,
-      ctx,
-      {
-        atoms: options.atoms,
-        context: options.context,
-        workDir: options.workDir,
-        signal,
-        staleTimeoutMs: options.staleTimeoutMs ?? 0,
-        workflowJobId: jobId,
-        progressStore: this.progressStore,
-        onProgress: (message) => {
-          this.progressStore.appendProgress(jobId, sessionId, message);
-        },
+    void resumePipeline(checkpoint, ast, providerName, this, ctx, {
+      atoms: options.atoms,
+      context: options.context,
+      workDir: options.workDir,
+      signal,
+      staleTimeoutMs: options.staleTimeoutMs ?? 0,
+      workflowJobId: jobId,
+      progressStore: this.progressStore,
+      onProgress: (message) => {
+        this.progressStore.appendProgress(jobId, sessionId, message);
       },
-    )
+    })
       .then((result: PipelineResult) => {
         const serialized = serializeWorkflowResult(result.stepDetails);
-        this.finishWorkflowJob(sessionId, jobId, 'completed', {
-          content: result.finalOutput,
-          workflow: serialized.workflow,
-        }, serialized.markdown);
+        this.finishWorkflowJob(
+          sessionId,
+          jobId,
+          'completed',
+          {
+            content: result.finalOutput,
+            workflow: serialized.workflow,
+          },
+          serialized.markdown,
+        );
       })
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);

@@ -150,7 +150,9 @@ export function parseAxisSpec(spec: string): ControversyAxis {
 
       const trimmedValue = rawValue.trim();
       if (trimmedValue.startsWith('"')) {
-        positions = parseScalarValue(trimmedValue).split(',').map((position) => position.trim());
+        positions = parseScalarValue(trimmedValue)
+          .split(',')
+          .map((position) => position.trim());
         collectingPositions = false;
         continue;
       }

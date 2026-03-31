@@ -33,9 +33,7 @@ async function recoverSessions(harness: DiscussHarness) {
   );
 }
 
-function resumeRecoveredSessions(
-  recovered: Awaited<ReturnType<typeof recoverSessions>>,
-): void {
+function resumeRecoveredSessions(recovered: Awaited<ReturnType<typeof recoverSessions>>): void {
   for (const session of recovered) {
     discussLoop.resumeLoop(session.ctx, session.sessionId, session.callerCtx);
   }
@@ -50,15 +48,39 @@ describe('Discuss faults and retry recovery', () => {
       sessionId: 'discuss-1',
       recover: true,
       buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.submitted', '2026-03-10T00:01:00.000Z', { agent: 'alpha', score: 80, thought: 'alpha' }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'bid.submitted', '2026-03-10T00:01:01.000Z', { agent: 'beta', score: 70, thought: 'beta' }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 3, 'bid.round.closed', '2026-03-10T00:01:02.000Z', {
-          allBids: { alpha: 80, beta: 70 },
-          effectiveBids: { alpha: 80, beta: 70 },
-          thoughts: { alpha: 'alpha', beta: 'beta' },
-          outcome: { winner: 'alpha', speaker_type: 'quota' as const },
-          stateMutations: { cold_start: false },
-        }),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'bid.submitted',
+          '2026-03-10T00:01:00.000Z',
+          { agent: 'alpha', score: 80, thought: 'alpha' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 2,
+          'bid.submitted',
+          '2026-03-10T00:01:01.000Z',
+          { agent: 'beta', score: 70, thought: 'beta' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 3,
+          'bid.round.closed',
+          '2026-03-10T00:01:02.000Z',
+          {
+            allBids: { alpha: 80, beta: 70 },
+            effectiveBids: { alpha: 80, beta: 70 },
+            thoughts: { alpha: 'alpha', beta: 'beta' },
+            outcome: { winner: 'alpha', speaker_type: 'quota' as const },
+            stateMutations: { cold_start: false },
+          },
+        ),
       ],
     });
 
@@ -81,7 +103,15 @@ describe('Discuss faults and retry recovery', () => {
       sessionId: 'discuss-1',
       recover: true,
       buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'bid.submitted', '2026-03-10T00:01:00.000Z', { agent: 'alpha', score: 88, thought: 'alpha' }),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'bid.submitted',
+          '2026-03-10T00:01:00.000Z',
+          { agent: 'alpha', score: 88, thought: 'alpha' },
+        ),
       ],
     });
 
@@ -108,19 +138,47 @@ describe('Discuss faults and retry recovery', () => {
         { name: 'user', persona: '# User', participation: 'observer' },
       ],
       buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'agent.run.bound', '2026-03-10T00:01:00.000Z', { agent: 'alpha', executionSessionId: 'exec-alpha' }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'agent.job.started', '2026-03-10T00:01:01.000Z', { agent: 'alpha', jobId: 'job-1', purpose: 'bid', attempt: 1 }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 3, 'agent.job.finished', '2026-03-10T00:01:02.000Z', { agent: 'alpha', jobId: 'job-1', outcome: 'retryable_parse_error', attempt: 1 }),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'agent.run.bound',
+          '2026-03-10T00:01:00.000Z',
+          { agent: 'alpha', executionSessionId: 'exec-alpha' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 2,
+          'agent.job.started',
+          '2026-03-10T00:01:01.000Z',
+          { agent: 'alpha', jobId: 'job-1', purpose: 'bid', attempt: 1 },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 3,
+          'agent.job.finished',
+          '2026-03-10T00:01:02.000Z',
+          { agent: 'alpha', jobId: 'job-1', outcome: 'retryable_parse_error', attempt: 1 },
+        ),
       ],
     });
 
     await discussSubflows.collectBids(harness.context, 'discuss-1', harness.ctx);
 
     const snapshot = harness.store.load('discuss-1');
-    expect(resume).toHaveBeenCalledWith('codex', expect.objectContaining({
-      sessionId: 'exec-alpha',
-      pool: 'discuss',
-    }), harness.ctx);
+    expect(resume).toHaveBeenCalledWith(
+      'codex',
+      expect.objectContaining({
+        sessionId: 'exec-alpha',
+        pool: 'discuss',
+      }),
+      harness.ctx,
+    );
     expect(snapshot?.state.current_bids).toEqual({ alpha: 66, user: null });
     expect(snapshot?.runtime.agentRuns.alpha.currentAttempt).toBe(2);
     expect(snapshot?.runtime.agentRuns.alpha.lastAttemptOutcome).toBe('completed');
@@ -146,8 +204,24 @@ describe('Discuss faults and retry recovery', () => {
         { name: 'user', persona: '# User', participation: 'observer' },
       ],
       buildTail: (snapshot) => [
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 1, 'agent.run.bound', '2026-03-10T00:01:00.000Z', { agent: 'alpha', executionSessionId: 'exec-alpha' }),
-        makeEvent(snapshot.sessionId, harness.projectRoot, snapshot.state.topic, snapshot.lastAppliedSeq + 2, 'agent.job.started', '2026-03-10T00:01:01.000Z', { agent: 'alpha', jobId: 'job-missing', purpose: 'bid', attempt: 1 }),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'agent.run.bound',
+          '2026-03-10T00:01:00.000Z',
+          { agent: 'alpha', executionSessionId: 'exec-alpha' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 2,
+          'agent.job.started',
+          '2026-03-10T00:01:01.000Z',
+          { agent: 'alpha', jobId: 'job-missing', purpose: 'bid', attempt: 1 },
+        ),
       ],
     });
     vi.useFakeTimers();
@@ -157,10 +231,14 @@ describe('Discuss faults and retry recovery', () => {
     await vi.runAllTimersAsync();
 
     const snapshot = harness.store.load('discuss-1');
-    expect(resume).toHaveBeenCalledWith('codex', expect.objectContaining({
-      sessionId: 'exec-alpha',
-      pool: 'discuss',
-    }), harness.ctx);
+    expect(resume).toHaveBeenCalledWith(
+      'codex',
+      expect.objectContaining({
+        sessionId: 'exec-alpha',
+        pool: 'discuss',
+      }),
+      harness.ctx,
+    );
     expect(snapshot?.state.current_bids).toEqual({ alpha: 58, user: null });
     expect(snapshot?.runtime.agentRuns.alpha.currentAttempt).toBe(2);
     expect(snapshot?.runtime.agentRuns.alpha.lastAttemptOutcome).toBe('completed');

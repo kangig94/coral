@@ -1,10 +1,7 @@
 import { readdirSync, type Dirent } from 'node:fs';
 import { basename, join } from 'node:path';
 import { sessionBase } from '../infra/paths.js';
-import {
-  readSessionEntryLenient,
-  type LenientSessionEntry,
-} from '../client/readers.js';
+import { readSessionEntryLenient, type LenientSessionEntry } from '../client/readers.js';
 import { belongsToNamespace } from '../shared/types.js';
 import type { ProgressStore } from './progress-store.js';
 import { SessionManager } from './session-manager.js';

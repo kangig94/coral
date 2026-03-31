@@ -1,14 +1,15 @@
-import { makeEvent, type PersistedDiscussAgentRun, type SessionCreatedAgentExecutionConfig } from '../../discuss/events.js';
+import {
+  makeEvent,
+  type PersistedDiscussAgentRun,
+  type SessionCreatedAgentExecutionConfig,
+} from '../../discuss/events.js';
 import type { PersistedDiscussSnapshot } from '../../discuss/events.js';
 import { nowIsoString } from '../../discuss/util/time.js';
 import { isLivePhase } from '../../shared/types.js';
 import { errorMessage } from '../../shared/mcp-utils.js';
 import { readStatusRecord } from '../../client/readers.js';
 import type { CallerContext } from '../request-context.js';
-import {
-  appendRuntimeEvents,
-  loadAttachedOrPersistedSnapshot,
-} from './persistence.js';
+import { appendRuntimeEvents, loadAttachedOrPersistedSnapshot } from './persistence.js';
 import type { AgentConfig, DiscussContext } from './context.js';
 
 export const DEFAULT_DISCUSS_PROVIDER = 'claude';
@@ -100,33 +101,29 @@ export function normalizeModel(model: string | undefined): string | undefined {
   return model;
 }
 
-export function buildAgentExecutionConfig(
-  agents: AgentConfig[],
-): Record<string, SessionCreatedAgentExecutionConfig> {
+export function buildAgentExecutionConfig(agents: AgentConfig[]): Record<string, SessionCreatedAgentExecutionConfig> {
   return Object.fromEntries(
     agents.map((agent) => {
       const isManualObserver =
-        (agent.participation ?? 'required') === 'observer'
-        && agent.provider === undefined
-        && agent.model === undefined;
+        (agent.participation ?? 'required') === 'observer' && agent.provider === undefined && agent.model === undefined;
 
       if (isManualObserver) {
         return [agent.name, { manual: true }];
       }
 
-      return [agent.name, {
-        manual: false,
-        provider: agent.provider ?? DEFAULT_DISCUSS_PROVIDER,
-        model: agent.model ?? '',
-      }];
+      return [
+        agent.name,
+        {
+          manual: false,
+          provider: agent.provider ?? DEFAULT_DISCUSS_PROVIDER,
+          model: agent.model ?? '',
+        },
+      ];
     }),
   ) as Record<string, SessionCreatedAgentExecutionConfig>;
 }
 
-export function nextAttemptForPurpose(
-  run: PersistedDiscussAgentRun | undefined,
-  purpose: string,
-): number {
+export function nextAttemptForPurpose(run: PersistedDiscussAgentRun | undefined, purpose: string): number {
   if (!run) {
     return 1;
   }
@@ -156,24 +153,21 @@ export function currentAgentRun(
   };
 }
 
-export function isManualParticipant(
-  snapshot: PersistedDiscussSnapshot,
-  agentName: string,
-): boolean {
-  return snapshot.state.agents[agentName]?.participation === 'observer'
-    && !(agentName in snapshot.runtime.agentRuns);
+export function isManualParticipant(snapshot: PersistedDiscussSnapshot, agentName: string): boolean {
+  return snapshot.state.agents[agentName]?.participation === 'observer' && !(agentName in snapshot.runtime.agentRuns);
 }
 
 export function hasPendingAutoBidders(snapshot: PersistedDiscussSnapshot): boolean {
-  return Object.entries(snapshot.state.current_bids).some(([agentName, score]) =>
-    score === null
-    && !snapshot.state.agents[agentName]?.banned
-    && !isManualParticipant(snapshot, agentName));
+  return Object.entries(snapshot.state.current_bids).some(
+    ([agentName, score]) =>
+      score === null && !snapshot.state.agents[agentName]?.banned && !isManualParticipant(snapshot, agentName),
+  );
 }
 
 export function hasActiveBidWork(snapshot: PersistedDiscussSnapshot): boolean {
-  return Object.values(snapshot.runtime.agentRuns).some((run) =>
-    run.currentJobId !== undefined && run.currentJobPurpose === PURPOSE_BID);
+  return Object.values(snapshot.runtime.agentRuns).some(
+    (run) => run.currentJobId !== undefined && run.currentJobPurpose === PURPOSE_BID,
+  );
 }
 
 function facilitatorRun(snapshot: PersistedDiscussSnapshot): FacilitatorRun | null {
@@ -195,10 +189,7 @@ function facilitatorRun(snapshot: PersistedDiscussSnapshot): FacilitatorRun | nu
   return null;
 }
 
-export async function recordJobFinished(
-  ctx: DiscussContext,
-  params: RecordJobFinishedParams,
-): Promise<void> {
+export async function recordJobFinished(ctx: DiscussContext, params: RecordJobFinishedParams): Promise<void> {
   const { sessionId, agentName, purpose, jobId, attempt, outcome } = params;
 
   await appendRuntimeEvents(ctx, sessionId, (current) => {
@@ -233,18 +224,7 @@ export async function executeAgentAttempt(
   ctx: DiscussContext,
   params: ExecuteAgentAttemptParams,
 ): Promise<AttemptResult> {
-  const {
-    agentName,
-    sessionId,
-    provider,
-    model,
-    prompt,
-    instruction,
-    cwd,
-    callerCtx,
-    purpose,
-    timeoutMs,
-  } = params;
+  const { agentName, sessionId, provider, model, prompt, instruction, cwd, callerCtx, purpose, timeoutMs } = params;
 
   const snapshot = loadAttachedOrPersistedSnapshot(ctx, sessionId);
   if (!snapshot) {
@@ -257,10 +237,7 @@ export async function executeAgentAttempt(
 
   let activeRun = currentAgentRun(snapshot, agentName, provider, model);
   let attempt = nextAttemptForPurpose(snapshot.runtime.agentRuns[agentName], purpose);
-  let activeJobId =
-    activeRun.currentJobPurpose === purpose
-      ? activeRun.currentJobId
-      : undefined;
+  let activeJobId = activeRun.currentJobPurpose === purpose ? activeRun.currentJobId : undefined;
 
   while (activeJobId) {
     const status = readStatusRecord(activeJobId);
@@ -331,33 +308,39 @@ export async function executeAgentAttempt(
 
     activeRun = currentAgentRun(refreshed, agentName, provider, model);
     attempt = nextAttemptForPurpose(refreshed.runtime.agentRuns[agentName], purpose);
-    activeJobId =
-      activeRun.currentJobPurpose === purpose
-        ? activeRun.currentJobId
-        : undefined;
+    activeJobId = activeRun.currentJobPurpose === purpose ? activeRun.currentJobId : undefined;
   }
 
   const executionSessionId = activeRun.executionSessionId;
-  const launch = executionSessionId === undefined
-    ? await ctx.service.start(provider, {
-      prompt,
-      model,
-      pool: 'discuss',
-      cwd,
-      bypassPermissions: true,
-      instruction: {
-        channel: 'system',
-        content: instruction,
-      },
-    }, callerCtx)
-    : await ctx.service.resume(provider, {
-      sessionId: executionSessionId,
-      prompt: `${instruction}\n\n---\n\n${prompt}`,
-      model,
-      pool: 'discuss',
-      cwd,
-      bypassPermissions: true,
-    }, callerCtx);
+  const launch =
+    executionSessionId === undefined
+      ? await ctx.service.start(
+          provider,
+          {
+            prompt,
+            model,
+            pool: 'discuss',
+            cwd,
+            bypassPermissions: true,
+            instruction: {
+              channel: 'system',
+              content: instruction,
+            },
+          },
+          callerCtx,
+        )
+      : await ctx.service.resume(
+          provider,
+          {
+            sessionId: executionSessionId,
+            prompt: `${instruction}\n\n---\n\n${prompt}`,
+            model,
+            pool: 'discuss',
+            cwd,
+            bypassPermissions: true,
+          },
+          callerCtx,
+        );
 
   if (launch.status === 'rejected') {
     return {
@@ -392,9 +375,11 @@ export async function executeAgentAttempt(
 
   await appendRuntimeEvents(ctx, sessionId, (current) => {
     const latestRun = current.runtime.agentRuns[agentName];
-    if (latestRun?.currentJobId === launch.job
-      && latestRun.currentJobPurpose === purpose
-      && latestRun.currentAttempt === attempt) {
+    if (
+      latestRun?.currentJobId === launch.job &&
+      latestRun.currentJobPurpose === purpose &&
+      latestRun.currentAttempt === attempt
+    ) {
       return [];
     }
 

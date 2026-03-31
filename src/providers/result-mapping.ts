@@ -17,7 +17,9 @@ export interface RawExecResult {
  * Session policy (conversationRef, nonResumable) and provider-specific fields
  * (exitCode/errors/warnings vs usage) remain in each adapter.
  */
-export function mapProviderResultBase(raw: RawExecResult): Pick<ProviderResult, 'content' | 'model' | 'durationMs' | 'aborted'> {
+export function mapProviderResultBase(
+  raw: RawExecResult,
+): Pick<ProviderResult, 'content' | 'model' | 'durationMs' | 'aborted'> {
   return {
     content: raw.response,
     model: raw.model,

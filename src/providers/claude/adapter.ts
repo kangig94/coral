@@ -18,7 +18,13 @@ import { extractClaudeProgressMessage } from './progress.js';
 import { readAppendedLines } from '../../shared/file-tail.js';
 import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
 import { mapProviderResultBase } from '../result-mapping.js';
-import { makeOnEvent, requireConversationRef, type Provider, type ProviderRecoveryContract, type ProviderRuntime } from '../types.js';
+import {
+  makeOnEvent,
+  requireConversationRef,
+  type Provider,
+  type ProviderRecoveryContract,
+  type ProviderRuntime,
+} from '../types.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 import type { ClaudeExecResult, ClaudeStreamEvent } from './types.js';
 

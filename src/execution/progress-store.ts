@@ -146,7 +146,6 @@ export class ProgressStore {
     return count;
   }
 
-
   listJobIds(): string[] {
     return [...this.knownJobIds];
   }
@@ -183,7 +182,16 @@ export class ProgressStore {
 
   /** Create the job directory and write initial status.json. */
   initJob(opts: InitJobOptions): void {
-    const { jobId, sessionId, provider, projectRoot, backendNamespace, bundleHash, jobKind, initialPhase = 'launching' } = opts;
+    const {
+      jobId,
+      sessionId,
+      provider,
+      projectRoot,
+      backendNamespace,
+      bundleHash,
+      jobKind,
+      initialPhase = 'launching',
+    } = opts;
     const dir = this.jobDir(jobId);
     mkdirSync(dir, { recursive: true });
     const record: PersistedStatusRecord = {

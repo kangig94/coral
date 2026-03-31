@@ -4,31 +4,14 @@ declare const __VERSION__: string;
 import { existsSync, readFileSync } from 'node:fs';
 import { Command, Option } from 'commander';
 
-import {
-  BackendClient,
-  BackendToolHttpError,
-  type CallerContext,
-} from '../client/http-client.js';
+import { BackendClient, BackendToolHttpError, type CallerContext } from '../client/http-client.js';
 import { assertOwnerId, collectCoralEnv } from '../shared/mcp-utils.js';
 import { ensureBackend } from '../client/backend-lifecycle.js';
-import {
-  getBackendStatusFull,
-  shutdownBackend,
-  streamWait,
-  type WaitCursorRef,
-} from '../bridge/backend-client.js';
+import { getBackendStatusFull, shutdownBackend, streamWait, type WaitCursorRef } from '../bridge/backend-client.js';
 import type { AbortResult } from '../execution/abort-registry.js';
 import type { ListResult } from '../execution/service.js';
-import {
-  discussParticipateSchema,
-  discussSeedSchema,
-  discussStartSchema,
-} from '../discuss/schemas.js';
-import type {
-  BidResult,
-  PersonaSeedOutput,
-  SpeechResult,
-} from '../discuss/types.js';
+import { discussParticipateSchema, discussSeedSchema, discussStartSchema } from '../discuss/schemas.js';
+import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/types.js';
 import { MAX_INLINE } from '../shared/schemas.js';
 import type { LaunchDecision, WaitStreamEvent } from '../shared/types.js';
 import {
@@ -64,13 +47,7 @@ import {
   type WaitRenderContext,
 } from './format.js';
 import { launchAndFollow } from './follow.js';
-import {
-  isJsonObject,
-  parseAgentSpec,
-  parseAxisSpec,
-  parseInputJson,
-  type JsonObject,
-} from './parse.js';
+import { isJsonObject, parseAgentSpec, parseAxisSpec, parseInputJson, type JsonObject } from './parse.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { getAllNewProviders } from '../providers/registry.js';
 
@@ -202,10 +179,10 @@ function makeClient(projectRoot: string): BackendClient {
 
 function normalizeResult(result: unknown): { output: unknown; isError: boolean } {
   if (
-    isJsonObject(result)
-    && typeof result.isError === 'boolean'
-    && Array.isArray(result.content)
-    && result.content.length > 0
+    isJsonObject(result) &&
+    typeof result.isError === 'boolean' &&
+    Array.isArray(result.content) &&
+    result.content.length > 0
   ) {
     const first = result.content[0];
     if (isJsonObject(first) && typeof first.text === 'string') {
@@ -226,22 +203,14 @@ function normalizeResult(result: unknown): { output: unknown; isError: boolean }
 }
 
 export function getOutputFormat(command: Command): 'text' | 'json' {
-  return command.optsWithGlobals<{ outputFormat?: string }>().outputFormat === 'json'
-    ? 'json'
-    : 'text';
+  return command.optsWithGlobals<{ outputFormat?: string }>().outputFormat === 'json' ? 'json' : 'text';
 }
 
 function getCliDisplayPrefix(argv: readonly string[] = process.argv): string {
-  return argv[0]?.match(/node(\.exe)?$/)
-    ? `node "${argv[1]}"`
-    : (argv[0] ?? 'coral-cli');
+  return argv[0]?.match(/node(\.exe)?$/) ? `node "${argv[1]}"` : (argv[0] ?? 'coral-cli');
 }
 
-function emit(
-  result: unknown,
-  outputFormat: 'text' | 'json',
-  textFormatter?: (data: unknown) => string,
-): void {
+function emit(result: unknown, outputFormat: 'text' | 'json', textFormatter?: (data: unknown) => string): void {
   const { output, isError } = normalizeResult(result);
 
   if (isError) {
@@ -251,9 +220,7 @@ function emit(
     return;
   }
 
-  const text = outputFormat === 'text' && textFormatter !== undefined
-    ? textFormatter(output)
-    : JSON.stringify(output);
+  const text = outputFormat === 'text' && textFormatter !== undefined ? textFormatter(output) : JSON.stringify(output);
   process.stdout.write(text + '\n');
 }
 
@@ -283,7 +250,10 @@ function parseIntegerFlag(flagName: string, value: string): number {
 }
 
 function parseJobIds(raw: string): string[] {
-  const jobIds = raw.split(',').map((entry) => entry.trim()).filter(Boolean);
+  const jobIds = raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
   if (jobIds.length === 0) {
     throw new Error('--jobs must include at least one job ID');
   }
@@ -301,21 +271,14 @@ export function isLaunchDecision(value: unknown): value is LaunchDecision {
   }
 
   if (value.status === 'rejected') {
-    return value.phase === 'preflight'
-      && typeof value.code === 'string'
-      && typeof value.message === 'string';
+    return value.phase === 'preflight' && typeof value.code === 'string' && typeof value.message === 'string';
   }
 
   return false;
 }
 
-export function emitLaunchDecision(
-  decision: LaunchDecision,
-  outputFormat: 'text' | 'json',
-): void {
-  const text = outputFormat === 'text'
-    ? formatLaunchDecision(decision)
-    : JSON.stringify(decision);
+export function emitLaunchDecision(decision: LaunchDecision, outputFormat: 'text' | 'json'): void {
+  const text = outputFormat === 'text' ? formatLaunchDecision(decision) : JSON.stringify(decision);
   process.stdout.write(text + '\n');
 }
 
@@ -323,9 +286,7 @@ export function emitRejectedLaunchDecision(
   decision: Extract<LaunchDecision, { status: 'rejected' }>,
   outputFormat: 'text' | 'json',
 ): void {
-  const text = outputFormat === 'text'
-    ? formatLaunchDecision(decision)
-    : JSON.stringify(decision);
+  const text = outputFormat === 'text' ? formatLaunchDecision(decision) : JSON.stringify(decision);
   process.stderr.write(text + '\n');
   process.exitCode = 1;
 }
@@ -376,11 +337,7 @@ type WaitOutputRecord = {
   event: unknown;
 };
 
-function shapeWaitOutputRecord(
-  event: WaitStreamEvent,
-  cursor: string | null,
-  embed: boolean,
-): WaitOutputRecord {
+function shapeWaitOutputRecord(event: WaitStreamEvent, cursor: string | null, embed: boolean): WaitOutputRecord {
   if (event.type !== 'terminal') {
     return { cursor, event };
   }
@@ -433,9 +390,7 @@ function shapeWaitOutputRecord(
     },
   };
 
-  return JSON.stringify(embeddedRecord).length <= MAX_INLINE
-    ? embeddedRecord
-    : pathOnlyRecord;
+  return JSON.stringify(embeddedRecord).length <= MAX_INLINE ? embeddedRecord : pathOnlyRecord;
 }
 
 export function normalizeProviderArgv(argv: readonly string[]): string[] {
@@ -459,9 +414,7 @@ export function normalizeProviderArgv(argv: readonly string[]): string[] {
 
 function registerProviderCommands(program: Command): void {
   for (const providerName of getProviderNames()) {
-    const provider = program
-      .command(providerName)
-      .description(`${providerName} provider operations`);
+    const provider = program.command(providerName).description(`${providerName} provider operations`);
 
     const execCommand = provider.command('exec');
     execCommand
@@ -511,19 +464,17 @@ function registerProviderCommands(program: Command): void {
       });
 
     const listCommand = provider.command('list');
-    listCommand
-      .description('List sessions')
-      .action(async () => {
-        const outputFormat = getOutputFormat(listCommand);
+    listCommand.description('List sessions').action(async () => {
+      const outputFormat = getOutputFormat(listCommand);
 
-        try {
-          const client = makeClient(process.cwd());
-          const result = await client.providerList(providerName);
-          emit(result, outputFormat, (data) => formatProviderList(data as ListResult));
-        } catch (error) {
-          emitError(error, outputFormat);
-        }
-      });
+      try {
+        const client = makeClient(process.cwd());
+        const result = await client.providerList(providerName);
+        emit(result, outputFormat, (data) => formatProviderList(data as ListResult));
+      } catch (error) {
+        emitError(error, outputFormat);
+      }
+    });
 
     const coralCommand = provider.command('coral');
     coralCommand
@@ -559,11 +510,7 @@ export function buildProgram(): Command {
     .name('coral-cli')
     .version(typeof __VERSION__ === 'string' ? __VERSION__ : '0.0.0')
     .description('Coral CLI — invoke providers, monitor jobs, and manage discuss sessions');
-  program.addOption(
-    new Option('--output-format <format>', 'Output format')
-      .choices(['text', 'json'])
-      .default('text'),
-  );
+  program.addOption(new Option('--output-format <format>', 'Output format').choices(['text', 'json']).default('text'));
 
   registerProviderCommands(program);
 
@@ -664,11 +611,7 @@ export function buildProgram(): Command {
 
       try {
         const base: JsonObject = await parseInputJson(opts.inputJson);
-        const {
-          expression: baseExpression,
-          init_prompt: baseInitPrompt,
-          ...basePayload
-        } = base;
+        const { expression: baseExpression, init_prompt: baseInitPrompt, ...basePayload } = base;
         const expression = opts.expression ?? (typeof baseExpression === 'string' ? baseExpression : undefined);
         const initPrompt = opts.initPrompt ?? (typeof baseInitPrompt === 'string' ? baseInitPrompt : undefined);
 
@@ -703,42 +646,36 @@ export function buildProgram(): Command {
   const backend = program.command('backend').description('Backend daemon control');
 
   const backendStatusCommand = backend.command('status');
-  backendStatusCommand
-    .description('Show backend daemon status')
-    .action(async () => {
-      const outputFormat = getOutputFormat(backendStatusCommand);
+  backendStatusCommand.description('Show backend daemon status').action(async () => {
+    const outputFormat = getOutputFormat(backendStatusCommand);
 
-      try {
-        const status = await getBackendStatusFull(pluginRoot);
-        process.stdout.write(
-          (outputFormat === 'text' ? formatBackendStatus(status) : JSON.stringify(status)) + '\n',
-        );
-      } catch (error) {
-        emitError(error, outputFormat);
-      }
-    });
+    try {
+      const status = await getBackendStatusFull(pluginRoot);
+      process.stdout.write((outputFormat === 'text' ? formatBackendStatus(status) : JSON.stringify(status)) + '\n');
+    } catch (error) {
+      emitError(error, outputFormat);
+    }
+  });
 
   const backendShutdownCommand = backend.command('shutdown');
-  backendShutdownCommand
-    .description('Gracefully shut down backend daemon')
-    .action(async () => {
-      const outputFormat = getOutputFormat(backendShutdownCommand);
+  backendShutdownCommand.description('Gracefully shut down backend daemon').action(async () => {
+    const outputFormat = getOutputFormat(backendShutdownCommand);
 
-      try {
-        const result = await shutdownBackend(pluginRoot);
-        const text = outputFormat === 'text' ? formatShutdown(result) : JSON.stringify(result);
+    try {
+      const result = await shutdownBackend(pluginRoot);
+      const text = outputFormat === 'text' ? formatShutdown(result) : JSON.stringify(result);
 
-        if (result.ok) {
-          process.stdout.write(text + '\n');
-          return;
-        }
-
-        process.stderr.write(text + '\n');
-        process.exitCode = 1;
-      } catch (error) {
-        emitError(error, outputFormat);
+      if (result.ok) {
+        process.stdout.write(text + '\n');
+        return;
       }
-    });
+
+      process.stderr.write(text + '\n');
+      process.exitCode = 1;
+    } catch (error) {
+      emitError(error, outputFormat);
+    }
+  });
 
   const discuss = program.command('discuss').description('Discussion operations');
 
@@ -746,7 +683,10 @@ export function buildProgram(): Command {
   discussSeedCommand
     .description('Generate discussion personas')
     .option('--input-json <source>', 'JSON payload from stdin (use -)')
-    .option('--axis <spec>', 'Controversy axis spec (repeatable)', (value: string, previous: string[] | undefined) => [...(previous ?? []), value])
+    .option('--axis <spec>', 'Controversy axis spec (repeatable)', (value: string, previous: string[] | undefined) => [
+      ...(previous ?? []),
+      value,
+    ])
     .option('--count <n>', 'Number of personas')
     .option('--seed <n>', 'Random seed')
     .action(async (opts: DiscussSeedOptions) => {
@@ -763,9 +703,7 @@ export function buildProgram(): Command {
         };
         discussSeedSchema.parse(args);
         const client = makeClient(process.cwd());
-        const result = await client.discussSeed(
-          args as Parameters<BackendClient['discussSeed']>[0],
-        );
+        const result = await client.discussSeed(args as Parameters<BackendClient['discussSeed']>[0]);
         emit(result, outputFormat, (data) => formatPersonaSeed(data as PersonaSeedOutput));
       } catch (error) {
         emitError(error, outputFormat);
@@ -776,7 +714,10 @@ export function buildProgram(): Command {
   discussStartCommand
     .description('Start a discussion session')
     .option('--input-json <source>', 'JSON payload from stdin (use -)')
-    .option('--agent <spec>', 'Agent spec (repeatable)', (value: string, previous: string[] | undefined) => [...(previous ?? []), value])
+    .option('--agent <spec>', 'Agent spec (repeatable)', (value: string, previous: string[] | undefined) => [
+      ...(previous ?? []),
+      value,
+    ])
     .option('--topic <text>', 'Discussion topic')
     .action(async (opts: DiscussStartOptions) => {
       const outputFormat = getOutputFormat(discussStartCommand);
@@ -791,9 +732,7 @@ export function buildProgram(): Command {
         };
         discussStartSchema.parse(args);
         const client = makeClient(process.cwd());
-        const result = await client.discussStart(
-          args as Parameters<BackendClient['discussStart']>[0],
-        );
+        const result = await client.discussStart(args as Parameters<BackendClient['discussStart']>[0]);
         emit(result, outputFormat, (data) => formatDiscussStart(data as DiscussStartResult));
       } catch (error) {
         emitError(error, outputFormat);
@@ -842,9 +781,7 @@ export function buildProgram(): Command {
         };
         discussParticipateSchema.parse(args);
         const client = makeClient(process.cwd());
-        const result = await client.discussParticipate(
-          args as Parameters<BackendClient['discussParticipate']>[0],
-        );
+        const result = await client.discussParticipate(args as Parameters<BackendClient['discussParticipate']>[0]);
         emit(result, outputFormat, (data) => formatDiscussParticipate(data as BidResult | SpeechResult));
       } catch (error) {
         emitError(error, outputFormat);
@@ -914,8 +851,7 @@ export function buildProgram(): Command {
       }
     });
 
-  const kbMemoCommand = kb.command('memo')
-    .description('Manage project memos');
+  const kbMemoCommand = kb.command('memo').description('Manage project memos');
 
   const kbMemoWriteCommand = kbMemoCommand.command('write');
   kbMemoWriteCommand
@@ -928,9 +864,8 @@ export function buildProgram(): Command {
       const outputFormat = getOutputFormat(kbMemoWriteCommand);
 
       try {
-        const content = opts.contentFile !== undefined
-          ? readFileSync(resolveFilePath(opts.contentFile), 'utf8')
-          : opts.content;
+        const content =
+          opts.contentFile !== undefined ? readFileSync(resolveFilePath(opts.contentFile), 'utf8') : opts.content;
         if (content === undefined) {
           throw new Error('Either --content or --content-file is required');
         }
@@ -1024,9 +959,8 @@ export function buildProgram(): Command {
       const outputFormat = getOutputFormat(kbPromoteCommand);
 
       try {
-        const content = opts.contentFile !== undefined
-          ? readFileSync(resolveFilePath(opts.contentFile), 'utf8')
-          : undefined;
+        const content =
+          opts.contentFile !== undefined ? readFileSync(resolveFilePath(opts.contentFile), 'utf8') : undefined;
         const args = {
           ...(opts.memo !== undefined ? { memo: opts.memo } : {}),
           ...(opts.title !== undefined ? { title: opts.title } : {}),
@@ -1035,9 +969,7 @@ export function buildProgram(): Command {
           ...(opts.topic !== undefined ? { topic: opts.topic } : {}),
         };
         const client = makeClient(process.cwd());
-        const result = await client.kbPromote(
-          args as Parameters<BackendClient['kbPromote']>[0],
-        );
+        const result = await client.kbPromote(args as Parameters<BackendClient['kbPromote']>[0]);
         emit(result, outputFormat, formatKbPromote);
       } catch (error) {
         emitError(error, outputFormat);
@@ -1057,7 +989,9 @@ export function buildProgram(): Command {
         const args = {
           note,
           ...(opts.title !== undefined ? { title: opts.title } : {}),
-          ...(opts.contentFile !== undefined ? { content: readFileSync(resolveFilePath(opts.contentFile), 'utf8') } : {}),
+          ...(opts.contentFile !== undefined
+            ? { content: readFileSync(resolveFilePath(opts.contentFile), 'utf8') }
+            : {}),
         };
         const client = makeClient(process.cwd());
         const result = await client.kbUpdate(args);
@@ -1084,19 +1018,17 @@ export function buildProgram(): Command {
     });
 
   const kbReindexCommand = kb.command('reindex');
-  kbReindexCommand
-    .description('Rebuild the KB index')
-    .action(async () => {
-      const outputFormat = getOutputFormat(kbReindexCommand);
+  kbReindexCommand.description('Rebuild the KB index').action(async () => {
+    const outputFormat = getOutputFormat(kbReindexCommand);
 
-      try {
-        const client = makeClient(process.cwd());
-        const result = await client.kbReindex({});
-        emit(result, outputFormat, (data) => formatKbReindex(data, cliPrefix));
-      } catch (error) {
-        emitError(error, outputFormat);
-      }
-    });
+    try {
+      const client = makeClient(process.cwd());
+      const result = await client.kbReindex({});
+      emit(result, outputFormat, (data) => formatKbReindex(data, cliPrefix));
+    } catch (error) {
+      emitError(error, outputFormat);
+    }
+  });
 
   return program;
 }

@@ -22,7 +22,7 @@ function scanQuoteAware(text: string, visitor: ScanVisitor): string | null {
       continue;
     }
 
-    if ((char === '\'' || char === '"') && inQuote === null) {
+    if ((char === "'" || char === '"') && inQuote === null) {
       inQuote = char;
       if (visitor(char, index, inQuote)) return inQuote;
       continue;
@@ -120,7 +120,7 @@ function parseAtom(rawAtom: string): PipeAtom {
   const atomText = rawAtom.trim();
   if (!atomText) throw new Error('Expected atom');
 
-  if (atomText.startsWith('\'') || atomText.startsWith('"')) {
+  if (atomText.startsWith("'") || atomText.startsWith('"')) {
     return parsePromptLiteral(atomText);
   }
 
@@ -197,8 +197,7 @@ function parseStep(rawStep: string): PipeStep {
     return parseParallelStep(stepText);
   }
 
-  if (hasTopLevelComma(stepText))
-    throw new Error(`Parallel steps must be wrapped in parentheses: "${stepText}"`);
+  if (hasTopLevelComma(stepText)) throw new Error(`Parallel steps must be wrapped in parentheses: "${stepText}"`);
 
   return [parseAtom(stepText)];
 }

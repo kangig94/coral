@@ -21,10 +21,7 @@ export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
 
 export const coralOpSchema = z
   .string()
-  .regex(
-    /^coral:[a-z0-9][a-z0-9-]*$/,
-    'Op must be coral:<agent-name> (lowercase letters, digits, hyphens)',
-  );
+  .regex(/^coral:[a-z0-9][a-z0-9-]*$/, 'Op must be coral:<agent-name> (lowercase letters, digits, hyphens)');
 
 export const providerNameSchema = z
   .string()
@@ -81,9 +78,11 @@ export const sharedForkSchema = z.object({
 /**
  * Shared list input schema (no fields required).
  */
-export const sharedListSchema = z.object({
-  op: z.literal('list'),
-}).strict();
+export const sharedListSchema = z
+  .object({
+    op: z.literal('list'),
+  })
+  .strict();
 
 /** Maximum serialized emitted CallToolResult body length for optional content embedding. */
 export const MAX_INLINE = 10_000;
@@ -91,11 +90,13 @@ export const MAX_INLINE = 10_000;
 /**
  * Wait tool input schema — accepts a list of jobIds to monitor.
  */
-export const waitInputSchema = z.object({
-  jobs: z.array(z.string()).min(1, 'At least one job required'),
-  timeout_seconds: z.number().min(1).max(1200).optional(),
-  cursor: z.string().min(1).optional(),
-}).strict();
+export const waitInputSchema = z
+  .object({
+    jobs: z.array(z.string()).min(1, 'At least one job required'),
+    timeout_seconds: z.number().min(1).max(1200).optional(),
+    cursor: z.string().min(1).optional(),
+  })
+  .strict();
 
 export type WaitInput = z.infer<typeof waitInputSchema>;
 
@@ -112,8 +113,4 @@ export type AbortInput = z.infer<typeof abortInputSchema>;
  * Shared provider op union used by both codex and claude schemas.
  * Each provider re-exports with its own type alias.
  */
-export const providerOpSchema = z.discriminatedUnion('op', [
-  sharedExecSchema,
-  sharedListSchema,
-  sharedForkSchema,
-]);
+export const providerOpSchema = z.discriminatedUnion('op', [sharedExecSchema, sharedListSchema, sharedForkSchema]);

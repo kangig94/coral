@@ -24,7 +24,11 @@ export class RecoveryRegistry {
     if (runtimeRecord) {
       const pid = runtimeRecord.pid;
       this.abortHandlers.set(jobId, () => {
-        try { process.kill(pid, 'SIGTERM'); } catch { /* pid already exited */ }
+        try {
+          process.kill(pid, 'SIGTERM');
+        } catch {
+          /* pid already exited */
+        }
       });
     }
   }

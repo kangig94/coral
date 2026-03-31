@@ -34,7 +34,9 @@ describe('execution AbortRegistry', () => {
   it('register with onAbort fires callback when job is aborted', () => {
     const registry = new AbortRegistry();
     let called = false;
-    const jobId = registry.register(undefined, () => { called = true; });
+    const jobId = registry.register(undefined, () => {
+      called = true;
+    });
 
     expect(called).toBe(false);
     registry.abort([jobId]);
@@ -44,7 +46,9 @@ describe('execution AbortRegistry', () => {
   it('register with explicit jobId and onAbort uses the given ID', () => {
     const registry = new AbortRegistry();
     let called = false;
-    const jobId = registry.register('adopted-42', () => { called = true; });
+    const jobId = registry.register('adopted-42', () => {
+      called = true;
+    });
 
     expect(jobId).toBe('adopted-42');
     expect(registry.has('adopted-42')).toBe(true);

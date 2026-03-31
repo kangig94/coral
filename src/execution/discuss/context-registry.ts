@@ -40,16 +40,11 @@ export function getOrCreate(
   return context;
 }
 
-export function get(
-  registry: DiscussContextRegistry,
-  projectRoot: string,
-): DiscussContext | undefined {
+export function get(registry: DiscussContextRegistry, projectRoot: string): DiscussContext | undefined {
   return registry.contexts.get(projectRoot);
 }
 
-export function listAttachedSessions(
-  registry: DiscussContextRegistry,
-): AttachedDiscussSession[] {
+export function listAttachedSessions(registry: DiscussContextRegistry): AttachedDiscussSession[] {
   const sessions: AttachedDiscussSession[] = [];
   for (const [projectRoot, context] of registry.contexts.entries()) {
     for (const [sessionId, session] of context.sessions.entries()) {
@@ -71,19 +66,14 @@ export function hasRunningSessions(registry: DiscussContextRegistry): boolean {
 }
 
 function isWithinLiveSessionBoundary(session: LiveDiscussSession): boolean {
-  return session.snapshot.state.status !== 'ended'
-    || session.snapshot.runtime.controlPhase !== 'idle';
+  return session.snapshot.state.status !== 'ended' || session.snapshot.runtime.controlPhase !== 'idle';
 }
 
 /** Abort all live sessions and clear every context from the registry. */
 export async function clearAllDiscuss(
   registry: DiscussContextRegistry,
   mode: 'handoff' | 'hard',
-  persistAbortEnd: (
-    ctx: DiscussContext,
-    sessionId: string,
-    session: LiveDiscussSession,
-  ) => Promise<void>,
+  persistAbortEnd: (ctx: DiscussContext, sessionId: string, session: LiveDiscussSession) => Promise<void>,
 ): Promise<void> {
   for (const context of registry.contexts.values()) {
     for (const [sessionId, session] of context.sessions.entries()) {

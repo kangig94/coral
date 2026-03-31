@@ -14,17 +14,8 @@ import type { IdleTimer } from './idle-timer.js';
 import type { ProgressStore } from './progress-store.js';
 import type { CallerContext } from './request-context.js';
 import type { SessionIndex } from './session-index.js';
-import type {
-  ExecutionServiceLike,
-  KbSubsystem,
-  RouteToolCallFn,
-  ScopeCheckResult,
-} from './tool-router.js';
-import type {
-  DiscussDetailResponse,
-  DiscussSummaryDto,
-  DiscussView,
-} from '../discuss/views.js';
+import type { ExecutionServiceLike, KbSubsystem, RouteToolCallFn, ScopeCheckResult } from './tool-router.js';
+import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../discuss/views.js';
 import type { LifecycleState } from './server.js';
 
 // ---------------------------------------------------------------------------
@@ -98,7 +89,11 @@ export interface HttpHandlerDeps {
   // Discuss read ports (narrowed — no registry internals)
   readonly liveDiscussCount: () => number;
   readonly listDiscussSessions: () => DiscussSummaryDto[];
-  readonly loadDiscussDetail: (source: string, sessionId: string, view: DiscussView) => DiscussDetailResponse | 'audit_requires_ended_session' | null;
+  readonly loadDiscussDetail: (
+    source: string,
+    sessionId: string,
+    view: DiscussView,
+  ) => DiscussDetailResponse | 'audit_requires_ended_session' | null;
 }
 
 // ---------------------------------------------------------------------------

@@ -262,9 +262,7 @@ describe('cli format', () => {
     });
 
     it('formats a session-ended participate result', () => {
-      expect(formatDiscussParticipate(bidEndedResult)).toBe(
-        'Session ended: max_epochs_reached\nDiscussion complete',
-      );
+      expect(formatDiscussParticipate(bidEndedResult)).toBe('Session ended: max_epochs_reached\nDiscussion complete');
     });
 
     it('formats a recorded speech result', () => {
@@ -272,24 +270,22 @@ describe('cli format', () => {
     });
 
     it('formats a not-your-turn result with the current speaker', () => {
-      expect(formatDiscussParticipate(notYourTurnResult)).toBe(
-        'Not your turn (current speaker: bob)',
-      );
+      expect(formatDiscussParticipate(notYourTurnResult)).toBe('Not your turn (current speaker: bob)');
     });
 
     it('formats a valid discuss watch payload', () => {
-      expect(formatDiscussWatch({
-        session: 'session-1',
-        status: 'bidding',
-        topic: 'Risk tradeoffs',
-        epoch: 2,
-        step: 3,
-        events: [{ id: 1 }, { id: 2 }],
-        cursor: 9,
-      })).toBe(
-        'Session session-1 [bidding]\n'
-        + 'Topic: Risk tradeoffs\n'
-        + 'Epoch: 2 | Step: 3 | Events: 2 | Cursor: 9',
+      expect(
+        formatDiscussWatch({
+          session: 'session-1',
+          status: 'bidding',
+          topic: 'Risk tradeoffs',
+          epoch: 2,
+          step: 3,
+          events: [{ id: 1 }, { id: 2 }],
+          cursor: 9,
+        }),
+      ).toBe(
+        'Session session-1 [bidding]\n' + 'Topic: Risk tradeoffs\n' + 'Epoch: 2 | Step: 3 | Events: 2 | Cursor: 9',
       );
     });
 
@@ -315,11 +311,7 @@ describe('cli format', () => {
       } satisfies BackendStatusFull;
 
       expect(formatBackendStatus(status)).toBe(
-        'Backend ok\n'
-        + 'Version: 1.2.3\n'
-        + 'Uptime: 1234ms\n'
-        + 'Active children: 2\n'
-        + 'Active jobs: 1',
+        'Backend ok\n' + 'Version: 1.2.3\n' + 'Uptime: 1234ms\n' + 'Active children: 2\n' + 'Active jobs: 1',
       );
     });
 
@@ -348,18 +340,21 @@ describe('cli format', () => {
 
   describe('kb formatters', () => {
     it('formats kb search results as JSON and rewrites kb_reindex warnings', () => {
-      const formatted = formatKbSearch({
-        results: [
-          {
-            note: 'cli-kb-tooling',
-            title: 'KB CLI Tooling',
-            matchedBy: ['filename', 'content'],
-            snippet: 'Use kb_reindex after stale writes.',
-          },
-        ],
-        mode: 'text',
-        warning: 'Enhanced KB index is stale; run kb_reindex to refresh it.',
-      }, 'node "/tmp/coral-cli.cjs"');
+      const formatted = formatKbSearch(
+        {
+          results: [
+            {
+              note: 'cli-kb-tooling',
+              title: 'KB CLI Tooling',
+              matchedBy: ['filename', 'content'],
+              snippet: 'Use kb_reindex after stale writes.',
+            },
+          ],
+          mode: 'text',
+          warning: 'Enhanced KB index is stale; run kb_reindex to refresh it.',
+        },
+        'node "/tmp/coral-cli.cjs"',
+      );
 
       const parsed = JSON.parse(formatted);
       expect(parsed.count).toBe(1);
@@ -409,47 +404,50 @@ describe('cli format', () => {
     });
 
     it('formats kb memo write, list, delete, and purge results', () => {
-      expect(formatKbMemo({ filename: '20260327-184939-kb.md' }))
-        .toBe('Memo: 20260327-184939-kb.md');
-      expect(formatKbMemoList({
-        memos: [{ filename: 'a.md', summary: 'summary', createdAt: '2026-03-27T00:00:00.000Z' }],
-      })).toBe(
-        'FILENAME  SUMMARY  CREATED AT              \n'
-        + '--------  -------  ------------------------\n'
-        + 'a.md      summary  2026-03-27T00:00:00.000Z',
+      expect(formatKbMemo({ filename: '20260327-184939-kb.md' })).toBe('Memo: 20260327-184939-kb.md');
+      expect(
+        formatKbMemoList({
+          memos: [{ filename: 'a.md', summary: 'summary', createdAt: '2026-03-27T00:00:00.000Z' }],
+        }),
+      ).toBe(
+        'FILENAME  SUMMARY  CREATED AT              \n' +
+          '--------  -------  ------------------------\n' +
+          'a.md      summary  2026-03-27T00:00:00.000Z',
       );
       expect(formatKbMemoList({ memos: [] })).toBe('No memos');
-      expect(formatKbMemoDelete({ deleted: ['a.md', 'b.md'], count: 2 }))
-        .toBe('a.md\nb.md\nCount: 2');
-      expect(formatKbMemoDelete({ deleted: [], count: 0 }))
-        .toBe('No memos deleted\nCount: 0');
+      expect(formatKbMemoDelete({ deleted: ['a.md', 'b.md'], count: 2 })).toBe('a.md\nb.md\nCount: 2');
+      expect(formatKbMemoDelete({ deleted: [], count: 0 })).toBe('No memos deleted\nCount: 0');
       expect(formatKbMemoPurge({ deleted: 3 })).toBe('Purged: 3 memos');
     });
 
     it('formats kb principles with totals and warning translation', () => {
-      expect(formatKbPrinciples({
-        principles: ['contract-first-design', 'single-source-of-truth'],
-        total: 2,
-        warning: 'No index found. Run kb_reindex first.',
-      })).toBe(
-        'contract-first-design\n'
-        + 'single-source-of-truth\n'
-        + 'Total: 2\n'
-        + 'Warning: No index found. Run coral-cli kb reindex first.',
+      expect(
+        formatKbPrinciples({
+          principles: ['contract-first-design', 'single-source-of-truth'],
+          total: 2,
+          warning: 'No index found. Run kb_reindex first.',
+        }),
+      ).toBe(
+        'contract-first-design\n' +
+          'single-source-of-truth\n' +
+          'Total: 2\n' +
+          'Warning: No index found. Run coral-cli kb reindex first.',
       );
     });
 
     it('formats verbose kb principles with note lists', () => {
-      expect(formatKbPrinciples({
-        principles: [
-          {
-            name: 'contract-first-design',
-            statement: 'State contracts first.',
-            notes: ['a-note', 'b-note'],
-          },
-        ],
-        total: 2,
-      })).toBe('contract-first-design (a-note, b-note): State contracts first.\nTotal: 2');
+      expect(
+        formatKbPrinciples({
+          principles: [
+            {
+              name: 'contract-first-design',
+              statement: 'State contracts first.',
+              notes: ['a-note', 'b-note'],
+            },
+          ],
+          total: 2,
+        }),
+      ).toBe('contract-first-design (a-note, b-note): State contracts first.\nTotal: 2');
     });
 
     it('formats an empty kb principles result', () => {
@@ -457,38 +455,46 @@ describe('cli format', () => {
     });
 
     it('formats kb promote, update, and delete results', () => {
-      expect(formatKbPromote({ path: '/tmp/kb/notes/cli-kb-tooling.md' }))
-        .toBe('Created: /tmp/kb/notes/cli-kb-tooling.md');
-      expect(formatKbUpdate({ path: '/tmp/kb/notes/cli-kb-tooling.md' }))
-        .toBe('Updated: /tmp/kb/notes/cli-kb-tooling.md');
-      expect(formatKbDelete({ deleted: '/tmp/kb/notes/cli-kb-tooling.md' }))
-        .toBe('Deleted: /tmp/kb/notes/cli-kb-tooling.md');
+      expect(formatKbPromote({ path: '/tmp/kb/notes/cli-kb-tooling.md' })).toBe(
+        'Created: /tmp/kb/notes/cli-kb-tooling.md',
+      );
+      expect(formatKbUpdate({ path: '/tmp/kb/notes/cli-kb-tooling.md' })).toBe(
+        'Updated: /tmp/kb/notes/cli-kb-tooling.md',
+      );
+      expect(formatKbDelete({ deleted: '/tmp/kb/notes/cli-kb-tooling.md' })).toBe(
+        'Deleted: /tmp/kb/notes/cli-kb-tooling.md',
+      );
     });
 
     it('formats kb reindex as one-liner and rewrites kb_reindex warnings', () => {
-      const formatted = formatKbReindex({
-        notes: 4,
-        principles: 2,
-        tags: 3,
-        duration_ms: 25,
-        mode: 'text',
-        warning: 'Run kb_reindex again to refresh the enhanced index.',
-      }, 'node "/tmp/coral-cli.cjs"');
+      const formatted = formatKbReindex(
+        {
+          notes: 4,
+          principles: 2,
+          tags: 3,
+          duration_ms: 25,
+          mode: 'text',
+          warning: 'Run kb_reindex again to refresh the enhanced index.',
+        },
+        'node "/tmp/coral-cli.cjs"',
+      );
 
       expect(formatted).toBe(
-        'Reindexed: 4 notes, 2 principles, 3 tags (25ms, text)\n'
-        + 'Warning: Run node "/tmp/coral-cli.cjs" kb reindex again to refresh the enhanced index.',
+        'Reindexed: 4 notes, 2 principles, 3 tags (25ms, text)\n' +
+          'Warning: Run node "/tmp/coral-cli.cjs" kb reindex again to refresh the enhanced index.',
       );
     });
   });
 
   describe('formatError', () => {
     it('formats a BackendToolHttpError-shaped value', () => {
-      expect(formatError({
-        statusCode: 403,
-        body: { error: 'scope_mismatch' },
-        message: 'Backend request failed: 403 Forbidden',
-      })).toBe('HTTP 403: {"error":"scope_mismatch"}');
+      expect(
+        formatError({
+          statusCode: 403,
+          body: { error: 'scope_mismatch' },
+          message: 'Backend request failed: 403 Forbidden',
+        }),
+      ).toBe('HTTP 403: {"error":"scope_mismatch"}');
     });
 
     it('formats an Error instance', () => {
@@ -502,8 +508,7 @@ describe('cli format', () => {
 
   describe('wait formatters', () => {
     it('formats progress events with a cursor', () => {
-      expect(formatWaitProgress(waitProgressEvent, 'cursor-1'))
-        .toBe('[job-1] Still running (cursor: cursor-1)');
+      expect(formatWaitProgress(waitProgressEvent, 'cursor-1')).toBe('[job-1] Still running (cursor: cursor-1)');
     });
 
     it('formats progress events without a cursor', () => {
@@ -511,8 +516,7 @@ describe('cli format', () => {
     });
 
     it('formats queued events with a cursor', () => {
-      expect(formatWaitQueued(waitQueuedEvent, 'cursor-2'))
-        .toBe('[job-1] queued at position 2 (cursor: cursor-2)');
+      expect(formatWaitQueued(waitQueuedEvent, 'cursor-2')).toBe('[job-1] queued at position 2 (cursor: cursor-2)');
     });
 
     it('formats queued events without a cursor', () => {
@@ -521,35 +525,30 @@ describe('cli format', () => {
 
     it('formats a non-inline terminal event with the result path', () => {
       expect(formatWaitTerminal(waitTerminalEvent, null, false)).toBe(
-        '[job-1] completed\n'
-        + 'Result path: /tmp/result.md\n'
-        + 'Remaining jobs: 1',
+        '[job-1] completed\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: 1',
       );
     });
 
     it('formats an inline terminal event with a content preview', () => {
-      expect(formatWaitTerminal(waitTerminalEvent, null, true)).toBe(
-        '[job-1] completed\nWorkflow summary',
-      );
+      expect(formatWaitTerminal(waitTerminalEvent, null, true)).toBe('[job-1] completed\nWorkflow summary');
     });
 
     it('includes the cursor in terminal output when present', () => {
       expect(formatWaitTerminal(waitTerminalEvent, 'cursor-3', false)).toBe(
-        '[job-1] completed\n'
-        + 'Result path: /tmp/result.md\n'
-        + 'Remaining jobs: 1\n'
-        + 'Cursor: cursor-3',
+        '[job-1] completed\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: 1\n' + 'Cursor: cursor-3',
       );
     });
 
     it('formats timeout output with running jobs', () => {
-      expect(formatWaitTimeout(waitTimeoutEvent, 'cursor-4'))
-        .toBe('Wait timed out; running jobs: job-1, job-2 (cursor: cursor-4)');
+      expect(formatWaitTimeout(waitTimeoutEvent, 'cursor-4')).toBe(
+        'Wait timed out; running jobs: job-1, job-2 (cursor: cursor-4)',
+      );
     });
 
     it('formats timeout output without running jobs', () => {
-      expect(formatWaitTimeout({ type: 'timeout', runningJobIds: [] }, null))
-        .toBe('Wait timed out; running jobs: none');
+      expect(formatWaitTimeout({ type: 'timeout', runningJobIds: [] }, null)).toBe(
+        'Wait timed out; running jobs: none',
+      );
     });
 
     it('renders TTY wait lines with carriage return and padding', () => {

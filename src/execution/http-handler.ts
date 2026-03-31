@@ -8,19 +8,10 @@
 
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import {
-  collectCoralEnv,
-  isRecord,
-  nowIsoString,
-} from '../shared/mcp-utils.js';
+import { collectCoralEnv, isRecord, nowIsoString } from '../shared/mcp-utils.js';
 import { resolveProjectSource } from '../infra/paths.js';
 import type { CallerContext, ToolRequest } from './request-context.js';
-import type {
-  PersistedProgressRecord,
-  PersistedStatusRecord,
-  WaitCursor,
-  WaitRequest,
-} from '../shared/types.js';
+import type { PersistedProgressRecord, PersistedStatusRecord, WaitCursor, WaitRequest } from '../shared/types.js';
 import { belongsToNamespace } from '../shared/types.js';
 import { createReplayCursor } from './progress-store.js';
 import type { ProgressStore } from './progress-store.js';
@@ -96,7 +87,11 @@ export function parseToolRequest(body: unknown, resolvedPluginRoot: string): Too
   if (typeof body.name !== 'string') return null;
   if (!isRecord(body.args) || !isRecord(body.context)) return null;
   if (typeof body.context.projectRoot !== 'string' || body.context.projectRoot.length === 0) return null;
-  if ('pluginRoot' in body.context && body.context.pluginRoot !== undefined && typeof body.context.pluginRoot !== 'string') {
+  if (
+    'pluginRoot' in body.context &&
+    body.context.pluginRoot !== undefined &&
+    typeof body.context.pluginRoot !== 'string'
+  ) {
     return null;
   }
   if (!isRecord(body.context.coralEnv)) return null;
@@ -124,12 +119,7 @@ export function parseToolRequest(body: unknown, resolvedPluginRoot: string): Too
 // SSE / streaming helpers
 // ---------------------------------------------------------------------------
 
-export function writeSseEvent(
-  res: ServerResponse,
-  event: string,
-  data: unknown,
-  cursorId?: string,
-): void {
+export function writeSseEvent(res: ServerResponse, event: string, data: unknown, cursorId?: string): void {
   if (res.writableEnded) return;
   if (cursorId) {
     res.write(`event: ${event}\nid: ${cursorId}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -257,11 +247,7 @@ export function parseDiscussView(raw: string | null): DiscussView | null {
 // Route handlers
 // ---------------------------------------------------------------------------
 
-async function handleWaitStream(
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerDeps,
-): Promise<void> {
+async function handleWaitStream(req: IncomingMessage, res: ServerResponse, deps: HttpHandlerDeps): Promise<void> {
   const body = await readJsonBody(req);
   const parsed = parseWaitRequest(body);
   if (!parsed) {
@@ -351,11 +337,7 @@ async function handleWaitStream(
   }
 }
 
-async function handleEventStream(
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerDeps,
-): Promise<void> {
+async function handleEventStream(req: IncomingMessage, res: ServerResponse, deps: HttpHandlerDeps): Promise<void> {
   const streamId = randomUUID();
   const filterJobId = parseEventStreamFilter(req.url ?? '');
 
@@ -447,7 +429,11 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
       const env = collectCoralEnv();
 
       sendJson(res, 200, {
-        status: idleTimer.isDraining ? 'draining' : (runtimeState.getLifecycle() === 'running' ? 'ok' : runtimeState.getLifecycle()),
+        status: idleTimer.isDraining
+          ? 'draining'
+          : runtimeState.getLifecycle() === 'running'
+            ? 'ok'
+            : runtimeState.getLifecycle(),
         version: identity.version,
         bundleHash: identity.bundleHash,
         namespace: identity.namespace,
@@ -519,20 +505,28 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
       if (runtimeState.getLaunchFenceActive()) {
         const parsedOp = typeof request.args.op === 'string' ? request.args.op : null;
         const isLaunchOp = parsedOp !== null && ['exec', 'resume', 'fork', 'bypass_exec'].includes(parsedOp);
-        const isProviderTool = !request.name.startsWith('discuss') && !request.name.startsWith('kb_')
-          && request.name !== 'abort' && request.name !== 'wait' && request.name !== 'workflow';
+        const isProviderTool =
+          !request.name.startsWith('discuss') &&
+          !request.name.startsWith('kb_') &&
+          request.name !== 'abort' &&
+          request.name !== 'wait' &&
+          request.name !== 'workflow';
         if (isLaunchOp && isProviderTool) {
           sendJson(res, 200, { content: [{ type: 'text', text: 'recovering — retry after 500ms' }], isError: true });
           return;
         }
       }
 
-      const result = await deps.routeToolCall(request, {
-        getExecutionService: deps.getExecutionService,
-        getDiscussContext: deps.getDiscussContext,
-        abortJobs: deps.abortJobs,
-        scopeCheckJobs: deps.scopeCheckJobs,
-      }, runtimeState.getKbSubsystem());
+      const result = await deps.routeToolCall(
+        request,
+        {
+          getExecutionService: deps.getExecutionService,
+          getDiscussContext: deps.getDiscussContext,
+          abortJobs: deps.abortJobs,
+          scopeCheckJobs: deps.scopeCheckJobs,
+        },
+        runtimeState.getKbSubsystem(),
+      );
       sendJson(res, result.statusCode, result.body);
       return;
     }

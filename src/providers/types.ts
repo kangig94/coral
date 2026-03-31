@@ -34,11 +34,10 @@ export interface ProviderRecoveryContract {
    * Used to reattach live progress for adopted running jobs.
    * Returns extracted messages and the new byte offset watermark.
    */
-  extractProgress?(options: {
-    stdoutPath: string;
-    fromOffset: number;
-    providerMeta?: Record<string, unknown>;
-  }): { messages: string[]; newOffset: number };
+  extractProgress?(options: { stdoutPath: string; fromOffset: number; providerMeta?: Record<string, unknown> }): {
+    messages: string[];
+    newOffset: number;
+  };
 }
 
 /** Build an onEvent callback that parses JSON lines and emits ProviderProgressEvents. */

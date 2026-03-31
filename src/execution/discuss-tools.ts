@@ -1,15 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { errorMessage, textResult, type McpResult } from '../shared/mcp-utils.js';
-import {
-  discussParticipateSchema,
-  discussSeedSchema,
-  discussStartSchema,
-} from '../discuss/schemas.js';
-import {
-  DiscussManagerError,
-  type DiscussContext,
-} from './discuss/context.js';
+import { discussParticipateSchema, discussSeedSchema, discussStartSchema } from '../discuss/schemas.js';
+import { DiscussManagerError, type DiscussContext } from './discuss/context.js';
 import * as discussOperations from './discuss/operations.js';
 import { seedPersonas } from '../discuss/persona-seed.js';
 import type { ToolRouteResponse } from './tool-router.js';
@@ -31,20 +24,26 @@ function jsonTextResult(data: unknown, isError = false): McpResult {
 function toolValidationError(error: z.ZodError): ToolRouteResponse {
   return {
     statusCode: 200,
-    body: jsonTextResult({
-      error: 'invalid_request',
-      message: error.message,
-    }, true),
+    body: jsonTextResult(
+      {
+        error: 'invalid_request',
+        message: error.message,
+      },
+      true,
+    ),
   };
 }
 
 function toolError(error: string, detail?: Record<string, unknown>): ToolRouteResponse {
   return {
     statusCode: 200,
-    body: jsonTextResult({
-      error,
-      ...(detail === undefined ? {} : detail),
-    }, true),
+    body: jsonTextResult(
+      {
+        error,
+        ...(detail === undefined ? {} : detail),
+      },
+      true,
+    ),
   };
 }
 
@@ -109,10 +108,7 @@ export async function handleDiscussToolCall(
     }
 
     try {
-      await discussOperations.abortDiscussSession(
-        helpers.getDiscussContext(request.context),
-        parsed.data.session,
-      );
+      await discussOperations.abortDiscussSession(helpers.getDiscussContext(request.context), parsed.data.session);
       return toolSuccess({ ok: true, session: parsed.data.session });
     } catch (error: unknown) {
       if (error instanceof DiscussManagerError) {
@@ -129,11 +125,13 @@ export async function handleDiscussToolCall(
     }
 
     try {
-      return toolSuccess(discussOperations.getWatchState(
-        helpers.getDiscussContext(request.context),
-        parsed.data.session,
-        parsed.data.cursor,
-      ));
+      return toolSuccess(
+        discussOperations.getWatchState(
+          helpers.getDiscussContext(request.context),
+          parsed.data.session,
+          parsed.data.cursor,
+        ),
+      );
     } catch (error: unknown) {
       if (error instanceof DiscussManagerError) {
         return toolError(error.code, error.detail);

@@ -5,10 +5,7 @@ declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
-import {
-  formatError,
-  readBundleHash,
-} from '../shared/mcp-utils.js';
+import { formatError, readBundleHash } from '../shared/mcp-utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import { pluginRootNamespace, resolveProjectSource } from '../infra/paths.js';
 import type { ExecutionService } from './service.js';
@@ -22,18 +19,14 @@ import { IdleTimer } from './idle-timer.js';
 import { ProgressStore } from './progress-store.js';
 import type { CallerContext } from './request-context.js';
 import { SessionIndex } from './session-index.js';
-import {
-  type DiscussContext,
-} from './discuss/context.js';
+import { type DiscussContext } from './discuss/context.js';
 import {
   createDiscussContextRegistry,
   getOrCreate as getOrCreateDiscussContext,
   listAttachedSessions,
   type DiscussContextRegistry,
 } from './discuss/context-registry.js';
-import {
-  DiscussSessionStore,
-} from './discuss/session-store.js';
+import { DiscussSessionStore } from './discuss/session-store.js';
 import {
   buildDiscussDetail,
   buildDiscussSummary,
@@ -42,15 +35,9 @@ import {
   type DiscussSummaryDto,
   type DiscussView,
 } from '../discuss/views.js';
-import {
-  readDiscussSources,
-} from '../client/readers.js';
-import {
-  ExecutionService as DefaultExecutionService,
-} from './service.js';
-import {
-  belongsToNamespace,
-} from '../shared/types.js';
+import { readDiscussSources } from '../client/readers.js';
+import { ExecutionService as DefaultExecutionService } from './service.js';
+import { belongsToNamespace } from '../shared/types.js';
 import {
   routeToolCall,
   getToolDescriptors,
@@ -141,26 +128,35 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const sessionIndex = new SessionIndex();
   const now = options.now ?? (() => Date.now());
   backendLog.init({ version, bundleHash });
-  const log = options.log ?? ((message: string) => {
-    backendLog.raw(message);
-  });
-  const createExecutionService = options.createExecutionService
-    ?? ((ctx: CallerContext) => new DefaultExecutionService(ctx, progressStore, bundleHash));
+  const log =
+    options.log ??
+    ((message: string) => {
+      backendLog.raw(message);
+    });
+  const createExecutionService =
+    options.createExecutionService ??
+    ((ctx: CallerContext) => new DefaultExecutionService(ctx, progressStore, bundleHash));
   const acquireLockFn = options.acquireLockFn ?? acquireLock;
   const writeBackendInfoFn = options.writeBackendInfoFn ?? writeBackendInfo;
   const removeBackendInfoIfOwnerFn = options.removeBackendInfoIfOwnerFn ?? removeBackendInfoIfOwner;
   const removeLockIfOwnerFn = options.removeLockIfOwnerFn ?? removeLockIfOwner;
   const routeToolCallFn = options.routeToolCallFn ?? routeToolCall;
   const closeServerFn = options.closeServerFn ?? defaultCloseServer;
-  const recoverOrphanedJobsFn = options.recoverOrphanedJobsFn ?? ((currentNamespace: string) => {
-    recoverOrphanedJobs(progressStore, currentNamespace, log);
-  });
-  const cleanupStaleJobsFn = options.cleanupStaleJobsFn ?? ((currentBundleHash: string) => {
-    cleanupStaleJobs(progressStore, currentBundleHash, log);
-  });
-  const markJobsAsErrorFn = options.markJobsAsErrorFn ?? ((currentNamespace: string, message: string) => {
-    markJobsAsError(progressStore, currentNamespace, message);
-  });
+  const recoverOrphanedJobsFn =
+    options.recoverOrphanedJobsFn ??
+    ((currentNamespace: string) => {
+      recoverOrphanedJobs(progressStore, currentNamespace, log);
+    });
+  const cleanupStaleJobsFn =
+    options.cleanupStaleJobsFn ??
+    ((currentBundleHash: string) => {
+      cleanupStaleJobs(progressStore, currentBundleHash, log);
+    });
+  const markJobsAsErrorFn =
+    options.markJobsAsErrorFn ??
+    ((currentNamespace: string, message: string) => {
+      markJobsAsError(progressStore, currentNamespace, message);
+    });
   const killAllChildrenFn = options.killAllChildrenFn ?? killAllChildren;
   const createKbSubsystemFn = options.createKbSubsystemFn ?? defaultCreateKbSubsystem;
 
@@ -182,10 +178,18 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     getStartedAt: () => startedAt,
     getKbSubsystem: () => kbSubsystem,
     getLaunchFenceActive: () => launchFenceActive,
-    setLifecycle: (state) => { lifecycle = state; },
-    setStartedAt: (ts) => { startedAt = ts; },
-    setKbSubsystem: (kb) => { kbSubsystem = kb; },
-    setLaunchFenceActive: (active) => { launchFenceActive = active; },
+    setLifecycle: (state) => {
+      lifecycle = state;
+    },
+    setStartedAt: (ts) => {
+      startedAt = ts;
+    },
+    setKbSubsystem: (kb) => {
+      kbSubsystem = kb;
+    },
+    setLaunchFenceActive: (active) => {
+      launchFenceActive = active;
+    },
   };
 
   // -- Service factories (shared between lifecycle, HTTP handler, tool router)
@@ -237,7 +241,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     // Check recovery registry first (transient, owned by lifecycle)
     const recoveryRegistry = lifecycleController?.getRecoveryRegistry();
     if (recoveryRegistry && recoveryRegistry.size > 0) {
-      const registryJobIds = [...pending].filter(id => recoveryRegistry.has(id));
+      const registryJobIds = [...pending].filter((id) => recoveryRegistry.has(id));
       if (registryJobIds.length > 0) {
         const result = recoveryRegistry.abort(registryJobIds);
         for (const jobId of result.aborted) {
@@ -352,9 +356,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       return 'audit_requires_ended_session';
     }
 
-    const authority: DiscussAuthority = isLiveDiscussSession(source, sessionId)
-      ? 'live'
-      : 'persisted';
+    const authority: DiscussAuthority = isLiveDiscussSession(source, sessionId) ? 'live' : 'persisted';
     return view === 'audit'
       ? buildDiscussDetail(snapshot, 'audit', authority)
       : buildDiscussDetail(snapshot, 'control', authority);

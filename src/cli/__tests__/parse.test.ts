@@ -1,12 +1,7 @@
 import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import {
-  parseAgentSpec,
-  parseAxisSpec,
-  parseInputJson,
-  parseKeyValuePairs,
-} from '../parse.js';
+import { parseAgentSpec, parseAxisSpec, parseInputJson, parseKeyValuePairs } from '../parse.js';
 
 const originalStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
 

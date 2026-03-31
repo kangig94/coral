@@ -19,15 +19,8 @@ import {
 import type { DiscussContext } from '../discuss/context.js';
 import { buildWatchEvents } from '../../discuss/projections.js';
 import { DiscussSessionStore } from '../discuss/session-store.js';
-import {
-  attachSession,
-  detachSession,
-  listSessions,
-} from '../discuss/registry.js';
-import {
-  isAbortEnded,
-  readSessionEvents,
-} from '../discuss/persistence.js';
+import { attachSession, detachSession, listSessions } from '../discuss/registry.js';
+import { isAbortEnded, readSessionEvents } from '../discuss/persistence.js';
 import type { CallerContext, ExecutionService } from '../service.js';
 
 export const DEFAULT_TOPIC = 'Should the city pedestrianize the downtown core?';
@@ -181,10 +174,15 @@ export function attachPersistedSession(
   snapshot: PersistedDiscussSnapshot,
 ): void {
   const events = readSessionEvents(harness.context, snapshot.sessionId);
-  attachSession(harness.context, snapshot, {
-    baseCursor: 0,
-    events: buildWatchEvents(events),
-  }, isAbortEnded(events));
+  attachSession(
+    harness.context,
+    snapshot,
+    {
+      baseCursor: 0,
+      events: buildWatchEvents(events),
+    },
+    isAbortEnded(events),
+  );
 }
 
 export async function persistSession(
@@ -209,15 +207,9 @@ export async function persistSession(
     agents,
     min_bid_delay_ms: options.minBidDelayMs ?? 0,
   };
-  const created = decideSessionCreate(
-    input,
-    sessionId,
-    harness.projectRoot,
-    topic,
-    1,
-    createdAt,
-    { agentExecution: options.agentExecution ?? defaultAgentExecution(agents) },
-  );
+  const created = decideSessionCreate(input, sessionId, harness.projectRoot, topic, 1, createdAt, {
+    agentExecution: options.agentExecution ?? defaultAgentExecution(agents),
+  });
   if (!created.ok) {
     const createError = created.error;
     throw new Error(createError);

@@ -122,14 +122,18 @@ Keep the body stable.
   });
 
   it('extracts titles and filename-derived identities', () => {
-    const note = serializeNote({
-      tags: ['coral'],
-      principles: ['contract-first-design'],
-      source: ['kangig94/coral'],
-      createdAt: '2026-03-23',
-      updatedAt: '2026-03-23',
-      mutationSeqAtPromote: 23,
-    }, 'KB Runtime Root', '## Rule\nUse the configured root.');
+    const note = serializeNote(
+      {
+        tags: ['coral'],
+        principles: ['contract-first-design'],
+        source: ['kangig94/coral'],
+        createdAt: '2026-03-23',
+        updatedAt: '2026-03-23',
+        mutationSeqAtPromote: 23,
+      },
+      'KB Runtime Root',
+      '## Rule\nUse the configured root.',
+    );
 
     expect(extractTitle(note)).toBe('KB Runtime Root');
     expect(deriveNoteIdentity('/tmp/coral-kb-runtime-root.md')).toEqual({
@@ -143,7 +147,9 @@ Keep the body stable.
     const { markTextIndexStale } = await import('../mutation-helpers.js');
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
-    const alwaysThrows = () => { throw new Error('disk full'); };
+    const alwaysThrows = () => {
+      throw new Error('disk full');
+    };
     markTextIndexStale(alwaysThrows, 'stale after promote');
 
     expect(stderrSpy).toHaveBeenCalledOnce();
@@ -154,13 +160,11 @@ Keep the body stable.
 
   it('imports frontmatter and mutation helpers through validation without a circular load failure', async () => {
     vi.resetModules();
-    const [{ parseFrontmatter: dynamicParseFrontmatter }, { buildNoteIndexEntry }, { assertNonEmptyText }] = await Promise.all([
-      import('../frontmatter.js'),
-      import('../mutation-helpers.js'),
-      import('../validation.js'),
-    ]);
+    const [{ parseFrontmatter: dynamicParseFrontmatter }, { buildNoteIndexEntry }, { assertNonEmptyText }] =
+      await Promise.all([import('../frontmatter.js'), import('../mutation-helpers.js'), import('../validation.js')]);
 
-    expect(dynamicParseFrontmatter(`---
+    expect(
+      dynamicParseFrontmatter(`---
 tags: [coral]
 principles: []
 source:
@@ -169,13 +173,21 @@ createdAt: 2026-03-23
 updatedAt: 2026-03-23
 ---
 # Dynamic Import
-`)).toMatchObject({
+`),
+    ).toMatchObject({
       createdAt: '2026-03-23',
       updatedAt: '2026-03-23',
     });
-    expect(buildNoteIndexEntry({
-      title: 'Test', tags: ['coral'], principles: [], source: ['test'], createdAt: '2026-03-23', updatedAt: '2026-03-23',
-    })).toMatchObject({ title: 'Test', tags: ['coral'] });
+    expect(
+      buildNoteIndexEntry({
+        title: 'Test',
+        tags: ['coral'],
+        principles: [],
+        source: ['test'],
+        createdAt: '2026-03-23',
+        updatedAt: '2026-03-23',
+      }),
+    ).toMatchObject({ title: 'Test', tags: ['coral'] });
     expect(assertNonEmptyText(' title ', 'title')).toBe('title');
   });
 });

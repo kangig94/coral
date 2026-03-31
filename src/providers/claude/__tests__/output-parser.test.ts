@@ -117,9 +117,7 @@ describe('parseClaudeStreamJson', () => {
 describe('parseClaudeStreamJson — adversarial', () => {
   describe('stream with only system/init events — no result, no assistant', () => {
     it('returns sentinel when stream has only a system init event', () => {
-      const output = ndjson(
-        { type: 'system', subtype: 'init', session_id: 'sess-x', tools: [], mcp_servers: [] },
-      );
+      const output = ndjson({ type: 'system', subtype: 'init', session_id: 'sess-x', tools: [], mcp_servers: [] });
       expectParseFailure(output);
     });
 
@@ -134,15 +132,16 @@ describe('parseClaudeStreamJson — adversarial', () => {
 
   describe('mixed valid+invalid lines — ordering matters', () => {
     it('tolerates leading garbage line before a valid result event', () => {
-      const output = [
-        'not valid json at all',
-        JSON.stringify({
-          type: 'result',
-          result: 'hello from result',
-          session_id: 'sess-good',
-          total_cost_usd: 0.01,
-        }),
-      ].join('\n') + '\n';
+      const output =
+        [
+          'not valid json at all',
+          JSON.stringify({
+            type: 'result',
+            result: 'hello from result',
+            session_id: 'sess-good',
+            total_cost_usd: 0.01,
+          }),
+        ].join('\n') + '\n';
 
       const result = expectSuccess(output);
       expect(result.response).toBe('hello from result');
@@ -150,22 +149,24 @@ describe('parseClaudeStreamJson — adversarial', () => {
     });
 
     it('tolerates trailing garbage after a valid result event', () => {
-      const output = [
-        JSON.stringify({ type: 'result', result: 'ok', session_id: 's1', total_cost_usd: 0.005 }),
-        '{{broken',
-        'also bad',
-      ].join('\n') + '\n';
+      const output =
+        [
+          JSON.stringify({ type: 'result', result: 'ok', session_id: 's1', total_cost_usd: 0.005 }),
+          '{{broken',
+          'also bad',
+        ].join('\n') + '\n';
 
       const result = expectSuccess(output);
       expect(result.response).toBe('ok');
     });
 
     it('tolerates interleaved garbage between assistant and result events', () => {
-      const output = [
-        JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'partial' }] } }),
-        'GARBAGE LINE',
-        JSON.stringify({ type: 'result', result: 'final answer', session_id: 's2', total_cost_usd: 0.02 }),
-      ].join('\n') + '\n';
+      const output =
+        [
+          JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'partial' }] } }),
+          'GARBAGE LINE',
+          JSON.stringify({ type: 'result', result: 'final answer', session_id: 's2', total_cost_usd: 0.02 }),
+        ].join('\n') + '\n';
 
       const result = expectSuccess(output);
       expect(result.response).toBe('final answer');
@@ -300,7 +301,8 @@ describe('parseClaudeStreamJson — adversarial', () => {
   describe('trailing Insight block recovery', () => {
     it('prepends previous assistant message when result starts with Insight marker', () => {
       const review = '**[OKAY]**\n\nFindings:\n| # | Severity | Finding |\n|---|----------|---------|';
-      const insight = '`★ Insight ─────────────────────────────────────`\n1. Key observation.\n`─────────────────────────────────────────────────`';
+      const insight =
+        '`★ Insight ─────────────────────────────────────`\n1. Key observation.\n`─────────────────────────────────────────────────`';
       const output = ndjson(
         { type: 'assistant', message: { content: [{ type: 'text', text: 'Let me read the files.' }] } },
         { type: 'assistant', message: { content: [{ type: 'text', text: review }] } },
@@ -338,7 +340,8 @@ describe('parseClaudeStreamJson — adversarial', () => {
 
     it('handles leading newlines before Insight marker (real CLI format)', () => {
       const review = '<critic>\n## Findings\n| # | Severity |\n</critic>';
-      const insightWithNewlines = '\n\n`★ Insight ─────────────────────────────────────`\nKey point.\n`─────────────────────────────────────────────────`';
+      const insightWithNewlines =
+        '\n\n`★ Insight ─────────────────────────────────────`\nKey point.\n`─────────────────────────────────────────────────`';
       const output = ndjson(
         { type: 'assistant', message: { content: [{ type: 'text', text: review }] } },
         { type: 'assistant', message: { content: [{ type: 'text', text: insightWithNewlines }] } },

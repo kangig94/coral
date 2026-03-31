@@ -71,15 +71,11 @@ function createOriginPool(entries: OriginWeight[]): OriginPool {
 }
 
 function sortOriginWeights(entries: OriginWeight[]): OriginWeight[] {
-  return [...entries].sort((lhs, rhs) =>
-    rhs[1] - lhs[1]
-      || (lhs[0] < rhs[0] ? -1 : lhs[0] > rhs[0] ? 1 : 0),
-  );
+  return [...entries].sort((lhs, rhs) => rhs[1] - lhs[1] || (lhs[0] < rhs[0] ? -1 : lhs[0] > rhs[0] ? 1 : 0));
 }
 
 function allFinitePositiveEntries(originWeights: Record<string, number>): OriginWeight[] {
-  return Object.entries(originWeights)
-    .filter(([, weight]) => Number.isFinite(weight) && weight > 0);
+  return Object.entries(originWeights).filter(([, weight]) => Number.isFinite(weight) && weight > 0);
 }
 
 function pickSlots(outlierCount: number, total: number, rng: () => number): Set<number> {
@@ -88,11 +84,7 @@ function pickSlots(outlierCount: number, total: number, rng: () => number): Set<
   return new Set(slots.slice(0, outlierCount));
 }
 
-function sampleOriginFromPool(
-  pool: OriginPool,
-  assignedOrigins: Set<string>,
-  rng: () => number,
-): string {
+function sampleOriginFromPool(pool: OriginPool, assignedOrigins: Set<string>, rng: () => number): string {
   if (pool.entries.length === 0) return '';
 
   const MAX_SAMPLE_ATTEMPTS = 100;
@@ -268,9 +260,7 @@ export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput>
 
   const reuseOrder = rankReuseSlots(selectedPoolIndexes, pool);
   const tones = assignTones(requestedCount, rng);
-  const origins = input.demographics
-    ? assignOrigins(requestedCount, input.demographics, rng)
-    : null;
+  const origins = input.demographics ? assignOrigins(requestedCount, input.demographics, rng) : null;
   const assignments: PersonaAssignment[] = [];
 
   for (let i = 0; i < uniqueCount; i += 1) {
@@ -278,9 +268,7 @@ export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput>
       positions: buildPositionRecord(input.controversy_axes, pool[selectedPoolIndexes[i]]),
       tone: tones[i],
       persona_seed: drawUInt32(rng),
-      ...(origins
-        ? { suggested_origin: origins[i].origin, is_outlier: origins[i].is_outlier }
-        : {}),
+      ...(origins ? { suggested_origin: origins[i].origin, is_outlier: origins[i].is_outlier } : {}),
     });
   }
 
@@ -291,9 +279,7 @@ export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput>
       tone: tones[i],
       persona_seed: drawUInt32(rng),
       shared_position_with: sourceSlot,
-      ...(origins
-        ? { suggested_origin: origins[i].origin, is_outlier: origins[i].is_outlier }
-        : {}),
+      ...(origins ? { suggested_origin: origins[i].origin, is_outlier: origins[i].is_outlier } : {}),
     });
   }
 

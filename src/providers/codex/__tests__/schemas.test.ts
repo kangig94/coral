@@ -119,18 +119,22 @@ describe('coralAgentSchema', () => {
   });
 
   it('rejects owner with invalid characters', () => {
-    expect(() => coralAgentSchema.parse({
-      op: 'coral:scanner',
-      prompt: 'analyze',
-      owner: '../bad',
-    })).toThrow(ZodError);
+    expect(() =>
+      coralAgentSchema.parse({
+        op: 'coral:scanner',
+        prompt: 'analyze',
+        owner: '../bad',
+      }),
+    ).toThrow(ZodError);
   });
 
   it('rejects empty string owner', () => {
-    expect(() => coralAgentSchema.parse({
-      op: 'coral:scanner',
-      prompt: 'analyze',
-      owner: '',
-    })).toThrow(ZodError);
+    expect(() =>
+      coralAgentSchema.parse({
+        op: 'coral:scanner',
+        prompt: 'analyze',
+        owner: '',
+      }),
+    ).toThrow(ZodError);
   });
 });

@@ -6,21 +6,11 @@ import {
   decideSessionCreate,
   decideSpeech,
 } from '../../discuss/state-machine.js';
-import type {
-  BidResult,
-  DiscussCreateInput,
-  Result,
-  SpeechResult,
-} from '../../discuss/types.js';
+import type { BidResult, DiscussCreateInput, Result, SpeechResult } from '../../discuss/types.js';
 import { buildWatchEvents } from '../../discuss/projections.js';
 import { nowIsoString } from '../../discuss/util/time.js';
 import type { CallerContext } from '../request-context.js';
-import {
-  buildAgentExecutionConfig,
-  hasActiveBidWork,
-  hasPendingAutoBidders,
-  isManualParticipant,
-} from './executor.js';
+import { buildAgentExecutionConfig, hasActiveBidWork, hasPendingAutoBidders, isManualParticipant } from './executor.js';
 import * as discussLoop from './loop.js';
 import {
   ABORT_REASON,
@@ -33,13 +23,7 @@ import {
   unwrapResult,
 } from './context.js';
 import { attachSession, detachSession, getSession, getWatchState as getRegistryWatchState } from './registry.js';
-import {
-  appendRuntimeEvents,
-  afterCommit,
-  commitDecision,
-  isAbortEnded,
-  readSessionEvents,
-} from './persistence.js';
+import { appendRuntimeEvents, afterCommit, commitDecision, isAbortEnded, readSessionEvents } from './persistence.js';
 import type { DiscussSessionStore } from './session-store.js';
 import { backendLog } from '../../shared/backend-log.js';
 import { collectBids } from './subflows.js';
@@ -160,15 +144,10 @@ export async function startDiscussSession(
   };
 
   const created = unwrapResult(
-    decideSessionCreate(
-      input,
-      sessionId,
-      ctx.projectRoot,
-      topic,
-      1,
-      nowIsoString(),
-      { maxEpochs: readDiscussMaxEpochs(), agentExecution: buildAgentExecutionConfig(agents) },
-    ),
+    decideSessionCreate(input, sessionId, ctx.projectRoot, topic, 1, nowIsoString(), {
+      maxEpochs: readDiscussMaxEpochs(),
+      agentExecution: buildAgentExecutionConfig(agents),
+    }),
   );
 
   const snapshot = await ctx.store.append(sessionId, null, created);
@@ -210,7 +189,8 @@ export async function submitManualBid(
       current.state.topic,
       current.lastAppliedSeq + 1,
       nowIsoString(),
-    ));
+    ),
+  );
   if (!committed.ok) {
     throw new DiscussManagerError(committed.error, committed.detail);
   }
@@ -258,7 +238,8 @@ export async function submitManualSpeech(
       current.state.topic,
       current.lastAppliedSeq + 1,
       nowIsoString(),
-    ));
+    ),
+  );
   if (!committed.ok) {
     throw new DiscussManagerError(committed.error, committed.detail);
   }
@@ -267,10 +248,7 @@ export async function submitManualSpeech(
   return { action: 'speech_recorded' };
 }
 
-export async function abortDiscussSession(
-  ctx: DiscussContext,
-  sessionId: string,
-): Promise<void> {
+export async function abortDiscussSession(ctx: DiscussContext, sessionId: string): Promise<void> {
   const session = requireLiveSession(ctx, sessionId);
 
   const committed = await commitDecision(ctx, sessionId, (current) =>
@@ -282,7 +260,8 @@ export async function abortDiscussSession(
       current.state.topic,
       current.lastAppliedSeq + 1,
       nowIsoString(),
-    ));
+    ),
+  );
   if (!committed.ok && committed.error !== 'session_not_found') {
     throw new DiscussManagerError(committed.error, committed.detail);
   }
@@ -296,8 +275,7 @@ export async function persistAbortEndForShutdown(
   sessionId: string,
   _session: LiveDiscussSession,
 ): Promise<void> {
-  await appendRuntimeEvents(ctx, sessionId, (current) =>
-    buildAbortEndEventsForShutdown(ctx, sessionId, current));
+  await appendRuntimeEvents(ctx, sessionId, (current) => buildAbortEndEventsForShutdown(ctx, sessionId, current));
 }
 
 export async function persistAbortEndForPersistedShutdownCandidates(
@@ -336,7 +314,8 @@ export async function persistAbortEndForPersistedShutdownCandidates(
         }
 
         await appendRuntimeEvents(ctx, candidate.sessionId, (current) =>
-          buildAbortEndEventsForShutdown(ctx, candidate.sessionId, current));
+          buildAbortEndEventsForShutdown(ctx, candidate.sessionId, current),
+        );
       } catch (error: unknown) {
         logShutdownPersistFailure(candidate.sessionId, error);
       }
@@ -344,11 +323,7 @@ export async function persistAbortEndForPersistedShutdownCandidates(
   }
 }
 
-export function getWatchState(
-  ctx: DiscussContext,
-  sessionId: string,
-  cursor?: number,
-): WatchState {
+export function getWatchState(ctx: DiscussContext, sessionId: string, cursor?: number): WatchState {
   return getRegistryWatchState(ctx, sessionId, cursor);
 }
 
@@ -382,10 +357,15 @@ export async function recoverPersistedSessionsFromStore(
       continue;
     }
 
-    attachSession(ctx, snapshot, {
-      baseCursor: 0,
-      events: buildWatchEvents(events),
-    }, abortEnded);
+    attachSession(
+      ctx,
+      snapshot,
+      {
+        baseCursor: 0,
+        events: buildWatchEvents(events),
+      },
+      abortEnded,
+    );
 
     if (shouldResumeRecoveredSession(snapshot)) {
       recovered.push({

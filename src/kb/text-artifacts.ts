@@ -3,10 +3,7 @@ import { join } from 'node:path';
 import { insertMultiple } from '@orama/orama';
 import { errorMessage, isNoEntryError } from '../shared/mcp-utils.js';
 import { backendLog } from '../shared/backend-log.js';
-import {
-  deriveNoteIdentity,
-  extractPrincipleStatement,
-} from './frontmatter.js';
+import { deriveNoteIdentity, extractPrincipleStatement } from './frontmatter.js';
 import { buildNoteIndexEntry } from './mutation-helpers.js';
 import { loadKbNote } from './read.js';
 import { compareLocale } from './validation.js';

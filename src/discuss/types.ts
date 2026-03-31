@@ -2,23 +2,29 @@ type AgentScoreMap = Record<string, number>;
 type NullableAgentScoreMap = Record<string, number | null>;
 
 export const speakerTypes = ['quota', 'fallback', 'cold_start'] as const;
-export type SpeakerType = typeof speakerTypes[number];
+export type SpeakerType = (typeof speakerTypes)[number];
 
 export const transcriptResolveTypes = ['normal', 'fallback', 'cold_start', 'no_winner'] as const;
-export type TranscriptResolveType = typeof transcriptResolveTypes[number];
+export type TranscriptResolveType = (typeof transcriptResolveTypes)[number];
 
 export const participationTypes = ['required', 'observer'] as const;
-export type ParticipationType = typeof participationTypes[number];
+export type ParticipationType = (typeof participationTypes)[number];
 
 export const discussStatuses = ['setup', 'bidding', 'speaking', 'ended'] as const;
-export type DiscussStatus = typeof discussStatuses[number];
+export type DiscussStatus = (typeof discussStatuses)[number];
 
 export const resolveReasons = ['all_below_threshold', 'max_epochs_reached', 'all_blocked', 'epoch_transition'] as const;
 
-export const endReasons = ['all_below_threshold', 'max_epochs_reached', 'all_blocked', 'no_participants', 'already_ended'] as const;
+export const endReasons = [
+  'all_below_threshold',
+  'max_epochs_reached',
+  'all_blocked',
+  'no_participants',
+  'already_ended',
+] as const;
 
 export const sessionEventKinds = ['force_end', 'synthesis'] as const;
-export type SessionEventKind = typeof sessionEventKinds[number];
+export type SessionEventKind = (typeof sessionEventKinds)[number];
 
 type TranscriptStepMetadata = {
   step: number;
@@ -32,17 +38,17 @@ type TranscriptEpochMetadata = {
 
 export type TranscriptEntry =
   | ({
-    type: 'bids';
-    bids: AgentScoreMap;
-    effective_bids?: AgentScoreMap;
-    thoughts?: Record<string, string>;
-    winner: string | null;
-    resolve_type: TranscriptResolveType;
-  } & TranscriptStepMetadata)
-  | ({ type: 'speech'; agent: string; display_name: string; content: string; } & TranscriptStepMetadata)
-  | ({ type: 'follow_up'; agent: string; question: string; answer: string; } & TranscriptEpochMetadata)
-  | ({ type: 'epoch_summary'; summary: string; } & TranscriptEpochMetadata)
-  | ({ type: 'session_event'; event: SessionEventKind; detail: string; } & TranscriptEpochMetadata);
+      type: 'bids';
+      bids: AgentScoreMap;
+      effective_bids?: AgentScoreMap;
+      thoughts?: Record<string, string>;
+      winner: string | null;
+      resolve_type: TranscriptResolveType;
+    } & TranscriptStepMetadata)
+  | ({ type: 'speech'; agent: string; display_name: string; content: string } & TranscriptStepMetadata)
+  | ({ type: 'follow_up'; agent: string; question: string; answer: string } & TranscriptEpochMetadata)
+  | ({ type: 'epoch_summary'; summary: string } & TranscriptEpochMetadata)
+  | ({ type: 'session_event'; event: SessionEventKind; detail: string } & TranscriptEpochMetadata);
 
 export type AgentState = {
   persona: string;
@@ -81,11 +87,9 @@ export type DiscussState = {
   min_bid_delay_ms: number;
 };
 
-export type Result<T> =
-  | { ok: true; value: T }
-  | { ok: false; error: string; detail?: Record<string, unknown> };
+export type Result<T> = { ok: true; value: T } | { ok: false; error: string; detail?: Record<string, unknown> };
 
-export type ResolveReason = typeof resolveReasons[number];
+export type ResolveReason = (typeof resolveReasons)[number];
 
 /**
  * Sealed-bid design: individual bid scores are never returned to any caller.
@@ -106,7 +110,7 @@ export type SpeechResult =
   | { action: 'not_your_turn'; current_speaker: string | null }
   | { action: 'session_ended'; reason?: string; content?: string };
 
-export type EndReason = typeof endReasons[number];
+export type EndReason = (typeof endReasons)[number];
 
 export type DiscussCreateInput = {
   topic: string;

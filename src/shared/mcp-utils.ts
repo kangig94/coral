@@ -39,7 +39,9 @@ export function isOwnerId(value: unknown): value is string {
 /** Validate and return a token-safe owner identifier, or throw on invalid/blank values. */
 export function assertOwnerId(value: unknown, label = 'owner'): string {
   if (!isOwnerId(value)) {
-    throw new Error(`${label} must be a non-empty token-safe identifier (alphanumeric, '.', '_', '-'; must start with alphanumeric)`);
+    throw new Error(
+      `${label} must be a non-empty token-safe identifier (alphanumeric, '.', '_', '-'; must start with alphanumeric)`,
+    );
   }
   return value;
 }
@@ -71,7 +73,7 @@ export function isProcessAlive(pid: number): boolean {
 }
 
 export function formatError(error: unknown): string {
-  return error instanceof Error ? error.stack ?? error.message : String(error);
+  return error instanceof Error ? (error.stack ?? error.message) : String(error);
 }
 
 export function errorMessage(error: unknown): string {
@@ -98,7 +100,9 @@ export function readBundleHash(pluginRoot: string): string {
     if (isRecord(parsed) && typeof parsed.bundleHash === 'string') {
       return parsed.bundleHash;
     }
-  } catch { /* fall through */ }
+  } catch {
+    /* fall through */
+  }
   return 'unknown';
 }
 

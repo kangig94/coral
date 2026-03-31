@@ -13,11 +13,7 @@ function createPluginRoot(name: string, bundleHash?: string): string {
   tempRoots.push(root);
   mkdirSync(join(root, 'bridge'), { recursive: true });
   if (bundleHash !== undefined) {
-    writeFileSync(
-      join(root, 'bridge', 'manifest.json'),
-      JSON.stringify({ bundleHash }, null, 2),
-      'utf-8',
-    );
+    writeFileSync(join(root, 'bridge', 'manifest.json'), JSON.stringify({ bundleHash }, null, 2), 'utf-8');
   }
   return root;
 }
@@ -49,9 +45,7 @@ describe('client namespace isolation', () => {
     const pluginRoot = createPluginRoot('coral-namespace');
     const testPath = realpathSync(pluginRoot);
 
-    expect(pluginRootNamespace(pluginRoot)).toBe(
-      createHash('sha256').update(testPath).digest('hex').slice(0, 12),
-    );
+    expect(pluginRootNamespace(pluginRoot)).toBe(createHash('sha256').update(testPath).digest('hex').slice(0, 12));
   });
 
   // ── pluginRootNamespace edge cases (from algorithm-parity) ────────────────

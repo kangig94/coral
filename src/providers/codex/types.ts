@@ -39,8 +39,23 @@ export type CodexThreadItemDetails =
   | { type: 'reasoning'; text: string }
   | { type: 'command_execution'; command: string; aggregated_output: string; exit_code: number | null; status: string }
   | { type: 'file_change'; changes: Array<{ path: string; kind: string }>; status: string }
-  | { type: 'mcp_tool_call'; server: string; tool: string; arguments: unknown; result: unknown; error: unknown; status: string }
-  | { type: 'collab_tool_call'; tool: string; sender_thread_id: string; receiver_thread_ids: string[]; prompt: string | null; status: string }
+  | {
+      type: 'mcp_tool_call';
+      server: string;
+      tool: string;
+      arguments: unknown;
+      result: unknown;
+      error: unknown;
+      status: string;
+    }
+  | {
+      type: 'collab_tool_call';
+      tool: string;
+      sender_thread_id: string;
+      receiver_thread_ids: string[];
+      prompt: string | null;
+      status: string;
+    }
   | { type: 'web_search'; query: string; action: unknown }
   | { type: 'todo_list'; items: Array<{ text: string; completed: boolean }> }
   | { type: 'error'; message: string }

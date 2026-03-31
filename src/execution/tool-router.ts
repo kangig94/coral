@@ -1,10 +1,11 @@
 import { z } from 'zod';
+import { assertOwnerId, textResult, type McpResult } from '../shared/mcp-utils.js';
 import {
-  assertOwnerId,
-  textResult,
-  type McpResult,
-} from '../shared/mcp-utils.js';
-import { internalProviderFieldsShape, sharedExecSchema, sharedForkSchema, sharedResumeSchema } from '../shared/schemas.js';
+  internalProviderFieldsShape,
+  sharedExecSchema,
+  sharedForkSchema,
+  sharedResumeSchema,
+} from '../shared/schemas.js';
 import type { ExecutionService } from './service.js';
 import type { AbortResult } from './abort-registry.js';
 import type { DiscussContext } from './discuss/context.js';
@@ -63,7 +64,14 @@ function jsonTextResult(data: unknown, isError = false): McpResult {
 function toProviderFields(
   data: { session?: string; prompt?: string; work_dir?: string; model?: string; system_prompt?: string },
   bypassPermissions: boolean,
-): { sessionId: string; prompt: string; cwd: string | undefined; model: string | undefined; bypassPermissions: boolean; systemPrompt: string | undefined } {
+): {
+  sessionId: string;
+  prompt: string;
+  cwd: string | undefined;
+  model: string | undefined;
+  bypassPermissions: boolean;
+  systemPrompt: string | undefined;
+} {
   return {
     sessionId: data.session ?? '',
     prompt: data.prompt ?? '',
@@ -77,20 +85,26 @@ function toProviderFields(
 function toolValidationError(error: z.ZodError): ToolRouteResponse {
   return {
     statusCode: 200,
-    body: jsonTextResult({
-      error: 'invalid_request',
-      message: error.message,
-    }, true),
+    body: jsonTextResult(
+      {
+        error: 'invalid_request',
+        message: error.message,
+      },
+      true,
+    ),
   };
 }
 
 function toolError(error: string, detail?: Record<string, unknown>): ToolRouteResponse {
   return {
     statusCode: 200,
-    body: jsonTextResult({
-      error,
-      ...(detail === undefined ? {} : detail),
-    }, true),
+    body: jsonTextResult(
+      {
+        error,
+        ...(detail === undefined ? {} : detail),
+      },
+      true,
+    ),
   };
 }
 
@@ -233,7 +247,8 @@ export function getToolDescriptors(): Array<Record<string, unknown>> {
     },
     {
       name: 'discuss_participate',
-      description: 'Submit a bid (score + thought) or speech (content) for an active discussion participant. Provide either score+thought or content, not both.',
+      description:
+        'Submit a bid (score + thought) or speech (content) for an active discussion participant. Provide either score+thought or content, not both.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -389,10 +404,14 @@ export async function routeToolCall(
 
     return {
       statusCode: 200,
-      body: await service.start(request.name, {
-        ...toProviderFields(parsed.data, bypassPermissions),
-        cwd: parsed.data.work_dir ?? defaultCwd,
-      }, request.context),
+      body: await service.start(
+        request.name,
+        {
+          ...toProviderFields(parsed.data, bypassPermissions),
+          cwd: parsed.data.work_dir ?? defaultCwd,
+        },
+        request.context,
+      ),
     };
   }
 
@@ -406,11 +425,16 @@ export async function routeToolCall(
       : request.context;
     return {
       statusCode: 200,
-      body: await service.coralDispatch(request.name, op.slice(CORAL_OP_PREFIX.length), {
-        prompt,
-        sessionId,
-        cwd: sessionId ? cwd : cwd ?? defaultCwd,
-      }, effectiveContext),
+      body: await service.coralDispatch(
+        request.name,
+        op.slice(CORAL_OP_PREFIX.length),
+        {
+          prompt,
+          sessionId,
+          cwd: sessionId ? cwd : (cwd ?? defaultCwd),
+        },
+        effectiveContext,
+      ),
     };
   }
 

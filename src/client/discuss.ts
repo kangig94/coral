@@ -5,10 +5,7 @@
  * re-exports them so the `./client` public surface remains stable.
  */
 
-export {
-  buildDiscussDetail,
-  buildDiscussSummary,
-} from '../discuss/views.js';
+export { buildDiscussDetail, buildDiscussSummary } from '../discuss/views.js';
 
 export type {
   DiscussAuthority,

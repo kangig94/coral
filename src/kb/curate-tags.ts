@@ -2,13 +2,7 @@ import { deriveNoteIdentity } from './frontmatter.js';
 import type { KbIndex } from './types.js';
 import { compareLocale } from './validation.js';
 
-const PATTERN_SUFFIXES = new Set([
-  'pattern',
-  'architecture',
-  'design',
-  'contract',
-  'strategy',
-]);
+const PATTERN_SUFFIXES = new Set(['pattern', 'architecture', 'design', 'contract', 'strategy']);
 
 export type TagCleanupResult = {
   globalReplacements: Map<string, string>;

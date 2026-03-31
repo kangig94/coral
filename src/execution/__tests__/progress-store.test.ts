@@ -429,7 +429,13 @@ describe('legacy backendNamespace bridge', () => {
     jobIdsToClean.add(jobId);
 
     const namespace = 'my-plugin-namespace';
-    store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot: '/tmp/project', backendNamespace: namespace });
+    store.initJob({
+      jobId,
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: '/tmp/project',
+      backendNamespace: namespace,
+    });
 
     const status = store.readStatus(jobId) as Record<string, unknown> | null;
     expect(status).not.toBeNull();
@@ -550,8 +556,13 @@ describe('durable snapshot artifacts', () => {
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
 
     store.writeLaunchRecord(jobId, {
-      jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test',
-      backendNamespace: 'ns1', pool: 'default', enqueueSequence: 1,
+      jobId,
+      sessionId: 's1',
+      provider: 'codex',
+      projectRoot: '/tmp/test',
+      backendNamespace: 'ns1',
+      pool: 'default',
+      enqueueSequence: 1,
       providerAction: 'exec',
       request: { prompt: 'test', bypassPermissions: false, coralEnv: {} },
       createdAt: new Date().toISOString(),
@@ -559,13 +570,17 @@ describe('durable snapshot artifacts', () => {
     expect(store.hasLaunchRecord(jobId)).toBe(true);
 
     store.writeRuntimeRecord(jobId, {
-      pid: 999, stdoutPath: '/tmp/out', stderrPath: '/tmp/err',
+      pid: 999,
+      stdoutPath: '/tmp/out',
+      stderrPath: '/tmp/err',
       startTime: new Date().toISOString(),
     });
     expect(store.hasRuntimeRecord(jobId)).toBe(true);
 
     store.writeExitRecord(jobId, {
-      exitCode: 0, signal: null, endTime: new Date().toISOString(),
+      exitCode: 0,
+      signal: null,
+      endTime: new Date().toISOString(),
     });
     expect(store.hasExitRecord(jobId)).toBe(true);
   });
@@ -588,7 +603,14 @@ describe('rebindNamespace', () => {
     const store = new ProgressStore();
     const jobId = `rebind-hash-${randomUUID()}`;
     jobIdsToClean.add(jobId);
-    store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot, backendNamespace: 'old-ns', bundleHash: 'old-hash' });
+    store.initJob({
+      jobId,
+      sessionId: 's1',
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: 'old-ns',
+      bundleHash: 'old-hash',
+    });
 
     store.rebindNamespace(jobId, 'new-ns', 'new-hash');
 

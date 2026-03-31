@@ -19,14 +19,17 @@ vi.mock('node:os', async () => {
 function createIndex(noteTags: Record<string, string[]>): KbIndex {
   return {
     notes: Object.fromEntries(
-      Object.entries(noteTags).map(([note, tags], index) => [note, {
-        title: `Note ${index + 1}`,
-        tags,
-        principles: [],
-        source: ['kangig94/coral'],
-        createdAt: '2026-03-20T00:00:00.000Z',
-        updatedAt: '2026-03-20T00:00:00.000Z',
-      }]),
+      Object.entries(noteTags).map(([note, tags], index) => [
+        note,
+        {
+          title: `Note ${index + 1}`,
+          tags,
+          principles: [],
+          source: ['kangig94/coral'],
+          createdAt: '2026-03-20T00:00:00.000Z',
+          updatedAt: '2026-03-20T00:00:00.000Z',
+        },
+      ]),
     ),
     principles: {},
   };
@@ -69,10 +72,7 @@ describe('cleanupTags', () => {
         ['deep-alert-pattern', 'deep-alert-patterns'],
         ['widget', 'widgets'],
       ]),
-      globalDeletions: new Set([
-        'deep-legacy-api',
-        'ui-pattern',
-      ]),
+      globalDeletions: new Set(['deep-legacy-api', 'ui-pattern']),
     });
     expect(result.globalReplacements.has('alpha')).toBe(false);
     expect(result.globalDeletions.has('alpha')).toBe(false);
@@ -89,9 +89,7 @@ describe('cleanupTags', () => {
     });
 
     expect(cleanupTags(index, ['alpha-plural-one', 'gamma-singular-one'])).toEqual({
-      globalReplacements: new Map([
-        ['reports', 'report'],
-      ]),
+      globalReplacements: new Map([['reports', 'report']]),
       globalDeletions: new Set(),
     });
   });

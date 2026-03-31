@@ -20,10 +20,12 @@ function joinSections(sections: Array<string | null | undefined>): string {
 }
 
 function firstPersonaLine(persona: string): string {
-  return persona
-    .split('\n')
-    .map((line) => line.trim())
-    .find((line) => line.length > 0) ?? '';
+  return (
+    persona
+      .split('\n')
+      .map((line) => line.trim())
+      .find((line) => line.length > 0) ?? ''
+  );
 }
 
 /** Full self-persona block for this agent */

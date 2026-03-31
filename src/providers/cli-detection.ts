@@ -54,7 +54,7 @@ function createCliDetector(config: CliDetectorConfig): {
   }
 
   async function runProbe(): Promise<CliInfo> {
-    const cli = cachedCli ?? await queryCliVersion();
+    const cli = cachedCli ?? (await queryCliVersion());
     cachedCli = cli;
     if (!cli.available) return cli;
 
@@ -80,19 +80,14 @@ function createCliDetector(config: CliDetectorConfig): {
 
   function queryCliVersion(): Promise<CliInfo> {
     return new Promise<CliInfo>((resolve) => {
-      execFile(
-        config.binaryName,
-        [...config.versionArgs],
-        { timeout: 10_000, encoding: 'utf8' },
-        (err, stdout) => {
-          if (err) {
-            resolve({ available: false, error: config.notFoundMessage });
-            return;
-          }
+      execFile(config.binaryName, [...config.versionArgs], { timeout: 10_000, encoding: 'utf8' }, (err, stdout) => {
+        if (err) {
+          resolve({ available: false, error: config.notFoundMessage });
+          return;
+        }
 
-          resolve({ available: true, version: stdout.trim(), authState: 'unknown' });
-        },
-      );
+        resolve({ available: true, version: stdout.trim(), authState: 'unknown' });
+      });
     });
   }
 
@@ -191,7 +186,8 @@ const claudeDetector = createCliDetector({
   notFoundMessage: 'Claude CLI not found. Install it from the Claude Code distribution.',
   authEnvVar: 'ANTHROPIC_API_KEY',
   authCommand: ['auth', 'status', '--json'],
-  authErrorPattern: /not logged in|unauthorized|unauthenticated|authentication required|login required|no api key|missing.*api.*key/i,
+  authErrorPattern:
+    /not logged in|unauthorized|unauthenticated|authentication required|login required|no api key|missing.*api.*key/i,
   authErrorMessage: CLAUDE_AUTH_ERROR_MESSAGE,
   parseAuthOutput: parseClaudeAuthStatus,
 });

@@ -34,9 +34,12 @@ describe('shortPath', () => {
 
 describe('formatToolProgress', () => {
   it('formats Read with relative path when inside projectRoot', () => {
-    expect(formatToolProgress('Read', { file_path: projectMainFile, offset: 12, limit: 8 }, projectRoot))
-      .toBe('Read(src/main.ts:12-20)');
-    expect(formatToolProgress('Read', { file_path: projectMainFile, offset: 12 }, projectRoot)).toBe('Read(src/main.ts:12+)');
+    expect(formatToolProgress('Read', { file_path: projectMainFile, offset: 12, limit: 8 }, projectRoot)).toBe(
+      'Read(src/main.ts:12-20)',
+    );
+    expect(formatToolProgress('Read', { file_path: projectMainFile, offset: 12 }, projectRoot)).toBe(
+      'Read(src/main.ts:12+)',
+    );
     expect(formatToolProgress('Read', { file_path: projectMainFile }, projectRoot)).toBe('Read(src/main.ts)');
   });
 
@@ -45,8 +48,13 @@ describe('formatToolProgress', () => {
   });
 
   it('formats Edit and Write tools', () => {
-    expect(formatToolProgress('Edit', { file_path: projectMainFile, old_string: 'before\nline', new_string: 'after\nline' }, projectRoot))
-      .toBe('Update(src/main.ts, "before" → "after")');
+    expect(
+      formatToolProgress(
+        'Edit',
+        { file_path: projectMainFile, old_string: 'before\nline', new_string: 'after\nline' },
+        projectRoot,
+      ),
+    ).toBe('Update(src/main.ts, "before" → "after")');
     expect(formatToolProgress('Write', { file_path: projectMainFile }, projectRoot)).toBe('Write(src/main.ts)');
   });
 

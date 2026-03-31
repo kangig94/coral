@@ -16,14 +16,16 @@ const NONDASH_FILE = String.raw`("[^"]+"|'[^']+'|[^-\s]\S*)`;
 const SED_RANGE = String.raw`['"]?(\d+),(\d+)p['"]?`;
 
 const RULES: Rule[] = [
-  [new RegExp(String.raw`^nl\s+-ba\s+${FILE}\s*\|\s*sed\s+-n\s+${SED_RANGE}$`),
-    (m, sp) => `Read(${sp(stripQuotes(m[1]))}:${m[2]}-${m[3]})`],
-  [new RegExp(String.raw`^sed\s+-n\s+${SED_RANGE}\s+${FILE}$`),
-    (m, sp) => `Read(${sp(stripQuotes(m[3]))}:${m[1]}-${m[2]})`],
-  [new RegExp(String.raw`^nl\s+-ba\s+${FILE}$`),
-    (m, sp) => `Read(${sp(stripQuotes(m[1]))})`],
-  [new RegExp(String.raw`^cat\s+${NONDASH_FILE}$`),
-    (m, sp) => `Read(${sp(stripQuotes(m[1]))})`],
+  [
+    new RegExp(String.raw`^nl\s+-ba\s+${FILE}\s*\|\s*sed\s+-n\s+${SED_RANGE}$`),
+    (m, sp) => `Read(${sp(stripQuotes(m[1]))}:${m[2]}-${m[3]})`,
+  ],
+  [
+    new RegExp(String.raw`^sed\s+-n\s+${SED_RANGE}\s+${FILE}$`),
+    (m, sp) => `Read(${sp(stripQuotes(m[3]))}:${m[1]}-${m[2]})`,
+  ],
+  [new RegExp(String.raw`^nl\s+-ba\s+${FILE}$`), (m, sp) => `Read(${sp(stripQuotes(m[1]))})`],
+  [new RegExp(String.raw`^cat\s+${NONDASH_FILE}$`), (m, sp) => `Read(${sp(stripQuotes(m[1]))})`],
   [/^rg\b.*?(?:"([^"]+)"|'([^']+)')/, (m, _sp) => `Grep(${m[1] ?? m[2]})`],
   [/^rg\s+(?:-\S+\s+)*([^-\s]\S*)/, (m, _sp) => `Grep(${m[1]})`],
 ];

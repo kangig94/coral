@@ -161,8 +161,15 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     expect(program.name()).toBe('coral-cli');
-    expect(normalizeProviderArgv(['node', 'coral-cli', 'codex', 'coral:architect', '--prompt', 'hi']))
-      .toEqual(['node', 'coral-cli', 'codex', 'coral', 'architect', '--prompt', 'hi']);
+    expect(normalizeProviderArgv(['node', 'coral-cli', 'codex', 'coral:architect', '--prompt', 'hi'])).toEqual([
+      'node',
+      'coral-cli',
+      'codex',
+      'coral',
+      'architect',
+      '--prompt',
+      'hi',
+    ]);
   });
 
   it('adds --detach to exec, fork, coral, and workflow command help', async () => {
@@ -219,16 +226,7 @@ describe('cli main routing', () => {
     });
     mockState.launchAndFollow.mockResolvedValueOnce(7);
 
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'codex',
-      'exec',
-      '--prompt',
-      'hi',
-      '--output-format',
-      'json',
-    ]);
+    await program.parseAsync(['node', 'coral-cli', 'codex', 'exec', '--prompt', 'hi', '--output-format', 'json']);
 
     expect(mockState.launchAndFollow).toHaveBeenCalledWith({
       launchResult: {
@@ -259,14 +257,7 @@ describe('cli main routing', () => {
       message: 'Missing prompt',
     });
 
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'codex',
-      'exec',
-      '--prompt',
-      'hi',
-    ]);
+    await program.parseAsync(['node', 'coral-cli', 'codex', 'exec', '--prompt', 'hi']);
 
     expect(stdout).toBe('');
     expect(stderr).toBe('Rejected [bad_request]: Missing prompt\n');
@@ -329,13 +320,7 @@ describe('cli main routing', () => {
       mode: 'text',
     });
 
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'kb',
-      'search',
-      'accel',
-    ]);
+    await program.parseAsync(['node', 'coral-cli', 'kb', 'search', 'accel']);
 
     expect(mockState.kbSearch).toHaveBeenCalledWith({ query: 'accel' });
     const parsed = JSON.parse(stdout);
@@ -354,17 +339,7 @@ describe('cli main routing', () => {
       warning: 'Run kb_reindex to build the search index.',
     });
 
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'kb',
-      'search',
-      'accel',
-      '--top-k',
-      '5',
-      '--output-format',
-      'json',
-    ]);
+    await program.parseAsync(['node', 'coral-cli', 'kb', 'search', 'accel', '--top-k', '5', '--output-format', 'json']);
 
     expect(mockState.kbSearch).toHaveBeenCalledWith({ query: 'accel', top_k: 5 });
     expect(JSON.parse(stdout.trim())).toEqual({
@@ -383,12 +358,7 @@ describe('cli main routing', () => {
       total: 1,
     });
 
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'kb',
-      'principles',
-    ]);
+    await program.parseAsync(['node', 'coral-cli', 'kb', 'principles']);
 
     expect(mockState.kbPrinciples).toHaveBeenCalledWith({});
     expect(stdout).toBe('contract-first-design\nTotal: 1\n');
@@ -403,16 +373,7 @@ describe('cli main routing', () => {
       total: 0,
     });
 
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'kb',
-      'principles',
-      '--query',
-      'contract',
-      '--top-k',
-      '7',
-    ]);
+    await program.parseAsync(['node', 'coral-cli', 'kb', 'principles', '--query', 'contract', '--top-k', '7']);
 
     expect(mockState.kbPrinciples).toHaveBeenCalledWith({ query: 'contract', top_k: 7 });
   });
@@ -432,13 +393,7 @@ describe('cli main routing', () => {
       total: 2,
     });
 
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'kb',
-      'principles',
-      '--verbose',
-    ]);
+    await program.parseAsync(['node', 'coral-cli', 'kb', 'principles', '--verbose']);
 
     expect(mockState.kbPrinciples).toHaveBeenCalledWith({ verbose: true });
     expect(stdout).toBe('contract-first-design (a-note, b-note): State contracts first.\nTotal: 2\n');
@@ -478,15 +433,7 @@ describe('cli main routing', () => {
       memos: [{ filename: 'a.md', summary: 'summary', createdAt: '2026-03-27T00:00:00.000Z' }],
     });
 
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'kb',
-      'memo',
-      'list',
-      '--output-format',
-      'json',
-    ]);
+    await program.parseAsync(['node', 'coral-cli', 'kb', 'memo', 'list', '--output-format', 'json']);
 
     expect(mockState.kbMemoList).toHaveBeenCalledWith({});
     expect(JSON.parse(stdout.trim())).toEqual({
@@ -503,16 +450,7 @@ describe('cli main routing', () => {
       count: 1,
     });
 
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'kb',
-      'memo',
-      'delete',
-      '2026*',
-      '--output-format',
-      'json',
-    ]);
+    await program.parseAsync(['node', 'coral-cli', 'kb', 'memo', 'delete', '2026*', '--output-format', 'json']);
 
     expect(mockState.kbMemoDelete).toHaveBeenCalledWith({ pattern: '2026*' });
     expect(JSON.parse(stdout.trim())).toEqual({
@@ -529,15 +467,7 @@ describe('cli main routing', () => {
       deleted: 3,
     });
 
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'kb',
-      'memo',
-      'purge',
-      '--output-format',
-      'json',
-    ]);
+    await program.parseAsync(['node', 'coral-cli', 'kb', 'memo', 'purge', '--output-format', 'json']);
 
     expect(mockState.kbMemoPurge).toHaveBeenCalledWith({});
     expect(JSON.parse(stdout.trim())).toEqual({ deleted: 3 });
@@ -556,13 +486,7 @@ describe('cli main routing', () => {
       principles: ['contract-first-design'],
     });
 
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'kb',
-      'read',
-      'coral-kb-read',
-    ]);
+    await program.parseAsync(['node', 'coral-cli', 'kb', 'read', 'coral-kb-read']);
 
     expect(mockState.kbRead).toHaveBeenCalledWith({ note: 'coral-kb-read' });
     const parsed = JSON.parse(stdout.trim());
@@ -624,15 +548,7 @@ describe('cli main routing', () => {
     writeFileSync(tmpFile, 'Updated', 'utf8');
 
     try {
-      await program.parseAsync([
-        'node',
-        'coral-cli',
-        'kb',
-        'update',
-        'cli-kb-tooling',
-        '--content-file',
-        tmpFile,
-      ]);
+      await program.parseAsync(['node', 'coral-cli', 'kb', 'update', 'cli-kb-tooling', '--content-file', tmpFile]);
 
       expect(mockState.kbUpdate).toHaveBeenCalledWith({
         note: 'cli-kb-tooling',
@@ -652,13 +568,7 @@ describe('cli main routing', () => {
       deleted: '/tmp/kb/notes/cli-kb-tooling.md',
     });
 
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'kb',
-      'delete',
-      'cli-kb-tooling',
-    ]);
+    await program.parseAsync(['node', 'coral-cli', 'kb', 'delete', 'cli-kb-tooling']);
 
     expect(mockState.kbDelete).toHaveBeenCalledWith({ note: 'cli-kb-tooling' });
     expect(stdout).toBe('Deleted: /tmp/kb/notes/cli-kb-tooling.md\n');
@@ -678,12 +588,7 @@ describe('cli main routing', () => {
       warning: 'Run kb_reindex again to refresh it.',
     });
 
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'kb',
-      'reindex',
-    ]);
+    await program.parseAsync(['node', 'coral-cli', 'kb', 'reindex']);
 
     expect(mockState.kbReindex).toHaveBeenCalledWith({});
     expect(stdout).toContain('Reindexed:');

@@ -30,7 +30,7 @@ function denormalizeSlug(slug: string): string {
 }
 
 function sortedMatchedBy(matchedBy: Set<KbMatchSurface>): KbMatchSurface[] {
-  return MATCH_SURFACE_ORDER.filter(surface => matchedBy.has(surface));
+  return MATCH_SURFACE_ORDER.filter((surface) => matchedBy.has(surface));
 }
 
 function hasTokenOverlap(queryTokens: string[], fieldTokens: string[]): boolean {
@@ -39,7 +39,7 @@ function hasTokenOverlap(queryTokens: string[], fieldTokens: string[]): boolean 
   }
 
   const fieldTokenSet = new Set(fieldTokens);
-  return queryTokens.some(token => fieldTokenSet.has(token));
+  return queryTokens.some((token) => fieldTokenSet.has(token));
 }
 
 function findSentenceStart(content: string, matchIndex: number): number {
@@ -105,10 +105,7 @@ function findPhraseAnchor(content: string, rawQuery: string, oramaTerm: string):
 
   for (const candidate of candidates) {
     const matchIndex = normalizedContent.indexOf(candidate.toLowerCase());
-    if (
-      matchIndex !== -1
-      && (bestAnchor === null || matchIndex < bestAnchor.index)
-    ) {
+    if (matchIndex !== -1 && (bestAnchor === null || matchIndex < bestAnchor.index)) {
       bestAnchor = {
         index: matchIndex,
         length: candidate.length,
@@ -144,8 +141,7 @@ function extractSnippet(
   queryTokens: string[],
   tokenizer: KbOramaTokenizer,
 ): string | undefined {
-  const anchor = findPhraseAnchor(content, rawQuery, oramaTerm)
-    ?? findTokenAnchor(content, queryTokens, tokenizer);
+  const anchor = findPhraseAnchor(content, rawQuery, oramaTerm) ?? findTokenAnchor(content, queryTokens, tokenizer);
 
   if (anchor === null) {
     return undefined;
@@ -181,10 +177,10 @@ function toResult(
   if (hasTokenOverlap(queryTokens, tokenizeField(slug, tokenizer))) {
     matchedBy.add('filename');
   }
-  if (principles.some(principle => hasTokenOverlap(queryTokens, tokenizeField(principle, tokenizer)))) {
+  if (principles.some((principle) => hasTokenOverlap(queryTokens, tokenizeField(principle, tokenizer)))) {
     matchedBy.add('principle');
   }
-  if (tags.some(tag => hasTokenOverlap(queryTokens, tokenizeField(tag, tokenizer)))) {
+  if (tags.some((tag) => hasTokenOverlap(queryTokens, tokenizeField(tag, tokenizer)))) {
     matchedBy.add('tag');
   }
   if (hasTokenOverlap(queryTokens, tokenizeField(title, tokenizer))) {
@@ -230,7 +226,7 @@ export async function searchKb(rt: KbRuntime, query: string, top_k = 20): Promis
   });
 
   return {
-    results: response.hits.map(hit => toResult(hit.document, index, queryTokens, tokenizer, rawQuery, oramaTerm)),
+    results: response.hits.map((hit) => toResult(hit.document, index, queryTokens, tokenizer, rawQuery, oramaTerm)),
     mode: 'text',
   };
 }

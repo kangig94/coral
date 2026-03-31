@@ -235,12 +235,7 @@ describe('matchCommandPattern — adversarial', () => {
 
   describe('commands that look like patterns but are not in the rule table', () => {
     it('returns null for commands outside the rule table', () => {
-      const unknownCommands = [
-        'grep -r "pattern" src/',
-        'head -n 20 file.ts',
-        'tail -f log.txt',
-        'less file.txt',
-      ];
+      const unknownCommands = ['grep -r "pattern" src/', 'head -n 20 file.ts', 'tail -f log.txt', 'less file.txt'];
       for (const command of unknownCommands) {
         expectNoPattern(command);
       }
@@ -249,11 +244,7 @@ describe('matchCommandPattern — adversarial', () => {
 
   describe('multiline and piped commands not in the rule table', () => {
     it('returns null for unsupported command chains', () => {
-      const chainedCommands = [
-        'cd /project; ls -la; cat package.json',
-        'cat file.ts | wc -l',
-        'find . | xargs cat',
-      ];
+      const chainedCommands = ['cd /project; ls -la; cat package.json', 'cat file.ts | wc -l', 'find . | xargs cat'];
       for (const command of chainedCommands) {
         expectNoPattern(command);
       }

@@ -41,10 +41,12 @@ describe('claude schemas', () => {
   });
 
   it('rejects abort discriminator (removed — use unified abort tool)', () => {
-    expect(claudeOpSchema.safeParse({
-      op: 'abort',
-      session: '12345678-1234-4234-8234-123456789abc',
-    }).success).toBe(false);
+    expect(
+      claudeOpSchema.safeParse({
+        op: 'abort',
+        session: '12345678-1234-4234-8234-123456789abc',
+      }).success,
+    ).toBe(false);
   });
 
   it('validates coral:<name> schema and rejects traversal-like names', () => {
@@ -62,11 +64,13 @@ describe('claude schemas', () => {
   });
 
   it('validates coral schema with work_dir', () => {
-    expect(coralClaudeSchema.safeParse({
-      op: 'coral:architect',
-      prompt: 'Do it',
-      work_dir: '/tmp',
-    }).success).toBe(true);
+    expect(
+      coralClaudeSchema.safeParse({
+        op: 'coral:architect',
+        prompt: 'Do it',
+        work_dir: '/tmp',
+      }).success,
+    ).toBe(true);
   });
 
   it('accepts optional owner field with valid token-safe value', () => {
@@ -93,19 +97,22 @@ describe('claude schemas', () => {
   });
 
   it('rejects owner with invalid characters', () => {
-    expect(coralClaudeSchema.safeParse({
-      op: 'coral:architect',
-      prompt: 'Do it',
-      owner: '../bad',
-    }).success).toBe(false);
+    expect(
+      coralClaudeSchema.safeParse({
+        op: 'coral:architect',
+        prompt: 'Do it',
+        owner: '../bad',
+      }).success,
+    ).toBe(false);
   });
 
   it('rejects empty string owner', () => {
-    expect(coralClaudeSchema.safeParse({
-      op: 'coral:architect',
-      prompt: 'Do it',
-      owner: '',
-    }).success).toBe(false);
+    expect(
+      coralClaudeSchema.safeParse({
+        op: 'coral:architect',
+        prompt: 'Do it',
+        owner: '',
+      }).success,
+    ).toBe(false);
   });
-
 });

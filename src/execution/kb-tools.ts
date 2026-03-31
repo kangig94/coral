@@ -1,6 +1,4 @@
-import {
-  assertOwnerId,
-} from '../shared/mcp-utils.js';
+import { assertOwnerId } from '../shared/mcp-utils.js';
 import { deleteFn as kbDeleteFn } from '../kb/delete.js';
 import { deleteMemos, listMemos, purgeMemos, writeMemo } from '../kb/memo.js';
 import { promote as kbPromote } from '../kb/promote.js';
@@ -19,10 +17,13 @@ function jsonTextResult(data: unknown, isError = false) {
 function toolError(error: string, detail?: Record<string, unknown>): ToolRouteResponse {
   return {
     statusCode: 200,
-    body: jsonTextResult({
-      error,
-      ...(detail === undefined ? {} : detail),
-    }, true),
+    body: jsonTextResult(
+      {
+        error,
+        ...(detail === undefined ? {} : detail),
+      },
+      true,
+    ),
   };
 }
 
@@ -43,10 +44,7 @@ function optionalString(args: Record<string, unknown>, key: string): string | un
   return typeof value === 'string' ? value : undefined;
 }
 
-export async function handleKbToolCall(
-  request: ToolRequest,
-  kbSubsystem: KbSubsystem,
-): Promise<ToolRouteResponse> {
+export async function handleKbToolCall(request: ToolRequest, kbSubsystem: KbSubsystem): Promise<ToolRouteResponse> {
   const { kb } = kbSubsystem;
   const args = request.args;
   const ctx = request.context;
@@ -72,14 +70,13 @@ export async function handleKbToolCall(
         const domain = requireString(args, 'domain');
         const topic = requireString(args, 'topic');
         if (!memo || !title || content === null || !domain || !topic) {
-          return toolError('invalid_request', { message: 'memo, title, content, domain, and topic are required strings' });
+          return toolError('invalid_request', {
+            message: 'memo, title, content, domain, and topic are required strings',
+          });
         }
-        result = await kbPromote(
-          kb,
-          ctx.projectRoot,
-          { memo, title, content, domain, topic },
-          () => { kbSubsystem.curateScheduler.schedule(); },
-        );
+        result = await kbPromote(kb, ctx.projectRoot, { memo, title, content, domain, topic }, () => {
+          kbSubsystem.curateScheduler.schedule();
+        });
         kbSubsystem.curateScheduler.scheduleDeferredCommit();
         break;
       }

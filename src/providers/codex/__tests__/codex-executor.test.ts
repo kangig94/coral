@@ -23,10 +23,7 @@ async function loadExecutor(pluginRoot?: string): Promise<ExecutorModule> {
 
 const authenticatedCli = { available: true as const, version: '1.0.0', authState: 'authenticated' as const };
 
-function cliResult(
-  stdout: string,
-  overrides: Partial<ProviderCliResult> = {},
-): ProviderCliResult {
+function cliResult(stdout: string, overrides: Partial<ProviderCliResult> = {}): ProviderCliResult {
   return {
     stdout,
     stderr: '',
@@ -36,7 +33,9 @@ function cliResult(
   };
 }
 
-function withAuthenticatedCli(overrides: Partial<Omit<CodexExecOptions, 'preChecked' | 'runCli'>> = {}): CodexExecOptions {
+function withAuthenticatedCli(
+  overrides: Partial<Omit<CodexExecOptions, 'preChecked' | 'runCli'>> = {},
+): CodexExecOptions {
   return {
     environment: {},
     runCli: mockRunCli as CodexExecOptions['runCli'],
@@ -107,9 +106,11 @@ describe('prependInjectMd', () => {
         runCli,
       });
 
-      expect(runCli).toHaveBeenCalledWith(expect.objectContaining({
-        prompt: '# Guidelines\nBe concise.\n\n---\n\ndo something',
-      }));
+      expect(runCli).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: '# Guidelines\nBe concise.\n\n---\n\ndo something',
+        }),
+      );
     } finally {
       rmSync(pluginRoot, { recursive: true, force: true });
     }
@@ -127,9 +128,11 @@ describe('prependInjectMd', () => {
         runCli,
       });
 
-      expect(runCli).toHaveBeenCalledWith(expect.objectContaining({
-        prompt: `Memo dir: ${join(homedir(), '.coral', 'projects', 'local-project-root')}/memo\n\n---\n\ndo something`,
-      }));
+      expect(runCli).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: `Memo dir: ${join(homedir(), '.coral', 'projects', 'local-project-root')}/memo\n\n---\n\ndo something`,
+        }),
+      );
     } finally {
       rmSync(pluginRoot, { recursive: true, force: true });
     }
@@ -147,9 +150,11 @@ describe('prependInjectMd', () => {
         runCli,
       });
 
-      expect(runCli).toHaveBeenCalledWith(expect.objectContaining({
-        prompt: `KB: node "${join(pluginRoot, 'bridge', 'coral-cli.cjs')}" kb search "accel"\n\n---\n\ndo something`,
-      }));
+      expect(runCli).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: `KB: node "${join(pluginRoot, 'bridge', 'coral-cli.cjs')}" kb search "accel"\n\n---\n\ndo something`,
+        }),
+      );
     } finally {
       rmSync(pluginRoot, { recursive: true, force: true });
     }
@@ -182,7 +187,10 @@ describe('executeOneShot', () => {
     );
     mockRunCli.mockResolvedValue(cliResult(output));
 
-    const result = await executeOneShot('test prompt', withAuthenticatedCli({ model: 'o4-mini', workingDirectory: '/tmp' }));
+    const result = await executeOneShot(
+      'test prompt',
+      withAuthenticatedCli({ model: 'o4-mini', workingDirectory: '/tmp' }),
+    );
 
     expect(mockRunCli).toHaveBeenCalledWith({
       command: 'codex',
@@ -204,16 +212,19 @@ describe('executeOneShot', () => {
   });
 
   it('throws when preChecked is unauthenticated', async () => {
-    await expect(executeOneShot('test', {
-      environment: {},
-      runCli: mockRunCli as CodexExecOptions['runCli'],
-      preChecked: {
-        available: true,
-        version: '1.0.0',
-        authState: 'unauthenticated',
-        authError: 'Codex CLI is not authenticated. Run "codex login" or set the OPENAI_API_KEY environment variable.',
-      },
-    })).rejects.toThrow('Codex CLI is not authenticated');
+    await expect(
+      executeOneShot('test', {
+        environment: {},
+        runCli: mockRunCli as CodexExecOptions['runCli'],
+        preChecked: {
+          available: true,
+          version: '1.0.0',
+          authState: 'unauthenticated',
+          authError:
+            'Codex CLI is not authenticated. Run "codex login" or set the OPENAI_API_KEY environment variable.',
+        },
+      }),
+    ).rejects.toThrow('Codex CLI is not authenticated');
 
     expect(mockRunCli).not.toHaveBeenCalled();
   });
@@ -263,9 +274,11 @@ describe('executeOneShot', () => {
   it('maps max effort to the Codex-native xhigh flag', async () => {
     await executeOneShot('test', withAuthenticatedCli({ model: 'o4-mini', workingDirectory: '/tmp', effort: 'max' }));
 
-    expect(mockRunCli).toHaveBeenCalledWith(expect.objectContaining({
-      args: ['exec', '-m', 'o4-mini', ...FULL_AUTO_FLAGS, '-c', 'model_reasoning_effort=xhigh'],
-    }));
+    expect(mockRunCli).toHaveBeenCalledWith(
+      expect.objectContaining({
+        args: ['exec', '-m', 'o4-mini', ...FULL_AUTO_FLAGS, '-c', 'model_reasoning_effort=xhigh'],
+      }),
+    );
   });
 
   it('uses the default model when none is provided', async () => {
@@ -275,11 +288,16 @@ describe('executeOneShot', () => {
   });
 
   it('uses bypass flags when bypassSandbox is true', async () => {
-    await executeOneShot('test', withAuthenticatedCli({ model: 'o4-mini', workingDirectory: '/tmp', bypassSandbox: true }));
+    await executeOneShot(
+      'test',
+      withAuthenticatedCli({ model: 'o4-mini', workingDirectory: '/tmp', bypassSandbox: true }),
+    );
 
-    expect(mockRunCli).toHaveBeenCalledWith(expect.objectContaining({
-      args: ['exec', '-m', 'o4-mini', ...BYPASS_FLAGS, ...DEFAULT_EFFORT_FLAGS],
-    }));
+    expect(mockRunCli).toHaveBeenCalledWith(
+      expect.objectContaining({
+        args: ['exec', '-m', 'o4-mini', ...BYPASS_FLAGS, ...DEFAULT_EFFORT_FLAGS],
+      }),
+    );
   });
 
   it('forwards onEvent to the runner port', async () => {
@@ -314,17 +332,19 @@ describe('executeResume', () => {
   });
 
   it('throws verbatim authError before calling the runner', async () => {
-    await expect(executeResume('thread-abc', 'continue', {
-      environment: {},
-      bypassSandbox: false,
-      runCli: mockRunCli as CodexExecOptions['runCli'],
-      preChecked: {
-        available: true,
-        version: '1.0.0',
-        authState: 'unauthenticated',
-        authError: 'Custom auth error for resume test',
-      },
-    })).rejects.toThrow('Custom auth error for resume test');
+    await expect(
+      executeResume('thread-abc', 'continue', {
+        environment: {},
+        bypassSandbox: false,
+        runCli: mockRunCli as CodexExecOptions['runCli'],
+        preChecked: {
+          available: true,
+          version: '1.0.0',
+          authState: 'unauthenticated',
+          authError: 'Custom auth error for resume test',
+        },
+      }),
+    ).rejects.toThrow('Custom auth error for resume test');
 
     expect(mockRunCli).not.toHaveBeenCalled();
   });
@@ -340,10 +360,12 @@ describe('executeFork', () => {
 
     const result = await executeFork('thread-orig', 'Continue from where we left off.', withAuthenticatedCli());
 
-    expect(mockRunCli).toHaveBeenCalledWith(expect.objectContaining({
-      args: expect.arrayContaining(['exec', 'resume', 'thread-orig']),
-      prompt: 'Continue from where we left off.',
-    }));
+    expect(mockRunCli).toHaveBeenCalledWith(
+      expect.objectContaining({
+        args: expect.arrayContaining(['exec', 'resume', 'thread-orig']),
+        prompt: 'Continue from where we left off.',
+      }),
+    );
     expect(result.response).toBe('Forked');
     expect(result.sessionId).toBe('t-fork');
   });
