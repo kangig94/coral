@@ -15,6 +15,7 @@ import {
   type ProviderInstruction,
   type ProviderProgressEvent,
   type ProviderRequest,
+  type ProviderResult,
   type TerminalResult,
   type WaitRequest,
   type WaitStreamEvent,
@@ -145,8 +146,22 @@ type ProviderServerRegistryEntry = {
 };
 
 type ProbeConversationRefResult = 'available' | 'missing' | 'unavailable';
+type InterruptedAppServerReason = 'restart' | 'handoff';
 
 const APP_SERVER_RECOVERY_POLICY = 'session_continuity_only' as const;
+const APP_SERVER_RESTART_NOTICE = 'Backend restarted during the Codex turn. The interrupted turn was not replayed.';
+const APP_SERVER_HANDOFF_NOTICE = 'Backend handoff interrupted the Codex turn. The interrupted turn was not replayed.';
+const APP_SERVER_INTERRUPTED_BEFORE_CONTINUITY_NOTICE =
+  'The job ended before a resumable conversation checkpoint for this turn was written.';
+const APP_SERVER_CONTINUITY_VERIFIED_NOTICE = 'Session continuity was verified for the saved conversation thread.';
+const APP_SERVER_CONTINUITY_MISSING_NOTICE =
+  'The saved conversation thread is no longer available, so the session is non-resumable.';
+const APP_SERVER_CONTINUITY_UNVERIFIED_NOTICE =
+  'Session continuity could not be verified because the recovery probe was unavailable.';
+
+function joinNotice(...parts: Array<string | undefined>): string {
+  return parts.filter((part): part is string => typeof part === 'string' && part.length > 0).join(' ');
+}
 
 function bindProviderRunner(
   provider: string,
@@ -398,6 +413,79 @@ export class ExecutionService {
   async drainProviderServers(): Promise<void> {
     const entries = [...this.providerServers.values()];
     await Promise.all(entries.map((entry) => this.closeProviderServerEntry(entry, 'drained')));
+  }
+
+  async finalizeInterruptedAppServerJob(
+    launchRecord: PersistedLaunchRecord,
+    runtimeRecord: AppServerRuntimeRecord,
+    options: { reason: InterruptedAppServerReason },
+  ): Promise<void> {
+    const status = this.progressStore.readStatus(launchRecord.jobId);
+    if (!status || isTerminalPhase(status.phase)) {
+      return;
+    }
+
+    const baseNotice =
+      options.reason === 'restart' ? APP_SERVER_RESTART_NOTICE : APP_SERVER_HANDOFF_NOTICE;
+    const session =
+      this.sessionManager.get(launchRecord.provider, launchRecord.sessionId) ??
+      ({ conversationRef: launchRecord.request.conversationRef } as Pick<SessionEntry, 'conversationRef'>);
+    const preservedConversationRef = session.conversationRef;
+
+    const { leaseState, threadId } = runtimeRecord.providerMeta;
+    let mutation:
+      | { type: 'set_resumable'; conversationRef: string }
+      | { type: 'clear_non_resumable' };
+    let notice: string;
+
+    if (leaseState === 'waiting' || !threadId) {
+      if (preservedConversationRef) {
+        mutation = {
+          type: 'set_resumable',
+          conversationRef: preservedConversationRef,
+        };
+        notice = joinNotice(
+          baseNotice,
+          APP_SERVER_INTERRUPTED_BEFORE_CONTINUITY_NOTICE,
+          'The existing conversation reference was preserved.',
+        );
+      } else {
+        mutation = { type: 'clear_non_resumable' };
+        notice = joinNotice(
+          baseNotice,
+          APP_SERVER_INTERRUPTED_BEFORE_CONTINUITY_NOTICE,
+          'No resumable conversation was available.',
+        );
+      }
+    } else {
+      const probeResult = await this.probeConversationRef(threadId);
+      if (probeResult === 'available') {
+        mutation = { type: 'set_resumable', conversationRef: threadId };
+        notice = joinNotice(baseNotice, APP_SERVER_CONTINUITY_VERIFIED_NOTICE);
+      } else if (probeResult === 'missing') {
+        mutation = { type: 'clear_non_resumable' };
+        notice = joinNotice(baseNotice, APP_SERVER_CONTINUITY_MISSING_NOTICE);
+      } else {
+        mutation = {
+          type: 'set_resumable',
+          conversationRef: preservedConversationRef ?? threadId,
+        };
+        notice = joinNotice(baseNotice, APP_SERVER_CONTINUITY_UNVERIFIED_NOTICE);
+      }
+    }
+
+    this.progressStore.updateLaunchState(launchRecord.jobId, 'error', notice);
+    this.writeTerminalResult(launchRecord.jobId, launchRecord.sessionId, { content: '', notice }, 'error');
+    this.progressStore.writeResultMd(launchRecord.jobId, '');
+    this.abortRegistry.remove(launchRecord.jobId);
+    releaseLaunch(launchRecord.jobId, (this.jobPools.get(launchRecord.jobId) ?? launchRecord.pool ?? 'default') as LaunchPool);
+    this.jobPools.delete(launchRecord.jobId);
+    await this.finalizeSessionContinuityMutation(
+      launchRecord.provider,
+      launchRecord.sessionId,
+      launchRecord.jobId,
+      mutation,
+    );
   }
 
   private async claimJobAtomic(
@@ -1097,6 +1185,62 @@ export class ExecutionService {
     this.sessionManager.releaseJob(sessionId, jobId);
   }
 
+  private async finalizeSessionContinuityMutation(
+    providerName: string,
+    sessionId: string,
+    jobId: string,
+    mutation:
+      | { type: 'set_resumable'; conversationRef: string }
+      | { type: 'clear_non_resumable' },
+  ): Promise<boolean> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const session = this.sessionManager.get(providerName, sessionId);
+      if (!session || session.activeJobId !== jobId) {
+        return false;
+      }
+
+      const finalized =
+        mutation.type === 'clear_non_resumable'
+          ? await this.sessionManager.clearConversationRefAndMarkNonResumableAtomic(
+              sessionId,
+              jobId,
+              session.version,
+            )
+          : await this.sessionManager.finalizeJobContinuityAtomic(sessionId, {
+              expectedActiveJobId: jobId,
+              expectedVersion: session.version,
+              mutation,
+            });
+      if (finalized) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private async finalizeProviderSession(
+    providerName: string,
+    request: ProviderRequest,
+    sessionId: string,
+    jobId: string,
+    result: ProviderResult,
+  ): Promise<void> {
+    if (request.action === 'resume' && result.nonResumable) {
+      await this.finalizeSessionContinuityMutation(providerName, sessionId, jobId, {
+        type: 'clear_non_resumable',
+      });
+      return;
+    }
+
+    if (result.conversationRef) {
+      this.sessionManager.setConversationRef(sessionId, result.conversationRef);
+    } else if (result.nonResumable) {
+      this.sessionManager.setNonResumable(sessionId);
+    }
+    this.sessionManager.releaseJob(sessionId, jobId);
+  }
+
   /**
    * Poll until launch state is non-pending. Returns 'pending' if timeout expires.
    * Returns 'queued' immediately for queued jobs — callers must NOT treat this as an error.
@@ -1295,13 +1439,7 @@ export class ExecutionService {
         this.progressStore.writeResultMd(jobId, result.content);
         this.abortRegistry.remove(jobId);
         this.jobPools.delete(jobId);
-
-        if (result.conversationRef) {
-          this.sessionManager.setConversationRef(sessionId, result.conversationRef);
-        } else if (result.nonResumable) {
-          this.sessionManager.setNonResumable(sessionId);
-        }
-        this.sessionManager.releaseJob(sessionId, jobId);
+        await this.finalizeProviderSession(provider.name, request, sessionId, jobId, result);
       } catch (err: unknown) {
         const currentStatus = this.progressStore.readStatus(jobId);
         if (!currentStatus || isTerminalPhase(currentStatus.phase)) {
@@ -1403,13 +1541,7 @@ export class ExecutionService {
         this.progressStore.writeResultMd(jobId, result.content);
         this.abortRegistry.remove(jobId);
         this.jobPools.delete(jobId);
-
-        if (result.conversationRef) {
-          this.sessionManager.setConversationRef(sessionId, result.conversationRef);
-        } else if (result.nonResumable) {
-          this.sessionManager.setNonResumable(sessionId);
-        }
-        this.sessionManager.releaseJob(sessionId, jobId);
+        await this.finalizeProviderSession(provider.name, request, sessionId, jobId, result);
       } catch (err: unknown) {
         const currentStatus = this.progressStore.readStatus(jobId);
         if (!currentStatus || isTerminalPhase(currentStatus.phase)) return;

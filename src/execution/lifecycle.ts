@@ -34,7 +34,6 @@ import { type ExecutionService as DefaultExecutionService } from './service.js';
 import {
   isAppServerRuntime,
   belongsToNamespace,
-  isDurableCliRuntime,
   isLivePhase,
   isTerminalPhase,
   readBackendNamespace,
@@ -460,7 +459,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     discussRegistry,
     server,
     getExecutionService,
-    listExecutionServices: _listExecutionServices,
+    listExecutionServices,
     getDiscussStoreForSource,
     knownDiscussSources,
     getDiscussContext,
@@ -510,6 +509,38 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     sessionIndexSubscribed = false;
   }
 
+  async function finalizeLiveAppServerJobsForHandoff(): Promise<void> {
+    for (const status of listLiveJobs(progressStore, namespace)) {
+      const launchRecord = progressStore.readLaunchRecord(status.jobId);
+      const runtimeRecord = progressStore.readRuntimeRecord(status.jobId);
+      if (!launchRecord || !isAppServerRuntime(runtimeRecord)) {
+        continue;
+      }
+
+      try {
+        const ctx: CallerContext = { projectRoot: launchRecord.projectRoot, pluginRoot, coralEnv: {} };
+        const service = getExecutionService(ctx) as DefaultExecutionService;
+        await service.finalizeInterruptedAppServerJob(launchRecord, runtimeRecord, { reason: 'handoff' });
+        log(`Finalized interrupted app-server job during handoff: ${status.jobId}\n`);
+      } catch (error: unknown) {
+        log(`Failed to finalize interrupted app-server job ${status.jobId} during handoff: ${formatError(error)}\n`);
+      }
+    }
+
+    for (const service of listExecutionServices()) {
+      const drainProviderServers = (service as Partial<DefaultExecutionService>).drainProviderServers;
+      if (typeof drainProviderServers !== 'function') {
+        continue;
+      }
+
+      try {
+        await drainProviderServers.call(service);
+      } catch (error: unknown) {
+        log(`Failed to drain provider servers during handoff: ${formatError(error)}\n`);
+      }
+    }
+  }
+
   // -- Recovery adoption ----------------------------------------------------
 
   async function runRecoveryAdoption(
@@ -534,10 +565,15 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         const service = getExecutionService(ctx) as DefaultExecutionService;
         const provider = getNewProvider(launchRecord.provider);
         const recovery = provider?.recovery;
-        // TODO(AC2-AC10): route app-server runtime recovery through transport-aware continuity handling.
-        if (!isDurableCliRuntime(runtimeRecord)) {
-          throw new Error(`Unsupported runtime transport for recovered job ${jobId}: ${runtimeRecord.transport}`);
+        if (isAppServerRuntime(runtimeRecord)) {
+          assertStartupStillActive();
+          await service.finalizeInterruptedAppServerJob(launchRecord, runtimeRecord, { reason: 'restart' });
+          assertStartupStillActive();
+          recoveryRegistry?.remove(jobId);
+          log(`Recovered interrupted app-server job: ${jobId}\n`);
+          continue;
         }
+
         let adoptedRuntimeRecord = runtimeRecord;
         assertStartupStillActive();
         ({ cleanup } = service.adoptRunningJob(launchRecord, runtimeRecord));
@@ -739,9 +775,11 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       if (mode === 'hard') {
         markJobsAsErrorFn(namespace, 'Backend shutting down');
         killAllChildrenFn();
+      } else {
+        await finalizeLiveAppServerJobsForHandoff();
       }
-      // handoff mode: detached wrappers continue, jobs remain in their current
-      // phase for recovery by the replacement backend.
+      // handoff mode: detached durable wrappers continue for replacement recovery,
+      // while app-server jobs are terminalized locally before provider-server drain.
 
       for (const interval of recoveryPollIntervals) clearInterval(interval);
       recoveryPollIntervals.clear();

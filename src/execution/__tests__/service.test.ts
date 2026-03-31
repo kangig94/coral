@@ -664,6 +664,44 @@ describe('ExecutionService', () => {
       expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBe('job-race');
     });
 
+    it('resume clears conversationRef and marks the session non_resumable on invalid-thread results', async () => {
+      const { provider } = makeProvider({
+        execute: async () => ({
+          content: '',
+          nonResumable: true,
+          notice: 'Conversation thread-stale is no longer resumable.',
+          errors: ['No such thread'],
+        }),
+      });
+      mockState.getNewProvider.mockReturnValue(provider);
+      const mgr = new SessionManager(ctx.projectRoot);
+      const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
+      mgr.setConversationRef(entry.sessionId, 'thread-stale');
+      const service = new ExecutionService(ctx);
+
+      const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);
+
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') {
+        throw new Error('expected running launch');
+      }
+      trackJob(decision.job);
+
+      const terminal = await waitForTerminalEvent(service, decision.job);
+      const updatedSession = mgr.get('codex', entry.sessionId);
+
+      expect(terminal.result).toMatchObject({
+        content: '',
+        nonResumable: true,
+        notice: 'Conversation thread-stale is no longer resumable.',
+        errors: ['No such thread'],
+      });
+      expect(updatedSession?.activeJobId).toBeUndefined();
+      expect(updatedSession?.lastJobId).toBe(decision.job);
+      expect(updatedSession?.state).toBe('non_resumable');
+      expect(updatedSession?.conversationRef).toBeUndefined();
+    });
+
     it('fork allocates a new session id', async () => {
       const never = new Promise<ProviderResult>(() => {});
       const { provider } = makeProvider({ execute: () => never });
@@ -1574,6 +1612,21 @@ describe('ExecutionService', () => {
       };
     }
 
+    function makeAppServerRuntimeRecord(
+      overrides?: Partial<AppServerRuntimeRecord['providerMeta']>,
+    ): AppServerRuntimeRecord {
+      return {
+        transport: 'app-server',
+        startTime: new Date().toISOString(),
+        providerMeta: {
+          serverKey: `codex:${ctx.projectRoot}`,
+          leaseState: 'acquired',
+          recoveryPolicy: 'session_continuity_only',
+          ...overrides,
+        },
+      };
+    }
+
     describe('recoverQueuedJob', () => {
       it('recovers a queued job from a persisted launch record and preserves the original jobId', async () => {
         const { provider } = makeProvider();
@@ -1835,6 +1888,187 @@ describe('ExecutionService', () => {
         const updatedSession = sessionManager.get('codex', session.sessionId);
         expect(updatedSession?.activeJobId).toBeUndefined();
         expect(updatedSession?.lastJobId).toBe(jobId);
+      });
+    });
+
+    describe('finalizeInterruptedAppServerJob', () => {
+      it('skips the probe for lease-waiting jobs and preserves an existing conversationRef', async () => {
+        const service = new ExecutionService(ctx);
+        const { progressStore, sessionManager } = getInternals(service);
+        const probeSpy = vi.spyOn(service, 'probeConversationRef');
+        const jobId = `app-server-waiting-${randomUUID()}`;
+        trackJob(jobId);
+        const session = sessionManager.allocate('codex', 'recover-waiting', 'gpt-5', ctx.projectRoot);
+        sessionManager.setConversationRef(session.sessionId, 'thread-existing');
+        sessionManager.claimForJobSync(session.sessionId, jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: TEST_BACKEND_NAMESPACE,
+          initialPhase: 'running',
+        });
+
+        const launchRecord = makeLaunchRecord({
+          jobId,
+          sessionId: session.sessionId,
+          projectRoot: ctx.projectRoot,
+          request: {
+            prompt: 'recover me',
+            bypassPermissions: false,
+            conversationRef: 'thread-existing',
+            coralEnv: {},
+          },
+        });
+
+        await service.finalizeInterruptedAppServerJob(
+          launchRecord,
+          makeAppServerRuntimeRecord({ leaseState: 'waiting' }),
+          { reason: 'restart' },
+        );
+
+        expect(probeSpy).not.toHaveBeenCalled();
+        expect(progressStore.readStatus(jobId)).toMatchObject({
+          phase: 'error',
+          result: {
+            notice: expect.stringContaining('The existing conversation reference was preserved.'),
+          },
+        });
+        expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
+          activeJobId: undefined,
+          lastJobId: jobId,
+          state: 'ready',
+          conversationRef: 'thread-existing',
+        });
+      });
+
+      it('stores the recovered threadId when continuity is verified', async () => {
+        const service = new ExecutionService(ctx);
+        const { progressStore, sessionManager } = getInternals(service);
+        vi.spyOn(service, 'probeConversationRef').mockResolvedValue('available');
+        const jobId = `app-server-verified-${randomUUID()}`;
+        trackJob(jobId);
+        const session = sessionManager.allocate('codex', 'recover-verified', 'gpt-5', ctx.projectRoot);
+        sessionManager.claimForJobSync(session.sessionId, jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: TEST_BACKEND_NAMESPACE,
+          initialPhase: 'running',
+        });
+
+        await service.finalizeInterruptedAppServerJob(
+          makeLaunchRecord({
+            jobId,
+            sessionId: session.sessionId,
+            projectRoot: ctx.projectRoot,
+          }),
+          makeAppServerRuntimeRecord({ threadId: 'thread-recovered' }),
+          { reason: 'restart' },
+        );
+
+        expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
+          activeJobId: undefined,
+          lastJobId: jobId,
+          state: 'ready',
+          conversationRef: 'thread-recovered',
+        });
+      });
+
+      it('clears conversationRef and marks the session non_resumable when the thread is definitively missing', async () => {
+        const service = new ExecutionService(ctx);
+        const { progressStore, sessionManager } = getInternals(service);
+        vi.spyOn(service, 'probeConversationRef').mockResolvedValue('missing');
+        const jobId = `app-server-missing-${randomUUID()}`;
+        trackJob(jobId);
+        const session = sessionManager.allocate('codex', 'recover-missing', 'gpt-5', ctx.projectRoot);
+        sessionManager.setConversationRef(session.sessionId, 'thread-stale');
+        sessionManager.claimForJobSync(session.sessionId, jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: TEST_BACKEND_NAMESPACE,
+          initialPhase: 'running',
+        });
+
+        await service.finalizeInterruptedAppServerJob(
+          makeLaunchRecord({
+            jobId,
+            sessionId: session.sessionId,
+            projectRoot: ctx.projectRoot,
+            request: {
+              prompt: 'recover me',
+              bypassPermissions: false,
+              conversationRef: 'thread-stale',
+              coralEnv: {},
+            },
+          }),
+          makeAppServerRuntimeRecord({ threadId: 'thread-stale' }),
+          { reason: 'restart' },
+        );
+
+        expect(progressStore.readStatus(jobId)).toMatchObject({
+          phase: 'error',
+          result: {
+            notice: expect.stringContaining('session is non-resumable'),
+          },
+        });
+        expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
+          activeJobId: undefined,
+          lastJobId: jobId,
+          state: 'non_resumable',
+        });
+        expect(sessionManager.get('codex', session.sessionId)?.conversationRef).toBeUndefined();
+      });
+
+      it('preserves or seeds conversationRef with an explicit notice when the probe is unavailable', async () => {
+        const service = new ExecutionService(ctx);
+        const { progressStore, sessionManager } = getInternals(service);
+        vi.spyOn(service, 'probeConversationRef').mockResolvedValue('unavailable');
+        const jobId = `app-server-unavailable-${randomUUID()}`;
+        trackJob(jobId);
+        const session = sessionManager.allocate('codex', 'recover-unavailable', 'gpt-5', ctx.projectRoot);
+        sessionManager.claimForJobSync(session.sessionId, jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: TEST_BACKEND_NAMESPACE,
+          initialPhase: 'running',
+        });
+
+        await service.finalizeInterruptedAppServerJob(
+          makeLaunchRecord({
+            jobId,
+            sessionId: session.sessionId,
+            projectRoot: ctx.projectRoot,
+          }),
+          makeAppServerRuntimeRecord({ threadId: 'thread-unverified' }),
+          { reason: 'handoff' },
+        );
+
+        expect(progressStore.readStatus(jobId)).toMatchObject({
+          phase: 'error',
+          result: {
+            notice: expect.stringContaining('could not be verified'),
+          },
+        });
+        expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
+          activeJobId: undefined,
+          lastJobId: jobId,
+          state: 'ready',
+          conversationRef: 'thread-unverified',
+        });
       });
     });
   });

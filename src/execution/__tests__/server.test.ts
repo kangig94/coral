@@ -1713,6 +1713,111 @@ describe('execution backend server', () => {
       expect(markJobsAsErrorFn).not.toHaveBeenCalled();
     });
 
+    it('handoff finalizes live app-server jobs before draining provider servers', async () => {
+      const { lifecycleModule } = await loadExecutionModules();
+      const pluginRoot = createProjectRoot('handoff-app-server-finalization');
+      const namespace = pluginRootNamespace(pluginRoot);
+      const progressStore = new ProgressStore();
+      const jobId = 'handoff-app-server-job';
+      createdJobIds.add(jobId);
+
+      progressStore.initJob({
+        jobId,
+        sessionId: 'handoff-session',
+        provider: 'codex',
+        projectRoot: pluginRoot,
+        backendNamespace: namespace,
+        initialPhase: 'running',
+      });
+      stubLaunchRecord(progressStore, {
+        jobId,
+        sessionId: 'handoff-session',
+        provider: 'codex',
+        projectRoot: pluginRoot,
+        backendNamespace: namespace,
+      });
+      progressStore.writeRuntimeRecord(jobId, {
+        transport: 'app-server',
+        startTime: '2026-03-31T00:00:00.000Z',
+        providerMeta: {
+          serverKey: `codex:${pluginRoot}`,
+          leaseState: 'acquired',
+          threadId: 'thread-1',
+          recoveryPolicy: 'session_continuity_only',
+        },
+      });
+
+      const fakeService = {
+        finalizeInterruptedAppServerJob: vi.fn(async () => {}),
+        drainProviderServers: vi.fn(async () => {}),
+      };
+      const fakeIdleTimer = createFakeIdleTimer();
+      const { runtimeState } = createRuntimeStateMock();
+      runtimeState.setLifecycle('running');
+
+      const controller = lifecycleModule.createLifecycle({
+        identity: {
+          pluginRoot,
+          namespace,
+          version: '9.9.9',
+          bundleHash: 'testhash1234',
+          instanceId: 'handoff-instance-1',
+          token: 'test-token',
+          now: () => 1,
+          log: () => {},
+        },
+        runtimeState,
+        idleTimer: fakeIdleTimer as never,
+        progressStore,
+        sessionIndex: {
+          hydrate: vi.fn(),
+          hasShard: vi.fn(() => true),
+          discoverShard: vi.fn(),
+          invalidate: vi.fn(),
+        } as never,
+        streamResponses: new Set(),
+        discussStores: new Map(),
+        discussRegistry: createDiscussContextRegistry(),
+        server: createServer(),
+        getExecutionService: () => fakeService as never,
+        listExecutionServices: () => [fakeService as never],
+        getDiscussStoreForSource: () => {
+          throw new Error('Unexpected discuss store lookup');
+        },
+        knownDiscussSources: () => new Set<string>(),
+        getDiscussContext: () => {
+          throw new Error('Unexpected discuss context lookup');
+        },
+        acquireLockFn: async () => {},
+        writeBackendInfoFn: vi.fn(),
+        removeBackendInfoIfOwnerFn: () => {},
+        removeLockIfOwnerFn: () => {},
+        recoverOrphanedJobsFn: () => {},
+        cleanupStaleJobsFn: () => {},
+        markJobsAsErrorFn: vi.fn(),
+        killAllChildrenFn: vi.fn(),
+        createKbSubsystemFn: async () => createMockKbSubsystem(),
+        closeServerFn: async () => {},
+        listenFn: async () => ({ port: 4102, host: '127.0.0.1' }),
+      });
+
+      await controller.shutdown('replaced');
+      await controller.waitForShutdown();
+
+      expect(fakeService.finalizeInterruptedAppServerJob).toHaveBeenCalledWith(
+        expect.objectContaining({ jobId }),
+        expect.objectContaining({
+          transport: 'app-server',
+          providerMeta: expect.objectContaining({ threadId: 'thread-1' }),
+        }),
+        { reason: 'handoff' },
+      );
+      expect(fakeService.drainProviderServers).toHaveBeenCalledTimes(1);
+      const finalizeOrder = fakeService.finalizeInterruptedAppServerJob.mock.invocationCallOrder.at(0);
+      const drainOrder = fakeService.drainProviderServers.mock.invocationCallOrder.at(0);
+      expect(finalizeOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(drainOrder ?? Number.POSITIVE_INFINITY);
+    });
+
     it('hard shutdown kills children and marks jobs as error', async () => {
       const markJobsAsErrorFn = vi.fn();
       const killAllChildrenFn = vi.fn();
@@ -1962,6 +2067,114 @@ describe('execution backend server', () => {
         expect(publishOrder).toBeDefined();
         expect(recoverOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(publishOrder ?? Number.POSITIVE_INFINITY);
         expect(controller.getRecoveryRegistry()).toBeNull();
+      } finally {
+        await controller.shutdown('test');
+        await controller.waitForShutdown();
+      }
+    });
+
+    it('routes recovered app-server jobs through continuity finalization instead of PID adoption', async () => {
+      const { lifecycleModule } = await loadExecutionModules();
+      const pluginRoot = createProjectRoot('startup-app-server-recovery');
+      const namespace = pluginRootNamespace(pluginRoot);
+      const progressStore = new ProgressStore();
+      const jobId = 'startup-app-server-job';
+      createdJobIds.add(jobId);
+      progressStore.initJob({
+        jobId,
+        sessionId: 'startup-app-server-session',
+        provider: 'codex',
+        projectRoot: pluginRoot,
+        backendNamespace: namespace,
+        initialPhase: 'running',
+      });
+      stubLaunchRecord(progressStore, {
+        jobId,
+        sessionId: 'startup-app-server-session',
+        provider: 'codex',
+        projectRoot: pluginRoot,
+        backendNamespace: namespace,
+      });
+      progressStore.writeRuntimeRecord(jobId, {
+        transport: 'app-server',
+        startTime: '2026-03-31T00:00:00.000Z',
+        providerMeta: {
+          serverKey: `codex:${pluginRoot}`,
+          leaseState: 'acquired',
+          threadId: 'thread-1',
+          recoveryPolicy: 'session_continuity_only',
+        },
+      });
+
+      const fakeService = {
+        adoptRunningJob: vi.fn(() => ({ cleanup: vi.fn() })),
+        finalizeInterruptedAppServerJob: vi.fn(async () => {}),
+        recoverQueuedJob: vi.fn(),
+        completeRecoveredJob: vi.fn(),
+        drainProviderServers: vi.fn(async () => {}),
+      };
+      const fakeIdleTimer = createFakeIdleTimer();
+      const { runtimeState } = createRuntimeStateMock();
+      const sessionIndex = {
+        hydrate: vi.fn(),
+        hasShard: vi.fn(() => true),
+        discoverShard: vi.fn(),
+        invalidate: vi.fn(),
+      };
+
+      const controller = lifecycleModule.createLifecycle({
+        identity: {
+          pluginRoot,
+          namespace,
+          version: '9.9.9',
+          bundleHash: 'testhash1234',
+          instanceId: 'lifecycle-instance-app-server',
+          token: 'test-token',
+          now: () => 1,
+          log: () => {},
+        },
+        runtimeState,
+        idleTimer: fakeIdleTimer as never,
+        progressStore,
+        sessionIndex: sessionIndex as never,
+        streamResponses: new Set(),
+        discussStores: new Map(),
+        discussRegistry: createDiscussContextRegistry(),
+        server: createServer(),
+        getExecutionService: () => fakeService as never,
+        listExecutionServices: () => [fakeService as never],
+        getDiscussStoreForSource: () => {
+          throw new Error('Unexpected discuss store lookup');
+        },
+        knownDiscussSources: () => new Set<string>(),
+        getDiscussContext: () => {
+          throw new Error('Unexpected discuss context lookup');
+        },
+        acquireLockFn: async () => {},
+        writeBackendInfoFn: vi.fn(),
+        removeBackendInfoIfOwnerFn: () => {},
+        removeLockIfOwnerFn: () => {},
+        recoverOrphanedJobsFn: () => {},
+        cleanupStaleJobsFn: () => {},
+        markJobsAsErrorFn: () => {},
+        killAllChildrenFn: () => {},
+        createKbSubsystemFn: async () => createMockKbSubsystem(),
+        closeServerFn: async () => {},
+        listenFn: async () => ({ port: 4103, host: '127.0.0.1' }),
+      });
+
+      try {
+        await controller.start();
+
+        expect(fakeService.finalizeInterruptedAppServerJob).toHaveBeenCalledWith(
+          expect.objectContaining({ jobId }),
+          expect.objectContaining({
+            transport: 'app-server',
+            providerMeta: expect.objectContaining({ threadId: 'thread-1' }),
+          }),
+          { reason: 'restart' },
+        );
+        expect(fakeService.adoptRunningJob).not.toHaveBeenCalled();
       } finally {
         await controller.shutdown('test');
         await controller.waitForShutdown();

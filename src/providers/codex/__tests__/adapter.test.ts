@@ -226,4 +226,56 @@ describe('codex adapter app-server flow', () => {
       conversationRef: 'thread-1',
     });
   });
+
+  it('returns a terminal non-resumable result when resume targets a missing thread', async () => {
+    const lease = makeLease(async (method) => {
+      if (method === 'thread/resume') {
+        throw new Error('No such thread');
+      }
+      if (method === 'turn/start') {
+        throw new Error('turn/start should not be called for a missing thread');
+      }
+      throw new Error(`Unexpected method: ${method}`);
+    });
+    const runtime = makeRuntime(lease);
+    const { codexProvider } = await loadProvider();
+
+    await expect(
+      codexProvider.execute(
+        makeRequest({
+          action: 'resume',
+          conversationRef: 'thread-missing',
+        }),
+        runtime,
+      ),
+    ).resolves.toMatchObject({
+      content: '',
+      nonResumable: true,
+      notice: 'Conversation thread-missing is no longer resumable because the saved thread is missing or invalid.',
+      errors: ['No such thread'],
+    });
+
+    expect(runtime.checkpointRecovery).not.toHaveBeenCalled();
+    expect(lease.rpcMock.mock.calls.map(([method]) => method)).toEqual(['thread/resume']);
+    expect(lease.releaseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails fork immediately with an explicit unsupported error', async () => {
+    const lease = makeLease(async () => ({}));
+    const runtime = makeRuntime(lease);
+    const { codexProvider } = await loadProvider();
+
+    await expect(
+      codexProvider.execute(
+        makeRequest({
+          action: 'fork',
+          conversationRef: 'thread-1',
+        }),
+        runtime,
+      ),
+    ).rejects.toThrow('Codex app-server fork is unsupported until clone/fork RPC is available.');
+
+    expect(runtime.acquireServer).not.toHaveBeenCalled();
+    expect(lease.releaseMock).not.toHaveBeenCalled();
+  });
 });

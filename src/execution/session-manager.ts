@@ -24,6 +24,10 @@ export interface SessionEntry {
   version: number;
 }
 
+export type SessionContinuityMutation =
+  | { type: 'set_resumable'; conversationRef: string }
+  | { type: 'clear_non_resumable' };
+
 type CachedSession = {
   entry: SessionEntry;
 };
@@ -252,6 +256,52 @@ export class SessionManager {
     } finally {
       release();
     }
+  }
+
+  async finalizeJobContinuityAtomic(
+    sessionId: string,
+    options: {
+      expectedActiveJobId: string;
+      expectedVersion: number;
+      mutation: SessionContinuityMutation;
+    },
+  ): Promise<boolean> {
+    const release = await this.acquireSessionLock(sessionId);
+    try {
+      const entry = this.readEntry(sessionId, { forceFresh: true });
+      if (!entry) return false;
+      if (entry.activeJobId !== options.expectedActiveJobId) return false;
+      if (entry.version !== options.expectedVersion) return false;
+
+      entry.activeJobId = undefined;
+      entry.lastJobId = options.expectedActiveJobId;
+      entry.lastUsedAt = nowIsoString();
+
+      if (options.mutation.type === 'set_resumable') {
+        entry.conversationRef = options.mutation.conversationRef;
+        entry.state = 'ready';
+      } else {
+        entry.conversationRef = undefined;
+        entry.state = 'non_resumable';
+      }
+
+      this.writeEntry(entry);
+      return true;
+    } finally {
+      release();
+    }
+  }
+
+  async clearConversationRefAndMarkNonResumableAtomic(
+    sessionId: string,
+    expectedActiveJobId: string,
+    expectedVersion: number,
+  ): Promise<boolean> {
+    return this.finalizeJobContinuityAtomic(sessionId, {
+      expectedActiveJobId,
+      expectedVersion,
+      mutation: { type: 'clear_non_resumable' },
+    });
   }
 
   /**

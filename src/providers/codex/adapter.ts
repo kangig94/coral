@@ -443,7 +443,7 @@ async function preflight(): Promise<void> {
 
 async function execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult> {
   if (request.action === 'fork') {
-    throw new Error('Codex app-server does not support fork');
+    throw new Error('Codex app-server fork is unsupported until clone/fork RPC is available.');
   }
 
   const { acquireServer, checkpointRecovery } = requireAppServerRuntime(runtime);
@@ -465,7 +465,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
             content: '',
             durationMs: Date.now() - startedAt,
             nonResumable: true,
-            notice: `Conversation ${conversationRef} is no longer resumable.`,
+            notice: `Conversation ${conversationRef} is no longer resumable because the saved thread is missing or invalid.`,
             errors: [error instanceof Error ? error.message : String(error)],
           };
         }
