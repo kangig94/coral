@@ -201,9 +201,7 @@ gpt-5.4  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
 | `/coral:init-project` | 프로젝트 초기화 오케스트레이터 | - |
 | `/coral:discuss` | 모더레이션 기반 다자간 AI 토론 | - |
 | `/coral:bid` | 활성 `--user` 토론 세션에서 입찰/발언 | - |
-| `/coral:equip` | MCP 도구 원터치 설치 | - |
 | `/coral:statusline` | HUD 상태줄 설치/제거 | - |
-| `/coral:reef` | 세션 활동 및 KB 상태 실시간 대시보드 | - |
 
 ## 지식 베이스
 

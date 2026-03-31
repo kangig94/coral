@@ -205,9 +205,7 @@ gpt-5.4  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
 | `/coral:init-project` | Project initialization orchestrator | - |
 | `/coral:discuss` | Moderated multi-agent discussion | - |
 | `/coral:bid` | Submit bid/speech in active `--user` discuss session | - |
-| `/coral:equip` | One-touch install of MCP tools | - |
 | `/coral:statusline` | Install or remove HUD statusline | - |
-| `/coral:reef` | Real-time dashboard for session activity and KB state | - |
 
 ## Knowledge Base
 
