@@ -12,6 +12,7 @@
     "bridge/coral-backend.cjs",
     "bridge/coral-ax.cjs",
     "bridge/coral-cli.cjs",
+    "bridge/coral-claude-appserver.cjs",
     "bridge/manifest.json"
   ],
   "scripts": {

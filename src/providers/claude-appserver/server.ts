@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
+import { basename } from 'node:path';
 import process from 'node:process';
 
 import { isRecord } from '../../shared/mcp-utils.js';
@@ -335,6 +335,15 @@ function main(): void {
   createClaudeBrokerServer().start();
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (isDirectExecution(process.argv[1])) {
   main();
+}
+
+function isDirectExecution(entry: string | undefined): boolean {
+  if (!entry) {
+    return false;
+  }
+
+  const name = basename(entry);
+  return name === 'server.ts' || name === 'server.js' || name === 'coral-claude-appserver.cjs';
 }

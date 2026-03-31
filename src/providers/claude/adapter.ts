@@ -341,7 +341,9 @@ async function executePersistent(
       return;
     }
     interruptRequested = true;
-    void lease.rpc('turn/interrupt', mapInterruptParams(brokerTurnId)).catch(() => {});
+    void lease
+      .rpc('turn/interrupt', mapInterruptParams(brokerTurnId) as Record<string, unknown>)
+      .catch(() => {});
   };
 
   const onAbort = (): void => {
@@ -472,7 +474,7 @@ async function executePersistent(
   try {
     const ensureResult = await lease.rpc<Record<string, unknown>>(
       'session/ensure',
-      mapSessionEnsureParams(request, prepared.systemPrompt, runtime.persistedContinuity),
+      mapSessionEnsureParams(request, prepared.systemPrompt, runtime.persistedContinuity) as unknown as Record<string, unknown>,
     );
     bootstrapSignature = readBootstrapSignature(ensureResult.bootstrapSignature);
     conversationRef = readTurnConversationRef(ensureResult) ?? conversationRef;
@@ -496,7 +498,10 @@ async function executePersistent(
       },
       prepared.prompt,
     );
-    const startResult = await lease.rpc<Record<string, unknown>>('turn/start', startParams);
+    const startResult = await lease.rpc<Record<string, unknown>>(
+      'turn/start',
+      startParams as unknown as Record<string, unknown>,
+    );
     brokerTurnId = readString(startResult.brokerTurnId) ?? startParams.brokerTurnId;
     conversationRef = readTurnConversationRef(startResult) ?? conversationRef;
     checkpoint();
@@ -541,7 +546,10 @@ const claudeAppServer: ProviderAppServerContract = {
   },
   async interrupt(lease, continuity) {
     const persistedContinuity = readClaudePersistedContinuity(continuity);
-    await lease.rpc('turn/interrupt', mapInterruptParams(persistedContinuity.brokerTurnId));
+    await lease.rpc(
+      'turn/interrupt',
+      mapInterruptParams(persistedContinuity.brokerTurnId) as unknown as Record<string, unknown>,
+    );
   },
   async probe(lease, continuity) {
     const persistedContinuity = readClaudePersistedContinuity(continuity);

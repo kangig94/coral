@@ -400,7 +400,7 @@ async function rpc<M extends AppServerMethod>(
   method: M,
   params: AppServerRequestParams<M>,
 ): Promise<AppServerResponse<M>> {
-  return lease.rpc<AppServerResponse<M>>(method, params as Record<string, unknown>);
+  return lease.rpc<AppServerResponse<M>>(method, params as unknown as Record<string, unknown>);
 }
 
 async function interruptTurn(lease: ProviderServerLease, threadId: string, turnId: string): Promise<void> {

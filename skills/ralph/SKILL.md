@@ -101,10 +101,16 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
     d. **Test**: run test suite after build passes.
 
     **`--red` collection** (if `--red` is set, between d and e):
-    d1. Wait for red-attacker if not yet complete. Move staged tests into test directory.
-    d2. Re-run test suite.
-    d3. Fix loop: fix failures → re-run. Cap at 3 iterations; escalate if still failing.
-    d4. Triage: verify tests target changed code, aren't duplicates. Merge valid, discard others.
+    d1. Wait for red-attacker if not yet complete.
+    d2. **Adapt**: Fix red tests to compile and run against the actual API (names, types, mocks).
+    d3. **Run**: Execute red tests. Classify results:
+        - **Failing**: likely found a real blind spot — fix the implementation or keep the test
+        - **Passing**: may duplicate existing coverage — check before keeping
+    d4. **Triage**: Discard tests that duplicate existing coverage or test impossible scenarios.
+        Keep tests that caught real bugs (d3 failures) or cover genuinely untested paths.
+    d5. **Merge**: Move kept tests into the corresponding normal test file where they logically
+        belong. No separate `red-*.test.ts` files. Delete the red files after merge.
+    d6. Re-run merged test files to verify (max 3 fix iterations; escalate if stuck).
 
     e. **Done**: Only declare done when all applicable checks pass.
 

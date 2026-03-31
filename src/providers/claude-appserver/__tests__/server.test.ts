@@ -1,11 +1,12 @@
 import { PassThrough } from 'node:stream';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { isRecord } from '../../../shared/mcp-utils.js';
 import { buildClaudeChildArgs, createClaudeBrokerServer } from '../server.js';
 import { createBrokerSession, type ClaudeBrokerChild, type ClaudeBrokerSession } from '../session.js';
 import {
+  CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
   CLAUDE_BROKER_BUSY_RPC_CODE,
   type ClaudeBrokerNotification,
   type SessionEnsureParams,
@@ -17,6 +18,8 @@ const BOOTSTRAP: SessionEnsureParams = {
   permissionMode: 'bypassPermissions',
   systemPrompt: 'Stay concise.',
 };
+
+const MODEL = 'claude-sonnet-4-6';
 
 class FakeClaudeChild implements ClaudeBrokerChild {
   readonly writes: unknown[] = [];
@@ -102,7 +105,7 @@ class FakeClaudeChild implements ClaudeBrokerChild {
       cwd: '/workspace',
       tools: [],
       mcp_servers: [],
-      model: 'claude-sonnet-4-6',
+      model: MODEL,
       permissionMode: 'bypassPermissions',
       slash_commands: [],
       output_style: 'normal',
@@ -116,7 +119,7 @@ class FakeClaudeChild implements ClaudeBrokerChild {
       type: 'assistant',
       message: {
         role: 'assistant',
-        model: 'claude-sonnet-4-6',
+        model: MODEL,
         content: [
           {
             type: 'tool_use',
@@ -172,7 +175,7 @@ class FakeClaudeChild implements ClaudeBrokerChild {
       total_cost_usd: costUsd,
       usage: { output_tokens: 4 },
       modelUsage: {
-        'claude-sonnet-4-6': {
+        [MODEL]: {
           inputTokens: 10,
           outputTokens: 4,
           cacheReadInputTokens: 0,
@@ -190,10 +193,54 @@ class FakeClaudeChild implements ClaudeBrokerChild {
     });
   }
 
+  emitResultWithoutCost(sessionId: string, result = 'done'): void {
+    this.emit({
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 25,
+      duration_api_ms: 20,
+      is_error: false,
+      num_turns: 1,
+      stop_reason: null,
+      usage: { output_tokens: 4 },
+      modelUsage: {
+        [MODEL]: {
+          inputTokens: 10,
+          outputTokens: 4,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          webSearchRequests: 0,
+          costUSD: 0,
+          contextWindow: 200000,
+          maxOutputTokens: 8192,
+        },
+      },
+      permission_denials: [],
+      uuid: `result-missing-cost-${sessionId}`,
+      session_id: sessionId,
+      result,
+    });
+  }
+
   emitStderr(chunk: string): void {
     for (const handler of this.stderrHandlers) {
       handler(chunk);
     }
+  }
+
+  emitUnknownControlRequest(requestId: string): void {
+    this.emit({
+      type: 'control_request',
+      request_id: requestId,
+      request: {
+        subtype: 'request_file_access',
+        path: '/etc/passwd',
+      },
+    });
+  }
+
+  crash(exitCode: number | null = 1): void {
+    this.emitExit({ code: exitCode, signal: null });
   }
 
   emitExit(event: { code: number | null; signal: NodeJS.Signals | null; error?: Error }): void {
@@ -222,6 +269,47 @@ function collectNotifications(session: ClaudeBrokerSession): ClaudeBrokerNotific
   });
   return notifications;
 }
+
+function countControlRequests(child: FakeClaudeChild, subtype: string): number {
+  return child.writes.filter((message) => {
+    return (
+      isRecord(message) &&
+      message.type === 'control_request' &&
+      isRecord(message.request) &&
+      message.request.subtype === subtype
+    );
+  }).length;
+}
+
+function countControlResponses(child: FakeClaudeChild, requestId: string): number {
+  return child.writes.filter((message) => {
+    return (
+      isRecord(message) &&
+      message.type === 'control_response' &&
+      isRecord(message.response) &&
+      message.response.request_id === requestId
+    );
+  }).length;
+}
+
+function readAllowBehavior(child: FakeClaudeChild, requestId: string): string | undefined {
+  const response = child.writes.find((message) => {
+    return (
+      isRecord(message) &&
+      message.type === 'control_response' &&
+      isRecord(message.response) &&
+      message.response.request_id === requestId
+    );
+  });
+  if (!isRecord(response) || !isRecord(response.response) || !isRecord(response.response.response)) {
+    return undefined;
+  }
+  return typeof response.response.response.behavior === 'string' ? response.response.response.behavior : undefined;
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('buildClaudeChildArgs', () => {
   it('builds the persistent Claude child argv for fresh and resumed sessions', () => {
@@ -355,7 +443,7 @@ describe('Claude broker session', () => {
     const controlRequests = child.writes.filter(
       (message) => isRecord(message) && message.type === 'control_request' && isRecord(message.request),
     );
-    const subtypes = controlRequests.map((message) => String((message.request as Record<string, unknown>).subtype));
+    const subtypes = controlRequests.map((message) => String(((message as Record<string, unknown>).request as Record<string, unknown>).subtype));
     expect(subtypes).toContain('set_model');
     expect(subtypes).toContain('set_max_thinking_tokens');
     expect(subtypes.filter((subtype) => subtype === 'interrupt')).toHaveLength(1);
@@ -399,15 +487,8 @@ describe('Claude broker session', () => {
     child.emitHookProgress('sess-progress', 'formatter: updated output');
     await flush();
 
-    const controlResponses = child.writes.filter(
-      (message) =>
-        isRecord(message) &&
-        message.type === 'control_response' &&
-        isRecord(message.response) &&
-        message.response.request_id === 'req-1',
-    );
-    expect(controlResponses).toHaveLength(1);
-    expect((controlResponses[0].response as Record<string, unknown>).response).toEqual({ behavior: 'allow' });
+    expect(countControlResponses(child, 'req-1')).toBe(1);
+    expect(readAllowBehavior(child, 'req-1')).toBe('allow');
 
     const progressMessages = notifications
       .filter((notification): notification is Extract<ClaudeBrokerNotification, { method: 'turn/progress' }> => notification.method === 'turn/progress')
@@ -448,6 +529,365 @@ describe('Claude broker session', () => {
   });
 });
 
+describe('broker: duplicate turn/start rejection', () => {
+  it('rejects a second turn/start while the first turn is pending acknowledgement', async () => {
+    const child = new FakeClaudeChild();
+    let releaseFirstStart!: () => void;
+    let markFirstInFlight!: () => void;
+    const firstInFlight = new Promise<void>((resolve) => {
+      markFirstInFlight = resolve;
+    });
+    const session = createBrokerSession({
+      spawnChild: async () => child,
+      onTurnStarted: async () => {
+        markFirstInFlight();
+        await new Promise<void>((resolve) => {
+          releaseFirstStart = resolve;
+        });
+      },
+    });
+
+    await session.sessionEnsure(BOOTSTRAP);
+    child.emitSystemInit('sess-pending');
+    await flush();
+
+    const first = session.turnStart({ brokerTurnId: 'turn-1', prompt: 'hello' });
+    await firstInFlight;
+    const second = session.turnStart({ brokerTurnId: 'turn-2', prompt: 'world' });
+
+    await expect(second).rejects.toMatchObject({
+      code: CLAUDE_BROKER_BUSY_RPC_CODE,
+      message: expect.stringMatching(/busy/i),
+    });
+
+    releaseFirstStart();
+    await expect(first).resolves.toMatchObject({ brokerTurnId: 'turn-1' });
+    child.emitResult('sess-pending', 'done');
+    await flush();
+  });
+
+  it('accepts a new turn/start after the previous turn completes', async () => {
+    const child = new FakeClaudeChild();
+    const session = createBrokerSession({ spawnChild: async () => child });
+
+    await session.sessionEnsure(BOOTSTRAP);
+    child.emitSystemInit('sess-seq');
+    await flush();
+
+    await session.turnStart({ brokerTurnId: 'turn-1', prompt: 'first' });
+    child.emitResult('sess-seq', 'first done');
+    await flush();
+
+    await expect(session.turnStart({ brokerTurnId: 'turn-2', prompt: 'second' })).resolves.toMatchObject({
+      brokerTurnId: 'turn-2',
+      sessionId: 'sess-seq',
+      conversationRef: 'sess-seq',
+    });
+
+    child.emitResult('sess-seq', 'second done');
+    await flush();
+  });
+});
+
+describe('broker: turn/interrupt timing contracts', () => {
+  it('interrupt without an active turn is idempotent', async () => {
+    const child = new FakeClaudeChild();
+    const session = createBrokerSession({ spawnChild: async () => child });
+
+    await session.sessionEnsure(BOOTSTRAP);
+    await expect(session.turnInterrupt({})).resolves.toEqual({
+      brokerTurnId: null,
+      interrupted: false,
+    });
+  });
+
+  it('interrupt before turn/start acknowledgement with no brokerTurnId still targets the in-flight turn', async () => {
+    const child = new FakeClaudeChild();
+    let releaseTurnStart!: () => void;
+    let markTurnStarted!: () => void;
+    const turnStarted = new Promise<void>((resolve) => {
+      markTurnStarted = resolve;
+    });
+    const session = createBrokerSession({
+      spawnChild: async () => child,
+      onTurnStarted: async () => {
+        markTurnStarted();
+        await new Promise<void>((resolve) => {
+          releaseTurnStart = resolve;
+        });
+      },
+    });
+
+    await session.sessionEnsure(BOOTSTRAP);
+    child.emitSystemInit('sess-preack');
+    await flush();
+
+    const turnStart = session.turnStart({ brokerTurnId: 'turn-1', prompt: 'long task' });
+    await turnStarted;
+
+    await expect(session.turnInterrupt({})).resolves.toEqual({
+      brokerTurnId: 'turn-1',
+      interrupted: true,
+    });
+    expect(countControlRequests(child, 'interrupt')).toBe(1);
+
+    releaseTurnStart();
+    await expect(turnStart).resolves.toMatchObject({ brokerTurnId: 'turn-1' });
+    child.emitResult('sess-preack', 'interrupted');
+    await flush();
+  });
+});
+
+describe('broker: session/ensure during active turn is a read, not a respawn', () => {
+  it('returns current bootstrap state without restarting the child', async () => {
+    const child = new FakeClaudeChild();
+    const spawnChild = vi.fn(async () => child);
+    const session = createBrokerSession({ spawnChild });
+
+    await session.sessionEnsure(BOOTSTRAP);
+    child.emitSystemInit('sess-concurrent');
+    await flush();
+    await session.turnStart({ brokerTurnId: 'turn-1', prompt: 'busy' });
+
+    await expect(session.sessionEnsure(BOOTSTRAP)).resolves.toMatchObject({
+      sessionId: 'sess-concurrent',
+      conversationRef: 'sess-concurrent',
+      activeTurnId: 'turn-1',
+      initialized: true,
+    });
+    expect(spawnChild).toHaveBeenCalledTimes(1);
+
+    child.emitResult('sess-concurrent', 'done');
+    await flush();
+  });
+
+  it('returns a mismatch error when the bootstrap signature drifts during an active turn', async () => {
+    const child = new FakeClaudeChild();
+    const session = createBrokerSession({ spawnChild: async () => child });
+
+    await session.sessionEnsure(BOOTSTRAP);
+    child.emitSystemInit('sess-drift');
+    await flush();
+    await session.turnStart({ brokerTurnId: 'turn-1', prompt: 'running' });
+
+    await expect(session.sessionEnsure({ ...BOOTSTRAP, cwd: '/different/path' })).rejects.toMatchObject({
+      code: CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
+      message: expect.stringMatching(/mismatch/i),
+    });
+
+    child.emitResult('sess-drift', 'done');
+    await flush();
+  });
+});
+
+describe('broker: initialize sent exactly once per child lifecycle', () => {
+  it('sends initialize again only after a child respawn', async () => {
+    const child1 = new FakeClaudeChild();
+    const child2 = new FakeClaudeChild();
+    let activeChild = child1;
+    const spawnChild = vi.fn(async () => activeChild);
+    const session = createBrokerSession({ spawnChild });
+
+    await session.sessionEnsure(BOOTSTRAP);
+    child1.emitSystemInit('sess-first');
+    await flush();
+
+    activeChild = child2;
+    child1.crash(1);
+    await flush();
+
+    const secondEnsure = session.sessionEnsure({ ...BOOTSTRAP, conversationRef: 'sess-first' });
+    child2.emitSystemInit('sess-first');
+
+    await expect(secondEnsure).resolves.toMatchObject({
+      sessionId: 'sess-first',
+      conversationRef: 'sess-first',
+      initialized: true,
+    });
+    expect(spawnChild).toHaveBeenCalledTimes(2);
+    expect(countControlRequests(child2, 'initialize')).toBe(1);
+  });
+});
+
+describe('broker: child crash during active turn produces terminal failure, not a hung wait', () => {
+  it('resolves the closed signal quickly when the child exits unexpectedly mid-turn', async () => {
+    const child = new FakeClaudeChild();
+    const session = createBrokerSession({ spawnChild: async () => child });
+
+    await session.sessionEnsure(BOOTSTRAP);
+    child.emitSystemInit('sess-crash');
+    await flush();
+    await session.turnStart({ brokerTurnId: 'turn-crash', prompt: 'long op' });
+
+    child.crash(1);
+
+    const closed = await Promise.race([
+      session.closed,
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 500)),
+    ]);
+
+    expect(closed).not.toBe('timeout');
+    expect(closed).toBeInstanceOf(Error);
+  });
+});
+
+describe('broker: child exits before first session_id emission', () => {
+  it('session/ensure rejects when the child exits during bootstrap before session_id', async () => {
+    const child = new FakeClaudeChild(false);
+    const session = createBrokerSession({ spawnChild: async () => child });
+
+    const ensure = session.sessionEnsure(BOOTSTRAP);
+    await vi.waitFor(() => {
+      expect(countControlRequests(child, 'initialize')).toBe(1);
+    });
+    child.crash(1);
+
+    await expect(ensure).rejects.toThrow();
+  });
+
+  it('does not permanently lock the broker after a bootstrap failure', async () => {
+    const child1 = new FakeClaudeChild(false);
+    const child2 = new FakeClaudeChild();
+    let activeChild = child1;
+    const session = createBrokerSession({
+      spawnChild: async () => activeChild,
+    });
+
+    const firstEnsure = session.sessionEnsure(BOOTSTRAP);
+    await vi.waitFor(() => {
+      expect(countControlRequests(child1, 'initialize')).toBe(1);
+    });
+    child1.crash(1);
+    await expect(firstEnsure).rejects.toThrow();
+
+    activeChild = child2;
+    const secondEnsure = session.sessionEnsure(BOOTSTRAP);
+    await expect(secondEnsure).resolves.toMatchObject({
+      initialized: true,
+    });
+
+    child2.emitSystemInit('sess-recovered');
+    await flush();
+
+    await expect(session.sessionEnsure(BOOTSTRAP)).resolves.toMatchObject({
+      sessionId: 'sess-recovered',
+      conversationRef: 'sess-recovered',
+      initialized: true,
+    });
+  });
+});
+
+describe('broker: permission auto-allow for can_use_tool', () => {
+  it('does not auto-allow an unknown control_request subtype', async () => {
+    const child = new FakeClaudeChild();
+    const session = createBrokerSession({ spawnChild: async () => child });
+
+    await session.sessionEnsure(BOOTSTRAP);
+    child.emitSystemInit('sess-unknown-ctrl');
+    await flush();
+    await session.turnStart({ brokerTurnId: 'turn-1', prompt: 'work' });
+
+    child.emitUnknownControlRequest('req-unknown-1');
+    await flush();
+
+    expect(countControlResponses(child, 'req-unknown-1')).toBe(0);
+
+    child.emitResult('sess-unknown-ctrl', 'done');
+    await flush();
+  });
+});
+
+describe('broker: session/ensure bootstrap signature mismatch', () => {
+  it('rejects session/ensure when cwd drifts against an already-live child', async () => {
+    const child = new FakeClaudeChild();
+    const session = createBrokerSession({ spawnChild: async () => child });
+
+    await session.sessionEnsure(BOOTSTRAP);
+    child.emitSystemInit('sess-live');
+    await flush();
+
+    await expect(session.sessionEnsure({ ...BOOTSTRAP, cwd: '/completely/different' })).rejects.toMatchObject({
+      code: CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
+      message: expect.stringMatching(/mismatch/i),
+    });
+  });
+
+  it('rejects session/ensure when systemPromptHash drifts against a live child', async () => {
+    const child = new FakeClaudeChild();
+    const session = createBrokerSession({ spawnChild: async () => child });
+
+    await session.sessionEnsure(BOOTSTRAP);
+    child.emitSystemInit('sess-hash-live');
+    await flush();
+
+    await expect(
+      session.sessionEnsure({ ...BOOTSTRAP, systemPromptHash: 'sha256:differenthash' }),
+    ).rejects.toMatchObject({
+      code: CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
+      message: expect.stringMatching(/mismatch/i),
+    });
+  });
+
+  it('does not respawn the child when mismatch is detected', async () => {
+    const child = new FakeClaudeChild();
+    const spawnChild = vi.fn(async () => child);
+    const session = createBrokerSession({ spawnChild });
+
+    await session.sessionEnsure(BOOTSTRAP);
+    child.emitSystemInit('sess-no-respawn');
+    await flush();
+
+    await expect(session.sessionEnsure({ ...BOOTSTRAP, cwd: '/drift' })).rejects.toThrow();
+    expect(spawnChild).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('broker: turn/completed notification carries cost metadata', () => {
+  it('ignores malformed result events without crashing the broker', async () => {
+    const child = new FakeClaudeChild();
+    const session = createBrokerSession({ spawnChild: async () => child });
+    const notifications = collectNotifications(session);
+
+    await session.sessionEnsure(BOOTSTRAP);
+    child.emitSystemInit('sess-nocost');
+    await flush();
+    await session.turnStart({ brokerTurnId: 'turn-nocost', prompt: 'work' });
+
+    child.emitResultWithoutCost('sess-nocost', 'ok');
+    await flush();
+
+    expect(notifications.find((notification) => notification.method === 'turn/completed')).toBeUndefined();
+    await expect(session.turnStart({ brokerTurnId: 'turn-overlap', prompt: 'still busy' })).rejects.toMatchObject({
+      code: CLAUDE_BROKER_BUSY_RPC_CODE,
+    });
+
+    child.emitResult('sess-nocost', 'done');
+    await flush();
+  });
+});
+
+describe('broker: transport-close signal', () => {
+  it('exposes a closed promise that resolves on child crash', async () => {
+    const child = new FakeClaudeChild(false);
+    const session = createBrokerSession({ spawnChild: async () => child });
+
+    const ensure = session.sessionEnsure(BOOTSTRAP);
+    await vi.waitFor(() => {
+      expect(countControlRequests(child, 'initialize')).toBe(1);
+    });
+    child.crash(1);
+    await expect(ensure).rejects.toThrow();
+
+    const closed = await Promise.race([
+      session.closed,
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 500)),
+    ]);
+
+    expect(closed).not.toBe('timeout');
+    expect(closed).toBeInstanceOf(Error);
+  });
+});
+
 describe('Claude broker JSON-RPC server', () => {
   it('frames JSON-RPC requests and notifications on stdio', async () => {
     const input = new PassThrough();
@@ -474,7 +914,7 @@ describe('Claude broker JSON-RPC server', () => {
         initialized: true,
       })),
       sessionProbe: vi.fn(async () => ({
-        status: 'available',
+        status: 'available' as const,
         bootstrapSignature: {
           cwd: '/workspace',
           systemPromptHash: 'sha256:abc123',
@@ -529,7 +969,7 @@ describe('Claude broker JSON-RPC server', () => {
     });
 
     outputText = '';
-    notificationHandler?.({
+    notificationHandler!({
       method: 'turn/progress',
       params: {
         brokerTurnId: 'turn-1',

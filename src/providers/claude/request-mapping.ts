@@ -2,8 +2,7 @@ declare const __PLUGIN_ROOT__: string;
 
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, resolve } from 'node:path';
 
 import { isRecord } from '../../shared/mcp-utils.js';
 import type { ProviderContinuityBlob, ProviderRequest } from '../../shared/types.js';
@@ -25,7 +24,7 @@ export interface ClaudePersistedContinuity extends ProviderContinuityBlob {
 const pluginRoot =
   typeof __PLUGIN_ROOT__ === 'string'
     ? __PLUGIN_ROOT__
-    : resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+    : resolve(process.cwd());
 
 export function readClaudePersistedContinuity(
   persistedContinuity: ProviderContinuityBlob | undefined,
