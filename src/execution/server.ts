@@ -9,6 +9,7 @@ import {
   formatError,
   readBundleHash,
 } from '../shared/mcp-utils.js';
+import { backendLog } from '../shared/backend-log.js';
 import { pluginRootNamespace, resolveProjectSource } from '../infra/paths.js';
 import type { ExecutionService } from './service.js';
 import { activeChildren, killAllChildren, queueDepth } from './engine.js';
@@ -139,8 +140,9 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const progressStore = options.progressStore ?? new ProgressStore();
   const sessionIndex = new SessionIndex();
   const now = options.now ?? (() => Date.now());
+  backendLog.init({ version, bundleHash });
   const log = options.log ?? ((message: string) => {
-    process.stderr.write(message);
+    backendLog.raw(message);
   });
   const createExecutionService = options.createExecutionService
     ?? ((ctx: CallerContext) => new DefaultExecutionService(ctx, progressStore, bundleHash));
@@ -475,7 +477,7 @@ async function main(): Promise<void> {
       process.exit(0);
     },
     onFatalShutdownError: (error) => {
-      process.stderr.write(`Fatal shutdown error: ${formatError(error)}\n`);
+      backendLog.error('Fatal shutdown error', error);
       process.exit(1);
     },
   });
@@ -489,10 +491,10 @@ async function main(): Promise<void> {
 
   try {
     const info = await backend.start();
-    process.stderr.write(`Coral backend running on ${info.host}:${info.port}\n`);
+    backendLog.info(`Running on ${info.host}:${info.port}`);
   } catch (error: unknown) {
     if (error instanceof BackendAlreadyRunningError) {
-      process.stderr.write(`${error.message}\n`);
+      backendLog.info(error.message);
       process.exit(0);
       return;
     }
@@ -500,7 +502,7 @@ async function main(): Promise<void> {
       return;
     }
 
-    process.stderr.write(`Fatal startup error: ${formatError(error)}\n`);
+    backendLog.error('Fatal startup error', error);
     process.exit(1);
   }
 }

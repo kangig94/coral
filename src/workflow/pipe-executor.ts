@@ -174,7 +174,7 @@ function writeCheckpoint(
     } finally {
       release();
     }
-  });
+  }).catch(() => {}); // best-effort: checkpoint writes must not crash the process
 }
 
 function stripElapsedPrefix(message: string): string {

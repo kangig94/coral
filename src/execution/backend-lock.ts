@@ -3,6 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { backendLockPath, pluginRootNamespace } from '../infra/paths.js';
 import { readBackendInfo } from '../infra/backend-info.js';
 import { isNoEntryError, isProcessAlive, tryExclusiveWrite } from '../shared/mcp-utils.js';
+import { backendLog } from '../shared/backend-log.js';
 
 export { backendLockPath } from '../infra/paths.js';
 export const STARTUP_DEADLINE = 30_000;
@@ -163,7 +164,7 @@ export async function acquireLock(pluginRoot: string, instanceId: string, versio
 
   while (true) {
     if (Date.now() - contenderStartedAt >= CONTENDER_BUDGET) {
-      process.stderr.write(`Coral backend lock acquisition timed out after ${CONTENDER_BUDGET}ms\n`);
+      backendLog.error(`Lock acquisition timed out after ${CONTENDER_BUDGET}ms`);
       throw new Error('Coral backend lock acquisition timed out');
     }
 

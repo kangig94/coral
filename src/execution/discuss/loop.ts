@@ -1,6 +1,7 @@
 import { decideBidRoundClose, decideEnd } from '../../discuss/state-machine.js';
 import { nowIsoString } from '../../discuss/util/time.js';
 import { errorMessage } from '../../shared/mcp-utils.js';
+import { backendLog } from '../../shared/backend-log.js';
 import type { CallerContext } from '../request-context.js';
 import {
   hasActiveBidWork,
@@ -97,7 +98,7 @@ export function resumeLoop(
   setTimeout(() => {
     void continueLoop(ctx, sessionId, callerCtx).catch((error: unknown) => {
       void forceEndAfterLoopFailure(ctx, sessionId, error).catch((endErr: unknown) => {
-        process.stderr.write(`Discuss session ${sessionId} force-end also failed: ${endErr}\n`);
+        backendLog.error(`Discuss session ${sessionId} force-end also failed`, endErr);
       });
     });
   }, 0);

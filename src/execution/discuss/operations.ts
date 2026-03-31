@@ -41,6 +41,7 @@ import {
   readSessionEvents,
 } from './persistence.js';
 import type { DiscussSessionStore } from './session-store.js';
+import { backendLog } from '../../shared/backend-log.js';
 import { collectBids } from './subflows.js';
 
 function readDiscussMaxEpochs(): number {
@@ -137,8 +138,7 @@ function buildAbortEndEventsForShutdown(
 }
 
 function logShutdownPersistFailure(scope: string, error: unknown): void {
-  const detail = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`Discuss shutdown persist failed for ${scope}: ${detail}\n`);
+  backendLog.error(`Discuss shutdown persist failed for ${scope}`, error);
 }
 
 export async function startDiscussSession(

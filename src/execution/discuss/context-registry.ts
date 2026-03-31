@@ -1,4 +1,5 @@
 import type { DiscussSessionStore } from './session-store.js';
+import { backendLog } from '../../shared/backend-log.js';
 import type { ExecutionService } from '../service.js';
 import type { DiscussContext, LiveDiscussSession } from './context.js';
 
@@ -91,9 +92,7 @@ export async function clearAllDiscuss(
           await persistAbortEnd(context, sessionId, session);
         } catch (error: unknown) {
           const detail = error instanceof Error ? error.message : String(error);
-          process.stderr.write(
-            `Discuss shutdown persist failed for ${sessionId}: ${detail}\n`,
-          );
+          backendLog.error(`Discuss shutdown persist failed for ${sessionId}: ${detail}`);
         }
       }
       if (!session.controller.signal.aborted) {

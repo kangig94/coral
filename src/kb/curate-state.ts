@@ -7,6 +7,7 @@ import { loadKbNote } from './read.js';
 import type { KbRuntime } from './runtime.js';
 import { sortedMarkdownEntries } from './text-artifacts.js';
 import type { KbNoteFrontmatter } from './types.js';
+import { backendLog } from '../shared/backend-log.js';
 
 export const CURATE_STATE_FILE = 'curate-state.json';
 const CLAIM_STALE_MS = 15 * 60 * 1000;
@@ -416,7 +417,8 @@ export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promis
 
     const currentIndex = kb.readIndex();
     if (currentIndex === null) {
-      throw new Error('KB index must exist before curate migration.');
+      backendLog.warn('KB index missing during curate migration — skipping');
+      return;
     }
 
     const nextIndex = cloneKbIndex(currentIndex);
@@ -426,7 +428,7 @@ export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promis
       try {
         scannedNotes.push(scanNote(kb, note));
       } catch (error: unknown) {
-        process.stderr.write(`Warning: Skipping malformed KB note ${note} during migration: ${errorMessage(error)}\n`);
+        backendLog.warn(`Skipping malformed KB note ${note} during migration: ${errorMessage(error)}`);
       }
     }
     let highestExistingMutationSeq = 0;

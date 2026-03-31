@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { insertMultiple } from '@orama/orama';
 import { errorMessage, isNoEntryError } from '../shared/mcp-utils.js';
+import { backendLog } from '../shared/backend-log.js';
 import {
   deriveNoteIdentity,
   extractPrincipleStatement,
@@ -43,7 +44,7 @@ function loadNotes(kb: KbRuntime): KbReindexNoteRecord[] {
         ...frontmatter,
       });
     } catch (error: unknown) {
-      process.stderr.write(`Warning: Skipping malformed KB note ${entry}: ${errorMessage(error)}\n`);
+      backendLog.warn(`Skipping malformed KB note ${entry}: ${errorMessage(error)}`);
     }
   }
 
@@ -60,7 +61,7 @@ function loadPrinciples(kb: KbRuntime): Array<[string, string]> {
       const content = readFileSync(join(principlesPath, entry), 'utf-8');
       principles.push([name, extractPrincipleStatement(content)]);
     } catch (error: unknown) {
-      process.stderr.write(`Warning: Skipping malformed KB principle ${entry}: ${errorMessage(error)}\n`);
+      backendLog.warn(`Skipping malformed KB principle ${entry}: ${errorMessage(error)}`);
     }
   }
 

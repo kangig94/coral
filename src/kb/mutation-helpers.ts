@@ -1,6 +1,7 @@
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { errorMessage, isNoEntryError } from '../shared/mcp-utils.js';
+import { backendLog } from '../shared/backend-log.js';
 import type { KbIndexState } from './runtime.js';
 import type { KbRuntime } from './runtime.js';
 import type { KbIndex } from './types.js';
@@ -105,6 +106,6 @@ export function markTextIndexStale(
   try {
     invalidate(reason);
   } catch (error: unknown) {
-    process.stderr.write(`markTextIndexStale: ${errorMessage(error)}\n`);
+    backendLog.warn(`markTextIndexStale: ${errorMessage(error)}`);
   }
 }

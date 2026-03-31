@@ -272,4 +272,45 @@ Make the contract explicit first.
       indexedSeq: 5,
     });
   });
+
+  it('skips notes with malformed frontmatter instead of crashing', async () => {
+    const { reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.principlesDir(), { recursive: true });
+
+    // Valid note
+    writeFileSync(join(paths.notesDir(), 'valid-note.md'), `---
+tags: [test]
+principles: []
+source:
+  - kangig94/coral
+createdAt: 2026-03-20
+updatedAt: 2026-03-20
+---
+# Valid Note
+Content here.
+`, 'utf-8');
+
+    // Malformed note: source is a bare string instead of an array
+    writeFileSync(join(paths.notesDir(), 'bad-source.md'), `---
+tags: [test]
+principles: []
+source: kangig94/coral
+createdAt: 2026-03-20
+updatedAt: 2026-03-20
+---
+# Bad Source
+This note has source as a bare string.
+`, 'utf-8');
+
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const result = await reindex(kb);
+    stderrSpy.mockRestore();
+
+    expect(result.notes).toBe(1); // only the valid note indexed
+    const index = kb.readIndex();
+    expect(index?.notes['valid-note']).toBeDefined();
+    expect(index?.notes['bad-source']).toBeUndefined();
+  });
 });

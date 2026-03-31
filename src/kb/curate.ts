@@ -45,6 +45,7 @@ import {
 } from './mutation-helpers.js';
 import type { KbRuntime } from './runtime.js';
 import type { KbIndex } from './types.js';
+import { backendLog } from '../shared/backend-log.js';
 
 // -- Schedule debounce --
 const CURATE_SCHEDULE_DEBOUNCE_MS = 60 * 1000;
@@ -1878,18 +1879,18 @@ export function createCurateScheduler({
           try {
             await clearCurateRetryState();
           } catch (stateError: unknown) {
-            process.stderr.write(`kb_curate: failed to clear stop state: ${errorMessage(stateError)}\n`);
+            backendLog.error('kb_curate: failed to clear stop state', stateError);
           }
           return;
         }
         const runError = error instanceof CurateRunError
           ? error
           : new CurateRunError(null, error);
-        process.stderr.write(`kb_curate: ${errorMessage(runError.cause)}\n`);
+        backendLog.error('kb_curate: run failed', runError.cause);
         try {
           await recordCurateFailure(runError.through, runError.cause);
         } catch (stateError: unknown) {
-          process.stderr.write(`kb_curate: failed to persist retry state: ${errorMessage(stateError)}\n`);
+          backendLog.error('kb_curate: failed to persist retry state', stateError);
         }
       } finally {
         activeRun = null;
@@ -1901,7 +1902,7 @@ export function createCurateScheduler({
             armRetryWake();
           }
         } catch (error: unknown) {
-          process.stderr.write(`kb_curate: ${errorMessage(error)}\n`);
+          backendLog.error('kb_curate', error);
         }
         if (!stopped && lastCompletedThrough !== null) {
           try {
@@ -1909,7 +1910,7 @@ export function createCurateScheduler({
               schedule();
             }
           } catch (error: unknown) {
-            process.stderr.write(`kb_curate: ${errorMessage(error)}\n`);
+            backendLog.error('kb_curate', error);
           }
         }
       }
