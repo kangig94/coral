@@ -18,8 +18,8 @@ import { readFileSync } from 'node:fs';
 import { backendLog } from './backend-log.js';
 
 /**
- * Resolve the system's ARG_MAX and derive an env budget (75% of ARG_MAX,
- * leaving 25% headroom for argv, the executable path, and padding).
+ * Resolve the system's ARG_MAX and derive an env budget (80% of ARG_MAX,
+ * leaving 20% headroom for argv, the executable path, and padding).
  *
  * Detection order:
  * 1. /proc/sys/kernel/argmax (Linux, no subprocess)
@@ -50,10 +50,10 @@ function resolveEnvBudget(): number {
     argMax = 2 * 1024 * 1024;
   }
 
-  return Math.floor(argMax * 0.75);
+  return Math.floor(argMax * 0.80);
 }
 
-/** Env budget: 75% of system ARG_MAX. Computed once at module load. */
+/** Env budget: 80% of system ARG_MAX. Computed once at module load. */
 export const ENV_BUDGET_BYTES = resolveEnvBudget();
 
 /**
@@ -79,7 +79,7 @@ export function measureEnv(env: Record<string, string>): number {
  * Build a sanitized environment for a child CLI process.
  *
  * - Strips `CORAL_*` from the inherited env (child is a different program).
- * - Applies size-budget shedding when total env exceeds 75% of system ARG_MAX.
+ * - Applies size-budget shedding when total env exceeds 80% of system ARG_MAX.
  * - Overlays `extraEnv` (always preserved, never shed).
  * - Sets `CORAL_CHILD: '1'`.
  *
