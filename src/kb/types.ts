@@ -1,3 +1,5 @@
+import { assertNoteSlug, assertSourceSlug } from './validation.js';
+
 export type KbMatchSurface = 'filename' | 'principle' | 'tag' | 'title' | 'content';
 
 export interface KbResult {
@@ -24,6 +26,8 @@ export interface KbSourceFrontmatter {
   tags: string[];
   url?: string;
   importedAt: string;
+  entrySeq?: number;
+  related?: string[];
 }
 
 export type KbSourcePersistInput = {
@@ -78,7 +82,8 @@ export interface KbNoteFrontmatter {
   source: string[];
   createdAt: string;
   updatedAt: string;
-  mutationSeqAtPromote?: number;
+  entrySeq?: number;
+  related?: string[];
 }
 
 export interface KbNoteIdentity {
@@ -207,6 +212,59 @@ export function noteEntryId(slug: string): KbEntryId {
 
 export function sourceEntryId(slug: string): KbEntryId {
   return `source:${slug}`;
+}
+
+export function parseKbEntryId(value: string): KbEntryId | null {
+  if (value.startsWith('note:')) {
+    try {
+      return noteEntryId(assertNoteSlug(value.slice('note:'.length), 'entryId'));
+    } catch {
+      return null;
+    }
+  }
+
+  if (value.startsWith('source:')) {
+    try {
+      return sourceEntryId(assertSourceSlug(value.slice('source:'.length), 'entryId'));
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+export function entryIdToVaultLink(id: KbEntryId): string {
+  if (id.startsWith('note:')) {
+    return `[[notes/${id.slice('note:'.length)}]]`;
+  }
+
+  return `[[sources/${id.slice('source:'.length)}]]`;
+}
+
+export function vaultLinkToEntryId(link: string): KbEntryId | null {
+  const match = link.trim().match(/^\[\[(notes|sources)\/([^[\]\/]+)\]\]$/);
+  if (match === null) {
+    return null;
+  }
+
+  if (match[1] === 'notes') {
+    try {
+      return noteEntryId(assertNoteSlug(match[2], 'vault link'));
+    } catch {
+      return null;
+    }
+  }
+
+  try {
+    return sourceEntryId(assertSourceSlug(match[2], 'vault link'));
+  } catch {
+    return null;
+  }
+}
+
+export function entrySeqFromRecord(entry: EntryRecord): number | undefined {
+  return entry.entrySeq;
 }
 
 export function getEntry(index: KbIndex, id: KbEntryId): EntryRecord | undefined {

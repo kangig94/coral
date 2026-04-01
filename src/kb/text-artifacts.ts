@@ -109,7 +109,8 @@ function buildKbIndex(
       source: note.source,
       createdAt: note.createdAt,
       updatedAt: note.updatedAt,
-      ...(note.mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote: note.mutationSeqAtPromote }),
+      related: note.related ?? [],
+      ...(note.entrySeq === undefined ? {} : { entrySeq: note.entrySeq }),
     });
   }
 
@@ -121,6 +122,8 @@ function buildKbIndex(
       tags: source.tags,
       ...(source.url === undefined ? {} : { url: source.url }),
       importedAt: source.importedAt,
+      related: source.related ?? [],
+      ...(source.entrySeq === undefined ? {} : { entrySeq: source.entrySeq }),
     });
   }
 

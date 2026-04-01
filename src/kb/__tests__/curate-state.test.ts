@@ -10,6 +10,7 @@ import {
   applyRecordDiscoveryAttempt,
   applyRemovePendingDiscovery,
   compareCursor,
+  CURATE_STATE_MIGRATION_VERSION,
   curateStatePath,
   isClaimStale,
   readCurateState,
@@ -32,7 +33,15 @@ function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
     pendingDiscoveries: [],
     consecutiveFailures: 0,
     initialized: false,
+    migrationVersion: 0,
     ...overrides,
+  };
+}
+
+function cursor(note: string, entrySeq: number) {
+  return {
+    entryId: noteEntryId(note),
+    entrySeq,
   };
 }
 
@@ -43,7 +52,7 @@ function renderNote({
   source = ['kangig94/coral'],
   createdAt = '2026-03-20T00:00:00.000Z',
   updatedAt = '2026-03-20T00:00:00.000Z',
-  mutationSeqAtPromote,
+  entrySeq,
   body = 'Body.',
 }: {
   title: string;
@@ -52,7 +61,7 @@ function renderNote({
   source?: string[];
   createdAt?: string;
   updatedAt?: string;
-  mutationSeqAtPromote?: number;
+  entrySeq?: number;
   body?: string;
 }): string {
   const lines = [
@@ -63,7 +72,7 @@ function renderNote({
     ...source.map((entry) => `  - ${entry}`),
     `createdAt: ${createdAt}`,
     `updatedAt: ${updatedAt}`,
-    ...(mutationSeqAtPromote === undefined ? [] : [`mutationSeqAtPromote: ${mutationSeqAtPromote}`]),
+    ...(entrySeq === undefined ? [] : [`entrySeq: ${entrySeq}`]),
     '---',
     `# ${title}`,
     '',
@@ -72,7 +81,7 @@ function renderNote({
   return `${lines.join('\n')}\n`;
 }
 
-function createIndexNote(title: string, mutationSeqAtPromote?: number): Omit<NoteEntry, 'kind' | 'slug'> {
+function createIndexNote(title: string, entrySeq?: number): Omit<NoteEntry, 'kind' | 'slug'> {
   return {
     title,
     tags: ['coral'],
@@ -80,7 +89,8 @@ function createIndexNote(title: string, mutationSeqAtPromote?: number): Omit<Not
     source: ['kangig94/coral'],
     createdAt: '2026-03-20T00:00:00.000Z',
     updatedAt: '2026-03-20T00:00:00.000Z',
-    ...(mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote }),
+    related: [],
+    ...(entrySeq === undefined ? {} : { entrySeq }),
   };
 }
 
@@ -138,21 +148,12 @@ describe('curate state', () => {
 
   it('reads persisted curate state with nested cursors and discoveries', () => {
     const persisted = createCurateState({
-      processedThrough: {
-        note: 'coral-first',
-        mutationSeqAtPromote: 3,
-      },
+      processedThrough: cursor('coral-first', 3),
       lastRunDay: '2026-03-25',
-      lastAttemptedThrough: {
-        note: 'coral-second',
-        mutationSeqAtPromote: 4,
-      },
+      lastAttemptedThrough: cursor('coral-second', 4),
       retryNotBefore: '2026-03-26T00:00:00.000Z',
       activeClaim: {
-        through: {
-          note: 'coral-third',
-          mutationSeqAtPromote: 5,
-        },
+        through: cursor('coral-third', 5),
         startedAt: '2026-03-25T11:55:00.000Z',
       },
       pendingDiscoveries: [
@@ -175,10 +176,7 @@ describe('curate state', () => {
 
   it('writes curate state atomically without leaving a temp file and round-trips through readCurateState', () => {
     const state = createCurateState({
-      processedThrough: {
-        note: 'coral-atomic',
-        mutationSeqAtPromote: 7,
-      },
+      processedThrough: cursor('coral-atomic', 7),
       pendingDiscoveries: [
         {
           principle: 'atomic-persistence-or-nothing',
@@ -198,18 +196,13 @@ describe('curate state', () => {
   });
 
   it('sorts cursors by mutation sequence before note name ties', () => {
-    const sorted = [
-      { note: 'coral-zeta', mutationSeqAtPromote: 1 },
-      { note: 'coral-beta', mutationSeqAtPromote: 3 },
-      { note: 'coral-gamma', mutationSeqAtPromote: 3 },
-      { note: 'coral-alpha', mutationSeqAtPromote: 5 },
-    ].sort(compareCursor);
+    const sorted = [cursor('coral-zeta', 1), cursor('coral-beta', 3), cursor('coral-gamma', 3), cursor('coral-alpha', 5)].sort(compareCursor);
 
     expect(sorted).toEqual([
-      { note: 'coral-zeta', mutationSeqAtPromote: 1 },
-      { note: 'coral-beta', mutationSeqAtPromote: 3 },
-      { note: 'coral-gamma', mutationSeqAtPromote: 3 },
-      { note: 'coral-alpha', mutationSeqAtPromote: 5 },
+      cursor('coral-zeta', 1),
+      cursor('coral-beta', 3),
+      cursor('coral-gamma', 3),
+      cursor('coral-alpha', 5),
     ]);
   });
 
@@ -221,10 +214,7 @@ describe('curate state', () => {
       isClaimStale(
         createCurateState({
           activeClaim: {
-            through: {
-              note: 'coral-recent',
-              mutationSeqAtPromote: 2,
-            },
+            through: cursor('coral-recent', 2),
             startedAt: '2026-03-25T11:45:01.000Z',
           },
         }),
@@ -235,10 +225,7 @@ describe('curate state', () => {
       isClaimStale(
         createCurateState({
           activeClaim: {
-            through: {
-              note: 'coral-stale',
-              mutationSeqAtPromote: 3,
-            },
+            through: cursor('coral-stale', 3),
             startedAt: '2026-03-25T11:45:00.000Z',
           },
         }),
@@ -249,15 +236,9 @@ describe('curate state', () => {
 
   it('applies curate failure state transitions without disk access', () => {
     const state = createCurateState({
-      lastAttemptedThrough: {
-        note: 'coral-failed',
-        mutationSeqAtPromote: 4,
-      },
+      lastAttemptedThrough: cursor('coral-failed', 4),
       activeClaim: {
-        through: {
-          note: 'coral-failed',
-          mutationSeqAtPromote: 4,
-        },
+        through: cursor('coral-failed', 4),
         startedAt: '2026-03-25T11:59:00.000Z',
       },
       consecutiveFailures: 2,
@@ -265,10 +246,7 @@ describe('curate state', () => {
 
     expect(applyRecordCurateFailure(state, null, new Error('transient failure'))).toEqual({
       ...state,
-      lastAttemptedThrough: {
-        note: 'coral-failed',
-        mutationSeqAtPromote: 4,
-      },
+      lastAttemptedThrough: cursor('coral-failed', 4),
       retryNotBefore: '2026-03-25T14:00:00.000Z',
       activeClaim: null,
       consecutiveFailures: 3,
@@ -279,10 +257,7 @@ describe('curate state', () => {
     const retryState = createCurateState({
       retryNotBefore: '2026-03-25T13:00:00.000Z',
       activeClaim: {
-        through: {
-          note: 'coral-active',
-          mutationSeqAtPromote: 7,
-        },
+        through: cursor('coral-active', 7),
         startedAt: '2026-03-25T11:58:00.000Z',
       },
       consecutiveFailures: 4,
@@ -352,7 +327,7 @@ describe('curate state', () => {
       join(runtime.notesDir(), 'coral-third.md'),
       renderNote({
         title: 'Coral Third',
-        mutationSeqAtPromote: 11,
+        entrySeq: 11,
       }),
       'utf-8',
     );
@@ -360,8 +335,6 @@ describe('curate state', () => {
 
     runtime.writeIndex({
       entries: createIndexEntries({
-        'coral-first': createIndexNote('Coral First'),
-        'coral-second': createIndexNote('Coral Second'),
         'coral-third': createIndexNote('Coral Third', 11),
       }),
       principles: {},
@@ -376,13 +349,13 @@ describe('curate state', () => {
     await internals.migrateCurateStateIfNeeded();
 
     expect(
-      parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-first.md'), 'utf-8')).mutationSeqAtPromote,
+      parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-first.md'), 'utf-8')).entrySeq,
     ).toBe(12);
     expect(
-      parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-second.md'), 'utf-8')).mutationSeqAtPromote,
+      parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-second.md'), 'utf-8')).entrySeq,
     ).toBe(13);
     expect(
-      parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-third.md'), 'utf-8')).mutationSeqAtPromote,
+      parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-third.md'), 'utf-8')).entrySeq,
     ).toBe(11);
     expect(readFileSync(join(runtime.notesDir(), 'coral-third.md'), 'utf-8')).toBe(existingContent);
     expect(runtime.readIndex()).toEqual({
@@ -407,7 +380,7 @@ describe('curate state', () => {
       join(runtime.notesDir(), 'coral-current-floor.md'),
       renderNote({
         title: 'Current Floor',
-        mutationSeqAtPromote: 9,
+        entrySeq: 9,
       }),
       'utf-8',
     );
@@ -415,7 +388,7 @@ describe('curate state', () => {
       join(runtime.notesDir(), 'coral-late-existing.md'),
       renderNote({
         title: 'Late Existing',
-        mutationSeqAtPromote: 11,
+        entrySeq: 11,
       }),
       'utf-8',
     );
@@ -431,7 +404,6 @@ describe('curate state', () => {
       entries: createIndexEntries({
         'coral-current-floor': createIndexNote('Current Floor', 9),
         'coral-late-existing': createIndexNote('Late Existing', 11),
-        'coral-needs-seq': createIndexNote('Needs Seq'),
       }),
       principles: {},
     });
@@ -444,13 +416,13 @@ describe('curate state', () => {
     await internals.migrateCurateStateIfNeeded();
 
     expect(
-      parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-current-floor.md'), 'utf-8')).mutationSeqAtPromote,
+      parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-current-floor.md'), 'utf-8')).entrySeq,
     ).toBe(9);
     expect(
-      parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-late-existing.md'), 'utf-8')).mutationSeqAtPromote,
+      parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-late-existing.md'), 'utf-8')).entrySeq,
     ).toBe(11);
     expect(
-      parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-needs-seq.md'), 'utf-8')).mutationSeqAtPromote,
+      parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-needs-seq.md'), 'utf-8')).entrySeq,
     ).toBe(21);
     expect(runtime.readIndex()).toEqual({
       entries: createIndexEntries({
@@ -472,7 +444,7 @@ describe('curate state', () => {
     writeFileSync(join(runtime.notesDir(), 'coral-skip.md'), renderNote({ title: 'Skip Migration' }), 'utf-8');
     runtime.writeIndex({
       entries: createIndexEntries({
-        'coral-skip': createIndexNote('Skip Migration'),
+        'coral-skip': createIndexNote('Skip Migration', 4),
       }),
       principles: {},
     });
@@ -484,6 +456,7 @@ describe('curate state', () => {
       runtime,
       createCurateState({
         initialized: true,
+        migrationVersion: CURATE_STATE_MIGRATION_VERSION,
         lastRunDay: '2026-03-25',
       }),
     );
@@ -491,11 +464,11 @@ describe('curate state', () => {
     await internals.migrateCurateStateIfNeeded();
 
     expect(
-      parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-skip.md'), 'utf-8')).mutationSeqAtPromote,
+      parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-skip.md'), 'utf-8')).entrySeq,
     ).toBeUndefined();
     expect(runtime.readIndex()).toEqual({
       entries: createIndexEntries({
-        'coral-skip': createIndexNote('Skip Migration'),
+        'coral-skip': createIndexNote('Skip Migration', 4),
       }),
       principles: {},
     });
@@ -506,6 +479,7 @@ describe('curate state', () => {
     expect(readCurateState(runtime)).toEqual(
       createCurateState({
         initialized: true,
+        migrationVersion: CURATE_STATE_MIGRATION_VERSION,
         lastRunDay: '2026-03-25',
       }),
     );

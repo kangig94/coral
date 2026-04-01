@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { load, save, type RawData } from '@orama/orama';
 import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
 import { CURATE_STATE_FILE } from './curate-state.js';
+import { rewriteLegacyNoteFrontmatter } from './frontmatter.js';
 import { loadKbLanceDb } from './lancedb-runtime.js';
 import { writeFileAtomic } from './mutation-helpers.js';
 import { createOramaDb, type KbOramaDb, type KbOramaTokenizer } from './orama-factory.js';
@@ -17,13 +18,22 @@ import {
   sourcePathFromName,
   sourcesDir as pathsSourcesDir,
 } from './paths.js';
-import { rebuildTextArtifacts } from './text-artifacts.js';
-import { noteEntryId, sourceEntryId, type KbIndex, type KbLanceDbAdapter, type NoteEntry, type SourceEntry } from './types.js';
+import { rebuildTextArtifacts, sortedMarkdownEntries } from './text-artifacts.js';
+import {
+  noteEntryId,
+  parseKbEntryId,
+  sourceEntryId,
+  type KbIndex,
+  type KbLanceDbAdapter,
+  type NoteEntry,
+  type SourceEntry,
+} from './types.js';
 import { assertNonEmptyText, assertNoteSlug, assertSourceSlug } from './validation.js';
 
 const INDEX_STATE_FILE = 'index-state.json';
 const INDEX_FILE = 'index.json';
 const ORAMA_INDEX_FILE = 'orama-index.json';
+export const KB_ENTRYSEQ_MIGRATION_VERSION = 1;
 
 export type KbIndexState = {
   mutationSeq: number;
@@ -84,11 +94,9 @@ function emptyIndex(): KbIndex {
   };
 }
 
-function parseMutationSeqAtPromote(value: unknown): number | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
+type EntrySeqGuardTarget = Pick<KbRuntime, 'notePath' | 'notesDir'>;
 
+function parseEntrySeq(value: unknown): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
     throw new Error('Invalid KB index');
   }
@@ -104,8 +112,22 @@ function parseStringArray(value: unknown): string[] {
   return [...value];
 }
 
+function parseEntryIdArray(value: unknown): string[] {
+  const values = parseStringArray(value);
+  return values.map((entryId) => {
+    const normalized = parseKbEntryId(entryId);
+    if (normalized === null) {
+      throw new Error('Invalid KB index');
+    }
+    return normalized;
+  });
+}
+
 function parseNoteIndexEntry(entryId: string, value: Record<string, unknown>): NoteEntry {
-  const mutationSeqAtPromote = parseMutationSeqAtPromote(value.mutationSeqAtPromote);
+  if ('mutationSeqAtPromote' in value) {
+    throw new Error('Invalid KB index');
+  }
+
   const slug = assertNoteSlug(value.slug, 'KB index entry slug');
   if (entryId !== noteEntryId(slug)) {
     throw new Error('Invalid KB index');
@@ -120,11 +142,16 @@ function parseNoteIndexEntry(entryId: string, value: Record<string, unknown>): N
     source: parseStringArray(value.source),
     createdAt: assertNonEmptyText(value.createdAt, 'KB index entry createdAt'),
     updatedAt: assertNonEmptyText(value.updatedAt, 'KB index entry updatedAt'),
-    ...(mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote }),
+    entrySeq: parseEntrySeq(value.entrySeq),
+    related: value.related === undefined ? [] : parseEntryIdArray(value.related),
   };
 }
 
 function parseSourceIndexEntry(entryId: string, value: Record<string, unknown>): SourceEntry {
+  if ('mutationSeqAtPromote' in value) {
+    throw new Error('Invalid KB index');
+  }
+
   const slug = assertSourceSlug(value.slug, 'KB index entry slug');
   if (entryId !== sourceEntryId(slug)) {
     throw new Error('Invalid KB index');
@@ -142,6 +169,8 @@ function parseSourceIndexEntry(entryId: string, value: Record<string, unknown>):
     tags: parseStringArray(value.tags),
     ...(url === undefined ? {} : { url: assertNonEmptyText(url, 'KB index entry url') }),
     importedAt: assertNonEmptyText(value.importedAt, 'KB index entry importedAt'),
+    entrySeq: parseEntrySeq(value.entrySeq),
+    related: value.related === undefined ? [] : parseEntryIdArray(value.related),
   };
 }
 
@@ -211,6 +240,31 @@ function writeJsonAtomic(filePath: string, value: unknown): void {
 
 function isFreshTextSnapshot(state: KbIndexState | null): state is KbIndexState {
   return state !== null && state.indexedSeq === state.mutationSeq && state.staleReason === undefined;
+}
+
+export function runEntrySeqUpgradeGuard(target: EntrySeqGuardTarget): boolean {
+  let changed = false;
+
+  for (const entry of sortedMarkdownEntries(target.notesDir())) {
+    const notePath = target.notePath(entry.slice(0, -3));
+    const raw = readFileSync(notePath, 'utf-8');
+    let rewritten: string | null;
+
+    try {
+      rewritten = rewriteLegacyNoteFrontmatter(raw);
+    } catch {
+      continue;
+    }
+
+    if (rewritten === null) {
+      continue;
+    }
+
+    writeFileAtomic(notePath, rewritten);
+    changed = true;
+  }
+
+  return changed;
 }
 
 export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: string; runtimeDir: string }): KbRuntime {
@@ -336,8 +390,11 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
   }
 
   async function ensureIndex(): Promise<KbIndex> {
+    runEntrySeqUpgradeGuard(kbRuntime);
+
     if (textArtifactsNeedRebuild()) {
       await kbRuntime.withMutationLock(async () => {
+        runEntrySeqUpgradeGuard(kbRuntime);
         const state = readIndexStateIfPresent();
         const startSeq = state?.mutationSeq ?? 0;
         if (!textArtifactsNeedRebuild(state)) {
@@ -404,6 +461,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     adapter = null;
     kbRuntime.invalidateKbCache();
     mkdirSync(runtimeDir, { recursive: true });
+    runEntrySeqUpgradeGuard(kbRuntime);
 
     try {
       const req = createRequire(join(pluginRoot, 'bridge', 'coral-backend.cjs'));
@@ -559,6 +617,9 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     sourceImportStageDir,
     curateStatePath,
   };
+
+  mkdirSync(runtimeDir, { recursive: true });
+  runEntrySeqUpgradeGuard(kbRuntime);
 
   return kbRuntime;
 }

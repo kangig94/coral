@@ -1,6 +1,6 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
@@ -33,13 +33,32 @@ import {
   extractPrincipleStatement,
   extractTitle,
   parseFrontmatter,
+  parseSourceFrontmatter,
   replaceFrontmatter,
+  replaceSourceFrontmatter,
 } from './frontmatter.js';
-import { loadKbNote } from './read.js';
+import { loadKbNote, loadKbSource } from './read.js';
 import { assertNonEmptyText, assertNoteSlug, compareLocale } from './validation.js';
-import { buildNoteIndexEntry, cloneKbIndex, markTextIndexStale, writeFileAtomic } from './mutation-helpers.js';
-import type { KbRuntime } from './runtime.js';
-import { getEntry, isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from './types.js';
+import {
+  buildNoteIndexEntry,
+  buildSourceIndexEntry,
+  cloneKbIndex,
+  markTextIndexStale,
+  writeFileAtomic,
+} from './mutation-helpers.js';
+import { runEntrySeqUpgradeGuard, type KbRuntime } from './runtime.js';
+import {
+  getEntry,
+  isNoteEntry,
+  parseKbEntryId,
+  isSourceEntry,
+  noteEntryId,
+  sourceEntryId,
+  type EntryRecord,
+  type KbEntryId,
+  type KbIndex,
+  type NoteEntry,
+} from './types.js';
 import { backendLog } from '../shared/backend-log.js';
 
 // -- Schedule debounce --
@@ -50,6 +69,9 @@ const CURATE_MIN_CLAIM_SIZE = 10;
 const CURATE_IMMEDIATE_CLAIM_SIZE = 30;
 const CURATE_MAX_CLAIM_SIZE = 100;
 const CLASSIFICATION_BATCH_SIZE = 100;
+const CLASSIFICATION_REQUEST_TOKEN_BUDGET = 12_000;
+const CLASSIFICATION_RESPONSE_TOKEN_HEADROOM = 2_000;
+const CLASSIFICATION_SOURCE_EXCERPT_TOKEN_LIMIT = 2_000;
 
 // -- Principle discovery --
 const DISCOVERY_NEW_NOTE_THRESHOLD = 50;
@@ -110,18 +132,70 @@ export type SpawnCliFn = (options: {
   signal?: AbortSignal;
 }) => Promise<SpawnCliResult>;
 
-export type CurateClaimedNote = {
+type NoteClaimCandidate = {
+  kind: 'note';
+  entryId: KbEntryId;
+  slug: string;
+  updatedAt: string;
+  cursor: CurateCursor;
+};
+
+type SourceClaimCandidate = {
+  kind: 'source';
+  entryId: KbEntryId;
+  slug: string;
+  cursor: CurateCursor;
+};
+
+type ClaimCandidate = NoteClaimCandidate | SourceClaimCandidate;
+
+type NoteCurateClaimedEntry = {
+  kind: 'note';
+  entryId: KbEntryId;
   slug: string;
   title: string;
   body: string;
   updatedAt: string;
-  mutationSeqAtPromote: number;
+  entrySeq: number;
+};
+
+type SourceCurateClaimedEntry = {
+  kind: 'source';
+  entryId: KbEntryId;
+  slug: string;
+  title: string;
+  body: string;
+  claimTimeFingerprint: string;
+  entrySeq: number;
+};
+
+export type CurateClaimedEntry = NoteCurateClaimedEntry | SourceCurateClaimedEntry;
+type DiscoveryCurateClaimedEntry = NoteCurateClaimedEntry;
+
+function isNoteClaimedEntry(entry: CurateClaimedEntry): entry is NoteCurateClaimedEntry {
+  return entry.kind === 'note';
+}
+
+type NoteMetadataTarget = {
+  kind: 'note';
+  entryId: KbEntryId;
+  slug: string;
+  entrySeq: number;
+  claimTimeUpdatedAt: string;
+  addTags?: string[];
+  addRelated?: string[];
+  desiredTags?: string[];
+  addPrinciples?: string[];
+  removePrinciples?: string[];
+  removeTags?: string[];
+  cleanup?: boolean;
 };
 
 export type ClassificationAssignment = {
-  note: string;
+  entry: string;
   tags: string[];
-  principles: string[];
+  principles?: string[];
+  related?: string[];
 };
 
 export type DiscoveryProposal = {
@@ -139,27 +213,18 @@ type EnsurePrincipleDocumentResult = {
 };
 
 export type MetadataTarget = {
-  note: string;
-  mutationSeqAtPromote: number;
-  claimTimeUpdatedAt: string;
+  kind: 'source';
+  entryId: KbEntryId;
+  slug: string;
+  entrySeq: number;
+  claimTimeFingerprint: string;
   addTags?: string[];
-  desiredTags?: string[];
-  addPrinciples?: string[];
-  removePrinciples?: string[];
-  removeTags?: string[];
-  cleanup?: boolean;
-};
+  addRelated?: string[];
+} | NoteMetadataTarget;
 
 export type CurateClaim = {
-  notes: CurateClaimedNote[];
+  entries: CurateClaimedEntry[];
   through: CurateCursor;
-};
-
-type ClaimCandidate = {
-  slug: string;
-  title: string;
-  updatedAt: string;
-  cursor: CurateCursor;
 };
 
 type LiveMetadataDecision = {
@@ -217,6 +282,10 @@ function buildFlatList(values: string[]): string {
   return values.map((value) => `- ${value}`).join('\n');
 }
 
+function fingerprintEntryContent(raw: string): string {
+  return createHash('sha256').update(raw).digest('hex');
+}
+
 function stripMarkdownCodeFences(raw: string): string {
   const trimmed = raw.trim();
   const match = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
@@ -265,8 +334,20 @@ function uniqueTrimmedList(values: string[]): string[] {
   return normalized;
 }
 
+function countClassificationTagSupport(index: KbIndex): Map<string, number> {
+  const counts = new Map<string, number>();
+
+  for (const entry of getCuratableEntries(index)) {
+    for (const tag of entry.tags) {
+      counts.set(tag, (counts.get(tag) ?? 0) + 1);
+    }
+  }
+
+  return counts;
+}
+
 function buildTagVocabulary(index: KbIndex): string[] {
-  return [...countTagSupport(index).keys()].sort(compareLocale);
+  return [...countClassificationTagSupport(index).keys()].sort(compareLocale);
 }
 
 function buildPrincipleNames(index: KbIndex): string[] {
@@ -278,7 +359,11 @@ function getIndexNote(index: KbIndex, note: string): NoteEntry | undefined {
   return entry !== undefined && isNoteEntry(entry) ? entry : undefined;
 }
 
-function getIndexNotes(index: KbIndex): NoteEntry[] {
+function getCuratableEntries(index: KbIndex): EntryRecord[] {
+  return Object.values(index.entries);
+}
+
+function getDiscoveryNotes(index: KbIndex): NoteEntry[] {
   return Object.values(index.entries).filter(isNoteEntry);
 }
 
@@ -288,6 +373,20 @@ function compareOptionalCursor(left: CurateCursor | null, right: CurateCursor): 
   }
 
   return compareCursor(left, right);
+}
+
+function noteCursor(note: string, entrySeq: number): CurateCursor {
+  return {
+    entryId: noteEntryId(note),
+    entrySeq,
+  };
+}
+
+function sourceCursor(slug: string, entrySeq: number): CurateCursor {
+  return {
+    entryId: sourceEntryId(slug),
+    entrySeq,
+  };
 }
 
 function compareCursorDates(target: string | null, now: string): number {
@@ -309,37 +408,60 @@ function compareCursorDates(target: string | null, now: string): number {
 }
 
 function collectClaimCandidates(index: KbIndex): ClaimCandidate[] {
-  return getIndexNotes(index)
+  const candidates: ClaimCandidate[] = [];
+  for (const entry of getCuratableEntries(index)) {
+    if (entry.entrySeq === undefined) continue;
+
+    if (isNoteEntry(entry)) {
+      candidates.push({
+        kind: 'note',
+        entryId: noteEntryId(entry.slug),
+        slug: entry.slug,
+        updatedAt: entry.updatedAt,
+        cursor: noteCursor(entry.slug, entry.entrySeq),
+      });
+    } else {
+      candidates.push({
+        kind: 'source',
+        entryId: sourceEntryId(entry.slug),
+        slug: entry.slug,
+        cursor: sourceCursor(entry.slug, entry.entrySeq),
+      });
+    }
+  }
+  return candidates.sort((left, right) => compareCursor(left.cursor, right.cursor));
+}
+
+function collectDiscoveryCandidates(index: KbIndex): NoteClaimCandidate[] {
+  return getDiscoveryNotes(index)
     .flatMap((noteMeta) =>
-      noteMeta.mutationSeqAtPromote === undefined
+      noteMeta.entrySeq === undefined
         ? []
         : [
             {
+              kind: 'note' as const,
+              entryId: noteEntryId(noteMeta.slug),
               slug: noteMeta.slug,
-              title: noteMeta.title,
               updatedAt: noteMeta.updatedAt,
-              cursor: {
-                note: noteMeta.slug,
-                mutationSeqAtPromote: noteMeta.mutationSeqAtPromote,
-              },
+              cursor: noteCursor(noteMeta.slug, noteMeta.entrySeq),
             },
           ],
     )
     .sort((left, right) => compareCursor(left.cursor, right.cursor));
 }
 
-function pendingExtendsBeyondCursor(pendingNotes: ClaimCandidate[], cursor: CurateCursor | null): boolean {
-  if (cursor === null || pendingNotes.length === 0) {
+function pendingExtendsBeyondCursor(pendingEntries: ClaimCandidate[], cursor: CurateCursor | null): boolean {
+  if (cursor === null || pendingEntries.length === 0) {
     return false;
   }
 
-  return compareCursor(pendingNotes[pendingNotes.length - 1].cursor, cursor) > 0;
+  return compareCursor(pendingEntries[pendingEntries.length - 1].cursor, cursor) > 0;
 }
 
 function cursorFromTarget(target: MetadataTarget): CurateCursor {
   return {
-    note: target.note,
-    mutationSeqAtPromote: target.mutationSeqAtPromote,
+    entryId: target.entryId,
+    entrySeq: target.entrySeq,
   };
 }
 
@@ -401,8 +523,8 @@ function applyParentAbsorption(note: string, tags: string[], tagSupport: Readonl
   return uniqueTrimmedList(nextTags);
 }
 
-function buildLiveMetadataDecision(
-  target: MetadataTarget,
+function buildLiveNoteMetadataDecision(
+  target: NoteMetadataTarget,
   liveTags: string[],
   livePrinciples: string[],
   cleanupTagSupport: ReadonlyMap<string, number>,
@@ -424,7 +546,7 @@ function buildLiveMetadataDecision(
   const removeTagSet = new Set(removeTags);
   let nextTags = desiredTags ?? uniqueTrimmedList([...liveTags, ...addTags]).filter((tag) => !removeTagSet.has(tag));
   if (target.cleanup) {
-    nextTags = applyParentAbsorption(target.note, nextTags, cleanupTagSupport);
+    nextTags = applyParentAbsorption(target.slug, nextTags, cleanupTagSupport);
   }
 
   const removePrincipleSet = new Set(removePrinciples);
@@ -437,6 +559,25 @@ function buildLiveMetadataDecision(
     nextTags,
     nextPrinciples,
   };
+}
+
+function buildLiveSourceMetadataDecision(target: Extract<MetadataTarget, { kind: 'source' }>, liveTags: string[]): string[] {
+  return uniqueTrimmedList([...liveTags, ...(target.addTags ?? [])]);
+}
+
+function buildLiveRelatedMetadata(target: MetadataTarget, liveRelated: string[]): string[] {
+  const addRelated = uniqueTrimmedList(target.addRelated ?? []);
+  if (addRelated.length === 0) {
+    return [...liveRelated];
+  }
+
+  const existing = new Set(liveRelated);
+  const additions = addRelated.filter((relatedEntryId) => !existing.has(relatedEntryId));
+  if (additions.length === 0) {
+    return [...liveRelated];
+  }
+
+  return [...liveRelated, ...additions];
 }
 
 function applyGlobalCleanup(note: string, tags: string[], cleanup: TagCleanupResult): string[] {
@@ -467,7 +608,7 @@ function buildCleanupTargets(index: KbIndex, cohortNotes: string[], cleanup: Tag
 
   for (const slug of cohortNotes) {
     const noteMeta = getIndexNote(index, slug);
-    if (noteMeta === undefined || noteMeta.mutationSeqAtPromote === undefined) {
+    if (noteMeta === undefined || noteMeta.entrySeq === undefined) {
       continue;
     }
 
@@ -481,8 +622,10 @@ function buildCleanupTargets(index: KbIndex, cohortNotes: string[], cleanup: Tag
     }
 
     targets.push({
-      note: slug,
-      mutationSeqAtPromote: noteMeta.mutationSeqAtPromote,
+      kind: 'note',
+      entryId: noteEntryId(slug),
+      slug,
+      entrySeq: noteMeta.entrySeq,
       claimTimeUpdatedAt: noteMeta.updatedAt,
       desiredTags,
       cleanup: true,
@@ -530,14 +673,14 @@ function normalizeDiscoverySlug(raw: string): string | null {
 }
 
 export type DiscoveryBatch = {
-  selected: ClaimCandidate[];
+  selected: NoteClaimCandidate[];
   nextHighSeq: number;
   nextOffset: number;
 };
 
-function selectDiscoveryBatch(allClassified: ClaimCandidate[], highSeq: number, offset: number): DiscoveryBatch {
-  const newNotes = allClassified.filter((c) => c.cursor.mutationSeqAtPromote > highSeq);
-  const oldNotes = allClassified.filter((c) => c.cursor.mutationSeqAtPromote <= highSeq);
+function selectDiscoveryBatch(allClassified: NoteClaimCandidate[], highSeq: number, offset: number): DiscoveryBatch {
+  const newNotes = allClassified.filter((c) => c.cursor.entrySeq > highSeq);
+  const oldNotes = allClassified.filter((c) => c.cursor.entrySeq <= highSeq);
 
   const selected = newNotes.slice(0, DISCOVERY_BATCH_SIZE);
 
@@ -551,7 +694,7 @@ function selectDiscoveryBatch(allClassified: ClaimCandidate[], highSeq: number, 
     nextOffset = (start + fill) % oldNotes.length;
   }
 
-  const nextHighSeq = selected.reduce((max, c) => Math.max(max, c.cursor.mutationSeqAtPromote), highSeq);
+  const nextHighSeq = selected.reduce((max, c) => Math.max(max, c.cursor.entrySeq), highSeq);
 
   return { selected, nextHighSeq, nextOffset };
 }
@@ -566,21 +709,20 @@ function buildPrincipleAssignmentTargets(
 
   for (const note of notes) {
     const noteMeta = getIndexNote(index, note);
-    if (noteMeta === undefined || noteMeta.mutationSeqAtPromote === undefined) {
+    if (noteMeta === undefined || noteMeta.entrySeq === undefined) {
       continue;
     }
 
-    const cursor = {
-      note,
-      mutationSeqAtPromote: noteMeta.mutationSeqAtPromote,
-    };
+    const cursor = noteCursor(note, noteMeta.entrySeq);
     if (compareCursor(cursor, processedThrough) > 0 || noteMeta.principles.includes(principle)) {
       continue;
     }
 
     targets.push({
-      note,
-      mutationSeqAtPromote: noteMeta.mutationSeqAtPromote,
+      kind: 'note',
+      entryId: noteEntryId(note),
+      slug: note,
+      entrySeq: noteMeta.entrySeq,
       claimTimeUpdatedAt: noteMeta.updatedAt,
       addPrinciples: [principle],
     });
@@ -590,101 +732,344 @@ function buildPrincipleAssignmentTargets(
 }
 
 export function buildClassificationPrompt(
-  notes: CurateClaimedNote[],
+  entries: CurateClaimedEntry[],
   tagVocab: string[],
   principleNames: string[],
 ): string {
-  const noteBlocks = notes.map((note) => `## ${note.slug}\n${note.title}\n${note.body}`);
+  const shape = classificationBatchShape(entries);
+  const entryBlocks = entries.map(renderClassificationEntryBlock);
 
   return [
-    'Return raw JSON only. Do not include any preamble, explanation, or code fences.',
-    '',
-    'Tag vocabulary:',
-    buildFlatList(tagVocab),
-    '',
-    'Principle names:',
-    buildFlatList(principleNames),
-    '',
-    ...noteBlocks,
-    '',
-    'Return a JSON array: [{ "note": "<slug>", "tags": ["<tag>", ...], "principles": ["<principle>", ...] }]',
-  ].join('\n');
+    buildClassificationPromptHeader(shape, tagVocab, principleNames),
+    ...entryBlocks,
+    buildClassificationPromptFooter(shape),
+  ].join('\n\n');
 }
 
-function classifyParsedEntries(entries: unknown[], noteMap: Map<string, true>): ClassificationAssignment[] {
+export type ClassificationBatchShape = 'source-only' | 'note-or-mixed';
+
+function approximateTokenCount(value: string): number {
+  return value.length === 0 ? 0 : Math.ceil(value.length / 4);
+}
+
+function trimTextToTokenBudget(text: string, tokenBudget: number): string {
+  if (tokenBudget <= 0 || text.length === 0) {
+    return '';
+  }
+
+  if (approximateTokenCount(text) <= tokenBudget) {
+    return text;
+  }
+
+  let low = 0;
+  let high = text.length;
+  let best = '';
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = text.slice(0, mid).trimEnd();
+    if (approximateTokenCount(candidate) <= tokenBudget) {
+      best = candidate;
+      low = mid + 1;
+      continue;
+    }
+
+    high = mid - 1;
+  }
+
+  return best;
+}
+
+function excerptSourceBody(body: string): string {
+  return trimTextToTokenBudget(body, CLASSIFICATION_SOURCE_EXCERPT_TOKEN_LIMIT);
+}
+
+function classificationBatchShape(entries: CurateClaimedEntry[]): ClassificationBatchShape {
+  return entries.some((entry) => entry.kind === 'note') ? 'note-or-mixed' : 'source-only';
+}
+
+function renderClassificationEntryBlock(entry: CurateClaimedEntry): string {
+  return `## ${entry.entryId}\n${entry.title}\n${entry.body}`;
+}
+
+function buildClassificationPromptHeader(
+  shape: ClassificationBatchShape,
+  tagVocab: string[],
+  principleNames: string[],
+): string {
+  const lines = [
+    'Return raw JSON only. Do not include any preamble, explanation, or code fences.',
+    'Use KB entry IDs exactly as written, including the note:/source: prefix. Never return bare slugs.',
+    'Tag vocabulary:',
+    buildFlatList(tagVocab),
+    'Use only tags from the tag vocabulary.',
+  ];
+
+  if (shape === 'source-only') {
+    lines.push('Each source entry must return tags and related only.');
+    return lines.join('\n\n');
+  }
+
+  lines.push('Principle names:', buildFlatList(principleNames));
+  lines.push('Use only principle names from the principle list.');
+  lines.push(
+    'Each note entry must return tags, principles, and related. Source entries in the same batch return tags and related; omit principles or return [].',
+  );
+  return lines.join('\n\n');
+}
+
+function buildClassificationPromptFooter(shape: ClassificationBatchShape): string {
+  return shape === 'source-only'
+    ? 'Return a JSON array: [{ "entry": "source:<slug>", "tags": ["<tag>", ...], "related": ["source:<slug>", "note:<slug>"] }]'
+    : 'Return a JSON array: [{ "entry": "note:<slug>", "tags": ["<tag>", ...], "principles": ["<principle>", ...], "related": ["source:<slug>", "note:<slug>"] }]';
+}
+
+function classificationPromptTokenLimit(): number {
+  const promptTokenLimit = CLASSIFICATION_REQUEST_TOKEN_BUDGET - CLASSIFICATION_RESPONSE_TOKEN_HEADROOM;
+  if (promptTokenLimit < 1) {
+    throw new Error('Classification request budget must leave positive response headroom.');
+  }
+
+  return promptTokenLimit;
+}
+
+function estimateClassificationScaffoldTokens(
+  shape: ClassificationBatchShape,
+  tagVocab: string[],
+  principleNames: string[],
+): number {
+  return approximateTokenCount(
+    [buildClassificationPromptHeader(shape, tagVocab, principleNames), buildClassificationPromptFooter(shape)].join(
+      '\n\n',
+    ),
+  );
+}
+
+function estimateClassificationEntryTokens(entry: CurateClaimedEntry): number {
+  return approximateTokenCount(`\n\n${renderClassificationEntryBlock(entry)}`);
+}
+
+export function estimateClassificationBatchTokens(
+  entries: CurateClaimedEntry[],
+  tagVocab: string[],
+  principleNames: string[],
+): number {
+  const shape = classificationBatchShape(entries);
+  return (
+    estimateClassificationScaffoldTokens(shape, tagVocab, principleNames) +
+    entries.reduce((total, entry) => total + estimateClassificationEntryTokens(entry), 0)
+  );
+}
+
+function assertClassificationScaffoldFits(
+  shape: ClassificationBatchShape,
+  tagVocab: string[],
+  principleNames: string[],
+): void {
+  if (estimateClassificationScaffoldTokens(shape, tagVocab, principleNames) > classificationPromptTokenLimit()) {
+    throw new Error(`Classification ${shape} scaffold exceeds the request budget.`);
+  }
+}
+
+function fitSourceEntryToPromptBudget(
+  entry: SourceCurateClaimedEntry,
+  tagVocab: string[],
+  principleNames: string[],
+): SourceCurateClaimedEntry {
+  if (estimateClassificationBatchTokens([entry], tagVocab, principleNames) <= classificationPromptTokenLimit()) {
+    return entry;
+  }
+
+  let low = 0;
+  let high = entry.body.length;
+  let bestBody: string | null = null;
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = {
+      ...entry,
+      body: entry.body.slice(0, mid).trimEnd(),
+    };
+
+    if (estimateClassificationBatchTokens([candidate], tagVocab, principleNames) <= classificationPromptTokenLimit()) {
+      bestBody = candidate.body;
+      low = mid + 1;
+      continue;
+    }
+
+    high = mid - 1;
+  }
+
+  if (bestBody === null) {
+    throw new Error(`Classification source entry ${entry.entryId} exceeds the request budget.`);
+  }
+
+  return {
+    ...entry,
+    body: bestBody,
+  };
+}
+
+function classifyParsedEntries(entries: unknown[], entryMap: Map<string, true>): ClassificationAssignment[] {
   const assignments: ClassificationAssignment[] = [];
+
   for (const entry of entries) {
-    if (!isRecord(entry)) {
+    if (!isRecord(entry) || typeof entry.entry !== 'string' || !isStringArray(entry.tags)) {
       continue;
     }
-    if (
-      typeof entry.note !== 'string' ||
-      !isStringArray(entry.tags) ||
-      !isStringArray(entry.principles) ||
-      !noteMap.has(entry.note)
-    ) {
+
+    const parsedEntryId = parseKbEntryId(entry.entry);
+    if (parsedEntryId === null || !entryMap.has(parsedEntryId)) {
       continue;
     }
+
+    const principles = entry.principles === undefined ? [] : entry.principles;
+    const related = entry.related === undefined ? [] : entry.related;
+    if (!isStringArray(principles) || !isStringArray(related)) {
+      continue;
+    }
+
+    const normalizedRelated = uniqueTrimmedList(
+      related.flatMap((relatedEntryId) => {
+        const normalized = parseKbEntryId(relatedEntryId);
+        return normalized === null ? [] : [normalized];
+      }),
+    );
+
     assignments.push({
-      note: entry.note,
+      entry: parsedEntryId,
       tags: [...entry.tags],
-      principles: [...entry.principles],
+      principles: [...principles],
+      ...(normalizedRelated.length === 0 ? {} : { related: normalizedRelated }),
     });
   }
 
   return assignments;
 }
 
-export function parseClassificationResponse(raw: string, noteMap: Map<string, true>): ClassificationAssignment[] {
+export function parseClassificationResponse(raw: string, entryMap: Map<string, true>): ClassificationAssignment[] {
   const { entries, parseFailed } = parseJsonArray(raw);
-  return parseFailed ? [] : classifyParsedEntries(entries, noteMap);
+  return parseFailed ? [] : classifyParsedEntries(entries, entryMap);
 }
 
-export function chunkNotes<T>(notes: T[], batchSize = CLASSIFICATION_BATCH_SIZE): T[][] {
-  if (!Number.isInteger(batchSize) || batchSize < 1) {
-    throw new Error('batchSize must be a positive integer');
+export function chunkEntriesByPromptBudget(
+  entries: CurateClaimedEntry[],
+  tagVocab: string[],
+  principleNames: string[],
+  maxEntries = CLASSIFICATION_BATCH_SIZE,
+): CurateClaimedEntry[][] {
+  if (!Number.isInteger(maxEntries) || maxEntries < 1) {
+    throw new Error('maxEntries must be a positive integer');
   }
 
-  const chunks: T[][] = [];
-  for (let index = 0; index < notes.length; index += batchSize) {
-    chunks.push(notes.slice(index, index + batchSize));
+  if (entries.length === 0) {
+    return [];
   }
 
-  return chunks;
+  if (entries.some((entry) => entry.kind === 'source')) {
+    assertClassificationScaffoldFits('source-only', tagVocab, principleNames);
+  }
+  if (entries.some((entry) => entry.kind === 'note')) {
+    assertClassificationScaffoldFits('note-or-mixed', tagVocab, principleNames);
+  }
+
+  const batches: CurateClaimedEntry[][] = [];
+  let index = 0;
+  let currentBatch: CurateClaimedEntry[] = [];
+
+  while (index < entries.length) {
+    const entry = entries[index];
+    const nextBatch = [...currentBatch, entry];
+    const canFit =
+      currentBatch.length < maxEntries &&
+      estimateClassificationBatchTokens(nextBatch, tagVocab, principleNames) <= classificationPromptTokenLimit();
+
+    if (canFit) {
+      currentBatch.push(entry);
+      index += 1;
+      continue;
+    }
+
+    if (currentBatch.length > 0) {
+      batches.push(currentBatch);
+      currentBatch = [];
+      continue;
+    }
+
+    if (entry.kind === 'note') {
+      throw new Error(`Classification note entry ${entry.entryId} exceeds the request budget.`);
+    }
+
+    currentBatch = [fitSourceEntryToPromptBudget(entry, tagVocab, principleNames)];
+    index += 1;
+  }
+
+  if (currentBatch.length > 0) {
+    batches.push(currentBatch);
+  }
+
+  return batches;
 }
 
 export function validateAssignments(
   proposals: ClassificationAssignment[],
   index: KbIndex,
-  claimedNotes: CurateClaimedNote[],
+  claimedEntries: CurateClaimedEntry[],
 ): ClassificationAssignment[] {
-  const existingTagVocabulary = new Set(countTagSupport(index).keys());
+  const existingTagVocabulary = new Set(countClassificationTagSupport(index).keys());
+  const claimedByEntryId = new Map<KbEntryId, CurateClaimedEntry>();
+  for (const entry of claimedEntries) {
+    claimedByEntryId.set(entry.entryId, entry);
+  }
 
-  const claimedOrder = claimedNotes.map((note) => note.slug);
-  const claimedSet = new Set(claimedOrder);
-  const mergedByNote = new Map<string, ClassificationAssignment>();
+  const claimedOrder = claimedEntries.map((entry) => entry.entryId);
+  const mergedByEntry = new Map<KbEntryId, ClassificationAssignment>();
 
   for (const proposal of proposals) {
-    if (!claimedSet.has(proposal.note) || getIndexNote(index, proposal.note) === undefined) {
+    const entryId = parseKbEntryId(proposal.entry);
+    if (entryId === null) {
       continue;
     }
 
-    const existing = mergedByNote.get(proposal.note);
+    const claimedEntry = claimedByEntryId.get(entryId);
+    if (claimedEntry === undefined || getEntry(index, entryId) === undefined) {
+      continue;
+    }
+
+    const related = uniqueTrimmedList(
+      (proposal.related ?? []).flatMap((relatedEntryId) => {
+        const normalized = parseKbEntryId(relatedEntryId);
+        if (normalized === null || normalized === entryId || getEntry(index, normalized) === undefined) {
+          return [];
+        }
+
+        return [normalized];
+      }),
+    );
+    const existing = mergedByEntry.get(entryId);
     if (existing === undefined) {
-      mergedByNote.set(proposal.note, {
-        note: proposal.note,
+      mergedByEntry.set(entryId, {
+        entry: entryId,
         tags: uniqueTrimmedList(proposal.tags),
-        principles: uniqueTrimmedList(proposal.principles),
+        principles: uniqueTrimmedList(proposal.principles ?? []),
+        ...(related.length === 0 ? {} : { related }),
       });
       continue;
     }
 
     existing.tags = uniqueTrimmedList([...existing.tags, ...proposal.tags]);
-    existing.principles = uniqueTrimmedList([...existing.principles, ...proposal.principles]);
+    existing.principles = uniqueTrimmedList([...(existing.principles ?? []), ...(proposal.principles ?? [])]);
+    const mergedRelated = uniqueTrimmedList([...(existing.related ?? []), ...related]);
+    if (mergedRelated.length === 0) {
+      delete existing.related;
+      continue;
+    }
+
+    existing.related = mergedRelated;
   }
 
   const newTagSupport = new Map<string, number>();
-  for (const proposal of mergedByNote.values()) {
+  for (const proposal of mergedByEntry.values()) {
     const seenNewTags = new Set<string>();
     for (const tag of proposal.tags) {
       if (existingTagVocabulary.has(tag) || seenNewTags.has(tag)) {
@@ -696,25 +1081,33 @@ export function validateAssignments(
   }
 
   const validated: ClassificationAssignment[] = [];
-  for (const slug of claimedOrder) {
-    const proposal = mergedByNote.get(slug);
-    if (proposal === undefined) {
+  for (const entryId of claimedOrder) {
+    const proposal = mergedByEntry.get(entryId);
+    const claimedEntry = claimedByEntryId.get(entryId);
+    if (proposal === undefined || claimedEntry === undefined) {
       continue;
     }
 
-    const domain = deriveNoteIdentity(slug).domain;
-    const tags = uniqueTrimmedList([
-      domain,
-      ...proposal.tags.filter((tag) => existingTagVocabulary.has(tag) || (newTagSupport.get(tag) ?? 0) >= 3),
-    ]);
-    const principles = uniqueTrimmedList(
-      proposal.principles.filter((principle) => index.principles[principle] !== undefined),
+    const filteredTags = proposal.tags.filter(
+      (tag) => existingTagVocabulary.has(tag) || (newTagSupport.get(tag) ?? 0) >= 3,
+    );
+    const tags =
+      claimedEntry.kind === 'note'
+        ? uniqueTrimmedList([deriveNoteIdentity(claimedEntry.slug).domain, ...filteredTags])
+        : uniqueTrimmedList(filteredTags);
+    const principles =
+      claimedEntry.kind === 'note'
+        ? uniqueTrimmedList((proposal.principles ?? []).filter((principle) => index.principles[principle] !== undefined))
+        : [];
+    const related = uniqueTrimmedList(
+      (proposal.related ?? []).filter((relatedEntryId) => relatedEntryId !== entryId && getEntry(index, relatedEntryId as KbEntryId) !== undefined),
     );
 
     validated.push({
-      note: slug,
+      entry: entryId,
       tags,
       principles,
+      ...(related.length === 0 ? {} : { related }),
     });
   }
 
@@ -724,26 +1117,53 @@ export function validateAssignments(
 export function buildMetadataTargets(
   validatedAssignments: ClassificationAssignment[],
   index: KbIndex,
-  claimedNotes: CurateClaimedNote[],
+  claimedEntries: CurateClaimedEntry[],
 ): MetadataTarget[] {
-  const assignmentsByNote = new Map(validatedAssignments.map((assignment) => [assignment.note, assignment] as const));
+  const assignmentsByEntryId = new Map(
+    validatedAssignments.flatMap((assignment) => {
+      const entryId = parseKbEntryId(assignment.entry);
+      return entryId === null ? [] : [[entryId, assignment] as const];
+    }),
+  );
 
-  return claimedNotes
-    .map((claimedNote) => {
-      const claimTimeMeta = getIndexNote(index, claimedNote.slug);
+  return claimedEntries
+    .map((claimedEntry) => {
+      const claimTimeMeta = getEntry(index, claimedEntry.entryId);
       const existingTags = new Set(claimTimeMeta?.tags ?? []);
-      const existingPrinciples = new Set(claimTimeMeta?.principles ?? []);
-      const assignment = assignmentsByNote.get(claimedNote.slug);
+      const existingRelated = new Set(claimTimeMeta?.related ?? []);
+      const assignment = assignmentsByEntryId.get(claimedEntry.entryId);
       const addTags = uniqueTrimmedList((assignment?.tags ?? []).filter((tag) => !existingTags.has(tag)));
+      const addRelated = uniqueTrimmedList(
+        (assignment?.related ?? []).filter((relatedEntryId) => !existingRelated.has(relatedEntryId)),
+      );
+
+      if (claimedEntry.kind === 'source') {
+        return {
+          kind: 'source' as const,
+          entryId: claimedEntry.entryId,
+          slug: claimedEntry.slug,
+          entrySeq: claimedEntry.entrySeq,
+          claimTimeFingerprint: claimedEntry.claimTimeFingerprint,
+          ...(addTags.length === 0 ? {} : { addTags }),
+          ...(addRelated.length === 0 ? {} : { addRelated }),
+        };
+      }
+
+      const existingPrinciples = new Set(
+        claimTimeMeta !== undefined && isNoteEntry(claimTimeMeta) ? claimTimeMeta.principles : [],
+      );
       const addPrinciples = uniqueTrimmedList(
         (assignment?.principles ?? []).filter((principle) => !existingPrinciples.has(principle)),
       );
 
       return {
-        note: claimedNote.slug,
-        mutationSeqAtPromote: claimedNote.mutationSeqAtPromote,
-        claimTimeUpdatedAt: claimedNote.updatedAt,
+        kind: 'note' as const,
+        entryId: claimedEntry.entryId,
+        slug: claimedEntry.slug,
+        entrySeq: claimedEntry.entrySeq,
+        claimTimeUpdatedAt: claimedEntry.updatedAt,
         ...(addTags.length === 0 ? {} : { addTags }),
+        ...(addRelated.length === 0 ? {} : { addRelated }),
         ...(addPrinciples.length === 0 ? {} : { addPrinciples }),
       };
     })
@@ -756,7 +1176,7 @@ export type DiscoveryPromptResult = {
 };
 
 export function buildDiscoveryPrompt(
-  notes: CurateClaimedNote[],
+  notes: DiscoveryCurateClaimedEntry[],
   existingPrinciples: Record<string, string>,
 ): DiscoveryPromptResult {
   const noteBlocks = notes.map((note) => `## ${note.slug}\n${note.title}\n${truncateDiscoveryBody(note.body)}`);
@@ -798,7 +1218,7 @@ export function parseDiscoveryResponse(raw: string): DiscoveryProposal[] {
 
 export function validateDiscoveryProposals(
   proposals: DiscoveryProposal[],
-  eligibleNotes: CurateClaimedNote[],
+  eligibleNotes: DiscoveryCurateClaimedEntry[],
   existingPrinciples: Record<string, string>,
 ): DiscoveryProposal[] {
   const eligibleSet = new Set(eligibleNotes.map((note) => note.slug));
@@ -1117,7 +1537,7 @@ export function createCurateScheduler({
   function gitAutoCommit(message: string): void {
     if (!isGitRepo()) return;
     try {
-      git(['add', 'notes/', 'principles/', '.gitignore'], 10000);
+      git(['add', 'notes/', 'sources/', 'principles/', '.gitignore'], 10000);
       if (!hasStagedChanges()) return;
       gitCommit(message);
     } catch {
@@ -1133,7 +1553,7 @@ export function createCurateScheduler({
   async function gitAutoCommitAsync(message: string): Promise<void> {
     if (!isGitRepo()) return;
     try {
-      await gitAsync(['add', 'notes/', 'principles/', '.gitignore'], 10000);
+      await gitAsync(['add', 'notes/', 'sources/', 'principles/', '.gitignore'], 10000);
       if (!hasStagedChanges()) return;
       gitCommit(message);
     } catch {
@@ -1158,15 +1578,31 @@ export function createCurateScheduler({
     }
   }
 
-  function readClaimedNote(candidate: ClaimCandidate): CurateClaimedNote {
-    const { body } = loadKbNote(kb.notePath(candidate.slug));
+  function readClaimedEntry(candidate: ClaimCandidate): CurateClaimedEntry {
+    if (candidate.kind === 'note') {
+      const { title, body } = loadKbNote(kb.notePath(candidate.slug));
 
+      return {
+        kind: 'note',
+        entryId: candidate.entryId,
+        slug: candidate.slug,
+        title,
+        body,
+        updatedAt: candidate.updatedAt,
+        entrySeq: candidate.cursor.entrySeq,
+      };
+    }
+
+    const { raw, title, body } = loadKbSource(kb.sourcePath(candidate.slug));
+    const claimTimeFingerprint = fingerprintEntryContent(raw);
     return {
+      kind: 'source',
+      entryId: candidate.entryId,
       slug: candidate.slug,
-      title: candidate.title,
-      body,
-      updatedAt: candidate.updatedAt,
-      mutationSeqAtPromote: candidate.cursor.mutationSeqAtPromote,
+      title,
+      body: excerptSourceBody(body),
+      claimTimeFingerprint,
+      entrySeq: candidate.cursor.entrySeq,
     };
   }
 
@@ -1201,7 +1637,7 @@ export function createCurateScheduler({
     });
   }
 
-  async function hasPendingNotesBeyondCursor(cursor: CurateCursor): Promise<boolean> {
+  async function hasPendingEntriesBeyondCursor(cursor: CurateCursor): Promise<boolean> {
     return kb.withMutationLock(() => {
       const index = kb.readIndex();
       if (index === null) {
@@ -1260,36 +1696,36 @@ export function createCurateScheduler({
         return null;
       }
 
-      const pendingNotes = collectClaimCandidates(index).filter(
+      const pendingEntries = collectClaimCandidates(index).filter(
         (candidate) => compareOptionalCursor(state.processedThrough, candidate.cursor) < 0,
       );
-      if (pendingNotes.length === 0) {
+      if (pendingEntries.length === 0) {
         return null;
       }
 
       const firstPassClaim =
-        (today !== state.lastRunDay && pendingNotes.length >= CURATE_MIN_CLAIM_SIZE) ||
-        pendingNotes.length >= CURATE_IMMEDIATE_CLAIM_SIZE;
+        (today !== state.lastRunDay && pendingEntries.length >= CURATE_MIN_CLAIM_SIZE) ||
+        pendingEntries.length >= CURATE_IMMEDIATE_CLAIM_SIZE;
       const retryBlocked =
         compareCursorDates(state.retryNotBefore, now) > 0 &&
-        !pendingExtendsBeyondCursor(pendingNotes, state.lastAttemptedThrough);
+        !pendingExtendsBeyondCursor(pendingEntries, state.lastAttemptedThrough);
       const retryClaim = state.lastAttemptedThrough !== null && state.retryNotBefore !== null && !retryBlocked;
 
       if (!firstPassClaim && !retryClaim) {
         return null;
       }
 
-      const claimedCandidates = pendingNotes.slice(0, CURATE_MAX_CLAIM_SIZE);
+      const claimedCandidates = pendingEntries.slice(0, CURATE_MAX_CLAIM_SIZE);
       const through = claimedCandidates[claimedCandidates.length - 1]?.cursor;
       if (through === undefined) {
         return null;
       }
 
       const claim: CurateClaim = {
-        notes: claimedCandidates.map(readClaimedNote),
+        entries: claimedCandidates.map(readClaimedEntry),
         through,
       };
-      const freshPendingSuffix = pendingExtendsBeyondCursor(pendingNotes, state.lastAttemptedThrough);
+      const freshPendingSuffix = pendingExtendsBeyondCursor(pendingEntries, state.lastAttemptedThrough);
 
       writeCurateState(kb, {
         ...state,
@@ -1316,15 +1752,20 @@ export function createCurateScheduler({
     const tagVocab = buildTagVocabulary(index);
     const principleNames = buildPrincipleNames(index);
 
-    for (const batch of chunkNotes(claim.notes, CLASSIFICATION_BATCH_SIZE)) {
+    for (const batch of chunkEntriesByPromptBudget(
+      claim.entries,
+      tagVocab,
+      principleNames,
+      CLASSIFICATION_BATCH_SIZE,
+    )) {
       const prompt = buildClassificationPrompt(batch, tagVocab, principleNames);
       const raw = await runClaude(prompt, undefined, signal);
       const { entries, parseFailed } = parseJsonArray(raw);
       if (parseFailed) {
         throw new CurateJsonParseError('classification');
       }
-      const noteMap = new Map<string, true>(batch.map((note) => [note.slug, true] as const));
-      rawAssignments.push(...classifyParsedEntries(entries, noteMap));
+      const entryMap = new Map<string, true>(batch.map((entry) => [entry.entryId, true] as const));
+      rawAssignments.push(...classifyParsedEntries(entries, entryMap));
     }
 
     return rawAssignments;
@@ -1334,19 +1775,85 @@ export function createCurateScheduler({
     const sortedTargets = [...targets].sort(compareMetadataTarget);
     const currentIndex = kb.readIndexOrEmpty();
     const nextIndex = cloneKbIndex(currentIndex);
-    const hasCleanup = sortedTargets.some((t) => t.cleanup);
+    const hasCleanup = sortedTargets.some((target) => target.kind === 'note' && target.cleanup === true);
     const cleanupTagSupport = hasCleanup ? countTagSupport(currentIndex) : new Map<string, number>();
     let processedThrough = state.processedThrough;
     let cursorCanAdvance = true;
     let wroteMarkdown = false;
+    let failure: unknown = null;
 
     for (const target of sortedTargets) {
       const cursor = cursorFromTarget(target);
-      const notePath = kb.notePath(target.note);
+      if (target.kind === 'note') {
+        const notePath = kb.notePath(target.slug);
+        let raw: string;
+
+        try {
+          raw = readFileSync(notePath, 'utf-8');
+        } catch (error: unknown) {
+          if (isNoEntryError(error)) {
+            processedThrough = advanceProcessedThrough(processedThrough, cursorCanAdvance, cursor);
+            continue;
+          }
+          throw error;
+        }
+
+        const liveFrontmatter = parseFrontmatter(raw);
+        if (liveFrontmatter.updatedAt !== target.claimTimeUpdatedAt) {
+          cursorCanAdvance = false;
+          continue;
+        }
+
+        const metadataDecision = buildLiveNoteMetadataDecision(
+          target,
+          liveFrontmatter.tags,
+          liveFrontmatter.principles,
+          cleanupTagSupport,
+        );
+        const nextRelated = buildLiveRelatedMetadata(target, liveFrontmatter.related ?? []);
+        if (!metadataDecision.shouldWrite && sameStringList(nextRelated, liveFrontmatter.related ?? [])) {
+          processedThrough = advanceProcessedThrough(processedThrough, cursorCanAdvance, cursor);
+          continue;
+        }
+
+        const nextFrontmatter = {
+          tags: metadataDecision.nextTags,
+          principles: metadataDecision.nextPrinciples,
+          source: liveFrontmatter.source,
+          createdAt: liveFrontmatter.createdAt,
+          updatedAt: liveFrontmatter.updatedAt,
+          related: nextRelated,
+          entrySeq: liveFrontmatter.entrySeq ?? target.entrySeq,
+        };
+
+        writeFileAtomic(notePath, replaceFrontmatter(raw, nextFrontmatter));
+        kb.recordMutationCommitted();
+        wroteMarkdown = true;
+
+        const existingIndexEntry = nextIndex.entries[noteEntryId(target.slug)];
+        const existingIndexNote =
+          existingIndexEntry !== undefined && isNoteEntry(existingIndexEntry) ? existingIndexEntry : undefined;
+        nextIndex.entries[noteEntryId(target.slug)] = buildNoteIndexEntry({
+          slug: target.slug,
+          title: existingIndexNote?.title ?? extractTitle(raw),
+          tags: metadataDecision.nextTags,
+          principles: metadataDecision.nextPrinciples,
+          source: liveFrontmatter.source,
+          createdAt: liveFrontmatter.createdAt,
+          updatedAt: liveFrontmatter.updatedAt,
+          related: nextRelated,
+          entrySeq: nextFrontmatter.entrySeq,
+        });
+
+        processedThrough = advanceProcessedThrough(processedThrough, cursorCanAdvance, cursor);
+        continue;
+      }
+
+      const sourcePath = kb.sourcePath(target.slug);
       let raw: string;
 
       try {
-        raw = readFileSync(notePath, 'utf-8');
+        raw = readFileSync(sourcePath, 'utf-8');
       } catch (error: unknown) {
         if (isNoEntryError(error)) {
           processedThrough = advanceProcessedThrough(processedThrough, cursorCanAdvance, cursor);
@@ -1355,49 +1862,47 @@ export function createCurateScheduler({
         throw error;
       }
 
-      const liveFrontmatter = parseFrontmatter(raw);
-      if (liveFrontmatter.updatedAt !== target.claimTimeUpdatedAt) {
+      if (fingerprintEntryContent(raw) !== target.claimTimeFingerprint) {
         cursorCanAdvance = false;
         continue;
       }
 
-      const metadataDecision = buildLiveMetadataDecision(
-        target,
-        liveFrontmatter.tags,
-        liveFrontmatter.principles,
-        cleanupTagSupport,
-      );
-      if (!metadataDecision.shouldWrite) {
+      const liveFrontmatter = parseSourceFrontmatter(raw);
+      const nextTags = buildLiveSourceMetadataDecision(target, liveFrontmatter.tags);
+      const nextRelated = buildLiveRelatedMetadata(target, liveFrontmatter.related ?? []);
+      if (sameStringList(nextTags, liveFrontmatter.tags) && sameStringList(nextRelated, liveFrontmatter.related ?? [])) {
         processedThrough = advanceProcessedThrough(processedThrough, cursorCanAdvance, cursor);
         continue;
       }
 
       const nextFrontmatter = {
-        tags: metadataDecision.nextTags,
-        principles: metadataDecision.nextPrinciples,
-        source: liveFrontmatter.source,
-        createdAt: liveFrontmatter.createdAt,
-        updatedAt: liveFrontmatter.updatedAt,
-        mutationSeqAtPromote: liveFrontmatter.mutationSeqAtPromote ?? target.mutationSeqAtPromote,
+        title: liveFrontmatter.title,
+        type: liveFrontmatter.type,
+        tags: nextTags,
+        ...(liveFrontmatter.url === undefined ? {} : { url: liveFrontmatter.url }),
+        importedAt: liveFrontmatter.importedAt,
+        related: nextRelated,
+        entrySeq: liveFrontmatter.entrySeq ?? target.entrySeq,
       };
 
-      writeFileAtomic(notePath, replaceFrontmatter(raw, nextFrontmatter));
+      writeFileAtomic(sourcePath, replaceSourceFrontmatter(raw, nextFrontmatter));
       kb.recordMutationCommitted();
       wroteMarkdown = true;
 
-      const existingIndexEntry = nextIndex.entries[noteEntryId(target.note)];
-      const existingIndexNote =
-        existingIndexEntry !== undefined && isNoteEntry(existingIndexEntry) ? existingIndexEntry : undefined;
-      nextIndex.entries[noteEntryId(target.note)] = buildNoteIndexEntry({
-        slug: target.note,
-        title: existingIndexNote?.title ?? extractTitle(raw),
-        tags: metadataDecision.nextTags,
-        principles: metadataDecision.nextPrinciples,
-        source: liveFrontmatter.source,
-        createdAt: liveFrontmatter.createdAt,
-        updatedAt: liveFrontmatter.updatedAt,
-        mutationSeqAtPromote: nextFrontmatter.mutationSeqAtPromote,
+      const existingIndexEntry = nextIndex.entries[sourceEntryId(target.slug)];
+      const existingIndexSource =
+        existingIndexEntry !== undefined && isSourceEntry(existingIndexEntry) ? existingIndexEntry : undefined;
+      nextIndex.entries[sourceEntryId(target.slug)] = buildSourceIndexEntry({
+        slug: target.slug,
+        title: existingIndexSource?.title ?? liveFrontmatter.title,
+        type: liveFrontmatter.type,
+        tags: nextTags,
+        ...(liveFrontmatter.url === undefined ? {} : { url: liveFrontmatter.url }),
+        importedAt: liveFrontmatter.importedAt,
+        related: nextRelated,
+        entrySeq: nextFrontmatter.entrySeq,
       });
+      kb.writeIndex(nextIndex);
 
       processedThrough = advanceProcessedThrough(processedThrough, cursorCanAdvance, cursor);
     }
@@ -1407,8 +1912,6 @@ export function createCurateScheduler({
       processedThrough,
       activeClaim: null,
     };
-
-    let failure: unknown = null;
 
     if (wroteMarkdown) {
       try {
@@ -1442,17 +1945,21 @@ export function createCurateScheduler({
 
   async function commitMetadataTargets(targets: MetadataTarget[]): Promise<void> {
     await kb.withMutationLock(async () => {
+      runEntrySeqUpgradeGuard(kb);
       const state = readCurateState(kb);
       await commitMetadataTargetsLocked(targets, state);
     });
   }
 
-  function loadEligibleDiscoveryNotes(candidates: ClaimCandidate[]): CurateClaimedNote[] {
-    const eligible: CurateClaimedNote[] = [];
+  function loadEligibleDiscoveryNotes(candidates: NoteClaimCandidate[]): DiscoveryCurateClaimedEntry[] {
+    const eligible: DiscoveryCurateClaimedEntry[] = [];
 
     for (const candidate of candidates) {
       try {
-        eligible.push(readClaimedNote(candidate));
+        const entry = readClaimedEntry(candidate);
+        if (isNoteClaimedEntry(entry)) {
+          eligible.push(entry);
+        }
       } catch (error: unknown) {
         if (isNoEntryError(error)) {
           continue;
@@ -1539,18 +2046,10 @@ export function createCurateScheduler({
       if (noteMeta === undefined) {
         return true;
       }
-      if (noteMeta.mutationSeqAtPromote === undefined) {
+      if (noteMeta.entrySeq === undefined) {
         return false;
       }
-      if (
-        compareCursor(
-          {
-            note,
-            mutationSeqAtPromote: noteMeta.mutationSeqAtPromote,
-          },
-          processedThrough,
-        ) > 0
-      ) {
+      if (compareCursor(noteCursor(note, noteMeta.entrySeq), processedThrough) > 0) {
         return false;
       }
 
@@ -1595,10 +2094,10 @@ export function createCurateScheduler({
     const currentIndex = kb.readIndexOrEmpty();
     let state = readCurateState(kb);
 
-    const allClassified = collectClaimCandidates(currentIndex).filter(
+    const allClassified = collectDiscoveryCandidates(currentIndex).filter(
       (c) => compareCursor(c.cursor, processedThrough) <= 0,
     );
-    const newNotes = allClassified.filter((c) => c.cursor.mutationSeqAtPromote > state.discoveryHighSeq);
+    const newNotes = allClassified.filter((c) => c.cursor.entrySeq > state.discoveryHighSeq);
 
     if (newNotes.length < DISCOVERY_NEW_NOTE_THRESHOLD) {
       return;
@@ -1715,15 +2214,17 @@ export function createCurateScheduler({
 
         const targets: MetadataTarget[] = [];
         for (const absorbSlug of absorbs) {
-          for (const noteMeta of getIndexNotes(index)) {
+          for (const noteMeta of getDiscoveryNotes(index)) {
             const note = noteMeta.slug;
-            if (!noteMeta.principles.includes(absorbSlug) || noteMeta.mutationSeqAtPromote === undefined) {
+            if (!noteMeta.principles.includes(absorbSlug) || noteMeta.entrySeq === undefined) {
               continue;
             }
 
             targets.push({
-              note: assertNoteSlug(note, 'note'),
-              mutationSeqAtPromote: noteMeta.mutationSeqAtPromote,
+              kind: 'note',
+              entryId: noteEntryId(assertNoteSlug(note, 'note')),
+              slug: assertNoteSlug(note, 'note'),
+              entrySeq: noteMeta.entrySeq,
               claimTimeUpdatedAt: noteMeta.updatedAt,
               addPrinciples: [proposal.slug],
               removePrinciples: [absorbSlug],
@@ -1755,12 +2256,12 @@ export function createCurateScheduler({
       try {
         const claimIndex = kb.readIndexOrEmpty();
         const rawAssignments = await runClassificationBatches(claim, claimIndex, signal);
-        const validatedAssignments = validateAssignments(rawAssignments, claimIndex, claim.notes);
-        const metadataTargets = buildMetadataTargets(validatedAssignments, claimIndex, claim.notes);
+        const validatedAssignments = validateAssignments(rawAssignments, claimIndex, claim.entries);
+        const metadataTargets = buildMetadataTargets(validatedAssignments, claimIndex, claim.entries);
         await commitMetadataTargets(metadataTargets);
-        gitAutoCommit(`curate: classify ${claim.notes.length} notes (tags + principles)`);
+        gitAutoCommit(`curate: classify ${claim.entries.length} entries (tags + principles)`);
 
-        allCohortSlugs.push(...claim.notes.map((note) => note.slug));
+        allCohortSlugs.push(...claim.entries.filter(isNoteClaimedEntry).map((entry) => entry.slug));
         await clearCurateRetryState();
         lastCompletedThrough = claim.through;
       } catch (error: unknown) {
@@ -1857,7 +2358,7 @@ export function createCurateScheduler({
         }
         if (!stopped && lastCompletedThrough !== null) {
           try {
-            if (await hasPendingNotesBeyondCursor(lastCompletedThrough)) {
+            if (await hasPendingEntriesBeyondCursor(lastCompletedThrough)) {
               schedule();
             }
           } catch (error: unknown) {

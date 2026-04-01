@@ -1,6 +1,6 @@
 import { errorMessage } from '../shared/mcp-utils.js';
 import { rebuildEnhancedIndex } from './reindex-enhanced.js';
-import type { KbRuntime } from './runtime.js';
+import { runEntrySeqUpgradeGuard, type KbRuntime } from './runtime.js';
 import { TextSnapshotRebuildError, rebuildTextArtifacts } from './text-artifacts.js';
 import type { ReindexResult } from './types.js';
 
@@ -13,6 +13,7 @@ export async function reindex(kb: KbRuntime): Promise<ReindexResult> {
   const adapter = kb.adapter;
 
   return kb.withMutationLock(async () => {
+    runEntrySeqUpgradeGuard(kb);
     const startSeq = kb.readIndexState().mutationSeq;
     let rebuildResult: Awaited<ReturnType<typeof rebuildTextArtifacts>>;
 

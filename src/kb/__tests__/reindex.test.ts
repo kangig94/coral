@@ -123,7 +123,7 @@ source:
   - kangig94/coral
 createdAt: 2026-03-20T00:00:00.000Z
 updatedAt: 2026-03-21T00:00:00.000Z
-mutationSeqAtPromote: 11
+entrySeq: 11
 ---
 # KB Mode
 
@@ -153,6 +153,8 @@ Make the contract explicit first.
           source: ['kangig94/coral'],
           createdAt: '2026-03-01',
           updatedAt: '2026-03-01',
+          related: [],
+          entrySeq: 1,
         },
       },
       principles: {},
@@ -178,7 +180,8 @@ Make the contract explicit first.
           source: ['kangig94/coral'],
           createdAt: '2026-03-20T00:00:00.000Z',
           updatedAt: '2026-03-21T00:00:00.000Z',
-          mutationSeqAtPromote: 11,
+          related: [],
+          entrySeq: 11,
         },
       },
       principles: {
@@ -204,6 +207,7 @@ source:
   - kangig94/coral
 createdAt: 2026-03-20T00:00:00.000Z
 updatedAt: 2026-03-21T00:00:00.000Z
+entrySeq: 11
 ---
 # KB Mode
 `,
@@ -244,6 +248,7 @@ source:
   - kangig94/coral
 createdAt: 2026-03-20T00:00:00.000Z
 updatedAt: 2026-03-21T00:00:00.000Z
+entrySeq: 11
 ---
 # KB Mode
 
@@ -326,6 +331,7 @@ source:
   - kangig94/coral
 createdAt: 2026-03-20
 updatedAt: 2026-03-20
+entrySeq: 1
 ---
 # Valid Note
 Content here.

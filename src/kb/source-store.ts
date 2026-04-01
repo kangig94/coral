@@ -1,9 +1,9 @@
 import { existsSync, lstatSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { isNoEntryError } from '../shared/mcp-utils.js';
-import { parseSourceFrontmatter } from './frontmatter.js';
+import { parseSourceFrontmatter, replaceSourceFrontmatter } from './frontmatter.js';
 import { buildSourceIndexEntry, commitIndexUpdate, writeFileAtomic } from './mutation-helpers.js';
 import { assertWithin } from './paths.js';
-import type { KbRuntime } from './runtime.js';
+import { runEntrySeqUpgradeGuard, type KbRuntime } from './runtime.js';
 import { deleteEntry, isSourceEntry, setEntry, sourceEntryId, type KbSourceDeleteInput, type KbSourceFrontmatter, type KbSourceListResult } from './types.js';
 import { compareLocale, assertSourceSlug } from './validation.js';
 
@@ -34,6 +34,7 @@ export async function persistPreparedSource(
   const normalizedSlug = assertSourceSlug(slug, 'source');
 
   return kb.withMutationLock(async () => {
+    runEntrySeqUpgradeGuard(kb);
     const filePath = kb.sourcePath(normalizedSlug);
     const principlePath = kb.principlePath(normalizedSlug);
     const stagedCandidate = assertWithin(kb.sourceImportStageDir(), stagedPath, 'KB source staged markdown path');
@@ -49,17 +50,22 @@ export async function persistPreparedSource(
     try {
       const resolvedStagedPath = resolvePreparedSourceStagePath(kb, stagedCandidate);
       const renderedSource = readFileSync(resolvedStagedPath, 'utf-8');
+      const entrySeq = kb.recordMutationCommitted().mutationSeq;
       const parsedMeta = parseSourceFrontmatter(renderedSource);
+      const persistedMeta = {
+        ...parsedMeta,
+        entrySeq,
+      };
+      const persistedSource = replaceSourceFrontmatter(renderedSource, persistedMeta);
 
-      writeFileAtomic(filePath, renderedSource);
-      kb.recordMutationCommitted();
+      writeFileAtomic(filePath, persistedSource);
 
       commitIndexUpdate(
         kb,
         (index) => {
           setEntry(index, sourceEntryId(normalizedSlug), buildSourceIndexEntry({
             slug: normalizedSlug,
-            ...parsedMeta,
+            ...persistedMeta,
           }));
         },
         'KB text snapshot is stale after kb_source_import.',

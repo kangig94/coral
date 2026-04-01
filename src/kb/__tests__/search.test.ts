@@ -50,11 +50,13 @@ function writeNote(
     tags = [],
     principles = [],
     body,
+    entrySeq = 1,
   }: {
     title: string;
     tags?: string[];
     principles?: string[];
     body: string;
+    entrySeq?: number;
   },
 ): void {
   writeFileSync(
@@ -66,6 +68,7 @@ source:
   - kangig94/coral
 createdAt: 2026-03-23
 updatedAt: 2026-03-23
+entrySeq: ${entrySeq}
 ---
 # ${title}
 

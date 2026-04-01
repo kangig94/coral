@@ -19,10 +19,11 @@ export function buildNoteIndexEntry(meta: NoteIndexEntrySource): NoteEntry {
     source: [...meta.source],
     createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
+    related: [...(meta.related ?? [])],
   };
 
-  if (meta.mutationSeqAtPromote !== undefined) {
-    entry.mutationSeqAtPromote = meta.mutationSeqAtPromote;
+  if (meta.entrySeq !== undefined) {
+    entry.entrySeq = meta.entrySeq;
   }
 
   return entry;
@@ -37,6 +38,8 @@ export function buildSourceIndexEntry(meta: SourceIndexEntrySource): SourceEntry
     tags: [...meta.tags],
     ...(meta.url === undefined ? {} : { url: meta.url }),
     importedAt: meta.importedAt,
+    related: [...(meta.related ?? [])],
+    ...(meta.entrySeq === undefined ? {} : { entrySeq: meta.entrySeq }),
   };
 }
 

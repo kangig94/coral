@@ -1,6 +1,7 @@
 import { nowIsoString } from '../shared/mcp-utils.js';
 import { serializeNote } from './frontmatter.js';
 import { loadKbNote } from './read.js';
+import { runEntrySeqUpgradeGuard } from './runtime.js';
 import { noteEntryId, setEntry, type KbUpdateInput } from './types.js';
 import { assertNonEmptyText, assertNoteSlug } from './validation.js';
 import { buildNoteIndexEntry, commitIndexUpdate, writeFileAtomic } from './mutation-helpers.js';
@@ -10,6 +11,7 @@ export async function applyNoteUpdateLocked(
   rt: KbRuntime,
   input: { note: string; title?: string; content?: string },
 ): Promise<{ path: string }> {
+  runEntrySeqUpgradeGuard(rt);
   const notePath = rt.notePath(input.note);
   const { frontmatter, title: existingTitle, body: existingBody } = loadKbNote(notePath);
   const nextTitle = input.title ?? existingTitle;
