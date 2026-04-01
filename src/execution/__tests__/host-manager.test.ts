@@ -192,7 +192,44 @@ describe('ProviderHostManager', () => {
     await expect(borrowed?.rpc('ping', { ok: true }) ?? Promise.reject(new Error('missing attachment'))).resolves.toEqual({});
 
     lease.release();
+    await expect(manager.borrowLiveServer(spec, { serverGeneration: 41 })).resolves.toBeNull();
     await manager.shutdown();
+  });
+
+  it('falls back to signal shutdown when broker/shutdown succeeds but the process never closes', async () => {
+    vi.useFakeTimers();
+
+    const manager = new DefaultProviderHostManager();
+    const server = createFakeProviderServerHandle({
+      generation: 17,
+      request: async () => ({ ok: true }),
+    });
+    vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(server.handle);
+
+    const spec: ProviderServerSpec = {
+      provider: 'claude',
+      command: process.execPath,
+      args: ['broker.js'],
+      cwd: process.cwd(),
+      shared: true,
+      shutdownCapability: {
+        method: 'broker/shutdown',
+        timeoutMs: 3_000,
+      },
+    };
+
+    const lease = await manager.acquireServer(spec);
+    lease.release();
+
+    const shutdown = manager.shutdown();
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(server.closeMock).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await shutdown;
+
+    expect(server.requestMock).toHaveBeenCalledWith('broker/shutdown', {});
+    expect(server.closeMock).toHaveBeenCalledTimes(1);
   });
 
   it('uses shutdown capability metadata for graceful RPC shutdown before any signal fallback', async () => {

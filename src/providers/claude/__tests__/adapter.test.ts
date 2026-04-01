@@ -296,6 +296,48 @@ describe('claude adapter: app-server recovery preserves live broker continuity b
       continuityMutation: continuity,
     });
   });
+
+  it('treats a missing broker session on a fresh broker as resumable when continuity has a conversationRef', async () => {
+    const { claudeProvider } = await loadProvider();
+    const appServer = claudeProvider.appServer!;
+    const continuity = {
+      brokerSessionKey: BROKER_SESSION_KEY,
+      bootstrapSignature: {
+        cwd: '/workspace',
+        systemPromptHash: 'sha256:abc',
+        permissionMode: 'bypass',
+      },
+      envHash: 'sha256:env',
+      conversationRef: 'sess-resume',
+    };
+    const lease = makeLease({
+      rpcImpl: async (method) => {
+        if (method === 'session/probe') {
+          return {
+            brokerSessionKey: BROKER_SESSION_KEY,
+            status: 'missing',
+            bootstrapSignature: null,
+            sessionId: null,
+            conversationRef: null,
+            activeTurnId: null,
+          };
+        }
+        return {};
+      },
+    });
+
+    const probeResult = await appServer.probe(lease, continuity);
+    const finalization = appServer.finalizeInterrupted(probeResult, continuity);
+
+    expect(probeResult).toEqual({
+      resumable: true,
+      updatedContinuity: continuity,
+    });
+    expect(finalization).toEqual({
+      conversationRef: 'sess-resume',
+      continuityMutation: continuity,
+    });
+  });
 });
 
 describe('claude adapter: checkpoint timing for bootstrap signature', () => {

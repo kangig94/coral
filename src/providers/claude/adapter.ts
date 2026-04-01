@@ -501,8 +501,9 @@ const claudeAppServer: ProviderAppServerContract = {
     }
 
     const updatedConversationRef = readTurnConversationRef(result) ?? persistedContinuity.conversationRef;
+    const resumable = result.status === 'available' || (result.status === 'missing' && Boolean(persistedContinuity.conversationRef));
     return {
-      resumable: result.status === 'available',
+      resumable,
       updatedContinuity: withClaudeContinuity(continuity, {
         brokerSessionKey: result.brokerSessionKey ?? persistedContinuity.brokerSessionKey,
         bootstrapSignature: result.bootstrapSignature ?? persistedContinuity.bootstrapSignature,

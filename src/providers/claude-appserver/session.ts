@@ -851,8 +851,12 @@ class SingleSessionController {
     }
 
     if (this.childBinding) {
-      this.childBinding.dispose();
-      this.childBinding = null;
+      const childBinding = this.childBinding;
+      childBinding.child.kill('SIGTERM');
+      childBinding.dispose();
+      if (this.childBinding === childBinding) {
+        this.childBinding = null;
+      }
     }
     this.initialized = false;
     this.bootstrapSignature = null;
@@ -951,7 +955,7 @@ class BrokerSessionPool implements ClaudeBrokerSession {
       };
     } catch (error) {
       if (createdEntry) {
-        this.removeController(brokerSessionKey);
+        await this.removeController(brokerSessionKey).catch(() => {});
       } else if (entry.holdNotifications) {
         entry.holdNotifications = false;
         entry.pendingNotifications = [];
@@ -1045,7 +1049,7 @@ class BrokerSessionPool implements ClaudeBrokerSession {
         if (this.shuttingDown) {
           return;
         }
-        this.removeController(brokerSessionKey);
+        void this.removeController(brokerSessionKey).catch(() => {});
       },
     });
 
@@ -1080,7 +1084,7 @@ class BrokerSessionPool implements ClaudeBrokerSession {
     if (notification.method === 'turn/completed' || notification.method === 'turn/failed') {
       this.emitHostStats();
       if (entry.controller.canEvictReachableIdleController()) {
-        this.removeController(brokerSessionKey);
+        void this.removeController(brokerSessionKey).catch(() => {});
       }
     }
   }
@@ -1101,7 +1105,7 @@ class BrokerSessionPool implements ClaudeBrokerSession {
     });
   }
 
-  private removeController(brokerSessionKey: string): void {
+  private async removeController(brokerSessionKey: string): Promise<void> {
     const entry = this.controllers.get(brokerSessionKey);
     if (!entry) {
       return;
@@ -1110,6 +1114,7 @@ class BrokerSessionPool implements ClaudeBrokerSession {
     entry.dispose();
     this.controllers.delete(brokerSessionKey);
     this.emitHostStats();
+    await entry.controller.shutdown();
   }
 
   private emitNotification(notification: ClaudeBrokerNotification): void {

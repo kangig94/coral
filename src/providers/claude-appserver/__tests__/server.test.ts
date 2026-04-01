@@ -30,6 +30,7 @@ const MODEL = 'claude-sonnet-4-6';
 
 class FakeClaudeChild implements ClaudeBrokerChild {
   readonly writes: unknown[] = [];
+  readonly kills: Array<NodeJS.Signals | undefined> = [];
 
   private readonly stdoutHandlers = new Set<(line: string) => void>();
   private readonly exitHandlers = new Set<(event: { code: number | null; signal: NodeJS.Signals | null; error?: Error }) => void>();
@@ -73,6 +74,7 @@ class FakeClaudeChild implements ClaudeBrokerChild {
   }
 
   kill(_signal?: NodeJS.Signals): void {
+    this.kills.push(_signal);
     if (this.exitOnKill) {
       this.emitExit({ code: 0, signal: null });
     }
@@ -603,6 +605,7 @@ describe('Claude broker session', () => {
         },
       },
     ]);
+    expect(child.kills).toContain('SIGTERM');
 
     await expect(session.sessionProbe(probeParams(ensureResult.brokerSessionKey, 'sess-turn'))).resolves.toEqual({
       brokerSessionKey: ensureResult.brokerSessionKey,
@@ -955,6 +958,31 @@ describe('broker: child exits before first session_id emission', () => {
     child.crash(1);
 
     await expect(ensure).rejects.toThrow();
+  });
+
+  it('kills the child when initialize fails before bootstrap is established', async () => {
+    const child = new FakeClaudeChild(false);
+    const session = createBrokerSession({ spawnChild: async () => child });
+
+    const ensure = ensureSession(session);
+    await vi.waitFor(() => {
+      expect(countControlRequests(child, 'initialize')).toBe(1);
+    });
+
+    child.emit({
+      type: 'control_response',
+      response: {
+        subtype: 'error',
+        request_id: findControlRequestId(child, 'initialize'),
+        error: 'initialize failed',
+      },
+    });
+
+    await expect(ensure).rejects.toMatchObject({
+      code: CLAUDE_BROKER_STATE_RPC_CODE,
+      message: 'initialize failed',
+    });
+    expect(child.kills).toContain('SIGTERM');
   });
 
   it('does not permanently lock the broker after a bootstrap failure', async () => {
@@ -1489,6 +1517,96 @@ describe('Claude broker JSON-RPC server', () => {
     await flush();
     expect(parseLines(outputText)[0]).toEqual({
       id: 2,
+      result: { ok: true },
+    });
+    expect(exit).toHaveBeenCalledWith(0);
+  });
+
+  it('rejects new non-shutdown RPCs after broker/shutdown starts', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const errorOutput = new PassThrough();
+
+    let outputText = '';
+    output.on('data', (chunk) => {
+      outputText += chunk.toString();
+    });
+
+    const brokerShutdown = createDeferred();
+    const session: ClaudeBrokerSession = {
+      closed: Promise.resolve(),
+      sessionEnsure: vi.fn(async () => ({
+        brokerSessionKey: 'broker-session-1',
+        bootstrapSignature: {
+          cwd: '/workspace',
+          systemPromptHash: 'sha256:abc123',
+          permissionMode: 'bypassPermissions',
+        },
+        sessionId: null,
+        conversationRef: null,
+        activeTurnId: null,
+        initialized: true,
+      })),
+      sessionProbe: vi.fn(async () => ({
+        brokerSessionKey: 'broker-session-1',
+        status: 'available' as const,
+        bootstrapSignature: {
+          cwd: '/workspace',
+          systemPromptHash: 'sha256:abc123',
+          permissionMode: 'bypassPermissions',
+        },
+        sessionId: null,
+        conversationRef: null,
+        activeTurnId: null,
+      })),
+      turnStart: vi.fn(async () => ({
+        brokerSessionKey: 'broker-session-1',
+        brokerTurnId: 'turn-1',
+        sessionId: null,
+        conversationRef: null,
+      })),
+      turnInterrupt: vi.fn(async () => ({
+        brokerTurnId: null,
+        interrupted: false,
+      })),
+      shutdown: vi.fn(async () => {
+        await brokerShutdown.promise;
+      }),
+      subscribeNotifications() {
+        return () => {};
+      },
+    };
+
+    const exit = vi.fn();
+    createClaudeBrokerServer({
+      input,
+      output,
+      errorOutput,
+      session,
+      exit,
+    }).start();
+
+    input.write(`${JSON.stringify({ id: 1, method: 'broker/shutdown', params: {} })}\n`);
+    await flush();
+    expect(session.shutdown).toHaveBeenCalledTimes(1);
+
+    input.write(`${JSON.stringify({ id: 2, method: 'session/ensure', params: BOOTSTRAP })}\n`);
+    await flush();
+
+    expect(parseLines(outputText)).toContainEqual({
+      id: 2,
+      error: {
+        code: -32001,
+        message: 'Claude broker is shutting down.',
+      },
+    });
+    expect(session.sessionEnsure).not.toHaveBeenCalled();
+
+    brokerShutdown.resolve();
+    await flush();
+
+    expect(parseLines(outputText)).toContainEqual({
+      id: 1,
       result: { ok: true },
     });
     expect(exit).toHaveBeenCalledWith(0);

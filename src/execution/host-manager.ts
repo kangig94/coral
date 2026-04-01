@@ -2,6 +2,7 @@ import type { ProviderServerLease, ProviderServerSpec } from '../providers/types
 import { spawnProviderServer, type ProviderServerHandle } from './engine.js';
 
 const DEFAULT_BROKER_IDLE_MS = 300_000;
+const GRACEFUL_CLOSE_FOLLOWUP_TIMEOUT_MS = 5_000;
 
 type ProviderServerWaiter = {
   resolve: () => void;
@@ -158,6 +159,9 @@ export class DefaultProviderHostManager implements ProviderHostManager {
 
     const handle = entry.handle;
     if (!handle) {
+      return null;
+    }
+    if (entry.spec.shared !== true && !entry.leaseHeld) {
       return null;
     }
     if (options.serverGeneration !== undefined && handle.generation !== options.serverGeneration) {
@@ -513,7 +517,7 @@ export class DefaultProviderHostManager implements ProviderHostManager {
         return false;
       }
       if (outcome === 'rpc') {
-        await handle.closePromise.catch(() => {});
+        return waitForCloseWithin(handle.closePromise, GRACEFUL_CLOSE_FOLLOWUP_TIMEOUT_MS);
       }
       return true;
     } catch {

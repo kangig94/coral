@@ -8,6 +8,7 @@ import process from 'node:process';
 import { isRecord } from '../../shared/mcp-utils.js';
 import {
   buildJsonRpcError,
+  CLAUDE_BROKER_BUSY_RPC_CODE,
   ClaudeBrokerRpcError,
   type BrokerShutdownResult,
   type JsonRpcId,
@@ -90,6 +91,13 @@ export function createClaudeBrokerServer(options: CreateClaudeBrokerServerOption
 
   async function dispatchRequest(message: JsonRpcRequest<unknown>): Promise<void> {
     if (message.id === null || message.id === undefined) {
+      return;
+    }
+    if (shutdownRequested && message.method !== 'broker/shutdown') {
+      send({
+        id: message.id,
+        error: buildJsonRpcError(CLAUDE_BROKER_BUSY_RPC_CODE, 'Claude broker is shutting down.'),
+      });
       return;
     }
 
