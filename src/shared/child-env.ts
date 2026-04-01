@@ -6,26 +6,67 @@
  * Secrets can push process.env to hundreds of KB while ARG_MAX may be as low
  * as 128KB.
  *
- * Strategy: size-budget with tiered shedding.
+ * Strategy: size-budget with pure size-based shedding.
  * - If total env fits within budget → pass everything unchanged.
- * - If over budget → shed categories in priority order until it fits.
+ * - If over budget → drop the largest vars first until it fits.
+ * - CORAL_ENV_PASSTHROUGH protects specific vars from being shed.
  */
+
+import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 
 import { backendLog } from './backend-log.js';
 
-// Budget: 96KB leaves headroom for argv under a 128KB ARG_MAX.
-// Normal environments (< 96KB) experience zero filtering.
-const ENV_BUDGET_BYTES = 96 * 1024;
+/**
+ * Resolve the system's ARG_MAX and derive an env budget (75% of ARG_MAX,
+ * leaving 25% headroom for argv, the executable path, and padding).
+ *
+ * Detection order:
+ * 1. /proc/sys/kernel/argmax (Linux, no subprocess)
+ * 2. `getconf ARG_MAX` (POSIX, cross-platform)
+ * 3. Fallback: 2MB (standard Linux default)
+ */
+function resolveEnvBudget(): number {
+  let argMax: number | undefined;
 
-/** Kubernetes service-discovery pattern: `<NAME>_SERVICE_HOST`, `<NAME>_SERVICE_PORT`, `<NAME>_PORT_<N>_<PROTO>_*` */
-const K8S_SERVICE_RE =
-  /^[A-Z0-9_]+_(?:SERVICE_HOST|SERVICE_PORT(?:_[A-Z0-9_]+)?|PORT(?:_\d+_[A-Z]+(?:_[A-Z_]+)?)?|PORT)$/;
-const K8S_PREFIX_RE = /^KUBERNETES_/;
+  // 1. procfs (fast, no spawn)
+  try {
+    argMax = parseInt(readFileSync('/proc/sys/kernel/argmax', 'utf8').trim(), 10);
+  } catch {
+    // not Linux or procfs unavailable
+  }
 
-/** Per-value size ceiling for Tier 2 shedding (certificate blobs, mounted secrets). */
-const LARGE_VALUE_BYTES = 4 * 1024;
+  // 2. getconf (POSIX)
+  if (!argMax || isNaN(argMax)) {
+    try {
+      argMax = parseInt(execSync('getconf ARG_MAX', { encoding: 'utf8', timeout: 2_000 }).trim(), 10);
+    } catch {
+      // getconf not available
+    }
+  }
 
-function measureEnv(env: Record<string, string>): number {
+  // 3. Fallback
+  if (!argMax || isNaN(argMax) || argMax <= 0) {
+    argMax = 2 * 1024 * 1024;
+  }
+
+  return Math.floor(argMax * 0.75);
+}
+
+/** Env budget: 75% of system ARG_MAX. Computed once at module load. */
+export const ENV_BUDGET_BYTES = resolveEnvBudget();
+
+/**
+ * Vars listed in CORAL_ENV_PASSTHROUGH (comma-separated) are never shed.
+ * This lets users protect critical env vars in budget-constrained environments.
+ */
+function parsePassthrough(): Set<string> {
+  const raw = process.env.CORAL_ENV_PASSTHROUGH;
+  if (!raw) return new Set();
+  return new Set(raw.split(',').map((s) => s.trim()).filter(Boolean));
+}
+
+export function measureEnv(env: Record<string, string>): number {
   let size = 0;
   for (const key of Object.keys(env)) {
     // execve counts "KEY=VALUE\0" per entry
@@ -34,66 +75,16 @@ function measureEnv(env: Record<string, string>): number {
   return size;
 }
 
-type ShedResult = { env: Record<string, string>; shed: number };
-
-function shedTier1(env: Record<string, string>, budget: number): ShedResult {
-  const kept: Record<string, string> = {};
-  let shed = 0;
-  for (const key of Object.keys(env)) {
-    if (K8S_SERVICE_RE.test(key) || K8S_PREFIX_RE.test(key)) {
-      shed++;
-    } else {
-      kept[key] = env[key];
-    }
-  }
-  return { env: kept, shed };
-}
-
-function shedTier2(env: Record<string, string>): ShedResult {
-  const kept: Record<string, string> = {};
-  let shed = 0;
-  for (const key of Object.keys(env)) {
-    if (env[key].length > LARGE_VALUE_BYTES) {
-      shed++;
-    } else {
-      kept[key] = env[key];
-    }
-  }
-  return { env: kept, shed };
-}
-
-function shedTier3(env: Record<string, string>, budget: number): ShedResult {
-  // Sort entries by value size descending — drop the largest first.
-  const entries = Object.entries(env).sort((a, b) => b[1].length - a[1].length);
-  const kept: Record<string, string> = {};
-  let currentSize = measureEnv(env);
-  let shed = 0;
-
-  for (const [key, value] of entries) {
-    if (currentSize <= budget) {
-      kept[key] = value;
-    } else {
-      currentSize -= key.length + 1 + value.length + 1;
-      shed++;
-    }
-  }
-
-  // Add remaining entries that weren't iterated past the budget crossing
-  // (the loop above marks entries as kept once budget is met, but entries
-  // sorted after the crossover point haven't been visited yet).
-  // Actually, we iterate ALL entries. If over budget, drop; once under, keep.
-  // This is correct — largest values are dropped first.
-
-  return { env: kept, shed };
-}
-
 /**
  * Build a sanitized environment for a child CLI process.
  *
  * - Strips `CORAL_*` from the inherited env (child is a different program).
- * - Applies size-budget shedding when total env exceeds 96KB.
+ * - Applies size-budget shedding when total env exceeds 75% of system ARG_MAX.
  * - Overlays `extraEnv` (always preserved, never shed).
  * - Sets `CORAL_CHILD: '1'`.
+ *
+ * No domain heuristics — shedding is purely size-based (largest vars first).
+ * Use `CORAL_ENV_PASSTHROUGH=VAR1,VAR2` to protect specific vars from shedding.
  */
 export function buildChildEnv(extraEnv?: Record<string, string>): Record<string, string> {
   // 1. Collect base env, stripping CORAL_* internal vars
@@ -116,61 +107,37 @@ export function buildChildEnv(extraEnv?: Record<string, string>): Record<string,
 }
 
 function shedIfOverBudget(base: Record<string, string>): Record<string, string> {
-  let size = measureEnv(base);
-  if (size <= ENV_BUDGET_BYTES) return base;
+  if (measureEnv(base) <= ENV_BUDGET_BYTES) return base;
 
+  const passthrough = parsePassthrough();
   const originalCount = Object.keys(base).length;
-  const originalSize = size;
-  let env = base;
-  let totalShed = 0;
-  const tiers: string[] = [];
+  const originalSize = measureEnv(base);
 
-  // Tier 1: k8s service discovery vars
-  const t1 = shedTier1(env, ENV_BUDGET_BYTES);
-  if (t1.shed > 0) {
-    env = t1.env;
-    totalShed += t1.shed;
-    tiers.push(`tier1(k8s): ${t1.shed} vars`);
-    size = measureEnv(env);
-    if (size <= ENV_BUDGET_BYTES) {
-      logShedding(originalSize, size, originalCount, totalShed, tiers);
-      return env;
+  // Sort entries by value size descending — drop the largest first.
+  // Protected (passthrough) vars are never dropped.
+  const entries = Object.entries(base).sort((a, b) => b[1].length - a[1].length);
+  const kept: Record<string, string> = {};
+  let currentSize = originalSize;
+  let shed = 0;
+  const shedNames: string[] = [];
+
+  for (const [key, value] of entries) {
+    if (currentSize <= ENV_BUDGET_BYTES || passthrough.has(key)) {
+      kept[key] = value;
+    } else {
+      currentSize -= key.length + 1 + value.length + 1;
+      shed++;
+      if (shedNames.length < 10) shedNames.push(key);
     }
   }
 
-  // Tier 2: individual values > 4KB
-  const t2 = shedTier2(env);
-  if (t2.shed > 0) {
-    env = t2.env;
-    totalShed += t2.shed;
-    tiers.push(`tier2(large): ${t2.shed} vars`);
-    size = measureEnv(env);
-    if (size <= ENV_BUDGET_BYTES) {
-      logShedding(originalSize, size, originalCount, totalShed, tiers);
-      return env;
-    }
-  }
-
-  // Tier 3: drop largest remaining vars until under budget
-  const t3 = shedTier3(env, ENV_BUDGET_BYTES);
-  env = t3.env;
-  totalShed += t3.shed;
-  tiers.push(`tier3(by-size): ${t3.shed} vars`);
-
-  logShedding(originalSize, measureEnv(env), originalCount, totalShed, tiers);
-  return env;
-}
-
-function logShedding(
-  originalSize: number,
-  finalSize: number,
-  originalCount: number,
-  shedCount: number,
-  tiers: string[],
-): void {
+  const finalSize = measureEnv(kept);
+  const shedList = shedNames.join(', ') + (shed > shedNames.length ? `, ... (+${shed - shedNames.length} more)` : '');
   backendLog.warn(
-    `child-env: shed ${shedCount}/${originalCount} vars ` +
-      `(${(originalSize / 1024).toFixed(0)}KB → ${(finalSize / 1024).toFixed(0)}KB) ` +
-      `[${tiers.join(', ')}]`,
+    `child-env: shed ${shed}/${originalCount} vars ` +
+      `(${(originalSize / 1024).toFixed(0)}KB → ${(finalSize / 1024).toFixed(0)}KB, ` +
+      `budget=${(ENV_BUDGET_BYTES / 1024).toFixed(0)}KB) [${shedList}]` +
+      (shed > 0 ? ' — set CORAL_ENV_PASSTHROUGH=VAR1,VAR2 to protect specific vars' : ''),
   );
+  return kept;
 }
