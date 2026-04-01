@@ -14,6 +14,7 @@ import {
 import {
   CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
   CLAUDE_BROKER_BUSY_RPC_CODE,
+  CLAUDE_BROKER_STATE_RPC_CODE,
   type ClaudeBrokerNotification,
   type SessionEnsureParams,
 } from '../protocol.js';
@@ -34,7 +35,10 @@ class FakeClaudeChild implements ClaudeBrokerChild {
   private readonly exitHandlers = new Set<(event: { code: number | null; signal: NodeJS.Signals | null; error?: Error }) => void>();
   private readonly stderrHandlers = new Set<(chunk: string) => void>();
 
-  constructor(private readonly autoAckControlRequests = true) {}
+  constructor(
+    private readonly autoAckControlRequests = true,
+    private readonly exitOnKill = true,
+  ) {}
 
   writeLine(line: string): void {
     const parsed = JSON.parse(line) as {
@@ -69,7 +73,9 @@ class FakeClaudeChild implements ClaudeBrokerChild {
   }
 
   kill(_signal?: NodeJS.Signals): void {
-    this.emitExit({ code: 0, signal: null });
+    if (this.exitOnKill) {
+      this.emitExit({ code: 0, signal: null });
+    }
   }
 
   onStdoutLine(handler: (line: string) => void): () => void {
@@ -284,6 +290,14 @@ function parseLines(output: string): Array<Record<string, unknown>> {
     .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
+function createDeferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 async function flush(): Promise<void> {
   await Promise.resolve();
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -432,6 +446,13 @@ describe('Claude broker session', () => {
     expect(firstEnsure.initialized).toBe(true);
     expect(firstEnsure.sessionId).toBeNull();
     expect(spawnChild).toHaveBeenCalledTimes(1);
+    expect(notifications[0]).toEqual({
+      method: 'host/stats',
+      params: {
+        liveControllers: 1,
+        activeTurns: 0,
+      },
+    });
 
     child.emitSystemInit('sess-1');
     await flush();
@@ -549,6 +570,48 @@ describe('Claude broker session', () => {
         errors: undefined,
       },
     });
+
+    expect(
+      notifications.filter((notification) => notification.method === 'host/stats'),
+    ).toEqual([
+      {
+        method: 'host/stats',
+        params: {
+          liveControllers: 1,
+          activeTurns: 0,
+        },
+      },
+      {
+        method: 'host/stats',
+        params: {
+          liveControllers: 1,
+          activeTurns: 1,
+        },
+      },
+      {
+        method: 'host/stats',
+        params: {
+          liveControllers: 1,
+          activeTurns: 0,
+        },
+      },
+      {
+        method: 'host/stats',
+        params: {
+          liveControllers: 0,
+          activeTurns: 0,
+        },
+      },
+    ]);
+
+    await expect(session.sessionProbe(probeParams(ensureResult.brokerSessionKey, 'sess-turn'))).resolves.toEqual({
+      brokerSessionKey: ensureResult.brokerSessionKey,
+      status: 'missing',
+      bootstrapSignature: null,
+      sessionId: null,
+      conversationRef: null,
+      activeTurnId: null,
+    });
   });
 
   it('auto-allows tool permission requests and emits assistant/system progress', async () => {
@@ -601,6 +664,21 @@ describe('Claude broker session', () => {
         sessionId: 'sess-fail',
         conversationRef: 'sess-fail',
         stderr: 'fatal stderr chunk',
+      },
+    });
+    expect(notifications.map((notification) => notification.method)).toContain('host/stats');
+    expect(notifications.at(-2)).toEqual({
+      method: 'host/stats',
+      params: {
+        liveControllers: 0,
+        activeTurns: 0,
+      },
+    });
+    expect(notifications.at(-1)).toEqual({
+      method: 'host/stats',
+      params: {
+        liveControllers: 0,
+        activeTurns: 0,
       },
     });
 
@@ -663,10 +741,27 @@ describe('broker: duplicate turn/start rejection', () => {
 
     await expect(
       session.turnStart(startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-2', prompt: 'second' })),
+    ).rejects.toMatchObject({
+      code: CLAUDE_BROKER_STATE_RPC_CODE,
+    });
+
+    await expect(
+      ensureSession(session, {
+        brokerSessionKey: ensureResult.brokerSessionKey,
+        conversationRef: 'sess-seq',
+      }),
+    ).resolves.toMatchObject({
+      brokerSessionKey: ensureResult.brokerSessionKey,
+      conversationRef: 'sess-seq',
+      initialized: true,
+    });
+
+    await expect(
+      session.turnStart(startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-2', prompt: 'second' })),
     ).resolves.toMatchObject({
       brokerSessionKey: ensureResult.brokerSessionKey,
       brokerTurnId: 'turn-2',
-      sessionId: 'sess-seq',
+      sessionId: null,
       conversationRef: 'sess-seq',
     });
 
@@ -1079,7 +1174,15 @@ describe('broker: pooled controller routing', () => {
     child.emitControlSuccess(initializeRequestId!, 'initialize');
 
     const ensureResult = await ensurePromise;
-    expect(notifications).toEqual([]);
+    expect(notifications).toEqual([
+      {
+        method: 'host/stats',
+        params: {
+          liveControllers: 1,
+          activeTurns: 0,
+        },
+      },
+    ]);
 
     await flush();
     expect(notifications).toContainEqual({
@@ -1244,6 +1347,25 @@ describe('broker: per-controller env', () => {
       initialized: true,
     });
   });
+
+  it('waits for controller exit before resolving broker shutdown', async () => {
+    const child = new FakeClaudeChild(true, false);
+    const session = createBrokerSession({ spawnChild: async () => child });
+
+    await ensureSession(session);
+
+    let settled = false;
+    const shutdown = session.shutdown().then(() => {
+      settled = true;
+    });
+
+    await flush();
+    expect(settled).toBe(false);
+
+    child.emitExit({ code: 0, signal: 'SIGTERM' });
+    await shutdown;
+    expect(settled).toBe(true);
+  });
 });
 
 describe('Claude broker JSON-RPC server', () => {
@@ -1257,6 +1379,7 @@ describe('Claude broker JSON-RPC server', () => {
       outputText += chunk.toString();
     });
 
+    const brokerShutdown = createDeferred();
     let notificationHandler: ((notification: ClaudeBrokerNotification) => void) | null = null;
     const session: ClaudeBrokerSession = {
       closed: Promise.resolve(),
@@ -1294,7 +1417,9 @@ describe('Claude broker JSON-RPC server', () => {
         brokerTurnId: 'turn-1',
         interrupted: true,
       })),
-      shutdown: vi.fn(async () => {}),
+      shutdown: vi.fn(async () => {
+        await brokerShutdown.promise;
+      }),
       subscribeNotifications(handler) {
         notificationHandler = handler;
         return () => {
@@ -1353,9 +1478,19 @@ describe('Claude broker JSON-RPC server', () => {
       },
     });
 
+    outputText = '';
     input.write(`${JSON.stringify({ id: 2, method: 'broker/shutdown', params: {} })}\n`);
     await flush();
     expect(session.shutdown).toHaveBeenCalledTimes(1);
+    expect(outputText).toBe('');
+    expect(exit).not.toHaveBeenCalled();
+
+    brokerShutdown.resolve();
+    await flush();
+    expect(parseLines(outputText)[0]).toEqual({
+      id: 2,
+      result: { ok: true },
+    });
     expect(exit).toHaveBeenCalledWith(0);
   });
 });

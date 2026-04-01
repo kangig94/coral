@@ -17,6 +17,10 @@ export interface ProviderServerSpec {
   cwd: string;
   env?: Record<string, string>;
   shared?: boolean;
+  shutdownCapability?: {
+    method: string;
+    timeoutMs: number;
+  };
 }
 
 export interface ProviderServerLease {
@@ -24,6 +28,7 @@ export interface ProviderServerLease {
   subscribe(handler: (msg: { method: string; params?: Record<string, unknown> }) => void): () => void;
   release(): void;
   closed: Promise<Error | void>;
+  generation?: number;
 }
 
 export interface ProviderAppServerContract {

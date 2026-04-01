@@ -79,6 +79,10 @@ export function buildClaudeProviderServerSpec(
     args: [resolveClaudeBrokerEntrypoint()],
     cwd: process.cwd(),
     shared: true,
+    shutdownCapability: {
+      method: 'broker/shutdown',
+      timeoutMs: 3_000,
+    },
   };
 }
 

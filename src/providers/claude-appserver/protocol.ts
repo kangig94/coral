@@ -139,11 +139,17 @@ export interface TurnFailedParams {
   stderr?: string;
 }
 
+export interface HostStatsParams {
+  liveControllers: number;
+  activeTurns: number;
+}
+
 export interface ClaudeBrokerNotificationMap {
   'session/updated': SessionUpdatedParams;
   'turn/progress': TurnProgressParams;
   'turn/completed': TurnCompletedParams;
   'turn/failed': TurnFailedParams;
+  'host/stats': HostStatsParams;
 }
 
 export type ClaudeBrokerNotification = {

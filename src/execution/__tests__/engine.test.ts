@@ -495,7 +495,7 @@ describe('provider servers', () => {
     vi.resetModules();
   });
 
-  it('spawns a provider server with JSON-RPC transport and separate generation/count tracking', async () => {
+  it('spawns a provider server with JSON-RPC transport and a stable generation id', async () => {
     const handle = await engine.spawnProviderServer({
       provider: 'codex',
       command: process.execPath,
@@ -504,8 +504,6 @@ describe('provider servers', () => {
 
     expect(handle.pid).toBeGreaterThan(0);
     expect(handle.generation).toBe(1);
-    expect(engine.getProviderServerGeneration(handle.pid)).toBe(1);
-    expect(engine.getProviderServerCount()).toBe(1);
     expect(engine.activeChildren.size).toBe(0);
 
     const notifications: Array<{ method: string; params?: Record<string, unknown> }> = [];
@@ -523,23 +521,33 @@ describe('provider servers', () => {
 
     unsubscribe();
     await handle.close();
-    expect(engine.getProviderServerCount()).toBe(0);
-    expect(engine.getProviderServerGeneration(handle.pid)).toBeNull();
   });
 
-  it('killAllChildren drains provider servers and rejects pending RPC requests', async () => {
+  it('markExpectedClose treats broker exits as expected without tearing down the transport first', async () => {
+    const handle = await engine.spawnProviderServer({
+      provider: 'claude',
+      command: process.execPath,
+      args: ['-e', createProviderServerScript()],
+    });
+
+    handle.markExpectedClose();
+    handle.child.kill('SIGTERM');
+
+    await expect(handle.closePromise).resolves.toBeUndefined();
+  });
+
+  it('killAllChildren leaves provider servers to the host manager', async () => {
     const handle = await engine.spawnProviderServer({
       provider: 'codex',
       command: process.execPath,
       args: ['-e', createProviderServerScript()],
     });
 
-    const pending = handle.rpc.request('hang', {});
-
     engine.killAllChildren();
 
-    expect(engine.getProviderServerCount()).toBe(0);
-    await expect(pending).rejects.toThrow('Provider server codex killed during backend shutdown');
+    await expect(handle.rpc.request('ping', { value: 'still-live' })).resolves.toEqual({
+      pong: 'still-live',
+    });
     await handle.close();
   });
 });

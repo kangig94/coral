@@ -49,15 +49,12 @@ import {
   cancelQueued,
   CliBusyError,
   getActiveJobIds,
-  getProviderServerGeneration,
   queuePosition,
   requestLaunch,
   releaseLaunch,
   restoreActiveLaunch,
   restoreQueuedLaunch,
-  spawnProviderServer,
   spawnDurableJob,
-  type ProviderServerHandle,
   type AdmissionResult,
   type LaunchPool,
   type QueuedHandle,
@@ -67,6 +64,10 @@ import { buildCoralInstruction } from './instruction.js';
 import { ProgressStore, createReplayCursor, jobResultPath } from './progress-store.js';
 import { SessionManager } from './session-manager.js';
 import type { SessionEntry } from './session-manager.js';
+import {
+  type ProviderHostManager,
+  type ProviderServerAttachment,
+} from './host-manager.js';
 
 import type { CallerContext } from './request-context.js';
 export type { CallerContext } from './request-context.js';
@@ -136,22 +137,6 @@ const defaultPluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ 
 
 type AcceptedAdmission = Exclude<AdmissionResult, 'queue_full'>;
 
-type ProviderServerWaiter = {
-  resolve: () => void;
-  reject: (error: Error) => void;
-  cleanup: () => void;
-};
-
-type ProviderServerRegistryEntry = {
-  provider: string;
-  spec: ProviderServerSpec;
-  handle: ProviderServerHandle | null;
-  spawnPromise: Promise<ProviderServerHandle> | null;
-  leaseHeld: boolean;
-  sharedLeaseCount: number;
-  waiters: ProviderServerWaiter[];
-};
-
 type InterruptedAppServerReason = 'restart' | 'handoff';
 type InterruptedProbeOutcome = 'verified' | 'missing' | 'unavailable' | 'waiting';
 type InterruptedAppServerFinalization = {
@@ -173,6 +158,35 @@ const APP_SERVER_CONTINUITY_UNVERIFIED_NOTICE =
 
 function joinNotice(...parts: Array<string | undefined>): string {
   return parts.filter((part): part is string => typeof part === 'string' && part.length > 0).join(' ');
+}
+
+function buildInterruptedAppServerReport(options: {
+  baseNotice: string;
+  probeOutcome: InterruptedProbeOutcome;
+  conversationRef?: string;
+}): string {
+  const lines = [options.baseNotice, ''];
+
+  if (options.probeOutcome === 'verified') {
+    lines.push('Session is resumable. Use resume to continue.');
+    if (options.conversationRef) {
+      lines.push(`Conversation reference preserved: ${options.conversationRef}`);
+    }
+    return lines.join('\n');
+  }
+
+  if (options.probeOutcome === 'missing') {
+    lines.push('Session thread is no longer available. Marked as non-resumable.');
+    return lines.join('\n');
+  }
+
+  if (options.probeOutcome === 'unavailable') {
+    lines.push('Could not reach provider server to verify session. Marked as non-resumable.');
+    return lines.join('\n');
+  }
+
+  lines.push('Session was interrupted before completion. State unknown.');
+  return lines.join('\n');
 }
 
 function bindProviderRunner(
@@ -221,12 +235,6 @@ function resolveBackendNamespace(pluginRoot: string): string {
   } catch {
     return pluginRootNamespace(defaultPluginRoot);
   }
-}
-
-function createAbortError(message: string): Error {
-  const error = new Error(message);
-  error.name = 'AbortError';
-  return error;
 }
 
 function isAbortError(error: unknown): boolean {
@@ -311,50 +319,42 @@ export class ExecutionService {
   private readonly progressStore: ProgressStore;
   private readonly projectRoot: string;
   private readonly jobPools = new Map<string, LaunchPool>();
-  private readonly providerServers = new Map<string, ProviderServerRegistryEntry>();
+  private readonly providerHostManager: ProviderHostManager;
 
-  constructor(ctx: CallerContext, progressStore?: ProgressStore, bundleHash?: string) {
+  constructor(
+    ctx: CallerContext,
+    progressStore?: ProgressStore,
+    bundleHash?: string,
+    providerHostManager?: ProviderHostManager,
+  ) {
+    if (!providerHostManager) {
+      throw new Error('ExecutionService requires an injected ProviderHostManager');
+    }
     this.projectRoot = ctx.projectRoot;
     this.sessionManager = new SessionManager(ctx.projectRoot);
     this.abortRegistry = new AbortRegistry();
     this.backendNamespace = resolveBackendNamespace(ctx.pluginRoot);
     this.bundleHash = bundleHash ?? 'unknown';
     this.progressStore = progressStore ?? new ProgressStore();
+    this.providerHostManager = providerHostManager;
   }
 
   async acquireServer(
     spec: ProviderServerSpec,
     options?: { jobId?: string; signal?: AbortSignal },
   ): Promise<ProviderServerLease> {
-    const entry = this.getOrCreateProviderServerEntry(spec);
     if (options?.jobId) {
-      this.writeAppServerRuntimeRecord(options.jobId, entry.provider, { leaseState: 'waiting' });
+      this.writeAppServerRuntimeRecord(options.jobId, spec.provider, { leaseState: 'waiting' });
     }
 
-    if (entry.spec.shared === true) {
-      this.acquireSharedProviderServerLease(entry);
-    } else {
-      await this.waitForProviderServerLease(entry, options?.signal);
+    const lease = await this.providerHostManager.acquireServer(spec, { signal: options?.signal });
+    if (options?.jobId) {
+      this.writeAppServerRuntimeRecord(options.jobId, spec.provider, {
+        leaseState: 'acquired',
+        serverGeneration: lease.generation,
+      });
     }
-
-    try {
-      const handle = await this.ensureProviderServerHandle(entry);
-      if (options?.jobId) {
-        this.writeAppServerRuntimeRecord(options.jobId, entry.provider, {
-          leaseState: 'acquired',
-          serverGeneration: handle.generation,
-        });
-      }
-
-      return this.createProviderServerLease(handle, entry);
-    } catch (error) {
-      if (entry.spec.shared === true) {
-        this.releaseSharedProviderServerLease(entry);
-      } else {
-        this.releaseProviderServerLease(entry);
-      }
-      throw error;
-    }
+    return lease;
   }
 
   checkpointRecovery(jobId: string, update: { conversationRef?: string; providerMeta: ProviderRecoveryMeta }): void {
@@ -403,11 +403,14 @@ export class ExecutionService {
     }
 
     const spec = provider.appServer.buildServerSpec(continuity, toProviderRequest(launchRecord));
-    const liveEntry = this.providerServers.get(runtimeRecord.providerMeta.provider);
-    const liveHandle = liveEntry ? this.getLiveProviderServerHandle(liveEntry) : null;
-    if (spec.shared !== true && liveHandle && liveEntry) {
-      await provider.appServer.interrupt(this.createProviderServerLease(liveHandle, liveEntry), continuity);
-      return;
+    if (spec.shared !== true) {
+      const liveServer = await this.providerHostManager.borrowLiveServer(spec, {
+        serverGeneration: runtimeRecord.providerMeta.serverGeneration,
+      });
+      if (liveServer) {
+        await provider.appServer.interrupt(this.createAttachedProviderServerLease(liveServer), continuity);
+        return;
+      }
     }
 
     const lease = await this.acquireServer(spec);
@@ -416,11 +419,6 @@ export class ExecutionService {
     } finally {
       lease.release();
     }
-  }
-
-  async drainProviderServers(): Promise<void> {
-    const entries = [...this.providerServers.values()];
-    await Promise.all(entries.map((entry) => this.closeProviderServerEntry(entry, 'drained')));
   }
 
   async finalizeInterruptedAppServerJob(
@@ -489,20 +487,28 @@ export class ExecutionService {
         const spec = provider.appServer.buildServerSpec(continuity, toProviderRequest(launchRecord));
 
         try {
-          const lease = await this.acquireServer(spec);
+          const liveServer =
+            spec.shared !== true && runtimeRecord.providerMeta.leaseState === 'acquired'
+              ? await this.providerHostManager.borrowLiveServer(spec, {
+                  serverGeneration: runtimeRecord.providerMeta.serverGeneration,
+                })
+              : null;
+          const lease = liveServer ? this.createAttachedProviderServerLease(liveServer) : await this.acquireServer(spec);
           try {
             const probeResult = await provider.appServer.probe(lease, continuity);
             probeOutcome = probeResult.resumable ? 'verified' : 'missing';
             mutation = toMutation(provider.appServer.finalizeInterrupted(probeResult, continuity));
           } finally {
-            lease.release();
+            if (!liveServer) {
+              lease.release();
+            }
           }
         } catch {
           probeOutcome = 'unavailable';
           mutation = toMutation(
             provider.appServer.finalizeInterrupted(
               {
-                resumable: Boolean(preservedConversationRef ?? continuity),
+                resumable: false,
                 updatedContinuity: continuity,
               },
               continuity,
@@ -533,12 +539,31 @@ export class ExecutionService {
         : probeOutcome === 'verified'
           ? joinNotice(baseNotice, APP_SERVER_CONTINUITY_VERIFIED_NOTICE)
           : probeOutcome === 'missing'
-            ? joinNotice(baseNotice, APP_SERVER_CONTINUITY_MISSING_NOTICE)
-            : joinNotice(baseNotice, APP_SERVER_CONTINUITY_UNVERIFIED_NOTICE);
+          ? joinNotice(baseNotice, APP_SERVER_CONTINUITY_MISSING_NOTICE)
+          : joinNotice(baseNotice, APP_SERVER_CONTINUITY_UNVERIFIED_NOTICE);
+    const interruptedReport = buildInterruptedAppServerReport({
+      baseNotice,
+      probeOutcome,
+      conversationRef:
+        probeOutcome === 'verified'
+          ? mutation.type === 'set_resumable'
+            ? mutation.conversationRef
+            : preservedConversationRef
+          : undefined,
+    });
 
     this.progressStore.updateLaunchState(launchRecord.jobId, 'error', notice);
-    this.writeTerminalResult(launchRecord.jobId, launchRecord.sessionId, { content: '', notice }, 'error');
-    this.progressStore.writeResultMd(launchRecord.jobId, '');
+    this.writeTerminalResult(
+      launchRecord.jobId,
+      launchRecord.sessionId,
+      {
+        content: interruptedReport,
+        notice,
+        ...(probeOutcome === 'missing' || probeOutcome === 'unavailable' ? { nonResumable: true } : {}),
+      },
+      'error',
+    );
+    this.progressStore.writeResultMd(launchRecord.jobId, interruptedReport);
     this.abortRegistry.remove(launchRecord.jobId);
     releaseLaunch(launchRecord.jobId, (this.jobPools.get(launchRecord.jobId) ?? launchRecord.pool ?? 'default') as LaunchPool);
     this.jobPools.delete(launchRecord.jobId);
@@ -584,43 +609,12 @@ export class ExecutionService {
     }
   }
 
-  private getOrCreateProviderServerEntry(spec: ProviderServerSpec): ProviderServerRegistryEntry {
-    const provider = spec.provider;
-    const existing = this.providerServers.get(provider);
-    if (existing) return existing;
-
-    const created: ProviderServerRegistryEntry = {
-      provider,
-      spec: { ...spec },
-      handle: null,
-      spawnPromise: null,
-      leaseHeld: false,
-      sharedLeaseCount: 0,
-      waiters: [],
-    };
-    this.providerServers.set(provider, created);
-    return created;
-  }
-
-  private createProviderServerLease(
-    handle: ProviderServerHandle,
-    entry: ProviderServerRegistryEntry,
-  ): ProviderServerLease {
-    let released = false;
+  private createAttachedProviderServerLease(attachment: ProviderServerAttachment): ProviderServerLease {
     return {
-      rpc: <R = unknown>(method: string, params: Record<string, unknown>) => handle.rpc.request<R>(method, params),
-      subscribe: (handler: (msg: { method: string; params?: Record<string, unknown> }) => void) =>
-        handle.onNotification(handler),
-      release: () => {
-        if (released) return;
-        released = true;
-        if (entry.spec.shared === true) {
-          this.releaseSharedProviderServerLease(entry);
-          return;
-        }
-        this.releaseProviderServerLease(entry);
-      },
-      closed: handle.closePromise,
+      rpc: attachment.rpc,
+      subscribe: attachment.subscribe,
+      release: () => {},
+      closed: attachment.closed,
     };
   }
 
@@ -653,133 +647,6 @@ export class ExecutionService {
     }
 
     return Object.keys(continuity).length > 0 ? continuity : undefined;
-  }
-
-  private getLiveProviderServerHandle(entry: ProviderServerRegistryEntry): ProviderServerHandle | null {
-    const handle = entry.handle;
-    if (!handle) return null;
-    if (getProviderServerGeneration(handle.pid) !== handle.generation) {
-      entry.handle = null;
-      return null;
-    }
-    return handle;
-  }
-
-  private async ensureProviderServerHandle(entry: ProviderServerRegistryEntry): Promise<ProviderServerHandle> {
-    const existing = this.getLiveProviderServerHandle(entry);
-    if (existing) return existing;
-
-    if (entry.spawnPromise) {
-      return entry.spawnPromise;
-    }
-
-    entry.spawnPromise = spawnProviderServer({
-      provider: entry.spec.provider,
-      command: entry.spec.command,
-      args: entry.spec.args,
-      cwd: entry.spec.cwd,
-      extraEnv: entry.spec.env,
-    });
-
-    try {
-      const handle = await entry.spawnPromise;
-      entry.handle = handle;
-      return handle;
-    } finally {
-      entry.spawnPromise = null;
-    }
-  }
-
-  private async waitForProviderServerLease(entry: ProviderServerRegistryEntry, signal?: AbortSignal): Promise<void> {
-    if (!entry.leaseHeld) {
-      entry.leaseHeld = true;
-      return;
-    }
-
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const waiter: ProviderServerWaiter = {
-        resolve: () => {
-          if (settled) return;
-          settled = true;
-          waiter.cleanup();
-          resolve();
-        },
-        reject: (error: Error) => {
-          if (settled) return;
-          settled = true;
-          waiter.cleanup();
-          reject(error);
-        },
-        cleanup: () => {
-          signal?.removeEventListener('abort', onAbort);
-          const index = entry.waiters.indexOf(waiter);
-          if (index !== -1) {
-            entry.waiters.splice(index, 1);
-          }
-        },
-      };
-
-      const onAbort = () => {
-        waiter.reject(createAbortError('Aborted while waiting for a provider server lease'));
-      };
-
-      if (signal?.aborted) {
-        onAbort();
-        return;
-      }
-
-      signal?.addEventListener('abort', onAbort, { once: true });
-      entry.waiters.push(waiter);
-    });
-  }
-
-  private acquireSharedProviderServerLease(entry: ProviderServerRegistryEntry): void {
-    entry.sharedLeaseCount += 1;
-  }
-
-  private releaseSharedProviderServerLease(entry: ProviderServerRegistryEntry): void {
-    if (entry.sharedLeaseCount === 0) {
-      return;
-    }
-    entry.sharedLeaseCount -= 1;
-  }
-
-  private releaseProviderServerLease(entry: ProviderServerRegistryEntry): void {
-    const next = entry.waiters.shift();
-    if (next) {
-      next.resolve();
-      return;
-    }
-    entry.leaseHeld = false;
-  }
-
-  private async closeProviderServerEntry(entry: ProviderServerRegistryEntry, detail: string): Promise<void> {
-    this.providerServers.delete(entry.provider);
-    const error = new Error(`Provider server ${entry.provider} ${detail}`);
-    const waiters = entry.waiters.splice(0, entry.waiters.length);
-    for (const waiter of waiters) {
-      waiter.reject(error);
-    }
-    entry.leaseHeld = false;
-    entry.sharedLeaseCount = 0;
-
-    const handle = this.getLiveProviderServerHandle(entry);
-    entry.handle = null;
-    if (handle) {
-      await handle.close().catch(() => {});
-      return;
-    }
-
-    const pendingSpawn = entry.spawnPromise;
-    if (!pendingSpawn) {
-      return;
-    }
-
-    const spawnedHandle = await pendingSpawn.catch(() => null);
-    if (spawnedHandle) {
-      await spawnedHandle.close().catch(() => {});
-    }
   }
 
   private writeAppServerRuntimeRecord(

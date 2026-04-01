@@ -46,6 +46,7 @@ import { createCurateScheduler } from '../kb/curate.js';
 import { kbRuntimeDir } from '../kb/paths.js';
 import { createKbRuntime } from '../kb/runtime.js';
 import type { BackendIdentity, MutableBackendRuntimeState } from './backend-contracts.js';
+import type { ProviderHostManager } from './host-manager.js';
 import type { CreateKbSubsystemFn, ExecutionServiceLike, KbSubsystem } from './tool-router.js';
 import type { BackendServerInfo } from './server.js';
 
@@ -422,6 +423,7 @@ export type LifecycleDeps = {
   readonly cleanupStaleJobsFn: (currentBundleHash: string) => void;
   readonly markJobsAsErrorFn: (namespace: string, message: string) => void;
   readonly killAllChildrenFn: () => void;
+  readonly providerHostManager: ProviderHostManager;
 
   // KB subsystem factory
   readonly createKbSubsystemFn: CreateKbSubsystemFn;
@@ -471,6 +473,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     cleanupStaleJobsFn,
     markJobsAsErrorFn,
     killAllChildrenFn,
+    providerHostManager,
     createKbSubsystemFn,
     closeServerFn,
     listenFn,
@@ -527,17 +530,10 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       }
     }
 
-    for (const service of listExecutionServices()) {
-      const drainProviderServers = (service as Partial<DefaultExecutionService>).drainProviderServers;
-      if (typeof drainProviderServers !== 'function') {
-        continue;
-      }
-
-      try {
-        await drainProviderServers.call(service);
-      } catch (error: unknown) {
-        log(`Failed to drain provider servers during handoff: ${formatError(error)}\n`);
-      }
+    try {
+      await providerHostManager.drainForHandoff();
+    } catch (error: unknown) {
+      log(`Failed to drain provider servers during handoff: ${formatError(error)}\n`);
     }
   }
 
@@ -774,6 +770,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
 
       if (mode === 'hard') {
         markJobsAsErrorFn(namespace, 'Backend shutting down');
+        await providerHostManager.shutdown();
         killAllChildrenFn();
       } else {
         await finalizeLiveAppServerJobsForHandoff();

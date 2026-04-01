@@ -32,6 +32,7 @@ import {
 } from '../engine.js';
 import { type AbortRegistry } from '../abort-registry.js';
 import { JOBS_DIR, jobResultPath, type ProgressStore } from '../progress-store.js';
+import { createProviderHostManager, type ProviderHostManager } from '../host-manager.js';
 import { SessionManager } from '../session-manager.js';
 import { ExecutionService, type CallerContext } from '../service.js';
 
@@ -75,6 +76,22 @@ let baselineJobIds = new Set<string>();
 
 function getInternals(service: ExecutionService): ServiceInternals {
   return service as unknown as ServiceInternals;
+}
+
+function createService(
+  ctx: CallerContext,
+  options: {
+    progressStore?: ProgressStore;
+    bundleHash?: string;
+    providerHostManager?: ProviderHostManager;
+  } = {},
+): ExecutionService {
+  return new ExecutionService(
+    ctx,
+    options.progressStore,
+    options.bundleHash,
+    options.providerHostManager ?? createProviderHostManager(),
+  );
 }
 
 function trackJob(jobId: string): void {
@@ -136,6 +153,7 @@ function createFakeProviderServerHandle(options?: {
       handlers.delete(handler);
     };
   });
+  const markExpectedCloseMock = vi.fn();
   const closeMock = vi.fn(async () => {});
   const closePromise = new Promise<Error | void>(() => {});
 
@@ -150,11 +168,13 @@ function createFakeProviderServerHandle(options?: {
       },
       onNotification: onNotificationMock as unknown as ProviderServerHandle['onNotification'],
       closePromise,
+      markExpectedClose: markExpectedCloseMock,
       close: closeMock,
     } satisfies ProviderServerHandle,
     requestMock,
     notifyMock,
     onNotificationMock,
+    markExpectedCloseMock,
     closeMock,
     emit(message: { method: string; params?: Record<string, unknown> }) {
       for (const handler of handlers) {
@@ -352,7 +372,7 @@ describe('ExecutionService', () => {
     const never = new Promise<ProviderResult>(() => {});
     const { provider } = makeProvider({ execute: () => never });
     mockState.getNewProvider.mockReturnValue(provider);
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
 
     const decision = await service.start('codex', { prompt: 'hello' }, ctx);
 
@@ -398,7 +418,7 @@ describe('ExecutionService', () => {
       },
     };
     mockState.getNewProvider.mockReturnValue(provider);
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
 
     const decision = await service.start('codex', { prompt: 'hello' }, ctx);
 
@@ -425,7 +445,7 @@ describe('ExecutionService', () => {
   });
 
   it('writes app-server runtime waiting before lease grant and upgrades the same record on acquisition', async () => {
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const { progressStore } = getInternals(service);
     const spec = buildCodexProviderServerSpec(ctx.projectRoot);
     const server = createFakeProviderServerHandle({ generation: 41 });
@@ -508,7 +528,7 @@ describe('ExecutionService', () => {
   });
 
   it('allows shared app-server leases to overlap on the same handle', async () => {
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const { progressStore } = getInternals(service);
     const spec = {
       provider: 'claude',
@@ -531,7 +551,6 @@ describe('ExecutionService', () => {
       },
     });
     const spawnProviderServer = vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(server.handle);
-    vi.spyOn(engineModule, 'getProviderServerGeneration').mockReturnValue(41);
     const jobId1 = `shared-app-server-${randomUUID()}`;
     const jobId2 = `shared-app-server-${randomUUID()}`;
     trackJob(jobId1);
@@ -591,7 +610,7 @@ describe('ExecutionService', () => {
   });
 
   it('abort sends turn/interrupt for checkpointed app-server jobs', async () => {
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const { progressStore, abortRegistry } = getInternals(service);
     const jobId = `app-server-abort-${randomUUID()}`;
     const server = createFakeProviderServerHandle({
@@ -665,7 +684,7 @@ describe('ExecutionService', () => {
   });
 
   it('routes shared app-server interrupts through acquireServer while a live lease is active', async () => {
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const spec = {
       provider: 'claude',
       command: process.execPath,
@@ -675,7 +694,6 @@ describe('ExecutionService', () => {
     };
     const server = createFakeProviderServerHandle();
     const spawnProviderServer = vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(server.handle);
-    vi.spyOn(engineModule, 'getProviderServerGeneration').mockReturnValue(server.handle.generation);
     mockState.getNewProvider.mockReturnValue(makeSharedClaudeAppServerProvider(spec));
 
     const firstLease = await service.acquireServer(spec);
@@ -732,6 +750,61 @@ describe('ExecutionService', () => {
     firstLease.release();
   });
 
+  it('borrows the live exclusive app-server host for interrupts instead of queueing a second lease', async () => {
+    const service = createService(ctx);
+    const spec = buildCodexProviderServerSpec(ctx.projectRoot);
+    const server = createFakeProviderServerHandle();
+    const spawnProviderServer = vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(server.handle);
+    mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
+
+    const firstLease = await service.acquireServer(spec);
+    const acquireServerSpy = vi.spyOn(service, 'acquireServer');
+
+    await service.interruptAppServerJob(
+      {
+        jobId: `exclusive-interrupt-${randomUUID()}`,
+        sessionId: 'session-1',
+        provider: 'codex',
+        projectRoot: ctx.projectRoot,
+        backendNamespace: TEST_BACKEND_NAMESPACE,
+        pool: 'default',
+        enqueueSequence: 0,
+        providerAction: 'exec',
+        request: {
+          prompt: 'interrupt me',
+          cwd: ctx.projectRoot,
+          bypassPermissions: true,
+          coralEnv: {},
+        },
+        createdAt: new Date().toISOString(),
+      },
+      {
+        transport: 'app-server',
+        startTime: new Date().toISOString(),
+        providerMeta: {
+          provider: 'codex',
+          leaseState: 'acquired',
+          serverGeneration: firstLease.generation,
+          providerContinuity: {
+            threadId: 'thread-live',
+            turnId: 'turn-live',
+          },
+          recoveryPolicy: 'session_continuity_only',
+        },
+      },
+    );
+
+    expect(acquireServerSpy).not.toHaveBeenCalled();
+    expect(server.requestMock).toHaveBeenCalledWith('turn/interrupt', {
+      threadId: 'thread-live',
+      turnId: 'turn-live',
+    });
+    expect(spawnProviderServer).toHaveBeenCalledTimes(1);
+
+    acquireServerSpy.mockRestore();
+    firstLease.release();
+  });
+
   it('persists app-server lease-wait aborts as aborted instead of error', async () => {
     const spec = buildCodexProviderServerSpec(ctx.projectRoot);
     const server = createFakeProviderServerHandle();
@@ -746,7 +819,7 @@ describe('ExecutionService', () => {
       },
     });
     mockState.getNewProvider.mockReturnValue(provider);
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
 
     const first = await service.start('codex', { prompt: 'hold lease' }, ctx);
     const second = await service.start('codex', { prompt: 'wait for lease' }, ctx);
@@ -795,7 +868,7 @@ describe('ExecutionService', () => {
 
   it('start rejects unknown providers', async () => {
     mockState.getNewProvider.mockReturnValue(undefined);
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
 
     const decision = await service.start('missing', { prompt: 'hello' }, ctx);
 
@@ -814,7 +887,7 @@ describe('ExecutionService', () => {
       },
     });
     mockState.getNewProvider.mockReturnValue(provider);
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
 
     const decision = await service.start('codex', { prompt: 'hello' }, ctx);
 
@@ -833,7 +906,7 @@ describe('ExecutionService', () => {
       const never = new Promise<ProviderResult>(() => {});
       const { provider } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       await occupyProviderSlots(service, ctx, 'codex');
 
       const decision = await service.start('codex', { prompt: 'queued job' }, ctx);
@@ -857,7 +930,7 @@ describe('ExecutionService', () => {
     it('resume rejects when the session is missing', async () => {
       const { provider } = makeProvider();
       mockState.getNewProvider.mockReturnValue(provider);
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
 
       const decision = await service.resume('codex', { sessionId: 'missing', prompt: 'hello' }, ctx);
 
@@ -877,7 +950,7 @@ describe('ExecutionService', () => {
       const mgr = new SessionManager(ctx.projectRoot);
       const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
       mgr.claimForJobSync(entry.sessionId, 'job-1');
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
 
       const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);
 
@@ -895,7 +968,7 @@ describe('ExecutionService', () => {
       const never = new Promise<ProviderResult>(() => {});
       const blockingProvider = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(blockingProvider.provider);
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       await occupyProviderSlots(service, ctx, 'codex');
 
       const gate = createDeferred<void>();
@@ -938,7 +1011,7 @@ describe('ExecutionService', () => {
       const mgr = new SessionManager(ctx.projectRoot);
       const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
       mgr.setConversationRef(entry.sessionId, 'thread-stale');
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
 
       const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);
 
@@ -969,7 +1042,7 @@ describe('ExecutionService', () => {
       mockState.getNewProvider.mockReturnValue(provider);
       const mgr = new SessionManager(ctx.projectRoot);
       const source = mgr.allocate('codex', 'source', 'gpt-5', ctx.projectRoot);
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
 
       const decision = await service.fork('codex', { sessionId: source.sessionId, prompt: 'branch' }, ctx);
 
@@ -985,7 +1058,7 @@ describe('ExecutionService', () => {
       const never = new Promise<ProviderResult>(() => {});
       const { provider } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
 
       const first = await service.start('codex', { prompt: 'first' }, ctx);
       const second = await service.start('codex', { prompt: 'second' }, ctx);
@@ -1013,7 +1086,7 @@ describe('ExecutionService', () => {
       const never = new Promise<ProviderResult>(() => {});
       const { provider } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       await occupyProviderSlots(service, ctx, 'codex');
 
       const decision = await service.start('codex', { prompt: 'queued job' }, ctx);
@@ -1040,7 +1113,7 @@ describe('ExecutionService', () => {
   }); // end queue admission
 
   it('awaitLaunch returns ready once the launch state changes', async () => {
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const { progressStore } = getInternals(service);
     const jobId = `test-await-launch-${Date.now()}`;
     progressStore.initJob({
@@ -1066,7 +1139,7 @@ describe('ExecutionService', () => {
       content: '---\nname: sample\n---\nInjected coral content',
       path: '/tmp/sample.md',
     });
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
 
     const decision = await service.coralDispatch('codex', 'sample', { prompt: 'hello' }, ctx);
 
@@ -1089,7 +1162,7 @@ describe('ExecutionService', () => {
   });
 
   it('waitStream yields progress and terminal events in order', async () => {
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const { progressStore } = getInternals(service);
     const status: PersistedStatusRecord = {
       jobId: 'job-1',
@@ -1150,7 +1223,7 @@ describe('ExecutionService', () => {
   });
 
   it('waitStream yields terminal from status when no terminal event is replayed', async () => {
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const { progressStore } = getInternals(service);
     vi.spyOn(progressStore, 'readStatus').mockReturnValue({
       jobId: 'job-1',
@@ -1185,7 +1258,7 @@ describe('ExecutionService', () => {
   });
 
   it('waitStream re-reads terminal status after replay before waiting for more changes', async () => {
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const { progressStore } = getInternals(service);
     const runningStatus: PersistedStatusRecord = {
       jobId: 'job-1',
@@ -1235,7 +1308,7 @@ describe('ExecutionService', () => {
     const never = new Promise<ProviderResult>(() => {});
     const { provider } = makeProvider({ execute: () => never });
     mockState.getNewProvider.mockReturnValue(provider);
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const runningJobIds = await occupyProviderSlots(service, ctx, 'codex');
     const decision = await service.start('codex', { prompt: 'queued job' }, ctx);
 
@@ -1287,7 +1360,7 @@ describe('ExecutionService', () => {
       path: `/tmp/${name}.md`,
     }));
 
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const decision = await service.executeWorkflow(
       'codex',
       parseExpression('architect -> resolver'),
@@ -1364,7 +1437,7 @@ describe('ExecutionService', () => {
       path: `/tmp/${name}.md`,
     }));
 
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const workDir = join(mockState.tmpHome, 'child-workdir');
     mkdirSync(workDir, { recursive: true });
 
@@ -1405,7 +1478,7 @@ describe('ExecutionService', () => {
       path: `/tmp/${name}.md`,
     }));
 
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     for (const jobId of getActiveJobIds()) {
       releaseLaunch(jobId);
     }
@@ -1456,7 +1529,7 @@ describe('ExecutionService', () => {
       path: `/tmp/${name}.md`,
     }));
 
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const decision = await service.executeWorkflow(
       'codex',
       parseExpression('architect -> resolver'),
@@ -1522,7 +1595,7 @@ describe('ExecutionService', () => {
       path: `/tmp/${name}.md`,
     }));
 
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const decision = await service.executeWorkflow(
       'codex',
       parseExpression('architect -> resolver'),
@@ -1574,7 +1647,7 @@ describe('ExecutionService', () => {
     const { provider } = makeProvider();
     mockState.getNewProvider.mockReturnValue(provider);
 
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const { progressStore } = getInternals(service);
     const appendTerminal = vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
       throw new Error('disk full');
@@ -1604,7 +1677,7 @@ describe('ExecutionService', () => {
   });
 
   it('finishQueuedAbort falls back to status-only terminal persistence when appendTerminal throws', () => {
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const { progressStore } = getInternals(service);
     const jobId = `queued-abort-${randomUUID()}`;
     trackJob(jobId);
@@ -1635,7 +1708,7 @@ describe('ExecutionService', () => {
   });
 
   it('failJob falls back to status-only terminal persistence when appendTerminal throws', () => {
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const { progressStore } = getInternals(service);
     const jobId = `fail-job-${randomUUID()}`;
     trackJob(jobId);
@@ -1662,7 +1735,7 @@ describe('ExecutionService', () => {
   });
 
   it('finishWorkflowJob falls back to status-only terminal persistence when appendTerminal throws', () => {
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const { progressStore } = getInternals(service);
     const jobId = `workflow-terminal-${randomUUID()}`;
     trackJob(jobId);
@@ -1718,7 +1791,7 @@ describe('ExecutionService', () => {
   ])(
     'finishWorkflowJob writes result.md before %s terminal persistence and marks the session non_resumable afterward',
     ({ phase, result, markdown }) => {
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       const { progressStore, sessionManager } = getInternals(service);
       const session = sessionManager.allocate('codex', `workflow-${phase}`, 'workflow', ctx.projectRoot);
       const jobId = `workflow-order-${phase}-${randomUUID()}`;
@@ -1779,7 +1852,7 @@ describe('ExecutionService', () => {
   );
 
   it('finishWorkflowJob writes result.md before status-only terminal fallback and marks the session non_resumable afterward', () => {
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const { progressStore, sessionManager } = getInternals(service);
     const session = sessionManager.allocate('codex', 'workflow-fallback', 'workflow', ctx.projectRoot);
     const jobId = `workflow-fallback-order-${randomUUID()}`;
@@ -1888,11 +1961,22 @@ describe('ExecutionService', () => {
       };
     }
 
+    function buildExpectedInterruptedReport(
+      reason: 'restart' | 'handoff',
+      ...detailLines: string[]
+    ): string {
+      const baseNotice =
+        reason === 'restart'
+          ? 'Backend restarted during the app-server turn. The interrupted turn was not replayed.'
+          : 'Backend handoff interrupted the app-server turn. The interrupted turn was not replayed.';
+      return [baseNotice, '', ...detailLines].join('\n');
+    }
+
     describe('recoverQueuedJob', () => {
       it('recovers a queued job from a persisted launch record and preserves the original jobId', async () => {
         const { provider } = makeProvider();
         mockState.getNewProvider.mockReturnValue(provider);
-        const service = new ExecutionService(ctx);
+        const service = createService(ctx);
         const { progressStore } = getInternals(service);
 
         const jobId = `recover-queued-${randomUUID()}`;
@@ -1920,7 +2004,7 @@ describe('ExecutionService', () => {
       it('rebinds namespace to current backend', async () => {
         const { provider } = makeProvider();
         mockState.getNewProvider.mockReturnValue(provider);
-        const service = new ExecutionService(ctx);
+        const service = createService(ctx);
         const { progressStore } = getInternals(service);
 
         const jobId = `recover-rebind-${randomUUID()}`;
@@ -1948,7 +2032,7 @@ describe('ExecutionService', () => {
       it('hydrates event counter before new appends', () => {
         const { provider } = makeProvider();
         mockState.getNewProvider.mockReturnValue(provider);
-        const service = new ExecutionService(ctx);
+        const service = createService(ctx);
         const { progressStore } = getInternals(service);
 
         const jobId = `recover-hydrate-${randomUUID()}`;
@@ -1980,7 +2064,7 @@ describe('ExecutionService', () => {
         const never = new Promise<ProviderResult>(() => {});
         const { provider } = makeProvider({ execute: () => never });
         mockState.getNewProvider.mockReturnValue(provider);
-        const service = new ExecutionService(ctx);
+        const service = createService(ctx);
         const { progressStore } = getInternals(service);
         const occupyIds = await occupyProviderSlots(service, ctx, 'codex');
 
@@ -2019,7 +2103,7 @@ describe('ExecutionService', () => {
 
     describe('adoptRunningJob', () => {
       it('adopts a running job with a live PID and returns a cleanup handle', () => {
-        const service = new ExecutionService(ctx);
+        const service = createService(ctx);
         const { progressStore } = getInternals(service);
 
         const jobId = `adopt-running-${randomUUID()}`;
@@ -2052,7 +2136,7 @@ describe('ExecutionService', () => {
       });
 
       it('restores pool mapping and active permit', () => {
-        const service = new ExecutionService(ctx);
+        const service = createService(ctx);
         const { progressStore } = getInternals(service);
 
         const jobId = `adopt-pool-${randomUUID()}`;
@@ -2084,7 +2168,7 @@ describe('ExecutionService', () => {
       });
 
       it('rebinds namespace', () => {
-        const service = new ExecutionService(ctx);
+        const service = createService(ctx);
         const { progressStore } = getInternals(service);
 
         const jobId = `adopt-rebind-${randomUUID()}`;
@@ -2116,7 +2200,7 @@ describe('ExecutionService', () => {
 
     describe('completeRecoveredJob', () => {
       it('writes terminal result and releases session', () => {
-        const service = new ExecutionService(ctx);
+        const service = createService(ctx);
         const { progressStore, sessionManager } = getInternals(service);
 
         const jobId = `complete-recovered-${randomUUID()}`;
@@ -2154,7 +2238,7 @@ describe('ExecutionService', () => {
 
     describe('finalizeInterruptedAppServerJob', () => {
       it('skips the probe for lease-waiting jobs and preserves an existing conversationRef', async () => {
-        const service = new ExecutionService(ctx);
+        const service = createService(ctx);
         const { progressStore, sessionManager } = getInternals(service);
         const spawnProviderServer = vi.spyOn(engineModule, 'spawnProviderServer');
         const jobId = `app-server-waiting-${randomUUID()}`;
@@ -2196,13 +2280,20 @@ describe('ExecutionService', () => {
           { reason: 'restart' },
         );
 
+        const expectedReport = buildExpectedInterruptedReport(
+          'restart',
+          'Session was interrupted before completion. State unknown.',
+        );
+
         expect(spawnProviderServer).not.toHaveBeenCalled();
         expect(progressStore.readStatus(jobId)).toMatchObject({
           phase: 'error',
           result: {
+            content: expectedReport,
             notice: expect.stringContaining('The existing conversation reference was preserved.'),
           },
         });
+        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
         expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
           activeJobId: undefined,
           lastJobId: jobId,
@@ -2212,7 +2303,7 @@ describe('ExecutionService', () => {
       });
 
       it('stores the recovered threadId when continuity is verified', async () => {
-        const service = new ExecutionService(ctx);
+        const service = createService(ctx);
         const { progressStore, sessionManager } = getInternals(service);
         mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
         vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(
@@ -2253,6 +2344,19 @@ describe('ExecutionService', () => {
           { reason: 'restart' },
         );
 
+        const expectedReport = buildExpectedInterruptedReport(
+          'restart',
+          'Session is resumable. Use resume to continue.',
+          'Conversation reference preserved: thread-recovered',
+        );
+
+        expect(progressStore.readStatus(jobId)).toMatchObject({
+          phase: 'error',
+          result: {
+            content: expectedReport,
+          },
+        });
+        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
         expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
           activeJobId: undefined,
           lastJobId: jobId,
@@ -2262,7 +2366,7 @@ describe('ExecutionService', () => {
       });
 
       it('clears conversationRef and marks the session non_resumable when the thread is definitively missing', async () => {
-        const service = new ExecutionService(ctx);
+        const service = createService(ctx);
         const { progressStore, sessionManager } = getInternals(service);
         mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
         vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(
@@ -2315,12 +2419,20 @@ describe('ExecutionService', () => {
           { reason: 'restart' },
         );
 
+        const expectedReport = buildExpectedInterruptedReport(
+          'restart',
+          'Session thread is no longer available. Marked as non-resumable.',
+        );
+
         expect(progressStore.readStatus(jobId)).toMatchObject({
           phase: 'error',
           result: {
+            content: expectedReport,
+            nonResumable: true,
             notice: expect.stringContaining('session is non-resumable'),
           },
         });
+        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
         expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
           activeJobId: undefined,
           lastJobId: jobId,
@@ -2329,8 +2441,8 @@ describe('ExecutionService', () => {
         expect(sessionManager.get('codex', session.sessionId)?.conversationRef).toBeUndefined();
       });
 
-      it('preserves or seeds conversationRef with an explicit notice when the probe is unavailable', async () => {
-        const service = new ExecutionService(ctx);
+      it('marks the session non_resumable and writes an explicit report when the probe is unavailable', async () => {
+        const service = createService(ctx);
         const { progressStore, sessionManager } = getInternals(service);
         mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
         vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(
@@ -2346,6 +2458,12 @@ describe('ExecutionService', () => {
         const jobId = `app-server-unavailable-${randomUUID()}`;
         trackJob(jobId);
         const session = sessionManager.allocate('codex', 'recover-unavailable', 'gpt-5', ctx.projectRoot);
+        sessionManager.checkpointProviderContinuity(session.sessionId, {
+          providerContinuity: {
+            threadId: 'thread-unverified',
+          },
+          conversationRef: 'thread-unverified',
+        });
         sessionManager.claimForJobSync(session.sessionId, jobId);
 
         progressStore.initJob({
@@ -2362,6 +2480,12 @@ describe('ExecutionService', () => {
             jobId,
             sessionId: session.sessionId,
             projectRoot: ctx.projectRoot,
+            request: {
+              prompt: 'recover me',
+              bypassPermissions: false,
+              conversationRef: 'thread-unverified',
+              coralEnv: {},
+            },
           }),
           makeAppServerRuntimeRecord({
             providerContinuity: {
@@ -2371,18 +2495,26 @@ describe('ExecutionService', () => {
           { reason: 'handoff' },
         );
 
+        const expectedReport = buildExpectedInterruptedReport(
+          'handoff',
+          'Could not reach provider server to verify session. Marked as non-resumable.',
+        );
+
         expect(progressStore.readStatus(jobId)).toMatchObject({
           phase: 'error',
           result: {
+            content: expectedReport,
+            nonResumable: true,
             notice: expect.stringContaining('could not be verified'),
           },
         });
+        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
         expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
           activeJobId: undefined,
           lastJobId: jobId,
-          state: 'ready',
-          conversationRef: 'thread-unverified',
+          state: 'non_resumable',
         });
+        expect(sessionManager.get('codex', session.sessionId)?.conversationRef).toBeUndefined();
       });
     });
   });
@@ -2426,7 +2558,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
       mgr.setNonResumable(entry.sessionId);
 
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);
 
       expect(decision.status).toBe('rejected');
@@ -2440,7 +2572,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       const { provider } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
 
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       const firstDecision = await service.start('codex', { prompt: 'first' }, ctx);
       expect(firstDecision.status).toBe('running');
       if (firstDecision.status !== 'running') throw new Error('expected running');
@@ -2459,7 +2591,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       const mgr = new SessionManager(ctx.projectRoot);
       const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
 
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hi' }, ctx);
 
       expect(decision.status).toBe('rejected');
@@ -2482,7 +2614,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       const mgr = new SessionManager(ctx.projectRoot);
       const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
       const jobDirsBefore = listJobDirs();
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
 
       const firstResume = service.resume('codex', { sessionId: entry.sessionId, prompt: 'one' }, ctx);
       const secondResume = service.resume('codex', { sessionId: entry.sessionId, prompt: 'two' }, ctx);
@@ -2514,7 +2646,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       const { provider } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
 
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       const firstDecision = await service.start('codex', { prompt: 'first' }, ctx);
       expect(firstDecision.status).toBe('running');
       if (firstDecision.status !== 'running') throw new Error('expected running');
@@ -2534,7 +2666,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       const source = mgr.allocate('codex', 'source', 'gpt-5', ctx.projectRoot);
       const sessionsBefore = mgr.list('codex').length;
 
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       const decision = await service.fork('codex', { sessionId: source.sessionId, prompt: 'branch' }, ctx);
 
       expect(decision.status).toBe('rejected');
@@ -2557,7 +2689,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       const sessionsBefore = mgr.list('codex').length;
       const jobDirsBefore = listJobDirs();
 
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       const decisionPromise = service.fork('codex', { sessionId: source.sessionId, prompt: 'branch' }, ctx);
       expect(mgr.claimForJobSync(source.sessionId, 'job-race')).toBe(true);
       gate.resolve();
@@ -2588,7 +2720,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       const sessionsBefore = mgr.list('codex').length;
       const sourceVersionBefore = mgr.get('codex', source.sessionId)?.version;
       const jobDirsBefore = listJobDirs();
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
 
       const firstFork = service.fork('codex', { sessionId: source.sessionId, prompt: 'branch-one' }, ctx);
       const secondFork = service.fork('codex', { sessionId: source.sessionId, prompt: 'branch-two' }, ctx);
@@ -2619,7 +2751,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       const { provider } = makeProvider();
       mockState.getNewProvider.mockReturnValue(provider);
 
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       const decision = await service.fork('codex', { sessionId: 'ghost-session', prompt: 'branch' }, ctx);
 
       expect(decision.status).toBe('rejected');
@@ -2632,7 +2764,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
   describe('rejected LaunchDecision does not allocate job or session resources', () => {
     it('start() rejected decision has no job or session property', async () => {
       mockState.getNewProvider.mockReturnValue(undefined);
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
 
       const decision = await service.start('missing', { prompt: 'test' }, ctx);
 
@@ -2643,7 +2775,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
 
     it('abort() reports all jobIds as notFound after a series of preflight rejections', async () => {
       mockState.getNewProvider.mockReturnValue(undefined);
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
 
       await service.start('missing', { prompt: 'a' }, ctx);
       await service.start('missing', { prompt: 'b' }, ctx);
@@ -2661,7 +2793,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       createdJobIds.add(jobIdA);
       createdJobIds.add(jobIdB);
 
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       const { progressStore } = getInternals(service);
 
       vi.spyOn(progressStore, 'readStatus').mockImplementation((...args: unknown[]) => {
@@ -2712,7 +2844,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       const jobId = `red-ws-cursor-${randomUUID()}`;
       createdJobIds.add(jobId);
 
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       const { progressStore } = getInternals(service);
 
       vi.spyOn(progressStore, 'readStatus').mockImplementation((...args: unknown[]) => {

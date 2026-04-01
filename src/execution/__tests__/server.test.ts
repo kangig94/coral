@@ -8,6 +8,7 @@ import type * as ServerMod from '../server.js';
 import type * as BackendInfoMod from '../../infra/backend-info.js';
 import type * as BackendLockMod from '../backend-lock.js';
 import type * as LifecycleMod from '../lifecycle.js';
+import type { ProviderServerHandle } from '../engine.js';
 
 import { readDiscussEventLog } from '../../client/readers.js';
 import { makeEvent } from '../../discuss/events.js';
@@ -52,9 +53,9 @@ type BackendInfoModule = typeof BackendInfoMod;
 type BackendLockModule = typeof BackendLockMod;
 type LifecycleModule = typeof LifecycleMod;
 
-function createDeferred() {
-  let resolve!: () => void;
-  const promise = new Promise<void>((done) => {
+function createDeferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => {
     resolve = done;
   });
   return { promise, resolve };
@@ -117,6 +118,63 @@ function createFakeIdleTimer() {
     stopWatching: vi.fn(),
     requestDrain: vi.fn(),
     isDraining: false,
+  };
+}
+
+function createFakeProviderHostManager(overrides: Record<string, unknown> = {}) {
+  return {
+    acquireServer: vi.fn(),
+    borrowLiveServer: vi.fn(),
+    drainForHandoff: vi.fn(async () => {}),
+    shutdown: vi.fn(async () => {}),
+    ...overrides,
+  };
+}
+
+function createFakeProviderServerHandle(options?: {
+  generation?: number;
+  request?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+}) {
+  const handlers = new Set<(message: { method: string; params?: Record<string, unknown> }) => void>();
+  const closed = createDeferred<Error | void>();
+  const request =
+    options?.request ??
+    (async (_method: string, _params: Record<string, unknown>) => {
+      return {};
+    });
+  const requestMock = vi.fn((method: string, params: Record<string, unknown> = {}) => request(method, params));
+  const notifyMock = vi.fn();
+  const onNotificationMock = vi.fn((handler: (message: { method: string; params?: Record<string, unknown> }) => void) => {
+    handlers.add(handler);
+    return () => {
+      handlers.delete(handler);
+    };
+  });
+  const markExpectedCloseMock = vi.fn();
+  const closeMock = vi.fn(async () => {
+    closed.resolve();
+  });
+
+  return {
+    handle: {
+      pid: options?.generation ?? 1,
+      child: {} as never,
+      generation: options?.generation ?? 1,
+      rpc: {
+        request: requestMock as unknown as ProviderServerHandle['rpc']['request'],
+        notify: notifyMock,
+      },
+      onNotification: onNotificationMock as unknown as ProviderServerHandle['onNotification'],
+      closePromise: closed.promise,
+      markExpectedClose: markExpectedCloseMock,
+      close: closeMock,
+    } satisfies ProviderServerHandle,
+    requestMock,
+    markExpectedCloseMock,
+    closeMock,
+    resolveClosed: () => {
+      closed.resolve();
+    },
   };
 }
 
@@ -417,6 +475,142 @@ describe('execution backend server', () => {
       queueDepth: 0,
     });
     expect(typeof body.uptimeMs).toBe('number');
+  });
+
+  it('injects one shared ProviderHostManager across project-root services so Claude shares and incompatible Codex hosts stay isolated', async () => {
+    const { serverModule } = await loadExecutionModules();
+    const [{ ExecutionService }, engineModule, claudeRequestMapping, codexRequestMapping] = await Promise.all([
+      import('../service.js'),
+      import('../engine.js'),
+      import('../../providers/claude/request-mapping.js'),
+      import('../../providers/codex/request-mapping.js'),
+    ]);
+    const progressStore = new ProgressStore();
+    const projectRootA = createProjectRoot('provider-host-project-a');
+    const projectRootB = createProjectRoot('provider-host-project-b');
+    const jobIdA = 'provider-host-job-a';
+    const jobIdB = 'provider-host-job-b';
+    createdJobIds.add(jobIdA);
+    createdJobIds.add(jobIdB);
+
+    progressStore.initJob({
+      jobId: jobIdA,
+      sessionId: 'session-a',
+      provider: 'codex',
+      projectRoot: projectRootA,
+      backendNamespace: testBackendNamespace,
+      initialPhase: 'running',
+    });
+    progressStore.markTerminalStatus(jobIdA, { content: 'done-a' }, 'completed');
+
+    progressStore.initJob({
+      jobId: jobIdB,
+      sessionId: 'session-b',
+      provider: 'codex',
+      projectRoot: projectRootB,
+      backendNamespace: testBackendNamespace,
+      initialPhase: 'running',
+    });
+    progressStore.markTerminalStatus(jobIdB, { content: 'done-b' }, 'completed');
+
+    const services = new Map<string, InstanceType<typeof ExecutionService>>();
+    const capturedManagers: unknown[] = [];
+    controller = serverModule.createBackendServer({
+      instanceId: 'execution-backend-instance-1',
+      token: 'test-token',
+      version: '9.9.9',
+      bundleHash: 'testhash1234',
+      log: () => {},
+      createKbSubsystemFn: async () => createMockKbSubsystem(),
+      cleanupStaleJobsFn: () => {},
+      progressStore,
+      createExecutionService: (ctx, deps) => {
+        capturedManagers.push(deps.providerHostManager);
+        const service = new ExecutionService(ctx, deps.progressStore, deps.bundleHash, deps.providerHostManager);
+        services.set(ctx.projectRoot, service);
+        return service;
+      },
+    });
+    const started = await controller.start();
+    const backend = {
+      baseUrl: `http://127.0.0.1:${started.port}`,
+      token: started.token,
+    };
+
+    const waitForService = async (projectRoot: string, jobId: string): Promise<void> => {
+      const response = await fetch(`${backend.baseUrl}/wait/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Coral-Backend-Token': backend.token,
+        },
+        body: JSON.stringify({
+          jobIds: [jobId],
+          timeoutSeconds: 1,
+          projectRoot,
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      await response.text();
+    };
+
+    await waitForService(projectRootA, jobIdA);
+    await waitForService(projectRootB, jobIdB);
+
+    expect(capturedManagers).toHaveLength(2);
+    expect(capturedManagers[0]).toBe(capturedManagers[1]);
+
+    const serviceA = services.get(projectRootA);
+    const serviceB = services.get(projectRootB);
+    expect(serviceA).toBeInstanceOf(ExecutionService);
+    expect(serviceB).toBeInstanceOf(ExecutionService);
+
+    const sharedClaudeHandle = createFakeProviderServerHandle({
+      generation: 11,
+      request: async (method) => {
+        if (method === 'broker/shutdown') {
+          sharedClaudeHandle.resolveClosed();
+        }
+        return {};
+      },
+    });
+    const codexHandleA = createFakeProviderServerHandle({ generation: 22 });
+    const codexHandleB = createFakeProviderServerHandle({ generation: 33 });
+    const spawnProviderServer = vi
+      .spyOn(engineModule, 'spawnProviderServer')
+      .mockResolvedValueOnce(sharedClaudeHandle.handle)
+      .mockResolvedValueOnce(codexHandleA.handle)
+      .mockResolvedValueOnce(codexHandleB.handle);
+
+    const claudeSpec = claudeRequestMapping.buildClaudeProviderServerSpec({
+      sessionId: 'claude-session',
+      cwd: projectRootA,
+      bypassPermissions: false,
+      coralEnv: {},
+    });
+    const codexSpecA = codexRequestMapping.buildCodexProviderServerSpec(projectRootA, {
+      PROJECT_ROOT: 'a',
+    });
+    const codexSpecB = codexRequestMapping.buildCodexProviderServerSpec(projectRootB, {
+      PROJECT_ROOT: 'b',
+    });
+
+    const claudeLeaseA = await serviceA!.acquireServer(claudeSpec);
+    const claudeLeaseB = await serviceB!.acquireServer(claudeSpec);
+    const codexLeaseA = await serviceA!.acquireServer(codexSpecA);
+    const codexLeaseB = await serviceB!.acquireServer(codexSpecB);
+
+    expect(claudeLeaseA.generation).toBe(11);
+    expect(claudeLeaseB.generation).toBe(11);
+    expect(codexLeaseA.generation).toBe(22);
+    expect(codexLeaseB.generation).toBe(33);
+    expect(spawnProviderServer).toHaveBeenCalledTimes(3);
+
+    claudeLeaseA.release();
+    claudeLeaseB.release();
+    codexLeaseA.release();
+    codexLeaseB.release();
   });
 
   it('reports only matching bundleHash live jobs from /health when mixed hashes are seeded', async () => {
@@ -1758,8 +1952,8 @@ describe('execution backend server', () => {
 
       const fakeService = {
         finalizeInterruptedAppServerJob: vi.fn(async () => {}),
-        drainProviderServers: vi.fn(async () => {}),
       };
+      const providerHostManager = createFakeProviderHostManager();
       const fakeIdleTimer = createFakeIdleTimer();
       const { runtimeState } = createRuntimeStateMock();
       runtimeState.setLifecycle('running');
@@ -1805,6 +1999,7 @@ describe('execution backend server', () => {
         cleanupStaleJobsFn: () => {},
         markJobsAsErrorFn: vi.fn(),
         killAllChildrenFn: vi.fn(),
+        providerHostManager: providerHostManager as never,
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         closeServerFn: async () => {},
         listenFn: async () => ({ port: 4102, host: '127.0.0.1' }),
@@ -1823,19 +2018,21 @@ describe('execution backend server', () => {
         }),
         { reason: 'handoff' },
       );
-      expect(fakeService.drainProviderServers).toHaveBeenCalledTimes(1);
+      expect(providerHostManager.drainForHandoff).toHaveBeenCalledTimes(1);
       const finalizeOrder = fakeService.finalizeInterruptedAppServerJob.mock.invocationCallOrder.at(0);
-      const drainOrder = fakeService.drainProviderServers.mock.invocationCallOrder.at(0);
+      const drainOrder = providerHostManager.drainForHandoff.mock.invocationCallOrder.at(0);
       expect(finalizeOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(drainOrder ?? Number.POSITIVE_INFINITY);
     });
 
     it('hard shutdown kills children and marks jobs as error', async () => {
       const markJobsAsErrorFn = vi.fn();
       const killAllChildrenFn = vi.fn();
+      const providerHostManager = createFakeProviderHostManager();
 
       const backend = await startBackendServer({
         markJobsAsErrorFn,
         killAllChildrenFn,
+        providerHostManager: providerHostManager as never,
       });
 
       await backend.controller.shutdown('sigint');
@@ -1843,6 +2040,10 @@ describe('execution backend server', () => {
 
       expect(killAllChildrenFn).toHaveBeenCalledTimes(1);
       expect(markJobsAsErrorFn).toHaveBeenCalledTimes(1);
+      expect(providerHostManager.shutdown).toHaveBeenCalledTimes(1);
+      const hostShutdownOrder = providerHostManager.shutdown.mock.invocationCallOrder.at(0);
+      const childKillOrder = killAllChildrenFn.mock.invocationCallOrder.at(0);
+      expect(hostShutdownOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(childKillOrder ?? Number.POSITIVE_INFINITY);
     });
 
     it('hard shutdown during blocked startup persists abort markers for persisted-only recovery candidates before restart and skips terminal history', async () => {
@@ -2017,6 +2218,7 @@ describe('execution backend server', () => {
         discoverShard: vi.fn(),
         invalidate: vi.fn(),
       };
+      const providerHostManager = createFakeProviderHostManager();
       // eslint-disable-next-line prefer-const -- circular: writeBackendInfoFn closure reads controller, but controller assignment needs writeBackendInfoFn
       let controller!: ReturnType<LifecycleModule['createLifecycle']>;
       const writeBackendInfoFn = vi.fn((root: string, info: Parameters<typeof backendInfo.writeBackendInfo>[1]) => {
@@ -2061,6 +2263,7 @@ describe('execution backend server', () => {
         cleanupStaleJobsFn: () => {},
         markJobsAsErrorFn: () => {},
         killAllChildrenFn: () => {},
+        providerHostManager: providerHostManager as never,
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         closeServerFn: async () => {},
         listenFn: async () => ({ port: 4100, host: '127.0.0.1' }),
@@ -2125,8 +2328,8 @@ describe('execution backend server', () => {
         finalizeInterruptedAppServerJob: vi.fn(async () => {}),
         recoverQueuedJob: vi.fn(),
         completeRecoveredJob: vi.fn(),
-        drainProviderServers: vi.fn(async () => {}),
       };
+      const providerHostManager = createFakeProviderHostManager();
       const fakeIdleTimer = createFakeIdleTimer();
       const { runtimeState } = createRuntimeStateMock();
       const sessionIndex = {
@@ -2172,6 +2375,7 @@ describe('execution backend server', () => {
         cleanupStaleJobsFn: () => {},
         markJobsAsErrorFn: () => {},
         killAllChildrenFn: () => {},
+        providerHostManager: providerHostManager as never,
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         closeServerFn: async () => {},
         listenFn: async () => ({ port: 4103, host: '127.0.0.1' }),
@@ -2263,6 +2467,7 @@ describe('execution backend server', () => {
       const writeBackendInfoFn = vi.fn();
       // eslint-disable-next-line prefer-const -- circular: fakeService closure reads controller, but controller assignment needs fakeService
       let controller!: ReturnType<LifecycleModule['createLifecycle']>;
+      const providerHostManager = createFakeProviderHostManager();
       const fakeService = {
         adoptRunningJob: vi.fn(() => {
           void controller.shutdown('sigint');
@@ -2310,6 +2515,7 @@ describe('execution backend server', () => {
         cleanupStaleJobsFn: () => {},
         markJobsAsErrorFn: () => {},
         killAllChildrenFn: () => {},
+        providerHostManager: providerHostManager as never,
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         closeServerFn: async () => {},
         listenFn: async () => ({ port: 4101, host: '127.0.0.1' }),

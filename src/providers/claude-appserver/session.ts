@@ -32,6 +32,7 @@ import {
   ClaudeBrokerRpcError,
   type ClaudeBootstrapSignature,
   type ClaudeBrokerNotification,
+  type HostStatsParams,
   type SessionEnsureParams,
   type SessionEnsureResult,
   type SessionProbeParams,
@@ -47,6 +48,8 @@ import {
 } from './protocol.js';
 
 const DEFAULT_STDERR_RING_LIMIT = 16_384;
+const CHILD_SHUTDOWN_GRACE_MS = 1_000;
+const CHILD_SHUTDOWN_TIMEOUT_MS = 2_500;
 const AUTO_ALLOW_PERMISSION_MODES = new Set(['bypass', 'bypassPermissions', 'dontAsk']);
 
 type ControlRequestPayload =
@@ -99,6 +102,7 @@ type ControllerNotification = {
 
 type ChildBinding = {
   child: ClaudeBrokerChild;
+  closed: Promise<ChildExit>;
   dispose: () => void;
 };
 
@@ -333,6 +337,18 @@ class SingleSessionController {
     };
   }
 
+  hasActiveTurn(): boolean {
+    return this.activeTurn !== null;
+  }
+
+  hasLiveController(): boolean {
+    return this.childBinding !== null;
+  }
+
+  canEvictReachableIdleController(): boolean {
+    return this.activeTurn === null && this.currentConversationRef() !== null;
+  }
+
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
 
@@ -341,13 +357,24 @@ class SingleSessionController {
     }
 
     const childBinding = this.childBinding;
-    this.childBinding = null;
     this.initialized = false;
     this.rejectPendingControlRequests(
       new ClaudeBrokerRpcError(CLAUDE_BROKER_STATE_RPC_CODE, 'Claude broker is shutting down.', this.errorData()),
     );
     childBinding.child.kill('SIGTERM');
+    if (await this.waitForChildExit(childBinding.closed, CHILD_SHUTDOWN_GRACE_MS)) {
+      return;
+    }
+
+    childBinding.child.kill('SIGKILL');
+    if (await this.waitForChildExit(childBinding.closed, CHILD_SHUTDOWN_TIMEOUT_MS - CHILD_SHUTDOWN_GRACE_MS)) {
+      return;
+    }
+
     childBinding.dispose();
+    if (this.childBinding === childBinding) {
+      this.childBinding = null;
+    }
   }
 
   private async ensureInitializedSession(
@@ -399,7 +426,12 @@ class SingleSessionController {
     const offStdout = child.onStdoutLine((line) => {
       this.handleChildLine(line);
     });
+    let resolveClosed!: (event: ChildExit) => void;
+    const closed = new Promise<ChildExit>((resolve) => {
+      resolveClosed = resolve;
+    });
     const offExit = child.onExit((event) => {
+      resolveClosed(event);
       this.handleChildExit(event);
     });
     const offStderr = child.onStderrChunk?.((chunk) => {
@@ -408,6 +440,7 @@ class SingleSessionController {
 
     this.childBinding = {
       child,
+      closed,
       dispose: () => {
         offStdout();
         offExit();
@@ -415,6 +448,16 @@ class SingleSessionController {
       },
     };
     this.initialized = false;
+  }
+
+  private waitForChildExit(closed: Promise<ChildExit>, timeoutMs: number): Promise<boolean> {
+    return Promise.race([
+      closed.then(() => true),
+      new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
   }
 
   private handleChildLine(line: string): void {
@@ -896,6 +939,9 @@ class BrokerSessionPool implements ClaudeBrokerSession {
 
     try {
       const result = await entry.controller.sessionEnsure(stripBrokerSessionKey(params));
+      if (createdEntry) {
+        this.emitHostStats();
+      }
       if (entry.holdNotifications) {
         this.releaseHeldNotificationsAfterEnsure(brokerSessionKey, entry);
       }
@@ -944,13 +990,15 @@ class BrokerSessionPool implements ClaudeBrokerSession {
       );
     }
 
-    return {
-      ...(await entry.controller.turnStart({
+    const result = await entry.controller.turnStart({
         brokerTurnId: params.brokerTurnId,
         prompt: params.prompt,
         model: params.model,
         maxThinkingTokens: params.maxThinkingTokens,
-      })),
+      });
+    this.emitHostStats();
+    return {
+      ...result,
       brokerSessionKey: params.brokerSessionKey,
     };
   }
@@ -977,6 +1025,7 @@ class BrokerSessionPool implements ClaudeBrokerSession {
 
     const entries = [...this.controllers.values()];
     this.controllers.clear();
+    this.emitHostStats();
     await Promise.all(
       entries.map(async (entry) => {
         entry.dispose();
@@ -1028,6 +1077,12 @@ class BrokerSessionPool implements ClaudeBrokerSession {
     }
 
     this.emitNotification(routed);
+    if (notification.method === 'turn/completed' || notification.method === 'turn/failed') {
+      this.emitHostStats();
+      if (entry.controller.canEvictReachableIdleController()) {
+        this.removeController(brokerSessionKey);
+      }
+    }
   }
 
   private releaseHeldNotificationsAfterEnsure(brokerSessionKey: string, entry: ControllerEntry): void {
@@ -1054,12 +1109,37 @@ class BrokerSessionPool implements ClaudeBrokerSession {
 
     entry.dispose();
     this.controllers.delete(brokerSessionKey);
+    this.emitHostStats();
   }
 
   private emitNotification(notification: ClaudeBrokerNotification): void {
     for (const handler of this.notificationHandlers) {
       handler(notification);
     }
+  }
+
+  private emitHostStats(): void {
+    this.emitNotification({
+      method: 'host/stats',
+      params: this.currentHostStats(),
+    });
+  }
+
+  private currentHostStats(): HostStatsParams {
+    let liveControllers = 0;
+    let activeTurns = 0;
+    for (const entry of this.controllers.values()) {
+      if (entry.controller.hasLiveController()) {
+        liveControllers += 1;
+      }
+      if (entry.controller.hasActiveTurn()) {
+        activeTurns += 1;
+      }
+    }
+    return {
+      liveControllers,
+      activeTurns,
+    };
   }
 
   private resolvePoolClosed(error?: Error): void {

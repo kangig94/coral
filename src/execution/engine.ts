@@ -68,6 +68,7 @@ export type ProviderServerHandle = {
   rpc: ProviderServerRpc;
   onNotification: (handler: (message: ProviderServerNotification) => void) => () => void;
   closePromise: Promise<Error | void>;
+  markExpectedClose: () => void;
   close: () => Promise<void>;
 };
 
@@ -103,7 +104,6 @@ type QueuedLaunchEntry = {
 
 export const activeChildren = new Set<ActiveChild>();
 const activeDurablePids = new Set<number>();
-const providerServers = new Set<ProviderServerEntry>();
 let nextProviderServerGeneration = 1;
 
 const activeLaunchesDefault = new Map<string, string>();
@@ -348,7 +348,6 @@ function detachProviderServer(entry: ProviderServerEntry, error?: Error): void {
   if (error) {
     entry.closeOutcome = error;
   }
-  providerServers.delete(entry);
   entry.notificationHandlers.clear();
   rejectPendingProviderRequests(
     entry,
@@ -449,17 +448,10 @@ function handleProviderServerLine(entry: ProviderServerEntry, line: string): voi
 }
 
 function beginProviderServerShutdown(entry: ProviderServerEntry, detail: string): void {
-  if (entry.closeRequested) return;
+  if (entry.closed) return;
   entry.closeRequested = true;
   detachProviderServer(entry, createProviderServerError(entry.provider, detail, { stderr: entry.stderr }));
   gracefulKill(entry.child);
-}
-
-function findProviderServerByPid(pid: number): ProviderServerEntry | null {
-  for (const entry of providerServers) {
-    if (entry.pid === pid) return entry;
-  }
-  return null;
 }
 
 export type SpawnCliOptions = {
@@ -674,7 +666,6 @@ export async function spawnProviderServer(options: SpawnProviderServerOptions): 
     resolveClose,
     closeOutcome: undefined,
   };
-  providerServers.add(entry);
 
   const finalizeClose = (outcome?: Error): void => {
     if (outcome) {
@@ -769,26 +760,14 @@ export async function spawnProviderServer(options: SpawnProviderServerOptions): 
       };
     },
     closePromise,
+    markExpectedClose: () => {
+      entry.closeRequested = true;
+    },
     close: async () => {
       beginProviderServerShutdown(entry, 'closed');
       await entry.closePromise;
     },
   };
-}
-
-export function killProviderServer(pid: number): boolean {
-  const entry = findProviderServerByPid(pid);
-  if (!entry) return false;
-  beginProviderServerShutdown(entry, 'killed');
-  return true;
-}
-
-export function getProviderServerCount(): number {
-  return providerServers.size;
-}
-
-export function getProviderServerGeneration(pid: number): number | null {
-  return findProviderServerByPid(pid)?.generation ?? null;
 }
 
 // ── Durable wrapper spawn ─────────────────────────────────────────────────────
@@ -1203,9 +1182,6 @@ export function killAllChildren(): void {
     gracefulKill(child);
   }
   activeChildren.clear();
-  for (const entry of [...providerServers]) {
-    beginProviderServerShutdown(entry, 'killed during backend shutdown');
-  }
   for (const pid of activeDurablePids) {
     safeKillPid(pid, 'SIGTERM');
     const escalation = setTimeout(() => safeKillPid(pid, 'SIGKILL'), SIGTERM_GRACE_MS);

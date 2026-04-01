@@ -49,6 +49,7 @@ import {
 } from './tool-router.js';
 import { createHttpHandler, sendJson } from './http-handler.js';
 import type { EventStreamHandlers, HttpHandlerDeps, MutableBackendRuntimeState } from './backend-contracts.js';
+import { createProviderHostManager, type ProviderHostManager } from './host-manager.js';
 import {
   closeServer as defaultCloseServer,
   createKbSubsystem as defaultCreateKbSubsystem,
@@ -76,7 +77,14 @@ type BackendServerOptions = {
   now?: () => number;
   log?: (message: string) => void;
   createIdleTimer?: () => IdleTimer;
-  createExecutionService?: (ctx: CallerContext) => ExecutionServiceLike;
+  createExecutionService?: (
+    ctx: CallerContext,
+    deps: {
+      progressStore: ProgressStore;
+      bundleHash: string;
+      providerHostManager: ProviderHostManager;
+    },
+  ) => ExecutionServiceLike;
   acquireLockFn?: (pluginRoot: string, instanceId: string, version: string, bundleHash: string) => Promise<void>;
   writeBackendInfoFn?: typeof writeBackendInfo;
   removeBackendInfoIfOwnerFn?: typeof removeBackendInfoIfOwner;
@@ -88,6 +96,7 @@ type BackendServerOptions = {
   markJobsAsErrorFn?: (namespace: string, message: string) => void;
   killAllChildrenFn?: () => void;
   createKbSubsystemFn?: CreateKbSubsystemFn;
+  providerHostManager?: ProviderHostManager;
   onStopped?: () => void;
   onFatalShutdownError?: (error: unknown) => void;
   discussRegistry?: DiscussContextRegistry;
@@ -132,6 +141,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const idleTimer = options.createIdleTimer?.() ?? new IdleTimer();
   const discussRegistry = options.discussRegistry ?? globalDiscussRegistry;
   const progressStore = options.progressStore ?? new ProgressStore();
+  const providerHostManager = options.providerHostManager ?? createProviderHostManager();
   const sessionIndex = new SessionIndex();
   const now = options.now ?? (() => Date.now());
   backendLog.init({ version, bundleHash });
@@ -142,7 +152,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     });
   const createExecutionService =
     options.createExecutionService ??
-    ((ctx: CallerContext) => new DefaultExecutionService(ctx, progressStore, bundleHash));
+    ((ctx: CallerContext, deps) => new DefaultExecutionService(ctx, deps.progressStore, deps.bundleHash, deps.providerHostManager));
   const acquireLockFn = options.acquireLockFn ?? acquireLock;
   const writeBackendInfoFn = options.writeBackendInfoFn ?? writeBackendInfo;
   const removeBackendInfoIfOwnerFn = options.removeBackendInfoIfOwnerFn ?? removeBackendInfoIfOwner;
@@ -204,7 +214,11 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     const key = ctx.projectRoot;
     const existing = services.get(key);
     if (existing) return existing;
-    const created = createExecutionService(ctx);
+    const created = createExecutionService(ctx, {
+      progressStore,
+      bundleHash,
+      providerHostManager,
+    });
     services.set(key, created);
     return created;
   }
@@ -466,6 +480,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     cleanupStaleJobsFn,
     markJobsAsErrorFn,
     killAllChildrenFn,
+    providerHostManager,
     createKbSubsystemFn,
     closeServerFn,
     listenFn: defaultListen,
