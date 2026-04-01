@@ -204,7 +204,7 @@ Strip `--deep` and `--codex` flags before passing the prompt to the execution pa
         options: [
           { label: "Proceed", description: "Start planning" },
           { label: "Proceed --deep", description: "Plan with deep review" },
-          { label: "Proceed --codex", description: "Plan with Codex review" },
+          { label: "Proceed --deep --codex", description: "Plan with deep Codex review" },
           { label: "Continue discussion", description: "Keep refining preplan" }
         ], multiSelect: false }
     ]})
