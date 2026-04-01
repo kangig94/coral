@@ -4,6 +4,7 @@ import { closeSync, openSync, readFileSync, readSync, renameSync, statSync, writ
 import { join } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
 import { backendLog } from '../shared/backend-log.js';
+import { buildChildEnv } from '../shared/child-env.js';
 import { readAppendedLines } from '../shared/file-tail.js';
 import {
   isDurableCliRuntime,
@@ -513,7 +514,7 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
       // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- empty string is not a valid cwd
       cwd: options.cwd || undefined,
       shell: process.platform === 'win32',
-      env: { ...process.env, ...options.extraEnv, CORAL_CHILD: '1' },
+      env: buildChildEnv(options.extraEnv),
     });
     const entry: ActiveChild = { provider: options.provider, child };
     activeChildren.add(entry);
@@ -638,7 +639,7 @@ export async function spawnProviderServer(options: SpawnProviderServerOptions): 
     // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- empty string is not a valid cwd
     cwd: options.cwd || undefined,
     shell: process.platform === 'win32',
-    env: { ...process.env, ...options.extraEnv, CORAL_CHILD: '1' },
+    env: buildChildEnv(options.extraEnv),
   });
 
   const pid = child.pid;
@@ -818,19 +819,20 @@ const DURABLE_POLL_TIMEOUT_MS = 5_000;
  * Opens file-backed stdout/stderr, writes runtime.json after spawn,
  * and writes exit.json after CLI exit and output flush.
  *
- * Arguments: jobDir, command, argsJson, envJson, cwd, prompt
+ * Arguments: jobDir, command, argsJson, cwd, prompt
+ * Env is read from jobDir/env.json (avoids passing large env in argv → E2BIG).
  */
 const WRAPPER_SCRIPT = `
 const { spawn } = require('child_process');
-const { openSync, closeSync, writeFileSync, renameSync } = require('fs');
+const { openSync, closeSync, readFileSync, writeFileSync, renameSync } = require('fs');
 const { join } = require('path');
 
 const jobDir = process.argv[1];
 const command = process.argv[2];
 const args = JSON.parse(process.argv[3]);
-const env = JSON.parse(process.argv[4]);
-const cwd = process.argv[5] || undefined;
-const prompt = process.argv[6] || '';
+const env = JSON.parse(readFileSync(join(jobDir, 'env.json'), 'utf8'));
+const cwd = process.argv[4] || undefined;
+const prompt = process.argv[5] || '';
 
 const stdoutPath = join(jobDir, 'stdout');
 const stderrPath = join(jobDir, 'stderr');
@@ -907,15 +909,18 @@ child.on('error', (err) => {
 export async function spawnDurableWrapper(options: DurableSpawnOptions): Promise<DurableSpawnResult> {
   const { command, args, prompt, cwd, jobDir, env: extraEnv } = options;
 
-  const mergedEnv: Record<string, string> = {
-    ...(process.env as Record<string, string>),
-    ...extraEnv,
-    CORAL_CHILD: '1',
-  };
+  const mergedEnv = buildChildEnv(extraEnv);
+
+  // Write env to file — avoids passing large env as argv (E2BIG).
+  // The wrapper reads env.json from jobDir on startup.
+  const envTmp = join(jobDir, 'env.json.tmp');
+  const envFinal = join(jobDir, 'env.json');
+  writeFileSync(envTmp, JSON.stringify(mergedEnv));
+  renameSync(envTmp, envFinal);
 
   const wrapper = spawn(
     process.execPath,
-    ['-e', WRAPPER_SCRIPT, jobDir, command, JSON.stringify(args), JSON.stringify(mergedEnv), cwd ?? '', prompt ?? ''],
+    ['-e', WRAPPER_SCRIPT, jobDir, command, JSON.stringify(args), cwd ?? '', prompt ?? ''],
     {
       detached: true,
       stdio: ['ignore', 'ignore', 'ignore'],

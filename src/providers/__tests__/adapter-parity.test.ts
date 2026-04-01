@@ -110,7 +110,7 @@ function baseForkResult(
   return {
     response: 'ok',
     sessionId: 'claude-thread',
-    
+    model: 'claude-sonnet-4-6-20250514',
     durationMs: 15,
     costUsd: 0,
     aborted: false,

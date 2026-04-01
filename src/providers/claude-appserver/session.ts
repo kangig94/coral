@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
+import { buildChildEnv } from '../../shared/child-env.js';
 import { formatToolProgress, truncate } from '../../shared/format-progress.js';
 import { isRecord } from '../../shared/mcp-utils.js';
 import {
@@ -1075,15 +1076,7 @@ export function createBrokerSession(options: CreateBrokerSessionOptions): Claude
 }
 
 export function buildClaudeChildEnv(controllerEnv?: Record<string, string>): Record<string, string> {
-  const baseEnv = Object.fromEntries(
-    Object.entries(process.env).filter(([key, value]) => typeof value === 'string' && !key.startsWith('CORAL_')),
-  );
-
-  return {
-    ...baseEnv,
-    ...normalizeControllerEnv(controllerEnv),
-    CORAL_CHILD: '1',
-  };
+  return buildChildEnv(normalizeControllerEnv(controllerEnv));
 }
 
 export function hashClaudeChildEnv(childEnv: Record<string, string>): string {
