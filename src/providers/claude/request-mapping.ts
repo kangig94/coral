@@ -32,6 +32,8 @@ const pluginRoot =
   typeof __PLUGIN_ROOT__ === 'string'
     ? __PLUGIN_ROOT__
     : resolve(process.cwd());
+let cachedBrokerEntrypoint: string | null = null;
+let envHashCache: { controllerEnv: Record<string, string> | undefined; hash: string } | null = null;
 
 export function readClaudePersistedContinuity(
   persistedContinuity: ProviderContinuityBlob | undefined,
@@ -195,16 +197,23 @@ export function withClaudeContinuity(
 }
 
 function resolveClaudeBrokerEntrypoint(): string {
+  if (cachedBrokerEntrypoint) {
+    return cachedBrokerEntrypoint;
+  }
+
   const bundledPath = join(pluginRoot, 'bridge', 'coral-claude-appserver.cjs');
   if (existsSync(bundledPath)) {
+    cachedBrokerEntrypoint = bundledPath;
     return bundledPath;
   }
 
   const compiledPath = join(pluginRoot, 'dist', 'providers', 'claude-appserver', 'server.js');
   if (existsSync(compiledPath)) {
+    cachedBrokerEntrypoint = compiledPath;
     return compiledPath;
   }
 
+  cachedBrokerEntrypoint = bundledPath;
   return bundledPath;
 }
 
@@ -216,6 +225,10 @@ function buildSystemPromptSignature(derivedSystemPrompt?: string): string {
 }
 
 export function buildClaudeEnvHash(controllerEnv?: Record<string, string>): string {
+  if (envHashCache && envHashCache.controllerEnv === controllerEnv) {
+    return envHashCache.hash;
+  }
+
   const childEnv = {
     ...Object.fromEntries(
       Object.entries(process.env).filter(([key, value]) => typeof value === 'string' && !key.startsWith('CORAL_')),
@@ -226,7 +239,9 @@ export function buildClaudeEnvHash(controllerEnv?: Record<string, string>): stri
   const sortedEntries = Object.entries(childEnv)
     .filter(([key]) => key !== 'CORAL_CHILD')
     .sort(([left], [right]) => left.localeCompare(right));
-  return `sha256:${createHash('sha256').update(JSON.stringify(sortedEntries)).digest('hex')}`;
+  const hash = `sha256:${createHash('sha256').update(JSON.stringify(sortedEntries)).digest('hex')}`;
+  envHashCache = { controllerEnv, hash };
+  return hash;
 }
 
 function resolveClaudePermissionMode(bypassPermissions: boolean): string {

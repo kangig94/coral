@@ -133,6 +133,7 @@ export interface ListResult {
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
 const QUEUED_ABORT_MESSAGE = 'Aborted while queued.';
+const FINALIZE_CONTINUITY_MAX_RETRIES = 2;
 const defaultPluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : process.cwd();
 
 type AcceptedAdmission = Exclude<AdmissionResult, 'queue_full'>;
@@ -503,7 +504,10 @@ export class ExecutionService {
               lease.release();
             }
           }
-        } catch {
+        } catch (error: unknown) {
+          backendLog.error(
+            `Probe failed for ${launchRecord.jobId}: ${error instanceof Error ? error.message : String(error)}`,
+          );
           probeOutcome = 'unavailable';
           mutation = toMutation(
             provider.appServer.finalizeInterrupted(
@@ -634,6 +638,9 @@ export class ExecutionService {
       return undefined;
     }
 
+    // Legacy Codex runtime records stored threadId/turnId directly in providerMeta
+    // rather than in providerContinuity. This cast enables reading those fields
+    // for backward-compatible migration to the new continuity blob format.
     const legacyMeta = runtimeRecord.providerMeta as Record<string, unknown>;
     const continuity: ProviderContinuityBlob = {};
     if (typeof runtimeRecord.providerMeta.provider === 'string' && runtimeRecord.providerMeta.provider.length > 0) {
@@ -1186,7 +1193,7 @@ export class ExecutionService {
       | { type: 'clear_non_resumable'; providerContinuity?: ProviderContinuityBlob }
       | { type: 'preserve'; providerContinuity?: ProviderContinuityBlob },
   ): Promise<boolean> {
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    for (let attempt = 0; attempt < FINALIZE_CONTINUITY_MAX_RETRIES; attempt += 1) {
       const session = this.sessionManager.get(providerName, sessionId);
       if (!session || session.activeJobId !== jobId) {
         return false;
@@ -1663,7 +1670,11 @@ export class ExecutionService {
     try {
       this.progressStore.appendTerminal(jobId, sessionId, result, phase);
     } catch {
-      this.progressStore.markTerminalStatus(jobId, result, phase);
+      try {
+        this.progressStore.markTerminalStatus(jobId, result, phase);
+      } catch {
+        /* best-effort terminal write */
+      }
     }
   }
 

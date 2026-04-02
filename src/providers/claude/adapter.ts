@@ -18,6 +18,7 @@ import {
   type Provider,
   type ProviderAppServerContract,
   type ProviderRuntime,
+  type ProviderServerLease,
 } from '../types.js';
 import { resolveModelTier, type EffortLevel } from '../../shared/schemas.js';
 import type { SessionProbeResult } from '../claude-appserver/protocol.js';
@@ -40,6 +41,14 @@ async function preflight(): Promise<void> {
   const cli = await detectClaudeCli();
   if (!cli.available) throw new Error(`Claude CLI not available: ${cli.error}`);
   if (cli.authState === 'unauthenticated') throw new Error(`Claude CLI unauthenticated: ${cli.authError}`);
+}
+
+function brokerRpc<R = unknown>(
+  lease: ProviderServerLease,
+  method: string,
+  params: Record<string, unknown> | object,
+): Promise<R> {
+  return lease.rpc<R>(method, params as unknown as Record<string, unknown>);
 }
 
 /**
@@ -242,9 +251,7 @@ async function executePersistent(
       return;
     }
     interruptRequested = true;
-    void lease
-      .rpc('turn/interrupt', mapInterruptParams(brokerSessionKey, brokerTurnId) as unknown as Record<string, unknown>)
-      .catch(() => {});
+    void brokerRpc(lease, 'turn/interrupt', mapInterruptParams(brokerSessionKey, brokerTurnId)).catch(() => {});
   };
 
   const onAbort = (): void => {
@@ -392,9 +399,10 @@ async function executePersistent(
   runtime.signal.addEventListener('abort', onAbort, { once: true });
 
   try {
-    const ensureResult = await lease.rpc<Record<string, unknown>>(
+    const ensureResult = await brokerRpc<Record<string, unknown>>(
+      lease,
       'session/ensure',
-      mapSessionEnsureParams(request, prepared.systemPrompt, runtime.persistedContinuity) as unknown as Record<string, unknown>,
+      mapSessionEnsureParams(request, prepared.systemPrompt, runtime.persistedContinuity),
     );
     brokerSessionKey = readString(ensureResult.brokerSessionKey) ?? brokerSessionKey;
     bootstrapSignature = readBootstrapSignature(ensureResult.bootstrapSignature);
@@ -423,9 +431,10 @@ async function executePersistent(
       prepared.prompt,
       brokerSessionKey,
     );
-    const startResult = await lease.rpc<Record<string, unknown>>(
+    const startResult = await brokerRpc<Record<string, unknown>>(
+      lease,
       'turn/start',
-      startParams as unknown as Record<string, unknown>,
+      startParams,
     );
     brokerTurnId = readString(startResult.brokerTurnId) ?? startParams.brokerTurnId;
     conversationRef = readTurnConversationRef(startResult) ?? conversationRef;
@@ -473,9 +482,10 @@ const claudeAppServer: ProviderAppServerContract = {
     if (!persistedContinuity.brokerSessionKey) {
       throw new Error('Claude broker session key missing from continuity.');
     }
-    await lease.rpc(
+    await brokerRpc(
+      lease,
       'turn/interrupt',
-      mapInterruptParams(persistedContinuity.brokerSessionKey, persistedContinuity.brokerTurnId) as unknown as Record<string, unknown>,
+      mapInterruptParams(persistedContinuity.brokerSessionKey, persistedContinuity.brokerTurnId),
     );
   },
   async probe(lease, continuity) {

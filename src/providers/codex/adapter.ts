@@ -50,6 +50,7 @@ type CaptureState = {
 const CODEX_APP_SERVER_UPGRADE_MESSAGE = 'Codex CLI does not support app-server. Update with: npm update -g @openai/codex';
 const CODEX_AUTH_ERROR_MESSAGE = 'Codex CLI is not authenticated. Run "codex login" to create ~/.codex/auth.json.';
 const CODEX_PREFLIGHT_CACHE_TTL_MS = 60_000;
+const INFERRED_COMPLETION_DELAY_MS = 250;
 
 type CodexContinuity = {
   cwd?: string;
@@ -178,7 +179,7 @@ function scheduleInferredCompletion(state: CaptureState): void {
     if (state.completed || state.finalTurn || !state.finalAnswerSeen) return;
     if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0) return;
     completeTurn(state);
-  }, 250);
+  }, INFERRED_COMPLETION_DELAY_MS);
   state.completionTimer.unref?.();
 }
 
