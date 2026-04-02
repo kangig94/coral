@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { formatError, readBundleHash } from '../shared/mcp-utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import { pluginRootNamespace, resolveProjectSource } from '../infra/paths.js';
-import type { ExecutionService } from './service.js';
+import type { ExecutionService, RecoveryCapableService } from './service.js';
 import { activeChildren, killAllChildren, queueDepth } from './engine.js';
 import { writeBackendInfo, removeBackendInfoIfOwner } from '../infra/backend-info.js';
 import { acquireLock, BackendAlreadyRunningError, removeLockIfOwner } from './backend-lock.js';
@@ -221,6 +221,12 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     });
     services.set(key, created);
     return created;
+  }
+
+  function getRecoveryService(ctx: CallerContext): RecoveryCapableService {
+    // getExecutionService creates ExecutionService which implements RecoveryCapableService.
+    // The cast is safe because createExecutionService always returns ExecutionService.
+    return getExecutionService(ctx) as unknown as RecoveryCapableService;
   }
 
   function listExecutionServices(): ExecutionServiceLike[] {
@@ -468,6 +474,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     discussRegistry,
     server,
     getExecutionService,
+    getRecoveryService,
     listExecutionServices,
     getDiscussStoreForSource,
     knownDiscussSources,

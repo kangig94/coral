@@ -1978,6 +1978,7 @@ describe('execution backend server', () => {
         discussRegistry: createDiscussContextRegistry(),
         server: createServer(),
         getExecutionService: () => fakeService as never,
+        getRecoveryService: () => fakeService as never,
         listExecutionServices: () => [fakeService as never],
         getDiscussStoreForSource: () => {
           throw new Error('Unexpected discuss store lookup');
@@ -2242,6 +2243,7 @@ describe('execution backend server', () => {
         discussRegistry: createDiscussContextRegistry(),
         server: createServer(),
         getExecutionService: () => fakeService as never,
+        getRecoveryService: () => fakeService as never,
         listExecutionServices: () => [fakeService as never],
         getDiscussStoreForSource: () => {
           throw new Error('Unexpected discuss store lookup');
@@ -2354,6 +2356,7 @@ describe('execution backend server', () => {
         discussRegistry: createDiscussContextRegistry(),
         server: createServer(),
         getExecutionService: () => fakeService as never,
+        getRecoveryService: () => fakeService as never,
         listExecutionServices: () => [fakeService as never],
         getDiscussStoreForSource: () => {
           throw new Error('Unexpected discuss store lookup');
@@ -2492,6 +2495,7 @@ describe('execution backend server', () => {
         discussRegistry,
         server: createServer(),
         getExecutionService: () => fakeService as never,
+        getRecoveryService: () => fakeService as never,
         listExecutionServices: () => [fakeService as never],
         getDiscussStoreForSource: (requestedSource: string) => {
           if (requestedSource !== source) {

@@ -30,7 +30,7 @@ import * as discussOperations from './discuss/operations.js';
 import type { removeLockIfOwner } from './backend-lock.js';
 import { getNewProvider } from '../providers/registry.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
-import { type ExecutionService as DefaultExecutionService } from './service.js';
+import { type RecoveryCapableService } from './service.js';
 import {
   isAppServerRuntime,
   belongsToNamespace,
@@ -400,8 +400,9 @@ export type LifecycleDeps = {
   // Server / transport
   readonly server: Server;
 
-  // Service factories (shared with HTTP handler / tool router)
+  // Service factories
   readonly getExecutionService: (ctx: CallerContext) => ExecutionServiceLike;
+  readonly getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
   readonly listExecutionServices: () => ExecutionServiceLike[];
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly knownDiscussSources: () => Set<string>;
@@ -461,6 +462,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     discussRegistry,
     server,
     getExecutionService,
+    getRecoveryService,
     listExecutionServices,
     getDiscussStoreForSource,
     knownDiscussSources,
@@ -522,7 +524,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
 
       try {
         const ctx: CallerContext = { projectRoot: launchRecord.projectRoot, pluginRoot, coralEnv: {} };
-        const service = getExecutionService(ctx) as DefaultExecutionService;
+        const service = getRecoveryService(ctx);
         await service.finalizeInterruptedAppServerJob(launchRecord, runtimeRecord, { reason: 'handoff' });
         log(`Finalized interrupted app-server job during handoff: ${status.jobId}\n`);
       } catch (error: unknown) {
@@ -558,7 +560,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       let cleanup: (() => void) | null = null;
       try {
         const ctx: CallerContext = { projectRoot: launchRecord.projectRoot, pluginRoot, coralEnv: {} };
-        const service = getExecutionService(ctx) as DefaultExecutionService;
+        const service = getRecoveryService(ctx);
         const provider = getNewProvider(launchRecord.provider);
         const recovery = provider?.recovery;
         if (isAppServerRuntime(runtimeRecord)) {
@@ -725,7 +727,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     for (const { jobId, launchRecord } of queuedJobs) {
       try {
         const ctx: CallerContext = { projectRoot: launchRecord.projectRoot, pluginRoot, coralEnv: {} };
-        const service = getExecutionService(ctx) as DefaultExecutionService;
+        const service = getRecoveryService(ctx);
         assertStartupStillActive();
         service.recoverQueuedJob(launchRecord);
         recoveryRegistry?.remove(jobId);
@@ -909,7 +911,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
             if (isAppServerRuntime(runtimeRecord)) {
               recoveryRegistry.register(jobId, launchRecord, runtimeRecord, () => {
                 const ctx: CallerContext = { projectRoot: launchRecord.projectRoot, pluginRoot, coralEnv: {} };
-                const service = getExecutionService(ctx) as DefaultExecutionService;
+                const service = getRecoveryService(ctx);
                 void service.interruptAppServerJob(launchRecord, runtimeRecord).catch((error: unknown) => {
                   log(`Failed to interrupt recovered app-server job ${jobId}: ${formatError(error)}\n`);
                 });

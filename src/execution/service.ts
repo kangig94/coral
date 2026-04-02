@@ -312,7 +312,32 @@ class SessionClaimError extends Error {
   }
 }
 
-export class ExecutionService {
+/** Recovery-oriented interface for lifecycle startup/handoff/restart. */
+export interface RecoveryCapableService {
+  finalizeInterruptedAppServerJob(
+    launchRecord: PersistedLaunchRecord,
+    runtimeRecord: AppServerRuntimeRecord,
+    context: { reason: 'restart' | 'handoff' },
+  ): Promise<void>;
+  adoptRunningJob(
+    launchRecord: PersistedLaunchRecord,
+    runtimeRecord: PersistedRuntimeRecord,
+  ): { cleanup: () => void };
+  recoverQueuedJob(launchRecord: PersistedLaunchRecord): string;
+  interruptAppServerJob(
+    launchRecord: PersistedLaunchRecord,
+    runtimeRecord: AppServerRuntimeRecord,
+  ): Promise<void>;
+  completeRecoveredJob(
+    jobId: string,
+    sessionId: string,
+    result: TerminalResult,
+    phase: JobPhase,
+    options?: { conversationRef?: string; nonResumable?: boolean },
+  ): void;
+}
+
+export class ExecutionService implements RecoveryCapableService {
   private readonly sessionManager: SessionManager;
   private readonly abortRegistry: AbortRegistry;
   private readonly backendNamespace: string;
