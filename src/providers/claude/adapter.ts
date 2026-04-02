@@ -292,6 +292,10 @@ async function executePersistent(
       return;
     }
 
+    // Skip other sessions' routed notifications before our brokerSessionKey is assigned.
+    // The broker holds our session's notifications until session/ensure returns, so our
+    // own notifications only arrive after brokerSessionKey is set. Any notification with
+    // a brokerSessionKey that doesn't match ours is from another session on the shared broker.
     if (message.method === 'session/updated') {
       const params = isRecord(message.params) ? message.params : {};
       if (brokerSessionKey && readString(params.brokerSessionKey) && params.brokerSessionKey !== brokerSessionKey) {
