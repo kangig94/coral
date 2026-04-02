@@ -1645,7 +1645,7 @@ export function createCurateScheduler({
         return;
       }
 
-      const { generated: priorGeneratedCommunities, reservedSlugs } = loadExistingCommunityState(kb, finalIndex);
+      const { generated: priorGeneratedCommunities, reservedSlugs } = loadExistingCommunityState(kb);
       const communities = detectCommunities(graph, {
         priorCommunities: priorGeneratedCommunities,
         reservedSlugs,
