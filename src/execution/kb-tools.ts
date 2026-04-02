@@ -10,41 +10,8 @@ import { isNoteEntry, type KbSearchScope } from '../kb/types.js';
 import { update as kbUpdate } from '../kb/update.js';
 import { compareLocale } from '../kb/validation.js';
 import type { ToolRequest } from './request-context.js';
+import { optionalString, requireString, toolError, toolSuccess } from './tool-response.js';
 import type { KbSubsystem, ToolRouteResponse } from './tool-router.js';
-
-function jsonTextResult(data: unknown, isError = false) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(data) }], isError };
-}
-
-function toolError(error: string, detail?: Record<string, unknown>): ToolRouteResponse {
-  return {
-    statusCode: 200,
-    body: jsonTextResult(
-      {
-        error,
-        ...(detail ?? {}),
-      },
-      true,
-    ),
-  };
-}
-
-function toolSuccess(data: unknown): ToolRouteResponse {
-  return {
-    statusCode: 200,
-    body: jsonTextResult(data),
-  };
-}
-
-function requireString(args: Record<string, unknown>, key: string): string | null {
-  const value = args[key];
-  return typeof value === 'string' ? value : null;
-}
-
-function optionalString(args: Record<string, unknown>, key: string): string | undefined {
-  const value = args[key];
-  return typeof value === 'string' ? value : undefined;
-}
 
 function optionalKbSearchScope(args: Record<string, unknown>): KbSearchScope | null | undefined {
   const scope = optionalString(args, 'scope');

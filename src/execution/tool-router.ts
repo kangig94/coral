@@ -1,5 +1,6 @@
 import { type z } from 'zod';
-import { assertOwnerId, textResult, type McpResult } from '../shared/mcp-utils.js';
+import { assertOwnerId } from '../shared/mcp-utils.js';
+import { optionalString, requireString } from './tool-response.js';
 import type * as EngineMod from './engine.js';
 import {
   internalProviderFieldsShape,
@@ -58,10 +59,6 @@ export type CreateKbSubsystemFn = (options: {
 
 const CORAL_OP_PREFIX = 'coral:';
 
-function jsonTextResult(data: unknown, isError = false): McpResult {
-  return textResult(JSON.stringify(data), isError);
-}
-
 function toProviderFields(
   data: { session?: string; prompt?: string; work_dir?: string; model?: string; system_prompt?: string },
   bypassPermissions: boolean,
@@ -81,49 +78,6 @@ function toProviderFields(
     bypassPermissions,
     systemPrompt: data.system_prompt,
   };
-}
-
-function _toolValidationError(error: z.ZodError): ToolRouteResponse {
-  return {
-    statusCode: 200,
-    body: jsonTextResult(
-      {
-        error: 'invalid_request',
-        message: error.message,
-      },
-      true,
-    ),
-  };
-}
-
-function _toolError(error: string, detail?: Record<string, unknown>): ToolRouteResponse {
-  return {
-    statusCode: 200,
-    body: jsonTextResult(
-      {
-        error,
-        ...(detail ?? {}),
-      },
-      true,
-    ),
-  };
-}
-
-function _toolSuccess(data: unknown): ToolRouteResponse {
-  return {
-    statusCode: 200,
-    body: jsonTextResult(data),
-  };
-}
-
-function requireString(args: Record<string, unknown>, key: string): string | null {
-  const value = args[key];
-  return typeof value === 'string' ? value : null;
-}
-
-function optionalString(args: Record<string, unknown>, key: string): string | undefined {
-  const value = args[key];
-  return typeof value === 'string' ? value : undefined;
 }
 
 function parseOptionalOwner(args: Record<string, unknown>, key: string): string | undefined {

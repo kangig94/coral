@@ -26,6 +26,7 @@ import {
   writeCurateState,
   type CurateCursor,
   type CurateState,
+  type PendingDiscovery,
 } from './curate-state.js';
 import {
   buildCommunityDocuments,
@@ -216,8 +217,6 @@ export type DiscoveryProposal = {
   notes: string[];
   absorbs?: string[];
 };
-
-type PendingDiscovery = CurateState['pendingDiscoveries'][number];
 
 type EnsurePrincipleDocumentResult = {
   status: 'ready' | 'conflict';

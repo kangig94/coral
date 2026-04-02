@@ -72,7 +72,7 @@ export type CurateState = {
   migrationVersion: number;
 };
 
-type PendingDiscovery = CurateState['pendingDiscoveries'][number];
+export type PendingDiscovery = CurateState['pendingDiscoveries'][number];
 
 type ScannedNote = {
   note: string;

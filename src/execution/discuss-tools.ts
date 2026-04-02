@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { errorMessage, textResult, type McpResult } from '../shared/mcp-utils.js';
+import { errorMessage } from '../shared/mcp-utils.js';
 import { discussParticipateSchema, discussSeedSchema, discussStartSchema } from '../discuss/schemas.js';
 import { DiscussManagerError, type DiscussContext } from './discuss/context.js';
 import * as discussOperations from './discuss/operations.js';
 import { seedPersonas } from '../discuss/persona-seed.js';
+import { jsonTextResult, toolError, toolSuccess } from './tool-response.js';
 import type { ToolRouteResponse } from './tool-router.js';
 import type { CallerContext, ToolRequest } from './request-context.js';
 
@@ -17,10 +18,6 @@ const discussWatchSchema = z.object({
   cursor: z.number().int().min(0).optional(),
 });
 
-function jsonTextResult(data: unknown, isError = false): McpResult {
-  return textResult(JSON.stringify(data), isError);
-}
-
 function toolValidationError(error: z.ZodError): ToolRouteResponse {
   return {
     statusCode: 200,
@@ -31,26 +28,6 @@ function toolValidationError(error: z.ZodError): ToolRouteResponse {
       },
       true,
     ),
-  };
-}
-
-function toolError(error: string, detail?: Record<string, unknown>): ToolRouteResponse {
-  return {
-    statusCode: 200,
-    body: jsonTextResult(
-      {
-        error,
-        ...(detail ?? {}),
-      },
-      true,
-    ),
-  };
-}
-
-function toolSuccess(data: unknown): ToolRouteResponse {
-  return {
-    statusCode: 200,
-    body: jsonTextResult(data),
   };
 }
 

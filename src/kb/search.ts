@@ -166,14 +166,15 @@ function findTokenAnchor(content: string, queryTokens: string[], tokenizer: KbOr
   return null;
 }
 
-function extractSnippet(
-  content: string,
-  rawQuery: string,
-  oramaTerm: string,
-  queryTokens: string[],
-  tokenizer: KbOramaTokenizer,
-): string | undefined {
-  const anchor = findPhraseAnchor(content, rawQuery, oramaTerm) ?? findTokenAnchor(content, queryTokens, tokenizer);
+type QueryContext = {
+  rawQuery: string;
+  oramaTerm: string;
+  queryTokens: string[];
+  tokenizer: KbOramaTokenizer;
+};
+
+function extractSnippet(content: string, query: QueryContext): string | undefined {
+  const anchor = findPhraseAnchor(content, query.rawQuery, query.oramaTerm) ?? findTokenAnchor(content, query.queryTokens, query.tokenizer);
 
   if (anchor === null) {
     return undefined;
@@ -278,29 +279,23 @@ async function searchOrama(db: KbOramaDb, oramaTerm: string, limit: number): Pro
   return response.hits as KbSearchHit[];
 }
 
-function toResult(
-  hit: ResolvedKbSearchHit,
-  queryTokens: string[],
-  tokenizer: KbOramaTokenizer,
-  rawQuery: string,
-  oramaTerm: string,
-): KbResult {
+function toResult(hit: ResolvedKbSearchHit, query: QueryContext): KbResult {
   const matchedBy = new Set<KbMatchSurface>();
 
-  if (hasTokenOverlap(queryTokens, tokenizeField(hit.slug, tokenizer))) {
+  if (hasTokenOverlap(query.queryTokens, tokenizeField(hit.slug, query.tokenizer))) {
     matchedBy.add('filename');
   }
-  if (hit.principles.some((principle) => hasTokenOverlap(queryTokens, tokenizeField(principle, tokenizer)))) {
+  if (hit.principles.some((principle) => hasTokenOverlap(query.queryTokens, tokenizeField(principle, query.tokenizer)))) {
     matchedBy.add('principle');
   }
-  if (hit.tags.some((tag) => hasTokenOverlap(queryTokens, tokenizeField(tag, tokenizer)))) {
+  if (hit.tags.some((tag) => hasTokenOverlap(query.queryTokens, tokenizeField(tag, query.tokenizer)))) {
     matchedBy.add('tag');
   }
-  if (hasTokenOverlap(queryTokens, tokenizeField(hit.title, tokenizer))) {
+  if (hasTokenOverlap(query.queryTokens, tokenizeField(hit.title, query.tokenizer))) {
     matchedBy.add('title');
   }
 
-  const snippet = extractSnippet(hit.document.body, rawQuery, oramaTerm, queryTokens, tokenizer);
+  const snippet = extractSnippet(hit.document.body, query);
   if (snippet !== undefined) {
     matchedBy.add('content');
   } else if (matchedBy.size === 0) {
@@ -344,25 +339,28 @@ export async function searchKb(
     };
   }
 
+  const queryCtx: QueryContext = { rawQuery, oramaTerm, queryTokens, tokenizer };
+
   let limit = topK;
   let hits = await searchOrama(db, oramaTerm, limit);
   let exhausted = hits.length < limit;
   let resolvedHits = hits.map((hit) => resolveHit(hit, index));
 
   while (shouldContinueWidening(hits, resolvedHits, scope, topK, exhausted)) {
+    const prevCount = hits.length;
     limit = Math.max(limit + 1, limit * 2);
     hits = await searchOrama(db, oramaTerm, limit);
     exhausted = hits.length < limit;
-    resolvedHits = hits.map((hit) => resolveHit(hit, index));
+    for (let i = prevCount; i < hits.length; i++) {
+      resolvedHits.push(resolveHit(hits[i], index));
+    }
   }
 
   const selectedHits =
     scope === 'all' ? rerankHits(resolvedHits) : filterHitsByScope(resolvedHits, scope);
 
   return {
-    results: selectedHits
-      .slice(0, topK)
-      .map((hit) => toResult(hit, queryTokens, tokenizer, rawQuery, oramaTerm)),
+    results: selectedHits.slice(0, topK).map((hit) => toResult(hit, queryCtx)),
     mode: 'text',
   };
 }
