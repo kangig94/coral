@@ -74,10 +74,7 @@ import {
 } from './types.js';
 import { backendLog } from '../shared/backend-log.js';
 
-// -- Schedule debounce --
 const CURATE_SCHEDULE_DEBOUNCE_MS = 60 * 1000;
-
-// -- Claim thresholds --
 const CURATE_MIN_CLAIM_SIZE = 10;
 const CURATE_IMMEDIATE_CLAIM_SIZE = 30;
 const CURATE_MAX_CLAIM_SIZE = 100;
@@ -85,15 +82,11 @@ const CLASSIFICATION_BATCH_SIZE = 100;
 const CLASSIFICATION_REQUEST_TOKEN_BUDGET = 12_000;
 const CLASSIFICATION_RESPONSE_TOKEN_HEADROOM = 2_000;
 const CLASSIFICATION_SOURCE_EXCERPT_TOKEN_LIMIT = 2_000;
-
-// -- Principle discovery --
 const DISCOVERY_NEW_NOTE_THRESHOLD = 50;
 const DISCOVERY_BATCH_SIZE = 100;
 const DISCOVERY_PROMPT_BODY_LIMIT = 4000;
 const DISCOVERY_MAX_MERGES = 2;
 const DISCOVERY_MAX_REFINES = 3;
-
-// -- Usage budget --
 const USAGE_CACHE_STALE_MS = 10 * 60 * 1000;
 const USAGE_5H_THRESHOLD = 90;
 const USAGE_WK_THRESHOLD = 100;
