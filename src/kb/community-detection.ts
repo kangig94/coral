@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import * as GraphologyModule from 'graphology';
 import * as louvainModule from 'graphology-communities-louvain';
@@ -7,8 +7,6 @@ import type { AbstractGraph, GraphConstructor } from 'graphology-types';
 import { unlinkIfExists } from '../shared/mcp-utils.js';
 import {
   deriveNoteIdentity,
-  extractTitle,
-  parseCommunityFrontmatter,
   serializeCommunityFrontmatter,
 } from './frontmatter.js';
 import { writeFileAtomic } from './mutation-helpers.js';
@@ -17,7 +15,7 @@ import { loadKbNote, loadKbSource } from './read.js';
 import type { KbRuntime } from './runtime.js';
 import { sortedMarkdownEntries } from './text-artifacts.js';
 import { compareLocale, stripMarkdownCodeFences } from './validation.js';
-import { isNoteEntry, isSourceEntry, type CuratableEntry, type KbIndex } from './types.js';
+import { isCommunityEntry, isNoteEntry, isSourceEntry, type CuratableEntry, type KbIndex } from './types.js';
 
 type TagGraphNodeAttributes = Record<string, never>;
 type TagGraphEdgeAttributes = { weight: number };
@@ -408,27 +406,29 @@ export function detectCommunities(graph: TagGraph, options: DetectCommunitiesOpt
 
 export function loadExistingCommunityState(
   kb: Pick<KbRuntime, 'communitiesDir'>,
+  index: KbIndex,
 ): {
   generated: ExistingGeneratedCommunity[];
   reservedSlugs: Set<string>;
 } {
-  const generated: ExistingGeneratedCommunity[] = [];
-  const reservedSlugs = new Set<string>();
+  const generated = Object.values(index.entries)
+    .filter(isCommunityEntry)
+    .sort((left, right) => compareLocale(left.slug, right.slug))
+    .map((entry) => ({
+      slug: entry.slug,
+      title: entry.title,
+      members: [...entry.members],
+      ...(entry.summary === undefined ? {} : { summary: entry.summary }),
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt,
+    }));
 
-  for (const entry of sortedMarkdownEntries(kb.communitiesDir())) {
-    const slug = stripMdExt(entry);
-    const raw = readFileSync(join(kb.communitiesDir(), entry), 'utf-8');
-
-    try {
-      generated.push({
-        slug,
-        title: extractTitle(raw),
-        ...parseCommunityFrontmatter(raw),
-      });
-    } catch {
-      reservedSlugs.add(slug);
-    }
-  }
+  const indexedSlugs = new Set(generated.map((entry) => entry.slug));
+  const reservedSlugs = new Set(
+    sortedMarkdownEntries(kb.communitiesDir())
+      .map((entry) => stripMdExt(entry))
+      .filter((slug) => !indexedSlugs.has(slug)),
+  );
 
   return { generated, reservedSlugs };
 }
