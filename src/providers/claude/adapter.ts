@@ -292,13 +292,16 @@ async function executePersistent(
       return;
     }
 
-    // Skip other sessions' routed notifications before our brokerSessionKey is assigned.
-    // The broker holds our session's notifications until session/ensure returns, so our
-    // own notifications only arrive after brokerSessionKey is set. Any notification with
-    // a brokerSessionKey that doesn't match ours is from another session on the shared broker.
+    // Before brokerSessionKey is assigned (pre-session/ensure), reject all session-routed
+    // notifications. The broker holds OUR notifications until ensure returns, so only other
+    // sessions' events can arrive in this window. host/stats is allowed through (no session routing).
+    if (!brokerSessionKey && message.method !== 'host/stats') {
+      return;
+    }
+
     if (message.method === 'session/updated') {
       const params = isRecord(message.params) ? message.params : {};
-      if (brokerSessionKey && readString(params.brokerSessionKey) && params.brokerSessionKey !== brokerSessionKey) {
+      if (readString(params.brokerSessionKey) && params.brokerSessionKey !== brokerSessionKey) {
         return;
       }
       const updatedSignature = readBootstrapSignature(params.bootstrapSignature);
@@ -315,7 +318,7 @@ async function executePersistent(
 
     if (message.method === 'turn/progress') {
       const params = isRecord(message.params) ? message.params : {};
-      if (brokerSessionKey && readString(params.brokerSessionKey) && params.brokerSessionKey !== brokerSessionKey) {
+      if (readString(params.brokerSessionKey) && params.brokerSessionKey !== brokerSessionKey) {
         return;
       }
       if (brokerTurnId && typeof params.brokerTurnId === 'string' && params.brokerTurnId !== brokerTurnId) {
@@ -337,7 +340,7 @@ async function executePersistent(
 
     if (message.method === 'turn/completed') {
       const params = isRecord(message.params) ? message.params : {};
-      if (brokerSessionKey && readString(params.brokerSessionKey) && params.brokerSessionKey !== brokerSessionKey) {
+      if (readString(params.brokerSessionKey) && params.brokerSessionKey !== brokerSessionKey) {
         return;
       }
       if (brokerTurnId && typeof params.brokerTurnId === 'string' && params.brokerTurnId !== brokerTurnId) {
@@ -371,7 +374,7 @@ async function executePersistent(
 
     if (message.method === 'turn/failed') {
       const params = isRecord(message.params) ? message.params : {};
-      if (brokerSessionKey && readString(params.brokerSessionKey) && params.brokerSessionKey !== brokerSessionKey) {
+      if (readString(params.brokerSessionKey) && params.brokerSessionKey !== brokerSessionKey) {
         return;
       }
       if (brokerTurnId && typeof params.brokerTurnId === 'string' && params.brokerTurnId !== brokerTurnId) {

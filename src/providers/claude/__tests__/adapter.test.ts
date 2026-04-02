@@ -472,11 +472,12 @@ describe('claude adapter: checkpoint timing for bootstrap signature', () => {
 
     await vi.waitFor(() => {
       const calls = runtime.checkpointRecovery.mock.calls as Array<[Record<string, unknown>]>;
-      return calls.some((call) => {
+      const found = calls.some((call) => {
         const meta = call[0]?.providerMeta as Record<string, unknown> | undefined;
         return meta?.brokerTurnId === 'broker-turn-42';
       });
-    });
+      if (!found) throw new Error('brokerTurnId checkpoint not found yet');
+    }, { timeout: 4000 });
 
     lease.emit({
       method: 'turn/completed',
