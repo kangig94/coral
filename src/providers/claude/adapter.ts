@@ -252,11 +252,8 @@ async function executePersistent(
     checkpointRecovery({
       ...(conversationRef ? { conversationRef } : {}),
       providerMeta: {
-        ...(brokerSessionKey ? { brokerSessionKey } : {}),
-        bootstrapSignature,
-        envHash,
-        ...(conversationRef ? { conversationRef, sessionId: conversationRef } : {}),
-        ...(brokerTurnId ? { brokerTurnId } : {}),
+        ...providerContinuity,
+        ...(conversationRef ? { sessionId: conversationRef } : {}),
         providerContinuity,
       },
     });

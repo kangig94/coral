@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 
 import { buildChildEnv } from '../../shared/child-env.js';
 import { formatToolProgress, truncate } from '../../shared/format-progress.js';
@@ -507,14 +507,11 @@ class SingleSessionController {
       return;
     }
 
-    const progress = this.activeTurn
-      ? this.buildTurnProgress(this.activeTurn.brokerTurnId, formatToolProgress(message.request.tool_name, message.request.input, this.bootstrapSignature.cwd))
-      : null;
-    if (progress) {
-      this.emitNotification({
-        method: 'turn/progress',
-        params: progress,
-      });
+    if (this.activeTurn) {
+      this.emitTurnProgress(
+        this.activeTurn.brokerTurnId,
+        formatToolProgress(message.request.tool_name, message.request.input, this.bootstrapSignature.cwd),
+      );
     }
 
     try {
@@ -562,10 +559,7 @@ class SingleSessionController {
       return;
     }
 
-    this.emitNotification({
-      method: 'turn/progress',
-      params: this.buildTurnProgress(this.activeTurn.brokerTurnId, progressMessage),
-    });
+    this.emitTurnProgress(this.activeTurn.brokerTurnId, progressMessage);
   }
 
   private handleSystemMessage(message: SDKSystemMessage): void {
@@ -582,10 +576,7 @@ class SingleSessionController {
       return;
     }
 
-    this.emitNotification({
-      method: 'turn/progress',
-      params: this.buildTurnProgress(this.activeTurn.brokerTurnId, progressMessage),
-    });
+    this.emitTurnProgress(this.activeTurn.brokerTurnId, progressMessage);
   }
 
   private handleResultMessage(message: SDKResultMessage): void {
@@ -798,6 +789,13 @@ class SingleSessionController {
       sessionId: this.latestSessionId,
       conversationRef: this.currentConversationRef(),
     };
+  }
+
+  private emitTurnProgress(brokerTurnId: string, message: string): void {
+    this.emitNotification({
+      method: 'turn/progress',
+      params: this.buildTurnProgress(brokerTurnId, message),
+    });
   }
 
   private captureStderr(chunk: string): void {

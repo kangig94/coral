@@ -556,29 +556,33 @@ export class ExecutionService implements RecoveryCapableService {
       mutation = { type: 'clear_non_resumable' };
     }
 
-    const notice =
-      probeOutcome === 'waiting'
-        ? joinNotice(
-            baseNotice,
-            APP_SERVER_INTERRUPTED_BEFORE_CONTINUITY_NOTICE,
-            mutation.type === 'clear_non_resumable'
-              ? 'No resumable conversation was available.'
-              : 'The existing conversation reference was preserved.',
-          )
-        : probeOutcome === 'verified'
-          ? joinNotice(baseNotice, APP_SERVER_CONTINUITY_VERIFIED_NOTICE)
-          : probeOutcome === 'missing'
-          ? joinNotice(baseNotice, APP_SERVER_CONTINUITY_MISSING_NOTICE)
-          : joinNotice(baseNotice, APP_SERVER_CONTINUITY_UNVERIFIED_NOTICE);
+    let notice: string;
+    if (probeOutcome === 'waiting') {
+      notice = joinNotice(
+        baseNotice,
+        APP_SERVER_INTERRUPTED_BEFORE_CONTINUITY_NOTICE,
+        mutation.type === 'clear_non_resumable'
+          ? 'No resumable conversation was available.'
+          : 'The existing conversation reference was preserved.',
+      );
+    } else if (probeOutcome === 'verified') {
+      notice = joinNotice(baseNotice, APP_SERVER_CONTINUITY_VERIFIED_NOTICE);
+    } else if (probeOutcome === 'missing') {
+      notice = joinNotice(baseNotice, APP_SERVER_CONTINUITY_MISSING_NOTICE);
+    } else {
+      notice = joinNotice(baseNotice, APP_SERVER_CONTINUITY_UNVERIFIED_NOTICE);
+    }
+
+    let reportConversationRef: string | undefined;
+    if (probeOutcome === 'verified') {
+      reportConversationRef =
+        mutation.type === 'set_resumable' ? mutation.conversationRef : preservedConversationRef;
+    }
+
     const interruptedReport = buildInterruptedAppServerReport({
       baseNotice,
       probeOutcome,
-      conversationRef:
-        probeOutcome === 'verified'
-          ? mutation.type === 'set_resumable'
-            ? mutation.conversationRef
-            : preservedConversationRef
-          : undefined,
+      conversationRef: reportConversationRef,
     });
 
     this.progressStore.updateLaunchState(launchRecord.jobId, 'error', notice);
@@ -1635,11 +1639,7 @@ export class ExecutionService implements RecoveryCapableService {
   }
 
   private finishQueuedAbort(jobId: string, sessionId: string, message: string): void {
-    this.progressStore.updateLaunchState(jobId, 'error', message);
-    this.writeTerminalResult(jobId, sessionId, { content: '', aborted: true, notice: message }, 'aborted');
-    this.abortRegistry.remove(jobId);
-    this.jobPools.delete(jobId);
-    this.sessionManager.releaseJob(sessionId, jobId);
+    this.finishAbortedJob(jobId, sessionId, message);
   }
 
   private markJobReady(jobId: string): void {

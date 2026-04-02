@@ -120,10 +120,6 @@ export function readBundleHash(pluginRoot: string): string {
   return 'unknown';
 }
 
-/**
- * Attempt an exclusive-create write: creates parent directory, writes with O_EXCL,
- * and sets mode 0o600 on non-Windows. Returns true on success, false if file already exists.
- */
 export const nowIsoString = (): string => new Date().toISOString();
 
 /** Race a promise against a timeout. Returns true if the promise settles first, false on timeout. */
@@ -137,6 +133,10 @@ export function raceTimeout(promise: Promise<unknown>, timeoutMs: number): Promi
   ]);
 }
 
+/**
+ * Attempt an exclusive-create write: creates parent directory, writes with O_EXCL,
+ * and sets mode 0o600 on non-Windows. Returns true on success, false if file already exists.
+ */
 export function tryExclusiveWrite(filePath: string, payload: string): boolean {
   mkdirSync(dirname(filePath), { recursive: true });
   try {
