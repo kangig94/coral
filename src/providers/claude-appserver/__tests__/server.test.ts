@@ -1416,7 +1416,7 @@ describe('Claude broker JSON-RPC server', () => {
         bootstrapSignature: {
           cwd: '/workspace',
           systemPromptHash: 'sha256:abc123',
-          permissionMode: 'bypassPermissions',
+          permissionMode: 'bypassPermissions' as const,
         },
         sessionId: null,
         conversationRef: null,
@@ -1429,7 +1429,7 @@ describe('Claude broker JSON-RPC server', () => {
         bootstrapSignature: {
           cwd: '/workspace',
           systemPromptHash: 'sha256:abc123',
-          permissionMode: 'bypassPermissions',
+          permissionMode: 'bypassPermissions' as const,
         },
         sessionId: 'sess-1',
         conversationRef: 'sess-1',
@@ -1540,7 +1540,7 @@ describe('Claude broker JSON-RPC server', () => {
         bootstrapSignature: {
           cwd: '/workspace',
           systemPromptHash: 'sha256:abc123',
-          permissionMode: 'bypassPermissions',
+          permissionMode: 'bypassPermissions' as const,
         },
         sessionId: null,
         conversationRef: null,
@@ -1553,7 +1553,7 @@ describe('Claude broker JSON-RPC server', () => {
         bootstrapSignature: {
           cwd: '/workspace',
           systemPromptHash: 'sha256:abc123',
-          permissionMode: 'bypassPermissions',
+          permissionMode: 'bypassPermissions' as const,
         },
         sessionId: null,
         conversationRef: null,

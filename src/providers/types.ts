@@ -49,6 +49,8 @@ export interface ProviderAppServerContract {
     nonResumable?: boolean;
     continuityMutation?: ProviderContinuityBlob;
   };
+  /** Migrate legacy runtime meta to the provider continuity blob format. */
+  migrateLegacyContinuity?(meta: Record<string, unknown>): ProviderContinuityBlob | undefined;
 }
 
 /** Contract for provider-owned recovery after backend replacement. */

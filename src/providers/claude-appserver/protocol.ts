@@ -1,4 +1,4 @@
-export const AUTO_ALLOW_PERMISSION_MODES = new Set(['bypass', 'bypassPermissions', 'dontAsk']);
+export const AUTO_ALLOW_PERMISSION_MODES: ReadonlySet<string> = new Set(['bypassPermissions', 'dontAsk']);
 
 export const CLAUDE_BROKER_BUSY_RPC_CODE = -32001;
 export const CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE = -32002;
@@ -36,10 +36,12 @@ export interface JsonRpcFailure {
 
 export type JsonRpcResponse<TResult = unknown> = JsonRpcSuccess<TResult> | JsonRpcFailure;
 
+import type { PermissionMode } from '../claude/control-protocol.js';
+
 export interface ClaudeBootstrapSignature {
   cwd: string;
   systemPromptHash: string;
-  permissionMode: string;
+  permissionMode: PermissionMode;
 }
 
 export interface SessionEnsureParams extends ClaudeBootstrapSignature {
@@ -153,6 +155,16 @@ export interface ClaudeBrokerNotificationMap {
   'turn/failed': TurnFailedParams;
   'host/stats': HostStatsParams;
 }
+
+export type BrokerNotificationMethod = keyof ClaudeBrokerNotificationMap;
+
+export const brokerNotificationMethods = {
+  sessionUpdated: 'session/updated' as const satisfies BrokerNotificationMethod,
+  turnProgress: 'turn/progress' as const satisfies BrokerNotificationMethod,
+  turnCompleted: 'turn/completed' as const satisfies BrokerNotificationMethod,
+  turnFailed: 'turn/failed' as const satisfies BrokerNotificationMethod,
+  hostStats: 'host/stats' as const satisfies BrokerNotificationMethod,
+};
 
 export type ClaudeBrokerNotification = {
   [TMethod in keyof ClaudeBrokerNotificationMap]: {

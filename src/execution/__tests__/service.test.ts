@@ -729,7 +729,7 @@ describe('ExecutionService', () => {
           bootstrapSignature: {
             cwd: '/workspace',
             systemPromptHash: 'sha256:bootstrap',
-            permissionMode: 'bypass',
+            permissionMode: 'bypassPermissions',
           },
           envHash: 'sha256:env',
         },

@@ -659,26 +659,8 @@ export class ExecutionService implements RecoveryCapableService {
       return session.providerContinuity;
     }
 
-    if (providerName !== 'codex') {
-      return undefined;
-    }
-
-    // Legacy Codex runtime records stored threadId/turnId directly in providerMeta
-    // rather than in providerContinuity. This cast enables reading those fields
-    // for backward-compatible migration to the new continuity blob format.
-    const legacyMeta = runtimeRecord.providerMeta as Record<string, unknown>;
-    const continuity: ProviderContinuityBlob = {};
-    if (typeof runtimeRecord.providerMeta.provider === 'string' && runtimeRecord.providerMeta.provider.length > 0) {
-      continuity.provider = runtimeRecord.providerMeta.provider;
-    }
-    if (typeof legacyMeta.threadId === 'string' && legacyMeta.threadId.length > 0) {
-      continuity.threadId = legacyMeta.threadId;
-    }
-    if (typeof legacyMeta.turnId === 'string' && legacyMeta.turnId.length > 0) {
-      continuity.turnId = legacyMeta.turnId;
-    }
-
-    return Object.keys(continuity).length > 0 ? continuity : undefined;
+    const provider = getNewProvider(providerName);
+    return provider?.appServer?.migrateLegacyContinuity?.(runtimeRecord.providerMeta as Record<string, unknown>);
   }
 
   private writeAppServerRuntimeRecord(

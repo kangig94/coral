@@ -110,7 +110,7 @@ describe('claude adapter: bootstrap drift when persistent continuity exists', ()
       bootstrapSignature: {
         cwd: '/workspace',
         systemPromptHash: 'sha256:original',
-        permissionMode: 'bypass',
+        permissionMode: 'bypassPermissions',
       },
       conversationRef: 'sess-original',
     });
@@ -133,7 +133,7 @@ describe('claude adapter: bootstrap drift when persistent continuity exists', ()
         bootstrapSignature: {
           cwd: '/workspace',
           systemPromptHash: 'sha256:hash1',
-          permissionMode: 'bypass',
+          permissionMode: 'bypassPermissions',
         },
         conversationRef: 'sess-live',
       },
@@ -156,7 +156,7 @@ describe('claude adapter: bootstrap drift when persistent continuity exists', ()
         bootstrapSignature: {
           cwd: '/workspace',
           systemPromptHash: 'sha256:hash1',
-          permissionMode: 'bypass',
+          permissionMode: 'bypassPermissions',
         },
         conversationRef: 'sess-live',
       },
@@ -202,7 +202,7 @@ describe('claude adapter: non-fork requests use the persistent path', () => {
             bootstrapSignature: {
               cwd: '/workspace',
               systemPromptHash: 'sha256:new',
-              permissionMode: 'bypass',
+              permissionMode: 'bypassPermissions',
             },
             sessionId: null,
           };
@@ -265,7 +265,7 @@ describe('claude adapter: app-server recovery preserves live broker continuity b
       bootstrapSignature: {
         cwd: '/workspace',
         systemPromptHash: 'sha256:abc',
-        permissionMode: 'bypass',
+        permissionMode: 'bypassPermissions',
       },
       envHash: 'sha256:env',
     };
@@ -305,7 +305,7 @@ describe('claude adapter: app-server recovery preserves live broker continuity b
       bootstrapSignature: {
         cwd: '/workspace',
         systemPromptHash: 'sha256:abc',
-        permissionMode: 'bypass',
+        permissionMode: 'bypassPermissions',
       },
       envHash: 'sha256:env',
       conversationRef: 'sess-resume',
@@ -363,7 +363,7 @@ describe('claude adapter: checkpoint timing for bootstrap signature', () => {
             bootstrapSignature: {
               cwd: '/workspace',
               systemPromptHash: 'sha256:abc',
-              permissionMode: 'bypass',
+              permissionMode: 'bypassPermissions',
             },
             sessionId: null,
           };
@@ -408,7 +408,7 @@ describe('claude adapter: checkpoint timing for bootstrap signature', () => {
             bootstrapSignature: {
               cwd: '/workspace',
               systemPromptHash: 'sha256:abc',
-              permissionMode: 'bypass',
+              permissionMode: 'bypassPermissions',
             },
             sessionId: null,
           };
@@ -455,7 +455,7 @@ describe('claude adapter: checkpoint timing for bootstrap signature', () => {
             bootstrapSignature: {
               cwd: '/workspace',
               systemPromptHash: 'sha256:abc',
-              permissionMode: 'bypass',
+              permissionMode: 'bypassPermissions',
             },
             sessionId: 'sess-turn-ckpt',
           };
@@ -504,7 +504,7 @@ describe('claude adapter: broker death becomes terminal failure (not hung wait)'
             bootstrapSignature: {
               cwd: '/workspace',
               systemPromptHash: 'sha256:abc',
-              permissionMode: 'bypass',
+              permissionMode: 'bypassPermissions',
             },
             sessionId: 'sess-broker-death',
           };
@@ -547,7 +547,7 @@ describe('claude adapter: broker death becomes terminal failure (not hung wait)'
             bootstrapSignature: {
               cwd: '/workspace',
               systemPromptHash: 'sha256:abc',
-              permissionMode: 'bypass',
+              permissionMode: 'bypassPermissions',
             },
             sessionId: 'sess-release',
           };
@@ -777,7 +777,7 @@ describe('claude adapter: bypassPermissions=false stays on the persistent path',
         bootstrapSignature: {
           cwd: '/workspace',
           systemPromptHash: 'sha256:hash',
-          permissionMode: 'bypass',
+          permissionMode: 'bypassPermissions',
         },
         conversationRef: 'sess-established',
       },

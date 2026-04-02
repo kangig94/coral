@@ -1,3 +1,4 @@
+import { raceTimeout } from '../shared/mcp-utils.js';
 import type { ProviderServerLease, ProviderServerSpec } from '../providers/types.js';
 import { spawnProviderServer, type ProviderServerHandle } from './engine.js';
 
@@ -68,7 +69,7 @@ function waitForTimeout<T>(timeoutMs: number, value: T): Promise<T> {
 }
 
 function waitForCloseWithin(closed: Promise<Error | void>, timeoutMs: number): Promise<boolean> {
-  return Promise.race([closed.then(() => true), waitForTimeout(timeoutMs, false)]);
+  return raceTimeout(closed, timeoutMs);
 }
 
 function parseIdleTimeoutMs(raw: string | undefined): number {

@@ -145,7 +145,7 @@ describe('claude provider adapter', () => {
             bootstrapSignature: {
               cwd: '/repo',
               systemPromptHash: 'sha256:ensure',
-              permissionMode: 'bypass',
+              permissionMode: 'bypassPermissions',
             },
             sessionId: null,
           };
@@ -173,7 +173,7 @@ describe('claude provider adapter', () => {
     await vi.waitFor(() => {
       expect(lease.rpcMock).toHaveBeenCalledWith('session/ensure', expect.objectContaining({
         cwd: '/repo',
-        permissionMode: 'bypass',
+        permissionMode: 'bypassPermissions',
         systemPrompt: `You are the architect agent\n\nHonor repository policy\n\n${OUTPUT_STYLE_OVERRIDE}`,
       }));
       expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.objectContaining({

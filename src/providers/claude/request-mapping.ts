@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { isRecord } from '../../shared/mcp-utils.js';
+import type { PermissionMode } from './control-protocol.js';
 import type { ProviderContinuityBlob, ProviderRequest } from '../../shared/types.js';
 import type { ProviderServerSpec } from '../types.js';
 import type {
@@ -14,6 +15,7 @@ import type {
   TurnStartParams,
 } from '../claude-appserver/protocol.js';
 import {
+  hashSortedEnv,
   normalizeControllerEnv,
   readBootstrapSignature,
   readString,
@@ -50,19 +52,6 @@ export function readClaudePersistedContinuity(
     conversationRef: readString(persistedContinuity.conversationRef),
     brokerTurnId: readString(persistedContinuity.brokerTurnId),
   };
-}
-
-export function hasClaudePersistentContinuity(
-  persistedContinuity: ProviderContinuityBlob | undefined,
-): boolean {
-  const continuity = readClaudePersistedContinuity(persistedContinuity);
-  return Boolean(
-    continuity.brokerSessionKey ??
-    continuity.bootstrapSignature ??
-    continuity.envHash ??
-    continuity.conversationRef ??
-    continuity.brokerTurnId,
-  );
 }
 
 export function buildClaudeBootstrapSignature(
@@ -124,30 +113,6 @@ export function mapInterruptParams(
   brokerTurnId?: string,
 ): TurnInterruptParams {
   return brokerTurnId ? { brokerSessionKey, brokerTurnId } : { brokerSessionKey };
-}
-
-export function findClaudeBootstrapDrift(
-  request: Pick<ProviderRequest, 'cwd' | 'bypassPermissions'>,
-  derivedSystemPrompt: string | undefined,
-  persistedContinuity: ProviderContinuityBlob | undefined,
-): {
-  expected: ClaudeBootstrapSignature;
-  actual: ClaudeBootstrapSignature;
-} | null {
-  const continuity = readClaudePersistedContinuity(persistedContinuity);
-  if (!continuity.bootstrapSignature) {
-    return null;
-  }
-
-  const actual = buildClaudeBootstrapSignature(request, derivedSystemPrompt);
-  if (sameBootstrapSignature(continuity.bootstrapSignature, actual)) {
-    return null;
-  }
-
-  return {
-    expected: continuity.bootstrapSignature,
-    actual,
-  };
 }
 
 export function buildClaudeContinuity(update: {
@@ -236,14 +201,11 @@ export function buildClaudeEnvHash(controllerEnv?: Record<string, string>): stri
     ...normalizeControllerEnv(controllerEnv),
     CORAL_CHILD: '1',
   };
-  const sortedEntries = Object.entries(childEnv)
-    .filter(([key]) => key !== 'CORAL_CHILD')
-    .sort(([left], [right]) => left.localeCompare(right));
-  const hash = `sha256:${createHash('sha256').update(JSON.stringify(sortedEntries)).digest('hex')}`;
+  const hash = hashSortedEnv(childEnv);
   envHashCache = { controllerEnv, hash };
   return hash;
 }
 
-function resolveClaudePermissionMode(bypassPermissions: boolean): string {
-  return bypassPermissions ? 'bypass' : 'default';
+function resolveClaudePermissionMode(bypassPermissions: boolean): PermissionMode {
+  return bypassPermissions ? 'bypassPermissions' : 'default';
 }

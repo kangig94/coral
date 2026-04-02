@@ -21,20 +21,20 @@ import {
   type ProviderServerLease,
 } from '../types.js';
 import { resolveModelTier, type EffortLevel } from '../../shared/schemas.js';
-import type { SessionProbeResult } from '../claude-appserver/protocol.js';
+import { brokerNotificationMethods, type SessionProbeResult } from '../claude-appserver/protocol.js';
 import {
+  buildClaudeBootstrapSignature,
   buildClaudeEnvHash,
   buildClaudeContinuity,
   buildClaudeProviderServerSpec,
-  findClaudeBootstrapDrift,
-  hasClaudePersistentContinuity,
   mapInterruptParams,
   mapSessionEnsureParams,
   mapTurnStartParams,
   readClaudePersistedContinuity,
   withClaudeContinuity,
+  type ClaudePersistedContinuity,
 } from './request-mapping.js';
-import { readBootstrapSignature, readString } from './shared-utils.js';
+import { readBootstrapSignature, readString, sameBootstrapSignature } from './shared-utils.js';
 import type { ClaudeExecResult } from './types.js';
 
 async function preflight(): Promise<void> {
@@ -139,9 +139,13 @@ function buildNewSessionRequiredResult(request: ProviderRequest, reason: string)
 function getPersistentRedirectReason(
   request: ProviderRequest,
   runtime: ProviderRuntime,
+  continuity: ClaudePersistedContinuity,
   derivedSystemPrompt?: string,
 ): string | null {
-  if (!hasClaudePersistentContinuity(runtime.persistedContinuity)) {
+  const hasContinuity = Boolean(
+    continuity.brokerSessionKey ?? continuity.bootstrapSignature ?? continuity.envHash ?? continuity.conversationRef ?? continuity.brokerTurnId,
+  );
+  if (!hasContinuity) {
     return null;
   }
 
@@ -153,12 +157,14 @@ function getPersistentRedirectReason(
     return 'This Claude session already established persistent continuity. Start a new Coral session before forking.';
   }
 
-  const drift = findClaudeBootstrapDrift(request, derivedSystemPrompt, runtime.persistedContinuity);
-  if (!drift) {
-    return null;
+  if (continuity.bootstrapSignature) {
+    const actual = buildClaudeBootstrapSignature(request, derivedSystemPrompt);
+    if (!sameBootstrapSignature(continuity.bootstrapSignature, actual)) {
+      return `This Claude session already established persistent continuity with cwd=${continuity.bootstrapSignature.cwd}, systemPromptHash=${continuity.bootstrapSignature.systemPromptHash}, permissionMode=${continuity.bootstrapSignature.permissionMode}. Start a new Coral session before changing that bootstrap signature.`;
+    }
   }
 
-  return `This Claude session already established persistent continuity with cwd=${drift.expected.cwd}, systemPromptHash=${drift.expected.systemPromptHash}, permissionMode=${drift.expected.permissionMode}. Start a new Coral session before changing that bootstrap signature.`;
+  return null;
 }
 
 async function executeFork(
@@ -191,12 +197,12 @@ async function executePersistent(
   request: ProviderRequest,
   runtime: ProviderRuntime,
   prepared: { prompt: string; systemPrompt?: string; model?: string },
+  persistedContinuity: ClaudePersistedContinuity,
 ): Promise<ProviderResult> {
   const startedAt = Date.now();
   const { acquireServer, checkpointRecovery } = requireAppServerRuntime(runtime, 'Claude persistent');
   const spec = buildClaudeProviderServerSpec();
   const lease = await acquireServer(spec);
-  const persistedContinuity = readClaudePersistedContinuity(runtime.persistedContinuity);
 
   let brokerSessionKey = persistedContinuity.brokerSessionKey;
   let bootstrapSignature = persistedContinuity.bootstrapSignature;
@@ -215,6 +221,16 @@ async function executePersistent(
     completed = true;
     resolveTerminal(result);
   };
+
+  const failResult = (notice: string): ProviderResult => ({
+    content: '',
+    conversationRef,
+    model: prepared.model,
+    durationMs: Date.now() - startedAt,
+    exitCode: 1,
+    notice,
+    errors: [notice],
+  });
 
   const terminal = new Promise<ProviderResult>((resolve) => {
     resolveTerminal = resolve;
@@ -266,15 +282,7 @@ async function executePersistent(
       outcome instanceof Error
         ? outcome.message
         : 'Claude broker transport closed before the turn completed.';
-    resolveOnce({
-      content: '',
-      conversationRef,
-      model: prepared.model,
-      durationMs: Date.now() - startedAt,
-      exitCode: 1,
-      notice: message,
-      errors: [message],
-    });
+    resolveOnce(failResult(message));
     return undefined;
   });
   void transportClosed.catch(() => {});
@@ -284,9 +292,11 @@ async function executePersistent(
       return;
     }
 
+    const { sessionUpdated, turnProgress, turnCompleted, turnFailed, hostStats } = brokerNotificationMethods;
+
     // Broker holds our notifications until session/ensure returns — only foreign sessions' events
     // can arrive before brokerSessionKey is assigned. host/stats has no session routing.
-    if (!brokerSessionKey && message.method !== 'host/stats') {
+    if (!brokerSessionKey && message.method !== hostStats) {
       return;
     }
 
@@ -295,10 +305,7 @@ async function executePersistent(
       return;
     }
 
-    const isTurnEvent =
-      message.method === 'turn/progress' ||
-      message.method === 'turn/completed' ||
-      message.method === 'turn/failed';
+    const isTurnEvent = message.method === turnProgress || message.method === turnCompleted || message.method === turnFailed;
     if (isTurnEvent && brokerTurnId && typeof params.brokerTurnId === 'string' && params.brokerTurnId !== brokerTurnId) {
       return;
     }
@@ -308,7 +315,7 @@ async function executePersistent(
       conversationRef = updatedConversationRef;
     }
 
-    if (message.method === 'session/updated') {
+    if (message.method === sessionUpdated) {
       const updatedSignature = readBootstrapSignature(params.bootstrapSignature);
       if (updatedSignature) {
         bootstrapSignature = updatedSignature;
@@ -317,7 +324,7 @@ async function executePersistent(
       return;
     }
 
-    if (message.method === 'turn/progress') {
+    if (message.method === turnProgress) {
       if (typeof params.message === 'string' && params.message.length > 0) {
         runtime.onEvent({
           jobId: request.sessionId,
@@ -328,7 +335,7 @@ async function executePersistent(
       return;
     }
 
-    if (message.method === 'turn/completed') {
+    if (message.method === turnCompleted) {
       brokerTurnId = undefined;
       checkpoint();
 
@@ -350,7 +357,7 @@ async function executePersistent(
       return;
     }
 
-    if (message.method === 'turn/failed') {
+    if (message.method === turnFailed) {
       brokerTurnId = undefined;
       checkpoint();
 
@@ -358,15 +365,7 @@ async function executePersistent(
         typeof params.message === 'string' && params.message.length > 0
           ? params.message
           : 'Claude broker turn failed.';
-      resolveOnce({
-        content: '',
-        conversationRef,
-        model: prepared.model,
-        durationMs: Date.now() - startedAt,
-        exitCode: 1,
-        notice: failureMessage,
-        errors: [failureMessage],
-      });
+      resolveOnce(failResult(failureMessage));
     }
   });
 
@@ -430,16 +429,7 @@ async function executePersistent(
       };
     }
 
-    const msg = errorMessage(error);
-    return {
-      content: '',
-      conversationRef,
-      model: prepared.model,
-      durationMs: Date.now() - startedAt,
-      exitCode: 1,
-      notice: msg,
-      errors: [msg],
-    };
+    return failResult(errorMessage(error));
   } finally {
     runtime.signal.removeEventListener('abort', onAbort);
     unsubscribe();
@@ -526,7 +516,8 @@ const claudeAppServer: ProviderAppServerContract = {
 
 async function execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult> {
   const prepared = buildPreparedRequest(request);
-  const redirectReason = getPersistentRedirectReason(request, runtime, prepared.systemPrompt);
+  const continuity = readClaudePersistedContinuity(runtime.persistedContinuity);
+  const redirectReason = getPersistentRedirectReason(request, runtime, continuity, prepared.systemPrompt);
   if (redirectReason) {
     return buildNewSessionRequiredResult(request, redirectReason);
   }
@@ -535,7 +526,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
     return executeFork(request, runtime, prepared);
   }
 
-  return executePersistent(request, runtime, prepared);
+  return executePersistent(request, runtime, prepared, continuity);
 }
 
 function readTurnConversationRef(value: unknown): string | undefined {

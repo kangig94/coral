@@ -126,6 +126,17 @@ export function readBundleHash(pluginRoot: string): string {
  */
 export const nowIsoString = (): string => new Date().toISOString();
 
+/** Race a promise against a timeout. Returns true if the promise settles first, false on timeout. */
+export function raceTimeout(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  return Promise.race([
+    promise.then(() => true),
+    new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), timeoutMs);
+      timer.unref?.();
+    }),
+  ]);
+}
+
 export function tryExclusiveWrite(filePath: string, payload: string): boolean {
   mkdirSync(dirname(filePath), { recursive: true });
   try {

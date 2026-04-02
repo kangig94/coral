@@ -380,10 +380,7 @@ function continuityWithClearedTurnId(continuity: ProviderContinuityBlob | undefi
   };
 }
 
-function resolveProbeCwd(continuity: ProviderContinuityBlob): string {
-  const { cwd } = toCodexContinuity(continuity);
-  return cwd || process.cwd();
-}
+
 
 async function rpc<M extends AppServerMethod>(
   lease: ProviderServerLease,
@@ -547,28 +544,41 @@ function hasCodexAuthTokens(value: unknown): boolean {
 }
 
 const codexAppServer: ProviderAppServerContract = {
+  migrateLegacyContinuity(meta) {
+    const continuity: ProviderContinuityBlob = {};
+    if (typeof meta.provider === 'string' && meta.provider.length > 0) {
+      continuity.provider = meta.provider;
+    }
+    if (typeof meta.threadId === 'string' && meta.threadId.length > 0) {
+      continuity.threadId = meta.threadId;
+    }
+    if (typeof meta.turnId === 'string' && meta.turnId.length > 0) {
+      continuity.turnId = meta.turnId;
+    }
+    return Object.keys(continuity).length > 0 ? continuity : undefined;
+  },
   buildServerSpec(persistedContinuity, request) {
     const { cwd } = toCodexContinuity(persistedContinuity);
     return buildCodexProviderServerSpec(cwd ?? request.cwd ?? process.cwd(), request.coralEnv);
   },
   async interrupt(lease, continuity) {
-    const { threadId, turnId } = toCodexContinuity(continuity);
-    if (!threadId || !turnId) {
+    const parsed = toCodexContinuity(continuity);
+    if (!parsed.threadId || !parsed.turnId) {
       return;
     }
-    await interruptTurn(lease, threadId, turnId);
+    await interruptTurn(lease, parsed.threadId, parsed.turnId);
   },
   async probe(lease, continuity) {
-    const { threadId } = toCodexContinuity(continuity);
+    const parsed = toCodexContinuity(continuity);
     const updatedContinuity = continuityWithClearedTurnId(continuity);
-    if (!threadId) {
+    if (!parsed.threadId) {
       return { resumable: false, updatedContinuity };
     }
 
     try {
       await rpc(lease, 'thread/resume', {
-        threadId,
-        cwd: resolveProbeCwd(continuity),
+        threadId: parsed.threadId,
+        cwd: parsed.cwd ?? process.cwd(),
         model: null,
         approvalPolicy: 'never',
         sandbox: 'workspace-write',
@@ -589,10 +599,10 @@ const codexAppServer: ProviderAppServerContract = {
   },
   finalizeInterrupted(probeResult, continuity) {
     const nextContinuity = probeResult.updatedContinuity ?? continuityWithClearedTurnId(continuity);
-    const { threadId } = toCodexContinuity(nextContinuity ?? continuity);
-    if (probeResult.resumable && threadId) {
+    const parsed = toCodexContinuity(nextContinuity ?? continuity);
+    if (probeResult.resumable && parsed.threadId) {
       return {
-        conversationRef: threadId,
+        conversationRef: parsed.threadId,
         ...(nextContinuity ? { continuityMutation: nextContinuity } : {}),
       };
     }

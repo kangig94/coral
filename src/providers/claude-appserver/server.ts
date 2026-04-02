@@ -6,6 +6,7 @@ import { basename } from 'node:path';
 import process from 'node:process';
 
 import { buildJsonRpcError, isRecord } from '../../shared/mcp-utils.js';
+import type { PermissionMode } from '../claude/control-protocol.js';
 import {
   AUTO_ALLOW_PERMISSION_MODES,
   CLAUDE_BROKER_BUSY_RPC_CODE,
@@ -290,7 +291,7 @@ function requireSessionEnsureParams(params: unknown): SessionEnsureParams {
   return {
     cwd: params.cwd,
     systemPromptHash: params.systemPromptHash,
-    permissionMode: params.permissionMode,
+    permissionMode: params.permissionMode as PermissionMode,
     brokerSessionKey: typeof params.brokerSessionKey === 'string' ? params.brokerSessionKey : undefined,
     conversationRef: typeof params.conversationRef === 'string' ? params.conversationRef : undefined,
     controllerEnv: readControllerEnv(params.controllerEnv),

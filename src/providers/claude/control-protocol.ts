@@ -9,7 +9,8 @@ export const claudeControlRequestSubtypes = {
   setMaxThinkingTokens: 'set_max_thinking_tokens',
 } as const;
 
-const permissionModeSchema = z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk']);
+export const permissionModeSchema = z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk']);
+export type PermissionMode = z.infer<typeof permissionModeSchema>;
 
 const apiKeySourceSchema = z.enum(['user', 'project', 'org', 'temporary', 'oauth']);
 

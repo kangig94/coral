@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import { buildChildEnv } from '../../shared/child-env.js';
 import { formatToolProgress, truncate } from '../../shared/format-progress.js';
-import { isRecord } from '../../shared/mcp-utils.js';
+import { isRecord, raceTimeout } from '../../shared/mcp-utils.js';
 import {
   claudeControlRequestSubtypes,
   ndjsonSafeStringify,
@@ -18,7 +18,8 @@ import {
   type SDKSystemMessage,
 } from '../claude/control-protocol.js';
 import { extractClaudeProgressMessage } from '../claude/progress.js';
-import { normalizeControllerEnv, sameBootstrapSignature } from '../claude/shared-utils.js';
+import type { PermissionMode } from '../claude/control-protocol.js';
+import { hashSortedEnv, normalizeControllerEnv, sameBootstrapSignature } from '../claude/shared-utils.js';
 import {
   AUTO_ALLOW_PERMISSION_MODES,
   CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
@@ -120,7 +121,7 @@ export interface SpawnClaudeChildOptions {
   cwd: string;
   conversationRef?: string;
   systemPrompt?: string;
-  permissionMode: string;
+  permissionMode: PermissionMode;
   env?: Record<string, string>;
 }
 
@@ -446,13 +447,7 @@ class SingleSessionController {
   }
 
   private waitForChildExit(closed: Promise<ChildExit>, timeoutMs: number): Promise<boolean> {
-    return Promise.race([
-      closed.then(() => true),
-      new Promise<boolean>((resolve) => {
-        const timer = setTimeout(() => resolve(false), timeoutMs);
-        timer.unref?.();
-      }),
-    ]);
+    return raceTimeout(closed, timeoutMs);
   }
 
   private handleChildLine(line: string): void {
@@ -1152,10 +1147,7 @@ export function buildClaudeChildEnv(controllerEnv?: Record<string, string>): Rec
 }
 
 export function hashClaudeChildEnv(childEnv: Record<string, string>): string {
-  const sortedEntries = Object.entries(childEnv)
-    .filter(([key]) => key !== 'CORAL_CHILD')
-    .sort(([left], [right]) => left.localeCompare(right));
-  return `sha256:${createHash('sha256').update(JSON.stringify(sortedEntries)).digest('hex')}`;
+  return hashSortedEnv(childEnv);
 }
 
 function toBootstrapSignature(params: Omit<SessionEnsureParams, 'brokerSessionKey'>): ClaudeBootstrapSignature {
