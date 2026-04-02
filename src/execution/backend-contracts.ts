@@ -67,6 +67,7 @@ export interface HttpHandlerDeps {
   readonly progressStore: ProgressStore;
   readonly sessionIndex: SessionIndex;
   readonly activeChildren: ReadonlySet<unknown>;
+  readonly activeDurablePids: ReadonlySet<number>;
   readonly queueDepth: () => number;
   readonly streamResponses: Set<ServerResponse>;
 

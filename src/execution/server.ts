@@ -9,7 +9,7 @@ import { formatError, readBundleHash } from '../shared/mcp-utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import { pluginRootNamespace, resolveProjectSource } from '../infra/paths.js';
 import type { ExecutionService, RecoveryCapableService } from './service.js';
-import { activeChildren, killAllChildren, queueDepth } from './engine.js';
+import { activeChildren, activeDurablePids, killAllChildren, queueDepth } from './engine.js';
 import { writeBackendInfo, removeBackendInfoIfOwner } from '../infra/backend-info.js';
 import { acquireLock, BackendAlreadyRunningError, removeLockIfOwner } from './backend-lock.js';
 import type { AbortResult } from './abort-registry.js';
@@ -415,6 +415,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     progressStore,
     sessionIndex,
     activeChildren,
+    activeDurablePids,
     queueDepth,
     streamResponses,
     isDrainRequested: () => drainRequested,

@@ -477,6 +477,27 @@ describe('execution backend server', () => {
     expect(typeof body.uptimeMs).toBe('number');
   });
 
+  it('includes durable pids in activeChildren count', async () => {
+    const backend = await startBackendServer();
+    const engineModule = await import('../engine.js');
+
+    // Simulate two durable processes running
+    engineModule.activeDurablePids.add(99901);
+    engineModule.activeDurablePids.add(99902);
+
+    try {
+      const response = await fetch(`${backend.baseUrl}/health`, {
+        headers: { 'X-Coral-Backend-Token': backend.token },
+      });
+      const body = (await response.json()) as Record<string, unknown>;
+
+      expect(body.activeChildren).toBe(2);
+    } finally {
+      engineModule.activeDurablePids.delete(99901);
+      engineModule.activeDurablePids.delete(99902);
+    }
+  });
+
   it('injects one shared ProviderHostManager across project-root services so Claude shares and incompatible Codex hosts stay isolated', async () => {
     const { serverModule } = await loadExecutionModules();
     const [{ ExecutionService }, engineModule, claudeRequestMapping, codexRequestMapping] = await Promise.all([

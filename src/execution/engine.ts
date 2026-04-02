@@ -104,7 +104,7 @@ type QueuedLaunchEntry = {
 };
 
 export const activeChildren = new Set<ActiveChild>();
-const activeDurablePids = new Set<number>();
+export const activeDurablePids = new Set<number>();
 let nextProviderServerGeneration = 1;
 
 const activeLaunchesDefault = new Map<string, string>();
