@@ -49,7 +49,7 @@ import {
   replaceSourceFrontmatter,
 } from './frontmatter.js';
 import { loadKbNote, loadKbSource } from './read.js';
-import { assertNonEmptyText, assertNoteSlug, compareLocale } from './validation.js';
+import { assertNonEmptyText, assertNoteSlug, compareLocale, stripMarkdownCodeFences } from './validation.js';
 import {
   buildNoteIndexEntry,
   buildSourceIndexEntry,
@@ -299,12 +299,6 @@ function fingerprintEntryContent(raw: string): string {
   return createHash('sha256').update(raw).digest('hex');
 }
 
-function stripMarkdownCodeFences(raw: string): string {
-  const trimmed = raw.trim();
-  const match = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  return match ? match[1].trim() : trimmed;
-}
-
 function parseJsonArray(raw: string): ParsedArrayResult {
   const normalized = stripMarkdownCodeFences(raw.trim());
   let parsed: unknown;
@@ -347,20 +341,8 @@ function uniqueTrimmedList(values: string[]): string[] {
   return normalized;
 }
 
-function countClassificationTagSupport(index: KbIndex): Map<string, number> {
-  const counts = new Map<string, number>();
-
-  for (const entry of getCuratableEntries(index)) {
-    for (const tag of entry.tags) {
-      counts.set(tag, (counts.get(tag) ?? 0) + 1);
-    }
-  }
-
-  return counts;
-}
-
 function buildTagVocabulary(index: KbIndex): string[] {
-  return [...countClassificationTagSupport(index).keys()].sort(compareLocale);
+  return [...countTagSupport(index).keys()].sort(compareLocale);
 }
 
 function buildPrincipleNames(index: KbIndex): string[] {
@@ -1031,7 +1013,7 @@ export function validateAssignments(
   index: KbIndex,
   claimedEntries: CurateClaimedEntry[],
 ): ClassificationAssignment[] {
-  const existingTagVocabulary = new Set(countClassificationTagSupport(index).keys());
+  const existingTagVocabulary = new Set(countTagSupport(index).keys());
   const claimedByEntryId = new Map<KbEntryId, CurateClaimedEntry>();
   for (const entry of claimedEntries) {
     claimedByEntryId.set(entry.entryId, entry);
@@ -2037,7 +2019,6 @@ export function createCurateScheduler({
         related: nextRelated,
         entrySeq: nextFrontmatter.entrySeq,
       });
-      kb.writeIndex(nextIndex);
 
       processedThrough = advanceProcessedThrough(processedThrough, cursorCanAdvance, cursor);
     }

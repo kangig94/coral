@@ -12,10 +12,11 @@ import {
   serializeCommunityFrontmatter,
 } from './frontmatter.js';
 import { writeFileAtomic } from './mutation-helpers.js';
+import { stripMdExt } from './paths.js';
 import { loadKbNote, loadKbSource } from './read.js';
 import type { KbRuntime } from './runtime.js';
 import { sortedMarkdownEntries } from './text-artifacts.js';
-import { compareLocale } from './validation.js';
+import { compareLocale, stripMarkdownCodeFences } from './validation.js';
 import { isNoteEntry, isSourceEntry, type CuratableEntry, type KbIndex } from './types.js';
 
 type TagGraphNodeAttributes = Record<string, never>;
@@ -87,12 +88,6 @@ const COMMUNITY_SUMMARY_EXCERPT_MAX_CHARS = 800;
 
 function uniqueSorted(values: string[]): string[] {
   return [...new Set(values)].sort(compareLocale);
-}
-
-function stripMarkdownCodeFences(raw: string): string {
-  const trimmed = raw.trim();
-  const match = trimmed.match(/^```(?:markdown|md|text)?\s*([\s\S]*?)\s*```$/i);
-  return match ? match[1].trim() : trimmed;
 }
 
 function edgeKey(left: string, right: string): string {
@@ -421,7 +416,7 @@ export function loadExistingCommunityState(
   const reservedSlugs = new Set<string>();
 
   for (const entry of sortedMarkdownEntries(kb.communitiesDir())) {
-    const slug = entry.slice(0, -3);
+    const slug = stripMdExt(entry);
     const raw = readFileSync(join(kb.communitiesDir(), entry), 'utf-8');
 
     try {

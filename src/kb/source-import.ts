@@ -5,7 +5,7 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, delimiter, extname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { nowIsoString } from '../shared/mcp-utils.js'
-import { serializeSourceFrontmatter } from './frontmatter.js'
+import { FRONTMATTER_BLOCK, serializeSourceFrontmatter } from './frontmatter.js'
 import { kbRuntimeDir, sourceImportStageDir } from './paths.js'
 import type { KbSourceFrontmatter } from './types.js'
 import { assertNonEmptyText, assertSourceSlug } from './validation.js'
@@ -13,7 +13,6 @@ import { assertNonEmptyText, assertSourceSlug } from './validation.js'
 const execFileP = promisify(execFile)
 const LOCAL_BIN_DIR = join(homedir(), '.local', 'bin')
 
-const LEADING_YAML_FRONTMATTER = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/
 const LEADING_ATX_H1 = /^#(?!#)\s+(.+?)\s*#*\s*(?:\r?\n+|$)/
 const LEADING_SETEXT_H1 = /^([^\r\n]+)\r?\n=+\s*(?:\r?\n+|$)/
 const HTML_TITLE_PATTERN = /<title\b[^>]*>([\s\S]*?)<\/title>/i
@@ -164,7 +163,7 @@ export function toKebabCase(value: string): string {
 }
 
 function stripLeadingFrontmatter(markdown: string): string {
-  return markdown.replace(LEADING_YAML_FRONTMATTER, '')
+  return markdown.replace(FRONTMATTER_BLOCK, '')
 }
 
 function splitLeadingMarkdownTitle(markdown: string): { title?: string; body: string } {

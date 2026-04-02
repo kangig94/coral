@@ -12,6 +12,7 @@ import {
   parseSourceFrontmatter,
 } from './frontmatter.js';
 import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from './mutation-helpers.js';
+import { stripMdExt } from './paths.js';
 import { loadKbNote } from './read.js';
 import { assertCommunitySlug, assertSourceSlug, compareLocale } from './validation.js';
 import { createOramaDb, toOramaDocument } from './orama-factory.js';
@@ -72,7 +73,7 @@ function loadSources(kb: KbRuntime): KbReindexSourceRecord[] {
     try {
       const raw = readFileSync(join(sourcesPath, entry), 'utf-8');
       sources.push({
-        slug: assertSourceSlug(entry.slice(0, -3), 'KB source name'),
+        slug: assertSourceSlug(stripMdExt(entry), 'KB source name'),
         path: `sources/${entry}`,
         body: extractBody(raw),
         ...parseSourceFrontmatter(raw),
@@ -101,7 +102,7 @@ export function loadCommunities(kb: KbRuntime): KbReindexCommunityRecord[] {
   for (const entry of sortedMarkdownEntries(communitiesPath)) {
     try {
       communities.push({
-        slug: assertCommunitySlug(entry.slice(0, -3), 'KB community name'),
+        slug: assertCommunitySlug(stripMdExt(entry), 'KB community name'),
         path: `communities/${entry}`,
         ...loadCommunityDocument(join(communitiesPath, entry)),
       });
@@ -119,7 +120,7 @@ function loadPrinciples(kb: KbRuntime): Array<[string, string]> {
 
   for (const entry of sortedMarkdownEntries(principlesPath)) {
     try {
-      const name = entry.slice(0, -3);
+      const name = stripMdExt(entry);
       const content = readFileSync(join(principlesPath, entry), 'utf-8');
       principles.push([name, extractPrincipleStatement(content)]);
     } catch (error: unknown) {

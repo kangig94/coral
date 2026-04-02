@@ -19,6 +19,7 @@ import {
   sourceImportStageDir as pathsSourceImportStageDir,
   sourcePathFromName,
   sourcesDir as pathsSourcesDir,
+  stripMdExt,
 } from './paths.js';
 import { rebuildTextArtifacts, sortedMarkdownEntries } from './text-artifacts.js';
 import {
@@ -316,7 +317,7 @@ export function runEntrySeqUpgradeGuard(target: EntrySeqGuardTarget): boolean {
   let changed = false;
 
   for (const entry of sortedMarkdownEntries(target.notesDir())) {
-    const notePath = target.notePath(entry.slice(0, -3));
+    const notePath = target.notePath(stripMdExt(entry));
     const raw = readFileSync(notePath, 'utf-8');
     let rewritten: string | null;
 
@@ -473,8 +474,6 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
   }
 
   async function ensureIndex(): Promise<KbIndex> {
-    runEntrySeqUpgradeGuard(kbRuntime);
-
     if (textArtifactsNeedRebuild()) {
       await kbRuntime.withMutationLock(async () => {
         runEntrySeqUpgradeGuard(kbRuntime);

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
 import { replaceFrontmatter, replaceSourceFrontmatter } from './frontmatter.js';
 import { buildNoteIndexEntry, buildSourceIndexEntry, cloneKbIndex, writeFileAtomic } from './mutation-helpers.js';
+import { stripMdExt } from './paths.js';
 import { loadKbNote, loadKbSource } from './read.js';
 import type { KbRuntime } from './runtime.js';
 import { sortedMarkdownEntries } from './text-artifacts.js';
@@ -420,11 +421,11 @@ export function curateStatePath(target: CurateStateTarget): string {
 }
 
 function sortedNoteNames(kb: Pick<KbRuntime, 'notesDir'>): string[] {
-  return sortedMarkdownEntries(kb.notesDir()).map((entry) => entry.slice(0, -3));
+  return sortedMarkdownEntries(kb.notesDir()).map((entry) => stripMdExt(entry));
 }
 
 function sortedSourceNames(kb: Pick<KbRuntime, 'sourcesDir'>): string[] {
-  return sortedMarkdownEntries(kb.sourcesDir()).map((entry) => entry.slice(0, -3));
+  return sortedMarkdownEntries(kb.sourcesDir()).map((entry) => stripMdExt(entry));
 }
 
 function syncIndexNote(note: string, title: string, frontmatter: KbNoteFrontmatter, nextIndex: ReturnType<typeof cloneKbIndex>): boolean {
@@ -699,7 +700,6 @@ export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promis
           })();
 
     if (strictState !== null && strictState.migrationVersion >= CURATE_STATE_MIGRATION_VERSION) {
-      writeCurateState(kb, strictState);
       return;
     }
 

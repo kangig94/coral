@@ -1,4 +1,4 @@
-import { assertOwnerId, isRecord } from '../shared/mcp-utils.js';
+import { assertOwnerId } from '../shared/mcp-utils.js';
 import { deleteFn as kbDeleteFn } from '../kb/delete.js';
 import { deleteMemos, listMemos, purgeMemos, writeMemo } from '../kb/memo.js';
 import { promote as kbPromote } from '../kb/promote.js';
@@ -6,7 +6,7 @@ import { readEntry } from '../kb/read.js';
 import { reindex as kbReindex } from '../kb/reindex.js';
 import { searchKb } from '../kb/search.js';
 import { deleteSource, listSources, persistPreparedSource } from '../kb/source-store.js';
-import { isNoteEntry, type KbSearchScope, type KbSourceFrontmatter } from '../kb/types.js';
+import { isNoteEntry, type KbSearchScope } from '../kb/types.js';
 import { update as kbUpdate } from '../kb/update.js';
 import { compareLocale } from '../kb/validation.js';
 import type { ToolRequest } from './request-context.js';
@@ -44,11 +44,6 @@ function requireString(args: Record<string, unknown>, key: string): string | nul
 function optionalString(args: Record<string, unknown>, key: string): string | undefined {
   const value = args[key];
   return typeof value === 'string' ? value : undefined;
-}
-
-function requireRecord(args: Record<string, unknown>, key: string): Record<string, unknown> | null {
-  const value = args[key];
-  return isRecord(value) ? value : null;
 }
 
 function optionalKbSearchScope(args: Record<string, unknown>): KbSearchScope | null | undefined {
@@ -126,14 +121,13 @@ export async function handleKbToolCall(request: ToolRequest, kbSubsystem: KbSubs
       case 'kb_source_import': {
         const slug = requireString(args, 'slug');
         const stagedPath = requireString(args, 'stagedPath');
-        const meta = requireRecord(args, 'meta');
-        if (slug === null || stagedPath === null || meta === null) {
+        if (slug === null || stagedPath === null) {
           return toolError('invalid_request', {
-            message: 'slug, stagedPath, and meta are required',
+            message: 'slug and stagedPath are required',
           });
         }
 
-        result = await persistPreparedSource(kb, stagedPath, slug, meta as unknown as KbSourceFrontmatter);
+        result = await persistPreparedSource(kb, stagedPath, slug);
         kbSubsystem.curateScheduler.scheduleDeferredCommit();
         break;
       }

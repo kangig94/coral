@@ -4,7 +4,7 @@ import { parseSourceFrontmatter, replaceSourceFrontmatter } from './frontmatter.
 import { buildSourceIndexEntry, commitIndexUpdate, writeFileAtomic } from './mutation-helpers.js';
 import { assertWithin } from './paths.js';
 import { runEntrySeqUpgradeGuard, type KbRuntime } from './runtime.js';
-import { deleteEntry, isSourceEntry, setEntry, sourceEntryId, type KbSourceDeleteInput, type KbSourceFrontmatter, type KbSourceListResult } from './types.js';
+import { deleteEntry, isSourceEntry, setEntry, sourceEntryId, type KbSourceDeleteInput, type KbSourceListResult } from './types.js';
 import { compareLocale, assertSourceSlug } from './validation.js';
 
 function resolvePreparedSourceStagePath(kb: KbRuntime, candidate: string): string {
@@ -28,9 +28,7 @@ export async function persistPreparedSource(
   kb: KbRuntime,
   stagedPath: string,
   slug: string,
-  meta: KbSourceFrontmatter,
 ): Promise<{ slug: string; path: string }> {
-  void meta;
   const normalizedSlug = assertSourceSlug(slug, 'source');
 
   return kb.withMutationLock(async () => {

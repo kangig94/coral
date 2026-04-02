@@ -48,6 +48,13 @@ export function assertSourceSlug(value: unknown, label: string): string {
   return assertNoteSlug(value, label);
 }
 
+/** Strip markdown code fences (```json, ```markdown, etc.) wrapping raw LLM output. */
+export function stripMarkdownCodeFences(raw: string): string {
+  const trimmed = raw.trim();
+  const match = trimmed.match(/^```(?:\w+)?\s*([\s\S]*?)\s*```$/i);
+  return match ? match[1].trim() : trimmed;
+}
+
 export function assertCommunitySlug(value: unknown, label: string): string {
   return assertNoteSlug(value, label);
 }
