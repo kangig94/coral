@@ -662,6 +662,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
   };
 
   mkdirSync(runtimeDir, { recursive: true });
+  runEntrySeqUpgradeGuard(kbRuntime);
 
   return kbRuntime;
 }
