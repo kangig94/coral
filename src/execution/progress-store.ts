@@ -69,6 +69,7 @@ export class ProgressStore {
   private readonly eventCounters = new Map<string, number>();
   private readonly jobStartedAt = new Map<string, number>();
   private readonly statusCache = new Map<string, PersistedStatusRecord>();
+  private readonly runtimeCache = new Map<string, PersistedRuntimeRecord | null>();
   private readonly knownJobIds = new Set<string>();
   private liveCount = 0;
   private changeSeq = 0;
@@ -230,6 +231,7 @@ export class ProgressStore {
     }
     this.knownJobIds.delete(jobId);
     this.statusCache.delete(jobId);
+    this.runtimeCache.delete(jobId);
     this.eventCounters.delete(jobId);
     this.jobStartedAt.delete(jobId);
   }
@@ -401,15 +403,26 @@ export class ProgressStore {
 
   /** Write runtime.json as the spawn-to-runtime commit. */
   writeRuntimeRecord(jobId: string, record: PersistedRuntimeRecord): void {
-    this.writeJobFile(join(this.jobDir(jobId), RUNTIME_FILE), JSON.stringify(record, null, 2));
+    const didWrite = this.writeJobFile(join(this.jobDir(jobId), RUNTIME_FILE), JSON.stringify(record, null, 2));
+    if (didWrite) {
+      this.runtimeCache.set(jobId, record);
+    }
   }
 
   /** Read runtime.json. Returns null if not found or corrupt. */
   readRuntimeRecord(jobId: string): PersistedRuntimeRecord | null {
+    const cached = this.runtimeCache.get(jobId);
+    if (cached !== undefined) {
+      return cached;
+    }
+
     try {
       const data = readFileSync(join(this.jobDir(jobId), RUNTIME_FILE), 'utf-8');
-      return JSON.parse(data) as PersistedRuntimeRecord;
+      const record = JSON.parse(data) as PersistedRuntimeRecord;
+      this.runtimeCache.set(jobId, record);
+      return record;
     } catch {
+      this.runtimeCache.set(jobId, null);
       return null;
     }
   }

@@ -49,12 +49,21 @@ type CaptureState = {
 
 const CODEX_APP_SERVER_UPGRADE_MESSAGE = 'Codex CLI does not support app-server. Update with: npm update -g @openai/codex';
 const CODEX_AUTH_ERROR_MESSAGE = 'Codex CLI is not authenticated. Run "codex login" to create ~/.codex/auth.json.';
+const CODEX_PREFLIGHT_CACHE_TTL_MS = 60_000;
 
 type CodexContinuity = {
   cwd?: string;
   threadId?: string;
   turnId?: string;
 };
+
+type PreflightCacheEntry = {
+  available: boolean;
+  checkedAt: number;
+};
+
+let codexAppServerAvailabilityCache: PreflightCacheEntry | null = null;
+let codexAuthTokensCache: PreflightCacheEntry | null = null;
 
 function createProgressEvent(sessionId: string, message: string): { jobId: string; message: string; ts: string } {
   return {
@@ -487,26 +496,47 @@ async function preflight(): Promise<void> {
 }
 
 function assertCodexAppServerAvailable(): void {
+  const now = Date.now();
+  if (codexAppServerAvailabilityCache && now - codexAppServerAvailabilityCache.checkedAt < CODEX_PREFLIGHT_CACHE_TTL_MS) {
+    if (!codexAppServerAvailabilityCache.available) {
+      throw new Error(CODEX_APP_SERVER_UPGRADE_MESSAGE);
+    }
+    return;
+  }
+
   const result = spawnSync('codex', ['app-server', '--help'], {
     encoding: 'utf8',
     timeout: 10_000,
   });
-  if (result.error || result.status !== 0) {
+  const available = !result.error && result.status === 0;
+  codexAppServerAvailabilityCache = { available, checkedAt: now };
+  if (!available) {
     throw new Error(CODEX_APP_SERVER_UPGRADE_MESSAGE);
   }
 }
 
 async function assertCodexAuthTokens(): Promise<void> {
+  const now = Date.now();
+  if (codexAuthTokensCache && now - codexAuthTokensCache.checkedAt < CODEX_PREFLIGHT_CACHE_TTL_MS) {
+    if (!codexAuthTokensCache.available) {
+      throw new Error(CODEX_AUTH_ERROR_MESSAGE);
+    }
+    return;
+  }
+
   const authPath = join(homedir(), '.codex', 'auth.json');
   let parsed: unknown;
 
   try {
     parsed = JSON.parse(await readFile(authPath, 'utf8')) as unknown;
   } catch {
+    codexAuthTokensCache = { available: false, checkedAt: now };
     throw new Error(CODEX_AUTH_ERROR_MESSAGE);
   }
 
-  if (!hasCodexAuthTokens(parsed)) {
+  const available = hasCodexAuthTokens(parsed);
+  codexAuthTokensCache = { available, checkedAt: now };
+  if (!available) {
     throw new Error(CODEX_AUTH_ERROR_MESSAGE);
   }
 }

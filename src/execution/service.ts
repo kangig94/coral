@@ -1406,14 +1406,6 @@ export class ExecutionService {
       return;
     }
 
-    const onEvent = (event: ProviderProgressEvent): void => {
-      const currentStatus = this.progressStore.readStatus(jobId);
-      if (canAdvanceLaunchState(currentStatus)) {
-        this.markJobRunning(jobId);
-      }
-      this.progressStore.appendProgress(jobId, sessionId, event.message);
-    };
-
     void (async () => {
       let permitAcquired = admission.type === 'immediate';
 
@@ -1431,48 +1423,9 @@ export class ExecutionService {
         }
 
         bindLaunchPermit(jobId, signal, pool);
-        const runtime = this.createProviderRuntime(provider.name, sessionId, jobId, signal, pool, onEvent);
-        const result = await provider.execute(request, runtime);
-
-        if (canAdvanceLaunchState(this.progressStore.readStatus(jobId))) {
-          this.markJobReady(jobId);
-        }
-
-        const phase: JobPhase = result.aborted ? 'aborted' : 'completed';
-        const terminalResult: TerminalResult = {
-          content: result.content,
-          durationMs: result.durationMs,
-          aborted: result.aborted,
-          nonResumable: result.nonResumable,
-          exitCode: result.exitCode,
-          notice: result.notice,
-          errors: result.errors,
-          warnings: result.warnings,
-          usage: result.usage,
-        };
-
-        this.writeTerminalResult(jobId, sessionId, terminalResult, phase);
-        this.progressStore.writeResultMd(jobId, result.content);
-        this.abortRegistry.remove(jobId);
-        this.jobPools.delete(jobId);
-        await this.finalizeProviderSession(provider.name, request, sessionId, jobId, result);
+        await this.executeProviderJob(provider, request, jobId, sessionId, signal, pool);
       } catch (err: unknown) {
-        const currentStatus = this.progressStore.readStatus(jobId);
-        if (!currentStatus || isTerminalPhase(currentStatus.phase)) {
-          return;
-        }
-
-        if (err instanceof CliBusyError) {
-          this.failJob(jobId, sessionId, 'busy', err.message);
-          return;
-        }
-
-        const message = err instanceof Error ? err.message : String(err);
-        if (signal.aborted || isAbortError(err)) {
-          this.finishAbortedJob(jobId, sessionId, message);
-          return;
-        }
-        this.failJob(jobId, sessionId, 'error', message);
+        this.handleProviderJobError(jobId, sessionId, signal, err);
       } finally {
         if (permitAcquired) releaseLaunch(jobId, pool);
       }
@@ -1498,14 +1451,6 @@ export class ExecutionService {
       return;
     }
 
-    const onEvent = (event: ProviderProgressEvent): void => {
-      const currentStatus = this.progressStore.readStatus(jobId);
-      if (canAdvanceLaunchState(currentStatus)) {
-        this.markJobRunning(jobId);
-      }
-      this.progressStore.appendProgress(jobId, sessionId, event.message);
-    };
-
     void (async () => {
       try {
         const queueOutcome = await this.waitForQueuedPermit(admission, signal);
@@ -1519,51 +1464,84 @@ export class ExecutionService {
 
         bindLaunchPermit(jobId, signal, pool);
         const request = toProviderRequest(launchRecord);
-
-        const runtime = this.createProviderRuntime(provider.name, sessionId, jobId, signal, pool, onEvent);
-        const result = await provider.execute(request, runtime);
-
-        if (canAdvanceLaunchState(this.progressStore.readStatus(jobId))) {
-          this.markJobReady(jobId);
-        }
-
-        const phase: JobPhase = result.aborted ? 'aborted' : 'completed';
-        const terminalResult: TerminalResult = {
-          content: result.content,
-          durationMs: result.durationMs,
-          aborted: result.aborted,
-          nonResumable: result.nonResumable,
-          exitCode: result.exitCode,
-          notice: result.notice,
-          errors: result.errors,
-          warnings: result.warnings,
-          usage: result.usage,
-        };
-
-        this.writeTerminalResult(jobId, sessionId, terminalResult, phase);
-        this.progressStore.writeResultMd(jobId, result.content);
-        this.abortRegistry.remove(jobId);
-        this.jobPools.delete(jobId);
-        await this.finalizeProviderSession(provider.name, request, sessionId, jobId, result);
+        await this.executeProviderJob(provider, request, jobId, sessionId, signal, pool);
       } catch (err: unknown) {
-        const currentStatus = this.progressStore.readStatus(jobId);
-        if (!currentStatus || isTerminalPhase(currentStatus.phase)) return;
-
-        if (err instanceof CliBusyError) {
-          this.failJob(jobId, sessionId, 'busy', err.message);
-          return;
-        }
-
-        const message = err instanceof Error ? err.message : String(err);
-        if (signal.aborted || isAbortError(err)) {
-          this.finishAbortedJob(jobId, sessionId, message);
-          return;
-        }
-        this.failJob(jobId, sessionId, 'error', message);
+        this.handleProviderJobError(jobId, sessionId, signal, err);
       } finally {
         releaseLaunch(jobId, pool);
       }
     })();
+  }
+
+  private async executeProviderJob(
+    provider: Provider,
+    request: ProviderRequest,
+    jobId: string,
+    sessionId: string,
+    signal: AbortSignal,
+    pool: LaunchPool,
+  ): Promise<void> {
+    const onEvent = (event: ProviderProgressEvent): void => {
+      const currentStatus = this.progressStore.readStatus(jobId);
+      if (canAdvanceLaunchState(currentStatus)) {
+        this.markJobRunning(jobId);
+      }
+      this.progressStore.appendProgress(jobId, sessionId, event.message);
+    };
+
+    try {
+      const runtime = this.createProviderRuntime(provider.name, sessionId, jobId, signal, pool, onEvent);
+      const result = await provider.execute(request, runtime);
+
+      if (canAdvanceLaunchState(this.progressStore.readStatus(jobId))) {
+        this.markJobReady(jobId);
+      }
+
+      const phase: JobPhase = result.aborted ? 'aborted' : 'completed';
+      const terminalResult: TerminalResult = {
+        content: result.content,
+        durationMs: result.durationMs,
+        aborted: result.aborted,
+        nonResumable: result.nonResumable,
+        exitCode: result.exitCode,
+        notice: result.notice,
+        errors: result.errors,
+        warnings: result.warnings,
+        usage: result.usage,
+      };
+
+      this.writeTerminalResult(jobId, sessionId, terminalResult, phase);
+      this.progressStore.writeResultMd(jobId, result.content);
+      this.abortRegistry.remove(jobId);
+      this.jobPools.delete(jobId);
+      await this.finalizeProviderSession(provider.name, request, sessionId, jobId, result);
+    } catch (err: unknown) {
+      this.handleProviderJobError(jobId, sessionId, signal, err);
+    }
+  }
+
+  private handleProviderJobError(
+    jobId: string,
+    sessionId: string,
+    signal: AbortSignal,
+    err: unknown,
+  ): void {
+    const currentStatus = this.progressStore.readStatus(jobId);
+    if (!currentStatus || isTerminalPhase(currentStatus.phase)) {
+      return;
+    }
+
+    if (err instanceof CliBusyError) {
+      this.failJob(jobId, sessionId, 'busy', err.message);
+      return;
+    }
+
+    const message = err instanceof Error ? err.message : String(err);
+    if (signal.aborted || isAbortError(err)) {
+      this.finishAbortedJob(jobId, sessionId, message);
+      return;
+    }
+    this.failJob(jobId, sessionId, 'error', message);
   }
 
   private markJobQueued(jobId: string, sessionId: string, queuePosition: number): void {

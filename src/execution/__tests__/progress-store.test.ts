@@ -492,6 +492,36 @@ describe('durable snapshot artifacts', () => {
     expect(read).toEqual(record);
   });
 
+  it('caches runtime.json reads until cleanup clears the cache', () => {
+    const store = new ProgressStore();
+    const jobId = `test-runtime-cache-${randomUUID()}`;
+    jobIdsToClean.add(jobId);
+    store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
+
+    const runtimePath = join(store.jobDir(jobId), 'runtime.json');
+    const firstRecord: PersistedRuntimeRecord = {
+      pid: 111,
+      stdoutPath: join(store.jobDir(jobId), 'stdout-1'),
+      stderrPath: join(store.jobDir(jobId), 'stderr-1'),
+      startTime: '2026-04-03T00:00:00.000Z',
+    };
+    const secondRecord: PersistedRuntimeRecord = {
+      pid: 222,
+      stdoutPath: join(store.jobDir(jobId), 'stdout-2'),
+      stderrPath: join(store.jobDir(jobId), 'stderr-2'),
+      startTime: '2026-04-03T00:01:00.000Z',
+    };
+
+    writeFileSync(runtimePath, JSON.stringify(firstRecord, null, 2), 'utf8');
+    expect(store.readRuntimeRecord(jobId)).toEqual(firstRecord);
+
+    writeFileSync(runtimePath, JSON.stringify(secondRecord, null, 2), 'utf8');
+    expect(store.readRuntimeRecord(jobId)).toEqual(firstRecord);
+
+    store.purgeFromCache(jobId);
+    expect(store.readRuntimeRecord(jobId)).toEqual(secondRecord);
+  });
+
   it('writes and reads exit.json', () => {
     const store = new ProgressStore();
     const jobId = `test-exit-${randomUUID()}`;

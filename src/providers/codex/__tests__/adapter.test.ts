@@ -146,6 +146,77 @@ describe('codex adapter app-server flow', () => {
     expect(mockState.readFile).toHaveBeenCalledWith('/mock-home/.codex/auth.json', 'utf8');
   });
 
+  it('reuses successful preflight checks within the cache TTL', async () => {
+    let now = 1_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+
+    const { codexProvider } = await loadProvider();
+
+    await expect(codexProvider.preflight?.()).resolves.toBeUndefined();
+    now += 30_000;
+    await expect(codexProvider.preflight?.()).resolves.toBeUndefined();
+
+    expect(mockState.spawnSync).toHaveBeenCalledTimes(1);
+    expect(mockState.readFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-runs preflight checks after the cache TTL expires', async () => {
+    let now = 1_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+
+    const { codexProvider } = await loadProvider();
+
+    await expect(codexProvider.preflight?.()).resolves.toBeUndefined();
+    now += 60_001;
+    await expect(codexProvider.preflight?.()).resolves.toBeUndefined();
+
+    expect(mockState.spawnSync).toHaveBeenCalledTimes(2);
+    expect(mockState.readFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('caches failed app-server availability checks within the cache TTL', async () => {
+    let now = 1_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    mockState.spawnSync.mockReturnValue({
+      status: 1,
+      stdout: '',
+      stderr: 'unknown subcommand',
+      error: undefined,
+    });
+
+    const { codexProvider } = await loadProvider();
+
+    await expect(codexProvider.preflight?.()).rejects.toThrow(
+      'Codex CLI does not support app-server. Update with: npm update -g @openai/codex',
+    );
+    now += 30_000;
+    await expect(codexProvider.preflight?.()).rejects.toThrow(
+      'Codex CLI does not support app-server. Update with: npm update -g @openai/codex',
+    );
+
+    expect(mockState.spawnSync).toHaveBeenCalledTimes(1);
+    expect(mockState.readFile).not.toHaveBeenCalled();
+  });
+
+  it('caches failed auth token checks within the cache TTL', async () => {
+    let now = 1_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    mockState.readFile.mockResolvedValue(JSON.stringify({ tokens: {} }));
+
+    const { codexProvider } = await loadProvider();
+
+    await expect(codexProvider.preflight?.()).rejects.toThrow(
+      'Codex CLI is not authenticated. Run "codex login" to create ~/.codex/auth.json.',
+    );
+    now += 30_000;
+    await expect(codexProvider.preflight?.()).rejects.toThrow(
+      'Codex CLI is not authenticated. Run "codex login" to create ~/.codex/auth.json.',
+    );
+
+    expect(mockState.spawnSync).toHaveBeenCalledTimes(1);
+    expect(mockState.readFile).toHaveBeenCalledTimes(1);
+  });
+
   it('checkpoints threadId after thread/start and turnId as soon as turn/start responds', async () => {
     const lease = makeLease(async (method) => {
       if (method === 'thread/start') {
