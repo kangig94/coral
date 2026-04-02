@@ -28,6 +28,10 @@ export function principlesDir(root: string = kbRoot()): string {
   return join(root, 'principles');
 }
 
+export function communitiesDir(root: string = kbRoot()): string {
+  return join(root, 'communities');
+}
+
 export function kbRuntimeDir(): string {
   return join(coralRoot(), 'data', 'kb');
 }
@@ -55,6 +59,10 @@ export function notePathFromName(note: string, root: string = kbRoot()): string 
 
 export function principlePathFromName(principle: string, root: string = kbRoot()): string {
   return markdownPath(principlesDir(root), principle, 'KB principle path');
+}
+
+export function communityPathFromName(community: string, root: string = kbRoot()): string {
+  return markdownPath(communitiesDir(root), community, 'KB community path');
 }
 
 export function sourcePathFromName(source: string, root: string = kbRoot()): string {

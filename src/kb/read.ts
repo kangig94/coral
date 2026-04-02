@@ -1,15 +1,16 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  parseCommunityFrontmatter,
   extractBody,
   extractPrincipleStatement,
   extractTitle,
   parseFrontmatter,
   parseSourceFrontmatter,
 } from './frontmatter.js';
-import { memoDir, notePathFromName, principlePathFromName, sourcePathFromName } from './paths.js';
-import type { KbNoteFrontmatter, KbReadInput, KbReadResult, KbSourceFrontmatter } from './types.js';
-import { assertNoteSlug, assertSourceSlug } from './validation.js';
+import { communityPathFromName, memoDir, notePathFromName, principlePathFromName, sourcePathFromName } from './paths.js';
+import type { CommunityFrontmatter, KbNoteFrontmatter, KbReadInput, KbReadResult, KbSourceFrontmatter } from './types.js';
+import { assertCommunitySlug, assertNoteSlug, assertSourceSlug } from './validation.js';
 
 export type KbLoadedNote = {
   raw: string;
@@ -25,8 +26,15 @@ export type KbLoadedSource = {
   body: string;
 };
 
+export type KbLoadedCommunity = {
+  raw: string;
+  frontmatter: CommunityFrontmatter;
+  title: string;
+  body: string;
+};
+
 type KbReadSelector = {
-  kind?: 'source';
+  kind?: 'community' | 'source';
   slug: string;
 };
 
@@ -51,6 +59,16 @@ export function loadKbSource(sourcePath: string): KbLoadedSource {
   };
 }
 
+export function loadKbCommunity(communityPath: string): KbLoadedCommunity {
+  const raw = readFileSync(communityPath, 'utf-8');
+  return {
+    raw,
+    frontmatter: parseCommunityFrontmatter(raw),
+    title: extractTitle(raw),
+    body: extractBody(raw),
+  };
+}
+
 const MEMO_FILENAME_PATTERN = /^\d{8}-\d{6}-.+$/;
 
 export function parseReadSelector(selector: string): KbReadSelector {
@@ -62,15 +80,24 @@ export function parseReadSelector(selector: string): KbReadSelector {
   }
 
   const kind = selector.slice(0, separatorIndex);
-  if (kind !== 'sources') {
+  const slug = selector.slice(separatorIndex + 1);
+
+  if (kind === 'sources') {
     return {
-      slug: assertNoteSlug(selector, 'note'),
+      kind: 'source',
+      slug: assertSourceSlug(slug, 'source'),
+    };
+  }
+
+  if (kind === 'communities') {
+    return {
+      kind: 'community',
+      slug: assertCommunitySlug(slug, 'community'),
     };
   }
 
   return {
-    kind: 'source',
-    slug: assertSourceSlug(selector.slice(separatorIndex + 1), 'note'),
+    slug: assertNoteSlug(selector, 'note'),
   };
 }
 
@@ -91,6 +118,26 @@ function readSourceEntry(source: string): KbReadResult | null {
   };
 }
 
+function readCommunityEntry(community: string): KbReadResult | null {
+  const communityPath = communityPathFromName(community);
+  if (!existsSync(communityPath)) {
+    return null;
+  }
+
+  const { frontmatter, title, body } = loadKbCommunity(communityPath);
+  return {
+    kind: 'community',
+    note: community,
+    title,
+    content: body,
+    tags: [],
+    principles: [],
+    members: frontmatter.members,
+    ...(frontmatter.summary === undefined ? {} : { summary: frontmatter.summary }),
+    updatedAt: frontmatter.updatedAt,
+  };
+}
+
 export function readEntry(input: KbReadInput, projectRoot?: string): KbReadResult {
   const selector = parseReadSelector(input.note);
 
@@ -98,6 +145,15 @@ export function readEntry(input: KbReadInput, projectRoot?: string): KbReadResul
     const sourceEntry = readSourceEntry(selector.slug);
     if (sourceEntry !== null) {
       return sourceEntry;
+    }
+
+    throw new Error(`KB entry not found: ${input.note}`);
+  }
+
+  if (selector.kind === 'community') {
+    const communityEntry = readCommunityEntry(selector.slug);
+    if (communityEntry !== null) {
+      return communityEntry;
     }
 
     throw new Error(`KB entry not found: ${input.note}`);
@@ -132,6 +188,11 @@ export function readEntry(input: KbReadInput, projectRoot?: string): KbReadResul
       principles: frontmatter.principles,
       updatedAt: frontmatter.updatedAt,
     };
+  }
+
+  const communityEntry = readCommunityEntry(note);
+  if (communityEntry !== null) {
+    return communityEntry;
   }
 
   const sourceEntry = readSourceEntry(note);

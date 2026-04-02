@@ -4,10 +4,20 @@ import { errorMessage, isNoEntryError } from '../shared/mcp-utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import type { KbIndexState } from './runtime.js';
 import type { KbRuntime } from './runtime.js';
-import { isNoteEntry, type KbIndex, type NoteEntry, type SourceEntry } from './types.js';
+import {
+  isCommunityEntry,
+  isNoteEntry,
+  isSourceEntry,
+  type CommunityEntry,
+  type EntryRecord,
+  type KbIndex,
+  type NoteEntry,
+  type SourceEntry,
+} from './types.js';
 
 type NoteIndexEntrySource = Omit<NoteEntry, 'kind'>;
 type SourceIndexEntrySource = Omit<SourceEntry, 'kind'>;
+type CommunityIndexEntrySource = Omit<CommunityEntry, 'kind'>;
 
 export function buildNoteIndexEntry(meta: NoteIndexEntrySource): NoteEntry {
   const entry: NoteEntry = {
@@ -40,6 +50,21 @@ export function buildSourceIndexEntry(meta: SourceIndexEntrySource): SourceEntry
     importedAt: meta.importedAt,
     related: [...(meta.related ?? [])],
     ...(meta.entrySeq === undefined ? {} : { entrySeq: meta.entrySeq }),
+  };
+}
+
+export function buildCommunityIndexEntry(meta: CommunityIndexEntrySource): CommunityEntry {
+  return {
+    kind: 'community',
+    slug: meta.slug,
+    title: meta.title,
+    level: meta.level,
+    members: [...meta.members],
+    ...(meta.parent === undefined ? {} : { parent: meta.parent }),
+    ...(meta.summary === undefined ? {} : { summary: meta.summary }),
+    generatedBy: 'curate',
+    createdAt: meta.createdAt,
+    updatedAt: meta.updatedAt,
   };
 }
 
@@ -86,14 +111,25 @@ export function cloneKbIndex(index: KbIndex | null): KbIndex {
   }
 
   return {
-    entries: Object.fromEntries(
-      Object.entries(index.entries).map(([entryId, entry]) => [
-        entryId,
-        isNoteEntry(entry) ? buildNoteIndexEntry(entry) : buildSourceIndexEntry(entry),
-      ]),
-    ),
+    entries: Object.fromEntries(Object.entries(index.entries).map(([entryId, entry]) => [entryId, cloneEntryRecord(entry)])),
     principles: { ...index.principles },
   };
+}
+
+function cloneEntryRecord(entry: EntryRecord): EntryRecord {
+  if (isNoteEntry(entry)) {
+    return buildNoteIndexEntry(entry);
+  }
+
+  if (isSourceEntry(entry)) {
+    return buildSourceIndexEntry(entry);
+  }
+
+  if (isCommunityEntry(entry)) {
+    return buildCommunityIndexEntry(entry);
+  }
+
+  throw new Error(`Unsupported KB entry kind: ${(entry as EntryRecord).kind}`);
 }
 
 /**

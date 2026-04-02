@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   deriveNoteIdentity,
   extractTitle,
+  parseCommunityFrontmatter,
   parseFrontmatter,
   parseMemoFrontmatter,
   parseSourceFrontmatter,
   replaceFrontmatter,
+  serializeCommunityFrontmatter,
   serializeFrontmatter,
   serializeNote,
   serializeSourceFrontmatter,
@@ -97,6 +99,28 @@ updatedAt: 2026-03-23
       importedAt: '2026-03-23T00:00:00.000Z',
       entrySeq: 29,
       related: ['note:query-planner', 'source:sqlite-overview'],
+    });
+  });
+
+  it('parses and serializes community frontmatter separately from note frontmatter', () => {
+    const serialized = serializeCommunityFrontmatter({
+      level: 1,
+      members: ['graph-rag', 'retrieval'],
+      parent: 'community:ai-systems',
+      summary: '  Shared retrieval patterns.  ',
+      generatedBy: 'curate',
+      createdAt: '2026-04-02',
+      updatedAt: '2026-04-03',
+    });
+
+    expect(parseCommunityFrontmatter(`${serialized}# Graph RAG\n\nBody.\n`)).toEqual({
+      level: 1,
+      members: ['graph-rag', 'retrieval'],
+      parent: 'community:ai-systems',
+      summary: 'Shared retrieval patterns.',
+      generatedBy: 'curate',
+      createdAt: '2026-04-02',
+      updatedAt: '2026-04-03',
     });
   });
 

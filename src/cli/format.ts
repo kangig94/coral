@@ -485,6 +485,7 @@ export function formatKbReindex(data: unknown, cliPrefix = 'coral-cli'): string 
   if (
     !isRecord(data) ||
     typeof data.notes !== 'number' ||
+    typeof data.communities !== 'number' ||
     typeof data.principles !== 'number' ||
     typeof data.tags !== 'number' ||
     typeof data.duration_ms !== 'number' ||
@@ -496,7 +497,7 @@ export function formatKbReindex(data: unknown, cliPrefix = 'coral-cli'): string 
   const warning = normalizeKbWarning(data.warning, cliPrefix);
 
   return joinLines([
-    `Reindexed: ${data.notes} notes, ${data.principles} principles, ${data.tags} tags (${data.duration_ms}ms, ${data.mode})`,
+    `Reindexed: ${data.notes} notes, ${data.communities} communities, ${data.principles} principles, ${data.tags} tags (${data.duration_ms}ms, ${data.mode})`,
     warning === undefined ? undefined : `Warning: ${warning}`,
   ]);
 }

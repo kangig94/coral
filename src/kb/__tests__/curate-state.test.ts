@@ -31,6 +31,8 @@ function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
     retryNotBefore: null,
     activeClaim: null,
     pendingDiscoveries: [],
+    communityGraphHash: undefined,
+    communityMembershipFingerprints: undefined,
     consecutiveFailures: 0,
     initialized: false,
     migrationVersion: 0,
@@ -164,6 +166,10 @@ describe('curate state', () => {
           createdAt: '2026-03-25T11:58:00.000Z',
         },
       ],
+      communityGraphHash: 'graph-hash',
+      communityMembershipFingerprints: {
+        'graph-rag': 'members-hash',
+      },
       consecutiveFailures: 2,
       initialized: true,
     });
@@ -172,6 +178,25 @@ describe('curate state', () => {
     writeFileSync(curateStatePath(runtime), JSON.stringify(persisted), 'utf-8');
 
     expect(readCurateState(runtime)).toEqual(persisted);
+  });
+
+  it('treats missing community fingerprint fields as undefined when reading legacy state', () => {
+    mkdirSync(tempDir, { recursive: true });
+    writeFileSync(
+      curateStatePath(runtime),
+      JSON.stringify({
+        processedThrough: cursor('coral-legacy', 8),
+        initialized: true,
+      }),
+      'utf-8',
+    );
+
+    expect(readCurateState(runtime)).toEqual(
+      createCurateState({
+        processedThrough: cursor('coral-legacy', 8),
+        initialized: true,
+      }),
+    );
   });
 
   it('writes curate state atomically without leaving a temp file and round-trips through readCurateState', () => {
@@ -481,6 +506,39 @@ describe('curate state', () => {
         initialized: true,
         migrationVersion: CURATE_STATE_MIGRATION_VERSION,
         lastRunDay: '2026-03-25',
+      }),
+    );
+  });
+
+  it('recovers malformed community fingerprint fields during migration without changing the migration version contract', async () => {
+    mkdirSync(runtime.notesDir(), { recursive: true });
+    writeFileSync(join(runtime.notesDir(), 'coral-malformed.md'), renderNote({ title: 'Malformed Fields' }), 'utf-8');
+    runtime.writeIndex({
+      entries: {},
+      principles: {},
+    });
+    runtime.writeIndexState({
+      mutationSeq: 0,
+      indexedSeq: 0,
+    });
+    writeFileSync(
+      curateStatePath(runtime),
+      JSON.stringify({
+        initialized: true,
+        communityGraphHash: 42,
+        communityMembershipFingerprints: {
+          'graph-rag': 17,
+        },
+      }),
+      'utf-8',
+    );
+
+    await internals.migrateCurateStateIfNeeded();
+
+    expect(readCurateState(runtime)).toEqual(
+      createCurateState({
+        initialized: true,
+        migrationVersion: CURATE_STATE_MIGRATION_VERSION,
       }),
     );
   });

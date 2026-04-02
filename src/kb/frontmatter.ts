@@ -5,6 +5,7 @@ import {
   entryIdToVaultLink,
   parseKbEntryId,
   vaultLinkToEntryId,
+  type CommunityFrontmatter,
   type KbEntryId,
   type KbNoteFrontmatter,
   type KbNoteIdentity,
@@ -73,6 +74,39 @@ function normalizeOptionalNonEmptyText(value: unknown, field: string): string | 
   }
 
   return assertNonEmptyText(value, field);
+}
+
+function normalizeOptionalSummary(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'string') {
+    throw new Error('summary must be a string');
+  }
+
+  const normalized = value.trim();
+  return normalized ? normalized : undefined;
+}
+
+function normalizeCommunityLevel(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new Error('level must be a non-negative integer');
+  }
+
+  return value;
+}
+
+function normalizeCommunityParent(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const normalized = parseKbEntryId(assertNonEmptyText(value, 'parent'));
+  if (normalized === null || !normalized.startsWith('community:')) {
+    throw new Error('parent must be a community entry ID');
+  }
+
+  return normalized;
 }
 
 export function normalizePrincipleReference(value: string): string {
@@ -163,6 +197,26 @@ export function parseSourceFrontmatter(content: string): KbSourceFrontmatter {
   };
 }
 
+export function parseCommunityFrontmatter(content: string): CommunityFrontmatter {
+  const record = parseFrontmatterRecord(content);
+  const parent = normalizeCommunityParent(record.parent);
+  const summary = normalizeOptionalSummary(record.summary);
+
+  if (record.generatedBy !== 'curate') {
+    throw new Error("generatedBy must be 'curate'");
+  }
+
+  return {
+    level: normalizeCommunityLevel(record.level),
+    members: normalizeStringList(record.members, 'members'),
+    ...(parent === undefined ? {} : { parent }),
+    ...(summary === undefined ? {} : { summary }),
+    generatedBy: 'curate',
+    createdAt: assertNonEmptyText(record.createdAt, 'createdAt'),
+    updatedAt: assertNonEmptyText(record.updatedAt, 'updatedAt'),
+  };
+}
+
 export function parseMemoFrontmatter(content: string): { source: string[]; owner?: string } {
   const record = parseFrontmatterRecord(content);
   const { source, owner } = record;
@@ -230,6 +284,21 @@ export function serializeSourceFrontmatter(meta: KbSourceFrontmatter): string {
     importedAt: assertNonEmptyText(meta.importedAt, 'importedAt'),
     ...(entrySeq === undefined ? {} : { entrySeq }),
     ...(related.length === 0 ? {} : { related: related.map((entry) => entryIdToVaultLink(entry)) }),
+  });
+}
+
+export function serializeCommunityFrontmatter(meta: CommunityFrontmatter): string {
+  const parent = normalizeCommunityParent(meta.parent);
+  const summary = normalizeOptionalSummary(meta.summary);
+
+  return serializeFrontmatterRecord({
+    level: normalizeCommunityLevel(meta.level),
+    members: normalizeStringList(meta.members, 'members'),
+    ...(parent === undefined ? {} : { parent }),
+    ...(summary === undefined ? {} : { summary }),
+    generatedBy: 'curate',
+    createdAt: assertNonEmptyText(meta.createdAt, 'createdAt'),
+    updatedAt: assertNonEmptyText(meta.updatedAt, 'updatedAt'),
   });
 }
 

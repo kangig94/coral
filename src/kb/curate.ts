@@ -1,7 +1,7 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import {
@@ -27,6 +27,17 @@ import {
   type CurateCursor,
   type CurateState,
 } from './curate-state.js';
+import {
+  buildCommunityDocuments,
+  buildTagCooccurrenceGraph,
+  computeCommunityMembershipFingerprint,
+  computeGraphFingerprint,
+  detectCommunities,
+  generateCommunityFiles,
+  generateCommunitySummary,
+  loadExistingCommunityState,
+  renderCommunityDocument,
+} from './community-detection.js';
 import { cleanupTags, countTagSupport, type TagCleanupResult } from './curate-tags.js';
 import {
   deriveNoteIdentity,
@@ -47,6 +58,7 @@ import {
   writeFileAtomic,
 } from './mutation-helpers.js';
 import { runEntrySeqUpgradeGuard, type KbRuntime } from './runtime.js';
+import { rebuildTextArtifacts } from './text-artifacts.js';
 import {
   getEntry,
   isNoteEntry,
@@ -54,7 +66,7 @@ import {
   isSourceEntry,
   noteEntryId,
   sourceEntryId,
-  type EntryRecord,
+  type CuratableEntry,
   type KbEntryId,
   type KbIndex,
   type NoteEntry,
@@ -254,6 +266,7 @@ export type CurateHandle = {
     recordDiscoveryAttempt(highSeq: number, nextOffset: number): Promise<void>;
     addPendingDiscovery(entry: PendingDiscovery): Promise<void>;
     removePendingDiscovery(entry: PendingDiscovery): Promise<void>;
+    runCommunitySubphase(): Promise<boolean>;
     migrateCurateStateIfNeeded(): Promise<void>;
   };
 };
@@ -359,8 +372,10 @@ function getIndexNote(index: KbIndex, note: string): NoteEntry | undefined {
   return entry !== undefined && isNoteEntry(entry) ? entry : undefined;
 }
 
-function getCuratableEntries(index: KbIndex): EntryRecord[] {
-  return Object.values(index.entries);
+function getCuratableEntries(index: KbIndex): CuratableEntry[] {
+  return Object.values(index.entries).filter(
+    (entry): entry is CuratableEntry => isNoteEntry(entry) || isSourceEntry(entry),
+  );
 }
 
 function getDiscoveryNotes(index: KbIndex): NoteEntry[] {
@@ -1129,8 +1144,12 @@ export function buildMetadataTargets(
   return claimedEntries
     .map((claimedEntry) => {
       const claimTimeMeta = getEntry(index, claimedEntry.entryId);
-      const existingTags = new Set(claimTimeMeta?.tags ?? []);
-      const existingRelated = new Set(claimTimeMeta?.related ?? []);
+      const claimTimeCuratableMeta =
+        claimTimeMeta !== undefined && (isNoteEntry(claimTimeMeta) || isSourceEntry(claimTimeMeta))
+          ? claimTimeMeta
+          : undefined;
+      const existingTags = new Set(claimTimeCuratableMeta?.tags ?? []);
+      const existingRelated = new Set(claimTimeCuratableMeta?.related ?? []);
       const assignment = assignmentsByEntryId.get(claimedEntry.entryId);
       const addTags = uniqueTrimmedList((assignment?.tags ?? []).filter((tag) => !existingTags.has(tag)));
       const addRelated = uniqueTrimmedList(
@@ -1534,10 +1553,18 @@ export function createCurateScheduler({
     }
   }
 
+  function kbGitPaths(): string[] {
+    return ['notes/', 'sources/', 'principles/', 'communities/', '.gitignore'].filter((entry) =>
+      existsSync(join(root, entry.replace(/\/$/, ''))),
+    );
+  }
+
   function gitAutoCommit(message: string): void {
     if (!isGitRepo()) return;
     try {
-      git(['add', 'notes/', 'sources/', 'principles/', '.gitignore'], 10000);
+      const paths = kbGitPaths();
+      if (paths.length === 0) return;
+      git(['add', ...paths], 10000);
       if (!hasStagedChanges()) return;
       gitCommit(message);
     } catch {
@@ -1553,7 +1580,9 @@ export function createCurateScheduler({
   async function gitAutoCommitAsync(message: string): Promise<void> {
     if (!isGitRepo()) return;
     try {
-      await gitAsync(['add', 'notes/', 'sources/', 'principles/', '.gitignore'], 10000);
+      const paths = kbGitPaths();
+      if (paths.length === 0) return;
+      await gitAsync(['add', ...paths], 10000);
       if (!hasStagedChanges()) return;
       gitCommit(message);
     } catch {
@@ -1624,6 +1653,112 @@ export function createCurateScheduler({
       const state = readCurateState(kb);
       recordCurateFailureLocked(state, through, error);
     });
+  }
+
+  async function runCommunitySubphase(signal?: AbortSignal): Promise<boolean> {
+    let wroteCommunityFiles = false;
+
+    await kb.withMutationLock(async () => {
+      if (stopped || signal?.aborted) {
+        return;
+      }
+
+      const state = readCurateState(kb);
+      const finalIndex = kb.readIndexOrEmpty();
+      const graph = buildTagCooccurrenceGraph(finalIndex);
+      const graphHash = computeGraphFingerprint(graph);
+      if (state.communityGraphHash === graphHash) {
+        return;
+      }
+
+      const { generated: priorGeneratedCommunities, reservedSlugs } = loadExistingCommunityState(kb);
+      const communities = detectCommunities(graph, {
+        priorCommunities: priorGeneratedCommunities,
+        reservedSlugs,
+      });
+      const priorCommunitiesBySlug = new Map(
+        priorGeneratedCommunities.map((community) => [community.slug, community] as const),
+      );
+      let communityDocuments = buildCommunityDocuments(communities, {
+        priorGeneratedCommunities,
+        priorMembershipFingerprints: state.communityMembershipFingerprints,
+        today: nowIsoString().slice(0, 10),
+      });
+
+      let mutated = false;
+      let staleMarked = false;
+      const recordCommunityMutation = () => {
+        kb.recordMutationCommitted();
+        mutated = true;
+        if (!staleMarked) {
+          markTextIndexStale(kb.invalidateTextSnapshot, CURATE_STALE_REASON);
+          staleMarked = true;
+        }
+      };
+
+      mutated = generateCommunityFiles(kb, communityDocuments, priorGeneratedCommunities, recordCommunityMutation);
+
+      for (const [communityIndex, community] of communities.entries()) {
+        const document = communityDocuments[communityIndex];
+        if (document === undefined) {
+          continue;
+        }
+
+        const priorCommunity = priorCommunitiesBySlug.get(community.slug);
+        const priorMembershipFingerprint =
+          priorCommunity === undefined
+            ? undefined
+            : (state.communityMembershipFingerprints?.[community.slug] ??
+              computeCommunityMembershipFingerprint(priorCommunity.members));
+        const summary = await generateCommunitySummary({
+          community,
+          kb,
+          index: finalIndex,
+          priorCommunity,
+          priorMembershipFingerprint,
+          runClaude,
+          signal,
+        });
+
+        if (summary === document.summary) {
+          continue;
+        }
+
+        const updatedDocument = {
+          ...document,
+          summary,
+          content: renderCommunityDocument({
+            title: document.title,
+            members: document.members,
+            ...(summary === undefined ? {} : { summary }),
+            createdAt: document.createdAt,
+            updatedAt: document.updatedAt,
+          }),
+        };
+        writeFileAtomic(kb.communityPath(updatedDocument.slug), updatedDocument.content);
+        recordCommunityMutation();
+        communityDocuments[communityIndex] = updatedDocument;
+      }
+
+      if (mutated) {
+        const rebuildSeq = kb.readIndexState().mutationSeq;
+        await rebuildTextArtifacts(kb, rebuildSeq);
+        wroteCommunityFiles = true;
+      }
+
+      writeCurateState(kb, {
+        ...state,
+        communityGraphHash: graphHash,
+        communityMembershipFingerprints:
+          communityDocuments.length === 0
+            ? undefined
+            : Object.fromEntries(
+                communityDocuments.map((document) => [document.slug, document.membershipFingerprint] as const),
+              ),
+      });
+    });
+
+    return wroteCommunityFiles;
   }
 
   function clearCurateRetryStateLocked(state: CurateState): CurateState {
@@ -2308,6 +2443,16 @@ export function createCurateScheduler({
       }
     }
 
+    if (!stopped && !signal.aborted) {
+      try {
+        if (await runCommunitySubphase(signal)) {
+          gitAutoCommit('curate: detect communities');
+        }
+      } catch (error: unknown) {
+        throw new CurateRunError(lastCompletedThrough, error);
+      }
+    }
+
     if (!stopped && !signal.aborted) await gitPush();
     return lastCompletedThrough;
   }
@@ -2328,6 +2473,12 @@ export function createCurateScheduler({
 
       try {
         lastCompletedThrough = await runScheduledCurate(runController.signal);
+        if (!stopped && !runController.signal.aborted && lastCompletedThrough === null) {
+          if (await runCommunitySubphase(runController.signal)) {
+            gitAutoCommit('curate: detect communities');
+            await gitPush();
+          }
+        }
       } catch (error: unknown) {
         if (stopped && runController.signal.aborted) {
           try {
@@ -2450,6 +2601,7 @@ export function createCurateScheduler({
       recordDiscoveryAttempt,
       addPendingDiscovery,
       removePendingDiscovery,
+      runCommunitySubphase,
       async migrateCurateStateIfNeeded() {
         await migrateCurateStateIfNeeded(kb);
       },

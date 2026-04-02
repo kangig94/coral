@@ -3,16 +3,25 @@ import { join } from 'node:path';
 import { insertMultiple } from '@orama/orama';
 import { errorMessage, isNoEntryError } from '../shared/mcp-utils.js';
 import { backendLog } from '../shared/backend-log.js';
-import { deriveNoteIdentity, extractBody, extractPrincipleStatement, parseSourceFrontmatter } from './frontmatter.js';
-import { buildNoteIndexEntry, buildSourceIndexEntry } from './mutation-helpers.js';
+import {
+  deriveNoteIdentity,
+  extractBody,
+  extractPrincipleStatement,
+  extractTitle,
+  parseCommunityFrontmatter,
+  parseSourceFrontmatter,
+} from './frontmatter.js';
+import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from './mutation-helpers.js';
 import { loadKbNote } from './read.js';
-import { assertSourceSlug, compareLocale } from './validation.js';
+import { assertCommunitySlug, assertSourceSlug, compareLocale } from './validation.js';
 import { createOramaDb, toOramaDocument } from './orama-factory.js';
 import type { KbRuntime } from './runtime.js';
 import {
+  communityEntryId,
   noteEntryId,
   sourceEntryId,
   type KbIndex,
+  type KbReindexCommunityRecord,
   type KbReindexNoteRecord,
   type KbReindexSourceRecord,
   type ReindexResult,
@@ -76,6 +85,34 @@ function loadSources(kb: KbRuntime): KbReindexSourceRecord[] {
   return sources;
 }
 
+function loadCommunityDocument(communityPath: string): Omit<KbReindexCommunityRecord, 'path' | 'slug'> {
+  const raw = readFileSync(communityPath, 'utf-8');
+  return {
+    ...parseCommunityFrontmatter(raw),
+    title: extractTitle(raw),
+    body: extractBody(raw),
+  };
+}
+
+export function loadCommunities(kb: KbRuntime): KbReindexCommunityRecord[] {
+  const communitiesPath = kb.communitiesDir();
+  const communities: KbReindexCommunityRecord[] = [];
+
+  for (const entry of sortedMarkdownEntries(communitiesPath)) {
+    try {
+      communities.push({
+        slug: assertCommunitySlug(entry.slice(0, -3), 'KB community name'),
+        path: `communities/${entry}`,
+        ...loadCommunityDocument(join(communitiesPath, entry)),
+      });
+    } catch (error: unknown) {
+      backendLog.warn(`Skipping malformed KB community ${entry}: ${errorMessage(error)}`);
+    }
+  }
+
+  return communities;
+}
+
 function loadPrinciples(kb: KbRuntime): Array<[string, string]> {
   const principlesPath = kb.principlesDir();
   const principles: Array<[string, string]> = [];
@@ -96,6 +133,7 @@ function loadPrinciples(kb: KbRuntime): Array<[string, string]> {
 function buildKbIndex(
   notes: KbReindexNoteRecord[],
   sources: KbReindexSourceRecord[],
+  communities: KbReindexCommunityRecord[],
   principles: Array<[string, string]>,
 ): KbIndex {
   const entries: KbIndex['entries'] = {};
@@ -127,6 +165,20 @@ function buildKbIndex(
     });
   }
 
+  for (const community of communities) {
+    entries[communityEntryId(community.slug)] = buildCommunityIndexEntry({
+      slug: community.slug,
+      title: community.title,
+      level: community.level,
+      members: community.members,
+      ...(community.parent === undefined ? {} : { parent: community.parent }),
+      ...(community.summary === undefined ? {} : { summary: community.summary }),
+      generatedBy: community.generatedBy,
+      createdAt: community.createdAt,
+      updatedAt: community.updatedAt,
+    });
+  }
+
   return {
     entries,
     principles: Object.fromEntries(principles),
@@ -136,20 +188,29 @@ function buildKbIndex(
 function buildCounts(
   notes: KbReindexNoteRecord[],
   sources: KbReindexSourceRecord[],
+  communities: KbReindexCommunityRecord[],
   principles: Array<[string, string]>,
-): Pick<ReindexResult, 'notes' | 'sources' | 'principles' | 'tags'> {
+): Pick<ReindexResult, 'notes' | 'sources' | 'communities' | 'principles' | 'tags'> {
   return {
     notes: notes.length,
     sources: sources.length,
+    communities: communities.length,
     principles: principles.length,
-    tags: new Set([...notes.flatMap((note) => note.tags), ...sources.flatMap((source) => source.tags)]).size,
+    tags: new Set([
+      ...notes.flatMap((note) => note.tags),
+      ...sources.flatMap((source) => source.tags),
+      ...communities.flatMap((community) => community.members),
+    ]).size,
   };
 }
 
 export class TextSnapshotRebuildError extends Error {
-  readonly counts: Pick<ReindexResult, 'notes' | 'sources' | 'principles' | 'tags'>;
+  readonly counts: Pick<ReindexResult, 'notes' | 'sources' | 'communities' | 'principles' | 'tags'>;
 
-  constructor(message: string, counts: Pick<ReindexResult, 'notes' | 'sources' | 'principles' | 'tags'>) {
+  constructor(
+    message: string,
+    counts: Pick<ReindexResult, 'notes' | 'sources' | 'communities' | 'principles' | 'tags'>,
+  ) {
     super(message);
     this.name = 'TextSnapshotRebuildError';
     this.counts = counts;
@@ -165,17 +226,23 @@ export async function rebuildTextArtifacts(
 ): Promise<{
   notes: KbReindexNoteRecord[];
   sources: KbReindexSourceRecord[];
+  communities: KbReindexCommunityRecord[];
   principles: Array<[string, string]>;
-  counts: Pick<ReindexResult, 'notes' | 'sources' | 'principles' | 'tags'>;
+  counts: Pick<ReindexResult, 'notes' | 'sources' | 'communities' | 'principles' | 'tags'>;
 }> {
   const notes = loadNotes(kb);
   const sources = loadSources(kb);
+  const communities = loadCommunities(kb);
   const principles = loadPrinciples(kb);
-  const counts = buildCounts(notes, sources, principles);
-  const index = buildKbIndex(notes, sources, principles);
+  const counts = buildCounts(notes, sources, communities, principles);
+  const index = buildKbIndex(notes, sources, communities, principles);
   const { db, tokenizer } = await createOramaDb();
 
-  await insertMultiple(db, [...notes.map(toOramaDocument), ...sources.map(toOramaDocument)]);
+  await insertMultiple(db, [
+    ...notes.map(toOramaDocument),
+    ...sources.map(toOramaDocument),
+    ...communities.map(toOramaDocument),
+  ]);
   kb.persistIndexToDisk(index);
 
   try {
@@ -200,6 +267,7 @@ export async function rebuildTextArtifacts(
   return {
     notes,
     sources,
+    communities,
     principles,
     counts,
   };

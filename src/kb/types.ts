@@ -1,10 +1,10 @@
-import { assertNoteSlug, assertSourceSlug } from './validation.js';
+import { assertCommunitySlug, assertNoteSlug, assertSourceSlug } from './validation.js';
 
 export type KbMatchSurface = 'filename' | 'principle' | 'tag' | 'title' | 'content';
 
 export interface KbResult {
   note: string;
-  kind: 'note' | 'source';
+  kind: 'note' | 'source' | 'community';
   title: string;
   matchedBy: KbMatchSurface[];
   tags: string[];
@@ -12,7 +12,7 @@ export interface KbResult {
   snippet?: string;
 }
 
-export type KbEntryId = `note:${string}` | `source:${string}`;
+export type KbEntryId = `note:${string}` | `source:${string}` | `community:${string}`;
 
 export type NoteEntry = KbNoteFrontmatter & {
   kind: 'note';
@@ -53,7 +53,24 @@ export type SourceEntry = KbSourceFrontmatter & {
   slug: string;
 };
 
-export type EntryRecord = NoteEntry | SourceEntry;
+export interface CommunityFrontmatter {
+  level: number;
+  members: string[];
+  parent?: string;
+  summary?: string;
+  generatedBy: 'curate';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type CommunityEntry = CommunityFrontmatter & {
+  kind: 'community';
+  slug: string;
+  title: string;
+};
+
+export type EntryRecord = NoteEntry | SourceEntry | CommunityEntry;
+export type CuratableEntry = NoteEntry | SourceEntry;
 
 export interface KbIndex {
   entries: Record<string, EntryRecord>;
@@ -69,6 +86,7 @@ export interface KbSearchResponse {
 export type ReindexResult = {
   notes: number;
   sources: number;
+  communities: number;
   principles: number;
   tags: number;
   duration_ms: number;
@@ -106,6 +124,13 @@ export type KbReindexSourceRecord = KbSourceFrontmatter & {
   body: string;
 };
 
+export type KbReindexCommunityRecord = CommunityFrontmatter & {
+  slug: string;
+  path: string;
+  title: string;
+  body: string;
+};
+
 export interface KbLanceDbAdapter {
   getDb(): Promise<unknown>;
   ensureTables(): Promise<void>;
@@ -119,7 +144,7 @@ export type KbSearchInput = {
   scope?: KbSearchScope;
 };
 
-export type KbSearchScope = 'notes' | 'sources' | 'all';
+export type KbSearchScope = 'notes' | 'sources' | 'communities' | 'all';
 
 export type KbPromoteInput = {
   memo: string;
@@ -140,12 +165,14 @@ export type KbReadInput = {
 };
 
 export type KbReadResult = {
-  kind: 'memo' | 'note' | 'source' | 'principle';
+  kind: 'memo' | 'note' | 'source' | 'community' | 'principle';
   note: string;
   title: string;
   content: string;
   tags: string[];
   principles: string[];
+  members?: string[];
+  summary?: string;
   updatedAt?: string;
   rawContent?: string;
 };
@@ -214,6 +241,10 @@ export function sourceEntryId(slug: string): KbEntryId {
   return `source:${slug}`;
 }
 
+export function communityEntryId(slug: string): KbEntryId {
+  return `community:${slug}`;
+}
+
 export function parseKbEntryId(value: string): KbEntryId | null {
   if (value.startsWith('note:')) {
     try {
@@ -231,6 +262,14 @@ export function parseKbEntryId(value: string): KbEntryId | null {
     }
   }
 
+  if (value.startsWith('community:')) {
+    try {
+      return communityEntryId(assertCommunitySlug(value.slice('community:'.length), 'entryId'));
+    } catch {
+      return null;
+    }
+  }
+
   return null;
 }
 
@@ -239,11 +278,15 @@ export function entryIdToVaultLink(id: KbEntryId): string {
     return `[[notes/${id.slice('note:'.length)}]]`;
   }
 
-  return `[[sources/${id.slice('source:'.length)}]]`;
+  if (id.startsWith('source:')) {
+    return `[[sources/${id.slice('source:'.length)}]]`;
+  }
+
+  return `[[communities/${id.slice('community:'.length)}]]`;
 }
 
 export function vaultLinkToEntryId(link: string): KbEntryId | null {
-  const match = link.trim().match(/^\[\[(notes|sources)\/([^[\]\/]+)\]\]$/);
+  const match = link.trim().match(/^\[\[(notes|sources|communities)\/([^[\]\/]+)\]\]$/);
   if (match === null) {
     return null;
   }
@@ -256,14 +299,22 @@ export function vaultLinkToEntryId(link: string): KbEntryId | null {
     }
   }
 
+  if (match[1] === 'sources') {
+    try {
+      return sourceEntryId(assertSourceSlug(match[2], 'vault link'));
+    } catch {
+      return null;
+    }
+  }
+
   try {
-    return sourceEntryId(assertSourceSlug(match[2], 'vault link'));
+    return communityEntryId(assertCommunitySlug(match[2], 'vault link'));
   } catch {
     return null;
   }
 }
 
-export function entrySeqFromRecord(entry: EntryRecord): number | undefined {
+export function entrySeqFromRecord(entry: CuratableEntry): number | undefined {
   return entry.entrySeq;
 }
 
@@ -287,4 +338,8 @@ export function isNoteEntry(entry: EntryRecord): entry is NoteEntry {
 
 export function isSourceEntry(entry: EntryRecord): entry is SourceEntry {
   return entry.kind === 'source';
+}
+
+export function isCommunityEntry(entry: EntryRecord): entry is CommunityEntry {
+  return entry.kind === 'community';
 }

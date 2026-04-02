@@ -473,6 +473,7 @@ describe('cli format', () => {
         {
           notes: 4,
           sources: 0,
+          communities: 0,
           principles: 2,
           tags: 3,
           duration_ms: 25,
@@ -483,7 +484,7 @@ describe('cli format', () => {
       );
 
       expect(formatted).toBe(
-        'Reindexed: 4 notes, 2 principles, 3 tags (25ms, text)\n' +
+        'Reindexed: 4 notes, 0 communities, 2 principles, 3 tags (25ms, text)\n' +
           'Warning: Run node "/tmp/coral-cli.cjs" kb reindex again to refresh the enhanced index.',
       );
     });

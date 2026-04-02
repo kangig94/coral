@@ -63,6 +63,8 @@ export type CurateState = {
     notes: string[];
     createdAt: string;
   }>;
+  communityGraphHash?: string;
+  communityMembershipFingerprints?: Record<string, string>;
   consecutiveFailures: number;
   initialized: boolean;
   migrationVersion: number;
@@ -95,6 +97,8 @@ function defaultCurateState(): CurateState {
     retryNotBefore: null,
     activeClaim: null,
     pendingDiscoveries: [],
+    communityGraphHash: undefined,
+    communityMembershipFingerprints: undefined,
     consecutiveFailures: 0,
     initialized: false,
     migrationVersion: 0,
@@ -140,6 +144,35 @@ function parseOptionalString(value: unknown, label: string): string | null {
     throw new Error(`${label} must be a string or null`);
   }
   return value;
+}
+
+function parseOptionalDefinedString(value: unknown, label: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new Error(`${label} must be a non-empty string`);
+  }
+  return value.trim();
+}
+
+function parseOptionalStringRecord(value: unknown, label: string): Record<string, string> | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+
+  const entries: Record<string, string> = {};
+  for (const [key, entryValue] of Object.entries(value)) {
+    if (typeof entryValue !== 'string' || entryValue.trim() === '') {
+      throw new Error(`${label}.${key} must be a non-empty string`);
+    }
+    entries[key] = entryValue.trim();
+  }
+
+  return entries;
 }
 
 function parseEntryId(value: unknown, label: string): KbEntryId {
@@ -238,6 +271,11 @@ function parseCurateState(value: unknown): CurateState {
     retryNotBefore: parseOptionalString(value.retryNotBefore, 'retryNotBefore'),
     activeClaim: parseActiveClaim(value.activeClaim),
     pendingDiscoveries: parsePendingDiscoveries(value.pendingDiscoveries),
+    communityGraphHash: parseOptionalDefinedString(value.communityGraphHash, 'communityGraphHash'),
+    communityMembershipFingerprints: parseOptionalStringRecord(
+      value.communityMembershipFingerprints,
+      'communityMembershipFingerprints',
+    ),
     consecutiveFailures: parseNonNegativeInteger(value.consecutiveFailures ?? 0, 'consecutiveFailures'),
     initialized: value.initialized === true,
     migrationVersion: parseNonNegativeInteger(value.migrationVersion ?? 0, 'migrationVersion'),
@@ -285,6 +323,22 @@ function recoverOptionalString(value: unknown): string | null {
     return parseOptionalString(value, 'value');
   } catch {
     return null;
+  }
+}
+
+function recoverOptionalDefinedString(value: unknown): string | undefined {
+  try {
+    return parseOptionalDefinedString(value, 'value');
+  } catch {
+    return undefined;
+  }
+}
+
+function recoverOptionalStringRecord(value: unknown): Record<string, string> | undefined {
+  try {
+    return parseOptionalStringRecord(value, 'value');
+  } catch {
+    return undefined;
   }
 }
 
@@ -342,6 +396,8 @@ function recoverCurateState(value: unknown): CurateState {
     retryNotBefore: recoverOptionalString(value.retryNotBefore),
     activeClaim,
     pendingDiscoveries: recoverPendingDiscoveries(value.pendingDiscoveries),
+    communityGraphHash: recoverOptionalDefinedString(value.communityGraphHash),
+    communityMembershipFingerprints: recoverOptionalStringRecord(value.communityMembershipFingerprints),
     consecutiveFailures,
     initialized: value.initialized === true,
     migrationVersion,

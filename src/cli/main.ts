@@ -822,7 +822,14 @@ export function buildProgram(): Command {
     .description('Search KB entries')
     .argument('<query>', 'Search query')
     .option('--top-k <n>', 'Maximum results')
-    .addOption(new Option('--scope <scope>', 'Limit results to notes, sources, or both').choices(['notes', 'sources', 'all']))
+    .addOption(
+      new Option('--scope <scope>', 'Limit results to notes, communities, sources, or all').choices([
+        'notes',
+        'communities',
+        'sources',
+        'all',
+      ]),
+    )
     .action(async (query: string, opts: KbSearchOptions) => {
       const outputFormat = getOutputFormat(kbSearchCommand);
 
@@ -830,7 +837,9 @@ export function buildProgram(): Command {
         const args = {
           query,
           ...(opts.topK !== undefined ? { top_k: parseIntegerFlag('--top-k', opts.topK) } : {}),
-          ...(opts.scope !== undefined ? { scope: opts.scope as 'notes' | 'sources' | 'all' } : {}),
+          ...(opts.scope !== undefined
+            ? { scope: opts.scope as 'notes' | 'communities' | 'sources' | 'all' }
+            : {}),
         };
         const client = makeClient(process.cwd());
         const result = await client.kbSearch(args);
@@ -1002,8 +1011,11 @@ export function buildProgram(): Command {
 
   const kbReadCommand = kb.command('read');
   kbReadCommand
-    .description('Read a KB entry by slug')
-    .argument('<note>', 'Note or principle slug without extension (e.g. rendering-guiding-contracts)')
+    .description('Read a KB entry by slug or explicit selector')
+    .argument(
+      '<note>',
+      'Bare reads resolve memo -> note -> community -> source -> principle; use communities:<slug> or sources:<slug> to force a kind',
+    )
     .action(async (note: string) => {
       const outputFormat = getOutputFormat(kbReadCommand);
 

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
-import { noteEntryId } from '../types.js';
+import { communityEntryId, noteEntryId } from '../types.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -164,6 +164,7 @@ Make the contract explicit first.
 
     expect(result).toMatchObject({
       notes: 1,
+      communities: 0,
       principles: 1,
       tags: 2,
       mode: 'text',
@@ -191,6 +192,59 @@ Make the contract explicit first.
     expect(readFileSync(join(mockState.tmpHome, '.coral', 'data', 'kb', 'index.json'), 'utf-8')).toContain(
       '"coral-kb-mode"',
     );
+  });
+
+  it('indexes communities as first-class entries during text rebuild', async () => {
+    const { reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.communitiesDir(), { recursive: true });
+    writeFileSync(
+      join(paths.communitiesDir(), 'graph-rag.md'),
+      `---
+level: 0
+members:
+  - graph-rag
+  - retrieval
+summary: Shared retrieval patterns.
+generatedBy: curate
+createdAt: 2026-04-02
+updatedAt: 2026-04-02
+---
+# Graph RAG
+
+## Members
+- #graph-rag
+- #retrieval
+`,
+      'utf-8',
+    );
+
+    const result = await reindex(kb);
+
+    expect(result).toMatchObject({
+      notes: 0,
+      sources: 0,
+      communities: 1,
+      principles: 0,
+      tags: 2,
+      mode: 'text',
+    });
+    expect(kb.readIndex()).toEqual({
+      entries: {
+        [communityEntryId('graph-rag')]: {
+          kind: 'community',
+          slug: 'graph-rag',
+          title: 'Graph RAG',
+          level: 0,
+          members: ['graph-rag', 'retrieval'],
+          summary: 'Shared retrieval patterns.',
+          generatedBy: 'curate',
+          createdAt: '2026-04-02',
+          updatedAt: '2026-04-02',
+        },
+      },
+      principles: {},
+    });
   });
 
   it('rebuilds text mode cleanly when enhanced mode was previously active but is now unavailable', async () => {

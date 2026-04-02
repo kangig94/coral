@@ -47,3 +47,7 @@ export function assertNoteSlug(value: unknown, label: string): string {
 export function assertSourceSlug(value: unknown, label: string): string {
   return assertNoteSlug(value, label);
 }
+
+export function assertCommunitySlug(value: unknown, label: string): string {
+  return assertNoteSlug(value, label);
+}

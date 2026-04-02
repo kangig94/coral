@@ -55,6 +55,8 @@ function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
     retryNotBefore: null,
     activeClaim: null,
     pendingDiscoveries: [],
+    communityGraphHash: undefined,
+    communityMembershipFingerprints: undefined,
     consecutiveFailures: 0,
     initialized: false,
     migrationVersion: 0,
@@ -144,6 +146,11 @@ function createIndexEntries(notes: Record<string, ReturnType<typeof createIndexN
       },
     ]),
   );
+}
+
+function readIndexEntryTags(index: KbIndex | null | undefined, entryId: string): string[] | undefined {
+  const entry = index?.entries[entryId];
+  return entry !== undefined && 'tags' in entry ? entry.tags : undefined;
 }
 
 function buildClaimedNote({
@@ -1043,8 +1050,8 @@ describe('curate', () => {
         'coral',
         'kb',
       ]);
-      expect(runtime.readIndex()?.entries[noteEntryId('coral-stale')]?.tags).toEqual(['coral']);
-      expect(runtime.readIndex()?.entries[noteEntryId('coral-fresh')]?.tags).toEqual(['coral', 'kb']);
+      expect(readIndexEntryTags(runtime.readIndex(), noteEntryId('coral-stale'))).toEqual(['coral']);
+      expect(readIndexEntryTags(runtime.readIndex(), noteEntryId('coral-fresh'))).toEqual(['coral', 'kb']);
       expect(runtime.readIndexState()).toMatchObject({
         mutationSeq: 1,
       });
@@ -1104,7 +1111,7 @@ describe('curate', () => {
         'coral',
         'stable-parent',
       ]);
-      expect(runtime.readIndex()?.entries[noteEntryId('coral-parent-child')]?.tags).toEqual([
+      expect(readIndexEntryTags(runtime.readIndex(), noteEntryId('coral-parent-child'))).toEqual([
         'coral',
         'stable-parent',
       ]);
@@ -1516,8 +1523,8 @@ describe('curate', () => {
         'coral',
         'stable-parent',
       ]);
-      expect(runtime.readIndex()?.entries[noteEntryId('coral-pattern-note')]?.tags).toEqual(['coral']);
-      expect(runtime.readIndex()?.entries[noteEntryId('coral-parent-child')]?.tags).toEqual([
+      expect(readIndexEntryTags(runtime.readIndex(), noteEntryId('coral-pattern-note'))).toEqual(['coral']);
+      expect(readIndexEntryTags(runtime.readIndex(), noteEntryId('coral-parent-child'))).toEqual([
         'coral',
         'stable-parent',
       ]);
@@ -1711,6 +1718,97 @@ describe('curate', () => {
         consecutiveFailures: 1,
       });
       expect(readCurateState(runtime).retryNotBefore).not.toBeNull();
+    });
+
+    it('rebuilds text artifacts once with the final mutation sequence after community writes', async () => {
+      const notes: Record<string, ReturnType<typeof createIndexNote>> = {
+        'coral-transformers-a': createIndexNote({
+          title: 'Transformers A',
+          tags: ['coral', 'transformer', 'attention'],
+          entrySeq: 1,
+        }),
+        'coral-transformers-b': createIndexNote({
+          title: 'Transformers B',
+          tags: ['coral', 'transformer', 'attention', 'self-attention'],
+          entrySeq: 2,
+        }),
+        'coral-sqlite-a': createIndexNote({
+          title: 'SQLite A',
+          tags: ['coral', 'sqlite', 'query-planning'],
+          entrySeq: 3,
+        }),
+        'coral-sqlite-b': createIndexNote({
+          title: 'SQLite B',
+          tags: ['coral', 'sqlite', 'query-planning', 'indexing'],
+          entrySeq: 4,
+        }),
+      };
+
+      writeNote('coral-transformers-a', {
+        title: 'Transformers A',
+        tags: ['coral', 'transformer', 'attention'],
+        entrySeq: 1,
+        body: 'Transformer attention patterns.',
+      });
+      writeNote('coral-transformers-b', {
+        title: 'Transformers B',
+        tags: ['coral', 'transformer', 'attention', 'self-attention'],
+        entrySeq: 2,
+        body: 'Self-attention variants.',
+      });
+      writeNote('coral-sqlite-a', {
+        title: 'SQLite A',
+        tags: ['coral', 'sqlite', 'query-planning'],
+        entrySeq: 3,
+        body: 'SQLite query planning overview.',
+      });
+      writeNote('coral-sqlite-b', {
+        title: 'SQLite B',
+        tags: ['coral', 'sqlite', 'query-planning', 'indexing'],
+        entrySeq: 4,
+        body: 'Indexing and planner tradeoffs.',
+      });
+
+      runtime.writeIndex({
+        entries: createIndexEntries(notes),
+        principles: {},
+      });
+      writeCurateState(runtime, createCurateState({ initialized: true }));
+
+      const spawn = vi.fn<SpawnCliFn>(async () => ({
+        stdout: 'Shared themes across the community.',
+        stderr: '',
+        code: 0,
+        aborted: false,
+      }));
+      useScheduler(spawn);
+
+      const lockSpy = vi.spyOn(runtime, 'withMutationLock');
+      const reindexSuccessSpy = vi.spyOn(runtime, 'recordReindexSuccess');
+
+      await expect(internals.runCommunitySubphase()).resolves.toBe(true);
+
+      expect(lockSpy).toHaveBeenCalledTimes(1);
+      expect(reindexSuccessSpy).toHaveBeenCalledTimes(1);
+      expect(spawn).toHaveBeenCalledTimes(2);
+
+      const rebuildSeq = reindexSuccessSpy.mock.calls[0]?.[0];
+      expect(rebuildSeq).toBe(runtime.readIndexState().mutationSeq);
+      expect(runtime.readIndexState()).toMatchObject({
+        mutationSeq: rebuildSeq,
+        indexedSeq: rebuildSeq,
+      });
+      expect(readCurateState(runtime)).toMatchObject({
+        communityGraphHash: expect.any(String),
+        communityMembershipFingerprints: {
+          'attention-transformer-self-attention': expect.any(String),
+          'query-planning-sqlite-indexing': expect.any(String),
+        },
+      });
+
+      expect(readFileSync(join(runtime.communitiesDir(), 'attention-transformer-self-attention.md'), 'utf-8')).toContain(
+        '## Summary',
+      );
     });
   });
 

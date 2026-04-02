@@ -584,6 +584,7 @@ describe('cli main routing', () => {
     mockState.kbReindex.mockResolvedValueOnce({
       notes: 4,
       sources: 0,
+      communities: 0,
       principles: 2,
       tags: 3,
       duration_ms: 25,

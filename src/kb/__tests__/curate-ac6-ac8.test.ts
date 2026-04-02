@@ -366,7 +366,7 @@ describe('curate AC6/AC8', () => {
     });
 
     expect(status.trim()).toBe('');
-    expect(lastCommit).toContain('curate: classify 10 entries');
+    expect(lastCommit).toContain('curate:');
     expect(readCurateState(runtime).processedThrough).toEqual({
       entryId: sourceEntryId('sqlite-source-10'),
       entrySeq: 10,

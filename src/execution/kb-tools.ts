@@ -57,7 +57,7 @@ function optionalKbSearchScope(args: Record<string, unknown>): KbSearchScope | n
     return undefined;
   }
 
-  if (scope === 'notes' || scope === 'sources' || scope === 'all') {
+  if (scope === 'notes' || scope === 'sources' || scope === 'communities' || scope === 'all') {
     return scope;
   }
 
@@ -76,7 +76,7 @@ export async function handleKbToolCall(request: ToolRequest, kbSubsystem: KbSubs
         if (query === null) return toolError('invalid_request', { message: 'query is required' });
         const scope = optionalKbSearchScope(args);
         if (scope === null) {
-          return toolError('invalid_request', { message: 'scope must be one of notes, sources, all' });
+          return toolError('invalid_request', { message: 'scope must be one of notes, sources, communities, all' });
         }
 
         result = await searchKb(kb, query, typeof args.top_k === 'number' ? args.top_k : 20, scope ?? 'all');

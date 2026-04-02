@@ -11,7 +11,9 @@ import {
 import type { KbRuntime } from './runtime.js';
 import {
   getEntry,
+  isCommunityEntry,
   isNoteEntry,
+  isSourceEntry,
   type KbEntryId,
   type KbIndex,
   type KbMatchSurface,
@@ -29,7 +31,11 @@ const ORAMA_SEARCH_BOOST = {
   principles: 1.5,
   body: 1,
 } as const;
-const NOTE_RELEVANCE_BOOST = 1.1;
+const KIND_ORDER: Record<KbResult['kind'], number> = {
+  note: 0,
+  community: 1,
+  source: 2,
+};
 
 type SnippetAnchor = {
   index: number;
@@ -188,6 +194,14 @@ function extractSnippet(
 function resolveHit(hit: KbSearchHit, index: KbIndex): ResolvedKbSearchHit {
   const entry = getEntry(index, hit.document.entryId as KbEntryId);
   const slug = entry?.slug ?? denormalizeSlug(hit.document.slug);
+  const tags =
+    entry === undefined
+      ? [...hit.document.tags]
+      : isNoteEntry(entry) || isSourceEntry(entry)
+        ? [...entry.tags]
+        : isCommunityEntry(entry)
+          ? [...entry.members]
+          : [...hit.document.tags];
 
   return {
     document: hit.document,
@@ -195,7 +209,7 @@ function resolveHit(hit: KbSearchHit, index: KbIndex): ResolvedKbSearchHit {
     slug,
     kind: entry?.kind ?? hit.document.kind,
     title: entry?.title ?? hit.document.title,
-    tags: entry?.tags ? [...entry.tags] : [...hit.document.tags],
+    tags,
     principles: entry !== undefined && isNoteEntry(entry) ? [...entry.principles] : [...hit.document.principles],
   };
 }
@@ -205,41 +219,32 @@ function filterHitsByScope(hits: ResolvedKbSearchHit[], scope: KbSearchScope): R
     return hits;
   }
 
-  const targetKind = scope === 'notes' ? 'note' : 'source';
+  const targetKind = scope === 'notes' ? 'note' : scope === 'sources' ? 'source' : 'community';
   return hits.filter((hit) => hit.kind === targetKind);
-}
-
-function adjustedScore(hit: ResolvedKbSearchHit): number {
-  return hit.score * (hit.kind === 'note' ? NOTE_RELEVANCE_BOOST : 1);
 }
 
 function rerankHits(hits: ResolvedKbSearchHit[]): ResolvedKbSearchHit[] {
   return [...hits].sort((left, right) => {
-    const scoreDelta = adjustedScore(right) - adjustedScore(left);
+    const scoreDelta = right.score - left.score;
     if (scoreDelta !== 0) {
       return scoreDelta;
     }
 
     if (left.kind !== right.kind) {
-      return left.kind === 'note' ? -1 : 1;
-    }
-
-    const rawScoreDelta = right.score - left.score;
-    if (rawScoreDelta !== 0) {
-      return rawScoreDelta;
+      return KIND_ORDER[left.kind] - KIND_ORDER[right.kind];
     }
 
     return left.slug.localeCompare(right.slug);
   });
 }
 
-function maxPossibleOmittedAdjustedScore(hits: KbSearchHit[]): number {
+function maxPossibleOmittedScore(hits: KbSearchHit[]): number {
   const boundaryHit = hits.at(-1);
   if (boundaryHit === undefined) {
     return Number.NEGATIVE_INFINITY;
   }
 
-  return boundaryHit.score * NOTE_RELEVANCE_BOOST;
+  return boundaryHit.score;
 }
 
 function shouldContinueWidening(
@@ -258,7 +263,7 @@ function shouldContinueWidening(
     return !exhausted;
   }
 
-  return !exhausted && adjustedScore(rerankedHits[topK - 1]) <= maxPossibleOmittedAdjustedScore(hits);
+  return !exhausted && rerankedHits[topK - 1].score <= maxPossibleOmittedScore(hits);
 }
 
 async function searchOrama(db: KbOramaDb, oramaTerm: string, limit: number): Promise<KbSearchHit[]> {
