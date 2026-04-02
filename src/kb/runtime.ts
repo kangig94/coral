@@ -307,9 +307,7 @@ export function runEntrySeqUpgradeGuard(target: EntrySeqGuardTarget): boolean {
 
 export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: string; runtimeDir: string }): KbRuntime {
   let adapter: KbLanceDbAdapter | null = null;
-  let cachedIndex: KbIndex | null = null;
-  let cachedIndexLoaded = false;
-  let cachedIndexMtime = 0;
+  let indexCache: { index: KbIndex | null; mtime: number } | null = null;
   let cachedOramaIndex: KbCachedOramaIndex | null = null;
   let mutationLock: Promise<void> = Promise.resolve();
 
@@ -367,9 +365,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
 
   /** Install an already-validated index into the in-memory cache. */
   function installIndexCache(validated: KbIndex): KbIndex {
-    cachedIndex = validated;
-    cachedIndexLoaded = true;
-    cachedIndexMtime = Date.now();
+    indexCache = { index: validated, mtime: Date.now() };
     return validated;
   }
 
@@ -412,7 +408,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
       const currentSourcesDir = sourcesDir();
       const currentCommunitiesDir = communitiesDir();
 
-      const indexMtime = cachedIndexMtime || statSync(currentIndexPath).mtimeMs;
+      const indexMtime = indexCache?.mtime || statSync(currentIndexPath).mtimeMs;
       if (existsSync(currentNotesDir) && statSync(currentNotesDir).mtimeMs > indexMtime) {
         return true;
       }
@@ -539,27 +535,25 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     },
     initAdapter,
     readIndex() {
-      if (cachedIndexLoaded) {
-        return cachedIndex;
+      if (indexCache !== null) {
+        return indexCache.index;
       }
-
-      cachedIndexLoaded = true;
 
       try {
         const raw = readFileSync(indexPath(), 'utf-8');
+        let parsed: KbIndex;
         try {
-          cachedIndex = parseIndex(JSON.parse(raw) as unknown);
+          parsed = parseIndex(JSON.parse(raw) as unknown);
         } catch {
-          cachedIndex = null;
-          cachedIndexMtime = 0;
+          indexCache = { index: null, mtime: 0 };
           rmSync(indexPath(), { force: true });
           return null;
         }
-        cachedIndexMtime = statSync(indexPath()).mtimeMs;
-        return cachedIndex;
+        indexCache = { index: parsed, mtime: statSync(indexPath()).mtimeMs };
+        return parsed;
       } catch (error: unknown) {
         if (isNoEntryError(error)) {
-          cachedIndex = null;
+          indexCache = { index: null, mtime: 0 };
           return null;
         }
         throw error;
@@ -637,9 +631,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     ensureIndex,
     ensureOramaIndex,
     invalidateKbCache() {
-      cachedIndex = null;
-      cachedIndexLoaded = false;
-      cachedIndexMtime = 0;
+      indexCache = null;
       cachedOramaIndex = null;
     },
     invalidateTextSnapshot(reason) {
