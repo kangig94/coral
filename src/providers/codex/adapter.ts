@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ProviderContinuityBlob, ProviderRequest, ProviderResult } from '../../shared/types.js';
+import { errorMessage, nowIsoString, readString } from '../../shared/mcp-utils.js';
 import {
   requireAppServerRuntime,
   requireConversationRef,
@@ -16,8 +17,8 @@ import {
   mapThreadResumeParams,
   mapThreadStartParams,
   mapTurnStartParams,
-  resolveCodexModel,
 } from './request-mapping.js';
+import { resolveModelTier } from '../../shared/schemas.js';
 import type {
   AppServerMethod,
   AppServerNotification,
@@ -70,7 +71,7 @@ function createProgressEvent(sessionId: string, message: string): { jobId: strin
   return {
     jobId: sessionId,
     message,
-    ts: new Date().toISOString(),
+    ts: nowIsoString(),
   };
 }
 
@@ -354,19 +355,11 @@ function isAbortedTurn(status: string | undefined): boolean {
   return status === 'aborted' || status === 'cancelled' || status === 'canceled' || status === 'interrupted';
 }
 
-function readContinuityString(
-  continuity: ProviderContinuityBlob | undefined,
-  key: keyof CodexContinuity,
-): string | undefined {
-  const value = continuity?.[key];
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
-}
-
 function toCodexContinuity(continuity: ProviderContinuityBlob | undefined): CodexContinuity {
   return {
-    cwd: readContinuityString(continuity, 'cwd'),
-    threadId: readContinuityString(continuity, 'threadId'),
-    turnId: readContinuityString(continuity, 'turnId'),
+    cwd: readString(continuity?.cwd),
+    threadId: readString(continuity?.threadId),
+    turnId: readString(continuity?.turnId),
   };
 }
 
@@ -617,8 +610,17 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
 
   const { acquireServer, checkpointRecovery } = requireAppServerRuntime(runtime, 'Codex');
   const startedAt = Date.now();
+  const cwd = request.cwd ?? process.cwd();
+  const model = resolveModelTier(request.model);
   const spec = codexAppServer.buildServerSpec(runtime.persistedContinuity, request);
   const lease = await acquireServer(spec);
+
+  const checkpoint = (threadId: string, turnId?: string): void => {
+    checkpointRecovery({
+      conversationRef: threadId,
+      providerMeta: { providerContinuity: buildCodexContinuity(cwd, threadId, turnId) },
+    });
+  };
 
   try {
     let threadId: string;
@@ -636,7 +638,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
             durationMs: Date.now() - startedAt,
             nonResumable: true,
             notice: `Conversation ${conversationRef} is no longer resumable because the saved thread is missing or invalid.`,
-            errors: [error instanceof Error ? error.message : String(error)],
+            errors: [errorMessage(error)],
           };
         }
         throw error;
@@ -646,19 +648,14 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
       threadId = response.thread.id;
     }
 
-    checkpointRecovery({
-      conversationRef: threadId,
-      providerMeta: {
-        providerContinuity: buildCodexContinuity(request.cwd ?? process.cwd(), threadId),
-      },
-    });
+    checkpoint(threadId);
     runtime.onEvent(createProgressEvent(request.sessionId, `Thread ready (${threadId}).`));
 
     if (runtime.signal.aborted) {
       return {
         content: '',
         conversationRef: threadId,
-        model: resolveCodexModel(request.model),
+        model,
         durationMs: Date.now() - startedAt,
         aborted: true,
       };
@@ -667,33 +664,18 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
     const turnState = await captureTurn(lease, threadId, request, runtime, {
       onTurnStarted: (turnId) => {
         checkpointedTurnId = turnId;
-        checkpointRecovery({
-          conversationRef: threadId,
-          providerMeta: {
-            providerContinuity: buildCodexContinuity(request.cwd ?? process.cwd(), threadId, turnId),
-          },
-        });
+        checkpoint(threadId, turnId);
       },
     });
     if (turnState.turnId && turnState.turnId !== checkpointedTurnId) {
-      checkpointRecovery({
-        conversationRef: threadId,
-        providerMeta: {
-          providerContinuity: buildCodexContinuity(request.cwd ?? process.cwd(), threadId, turnState.turnId),
-        },
-      });
+      checkpoint(threadId, turnState.turnId);
     }
 
     const turnStatus = turnState.finalTurn?.status;
     const turnFailed = !isSuccessfulTurn(turnStatus);
     const turnAborted = isAbortedTurn(turnStatus);
 
-    checkpointRecovery({
-      conversationRef: threadId,
-      providerMeta: {
-        providerContinuity: buildCodexContinuity(request.cwd ?? process.cwd(), threadId),
-      },
-    });
+    checkpoint(threadId);
 
     if (turnFailed && !turnAborted && !turnState.lastAgentMessage.trim() && turnState.error?.message) {
       throw new Error(turnState.error.message);
@@ -702,7 +684,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
     return {
       content: turnState.lastAgentMessage,
       conversationRef: threadId,
-      model: resolveCodexModel(request.model),
+      model,
       durationMs: Date.now() - startedAt,
       aborted: turnAborted || undefined,
       exitCode: turnFailed ? 1 : 0,

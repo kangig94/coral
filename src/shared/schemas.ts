@@ -151,3 +151,13 @@ export type AbortInput = z.infer<typeof abortInputSchema>;
  * Each provider re-exports with its own type alias.
  */
 export const providerOpSchema = z.discriminatedUnion('op', [sharedExecSchema, sharedListSchema, sharedForkSchema]);
+
+/** Shared coral agent schema used by both codex and claude tools. */
+export const coralAgentOpSchema = z.object({
+  op: coralOpSchema,
+  prompt: promptSchema,
+  session: sessionRefSchema.optional(),
+  work_dir: cwdSchema,
+  owner: z.string().regex(identPattern, 'Owner must be token-safe').optional(),
+});
+export type CoralAgentOpInput = z.infer<typeof coralAgentOpSchema>;

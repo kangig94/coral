@@ -3,10 +3,6 @@ import { resolveModelTier } from '../../shared/schemas.js';
 import type { ProviderServerSpec } from '../types.js';
 import type { ThreadResumeParams, ThreadStartParams, TurnStartParams, UserInput } from './protocol.js';
 
-export function resolveCodexModel(model: string | undefined): string | undefined {
-  return resolveModelTier(model);
-}
-
 export function buildCodexPrompt(request: Pick<ProviderRequest, 'action' | 'instruction' | 'systemPrompt' | 'prompt'>): string {
   const parts: string[] = [];
   if (request.action !== 'resume' && request.instruction) {
@@ -43,7 +39,7 @@ export function buildCodexTurnInput(prompt: string): UserInput[] {
 export function mapThreadStartParams(request: ProviderRequest): ThreadStartParams {
   return {
     cwd: request.cwd ?? process.cwd(),
-    model: resolveCodexModel(request.model) ?? null,
+    model: resolveModelTier(request.model) ?? null,
     approvalPolicy: 'never',
     sandbox: resolveCodexSandbox(request.bypassPermissions),
     ephemeral: false,
@@ -54,7 +50,7 @@ export function mapThreadResumeParams(request: ProviderRequest, threadId: string
   return {
     threadId,
     cwd: request.cwd ?? process.cwd(),
-    model: resolveCodexModel(request.model) ?? null,
+    model: resolveModelTier(request.model) ?? null,
     approvalPolicy: 'never',
     sandbox: resolveCodexSandbox(request.bypassPermissions),
   };
@@ -64,7 +60,7 @@ export function mapTurnStartParams(request: ProviderRequest, threadId: string): 
   return {
     threadId,
     input: buildCodexTurnInput(buildCodexPrompt(request)),
-    model: resolveCodexModel(request.model),
+    model: resolveModelTier(request.model),
     effort: request.effort,
   };
 }

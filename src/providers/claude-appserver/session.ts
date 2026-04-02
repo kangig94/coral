@@ -20,6 +20,7 @@ import {
 import { extractClaudeProgressMessage } from '../claude/progress.js';
 import { normalizeControllerEnv, sameBootstrapSignature } from '../claude/shared-utils.js';
 import {
+  AUTO_ALLOW_PERMISSION_MODES,
   CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
   CLAUDE_BROKER_BUSY_RPC_CODE,
   CLAUDE_BROKER_CHILD_EXIT_RPC_CODE,
@@ -45,7 +46,6 @@ import {
 const DEFAULT_STDERR_RING_LIMIT = 16_384;
 const CHILD_SHUTDOWN_GRACE_MS = 1_000;
 const CHILD_SHUTDOWN_TIMEOUT_MS = 2_500;
-const AUTO_ALLOW_PERMISSION_MODES = new Set(['bypass', 'bypassPermissions', 'dontAsk']);
 
 type ControlRequestPayload =
   | SDKControlInitializeRequest
@@ -260,18 +260,18 @@ class SingleSessionController {
     this.activeTurn = turn;
 
     try {
+      const preTurnRequests: ControlRequestPayload[] = [];
       if (params.model !== undefined) {
-        await this.sendControlRequest({
-          subtype: claudeControlRequestSubtypes.setModel,
-          model: params.model,
-        });
+        preTurnRequests.push({ subtype: claudeControlRequestSubtypes.setModel, model: params.model });
       }
-
       if (params.maxThinkingTokens !== undefined) {
-        await this.sendControlRequest({
+        preTurnRequests.push({
           subtype: claudeControlRequestSubtypes.setMaxThinkingTokens,
           max_thinking_tokens: params.maxThinkingTokens,
         });
+      }
+      if (preTurnRequests.length > 0) {
+        await Promise.all(preTurnRequests.map((req) => this.sendControlRequest(req)));
       }
 
       this.writeChild({

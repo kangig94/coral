@@ -1,3 +1,5 @@
+export const AUTO_ALLOW_PERMISSION_MODES = new Set(['bypass', 'bypassPermissions', 'dontAsk']);
+
 export const CLAUDE_BROKER_BUSY_RPC_CODE = -32001;
 export const CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE = -32002;
 export const CLAUDE_BROKER_STATE_RPC_CODE = -32003;

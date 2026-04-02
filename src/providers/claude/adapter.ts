@@ -8,7 +8,7 @@ import { executeClaudeFork, ClaudeExecParseError } from './claude-executor.js';
 import { detectClaudeCli } from '../cli-detection.js';
 import { resolveInjectMd } from '../inject.js';
 import { extractClaudeProgressMessage } from './progress.js';
-import { isRecord, nowIsoString } from '../../shared/mcp-utils.js';
+import { errorMessage, isRecord, nowIsoString } from '../../shared/mcp-utils.js';
 import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
 import { mapProviderResultBase } from '../result-mapping.js';
 import {
@@ -284,38 +284,40 @@ async function executePersistent(
       return;
     }
 
-    // Before brokerSessionKey is assigned (pre-session/ensure), reject all session-routed
-    // notifications. The broker holds OUR notifications until ensure returns, so only other
-    // sessions' events can arrive in this window. host/stats is allowed through (no session routing).
+    // Broker holds our notifications until session/ensure returns — only foreign sessions' events
+    // can arrive before brokerSessionKey is assigned. host/stats has no session routing.
     if (!brokerSessionKey && message.method !== 'host/stats') {
       return;
     }
 
+    const params = isRecord(message.params) ? message.params : {};
+    if (readString(params.brokerSessionKey) && params.brokerSessionKey !== brokerSessionKey) {
+      return;
+    }
+
+    const isTurnEvent =
+      message.method === 'turn/progress' ||
+      message.method === 'turn/completed' ||
+      message.method === 'turn/failed';
+    if (isTurnEvent && brokerTurnId && typeof params.brokerTurnId === 'string' && params.brokerTurnId !== brokerTurnId) {
+      return;
+    }
+
+    const updatedConversationRef = readTurnConversationRef(params);
+    if (updatedConversationRef) {
+      conversationRef = updatedConversationRef;
+    }
+
     if (message.method === 'session/updated') {
-      const params = isRecord(message.params) ? message.params : {};
-      if (readString(params.brokerSessionKey) && params.brokerSessionKey !== brokerSessionKey) {
-        return;
-      }
       const updatedSignature = readBootstrapSignature(params.bootstrapSignature);
       if (updatedSignature) {
         bootstrapSignature = updatedSignature;
-      }
-      const updatedConversationRef = readTurnConversationRef(params);
-      if (updatedConversationRef) {
-        conversationRef = updatedConversationRef;
       }
       checkpoint();
       return;
     }
 
     if (message.method === 'turn/progress') {
-      const params = isRecord(message.params) ? message.params : {};
-      if (readString(params.brokerSessionKey) && params.brokerSessionKey !== brokerSessionKey) {
-        return;
-      }
-      if (brokerTurnId && typeof params.brokerTurnId === 'string' && params.brokerTurnId !== brokerTurnId) {
-        return;
-      }
       if (typeof params.message === 'string' && params.message.length > 0) {
         runtime.onEvent({
           jobId: request.sessionId,
@@ -323,26 +325,10 @@ async function executePersistent(
           ts: nowIsoString(),
         });
       }
-      const updatedConversationRef = readTurnConversationRef(params);
-      if (updatedConversationRef) {
-        conversationRef = updatedConversationRef;
-      }
       return;
     }
 
     if (message.method === 'turn/completed') {
-      const params = isRecord(message.params) ? message.params : {};
-      if (readString(params.brokerSessionKey) && params.brokerSessionKey !== brokerSessionKey) {
-        return;
-      }
-      if (brokerTurnId && typeof params.brokerTurnId === 'string' && params.brokerTurnId !== brokerTurnId) {
-        return;
-      }
-
-      const updatedConversationRef = readTurnConversationRef(params);
-      if (updatedConversationRef) {
-        conversationRef = updatedConversationRef;
-      }
       brokerTurnId = undefined;
       checkpoint();
 
@@ -365,18 +351,6 @@ async function executePersistent(
     }
 
     if (message.method === 'turn/failed') {
-      const params = isRecord(message.params) ? message.params : {};
-      if (readString(params.brokerSessionKey) && params.brokerSessionKey !== brokerSessionKey) {
-        return;
-      }
-      if (brokerTurnId && typeof params.brokerTurnId === 'string' && params.brokerTurnId !== brokerTurnId) {
-        return;
-      }
-
-      const updatedConversationRef = readTurnConversationRef(params);
-      if (updatedConversationRef) {
-        conversationRef = updatedConversationRef;
-      }
       brokerTurnId = undefined;
       checkpoint();
 
@@ -456,15 +430,15 @@ async function executePersistent(
       };
     }
 
-    const message = error instanceof Error ? error.message : String(error);
+    const msg = errorMessage(error);
     return {
       content: '',
       conversationRef,
       model: prepared.model,
       durationMs: Date.now() - startedAt,
       exitCode: 1,
-      notice: message,
-      errors: [message],
+      notice: msg,
+      errors: [msg],
     };
   } finally {
     runtime.signal.removeEventListener('abort', onAbort);

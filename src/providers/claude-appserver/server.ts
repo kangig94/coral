@@ -7,6 +7,7 @@ import process from 'node:process';
 
 import { buildJsonRpcError, isRecord } from '../../shared/mcp-utils.js';
 import {
+  AUTO_ALLOW_PERMISSION_MODES,
   CLAUDE_BROKER_BUSY_RPC_CODE,
   ClaudeBrokerRpcError,
   type BrokerShutdownResult,
@@ -356,7 +357,7 @@ function readControllerEnv(value: unknown): Record<string, string> | undefined {
 }
 
 function bypassesPermissions(permissionMode: string): boolean {
-  return permissionMode === 'bypass' || permissionMode === 'bypassPermissions' || permissionMode === 'dontAsk';
+  return AUTO_ALLOW_PERMISSION_MODES.has(permissionMode);
 }
 
 function main(): void {
