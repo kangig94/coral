@@ -11,7 +11,13 @@ import {
   type KbNoteIdentity,
   type KbSourceFrontmatter,
 } from './types.js';
-import { NOTE_SLUG_PATTERN, assertNonEmptyText } from './validation.js';
+import {
+  NOTE_SLUG_PATTERN,
+  assertNonEmptyText,
+  parseNonNegativeInteger,
+  parseOptionalTrimmedString,
+  parsePositiveInteger,
+} from './validation.js';
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 
@@ -59,13 +65,7 @@ function normalizeStringList(value: unknown, field: string): string[] {
 }
 
 function normalizeOptionalEntrySeq(value: unknown): number | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
-    throw new Error('entrySeq must be a positive integer');
-  }
-  return value;
+  return value === undefined ? undefined : parsePositiveInteger(value, 'entrySeq');
 }
 
 function normalizeOptionalNonEmptyText(value: unknown, field: string): string | undefined {
@@ -76,27 +76,7 @@ function normalizeOptionalNonEmptyText(value: unknown, field: string): string | 
   return assertNonEmptyText(value, field);
 }
 
-function normalizeOptionalSummary(value: unknown): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (typeof value !== 'string') {
-    throw new Error('summary must be a string');
-  }
-
-  const normalized = value.trim();
-  return normalized ? normalized : undefined;
-}
-
-function normalizeCommunityLevel(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
-    throw new Error('level must be a non-negative integer');
-  }
-
-  return value;
-}
-
-function normalizeCommunityParent(value: unknown): string | undefined {
+export function normalizeCommunityParent(value: unknown): string | undefined {
   if (value === undefined) {
     return undefined;
   }
@@ -200,14 +180,14 @@ export function parseSourceFrontmatter(content: string): KbSourceFrontmatter {
 export function parseCommunityFrontmatter(content: string): CommunityFrontmatter {
   const record = parseFrontmatterRecord(content);
   const parent = normalizeCommunityParent(record.parent);
-  const summary = normalizeOptionalSummary(record.summary);
+  const summary = parseOptionalTrimmedString(record.summary, 'summary');
 
   if (record.generatedBy !== 'curate') {
     throw new Error("generatedBy must be 'curate'");
   }
 
   return {
-    level: normalizeCommunityLevel(record.level),
+    level: parseNonNegativeInteger(record.level, 'level'),
     members: normalizeStringList(record.members, 'members'),
     ...(parent === undefined ? {} : { parent }),
     ...(summary === undefined ? {} : { summary }),
@@ -289,10 +269,10 @@ export function serializeSourceFrontmatter(meta: KbSourceFrontmatter): string {
 
 export function serializeCommunityFrontmatter(meta: CommunityFrontmatter): string {
   const parent = normalizeCommunityParent(meta.parent);
-  const summary = normalizeOptionalSummary(meta.summary);
+  const summary = parseOptionalTrimmedString(meta.summary, 'summary');
 
   return serializeFrontmatterRecord({
-    level: normalizeCommunityLevel(meta.level),
+    level: parseNonNegativeInteger(meta.level, 'level'),
     members: normalizeStringList(meta.members, 'members'),
     ...(parent === undefined ? {} : { parent }),
     ...(summary === undefined ? {} : { summary }),

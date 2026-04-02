@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { load, save, type RawData } from '@orama/orama';
 import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
 import { CURATE_STATE_FILE } from './curate-state.js';
-import { rewriteLegacyNoteFrontmatter } from './frontmatter.js';
+import { normalizeCommunityParent, rewriteLegacyNoteFrontmatter } from './frontmatter.js';
 import { loadKbLanceDb } from './lancedb-runtime.js';
 import { writeFileAtomic } from './mutation-helpers.js';
 import { createOramaDb, type KbOramaDb, type KbOramaTokenizer } from './orama-factory.js';
@@ -33,7 +33,15 @@ import {
   type NoteEntry,
   type SourceEntry,
 } from './types.js';
-import { assertCommunitySlug, assertNonEmptyText, assertNoteSlug, assertSourceSlug } from './validation.js';
+import {
+  assertCommunitySlug,
+  assertNonEmptyText,
+  assertNoteSlug,
+  assertSourceSlug,
+  parseNonNegativeInteger,
+  parseOptionalTrimmedString,
+  parsePositiveInteger,
+} from './validation.js';
 
 const INDEX_STATE_FILE = 'index-state.json';
 const INDEX_FILE = 'index.json';
@@ -103,14 +111,6 @@ function emptyIndex(): KbIndex {
 
 type EntrySeqGuardTarget = Pick<KbRuntime, 'notePath' | 'notesDir'>;
 
-function parseEntrySeq(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
-    throw new Error('Invalid KB index');
-  }
-
-  return value;
-}
-
 function parseStringArray(value: unknown): string[] {
   if (!isStringArray(value)) {
     throw new Error('Invalid KB index');
@@ -128,39 +128,6 @@ function parseEntryIdArray(value: unknown): string[] {
     }
     return normalized;
   });
-}
-
-function parseCommunityLevel(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
-    throw new Error('Invalid KB index');
-  }
-
-  return value;
-}
-
-function parseCommunityParent(value: unknown): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-
-  const normalized = parseKbEntryId(assertNonEmptyText(value, 'KB index entry parent'));
-  if (normalized === null || !normalized.startsWith('community:')) {
-    throw new Error('Invalid KB index');
-  }
-
-  return normalized;
-}
-
-function parseOptionalSummary(value: unknown): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (typeof value !== 'string') {
-    throw new Error('Invalid KB index');
-  }
-
-  const normalized = value.trim();
-  return normalized ? normalized : undefined;
 }
 
 function parseNoteIndexEntry(entryId: string, value: Record<string, unknown>): NoteEntry {
@@ -182,7 +149,7 @@ function parseNoteIndexEntry(entryId: string, value: Record<string, unknown>): N
     source: parseStringArray(value.source),
     createdAt: assertNonEmptyText(value.createdAt, 'KB index entry createdAt'),
     updatedAt: assertNonEmptyText(value.updatedAt, 'KB index entry updatedAt'),
-    entrySeq: parseEntrySeq(value.entrySeq),
+    entrySeq: parsePositiveInteger(value.entrySeq, 'entrySeq'),
     related: value.related === undefined ? [] : parseEntryIdArray(value.related),
   };
 }
@@ -209,7 +176,7 @@ function parseSourceIndexEntry(entryId: string, value: Record<string, unknown>):
     tags: parseStringArray(value.tags),
     ...(url === undefined ? {} : { url: assertNonEmptyText(url, 'KB index entry url') }),
     importedAt: assertNonEmptyText(value.importedAt, 'KB index entry importedAt'),
-    entrySeq: parseEntrySeq(value.entrySeq),
+    entrySeq: parsePositiveInteger(value.entrySeq, 'entrySeq'),
     related: value.related === undefined ? [] : parseEntryIdArray(value.related),
   };
 }
@@ -223,14 +190,14 @@ function parseCommunityIndexEntry(entryId: string, value: Record<string, unknown
     throw new Error('Invalid KB index');
   }
 
-  const parent = parseCommunityParent(value.parent);
-  const summary = parseOptionalSummary(value.summary);
+  const parent = normalizeCommunityParent(value.parent);
+  const summary = parseOptionalTrimmedString(value.summary, 'summary');
 
   return {
     kind: 'community',
     slug,
     title: assertNonEmptyText(value.title, 'KB index entry title'),
-    level: parseCommunityLevel(value.level),
+    level: parseNonNegativeInteger(value.level, 'level'),
     members: parseStringArray(value.members),
     ...(parent === undefined ? {} : { parent }),
     ...(summary === undefined ? {} : { summary }),

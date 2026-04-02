@@ -17,6 +17,7 @@ import {
   type KbNoteFrontmatter,
   type KbSourceFrontmatter,
 } from './types.js';
+import { parseNonNegativeInteger, parsePositiveInteger } from './validation.js';
 import { backendLog } from '../shared/backend-log.js';
 
 export const CURATE_STATE_FILE = 'curate-state.json';
@@ -121,20 +122,6 @@ function calculateRetryCooldownMs(baseCooldownMs: number, consecutiveFailures: n
 
 function samePendingDiscovery(left: PendingDiscovery, right: PendingDiscovery): boolean {
   return left.principle === right.principle && left.statement === right.statement;
-}
-
-function parsePositiveInteger(value: unknown, label: string): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
-    throw new Error(`${label} must be a positive integer`);
-  }
-  return value;
-}
-
-function parseNonNegativeInteger(value: unknown, label: string): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
-    throw new Error(`${label} must be a non-negative integer`);
-  }
-  return value;
 }
 
 function parseOptionalString(value: unknown, label: string): string | null {
