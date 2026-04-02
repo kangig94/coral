@@ -3,8 +3,14 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ProviderContinuityBlob, ProviderRequest, ProviderResult } from '../../shared/types.js';
-import type { ProviderAppServerContract, ProviderRuntime, ProviderServerLease, Provider } from '../types.js';
-import { requireConversationRef } from '../types.js';
+import {
+  requireAppServerRuntime,
+  requireConversationRef,
+  type ProviderAppServerContract,
+  type ProviderRuntime,
+  type ProviderServerLease,
+  type Provider,
+} from '../types.js';
 import {
   buildCodexProviderServerSpec,
   mapThreadResumeParams,
@@ -367,29 +373,13 @@ function continuityWithClearedTurnId(continuity: ProviderContinuityBlob | undefi
   }
   return {
     ...(cwd ? { cwd } : {}),
-    ...(threadId ? { threadId } : {}),
+    threadId,
   };
 }
 
 function resolveProbeCwd(continuity: ProviderContinuityBlob): string {
   const { cwd } = toCodexContinuity(continuity);
   return cwd || process.cwd();
-}
-
-function requireAppServerRuntime(runtime: ProviderRuntime): {
-  acquireServer: NonNullable<ProviderRuntime['acquireServer']>;
-  checkpointRecovery: NonNullable<ProviderRuntime['checkpointRecovery']>;
-} {
-  if (!runtime.acquireServer) {
-    throw new Error('Codex provider requires ProviderRuntime.acquireServer()');
-  }
-  if (!runtime.checkpointRecovery) {
-    throw new Error('Codex provider requires ProviderRuntime.checkpointRecovery()');
-  }
-  return {
-    acquireServer: runtime.acquireServer,
-    checkpointRecovery: runtime.checkpointRecovery,
-  };
 }
 
 async function rpc<M extends AppServerMethod>(
@@ -594,7 +584,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
     throw new Error('Codex app-server fork is unsupported until clone/fork RPC is available.');
   }
 
-  const { acquireServer, checkpointRecovery } = requireAppServerRuntime(runtime);
+  const { acquireServer, checkpointRecovery } = requireAppServerRuntime(runtime, 'Codex');
   const startedAt = Date.now();
   const spec = codexAppServer.buildServerSpec(runtime.persistedContinuity, request);
   const lease = await acquireServer(spec);

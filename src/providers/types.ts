@@ -130,3 +130,22 @@ export function requireConversationRef(request: ProviderRequest, action: 'resume
   if (!request.conversationRef) throw new Error(`${action} requires conversationRef`);
   return request.conversationRef;
 }
+
+export function requireAppServerRuntime(
+  runtime: ProviderRuntime,
+  providerName: string,
+): {
+  acquireServer: NonNullable<ProviderRuntime['acquireServer']>;
+  checkpointRecovery: NonNullable<ProviderRuntime['checkpointRecovery']>;
+} {
+  if (!runtime.acquireServer) {
+    throw new Error(`${providerName} provider requires ProviderRuntime.acquireServer().`);
+  }
+  if (!runtime.checkpointRecovery) {
+    throw new Error(`${providerName} provider requires ProviderRuntime.checkpointRecovery().`);
+  }
+  return {
+    acquireServer: runtime.acquireServer,
+    checkpointRecovery: runtime.checkpointRecovery,
+  };
+}

@@ -583,12 +583,7 @@ describe('execution backend server', () => {
       .mockResolvedValueOnce(codexHandleA.handle)
       .mockResolvedValueOnce(codexHandleB.handle);
 
-    const claudeSpec = claudeRequestMapping.buildClaudeProviderServerSpec({
-      sessionId: 'claude-session',
-      cwd: projectRootA,
-      bypassPermissions: false,
-      coralEnv: {},
-    });
+    const claudeSpec = claudeRequestMapping.buildClaudeProviderServerSpec();
     const codexSpecA = codexRequestMapping.buildCodexProviderServerSpec(projectRootA, {
       PROJECT_ROOT: 'a',
     });

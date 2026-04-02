@@ -180,7 +180,3 @@ export class ClaudeBrokerRpcError extends Error {
     this.data = data;
   }
 }
-
-export function buildJsonRpcError(code: number, message: string, data?: unknown): JsonRpcErrorObject {
-  return data === undefined ? { code, message } : { code, message, data };
-}

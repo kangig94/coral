@@ -596,11 +596,7 @@ describe('request-mapping: spec.key is stable and must not be replaced', () => {
   it('buildClaudeProviderServerSpec uses the shared broker key and backend launch context', async () => {
     const { buildClaudeProviderServerSpec } = await import('../request-mapping.js');
 
-    const spec = buildClaudeProviderServerSpec(
-      makeRequest(),
-      'sha256:system-prompt-hash',
-      undefined,
-    );
+    const spec = buildClaudeProviderServerSpec();
 
     expect(spec).toMatchObject({
       provider: 'claude',
@@ -613,8 +609,8 @@ describe('request-mapping: spec.key is stable and must not be replaced', () => {
   it('buildClaudeProviderServerSpec key stays fixed when sessionId changes', async () => {
     const { buildClaudeProviderServerSpec } = await import('../request-mapping.js');
 
-    const spec1 = buildClaudeProviderServerSpec(makeRequest({ sessionId: 'session-a' }), 'sha256:hash', undefined);
-    const spec2 = buildClaudeProviderServerSpec(makeRequest({ sessionId: 'session-b' }), 'sha256:hash', undefined);
+    const spec1 = buildClaudeProviderServerSpec();
+    const spec2 = buildClaudeProviderServerSpec();
 
     expect(spec1.provider).toBe('claude');
     expect(spec2.provider).toBe('claude');
@@ -623,8 +619,8 @@ describe('request-mapping: spec.key is stable and must not be replaced', () => {
   it('buildClaudeProviderServerSpec key stays fixed across bootstrap signatures', async () => {
     const { buildClaudeProviderServerSpec } = await import('../request-mapping.js');
 
-    const spec1 = buildClaudeProviderServerSpec(makeRequest({ sessionId: 'session-c' }), 'sha256:hash', undefined);
-    const spec2 = buildClaudeProviderServerSpec(makeRequest({ sessionId: 'session-c' }), 'sha256:other-hash', undefined);
+    const spec1 = buildClaudeProviderServerSpec();
+    const spec2 = buildClaudeProviderServerSpec();
 
     expect(spec1.provider).toBe('claude');
     expect(spec2.provider).toBe('claude');

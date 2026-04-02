@@ -29,6 +29,14 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+export function buildJsonRpcError(code: number, message: string, data?: unknown): {
+  code: number;
+  message: string;
+  data?: unknown;
+} {
+  return data === undefined ? { code, message } : { code, message, data };
+}
+
 export const identPattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
 /** Check whether a value is a valid token-safe owner identifier. */

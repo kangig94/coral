@@ -6,6 +6,7 @@ import { createInterface, type Interface } from 'node:readline';
 import { backendLog } from '../shared/backend-log.js';
 import { buildChildEnv } from '../shared/child-env.js';
 import { readAppendedLines } from '../shared/file-tail.js';
+import { buildJsonRpcError } from '../shared/mcp-utils.js';
 import {
   isDurableCliRuntime,
   type DurableCliRuntimeRecord,
@@ -309,14 +310,6 @@ function appendBuffer(current: string, chunk: string): string {
     return combined.slice(0, MAX_BUFFER) + '\n[output truncated at 10MB]';
   }
   return combined;
-}
-
-function buildJsonRpcError(code: number, message: string, data?: unknown): {
-  code: number;
-  message: string;
-  data?: unknown;
-} {
-  return data === undefined ? { code, message } : { code, message, data };
 }
 
 function createProviderServerError(

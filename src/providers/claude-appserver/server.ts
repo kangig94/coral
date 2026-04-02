@@ -5,9 +5,8 @@ import { createInterface } from 'node:readline';
 import { basename } from 'node:path';
 import process from 'node:process';
 
-import { isRecord } from '../../shared/mcp-utils.js';
+import { buildJsonRpcError, isRecord } from '../../shared/mcp-utils.js';
 import {
-  buildJsonRpcError,
   CLAUDE_BROKER_BUSY_RPC_CODE,
   ClaudeBrokerRpcError,
   type BrokerShutdownResult,

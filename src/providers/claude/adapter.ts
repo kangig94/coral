@@ -13,13 +13,14 @@ import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
 import { mapProviderResultBase } from '../result-mapping.js';
 import {
   makeOnEvent,
+  requireAppServerRuntime,
   requireConversationRef,
   type Provider,
   type ProviderAppServerContract,
   type ProviderRuntime,
 } from '../types.js';
 import { resolveModelTier, type EffortLevel } from '../../shared/schemas.js';
-import type { ClaudeBootstrapSignature, SessionProbeResult } from '../claude-appserver/protocol.js';
+import type { SessionProbeResult } from '../claude-appserver/protocol.js';
 import {
   buildClaudeEnvHash,
   buildClaudeContinuity,
@@ -32,6 +33,7 @@ import {
   readClaudePersistedContinuity,
   withClaudeContinuity,
 } from './request-mapping.js';
+import { readBootstrapSignature, readString } from './shared-utils.js';
 import type { ClaudeExecResult } from './types.js';
 
 async function preflight(): Promise<void> {
@@ -103,22 +105,6 @@ function resolveClaudeModel(model: string | undefined, env: Record<string, strin
   return resolveModelTier(model, cap);
 }
 
-function requirePersistentRuntime(runtime: ProviderRuntime): {
-  acquireServer: NonNullable<ProviderRuntime['acquireServer']>;
-  checkpointRecovery: NonNullable<ProviderRuntime['checkpointRecovery']>;
-} {
-  if (!runtime.acquireServer) {
-    throw new Error('Claude persistent provider requires ProviderRuntime.acquireServer().');
-  }
-  if (!runtime.checkpointRecovery) {
-    throw new Error('Claude persistent provider requires ProviderRuntime.checkpointRecovery().');
-  }
-  return {
-    acquireServer: runtime.acquireServer,
-    checkpointRecovery: runtime.checkpointRecovery,
-  };
-}
-
 function buildPreparedRequest(
   request: ProviderRequest,
 ): { prompt: string; systemPrompt?: string; model?: string; effort?: EffortLevel } {
@@ -171,12 +157,11 @@ async function executeFork(
   runtime: ProviderRuntime,
   prepared: { prompt: string; systemPrompt?: string; model?: string; effort?: EffortLevel },
 ): Promise<ProviderResult> {
-  const effort = request.effort as EffortLevel | undefined;
   const options = {
     model: prepared.model,
     workingDirectory: request.cwd,
     systemPrompt: prepared.systemPrompt,
-    effort: prepared.effort ?? effort,
+    effort: prepared.effort,
     bypassPermissions: request.bypassPermissions,
     onEvent: makeOnEvent(runtime, request.sessionId, extractClaudeProgressMessage, request.cwd),
     runCli: runtime.runCli,
@@ -199,8 +184,8 @@ async function executePersistent(
   prepared: { prompt: string; systemPrompt?: string; model?: string },
 ): Promise<ProviderResult> {
   const startedAt = Date.now();
-  const { acquireServer, checkpointRecovery } = requirePersistentRuntime(runtime);
-  const spec = buildClaudeProviderServerSpec(request, prepared.systemPrompt, runtime.persistedContinuity);
+  const { acquireServer, checkpointRecovery } = requireAppServerRuntime(runtime, 'Claude persistent');
+  const spec = buildClaudeProviderServerSpec();
   const lease = await acquireServer(spec);
   const persistedContinuity = readClaudePersistedContinuity(runtime.persistedContinuity);
 
@@ -480,9 +465,8 @@ async function executePersistent(
 }
 
 const claudeAppServer: ProviderAppServerContract = {
-  buildServerSpec(persistedContinuity, request) {
-    const { systemPrompt } = buildClaudeArgs(request);
-    return buildClaudeProviderServerSpec(request, systemPrompt, persistedContinuity);
+  buildServerSpec(_persistedContinuity, _request) {
+    return buildClaudeProviderServerSpec();
   },
   async interrupt(lease, continuity) {
     const persistedContinuity = readClaudePersistedContinuity(continuity);
@@ -570,31 +554,11 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
   return executePersistent(request, runtime, prepared);
 }
 
-function readString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
-}
-
 function readTurnConversationRef(value: unknown): string | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
   return readString(value.conversationRef) ?? readString(value.sessionId);
-}
-
-function readBootstrapSignature(value: unknown): ClaudeBootstrapSignature | undefined {
-  if (
-    !isRecord(value) ||
-    typeof value.cwd !== 'string' ||
-    typeof value.systemPromptHash !== 'string' ||
-    typeof value.permissionMode !== 'string'
-  ) {
-    return undefined;
-  }
-  return {
-    cwd: value.cwd,
-    systemPromptHash: value.systemPromptHash,
-    permissionMode: value.permissionMode,
-  };
 }
 
 function readErrors(value: unknown): string[] {

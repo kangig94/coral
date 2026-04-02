@@ -5,12 +5,6 @@ import { formatToolProgress, truncate } from '../../shared/format-progress.js';
 import { isRecord } from '../../shared/mcp-utils.js';
 import {
   claudeControlRequestSubtypes,
-  isAssistantMessage,
-  isControlResponse,
-  isKeepAliveMessage,
-  isPermissionRequest,
-  isResultMessage,
-  isSystemMessage,
   ndjsonSafeStringify,
   parseClaudeStdoutLine,
   type SDKAssistantMessage,
@@ -24,6 +18,7 @@ import {
   type SDKSystemMessage,
 } from '../claude/control-protocol.js';
 import { extractClaudeProgressMessage } from '../claude/progress.js';
+import { normalizeControllerEnv, sameBootstrapSignature } from '../claude/shared-utils.js';
 import {
   CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
   CLAUDE_BROKER_BUSY_RPC_CODE,
@@ -468,32 +463,24 @@ class SingleSessionController {
 
     this.maybeUpdateSessionId(readSessionId(message));
 
-    if (isKeepAliveMessage(message)) {
-      return;
-    }
-
-    if (isControlResponse(message)) {
-      this.handleControlResponse(message);
-      return;
-    }
-
-    if (isPermissionRequest(message)) {
-      this.handlePermissionRequest(message);
-      return;
-    }
-
-    if (isAssistantMessage(message)) {
-      this.handleAssistantMessage(message);
-      return;
-    }
-
-    if (isSystemMessage(message)) {
-      this.handleSystemMessage(message);
-      return;
-    }
-
-    if (isResultMessage(message)) {
-      this.handleResultMessage(message);
+    switch (message.type) {
+      case 'keep_alive':
+        return;
+      case 'control_response':
+        this.handleControlResponse(message);
+        return;
+      case 'control_request':
+        this.handlePermissionRequest(message);
+        return;
+      case 'assistant':
+        this.handleAssistantMessage(message);
+        return;
+      case 'system':
+        this.handleSystemMessage(message);
+        return;
+      case 'result':
+        this.handleResultMessage(message);
+        return;
     }
   }
 
@@ -1195,24 +1182,6 @@ function withBrokerSessionKey(
       brokerSessionKey,
     },
   } as ClaudeBrokerNotification;
-}
-
-function normalizeControllerEnv(controllerEnv?: Record<string, string>): Record<string, string> {
-  if (!controllerEnv) {
-    return {};
-  }
-
-  return Object.fromEntries(
-    Object.entries(controllerEnv).filter(([, value]) => typeof value === 'string'),
-  );
-}
-
-function sameBootstrapSignature(left: ClaudeBootstrapSignature, right: ClaudeBootstrapSignature): boolean {
-  return (
-    left.cwd === right.cwd &&
-    left.systemPromptHash === right.systemPromptHash &&
-    left.permissionMode === right.permissionMode
-  );
 }
 
 function isAutoAllowPermissionMode(permissionMode: string): boolean {

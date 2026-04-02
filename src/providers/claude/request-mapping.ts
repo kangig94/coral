@@ -13,6 +13,12 @@ import type {
   TurnInterruptParams,
   TurnStartParams,
 } from '../claude-appserver/protocol.js';
+import {
+  normalizeControllerEnv,
+  readBootstrapSignature,
+  readString,
+  sameBootstrapSignature,
+} from './shared-utils.js';
 
 export interface ClaudePersistedContinuity extends ProviderContinuityBlob {
   brokerSessionKey?: string;
@@ -68,11 +74,7 @@ export function buildClaudeBootstrapSignature(
   };
 }
 
-export function buildClaudeProviderServerSpec(
-  _request: Pick<ProviderRequest, 'sessionId' | 'cwd' | 'bypassPermissions' | 'coralEnv'>,
-  _derivedSystemPrompt?: string,
-  _persistedContinuity?: ProviderContinuityBlob,
-): ProviderServerSpec {
+export function buildClaudeProviderServerSpec(): ProviderServerSpec {
   return {
     provider: 'claude',
     command: process.execPath,
@@ -97,7 +99,7 @@ export function mapSessionEnsureParams(
     ...bootstrapSignature,
     brokerSessionKey: continuity.brokerSessionKey,
     conversationRef: continuity.conversationRef ?? request.conversationRef,
-    controllerEnv: normalizeClaudeControllerEnv(request.coralEnv),
+    controllerEnv: normalizeControllerEnv(request.coralEnv),
     systemPrompt: derivedSystemPrompt,
   };
 }
@@ -218,7 +220,7 @@ export function buildClaudeEnvHash(controllerEnv?: Record<string, string>): stri
     ...Object.fromEntries(
       Object.entries(process.env).filter(([key, value]) => typeof value === 'string' && !key.startsWith('CORAL_')),
     ),
-    ...normalizeClaudeControllerEnv(controllerEnv),
+    ...normalizeControllerEnv(controllerEnv),
     CORAL_CHILD: '1',
   };
   const sortedEntries = Object.entries(childEnv)
@@ -229,43 +231,4 @@ export function buildClaudeEnvHash(controllerEnv?: Record<string, string>): stri
 
 function resolveClaudePermissionMode(bypassPermissions: boolean): string {
   return bypassPermissions ? 'bypass' : 'default';
-}
-
-function sameBootstrapSignature(left: ClaudeBootstrapSignature, right: ClaudeBootstrapSignature): boolean {
-  return (
-    left.cwd === right.cwd &&
-    left.systemPromptHash === right.systemPromptHash &&
-    left.permissionMode === right.permissionMode
-  );
-}
-
-function readBootstrapSignature(value: unknown): ClaudeBootstrapSignature | undefined {
-  if (
-    !isRecord(value) ||
-    typeof value.cwd !== 'string' ||
-    typeof value.systemPromptHash !== 'string' ||
-    typeof value.permissionMode !== 'string'
-  ) {
-    return undefined;
-  }
-
-  return {
-    cwd: value.cwd,
-    systemPromptHash: value.systemPromptHash,
-    permissionMode: value.permissionMode,
-  };
-}
-
-function readString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
-}
-
-function normalizeClaudeControllerEnv(controllerEnv?: Record<string, string>): Record<string, string> {
-  if (!controllerEnv) {
-    return {};
-  }
-
-  return Object.fromEntries(
-    Object.entries(controllerEnv).filter(([, value]) => typeof value === 'string'),
-  );
 }
