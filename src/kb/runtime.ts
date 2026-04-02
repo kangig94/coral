@@ -388,7 +388,10 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
       if (isNoEntryError(error)) {
         return null;
       }
-      throw error;
+      // Corrupt index-state.json: delete and return null (same as missing).
+      // The next mutation or rebuild will recreate it from defaultIndexState().
+      rmSync(indexStatePath(), { force: true });
+      return null;
     }
   }
 
@@ -534,6 +537,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
           parsed = parseIndex(JSON.parse(raw) as unknown);
         } catch {
           indexCache = { index: null, mtime: 0 };
+          cachedOramaIndex = null;
           rmSync(indexPath(), { force: true });
           return null;
         }

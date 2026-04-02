@@ -122,7 +122,7 @@ export async function handleKbToolCall(request: ToolRequest, kbSubsystem: KbSubs
           const q = query.toLowerCase();
           names = allNames.filter((name) => name.toLowerCase().includes(q));
         }
-        const topK = typeof args.top_k === 'number' ? args.top_k : 100;
+        const topK = typeof args.top_k === 'number' && Number.isInteger(args.top_k) && args.top_k > 0 ? args.top_k : 100;
         names = names.slice(0, topK);
         if (!verbose) {
           result = { principles: names, total };

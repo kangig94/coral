@@ -48,8 +48,8 @@ export async function persistPreparedSource(
     try {
       const resolvedStagedPath = resolvePreparedSourceStagePath(kb, stagedCandidate);
       const renderedSource = readFileSync(resolvedStagedPath, 'utf-8');
-      const entrySeq = kb.recordMutationCommitted().mutationSeq;
       const parsedMeta = parseSourceFrontmatter(renderedSource);
+      const entrySeq = kb.recordMutationCommitted().mutationSeq;
       const persistedMeta = {
         ...parsedMeta,
         entrySeq,
