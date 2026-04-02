@@ -229,11 +229,10 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
 
     try {
       removeStaleBackendInfo(root);
+      spawnBackend(backendBin);
     } finally {
       releaseReplacementLock(root, replacementLock);
     }
-
-    spawnBackend(backendBin);
     const replacementDeadline = Math.min(startupDeadline, Date.now() + REPLACEMENT_TIMEOUT_MS);
     return summarizeBackend(
       await waitForReplacementBackend(root, replacedInstanceId, expectedHash, replacementDeadline),

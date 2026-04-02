@@ -1234,6 +1234,9 @@ export class ExecutionService implements RecoveryCapableService {
       }
     }
 
+    // Retries exhausted — release claim as fallback to prevent session leak.
+    // Mutation data (conversationRef, resumability) is lost but will be re-derived on next job.
+    this.sessionManager.releaseJob(sessionId, jobId);
     return false;
   }
 
@@ -1541,6 +1544,11 @@ export class ExecutionService implements RecoveryCapableService {
         warnings: result.warnings,
         usage: result.usage,
       };
+
+      const currentStatus = this.progressStore.readStatus(jobId);
+      if (currentStatus && isTerminalPhase(currentStatus.phase)) {
+        return;
+      }
 
       this.writeTerminalResult(jobId, sessionId, terminalResult, phase);
       this.progressStore.writeResultMd(jobId, result.content);
