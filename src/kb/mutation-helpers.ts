@@ -68,37 +68,17 @@ export function buildCommunityIndexEntry(meta: CommunityIndexEntrySource): Commu
   };
 }
 
-const ensuredDirs = new Set<string>();
-
-function ensureDir(dir: string): void {
-  if (ensuredDirs.has(dir)) {
-    return;
-  }
-
-  mkdirSync(dir, { recursive: true });
-  ensuredDirs.add(dir);
-}
-
 export function writeFileAtomic(filePath: string, payload: string): void {
   const dir = dirname(filePath);
-  ensureDir(dir);
+  mkdirSync(dir, { recursive: true });
   const tmpPath = `${filePath}.tmp`;
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      writeFileSync(tmpPath, payload, 'utf-8');
-      renameSync(tmpPath, filePath);
-      return;
-    } catch (error: unknown) {
-      rmSync(tmpPath, { force: true });
-      if (attempt === 0 && isNoEntryError(error)) {
-        ensuredDirs.delete(dir);
-        ensureDir(dir);
-        continue;
-      }
-
-      throw error;
-    }
+  try {
+    writeFileSync(tmpPath, payload, 'utf-8');
+    renameSync(tmpPath, filePath);
+  } catch (error: unknown) {
+    rmSync(tmpPath, { force: true });
+    throw error;
   }
 }
 
