@@ -396,6 +396,14 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     return readIndexStateIfPresent() ?? defaultIndexState();
   }
 
+  function dirModifiedAfter(dir: string, threshold: number): boolean {
+    try {
+      return statSync(dir).mtimeMs > threshold;
+    } catch {
+      return false;
+    }
+  }
+
   function indexNeedsRebuild(): boolean {
     const currentIndexPath = indexPath();
     if (!existsSync(currentIndexPath)) {
@@ -403,29 +411,9 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     }
 
     try {
-      const currentNotesDir = notesDir();
-      const currentPrinciplesDir = principlesDir();
-      const currentSourcesDir = sourcesDir();
-      const currentCommunitiesDir = communitiesDir();
-
       const indexMtime = indexCache?.mtime || statSync(currentIndexPath).mtimeMs;
-      if (existsSync(currentNotesDir) && statSync(currentNotesDir).mtimeMs > indexMtime) {
-        return true;
-      }
-
-      if (existsSync(currentPrinciplesDir) && statSync(currentPrinciplesDir).mtimeMs > indexMtime) {
-        return true;
-      }
-
-      if (existsSync(currentSourcesDir) && statSync(currentSourcesDir).mtimeMs > indexMtime) {
-        return true;
-      }
-
-      if (existsSync(currentCommunitiesDir) && statSync(currentCommunitiesDir).mtimeMs > indexMtime) {
-        return true;
-      }
-
-      return false;
+      return [notesDir(), principlesDir(), sourcesDir(), communitiesDir()]
+        .some((dir) => dirModifiedAfter(dir, indexMtime));
     } catch {
       return false;
     }
