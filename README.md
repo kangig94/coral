@@ -211,6 +211,8 @@ gpt-5.4  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
 
 Coral learns from every session. Root causes, gotchas, patterns — captured as memos, reviewed, and promoted to permanent knowledge at `~/.coral/kb/`. The next session checks the KB before debugging from scratch. Mistakes aren't repeated.
 
+- **Semantic search**: `/coral:equip kb` activates vector search with hybrid BM25 + embedding retrieval (Gemini, OpenAI, or local ONNX models)
+
 ## Configuration
 
 | Variable | Default | Description |

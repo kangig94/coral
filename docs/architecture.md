@@ -404,6 +404,25 @@ Each file is a single `SessionEntry`. Corrupt files are skipped with a warning; 
 - Agents write memos under `~/.coral/projects/{slug}/memo/`, then use KB tools (`kb_search`, `kb_promote`, `kb_update`, `kb_delete`, `kb_reindex`) for note operations.
 - **KB git cycle**: When the KB directory has a git remote, curate auto-manages sync. On start: `fetch` + `rebase` (conflict: `abort` + `merge -X theirs`, stash preserves uncommitted new notes). After curate: `push` (failure: `pull --rebase` + retry). `.gitignore` tracks `curate-state.json`, `data/`, `.obsidian/` (device-local files excluded from sync). Curate classification metadata lost to `-X theirs` is re-applied in the next curate cycle (idempotent).
 
+**Vector Search** (activated by `/coral:equip kb`):
+
+```
+~/.coral/data/kb/
+├── index.json              Text search index
+├── orama-index.json        Orama BM25 snapshot
+├── curate-state.json       Curation progress
+└── vec/                    Vector search (installed by equip kb)
+    ├── coral-vec.node      C++ addon (DuckDB + USearch)
+    └── specs/{specId}/     Per-embedding-spec snapshots
+        ├── ACTIVE          Atomic pointer to live snapshot
+        └── snapshots/{id}/
+            ├── store.duckdb    Chunk vectors + metadata
+            ├── manifest.json   Entry content hashes
+            └── engines/        Search engine index files
+```
+
+Hybrid search pipeline: query → embed via EmbeddingProvider → vector chunk search (USearch HNSW) → aggregate chunks to entries → RRF fusion with Orama BM25 → merged `KbResult[]`. Falls back to text-only when addon is absent.
+
 ## Directory Structure
 
 ```
@@ -454,7 +473,8 @@ L1  execution/server.ts ──→ execution/*, providers/, kb/, discuss/, workfl
 
 L0  providers/{codex,claude}/ ──→ shared/ only
     discuss/ ──→ (pure, no imports from execution or bridge)
-    kb/ ──→ shared/ only (runtime.ts is the subsystem entry point)
+    kb/ ──→ shared/ only (runtime.ts is the subsystem entry point;
+         vector-store.ts, vector-sync.ts, embedding.ts, chunking.ts, env.ts)
     workflow/ ──→ shared/ only (dependency-injected via ExecutionService)
     shared/, infra/, client/ ──→ (no upward imports)
 ```

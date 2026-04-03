@@ -20,6 +20,11 @@ Environment variables, config files, and the plugin manifest.
 | `CORAL_AUTO_SYMLINK` | `0` | Auto-create `.claude/coral → ~/.coral/projects/{slug}/` symlink on session start and add it to `.gitignore` |
 | `CORAL_KB_PATH` | `~/.coral/kb` | Custom KB storage path |
 | `CORAL_KB_GIT_SYNC` | `0` | Enable KB git sync with remote (`1` = auto fetch/rebase/push during curate). **Off by default** — KB notes may contain knowledge derived from proprietary codebases; only enable if the remote is authorized for that content. |
+| `CORAL_EMBEDDING_PROVIDER` | _(none)_ | Embedding provider (`gemini`, `openai`, `local`). If unset, vector search is disabled. |
+| `CORAL_EMBEDDING_API_KEY` | _(none)_ | API key for the chosen embedding provider (Gemini, OpenAI, Voyage) |
+| `CORAL_EMBEDDING_MODEL` | _(per provider)_ | Model override (default: `gemini-embedding-001` for Gemini) |
+| `CORAL_EMBEDDING_DIMS` | _(per provider)_ | Embedding dimensions override (default: 3072 for Gemini) |
+| `CORAL_EMBEDDING_BASE_URL` | _(none)_ | Custom API endpoint (for Ollama or self-hosted providers) |
 
 ### Usage - Shell
 
@@ -44,6 +49,20 @@ Set environment variables in `.claude/settings.json` (project-level or global). 
   }
 }
 ```
+
+### ~/.coral/.env — Embedding Configuration
+
+Embedding API keys should be stored in `~/.coral/.env`, not in `.claude/settings.json`. This file is user-local (not synced to git) and created with `0600` permissions.
+
+```bash
+# ~/.coral/.env
+CORAL_EMBEDDING_PROVIDER=gemini
+CORAL_EMBEDDING_API_KEY=AIza...
+```
+
+Priority: `process.env` (shell/settings.json) > `~/.coral/.env` > unconfigured (text-only search).
+
+Run `/coral:equip kb` to set up embedding — it guides through provider selection and writes `~/.coral/.env` automatically (API keys are never written by coral; add them manually).
 
 ## Config Files
 
@@ -113,6 +132,8 @@ See [Hooks documentation](./hooks.md) for details.
 |---|---|---|
 | `@modelcontextprotocol/sdk` | ^1.26.0 | MCP server framework |
 | `zod` | ^3.23.8 | Schema validation (MCP SDK dependency + input validation) |
+| `@orama/orama` | ^3.1.18 | Full-text BM25 search engine |
+| `node-addon-api` | ^8.7.0 | N-API C++ addon headers (build-time) |
 
 ### Dev Dependencies
 
@@ -129,6 +150,7 @@ See [Hooks documentation](./hooks.md) for details.
 |---|---|---|
 | Codex CLI v0.104+ | OpenAI model execution | `npm install -g @openai/codex` |
 | Node.js 18+ | Runtime | nvm, etc. |
+| cmake 3.21+ | C++ addon source build (fallback) | `uv tool install cmake` or system package |
 
 ## File Role Summary
 
@@ -146,6 +168,9 @@ hooks/hud-auto-update.mjs    -> SessionStart HUD auto-update hook
 ~/.claude/coral/sessions/<project-hash>/*.json  -> Runtime AX session files (Codex + Claude, auto-created)
 ~/.claude/coral/backend.json                    -> Runtime backend connection info (auto-created)
 ~/.claude/coral/backend.lock                    -> Runtime backend singleton lock (auto-created)
+~/.coral/data/kb/vec/coral-vec.node           -> Native vector search addon (installed by equip kb)
+~/.coral/data/kb/vec/specs/{specId}/           -> Per-spec immutable vector snapshots
+~/.coral/.env                                  -> Embedding provider config (API keys, created by user)
 <os-tmpdir>/coral-jobs/<jobId>/                  -> Runtime job directories (temporary, resolved by node:os tmpdir())
 ~/.coral/discuss-sources.json                   -> Shared discuss source registry (auto-created)
 ~/.coral/projects/<source-slug>/discuss/<session-dir>/  -> Runtime discuss session dirs (auto-created)

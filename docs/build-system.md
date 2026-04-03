@@ -10,6 +10,7 @@ TypeScript compilation and esbuild bundling pipeline.
 | `npm run build:server` | esbuild bundle only (skips tsc) |
 | `npm run dev` | TypeScript watch mode (`tsc --watch`) |
 | `npm test` | Run tests with vitest |
+| `cmake -B build csrc/ && cmake --build build -j$(($(nproc)/4))` | Build C++ native addon (requires cmake + C++ toolchain) |
 
 ## Bundle Commit Policy
 
@@ -45,9 +46,42 @@ bridge/coral-cli.cjs       (src/cli/bootstrap.ts)
 
 The build script performs two tasks before bundling: version sync and manifest update.
 
+### C++ Native Addon (csrc/)
+
+The vector search addon is built separately from the TypeScript pipeline.
+
+```
+csrc/
+├── CMakeLists.txt        DuckDB prebuilt download + addon compilation
+├── VERSION               Independent version (e.g., 0.1.0)
+├── bridge.cpp            N-API entry point
+├── store/                DuckDB integration (CRUD)
+├── engine/               Search engines (ExactScan, USearch HNSW)
+└── vendor/
+    ├── VERSIONS           Pinned dependency versions
+    ├── duckdb/duckdb.hpp  Header only (prebuilt .a downloaded at configure)
+    └── usearch/           Header-only search library
+```
+
+**Build**: `cmake -B build csrc/ && cmake --build build --config Release -j$(($(nproc)/4))`
+
+**Output**: `build/coral-vec.node`
+
+**DuckDB**: Prebuilt `libduckdb_static.a` is auto-downloaded from GitHub Releases at cmake configure time. No DuckDB source compilation needed.
+
+**Parallelism**: Always use `-j$(($(nproc)/4))` — full CPU causes freezes with large C++ headers.
+
+**Distribution**: Prebuilt addon binaries are published to GitHub Releases as `csrc@{version}-{platform}.tar.gz`. `/coral:equip kb` downloads the matching prebuild, falling back to source build if unavailable.
+
+**CI**: `.github/workflows/csrc-release.yml` builds 5 platforms on `main` push (csrc/ changes) or `csrc@*` tag push.
+
 ### Version Sync
 
 `package.json` is the single source of truth for the version. On each build, the script reads `package.json`, then writes the `version` field into `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` automatically. No manual version updates needed in those files.
+
+### Manifest Update
+
+`bridge/manifest.json` is extended during build to include native addon compatibility metadata: `csrcVersion`, `schemaVersion`, and `minNapiVersion` (sourced from `csrc/VERSION` and `src/kb/vector-store-contract.ts`). When `csrc/VERSION` is absent, these fields are `null` so TypeScript-only builds succeed.
 
 ### esbuild Settings
 
@@ -71,6 +105,8 @@ The build script performs two tasks before bundling: version sync and manifest u
 | `__VERSION__` | `package.json` version | MCP server initialization (`server.ts`) |
 | `__PLUGIN_ROOT__` | CJS `__dirname` + `..` | Runtime plugin-root resolution for shared resolver + Codex INJECT.md injection |
 | `__IS_CORAL_BACKEND_MAIN__` | `true` (backend bundle only) | Guards auto-start logic in `src/execution/server.ts` |
+| `CORAL_VEC_ADDON_VERSION` | `csrc/VERSION` | Addon version reported by `getStats()` |
+| `CORAL_VEC_SCHEMA_VERSION` | `src/kb/vector-store-contract.ts` | DuckDB schema version for compatibility checks |
 
 `__PLUGIN_ROOT__` is a CJS banner variable (not a `define` replacement), set to `path.resolve(__dirname, '..')` at runtime. This allows the bundled server to locate `INJECT.md` regardless of where the plugin is installed.
 
