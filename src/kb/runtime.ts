@@ -1,12 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
-import { createRequire } from 'node:module';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { load, save, type RawData } from '@orama/orama';
 import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
 import { CURATE_STATE_FILE } from './curate-state.js';
 import { normalizeCommunityParent, rewriteLegacyNoteFrontmatter } from './frontmatter.js';
-import { loadKbLanceDb } from './lancedb-runtime.js';
 import { writeFileAtomic } from './mutation-helpers.js';
 import { createOramaDb, type KbOramaDb, type KbOramaTokenizer } from './orama-factory.js';
 import {
@@ -24,12 +21,13 @@ import {
 import { rebuildTextArtifacts, sortedMarkdownEntries } from './text-artifacts.js';
 import {
   communityEntryId,
+  isNoteEntry,
+  isSourceEntry,
   noteEntryId,
   parseKbEntryId,
   sourceEntryId,
   type CommunityEntry,
   type KbIndex,
-  type KbLanceDbAdapter,
   type NoteEntry,
   type SourceEntry,
 } from './types.js';
@@ -42,16 +40,49 @@ import {
   parseOptionalTrimmedString,
   parsePositiveInteger,
 } from './validation.js';
+import { resolveEmbeddingProviderConfig } from './embedding.js';
+import { loadKbNote, loadKbSource } from './read.js';
+import {
+  createDuckDBVectorStore,
+  readActiveSnapshotId,
+  vectorAddonPath,
+  vectorSnapshotDbPath,
+  type VectorStore,
+} from './vector-store.js';
 
 const INDEX_STATE_FILE = 'index-state.json';
 const INDEX_FILE = 'index.json';
 const ORAMA_INDEX_FILE = 'orama-index.json';
 export const KB_ENTRYSEQ_MIGRATION_VERSION = 1;
 
-export type KbIndexState = {
-  mutationSeq: number;
+export type KbVectorSpecState = {
   indexedSeq: number;
   staleReason?: string;
+  activeSnapshotId?: string;
+};
+
+export type KbVectorLease = {
+  store: VectorStore;
+  specId: string;
+  snapshotId: string;
+  generation: number;
+  vectorStatus: KbVectorSpecState | null;
+  release(): Promise<void>;
+};
+
+export type KbVectorTextSnapshot = {
+  index: KbIndex;
+  notes: Array<{ entry: NoteEntry; body: string }>;
+  sources: Array<{ entry: SourceEntry; body: string }>;
+};
+
+export type KbIndexState = {
+  mutationSeq: number;
+  textIndexedSeq: number;
+  textStaleReason?: string;
+  vector: {
+    bySpec: Record<string, KbVectorSpecState>;
+  };
 };
 
 export type KbCachedOramaIndex = {
@@ -62,8 +93,19 @@ export type KbCachedOramaIndex = {
 export type KbRuntime = {
   readonly markdownRoot: string;
   readonly runtimeDir: string;
-  readonly adapter: KbLanceDbAdapter | null;
-  initAdapter(pluginRoot: string): Promise<void>;
+  vectorStore: VectorStore | null;
+  initVectorStore(pluginRoot: string): Promise<void>;
+  openVectorStore(
+    dbPath: string,
+    handleToken: string,
+  ): Promise<{
+    store: VectorStore;
+    close(): Promise<void>;
+  } | null>;
+  activateVectorSnapshot(specId: string, snapshotId: string): Promise<void>;
+  acquireVectorLease(): Promise<KbVectorLease | null>;
+  closeVectorStores(): Promise<void>;
+  getActiveVectorHandleInfo(): { specId: string; snapshotId: string; generation: number } | null;
   readIndex(): KbIndex | null;
   persistIndexToDisk(index: KbIndex): KbIndex;
   writeIndex(index: KbIndex): KbIndex;
@@ -75,12 +117,16 @@ export type KbRuntime = {
   recordIndexSyncSuccess(): KbIndexState;
   recordIndexSyncFailure(reason: string): KbIndexState;
   recordReindexSuccess(startSeq: number): KbIndexState;
+  recordVectorSyncSuccess(specId: string, startSeq: number, snapshotId: string): KbIndexState;
+  recordVectorSyncFailure(specId: string, reason: string, activeSnapshotId?: string): KbIndexState;
+  getVectorStatus(specId: string): KbVectorSpecState | null;
   ensureIndex(): Promise<KbIndex>;
   ensureOramaIndex(): Promise<{
     db: KbOramaDb;
     tokenizer: KbOramaTokenizer;
     index: KbIndex;
   }>;
+  ensureTextArtifactsFreshUnderLock(startSeq: number): Promise<KbVectorTextSnapshot>;
   withMutationLock<T>(fn: () => Promise<T> | T): Promise<T>;
   invalidateKbCache(): void;
   invalidateTextSnapshot(reason: string): KbIndexState;
@@ -99,7 +145,13 @@ export type KbRuntime = {
 };
 
 function defaultIndexState(): KbIndexState {
-  return { mutationSeq: 0, indexedSeq: 0 };
+  return {
+    mutationSeq: 0,
+    textIndexedSeq: 0,
+    vector: {
+      bySpec: {},
+    },
+  };
 }
 
 function emptyIndex(): KbIndex {
@@ -253,22 +305,57 @@ function parseIndexState(value: unknown): KbIndexState {
   }
 
   const mutationSeq = value.mutationSeq;
-  const indexedSeq = value.indexedSeq;
-  const staleReason = value.staleReason;
+  const textIndexedSeq = value.textIndexedSeq ?? value.indexedSeq;
+  const textStaleReason = value.textStaleReason ?? value.staleReason;
   if (typeof mutationSeq !== 'number' || !Number.isInteger(mutationSeq) || mutationSeq < 0) {
     throw new Error('Invalid KB index state');
   }
-  if (typeof indexedSeq !== 'number' || !Number.isInteger(indexedSeq) || indexedSeq < 0) {
+  if (typeof textIndexedSeq !== 'number' || !Number.isInteger(textIndexedSeq) || textIndexedSeq < 0) {
     throw new Error('Invalid KB index state');
   }
-  if (staleReason !== undefined && typeof staleReason !== 'string') {
+  if (textStaleReason !== undefined && typeof textStaleReason !== 'string') {
     throw new Error('Invalid KB index state');
+  }
+
+  const bySpec: Record<string, KbVectorSpecState> = {};
+  const vectorValue = value.vector;
+  if (vectorValue !== undefined) {
+    const rawBySpec = isRecord(vectorValue) && isRecord(vectorValue.bySpec) ? vectorValue.bySpec : null;
+    if (rawBySpec !== null) {
+      for (const [specId, rawSpecState] of Object.entries(rawBySpec)) {
+        if (!isRecord(rawSpecState)) {
+          continue;
+        }
+
+        const indexedSeq = rawSpecState.indexedSeq;
+        const staleReason = rawSpecState.staleReason;
+        const activeSnapshotId = rawSpecState.activeSnapshotId;
+        if (typeof indexedSeq !== 'number' || !Number.isInteger(indexedSeq) || indexedSeq < 0) {
+          continue;
+        }
+        if (staleReason !== undefined && typeof staleReason !== 'string') {
+          continue;
+        }
+        if (activeSnapshotId !== undefined && typeof activeSnapshotId !== 'string') {
+          continue;
+        }
+
+        bySpec[specId] = {
+          indexedSeq,
+          ...(typeof staleReason === 'string' ? { staleReason } : {}),
+          ...(typeof activeSnapshotId === 'string' ? { activeSnapshotId } : {}),
+        };
+      }
+    }
   }
 
   return {
     mutationSeq,
-    indexedSeq,
-    ...(typeof staleReason === 'string' ? { staleReason } : {}),
+    textIndexedSeq,
+    ...(typeof textStaleReason === 'string' ? { textStaleReason } : {}),
+    vector: {
+      bySpec,
+    },
   };
 }
 
@@ -277,7 +364,7 @@ function writeJsonAtomic(filePath: string, value: unknown): void {
 }
 
 function isFreshTextSnapshot(state: KbIndexState | null): state is KbIndexState {
-  return state !== null && state.indexedSeq === state.mutationSeq && state.staleReason === undefined;
+  return state !== null && state.textIndexedSeq === state.mutationSeq && state.textStaleReason === undefined;
 }
 
 export function runEntrySeqUpgradeGuard(target: EntrySeqGuardTarget): boolean {
@@ -306,10 +393,39 @@ export function runEntrySeqUpgradeGuard(target: EntrySeqGuardTarget): boolean {
 }
 
 export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: string; runtimeDir: string }): KbRuntime {
-  let adapter: KbLanceDbAdapter | null = null;
   let indexCache: { index: KbIndex | null; mtime: number } | null = null;
   let cachedOramaIndex: KbCachedOramaIndex | null = null;
   let mutationLock: Promise<void> = Promise.resolve();
+  let vectorPluginRoot: string | null = null;
+  let activeVectorHandle: RuntimeVectorHandle | null = null;
+  let nextVectorGeneration = 1;
+  const retiredVectorHandles = new Set<RuntimeVectorHandle>();
+  const vectorDrainTimeoutMs = readVectorDrainTimeoutMs();
+
+  type OpenedVectorStore = {
+    store: VectorStore;
+    close(): Promise<void>;
+  };
+
+  type RuntimeVectorHandle = OpenedVectorStore & {
+    specId: string;
+    snapshotId: string;
+    generation: number;
+    leaseCount: number;
+    retired: boolean;
+    closeTimer: NodeJS.Timeout | null;
+    closed: boolean;
+  };
+
+  function readVectorDrainTimeoutMs(): number {
+    const raw = process.env.CORAL_VECTOR_DRAIN_TIMEOUT_MS;
+    if (raw === undefined) {
+      return 30_000;
+    }
+
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : 30_000;
+  }
 
   function notesDir(): string {
     return pathsNotesDir(markdownRoot);
@@ -361,6 +477,222 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
 
   function oramaIndexPath(): string {
     return join(runtimeDir, ORAMA_INDEX_FILE);
+  }
+
+  function vectorHandleDir(handleToken: string): string {
+    return join(runtimeDir, 'vec', 'handles', handleToken);
+  }
+
+  function vectorHandleAddonPath(handleToken: string): string {
+    return join(vectorHandleDir(handleToken), 'coral-vec.node');
+  }
+
+  function makeHandleToken(prefix: string): string {
+    return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  async function closeOpenedVectorStore(opened: OpenedVectorStore): Promise<void> {
+    await opened.close();
+  }
+
+  async function openVectorStore(
+    dbPath: string,
+    handleToken: string,
+  ): Promise<{
+    store: VectorStore;
+    close(): Promise<void>;
+  } | null> {
+    if (vectorPluginRoot === null) {
+      return null;
+    }
+
+    const sourceAddonPath = vectorAddonPath(runtimeDir);
+    if (!existsSync(sourceAddonPath)) {
+      return null;
+    }
+
+    const addonDir = vectorHandleDir(handleToken);
+    const addonPath = vectorHandleAddonPath(handleToken);
+    mkdirSync(addonDir, { recursive: true });
+    copyFileSync(sourceAddonPath, addonPath);
+
+    const store = createDuckDBVectorStore({
+      pluginRoot: vectorPluginRoot,
+      runtimeDir,
+      addonPath,
+    });
+    if (store === null) {
+      rmSync(addonDir, { recursive: true, force: true });
+      return null;
+    }
+
+    try {
+      await store.init(dbPath);
+    } catch (error: unknown) {
+      await store.close().catch(() => {});
+      rmSync(addonDir, { recursive: true, force: true });
+      throw error;
+    }
+
+    return {
+      store,
+      async close() {
+        await store.close().catch(() => {});
+        rmSync(addonDir, { recursive: true, force: true });
+      },
+    };
+  }
+
+  async function forceCloseRuntimeVectorHandle(handle: RuntimeVectorHandle): Promise<void> {
+    if (handle.closed) {
+      return;
+    }
+
+    handle.closed = true;
+    if (handle.closeTimer !== null) {
+      clearTimeout(handle.closeTimer);
+      handle.closeTimer = null;
+    }
+
+    if (activeVectorHandle?.generation === handle.generation) {
+      activeVectorHandle = null;
+      kbRuntime.vectorStore = null;
+    }
+
+    retiredVectorHandles.delete(handle);
+    await closeOpenedVectorStore(handle);
+  }
+
+  async function maybeCloseRetiredVectorHandle(handle: RuntimeVectorHandle): Promise<void> {
+    if (!handle.retired || handle.leaseCount !== 0) {
+      return;
+    }
+
+    await forceCloseRuntimeVectorHandle(handle);
+  }
+
+  function scheduleRetiredHandleClose(handle: RuntimeVectorHandle): void {
+    if (handle.closeTimer !== null || handle.closed) {
+      return;
+    }
+
+    handle.closeTimer = setTimeout(() => {
+      if (handle.closed || handle.leaseCount === 0) {
+        void maybeCloseRetiredVectorHandle(handle);
+        return;
+      }
+
+      process.stderr.write(
+        `Warning: forcing close of retired KB vector handle after ${vectorDrainTimeoutMs}ms drain timeout.\n`,
+      );
+      void forceCloseRuntimeVectorHandle(handle);
+    }, vectorDrainTimeoutMs);
+    handle.closeTimer.unref?.();
+  }
+
+  function retireVectorHandle(handle: RuntimeVectorHandle): void {
+    handle.retired = true;
+    retiredVectorHandles.add(handle);
+    scheduleRetiredHandleClose(handle);
+    void maybeCloseRetiredVectorHandle(handle);
+  }
+
+  function publishVectorHandle(handle: RuntimeVectorHandle): void {
+    const previous = activeVectorHandle;
+    activeVectorHandle = handle;
+    kbRuntime.vectorStore = handle.store;
+    if (previous !== null && previous.generation !== handle.generation) {
+      retireVectorHandle(previous);
+    }
+  }
+
+  async function activateVectorSnapshot(specId: string, snapshotId: string): Promise<void> {
+    const opened = await openVectorStore(
+      vectorSnapshotDbPath(runtimeDir, specId, snapshotId),
+      makeHandleToken(`active-${specId}-${snapshotId}`),
+    );
+    if (opened === null) {
+      throw new Error('KB vector store is unavailable.');
+    }
+
+    publishVectorHandle({
+      ...opened,
+      specId,
+      snapshotId,
+      generation: nextVectorGeneration,
+      leaseCount: 0,
+      retired: false,
+      closeTimer: null,
+      closed: false,
+    });
+    nextVectorGeneration += 1;
+  }
+
+  async function acquireVectorLease(): Promise<KbVectorLease | null> {
+    const handle = activeVectorHandle;
+    if (handle === null || handle.closed) {
+      return null;
+    }
+
+    handle.leaseCount += 1;
+    const vectorStatus = kbRuntime.getVectorStatus(handle.specId);
+    let released = false;
+
+    return {
+      store: handle.store,
+      specId: handle.specId,
+      snapshotId: handle.snapshotId,
+      generation: handle.generation,
+      vectorStatus,
+      async release() {
+        if (released) {
+          return;
+        }
+        released = true;
+        handle.leaseCount = Math.max(0, handle.leaseCount - 1);
+        await maybeCloseRetiredVectorHandle(handle);
+      },
+    };
+  }
+
+  async function closeVectorStores(): Promise<void> {
+    const handles = [
+      ...(activeVectorHandle === null ? [] : [activeVectorHandle]),
+      ...retiredVectorHandles,
+    ];
+
+    activeVectorHandle = null;
+    kbRuntime.vectorStore = null;
+    retiredVectorHandles.clear();
+
+    for (const handle of handles) {
+      await forceCloseRuntimeVectorHandle(handle).catch(() => {});
+    }
+  }
+
+  function captureVectorTextSnapshot(): KbVectorTextSnapshot {
+    const index = kbRuntime.readIndex() ?? emptyIndex();
+    const notes: KbVectorTextSnapshot['notes'] = [];
+    const sources: KbVectorTextSnapshot['sources'] = [];
+
+    for (const entry of Object.values(index.entries)) {
+      if (isNoteEntry(entry)) {
+        notes.push({
+          entry,
+          body: loadKbNote(kbRuntime.notePath(entry.slug)).body,
+        });
+        continue;
+      }
+
+      if (isSourceEntry(entry)) {
+        sources.push({
+          entry,
+          body: loadKbSource(kbRuntime.sourcePath(entry.slug)).body,
+        });
+      }
+    }
+
+    return { index, notes, sources };
   }
 
   /** Install an already-validated index into the in-memory cache. */
@@ -415,8 +747,9 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
 
     try {
       const indexMtime = indexCache?.mtime || statSync(currentIndexPath).mtimeMs;
-      return [notesDir(), principlesDir(), sourcesDir(), communitiesDir()]
-        .some((dir) => dirModifiedAfter(dir, indexMtime));
+      return [notesDir(), principlesDir(), sourcesDir(), communitiesDir()].some((dir) =>
+        dirModifiedAfter(dir, indexMtime),
+      );
     } catch {
       return false;
     }
@@ -493,19 +826,35 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     });
   }
 
-  async function initAdapter(pluginRoot: string): Promise<void> {
-    adapter = null;
-    kbRuntime.invalidateKbCache();
+  async function ensureTextArtifactsFreshUnderLock(startSeq: number): Promise<KbVectorTextSnapshot> {
+    if (textArtifactsNeedRebuild()) {
+      await rebuildTextArtifacts(kbRuntime, startSeq);
+      return captureVectorTextSnapshot();
+    }
+
+    if (cachedOramaIndex === null) {
+      try {
+        installOramaCache(await loadOramaSnapshot());
+      } catch {
+        await rebuildTextArtifacts(kbRuntime, startSeq);
+      }
+    }
+
+    const stateAfterArtifacts = readIndexStateIfPresent();
+    if (cachedOramaIndex === null || textArtifactsNeedRebuild(stateAfterArtifacts)) {
+      throw new Error('KB text search is unavailable: a fresh text snapshot could not be installed.');
+    }
+
+    return captureVectorTextSnapshot();
+  }
+
+  async function initVectorStore(pluginRoot: string): Promise<void> {
+    vectorPluginRoot = pluginRoot;
+    rmSync(join(runtimeDir, 'vec-staging'), { recursive: true, force: true });
+    await closeVectorStores();
+    kbRuntime.vectorStore = null;
     mkdirSync(runtimeDir, { recursive: true });
     runEntrySeqUpgradeGuard(kbRuntime);
-
-    try {
-      const req = createRequire(join(pluginRoot, 'bridge', 'coral-backend.cjs'));
-      const entry = req.resolve('@lancedb/lancedb', { paths: [runtimeDir] });
-      adapter = await loadKbLanceDb(pathToFileURL(entry).href, runtimeDir);
-    } catch {
-      adapter = null;
-    }
 
     if (textArtifactsNeedRebuild()) {
       return;
@@ -516,15 +865,50 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     } catch {
       cachedOramaIndex = null;
     }
+
+    let desiredSpecId: string | null = null;
+    try {
+      desiredSpecId = resolveEmbeddingProviderConfig()?.specId ?? null;
+    } catch {
+      desiredSpecId = null;
+    }
+
+    if (desiredSpecId === null) {
+      return;
+    }
+
+    const snapshotId = readActiveSnapshotId(runtimeDir, desiredSpecId);
+    if (snapshotId === null) {
+      return;
+    }
+
+    try {
+      await activateVectorSnapshot(desiredSpecId, snapshotId);
+    } catch {
+      await closeVectorStores();
+    }
   }
 
   const kbRuntime: KbRuntime = {
     markdownRoot,
     runtimeDir,
-    get adapter() {
-      return adapter;
+    vectorStore: null,
+    initVectorStore,
+    openVectorStore,
+    activateVectorSnapshot,
+    acquireVectorLease,
+    closeVectorStores,
+    getActiveVectorHandleInfo() {
+      if (activeVectorHandle === null || activeVectorHandle.closed) {
+        return null;
+      }
+
+      return {
+        specId: activeVectorHandle.specId,
+        snapshotId: activeVectorHandle.snapshotId,
+        generation: activeVectorHandle.generation,
+      };
     },
-    initAdapter,
     readIndex() {
       if (indexCache !== null) {
         return indexCache.index;
@@ -592,7 +976,8 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
       const state = readIndexState();
       const nextState: KbIndexState = {
         mutationSeq: state.mutationSeq,
-        indexedSeq: state.mutationSeq,
+        textIndexedSeq: state.mutationSeq,
+        vector: state.vector,
       };
       kbRuntime.writeIndexState(nextState);
       return nextState;
@@ -601,8 +986,9 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
       const state = readIndexState();
       const nextState: KbIndexState = {
         mutationSeq: state.mutationSeq,
-        indexedSeq: state.indexedSeq,
-        staleReason: reason,
+        textIndexedSeq: state.textIndexedSeq,
+        textStaleReason: reason,
+        vector: state.vector,
       };
       kbRuntime.writeIndexState(nextState);
       return nextState;
@@ -615,13 +1001,62 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
 
       const nextState: KbIndexState = {
         mutationSeq: state.mutationSeq,
-        indexedSeq: startSeq,
+        textIndexedSeq: startSeq,
+        vector: state.vector,
       };
       kbRuntime.writeIndexState(nextState);
       return nextState;
     },
+    recordVectorSyncSuccess(specId, startSeq, snapshotId) {
+      const state = readIndexState();
+      if (state.mutationSeq !== startSeq) {
+        return state;
+      }
+
+      const nextState: KbIndexState = {
+        ...state,
+        vector: {
+          bySpec: {
+            ...state.vector.bySpec,
+            [specId]: {
+              indexedSeq: startSeq,
+              activeSnapshotId: snapshotId,
+            },
+          },
+        },
+      };
+      kbRuntime.writeIndexState(nextState);
+      return nextState;
+    },
+    recordVectorSyncFailure(specId, reason, activeSnapshotId) {
+      const state = readIndexState();
+      const current = state.vector.bySpec[specId];
+      const nextState: KbIndexState = {
+        ...state,
+        vector: {
+          bySpec: {
+            ...state.vector.bySpec,
+            [specId]: {
+              indexedSeq: current?.indexedSeq ?? 0,
+              staleReason: reason,
+              ...(activeSnapshotId === undefined
+                ? current?.activeSnapshotId === undefined
+                  ? {}
+                  : { activeSnapshotId: current.activeSnapshotId }
+                : { activeSnapshotId }),
+            },
+          },
+        },
+      };
+      kbRuntime.writeIndexState(nextState);
+      return nextState;
+    },
+    getVectorStatus(specId) {
+      return readIndexState().vector.bySpec[specId] ?? null;
+    },
     ensureIndex,
     ensureOramaIndex,
+    ensureTextArtifactsFreshUnderLock,
     invalidateKbCache() {
       indexCache = null;
       cachedOramaIndex = null;

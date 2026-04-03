@@ -6,3 +6,4 @@ tmp/
 
 .claude/coral
 .claude/settings.local.json
+build/

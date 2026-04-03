@@ -17,48 +17,6 @@ vi.mock('node:os', async () => {
   };
 });
 
-type FakeDb = {
-  dropped: string[];
-  created: Record<string, unknown[]>;
-  emptySchemas: Record<string, unknown>;
-  tableNames: Set<string>;
-  connection: {
-    tableNames: () => Promise<string[]>;
-    dropTable: (name: string) => Promise<void>;
-    createTable: (name: string, rows: Record<string, unknown>[]) => Promise<void>;
-    createEmptyTable: (name: string, schema: unknown) => Promise<void>;
-  };
-};
-
-function createFakeDb(): FakeDb {
-  const tableNames = new Set<string>();
-  const created: Record<string, unknown[]> = {};
-  const emptySchemas: Record<string, unknown> = {};
-  const dropped: string[] = [];
-
-  return {
-    dropped,
-    created,
-    emptySchemas,
-    tableNames,
-    connection: {
-      tableNames: async () => [...tableNames],
-      dropTable: async (name: string) => {
-        dropped.push(name);
-        tableNames.delete(name);
-      },
-      createTable: async (name: string, rows: Record<string, unknown>[]) => {
-        created[name] = rows;
-        tableNames.add(name);
-      },
-      createEmptyTable: async (name: string, schema: unknown) => {
-        emptySchemas[name] = schema;
-        tableNames.add(name);
-      },
-    },
-  };
-}
-
 async function loadKbModules() {
   vi.resetModules();
   const [{ reindex }, runtime, paths] = await Promise.all([
@@ -80,19 +38,6 @@ function createRuntime(
   return createKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: paths.kbRuntimeDir(),
-  });
-}
-
-function setAdapter(
-  kb: ReturnType<typeof createRuntime>,
-  adapter: {
-    getDb: () => Promise<unknown>;
-    ensureTables: () => Promise<void>;
-  } | null,
-): void {
-  Object.defineProperty(kb, 'adapter', {
-    configurable: true,
-    get: () => adapter,
   });
 }
 
@@ -247,7 +192,7 @@ updatedAt: 2026-04-02
     });
   });
 
-  it('rebuilds text mode cleanly when enhanced mode was previously active but is now unavailable', async () => {
+  it('rebuilds text mode cleanly when the vector store is unavailable', async () => {
     const { reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
@@ -279,94 +224,14 @@ Make the contract explicit first.
     );
     kb.writeIndexState({
       mutationSeq: 3,
-      indexedSeq: 3,
+      textIndexedSeq: 3,
+      vector: { bySpec: {} },
     });
 
     const result = await reindex(kb);
 
     expect(result.mode).toBe('text');
     expect(result.warning).toBeUndefined();
-  });
-
-  it('rebuilds LanceDB tables in enhanced mode and clears stale index state for the rebuilt snapshot', async () => {
-    const { reindex, createKbRuntime, paths } = await loadKbModules();
-    const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
-    mkdirSync(paths.principlesDir(), { recursive: true });
-    writeFileSync(
-      join(paths.notesDir(), 'coral-kb-mode.md'),
-      `---
-tags: [coral, kb]
-principles: [contract-first-design]
-source:
-  - kangig94/coral
-createdAt: 2026-03-20T00:00:00.000Z
-updatedAt: 2026-03-21T00:00:00.000Z
-entrySeq: 11
----
-# KB Mode
-
-## Rule
-Keep the JSON index authoritative.
-`,
-      'utf-8',
-    );
-    writeFileSync(
-      join(paths.principlesDir(), 'contract-first-design.md'),
-      `---
-createdAt: 2026-03-20
-updatedAt: 2026-03-20
----
-Make the contract explicit first.
-`,
-      'utf-8',
-    );
-    kb.writeIndexState({
-      mutationSeq: 5,
-      indexedSeq: 3,
-      staleReason: 'old failure',
-    });
-
-    const fakeDb = createFakeDb();
-    fakeDb.tableNames.add('notes');
-    fakeDb.tableNames.add('tags');
-    fakeDb.tableNames.add('principles');
-    setAdapter(kb, {
-      getDb: async () => fakeDb.connection,
-      ensureTables: async () => {},
-    });
-
-    const result = await reindex(kb);
-
-    expect(result.mode).toBe('text');
-    expect(result.warning).toBeUndefined();
-    expect(fakeDb.dropped).toEqual(['notes', 'tags', 'principles']);
-    expect(fakeDb.created.notes).toEqual([
-      {
-        id: 'coral-kb-mode',
-        path: 'notes/coral-kb-mode.md',
-        note_slug: 'coral-kb-mode',
-        note_slug_norm: 'coral-kb-mode',
-        domain: 'coral',
-        title: 'KB Mode',
-        title_norm: 'kb mode',
-        body: '## Rule\nKeep the JSON index authoritative.',
-        body_norm: '## rule\nkeep the json index authoritative.',
-        created: '2026-03-20T00:00:00.000Z',
-        updated: '2026-03-21T00:00:00.000Z',
-      },
-    ]);
-    expect(fakeDb.created.tags).toEqual([
-      { note_id: 'coral-kb-mode', tag: 'coral', tag_norm: 'coral' },
-      { note_id: 'coral-kb-mode', tag: 'kb', tag_norm: 'kb' },
-    ]);
-    expect(fakeDb.created.principles).toEqual([
-      { note_id: 'coral-kb-mode', principle: 'contract-first-design', principle_norm: 'contract-first-design' },
-    ]);
-    expect(kb.readIndexState()).toEqual({
-      mutationSeq: 5,
-      indexedSeq: 5,
-    });
   });
 
   it('skips notes with malformed frontmatter instead of crashing', async () => {

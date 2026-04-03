@@ -8,11 +8,36 @@ const mockState = vi.hoisted(() => ({
   tmpHome: '',
 }));
 
+const hybridMockState = vi.hoisted(() => ({
+  ensureVectorIndex: null as null | ((...args: any[]) => Promise<any>),
+  createEmbeddingProvider: null as null | ((...args: any[]) => Promise<any>),
+}));
+
 vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof NodeOs>('node:os');
   return {
     ...actual,
     homedir: () => mockState.tmpHome,
+  };
+});
+
+vi.mock('../vector-sync.js', async () => {
+  const actual = await vi.importActual<typeof import('../vector-sync.js')>('../vector-sync.js');
+  return {
+    ...actual,
+    ensureVectorIndex: (...args: Parameters<typeof actual.ensureVectorIndex>) =>
+      hybridMockState.ensureVectorIndex === null ? actual.ensureVectorIndex(...args) : hybridMockState.ensureVectorIndex(...args),
+  };
+});
+
+vi.mock('../embedding.js', async () => {
+  const actual = await vi.importActual<typeof import('../embedding.js')>('../embedding.js');
+  return {
+    ...actual,
+    createEmbeddingProvider: (...args: Parameters<typeof actual.createEmbeddingProvider>) =>
+      hybridMockState.createEmbeddingProvider === null
+        ? actual.createEmbeddingProvider(...args)
+        : hybridMockState.createEmbeddingProvider(...args),
   };
 });
 
@@ -78,6 +103,75 @@ ${body}
   );
 }
 
+function writeSource(
+  sourceDir: string,
+  slug: string,
+  {
+    title,
+    type = 'article',
+    tags = [],
+    body,
+    importedAt = '2026-03-23',
+    entrySeq = 1,
+  }: {
+    title: string;
+    type?: string;
+    tags?: string[];
+    body: string;
+    importedAt?: string;
+    entrySeq?: number;
+  },
+): void {
+  writeFileSync(
+    join(sourceDir, `${slug}.md`),
+    `---
+title: ${title}
+type: ${type}
+tags: [${tags.join(', ')}]
+importedAt: ${importedAt}
+entrySeq: ${entrySeq}
+---
+# ${title}
+
+${body}
+`,
+    'utf-8',
+  );
+}
+
+function writeCommunity(
+  communityDir: string,
+  slug: string,
+  {
+    title,
+    members,
+    summary,
+    body,
+  }: {
+    title: string;
+    members: string[];
+    summary?: string;
+    body: string;
+  },
+): void {
+  writeFileSync(
+    join(communityDir, `${slug}.md`),
+    `---
+level: 0
+members:
+${members.map((member) => `  - ${member}`).join('\n')}
+${summary === undefined ? '' : `summary: ${summary}\n`}generatedBy: curate
+createdAt: 2026-04-02
+updatedAt: 2026-04-02
+---
+# ${title}
+
+${body}
+`,
+    'utf-8',
+  );
+}
+
 function resultNotes(results: { note: string }[]): string[] {
   return results.map((result) => result.note);
 }
@@ -94,6 +188,54 @@ function resultFor<T extends { note: string }>(results: T[], target: string): T 
   return result!;
 }
 
+function mockHybridSearch(
+  kb: { acquireVectorLease: (...args: any[]) => Promise<any>; readIndexState: () => { mutationSeq: number } },
+  {
+    searchVector,
+    embedQuery = vi.fn().mockResolvedValue(new Float32Array([0.25, 0.75])),
+    specId = 'spec-1',
+    snapshotId = 'snapshot-1',
+  }: {
+    searchVector: (query: Float32Array, candidateK: number) => Promise<Array<{ chunkId: string; entryId: string; score: number }>>;
+    embedQuery?: (query: string) => Promise<Float32Array>;
+    specId?: string;
+    snapshotId?: string;
+  },
+) {
+  const mutationSeq = kb.readIndexState().mutationSeq;
+  const release = vi.fn().mockResolvedValue(undefined);
+
+  hybridMockState.ensureVectorIndex = vi.fn().mockResolvedValue({
+    mode: 'hybrid',
+    specId,
+    vectorStatus: {
+      indexedSeq: mutationSeq,
+      activeSnapshotId: snapshotId,
+    },
+  });
+  hybridMockState.createEmbeddingProvider = vi.fn().mockResolvedValue({
+    embedQuery,
+  });
+  kb.acquireVectorLease = vi.fn().mockResolvedValue({
+    store: {
+      searchVector,
+    },
+    specId,
+    snapshotId,
+    generation: 1,
+    vectorStatus: {
+      indexedSeq: mutationSeq,
+      activeSnapshotId: snapshotId,
+    },
+    release,
+  });
+
+  return {
+    release,
+    embedQuery,
+  };
+}
+
 describe('kb search', () => {
   beforeEach(() => {
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-kb-search-'));
@@ -104,6 +246,8 @@ describe('kb search', () => {
     rmSync(mockState.tmpHome, { recursive: true, force: true });
     mockState.tmpHome = '';
     delete process.env.CORAL_KB_PATH;
+    hybridMockState.ensureVectorIndex = null;
+    hybridMockState.createEmbeddingProvider = null;
     vi.resetModules();
   });
 
@@ -258,6 +402,216 @@ describe('kb search', () => {
     const match = resultFor(response.results, 'contract-first-design');
 
     expect(match.matchedBy).toEqual(['filename', 'principle', 'tag']);
+  });
+
+  it('fuses Orama and vector ranks with RRF for note and source entries', async () => {
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.sourcesDir(), { recursive: true });
+
+    writeNote(paths.notesDir(), 'rendering-alpha', {
+      title: 'Rendering Alpha',
+      body: 'Rendering guides keep frames stable.',
+    });
+    writeNote(paths.notesDir(), 'beta-archive', {
+      title: 'Beta Archive',
+      body: 'Rendering notes keep pipelines aligned.',
+    });
+    writeSource(paths.sourcesDir(), 'gamma-reference', {
+      title: 'Gamma Reference',
+      body: 'Archive only.',
+    });
+
+    await reindex(kb);
+
+    mockHybridSearch(kb, {
+      searchVector: vi.fn().mockResolvedValue([
+        { chunkId: 'beta:0', entryId: 'note:beta-archive', score: 0.99 },
+        { chunkId: 'gamma:0', entryId: 'source:gamma-reference', score: 0.98 },
+      ]),
+    });
+
+    const response = await searchKb(kb, 'rendering', 3);
+    const notesByRank = resultNotes(response.results);
+
+    expect(response.mode).toBe('hybrid');
+    expect(position(notesByRank, 'beta-archive')).toBeLessThan(position(notesByRank, 'rendering-alpha'));
+    expect(position(notesByRank, 'rendering-alpha')).toBeLessThan(position(notesByRank, 'gamma-reference'));
+    expect(resultFor(response.results, 'beta-archive').matchedBy).toEqual(expect.arrayContaining(['content']));
+    expect(resultFor(response.results, 'gamma-reference').matchedBy).toEqual([]);
+  });
+
+  it('widens vector candidates until topK distinct entries survive chunk aggregation', async () => {
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(), { recursive: true });
+
+    writeNote(paths.notesDir(), 'alpha-archive', {
+      title: 'Alpha',
+      body: 'Archive only.',
+    });
+    writeNote(paths.notesDir(), 'beta-history', {
+      title: 'Beta',
+      body: 'History only.',
+    });
+
+    await reindex(kb);
+
+    const searchVector = vi.fn().mockImplementation(async (_query: Float32Array, candidateK: number) => {
+      if (candidateK === 2) {
+        return [
+          { chunkId: 'alpha:0', entryId: 'note:alpha-archive', score: 0.99 },
+          { chunkId: 'alpha:1', entryId: 'note:alpha-archive', score: 0.95 },
+        ];
+      }
+
+      return [
+        { chunkId: 'alpha:0', entryId: 'note:alpha-archive', score: 0.99 },
+        { chunkId: 'alpha:1', entryId: 'note:alpha-archive', score: 0.95 },
+        { chunkId: 'beta:0', entryId: 'note:beta-history', score: 0.88 },
+        { chunkId: 'beta:1', entryId: 'note:beta-history', score: 0.84 },
+      ];
+    });
+
+    mockHybridSearch(kb, { searchVector });
+
+    const response = await searchKb(kb, 'semantic', 2);
+
+    expect(response.mode).toBe('hybrid');
+    expect(searchVector).toHaveBeenNthCalledWith(1, expect.any(Float32Array), 2);
+    expect(searchVector).toHaveBeenNthCalledWith(2, expect.any(Float32Array), 4);
+    expect(resultNotes(response.results)).toEqual(['alpha-archive', 'beta-history']);
+    expect(resultFor(response.results, 'alpha-archive').matchedBy).toEqual([]);
+    expect(resultFor(response.results, 'beta-history').matchedBy).toEqual([]);
+    expect(resultFor(response.results, 'alpha-archive').snippet).toBeUndefined();
+  });
+
+  it('filters vector-only hits to the requested source scope', async () => {
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.sourcesDir(), { recursive: true });
+
+    writeNote(paths.notesDir(), 'vector-note', {
+      title: 'Vector Note',
+      body: 'Archive only.',
+    });
+    writeSource(paths.sourcesDir(), 'vector-source', {
+      title: 'Vector Source',
+      body: 'History only.',
+    });
+
+    await reindex(kb);
+
+    mockHybridSearch(kb, {
+      searchVector: vi.fn().mockResolvedValue([
+        { chunkId: 'note:0', entryId: 'note:vector-note', score: 0.99 },
+        { chunkId: 'source:0', entryId: 'source:vector-source', score: 0.97 },
+      ]),
+    });
+
+    const response = await searchKb(kb, 'semantic', 2, 'sources');
+
+    expect(response.mode).toBe('hybrid');
+    expect(resultNotes(response.results)).toEqual(['vector-source']);
+    expect(resultFor(response.results, 'vector-source').kind).toBe('source');
+    expect(resultFor(response.results, 'vector-source').matchedBy).toEqual([]);
+  });
+
+  it('keeps communities text-only in all scope while allowing vector-backed note results', async () => {
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.communitiesDir(), { recursive: true });
+
+    writeNote(paths.notesDir(), 'latent-note', {
+      title: 'Latent Note',
+      body: 'Archive only.',
+    });
+    writeCommunity(paths.communitiesDir(), 'graph-rag', {
+      title: 'Graph RAG',
+      members: ['graph-rag', 'retrieval'],
+      summary: 'Shared retrieval patterns.',
+      body: 'Retrieval patterns stay clustered here.',
+    });
+
+    await reindex(kb);
+
+    mockHybridSearch(kb, {
+      searchVector: vi.fn().mockResolvedValue([{ chunkId: 'latent:0', entryId: 'note:latent-note', score: 0.99 }]),
+    });
+
+    const response = await searchKb(kb, 'retrieval', 2, 'all');
+
+    expect(response.mode).toBe('hybrid');
+    expect(resultNotes(response.results)).toEqual(expect.arrayContaining(['graph-rag', 'latent-note']));
+    expect(resultFor(response.results, 'graph-rag').kind).toBe('community');
+    expect(resultFor(response.results, 'graph-rag').matchedBy.length).toBeGreaterThan(0);
+    expect(resultFor(response.results, 'latent-note').matchedBy).toEqual([]);
+  });
+
+  it('keeps community-only searches in pure text mode even when vector search is configured', async () => {
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.communitiesDir(), { recursive: true });
+
+    writeCommunity(paths.communitiesDir(), 'graph-rag', {
+      title: 'Graph RAG',
+      members: ['graph-rag', 'retrieval'],
+      summary: 'Shared retrieval patterns.',
+      body: 'Retrieval patterns stay clustered here.',
+    });
+
+    await reindex(kb);
+
+    const acquireVectorLease = vi.spyOn(kb, 'acquireVectorLease');
+    hybridMockState.ensureVectorIndex = vi.fn().mockResolvedValue({
+      mode: 'hybrid',
+      specId: 'spec-1',
+      vectorStatus: {
+        indexedSeq: kb.readIndexState().mutationSeq,
+        activeSnapshotId: 'snapshot-1',
+      },
+    });
+    hybridMockState.createEmbeddingProvider = vi.fn().mockResolvedValue({
+      embedQuery: vi.fn().mockResolvedValue(new Float32Array([0.25, 0.75])),
+    });
+
+    const response = await searchKb(kb, 'retrieval', 5, 'communities');
+
+    expect(response.mode).toBe('text');
+    expect(resultNotes(response.results)).toEqual(['graph-rag']);
+    expect(acquireVectorLease).not.toHaveBeenCalled();
+    expect(hybridMockState.ensureVectorIndex).not.toHaveBeenCalled();
+    expect(hybridMockState.createEmbeddingProvider).not.toHaveBeenCalled();
+  });
+
+  it('falls back to text mode when vector query embedding fails', async () => {
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(), { recursive: true });
+
+    writeNote(paths.notesDir(), 'rendering-guides', {
+      title: 'Rendering Guides',
+      body: 'Rendering guides keep frames stable.',
+    });
+
+    await reindex(kb);
+
+    const { release } = mockHybridSearch(kb, {
+      searchVector: vi.fn().mockResolvedValue([{ chunkId: 'rendering:0', entryId: 'note:rendering-guides', score: 0.99 }]),
+      embedQuery: vi.fn().mockRejectedValue(new Error('embedding offline')),
+    });
+
+    const response = await searchKb(kb, 'rendering', 5);
+
+    expect(response.mode).toBe('text');
+    expect(resultNotes(response.results)).toEqual(['rendering-guides']);
+    expect(resultFor(response.results, 'rendering-guides').matchedBy).toEqual(
+      expect.arrayContaining(['filename', 'title', 'content']),
+    );
+    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it('auto-rebuilds when the search index is missing', async () => {

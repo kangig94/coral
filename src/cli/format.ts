@@ -287,6 +287,10 @@ export function formatKbSearch(data: unknown, cliPrefix = 'coral-cli'): string {
     count: results.length,
   };
 
+  if (data.mode === 'hybrid') {
+    output.indicator = '[hybrid]';
+  }
+
   if (warning !== undefined) {
     output.warning = warning;
   }

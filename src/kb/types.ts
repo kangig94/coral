@@ -131,11 +131,6 @@ export type KbReindexCommunityRecord = CommunityFrontmatter & {
   body: string;
 };
 
-export interface KbLanceDbAdapter {
-  getDb(): Promise<unknown>;
-  ensureTables(): Promise<void>;
-}
-
 // KB operation input types (plain types, no Zod dependency)
 
 export type KbSearchInput = {

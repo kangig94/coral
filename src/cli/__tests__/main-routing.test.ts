@@ -351,6 +351,33 @@ describe('cli main routing', () => {
     });
   });
 
+  it('formats hybrid kb search output with an indicator and rewritten warning text in text mode', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbSearch.mockResolvedValueOnce({
+      results: [
+        {
+          note: 'hybrid-note',
+          kind: 'note',
+          title: 'Hybrid Note',
+          matchedBy: [],
+        },
+      ],
+      mode: 'hybrid',
+      warning: 'Run kb_reindex again to refresh it.',
+    });
+
+    await program.parseAsync(['node', 'coral-cli', 'kb', 'search', 'semantic']);
+
+    const parsed = JSON.parse(stdout);
+    expect(parsed.mode).toBe('hybrid');
+    expect(parsed.indicator).toBe('[hybrid]');
+    expect(parsed.warning).toContain(' kb reindex');
+    expect(parsed.warning).not.toContain('kb_reindex');
+    expect(parsed.results[0].matched).toEqual([]);
+  });
+
   it('routes bare kb principles as an empty payload', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();

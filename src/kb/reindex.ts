@@ -1,18 +1,12 @@
-import { errorMessage } from '../shared/mcp-utils.js';
-import { rebuildEnhancedIndex } from './reindex-enhanced.js';
 import { runEntrySeqUpgradeGuard, type KbRuntime } from './runtime.js';
 import { TextSnapshotRebuildError, rebuildTextArtifacts } from './text-artifacts.js';
 import type { ReindexResult } from './types.js';
-
-function hybridWarning(error: unknown): string {
-  return `KB vector tables were not rebuilt: ${errorMessage(error)}. Text search remains available.`;
-}
+import { ensureVectorIndex } from './vector-sync.js';
 
 export async function reindex(kb: KbRuntime): Promise<ReindexResult> {
   const startedAt = Date.now();
-  const adapter = kb.adapter;
 
-  return kb.withMutationLock(async () => {
+  const textResult = await kb.withMutationLock(async () => {
     runEntrySeqUpgradeGuard(kb);
     const startSeq = kb.readIndexState().mutationSeq;
     let rebuildResult: Awaited<ReturnType<typeof rebuildTextArtifacts>>;
@@ -32,21 +26,17 @@ export async function reindex(kb: KbRuntime): Promise<ReindexResult> {
       throw error;
     }
 
-    let warning: string | undefined;
-
-    if (adapter !== null) {
-      try {
-        await rebuildEnhancedIndex(kb, rebuildResult.notes);
-      } catch (error: unknown) {
-        warning = hybridWarning(error);
-      }
-    }
-
     return {
       ...rebuildResult.counts,
-      duration_ms: Date.now() - startedAt,
       mode: 'text',
-      ...(warning === undefined ? {} : { warning }),
     };
   });
+
+  const vectorResult = await ensureVectorIndex(kb);
+  return {
+    ...textResult,
+    duration_ms: Date.now() - startedAt,
+    mode: vectorResult.mode,
+    ...(vectorResult.warning === undefined ? {} : { warning: vectorResult.warning }),
+  };
 }

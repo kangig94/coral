@@ -366,7 +366,8 @@ describe('curate state', () => {
     });
     runtime.writeIndexState({
       mutationSeq: 8,
-      indexedSeq: 8,
+      textIndexedSeq: 8,
+      vector: { bySpec: {} },
     });
     writeCurateState(runtime, createCurateState());
     const existingContent = readFileSync(join(runtime.notesDir(), 'coral-third.md'), 'utf-8');
@@ -393,7 +394,8 @@ describe('curate state', () => {
     });
     expect(runtime.readIndexState()).toEqual({
       mutationSeq: 13,
-      indexedSeq: 8,
+      textIndexedSeq: 8,
+      vector: { bySpec: {} },
     });
     expect(readCurateState(runtime).initialized).toBe(true);
   });
@@ -434,7 +436,8 @@ describe('curate state', () => {
     });
     runtime.writeIndexState({
       mutationSeq: 20,
-      indexedSeq: 18,
+      textIndexedSeq: 18,
+      vector: { bySpec: {} },
     });
     writeCurateState(runtime, createCurateState());
 
@@ -459,7 +462,8 @@ describe('curate state', () => {
     });
     expect(runtime.readIndexState()).toEqual({
       mutationSeq: 21,
-      indexedSeq: 18,
+      textIndexedSeq: 18,
+      vector: { bySpec: {} },
     });
   });
 
@@ -475,7 +479,8 @@ describe('curate state', () => {
     });
     runtime.writeIndexState({
       mutationSeq: 4,
-      indexedSeq: 4,
+      textIndexedSeq: 4,
+      vector: { bySpec: {} },
     });
     writeCurateState(
       runtime,
@@ -499,7 +504,8 @@ describe('curate state', () => {
     });
     expect(runtime.readIndexState()).toEqual({
       mutationSeq: 4,
-      indexedSeq: 4,
+      textIndexedSeq: 4,
+      vector: { bySpec: {} },
     });
     expect(readCurateState(runtime)).toEqual(
       createCurateState({
@@ -519,7 +525,8 @@ describe('curate state', () => {
     });
     runtime.writeIndexState({
       mutationSeq: 0,
-      indexedSeq: 0,
+      textIndexedSeq: 0,
+      vector: { bySpec: {} },
     });
     writeFileSync(
       curateStatePath(runtime),

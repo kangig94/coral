@@ -256,7 +256,11 @@ export async function rebuildTextArtifacts(
   }
 
   const nextState = kb.recordReindexSuccess(startSeq);
-  if (nextState.mutationSeq !== startSeq || nextState.indexedSeq !== startSeq || nextState.staleReason !== undefined) {
+  if (
+    nextState.mutationSeq !== startSeq ||
+    nextState.textIndexedSeq !== startSeq ||
+    nextState.textStaleReason !== undefined
+  ) {
     const reason = 'KB text index freshness changed during rebuild.';
     kb.invalidateTextSnapshot(reason);
     kb.invalidateKbCache();

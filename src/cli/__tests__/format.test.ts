@@ -339,7 +339,7 @@ describe('cli format', () => {
   });
 
   describe('kb formatters', () => {
-    it('formats kb search results as JSON and rewrites kb_reindex warnings', () => {
+    it('formats hybrid kb search results as JSON, adds an indicator, and rewrites kb_reindex warnings', () => {
       const formatted = formatKbSearch(
         {
           results: [
@@ -351,7 +351,7 @@ describe('cli format', () => {
               snippet: 'Use kb_reindex after stale writes.',
             },
           ],
-          mode: 'text',
+          mode: 'hybrid',
           warning: 'Enhanced KB index is stale; run kb_reindex to refresh it.',
         },
         'node "/tmp/coral-cli.cjs"',
@@ -359,6 +359,7 @@ describe('cli format', () => {
 
       const parsed = JSON.parse(formatted);
       expect(parsed.count).toBe(1);
+      expect(parsed.indicator).toBe('[hybrid]');
       expect(parsed.results[0].note).toBe('cli-kb-tooling');
       expect(parsed.results[0].kind).toBe('note');
       expect(parsed.warning).toContain('node "/tmp/coral-cli.cjs" kb reindex');

@@ -341,7 +341,7 @@ export async function createKbSubsystem({
     markdownRoot: kbRoot(),
     runtimeDir: kbRuntimeDir(),
   });
-  await kb.initAdapter(pluginRoot);
+  await kb.initVectorStore(pluginRoot);
 
   const curateScheduler = createCurateScheduler({
     kb,
@@ -790,6 +790,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         runtimeState.getKbSubsystem()?.curateScheduler.stop?.(),
         new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
       ]);
+      await runtimeState.getKbSubsystem()?.kb.closeVectorStores().catch(() => {});
       await clearAllDiscuss(discussRegistry, mode, discussOperations.persistAbortEndForShutdown);
       if (mode === 'hard') {
         await discussOperations.persistAbortEndForPersistedShutdownCandidates(

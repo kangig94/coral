@@ -63,12 +63,27 @@ Both adapters share: `cli-detection.ts` (availability + auth probes), `result-ma
 
 ## KB (`src/kb/`)
 
+Text indexing and vector search now split cleanly: Orama remains the text index, while the native DuckDB addon owns per-spec chunk storage and vector search snapshots.
+
 | Module | Responsibility |
 |--------|---------------|
-| `runtime.ts` | `KbRuntime` factory — cached text index, Orama snapshot, mutation lock, optional LanceDB adapter |
-| `search.ts` | Orama full-text search with BM25 ranking and field boosting |
+| `runtime.ts` | `KbRuntime` factory — cached text index, Orama snapshot, mutation lock, vector-store lifecycle, split text/vector freshness |
+| `vector-store.ts` | Node wrapper for the native addon — compatibility handshake, active snapshot resolution, DuckDB store access |
+| `vector-sync.ts` | Immutable per-spec vector snapshot staging/publish, manifest diffing, lease-safe live store swaps |
+| `embedding.ts` | Embedding provider selection and embedding-spec metadata |
+| `chunking.ts` | Note/source chunk generation for vector indexing |
+| `search.ts` | Orama full-text search plus hybrid vector fusion at the entry level |
 | `curate.ts` | Background curation scheduler — tag/principle classification via `claude -p`, git sync cycle |
 | `mutation-helpers.ts` | Atomic writes, index mutation under lock |
+
+## Native Vector Runtime (`csrc/`)
+
+| Module | Responsibility |
+|--------|---------------|
+| `bridge.cpp` | N-API boundary for `initStore`, `upsertChunks`, `searchVector`, `buildIndex`, and `getStats()` |
+| `store/duckdb-store.cpp` | Snapshot-local DuckDB schema, chunk/vector CRUD, active embedding spec metadata |
+| `engine/exact-scan.cpp` | Brute-force baseline vector engine |
+| `engine/usearch-hnsw.cpp` | USearch HNSW engine for approximate nearest-neighbor search |
 
 Operations: `memo.ts` (create), `promote.ts` (memo → note), `update.ts`, `delete.ts`, `read.ts`.
 

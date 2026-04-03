@@ -34,7 +34,7 @@ const foreignBackendNamespace = 'foreign-namespace-xyz';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
-  tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-execution-backend-test-tmp`,
+  tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-execution-backend-test-tmp-${process.pid}-${Date.now()}`,
 }));
 
 const createdJobIds = new Set<string>();
@@ -352,10 +352,11 @@ function parseToolText(body: unknown): unknown {
 
 describe('execution backend server', () => {
   let controller: BackendServerController | null = null;
+  const createdDiscussStores: DiscussSessionStore[] = [];
 
   beforeEach(() => {
-    rmSync(mockState.tmpRoot, { recursive: true, force: true });
     mkdirSync(mockState.tmpRoot, { recursive: true });
+    rmSync(JOBS_DIR, { recursive: true, force: true });
     mockState.tmpHome = mkdtempSync(join(mockState.tmpRoot, 'home-'));
   });
 
@@ -368,19 +369,29 @@ describe('execution backend server', () => {
       }
     }
     controller = null;
+    for (const store of createdDiscussStores.splice(0)) {
+      store.dispose();
+    }
     for (const jobId of createdJobIds) {
       rmSync(join(JOBS_DIR, jobId), { recursive: true, force: true });
     }
     createdJobIds.clear();
     vi.restoreAllMocks();
     vi.resetModules();
-    rmSync(mockState.tmpRoot, { recursive: true, force: true });
+    try {
+      rmSync(mockState.tmpHome, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+    rmSync(JOBS_DIR, { recursive: true, force: true });
     mockState.tmpHome = '';
   });
 
   function createMockKbSubsystem() {
     return {
-      kb: {} as never,
+      kb: {
+        closeVectorStores: vi.fn(async () => {}),
+      } as never,
       curateScheduler: {
         start: vi.fn(async () => {}),
         schedule: vi.fn(),
@@ -452,6 +463,12 @@ describe('execution backend server', () => {
     const projectRoot = join(mockState.tmpHome, name);
     mkdirSync(projectRoot, { recursive: true });
     return projectRoot;
+  }
+
+  function createDiscussStore(source: string): DiscussSessionStore {
+    const store = new DiscussSessionStore(source);
+    createdDiscussStores.push(store);
+    return store;
   }
 
   it('returns 200 from /health with execution metadata', async () => {
@@ -687,7 +704,9 @@ describe('execution backend server', () => {
   it('runs KB initialization during startup before idle watching begins', async () => {
     const fakeIdleTimer = createFakeIdleTimer();
     const createKbSubsystemFn = vi.fn(async () => ({
-      kb: {} as never,
+      kb: {
+        closeVectorStores: vi.fn(async () => {}),
+      } as never,
       curateScheduler: {
         start: vi.fn(async () => {}),
         schedule: vi.fn(),
@@ -743,7 +762,7 @@ describe('execution backend server', () => {
   it('recovers discuss-only sources from the durable source registry before idle watching starts', async () => {
     const fakeIdleTimer = createFakeIdleTimer();
     const projectRoot = createProjectRoot('discuss-only-project');
-    const store = new DiscussSessionStore(resolveProjectSource(projectRoot));
+    const store = createDiscussStore(resolveProjectSource(projectRoot));
     const created = decideSessionCreate(
       {
         topic: 'Should the city pedestrianize the downtown core?',
@@ -2068,7 +2087,7 @@ describe('execution backend server', () => {
       const topic = 'Should the city pedestrianize the downtown core?';
       const projectRoot = createProjectRoot('startup-shutdown-discuss');
       const source = resolveProjectSource(projectRoot);
-      const store = new DiscussSessionStore(source);
+      const store = createDiscussStore(source);
 
       const startupCandidateCreated = decideSessionCreate(
         {
@@ -2452,7 +2471,7 @@ describe('execution backend server', () => {
 
       const topic = 'Should the city pedestrianize the downtown core?';
       const source = resolveProjectSource(pluginRoot);
-      const store = new DiscussSessionStore(source);
+      const store = createDiscussStore(source);
       const created = decideSessionCreate(
         {
           topic,

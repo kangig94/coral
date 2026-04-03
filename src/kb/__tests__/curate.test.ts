@@ -1796,7 +1796,7 @@ describe('curate', () => {
       expect(rebuildSeq).toBe(runtime.readIndexState().mutationSeq);
       expect(runtime.readIndexState()).toMatchObject({
         mutationSeq: rebuildSeq,
-        indexedSeq: rebuildSeq,
+        textIndexedSeq: rebuildSeq,
       });
       expect(readCurateState(runtime)).toMatchObject({
         communityGraphHash: expect.any(String),

@@ -3,15 +3,64 @@
 // Usage: node install.mjs [--list | [--update] <package>]
 // Outputs a single JSON line to stdout.
 
-import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, chmodSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
-import { platform, arch, homedir } from 'node:os';
+import { execFileSync, execSync } from 'node:child_process';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { arch, homedir, platform, tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { gunzipSync } from 'node:zlib';
 
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+const PLUGIN_ROOT = resolve(SCRIPT_DIR, '..', '..');
 const TOOLS_DIR = join(homedir(), '.claude', 'tools');
+const KB_SUPPORTED_PLATFORMS = new Set([
+  'linux-x64',
+  'linux-arm64',
+  'darwin-x64',
+  'darwin-arm64',
+  'win32-x64',
+]);
+const KB_SECURITY_NOTICE = 'API key는 ~/.coral/.env에 직접 기록하세요. settings.json이 아닌 ~/.coral/.env에.';
+const KB_ONBOARDING_CHOICES = [
+  {
+    id: 'local-nomic-embed-text',
+    label: 'Local model: nomic-embed-text',
+    provider: 'local-onnx',
+    model: 'nomic-embed-text',
+    dims: 768,
+  },
+  {
+    id: 'local-bge-m3',
+    label: 'Local model: bge-m3',
+    provider: 'local-onnx',
+    model: 'bge-m3',
+    dims: 1024,
+  },
+  {
+    id: 'manual',
+    label: 'Manual setup',
+    provider: null,
+    model: null,
+    dims: null,
+  },
+];
 
 function kbRuntimeDirFromEnv() {
   return join(homedir(), '.coral', 'data', 'kb');
+}
+
+function coralEnvPathFromEnv() {
+  return join(homedir(), '.coral', '.env');
 }
 
 const CATALOG = {
@@ -32,9 +81,10 @@ const CATALOG = {
     },
   },
   kb: {
-    name: 'Knowledge Base (LanceDB)',
-    description: 'Enhanced KB search with structured queries and future vector support',
-    npm: '@lancedb/lancedb',
+    kind: 'kb-addon',
+    name: 'Knowledge Base Vector Runtime',
+    description: 'Installs the native KB vector runtime and embedding onboarding data',
+    repo: 'kangig94/coral',
     targetDir: () => kbRuntimeDirFromEnv(),
     postInstall: ['backend_shutdown', 'kb_reindex'],
   },
@@ -88,29 +138,6 @@ function writeTargetMeta(targetDir, version, method) {
   writeFileSync(targetMetaPath(targetDir), JSON.stringify({ version, method }));
 }
 
-function npmViewVersion(pkg) {
-  try {
-    return execSync(`npm view ${pkg} version`, {
-      stdio: 'pipe',
-      encoding: 'utf-8',
-      timeout: 10_000,
-    }).trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-function localPackageVersion(targetDir, pkgName) {
-  try {
-    const pkgPath = join(targetDir, 'node_modules', pkgName, 'package.json');
-    if (!existsSync(pkgPath)) return null;
-    const parsed = JSON.parse(readFileSync(pkgPath, 'utf-8'));
-    return typeof parsed.version === 'string' ? parsed.version : null;
-  } catch {
-    return null;
-  }
-}
-
 function fetchLatest(repo) {
   try {
     const json = execSync(
@@ -123,9 +150,161 @@ function fetchLatest(repo) {
   }
 }
 
+function kbAddonPath(targetDir) {
+  return join(targetDir, 'vec', 'coral-vec.node');
+}
+
+function readPackagedCsrcVersion() {
+  const manifestPath = join(PLUGIN_ROOT, 'bridge', 'manifest.json');
+  const parsed = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+  if (!parsed || typeof parsed.csrcVersion !== 'string' || parsed.csrcVersion.length === 0) {
+    throw new Error(`Packaged bridge manifest is missing csrcVersion: ${manifestPath}`);
+  }
+  return parsed.csrcVersion;
+}
+
+function resolveKbTargetVersion(requestedVersion) {
+  const csrcVersion = readPackagedCsrcVersion();
+  if (requestedVersion && requestedVersion !== csrcVersion) {
+    throw new Error(`kb expects packaged csrcVersion ${csrcVersion}, not ${requestedVersion}`);
+  }
+  return csrcVersion;
+}
+
+function buildKbOnboarding(targetDir) {
+  return {
+    envPath: coralEnvPathFromEnv(),
+    requiredEnv: ['CORAL_EMBEDDING_PROVIDER', 'CORAL_EMBEDDING_API_KEY'],
+    providerEnvKey: 'CORAL_EMBEDDING_PROVIDER',
+    modelEnvKey: 'CORAL_EMBEDDING_MODEL',
+    apiKeyEnvKey: 'CORAL_EMBEDDING_API_KEY',
+    securityNotice: KB_SECURITY_NOTICE,
+    localRuntime: {
+      targetDir,
+      bootstrapPackageJson: true,
+      packageManager: 'npm',
+      packageName: 'onnxruntime-node',
+    },
+    choices: KB_ONBOARDING_CHOICES,
+  };
+}
+
+function tarFieldToString(buffer) {
+  return buffer.toString('utf-8').replace(/\0.*$/, '').trim();
+}
+
+function tarFieldToNumber(buffer) {
+  const raw = tarFieldToString(buffer);
+  return raw === '' ? 0 : Number.parseInt(raw, 8);
+}
+
+function extractTarEntry(archivePath, expectedName) {
+  const tarBuffer = gunzipSync(readFileSync(archivePath));
+  let offset = 0;
+
+  while (offset + 512 <= tarBuffer.length) {
+    const header = tarBuffer.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) {
+      break;
+    }
+
+    const name = tarFieldToString(header.subarray(0, 100));
+    const prefix = tarFieldToString(header.subarray(345, 500));
+    const fullName = prefix ? `${prefix}/${name}` : name;
+    const size = tarFieldToNumber(header.subarray(124, 136));
+    const typeFlag = header[156] === 0 ? '0' : String.fromCharCode(header[156]);
+    offset += 512;
+
+    const data = tarBuffer.subarray(offset, offset + size);
+    if ((typeFlag === '0' || typeFlag === '') && (fullName === expectedName || fullName.endsWith(`/${expectedName}`))) {
+      return Buffer.from(data);
+    }
+
+    offset += Math.ceil(size / 512) * 512;
+  }
+
+  throw new Error(`${expectedName} was not found in ${archivePath}`);
+}
+
+function installKbPrebuild(entry, targetDir, version, platKey) {
+  const releaseTag = `csrc@${version}`;
+  const assetName = `${releaseTag}-${platKey}.tar.gz`;
+  const tempDir = mkdtempSync(join(tmpdir(), 'coral-kb-prebuild-'));
+
+  try {
+    const archivePath = join(tempDir, assetName);
+    const addonPath = kbAddonPath(targetDir);
+    download(`https://github.com/${entry.repo}/releases/download/${releaseTag}/${assetName}`, archivePath);
+    mkdirSync(dirname(addonPath), { recursive: true });
+    writeFileSync(addonPath, extractTarEntry(archivePath, 'coral-vec.node'));
+    writeTargetMeta(targetDir, version, 'prebuild');
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function ensureCmake() {
+  const existing = findCmd('cmake');
+  if (existing) {
+    return existing;
+  }
+
+  const uv = findCmd('uv');
+  if (!uv) {
+    throw new Error('cmake is required for KB source builds and uv is not installed.');
+  }
+
+  execFileSync(uv, ['tool', 'install', 'cmake'], {
+    stdio: 'pipe',
+    timeout: 300_000,
+  });
+
+  const installed = findCmd('cmake');
+  if (installed) {
+    return installed;
+  }
+
+  const fallback = join(homedir(), '.local', 'bin', platform() === 'win32' ? 'cmake.exe' : 'cmake');
+  if (existsSync(fallback)) {
+    return fallback;
+  }
+
+  throw new Error('cmake is still unavailable after uv tool install cmake.');
+}
+
+function installKbSourceBuild(targetDir, version) {
+  const cmake = ensureCmake();
+  execFileSync(cmake, ['-B', 'build', 'csrc/'], {
+    cwd: PLUGIN_ROOT,
+    stdio: 'pipe',
+    timeout: 900_000,
+  });
+  execFileSync(cmake, ['--build', 'build', '--config', 'Release'], {
+    cwd: PLUGIN_ROOT,
+    stdio: 'pipe',
+    timeout: 900_000,
+  });
+
+  const builtAddon = [
+    join(PLUGIN_ROOT, 'build', 'coral-vec.node'),
+    join(PLUGIN_ROOT, 'build', 'Release', 'coral-vec.node'),
+  ].find((candidate) => existsSync(candidate));
+
+  if (!builtAddon) {
+    throw new Error('cmake build completed without producing build/coral-vec.node.');
+  }
+
+  const addonPath = kbAddonPath(targetDir);
+  mkdirSync(dirname(addonPath), { recursive: true });
+  copyFileSync(builtAddon, addonPath);
+  writeTargetMeta(targetDir, version, 'source-build');
+}
+
 function buildResult(status, method, cmdPath, entry, extra) {
   return {
-    status, method, command: cmdPath,
+    status,
+    method,
+    command: cmdPath,
     mcp: {
       serverName: entry.mcp.serverName,
       command: cmdPath,
@@ -135,12 +314,13 @@ function buildResult(status, method, cmdPath, entry, extra) {
   };
 }
 
-function buildLocalNpmResult(status, method, targetDir, entry, extra) {
+function buildTargetResult(status, method, targetDir, entry, extra) {
   return {
     status,
     method,
     targetDir,
     ...(entry.postInstall ? { postInstall: entry.postInstall } : {}),
+    ...(entry.kind === 'kb-addon' ? { onboarding: buildKbOnboarding(targetDir) } : {}),
     ...extra,
   };
 }
@@ -148,14 +328,16 @@ function buildLocalNpmResult(status, method, targetDir, entry, extra) {
 // Parse arguments
 const argv = process.argv.slice(2);
 const update = argv.includes('--update');
-const rawPkg = argv.find(a => !a.startsWith('-'));
+const rawPkg = argv.find((arg) => !arg.startsWith('-'));
 
 // List catalog
 if (argv.includes('--list') || (!rawPkg && !update)) {
   emit({
     status: 'catalog',
-    packages: Object.entries(CATALOG).map(([id, e]) => ({
-      id, name: e.name, description: e.description,
+    packages: Object.entries(CATALOG).map(([id, item]) => ({
+      id,
+      name: item.name,
+      description: item.description,
     })),
   });
   process.exit(0);
@@ -173,30 +355,41 @@ if (!entry) {
   process.exit(1);
 }
 
-const ext = platform() === 'win32' ? '.exe' : '';
-const toolPath = join(TOOLS_DIR, pkg + ext);
 const plat = platform();
 const platKey = `${plat}-${arch()}`;
+const ext = plat === 'win32' ? '.exe' : '';
+const toolPath = join(TOOLS_DIR, pkg + ext);
 
-// Resolve target version
-const targetVersion = entry.npm
-  ? requestedVersion || npmViewVersion(entry.npm) || 'latest'
-  : requestedVersion || fetchLatest(entry.repo) || entry.fallbackVersion;
+let targetVersion;
+try {
+  targetVersion = entry.kind === 'kb-addon'
+    ? resolveKbTargetVersion(requestedVersion)
+    : requestedVersion || fetchLatest(entry.repo) || entry.fallbackVersion;
+} catch (error) {
+  emit({
+    status: 'error',
+    message: `Could not install ${pkg}`,
+    errors: [error instanceof Error ? error.message : String(error)],
+    suggestions: [],
+  });
+  process.exit(1);
+}
 
 const errors = [];
 const statusLabel = update ? 'updated' : 'installed';
 
-if (entry.npm) {
+if (entry.kind === 'kb-addon') {
   const targetDir = entry.targetDir();
-  const installedVersion = localPackageVersion(targetDir, entry.npm);
-  if (installedVersion === targetVersion) {
-    const meta = readTargetMeta(targetDir);
-    if (meta?.version !== targetVersion || meta?.method !== 'local-npm') {
-      writeTargetMeta(targetDir, targetVersion, 'local-npm');
-    }
-    emit(buildLocalNpmResult(
+  const addonPath = kbAddonPath(targetDir);
+  const installedMeta = readTargetMeta(targetDir);
+  const isCurrentInstall = existsSync(addonPath)
+    && installedMeta?.version === targetVersion
+    && (installedMeta?.method === 'prebuild' || installedMeta?.method === 'source-build');
+
+  if (isCurrentInstall) {
+    emit(buildTargetResult(
       update ? 'already_up_to_date' : 'already_installed',
-      'local-npm',
+      installedMeta.method,
       targetDir,
       entry,
       { version: targetVersion },
@@ -204,33 +397,35 @@ if (entry.npm) {
     process.exit(0);
   }
 
-  if (findCmd('npm')) {
+  if (KB_SUPPORTED_PLATFORMS.has(platKey)) {
     try {
-      mkdirSync(targetDir, { recursive: true });
-      if (!existsSync(join(targetDir, 'package.json'))) {
-        execSync('npm init -y', { cwd: targetDir, stdio: 'pipe' });
-      }
-      execSync(`npm install ${entry.npm}@${targetVersion}`, {
-        cwd: targetDir,
-        stdio: 'pipe',
-        timeout: 300_000,
-      });
-      writeTargetMeta(targetDir, targetVersion, 'local-npm');
-      emit(buildLocalNpmResult(
-        statusLabel,
-        'local-npm',
-        targetDir,
-        entry,
-        { version: targetVersion },
-      ));
+      installKbPrebuild(entry, targetDir, targetVersion, platKey);
+      emit(buildTargetResult(statusLabel, 'prebuild', targetDir, entry, { version: targetVersion }));
       process.exit(0);
-    } catch (e) {
-      errors.push(`local-npm: ${e.message}`);
+    } catch (error) {
+      errors.push(`prebuild: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
+  try {
+    installKbSourceBuild(targetDir, targetVersion);
+    emit(buildTargetResult(statusLabel, 'source-build', targetDir, entry, { version: targetVersion }));
+    process.exit(0);
+  } catch (error) {
+    errors.push(`source-build: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
   const suggestions = [];
-  if (!findCmd('npm')) suggestions.push('Install npm / Node.js to enable local package installs');
+  if (!KB_SUPPORTED_PLATFORMS.has(platKey)) {
+    suggestions.push(`No KB prebuild is published for ${platKey}`);
+  }
+  if (!findCmd('curl') && !findCmd('wget')) {
+    suggestions.push('Install curl or wget so the KB prebuild can be downloaded');
+  }
+  if (!findCmd('cmake') && !findCmd('uv')) {
+    suggestions.push('Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh');
+  }
+
   emit({ status: 'error', message: `Could not install ${pkg}`, errors, suggestions });
   process.exit(1);
 }
@@ -242,11 +437,11 @@ if (update) {
     process.exit(0);
   }
 
-  // Clean old binary for re-download
-  if (existsSync(toolPath)) unlinkSync(toolPath);
+  if (existsSync(toolPath)) {
+    unlinkSync(toolPath);
+  }
 }
 
-// Check already installed (install mode only)
 if (!update) {
   if (existsSync(toolPath)) {
     emit(buildResult('already_installed', 'binary', toolPath, entry));
@@ -259,7 +454,6 @@ if (!update) {
   }
 }
 
-// Strategy 1: Pre-built binary
 const asset = entry.binaries[platKey];
 if (asset) {
   try {
@@ -270,12 +464,11 @@ if (asset) {
     writeMeta(pkg, targetVersion, 'binary');
     emit(buildResult(statusLabel, 'binary', toolPath, entry, { version: targetVersion }));
     process.exit(0);
-  } catch (e) {
-    errors.push(`binary: ${e.message}`);
+  } catch (error) {
+    errors.push(`binary: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
-// Strategy 2: uv tool install/upgrade
 if (findCmd('uv')) {
   try {
     const uvCmd = update ? 'upgrade' : 'install';
@@ -284,12 +477,11 @@ if (findCmd('uv')) {
     writeMeta(pkg, targetVersion, 'uv');
     emit(buildResult(statusLabel, 'uv', cmd, entry, { version: targetVersion }));
     process.exit(0);
-  } catch (e) {
-    errors.push(`uv: ${e.message}`);
+  } catch (error) {
+    errors.push(`uv: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
-// Strategy 3: pipx install/upgrade
 if (findCmd('pipx')) {
   try {
     const pipxCmd = update ? 'upgrade' : 'install';
@@ -298,12 +490,11 @@ if (findCmd('pipx')) {
     writeMeta(pkg, targetVersion, 'pipx');
     emit(buildResult(statusLabel, 'pipx', cmd, entry, { version: targetVersion }));
     process.exit(0);
-  } catch (e) {
-    errors.push(`pipx: ${e.message}`);
+  } catch (error) {
+    errors.push(`pipx: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
-// All strategies failed
 const suggestions = [];
 if (!asset) suggestions.push(`No pre-built binary for ${platKey}`);
 if (!findCmd('uv')) suggestions.push('Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh');
