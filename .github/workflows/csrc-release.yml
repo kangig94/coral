@@ -37,9 +37,6 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install Dependencies
-        run: npm ci
-
       - name: Read csrc Version
         id: version
         shell: bash

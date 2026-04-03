@@ -39,19 +39,7 @@ if(NOT EXISTS "${NODE_INCLUDE_DIR}/node_api.h")
   message(FATAL_ERROR "Node headers not found at ${NODE_INCLUDE_DIR}")
 endif()
 
-execute_process(
-  COMMAND "${NODE_EXECUTABLE}" -p "require('node:path').resolve(require('node-addon-api').include_dir)"
-  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
-  RESULT_VARIABLE NODE_ADDON_API_RESULT
-  OUTPUT_VARIABLE NODE_ADDON_API_INCLUDE_DIR
-  OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-if(NOT NODE_ADDON_API_RESULT EQUAL 0)
-  message(FATAL_ERROR "Failed to resolve node-addon-api. Run npm install before building the addon.")
-endif()
-if(NOT EXISTS "${NODE_ADDON_API_INCLUDE_DIR}/napi.h")
-  message(FATAL_ERROR "node-addon-api headers not found at ${NODE_ADDON_API_INCLUDE_DIR}")
-endif()
+set(NODE_ADDON_API_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/napi")
 
 # --- Vendored dependencies (see vendor/VERSIONS for pinned versions) ---
 set(VENDOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor")

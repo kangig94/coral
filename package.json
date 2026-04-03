@@ -32,7 +32,6 @@
     "graphology": "^0.26.0",
     "graphology-communities-louvain": "^2.0.2",
     "mammoth": "^1.12.0",
-    "node-addon-api": "^8.7.0",
     "turndown": "^7.2.2",
     "yaml": "^2.4.2",
     "zod": "^3.23.8",
