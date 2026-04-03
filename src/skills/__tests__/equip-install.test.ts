@@ -296,7 +296,7 @@ describe('skills/equip/install.mjs kb addon flow', () => {
     expect(readLog(fixture.logPath)).toEqual([]);
   });
 
-  it('returns already_up_to_date when the runtime-local addon already matches the packaged csrcVersion', () => {
+  it('returns already_up_to_date when the runtime-local addon already matches the packaged needleVersion', () => {
     const fixture = createFixture();
     writeInstalledKb(fixture, KB_VERSION, 'prebuild');
 

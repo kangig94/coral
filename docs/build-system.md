@@ -71,7 +71,7 @@ coral-needle repo (github.com/kangig94/coral-needle)
 
 **Parallelism**: Always use `-j$(($(nproc)/4))` — full CPU causes freezes with large C++ headers.
 
-**Distribution**: Prebuilt addon binaries are published to GitHub Releases as `csrc@{version}-{platform}.tar.gz`. `/coral:equip kb` downloads the matching prebuild, falling back to source build if unavailable.
+**Distribution**: Prebuilt addon binaries are published to GitHub Releases as `coral-needle-v{version}-{platform}.tar.gz`. `/coral:equip kb` downloads the matching prebuild, falling back to source build if unavailable.
 
 **CI**: `.github/workflows/csrc-release.yml` builds 5 platforms on `main` push (coral-needle repo (github.com/kangig94/coral-needle) changes) or `csrc@*` tag push.
 
