@@ -230,7 +230,7 @@ describe('skills/equip/install.mjs kb addon flow', () => {
         providerEnvKey: 'CORAL_EMBEDDING_PROVIDER',
         modelEnvKey: 'CORAL_EMBEDDING_MODEL',
         apiKeyEnvKey: 'CORAL_EMBEDDING_API_KEY',
-        securityNotice: 'API key는 ~/.coral/.env에 직접 기록하세요. settings.json이 아닌 ~/.coral/.env에.',
+        securityNotice: 'Store API keys in ~/.coral/.env, not in settings.json.',
         localRuntime: {
           targetDir: fixture.targetDir,
           bootstrapPackageJson: true,

@@ -26,11 +26,10 @@ const TOOLS_DIR = join(homedir(), '.claude', 'tools');
 const KB_SUPPORTED_PLATFORMS = new Set([
   'linux-x64',
   'linux-arm64',
-  'darwin-x64',
   'darwin-arm64',
   'win32-x64',
 ]);
-const KB_SECURITY_NOTICE = 'API key는 ~/.coral/.env에 직접 기록하세요. settings.json이 아닌 ~/.coral/.env에.';
+const KB_SECURITY_NOTICE = 'Store API keys in ~/.coral/.env, not in settings.json.';
 const KB_ONBOARDING_CHOICES = [
   {
     id: 'local-nomic-embed-text',
