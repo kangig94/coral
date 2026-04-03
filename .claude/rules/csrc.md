@@ -10,7 +10,9 @@ paths:
 - Clean build: `cmake -B build csrc/ && cmake --build build --config Release -j$(nproc)`
 - Output: `build/coral-vec.node` (~44MB, DuckDB statically linked)
 - Build time: ~2 min on 24-core, ~10-20 min on CI runners (2-4 core)
-- Dependencies fetched via CMake FetchContent (DuckDB + USearch, pinned tags)
+- Dependencies vendored in `csrc/vendor/` (DuckDB amalgamation + USearch headers)
+- Versions tracked in `csrc/vendor/VERSIONS`
+- To update: download new amalgamation/headers, replace `csrc/vendor/`, update VERSIONS
 
 ## Versioning
 
