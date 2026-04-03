@@ -128,6 +128,29 @@ function releaseReplacementLock(root: string, lock: ReplacementLock): void {
   }
 }
 
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function tryRemoveStaleLock(root: string): boolean {
+  const lockPath = backendLockPath(root);
+  try {
+    const content = readFileSync(lockPath, 'utf-8');
+    const parsed: unknown = JSON.parse(content);
+    if (!isRecord(parsed) || typeof parsed.pid !== 'number') return false;
+    if (isProcessAlive(parsed.pid)) return false;
+    unlinkSync(lockPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function removeStaleBackendInfo(root: string): void {
   try {
     unlinkSync(backendInfoPath(root));
@@ -223,6 +246,7 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
 
     const replacementLock = tryAcquireReplacementLock(root, version, expectedHash);
     if (!replacementLock) {
+      tryRemoveStaleLock(root);
       await delay(STARTUP_POLL_MS);
       continue;
     }

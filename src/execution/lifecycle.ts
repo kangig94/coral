@@ -812,6 +812,8 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       eventBus.removeAllListeners();
 
       runtimeState.setLifecycle('stopped');
+      removeBackendInfoIfOwnerFn(pluginRoot, instanceId);
+      removeLockIfOwnerFn(pluginRoot, instanceId);
       onStopped?.();
     })()
       .catch((error) => {
