@@ -55,14 +55,55 @@ endif()
 
 # --- Vendored dependencies (see vendor/VERSIONS for pinned versions) ---
 set(VENDOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor")
+set(DUCKDB_VERSION "v1.5.1")
+set(DUCKDB_LIB_DIR "${CMAKE_BINARY_DIR}/_duckdb")
 
-# DuckDB amalgamation (single-file build)
-add_library(duckdb_static STATIC "${VENDOR_DIR}/duckdb/duckdb.cpp")
-target_include_directories(duckdb_static PUBLIC "${VENDOR_DIR}/duckdb")
-target_compile_definitions(duckdb_static PRIVATE DUCKDB_BUILD_LIBRARY)
-set_target_properties(duckdb_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
+# DuckDB prebuilt static library (downloaded at configure time)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
+  set(DUCKDB_PLATFORM "linux-amd64")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+  set(DUCKDB_PLATFORM "linux-arm64")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+  set(DUCKDB_PLATFORM "osx-universal")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+  set(DUCKDB_PLATFORM "windows-amd64")
+else()
+  message(FATAL_ERROR "Unsupported platform: ${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+endif()
 
-# USearch (header-only)
+set(DUCKDB_ARCHIVE "libduckdb-${DUCKDB_PLATFORM}.zip")
+set(DUCKDB_URL "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_VERSION}/${DUCKDB_ARCHIVE}")
+set(DUCKDB_DOWNLOAD_PATH "${DUCKDB_LIB_DIR}/${DUCKDB_ARCHIVE}")
+set(DUCKDB_STATIC_LIB "${DUCKDB_LIB_DIR}/libduckdb_static.a")
+
+if(NOT EXISTS "${DUCKDB_STATIC_LIB}")
+  message(STATUS "Downloading DuckDB ${DUCKDB_VERSION} prebuilt for ${DUCKDB_PLATFORM}...")
+  file(DOWNLOAD "${DUCKDB_URL}" "${DUCKDB_DOWNLOAD_PATH}"
+    STATUS DUCKDB_DL_STATUS
+    SHOW_PROGRESS
+  )
+  list(GET DUCKDB_DL_STATUS 0 DUCKDB_DL_CODE)
+  if(NOT DUCKDB_DL_CODE EQUAL 0)
+    list(GET DUCKDB_DL_STATUS 1 DUCKDB_DL_MSG)
+    message(FATAL_ERROR "Failed to download DuckDB: ${DUCKDB_DL_MSG}\nURL: ${DUCKDB_URL}")
+  endif()
+  execute_process(
+    COMMAND ${CMAKE_COMMAND} -E tar xf "${DUCKDB_DOWNLOAD_PATH}"
+    WORKING_DIRECTORY "${DUCKDB_LIB_DIR}"
+    RESULT_VARIABLE DUCKDB_EXTRACT_RESULT
+  )
+  if(NOT DUCKDB_EXTRACT_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to extract DuckDB archive")
+  endif()
+endif()
+
+add_library(duckdb_static STATIC IMPORTED)
+set_target_properties(duckdb_static PROPERTIES
+  IMPORTED_LOCATION "${DUCKDB_STATIC_LIB}"
+  INTERFACE_INCLUDE_DIRECTORIES "${VENDOR_DIR}/duckdb"
+)
+
+# USearch (header-only, vendored)
 set(USEARCH_INCLUDE_DIR "${VENDOR_DIR}/usearch")
 
 add_library(

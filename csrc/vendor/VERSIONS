@@ -1,5 +1,5 @@
-duckdb v1.5.1
-usearch v2.24.0
+duckdb v1.5.1 (prebuilt static lib downloaded at cmake configure, header vendored)
+usearch v2.24.0 (header-only, vendored)
 fp16 (vendored by usearch v2.24.0)
 simsimd (vendored by usearch v2.24.0)
 stringzilla (vendored by usearch v2.24.0)
