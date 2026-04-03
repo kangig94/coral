@@ -55,7 +55,8 @@ jobs:
         shell: bash
         run: |
           cmake -B build csrc/
-          cmake --build build --config Release
+          JOBS=$(( $(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2) / 4 ))
+          cmake --build build --config Release -j${JOBS:-1}
 
       - name: Package Artifact
         shell: bash
