@@ -23,12 +23,11 @@ import { gunzipSync } from 'node:zlib';
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(SCRIPT_DIR, '..', '..');
 const TOOLS_DIR = join(homedir(), '.claude', 'tools');
-const KB_SUPPORTED_PLATFORMS = new Set([
-  'linux-x64',
-  'linux-arm64',
-  'darwin-arm64',
-  'win32-x64',
-]);
+const KB_ARCH_MAP = { x64: 'amd64', arm64: 'arm64' };
+
+function kbPlatformKey() {
+  return `${platform()}-${KB_ARCH_MAP[arch()] || arch()}`;
+}
 const KB_SECURITY_NOTICE = 'Store API keys in ~/.coral/.env, not in settings.json.';
 const KB_ONBOARDING_CHOICES = [
   {
@@ -406,9 +405,10 @@ if (entry.kind === 'needle') {
     process.exit(0);
   }
 
-  if (KB_SUPPORTED_PLATFORMS.has(platKey)) {
+  const needlePlatKey = kbPlatformKey();
+  {
     try {
-      installKbPrebuild(entry, targetDir, targetVersion, platKey);
+      installKbPrebuild(entry, targetDir, targetVersion, needlePlatKey);
       emit(buildTargetResult(statusLabel, 'prebuild', targetDir, entry, { version: targetVersion }));
       process.exit(0);
     } catch (error) {
@@ -425,8 +425,8 @@ if (entry.kind === 'needle') {
   }
 
   const suggestions = [];
-  if (!KB_SUPPORTED_PLATFORMS.has(platKey)) {
-    suggestions.push(`No KB prebuild is published for ${platKey}`);
+  if (errors.some((e) => e.startsWith('prebuild:'))) {
+    suggestions.push(`No prebuild available for ${needlePlatKey}. Source build also failed.`);
   }
   if (!findCmd('curl') && !findCmd('wget')) {
     suggestions.push('Install curl or wget so the KB prebuild can be downloaded');

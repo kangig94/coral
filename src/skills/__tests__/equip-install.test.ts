@@ -270,7 +270,7 @@ describe('skills/equip/install.mjs kb addon flow', () => {
     const [curlCall] = readLog(fixture.logPath);
     expect(curlCall).toContain('-fsSL -o');
     expect(curlCall).toContain(
-      `https://github.com/kangig94/coral-needle/releases/download/v${KB_VERSION}/coral-needle-v${KB_VERSION}-${process.platform}-${process.arch}.tar.gz`,
+      `https://github.com/kangig94/coral-needle/releases/download/v${KB_VERSION}/coral-needle-v${KB_VERSION}-${process.platform}-${process.arch === 'x64' ? 'amd64' : process.arch}.tar.gz`,
     );
   });
 
