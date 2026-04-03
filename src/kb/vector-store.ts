@@ -7,8 +7,6 @@ import {
   type VectorBridgeManifest,
 } from './vector-store-contract.js';
 
-const require = createRequire(import.meta.url);
-
 const ACTIVE_POINTER_FILE = 'ACTIVE';
 const ADDON_FILE = 'coral-vec.node';
 const STORE_FILE = 'store.duckdb';
@@ -292,7 +290,8 @@ function loadNativeAddon(addonPath: string): NativeVectorStoreAddon | null {
   }
 
   try {
-    const loaded = require(addonPath) as unknown;
+    const addonRequire = createRequire(join(dirname(addonPath), 'package.json'));
+    const loaded = addonRequire(addonPath) as unknown;
     return isNativeVectorStoreAddon(loaded) ? loaded : null;
   } catch {
     return null;
