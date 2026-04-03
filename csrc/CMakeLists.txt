@@ -2,8 +2,6 @@ cmake_minimum_required(VERSION 3.21)
 
 project(coral_vec LANGUAGES CXX)
 
-include(FetchContent)
-
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -55,34 +53,17 @@ if(NOT EXISTS "${NODE_ADDON_API_INCLUDE_DIR}/napi.h")
   message(FATAL_ERROR "node-addon-api headers not found at ${NODE_ADDON_API_INCLUDE_DIR}")
 endif()
 
-set(BUILD_UNITTESTS OFF CACHE BOOL "" FORCE)
-set(BUILD_SHELL OFF CACHE BOOL "" FORCE)
-set(BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
-set(BUILD_TPCE OFF CACHE BOOL "" FORCE)
-set(BUILD_PYTHON OFF CACHE BOOL "" FORCE)
-set(ENABLE_SANITIZER OFF CACHE BOOL "" FORCE)
-set(ENABLE_UBSAN OFF CACHE BOOL "" FORCE)
-set(DISABLE_BUILTIN_EXTENSIONS ON CACHE BOOL "" FORCE)
-set(DISABLE_EXTENSION_LOAD ON CACHE BOOL "" FORCE)
+# --- Vendored dependencies (see vendor/VERSIONS for pinned versions) ---
+set(VENDOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor")
 
-FetchContent_Declare(
-  duckdb
-  GIT_REPOSITORY https://github.com/duckdb/duckdb.git
-  GIT_TAG v1.2.1
-  GIT_SHALLOW TRUE
-)
-FetchContent_MakeAvailable(duckdb)
+# DuckDB amalgamation (single-file build)
+add_library(duckdb_static STATIC "${VENDOR_DIR}/duckdb/duckdb.cpp")
+target_include_directories(duckdb_static PUBLIC "${VENDOR_DIR}/duckdb")
+target_compile_definitions(duckdb_static PRIVATE DUCKDB_BUILD_LIBRARY)
+set_target_properties(duckdb_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-FetchContent_Declare(
-  usearch
-  GIT_REPOSITORY https://github.com/unum-cloud/usearch.git
-  GIT_TAG v2.19.23
-  GIT_SHALLOW TRUE
-)
-FetchContent_GetProperties(usearch)
-if(NOT usearch_POPULATED)
-  FetchContent_Populate(usearch)
-endif()
+# USearch (header-only)
+set(USEARCH_INCLUDE_DIR "${VENDOR_DIR}/usearch")
 
 add_library(
   coral_vec
@@ -101,10 +82,10 @@ target_include_directories(
     "${CMAKE_CURRENT_SOURCE_DIR}/store"
     "${NODE_INCLUDE_DIR}"
     "${NODE_ADDON_API_INCLUDE_DIR}"
-    "${usearch_SOURCE_DIR}/include"
-    "${usearch_SOURCE_DIR}/fp16/include"
-    "${usearch_SOURCE_DIR}/simsimd/include"
-    "${usearch_SOURCE_DIR}/stringzilla/include"
+    "${USEARCH_INCLUDE_DIR}/include"
+    "${USEARCH_INCLUDE_DIR}/fp16/include"
+    "${USEARCH_INCLUDE_DIR}/simsimd/include"
+    "${USEARCH_INCLUDE_DIR}/stringzilla/include"
 )
 
 target_compile_definitions(

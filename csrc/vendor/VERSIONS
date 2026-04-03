@@ -1,0 +1,5 @@
+duckdb v1.5.1
+usearch v2.24.0
+fp16 (vendored by usearch v2.24.0)
+simsimd (vendored by usearch v2.24.0)
+stringzilla (vendored by usearch v2.24.0)
