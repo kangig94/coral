@@ -9,11 +9,17 @@
  * Fail-open: any error exits silently.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { exitIfChildProcess, readStdin, coralProjectDir, sweepStale, isOwnerId, readMemoOwnerFromFrontmatter } from './lib/hook-utils.mjs';
 exitIfChildProcess();
+
+// TODO: remove trace logging after diagnosing intermittent misfire across sessions
+const HOOK_LOG = join(tmpdir(), 'coral-kb-promote-gate.log');
+function trace(msg) {
+  try { appendFileSync(HOOK_LOG, `${new Date().toISOString()} ${msg}\n`); } catch { /* fail-open */ }
+}
 
 const FLAG_PREFIX = 'kb-active-';
 const KB_SKILL_RE = /\/(?:coral:)?ralph|\/(?:coral:)?bugfix/;
@@ -33,6 +39,7 @@ try {
     if (!KB_SKILL_RE.test(msg)) process.exit(0);
     mkdirSync(flagDir, { recursive: true });
     writeFileSync(join(flagDir, `${FLAG_PREFIX}${sessionId}`), '');
+    trace(`UserPromptSubmit: flag created session=${sessionId}`);
     process.exit(0);
   }
 
@@ -43,6 +50,7 @@ try {
     if (!/coral:ralph|coral:bugfix/.test(skill)) process.exit(0);
     mkdirSync(flagDir, { recursive: true });
     writeFileSync(join(flagDir, `${FLAG_PREFIX}${sessionId}`), '');
+    trace(`PreToolUse: flag created session=${sessionId} skill=${skill}`);
     process.exit(0);
   }
 
@@ -70,6 +78,7 @@ try {
   if (event === 'Stop') {
     const flag = sessionId && join(flagDir, `${FLAG_PREFIX}${sessionId}`);
     const hasFlag = flag && existsSync(flag);
+    trace(`Stop: session=${sessionId} hasFlag=${hasFlag} memos=${visibleMemos.length}`);
     if (hasFlag) {
       try { unlinkSync(flag); } catch { /* ignore */ }
     }
