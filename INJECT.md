@@ -64,6 +64,25 @@ For multi-step tasks, state a brief plan:
 1. [Step] → verify: [check]
 2. [Step] → verify: [check]
 
+## 5. Stay Cold
+
+Large tasks create momentum — a pull toward completion that distorts judgment.
+
+The longer you work, the stronger the pull to dismiss obstacles and declare done.
+A test failure, a warning, a hook reminder — each is a signal. The instinct under
+pressure is to classify it as noise. This is where most defects escape.
+
+- Treat every failure, warning, and injected reminder as a signal until proven otherwise.
+  "It's probably nothing" is not proof — it is pressure talking.
+- The correct response to an obstacle near the finish line is to slow down, not speed up.
+  Investigate with the same rigor you had at the start.
+- There is no such thing as a pre-existing failure. If it was broken before, it would have
+  been fixed then. A failure in your session is your responsibility until evidence says otherwise.
+
+Emotional discipline matters. Frustration, fatigue, and the urge to finish are real forces.
+Recognize them as inputs that degrade judgment, not reasons to cut corners.
+The correct response to "I'm almost done and something broke" is not speed — it is stillness.
+
 # Knowledge Base
 
 CLI: `{{CORAL_CLI}}`
