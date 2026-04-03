@@ -7,12 +7,15 @@ paths:
 
 ## Build
 
-- Clean build: `cmake -B build csrc/ && cmake --build build --config Release -j$(nproc)`
-- Output: `build/coral-vec.node` (~44MB, DuckDB statically linked)
-- Build time: ~2 min on 24-core, ~10-20 min on CI runners (2-4 core)
-- Dependencies vendored in `csrc/vendor/` (DuckDB amalgamation + USearch headers)
+- Clean build: `cmake -B build csrc/ && cmake --build build --config Release -j$(($(nproc)/4))`
+- Always use `-j$(($(nproc)/4))` — full CPU causes freezes with large headers like duckdb.hpp
+- Output: `build/coral-vec.node` (DuckDB statically linked)
+- Build time: ~5 sec (DuckDB prebuilt downloaded at configure, coral code only compiled)
+- DuckDB: prebuilt `libduckdb_static.a` auto-downloaded from GitHub Releases at cmake configure
+- USearch: header-only, vendored in `csrc/vendor/usearch/`
 - Versions tracked in `csrc/vendor/VERSIONS`
-- To update: download new amalgamation/headers, replace `csrc/vendor/`, update VERSIONS
+- To update DuckDB: change `DUCKDB_VERSION` in CMakeLists.txt, update `vendor/duckdb/duckdb.hpp` from matching release
+- To update USearch: download headers from release, replace `csrc/vendor/usearch/`, update VERSIONS
 
 ## Versioning
 
