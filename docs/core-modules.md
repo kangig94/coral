@@ -76,14 +76,9 @@ Text indexing and vector search now split cleanly: Orama remains the text index,
 | `curate.ts` | Background curation scheduler — tag/principle classification via `claude -p`, git sync cycle |
 | `mutation-helpers.ts` | Atomic writes, index mutation under lock |
 
-## Native Vector Runtime (`coral-needle (github.com/kangig94/coral-needle)`)
+## Native Vector Runtime
 
-| Module | Responsibility |
-|--------|---------------|
-| `bridge.cpp` | N-API boundary for `initStore`, `upsertChunks`, `searchVector`, `buildIndex`, and `getStats()` |
-| `store/duckdb-store.cpp` | Snapshot-local DuckDB schema, chunk/vector CRUD, active embedding spec metadata |
-| `engine/exact-scan.cpp` | Brute-force baseline vector engine |
-| `engine/usearch-hnsw.cpp` | USearch HNSW engine for approximate nearest-neighbor search |
+Separate repo: [kangig94/coral-needle](https://github.com/kangig94/coral-needle) — C++ N-API addon with DuckDB storage + USearch HNSW + ExactScan engines. Installed by `/coral:equip kb`.
 
 Operations: `memo.ts` (create), `promote.ts` (memo → note), `update.ts`, `delete.ts`, `read.ts`.
 

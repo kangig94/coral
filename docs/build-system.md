@@ -10,8 +10,6 @@ TypeScript compilation and esbuild bundling pipeline.
 | `npm run build:server` | esbuild bundle only (skips tsc) |
 | `npm run dev` | TypeScript watch mode (`tsc --watch`) |
 | `npm test` | Run tests with vitest |
-| `cmake -B build coral-needle repo (github.com/kangig94/coral-needle) && cmake --build build -j$(($(nproc)/4))` | Build C++ native addon (requires cmake + C++ toolchain) |
-
 ## Bundle Commit Policy
 
 All three bundles (`bridge/coral-ax.cjs`, `bridge/coral-backend.cjs`, and `bridge/coral-cli.cjs`) are committed to the repository. This means users can use the plugin by pointing to the plugin directory without running `npm install` + `npm run build`:
@@ -46,34 +44,9 @@ bridge/coral-cli.cjs       (src/cli/bootstrap.ts)
 
 The build script performs two tasks before bundling: version sync and manifest update.
 
-### C++ Native Addon (coral-needle repo (github.com/kangig94/coral-needle))
+### C++ Native Addon (coral-needle)
 
-The vector search addon is built separately from the TypeScript pipeline.
-
-```
-coral-needle repo (github.com/kangig94/coral-needle)
-├── CMakeLists.txt        DuckDB prebuilt download + addon compilation
-├── VERSION               Independent version (e.g., 0.1.0)
-├── bridge.cpp            N-API entry point
-├── store/                DuckDB integration (CRUD)
-├── engine/               Search engines (ExactScan, USearch HNSW)
-└── vendor/
-    ├── VERSIONS           Pinned dependency versions
-    ├── duckdb/duckdb.hpp  Header only (prebuilt .a downloaded at configure)
-    └── usearch/           Header-only search library
-```
-
-**Build**: `cmake -B build coral-needle repo (github.com/kangig94/coral-needle) && cmake --build build --config Release -j$(($(nproc)/4))`
-
-**Output**: `build/coral-vec.node`
-
-**DuckDB**: Prebuilt `libduckdb_static.a` is auto-downloaded from GitHub Releases at cmake configure time. No DuckDB source compilation needed.
-
-**Parallelism**: Always use `-j$(($(nproc)/4))` — full CPU causes freezes with large C++ headers.
-
-**Distribution**: Prebuilt addon binaries are published to GitHub Releases as `coral-needle-v{version}-{platform}.tar.gz`. `/coral:equip kb` downloads the matching prebuild, falling back to source build if unavailable.
-
-**CI**: `.github/workflows/csrc-release.yml` builds 5 platforms on `main` push (coral-needle repo (github.com/kangig94/coral-needle) changes) or `csrc@*` tag push.
+The vector search addon is a separate project: [kangig94/coral-needle](https://github.com/kangig94/coral-needle). See that repo for build instructions, CI, and platform support. `/coral:equip kb` downloads prebuilt binaries from coral-needle releases.
 
 ### Version Sync
 
@@ -81,7 +54,7 @@ coral-needle repo (github.com/kangig94/coral-needle)
 
 ### Manifest Update
 
-`bridge/manifest.json` is extended during build to include native addon compatibility metadata: `csrcVersion`, `schemaVersion`, and `minNapiVersion` (sourced from `coral-needle repo (github.com/kangig94/coral-needle)VERSION` and `src/kb/vector-store-contract.ts`). When `coral-needle repo (github.com/kangig94/coral-needle)VERSION` is absent, these fields are `null` so TypeScript-only builds succeed.
+`bridge/manifest.json` contains `bundleHash` for version-independent change detection, generated from the backend bundle content hash.
 
 ### esbuild Settings
 
