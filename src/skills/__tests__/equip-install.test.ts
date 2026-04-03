@@ -6,15 +6,7 @@ import { gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const INSTALL_SCRIPT = join(process.cwd(), 'skills', 'equip', 'install.mjs');
-const KB_VERSION = (() => {
-  const parsed = JSON.parse(readFileSync(join(process.cwd(), 'bridge', 'manifest.json'), 'utf-8')) as {
-    csrcVersion?: string | null;
-  };
-  if (typeof parsed.csrcVersion !== 'string' || parsed.csrcVersion.length === 0) {
-    throw new Error('bridge/manifest.json is missing csrcVersion');
-  }
-  return parsed.csrcVersion;
-})();
+const KB_VERSION = '0.1.0';
 const createdRoots: string[] = [];
 
 interface InstallerChoice {
@@ -153,7 +145,7 @@ function writeInstalledKb(
   method: 'prebuild' | 'source-build' = 'prebuild',
 ): void {
   mkdirSync(join(fixture.targetDir, 'vec'), { recursive: true });
-  writeFileSync(join(fixture.targetDir, 'vec', 'coral-vec.node'), Buffer.from('installed-addon'));
+  writeFileSync(join(fixture.targetDir, 'vec', 'coral-needle.node'), Buffer.from('installed-addon'));
   writeFileSync(join(fixture.targetDir, '.kb-meta.json'), JSON.stringify({ version, method }), 'utf-8');
 }
 
@@ -222,7 +214,7 @@ describe('skills/equip/install.mjs kb addon flow', () => {
     const fixture = createFixture();
     const addonBytes = Buffer.from('native-addon');
     writeFakeCurl(fixture.binDir);
-    createPrebuildArchive(fixture.archivePath, 'coral-vec.node', addonBytes);
+    createPrebuildArchive(fixture.archivePath, 'coral-needle.node', addonBytes);
 
     const result = parseResult(runInstall(fixture, ['kb']));
 
@@ -270,7 +262,7 @@ describe('skills/equip/install.mjs kb addon flow', () => {
         dims: null,
       },
     ]);
-    expect(readFileSync(join(fixture.targetDir, 'vec', 'coral-vec.node'))).toEqual(addonBytes);
+    expect(readFileSync(join(fixture.targetDir, 'vec', 'coral-needle.node'))).toEqual(addonBytes);
     expect(readJson(join(fixture.targetDir, '.kb-meta.json'))).toEqual({
       version: KB_VERSION,
       method: 'prebuild',
@@ -278,7 +270,7 @@ describe('skills/equip/install.mjs kb addon flow', () => {
     const [curlCall] = readLog(fixture.logPath);
     expect(curlCall).toContain('-fsSL -o');
     expect(curlCall).toContain(
-      `https://github.com/kangig94/coral/releases/download/csrc@${KB_VERSION}/csrc@${KB_VERSION}-${process.platform}-${process.arch}.tar.gz`,
+      `https://github.com/kangig94/coral-needle/releases/download/v${KB_VERSION}/coral-needle-v${KB_VERSION}-${process.platform}-${process.arch}.tar.gz`,
     );
   });
 

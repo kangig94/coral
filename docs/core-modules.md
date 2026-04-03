@@ -76,7 +76,7 @@ Text indexing and vector search now split cleanly: Orama remains the text index,
 | `curate.ts` | Background curation scheduler — tag/principle classification via `claude -p`, git sync cycle |
 | `mutation-helpers.ts` | Atomic writes, index mutation under lock |
 
-## Native Vector Runtime (`csrc/`)
+## Native Vector Runtime (`coral-needle (github.com/kangig94/coral-needle)`)
 
 | Module | Responsibility |
 |--------|---------------|

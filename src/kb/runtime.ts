@@ -484,7 +484,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
   }
 
   function vectorHandleAddonPath(handleToken: string): string {
-    return join(vectorHandleDir(handleToken), 'coral-vec.node');
+    return join(vectorHandleDir(handleToken), 'coral-needle.node');
   }
 
   function makeHandleToken(prefix: string): string {

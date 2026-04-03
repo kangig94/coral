@@ -81,10 +81,11 @@ const CATALOG = {
     },
   },
   kb: {
-    kind: 'kb-addon',
+    kind: 'needle',
     name: 'Knowledge Base Vector Runtime',
-    description: 'Installs the native KB vector runtime and embedding onboarding data',
-    repo: 'kangig94/coral',
+    description: 'Installs coral-needle native addon for vector search',
+    repo: 'kangig94/coral-needle',
+    needleVersion: '0.1.0',
     targetDir: () => kbRuntimeDirFromEnv(),
     postInstall: ['backend_shutdown', 'kb_reindex'],
   },
@@ -151,24 +152,18 @@ function fetchLatest(repo) {
 }
 
 function kbAddonPath(targetDir) {
-  return join(targetDir, 'vec', 'coral-vec.node');
+  return join(targetDir, 'vec', 'coral-needle.node');
 }
 
-function readPackagedCsrcVersion() {
-  const manifestPath = join(PLUGIN_ROOT, 'bridge', 'manifest.json');
-  const parsed = JSON.parse(readFileSync(manifestPath, 'utf-8'));
-  if (!parsed || typeof parsed.csrcVersion !== 'string' || parsed.csrcVersion.length === 0) {
-    throw new Error(`Packaged bridge manifest is missing csrcVersion: ${manifestPath}`);
+function resolveKbTargetVersion(entry, requestedVersion) {
+  const needleVersion = entry.needleVersion;
+  if (!needleVersion) {
+    throw new Error('kb catalog entry is missing needleVersion');
   }
-  return parsed.csrcVersion;
-}
-
-function resolveKbTargetVersion(requestedVersion) {
-  const csrcVersion = readPackagedCsrcVersion();
-  if (requestedVersion && requestedVersion !== csrcVersion) {
-    throw new Error(`kb expects packaged csrcVersion ${csrcVersion}, not ${requestedVersion}`);
+  if (requestedVersion && requestedVersion !== needleVersion) {
+    throw new Error(`kb expects needleVersion ${needleVersion}, not ${requestedVersion}`);
   }
-  return csrcVersion;
+  return needleVersion;
 }
 
 function buildKbOnboarding(targetDir) {
@@ -227,8 +222,8 @@ function extractTarEntry(archivePath, expectedName) {
 }
 
 function installKbPrebuild(entry, targetDir, version, platKey) {
-  const releaseTag = `csrc@${version}`;
-  const assetName = `${releaseTag}-${platKey}.tar.gz`;
+  const releaseTag = `v${version}`;
+  const assetName = `coral-needle-${releaseTag}-${platKey}.tar.gz`;
   const tempDir = mkdtempSync(join(tmpdir(), 'coral-kb-prebuild-'));
 
   try {
@@ -236,7 +231,7 @@ function installKbPrebuild(entry, targetDir, version, platKey) {
     const addonPath = kbAddonPath(targetDir);
     download(`https://github.com/${entry.repo}/releases/download/${releaseTag}/${assetName}`, archivePath);
     mkdirSync(dirname(addonPath), { recursive: true });
-    writeFileSync(addonPath, extractTarEntry(archivePath, 'coral-vec.node'));
+    writeFileSync(addonPath, extractTarEntry(archivePath, 'coral-needle.node'));
     writeTargetMeta(targetDir, version, 'prebuild');
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
@@ -272,32 +267,47 @@ function ensureCmake() {
   throw new Error('cmake is still unavailable after uv tool install cmake.');
 }
 
-function installKbSourceBuild(targetDir, version) {
+function installKbSourceBuild(entry, targetDir, version) {
   const cmake = ensureCmake();
-  execFileSync(cmake, ['-B', 'build', 'csrc/'], {
-    cwd: PLUGIN_ROOT,
-    stdio: 'pipe',
-    timeout: 900_000,
-  });
-  execFileSync(cmake, ['--build', 'build', '--config', 'Release'], {
-    cwd: PLUGIN_ROOT,
-    stdio: 'pipe',
-    timeout: 900_000,
-  });
+  const buildDir = mkdtempSync(join(tmpdir(), 'coral-needle-build-'));
 
-  const builtAddon = [
-    join(PLUGIN_ROOT, 'build', 'coral-vec.node'),
-    join(PLUGIN_ROOT, 'build', 'Release', 'coral-vec.node'),
-  ].find((candidate) => existsSync(candidate));
+  try {
+    const repoUrl = `https://github.com/${entry.repo}.git`;
+    const tag = `v${version}`;
+    execSync(`git clone --depth 1 --branch ${tag} ${repoUrl} src`, {
+      cwd: buildDir,
+      stdio: 'pipe',
+      timeout: 120_000,
+    });
 
-  if (!builtAddon) {
-    throw new Error('cmake build completed without producing build/coral-vec.node.');
+    const srcDir = join(buildDir, 'src');
+    execFileSync(cmake, ['-B', 'build', '.'], {
+      cwd: srcDir,
+      stdio: 'pipe',
+      timeout: 900_000,
+    });
+    execFileSync(cmake, ['--build', 'build', '--config', 'Release'], {
+      cwd: srcDir,
+      stdio: 'pipe',
+      timeout: 900_000,
+    });
+
+    const builtAddon = [
+      join(srcDir, 'build', 'coral-needle.node'),
+      join(srcDir, 'build', 'Release', 'coral-needle.node'),
+    ].find((candidate) => existsSync(candidate));
+
+    if (!builtAddon) {
+      throw new Error('cmake build completed without producing coral-needle.node.');
+    }
+
+    const addonPath = kbAddonPath(targetDir);
+    mkdirSync(dirname(addonPath), { recursive: true });
+    copyFileSync(builtAddon, addonPath);
+    writeTargetMeta(targetDir, version, 'source-build');
+  } finally {
+    rmSync(buildDir, { recursive: true, force: true });
   }
-
-  const addonPath = kbAddonPath(targetDir);
-  mkdirSync(dirname(addonPath), { recursive: true });
-  copyFileSync(builtAddon, addonPath);
-  writeTargetMeta(targetDir, version, 'source-build');
 }
 
 function buildResult(status, method, cmdPath, entry, extra) {
@@ -320,7 +330,7 @@ function buildTargetResult(status, method, targetDir, entry, extra) {
     method,
     targetDir,
     ...(entry.postInstall ? { postInstall: entry.postInstall } : {}),
-    ...(entry.kind === 'kb-addon' ? { onboarding: buildKbOnboarding(targetDir) } : {}),
+    ...(entry.kind === 'needle' ? { onboarding: buildKbOnboarding(targetDir) } : {}),
     ...extra,
   };
 }
@@ -362,8 +372,8 @@ const toolPath = join(TOOLS_DIR, pkg + ext);
 
 let targetVersion;
 try {
-  targetVersion = entry.kind === 'kb-addon'
-    ? resolveKbTargetVersion(requestedVersion)
+  targetVersion = entry.kind === 'needle'
+    ? resolveKbTargetVersion(entry, requestedVersion)
     : requestedVersion || fetchLatest(entry.repo) || entry.fallbackVersion;
 } catch (error) {
   emit({
@@ -378,7 +388,7 @@ try {
 const errors = [];
 const statusLabel = update ? 'updated' : 'installed';
 
-if (entry.kind === 'kb-addon') {
+if (entry.kind === 'needle') {
   const targetDir = entry.targetDir();
   const addonPath = kbAddonPath(targetDir);
   const installedMeta = readTargetMeta(targetDir);
@@ -408,7 +418,7 @@ if (entry.kind === 'kb-addon') {
   }
 
   try {
-    installKbSourceBuild(targetDir, targetVersion);
+    installKbSourceBuild(entry, targetDir, targetVersion);
     emit(buildTargetResult(statusLabel, 'source-build', targetDir, entry, { version: targetVersion }));
     process.exit(0);
   } catch (error) {

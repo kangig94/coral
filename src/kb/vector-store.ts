@@ -8,7 +8,7 @@ import {
 } from './vector-store-contract.js';
 
 const ACTIVE_POINTER_FILE = 'ACTIVE';
-const ADDON_FILE = 'coral-vec.node';
+const ADDON_FILE = 'coral-needle.node';
 const STORE_FILE = 'store.duckdb';
 
 export type EmbeddingSpec = {
@@ -116,24 +116,7 @@ function parseBridgeManifest(value: unknown): VectorBridgeManifest | null {
     return null;
   }
 
-  const { csrcVersion, schemaVersion, minNapiVersion } = value;
-
-  if (csrcVersion !== null && typeof csrcVersion !== 'string') {
-    return null;
-  }
-  if (schemaVersion !== null && (typeof schemaVersion !== 'number' || !Number.isInteger(schemaVersion))) {
-    return null;
-  }
-  if (minNapiVersion !== null && (typeof minNapiVersion !== 'number' || !Number.isInteger(minNapiVersion))) {
-    return null;
-  }
-
-  return {
-    bundleHash: value.bundleHash,
-    csrcVersion: csrcVersion ?? null,
-    schemaVersion: schemaVersion ?? null,
-    minNapiVersion: minNapiVersion ?? null,
-  };
+  return { bundleHash: value.bundleHash };
 }
 
 function parseStats(value: unknown): Awaited<ReturnType<VectorStore['stats']>> {
@@ -268,19 +251,11 @@ export function writeActiveSnapshotId(runtimeDir: string, specId: string, snapsh
 }
 
 export function isVectorAddonCompatible(
-  manifest: VectorBridgeManifest,
   stats: Awaited<ReturnType<VectorStore['stats']>>,
 ): boolean {
-  if (manifest.csrcVersion === null || manifest.schemaVersion === null || manifest.minNapiVersion === null) {
-    return false;
-  }
-
   return (
-    manifest.schemaVersion === VECTOR_STORE_SCHEMA_VERSION &&
-    manifest.minNapiVersion === VECTOR_STORE_MIN_NAPI_VERSION &&
-    stats.addonVersion === manifest.csrcVersion &&
-    stats.schemaVersion === manifest.schemaVersion &&
-    stats.napiVersion >= manifest.minNapiVersion
+    stats.schemaVersion === VECTOR_STORE_SCHEMA_VERSION &&
+    stats.napiVersion >= VECTOR_STORE_MIN_NAPI_VERSION
   );
 }
 
@@ -428,7 +403,7 @@ export function createDuckDBVectorStore(options: VectorStoreFactoryOptions): Duc
   }
 
   const stats = parseStats(addon.getStats());
-  if (!isVectorAddonCompatible(manifest, stats)) {
+  if (!isVectorAddonCompatible(stats)) {
     return null;
   }
 

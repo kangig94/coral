@@ -1,33 +1,8 @@
 import * as esbuild from 'esbuild';
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'fs';
 
 mkdirSync('bridge', { recursive: true });
-
-function readVectorContract() {
-  const source = readFileSync('src/kb/vector-store-contract.ts', 'utf8');
-  const schemaVersionMatch = source.match(/VECTOR_STORE_SCHEMA_VERSION = (\d+)/);
-  const minNapiVersionMatch = source.match(/VECTOR_STORE_MIN_NAPI_VERSION = (\d+)/);
-
-  if (!schemaVersionMatch || !minNapiVersionMatch) {
-    throw new Error('Failed to parse vector store contract constants.');
-  }
-
-  return {
-    schemaVersion: Number(schemaVersionMatch[1]),
-    minNapiVersion: Number(minNapiVersionMatch[1]),
-  };
-}
-
-function readCsrcVersion() {
-  const versionPath = 'csrc/VERSION';
-  if (!existsSync(versionPath)) {
-    return null;
-  }
-
-  const version = readFileSync(versionPath, 'utf8').trim();
-  return version === '' ? null : version;
-}
 
 const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
 
@@ -98,15 +73,10 @@ console.log('Built bridge/coral-claude-appserver.cjs');
 
 // Write bundle manifest with content hash for version-independent change detection
 const backendHash = createHash('sha256').update(readFileSync('bridge/coral-backend.cjs')).digest('hex').slice(0, 16);
-const csrcVersion = readCsrcVersion();
-const vectorContract = csrcVersion === null ? null : readVectorContract();
 
 writeFileSync(
   'bridge/manifest.json',
   JSON.stringify({
     bundleHash: backendHash,
-    csrcVersion,
-    schemaVersion: vectorContract?.schemaVersion ?? null,
-    minNapiVersion: vectorContract?.minNapiVersion ?? null,
   }) + '\n',
 );
