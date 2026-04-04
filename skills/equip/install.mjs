@@ -83,7 +83,7 @@ const CATALOG = {
     name: 'Knowledge Base Vector Runtime',
     description: 'Installs coral-needle native addon for vector search',
     repo: 'kangig94/coral-needle',
-    needleVersion: '0.1.0',
+    needleVersion: '0.2.0',
     targetDir: () => kbRuntimeDirFromEnv(),
     postInstall: ['backend_shutdown', 'kb_reindex'],
   },
