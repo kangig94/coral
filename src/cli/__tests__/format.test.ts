@@ -506,6 +506,12 @@ describe('cli format', () => {
       expect(formatError(new Error('boom'))).toBe('boom');
     });
 
+    it('formats plain objects with message property', () => {
+      expect(formatError({ message: 'KB note already exists: /path/to/note.md' })).toBe(
+        'KB note already exists: /path/to/note.md',
+      );
+    });
+
     it('formats unknown string values', () => {
       expect(formatError('plain failure')).toBe('plain failure');
     });

@@ -123,6 +123,9 @@ Timestamps, paths, and frontmatter are generated automatically.
 Most memos are disposable — only promote if the lesson is reusable across future sessions.
 Check for duplicates via `CLI kb search` before promoting:
 `CLI kb promote --memo "<filename>" --title "..." --content-file <temp-file> --domain d --topic t`
+The final note slug is `{domain}-{topic}.md` — topic must be specific enough to avoid collisions.
+Bad: `--domain cpp --topic duckdb` (too broad, blocks future DuckDB notes).
+Good: `--domain cpp --topic duckdb-split-amalgamation` (scoped to the specific finding).
 Write the full markdown body (e.g., `## Rule\n...\n## Why\n...\n## Pattern\n...`) to a temporary file first via the Write tool, then pass its path as `--content-file`. Use any writable temp path.
 Promote automatically deletes the source memo and creates a new KB note — no separate delete step needed.
 

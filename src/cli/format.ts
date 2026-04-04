@@ -541,6 +541,10 @@ export function formatError(error: unknown): string {
     return error.message;
   }
 
+  if (isRecord(error) && typeof error.message === 'string') {
+    return error.message;
+  }
+
   return String(error);
 }
 
