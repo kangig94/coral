@@ -9,6 +9,7 @@ import {
   getOrCreate as getOrCreateDiscussContext,
   type DiscussContextRegistry,
 } from '../discuss/context-registry.js';
+import type { DiscussContext } from '../discuss/context.js';
 import { getSession } from '../discuss/registry.js';
 import { routeToolCall } from '../tool-router.js';
 import type { CallerContext, ExecutionService } from '../service.js';
@@ -724,5 +725,93 @@ describe('execution discuss tools', () => {
     });
 
     harness.cleanup();
+  });
+
+  describe('unexpectedDiscussError path', () => {
+    it('discuss_abort returns discuss_error for non-DiscussManagerError', async () => {
+      const harness = createDiscussHarness();
+      const registry = createDiscussContextRegistry();
+      const stores = new Map([[harness.projectRoot, harness.store]]);
+      vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
+      const context = getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
+      await persistSession({ ...harness, context }, { sessionId: 'sess-err' });
+
+      // Make getSession throw a plain Error (simulates unexpected failure inside the operation)
+      const origGet = getSession;
+      vi.spyOn(await import('../discuss/registry.js'), 'getSession').mockImplementationOnce(() => {
+        throw new Error('disk full');
+      });
+
+      const result = await routeToolCall(
+        {
+          name: 'discuss_abort',
+          args: { session: 'sess-err' },
+          context: harness.ctx,
+        },
+        createHelpers(registry, stores, harness.service),
+      );
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.code).toBe('discuss_error');
+        expect(result.message).toBe('disk full');
+      }
+
+      harness.cleanup();
+    });
+
+    it('discuss_watch returns discuss_error for non-DiscussManagerError', async () => {
+      const harness = createDiscussHarness();
+      const throwingHelpers = {
+        getExecutionService: (_ctx: CallerContext) => harness.service,
+        getDiscussContext: (_ctx: CallerContext): DiscussContext => { throw new TypeError('Cannot read property'); },
+        abortJobs: (_jobIds: string[]) => ({ aborted: [], notFound: [] }),
+        scopeCheckJobs: (_jobIds: string[], _projectRoot: string) => ({ valid: [], missing: [], mismatch: [] }),
+      };
+
+      const result = await routeToolCall(
+        {
+          name: 'discuss_watch',
+          args: { session: 'sess-err2' },
+          context: harness.ctx,
+        },
+        throwingHelpers,
+      );
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.code).toBe('discuss_error');
+        expect(result.message).toBe('Cannot read property');
+      }
+
+      harness.cleanup();
+    });
+
+    it('discuss_participate returns discuss_error for non-DiscussManagerError', async () => {
+      const harness = createDiscussHarness();
+      const throwingHelpers = {
+        getExecutionService: (_ctx: CallerContext) => harness.service,
+        getDiscussContext: (_ctx: CallerContext): DiscussContext => { throw new RangeError('out of bounds'); },
+        abortJobs: (_jobIds: string[]) => ({ aborted: [], notFound: [] }),
+        scopeCheckJobs: (_jobIds: string[], _projectRoot: string) => ({ valid: [], missing: [], mismatch: [] }),
+      };
+
+      const result = await routeToolCall(
+        {
+          name: 'discuss_participate',
+          args: { session: 'sess-err3', agent_name: 'tester', content: 'test' },
+          context: harness.ctx,
+        },
+        throwingHelpers,
+      );
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.code).toBe('discuss_error');
+        expect(result.message).toBe('out of bounds');
+      }
+
+      harness.cleanup();
+    });
   });
 });
