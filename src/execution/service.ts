@@ -714,7 +714,7 @@ export class ExecutionService implements RecoveryCapableService {
       if (admission.type === 'queued') {
         const waitForPermit = admission.waitForPermit();
         admission.cancel();
-        void waitForPermit.catch(() => {});
+        void waitForPermit.catch((e: unknown) => { backendLog.warn(`Queued permit cleanup failed for ${jobId}: ${errorMessage(e)}`); });
       } else {
         releaseLaunch(jobId, pool);
       }

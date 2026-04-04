@@ -7,6 +7,7 @@ import type { ProgressStore } from '../execution/progress-store.js';
 import type { PipeAtom, PipelineAST } from './types.js';
 import { truncate } from '../shared/format-progress.js';
 import { errorMessage } from '../shared/mcp-utils.js';
+import { backendLog } from '../shared/backend-log.js';
 
 export const BOOTSTRAP_TIMEOUT_MS = 2_000;
 export const SIBLING_DRAIN_TIMEOUT_MS = 15_000;
@@ -97,7 +98,7 @@ function cleanupClaudeSessions(sessionIds: string[]): void {
         if (targets.has(file)) await unlink(join(projectsDir, dir.name, file)).catch(() => {});
       }
     }
-  })().catch(() => {});
+  })().catch((e: unknown) => { backendLog.warn(`cleanupClaudeSessions failed: ${errorMessage(e)}`); });
 }
 
 /** Simple async mutex — serializes access via a single Promise chain. */
@@ -179,7 +180,7 @@ function writeCheckpoint(
         release();
       }
     })
-    .catch(() => {}); // best-effort: checkpoint writes must not crash the process
+    .catch((e: unknown) => { backendLog.warn(`Checkpoint write failed for ${workflowJobId}: ${errorMessage(e)}`); });
 }
 
 function stripElapsedPrefix(message: string): string {

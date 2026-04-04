@@ -1,7 +1,7 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import {
@@ -1444,11 +1444,9 @@ export function createCurateScheduler({
       const missing = GITIGNORE_ENTRIES.filter((entry) => !lines.some((line) => line.trim() === entry));
       if (missing.length === 0) return;
 
-      if (existing.length === 0) {
-        writeFileSync(gitignorePath, `${GITIGNORE_HEADER}\n${missing.join('\n')}\n`, 'utf-8');
-      } else {
-        appendFileSync(gitignorePath, `\n${GITIGNORE_HEADER}\n${missing.join('\n')}\n`, 'utf-8');
-      }
+      const suffix = `${GITIGNORE_HEADER}\n${missing.join('\n')}\n`;
+      const newContent = existing.length === 0 ? suffix : `${existing}\n${suffix}`;
+      writeFileAtomic(gitignorePath, newContent);
     } catch {
       // best-effort
     }

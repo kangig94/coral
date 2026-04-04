@@ -11,7 +11,8 @@
 import type { Server, ServerResponse } from 'node:http';
 import { readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { formatError, isNoEntryError, isRecord } from '../shared/mcp-utils.js';
+import { errorMessage, formatError, isNoEntryError, isRecord } from '../shared/mcp-utils.js';
+import { backendLog } from '../shared/backend-log.js';
 import { kbRoot } from '../infra/paths.js';
 import { activeChildren as activeCliChildren, spawnCli } from './engine.js';
 import { readBackendInfo, type writeBackendInfo, type removeBackendInfoIfOwner } from '../infra/backend-info.js';
@@ -790,7 +791,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         runtimeState.getKbSubsystem()?.curateScheduler.stop?.(),
         new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
       ]);
-      await runtimeState.getKbSubsystem()?.kb.closeVectorStores().catch(() => {});
+      await runtimeState.getKbSubsystem()?.kb.closeVectorStores().catch((e: unknown) => { backendLog.warn(`closeVectorStores failed during shutdown: ${errorMessage(e)}`); });
       await clearAllDiscuss(discussRegistry, mode, discussOperations.persistAbortEndForShutdown);
       if (mode === 'hard') {
         await discussOperations.persistAbortEndForPersistedShutdownCandidates(

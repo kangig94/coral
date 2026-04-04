@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { z } from 'zod';
 import { isRecord, isStringArray } from '../shared/mcp-utils.js';
 import {
   discussSourcesPath,
@@ -71,6 +72,26 @@ function parseJsonLines<T>(text: string, parseLine: (value: unknown) => T | null
   }
   return entries;
 }
+
+/** Structural schema for persisted status records — validates fields callers branch on. */
+const persistedStatusRecordSchema = z.object({
+  jobId: z.string(),
+  sessionId: z.string(),
+  provider: z.string(),
+  projectRoot: z.string(),
+  backendNamespace: z.string(),
+  phase: z.string(),
+  launch: z.object({ state: z.string(), updatedAt: z.string() }).passthrough(),
+}).passthrough();
+
+/** Structural schema for persisted progress records. */
+const persistedProgressRecordSchema = z.object({
+  jobId: z.string(),
+  sessionId: z.string(),
+  eventId: z.number(),
+  type: z.string(),
+  ts: z.string(),
+}).passthrough();
 
 function readDirectoryEntries(baseDir: string): Array<{ name: string; isDirectory(): boolean }> {
   try {
@@ -626,7 +647,9 @@ export interface DiscussSummaryIndexData {
  */
 export function readStatusRecord(jobId: string): PersistedStatusRecord | null {
   const record = readJsonFile(join(JOBS_DIR, jobId, 'status.json'));
-  return record === null ? null : (record as PersistedStatusRecord);
+  if (record === null) return null;
+  const parsed = persistedStatusRecordSchema.safeParse(record);
+  return parsed.success ? (parsed.data as PersistedStatusRecord) : null;
 }
 
 /**
@@ -635,7 +658,10 @@ export function readStatusRecord(jobId: string): PersistedStatusRecord | null {
 export function readProgressLog(jobId: string): PersistedProgressRecord[] {
   const log = readTextFile(join(JOBS_DIR, jobId, 'progress.jsonl'));
   if (log === null) return [];
-  return parseJsonLines(log, (lineValue) => lineValue as PersistedProgressRecord);
+  return parseJsonLines(log, (lineValue) => {
+    const parsed = persistedProgressRecordSchema.safeParse(lineValue);
+    return parsed.success ? (parsed.data as PersistedProgressRecord) : null;
+  });
 }
 
 /**
