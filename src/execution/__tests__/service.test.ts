@@ -8,6 +8,7 @@ import type * as ResolverMod from '../resolver.js';
 import type {
   AppServerRuntimeRecord,
   DurableCliRuntimeRecord,
+  JobPhase,
   PersistedLaunchRecord,
   PersistedProgressRecord,
   PersistedStatusRecord,
@@ -31,6 +32,7 @@ import {
   type ProviderServerHandle,
 } from '../engine.js';
 import { type AbortRegistry } from '../abort-registry.js';
+import { eventBus } from '../event-bus.js';
 import { JOBS_DIR, jobResultPath, type ProgressStore } from '../progress-store.js';
 import { createProviderHostManager, type ProviderHostManager } from '../host-manager.js';
 import { SessionManager } from '../session-manager.js';
@@ -332,6 +334,37 @@ async function waitForTerminalEvent(
   }
 
   throw new Error(`Expected terminal event for ${jobId}`);
+}
+
+function createClaimedJob(
+  service: ExecutionService,
+  ctx: CallerContext,
+  options: { initialPhase?: JobPhase } = {},
+): {
+  jobId: string;
+  sessionId: string;
+  progressStore: ProgressStore;
+  sessionManager: SessionManager;
+} {
+  const { progressStore, sessionManager } = getInternals(service);
+  const session = sessionManager.allocate('codex', 'wait-session', 'test-model', ctx.projectRoot, ctx.projectRoot);
+  const jobId = `wait-job-${randomUUID()}`;
+  trackJob(jobId);
+  progressStore.initJob({
+    jobId,
+    sessionId: session.sessionId,
+    provider: 'codex',
+    projectRoot: ctx.projectRoot,
+    backendNamespace: TEST_BACKEND_NAMESPACE,
+    initialPhase: options.initialPhase ?? 'running',
+  });
+  expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
+  return {
+    jobId,
+    sessionId: session.sessionId,
+    progressStore,
+    sessionManager,
+  };
 }
 
 describe('ExecutionService', () => {
@@ -1129,6 +1162,106 @@ describe('ExecutionService', () => {
     }, 10);
 
     await expect(service.awaitLaunch(jobId, 1000)).resolves.toBe('ready');
+  });
+
+  describe('waitForJobTerminal', () => {
+    it('rejects immediately when the job status is missing', async () => {
+      const service = createService(ctx);
+
+      await expect(service.waitForJobTerminal('missing-job', 100)).rejects.toThrow('Job not found: missing-job');
+    });
+
+    it('waits for both terminal status and session claim release', async () => {
+      const service = createService(ctx);
+      const { jobId, sessionId, progressStore, sessionManager } = createClaimedJob(service, ctx);
+
+      let outcome: 'pending' | 'resolved' | 'rejected' = 'pending';
+      const waiter = service.waitForJobTerminal(jobId, 250);
+      void waiter.then(
+        () => {
+          outcome = 'resolved';
+        },
+        () => {
+          outcome = 'rejected';
+        },
+      );
+
+      await Promise.resolve();
+      progressStore.markTerminalStatus(jobId, { content: 'done' }, 'completed');
+      await Promise.resolve();
+      expect(outcome).toBe('pending');
+
+      sessionManager.setConversationRef(sessionId, 'thread-1');
+      await Promise.resolve();
+      expect(outcome).toBe('pending');
+
+      sessionManager.releaseJob(sessionId, jobId);
+      await expect(waiter).resolves.toBeUndefined();
+      expect(outcome).toBe('resolved');
+    });
+
+    it('rechecks persisted state after subscribing so listener-install races cannot miss completion', async () => {
+      const service = createService(ctx);
+      const { jobId, sessionId, progressStore, sessionManager } = createClaimedJob(service, ctx);
+      const originalOn = eventBus.on.bind(eventBus);
+      const originalEmit = eventBus.emit.bind(eventBus);
+      let injected = false;
+      let suppressWakeups = false;
+
+      vi.spyOn(eventBus, 'emit').mockImplementation(((event, payload) => {
+        if (
+          suppressWakeups &&
+          (event === 'job:completed' || event === 'job:phase_changed' || event === 'session:updated')
+        ) {
+          return false;
+        }
+        return originalEmit(event, payload);
+      }) as typeof eventBus.emit);
+
+      vi.spyOn(eventBus, 'on').mockImplementation(((event, listener) => {
+        if (!injected) {
+          injected = true;
+          suppressWakeups = true;
+          progressStore.markTerminalStatus(jobId, { content: 'done' }, 'completed');
+          sessionManager.releaseJob(sessionId, jobId);
+          suppressWakeups = false;
+        }
+        return originalOn(event, listener);
+      }) as typeof eventBus.on);
+
+      await expect(service.waitForJobTerminal(jobId, 200)).resolves.toBeUndefined();
+      expect(injected).toBe(true);
+    });
+
+    it('uses the default 30 second timeout when none is provided', async () => {
+      vi.useFakeTimers();
+      try {
+        const service = createService(ctx);
+        const { jobId } = createClaimedJob(service, ctx);
+        let outcome: 'pending' | 'resolved' | 'rejected' = 'pending';
+        const waiter = service.waitForJobTerminal(jobId);
+        void waiter.then(
+          () => {
+            outcome = 'resolved';
+          },
+          () => {
+            outcome = 'rejected';
+          },
+        );
+
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(29_999);
+        expect(outcome).toBe('pending');
+
+        await vi.advanceTimersByTimeAsync(1);
+        await expect(waiter).rejects.toThrow(
+          `Timed out waiting for job ${jobId} to reach a terminal state and release its session`,
+        );
+        expect(outcome).toBe('rejected');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it('coralDispatch resolves coral content and injects a system instruction', async () => {

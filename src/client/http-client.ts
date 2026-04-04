@@ -18,6 +18,7 @@ import type {
 import { isRecord } from '../shared/mcp-utils.js';
 import { describeHttpError, HEALTH_TIMEOUT_MS, parseJsonResponse, TOOL_TIMEOUT_MS } from '../shared/sse-parser.js';
 import { isBackendHealth, type BackendHealth } from './backend-health.js';
+import type { ToolDomainResult } from '../execution/tool-response.js';
 
 interface ProviderToolOptions {
   context?: CallerContext;
@@ -94,14 +95,14 @@ export class BackendClient {
   /**
    * Starts a new Codex execution.
    */
-  async exec(prompt: string, options: ProviderToolOptions = {}): Promise<unknown> {
+  async exec(prompt: string, options: ProviderToolOptions = {}): Promise<ToolDomainResult> {
     return this.providerExec('codex', prompt, options);
   }
 
   /**
    * Resumes an existing Codex session.
    */
-  async resume(session: string, prompt: string, options: ProviderToolOptions = {}): Promise<unknown> {
+  async resume(session: string, prompt: string, options: ProviderToolOptions = {}): Promise<ToolDomainResult> {
     const { context, ...args } = options;
     return this.proxyToolCall('codex', { op: 'resume', session, prompt, ...args }, this.resolveContext(context));
   }
@@ -109,27 +110,27 @@ export class BackendClient {
   /**
    * Forks a Codex session, optionally with a follow-up prompt.
    */
-  async fork(source: string, prompt?: string, options: ProviderToolOptions = {}): Promise<unknown> {
+  async fork(source: string, prompt?: string, options: ProviderToolOptions = {}): Promise<ToolDomainResult> {
     return this.providerFork('codex', source, prompt, options);
   }
 
   /**
    * Aborts a single backend job.
    */
-  async abort(jobId: string, context?: CallerContext): Promise<unknown> {
+  async abort(jobId: string, context?: CallerContext): Promise<ToolDomainResult> {
     return this.abortJobs([jobId], context);
   }
 
   /**
    * Executes a workflow expression through the backend workflow tool.
    */
-  async workflow(expression: string, options: WorkflowOptions): Promise<unknown>;
-  async workflow(expression: string, context: CallerContext, options: WorkflowOptions): Promise<unknown>;
+  async workflow(expression: string, options: WorkflowOptions): Promise<ToolDomainResult>;
+  async workflow(expression: string, context: CallerContext, options: WorkflowOptions): Promise<ToolDomainResult>;
   async workflow(
     expression: string,
     contextOrOptions: CallerContext | WorkflowOptions,
     maybeOptions?: WorkflowOptions,
-  ): Promise<unknown> {
+  ): Promise<ToolDomainResult> {
     const callerContext = isCallerContext(contextOrOptions) ? contextOrOptions : undefined;
     const options = callerContext ? maybeOptions : contextOrOptions;
 
@@ -138,7 +139,7 @@ export class BackendClient {
     return this.proxyToolCall('workflow', { expression, ...options }, this.resolveContext(callerContext));
   }
 
-  async providerExec(provider: string, prompt: string, options: ProviderExecOptions = {}): Promise<unknown> {
+  async providerExec(provider: string, prompt: string, options: ProviderExecOptions = {}): Promise<ToolDomainResult> {
     const { context, ...args } = options;
     return this.proxyToolCall(provider, { op: 'exec', prompt, ...args }, this.resolveContext(context));
   }
@@ -148,7 +149,7 @@ export class BackendClient {
     session: string,
     prompt?: string,
     options: ProviderToolOptions = {},
-  ): Promise<unknown> {
+  ): Promise<ToolDomainResult> {
     const { context, ...args } = options;
     const request: Record<string, unknown> = { op: 'fork', session, ...args };
 
@@ -159,7 +160,7 @@ export class BackendClient {
     return this.proxyToolCall(provider, request, this.resolveContext(context));
   }
 
-  async providerList(provider: string, context?: CallerContext): Promise<unknown> {
+  async providerList(provider: string, context?: CallerContext): Promise<ToolDomainResult> {
     return this.proxyToolCall(provider, { op: 'list' }, this.resolveContext(context));
   }
 
@@ -168,7 +169,7 @@ export class BackendClient {
     agentName: string,
     prompt: string,
     options: ProviderCoralDispatchOptions = {},
-  ): Promise<unknown> {
+  ): Promise<ToolDomainResult> {
     const { context, ...args } = options;
     return this.proxyToolCall(provider, { op: `coral:${agentName}`, prompt, ...args }, this.resolveContext(context));
   }
@@ -181,7 +182,7 @@ export class BackendClient {
       demographics?: { origin_weights: Record<string, number>; outlier_ratio?: number };
     },
     context?: CallerContext,
-  ): Promise<unknown> {
+  ): Promise<ToolDomainResult> {
     return this.proxyToolCall('discuss_seed', args, this.resolveContext(context));
   }
 
@@ -198,11 +199,11 @@ export class BackendClient {
       config?: { min_bid_delay_ms?: number };
     },
     context?: CallerContext,
-  ): Promise<unknown> {
+  ): Promise<ToolDomainResult> {
     return this.proxyToolCall('discuss_start', args, this.resolveContext(context));
   }
 
-  async discussWatch(session: string, cursor?: number, context?: CallerContext): Promise<unknown> {
+  async discussWatch(session: string, cursor?: number, context?: CallerContext): Promise<ToolDomainResult> {
     return this.proxyToolCall('discuss_watch', { session, cursor }, this.resolveContext(context));
   }
 
@@ -215,71 +216,71 @@ export class BackendClient {
       content?: string;
     },
     context?: CallerContext,
-  ): Promise<unknown> {
+  ): Promise<ToolDomainResult> {
     return this.proxyToolCall('discuss_participate', args, this.resolveContext(context));
   }
 
-  async discussAbort(session: string, context?: CallerContext): Promise<unknown> {
+  async discussAbort(session: string, context?: CallerContext): Promise<ToolDomainResult> {
     return this.proxyToolCall('discuss_abort', { session }, this.resolveContext(context));
   }
 
-  async abortJobs(jobIds: string[], context?: CallerContext): Promise<unknown> {
+  async abortJobs(jobIds: string[], context?: CallerContext): Promise<ToolDomainResult> {
     return this.proxyToolCall('abort', { jobs: jobIds }, this.resolveContext(context));
   }
 
-  async kbSearch(args: KbSearchInput, context?: CallerContext): Promise<unknown> {
+  async kbSearch(args: KbSearchInput, context?: CallerContext): Promise<ToolDomainResult> {
     return this.proxyToolCall('kb_search', args, this.resolveContext(context));
   }
 
-  async kbPrinciples(args: KbPrinciplesInput, context?: CallerContext): Promise<unknown> {
+  async kbPrinciples(args: KbPrinciplesInput, context?: CallerContext): Promise<ToolDomainResult> {
     return this.proxyToolCall('kb_principles', args, this.resolveContext(context));
   }
 
-  async kbRead(args: KbReadInput, context?: CallerContext): Promise<unknown> {
+  async kbRead(args: KbReadInput, context?: CallerContext): Promise<ToolDomainResult> {
     return this.proxyToolCall('kb_read', args, this.resolveContext(context));
   }
 
-  async kbPromote(args: KbPromoteInput, context?: CallerContext): Promise<unknown> {
+  async kbPromote(args: KbPromoteInput, context?: CallerContext): Promise<ToolDomainResult> {
     return this.proxyToolCall('kb_promote', args, this.resolveContext(context));
   }
 
-  async kbUpdate(args: KbUpdateInput, context?: CallerContext): Promise<unknown> {
+  async kbUpdate(args: KbUpdateInput, context?: CallerContext): Promise<ToolDomainResult> {
     return this.proxyToolCall('kb_update', args, this.resolveContext(context));
   }
 
-  async kbDelete(args: KbDeleteInput, context?: CallerContext): Promise<unknown> {
+  async kbDelete(args: KbDeleteInput, context?: CallerContext): Promise<ToolDomainResult> {
     return this.proxyToolCall('kb_delete', args, this.resolveContext(context));
   }
 
-  async kbSourceImport(args: KbSourcePersistInput, context?: CallerContext): Promise<unknown> {
+  async kbSourceImport(args: KbSourcePersistInput, context?: CallerContext): Promise<ToolDomainResult> {
     return this.proxyToolCall('kb_source_import', args, this.resolveContext(context));
   }
 
-  async kbSourceList(context?: CallerContext): Promise<unknown> {
+  async kbSourceList(context?: CallerContext): Promise<ToolDomainResult> {
     return this.proxyToolCall('kb_source_list', {}, this.resolveContext(context));
   }
 
-  async kbSourceDelete(args: KbSourceDeleteInput, context?: CallerContext): Promise<unknown> {
+  async kbSourceDelete(args: KbSourceDeleteInput, context?: CallerContext): Promise<ToolDomainResult> {
     return this.proxyToolCall('kb_source_delete', args, this.resolveContext(context));
   }
 
-  async kbMemo(args: KbMemoInput, context?: CallerContext): Promise<unknown> {
+  async kbMemo(args: KbMemoInput, context?: CallerContext): Promise<ToolDomainResult> {
     return this.proxyToolCall('kb_memo', args, this.resolveContext(context));
   }
 
-  async kbMemoList(args: KbMemoListInput, context?: CallerContext): Promise<unknown> {
+  async kbMemoList(args: KbMemoListInput, context?: CallerContext): Promise<ToolDomainResult> {
     return this.proxyToolCall('kb_memo_list', args, this.resolveContext(context));
   }
 
-  async kbMemoDelete(args: KbMemoDeleteInput, context?: CallerContext): Promise<unknown> {
+  async kbMemoDelete(args: KbMemoDeleteInput, context?: CallerContext): Promise<ToolDomainResult> {
     return this.proxyToolCall('kb_memo_delete', args, this.resolveContext(context));
   }
 
-  async kbMemoPurge(args: KbMemoPurgeInput, context?: CallerContext): Promise<unknown> {
+  async kbMemoPurge(args: KbMemoPurgeInput, context?: CallerContext): Promise<ToolDomainResult> {
     return this.proxyToolCall('kb_memo_purge', args, this.resolveContext(context));
   }
 
-  async kbReindex(args: KbReindexInput, context?: CallerContext): Promise<unknown> {
+  async kbReindex(args: KbReindexInput, context?: CallerContext): Promise<ToolDomainResult> {
     return this.proxyToolCall('kb_reindex', args, this.resolveContext(context));
   }
 
@@ -367,7 +368,7 @@ export class BackendClient {
     return this.ensureBackendHandle(pluginRoot);
   }
 
-  private async proxyToolCall(name: string, args: Record<string, unknown>, ctx: CallerContext): Promise<unknown> {
+  private async proxyToolCall(name: string, args: Record<string, unknown>, ctx: CallerContext): Promise<ToolDomainResult> {
     const { port, host, token } = await this.resolveBackendHandle(ctx);
     const body = JSON.stringify({
       name,
@@ -401,7 +402,7 @@ export class BackendClient {
           );
         }
 
-        return responseBody;
+        return responseBody as ToolDomainResult;
       });
     } catch (error) {
       if (error instanceof Error) throw error;

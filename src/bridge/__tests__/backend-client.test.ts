@@ -444,14 +444,14 @@ describe('bridge backend-client', () => {
         instanceId: info.instanceId,
         namespace: info.namespace,
       })))
-      .mockResolvedValueOnce(jsonResponse({ status: 'running', job: 'job-1', session: 'session-1' }));
+      .mockResolvedValueOnce(jsonResponse({ ok: true, data: { status: 'running', job: 'job-1', session: 'session-1' } }));
 
     const result = await client.proxyToolCall('codex', { op: 'exec', prompt: 'hello' }, {
       projectRoot: '/tmp/project',
       pluginRoot: actualPluginRoot(),
     });
 
-    expect(result).toEqual({ status: 'running', job: 'job-1', session: 'session-1' });
+    expect(result).toEqual({ ok: true, data: { status: 'running', job: 'job-1', session: 'session-1' } });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const toolCall = fetchMock.mock.calls[1];
     const toolCallInit = toolCall?.[1];
@@ -473,6 +473,26 @@ describe('bridge backend-client', () => {
     const parsedBody = JSON.parse(String(toolCallInit?.body));
     expect(typeof parsedBody.context).toBe('object');
     expect(parsedBody.context.coralEnv).toBeDefined();
+  });
+
+  it('proxyToolCall preserves domain errors and only throws on transport failures', async () => {
+    const client = await loadBackendClientModule();
+    const info = makeInfo();
+
+    readBackendInfoMock.mockReturnValueOnce(info);
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(makeBackendStatus({
+        version: info.version,
+        bundleHash: info.bundleHash,
+        instanceId: info.instanceId,
+        namespace: info.namespace,
+      })))
+      .mockResolvedValueOnce(jsonResponse({ ok: false, code: 'invalid_request', message: 'Prompt is required' }));
+
+    await expect(client.proxyToolCall('codex', { op: 'exec', prompt: '' }, {
+      projectRoot: '/tmp/project',
+      pluginRoot: actualPluginRoot(),
+    })).resolves.toEqual({ ok: false, code: 'invalid_request', message: 'Prompt is required' });
   });
 
   it('streamWait sends projectRoot and parses SSE progress and terminal events', async () => {

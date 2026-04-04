@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { CallerContext } from '../../execution/service.js';
+import type { CallerContext } from '../../execution/request-context.js';
 import type { TerminalResult, WaitRequest, WaitStreamEvent, WorkflowCheckpoint } from '../../shared/types.js';
 import type { ProgressStore } from '../../execution/progress-store.js';
 import { parseExpression } from '../pipe-parser.js';
+import type { WorkflowExecutionPort } from '../types.js';
 import {
   BOOTSTRAP_TIMEOUT_MS,
   WorkflowExecutionError,
@@ -11,7 +12,6 @@ import {
   launchAtomWithRetry,
   waitForAtoms,
   type LaunchedAtom,
-  type WorkflowExecutionService,
 } from '../pipe-executor.js';
 
 const ctx: CallerContext = {
@@ -52,13 +52,14 @@ async function* emit(events: WaitStreamEvent[]): AsyncGenerator<WaitStreamEvent>
   }
 }
 
-type MockExecutionService = WorkflowExecutionService & {
+type MockExecutionService = WorkflowExecutionPort & {
   coralDispatch: ReturnType<typeof vi.fn>;
   resume: ReturnType<typeof vi.fn>;
   abort: ReturnType<typeof vi.fn>;
   awaitLaunch: ReturnType<typeof vi.fn>;
   waitStream: ReturnType<typeof vi.fn>;
   getConversationRef: ReturnType<typeof vi.fn>;
+  waitForJobTerminal: ReturnType<typeof vi.fn>;
 };
 
 function createExecutionService(overrides: Partial<MockExecutionService> = {}): MockExecutionService {
@@ -69,6 +70,7 @@ function createExecutionService(overrides: Partial<MockExecutionService> = {}): 
     awaitLaunch: vi.fn(async () => 'ready'),
     waitStream: vi.fn((_req: WaitRequest) => emit([])),
     getConversationRef: vi.fn(() => undefined),
+    waitForJobTerminal: vi.fn(async () => {}),
     ...overrides,
   } as MockExecutionService;
 }
@@ -284,7 +286,14 @@ describe('workflow pipe executor', () => {
       );
 
       expect(executionSvc.abort).toHaveBeenCalledWith(['job-codex']);
+      expect(executionSvc.waitForJobTerminal).toHaveBeenCalledWith('job-codex', 30_000);
       expect(executionSvc.resume).toHaveBeenCalledTimes(1);
+      expect(executionSvc.abort.mock.invocationCallOrder[0]).toBeLessThan(
+        executionSvc.waitForJobTerminal.mock.invocationCallOrder[0],
+      );
+      expect(executionSvc.waitForJobTerminal.mock.invocationCallOrder[0]).toBeLessThan(
+        executionSvc.resume.mock.invocationCallOrder[0],
+      );
       expect(executionSvc.resume).toHaveBeenCalledWith(
         'codex',
         {
@@ -298,6 +307,42 @@ describe('workflow pipe executor', () => {
         ['0:0', 'CODEX DONE'],
         ['0:1', 'CLAUDE DONE'],
       ]);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('fails stale recovery when the aborted job never releases its session claim', async () => {
+    let mockNow = 10_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => {
+      mockNow += 10;
+      return mockNow;
+    });
+
+    const executionSvc = createExecutionService({
+      waitForJobTerminal: vi.fn(async () => {
+        throw new Error('Timed out waiting for job job-1 to reach a terminal state and release its session');
+      }),
+      waitStream: vi.fn((req: WaitRequest) => emit([timeout([...req.jobIds])])),
+    });
+
+    try {
+      await expect(
+        waitForAtoms([launchedAtom()], executionSvc, ctx, {
+          staleTimeoutMs: 1,
+          pollIntervalMs: 1,
+          onProgress: vi.fn(),
+        }),
+      ).rejects.toMatchObject({
+        message:
+          "Step 0, atom 'architect' stale recovery abort failed: Timed out waiting for job job-1 to reach a terminal state and release its session",
+        aborted: false,
+        stepDetails: [],
+      });
+
+      expect(executionSvc.abort).toHaveBeenCalledWith(['job-1']);
+      expect(executionSvc.waitForJobTerminal).toHaveBeenCalledWith('job-1', 30_000);
+      expect(executionSvc.resume).not.toHaveBeenCalled();
     } finally {
       vi.restoreAllMocks();
     }

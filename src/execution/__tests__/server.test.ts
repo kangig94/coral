@@ -16,6 +16,7 @@ import { decideSessionCreate } from '../../discuss/state-machine.js';
 import { createDiscussContextRegistry, getOrCreate as getOrCreateDiscussContext } from '../discuss/context-registry.js';
 import { DiscussSessionStore } from '../discuss/session-store.js';
 import { JOBS_DIR, ProgressStore, jobResultPath } from '../progress-store.js';
+import { SessionIndex } from '../session-index.js';
 import { SessionManager } from '../session-manager.js';
 import {
   discussEventLogPath,
@@ -25,9 +26,10 @@ import {
   resolveProjectSource,
 } from '../../infra/paths.js';
 import type { BackendServerController } from '../server.js';
-import type { MutableBackendRuntimeState } from '../backend-contracts.js';
+import type { HttpHandlerDeps, MutableBackendRuntimeState } from '../backend-contracts.js';
 import type { LifecycleState } from '../server.js';
 import type { PersistedLaunchRecord } from '../../shared/types.js';
+import { domainSuccess, type ToolDomainResult } from '../tool-response.js';
 
 const testBackendNamespace = pluginRootNamespace(process.cwd());
 const foreignBackendNamespace = 'foreign-namespace-xyz';
@@ -342,12 +344,18 @@ function stubRuntimeRecord(
   });
 }
 
-function parseToolText(body: unknown): unknown {
-  const text = (body as { content: Array<{ text: string }> }).content[0]?.text;
-  if (typeof text !== 'string') {
-    throw new Error('Missing tool text payload');
+function parseToolData(result: ToolDomainResult): unknown {
+  if (!result.ok) {
+    throw new Error(`Unexpected tool error: ${result.code}`);
   }
-  return JSON.parse(text);
+  return result.data;
+}
+
+function parseToolError(result: ToolDomainResult): Exclude<ToolDomainResult, { ok: true }> {
+  if (result.ok) {
+    throw new Error('Unexpected tool success');
+  }
+  return result;
 }
 
 describe('execution backend server', () => {
@@ -851,7 +859,7 @@ describe('execution backend server', () => {
     }
   });
 
-  it('returns 404 for unknown /tool requests', async () => {
+  it('returns 200 domain errors for unknown /tool requests', async () => {
     const backend = await startBackendServer();
 
     const response = await fetch(`${backend.baseUrl}/tool`, {
@@ -867,9 +875,10 @@ describe('execution backend server', () => {
       }),
     });
 
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      error: 'not_found',
+      ok: false,
+      code: 'not_found',
       message: 'Unknown tool: missing-provider',
     });
   });
@@ -891,9 +900,11 @@ describe('execution backend server', () => {
     });
 
     expect(response.status).toBe(200);
-    const body = (await response.json()) as { isError?: boolean };
+    const body = (await response.json()) as ToolDomainResult;
     // Mock KB subsystem has no real runtime, so the handler catches the error
-    expect(body.isError).toBe(true);
+    expect(parseToolError(body)).toMatchObject({
+      code: 'kb_error',
+    });
   });
 
   it('returns verbose kb principles rows with deterministic note order and orphan warnings', async () => {
@@ -961,8 +972,8 @@ describe('execution backend server', () => {
       } as never,
     );
 
-    expect(response.statusCode).toBe(200);
-    expect(parseToolText(response.body)).toEqual({
+    expect(response.ok).toBe(true);
+    expect(parseToolData(response)).toEqual({
       principles: [
         {
           name: 'contract-first-design',
@@ -1002,8 +1013,8 @@ describe('execution backend server', () => {
     });
 
     expect(listResponse.status).toBe(200);
-    const listBody = (await listResponse.json()) as { content: Array<{ text: string }> };
-    expect(JSON.parse(listBody.content[0].text)).toEqual({
+    const listBody = (await listResponse.json()) as ToolDomainResult;
+    expect(parseToolData(listBody)).toEqual({
       memos: [
         { filename: 'b.md', summary: 'Bravo summary', createdAt: expect.any(String) },
         { filename: 'a.md', summary: 'Alpha summary', createdAt: expect.any(String) },
@@ -1024,8 +1035,8 @@ describe('execution backend server', () => {
     });
 
     expect(deleteResponse.status).toBe(200);
-    const deleteBody = (await deleteResponse.json()) as { content: Array<{ text: string }> };
-    expect(JSON.parse(deleteBody.content[0].text)).toEqual({
+    const deleteBody = (await deleteResponse.json()) as ToolDomainResult;
+    expect(parseToolData(deleteBody)).toEqual({
       deleted: ['a.md'],
       count: 1,
     });
@@ -1044,11 +1055,11 @@ describe('execution backend server', () => {
     });
 
     expect(purgeResponse.status).toBe(200);
-    const purgeBody = (await purgeResponse.json()) as { content: Array<{ text: string }> };
-    expect(JSON.parse(purgeBody.content[0].text)).toEqual({ deleted: 1 });
+    const purgeBody = (await purgeResponse.json()) as ToolDomainResult;
+    expect(parseToolData(purgeBody)).toEqual({ deleted: 1 });
   });
 
-  it('returns 400 use_sse for wait tool calls sent to /tool', async () => {
+  it('returns 200 use_sse domain errors for wait tool calls sent to /tool', async () => {
     const backend = await startBackendServer();
 
     const response = await fetch(`${backend.baseUrl}/tool`, {
@@ -1064,9 +1075,10 @@ describe('execution backend server', () => {
       }),
     });
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      error: 'use_sse',
+      ok: false,
+      code: 'use_sse',
       message: 'Use POST /wait/stream for wait operations',
     });
   });
@@ -1088,10 +1100,10 @@ describe('execution backend server', () => {
     });
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ aborted: [], notFound: ['job-1'] });
+    expect(await response.json()).toEqual({ ok: true, data: { aborted: [], notFound: ['job-1'] } });
   });
 
-  it('returns 403 for abort tool calls that include cross-project jobs', async () => {
+  it('returns 200 scope_mismatch domain errors for abort tool calls that include cross-project jobs', async () => {
     const fakeService = createFakeExecutionService();
     const progressStore = new ProgressStore();
     createdJobIds.add('job-1');
@@ -1142,10 +1154,12 @@ describe('execution backend server', () => {
       }),
     });
 
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      error: 'scope_mismatch',
-      jobs: ['job-foreign'],
+      ok: false,
+      code: 'scope_mismatch',
+      message: 'Jobs do not belong to this project',
+      detail: { jobs: ['job-foreign'] },
     });
     expect(fakeService.abort).not.toHaveBeenCalled();
   });
@@ -1171,9 +1185,12 @@ describe('execution backend server', () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      status: 'running',
-      job: 'workflow-job',
-      session: 'workflow-session',
+      ok: true,
+      data: {
+        status: 'running',
+        job: 'workflow-job',
+        session: 'workflow-session',
+      },
     });
     expect(fakeService.executeWorkflow).toHaveBeenCalledTimes(1);
   });
@@ -1201,9 +1218,12 @@ describe('execution backend server', () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      status: 'running',
-      job: 'bypass-job',
-      session: 'bypass-session',
+      ok: true,
+      data: {
+        status: 'running',
+        job: 'bypass-job',
+        session: 'bypass-session',
+      },
     });
     expect(fakeService.start).toHaveBeenCalledWith(
       'codex',
@@ -2576,6 +2596,63 @@ describe('execution backend server', () => {
   });
 
   describe('launch fence', () => {
+    async function startFencedToolServer(routeToolCall = vi.fn(async () => domainSuccess({ allowed: true }))) {
+      const { createHttpHandler } = await import('../http-handler.js');
+      const { runtimeState } = createRuntimeStateMock();
+      runtimeState.setLifecycle('running');
+      runtimeState.setLaunchFenceActive(true);
+
+      const deps: HttpHandlerDeps = {
+        identity: {
+          pluginRoot: '/tmp/plugin',
+          namespace: testBackendNamespace,
+          version: '9.9.9',
+          bundleHash: 'testhash1234',
+          instanceId: 'execution-backend-instance-1',
+          token: 'test-token',
+          now: () => Date.now(),
+          log: () => {},
+        },
+        runtimeState,
+        idleTimer: createFakeIdleTimer() as never,
+        progressStore: new ProgressStore(),
+        sessionIndex: new SessionIndex(),
+        activeChildren: new Set(),
+        activeDurablePids: new Set(),
+        queueDepth: () => 0,
+        streamResponses: new Set(),
+        isDrainRequested: () => false,
+        requestDrain: () => {},
+        getExecutionService: () => createFakeExecutionService() as never,
+        getDiscussContext: () => ({}) as never,
+        abortJobs: () => ({ aborted: [], notFound: [] }),
+        scopeCheckJobs: () => ({ valid: [], missing: [], mismatch: [] }),
+        routeToolCall,
+        getToolDescriptors: () => [],
+        subscribeBackendEvents: () => {},
+        unsubscribeBackendEvents: () => {},
+        liveDiscussCount: () => 0,
+        listDiscussSessions: () => [],
+        loadDiscussDetail: () => null,
+      };
+
+      const server = createServer((req, res) => {
+        void createHttpHandler(deps)(req, res);
+      });
+
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('Expected listening address');
+      }
+
+      return {
+        server,
+        routeToolCall,
+        baseUrl: `http://127.0.0.1:${address.port}`,
+      };
+    }
+
     it('allows launch ops after fence lifts on startup completion', async () => {
       // Seed a recoverable queued job so the recovery scan activates the fence
       const progressStore = new ProgressStore();
@@ -2622,9 +2699,79 @@ describe('execution backend server', () => {
       });
 
       expect(response.status).toBe(200);
-      const body = (await response.json()) as Record<string, unknown>;
-      expect(body).toMatchObject({ status: 'running' });
+      const body = (await response.json()) as ToolDomainResult;
+      expect(parseToolData(body)).toMatchObject({ status: 'running' });
       expect(fakeService.start).toHaveBeenCalled();
+    });
+
+    it.each([
+      {
+        name: 'direct provider exec',
+        request: { name: 'codex', args: { op: 'exec', prompt: 'hello' } },
+      },
+      {
+        name: 'coral dispatch',
+        request: { name: 'codex', args: { op: 'coral:architect', prompt: 'hello' } },
+      },
+      {
+        name: 'workflow',
+        request: { name: 'workflow', args: { expression: 'architect', init_prompt: 'hello' } },
+      },
+    ])('returns a domain error while the launch fence is active for $name', async ({ request }) => {
+      const fenced = await startFencedToolServer();
+
+      try {
+        const response = await fetch(`${fenced.baseUrl}/tool`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: JSON.stringify({
+            ...request,
+            context: { projectRoot: '/tmp/project', coralEnv: {} },
+          }),
+        });
+
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({
+          ok: false,
+          code: 'backend_recovering',
+          message: 'recovering — retry after 500ms',
+        });
+        expect(fenced.routeToolCall).not.toHaveBeenCalled();
+      } finally {
+        await new Promise<void>((resolve, reject) => fenced.server.close((error) => (error ? reject(error) : resolve())));
+      }
+    });
+
+    it('allows non-work-admitting tool calls to pass through while the launch fence is active', async () => {
+      const routeToolCall = vi.fn(async () => domainSuccess({ sessions: [] }));
+      const fenced = await startFencedToolServer(routeToolCall);
+
+      try {
+        const response = await fetch(`${fenced.baseUrl}/tool`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: JSON.stringify({
+            name: 'codex',
+            args: { op: 'list' },
+            context: { projectRoot: '/tmp/project', coralEnv: {} },
+          }),
+        });
+
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({
+          ok: true,
+          data: { sessions: [] },
+        });
+        expect(routeToolCall).toHaveBeenCalledTimes(1);
+      } finally {
+        await new Promise<void>((resolve, reject) => fenced.server.close((error) => (error ? reject(error) : resolve())));
+      }
     });
   });
 

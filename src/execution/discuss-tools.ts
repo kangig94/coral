@@ -5,8 +5,7 @@ import { discussParticipateSchema, discussSeedSchema, discussStartSchema } from 
 import { DiscussManagerError, type DiscussContext } from './discuss/context.js';
 import * as discussOperations from './discuss/operations.js';
 import { seedPersonas } from '../discuss/persona-seed.js';
-import { jsonTextResult, toolError, toolSuccess } from './tool-response.js';
-import type { ToolRouteResponse } from './tool-router.js';
+import { deriveLegacyErrorMessage, domainError, domainSuccess, type ToolDomainResult } from './tool-response.js';
 import type { CallerContext, ToolRequest } from './request-context.js';
 
 const discussSessionSchema = z.object({
@@ -18,17 +17,16 @@ const discussWatchSchema = z.object({
   cursor: z.number().int().min(0).optional(),
 });
 
-function toolValidationError(error: z.ZodError): ToolRouteResponse {
-  return {
-    statusCode: 200,
-    body: jsonTextResult(
-      {
-        error: 'invalid_request',
-        message: error.message,
-      },
-      true,
-    ),
-  };
+function toolValidationError(error: z.ZodError): ToolDomainResult {
+  return domainError('invalid_request', error.message);
+}
+
+function discussManagerError(error: DiscussManagerError): ToolDomainResult {
+  return domainError(error.code, deriveLegacyErrorMessage(error.code, error.detail), error.detail);
+}
+
+function unexpectedDiscussError(error: unknown): ToolDomainResult {
+  return domainError('discuss_error', error instanceof Error ? error.message : 'unexpected error');
 }
 
 /**
@@ -40,7 +38,7 @@ export async function handleDiscussToolCall(
   helpers: {
     getDiscussContext: (ctx: CallerContext) => DiscussContext;
   },
-): Promise<ToolRouteResponse | null> {
+): Promise<ToolDomainResult | null> {
   if (request.name === 'discuss_seed') {
     const parsed = discussSeedSchema.safeParse(request.args);
     if (!parsed.success) {
@@ -49,9 +47,9 @@ export async function handleDiscussToolCall(
 
     const seeded = seedPersonas(parsed.data);
     if (!seeded.ok) {
-      return toolError(seeded.error, seeded.detail);
+      return domainError(seeded.error, deriveLegacyErrorMessage(seeded.error, seeded.detail), seeded.detail);
     }
-    return toolSuccess(seeded.value);
+    return domainSuccess(seeded.value);
   }
 
   if (request.name === 'discuss_start') {
@@ -70,11 +68,9 @@ export async function handleDiscussToolCall(
         parsed.data.config ?? {},
         request.context,
       );
-      return toolSuccess({ session: sessionId });
+      return domainSuccess({ session: sessionId });
     } catch (error: unknown) {
-      return toolError('start_failed', {
-        message: errorMessage(error),
-      });
+      return domainError('start_failed', errorMessage(error));
     }
   }
 
@@ -86,12 +82,12 @@ export async function handleDiscussToolCall(
 
     try {
       await discussOperations.abortDiscussSession(helpers.getDiscussContext(request.context), parsed.data.session);
-      return toolSuccess({ ok: true, session: parsed.data.session });
+      return domainSuccess({ ok: true, session: parsed.data.session });
     } catch (error: unknown) {
       if (error instanceof DiscussManagerError) {
-        return toolError(error.code, error.detail);
+        return discussManagerError(error);
       }
-      throw error;
+      return unexpectedDiscussError(error);
     }
   }
 
@@ -102,7 +98,7 @@ export async function handleDiscussToolCall(
     }
 
     try {
-      return toolSuccess(
+      return domainSuccess(
         discussOperations.getWatchState(
           helpers.getDiscussContext(request.context),
           parsed.data.session,
@@ -111,9 +107,9 @@ export async function handleDiscussToolCall(
       );
     } catch (error: unknown) {
       if (error instanceof DiscussManagerError) {
-        return toolError(error.code, error.detail);
+        return discussManagerError(error);
       }
-      throw error;
+      return unexpectedDiscussError(error);
     }
   }
 
@@ -125,7 +121,7 @@ export async function handleDiscussToolCall(
 
     try {
       if (typeof parsed.data.content === 'string') {
-        return toolSuccess(
+        return domainSuccess(
           await discussOperations.submitManualSpeech(
             helpers.getDiscussContext(request.context),
             parsed.data.session,
@@ -136,7 +132,7 @@ export async function handleDiscussToolCall(
         );
       }
 
-      return toolSuccess(
+      return domainSuccess(
         await discussOperations.submitManualBid(
           helpers.getDiscussContext(request.context),
           parsed.data.session,
@@ -148,9 +144,9 @@ export async function handleDiscussToolCall(
       );
     } catch (error: unknown) {
       if (error instanceof DiscussManagerError) {
-        return toolError(error.code, error.detail);
+        return discussManagerError(error);
       }
-      throw error;
+      return unexpectedDiscussError(error);
     }
   }
 

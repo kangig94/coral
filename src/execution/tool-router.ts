@@ -1,8 +1,7 @@
-import { type z } from 'zod';
-import { assertOwnerId } from '../shared/mcp-utils.js';
-import { optionalString, requireString } from './tool-response.js';
+import { requireString } from './tool-response.js';
 import type * as EngineMod from './engine.js';
 import {
+  coralAgentOpSchema,
   internalProviderFieldsShape,
   sharedExecSchema,
   sharedForkSchema,
@@ -19,16 +18,17 @@ import type { KbRuntime } from '../kb/runtime.js';
 import type { CallerContext, ToolRequest } from './request-context.js';
 import { handleKbToolCall } from './kb-tools.js';
 import { handleDiscussToolCall } from './discuss-tools.js';
+import {
+  domainError,
+  domainSuccess,
+  launchDecisionToDomain,
+  type ToolDomainResult,
+} from './tool-response.js';
 
 export type ExecutionServiceLike = Pick<
   ExecutionService,
   'start' | 'resume' | 'fork' | 'coralDispatch' | 'executeWorkflow' | 'list' | 'abort' | 'waitStream' | 'waitStreamOnce'
 >;
-
-export type ToolRouteResponse = {
-  statusCode: number;
-  body: unknown;
-};
 
 export type ScopeCheckResult = {
   valid: string[];
@@ -45,7 +45,7 @@ export type RouteToolCallFn = (
     scopeCheckJobs: (jobIds: string[], projectRoot: string) => ScopeCheckResult;
   },
   kbSubsystem: KbSubsystem | null,
-) => Promise<ToolRouteResponse>;
+) => Promise<ToolDomainResult>;
 
 export type KbSubsystem = {
   kb: KbRuntime;
@@ -80,14 +80,46 @@ function toProviderFields(
   };
 }
 
-function parseOptionalOwner(args: Record<string, unknown>, key: string): string | undefined {
-  const raw = optionalString(args, key);
-  if (raw === undefined) return undefined;
-  return assertOwnerId(raw, key);
-}
-
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string' && item.length > 0);
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.length > 0) {
+    return error.message;
+  }
+
+  return fallback;
+}
+
+function invalidRequest(message: string, detail?: unknown): ToolDomainResult {
+  return domainError('invalid_request', message, detail);
+}
+
+function invalidRequestFromSchema(message: string): ToolDomainResult {
+  return invalidRequest(message);
+}
+
+function isCoralTargetError(error: unknown): error is Error {
+  if (!(error instanceof Error)) return false;
+  return (
+    error.message.startsWith('Invalid coral target name:') ||
+    error.message.startsWith('Coral content not found:') ||
+    error.message === 'Invalid coral path'
+  );
+}
+
+export function isWorkAdmittingToolRequest(request: ToolRequest): boolean {
+  if (request.name === 'workflow') {
+    return true;
+  }
+
+  const op = typeof request.args.op === 'string' ? request.args.op : null;
+  if (op === null) {
+    return false;
+  }
+
+  return op === 'exec' || op === 'resume' || op === 'fork' || op === 'bypass_exec' || op.startsWith(CORAL_OP_PREFIX);
 }
 
 export function getToolDescriptors(): Array<Record<string, unknown>> {
@@ -268,130 +300,131 @@ export async function routeToolCall(
     scopeCheckJobs: (jobIds: string[], projectRoot: string) => ScopeCheckResult;
   },
   kbSubsystem: KbSubsystem | null = null,
-): Promise<ToolRouteResponse> {
+): Promise<ToolDomainResult> {
   registerBuiltInProviders();
 
-  if (request.name === 'abort') {
-    if (!isStringArray(request.args.jobs)) {
-      return { statusCode: 400, body: { error: 'invalid_request' } };
-    }
-    const scopeCheck = helpers.scopeCheckJobs(request.args.jobs, request.context.projectRoot);
-    if (scopeCheck.mismatch.length > 0) {
-      return { statusCode: 403, body: { error: 'scope_mismatch', jobs: scopeCheck.mismatch } };
-    }
-    return { statusCode: 200, body: helpers.abortJobs(scopeCheck.valid) };
-  }
-
-  if (request.name === 'wait') {
-    return {
-      statusCode: 400,
-      body: { error: 'use_sse', message: 'Use POST /wait/stream for wait operations' },
-    };
-  }
-
-  if (request.name === 'workflow') {
-    const svc = helpers.getExecutionService(request.context);
-    const decision = await handleWorkflow(request.args, svc, request.context);
-    return { statusCode: 200, body: decision };
-  }
-
-  const discussResult = await handleDiscussToolCall(request, helpers);
-  if (discussResult !== null) {
-    return discussResult;
-  }
-
-  if (request.name.startsWith('kb_') && kbSubsystem) {
-    return handleKbToolCall(request, kbSubsystem);
-  }
-
-  if (!getNewProvider(request.name)) {
-    return {
-      statusCode: 404,
-      body: { error: 'not_found', message: `Unknown tool: ${request.name}` },
-    };
-  }
-
-  const service = helpers.getExecutionService(request.context);
-  const op = requireString(request.args, 'op');
-  if (!op) {
-    return { statusCode: 400, body: { error: 'invalid_request' } };
-  }
-
-  const sessionId = optionalString(request.args, 'session');
-  const prompt = optionalString(request.args, 'prompt');
-  const defaultCwd = request.context.projectRoot;
-  const cwd = optionalString(request.args, 'work_dir');
-
-  if (op === 'list') {
-    return { statusCode: 200, body: service.list(request.name) };
-  }
-
-  if (op === 'fork') {
-    const parsed = sharedForkSchema.extend(internalProviderFieldsShape).safeParse(request.args);
-    if (!parsed.success) return { statusCode: 400, body: { error: 'invalid_request' } };
-    return {
-      statusCode: 200,
-      body: await service.fork(request.name, toProviderFields(parsed.data, true), request.context),
-    };
-  }
-
-  if (op === 'resume') {
-    const parsed = sharedResumeSchema.extend(internalProviderFieldsShape).safeParse(request.args);
-    if (!parsed.success) return { statusCode: 400, body: { error: 'invalid_request' } };
-    return {
-      statusCode: 200,
-      body: await service.resume(request.name, toProviderFields(parsed.data, true), request.context),
-    };
-  }
-
-  if (op === 'exec' || op === 'bypass_exec') {
-    const parsed = sharedExecSchema.extend(internalProviderFieldsShape).safeParse(request.args);
-    if (!parsed.success) return { statusCode: 400, body: { error: 'invalid_request' } };
-
-    const bypassPermissions = op === 'bypass_exec';
-
-    if (parsed.data.session) {
-      return {
-        statusCode: 200,
-        body: await service.resume(request.name, toProviderFields(parsed.data, bypassPermissions), request.context),
-      };
+  try {
+    if (request.name === 'abort') {
+      if (!isStringArray(request.args.jobs)) {
+        return invalidRequest('jobs must be string array');
+      }
+      const scopeCheck = helpers.scopeCheckJobs(request.args.jobs, request.context.projectRoot);
+      if (scopeCheck.mismatch.length > 0) {
+        return domainError('scope_mismatch', 'Jobs do not belong to this project', { jobs: scopeCheck.mismatch });
+      }
+      return domainSuccess(helpers.abortJobs(scopeCheck.valid));
     }
 
-    return {
-      statusCode: 200,
-      body: await service.start(
-        request.name,
-        {
-          ...toProviderFields(parsed.data, bypassPermissions),
-          cwd: parsed.data.work_dir ?? defaultCwd,
-        },
-        request.context,
-      ),
-    };
-  }
-
-  if (op.startsWith(CORAL_OP_PREFIX)) {
-    if (typeof prompt !== 'string') {
-      return { statusCode: 400, body: { error: 'invalid_request' } };
+    if (request.name === 'wait') {
+      return domainError('use_sse', 'Use POST /wait/stream for wait operations');
     }
-    const owner = parseOptionalOwner(request.args, 'owner');
-    const effectiveContext = owner
-      ? { ...request.context, coralEnv: { ...request.context.coralEnv, CORAL_OWNER: owner } }
-      : request.context;
-    return {
-      statusCode: 200,
-      body: await service.coralDispatch(
-        request.name,
-        op.slice(CORAL_OP_PREFIX.length),
-        {
-          prompt,
-          sessionId,
-          cwd: sessionId ? cwd : (cwd ?? defaultCwd),
-        },
-        effectiveContext,
-      ),
-    };
-  }
 
-  return { statusCode: 400, body: { error: 'invalid_request' } };
+    if (request.name === 'workflow') {
+      const svc = helpers.getExecutionService(request.context);
+      try {
+        const decision = await handleWorkflow(request.args, svc, request.context);
+        return launchDecisionToDomain(decision);
+      } catch (error: unknown) {
+        return invalidRequest(errorMessage(error, 'Invalid workflow request'));
+      }
+    }
+
+    const discussResult = await handleDiscussToolCall(request, helpers);
+    if (discussResult !== null) {
+      return discussResult;
+    }
+
+    if (request.name.startsWith('kb_') && kbSubsystem) {
+      return handleKbToolCall(request, kbSubsystem);
+    }
+
+    if (!getNewProvider(request.name)) {
+      return domainError('not_found', `Unknown tool: ${request.name}`);
+    }
+
+    const service = helpers.getExecutionService(request.context);
+    const op = requireString(request.args, 'op');
+    if (!op) {
+      return invalidRequest('op is required');
+    }
+
+    const defaultCwd = request.context.projectRoot;
+
+    if (op === 'list') {
+      return domainSuccess(service.list(request.name));
+    }
+
+    if (op === 'fork') {
+      const parsed = sharedForkSchema.extend(internalProviderFieldsShape).safeParse(request.args);
+      if (!parsed.success) return invalidRequestFromSchema(parsed.error.message);
+      return launchDecisionToDomain(await service.fork(request.name, toProviderFields(parsed.data, true), request.context));
+    }
+
+    if (op === 'resume') {
+      const parsed = sharedResumeSchema.extend(internalProviderFieldsShape).safeParse(request.args);
+      if (!parsed.success) return invalidRequestFromSchema(parsed.error.message);
+      return launchDecisionToDomain(
+        await service.resume(request.name, toProviderFields(parsed.data, true), request.context),
+      );
+    }
+
+    if (op === 'exec' || op === 'bypass_exec') {
+      const parsed = sharedExecSchema.extend(internalProviderFieldsShape).safeParse(request.args);
+      if (!parsed.success) return invalidRequestFromSchema(parsed.error.message);
+
+      const bypassPermissions = op === 'bypass_exec';
+
+      if (parsed.data.session) {
+        return launchDecisionToDomain(
+          await service.resume(request.name, toProviderFields(parsed.data, bypassPermissions), request.context),
+        );
+      }
+
+      return launchDecisionToDomain(
+        await service.start(
+          request.name,
+          {
+            ...toProviderFields(parsed.data, bypassPermissions),
+            cwd: parsed.data.work_dir ?? defaultCwd,
+          },
+          request.context,
+        ),
+      );
+    }
+
+    if (op.startsWith(CORAL_OP_PREFIX)) {
+      const parsed = coralAgentOpSchema.safeParse(request.args);
+      if (!parsed.success) {
+        return invalidRequestFromSchema(parsed.error.message);
+      }
+
+      const effectiveContext = parsed.data.owner
+        ? { ...request.context, coralEnv: { ...request.context.coralEnv, CORAL_OWNER: parsed.data.owner } }
+        : request.context;
+
+      try {
+        return launchDecisionToDomain(
+          await service.coralDispatch(
+            request.name,
+            parsed.data.op.slice(CORAL_OP_PREFIX.length),
+            {
+              prompt: parsed.data.prompt,
+              sessionId: parsed.data.session,
+              cwd: parsed.data.session ? parsed.data.work_dir : (parsed.data.work_dir ?? defaultCwd),
+            },
+            effectiveContext,
+          ),
+        );
+      } catch (error: unknown) {
+        if (isCoralTargetError(error)) {
+          return invalidRequest(error.message);
+        }
+        throw error;
+      }
+    }
+
+    return invalidRequest(`Unsupported op: ${op}`);
+  } catch (error: unknown) {
+    return domainError('internal_error', errorMessage(error, 'Internal error'));
+  }
 }

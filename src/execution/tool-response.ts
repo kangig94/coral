@@ -1,28 +1,48 @@
-import { textResult, type McpResult } from '../shared/mcp-utils.js';
-import type { ToolRouteResponse } from './tool-router.js';
+import { isRecord, textResult, type McpResult } from '../shared/mcp-utils.js';
+import type { LaunchDecision } from '../shared/types.js';
 
-export function jsonTextResult(data: unknown, isError = false): McpResult {
-  return textResult(JSON.stringify(data), isError);
+export type ToolDomainResult =
+  | { ok: true; data: unknown }
+  | { ok: false; code: string; message: string; detail?: unknown };
+
+export function domainSuccess(data: unknown): ToolDomainResult {
+  return { ok: true, data };
 }
 
-export function toolError(error: string, detail?: Record<string, unknown>): ToolRouteResponse {
-  return {
-    statusCode: 200,
-    body: jsonTextResult(
-      {
-        error,
-        ...(detail ?? {}),
-      },
-      true,
-    ),
-  };
+export function domainError(code: string, message: string, detail?: unknown): ToolDomainResult {
+  return detail === undefined ? { ok: false, code, message } : { ok: false, code, message, detail };
 }
 
-export function toolSuccess(data: unknown): ToolRouteResponse {
-  return {
-    statusCode: 200,
-    body: jsonTextResult(data),
-  };
+export function deriveLegacyErrorMessage(code: string, detail?: unknown): string {
+  if (typeof detail === 'string' && detail.length > 0) {
+    return detail;
+  }
+
+  if (detail instanceof Error && detail.message.length > 0) {
+    return detail.message;
+  }
+
+  if (isRecord(detail) && typeof detail.message === 'string' && detail.message.length > 0) {
+    return detail.message;
+  }
+
+  return code.replaceAll('_', ' ');
+}
+
+export function launchDecisionToDomain(decision: LaunchDecision): ToolDomainResult {
+  if (decision.status === 'rejected') {
+    return domainError(decision.code, decision.message);
+  }
+
+  return domainSuccess(decision);
+}
+
+export function domainToMcp(result: ToolDomainResult): McpResult {
+  return result.ok ? textResult(JSON.stringify(result.data)) : textResult(JSON.stringify(result), true);
+}
+
+export function domainToHttp(result: ToolDomainResult): { statusCode: number; body: unknown } {
+  return { statusCode: 200, body: result };
 }
 
 export function requireString(args: Record<string, unknown>, key: string): string | null {

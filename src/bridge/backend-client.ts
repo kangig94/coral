@@ -15,6 +15,7 @@ import {
   WAIT_FETCH_MARGIN_MS,
 } from '../shared/sse-parser.js';
 import type { WaitStreamEvent } from '../shared/types.js';
+import type { ToolDomainResult } from '../execution/tool-response.js';
 
 export { ensureBackend } from '../client/backend-lifecycle.js';
 
@@ -126,7 +127,7 @@ export async function proxyToolCall(
   name: string,
   args: Record<string, unknown>,
   ctx: { projectRoot: string; pluginRoot: string },
-): Promise<unknown> {
+): Promise<ToolDomainResult> {
   const { port, host, token } = await ensureBackend(ctx.pluginRoot);
   const coralEnv = collectCoralEnv();
   const body = JSON.stringify({
@@ -155,7 +156,7 @@ export async function proxyToolCall(
         throw new Error(describeHttpError(response.status, response.statusText));
       }
 
-      return parseJsonResponse(response);
+      return (await parseJsonResponse(response)) as ToolDomainResult;
     });
   } catch (error) {
     if (error instanceof Error) throw error;

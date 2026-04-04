@@ -55,6 +55,7 @@ import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { getAllNewProviders } from '../providers/registry.js';
 import { prepareSourceImport } from '../kb/source-import.js';
 import { assertSourceSlug } from '../kb/validation.js';
+import type { ToolDomainResult } from '../execution/tool-response.js';
 
 /** Return registered provider names. Built-ins are registered on first call. */
 function getProviderNames(): string[] {
@@ -187,7 +188,24 @@ function makeClient(projectRoot: string): BackendClient {
   });
 }
 
+function isToolDomainResult(value: unknown): value is ToolDomainResult {
+  return isJsonObject(value)
+    && typeof value.ok === 'boolean'
+    && (
+      (value.ok === true && 'data' in value)
+      || (
+        value.ok === false
+        && typeof value.code === 'string'
+        && typeof value.message === 'string'
+      )
+    );
+}
+
 function normalizeResult(result: unknown): { output: unknown; isError: boolean } {
+  if (isToolDomainResult(result)) {
+    return result.ok ? { output: result.data, isError: false } : { output: result, isError: true };
+  }
+
   if (
     isJsonObject(result) &&
     typeof result.isError === 'boolean' &&
@@ -204,11 +222,6 @@ function normalizeResult(result: unknown): { output: unknown; isError: boolean }
     }
   }
 
-  if (isJsonObject(result) && result.status === 'rejected') {
-    return { output: result, isError: true };
-  }
-
-  // Non-MCP response shape — treat as success and emit as-is
   return { output: result, isError: false };
 }
 
@@ -243,6 +256,8 @@ export function emitError(error: unknown, outputFormat: 'text' | 'json'): void {
 
   if (error instanceof BackendToolHttpError) {
     process.stderr.write(JSON.stringify({ error: true, statusCode: error.statusCode, body: error.body }) + '\n');
+  } else if (isToolDomainResult(error) && !error.ok) {
+    process.stderr.write(JSON.stringify(error) + '\n');
   } else if (error instanceof Error) {
     process.stderr.write(JSON.stringify({ error: true, message: error.message }) + '\n');
   } else {
@@ -292,15 +307,6 @@ export function emitLaunchDecision(decision: LaunchDecision, outputFormat: 'text
   process.stdout.write(text + '\n');
 }
 
-export function emitRejectedLaunchDecision(
-  decision: Extract<LaunchDecision, { status: 'rejected' }>,
-  outputFormat: 'text' | 'json',
-): void {
-  const text = outputFormat === 'text' ? formatLaunchDecision(decision) : JSON.stringify(decision);
-  process.stderr.write(text + '\n');
-  process.exitCode = 1;
-}
-
 function getTerminalContext(): { isTTY: boolean; columns: number } {
   return {
     isTTY: process.stdout.isTTY === true,
@@ -317,11 +323,7 @@ async function handleLaunchResult(
   const normalized = normalizeResult(result);
 
   if (normalized.isError) {
-    if (isLaunchDecision(normalized.output) && normalized.output.status === 'rejected') {
-      emitRejectedLaunchDecision(normalized.output, outputFormat);
-    } else {
-      emitError(normalized.output, outputFormat);
-    }
+    emitError(normalized.output, outputFormat);
     return;
   }
 

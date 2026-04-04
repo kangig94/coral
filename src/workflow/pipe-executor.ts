@@ -1,10 +1,10 @@
 import { homedir } from 'node:os';
 import { readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { CallerContext, ExecutionService } from '../execution/service.js';
+import type { CallerContext } from '../execution/request-context.js';
 import type { TerminalResult, WaitCursor, WorkflowCheckpoint } from '../shared/types.js';
 import type { ProgressStore } from '../execution/progress-store.js';
-import type { PipeAtom, PipelineAST } from './types.js';
+import type { PipeAtom, PipelineAST, WorkflowExecutionPort } from './types.js';
 import { truncate } from '../shared/format-progress.js';
 import { errorMessage } from '../shared/mcp-utils.js';
 import { backendLog } from '../shared/backend-log.js';
@@ -14,6 +14,7 @@ export const SIBLING_DRAIN_TIMEOUT_MS = 15_000;
 
 const DEFAULT_WAIT_POLL_INTERVAL_MS = 500;
 const MAX_STALE_RECOVERY_RETRIES = 2;
+const STALE_ABORT_TIMEOUT_MS = 30_000;
 const STALE_RESUME_PROMPT = 'Your previous execution timed out due to inactivity. Continue where you left off.';
 
 type WorkflowAtoms = Record<string, { instruction?: string }>;
@@ -41,7 +42,7 @@ type LaunchContext = {
   context?: string;
   workDir?: string;
   defaultProviderName: string;
-  executionSvc: WorkflowExecutionService;
+  executionSvc: WorkflowExecutionPort;
   ctx: CallerContext;
   atoms?: WorkflowAtoms;
   signal?: AbortSignal;
@@ -49,11 +50,6 @@ type LaunchContext = {
   /** Parent workflow job ID — persisted in atom launch records for restart recovery. */
   workflowJobId?: string;
 };
-
-export type WorkflowExecutionService = Pick<
-  ExecutionService,
-  'coralDispatch' | 'resume' | 'abort' | 'awaitLaunch' | 'waitStream' | 'getConversationRef'
->;
 
 export type LaunchedAtom = {
   jobId: string;
@@ -253,7 +249,7 @@ function waitTimeoutSeconds(staleTimeoutMs: number, pollIntervalMs: number): num
 
 async function readLaunchFailureMessage(
   jobId: string,
-  executionSvc: WorkflowExecutionService,
+  executionSvc: WorkflowExecutionPort,
   signal?: AbortSignal,
 ): Promise<string | null> {
   if (signal?.aborted) return 'aborted during bootstrap';
@@ -371,7 +367,7 @@ async function recoverStaleAtom(
   expectedStaleAborts: Set<string>,
   lastActivityAt: Map<string, number>,
   cursor: WaitCursor,
-  executionSvc: WorkflowExecutionService,
+  executionSvc: WorkflowExecutionPort,
   ctx: CallerContext,
   options: {
     signal?: AbortSignal;
@@ -400,6 +396,16 @@ async function recoverStaleAtom(
     expectedStaleAborts.add(atom.jobId);
     options.onProgress(`${atom.stepIndex}-${atom.agent.slice(0, 3)} stale, aborting`);
     executionSvc.abort([atom.jobId]);
+
+    try {
+      await executionSvc.waitForJobTerminal(atom.jobId, STALE_ABORT_TIMEOUT_MS);
+    } catch (error: unknown) {
+      throw createWorkflowExecutionError(
+        `Step ${atom.stepIndex}, atom '${atom.agent}' stale recovery abort failed: ${errorMessage(error)}`,
+        false,
+        options.buildPartialStepDetails(),
+      );
+    }
 
     if (options.signal?.aborted) {
       throw createWorkflowExecutionError(
@@ -461,7 +467,7 @@ async function recoverStaleAtom(
 
 export async function waitForAtoms(
   atoms: LaunchedAtom[],
-  executionSvc: WorkflowExecutionService,
+  executionSvc: WorkflowExecutionPort,
   ctx: CallerContext,
   options: {
     signal?: AbortSignal;
@@ -613,7 +619,7 @@ export async function waitForAtoms(
 
 async function drainLaunchedAtoms(
   launchedAtoms: LaunchedAtom[],
-  executionSvc: WorkflowExecutionService,
+  executionSvc: WorkflowExecutionPort,
   ctx: CallerContext,
   options: {
     signal?: AbortSignal;
@@ -669,7 +675,7 @@ export async function resumePipeline(
   checkpoint: WorkflowCheckpoint,
   ast: PipelineAST,
   defaultProviderName: string,
-  executionSvc: WorkflowExecutionService,
+  executionSvc: WorkflowExecutionPort,
   ctx: CallerContext,
   options: {
     atoms?: WorkflowAtoms;
@@ -947,7 +953,7 @@ export async function executePipeline(
   ast: PipelineAST,
   initialPrompt: string,
   defaultProviderName: string,
-  executionSvc: WorkflowExecutionService,
+  executionSvc: WorkflowExecutionPort,
   ctx: CallerContext,
   options: {
     atoms?: WorkflowAtoms;

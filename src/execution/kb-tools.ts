@@ -10,8 +10,15 @@ import { isNoteEntry, type KbSearchScope } from '../kb/types.js';
 import { update as kbUpdate } from '../kb/update.js';
 import { compareLocale } from '../kb/validation.js';
 import type { ToolRequest } from './request-context.js';
-import { optionalString, requireString, toolError, toolSuccess } from './tool-response.js';
-import type { KbSubsystem, ToolRouteResponse } from './tool-router.js';
+import {
+  deriveLegacyErrorMessage,
+  domainError,
+  domainSuccess,
+  optionalString,
+  requireString,
+  type ToolDomainResult,
+} from './tool-response.js';
+import type { KbSubsystem } from './tool-router.js';
 
 function optionalKbSearchScope(args: Record<string, unknown>): KbSearchScope | null | undefined {
   const scope = optionalString(args, 'scope');
@@ -26,7 +33,34 @@ function optionalKbSearchScope(args: Record<string, unknown>): KbSearchScope | n
   return null;
 }
 
-export async function handleKbToolCall(request: ToolRequest, kbSubsystem: KbSubsystem): Promise<ToolRouteResponse> {
+function readRequiredOwner(owner: string): { ok: true; value: string } | { ok: false; error: ToolDomainResult } {
+  try {
+    return { ok: true, value: assertOwnerId(owner) };
+  } catch (error: unknown) {
+    return { ok: false, error: domainError('invalid_request', deriveLegacyErrorMessage('invalid_request', error)) };
+  }
+}
+
+function readOptionalOwner(
+  args: Record<string, unknown>,
+): { ok: true; value: string | undefined } | { ok: false; error: ToolDomainResult } {
+  if (!Object.hasOwn(args, 'owner')) {
+    return { ok: true, value: undefined };
+  }
+
+  const rawOwner = args.owner;
+  if (typeof rawOwner !== 'string') {
+    return { ok: false, error: domainError('invalid_request', 'owner must be a valid token-safe identifier') };
+  }
+
+  try {
+    return { ok: true, value: assertOwnerId(rawOwner) };
+  } catch (error: unknown) {
+    return { ok: false, error: domainError('invalid_request', deriveLegacyErrorMessage('invalid_request', error)) };
+  }
+}
+
+export async function handleKbToolCall(request: ToolRequest, kbSubsystem: KbSubsystem): Promise<ToolDomainResult> {
   const { kb } = kbSubsystem;
   const args = request.args;
   const ctx = request.context;
@@ -35,10 +69,10 @@ export async function handleKbToolCall(request: ToolRequest, kbSubsystem: KbSubs
     switch (request.name) {
       case 'kb_search': {
         const query = requireString(args, 'query');
-        if (query === null) return toolError('invalid_request', { message: 'query is required' });
+        if (query === null) return domainError('invalid_request', 'query is required');
         const scope = optionalKbSearchScope(args);
         if (scope === null) {
-          return toolError('invalid_request', { message: 'scope must be one of notes, sources, communities, all' });
+          return domainError('invalid_request', 'scope must be one of notes, sources, communities, all');
         }
 
         result = await searchKb(kb, query, typeof args.top_k === 'number' ? args.top_k : 20, scope ?? 'all');
@@ -46,7 +80,7 @@ export async function handleKbToolCall(request: ToolRequest, kbSubsystem: KbSubs
       }
       case 'kb_read': {
         const note = requireString(args, 'note');
-        if (note === null) return toolError('invalid_request', { message: 'note is required' });
+        if (note === null) return domainError('invalid_request', 'note is required');
         result = readEntry({ note }, ctx.projectRoot);
         break;
       }
@@ -57,9 +91,7 @@ export async function handleKbToolCall(request: ToolRequest, kbSubsystem: KbSubs
         const domain = requireString(args, 'domain');
         const topic = requireString(args, 'topic');
         if (!memo || !title || content === null || !domain || !topic) {
-          return toolError('invalid_request', {
-            message: 'memo, title, content, domain, and topic are required strings',
-          });
+          return domainError('invalid_request', 'memo, title, content, domain, and topic are required strings');
         }
         result = await kbPromote(kb, ctx.projectRoot, { memo, title, content, domain, topic }, () => {
           kbSubsystem.curateScheduler.schedule();
@@ -69,7 +101,7 @@ export async function handleKbToolCall(request: ToolRequest, kbSubsystem: KbSubs
       }
       case 'kb_update': {
         const note = requireString(args, 'note');
-        if (note === null) return toolError('invalid_request', { message: 'note is required' });
+        if (note === null) return domainError('invalid_request', 'note is required');
         result = await kbUpdate(kb, {
           note,
           ...(args.title !== undefined ? { title: optionalString(args, 'title') } : {}),
@@ -80,7 +112,7 @@ export async function handleKbToolCall(request: ToolRequest, kbSubsystem: KbSubs
       }
       case 'kb_delete': {
         const note = requireString(args, 'note');
-        if (note === null) return toolError('invalid_request', { message: 'note is required' });
+        if (note === null) return domainError('invalid_request', 'note is required');
         result = await kbDeleteFn(kb, { note });
         kbSubsystem.curateScheduler.scheduleDeferredCommit();
         break;
@@ -89,9 +121,7 @@ export async function handleKbToolCall(request: ToolRequest, kbSubsystem: KbSubs
         const slug = requireString(args, 'slug');
         const stagedPath = requireString(args, 'stagedPath');
         if (slug === null || stagedPath === null) {
-          return toolError('invalid_request', {
-            message: 'slug and stagedPath are required',
-          });
+          return domainError('invalid_request', 'slug and stagedPath are required');
         }
 
         result = await persistPreparedSource(kb, stagedPath, slug);
@@ -103,7 +133,7 @@ export async function handleKbToolCall(request: ToolRequest, kbSubsystem: KbSubs
         break;
       case 'kb_source_delete': {
         const slug = requireString(args, 'slug');
-        if (slug === null) return toolError('invalid_request', { message: 'slug is required' });
+        if (slug === null) return domainError('invalid_request', 'slug is required');
         result = await deleteSource(kb, { slug });
         kbSubsystem.curateScheduler.scheduleDeferredCommit();
         break;
@@ -165,33 +195,38 @@ export async function handleKbToolCall(request: ToolRequest, kbSubsystem: KbSubs
         const content = requireString(args, 'content');
         const owner = requireString(args, 'owner');
         if (!topic || content === null || owner === null)
-          return toolError('invalid_request', { message: 'topic, content, and owner are required' });
-        const normalizedOwner = assertOwnerId(owner);
-        result = writeMemo(ctx.projectRoot, { topic, content, owner: normalizedOwner });
+          return domainError('invalid_request', 'topic, content, and owner are required');
+        const normalizedOwner = readRequiredOwner(owner);
+        if (!normalizedOwner.ok) return normalizedOwner.error;
+        result = writeMemo(ctx.projectRoot, { topic, content, owner: normalizedOwner.value });
         break;
       }
       case 'kb_memo_list': {
-        const ownerFilter = optionalString(args, 'owner');
-        result = listMemos(ctx.projectRoot, ownerFilter);
+        const ownerFilter = readOptionalOwner(args);
+        if (!ownerFilter.ok) return ownerFilter.error;
+        result = listMemos(ctx.projectRoot, ownerFilter.value);
         break;
       }
       case 'kb_memo_delete': {
         const pattern = requireString(args, 'pattern');
-        if (pattern === null) return toolError('invalid_request', { message: 'pattern is required' });
-        const deleteOwner = optionalString(args, 'owner');
-        result = deleteMemos(ctx.projectRoot, { pattern, owner: deleteOwner });
+        if (pattern === null) return domainError('invalid_request', 'pattern is required');
+        const deleteOwner = readOptionalOwner(args);
+        if (!deleteOwner.ok) return deleteOwner.error;
+        result = deleteMemos(ctx.projectRoot, { pattern, owner: deleteOwner.value });
         break;
       }
-      case 'kb_memo_purge':
-        result = purgeMemos(ctx.projectRoot, optionalString(args, 'owner'));
+      case 'kb_memo_purge': {
+        const purgeOwner = readOptionalOwner(args);
+        if (!purgeOwner.ok) return purgeOwner.error;
+        result = purgeMemos(ctx.projectRoot, purgeOwner.value);
         break;
+      }
       default:
-        return { statusCode: 404, body: { error: 'unknown_tool', name: request.name } };
+        return domainError('unknown_tool', `Unknown tool: ${request.name}`, { name: request.name });
     }
-    return toolSuccess(result);
+    return domainSuccess(result);
   } catch (error: unknown) {
-    return toolError('kb_error', {
-      message: error instanceof Error ? error.message : String(error),
-    });
+    const detail = error instanceof Error ? { message: error.message } : error;
+    return domainError('kb_error', deriveLegacyErrorMessage('kb_error', detail), detail);
   }
 }

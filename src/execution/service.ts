@@ -64,6 +64,7 @@ import { buildCoralInstruction } from './instruction.js';
 import { ProgressStore, createReplayCursor, jobResultPath } from './progress-store.js';
 import { SessionManager } from './session-manager.js';
 import type { SessionEntry } from './session-manager.js';
+import { eventBus } from './event-bus.js';
 import {
   type ProviderHostManager,
   type ProviderServerAttachment,
@@ -134,6 +135,7 @@ export interface ListResult {
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
 const QUEUED_ABORT_MESSAGE = 'Aborted while queued.';
 const FINALIZE_CONTINUITY_MAX_RETRIES = 2;
+const WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS = 30_000;
 const defaultPluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : process.cwd();
 
 type AcceptedAdmission = Exclude<AdmissionResult, 'queue_full'>;
@@ -1086,6 +1088,115 @@ export class ExecutionService implements RecoveryCapableService {
     }
 
     return { aborted, notFound };
+  }
+
+  async waitForJobTerminal(jobId: string, timeoutMs = WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS): Promise<void> {
+    const initialStatus = this.progressStore.readStatus(jobId);
+    if (!initialStatus) {
+      throw new Error(`Job not found: ${jobId}`);
+    }
+
+    const owner = {
+      provider: initialStatus.provider,
+      sessionId: initialStatus.sessionId,
+    };
+    const timeoutError = new Error(
+      `Timed out waiting for job ${jobId} to reach a terminal state and release its session`,
+    );
+
+    const isTerminalAndReleased = (status: PersistedStatusRecord): boolean => {
+      if (!isTerminalPhase(status.phase)) {
+        return false;
+      }
+
+      const session = this.sessionManager.get(owner.provider, owner.sessionId);
+      return session?.activeJobId !== jobId;
+    };
+
+    const readTerminalAndReleased = (): boolean => {
+      const status = this.progressStore.readStatus(jobId);
+      if (!status) {
+        throw new Error(`Job not found: ${jobId}`);
+      }
+      return isTerminalAndReleased(status);
+    };
+
+    if (isTerminalAndReleased(initialStatus)) {
+      return;
+    }
+
+    const startedAt = Date.now();
+    await new Promise<void>((resolve, reject) => {
+      let timer: NodeJS.Timeout | undefined;
+      let settled = false;
+
+      const cleanup = (): void => {
+        eventBus.off('job:completed', onJobCompleted);
+        eventBus.off('job:phase_changed', onJobPhaseChanged);
+        eventBus.off('session:updated', onSessionUpdated);
+        if (timer) clearTimeout(timer);
+      };
+
+      const finish = (callback: () => void): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        callback();
+      };
+
+      const recheck = (): void => {
+        try {
+          if (!readTerminalAndReleased()) {
+            return;
+          }
+          finish(resolve);
+        } catch (error: unknown) {
+          finish(() => reject(error));
+        }
+      };
+
+      const onJobCompleted = ({ jobId: completedJobId }: { jobId: string }): void => {
+        if (completedJobId !== jobId) {
+          return;
+        }
+        recheck();
+      };
+
+      const onJobPhaseChanged = ({ jobId: changedJobId }: { jobId: string }): void => {
+        if (changedJobId !== jobId) {
+          return;
+        }
+        recheck();
+      };
+
+      const onSessionUpdated = ({ sessionId }: { sessionId: string }): void => {
+        if (sessionId !== owner.sessionId) {
+          return;
+        }
+        recheck();
+      };
+
+      eventBus.on('job:completed', onJobCompleted);
+      eventBus.on('job:phase_changed', onJobPhaseChanged);
+      eventBus.on('session:updated', onSessionUpdated);
+
+      recheck();
+      if (settled) {
+        return;
+      }
+
+      const remainingMs = timeoutMs - (Date.now() - startedAt);
+      if (remainingMs <= 0) {
+        finish(() => reject(timeoutError));
+        return;
+      }
+
+      timer = setTimeout(() => {
+        finish(() => reject(timeoutError));
+      }, remainingMs);
+    });
   }
 
   // ── Recovery adoption APIs ──────────────────────────────────────────────────

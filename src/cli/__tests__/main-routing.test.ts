@@ -190,9 +190,12 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.providerExec.mockResolvedValueOnce({
-      status: 'running',
-      job: 'job-1',
-      session: 'session-1',
+      ok: true,
+      data: {
+        status: 'running',
+        job: 'job-1',
+        session: 'session-1',
+      },
     });
 
     await program.parseAsync([
@@ -221,9 +224,12 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.providerExec.mockResolvedValueOnce({
-      status: 'running',
-      job: 'job-1',
-      session: 'session-1',
+      ok: true,
+      data: {
+        status: 'running',
+        job: 'job-1',
+        session: 'session-1',
+      },
     });
     mockState.launchAndFollow.mockResolvedValueOnce(7);
 
@@ -247,13 +253,12 @@ describe('cli main routing', () => {
     expect(stderr).toBe('');
   });
 
-  it('formats rejected launch decisions on stderr and does not follow them', async () => {
+  it('treats domain launch failures as tool errors and does not follow them', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
     mockState.providerExec.mockResolvedValueOnce({
-      status: 'rejected',
-      phase: 'preflight',
+      ok: false,
       code: 'bad_request',
       message: 'Missing prompt',
     });
@@ -261,7 +266,7 @@ describe('cli main routing', () => {
     await program.parseAsync(['node', 'coral-cli', 'codex', 'exec', '--prompt', 'hi']);
 
     expect(stdout).toBe('');
-    expect(stderr).toBe('Rejected [bad_request]: Missing prompt\n');
+    expect(stderr).toBe('Missing prompt\n');
     expect(process.exitCode).toBe(1);
     expect(mockState.launchAndFollow).not.toHaveBeenCalled();
   });
@@ -271,9 +276,12 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.workflow.mockResolvedValueOnce({
-      status: 'queued',
-      job: 'job-2',
-      session: 'session-2',
+      ok: true,
+      data: {
+        status: 'queued',
+        job: 'job-2',
+        session: 'session-2',
+      },
     });
     mockState.launchAndFollow.mockResolvedValueOnce(0);
 
@@ -310,16 +318,19 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.kbSearch.mockResolvedValueOnce({
-      results: [
-        {
-          note: 'cli-kb-tooling',
-          kind: 'note',
-          title: 'KB CLI Tooling',
-          matchedBy: ['filename', 'content'],
-          snippet: 'Use the read surface.',
-        },
-      ],
-      mode: 'text',
+      ok: true,
+      data: {
+        results: [
+          {
+            note: 'cli-kb-tooling',
+            kind: 'note',
+            title: 'KB CLI Tooling',
+            matchedBy: ['filename', 'content'],
+            snippet: 'Use the read surface.',
+          },
+        ],
+        mode: 'text',
+      },
     });
 
     await program.parseAsync(['node', 'coral-cli', 'kb', 'search', 'accel']);
@@ -336,9 +347,12 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.kbSearch.mockResolvedValueOnce({
-      results: [],
-      mode: 'text',
-      warning: 'Run kb_reindex to build the search index.',
+      ok: true,
+      data: {
+        results: [],
+        mode: 'text',
+        warning: 'Run kb_reindex to build the search index.',
+      },
     });
 
     await program.parseAsync(['node', 'coral-cli', 'kb', 'search', 'accel', '--top-k', '5', '--output-format', 'json']);
@@ -356,16 +370,19 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.kbSearch.mockResolvedValueOnce({
-      results: [
-        {
-          note: 'hybrid-note',
-          kind: 'note',
-          title: 'Hybrid Note',
-          matchedBy: [],
-        },
-      ],
-      mode: 'hybrid',
-      warning: 'Run kb_reindex again to refresh it.',
+      ok: true,
+      data: {
+        results: [
+          {
+            note: 'hybrid-note',
+            kind: 'note',
+            title: 'Hybrid Note',
+            matchedBy: [],
+          },
+        ],
+        mode: 'hybrid',
+        warning: 'Run kb_reindex again to refresh it.',
+      },
     });
 
     await program.parseAsync(['node', 'coral-cli', 'kb', 'search', 'semantic']);
@@ -383,8 +400,11 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.kbPrinciples.mockResolvedValueOnce({
-      principles: ['contract-first-design'],
-      total: 1,
+      ok: true,
+      data: {
+        principles: ['contract-first-design'],
+        total: 1,
+      },
     });
 
     await program.parseAsync(['node', 'coral-cli', 'kb', 'principles']);
@@ -398,8 +418,11 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.kbPrinciples.mockResolvedValueOnce({
-      principles: [],
-      total: 0,
+      ok: true,
+      data: {
+        principles: [],
+        total: 0,
+      },
     });
 
     await program.parseAsync(['node', 'coral-cli', 'kb', 'principles', '--query', 'contract', '--top-k', '7']);
@@ -412,14 +435,17 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.kbPrinciples.mockResolvedValueOnce({
-      principles: [
-        {
-          name: 'contract-first-design',
-          statement: 'State contracts first.',
-          notes: ['a-note', 'b-note'],
-        },
-      ],
-      total: 2,
+      ok: true,
+      data: {
+        principles: [
+          {
+            name: 'contract-first-design',
+            statement: 'State contracts first.',
+            notes: ['a-note', 'b-note'],
+          },
+        ],
+        total: 2,
+      },
     });
 
     await program.parseAsync(['node', 'coral-cli', 'kb', 'principles', '--verbose']);
@@ -433,7 +459,10 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.kbMemo.mockResolvedValueOnce({
-      filename: '20260327-184939-kb-routing.md',
+      ok: true,
+      data: {
+        filename: '20260327-184939-kb-routing.md',
+      },
     });
 
     await program.parseAsync([
@@ -459,7 +488,10 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.kbMemoList.mockResolvedValueOnce({
-      memos: [{ filename: 'a.md', summary: 'summary', createdAt: '2026-03-27T00:00:00.000Z' }],
+      ok: true,
+      data: {
+        memos: [{ filename: 'a.md', summary: 'summary', createdAt: '2026-03-27T00:00:00.000Z' }],
+      },
     });
 
     await program.parseAsync(['node', 'coral-cli', 'kb', 'memo', 'list', '--output-format', 'json']);
@@ -475,8 +507,11 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.kbMemoDelete.mockResolvedValueOnce({
-      deleted: ['a.md'],
-      count: 1,
+      ok: true,
+      data: {
+        deleted: ['a.md'],
+        count: 1,
+      },
     });
 
     await program.parseAsync(['node', 'coral-cli', 'kb', 'memo', 'delete', '2026*', '--output-format', 'json']);
@@ -493,7 +528,10 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.kbMemoPurge.mockResolvedValueOnce({
-      deleted: 3,
+      ok: true,
+      data: {
+        deleted: 3,
+      },
     });
 
     await program.parseAsync(['node', 'coral-cli', 'kb', 'memo', 'purge', '--output-format', 'json']);
@@ -507,12 +545,15 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.kbRead.mockResolvedValueOnce({
-      kind: 'note',
-      note: 'coral-kb-read',
-      title: 'Read Test',
-      content: '## Rule\nContent.',
-      tags: ['coral'],
-      principles: ['contract-first-design'],
+      ok: true,
+      data: {
+        kind: 'note',
+        note: 'coral-kb-read',
+        title: 'Read Test',
+        content: '## Rule\nContent.',
+        tags: ['coral'],
+        principles: ['contract-first-design'],
+      },
     });
 
     await program.parseAsync(['node', 'coral-cli', 'kb', 'read', 'coral-kb-read']);
@@ -529,7 +570,10 @@ describe('cli main routing', () => {
     const tmpFile = join(tmpdir(), 'test-kb-content.md');
 
     mockState.kbPromote.mockResolvedValueOnce({
-      path: '/tmp/kb/notes/cli-kb-tooling.md',
+      ok: true,
+      data: {
+        path: '/tmp/kb/notes/cli-kb-tooling.md',
+      },
     });
 
     writeFileSync(tmpFile, 'Details', 'utf8');
@@ -571,7 +615,10 @@ describe('cli main routing', () => {
     const tmpFile = join(tmpdir(), 'test-kb-update-content.md');
 
     mockState.kbUpdate.mockResolvedValueOnce({
-      path: '/tmp/kb/notes/cli-kb-tooling.md',
+      ok: true,
+      data: {
+        path: '/tmp/kb/notes/cli-kb-tooling.md',
+      },
     });
 
     writeFileSync(tmpFile, 'Updated', 'utf8');
@@ -594,7 +641,10 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.kbDelete.mockResolvedValueOnce({
-      deleted: '/tmp/kb/notes/cli-kb-tooling.md',
+      ok: true,
+      data: {
+        deleted: '/tmp/kb/notes/cli-kb-tooling.md',
+      },
     });
 
     await program.parseAsync(['node', 'coral-cli', 'kb', 'delete', 'cli-kb-tooling']);
@@ -609,14 +659,17 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.kbReindex.mockResolvedValueOnce({
-      notes: 4,
-      sources: 0,
-      communities: 0,
-      principles: 2,
-      tags: 3,
-      duration_ms: 25,
-      mode: 'text',
-      warning: 'Run kb_reindex again to refresh it.',
+      ok: true,
+      data: {
+        notes: 4,
+        sources: 0,
+        communities: 0,
+        principles: 2,
+        tags: 3,
+        duration_ms: 25,
+        mode: 'text',
+        warning: 'Run kb_reindex again to refresh it.',
+      },
     });
 
     await program.parseAsync(['node', 'coral-cli', 'kb', 'reindex']);

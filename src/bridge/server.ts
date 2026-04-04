@@ -11,6 +11,7 @@ import { ensureBackend, proxyToolCall, streamWait, type WaitCursorRef } from './
 import { buildToolList, handleBackendToolCall } from './backend-tool.js';
 import { errorMessage, isRecord, isTransientStreamError, jsonResult, mcpError, textResult, type McpResult } from '../shared/mcp-utils.js';
 import { waitInputSchema, MAX_INLINE } from '../shared/schemas.js';
+import { domainToMcp } from '../execution/tool-response.js';
 
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
 const version = typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0';
@@ -170,16 +171,6 @@ function createWaitSignal(requestSignal: AbortSignal): { signal: AbortSignal; cl
 }
 
 
-function isMcpTextResult(value: unknown): value is McpResult {
-  return isRecord(value)
-    && typeof value.isError === 'boolean'
-    && Array.isArray(value.content)
-    && value.content.every((entry) =>
-      isRecord(entry)
-      && entry.type === 'text'
-      && typeof entry.text === 'string');
-}
-
 const server = new Server(
   { name: 'coral', version },
   { capabilities: { tools: {} } },
@@ -303,18 +294,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       pluginRoot,
     });
 
-    if (isMcpTextResult(response)) {
-      return response;
-    }
-
-    if (isRecord(response) && response.status === 'rejected') {
-      return textResult(
-        typeof response.message === 'string' ? response.message : JSON.stringify(response),
-        true,
-      );
-    }
-
-    return textResult(JSON.stringify(response));
+    return domainToMcp(response);
   } catch (error) {
     return textResult(errorMessage(error), true);
   }
