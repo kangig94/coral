@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
+import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { join, relative } from 'node:path';
 import { exitIfChildProcess, readStdin, resolveProjectSource, coralProjectDir, resolveKbRoot, isOwnerId } from './lib/hook-utils.mjs';
 exitIfChildProcess();
 
@@ -19,9 +21,10 @@ try {
 
   if (!PLUGIN_ROOT || !existsSync(PLUGIN_ROOT)) process.exit(0);
 
-  if (projectDir) ensureCliPermission(projectDir);
+  const gitRoot = projectDir ? findGitRoot(projectDir) : undefined;
+  ensureCliPermission();
   if (projectDir && process.env.CORAL_AUTO_SYMLINK === '1') {
-    ensureCoralSymlink(projectDir);
+    ensureCoralSymlink(projectDir, gitRoot);
   }
 
   const ownerSessionId = isOwnerId(sessionId) ? sessionId : undefined;
@@ -47,19 +50,33 @@ try {
   process.exit(0);
 }
 
-function addGitignoreEntry(projectDir, entry) {
+function findGitRoot(cwd) {
   try {
-    const gitignore = join(projectDir, '.gitignore');
+    return execSync('git rev-parse --show-toplevel', {
+      cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+  } catch {
+    return undefined;
+  }
+}
+
+function addGitignoreEntry(projectDir, entry, gitRoot) {
+  try {
+    const baseDir = gitRoot ?? projectDir;
+    const fullEntry = gitRoot && gitRoot !== projectDir
+      ? join(relative(gitRoot, projectDir), entry)
+      : entry;
+    const gitignore = join(baseDir, '.gitignore');
     const content = existsSync(gitignore) ? readFileSync(gitignore, 'utf-8') : '';
-    if (!content.split('\n').includes(entry)) {
-      writeFileSync(gitignore, content + (content.endsWith('\n') || !content ? '' : '\n') + entry + '\n');
+    if (!content.split('\n').includes(fullEntry)) {
+      writeFileSync(gitignore, content + (content.endsWith('\n') || !content ? '' : '\n') + fullEntry + '\n');
     }
   } catch {
     // fail-open
   }
 }
 
-function ensureCoralSymlink(projectDir) {
+function ensureCoralSymlink(projectDir, gitRoot) {
   const link = join(projectDir, '.claude', 'coral');
   const target = coralProjectDir(projectDir);
   try {
@@ -69,26 +86,23 @@ function ensureCoralSymlink(projectDir) {
   } catch {
     return; // lost race or fs error — skip gitignore
   }
-  addGitignoreEntry(projectDir, '.claude/coral');
+  addGitignoreEntry(projectDir, '.claude/coral', gitRoot);
 }
 
-function ensureCliPermission(projectDir) {
+function ensureCliPermission() {
   const rule = 'Bash(node *coral-cli*)';
-  const dir = join(projectDir, '.claude');
-  const path = join(dir, 'settings.local.json');
-  const isNew = !existsSync(path);
+  const dir = join(homedir(), '.claude');
+  const file = join(dir, 'settings.json');
   try {
-    const settings = isNew ? {} : JSON.parse(readFileSync(path, 'utf-8'));
+    const settings = existsSync(file) ? JSON.parse(readFileSync(file, 'utf-8')) : {};
     const allow = settings.permissions?.allow ?? [];
     if (allow.includes(rule)) return;
     if (!settings.permissions) settings.permissions = {};
     if (!settings.permissions.allow) settings.permissions.allow = [];
     settings.permissions.allow.push(rule);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(path, JSON.stringify(settings, null, 2) + '\n');
+    writeFileSync(file, JSON.stringify(settings, null, 2) + '\n');
   } catch {
     // fail-open
-    return;
   }
-  if (isNew) addGitignoreEntry(projectDir, '.claude/settings.local.json');
 }
