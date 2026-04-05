@@ -22,7 +22,7 @@ import { parseNonNegativeInteger, parsePositiveInteger } from './validation.js';
 import { backendLog } from '../shared/backend-log.js';
 
 export const CURATE_STATE_FILE = 'curate-state.json';
-export const CURATE_STATE_MIGRATION_VERSION = 3;
+export const CURATE_STATE_MIGRATION_VERSION = 4;
 const CLAIM_STALE_MS = 15 * 60 * 1000;
 const CURATE_TRANSIENT_RETRY_MS = 30 * 60 * 1000;
 const CURATE_MISSING_CLI_RETRY_MS = 2 * 60 * 60 * 1000;
@@ -75,8 +75,9 @@ export type CurateState = {
     createdAt: string;
   }>;
   pendingRepair: PendingRepair[] | null;
-  communityGraphHash?: string;
-  communityMembershipFingerprints?: Record<string, string>;
+  communityTopologyHash?: string;
+  communitySummaryTopologyHash?: string;
+  communitySummaryInputFingerprints?: Record<string, string>;
   consecutiveFailures: number;
   initialized: boolean;
   migrationVersion: number;
@@ -138,8 +139,9 @@ function defaultCurateState(): CurateState {
     activeClaim: null,
     pendingDiscoveries: [],
     pendingRepair: null,
-    communityGraphHash: undefined,
-    communityMembershipFingerprints: undefined,
+    communityTopologyHash: undefined,
+    communitySummaryTopologyHash: undefined,
+    communitySummaryInputFingerprints: undefined,
     consecutiveFailures: 0,
     initialized: false,
     migrationVersion: 0,
@@ -307,10 +309,17 @@ function parseCurateState(value: unknown): CurateState {
     activeClaim: parseActiveClaim(value.activeClaim),
     pendingDiscoveries: parsePendingDiscoveries(value.pendingDiscoveries),
     pendingRepair: parsePendingRepair(value.pendingRepair),
-    communityGraphHash: parseOptionalDefinedString(value.communityGraphHash, 'communityGraphHash'),
-    communityMembershipFingerprints: parseOptionalStringRecord(
-      value.communityMembershipFingerprints,
-      'communityMembershipFingerprints',
+    communityTopologyHash: parseOptionalDefinedString(
+      value.communityTopologyHash ?? value.communityGraphHash,
+      'communityTopologyHash',
+    ),
+    communitySummaryTopologyHash: parseOptionalDefinedString(
+      value.communitySummaryTopologyHash ?? value.communityGraphHash,
+      'communitySummaryTopologyHash',
+    ),
+    communitySummaryInputFingerprints: parseOptionalStringRecord(
+      value.communitySummaryInputFingerprints ?? value.communityMembershipFingerprints,
+      'communitySummaryInputFingerprints',
     ),
     consecutiveFailures: parseNonNegativeInteger(value.consecutiveFailures ?? 0, 'consecutiveFailures'),
     initialized: value.initialized === true,
@@ -441,8 +450,13 @@ function recoverCurateState(value: unknown): CurateState {
     activeClaim,
     pendingDiscoveries: recoverPendingDiscoveries(value.pendingDiscoveries),
     pendingRepair: recoverPendingRepair(value.pendingRepair),
-    communityGraphHash: recoverOptionalDefinedString(value.communityGraphHash),
-    communityMembershipFingerprints: recoverOptionalStringRecord(value.communityMembershipFingerprints),
+    communityTopologyHash: recoverOptionalDefinedString(value.communityTopologyHash ?? value.communityGraphHash),
+    communitySummaryTopologyHash: recoverOptionalDefinedString(
+      value.communitySummaryTopologyHash ?? value.communityGraphHash,
+    ),
+    communitySummaryInputFingerprints: recoverOptionalStringRecord(
+      value.communitySummaryInputFingerprints ?? value.communityMembershipFingerprints,
+    ),
     consecutiveFailures,
     initialized: value.initialized === true,
     migrationVersion,
@@ -472,7 +486,12 @@ function sortedSourceNames(kb: Pick<KbRuntime, 'sourcesDir'>): string[] {
   return sortedMarkdownEntries(kb.sourcesDir()).map((entry) => stripMdExt(entry));
 }
 
-function syncIndexNote(note: string, title: string, frontmatter: KbNoteFrontmatter, nextIndex: ReturnType<typeof cloneKbIndex>): boolean {
+function syncIndexNote(
+  note: string,
+  title: string,
+  frontmatter: KbNoteFrontmatter,
+  nextIndex: ReturnType<typeof cloneKbIndex>,
+): boolean {
   const nextEntry = buildNoteIndexEntry({
     slug: note,
     title,
@@ -549,7 +568,19 @@ function scanSource(kb: Pick<KbRuntime, 'sourcePath'>, slug: string): ScannedSou
   };
 }
 
-function inferProcessedThrough(state: CurateState, scannedNotes: ScannedNote[]): CurateCursor | null {
+function hasCuratedNoteMetadata(frontmatter: KbNoteFrontmatter): boolean {
+  return frontmatter.tags.length > 0 || frontmatter.principles.length > 0 || (frontmatter.related ?? []).length > 0;
+}
+
+function hasCuratedSourceMetadata(frontmatter: KbSourceFrontmatter): boolean {
+  return frontmatter.tags.length > 0 || (frontmatter.related ?? []).length > 0;
+}
+
+function inferProcessedThrough(
+  state: CurateState,
+  scannedNotes: ScannedNote[],
+  scannedSources: ScannedSource[],
+): CurateCursor | null {
   if (state.processedThrough !== null) {
     return state.processedThrough;
   }
@@ -557,19 +588,27 @@ function inferProcessedThrough(state: CurateState, scannedNotes: ScannedNote[]):
   let highestCuratedCursor: CurateCursor | null = null;
   for (const scannedNote of scannedNotes) {
     const entrySeq = scannedNote.frontmatter.entrySeq;
-    if (entrySeq === undefined) {
-      continue;
-    }
-    if (
-      scannedNote.frontmatter.tags.length <= 1 &&
-      scannedNote.frontmatter.principles.length === 0 &&
-      (scannedNote.frontmatter.related ?? []).length === 0
-    ) {
+    if (entrySeq === undefined || !hasCuratedNoteMetadata(scannedNote.frontmatter)) {
       continue;
     }
 
     const cursor: CurateCursor = {
       entryId: noteEntryId(scannedNote.note),
+      entrySeq,
+    };
+    if (highestCuratedCursor === null || compareCursor(cursor, highestCuratedCursor) > 0) {
+      highestCuratedCursor = cursor;
+    }
+  }
+
+  for (const scannedSource of scannedSources) {
+    const entrySeq = scannedSource.frontmatter.entrySeq;
+    if (entrySeq === undefined || !hasCuratedSourceMetadata(scannedSource.frontmatter)) {
+      continue;
+    }
+
+    const cursor: CurateCursor = {
+      entryId: sourceEntryId(scannedSource.slug),
       entrySeq,
     };
     if (highestCuratedCursor === null || compareCursor(cursor, highestCuratedCursor) > 0) {
@@ -602,6 +641,23 @@ export function readCurateState(target: CurateStateTarget): CurateState {
 
 export function writeCurateState(target: CurateStateTarget, state: CurateState): void {
   writeFileAtomic(curateStatePath(target), `${JSON.stringify(normalizeCurateStateRepairFrontier(state), null, 2)}\n`);
+}
+
+/**
+ * Reset the curate cursor so the next scheduler claim reprocesses the corpus with the current prompt
+ * and consolidation path. AC8 topology and summary fingerprint state is preserved and continues to be
+ * normalized by writeCurateState/parseCurateState.
+ */
+export function resetCurateStateForBackfill(state: CurateState): CurateState {
+  return normalizeCurateStateRepairFrontier({
+    ...state,
+    processedThrough: null,
+    activeClaim: null,
+    lastAttemptedThrough: null,
+    retryNotBefore: null,
+    lastRunDay: null,
+    consecutiveFailures: 0,
+  });
 }
 
 export function compareCursor(left: CurateCursor, right: CurateCursor): number {
@@ -970,7 +1026,8 @@ export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promis
       }
 
       highestAssignedEntrySeq = Math.max(highestAssignedEntrySeq, scannedNote.frontmatter.entrySeq ?? 0);
-      indexChanged = syncIndexNote(scannedNote.note, scannedNote.title, scannedNote.frontmatter, nextIndex) || indexChanged;
+      indexChanged =
+        syncIndexNote(scannedNote.note, scannedNote.title, scannedNote.frontmatter, nextIndex) || indexChanged;
     }
 
     for (const scannedSource of scannedSources) {
@@ -994,13 +1051,16 @@ export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promis
     if (highestAssignedEntrySeq > indexState.mutationSeq) {
       kb.writeIndexState({
         ...indexState,
+        contentSeq: highestAssignedEntrySeq,
+        metadataSeq: highestAssignedEntrySeq,
         mutationSeq: highestAssignedEntrySeq,
+        textIndexedSeq: highestAssignedEntrySeq,
       });
     }
 
     writeCurateState(kb, {
       ...recoveredState,
-      processedThrough: inferProcessedThrough(recoveredState, scannedNotes),
+      processedThrough: inferProcessedThrough(recoveredState, scannedNotes, scannedSources),
       pendingRepair: pendingRepair.length === 0 ? null : pendingRepair,
       initialized: true,
       migrationVersion: CURATE_STATE_MIGRATION_VERSION,

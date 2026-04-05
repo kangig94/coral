@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { insertMultiple } from '@orama/orama';
 import { errorMessage } from '../shared/mcp-utils.js';
@@ -7,6 +7,7 @@ import {
   extractMalformedEntryRepair,
   readCurateState,
   writeCurateState,
+  type CurateState,
   type PendingRepair,
 } from './curate-state.js';
 import {
@@ -17,16 +18,27 @@ import {
   parseCommunityFrontmatter,
   parseSourceFrontmatter,
 } from './frontmatter.js';
-import { parseMembersFromBody, parseSummaryFromBody } from './community-detection.js';
+import {
+  buildCommunityDocuments,
+  buildEntityRelationshipGraph,
+  computeCommunitySummaryInputFingerprints,
+  computeCommunityTopologyFingerprint,
+  detectCommunities,
+  generateCommunityFiles,
+  loadExistingCommunityState,
+  parseMembersFromBody,
+  parseSummaryFromBody,
+} from './community-detection.js';
 import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from './mutation-helpers.js';
 import { sortedMarkdownEntries } from './markdown-entries.js';
 import { stripMdExt } from './paths.js';
 import { loadKbNote } from './read.js';
 import { assertCommunitySlug, assertSourceSlug } from './validation.js';
 import { createOramaDb, toOramaDocument } from './orama-factory.js';
-import type { KbRuntime } from './contracts.js';
+import type { KbIndexMutationLane, KbIndexState, KbRuntime } from './contracts.js';
 import {
   communityEntryId,
+  isCommunityEntry,
   noteEntryId,
   sourceEntryId,
   type KbIndex,
@@ -36,10 +48,213 @@ import {
   type ReindexResult,
 } from './types.js';
 
+const INDEX_FILE = 'index.json';
+
 type LoadedArtifacts<T> = {
   entries: T[];
   pendingRepair: PendingRepair[];
 };
+
+function mergeMutationLane(
+  current: KbIndexMutationLane | null,
+  next: KbIndexMutationLane | null,
+): KbIndexMutationLane | null {
+  if (next === null || current === 'both') {
+    return current;
+  }
+  if (current === null || current === next) {
+    return next;
+  }
+  return 'both';
+}
+
+function dirModifiedAfter(dir: string, threshold: number): boolean {
+  try {
+    return statSync(dir).mtimeMs > threshold;
+  } catch {
+    return false;
+  }
+}
+
+function fileModifiedAfter(filePath: string, threshold: number): boolean {
+  try {
+    return statSync(filePath).mtimeMs > threshold;
+  } catch {
+    return false;
+  }
+}
+
+export function detectTextArtifactRebuildInfo(
+  kb: Pick<
+    KbRuntime,
+    'runtimeDir' | 'readIndex' | 'notesDir' | 'sourcesDir' | 'communitiesDir' | 'principlesDir' | 'entityGraphPath'
+  >,
+): {
+  needsRebuild: boolean;
+  externalMutation: KbIndexMutationLane | null;
+} {
+  const indexPath = join(kb.runtimeDir, INDEX_FILE);
+  if (!existsSync(indexPath)) {
+    return {
+      needsRebuild: true,
+      externalMutation: null,
+    };
+  }
+
+  try {
+    const indexMtime = statSync(indexPath).mtimeMs;
+    const currentIndex = kb.readIndex();
+    let externalMutation: KbIndexMutationLane | null = null;
+
+    if (!existsSync(kb.entityGraphPath())) {
+      if (currentIndex?.entityMeta !== undefined || currentIndex?.relationships !== undefined) {
+        externalMutation = mergeMutationLane(externalMutation, 'metadata');
+      }
+    } else if (fileModifiedAfter(kb.entityGraphPath(), indexMtime)) {
+      externalMutation = mergeMutationLane(externalMutation, 'metadata');
+    }
+
+    if (dirModifiedAfter(kb.principlesDir(), indexMtime) || dirModifiedAfter(kb.communitiesDir(), indexMtime)) {
+      externalMutation = mergeMutationLane(externalMutation, 'metadata');
+    }
+
+    if (dirModifiedAfter(kb.notesDir(), indexMtime) || dirModifiedAfter(kb.sourcesDir(), indexMtime)) {
+      externalMutation = mergeMutationLane(externalMutation, 'both');
+    }
+
+    return {
+      needsRebuild: externalMutation !== null,
+      externalMutation,
+    };
+  } catch {
+    return {
+      needsRebuild: false,
+      externalMutation: null,
+    };
+  }
+}
+
+function areCommunityDocumentsFreshForState(
+  state: Pick<CurateState, 'communityTopologyHash' | 'communitySummaryTopologyHash' | 'communitySummaryInputFingerprints'>,
+  kb: Pick<KbRuntime, 'curateStatePath' | 'notePath' | 'sourcePath'>,
+  index: KbIndex,
+): boolean {
+  const hasCommunityEntries = Object.values(index.entries).some((entry) => entry.kind === 'community');
+  if (!hasCommunityEntries) {
+    return true;
+  }
+
+  const topologyHash = computeCommunityTopologyFingerprint(index);
+  if (state.communityTopologyHash !== topologyHash || state.communitySummaryTopologyHash !== topologyHash) {
+    return false;
+  }
+
+  try {
+    const communities = Object.values(index.entries)
+      .filter(isCommunityEntry)
+      .map((community) => ({
+        slug: community.slug,
+        title: community.title,
+        level: community.level,
+        members: community.members,
+        ...(community.children === undefined ? {} : { children: community.children }),
+        ...(community.summary === undefined ? {} : { summary: community.summary }),
+      }));
+    const currentFingerprints = computeCommunitySummaryInputFingerprints(communities, kb, index);
+    const storedFingerprints = state.communitySummaryInputFingerprints ?? {};
+    const currentEntries = Object.entries(currentFingerprints).sort(([left], [right]) => left.localeCompare(right));
+    const storedEntries = Object.entries(storedFingerprints)
+      .filter(([slug]) => slug in currentFingerprints)
+      .sort(([left], [right]) => left.localeCompare(right));
+
+    return (
+      currentEntries.length === storedEntries.length &&
+      currentEntries.every(
+        ([slug, fingerprint], index) =>
+          storedEntries[index]?.[0] === slug && storedEntries[index]?.[1] === fingerprint,
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+function normalizedCommunitySummaryFingerprints(
+  fingerprints: Readonly<Record<string, string>> | undefined,
+  communities: ReadonlyArray<{ slug: string }>,
+): Record<string, string> | undefined {
+  if (fingerprints === undefined) {
+    return undefined;
+  }
+
+  const allowedSlugs = new Set(communities.map((community) => community.slug));
+  const entries = Object.entries(fingerprints)
+    .filter(([slug]) => allowedSlugs.has(slug))
+    .sort(([left], [right]) => left.localeCompare(right));
+
+  return entries.length === 0 ? undefined : Object.fromEntries(entries);
+}
+
+function prepareCommunityTopologyRefresh(
+  kb: KbRuntime,
+  index: KbIndex,
+): {
+  topologyHash: string;
+  nextSummaryInputFingerprints: Record<string, string> | undefined;
+  shouldPersistState: boolean;
+} {
+  const state = readCurateState(kb);
+  const graph = buildEntityRelationshipGraph({
+    entityMeta: index.entityMeta ?? {},
+    relationships: index.relationships ?? [],
+  });
+  const topologyHash = computeCommunityTopologyFingerprint(index, graph);
+  if (state.communityTopologyHash === topologyHash) {
+    return {
+      topologyHash,
+      nextSummaryInputFingerprints: normalizedCommunitySummaryFingerprints(
+        state.communitySummaryInputFingerprints,
+        Object.values(index.entries).filter(isCommunityEntry),
+      ),
+      shouldPersistState: false,
+    };
+  }
+
+  const { generated: priorGeneratedCommunities, reservedSlugs } = loadExistingCommunityState(kb);
+  const communities = detectCommunities(graph, {
+    priorCommunities: priorGeneratedCommunities,
+    reservedSlugs,
+  });
+  const communityDocuments = buildCommunityDocuments(communities, {
+    priorGeneratedCommunities,
+    today: new Date().toISOString().slice(0, 10),
+  });
+  generateCommunityFiles(kb, communityDocuments, priorGeneratedCommunities);
+
+  return {
+    topologyHash,
+    nextSummaryInputFingerprints: normalizedCommunitySummaryFingerprints(
+      state.communitySummaryInputFingerprints,
+      communityDocuments,
+    ),
+    shouldPersistState: true,
+  };
+}
+
+function applyLaneMutation(
+  state: Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>,
+  lane: KbIndexMutationLane | null,
+): Pick<KbIndexState, 'contentSeq' | 'metadataSeq'> {
+  if (lane === null) {
+    return state;
+  }
+
+  const nextSeq = Math.max(state.contentSeq, state.metadataSeq) + 1;
+  return {
+    contentSeq: lane === 'content' || lane === 'both' ? nextSeq : state.contentSeq,
+    metadataSeq: lane === 'metadata' || lane === 'both' ? nextSeq : state.metadataSeq,
+  };
+}
 
 function readMalformedRepairEntry(
   path: string,
@@ -123,8 +338,10 @@ function loadCommunityDocument(communityPath: string): Omit<KbReindexCommunityRe
     ...frontmatter,
     title: extractTitle(raw),
     body,
-    level: 0,
+    level: frontmatter.level,
     members: parseMembersFromBody(body),
+    ...(frontmatter.parent === undefined ? {} : { parent: frontmatter.parent }),
+    ...(frontmatter.children === undefined ? {} : { children: frontmatter.children }),
     summary: parseSummaryFromBody(body),
   };
 }
@@ -166,12 +383,14 @@ function loadPrinciples(kb: KbRuntime): Array<[string, string]> {
 }
 
 function buildKbIndex(
+  kb: KbRuntime,
   notes: KbReindexNoteRecord[],
   sources: KbReindexSourceRecord[],
   communities: KbReindexCommunityRecord[],
   principles: Array<[string, string]>,
 ): KbIndex {
   const entries: KbIndex['entries'] = {};
+  const entityGraph = kb.readEntityGraph();
 
   for (const note of notes) {
     entries[noteEntryId(note.note)] = buildNoteIndexEntry({
@@ -207,6 +426,7 @@ function buildKbIndex(
       level: community.level,
       members: community.members,
       ...(community.parent === undefined ? {} : { parent: community.parent }),
+      ...(community.children === undefined ? {} : { children: community.children }),
       ...(community.summary === undefined ? {} : { summary: community.summary }),
       createdAt: community.createdAt,
       updatedAt: community.updatedAt,
@@ -216,6 +436,12 @@ function buildKbIndex(
   return {
     entries,
     principles: Object.fromEntries(principles),
+    ...(entityGraph === null
+      ? {}
+      : {
+          entityMeta: entityGraph.entityMeta,
+          relationships: entityGraph.relationships,
+        }),
   };
 }
 
@@ -224,27 +450,45 @@ function buildCounts(
   sources: KbReindexSourceRecord[],
   communities: KbReindexCommunityRecord[],
   principles: Array<[string, string]>,
-): Pick<ReindexResult, 'notes' | 'sources' | 'communities' | 'principles' | 'tags'> {
+  index: KbIndex,
+): Pick<
+  ReindexResult,
+  'notes' | 'sources' | 'communities' | 'principles' | 'tags' | 'entities' | 'relationships' | 'entityCoverage'
+> {
+  const uniqueTags = new Set([
+    ...notes.flatMap((note) => note.tags),
+    ...sources.flatMap((source) => source.tags),
+    ...communities.flatMap((community) => community.members),
+  ]);
+  const entityNames = Object.keys(index.entityMeta ?? {});
+  const coveredTags = [...uniqueTags].filter((tag) =>
+    Object.prototype.hasOwnProperty.call(index.entityMeta ?? {}, tag),
+  ).length;
   return {
     notes: notes.length,
     sources: sources.length,
     communities: communities.length,
     principles: principles.length,
-    tags: new Set([
-      ...notes.flatMap((note) => note.tags),
-      ...sources.flatMap((source) => source.tags),
-      ...communities.flatMap((community) => community.members),
-    ]).size,
+    tags: uniqueTags.size,
+    entities: entityNames.length,
+    relationships: index.relationships?.length ?? 0,
+    entityCoverage: uniqueTags.size === 0 ? 1 : coveredTags / uniqueTags.size,
   };
 }
 
 export class TextSnapshotRebuildError extends Error {
-  readonly counts: Pick<ReindexResult, 'notes' | 'sources' | 'communities' | 'principles' | 'tags'>;
+  readonly counts: Pick<
+    ReindexResult,
+    'notes' | 'sources' | 'communities' | 'principles' | 'tags' | 'entities' | 'relationships' | 'entityCoverage'
+  >;
   readonly pendingRepair: PendingRepair[] | null;
 
   constructor(
     message: string,
-    counts: Pick<ReindexResult, 'notes' | 'sources' | 'communities' | 'principles' | 'tags'>,
+    counts: Pick<
+      ReindexResult,
+      'notes' | 'sources' | 'communities' | 'principles' | 'tags' | 'entities' | 'relationships' | 'entityCoverage'
+    >,
     pendingRepair: PendingRepair[] | null,
   ) {
     super(message);
@@ -267,29 +511,44 @@ function persistPendingRepair(kb: KbRuntime, pendingRepair: PendingRepair[] | nu
  */
 export async function rebuildTextArtifacts(
   kb: KbRuntime,
-  startSeq: number,
+  startState: Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>,
 ): Promise<{
   notes: KbReindexNoteRecord[];
   sources: KbReindexSourceRecord[];
   communities: KbReindexCommunityRecord[];
   principles: Array<[string, string]>;
-  counts: Pick<ReindexResult, 'notes' | 'sources' | 'communities' | 'principles' | 'tags'>;
+  counts: Pick<
+    ReindexResult,
+    'notes' | 'sources' | 'communities' | 'principles' | 'tags' | 'entities' | 'relationships' | 'entityCoverage'
+  >;
   pendingRepair: PendingRepair[] | null;
 }> {
   const detectedAt = new Date().toISOString();
   const { entries: notes, pendingRepair: malformedNotes } = loadNotes(kb, detectedAt);
   const { entries: sources, pendingRepair: malformedSources } = loadSources(kb, detectedAt);
-  const communities = loadCommunities(kb);
   const principles = loadPrinciples(kb);
   const pendingRepair = [...malformedNotes, ...malformedSources];
-  const counts = buildCounts(notes, sources, communities, principles);
-  const index = buildKbIndex(notes, sources, communities, principles);
+  const rebuildInfo = detectTextArtifactRebuildInfo(kb);
+  const topologyIndex = buildKbIndex(kb, notes, sources, [], principles);
+  const topologyRefresh = prepareCommunityTopologyRefresh(kb, topologyIndex);
+  const communities = loadCommunities(kb);
+  const index = buildKbIndex(kb, notes, sources, communities, principles);
+  const counts = buildCounts(notes, sources, communities, principles, index);
+  const projectedCommunityState = topologyRefresh.shouldPersistState
+    ? {
+        ...readCurateState(kb),
+        communityTopologyHash: topologyRefresh.topologyHash,
+        communitySummaryTopologyHash: topologyRefresh.topologyHash,
+        communitySummaryInputFingerprints: topologyRefresh.nextSummaryInputFingerprints,
+      }
+    : readCurateState(kb);
+  const communityFresh = areCommunityDocumentsFreshForState(projectedCommunityState, kb, index);
   const { db, tokenizer } = await createOramaDb();
 
   await insertMultiple(db, [
-    ...notes.map(toOramaDocument),
-    ...sources.map(toOramaDocument),
-    ...communities.map(toOramaDocument),
+    ...notes.map((note) => toOramaDocument(note)),
+    ...sources.map((source) => toOramaDocument(source)),
+    ...communities.map((community) => toOramaDocument(community, { communityFresh })),
   ]);
   kb.persistIndexToDisk(index);
 
@@ -302,10 +561,11 @@ export async function rebuildTextArtifacts(
     throw new TextSnapshotRebuildError(reason, counts, pendingRepair.length === 0 ? null : pendingRepair);
   }
 
-  const nextState = kb.recordReindexSuccess(startSeq);
+  const nextState = kb.recordReindexSuccess(startState, rebuildInfo.externalMutation);
+  const expectedState = applyLaneMutation(startState, rebuildInfo.externalMutation);
   if (
-    nextState.mutationSeq !== startSeq ||
-    nextState.textIndexedSeq !== startSeq ||
+    nextState.contentSeq !== expectedState.contentSeq ||
+    nextState.metadataSeq !== expectedState.metadataSeq ||
     nextState.textStaleReason !== undefined
   ) {
     const reason = 'KB text index freshness changed during rebuild.';
@@ -315,6 +575,16 @@ export async function rebuildTextArtifacts(
   }
 
   kb.installRebuiltArtifacts(index, { db, tokenizer });
+
+  if (topologyRefresh.shouldPersistState) {
+    const currentState = readCurateState(kb);
+    writeCurateState(kb, {
+      ...currentState,
+      communityTopologyHash: topologyRefresh.topologyHash,
+      communitySummaryTopologyHash: topologyRefresh.topologyHash,
+      communitySummaryInputFingerprints: topologyRefresh.nextSummaryInputFingerprints,
+    });
+  }
 
   return {
     notes,
@@ -331,10 +601,10 @@ export async function rebuildTextArtifacts(
  */
 export async function rebuildTextArtifactsAndPersistRepairState(
   kb: KbRuntime,
-  startSeq: number,
+  startState: Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>,
 ): Promise<Awaited<ReturnType<typeof rebuildTextArtifacts>>> {
   try {
-    const result = await rebuildTextArtifacts(kb, startSeq);
+    const result = await rebuildTextArtifacts(kb, startState);
     persistPendingRepair(kb, result.pendingRepair);
     return result;
   } catch (error: unknown) {

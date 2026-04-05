@@ -6,7 +6,6 @@ import * as louvainModule from 'graphology-communities-louvain';
 import type { AbstractGraph, GraphConstructor } from 'graphology-types';
 import { unlinkIfExists } from '../shared/mcp-utils.js';
 import {
-  deriveNoteIdentity,
   extractBody,
   extractTitle,
   parseCommunityFrontmatter,
@@ -18,19 +17,25 @@ import { stripMdExt } from './paths.js';
 import { loadKbNote, loadKbSource } from './read.js';
 import type { KbRuntime } from './contracts.js';
 import { compareLocale, stripMarkdownCodeFences } from './validation.js';
-import { isNoteEntry, isSourceEntry, type CuratableEntry, type KbIndex } from './types.js';
+import {
+  communityEntryId,
+  parseKbEntryId,
+  isNoteEntry,
+  isSourceEntry,
+  type CuratableEntry,
+  type EntityGraph,
+  type KbIndex,
+} from './types.js';
 
 type TagGraphNodeAttributes = Record<string, never>;
 type TagGraphEdgeAttributes = { weight: number };
 type Louvain = (typeof import('graphology-communities-louvain'))['default'];
+type LouvainDetails = import('graphology-communities-louvain').DetailedLouvainOutput;
 
-const Graph = (
-  (GraphologyModule as unknown as { default?: GraphConstructor<TagGraphNodeAttributes, TagGraphEdgeAttributes> }).default ??
-  (GraphologyModule as unknown as GraphConstructor<TagGraphNodeAttributes, TagGraphEdgeAttributes>)
-);
-const louvain = (
-  (louvainModule as unknown as { default?: Louvain }).default ?? (louvainModule as unknown as Louvain)
-);
+const Graph =
+  (GraphologyModule as unknown as { default?: GraphConstructor<TagGraphNodeAttributes, TagGraphEdgeAttributes> })
+    .default ?? (GraphologyModule as unknown as GraphConstructor<TagGraphNodeAttributes, TagGraphEdgeAttributes>);
+const louvain = (louvainModule as unknown as { default?: Louvain }).default ?? (louvainModule as unknown as Louvain);
 
 export type TagGraphEdge = {
   left: string;
@@ -48,14 +53,19 @@ export type TagGraph = {
 export type DetectedCommunity = {
   slug: string;
   title: string;
-  level: 0;
+  level: number;
   members: string[];
+  parent?: string;
+  children?: string[];
 };
 
 export type ExistingGeneratedCommunity = {
   slug: string;
   title: string;
+  level: number;
   members: string[];
+  parent?: string;
+  children?: string[];
   summary?: string;
   createdAt: string;
   updatedAt: string;
@@ -64,11 +74,13 @@ export type ExistingGeneratedCommunity = {
 export type CommunityDocument = {
   slug: string;
   title: string;
+  level: number;
   members: string[];
+  parent?: string;
+  children?: string[];
   summary?: string;
   createdAt: string;
   updatedAt: string;
-  membershipFingerprint: string;
   content: string;
 };
 
@@ -79,13 +91,69 @@ type DetectCommunitiesOptions = {
 
 type BuildCommunityDocumentsOptions = {
   priorGeneratedCommunities: ExistingGeneratedCommunity[];
-  priorMembershipFingerprints?: Readonly<Record<string, string>>;
   today: string;
+};
+
+type DetectedCommunitySeed = Omit<DetectedCommunity, 'slug' | 'parent' | 'children'> & {
+  freshSlug: string;
+  key?: string;
+  parentKey?: string;
+  childKeys?: string[];
+  parentMembershipFingerprint?: string;
+};
+
+type RepresentativeDocument = {
+  kind: 'note' | 'source';
+  slug: string;
+  title: string;
+  overlapTags: string[];
+  excerpt: string;
+};
+
+type RepresentativeDocumentCandidate = Omit<RepresentativeDocument, 'excerpt'>;
+
+type ChildCommunitySummary = {
+  slug: string;
+  title: string;
+  members: string[];
+  summary: string;
+};
+
+type SummaryFingerprintCommunity = Pick<
+  ExistingGeneratedCommunity,
+  'slug' | 'title' | 'level' | 'members' | 'children' | 'summary'
+>;
+
+type PartitionGroup = {
+  id: number;
+  nodeIndices: number[];
+  members: string[];
+};
+
+type HierarchySeed = DetectedCommunitySeed & {
+  key: string;
+  childKeys: string[];
+};
+
+type ResolutionEvaluation = {
+  resolution: number;
+  details: LouvainDetails;
+  maxLeafSize: number;
+  targetPenalty: number;
+  midpointPenalty: number;
 };
 
 const COMMUNITY_SLUG_TAG_LIMIT = 3;
 const COMMUNITY_SUMMARY_DOCUMENT_LIMIT = 3;
 const COMMUNITY_SUMMARY_EXCERPT_MAX_CHARS = 800;
+const COMMUNITY_LOUVAIN_SEED = 0x5eed1234;
+const COMMUNITY_RESOLUTION_MIN = 0.5;
+const COMMUNITY_RESOLUTION_MAX = 5;
+const COMMUNITY_RESOLUTION_TARGET_MIN = 20;
+const COMMUNITY_RESOLUTION_TARGET_MAX = 30;
+const COMMUNITY_RESOLUTION_TARGET_MIDPOINT =
+  (COMMUNITY_RESOLUTION_TARGET_MIN + COMMUNITY_RESOLUTION_TARGET_MAX) / 2;
+const COMMUNITY_RESOLUTION_SWEEP_STEPS = 12;
 
 function uniqueSorted(values: string[]): string[] {
   return [...new Set(values)].sort(compareLocale);
@@ -101,6 +169,26 @@ function parseEdgeKey(key: string): [string, string] {
     throw new Error(`Invalid tag graph edge key: ${key}`);
   }
   return [left, right];
+}
+
+function computeTextFingerprint(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function communitySlugFromReference(reference: string): string {
+  const parsed = parseKbEntryId(reference);
+  if (parsed !== null && parsed.startsWith('community:')) {
+    return parsed.slice('community:'.length);
+  }
+  return reference;
+}
+
+function communityReferenceSortValue(reference: string): string {
+  return communitySlugFromReference(reference);
+}
+
+function memberFingerprintSignature(members: string[]): string {
+  return computeCommunityMembershipFingerprint(members);
 }
 
 function internalWeightedDegree(
@@ -139,7 +227,8 @@ function rankCommunityMembers(
 ): string[] {
   const memberSet = new Set(members);
   return [...members].sort((left, right) => {
-    const degreeDiff = internalWeightedDegree(right, memberSet, adjacency) - internalWeightedDegree(left, memberSet, adjacency);
+    const degreeDiff =
+      internalWeightedDegree(right, memberSet, adjacency) - internalWeightedDegree(left, memberSet, adjacency);
     if (degreeDiff !== 0) {
       return degreeDiff;
     }
@@ -180,44 +269,73 @@ function renderMembersSection(members: string[]): string {
   return ['## Members', '', ...members.map((member) => `- #${member}`)].join('\n');
 }
 
-export function graphTagsForEntry(entry: CuratableEntry): string[] {
-  const tags = uniqueSorted(entry.tags);
-  if (!isNoteEntry(entry)) {
-    return tags;
-  }
-
-  const domain = deriveNoteIdentity(entry.slug).domain;
-  return tags.filter((tag) => tag !== domain);
+function renderChildrenSection(children: string[]): string {
+  return ['## Children', '', ...children.map((child) => `- ${child}`)].join('\n');
 }
 
-export function buildTagCooccurrenceGraph(index: KbIndex): TagGraph {
+function normalizeEntityGraph(index: KbIndex): EntityGraph {
+  return {
+    entityMeta: index.entityMeta ?? {},
+    relationships: index.relationships ?? [],
+  };
+}
+
+function normalizeRelationshipEvidence(evidence: string[]): string[] {
+  return uniqueSorted(evidence);
+}
+
+export function seededRng(seed: number): () => number {
+  let state = seed >>> 0;
+
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4_294_967_296;
+  };
+}
+
+export function buildEntityRelationshipGraph(entityGraph: EntityGraph): TagGraph {
+  const sortedTags = Object.keys(entityGraph.entityMeta).sort(compareLocale);
+  const tagSet = new Set(sortedTags);
   const edgeWeights = new Map<string, number>();
-  const tags = new Set<string>();
 
-  for (const entry of Object.values(index.entries)) {
-    if (!isNoteEntry(entry) && !isSourceEntry(entry)) {
+  const sortedRelationships = [...entityGraph.relationships].sort((left, right) => {
+    const sourceCompare = compareLocale(left.source, right.source);
+    if (sourceCompare !== 0) {
+      return sourceCompare;
+    }
+    const targetCompare = compareLocale(left.target, right.target);
+    if (targetCompare !== 0) {
+      return targetCompare;
+    }
+    const typeCompare = compareLocale(left.type, right.type);
+    if (typeCompare !== 0) {
+      return typeCompare;
+    }
+    return compareLocale(left.description, right.description);
+  });
+
+  for (const relationship of sortedRelationships) {
+    if (
+      relationship.source === relationship.target ||
+      !tagSet.has(relationship.source) ||
+      !tagSet.has(relationship.target)
+    ) {
       continue;
     }
 
-    const entryTags = graphTagsForEntry(entry);
-    for (const tag of entryTags) {
-      tags.add(tag);
-    }
-
-    if (entryTags.length < 2) {
+    const evidence = normalizeRelationshipEvidence(relationship.evidence);
+    const contribution = evidence.length;
+    if (contribution === 0) {
       continue;
     }
 
-    const contribution = 1 / entryTags.length;
-    for (let leftIndex = 0; leftIndex < entryTags.length - 1; leftIndex += 1) {
-      for (let rightIndex = leftIndex + 1; rightIndex < entryTags.length; rightIndex += 1) {
-        const key = edgeKey(entryTags[leftIndex]!, entryTags[rightIndex]!);
-        edgeWeights.set(key, (edgeWeights.get(key) ?? 0) + contribution);
-      }
-    }
+    const key = edgeKey(relationship.source, relationship.target);
+    edgeWeights.set(key, (edgeWeights.get(key) ?? 0) + contribution);
   }
 
-  const sortedTags = [...tags].sort(compareLocale);
   const edges = [...edgeWeights.entries()]
     .map(([key, weight]) => {
       const [left, right] = parseEdgeKey(key);
@@ -256,160 +374,433 @@ export function buildTagCooccurrenceGraph(index: KbIndex): TagGraph {
   };
 }
 
+function buildEntityRelationshipGraphFromIndex(index: KbIndex): TagGraph {
+  return buildEntityRelationshipGraph(normalizeEntityGraph(index));
+}
+
 export function computeGraphFingerprint(graph: TagGraph): string {
-  const payload = graph.edges.map((edge) => `${edge.left}\t${edge.right}\t${formatEdgeWeight(edge.weight)}`).join('\n');
+  const payload = [
+    ...graph.tags.map((tag) => `N\t${tag}`),
+    ...graph.edges.map((edge) => `${edge.left}\t${edge.right}\t${formatEdgeWeight(edge.weight)}`),
+  ].join('\n');
   return createHash('sha256').update(payload).digest('hex');
 }
 
-export function computeCommunityMembershipFingerprint(members: string[]): string {
-  return createHash('sha256').update(uniqueSorted(members).join('\n')).digest('hex');
+function normalizeDendrogramLevels(
+  graph: TagGraph,
+  details: LouvainDetails,
+): number[][] {
+  const rawDendrogram = (details as LouvainDetails & { dendrogram: LouvainDetails['dendrogram'] | null }).dendrogram;
+  const levels = (rawDendrogram ?? []).map((level) => Array.from(level, (community) => Number(community)));
+  const meaningfulLevels = levels.length > 1 ? levels.slice(1) : levels;
+  const normalizedLevels = meaningfulLevels.length > 0 ? meaningfulLevels : [graph.tags.map((tag, index) => details.communities[tag] ?? index)];
+
+  const deduped: number[][] = [];
+  for (const level of normalizedLevels) {
+    const previous = deduped.at(-1);
+    if (
+      previous !== undefined &&
+      previous.length === level.length &&
+      previous.every((value, index) => value === level[index])
+    ) {
+      continue;
+    }
+    deduped.push(level);
+  }
+
+  return deduped;
 }
 
-function jaccardOverlap(left: string[], right: string[]): number {
-  const leftSet = new Set(left);
-  const rightSet = new Set(right);
+function partitionGroupsForLevel(nodes: string[], partition: number[]): PartitionGroup[] {
+  const membersByCommunity = new Map<number, { members: string[]; nodeIndices: number[] }>();
 
-  let intersection = 0;
-  for (const member of leftSet) {
-    if (rightSet.has(member)) {
-      intersection += 1;
+  partition.forEach((communityId, nodeIndex) => {
+    const member = nodes[nodeIndex];
+    if (member === undefined) {
+      return;
+    }
+
+    const existing = membersByCommunity.get(communityId);
+    if (existing === undefined) {
+      membersByCommunity.set(communityId, {
+        members: [member],
+        nodeIndices: [nodeIndex],
+      });
+      return;
+    }
+
+    existing.members.push(member);
+    existing.nodeIndices.push(nodeIndex);
+  });
+
+  return [...membersByCommunity.entries()]
+    .map(([id, group]) => ({
+      id,
+      nodeIndices: [...group.nodeIndices],
+      members: uniqueSorted(group.members),
+    }))
+    .sort((left, right) => {
+      const leftFingerprint = memberFingerprintSignature(left.members);
+      const rightFingerprint = memberFingerprintSignature(right.members);
+      const fingerprintCompare = compareLocale(leftFingerprint, rightFingerprint);
+      if (fingerprintCompare !== 0) {
+        return fingerprintCompare;
+      }
+      return left.id - right.id;
+    });
+}
+
+function buildHierarchySeeds(graph: TagGraph, details: LouvainDetails): HierarchySeed[] {
+  const nodes = graph.graph.nodes();
+  const partitions = normalizeDendrogramLevels(graph, details);
+  if (partitions.length === 0) {
+    return [];
+  }
+
+  const groupsByLevel = partitions.map((partition) => partitionGroupsForLevel(nodes, partition));
+  const seeds = new Map<string, HierarchySeed>();
+
+  for (let level = 0; level < groupsByLevel.length; level += 1) {
+    const groups = groupsByLevel[level] ?? [];
+    const nextPartition = partitions[level + 1];
+
+    for (const group of groups) {
+      const rankedMembers = rankCommunityMembers(group.members, graph.adjacency);
+      const parentGroup =
+        nextPartition === undefined
+          ? undefined
+          : groupsByLevel[level + 1]?.find(
+              (candidate) => candidate.id === nextPartition[group.nodeIndices[0] ?? 0],
+            );
+      const key = `${level}:${group.id}`;
+
+      seeds.set(key, {
+        key,
+        freshSlug: deriveCommunitySlug(rankedMembers),
+        title: deriveCommunityTitle(rankedMembers),
+        level,
+        members: group.members,
+        ...(parentGroup === undefined ? {} : { parentKey: `${level + 1}:${parentGroup.id}` }),
+        ...(parentGroup === undefined
+          ? {}
+          : { parentMembershipFingerprint: memberFingerprintSignature(parentGroup.members) }),
+        childKeys: [],
+      });
     }
   }
 
-  const union = new Set([...leftSet, ...rightSet]).size;
-  return union === 0 ? 0 : intersection / union;
+  for (const seed of seeds.values()) {
+    if (seed.parentKey === undefined) {
+      continue;
+    }
+
+    const parent = seeds.get(seed.parentKey);
+    if (parent !== undefined) {
+      parent.childKeys.push(seed.key);
+    }
+  }
+
+  return [...seeds.values()].sort((left, right) => {
+    if (left.level !== right.level) {
+      return left.level - right.level;
+    }
+
+    const fingerprintCompare = compareLocale(
+      memberFingerprintSignature(left.members),
+      memberFingerprintSignature(right.members),
+    );
+    if (fingerprintCompare !== 0) {
+      return fingerprintCompare;
+    }
+
+    return compareLocale(left.key, right.key);
+  });
 }
 
-type DetectedCommunitySeed = Omit<DetectedCommunity, 'slug'> & {
-  freshSlug: string;
-};
+function maxLeafCommunitySize(graph: TagGraph, details: LouvainDetails): number {
+  const firstLevel = normalizeDendrogramLevels(graph, details)[0];
+  if (firstLevel === undefined) {
+    return 0;
+  }
+
+  const counts = new Map<number, number>();
+  for (const communityId of firstLevel) {
+    counts.set(communityId, (counts.get(communityId) ?? 0) + 1);
+  }
+
+  return Math.max(...counts.values(), 0);
+}
+
+function evaluateResolution(graph: TagGraph, resolution: number): ResolutionEvaluation {
+  const details = louvain.detailed(graph.graph, {
+    getEdgeWeight: 'weight',
+    randomWalk: false,
+    rng: seededRng(COMMUNITY_LOUVAIN_SEED),
+    resolution,
+  });
+  const maxLeafSize = maxLeafCommunitySize(graph, details);
+  const targetPenalty =
+    maxLeafSize > COMMUNITY_RESOLUTION_TARGET_MAX
+      ? maxLeafSize - COMMUNITY_RESOLUTION_TARGET_MAX
+      : maxLeafSize < COMMUNITY_RESOLUTION_TARGET_MIN
+        ? COMMUNITY_RESOLUTION_TARGET_MIN - maxLeafSize
+        : 0;
+
+  return {
+    resolution,
+    details,
+    maxLeafSize,
+    targetPenalty,
+    midpointPenalty: Math.abs(maxLeafSize - COMMUNITY_RESOLUTION_TARGET_MIDPOINT),
+  };
+}
+
+function isBetterResolutionCandidate(
+  candidate: ResolutionEvaluation,
+  currentBest: ResolutionEvaluation | null,
+): boolean {
+  if (currentBest === null) {
+    return true;
+  }
+  if (candidate.targetPenalty !== currentBest.targetPenalty) {
+    return candidate.targetPenalty < currentBest.targetPenalty;
+  }
+  if (candidate.midpointPenalty !== currentBest.midpointPenalty) {
+    return candidate.midpointPenalty < currentBest.midpointPenalty;
+  }
+  if (candidate.details.modularity !== currentBest.details.modularity) {
+    return candidate.details.modularity > currentBest.details.modularity;
+  }
+  return candidate.resolution < currentBest.resolution;
+}
+
+function chooseBestResolution(graph: TagGraph): LouvainDetails {
+  let low = COMMUNITY_RESOLUTION_MIN;
+  let high = COMMUNITY_RESOLUTION_MAX;
+  let best: ResolutionEvaluation | null = null;
+
+  for (const resolution of [COMMUNITY_RESOLUTION_MIN, COMMUNITY_RESOLUTION_MAX]) {
+    const evaluation = evaluateResolution(graph, resolution);
+    if (isBetterResolutionCandidate(evaluation, best)) {
+      best = evaluation;
+    }
+  }
+
+  for (let step = 0; step < COMMUNITY_RESOLUTION_SWEEP_STEPS; step += 1) {
+    const resolution = (low + high) / 2;
+    const evaluation = evaluateResolution(graph, resolution);
+    if (isBetterResolutionCandidate(evaluation, best)) {
+      best = evaluation;
+    }
+
+    if (evaluation.maxLeafSize > COMMUNITY_RESOLUTION_TARGET_MAX) {
+      low = resolution;
+      continue;
+    }
+    if (evaluation.maxLeafSize < COMMUNITY_RESOLUTION_TARGET_MIN) {
+      high = resolution;
+      continue;
+    }
+
+    high = resolution;
+  }
+
+  if (best === null) {
+    throw new Error('Failed to evaluate Louvain resolution sweep.');
+  }
+
+  return best.details;
+}
+
+function buildCarryOverSignature(
+  community: Pick<DetectedCommunitySeed, 'level' | 'members' | 'parentMembershipFingerprint'>,
+): string {
+  return [
+    String(community.level),
+    memberFingerprintSignature(community.members),
+    community.parentMembershipFingerprint ?? '',
+  ].join('\u0000');
+}
+
+function priorParentMembershipFingerprint(
+  community: ExistingGeneratedCommunity,
+  priorBySlug: ReadonlyMap<string, ExistingGeneratedCommunity>,
+): string | undefined {
+  if (community.parent === undefined) {
+    return undefined;
+  }
+
+  const parentSlug = communitySlugFromReference(community.parent);
+  const parent = priorBySlug.get(parentSlug);
+  return parent === undefined ? undefined : memberFingerprintSignature(parent.members);
+}
+
+function assignCommunitySlugs(
+  communities: DetectedCommunitySeed[],
+  priorCommunities: ExistingGeneratedCommunity[],
+  options: { reservedSlugs?: ReadonlySet<string> } = {},
+): Array<DetectedCommunity & { key?: string; parentKey?: string; childKeys?: string[] }> {
+  const reservedSlugs = options.reservedSlugs ?? new Set<string>();
+  const priorBySlug = new Map(priorCommunities.map((community) => [community.slug, community] as const));
+  const reusablePriorSlugs = new Map<string, string[]>();
+
+  for (const priorCommunity of priorCommunities) {
+    const signature = buildCarryOverSignature({
+      level: priorCommunity.level,
+      members: priorCommunity.members,
+      parentMembershipFingerprint: priorParentMembershipFingerprint(priorCommunity, priorBySlug),
+    });
+    const existing = reusablePriorSlugs.get(signature);
+    if (existing === undefined) {
+      reusablePriorSlugs.set(signature, [priorCommunity.slug]);
+      continue;
+    }
+    existing.push(priorCommunity.slug);
+  }
+
+  for (const slugs of reusablePriorSlugs.values()) {
+    slugs.sort(compareLocale);
+  }
+
+  const usedSlugs = new Set<string>();
+  const assignedSlugs = new Map<string | number, string>();
+  const sortedCommunities = [...communities].sort((left, right) => {
+    if (left.level !== right.level) {
+      return left.level - right.level;
+    }
+    const leftSignature = buildCarryOverSignature(left);
+    const rightSignature = buildCarryOverSignature(right);
+    const signatureCompare = compareLocale(leftSignature, rightSignature);
+    if (signatureCompare !== 0) {
+      return signatureCompare;
+    }
+    return compareLocale(left.freshSlug, right.freshSlug);
+  });
+
+  for (const community of sortedCommunities) {
+    const key = community.key ?? `${community.level}:${memberFingerprintSignature(community.members)}`;
+    const reusable = reusablePriorSlugs.get(buildCarryOverSignature(community));
+    const carriedSlug = reusable?.shift();
+
+    assignedSlugs.set(
+      key,
+      ensureUniqueCommunitySlug(carriedSlug ?? community.freshSlug, usedSlugs, reservedSlugs),
+    );
+  }
+
+  return communities
+    .map((community, index) => {
+      const key = community.key ?? index;
+      return {
+        slug:
+          assignedSlugs.get(key) ??
+          ensureUniqueCommunitySlug(community.freshSlug, usedSlugs, reservedSlugs),
+        title: community.title,
+        level: community.level,
+        members: community.members,
+        ...(community.parentKey === undefined ? {} : { parentKey: community.parentKey }),
+        ...(community.childKeys === undefined ? {} : { childKeys: community.childKeys }),
+        ...(community.key === undefined ? {} : { key: community.key }),
+      };
+    })
+    .sort((left, right) => compareLocale(left.slug, right.slug));
+}
 
 export function carryOverSlugs(
   communities: DetectedCommunitySeed[],
   priorCommunities: ExistingGeneratedCommunity[],
   options: { reservedSlugs?: ReadonlySet<string> } = {},
 ): DetectedCommunity[] {
-  const reservedSlugs = options.reservedSlugs ?? new Set<string>();
-  const assignedPriorSlugByIndex = new Map<number, string>();
-  const candidateMatches = communities
-    .flatMap((community, communityIndex) =>
-      priorCommunities
-        .map((priorCommunity, priorIndex) => {
-          const score = jaccardOverlap(community.members, priorCommunity.members);
-          return {
-            communityIndex,
-            priorIndex,
-            score,
-            slug: priorCommunity.slug,
-          };
-        })
-        .filter((candidate) => candidate.score > 0),
-    )
-    .sort((left, right) => {
-      const scoreDiff = right.score - left.score;
-      if (scoreDiff !== 0) {
-        return scoreDiff;
-      }
+  return assignCommunitySlugs(communities, priorCommunities, options).map((community) => ({
+    slug: community.slug,
+    title: community.title,
+    level: community.level,
+    members: community.members,
+  }));
+}
 
-      const leftPrior = priorCommunities[left.priorIndex];
-      const rightPrior = priorCommunities[right.priorIndex];
-      if (leftPrior !== undefined && rightPrior !== undefined) {
-        const priorCompare = compareLocale(leftPrior.slug, rightPrior.slug);
-        if (priorCompare !== 0) {
-          return priorCompare;
-        }
-      }
-
-      const communityCompare = compareLocale(
-        communities[left.communityIndex]?.freshSlug ?? '',
-        communities[right.communityIndex]?.freshSlug ?? '',
-      );
-      if (communityCompare !== 0) {
-        return communityCompare;
-      }
-
-      return left.communityIndex - right.communityIndex;
-    });
-
-  const matchedCommunities = new Set<number>();
-  const matchedPriors = new Set<number>();
-  for (const candidate of candidateMatches) {
-    if (matchedCommunities.has(candidate.communityIndex) || matchedPriors.has(candidate.priorIndex)) {
-      continue;
-    }
-
-    matchedCommunities.add(candidate.communityIndex);
-    matchedPriors.add(candidate.priorIndex);
-    assignedPriorSlugByIndex.set(candidate.communityIndex, candidate.slug);
-  }
-
-  const finalSlugByIndex = new Map<number, string>();
-  const usedSlugs = new Set<string>();
-
-  for (const [communityIndex, carriedSlug] of [...assignedPriorSlugByIndex.entries()].sort((left, right) =>
-    compareLocale(left[1], right[1]),
-  )) {
-    finalSlugByIndex.set(communityIndex, ensureUniqueCommunitySlug(carriedSlug, usedSlugs, reservedSlugs));
-  }
-
-  communities.forEach((community, communityIndex) => {
-    if (finalSlugByIndex.has(communityIndex)) {
-      return;
-    }
-
-    finalSlugByIndex.set(communityIndex, ensureUniqueCommunitySlug(community.freshSlug, usedSlugs, reservedSlugs));
-  });
-
-  return communities
-    .map((community, communityIndex) => ({
-      slug: finalSlugByIndex.get(communityIndex) ?? ensureUniqueCommunitySlug(community.freshSlug, usedSlugs, reservedSlugs),
-      title: community.title,
-      level: 0 as const,
-      members: community.members,
-    }))
-    .sort((left, right) => compareLocale(left.slug, right.slug));
+function detectCommunitiesForHash(
+  graph: TagGraph,
+): Array<Pick<DetectedCommunity, 'slug' | 'level' | 'members' | 'parent' | 'children'>> {
+  return detectCommunities(graph).map((community) => ({
+    slug: community.slug,
+    level: community.level,
+    members: community.members,
+    ...(community.parent === undefined ? {} : { parent: community.parent }),
+    ...(community.children === undefined ? {} : { children: community.children }),
+  }));
 }
 
 export function detectCommunities(graph: TagGraph, options: DetectCommunitiesOptions = {}): DetectedCommunity[] {
-  if (graph.graph.order < 2 || graph.graph.size === 0) {
+  if (graph.graph.order === 0) {
     return [];
   }
 
-  const partition: Record<string, number> = louvain(graph.graph, {
-    getEdgeWeight: 'weight',
-    randomWalk: false,
-  });
-  const membersByCommunity = new Map<number, string[]>();
-  for (const [node, community] of Object.entries(partition)) {
-    const members = membersByCommunity.get(community);
-    if (members === undefined) {
-      membersByCommunity.set(community, [node]);
-      continue;
-    }
-    members.push(node);
+  const details = chooseBestResolution(graph);
+  const hierarchySeeds = buildHierarchySeeds(graph, details);
+  if (hierarchySeeds.length === 0) {
+    return [];
   }
 
-  const seeds = [...membersByCommunity.values()]
-    .map((members) => uniqueSorted(members))
-    .filter((members) => members.length >= 2)
-    .map((members) => {
-      const rankedMembers = rankCommunityMembers(members, graph.adjacency);
-      return {
-        freshSlug: deriveCommunitySlug(rankedMembers),
-        title: deriveCommunityTitle(rankedMembers),
-        level: 0 as const,
-        members,
-      };
-    });
-
-  return carryOverSlugs(seeds, options.priorCommunities ?? [], {
+  const assignedCommunities = assignCommunitySlugs(hierarchySeeds, options.priorCommunities ?? [], {
     reservedSlugs: options.reservedSlugs,
   });
+  const slugByKey = new Map(
+    assignedCommunities
+      .filter((community): community is typeof community & { key: string } => typeof community.key === 'string')
+      .map((community) => [community.key, community.slug] as const),
+  );
+
+  return assignedCommunities
+    .map((community) => ({
+      slug: community.slug,
+      title: community.title,
+      level: community.level,
+      members: community.members,
+      ...(community.parentKey === undefined
+        ? {}
+        : { parent: communityEntryId(slugByKey.get(community.parentKey) ?? community.parentKey) }),
+      ...(community.childKeys === undefined || community.childKeys.length === 0
+        ? {}
+        : {
+            children: community.childKeys
+              .map((childKey) => slugByKey.get(childKey))
+              .filter((slug): slug is string => slug !== undefined)
+              .sort(compareLocale)
+              .map((slug) => communityEntryId(slug)),
+          }),
+    }))
+    .sort((left, right) => {
+      if (left.level !== right.level) {
+        return left.level - right.level;
+      }
+      return compareLocale(left.slug, right.slug);
+    });
 }
 
-export function loadExistingCommunityState(
-  kb: Pick<KbRuntime, 'communitiesDir'>,
-): {
+export function computeCommunityTopologyFingerprint(index: KbIndex, graph = buildEntityRelationshipGraphFromIndex(index)): string {
+  const communities = detectCommunitiesForHash(graph);
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        graph: computeGraphFingerprint(graph),
+        communities: communities.map((community) => ({
+          slug: community.slug,
+          level: community.level,
+          members: community.members,
+          ...(community.parent === undefined ? {} : { parent: community.parent }),
+          ...(community.children === undefined ? {} : { children: community.children }),
+        })),
+      }),
+    )
+    .digest('hex');
+}
+
+export function computeCommunityMembershipFingerprint(members: string[]): string {
+  return createHash('sha256').update(uniqueSorted(members).join('\n')).digest('hex');
+}
+
+export function loadExistingCommunityState(kb: Pick<KbRuntime, 'communitiesDir'>): {
   generated: ExistingGeneratedCommunity[];
   reservedSlugs: Set<string>;
 } {
@@ -426,7 +817,10 @@ export function loadExistingCommunityState(
       generated.push({
         slug,
         title: extractTitle(raw),
+        level: frontmatter.level,
         members: parseMembersFromBody(body),
+        ...(frontmatter.parent === undefined ? {} : { parent: frontmatter.parent }),
+        ...(frontmatter.children === undefined ? {} : { children: frontmatter.children }),
         summary: parseSummaryFromBody(body),
         createdAt: frontmatter.createdAt,
         updatedAt: frontmatter.updatedAt,
@@ -442,6 +836,9 @@ export function loadExistingCommunityState(
 export function renderCommunityDocument(document: {
   title: string;
   members: string[];
+  level?: number;
+  parent?: string;
+  children?: string[];
   summary?: string;
   createdAt: string;
   updatedAt: string;
@@ -449,14 +846,19 @@ export function renderCommunityDocument(document: {
   const frontmatter = serializeCommunityFrontmatter({
     createdAt: document.createdAt,
     updatedAt: document.updatedAt,
+    level: document.level,
+    ...(document.parent === undefined ? {} : { parent: document.parent }),
+    ...(document.children === undefined ? {} : { children: document.children }),
   });
-  const summarySection =
-    document.summary === undefined ? '' : `## Summary\n\n${document.summary}\n\n`;
+  const summarySection = document.summary === undefined ? '' : `## Summary\n\n${document.summary}\n\n`;
+  const childrenSection =
+    document.children === undefined || document.children.length === 0
+      ? ''
+      : `\n\n${renderChildrenSection(document.children)}`;
 
-  return `${frontmatter}# ${document.title}\n\n${summarySection}${renderMembersSection(document.members)}\n`;
+  return `${frontmatter}# ${document.title}\n\n${summarySection}${renderMembersSection(document.members)}${childrenSection}\n`;
 }
 
-/** Parse members from the `## Members` body section. */
 export function parseMembersFromBody(body: string): string[] {
   const membersMatch = body.match(/## Members\s*\n([\s\S]*?)(?:\n##|\n*$)/);
   if (!membersMatch) return [];
@@ -464,10 +866,9 @@ export function parseMembersFromBody(body: string): string[] {
     .split('\n')
     .map((line) => line.replace(/^-\s*#?/, '').trim())
     .filter(Boolean)
-    .sort();
+    .sort(compareLocale);
 }
 
-/** Parse optional summary from the `## Summary` body section. */
 export function parseSummaryFromBody(body: string): string | undefined {
   const summaryMatch = body.match(/## Summary\s*\n\n([\s\S]*?)(?:\n\n## |\n*$)/);
   if (!summaryMatch) return undefined;
@@ -475,47 +876,36 @@ export function parseSummaryFromBody(body: string): string | undefined {
   return text || undefined;
 }
 
-function priorMembershipFingerprintForCommunity(
-  community: ExistingGeneratedCommunity | undefined,
-  priorMembershipFingerprints?: Readonly<Record<string, string>>,
-): string | undefined {
-  if (community === undefined) {
-    return undefined;
-  }
-
-  return priorMembershipFingerprints?.[community.slug] ?? computeCommunityMembershipFingerprint(community.members);
-}
-
 export function buildCommunityDocuments(
   communities: DetectedCommunity[],
   options: BuildCommunityDocumentsOptions,
 ): CommunityDocument[] {
-  const priorBySlug = new Map(options.priorGeneratedCommunities.map((community) => [community.slug, community] as const));
+  const priorBySlug = new Map(
+    options.priorGeneratedCommunities.map((community) => [community.slug, community] as const),
+  );
 
   return communities.map((community) => {
     const priorCommunity = priorBySlug.get(community.slug);
-    const membershipFingerprint = computeCommunityMembershipFingerprint(community.members);
-    const priorMembershipFingerprint = priorMembershipFingerprintForCommunity(
-      priorCommunity,
-      options.priorMembershipFingerprints,
-    );
-    const preserveSummary =
-      priorCommunity?.summary !== undefined && priorMembershipFingerprint === membershipFingerprint;
     const createdAt = priorCommunity?.createdAt ?? options.today;
+    const summary = priorCommunity?.summary;
     const title = community.title;
-    const summary = preserveSummary ? priorCommunity.summary : undefined;
 
     return {
       slug: community.slug,
       title,
+      level: community.level,
       members: community.members,
+      ...(community.parent === undefined ? {} : { parent: community.parent }),
+      ...(community.children === undefined ? {} : { children: community.children }),
       ...(summary === undefined ? {} : { summary }),
       createdAt,
       updatedAt: options.today,
-      membershipFingerprint,
       content: renderCommunityDocument({
         title,
         members: community.members,
+        level: community.level,
+        ...(community.parent === undefined ? {} : { parent: community.parent }),
+        ...(community.children === undefined ? {} : { children: community.children }),
         ...(summary === undefined ? {} : { summary }),
         createdAt,
         updatedAt: options.today,
@@ -560,16 +950,6 @@ function trimSummaryExcerpt(body: string, maxChars: number): string {
 
   return normalized.slice(0, maxChars).trimEnd();
 }
-
-type RepresentativeDocument = {
-  kind: 'note' | 'source';
-  slug: string;
-  title: string;
-  overlapTags: string[];
-  excerpt: string;
-};
-
-type RepresentativeDocumentCandidate = Omit<RepresentativeDocument, 'excerpt'>;
 
 function selectRepresentativeDocuments(
   kb: Pick<KbRuntime, 'notePath' | 'sourcePath'>,
@@ -626,30 +1006,188 @@ function selectRepresentativeDocuments(
   });
 }
 
-function buildCommunitySummaryPrompt(community: DetectedCommunity, documents: RepresentativeDocument[]): string {
-  const memberLines = community.members.map((member) => `- ${member}`);
-  const excerptBlocks = documents.map(
-    (document) =>
-      [
-        `## ${document.kind}:${document.slug}`,
-        `Title: ${document.title}`,
-        `Overlap tags: ${document.overlapTags.join(', ')}`,
-        'Excerpt:',
-        document.excerpt,
-      ].join('\n'),
+function representativeDocumentFingerprint(document: RepresentativeDocument): string {
+  return computeTextFingerprint(
+    JSON.stringify({
+      kind: document.kind,
+      slug: document.slug,
+      overlapTags: document.overlapTags,
+      excerpt: document.excerpt,
+    }),
+  );
+}
+
+function leafSummaryFingerprintPayload(
+  community: Pick<DetectedCommunity, 'members'>,
+  index: KbIndex,
+  documents: RepresentativeDocument[],
+): string {
+  const entityMeta = index.entityMeta ?? {};
+
+  return JSON.stringify({
+    kind: 'leaf',
+    members: uniqueSorted(community.members),
+    entityMeta: uniqueSorted(community.members).map((member) => {
+      const meta = entityMeta[member];
+      return {
+        member,
+        type: meta?.type ?? '',
+        description: meta?.description ?? '',
+        aliases: [...(meta?.aliases ?? [])].sort(compareLocale),
+      };
+    }),
+    excerpts: documents.map((document) => ({
+      kind: document.kind,
+      slug: document.slug,
+      fingerprint: representativeDocumentFingerprint(document),
+    })),
+  });
+}
+
+function summaryTextFingerprint(summary: string | undefined): string {
+  return computeTextFingerprint((summary ?? '').trim());
+}
+
+function childCommunitiesForCommunity(
+  community: Pick<SummaryFingerprintCommunity, 'children'>,
+  communitiesBySlug: ReadonlyMap<string, SummaryFingerprintCommunity>,
+): ChildCommunitySummary[] {
+  const childReferences = [...(community.children ?? [])].sort((left, right) =>
+    compareLocale(communityReferenceSortValue(left), communityReferenceSortValue(right)),
+  );
+
+  return childReferences.map((reference) => {
+    const slug = communitySlugFromReference(reference);
+    const child = communitiesBySlug.get(slug);
+    if (child === undefined) {
+      throw new Error(`Missing child community ${reference} while computing parent summary dependencies.`);
+    }
+    if (child.summary === undefined) {
+      throw new Error(`Missing child summary for ${reference} while computing parent summary dependencies.`);
+    }
+
+    return {
+      slug: child.slug,
+      title: child.title,
+      members: child.members,
+      summary: child.summary,
+    };
+  });
+}
+
+function parentSummaryFingerprintPayload(
+  community: Pick<DetectedCommunity, 'members'>,
+  childCommunities: ChildCommunitySummary[],
+): string {
+  return JSON.stringify({
+    kind: 'parent',
+    members: uniqueSorted(community.members),
+    children: childCommunities.map((child) => ({
+      slug: child.slug,
+      summaryFingerprint: summaryTextFingerprint(child.summary),
+    })),
+  });
+}
+
+export function computeCommunitySummaryInputFingerprintForCommunity(
+  community: SummaryFingerprintCommunity,
+  communitiesBySlug: ReadonlyMap<string, SummaryFingerprintCommunity>,
+  kb: Pick<KbRuntime, 'notePath' | 'sourcePath'>,
+  index: KbIndex,
+): string {
+  if (community.children === undefined || community.children.length === 0) {
+    return computeTextFingerprint(
+      leafSummaryFingerprintPayload(community, index, selectRepresentativeDocuments(kb, index, community.members)),
+    );
+  }
+
+  return computeTextFingerprint(
+    parentSummaryFingerprintPayload(community, childCommunitiesForCommunity(community, communitiesBySlug)),
+  );
+}
+
+export function computeCommunitySummaryInputFingerprints(
+  communities: SummaryFingerprintCommunity[],
+  kb: Pick<KbRuntime, 'notePath' | 'sourcePath'>,
+  index: KbIndex,
+): Record<string, string> {
+  const communitiesBySlug = new Map(communities.map((community) => [community.slug, community] as const));
+  const orderedCommunities = [...communities].sort((left, right) => {
+    if (left.level !== right.level) {
+      return left.level - right.level;
+    }
+    return compareLocale(left.slug, right.slug);
+  });
+
+  return Object.fromEntries(
+    orderedCommunities.map((community) => [
+      community.slug,
+      computeCommunitySummaryInputFingerprintForCommunity(community, communitiesBySlug, kb, index),
+    ]),
+  );
+}
+
+function buildLeafCommunitySummaryPrompt(
+  community: Pick<DetectedCommunity, 'members'>,
+  index: KbIndex,
+  documents: RepresentativeDocument[],
+): string {
+  const entityMeta = index.entityMeta ?? {};
+  const entityLines = uniqueSorted(community.members).map((member) => {
+    const meta = entityMeta[member];
+    const typeSegment = meta?.type === undefined ? '' : ` (${meta.type})`;
+    const description = meta?.description ?? 'No stored description.';
+    return `- ${member}${typeSegment}: ${description}`;
+  });
+  const excerptBlocks = documents.map((document) =>
+    [
+      `## ${document.kind}:${document.slug}`,
+      `Title: ${document.title}`,
+      `Overlap entities: ${document.overlapTags.join(', ')}`,
+      'Excerpt:',
+      document.excerpt,
+    ].join('\n'),
   );
 
   return [
     'Return plain text only. No heading, bullets, or code fences.',
     'Write a concise KB community summary in 2-3 sentences.',
-    'Base it only on the member tags and representative excerpts below.',
+    'Base it only on the entity descriptions and representative excerpts below.',
     'If the excerpts are mixed, describe the shared thread conservatively and do not invent unsupported claims.',
     '',
-    'Community members:',
-    ...memberLines,
+    'Entity descriptions:',
+    ...entityLines,
     '',
     'Representative excerpts:',
     ...excerptBlocks,
+  ].join('\n');
+}
+
+function buildParentCommunitySummaryPrompt(
+  community: Pick<DetectedCommunity, 'members'>,
+  childCommunities: ChildCommunitySummary[],
+): string {
+  const childBlocks = childCommunities.map((child) =>
+    [
+      `## ${child.slug}`,
+      `Title: ${child.title}`,
+      `Members: ${child.members.join(', ')}`,
+      'Summary:',
+      child.summary,
+    ].join('\n'),
+  );
+
+  return [
+    'Return plain text only. No heading, bullets, or code fences.',
+    'Write a concise KB community summary in 2-3 sentences.',
+    'Base it only on the child community summaries below.',
+    'Synthesize the shared abstraction across the children without inventing unsupported details.',
+    '',
+    'Parent members:',
+    ...community.members.map((member) => `- ${member}`),
+    '',
+    'Child community summaries:',
+    ...childBlocks,
   ].join('\n');
 }
 
@@ -662,21 +1200,40 @@ export async function generateCommunitySummary(options: {
   community: DetectedCommunity;
   kb: Pick<KbRuntime, 'notePath' | 'sourcePath'>;
   index: KbIndex;
+  childCommunities?: ChildCommunitySummary[];
   priorCommunity?: ExistingGeneratedCommunity;
-  priorMembershipFingerprint?: string;
+  priorSummaryInputFingerprint?: string;
   runClaude: (prompt: string, extraArgs?: string[], signal?: AbortSignal) => Promise<string>;
   signal?: AbortSignal;
 }): Promise<string | undefined> {
-  const membershipFingerprint = computeCommunityMembershipFingerprint(options.community.members);
+  const childCommunities = options.childCommunities?.length ? [...options.childCommunities] : undefined;
+  const summaryInputFingerprint =
+    childCommunities === undefined
+      ? computeTextFingerprint(
+          leafSummaryFingerprintPayload(
+            options.community,
+            options.index,
+            selectRepresentativeDocuments(options.kb, options.index, options.community.members),
+          ),
+        )
+      : computeTextFingerprint(parentSummaryFingerprintPayload(options.community, childCommunities));
+
   if (
     options.priorCommunity?.summary !== undefined &&
-    options.priorMembershipFingerprint === membershipFingerprint
+    options.priorSummaryInputFingerprint === summaryInputFingerprint
   ) {
     return options.priorCommunity.summary;
   }
 
-  const representativeDocuments = selectRepresentativeDocuments(options.kb, options.index, options.community.members);
-  const prompt = buildCommunitySummaryPrompt(options.community, representativeDocuments);
+  const prompt =
+    childCommunities === undefined
+      ? buildLeafCommunitySummaryPrompt(
+          options.community,
+          options.index,
+          selectRepresentativeDocuments(options.kb, options.index, options.community.members),
+        )
+      : buildParentCommunitySummaryPrompt(options.community, childCommunities);
+
   const rawSummary = await options.runClaude(prompt, undefined, options.signal);
   const summary = normalizeGeneratedSummary(rawSummary);
   if (summary === undefined) {

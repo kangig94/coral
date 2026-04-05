@@ -35,8 +35,9 @@ function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
     activeClaim: null,
     pendingDiscoveries: [],
     pendingRepair: null,
-    communityGraphHash: undefined,
-    communityMembershipFingerprints: undefined,
+    communityTopologyHash: undefined,
+    communitySummaryTopologyHash: undefined,
+    communitySummaryInputFingerprints: undefined,
     consecutiveFailures: 0,
     initialized: false,
     migrationVersion: 0,
@@ -207,8 +208,9 @@ describe('curate state', () => {
           detectedAt: '2026-03-25T11:57:00.000Z',
         },
       ],
-      communityGraphHash: 'graph-hash',
-      communityMembershipFingerprints: {
+      communityTopologyHash: 'graph-hash',
+      communitySummaryTopologyHash: 'graph-hash',
+      communitySummaryInputFingerprints: {
         'graph-rag': 'members-hash',
       },
       consecutiveFailures: 2,
@@ -491,6 +493,8 @@ describe('curate state', () => {
       principles: {},
     });
     runtime.writeIndexState({
+      contentSeq: 8,
+      metadataSeq: 8,
       mutationSeq: 8,
       textIndexedSeq: 8,
       vector: { bySpec: {} },
@@ -519,8 +523,10 @@ describe('curate state', () => {
       principles: {},
     });
     expect(runtime.readIndexState()).toEqual({
+      contentSeq: 13,
+      metadataSeq: 13,
       mutationSeq: 13,
-      textIndexedSeq: 8,
+      textIndexedSeq: 13,
       vector: { bySpec: {} },
     });
     expect(readCurateState(runtime).initialized).toBe(true);
@@ -554,6 +560,8 @@ describe('curate state', () => {
       principles: {},
     });
     runtime.writeIndexState({
+      contentSeq: 5,
+      metadataSeq: 5,
       mutationSeq: 5,
       textIndexedSeq: 5,
       vector: { bySpec: {} },
@@ -573,8 +581,10 @@ describe('curate state', () => {
       },
     ]);
     expect(runtime.readIndexState()).toEqual({
+      contentSeq: 31,
+      metadataSeq: 31,
       mutationSeq: 31,
-      textIndexedSeq: 5,
+      textIndexedSeq: 31,
       vector: { bySpec: {} },
     });
   });
@@ -631,6 +641,8 @@ describe('curate state', () => {
       principles: {},
     });
     runtime.writeIndexState({
+      contentSeq: 6,
+      metadataSeq: 6,
       mutationSeq: 6,
       textIndexedSeq: 6,
       vector: { bySpec: {} },
@@ -708,6 +720,8 @@ describe('curate state', () => {
       principles: {},
     });
     runtime.writeIndexState({
+      contentSeq: 20,
+      metadataSeq: 20,
       mutationSeq: 20,
       textIndexedSeq: 18,
       vector: { bySpec: {} },
@@ -734,8 +748,10 @@ describe('curate state', () => {
       principles: {},
     });
     expect(runtime.readIndexState()).toEqual({
+      contentSeq: 21,
+      metadataSeq: 21,
       mutationSeq: 21,
-      textIndexedSeq: 18,
+      textIndexedSeq: 21,
       vector: { bySpec: {} },
     });
   });
@@ -751,6 +767,8 @@ describe('curate state', () => {
       principles: {},
     });
     runtime.writeIndexState({
+      contentSeq: 4,
+      metadataSeq: 4,
       mutationSeq: 4,
       textIndexedSeq: 4,
       vector: { bySpec: {} },
@@ -776,6 +794,8 @@ describe('curate state', () => {
       principles: {},
     });
     expect(runtime.readIndexState()).toEqual({
+      contentSeq: 4,
+      metadataSeq: 4,
       mutationSeq: 4,
       textIndexedSeq: 4,
       vector: { bySpec: {} },
@@ -797,6 +817,8 @@ describe('curate state', () => {
       principles: {},
     });
     runtime.writeIndexState({
+      contentSeq: 0,
+      metadataSeq: 0,
       mutationSeq: 0,
       textIndexedSeq: 0,
       vector: { bySpec: {} },
@@ -817,6 +839,7 @@ describe('curate state', () => {
 
     expect(readCurateState(runtime)).toEqual(
       createCurateState({
+        processedThrough: cursor('coral-malformed', 1),
         initialized: true,
         migrationVersion: CURATE_STATE_MIGRATION_VERSION,
       }),

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
-import { communityEntryId, noteEntryId, sourceEntryId } from '../types.js';
+import { communityEntryId, noteEntryId, sourceEntryId, type EntityGraph } from '../types.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -19,15 +19,17 @@ vi.mock('node:os', async () => {
 
 async function loadKbModules() {
   vi.resetModules();
-  const [{ reindex }, runtime, paths] = await Promise.all([
+  const [{ reindex }, runtime, paths, read] = await Promise.all([
     import('../reindex.js'),
     import('../runtime.js'),
     import('../paths.js'),
+    import('../read.js'),
   ]);
   return {
     reindex,
     createKbRuntime: runtime.createKbRuntime,
     paths,
+    readEntry: read.readEntry,
   };
 }
 
@@ -144,14 +146,21 @@ Make the contract explicit first.
   });
 
   it('indexes communities as first-class entries during text rebuild', async () => {
-    const { reindex, createKbRuntime, paths } = await loadKbModules();
+    const { reindex, createKbRuntime, paths, readEntry } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.communitiesDir(), { recursive: true });
-    writeFileSync(
-      join(paths.communitiesDir(), 'graph-rag.md'),
-      `---
+
+    const writeCommunityFile = () => {
+      writeFileSync(
+        join(paths.communitiesDir(), 'graph-rag.md'),
+        `---
 createdAt: 2026-04-02
 updatedAt: 2026-04-02
+level: 1
+parent: community:platform-architecture
+children:
+  - community:graph-rag-leaf
+  - community:retrieval-leaf
 ---
 # Graph RAG
 
@@ -163,8 +172,15 @@ Shared retrieval patterns.
 - #graph-rag
 - #retrieval
 `,
-      'utf-8',
-    );
+        'utf-8',
+      );
+    };
+
+    // First reindex establishes the empty-graph topology hash.
+    // Then re-write the community file (topology refresh deletes it).
+    // Second reindex indexes the community (topology hash now matches).
+    await reindex(kb);
+    writeCommunityFile();
 
     const result = await reindex(kb);
 
@@ -182,8 +198,10 @@ Shared retrieval patterns.
           kind: 'community',
           slug: 'graph-rag',
           title: 'Graph RAG',
-          level: 0,
+          level: 1,
           members: ['graph-rag', 'retrieval'],
+          parent: 'community:platform-architecture',
+          children: ['community:graph-rag-leaf', 'community:retrieval-leaf'],
           summary: 'Shared retrieval patterns.',
           createdAt: '2026-04-02',
           updatedAt: '2026-04-02',
@@ -191,6 +209,276 @@ Shared retrieval patterns.
       },
       principles: {},
     });
+    expect(readEntry({ note: 'communities:graph-rag' })).toEqual({
+      kind: 'community',
+      note: 'graph-rag',
+      title: 'Graph RAG',
+      content: `## Summary
+
+Shared retrieval patterns.
+
+## Members
+- #graph-rag
+- #retrieval`,
+      tags: [],
+      principles: [],
+      members: ['graph-rag', 'retrieval'],
+      level: 1,
+      parent: 'community:platform-architecture',
+      children: ['community:graph-rag-leaf', 'community:retrieval-leaf'],
+      summary: 'Shared retrieval patterns.',
+      updatedAt: '2026-04-02',
+    });
+  });
+
+  it('loads the entity graph during reindex and reports entity coverage', async () => {
+    const { reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(), { recursive: true });
+    writeFileSync(
+      join(paths.notesDir(), 'graph-rag-note.md'),
+      `---
+tags: [graph-rag, retrieval]
+principles: []
+source:
+  - kangig94/coral
+createdAt: 2026-04-02
+updatedAt: 2026-04-02
+entrySeq: 1
+---
+# Graph RAG Note
+
+Body.
+`,
+      'utf-8',
+    );
+
+    const graph: EntityGraph = {
+      entityMeta: {
+        'graph-rag': {
+          type: 'concept',
+          description: 'Graph-backed retrieval.',
+        },
+        retrieval: {
+          type: 'operation',
+          description: 'Retrieval workflows.',
+        },
+      },
+      relationships: [
+        {
+          source: 'graph-rag',
+          target: 'retrieval',
+          type: 'enables',
+          description: 'Graph structure supports retrieval.',
+          evidence: ['note:graph-rag-note'],
+        },
+      ],
+    };
+    kb.writeEntityGraph(graph);
+
+    const result = await reindex(kb);
+
+    expect(result).toMatchObject({
+      notes: 1,
+      entities: 2,
+      relationships: 1,
+      entityCoverage: 1,
+      mode: 'text',
+    });
+    expect(kb.readIndex()).toMatchObject({
+      entityMeta: graph.entityMeta,
+      relationships: graph.relationships,
+    });
+  });
+
+  it('repairs entity-graph-driven topology on ensureIndex after a manual entity graph edit', async () => {
+    const { reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(), { recursive: true });
+
+    writeFileSync(
+      join(paths.notesDir(), 'graph-rag-note.md'),
+      `---
+tags: [graph-rag, retrieval, indexing]
+principles: []
+source:
+  - kangig94/coral
+createdAt: 2026-04-02
+updatedAt: 2026-04-02
+entrySeq: 1
+---
+# Graph RAG Note
+
+Body.
+`,
+      'utf-8',
+    );
+
+    kb.writeEntityGraph({
+      entityMeta: {
+        'graph-rag': { type: 'concept', description: 'Graph-backed retrieval.' },
+        retrieval: { type: 'operation', description: 'Retrieval workflows.' },
+        indexing: { type: 'operation', description: 'Index maintenance.' },
+      },
+      relationships: [
+        {
+          source: 'graph-rag',
+          target: 'retrieval',
+          type: 'enables',
+          description: 'Graph structure supports retrieval.',
+          evidence: ['note:graph-rag-note'],
+        },
+        {
+          source: 'retrieval',
+          target: 'indexing',
+          type: 'requires',
+          description: 'Retrieval depends on indexes.',
+          evidence: ['note:graph-rag-note'],
+        },
+      ],
+    });
+
+    await reindex(kb);
+
+    const editedGraph: EntityGraph = {
+      entityMeta: {
+        'graph-rag': { type: 'concept', description: 'Graph-backed retrieval.' },
+        'vector-store': { type: 'component', description: 'Vector storage.' },
+        reranking: { type: 'operation', description: 'Result reranking.' },
+      },
+      relationships: [
+        {
+          source: 'graph-rag',
+          target: 'vector-store',
+          type: 'requires',
+          description: 'Graph RAG needs vector storage.',
+          evidence: ['note:graph-rag-note'],
+        },
+        {
+          source: 'vector-store',
+          target: 'reranking',
+          type: 'enables',
+          description: 'Vector storage supports reranking.',
+          evidence: ['note:graph-rag-note'],
+        },
+      ],
+    };
+
+    writeFileSync(kb.entityGraphPath(), `${JSON.stringify(editedGraph, null, 2)}\n`, 'utf-8');
+    setMtime(kb.entityGraphPath(), new Date(Date.now() + 60_000));
+
+    const index = await kb.ensureIndex();
+    const communities = Object.values(index.entries).filter((entry) => entry.kind === 'community');
+
+    expect(index.entityMeta).toEqual(editedGraph.entityMeta);
+    expect(index.relationships).toEqual(editedGraph.relationships);
+    expect(
+      communities.some(
+        (community) =>
+          community.members.includes('graph-rag') &&
+          community.members.includes('vector-store') &&
+          community.members.includes('reranking'),
+      ),
+    ).toBe(true);
+  });
+
+  it('repairs entity-graph-driven topology on reindex after a manual entity graph edit', async () => {
+    const { reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(), { recursive: true });
+
+    writeFileSync(
+      join(paths.notesDir(), 'graph-rag-note.md'),
+      `---
+tags: [graph-rag, retrieval, indexing]
+principles: []
+source:
+  - kangig94/coral
+createdAt: 2026-04-02
+updatedAt: 2026-04-02
+entrySeq: 1
+---
+# Graph RAG Note
+
+Body.
+`,
+      'utf-8',
+    );
+
+    kb.writeEntityGraph({
+      entityMeta: {
+        'graph-rag': { type: 'concept', description: 'Graph-backed retrieval.' },
+        retrieval: { type: 'operation', description: 'Retrieval workflows.' },
+        indexing: { type: 'operation', description: 'Index maintenance.' },
+      },
+      relationships: [
+        {
+          source: 'graph-rag',
+          target: 'retrieval',
+          type: 'enables',
+          description: 'Graph structure supports retrieval.',
+          evidence: ['note:graph-rag-note'],
+        },
+        {
+          source: 'retrieval',
+          target: 'indexing',
+          type: 'requires',
+          description: 'Retrieval depends on indexes.',
+          evidence: ['note:graph-rag-note'],
+        },
+      ],
+    });
+
+    await reindex(kb);
+
+    const editedGraph: EntityGraph = {
+      entityMeta: {
+        'graph-rag': { type: 'concept', description: 'Graph-backed retrieval.' },
+        'vector-store': { type: 'component', description: 'Vector storage.' },
+        reranking: { type: 'operation', description: 'Result reranking.' },
+      },
+      relationships: [
+        {
+          source: 'graph-rag',
+          target: 'vector-store',
+          type: 'requires',
+          description: 'Graph RAG needs vector storage.',
+          evidence: ['note:graph-rag-note'],
+        },
+        {
+          source: 'vector-store',
+          target: 'reranking',
+          type: 'enables',
+          description: 'Vector storage supports reranking.',
+          evidence: ['note:graph-rag-note'],
+        },
+      ],
+    };
+
+    writeFileSync(kb.entityGraphPath(), `${JSON.stringify(editedGraph, null, 2)}\n`, 'utf-8');
+    setMtime(kb.entityGraphPath(), new Date(Date.now() + 60_000));
+
+    const result = await reindex(kb);
+    const index = kb.readIndex();
+    const communities = Object.values(index?.entries ?? {}).filter((entry) => entry.kind === 'community');
+
+    expect(result).toMatchObject({
+      communities: expect.any(Number),
+      entities: 3,
+      relationships: 2,
+    });
+    expect(index).toMatchObject({
+      entityMeta: editedGraph.entityMeta,
+      relationships: editedGraph.relationships,
+    });
+    expect(
+      communities.some(
+        (community) =>
+          community.members.includes('graph-rag') &&
+          community.members.includes('vector-store') &&
+          community.members.includes('reranking'),
+      ),
+    ).toBe(true);
   });
 
   it('rebuilds text mode cleanly when the vector store is unavailable', async () => {
@@ -224,6 +512,8 @@ Make the contract explicit first.
       'utf-8',
     );
     kb.writeIndexState({
+      contentSeq: 3,
+      metadataSeq: 3,
       mutationSeq: 3,
       textIndexedSeq: 3,
       vector: { bySpec: {} },

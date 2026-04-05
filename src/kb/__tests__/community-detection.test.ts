@@ -1,340 +1,158 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { KbRuntime } from '../contracts.js';
+import { describe, expect, it } from 'vitest';
 import {
-  buildTagCooccurrenceGraph,
-  carryOverSlugs,
-  computeCommunityMembershipFingerprint,
+  buildEntityRelationshipGraph,
   detectCommunities,
-  generateCommunityFiles,
-  generateCommunitySummary,
+  parseMembersFromBody,
+  parseSummaryFromBody,
   renderCommunityDocument,
-  type ExistingGeneratedCommunity,
 } from '../community-detection.js';
-import { createKbRuntime } from '../runtime.js';
-import { noteEntryId, sourceEntryId, type KbIndex, type NoteEntry, type SourceEntry } from '../types.js';
+import { extractBody, parseCommunityFrontmatter } from '../frontmatter.js';
+import type { EntityGraph } from '../types.js';
 
-const DEFAULT_CREATED_AT = '2026-04-02';
-const DEFAULT_UPDATED_AT = '2026-04-02';
-const DEFAULT_IMPORTED_AT = '2026-04-02T00:00:00.000Z';
-
-function createNote(
-  slug: string,
-  title: string,
-  tags: string[],
-  body = 'Note body.',
-): { entry: NoteEntry; raw: string } {
-  const raw = [
-    '---',
-    `tags: [${tags.join(', ')}]`,
-    'principles: []',
-    'source:',
-    '  - kangig94/coral',
-    `createdAt: ${DEFAULT_CREATED_AT}`,
-    `updatedAt: ${DEFAULT_UPDATED_AT}`,
-    '---',
-    `# ${title}`,
-    '',
-    body,
-    '',
-  ].join('\n');
-
+function createEntityGraph(): EntityGraph {
   return {
-    entry: {
-      kind: 'note',
-      slug,
-      title,
-      tags,
-      principles: [],
-      source: ['kangig94/coral'],
-      createdAt: DEFAULT_CREATED_AT,
-      updatedAt: DEFAULT_UPDATED_AT,
+    entityMeta: {
+      'graph-rag': {
+        type: 'concept',
+        description: 'Graph-backed retrieval.',
+      },
+      retrieval: {
+        type: 'operation',
+        description: 'Retrieval workflows.',
+      },
+      indexing: {
+        type: 'operation',
+        description: 'Index maintenance.',
+      },
+      embeddings: {
+        type: 'technology',
+        description: 'Vector embeddings.',
+      },
     },
-    raw,
-  };
-}
-
-function createSource(
-  slug: string,
-  title: string,
-  tags: string[],
-  body = 'Source body.',
-): { entry: SourceEntry; raw: string } {
-  const raw = [
-    '---',
-    `title: ${title}`,
-    'type: spec',
-    `tags: [${tags.join(', ')}]`,
-    `importedAt: ${DEFAULT_IMPORTED_AT}`,
-    '---',
-    `# ${title}`,
-    '',
-    body,
-    '',
-  ].join('\n');
-
-  return {
-    entry: {
-      kind: 'source',
-      slug,
-      title,
-      type: 'spec',
-      tags,
-      importedAt: DEFAULT_IMPORTED_AT,
-      related: [],
-    },
-    raw,
-  };
-}
-
-function createIndex(entries: Array<NoteEntry | SourceEntry>): KbIndex {
-  return {
-    entries: Object.fromEntries(
-      entries.map((entry) => [
-        entry.kind === 'note' ? noteEntryId(entry.slug) : sourceEntryId(entry.slug),
-        entry,
-      ]),
-    ),
-    principles: {},
+    relationships: [
+      {
+        source: 'graph-rag',
+        target: 'retrieval',
+        type: 'enables',
+        description: 'Graph structure improves retrieval.',
+        evidence: ['note:graph-rag-1', 'note:graph-rag-2'],
+      },
+      {
+        source: 'retrieval',
+        target: 'indexing',
+        type: 'requires',
+        description: 'Retrieval depends on indexes.',
+        evidence: ['note:graph-rag-2'],
+      },
+      {
+        source: 'embeddings',
+        target: 'retrieval',
+        type: 'enables',
+        description: 'Embeddings support retrieval.',
+        evidence: ['note:graph-rag-3'],
+      },
+    ],
   };
 }
 
 describe('community-detection', () => {
-  let tempDir: string;
-  let runtime: KbRuntime;
-
-  beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'coral-kb-community-detection-'));
-    runtime = createKbRuntime({
-      markdownRoot: tempDir,
-      runtimeDir: tempDir,
+  it('builds the entity relationship graph from canonical entity metadata and relationship evidence', () => {
+    const graph = buildEntityRelationshipGraph({
+      entityMeta: {
+        alpha: { type: 'concept', description: 'Alpha.' },
+        beta: { type: 'concept', description: 'Beta.' },
+        gamma: { type: 'concept', description: 'Gamma.' },
+      },
+      relationships: [
+        {
+          source: 'alpha',
+          target: 'beta',
+          type: 'enables',
+          description: 'Alpha enables beta.',
+          evidence: ['note:1', 'note:1', 'note:2'],
+        },
+        {
+          source: 'beta',
+          target: 'alpha',
+          type: 'requires',
+          description: 'Beta also points back to alpha.',
+          evidence: ['note:3'],
+        },
+        {
+          source: 'beta',
+          target: 'beta',
+          type: 'implements',
+          description: 'Self loops are ignored.',
+          evidence: ['note:4'],
+        },
+        {
+          source: 'gamma',
+          target: 'missing',
+          type: 'enables',
+          description: 'Missing endpoints are ignored.',
+          evidence: ['note:5'],
+        },
+      ],
     });
-  });
 
-  afterEach(() => {
-    vi.restoreAllMocks();
-    rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  it('builds the tag graph with note-local domain exclusion and source tag preservation', () => {
-    const note = createNote('coral-llm', 'LLM Note', ['coral', 'llm', 'agents']);
-    const source = createSource('database-overview', 'Database Overview', ['coral', 'database']);
-    const graph = buildTagCooccurrenceGraph(createIndex([note.entry, source.entry]));
-
-    expect(graph.tags).toEqual(['agents', 'coral', 'database', 'llm']);
+    expect(graph.tags).toEqual(['alpha', 'beta', 'gamma']);
     expect(graph.edges).toEqual([
       {
-        left: 'agents',
-        right: 'llm',
-        weight: 0.5,
-      },
-      {
-        left: 'coral',
-        right: 'database',
-        weight: 0.5,
+        left: 'alpha',
+        right: 'beta',
+        weight: 3,
       },
     ]);
+    expect(graph.adjacency.get('alpha')?.get('beta')).toBe(3);
+    expect(graph.adjacency.get('beta')?.get('alpha')).toBe(3);
+    expect(graph.adjacency.get('beta')?.has('beta')).toBe(false);
   });
 
-  it('detects flat Louvain communities only', () => {
-    const entries = [
-      createNote('coral-transformers-a', 'Transformers A', ['coral', 'transformer', 'attention']).entry,
-      createNote('coral-transformers-b', 'Transformers B', ['coral', 'transformer', 'attention', 'self-attention'])
-        .entry,
-      createNote('coral-sqlite-a', 'SQLite A', ['coral', 'sqlite', 'query-planning']).entry,
-      createSource('sqlite-indexing', 'SQLite Indexing', ['sqlite', 'query-planning', 'indexing']).entry,
-    ];
-    const communities = detectCommunities(buildTagCooccurrenceGraph(createIndex(entries)));
+  it('detects stable communities for the same entity graph across repeated runs', () => {
+    const graph = buildEntityRelationshipGraph(createEntityGraph());
 
-    expect(communities).toHaveLength(2);
-    expect(communities.map((community) => community.slug)).toEqual([
-      'attention-transformer-self-attention',
-      'query-planning-sqlite-indexing',
-    ]);
-    expect(communities.every((community) => community.level === 0)).toBe(true);
-    expect(communities.some((community) => 'parent' in community)).toBe(false);
+    const first = detectCommunities(graph);
+    const second = detectCommunities(graph);
+
+    expect(second).toEqual(first);
+    expect(first.length).toBeGreaterThan(0);
+
+    for (const community of first) {
+      expect(community.members).toEqual([...community.members].sort((left, right) => left.localeCompare(right)));
+      if (community.parent !== undefined) {
+        expect(first.some((candidate) => `community:${candidate.slug}` === community.parent)).toBe(true);
+      }
+      for (const child of community.children ?? []) {
+        expect(first.some((candidate) => `community:${candidate.slug}` === child)).toBe(true);
+      }
+    }
   });
 
-  it('carries over prior slugs with one-to-one best-overlap matching', () => {
-    const priorCommunities: ExistingGeneratedCommunity[] = [
-      {
-        slug: 'alpha-beta-gamma',
-        title: 'Alpha / Beta / Gamma',
-        members: ['alpha', 'beta', 'gamma'],
-        summary: 'Alpha summary.',
-        createdAt: DEFAULT_CREATED_AT,
-        updatedAt: DEFAULT_UPDATED_AT,
-      },
-      {
-        slug: 'delta-epsilon-zeta',
-        title: 'Delta / Epsilon / Zeta',
-        members: ['delta', 'epsilon', 'zeta'],
-        summary: 'Delta summary.',
-        createdAt: DEFAULT_CREATED_AT,
-        updatedAt: DEFAULT_UPDATED_AT,
-      },
-    ];
-
-    const communities = carryOverSlugs(
-      [
-        {
-          freshSlug: 'fresh-alpha',
-          title: 'Fresh Alpha',
-          level: 0,
-          members: ['alpha', 'beta'],
-        },
-        {
-          freshSlug: 'fresh-collision',
-          title: 'Fresh Collision',
-          level: 0,
-          members: ['alpha', 'beta', 'theta'],
-        },
-        {
-          freshSlug: 'fresh-delta',
-          title: 'Fresh Delta',
-          level: 0,
-          members: ['delta', 'epsilon'],
-        },
-      ],
-      priorCommunities,
-    );
-
-    expect(Object.fromEntries(communities.map((community) => [community.title, community.slug]))).toEqual({
-      'Fresh Alpha': 'alpha-beta-gamma',
-      'Fresh Collision': 'fresh-collision',
-      'Fresh Delta': 'delta-epsilon-zeta',
-    });
-  });
-
-  it('regenerates community files with the authoritative markdown body contract', () => {
-    mkdirSync(runtime.communitiesDir(), { recursive: true });
-    writeFileSync(runtime.communityPath('old-community'), '# old\n', 'utf-8');
-
-    const document = {
-      slug: 'graph-rag',
+  it('renders and parses hierarchy metadata and summary sections round-trip', () => {
+    const rendered = renderCommunityDocument({
       title: 'Graph RAG',
+      level: 1,
       members: ['graph-rag', 'retrieval'],
-      createdAt: DEFAULT_CREATED_AT,
-      updatedAt: DEFAULT_UPDATED_AT,
-      membershipFingerprint: 'fingerprint',
-      content: renderCommunityDocument({
-        title: 'Graph RAG',
-        members: ['graph-rag', 'retrieval'],
-        createdAt: DEFAULT_CREATED_AT,
-        updatedAt: DEFAULT_UPDATED_AT,
-      }),
-    };
-    const wrote = generateCommunityFiles(
-      runtime,
-      [document],
-      [
-        {
-          slug: 'old-community',
-          title: 'Old Community',
-          members: ['legacy'],
-          createdAt: DEFAULT_CREATED_AT,
-          updatedAt: DEFAULT_UPDATED_AT,
-        },
-      ],
-    );
-
-    expect(wrote).toBe(true);
-    expect(existsSync(runtime.communityPath('old-community'))).toBe(false);
-
-    const raw = readFileSync(runtime.communityPath('graph-rag'), 'utf-8');
-    expect(raw).toContain('# Graph RAG');
-    expect(raw).not.toContain('## Summary');
-    expect(raw).toContain('## Members');
-    expect(raw).toContain('- #graph-rag');
-    expect(raw).toContain('- #retrieval');
-
-    const withSummary = renderCommunityDocument({
-      title: 'Graph RAG',
-      members: ['graph-rag', 'retrieval'],
-      summary: 'Shared retrieval graph patterns.',
-      createdAt: DEFAULT_CREATED_AT,
-      updatedAt: DEFAULT_UPDATED_AT,
-    });
-    expect(withSummary).not.toContain('summary: Shared retrieval graph patterns.');
-    expect(withSummary).toContain('## Summary\n\nShared retrieval graph patterns.');
-  });
-
-  it('reuses stable summaries without calling Claude', async () => {
-    const runClaude = vi.fn();
-    const summary = await generateCommunitySummary({
-      community: {
-        slug: 'graph-rag',
-        title: 'Graph RAG',
-        level: 0,
-        members: ['graph-rag', 'retrieval'],
-      },
-      kb: runtime,
-      index: { entries: {}, principles: {} },
-      priorCommunity: {
-        slug: 'graph-rag',
-        title: 'Graph RAG',
-        members: ['graph-rag', 'retrieval'],
-        summary: 'Stable summary.',
-        createdAt: DEFAULT_CREATED_AT,
-        updatedAt: DEFAULT_UPDATED_AT,
-      },
-      priorMembershipFingerprint: computeCommunityMembershipFingerprint(['graph-rag', 'retrieval']),
-      runClaude,
+      parent: 'community:platform-architecture',
+      children: ['community:graph-rag-leaf', 'community:retrieval-leaf'],
+      summary: 'Shared graph-backed retrieval patterns.',
+      createdAt: '2026-04-02',
+      updatedAt: '2026-04-03',
     });
 
-    expect(summary).toBe('Stable summary.');
-    expect(runClaude).not.toHaveBeenCalled();
-  });
+    const body = extractBody(rendered);
 
-  it('generates summaries from member tags and representative excerpts when membership changes', async () => {
-    const note = createNote(
-      'coral-graph-rag',
-      'Graph RAG Note',
-      ['coral', 'graph-rag', 'retrieval'],
-      'Graph retrieval notes connect entity links to downstream retrieval quality.',
-    );
-    const source = createSource(
-      'retrieval-benchmark',
-      'Retrieval Benchmark',
-      ['retrieval', 'graph-rag', 'evaluation'],
-      'Benchmarks compare retrieval precision, grounded answers, and graph expansion tradeoffs.',
-    );
-    mkdirSync(runtime.notesDir(), { recursive: true });
-    mkdirSync(runtime.sourcesDir(), { recursive: true });
-    writeFileSync(join(runtime.notesDir(), 'coral-graph-rag.md'), note.raw, 'utf-8');
-    writeFileSync(join(runtime.sourcesDir(), 'retrieval-benchmark.md'), source.raw, 'utf-8');
-
-    const runClaude = vi.fn(async ({ prompt }: { prompt: string }) => {
-      expect(prompt).toContain('Community members:\n- graph-rag\n- retrieval');
-      expect(prompt).toContain('## note:coral-graph-rag');
-      expect(prompt).toContain('## source:retrieval-benchmark');
-      return '  Shared graph-backed retrieval patterns and evaluation concerns.  ';
+    expect(parseCommunityFrontmatter(rendered)).toEqual({
+      createdAt: '2026-04-02',
+      updatedAt: '2026-04-03',
+      level: 1,
+      parent: 'community:platform-architecture',
+      children: ['community:graph-rag-leaf', 'community:retrieval-leaf'],
     });
-
-    const summary = await generateCommunitySummary({
-      community: {
-        slug: 'graph-rag',
-        title: 'Graph RAG',
-        level: 0,
-        members: ['graph-rag', 'retrieval'],
-      },
-      kb: runtime,
-      index: createIndex([note.entry, source.entry]),
-      priorCommunity: {
-        slug: 'graph-rag',
-        title: 'Graph RAG',
-        members: ['graph-rag', 'indexing'],
-        summary: 'Old summary.',
-        createdAt: DEFAULT_CREATED_AT,
-        updatedAt: DEFAULT_UPDATED_AT,
-      },
-      priorMembershipFingerprint: computeCommunityMembershipFingerprint(['graph-rag', 'indexing']),
-      runClaude: async (prompt) => runClaude({ prompt }),
-    });
-
-    expect(summary).toBe('Shared graph-backed retrieval patterns and evaluation concerns.');
-    expect(runClaude).toHaveBeenCalledOnce();
+    expect(parseMembersFromBody(body)).toEqual(['graph-rag', 'retrieval']);
+    expect(parseSummaryFromBody(body)).toBe('Shared graph-backed retrieval patterns.');
+    expect(rendered).toContain('## Children');
+    expect(rendered).toContain('- community:graph-rag-leaf');
+    expect(rendered).toContain('- community:retrieval-leaf');
   });
 });

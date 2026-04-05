@@ -14,6 +14,7 @@ export const ORAMA_SCHEMA = {
   entryId: 'string',
   slug: 'string',
   kind: 'string',
+  freshness: 'string',
   title: 'string',
   body: 'string',
   tags: 'string[]',
@@ -24,6 +25,7 @@ export type KbOramaDocument = {
   entryId: string;
   slug: string;
   kind: 'note' | 'source' | 'community';
+  freshness: 'fresh' | 'stale';
   title: string;
   body: string;
   tags: string[];
@@ -68,12 +70,14 @@ export function tokenizeField(value: string, tokenizer: KbOramaTokenizer): strin
 
 export function toOramaDocument(
   record: KbReindexNoteRecord | KbReindexSourceRecord | KbReindexCommunityRecord,
+  options: { communityFresh?: boolean } = {},
 ): KbOramaDocument {
   if ('note' in record) {
     return {
       entryId: noteEntryId(record.note),
       slug: normalizeHyphens(record.note),
       kind: 'note',
+      freshness: 'fresh',
       title: record.title,
       body: record.body,
       tags: record.tags.map(normalizeHyphens),
@@ -86,6 +90,7 @@ export function toOramaDocument(
       entryId: sourceEntryId(record.slug),
       slug: normalizeHyphens(record.slug),
       kind: 'source',
+      freshness: 'fresh',
       title: record.title,
       body: record.body,
       tags: record.tags.map(normalizeHyphens),
@@ -97,6 +102,7 @@ export function toOramaDocument(
     entryId: communityEntryId(record.slug),
     slug: normalizeHyphens(record.slug),
     kind: 'community',
+    freshness: options.communityFresh === false ? 'stale' : 'fresh',
     title: record.title,
     body: record.body,
     tags: record.members.map(normalizeHyphens),

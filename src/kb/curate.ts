@@ -33,16 +33,23 @@ import {
 } from './curate-state.js';
 import {
   buildCommunityDocuments,
-  buildTagCooccurrenceGraph,
-  computeCommunityMembershipFingerprint,
-  computeGraphFingerprint,
+  buildEntityRelationshipGraph,
+  computeCommunitySummaryInputFingerprintForCommunity,
+  computeCommunityTopologyFingerprint,
   detectCommunities,
+  type ExistingGeneratedCommunity,
   generateCommunityFiles,
   generateCommunitySummary,
   loadExistingCommunityState,
   renderCommunityDocument,
 } from './community-detection.js';
-import { cleanupTags, countTagSupport, type TagCleanupResult } from './curate-tags.js';
+import {
+  consolidateEntityGraph,
+  resolveCanonicalEntityId,
+  type ConsolidationResult,
+  type EntityConsolidationDelta,
+  type EntityReplacementMap,
+} from './entity-consolidation.js';
 import {
   deriveNoteIdentity,
   extractPrincipleStatement,
@@ -59,12 +66,15 @@ import {
   buildSourceIndexEntry,
   cloneKbIndex,
   markTextIndexStale,
+  recordMetadataMutation,
   writeFileAtomic,
 } from './mutation-helpers.js';
 import type { KbRuntime } from './contracts.js';
 import { runEntrySeqUpgradeGuard } from './runtime.js';
 import { rebuildTextArtifactsAndPersistRepairState } from './text-artifacts.js';
 import {
+  ENTITY_TYPES,
+  RELATIONSHIP_TYPES,
   getEntry,
   isNoteEntry,
   parseKbEntryId,
@@ -72,9 +82,14 @@ import {
   noteEntryId,
   sourceEntryId,
   type CuratableEntry,
+  type EntityGraph,
+  type EntityMeta,
+  type EntityRelationship,
+  type EntityType,
   type KbEntryId,
   type KbIndex,
   type NoteEntry,
+  type RelationshipType,
 } from './types.js';
 import { backendLog } from '../shared/backend-log.js';
 
@@ -83,8 +98,9 @@ const CURATE_MIN_CLAIM_SIZE = 10;
 const CURATE_IMMEDIATE_CLAIM_SIZE = 30;
 const CURATE_MAX_CLAIM_SIZE = 100;
 const CLASSIFICATION_BATCH_SIZE = 100;
-const CLASSIFICATION_REQUEST_TOKEN_BUDGET = 12_000;
-const CLASSIFICATION_RESPONSE_TOKEN_HEADROOM = 2_000;
+const CLASSIFICATION_REQUEST_TOKEN_BUDGET = 16_000;
+const CLASSIFICATION_RESPONSE_TOKEN_HEADROOM = 4_000;
+const CLASSIFICATION_ENTITY_VOCAB_TOKEN_LIMIT = 4_000;
 const CLASSIFICATION_SOURCE_EXCERPT_TOKEN_LIMIT = 2_000;
 const DISCOVERY_NEW_NOTE_THRESHOLD = 50;
 const DISCOVERY_BATCH_SIZE = 100;
@@ -97,6 +113,28 @@ const USAGE_WK_THRESHOLD = 100;
 
 const CURATE_STALE_REASON = 'KB text snapshot is stale after kb_curate.';
 const GITIGNORE_ENTRIES = ['data/', '.obsidian/'];
+const ENTITY_TYPE_PROMPT_GUIDANCE: ReadonlyArray<readonly [EntityType, string]> = [
+  ['technology', 'a concrete technical capability, platform, or system'],
+  ['pattern', 'a reusable design or implementation approach'],
+  ['concept', 'an abstract idea, model, or mental frame'],
+  ['library', 'a package, framework, SDK, or API surface'],
+  ['component', 'a bounded module, service, or subsystem'],
+  ['domain', 'a business or problem-space area'],
+  ['operation', 'a workflow, procedure, or runtime activity'],
+  ['quality', 'a non-functional property, constraint, or attribute'],
+];
+const RELATIONSHIP_TYPE_PROMPT_GUIDANCE: ReadonlyArray<readonly [RelationshipType, string]> = [
+  ['enables', 'source makes target possible'],
+  ['requires', 'source depends on target'],
+  ['constrains', 'source limits or governs target'],
+  ['implements', 'source realizes target'],
+  ['specializes', 'source is a narrower form of target'],
+  ['conflicts-with', 'source is incompatible with target'],
+  ['precedes', 'source comes before target in time or flow'],
+  ['composes', 'source contains or assembles target'],
+  ['abstracts', 'source generalizes or hides target details'],
+  ['replaces', 'source supersedes target'],
+];
 
 function isUsageBudgetExhausted(): boolean {
   try {
@@ -198,7 +236,18 @@ type NoteMetadataTarget = {
   addPrinciples?: string[];
   removePrinciples?: string[];
   removeTags?: string[];
-  cleanup?: boolean;
+};
+
+export type ClassificationNewEntity = {
+  type: EntityType;
+  description: string;
+};
+
+export type ClassificationRelationship = {
+  source: string;
+  target: string;
+  type: RelationshipType;
+  description: string;
 };
 
 export type ClassificationAssignment = {
@@ -206,7 +255,19 @@ export type ClassificationAssignment = {
   tags: string[];
   principles?: string[];
   related?: string[];
+  newEntities?: Record<string, ClassificationNewEntity>;
+  relationships?: ClassificationRelationship[];
 };
+
+type ClassificationPromptVocabularyEntry = {
+  name: string;
+  type: EntityType;
+  description: string;
+  relevant: boolean;
+  support: number;
+};
+
+type ClassificationPromptVocabularyInput = readonly string[] | readonly ClassificationPromptVocabularyEntry[];
 
 export type DiscoveryProposal = {
   slug: string;
@@ -220,15 +281,19 @@ type EnsurePrincipleDocumentResult = {
   state: CurateState;
 };
 
-export type MetadataTarget = {
-  kind: 'source';
-  entryId: KbEntryId;
-  slug: string;
-  entrySeq: number;
-  claimTimeFingerprint: string;
-  addTags?: string[];
-  addRelated?: string[];
-} | NoteMetadataTarget;
+export type MetadataTarget =
+  | {
+      kind: 'source';
+      entryId: KbEntryId;
+      slug: string;
+      entrySeq: number;
+      claimTimeFingerprint: string;
+      addTags?: string[];
+      desiredTags?: string[];
+      addRelated?: string[];
+      removeTags?: string[];
+    }
+  | NoteMetadataTarget;
 
 export type CurateClaim = {
   entries: CurateClaimedEntry[];
@@ -337,8 +402,251 @@ function uniqueTrimmedList(values: string[]): string[] {
   return normalized;
 }
 
-function buildTagVocabulary(index: KbIndex): string[] {
-  return [...countTagSupport(index).keys()].sort(compareLocale);
+function isKnownEntityType(value: string): value is EntityType {
+  return (ENTITY_TYPES as readonly string[]).includes(value);
+}
+
+function isKnownRelationshipType(value: string): value is RelationshipType {
+  return (RELATIONSHIP_TYPES as readonly string[]).includes(value);
+}
+
+function tokenizeLowercaseText(value: string): string[] {
+  return value.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+}
+
+function classificationEntityNameSegments(value: string): string[] {
+  return value.split('-').filter((segment) => segment.length > 0);
+}
+
+function isDescriptiveEntityName(value: string, minimumSegments = 2): boolean {
+  return /^[a-z0-9]+(?:-[a-z0-9]+)+$/.test(value) && classificationEntityNameSegments(value).length >= minimumSegments;
+}
+
+function hasNonEmptyDescription(value: string): boolean {
+  return value.trim().length > 0;
+}
+
+function cloneEntityMetaMap(entityMeta: Record<string, EntityMeta>): Record<string, EntityMeta> {
+  return Object.fromEntries(
+    Object.entries(entityMeta).map(([entityName, meta]) => [
+      entityName,
+      {
+        type: meta.type,
+        description: meta.description,
+        ...(meta.aliases === undefined ? {} : { aliases: [...meta.aliases] }),
+      },
+    ]),
+  );
+}
+
+function cloneEntityRelationships(relationships: EntityRelationship[]): EntityRelationship[] {
+  return relationships.map((relationship) => ({
+    source: relationship.source,
+    target: relationship.target,
+    type: relationship.type,
+    description: relationship.description,
+    evidence: [...relationship.evidence],
+  }));
+}
+
+function snapshotEntityGraph(index: KbIndex): EntityGraph {
+  return {
+    entityMeta: cloneEntityMetaMap(index.entityMeta ?? {}),
+    relationships: cloneEntityRelationships(index.relationships ?? []),
+  };
+}
+
+function entityGraphsEqual(left: EntityGraph, right: EntityGraph): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function buildEntitySupportMap(index: KbIndex): Map<string, number> {
+  const support = new Map<string, number>();
+
+  for (const entry of Object.values(index.entries)) {
+    if (!('tags' in entry)) {
+      continue;
+    }
+
+    for (const tag of new Set(entry.tags)) {
+      support.set(tag, (support.get(tag) ?? 0) + 1);
+    }
+  }
+
+  for (const relationship of index.relationships ?? []) {
+    const evidenceCount = uniqueTrimmedList(relationship.evidence).length;
+    if (evidenceCount === 0) {
+      continue;
+    }
+
+    support.set(relationship.source, (support.get(relationship.source) ?? 0) + evidenceCount);
+    support.set(relationship.target, (support.get(relationship.target) ?? 0) + evidenceCount);
+  }
+
+  return support;
+}
+
+function buildClassificationContext(
+  entries: CurateClaimedEntry[],
+  index: KbIndex,
+): {
+  liveTags: Set<string>;
+  tokenSet: Set<string>;
+} {
+  const liveTags = new Set<string>();
+  const tokenSet = new Set<string>();
+
+  const addTokens = (value: string) => {
+    for (const token of tokenizeLowercaseText(value)) {
+      tokenSet.add(token);
+    }
+  };
+
+  for (const entry of entries) {
+    const liveEntry = getEntry(index, entry.entryId);
+    if (liveEntry !== undefined && 'tags' in liveEntry) {
+      for (const tag of liveEntry.tags) {
+        liveTags.add(tag);
+        addTokens(tag);
+      }
+    }
+
+    addTokens(entry.title);
+    addTokens(entry.body.slice(0, 4_000));
+
+    if (entry.kind === 'note') {
+      const identity = deriveNoteIdentity(entry.slug);
+      addTokens(identity.domain);
+      addTokens(identity.topic);
+    }
+  }
+
+  return {
+    liveTags,
+    tokenSet,
+  };
+}
+
+function buildClassificationPromptVocabulary(
+  entries: CurateClaimedEntry[],
+  index: KbIndex,
+): ClassificationPromptVocabularyEntry[] {
+  const entityMeta = index.entityMeta ?? {};
+  const entityNames = Object.keys(entityMeta);
+  if (entityNames.length === 0) {
+    return [];
+  }
+
+  const support = buildEntitySupportMap(index);
+  const { liveTags, tokenSet } = buildClassificationContext(entries, index);
+  const relationships = index.relationships ?? [];
+
+  const ranked = entityNames
+    .map((name) => {
+      const meta = entityMeta[name];
+      const relevantByRelationship = relationships.some(
+        (relationship) =>
+          (relationship.source === name && liveTags.has(relationship.target)) ||
+          (relationship.target === name && liveTags.has(relationship.source)),
+      );
+      const relevant =
+        liveTags.has(name) ||
+        relevantByRelationship ||
+        classificationEntityNameSegments(name).some((segment) => tokenSet.has(segment));
+
+      return {
+        name,
+        type: meta.type,
+        description: meta.description,
+        relevant,
+        support: support.get(name) ?? 0,
+      };
+    })
+    .sort(
+      (left, right) =>
+        Number(right.relevant) - Number(left.relevant) ||
+        right.support - left.support ||
+        compareLocale(left.name, right.name),
+    );
+
+  const selected: ClassificationPromptVocabularyEntry[] = [];
+  let consumedTokens = 0;
+
+  for (const candidate of ranked) {
+    const renderedLine =
+      candidate.relevant && candidate.description
+        ? `- ${candidate.name}: ${candidate.type} (${candidate.description})`
+        : `- ${candidate.name}: ${candidate.type}`;
+    const lineTokens = approximateTokenCount(renderedLine);
+    if (selected.length > 0 && consumedTokens + lineTokens > CLASSIFICATION_ENTITY_VOCAB_TOKEN_LIMIT) {
+      continue;
+    }
+
+    selected.push(candidate);
+    consumedTokens += lineTokens;
+  }
+
+  return selected;
+}
+
+function normalizeClassificationPromptVocabulary(
+  vocabulary: ClassificationPromptVocabularyInput,
+): ClassificationPromptVocabularyEntry[] {
+  const seen = new Set<string>();
+  const normalized: ClassificationPromptVocabularyEntry[] = [];
+  let consumedTokens = 0;
+
+  for (const value of vocabulary) {
+    const entry =
+      typeof value === 'string'
+        ? {
+            name: value.trim(),
+            type: 'concept' as const,
+            description: '',
+            relevant: false,
+            support: 0,
+          }
+        : {
+            name: value.name.trim(),
+            type: value.type,
+            description: value.description.trim(),
+            relevant: value.relevant,
+            support: value.support,
+          };
+    if (!entry.name || seen.has(entry.name)) {
+      continue;
+    }
+
+    const renderedLine =
+      entry.relevant && entry.description
+        ? `- ${entry.name}: ${entry.type} (${entry.description})`
+        : `- ${entry.name}: ${entry.type}`;
+    const lineTokens = approximateTokenCount(renderedLine);
+    if (normalized.length > 0 && consumedTokens + lineTokens > CLASSIFICATION_ENTITY_VOCAB_TOKEN_LIMIT) {
+      continue;
+    }
+
+    seen.add(entry.name);
+    normalized.push(entry);
+    consumedTokens += lineTokens;
+  }
+
+  return normalized;
+}
+
+function renderClassificationPromptVocabulary(vocabulary: ClassificationPromptVocabularyInput): string {
+  const normalized = normalizeClassificationPromptVocabulary(vocabulary);
+  if (normalized.length === 0) {
+    return '- (none yet)';
+  }
+
+  return normalized
+    .map((entry) =>
+      entry.relevant && entry.description
+        ? `- ${entry.name}: ${entry.type} (${entry.description})`
+        : `- ${entry.name}: ${entry.type}`,
+    )
+    .join('\n');
 }
 
 function buildPrincipleNames(index: KbIndex): string[] {
@@ -496,53 +804,10 @@ function advanceProcessedThrough(
   return cursor;
 }
 
-function parentAbsorptionTarget(
-  tag: string,
-  noteTagSet: ReadonlySet<string>,
-  tagSupport: ReadonlyMap<string, number>,
-): string | null {
-  const splitAt = tag.lastIndexOf('-');
-  if (splitAt <= 0) {
-    return null;
-  }
-
-  const core = tag.slice(0, splitAt);
-  if (!noteTagSet.has(core)) {
-    return null;
-  }
-  if ((tagSupport.get(core) ?? 0) < 3) {
-    return null;
-  }
-
-  return core;
-}
-
-function hasParentAbsorptionCandidate(note: string, tags: string[], tagSupport: ReadonlyMap<string, number>): boolean {
-  const domain = deriveNoteIdentity(note).domain;
-  const noteTagSet = new Set(tags);
-
-  return tags.some((tag) => tag !== domain && parentAbsorptionTarget(tag, noteTagSet, tagSupport) !== null);
-}
-
-function applyParentAbsorption(note: string, tags: string[], tagSupport: ReadonlyMap<string, number>): string[] {
-  const domain = deriveNoteIdentity(note).domain;
-  const noteTagSet = new Set(tags);
-  const nextTags = tags.map((tag) => {
-    if (tag === domain) {
-      return tag;
-    }
-
-    return parentAbsorptionTarget(tag, noteTagSet, tagSupport) ?? tag;
-  });
-
-  return uniqueTrimmedList(nextTags);
-}
-
 function buildLiveNoteMetadataDecision(
   target: NoteMetadataTarget,
   liveTags: string[],
   livePrinciples: string[],
-  cleanupTagSupport: ReadonlyMap<string, number>,
 ): LiveMetadataDecision {
   const addTags = uniqueTrimmedList(target.addTags ?? []);
   const addPrinciples = uniqueTrimmedList(target.addPrinciples ?? []);
@@ -550,19 +815,8 @@ function buildLiveNoteMetadataDecision(
   const removeTags = uniqueTrimmedList(target.removeTags ?? []);
   const desiredTags = target.desiredTags === undefined ? undefined : uniqueTrimmedList(target.desiredTags);
 
-  if (target.cleanup && removeTags.length > 0 && removeTags.some((tag) => !liveTags.includes(tag))) {
-    return {
-      shouldWrite: false,
-      nextTags: [...liveTags],
-      nextPrinciples: [...livePrinciples],
-    };
-  }
-
   const removeTagSet = new Set(removeTags);
-  let nextTags = desiredTags ?? uniqueTrimmedList([...liveTags, ...addTags]).filter((tag) => !removeTagSet.has(tag));
-  if (target.cleanup) {
-    nextTags = applyParentAbsorption(target.slug, nextTags, cleanupTagSupport);
-  }
+  const nextTags = desiredTags ?? uniqueTrimmedList([...liveTags, ...addTags]).filter((tag) => !removeTagSet.has(tag));
 
   const removePrincipleSet = new Set(removePrinciples);
   const nextPrinciples = uniqueTrimmedList([...livePrinciples, ...addPrinciples]).filter(
@@ -576,8 +830,16 @@ function buildLiveNoteMetadataDecision(
   };
 }
 
-function buildLiveSourceMetadataDecision(target: Extract<MetadataTarget, { kind: 'source' }>, liveTags: string[]): string[] {
-  return uniqueTrimmedList([...liveTags, ...(target.addTags ?? [])]);
+function buildLiveSourceMetadataDecision(
+  target: Extract<MetadataTarget, { kind: 'source' }>,
+  liveTags: string[],
+): string[] {
+  const addTags = uniqueTrimmedList(target.addTags ?? []);
+  const removeTags = uniqueTrimmedList(target.removeTags ?? []);
+  const desiredTags = target.desiredTags === undefined ? undefined : uniqueTrimmedList(target.desiredTags);
+  const removeTagSet = new Set(removeTags);
+
+  return desiredTags ?? uniqueTrimmedList([...liveTags, ...addTags]).filter((tag) => !removeTagSet.has(tag));
 }
 
 function buildLiveRelatedMetadata(target: MetadataTarget, liveRelated: string[]): string[] {
@@ -593,62 +855,6 @@ function buildLiveRelatedMetadata(target: MetadataTarget, liveRelated: string[])
   }
 
   return [...liveRelated, ...additions];
-}
-
-function applyGlobalCleanup(note: string, tags: string[], cleanup: TagCleanupResult): string[] {
-  const domain = deriveNoteIdentity(note).domain;
-
-  return uniqueTrimmedList(
-    tags.flatMap((tag) => {
-      if (tag === domain) {
-        return [tag];
-      }
-
-      const replacement = cleanup.globalReplacements.get(tag);
-      if (replacement !== undefined) {
-        return [replacement];
-      }
-      if (cleanup.globalDeletions.has(tag)) {
-        return [];
-      }
-
-      return [tag];
-    }),
-  );
-}
-
-function buildCleanupTargets(index: KbIndex, cohortNotes: string[], cleanup: TagCleanupResult): MetadataTarget[] {
-  const tagSupport = countTagSupport(index);
-  const targets: MetadataTarget[] = [];
-
-  for (const slug of cohortNotes) {
-    const noteMeta = getIndexNote(index, slug);
-    if (noteMeta === undefined || noteMeta.entrySeq === undefined) {
-      continue;
-    }
-
-    const desiredTags = applyGlobalCleanup(slug, noteMeta.tags, cleanup);
-    const desiredSet = new Set(desiredTags);
-    const removeTags = noteMeta.tags.filter((tag) => !desiredSet.has(tag));
-    const parentAbsorptionPending = hasParentAbsorptionCandidate(slug, desiredTags, tagSupport);
-
-    if (!parentAbsorptionPending && sameStringList(desiredTags, noteMeta.tags)) {
-      continue;
-    }
-
-    targets.push({
-      kind: 'note',
-      entryId: noteEntryId(slug),
-      slug,
-      entrySeq: noteMeta.entrySeq,
-      claimTimeUpdatedAt: noteMeta.updatedAt,
-      desiredTags,
-      cleanup: true,
-      ...(removeTags.length === 0 ? {} : { removeTags }),
-    });
-  }
-
-  return targets.sort(compareMetadataTarget);
 }
 
 function truncateDiscoveryBody(body: string): string {
@@ -720,7 +926,11 @@ function effectiveDiscoveryThrough(requestedProcessedThrough: CurateCursor, stat
     : state.processedThrough;
 }
 
-function shouldRunDiscoveryBatch(newNotes: NoteClaimCandidate[], state: CurateState, processedThrough: CurateCursor): boolean {
+function shouldRunDiscoveryBatch(
+  newNotes: NoteClaimCandidate[],
+  state: CurateState,
+  processedThrough: CurateCursor,
+): boolean {
   if (newNotes.length >= DISCOVERY_NEW_NOTE_THRESHOLD) {
     return true;
   }
@@ -812,7 +1022,7 @@ function buildPrincipleAssignmentTargets(
 
 export function buildClassificationPrompt(
   entries: CurateClaimedEntry[],
-  tagVocab: string[],
+  tagVocab: ClassificationPromptVocabularyInput,
   principleNames: string[],
 ): string {
   const shape = classificationBatchShape(entries);
@@ -873,34 +1083,44 @@ function renderClassificationEntryBlock(entry: CurateClaimedEntry): string {
 
 function buildClassificationPromptHeader(
   shape: ClassificationBatchShape,
-  tagVocab: string[],
+  tagVocab: ClassificationPromptVocabularyInput,
   principleNames: string[],
 ): string {
+  const normalizedVocabulary = normalizeClassificationPromptVocabulary(tagVocab);
   const lines = [
     'Return raw JSON only. Do not include any preamble, explanation, or code fences.',
     'Use KB entry IDs exactly as written, including the note:/source: prefix. Never return bare slugs.',
-    'Tag vocabulary:',
-    buildFlatList(tagVocab),
-    'Use only tags from the tag vocabulary.',
+    'Tags must be descriptive entity names in lowercase kebab-case. Prefer 2-4 words and avoid bare keywords.',
+    'If you introduce a tag that is not already in the existing entity vocabulary, include it in newEntities with a valid type and a one-sentence description.',
+    'Extract directed relationships observed in the document between tags assigned to the same entry. Only use relationship types from the relationship vocabulary. Relationship source and target must both appear in that entry\'s tags.',
+    'Entity type vocabulary:',
+    buildFlatList(ENTITY_TYPE_PROMPT_GUIDANCE.map(([type, description]) => `${type}: ${description}`)),
+    'Relationship type vocabulary:',
+    buildFlatList(RELATIONSHIP_TYPE_PROMPT_GUIDANCE.map(([type, description]) => `${type}: ${description}`)),
+    'Existing entity vocabulary:',
+    renderClassificationPromptVocabulary(normalizedVocabulary),
+    normalizedVocabulary.length === 0
+      ? 'No existing entity vocabulary is available yet. Create newEntities when the document introduces distinct entities.'
+      : 'Reuse existing entity names when they fit. Only introduce newEntities for genuinely new entities.',
   ];
 
   if (shape === 'source-only') {
-    lines.push('Each source entry must return tags and related only.');
+    lines.push('Each source entry must return tags, related, newEntities, and relationships. Omit principles or return [].');
     return lines.join('\n\n');
   }
 
   lines.push('Principle names:', buildFlatList(principleNames));
   lines.push('Use only principle names from the principle list.');
   lines.push(
-    'Each note entry must return tags, principles, and related. Source entries in the same batch return tags and related; omit principles or return [].',
+    'Each note entry must return tags, principles, related, newEntities, and relationships. Source entries in the same batch return tags, related, newEntities, and relationships; omit principles or return [].',
   );
   return lines.join('\n\n');
 }
 
 function buildClassificationPromptFooter(shape: ClassificationBatchShape): string {
   return shape === 'source-only'
-    ? 'Return a JSON array: [{ "entry": "source:<slug>", "tags": ["<tag>", ...], "related": ["source:<slug>", "note:<slug>"] }]'
-    : 'Return a JSON array: [{ "entry": "note:<slug>", "tags": ["<tag>", ...], "principles": ["<principle>", ...], "related": ["source:<slug>", "note:<slug>"] }]';
+    ? 'Return a JSON array: [{ "entry": "source:<slug>", "tags": ["<entity-name>", ...], "related": ["source:<slug>", "note:<slug>"], "newEntities": { "<entity-name>": { "type": "<entity-type>", "description": "<one sentence>" } }, "relationships": [{ "source": "<entity-name>", "target": "<entity-name>", "type": "<relationship-type>", "description": "<one sentence>" }] }]'
+    : 'Return a JSON array: [{ "entry": "note:<slug>", "tags": ["<entity-name>", ...], "principles": ["<principle>", ...], "related": ["source:<slug>", "note:<slug>"], "newEntities": { "<entity-name>": { "type": "<entity-type>", "description": "<one sentence>" } }, "relationships": [{ "source": "<entity-name>", "target": "<entity-name>", "type": "<relationship-type>", "description": "<one sentence>" }] }]';
 }
 
 function classificationPromptTokenLimit(): number {
@@ -914,7 +1134,7 @@ function classificationPromptTokenLimit(): number {
 
 function estimateClassificationScaffoldTokens(
   shape: ClassificationBatchShape,
-  tagVocab: string[],
+  tagVocab: ClassificationPromptVocabularyInput,
   principleNames: string[],
 ): number {
   return approximateTokenCount(
@@ -930,7 +1150,7 @@ function estimateClassificationEntryTokens(entry: CurateClaimedEntry): number {
 
 export function estimateClassificationBatchTokens(
   entries: CurateClaimedEntry[],
-  tagVocab: string[],
+  tagVocab: ClassificationPromptVocabularyInput,
   principleNames: string[],
 ): number {
   const shape = classificationBatchShape(entries);
@@ -942,7 +1162,7 @@ export function estimateClassificationBatchTokens(
 
 function assertClassificationScaffoldFits(
   shape: ClassificationBatchShape,
-  tagVocab: string[],
+  tagVocab: ClassificationPromptVocabularyInput,
   principleNames: string[],
 ): void {
   if (estimateClassificationScaffoldTokens(shape, tagVocab, principleNames) > classificationPromptTokenLimit()) {
@@ -952,7 +1172,7 @@ function assertClassificationScaffoldFits(
 
 function fitSourceEntryToPromptBudget(
   entry: SourceCurateClaimedEntry,
-  tagVocab: string[],
+  tagVocab: ClassificationPromptVocabularyInput,
   principleNames: string[],
 ): SourceCurateClaimedEntry {
   if (estimateClassificationBatchTokens([entry], tagVocab, principleNames) <= classificationPromptTokenLimit()) {
@@ -989,6 +1209,73 @@ function fitSourceEntryToPromptBudget(
   };
 }
 
+function parseClassificationNewEntities(value: unknown): Record<string, ClassificationNewEntity> {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  const accepted: Record<string, ClassificationNewEntity> = {};
+  for (const [entityName, rawMeta] of Object.entries(value)) {
+    if (
+      !isRecord(rawMeta) ||
+      typeof rawMeta.type !== 'string' ||
+      typeof rawMeta.description !== 'string' ||
+      !isKnownEntityType(rawMeta.type)
+    ) {
+      continue;
+    }
+
+    const normalizedName = entityName.trim();
+    const description = rawMeta.description.trim();
+    if (!normalizedName || !description) {
+      continue;
+    }
+
+    accepted[normalizedName] = {
+      type: rawMeta.type,
+      description,
+    };
+  }
+
+  return accepted;
+}
+
+function parseClassificationRelationships(value: unknown): ClassificationRelationship[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const relationships: ClassificationRelationship[] = [];
+  for (const relationship of value) {
+    if (
+      !isRecord(relationship) ||
+      typeof relationship.source !== 'string' ||
+      typeof relationship.target !== 'string' ||
+      typeof relationship.type !== 'string' ||
+      typeof relationship.description !== 'string' ||
+      !isKnownRelationshipType(relationship.type)
+    ) {
+      continue;
+    }
+
+    const source = relationship.source.trim();
+    const target = relationship.target.trim();
+    const description = relationship.description.trim();
+    if (!source || !target || !description) {
+      continue;
+    }
+
+    relationships.push({
+      source,
+      target,
+      type: relationship.type,
+      description,
+    });
+  }
+
+  return relationships;
+}
+
 function classifyParsedEntries(entries: unknown[], entryMap: Map<string, true>): ClassificationAssignment[] {
   const assignments: ClassificationAssignment[] = [];
 
@@ -1007,6 +1294,8 @@ function classifyParsedEntries(entries: unknown[], entryMap: Map<string, true>):
     if (!isStringArray(principles) || !isStringArray(related)) {
       continue;
     }
+    const newEntities = parseClassificationNewEntities(entry.newEntities);
+    const relationships = parseClassificationRelationships(entry.relationships);
 
     const normalizedRelated = uniqueTrimmedList(
       related.flatMap((relatedEntryId) => {
@@ -1017,9 +1306,11 @@ function classifyParsedEntries(entries: unknown[], entryMap: Map<string, true>):
 
     assignments.push({
       entry: parsedEntryId,
-      tags: [...entry.tags],
+      tags: uniqueTrimmedList(entry.tags),
       principles: [...principles],
       ...(normalizedRelated.length === 0 ? {} : { related: normalizedRelated }),
+      ...(Object.keys(newEntities).length === 0 ? {} : { newEntities }),
+      ...(relationships.length === 0 ? {} : { relationships }),
     });
   }
 
@@ -1033,7 +1324,7 @@ export function parseClassificationResponse(raw: string, entryMap: Map<string, t
 
 export function chunkEntriesByPromptBudget(
   entries: CurateClaimedEntry[],
-  tagVocab: string[],
+  tagVocab: ClassificationPromptVocabularyInput,
   principleNames: string[],
   maxEntries = CLASSIFICATION_BATCH_SIZE,
 ): CurateClaimedEntry[][] {
@@ -1090,12 +1381,133 @@ export function chunkEntriesByPromptBudget(
   return batches;
 }
 
+function takeClassificationBatchWithIndex(
+  entries: CurateClaimedEntry[],
+  index: KbIndex,
+  principleNames: string[],
+  maxEntries = CLASSIFICATION_BATCH_SIZE,
+): {
+  batch: CurateClaimedEntry[];
+  vocabulary: ClassificationPromptVocabularyEntry[];
+} {
+  if (!Number.isInteger(maxEntries) || maxEntries < 1) {
+    throw new Error('maxEntries must be a positive integer');
+  }
+
+  if (entries.length === 0) {
+    return {
+      batch: [],
+      vocabulary: [],
+    };
+  }
+
+  let batch: CurateClaimedEntry[] = [];
+  let vocabulary: ClassificationPromptVocabularyEntry[] = [];
+  let indexCursor = 0;
+
+  while (indexCursor < entries.length) {
+    const entry = entries[indexCursor];
+    const candidateBatch = [...batch, entry];
+    const candidateVocabulary = buildClassificationPromptVocabulary(candidateBatch, index);
+    assertClassificationScaffoldFits(classificationBatchShape(candidateBatch), candidateVocabulary, principleNames);
+
+    if (
+      batch.length < maxEntries &&
+      estimateClassificationBatchTokens(candidateBatch, candidateVocabulary, principleNames) <=
+        classificationPromptTokenLimit()
+    ) {
+      batch = candidateBatch;
+      vocabulary = candidateVocabulary;
+      indexCursor += 1;
+      continue;
+    }
+
+    if (batch.length > 0) {
+      break;
+    }
+
+    if (entry.kind === 'note') {
+      throw new Error(`Classification note entry ${entry.entryId} exceeds the request budget.`);
+    }
+
+    const fittedEntry = fitSourceEntryToPromptBudget(entry, candidateVocabulary, principleNames);
+    batch = [fittedEntry];
+    vocabulary = buildClassificationPromptVocabulary(batch, index);
+    assertClassificationScaffoldFits(classificationBatchShape(batch), vocabulary, principleNames);
+    break;
+  }
+
+  return {
+    batch,
+    vocabulary,
+  };
+}
+
+function mergeClassificationNewEntities(
+  ...maps: Array<Record<string, ClassificationNewEntity> | undefined>
+): Record<string, ClassificationNewEntity> | undefined {
+  const merged: Record<string, ClassificationNewEntity> = {};
+
+  for (const map of maps) {
+    if (map === undefined) {
+      continue;
+    }
+
+    for (const [entityName, meta] of Object.entries(map)) {
+      if (merged[entityName] !== undefined) {
+        continue;
+      }
+
+      merged[entityName] = {
+        type: meta.type,
+        description: meta.description,
+      };
+    }
+  }
+
+  return Object.keys(merged).length === 0 ? undefined : merged;
+}
+
+function classificationRelationshipKey(relationship: ClassificationRelationship): string {
+  return `${relationship.source}\u0000${relationship.target}\u0000${relationship.type}`;
+}
+
+function mergeClassificationRelationships(
+  ...lists: Array<ClassificationRelationship[] | undefined>
+): ClassificationRelationship[] | undefined {
+  const merged: ClassificationRelationship[] = [];
+  const seen = new Set<string>();
+
+  for (const list of lists) {
+    if (list === undefined) {
+      continue;
+    }
+
+    for (const relationship of list) {
+      const key = classificationRelationshipKey(relationship);
+      if (seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      merged.push({
+        source: relationship.source,
+        target: relationship.target,
+        type: relationship.type,
+        description: relationship.description,
+      });
+    }
+  }
+
+  return merged.length === 0 ? undefined : merged;
+}
+
 export function validateAssignments(
   proposals: ClassificationAssignment[],
   index: KbIndex,
   claimedEntries: CurateClaimedEntry[],
 ): ClassificationAssignment[] {
-  const existingTagVocabulary = new Set(countTagSupport(index).keys());
+  const existingEntityVocabulary = new Set(Object.keys(index.entityMeta ?? {}));
   const claimedByEntryId = new Map<KbEntryId, CurateClaimedEntry>();
   for (const entry of claimedEntries) {
     claimedByEntryId.set(entry.entryId, entry);
@@ -1127,35 +1539,34 @@ export function validateAssignments(
     );
     const existing = mergedByEntry.get(entryId);
     if (existing === undefined) {
+      const mergedNewEntities = mergeClassificationNewEntities(proposal.newEntities);
+      const mergedRelationships = mergeClassificationRelationships(proposal.relationships);
       mergedByEntry.set(entryId, {
         entry: entryId,
         tags: uniqueTrimmedList(proposal.tags),
         principles: uniqueTrimmedList(proposal.principles ?? []),
         ...(related.length === 0 ? {} : { related }),
+        ...(mergedNewEntities === undefined ? {} : { newEntities: mergedNewEntities }),
+        ...(mergedRelationships === undefined ? {} : { relationships: mergedRelationships }),
       });
       continue;
     }
 
     existing.tags = uniqueTrimmedList([...existing.tags, ...proposal.tags]);
     existing.principles = uniqueTrimmedList([...(existing.principles ?? []), ...(proposal.principles ?? [])]);
+    existing.newEntities = mergeClassificationNewEntities(existing.newEntities, proposal.newEntities);
+    existing.relationships = mergeClassificationRelationships(existing.relationships, proposal.relationships);
+    if (existing.newEntities === undefined) {
+      delete existing.newEntities;
+    }
+    if (existing.relationships === undefined) {
+      delete existing.relationships;
+    }
     const mergedRelated = uniqueTrimmedList([...(existing.related ?? []), ...related]);
     if (mergedRelated.length === 0) {
       delete existing.related;
-      continue;
-    }
-
-    existing.related = mergedRelated;
-  }
-
-  const newTagSupport = new Map<string, number>();
-  for (const proposal of mergedByEntry.values()) {
-    const seenNewTags = new Set<string>();
-    for (const tag of proposal.tags) {
-      if (existingTagVocabulary.has(tag) || seenNewTags.has(tag)) {
-        continue;
-      }
-      seenNewTags.add(tag);
-      newTagSupport.set(tag, (newTagSupport.get(tag) ?? 0) + 1);
+    } else {
+      existing.related = mergedRelated;
     }
   }
 
@@ -1167,30 +1578,180 @@ export function validateAssignments(
       continue;
     }
 
-    const filteredTags = proposal.tags.filter(
-      (tag) => existingTagVocabulary.has(tag) || (newTagSupport.get(tag) ?? 0) >= 3,
+    const acceptedNewEntities: Record<string, ClassificationNewEntity> = {};
+    const tags = uniqueTrimmedList(
+      proposal.tags.filter((tag) => {
+        if (existingEntityVocabulary.has(tag)) {
+          return true;
+        }
+
+        const candidate = proposal.newEntities?.[tag];
+        if (
+          candidate === undefined ||
+          !isDescriptiveEntityName(tag, 2) ||
+          !isKnownEntityType(candidate.type) ||
+          !hasNonEmptyDescription(candidate.description)
+        ) {
+          return false;
+        }
+
+        acceptedNewEntities[tag] = {
+          type: candidate.type,
+          description: candidate.description.trim(),
+        };
+        return true;
+      }),
     );
-    const tags =
-      claimedEntry.kind === 'note'
-        ? uniqueTrimmedList([deriveNoteIdentity(claimedEntry.slug).domain, ...filteredTags])
-        : uniqueTrimmedList(filteredTags);
+    const tagSet = new Set(tags);
     const principles =
       claimedEntry.kind === 'note'
-        ? uniqueTrimmedList((proposal.principles ?? []).filter((principle) => index.principles[principle] !== undefined))
+        ? uniqueTrimmedList(
+            (proposal.principles ?? []).filter((principle) => index.principles[principle] !== undefined),
+          )
         : [];
     const related = uniqueTrimmedList(
-      (proposal.related ?? []).filter((relatedEntryId) => relatedEntryId !== entryId && getEntry(index, relatedEntryId as KbEntryId) !== undefined),
+      (proposal.related ?? []).filter(
+        (relatedEntryId) => relatedEntryId !== entryId && getEntry(index, relatedEntryId as KbEntryId) !== undefined,
+      ),
     );
+    const relationships: ClassificationRelationship[] = [];
+    const seenRelationships = new Set<string>();
+    for (const relationship of proposal.relationships ?? []) {
+      if (
+        relationship.source === relationship.target ||
+        !tagSet.has(relationship.source) ||
+        !tagSet.has(relationship.target) ||
+        !isKnownRelationshipType(relationship.type) ||
+        !hasNonEmptyDescription(relationship.description)
+      ) {
+        continue;
+      }
+
+      const normalizedRelationship = {
+        source: relationship.source,
+        target: relationship.target,
+        type: relationship.type,
+        description: relationship.description.trim(),
+      };
+      const key = classificationRelationshipKey(normalizedRelationship);
+      if (seenRelationships.has(key)) {
+        continue;
+      }
+
+      seenRelationships.add(key);
+      relationships.push(normalizedRelationship);
+    }
 
     validated.push({
       entry: entryId,
       tags,
       principles,
       ...(related.length === 0 ? {} : { related }),
+      ...(Object.keys(acceptedNewEntities).length === 0 ? {} : { newEntities: acceptedNewEntities }),
+      ...(relationships.length === 0 ? {} : { relationships }),
     });
   }
 
   return validated;
+}
+
+function mergeAssignmentsIntoIndexGraph(index: KbIndex, assignments: ClassificationAssignment[]): KbIndex {
+  const nextIndex = cloneKbIndex(index);
+  const entityMeta = cloneEntityMetaMap(nextIndex.entityMeta ?? {});
+  const relationships = cloneEntityRelationships(nextIndex.relationships ?? []);
+  const relationshipsByKey = new Map(
+    relationships.map((relationship, index) => [classificationRelationshipKey(relationship), index] as const),
+  );
+
+  for (const assignment of assignments) {
+    for (const [entityName, meta] of Object.entries(assignment.newEntities ?? {})) {
+      if (entityMeta[entityName] !== undefined) {
+        continue;
+      }
+
+      entityMeta[entityName] = {
+        type: meta.type,
+        description: meta.description,
+      };
+    }
+
+    for (const relationship of assignment.relationships ?? []) {
+      const key = classificationRelationshipKey(relationship);
+      const existingIndex = relationshipsByKey.get(key);
+      if (existingIndex !== undefined) {
+        const existing = relationships[existingIndex];
+        if (existing !== undefined) {
+          existing.evidence = uniqueTrimmedList([...existing.evidence, assignment.entry]);
+          if (!existing.description && relationship.description) {
+            existing.description = relationship.description;
+          }
+        }
+        continue;
+      }
+
+      relationshipsByKey.set(key, relationships.length);
+      relationships.push({
+        source: relationship.source,
+        target: relationship.target,
+        type: relationship.type,
+        description: relationship.description,
+        evidence: [assignment.entry],
+      });
+    }
+  }
+
+  nextIndex.entityMeta = entityMeta;
+  nextIndex.relationships = relationships;
+  return nextIndex;
+}
+
+function buildEntityConsolidationDelta(assignments: ClassificationAssignment[]): EntityConsolidationDelta {
+  const entities: NonNullable<EntityConsolidationDelta['entities']> = [];
+  const relationships: EntityRelationship[] = [];
+
+  for (const assignment of assignments) {
+    for (const [name, meta] of Object.entries(assignment.newEntities ?? {})) {
+      entities.push({
+        name,
+        type: meta.type,
+        description: meta.description,
+      });
+    }
+
+    for (const relationship of assignment.relationships ?? []) {
+      relationships.push({
+        source: relationship.source,
+        target: relationship.target,
+        type: relationship.type,
+        description: relationship.description,
+        evidence: [assignment.entry],
+      });
+    }
+  }
+
+  return {
+    ...(entities.length === 0 ? {} : { entities }),
+    ...(relationships.length === 0 ? {} : { relationships }),
+  };
+}
+
+function applyEntityReplacementMap(tags: string[] | undefined, replacementMap: EntityReplacementMap): string[] | undefined {
+  if (tags === undefined) {
+    return undefined;
+  }
+
+  return uniqueTrimmedList(tags.map((tag) => resolveCanonicalEntityId(tag, replacementMap)));
+}
+
+function rewriteMetadataTargetEntities(target: MetadataTarget, replacementMap: EntityReplacementMap): MetadataTarget {
+  return {
+    ...target,
+    ...(target.addTags === undefined ? {} : { addTags: applyEntityReplacementMap(target.addTags, replacementMap) }),
+    ...(target.desiredTags === undefined
+      ? {}
+      : { desiredTags: applyEntityReplacementMap(target.desiredTags, replacementMap) }),
+    ...(target.removeTags === undefined ? {} : { removeTags: uniqueTrimmedList(target.removeTags) }),
+  };
 }
 
 export function buildMetadataTargets(
@@ -1212,10 +1773,12 @@ export function buildMetadataTargets(
         claimTimeMeta !== undefined && (isNoteEntry(claimTimeMeta) || isSourceEntry(claimTimeMeta))
           ? claimTimeMeta
           : undefined;
-      const existingTags = new Set(claimTimeCuratableMeta?.tags ?? []);
       const existingRelated = new Set(claimTimeCuratableMeta?.related ?? []);
       const assignment = assignmentsByEntryId.get(claimedEntry.entryId);
-      const addTags = uniqueTrimmedList((assignment?.tags ?? []).filter((tag) => !existingTags.has(tag)));
+      const desiredTags = assignment === undefined ? undefined : uniqueTrimmedList(assignment.tags);
+      const desiredTagSet = new Set(desiredTags ?? []);
+      const removeTags =
+        desiredTags === undefined ? [] : (claimTimeCuratableMeta?.tags ?? []).filter((tag) => !desiredTagSet.has(tag));
       const addRelated = uniqueTrimmedList(
         (assignment?.related ?? []).filter((relatedEntryId) => !existingRelated.has(relatedEntryId)),
       );
@@ -1227,8 +1790,9 @@ export function buildMetadataTargets(
           slug: claimedEntry.slug,
           entrySeq: claimedEntry.entrySeq,
           claimTimeFingerprint: claimedEntry.claimTimeFingerprint,
-          ...(addTags.length === 0 ? {} : { addTags }),
+          ...(desiredTags === undefined ? {} : { desiredTags }),
           ...(addRelated.length === 0 ? {} : { addRelated }),
+          ...(removeTags.length === 0 ? {} : { removeTags }),
         };
       }
 
@@ -1245,9 +1809,10 @@ export function buildMetadataTargets(
         slug: claimedEntry.slug,
         entrySeq: claimedEntry.entrySeq,
         claimTimeUpdatedAt: claimedEntry.updatedAt,
-        ...(addTags.length === 0 ? {} : { addTags }),
+        ...(desiredTags === undefined ? {} : { desiredTags }),
         ...(addRelated.length === 0 ? {} : { addRelated }),
         ...(addPrinciples.length === 0 ? {} : { addPrinciples }),
+        ...(removeTags.length === 0 ? {} : { removeTags }),
       };
     })
     .sort(compareMetadataTarget);
@@ -1467,7 +2032,12 @@ function persistCurateState(kb: KbRuntime, state: CurateState, next: CurateState
   return normalizedNext;
 }
 
-function recordCurateFailureLocked(kb: KbRuntime, state: CurateState, through: CurateCursor | null, error: unknown): CurateState {
+function recordCurateFailureLocked(
+  kb: KbRuntime,
+  state: CurateState,
+  through: CurateCursor | null,
+  error: unknown,
+): CurateState {
   return persistCurateState(kb, state, applyRecordCurateFailure(state, through, error));
 }
 
@@ -1505,7 +2075,9 @@ async function claimCurateRun(kb: KbRuntime, today: string): Promise<CurateClaim
 
     const repairFrontier = getCurateRepairFrontier(state.pendingRepair);
     const pendingEntries = filterCandidatesBeforeRepairFrontier(
-      collectClaimCandidates(index).filter((candidate) => compareOptionalCursor(state.processedThrough, candidate.cursor) < 0),
+      collectClaimCandidates(index).filter(
+        (candidate) => compareOptionalCursor(state.processedThrough, candidate.cursor) < 0,
+      ),
       repairFrontier,
     );
     if (pendingEntries.length === 0) {
@@ -1578,45 +2150,77 @@ async function runClassificationBatches(
   index: KbIndex,
   signal?: AbortSignal,
 ): Promise<ClassificationAssignment[]> {
-  const rawAssignments: ClassificationAssignment[] = [];
-  const tagVocab = buildTagVocabulary(index);
-  const principleNames = buildPrincipleNames(index);
+  let workingIndex = cloneKbIndex(index);
+  const validatedAssignments: ClassificationAssignment[] = [];
+  const principleNames = buildPrincipleNames(workingIndex);
+  const remainingEntries = [...claim.entries];
 
-  for (const batch of chunkEntriesByPromptBudget(
-    claim.entries,
-    tagVocab,
-    principleNames,
-    CLASSIFICATION_BATCH_SIZE,
-  )) {
-    const prompt = buildClassificationPrompt(batch, tagVocab, principleNames);
+  while (remainingEntries.length > 0) {
+    const { batch, vocabulary } = takeClassificationBatchWithIndex(
+      remainingEntries,
+      workingIndex,
+      principleNames,
+      CLASSIFICATION_BATCH_SIZE,
+    );
+    if (batch.length === 0) {
+      throw new Error('Classification batch selection produced an empty batch.');
+    }
+
+    const prompt = buildClassificationPrompt(batch, vocabulary, principleNames);
     const raw = await runCurateClaude(kb, spawnCli, prompt, undefined, signal);
     const { entries, parseFailed } = parseJsonArray(raw);
     if (parseFailed) {
       throw new CurateJsonParseError('classification');
     }
     const entryMap = new Map<string, true>(batch.map((entry) => [entry.entryId, true] as const));
-    rawAssignments.push(...classifyParsedEntries(entries, entryMap));
+    const validatedBatch = validateAssignments(classifyParsedEntries(entries, entryMap), workingIndex, batch);
+    validatedAssignments.push(...validatedBatch);
+    workingIndex = mergeAssignmentsIntoIndexGraph(workingIndex, validatedBatch);
+    remainingEntries.splice(0, batch.length);
   }
 
-  return rawAssignments;
+  return validatedAssignments;
 }
 
 async function commitMetadataTargetsLocked(
   kb: KbRuntime,
   targets: MetadataTarget[],
   state: CurateState,
+  graphAssignments?: ClassificationAssignment[],
 ): Promise<CurateState> {
   const normalizedState = normalizeCurateStateRepairFrontier(state);
   const repairFrontier = getCurateRepairFrontier(normalizedState.pendingRepair);
-  const sortedTargets = [...targets].sort(compareMetadataTarget);
   const currentIndex = kb.readIndexOrEmpty();
   const nextIndex = cloneKbIndex(currentIndex);
-  const hasCleanup = sortedTargets.some((target) => target.kind === 'note' && target.cleanup === true);
-  const cleanupTagSupport = hasCleanup ? countTagSupport(currentIndex) : new Map<string, number>();
+  const currentGraph = snapshotEntityGraph(currentIndex);
+  const consolidationResult: ConsolidationResult = consolidateEntityGraph(
+    currentGraph,
+    graphAssignments === undefined ? undefined : buildEntityConsolidationDelta(graphAssignments),
+  );
+  const desiredGraph = consolidationResult.canonicalGraph;
+  const graphChanged = !entityGraphsEqual(currentGraph, desiredGraph);
+  const sortedTargets = [...targets]
+    .map((target) => rewriteMetadataTargetEntities(target, consolidationResult.replacementMap))
+    .sort(compareMetadataTarget);
+
+  nextIndex.entityMeta = cloneEntityMetaMap(desiredGraph.entityMeta);
+  nextIndex.relationships = cloneEntityRelationships(desiredGraph.relationships);
   let processedThrough = normalizedState.processedThrough;
   let cursorCanAdvance = true;
   let wroteMarkdown = false;
   let failure: unknown = null;
+
+  if (graphChanged) {
+    try {
+      writeFileAtomic(kb.entityGraphPath(), `${JSON.stringify(desiredGraph, null, 2)}\n`);
+    } catch (error: unknown) {
+      failure ??= error;
+    }
+  }
+  if (failure !== null) {
+    if (failure instanceof Error) throw failure;
+    throw new Error(typeof failure === 'string' ? failure : 'Unknown error');
+  }
 
   for (const target of sortedTargets) {
     const cursor = cursorFromTarget(target);
@@ -1645,12 +2249,7 @@ async function commitMetadataTargetsLocked(
         continue;
       }
 
-      const metadataDecision = buildLiveNoteMetadataDecision(
-        target,
-        liveFrontmatter.tags,
-        liveFrontmatter.principles,
-        cleanupTagSupport,
-      );
+      const metadataDecision = buildLiveNoteMetadataDecision(target, liveFrontmatter.tags, liveFrontmatter.principles);
       const nextRelated = buildLiveRelatedMetadata(target, liveFrontmatter.related ?? []);
       if (!metadataDecision.shouldWrite && sameStringList(nextRelated, liveFrontmatter.related ?? [])) {
         processedThrough = advanceProcessedThrough(processedThrough, cursorCanAdvance, cursor);
@@ -1751,24 +2350,10 @@ async function commitMetadataTargetsLocked(
     activeClaim: null,
   });
 
-  if (wroteMarkdown) {
-    kb.recordMutationCommitted();
+  if (wroteMarkdown || graphChanged) {
+    recordMetadataMutation(kb, CURATE_STALE_REASON);
     try {
       kb.writeIndex(nextIndex);
-    } catch (error: unknown) {
-      failure ??= error;
-    }
-  }
-
-  try {
-    writeCurateState(kb, nextState);
-  } catch (error: unknown) {
-    failure ??= error;
-  }
-
-  if (wroteMarkdown) {
-    try {
-      markTextIndexStale(kb.invalidateTextSnapshot, CURATE_STALE_REASON);
     } catch (error: unknown) {
       failure ??= error;
     }
@@ -1779,14 +2364,19 @@ async function commitMetadataTargetsLocked(
     throw new Error(typeof failure === 'string' ? failure : 'Unknown error');
   }
 
+  writeCurateState(kb, nextState);
   return nextState;
 }
 
-async function commitMetadataTargets(kb: KbRuntime, targets: MetadataTarget[]): Promise<void> {
+async function commitMetadataTargets(
+  kb: KbRuntime,
+  targets: MetadataTarget[],
+  graphAssignments?: ClassificationAssignment[],
+): Promise<void> {
   await kb.withMutationLock(async () => {
     runEntrySeqUpgradeGuard(kb);
     const state = readCurateState(kb);
-    await commitMetadataTargetsLocked(kb, targets, state);
+    await commitMetadataTargetsLocked(kb, targets, state, graphAssignments);
   });
 }
 
@@ -1810,7 +2400,12 @@ function loadEligibleDiscoveryNotes(kb: KbRuntime, candidates: NoteClaimCandidat
   return eligible;
 }
 
-function recordDiscoveryAttemptLocked(kb: KbRuntime, state: CurateState, highSeq: number, nextOffset: number): CurateState {
+function recordDiscoveryAttemptLocked(
+  kb: KbRuntime,
+  state: CurateState,
+  highSeq: number,
+  nextOffset: number,
+): CurateState {
   return persistCurateState(kb, state, applyRecordDiscoveryAttempt(state, highSeq, nextOffset));
 }
 
@@ -1870,11 +2465,10 @@ function ensurePrincipleDocumentLocked(
     }
   }
 
-  kb.recordMutationCommitted();
+  recordMetadataMutation(kb, CURATE_STALE_REASON);
   writeFileAtomic(principlePath, serializePrincipleDocument(entry.statement, entry.createdAt));
   nextIndex.principles[entry.principle] = entry.statement;
   kb.writeIndex(nextIndex);
-  markTextIndexStale(kb.invalidateTextSnapshot, CURATE_STALE_REASON);
   return {
     status: 'ready',
     state,
@@ -1936,6 +2530,99 @@ type RunCommunitySubphaseOptions = {
   shouldStop?: () => boolean;
 };
 
+function communitySlugFromReference(reference: string): string {
+  const parsed = parseKbEntryId(reference);
+  if (parsed !== null && parsed.startsWith('community:')) {
+    return parsed.slice('community:'.length);
+  }
+
+  return reference;
+}
+
+function normalizedCommunitySummaryFingerprints(
+  fingerprints: Readonly<Record<string, string>> | undefined,
+  communities: ReadonlyArray<{ slug: string }>,
+): Record<string, string> | undefined {
+  if (fingerprints === undefined) {
+    return undefined;
+  }
+
+  const allowedSlugs = new Set(communities.map((community) => community.slug));
+  const entries = Object.entries(fingerprints)
+    .filter(([slug]) => allowedSlugs.has(slug))
+    .sort(([left], [right]) => compareLocale(left, right));
+
+  return entries.length === 0 ? undefined : Object.fromEntries(entries);
+}
+
+function sameCommunitySummaryFingerprints(
+  left: Readonly<Record<string, string>> | undefined,
+  right: Readonly<Record<string, string>> | undefined,
+): boolean {
+  const leftEntries = Object.entries(left ?? {}).sort(([leftKey], [rightKey]) => compareLocale(leftKey, rightKey));
+  const rightEntries = Object.entries(right ?? {}).sort(([leftKey], [rightKey]) => compareLocale(leftKey, rightKey));
+  return (
+    leftEntries.length === rightEntries.length &&
+    leftEntries.every(
+      ([slug, fingerprint], index) =>
+        rightEntries[index]?.[0] === slug && rightEntries[index]?.[1] === fingerprint,
+    )
+  );
+}
+
+function communitySummaryChildren(
+  community: { children?: string[] },
+  communitiesBySlug: ReadonlyMap<string, ExistingGeneratedCommunity>,
+): Array<{ slug: string; title: string; members: string[]; summary: string }> | undefined {
+  if (community.children === undefined || community.children.length === 0) {
+    return undefined;
+  }
+
+  return [...community.children]
+    .sort((left, right) => compareLocale(communitySlugFromReference(left), communitySlugFromReference(right)))
+    .map((reference) => {
+      const slug = communitySlugFromReference(reference);
+      const child = communitiesBySlug.get(slug);
+      if (child === undefined) {
+        throw new Error(`Missing child community ${reference} while generating community summaries.`);
+      }
+      if (child.summary === undefined) {
+        throw new Error(`Missing child summary for ${reference} while generating parent community summaries.`);
+      }
+
+      return {
+        slug: child.slug,
+        title: child.title,
+        members: child.members,
+        summary: child.summary,
+      };
+    });
+}
+
+function toExistingGeneratedCommunity(document: {
+  slug: string;
+  title: string;
+  level: number;
+  members: string[];
+  parent?: string;
+  children?: string[];
+  summary?: string;
+  createdAt: string;
+  updatedAt: string;
+}): ExistingGeneratedCommunity {
+  return {
+    slug: document.slug,
+    title: document.title,
+    level: document.level,
+    members: document.members,
+    ...(document.parent === undefined ? {} : { parent: document.parent }),
+    ...(document.children === undefined ? {} : { children: document.children }),
+    ...(document.summary === undefined ? {} : { summary: document.summary }),
+    createdAt: document.createdAt,
+    updatedAt: document.updatedAt,
+  };
+}
+
 async function runCommunitySubphase(
   kb: KbRuntime,
   spawnCli: SpawnCliFn,
@@ -1949,101 +2636,177 @@ async function runCommunitySubphase(
       return;
     }
 
+    const today = nowIsoString().slice(0, 10);
     const state = readCurateState(kb);
     const finalIndex = kb.readIndexOrEmpty();
-    const graph = buildTagCooccurrenceGraph(finalIndex);
-    const graphHash = computeGraphFingerprint(graph);
-    if (state.communityGraphHash === graphHash) {
-      return;
-    }
-
+    const graph = buildEntityRelationshipGraph({
+      entityMeta: finalIndex.entityMeta ?? {},
+      relationships: finalIndex.relationships ?? [],
+    });
+    const topologyHash = computeCommunityTopologyFingerprint(finalIndex, graph);
+    const topologyNeedsRefresh = state.communityTopologyHash !== topologyHash;
     const { generated: priorGeneratedCommunities, reservedSlugs } = loadExistingCommunityState(kb);
-    const communities = detectCommunities(graph, {
-      priorCommunities: priorGeneratedCommunities,
-      reservedSlugs,
-    });
-    const priorCommunitiesBySlug = new Map(
-      priorGeneratedCommunities.map((community) => [community.slug, community] as const),
-    );
-    let communityDocuments = buildCommunityDocuments(communities, {
-      priorGeneratedCommunities,
-      priorMembershipFingerprints: state.communityMembershipFingerprints,
-      today: nowIsoString().slice(0, 10),
-    });
 
-    let mutated = false;
-    let staleMarked = false;
+    let activeCommunities = [...priorGeneratedCommunities];
+    let pendingArtifactRebuild = false;
+    let summaryStateChanged = false;
     const recordCommunityMutation = () => {
-      kb.recordMutationCommitted();
-      mutated = true;
-      if (!staleMarked) {
-        markTextIndexStale(kb.invalidateTextSnapshot, CURATE_STALE_REASON);
-        staleMarked = true;
-      }
+      recordMetadataMutation(kb, CURATE_STALE_REASON);
+      pendingArtifactRebuild = true;
     };
 
-    mutated = generateCommunityFiles(kb, communityDocuments, priorGeneratedCommunities, recordCommunityMutation);
-
-    for (const [communityIndex, community] of communities.entries()) {
-      const document = communityDocuments[communityIndex];
-      if (document === undefined) {
-        continue;
-      }
-
-      const priorCommunity = priorCommunitiesBySlug.get(community.slug);
-      const priorMembershipFingerprint =
-        priorCommunity === undefined
-          ? undefined
-          : (state.communityMembershipFingerprints?.[community.slug] ??
-            computeCommunityMembershipFingerprint(priorCommunity.members));
-      const summary = await generateCommunitySummary({
-        community,
-        kb,
-        index: finalIndex,
-        priorCommunity,
-        priorMembershipFingerprint,
-        runClaude(prompt, extraArgs, summarySignal) {
-          return runCurateClaude(kb, spawnCli, prompt, extraArgs, summarySignal);
-        },
-        signal,
+    if (topologyNeedsRefresh) {
+      const communities = detectCommunities(graph, {
+        priorCommunities: priorGeneratedCommunities,
+        reservedSlugs,
+      });
+      const communityDocuments = buildCommunityDocuments(communities, {
+        priorGeneratedCommunities,
+        today,
       });
 
-      if (summary === document.summary) {
-        continue;
+      if (generateCommunityFiles(kb, communityDocuments, priorGeneratedCommunities, recordCommunityMutation)) {
+        wroteCommunityFiles = true;
       }
 
-      const updatedDocument = {
-        ...document,
-        summary,
-        content: renderCommunityDocument({
-          title: document.title,
-          members: document.members,
-          ...(summary === undefined ? {} : { summary }),
-          createdAt: document.createdAt,
-          updatedAt: document.updatedAt,
-        }),
-      };
-      writeFileAtomic(kb.communityPath(updatedDocument.slug), updatedDocument.content);
-      recordCommunityMutation();
-      communityDocuments[communityIndex] = updatedDocument;
+      activeCommunities = communityDocuments.map(toExistingGeneratedCommunity);
     }
 
-    if (mutated) {
-      const rebuildSeq = kb.readIndexState().mutationSeq;
-      await rebuildTextArtifactsAndPersistRepairState(kb, rebuildSeq);
-      wroteCommunityFiles = true;
+    let currentState = topologyNeedsRefresh ? readCurateState(kb) : state;
+    let summaryInputFingerprints = {
+      ...(normalizedCommunitySummaryFingerprints(currentState.communitySummaryInputFingerprints, activeCommunities) ?? {}),
+    };
+    const normalizedFingerprints =
+      Object.keys(summaryInputFingerprints).length === 0 ? undefined : summaryInputFingerprints;
+    const initialSummaryStateChange =
+      currentState.communityTopologyHash !== topologyHash ||
+      currentState.communitySummaryTopologyHash !== topologyHash ||
+      !sameCommunitySummaryFingerprints(currentState.communitySummaryInputFingerprints, normalizedFingerprints);
+    if (initialSummaryStateChange) {
+      writeCurateState(kb, {
+        ...currentState,
+        communityTopologyHash: topologyHash,
+        communitySummaryTopologyHash: topologyHash,
+        communitySummaryInputFingerprints: normalizedFingerprints,
+      });
+      summaryStateChanged = true;
+      currentState = readCurateState(kb);
     }
 
-    const finalState = mutated ? readCurateState(kb) : state;
+    if (pendingArtifactRebuild || (topologyNeedsRefresh && summaryStateChanged)) {
+      const rebuildState = kb.readIndexState();
+      await rebuildTextArtifactsAndPersistRepairState(kb, {
+        contentSeq: rebuildState.contentSeq,
+        metadataSeq: rebuildState.metadataSeq,
+      });
+      pendingArtifactRebuild = false;
+      summaryStateChanged = false;
+      currentState = readCurateState(kb);
+    }
+
+    const communitiesBySlug = new Map(activeCommunities.map((community) => [community.slug, community] as const));
+    for (const community of [...activeCommunities].sort((left, right) => {
+      if (left.level !== right.level) {
+        return left.level - right.level;
+      }
+      return compareLocale(left.slug, right.slug);
+    })) {
+      if (shouldStop() || signal?.aborted) {
+        break;
+      }
+
+      const summaryInputFingerprint = computeCommunitySummaryInputFingerprintForCommunity(
+        community,
+        communitiesBySlug,
+        kb,
+        finalIndex,
+      );
+      const currentSummaryFingerprint = summaryInputFingerprints[community.slug];
+
+      if (community.summary === undefined || currentSummaryFingerprint !== summaryInputFingerprint) {
+        const summary = await generateCommunitySummary({
+          community: {
+            slug: community.slug,
+            title: community.title,
+            level: community.level,
+            members: community.members,
+            ...(community.parent === undefined ? {} : { parent: community.parent }),
+            ...(community.children === undefined ? {} : { children: community.children }),
+          },
+          kb,
+          index: finalIndex,
+          childCommunities: communitySummaryChildren(community, communitiesBySlug),
+          priorCommunity: community,
+          priorSummaryInputFingerprint: currentSummaryFingerprint,
+          runClaude(prompt, extraArgs, summarySignal) {
+            return runCurateClaude(kb, spawnCli, prompt, extraArgs, summarySignal);
+          },
+          signal,
+        });
+
+        if (summary !== community.summary) {
+          const updatedCommunity: ExistingGeneratedCommunity = {
+            ...community,
+            ...(summary === undefined ? {} : { summary }),
+            updatedAt: today,
+          };
+          writeFileAtomic(
+            kb.communityPath(updatedCommunity.slug),
+            renderCommunityDocument({
+              title: updatedCommunity.title,
+              members: updatedCommunity.members,
+              level: updatedCommunity.level,
+              ...(updatedCommunity.parent === undefined ? {} : { parent: updatedCommunity.parent }),
+              ...(updatedCommunity.children === undefined ? {} : { children: updatedCommunity.children }),
+              ...(summary === undefined ? {} : { summary }),
+              createdAt: updatedCommunity.createdAt,
+              updatedAt: updatedCommunity.updatedAt,
+            }),
+          );
+          recordCommunityMutation();
+          wroteCommunityFiles = true;
+          communitiesBySlug.set(updatedCommunity.slug, updatedCommunity);
+        }
+      }
+
+      if (summaryInputFingerprints[community.slug] !== summaryInputFingerprint) {
+        summaryInputFingerprints = {
+          ...summaryInputFingerprints,
+          [community.slug]: summaryInputFingerprint,
+        };
+        currentState = readCurateState(kb);
+        writeCurateState(kb, {
+          ...currentState,
+          communityTopologyHash: topologyHash,
+          communitySummaryTopologyHash: topologyHash,
+          communitySummaryInputFingerprints: normalizedCommunitySummaryFingerprints(
+            summaryInputFingerprints,
+            activeCommunities,
+          ),
+        });
+        summaryStateChanged = true;
+      }
+    }
+
+    if (pendingArtifactRebuild || summaryStateChanged) {
+      const rebuildState = kb.readIndexState();
+      await rebuildTextArtifactsAndPersistRepairState(kb, {
+        contentSeq: rebuildState.contentSeq,
+        metadataSeq: rebuildState.metadataSeq,
+      });
+      pendingArtifactRebuild = false;
+      summaryStateChanged = false;
+    }
+
+    currentState = readCurateState(kb);
     writeCurateState(kb, {
-      ...finalState,
-      communityGraphHash: graphHash,
-      communityMembershipFingerprints:
-        communityDocuments.length === 0
-          ? undefined
-          : Object.fromEntries(
-              communityDocuments.map((document) => [document.slug, document.membershipFingerprint] as const),
-            ),
+      ...currentState,
+      communityTopologyHash: topologyHash,
+      communitySummaryTopologyHash: topologyHash,
+      communitySummaryInputFingerprints: normalizedCommunitySummaryFingerprints(
+        summaryInputFingerprints,
+        activeCommunities,
+      ),
     });
   });
 
@@ -2155,12 +2918,11 @@ async function runPrincipleDiscovery(
             '',
           ].join('\n'),
         );
-        kb.recordMutationCommitted();
+        recordMetadataMutation(kb, CURATE_STALE_REASON);
         const nextIndex = cloneKbIndex(kb.readIndexOrEmpty());
         nextIndex.principles[entry.principle] = entry.statement;
         kb.writeIndex(nextIndex);
         index = nextIndex;
-        markTextIndexStale(kb.invalidateTextSnapshot, CURATE_STALE_REASON);
       }
 
       const targets = filterCandidatesBeforeRepairFrontier(
@@ -2198,9 +2960,9 @@ async function runPrincipleDiscovery(
         unlinkIfExists(kb.principlePath(absorbSlug));
         delete nextIndex.principles[absorbSlug];
       }
+      recordMetadataMutation(kb, CURATE_STALE_REASON);
       kb.writeIndex(nextIndex);
       index = nextIndex;
-      markTextIndexStale(kb.invalidateTextSnapshot, CURATE_STALE_REASON);
 
       const targets: MetadataTarget[] = [];
       for (const absorbSlug of absorbs) {
@@ -2366,7 +3128,13 @@ export function createCurateScheduler({
 
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        await runCurateClaude(kb, spawnCli, prompt, ['--permission-mode', 'bypassPermissions', '--model', 'sonnet'], signal);
+        await runCurateClaude(
+          kb,
+          spawnCli,
+          prompt,
+          ['--permission-mode', 'bypassPermissions', '--model', 'sonnet'],
+          signal,
+        );
       } catch {
         return false;
       }
@@ -2431,7 +3199,7 @@ export function createCurateScheduler({
   }
 
   function kbGitPaths(): string[] {
-    return ['notes/', 'sources/', 'principles/', 'communities/', '.gitignore'].filter((entry) =>
+    return ['notes/', 'sources/', 'principles/', 'communities/', '.entity-graph.json', '.gitignore'].filter((entry) =>
       existsSync(join(root, entry.replace(/\/$/, ''))),
     );
   }
@@ -2536,7 +3304,6 @@ export function createCurateScheduler({
   async function runScheduledCurate(signal: AbortSignal): Promise<CurateCursor | null> {
     await gitSync(signal);
     let lastCompletedThrough: CurateCursor | null = null;
-    const allCohortSlugs: string[] = [];
 
     while (!stopped && !signal.aborted) {
       const claim = await claimCurateRun(kb, nowIsoString().slice(0, 10));
@@ -2546,13 +3313,11 @@ export function createCurateScheduler({
 
       try {
         const claimIndex = kb.readIndexOrEmpty();
-        const rawAssignments = await runClassificationBatches(kb, spawnCli, claim, claimIndex, signal);
-        const validatedAssignments = validateAssignments(rawAssignments, claimIndex, claim.entries);
+        const validatedAssignments = await runClassificationBatches(kb, spawnCli, claim, claimIndex, signal);
         const metadataTargets = buildMetadataTargets(validatedAssignments, claimIndex, claim.entries);
-        await commitMetadataTargets(kb, metadataTargets);
+        await commitMetadataTargets(kb, metadataTargets, validatedAssignments);
         gitAutoCommit(`curate: classify ${claim.entries.length} entries (tags + principles)`);
 
-        allCohortSlugs.push(...claim.entries.filter(isNoteClaimedEntry).map((entry) => entry.slug));
         await clearCurateRetryState(kb);
         lastCompletedThrough = claim.through;
       } catch (error: unknown) {
@@ -2574,7 +3339,6 @@ export function createCurateScheduler({
     // Discovery runs once after all classification claims, seeing the full corpus.
     const postClassifyState = readCurateState(kb);
     const processedThrough = postClassifyState.processedThrough;
-    const postClassifyIndex = kb.readIndexOrEmpty();
 
     if (!stopped && !signal.aborted && processedThrough !== null) {
       try {
@@ -2582,20 +3346,6 @@ export function createCurateScheduler({
         gitAutoCommit('curate: discover principles');
       } catch (error: unknown) {
         throw new CurateRunError(lastCompletedThrough, error);
-      }
-    }
-
-    // Tag cleanup runs once over all classified notes.
-    if (!stopped && !signal.aborted) {
-      const cleanupResult = cleanupTags(postClassifyIndex, allCohortSlugs);
-      const cleanupTargets = buildCleanupTargets(postClassifyIndex, allCohortSlugs, cleanupResult);
-      if (cleanupTargets.length > 0) {
-        try {
-          await commitMetadataTargets(kb, cleanupTargets);
-          gitAutoCommit(`curate: cleanup tags for ${cleanupTargets.length} notes`);
-        } catch (error: unknown) {
-          throw new CurateRunError(lastCompletedThrough, error);
-        }
       }
     }
 

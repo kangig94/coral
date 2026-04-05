@@ -2,18 +2,20 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } f
 import { join } from 'node:path';
 import { load, save, type RawData } from '@orama/orama';
 import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
+import { backendLog } from '../shared/backend-log.js';
 import { CURATE_STATE_FILE, readCurateState, type PendingRepair } from './curate-state.js';
 import type {
   KbCachedOramaIndex,
+  KbIndexMutationLane,
   KbIndexState,
   KbRuntime,
   KbVectorLease,
   KbVectorSpecState,
   KbVectorTextSnapshot,
 } from './contracts.js';
-import { normalizeCommunityParent, rewriteLegacyNoteFrontmatter } from './frontmatter.js';
+import { normalizeCommunityChildren, normalizeCommunityParent, rewriteLegacyNoteFrontmatter } from './frontmatter.js';
 import { sortedMarkdownEntries } from './markdown-entries.js';
-import { writeFileAtomic } from './mutation-helpers.js';
+import { cloneKbIndex, writeFileAtomic } from './mutation-helpers.js';
 import { createOramaDb, type KbOramaDb, type KbOramaTokenizer } from './orama-factory.js';
 import {
   communityPathFromName,
@@ -27,17 +29,24 @@ import {
   sourcesDir as pathsSourcesDir,
   stripMdExt,
 } from './paths.js';
-import { rebuildTextArtifactsAndPersistRepairState } from './text-artifacts.js';
+import { detectTextArtifactRebuildInfo, rebuildTextArtifactsAndPersistRepairState } from './text-artifacts.js';
 import {
   communityEntryId,
+  ENTITY_TYPES,
+  RELATIONSHIP_TYPES,
+  type CommunityEntry,
+  type EntityGraph,
+  type EntityMeta,
+  type EntityRelationship,
+  type EntityType,
   isNoteEntry,
   isSourceEntry,
   noteEntryId,
   parseKbEntryId,
   sourceEntryId,
-  type CommunityEntry,
   type KbIndex,
   type NoteEntry,
+  type RelationshipType,
   type SourceEntry,
 } from './types.js';
 import {
@@ -63,14 +72,72 @@ const INDEX_STATE_FILE = 'index-state.json';
 const INDEX_FILE = 'index.json';
 const ORAMA_INDEX_FILE = 'orama-index.json';
 export const KB_ENTRYSEQ_MIGRATION_VERSION = 1;
+const ENTITY_TYPE_SET = new Set<string>(ENTITY_TYPES);
+const RELATIONSHIP_TYPE_SET = new Set<string>(RELATIONSHIP_TYPES);
+
+type PersistedKbIndexState = Omit<KbIndexState, 'mutationSeq' | 'textIndexedSeq'>;
+type KbIndexStateSnapshot = Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>;
+
+function maxIndexSeq(state: KbIndexStateSnapshot): number {
+  return Math.max(state.contentSeq, state.metadataSeq);
+}
+
+function withLegacyIndexStateAliases(state: PersistedKbIndexState): KbIndexState {
+  const mutationSeq = maxIndexSeq(state);
+  return {
+    ...state,
+    mutationSeq,
+    textIndexedSeq: mutationSeq,
+  };
+}
+
+function stripLegacyIndexStateAliases(state: KbIndexState): PersistedKbIndexState {
+  const { mutationSeq: _mutationSeq, textIndexedSeq: _textIndexedSeq, ...persisted } = state;
+  return persisted;
+}
+
+function withoutTextStaleReason(state: PersistedKbIndexState): PersistedKbIndexState {
+  const { textStaleReason: _textStaleReason, ...nextState } = state;
+  return nextState;
+}
+
+function captureIndexStateSnapshot(state: KbIndexState | PersistedKbIndexState | null): KbIndexStateSnapshot {
+  return {
+    contentSeq: state?.contentSeq ?? 0,
+    metadataSeq: state?.metadataSeq ?? 0,
+  };
+}
+
+function indexStateMatchesSnapshot(state: KbIndexStateSnapshot, snapshot: KbIndexStateSnapshot): boolean {
+  return state.contentSeq === snapshot.contentSeq && state.metadataSeq === snapshot.metadataSeq;
+}
+
+function applyMutationLane(state: PersistedKbIndexState, lane: KbIndexMutationLane | null): PersistedKbIndexState {
+  if (lane === null) {
+    return state;
+  }
+
+  const nextSeq = maxIndexSeq(state) + 1;
+  return {
+    ...state,
+    contentSeq: lane === 'content' || lane === 'both' ? nextSeq : state.contentSeq,
+    metadataSeq: lane === 'metadata' || lane === 'both' ? nextSeq : state.metadataSeq,
+  };
+}
+
+function isLegacyRawIndexState(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && !('contentSeq' in value) && 'mutationSeq' in value;
+}
 
 function defaultIndexState(): KbIndexState {
   return {
-    mutationSeq: 0,
-    textIndexedSeq: 0,
+    contentSeq: 0,
+    metadataSeq: 0,
     vector: {
       bySpec: {},
     },
+    mutationSeq: 0,
+    textIndexedSeq: 0,
   };
 }
 
@@ -78,6 +145,8 @@ function emptyIndex(): KbIndex {
   return {
     entries: {},
     principles: {},
+    entityMeta: {},
+    relationships: [],
   };
 }
 
@@ -89,6 +158,95 @@ function parseStringArray(value: unknown): string[] {
   }
 
   return [...value];
+}
+
+function parseNonEmptyStringArray(
+  value: unknown,
+  field: string,
+  errorMessageText = 'Invalid KB entity graph',
+): string[] {
+  if (!isStringArray(value)) {
+    throw new Error(errorMessageText);
+  }
+
+  return value.map((entry, index) => assertNonEmptyText(entry, `${field}[${index}]`));
+}
+
+function parseEntityType(value: unknown, errorMessageText = 'Invalid KB entity graph'): EntityType {
+  if (typeof value !== 'string' || !ENTITY_TYPE_SET.has(value)) {
+    throw new Error(errorMessageText);
+  }
+
+  return value as EntityType;
+}
+
+function parseRelationshipType(value: unknown, errorMessageText = 'Invalid KB entity graph'): RelationshipType {
+  if (typeof value !== 'string' || !RELATIONSHIP_TYPE_SET.has(value)) {
+    throw new Error(errorMessageText);
+  }
+
+  return value as RelationshipType;
+}
+
+function parseEntityMetaMap(value: unknown, errorMessageText = 'Invalid KB entity graph'): Record<string, EntityMeta> {
+  if (!isRecord(value)) {
+    throw new Error(errorMessageText);
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).map(([entityName, rawMeta]) => {
+      if (!isRecord(rawMeta)) {
+        throw new Error(errorMessageText);
+      }
+
+      const aliases = rawMeta.aliases;
+      return [
+        assertNonEmptyText(entityName, 'entityMeta key'),
+        {
+          type: parseEntityType(rawMeta.type, errorMessageText),
+          description: assertNonEmptyText(rawMeta.description, 'entity description'),
+          ...(aliases === undefined
+            ? {}
+            : { aliases: parseNonEmptyStringArray(aliases, `entityMeta.${entityName}.aliases`, errorMessageText) }),
+        },
+      ];
+    }),
+  );
+}
+
+function parseEntityRelationships(value: unknown, errorMessageText = 'Invalid KB entity graph'): EntityRelationship[] {
+  if (!Array.isArray(value)) {
+    throw new Error(errorMessageText);
+  }
+
+  return value.map((rawRelationship, index) => {
+    if (!isRecord(rawRelationship)) {
+      throw new Error(errorMessageText);
+    }
+
+    return {
+      source: assertNonEmptyText(rawRelationship.source, `relationships[${index}].source`),
+      target: assertNonEmptyText(rawRelationship.target, `relationships[${index}].target`),
+      type: parseRelationshipType(rawRelationship.type, errorMessageText),
+      description: assertNonEmptyText(rawRelationship.description, `relationships[${index}].description`),
+      evidence: parseNonEmptyStringArray(
+        rawRelationship.evidence,
+        `relationships[${index}].evidence`,
+        errorMessageText,
+      ),
+    };
+  });
+}
+
+function parseEntityGraph(value: unknown): EntityGraph {
+  if (!isRecord(value) || !('entityMeta' in value) || !('relationships' in value)) {
+    throw new Error('Invalid KB entity graph');
+  }
+
+  return {
+    entityMeta: parseEntityMetaMap(value.entityMeta),
+    relationships: parseEntityRelationships(value.relationships),
+  };
 }
 
 function parseEntryIdArray(value: unknown): string[] {
@@ -160,6 +318,7 @@ function parseCommunityIndexEntry(entryId: string, value: Record<string, unknown
   }
 
   const parent = normalizeCommunityParent(value.parent);
+  const children = normalizeCommunityChildren(value.children);
   const summary = parseOptionalTrimmedString(value.summary, 'summary');
 
   return {
@@ -169,6 +328,7 @@ function parseCommunityIndexEntry(entryId: string, value: Record<string, unknown
     level: parseNonNegativeInteger(value.level ?? 0, 'level'),
     members: parseStringArray(value.members),
     ...(parent === undefined ? {} : { parent }),
+    ...(children === undefined ? {} : { children }),
     ...(summary === undefined ? {} : { summary }),
     createdAt: assertNonEmptyText(value.createdAt, 'KB index entry createdAt'),
     updatedAt: assertNonEmptyText(value.updatedAt, 'KB index entry updatedAt'),
@@ -212,7 +372,17 @@ function parseIndex(value: unknown): KbIndex {
     principles[name] = statement;
   }
 
-  return { entries, principles };
+  const entityMeta =
+    value.entityMeta === undefined ? undefined : parseEntityMetaMap(value.entityMeta, 'Invalid KB index');
+  const relationships =
+    value.relationships === undefined ? undefined : parseEntityRelationships(value.relationships, 'Invalid KB index');
+
+  return {
+    entries,
+    principles,
+    ...(entityMeta === undefined ? {} : { entityMeta }),
+    ...(relationships === undefined ? {} : { relationships }),
+  };
 }
 
 function parseIndexState(value: unknown): KbIndexState {
@@ -220,18 +390,25 @@ function parseIndexState(value: unknown): KbIndexState {
     throw new Error('Invalid KB index state');
   }
 
-  const mutationSeq = value.mutationSeq;
-  const textIndexedSeq = value.textIndexedSeq ?? value.indexedSeq;
+  const hasSemanticLanes = value.contentSeq !== undefined || value.metadataSeq !== undefined;
+  const contentSeq = hasSemanticLanes ? value.contentSeq : value.mutationSeq;
+  const metadataSeq = hasSemanticLanes ? value.metadataSeq : value.mutationSeq;
+  const legacyTextIndexedSeq = value.textIndexedSeq ?? value.indexedSeq;
   const textStaleReason = value.textStaleReason ?? value.staleReason;
-  if (typeof mutationSeq !== 'number' || !Number.isInteger(mutationSeq) || mutationSeq < 0) {
+  if (typeof contentSeq !== 'number' || !Number.isInteger(contentSeq) || contentSeq < 0) {
     throw new Error('Invalid KB index state');
   }
-  if (typeof textIndexedSeq !== 'number' || !Number.isInteger(textIndexedSeq) || textIndexedSeq < 0) {
+  if (typeof metadataSeq !== 'number' || !Number.isInteger(metadataSeq) || metadataSeq < 0) {
     throw new Error('Invalid KB index state');
   }
   if (textStaleReason !== undefined && typeof textStaleReason !== 'string') {
     throw new Error('Invalid KB index state');
   }
+
+  const migratedLegacyState =
+    !hasSemanticLanes && legacyTextIndexedSeq !== undefined && legacyTextIndexedSeq !== contentSeq
+      ? 'KB text snapshot requires lane-state migration rebuild.'
+      : undefined;
 
   const bySpec: Record<string, KbVectorSpecState> = {};
   const vectorValue = value.vector;
@@ -265,14 +442,18 @@ function parseIndexState(value: unknown): KbIndexState {
     }
   }
 
-  return {
-    mutationSeq,
-    textIndexedSeq,
-    ...(typeof textStaleReason === 'string' ? { textStaleReason } : {}),
+  return withLegacyIndexStateAliases({
+    contentSeq,
+    metadataSeq,
+    ...(typeof textStaleReason === 'string'
+      ? { textStaleReason }
+      : migratedLegacyState === undefined
+        ? {}
+        : { textStaleReason: migratedLegacyState }),
     vector: {
       bySpec,
     },
-  };
+  });
 }
 
 function writeJsonAtomic(filePath: string, value: unknown): void {
@@ -280,7 +461,7 @@ function writeJsonAtomic(filePath: string, value: unknown): void {
 }
 
 function isFreshTextSnapshot(state: KbIndexState | null): state is KbIndexState {
-  return state !== null && state.textIndexedSeq === state.mutationSeq && state.textStaleReason === undefined;
+  return state !== null && state.textStaleReason === undefined;
 }
 
 /**
@@ -381,6 +562,10 @@ class KbRuntimeImpl implements KbRuntime {
     return pathsPrinciplesDir(this.markdownRoot);
   }
 
+  entityGraphPath(): string {
+    return join(this.markdownRoot, '.entity-graph.json');
+  }
+
   notePath(note: string): string {
     return notePathFromName(note, this.markdownRoot);
   }
@@ -403,6 +588,42 @@ class KbRuntimeImpl implements KbRuntime {
 
   curateStatePath(): string {
     return join(this.runtimeDir, CURATE_STATE_FILE);
+  }
+
+  readEntityGraph(): EntityGraph | null {
+    const graphPath = this.entityGraphPath();
+
+    try {
+      const raw = readFileSync(graphPath, 'utf-8');
+      if (raw.includes('<<<<<<<')) {
+        throw new Error('Merge conflict markers detected.');
+      }
+
+      return parseEntityGraph(JSON.parse(raw) as unknown);
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) {
+        return null;
+      }
+
+      backendLog.warn(
+        `KB entity graph is unavailable; graph and community-derived features are disabled: ${errorMessage(error)}`,
+      );
+      return null;
+    }
+  }
+
+  writeEntityGraph(graph: EntityGraph): void {
+    const normalized = parseEntityGraph(graph);
+    writeJsonAtomic(this.entityGraphPath(), normalized);
+    this.recordMutationCommitted('metadata', 'KB entity graph changed.');
+
+    const currentIndex = this.readIndex();
+    if (currentIndex !== null) {
+      const nextIndex = cloneKbIndex(currentIndex);
+      nextIndex.entityMeta = normalized.entityMeta;
+      nextIndex.relationships = normalized.relationships;
+      this.writeIndex(nextIndex);
+    }
   }
 
   async initVectorStore(pluginRoot: string): Promise<void> {
@@ -612,7 +833,12 @@ class KbRuntimeImpl implements KbRuntime {
   readIndexStateIfPresent(): KbIndexState | null {
     try {
       const raw = readFileSync(this.indexStatePath(), 'utf-8');
-      return parseIndexState(JSON.parse(raw) as unknown);
+      const parsedRaw = JSON.parse(raw) as unknown;
+      const parsedState = parseIndexState(parsedRaw);
+      if (isLegacyRawIndexState(parsedRaw)) {
+        this.writeIndexState(parsedState);
+      }
+      return parsedState;
     } catch (error: unknown) {
       if (isNoEntryError(error)) {
         return null;
@@ -629,57 +855,62 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   writeIndexState(state: KbIndexState): void {
-    writeJsonAtomic(this.indexStatePath(), state);
+    writeJsonAtomic(this.indexStatePath(), stripLegacyIndexStateAliases(state));
   }
 
-  recordMutationCommitted(): KbIndexState {
-    const state = this.readIndexState();
-    const nextState = { ...state, mutationSeq: state.mutationSeq + 1 };
+  recordMutationCommitted(lane: KbIndexMutationLane = 'both', reason?: string): KbIndexState {
+    const state = stripLegacyIndexStateAliases(this.readIndexState());
+    const nextState = withLegacyIndexStateAliases({
+      ...applyMutationLane(state, lane),
+      ...(reason === undefined ? {} : { textStaleReason: reason }),
+    });
     this.writeIndexState(nextState);
     return nextState;
   }
 
   recordIndexSyncSuccess(): KbIndexState {
-    const state = this.readIndexState();
-    const nextState: KbIndexState = {
-      mutationSeq: state.mutationSeq,
-      textIndexedSeq: state.mutationSeq,
+    const state = stripLegacyIndexStateAliases(this.readIndexState());
+    const nextState = withLegacyIndexStateAliases({
+      contentSeq: state.contentSeq,
+      metadataSeq: state.metadataSeq,
       vector: state.vector,
-    };
+    });
     this.writeIndexState(nextState);
     return nextState;
   }
 
   recordIndexSyncFailure(reason: string): KbIndexState {
-    const state = this.readIndexState();
-    const nextState: KbIndexState = {
-      mutationSeq: state.mutationSeq,
-      textIndexedSeq: state.textIndexedSeq,
+    const state = stripLegacyIndexStateAliases(this.readIndexState());
+    const nextState = withLegacyIndexStateAliases({
+      contentSeq: state.contentSeq,
+      metadataSeq: state.metadataSeq,
       textStaleReason: reason,
       vector: state.vector,
-    };
+    });
     this.writeIndexState(nextState);
     return nextState;
   }
 
-  recordReindexSuccess(startSeq: number): KbIndexState {
+  recordReindexSuccess(
+    startState: Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>,
+    externalMutation: KbIndexMutationLane | null = null,
+  ): KbIndexState {
     const state = this.readIndexState();
-    if (state.mutationSeq !== startSeq) {
+    if (!indexStateMatchesSnapshot(state, startState)) {
       return state;
     }
 
-    const nextState: KbIndexState = {
-      mutationSeq: state.mutationSeq,
-      textIndexedSeq: startSeq,
+    const nextState = withLegacyIndexStateAliases({
+      ...applyMutationLane(withoutTextStaleReason(stripLegacyIndexStateAliases(state)), externalMutation),
       vector: state.vector,
-    };
+    });
     this.writeIndexState(nextState);
     return nextState;
   }
 
-  recordVectorSyncSuccess(specId: string, startSeq: number, snapshotId: string): KbIndexState {
+  recordVectorSyncSuccess(specId: string, startContentSeq: number, snapshotId: string): KbIndexState {
     const state = this.readIndexState();
-    if (state.mutationSeq !== startSeq) {
+    if (state.contentSeq !== startContentSeq) {
       return state;
     }
 
@@ -689,7 +920,7 @@ class KbRuntimeImpl implements KbRuntime {
         bySpec: {
           ...state.vector.bySpec,
           [specId]: {
-            indexedSeq: startSeq,
+            indexedSeq: startContentSeq,
             activeSnapshotId: snapshotId,
           },
         },
@@ -735,12 +966,11 @@ class KbRuntimeImpl implements KbRuntime {
           this.upgradeGuardDone = true;
         }
         const state = this.readIndexStateIfPresent();
-        const startSeq = state?.mutationSeq ?? 0;
         if (!this.textArtifactsNeedRebuild(state)) {
           return;
         }
 
-        await rebuildTextArtifactsAndPersistRepairState(this, startSeq);
+        await rebuildTextArtifactsAndPersistRepairState(this, captureIndexStateSnapshot(state));
       });
     }
 
@@ -764,11 +994,11 @@ class KbRuntimeImpl implements KbRuntime {
 
     return this.withMutationLock(async () => {
       const state = this.readIndexStateIfPresent();
-      const startSeq = state?.mutationSeq ?? 0;
+      const startState = captureIndexStateSnapshot(state);
 
       if (this.textArtifactsNeedRebuild(state)) {
         try {
-          await rebuildTextArtifactsAndPersistRepairState(this, startSeq);
+          await rebuildTextArtifactsAndPersistRepairState(this, startState);
         } catch (error: unknown) {
           throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
         }
@@ -777,7 +1007,7 @@ class KbRuntimeImpl implements KbRuntime {
           this.installOramaCache(await this.loadOramaSnapshot());
         } catch {
           try {
-            await rebuildTextArtifactsAndPersistRepairState(this, startSeq);
+            await rebuildTextArtifactsAndPersistRepairState(this, startState);
           } catch (error: unknown) {
             throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
           }
@@ -796,9 +1026,12 @@ class KbRuntimeImpl implements KbRuntime {
     });
   }
 
-  async ensureTextArtifactsFreshUnderLock(startSeq: number): Promise<KbVectorTextSnapshot> {
+  async ensureTextArtifactsFreshUnderLock(): Promise<KbVectorTextSnapshot> {
     if (this.textArtifactsNeedRebuild()) {
-      const result = await rebuildTextArtifactsAndPersistRepairState(this, startSeq);
+      const result = await rebuildTextArtifactsAndPersistRepairState(
+        this,
+        captureIndexStateSnapshot(this.readIndexState()),
+      );
       return this.snapshotFromRebuildResult(result);
     }
 
@@ -806,7 +1039,10 @@ class KbRuntimeImpl implements KbRuntime {
       try {
         this.installOramaCache(await this.loadOramaSnapshot());
       } catch {
-        const result = await rebuildTextArtifactsAndPersistRepairState(this, startSeq);
+        const result = await rebuildTextArtifactsAndPersistRepairState(
+          this,
+          captureIndexStateSnapshot(this.readIndexState()),
+        );
         return this.snapshotFromRebuildResult(result);
       }
     }
@@ -987,14 +1223,6 @@ class KbRuntimeImpl implements KbRuntime {
     return { db, tokenizer };
   }
 
-  private dirModifiedAfter(dir: string, threshold: number): boolean {
-    try {
-      return statSync(dir).mtimeMs > threshold;
-    } catch {
-      return false;
-    }
-  }
-
   private pendingRepairPath(entry: PendingRepair): string | null {
     if (entry.entryId.startsWith('note:')) {
       return this.notePath(entry.entryId.slice('note:'.length));
@@ -1044,19 +1272,7 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   private indexNeedsRebuild(): boolean {
-    const currentIndexPath = this.indexPath();
-    if (!existsSync(currentIndexPath)) {
-      return true;
-    }
-
-    try {
-      const indexMtime = this.indexCache?.mtime || statSync(currentIndexPath).mtimeMs;
-      return [this.notesDir(), this.principlesDir(), this.sourcesDir(), this.communitiesDir()].some((dir) =>
-        this.dirModifiedAfter(dir, indexMtime),
-      );
-    } catch {
-      return false;
-    }
+    return detectTextArtifactRebuildInfo(this).needsRebuild;
   }
 
   private textArtifactsNeedRebuild(state?: KbIndexState | null): boolean {

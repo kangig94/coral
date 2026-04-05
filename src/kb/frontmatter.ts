@@ -15,7 +15,6 @@ import {
   NOTE_SLUG_PATTERN,
   assertNonEmptyText,
   parseNonNegativeInteger,
-  parseOptionalTrimmedString,
   parsePositiveInteger,
 } from './validation.js';
 
@@ -87,6 +86,21 @@ export function normalizeCommunityParent(value: unknown): string | undefined {
   }
 
   return normalized;
+}
+
+export function normalizeCommunityChildren(value: unknown): string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return normalizeStringList(value, 'children').map((entry) => {
+    const normalized = parseKbEntryId(entry);
+    if (normalized === null || !normalized.startsWith('community:')) {
+      throw new Error('children must contain community entry IDs');
+    }
+
+    return normalized;
+  });
 }
 
 export function normalizePrincipleReference(value: string): string {
@@ -179,9 +193,15 @@ export function parseSourceFrontmatter(content: string): KbSourceFrontmatter {
 
 export function parseCommunityFrontmatter(content: string): CommunityFrontmatter {
   const record = parseFrontmatterRecord(content);
+  const level = parseNonNegativeInteger(record.level ?? 0, 'level');
+  const parent = normalizeCommunityParent(record.parent);
+  const children = normalizeCommunityChildren(record.children);
   return {
     createdAt: assertNonEmptyText(record.createdAt, 'createdAt'),
     updatedAt: assertNonEmptyText(record.updatedAt, 'updatedAt'),
+    level,
+    ...(parent === undefined ? {} : { parent }),
+    ...(children === undefined ? {} : { children }),
   };
 }
 
@@ -255,10 +275,18 @@ export function serializeSourceFrontmatter(meta: KbSourceFrontmatter): string {
   });
 }
 
-export function serializeCommunityFrontmatter(meta: CommunityFrontmatter): string {
+export function serializeCommunityFrontmatter(
+  meta: Omit<CommunityFrontmatter, 'level'> & { level?: number },
+): string {
+  const level = parseNonNegativeInteger(meta.level ?? 0, 'level');
+  const parent = normalizeCommunityParent(meta.parent);
+  const children = normalizeCommunityChildren(meta.children);
   return serializeFrontmatterRecord({
     createdAt: assertNonEmptyText(meta.createdAt, 'createdAt'),
     updatedAt: assertNonEmptyText(meta.updatedAt, 'updatedAt'),
+    level,
+    ...(parent === undefined ? {} : { parent }),
+    ...(children === undefined ? {} : { children }),
   });
 }
 
