@@ -1886,7 +1886,7 @@ export function createCurateScheduler({
   }
 
   async function claimCurateRun(today: string): Promise<CurateClaim | null> {
-    return kb.withMutationLock(() => {
+    const lockResult = await kb.withMutationLock(() => {
       const state = readCurateState(kb);
       const now = nowIsoString();
 
@@ -1926,10 +1926,6 @@ export function createCurateScheduler({
         return null;
       }
 
-      const claim: CurateClaim = {
-        entries: claimedCandidates.map(readClaimedEntry),
-        through,
-      };
       const freshPendingSuffix = pendingExtendsBeyondCursor(pendingEntries, state.lastAttemptedThrough);
 
       writeCurateState(
@@ -1947,8 +1943,28 @@ export function createCurateScheduler({
         }),
       );
 
-      return claim;
+      return { claimedCandidates, through };
     });
+
+    if (lockResult === null) {
+      return null;
+    }
+
+    // Read file contents outside the mutation lock — the claim cursor is already
+    // persisted, and commitMetadataTargetsLocked uses compare-and-swap (updatedAt /
+    // fingerprint) to detect any changes between now and commit.
+    const entries = lockResult.claimedCandidates.flatMap((candidate) => {
+      try {
+        return [readClaimedEntry(candidate)];
+      } catch {
+        return [];
+      }
+    });
+    if (entries.length === 0) {
+      return null;
+    }
+
+    return { entries, through: lockResult.through };
   }
 
   async function runClassificationBatches(
@@ -2042,7 +2058,6 @@ export function createCurateScheduler({
         };
 
         writeFileAtomic(notePath, replaceFrontmatter(raw, nextFrontmatter));
-        kb.recordMutationCommitted();
         wroteMarkdown = true;
 
         const existingIndexEntry = nextIndex.entries[noteEntryId(target.slug)];
@@ -2101,7 +2116,6 @@ export function createCurateScheduler({
       };
 
       writeFileAtomic(sourcePath, replaceSourceFrontmatter(raw, nextFrontmatter));
-      kb.recordMutationCommitted();
       wroteMarkdown = true;
 
       const existingIndexEntry = nextIndex.entries[sourceEntryId(target.slug)];
@@ -2128,6 +2142,7 @@ export function createCurateScheduler({
     });
 
     if (wroteMarkdown) {
+      kb.recordMutationCommitted();
       try {
         kb.writeIndex(nextIndex);
       } catch (error: unknown) {
