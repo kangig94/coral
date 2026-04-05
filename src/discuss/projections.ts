@@ -44,16 +44,14 @@ function parseWatchEventTs(ts: string): number {
 
 export function buildControlView(snapshot: PersistedDiscussSnapshot): DiscussControlView {
   return {
-    transcript: snapshot.state.transcript.map((entry) => redactTranscriptEntry(entry)),
+    transcript: snapshot.state.transcript.map(redactTranscriptEntry),
     lastSeq: snapshot.lastAppliedSeq,
   };
 }
 
 export function buildAuditView(snapshot: PersistedDiscussSnapshot): DiscussAuditView {
   return {
-    transcript: snapshot.state.transcript.map((entry) =>
-      cloneTranscriptEntry(entry),
-    ),
+    transcript: snapshot.state.transcript.map(cloneTranscriptEntry),
     lastSeq: snapshot.lastAppliedSeq,
   };
 }
@@ -75,15 +73,18 @@ export function buildWatchEvents(events: DiscussDomainEvent[]): WatchEvent[] {
             },
             ts,
           });
-        } else if (event.payload.outcome.reason === 'epoch_transition') {
-          watchEvents.push({
-            type: 'epoch_transition',
-            data: {
-              epoch: event.payload.stateMutations.epoch ?? null,
-            },
-            ts,
-          });
+          break;
         }
+
+        if (event.payload.outcome.reason !== 'epoch_transition') break;
+
+        watchEvents.push({
+          type: 'epoch_transition',
+          data: {
+            epoch: event.payload.stateMutations.epoch ?? null,
+          },
+          ts,
+        });
         break;
 
       case 'speech.recorded':

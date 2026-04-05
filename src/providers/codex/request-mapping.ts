@@ -36,12 +36,20 @@ export function buildCodexTurnInput(prompt: string): UserInput[] {
   return [{ type: 'text', text: prompt, text_elements: [] }];
 }
 
-export function mapThreadStartParams(request: ProviderRequest): ThreadStartParams {
+function buildThreadParams(
+  request: ProviderRequest,
+): Pick<ThreadStartParams, 'cwd' | 'model' | 'approvalPolicy' | 'sandbox'> {
   return {
     cwd: request.cwd ?? process.cwd(),
     model: resolveModelTier(request.model) ?? null,
     approvalPolicy: 'never',
     sandbox: resolveCodexSandbox(request.bypassPermissions),
+  };
+}
+
+export function mapThreadStartParams(request: ProviderRequest): ThreadStartParams {
+  return {
+    ...buildThreadParams(request),
     ephemeral: false,
   };
 }
@@ -49,10 +57,7 @@ export function mapThreadStartParams(request: ProviderRequest): ThreadStartParam
 export function mapThreadResumeParams(request: ProviderRequest, threadId: string): ThreadResumeParams {
   return {
     threadId,
-    cwd: request.cwd ?? process.cwd(),
-    model: resolveModelTier(request.model) ?? null,
-    approvalPolicy: 'never',
-    sandbox: resolveCodexSandbox(request.bypassPermissions),
+    ...buildThreadParams(request),
   };
 }
 

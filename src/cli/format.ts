@@ -193,12 +193,14 @@ export function formatProviderList(result: ListResult): string {
 }
 
 export function formatPersonaSeed(result: PersonaSeedOutput): string {
-  const subsampledLine =
-    result.subsampled === undefined
-      ? undefined
-      : result.subsampled
-        ? `Subsampled: yes${result.original_pool_size === undefined ? '' : ` (from ${result.original_pool_size})`}`
-        : 'Subsampled: no';
+  let subsampledLine: string | undefined;
+  if (result.subsampled === true) {
+    const fromPool =
+      result.original_pool_size === undefined ? '' : ` (from ${result.original_pool_size})`;
+    subsampledLine = `Subsampled: yes${fromPool}`;
+  } else if (result.subsampled === false) {
+    subsampledLine = 'Subsampled: no';
+  }
 
   return joinLines([
     `Seed used: ${result.seed_used}`,

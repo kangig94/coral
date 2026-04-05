@@ -476,37 +476,47 @@ const claudeAppServer: ProviderAppServerContract = {
   },
   finalizeInterrupted(probeResult, continuity) {
     const persistedContinuity = readClaudePersistedContinuity(probeResult.updatedContinuity ?? continuity);
-    const continuityMutation =
-      persistedContinuity.bootstrapSignature
-        ? buildClaudeContinuity({
-            ...(persistedContinuity.brokerSessionKey ? { brokerSessionKey: persistedContinuity.brokerSessionKey } : {}),
-            bootstrapSignature: persistedContinuity.bootstrapSignature,
-            ...(persistedContinuity.envHash ? { envHash: persistedContinuity.envHash } : {}),
-            ...(persistedContinuity.conversationRef ? { conversationRef: persistedContinuity.conversationRef } : {}),
-          })
-        : undefined;
 
     if (probeResult.resumable && persistedContinuity.conversationRef) {
+      if (!persistedContinuity.bootstrapSignature) {
+        return {
+          conversationRef: persistedContinuity.conversationRef,
+        };
+      }
+
       return {
         conversationRef: persistedContinuity.conversationRef,
-        ...(continuityMutation ? { continuityMutation } : {}),
+        continuityMutation: buildClaudeContinuity({
+          ...(persistedContinuity.brokerSessionKey ? { brokerSessionKey: persistedContinuity.brokerSessionKey } : {}),
+          bootstrapSignature: persistedContinuity.bootstrapSignature,
+          ...(persistedContinuity.envHash ? { envHash: persistedContinuity.envHash } : {}),
+          conversationRef: persistedContinuity.conversationRef,
+        }),
       };
     }
 
-    if (continuityMutation) {
-      if (probeResult.resumable) {
-        return {
-          continuityMutation,
-        };
-      }
+    if (!persistedContinuity.bootstrapSignature) {
       return {
         nonResumable: true,
+      };
+    }
+
+    const continuityMutation = buildClaudeContinuity({
+      ...(persistedContinuity.brokerSessionKey ? { brokerSessionKey: persistedContinuity.brokerSessionKey } : {}),
+      bootstrapSignature: persistedContinuity.bootstrapSignature,
+      ...(persistedContinuity.envHash ? { envHash: persistedContinuity.envHash } : {}),
+      ...(persistedContinuity.conversationRef ? { conversationRef: persistedContinuity.conversationRef } : {}),
+    });
+
+    if (probeResult.resumable) {
+      return {
         continuityMutation,
       };
     }
 
     return {
       nonResumable: true,
+      continuityMutation,
     };
   },
 };

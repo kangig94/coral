@@ -16,10 +16,8 @@ export type {
   DiscussAuditView,
 } from './view-types.js';
 import type {
-  DiscussAuditView,
   DiscussAuditTranscriptEntryDto,
   DiscussControlTranscriptEntryDto,
-  DiscussControlView,
 } from './view-types.js';
 
 // ---------------------------------------------------------------------------
@@ -171,22 +169,22 @@ export function buildDiscussDetail(
 ): DiscussDetailResponse {
   const session = buildDiscussSession(snapshot);
   if (view === 'audit') {
-    const auditView: DiscussAuditView = buildAuditView(snapshot);
+    const { transcript, lastSeq } = buildAuditView(snapshot);
     return {
       authority,
       view,
       session,
-      transcript: auditView.transcript,
-      lastSeq: auditView.lastSeq,
+      transcript,
+      lastSeq,
     };
   }
 
-  const controlView: DiscussControlView = buildControlView(snapshot);
+  const { transcript, lastSeq } = buildControlView(snapshot);
   return {
     authority,
     view,
     session,
-    transcript: controlView.transcript,
-    lastSeq: controlView.lastSeq,
+    transcript,
+    lastSeq,
   };
 }

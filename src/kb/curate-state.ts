@@ -476,13 +476,7 @@ function syncIndexNote(note: string, title: string, frontmatter: KbNoteFrontmatt
   const nextEntry = buildNoteIndexEntry({
     slug: note,
     title,
-    tags: frontmatter.tags,
-    principles: frontmatter.principles,
-    source: frontmatter.source,
-    createdAt: frontmatter.createdAt,
-    updatedAt: frontmatter.updatedAt,
-    related: frontmatter.related ?? [],
-    ...(frontmatter.entrySeq === undefined ? {} : { entrySeq: frontmatter.entrySeq }),
+    ...frontmatter,
   });
   const existingEntry = nextIndex.entries[noteEntryId(note)];
   const existing = existingEntry !== undefined && isNoteEntry(existingEntry) ? existingEntry : undefined;
@@ -511,13 +505,7 @@ function syncIndexSource(
 ): boolean {
   const nextEntry = buildSourceIndexEntry({
     slug,
-    title: frontmatter.title,
-    type: frontmatter.type,
-    tags: frontmatter.tags,
-    ...(frontmatter.url === undefined ? {} : { url: frontmatter.url }),
-    importedAt: frontmatter.importedAt,
-    related: frontmatter.related ?? [],
-    ...(frontmatter.entrySeq === undefined ? {} : { entrySeq: frontmatter.entrySeq }),
+    ...frontmatter,
   });
   const existingEntry = nextIndex.entries[sourceEntryId(slug)];
   const existing = existingEntry !== undefined && isSourceEntry(existingEntry) ? existingEntry : undefined;

@@ -22,6 +22,13 @@ export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
 const VALID_EFFORT_LEVELS = new Set<string>(['low', 'medium', 'high', 'max']);
 const ABSTRACT_MODEL_TIERS: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3 };
 
+function parseEffortLevel(value: string, label: string): EffortLevel {
+  if (!VALID_EFFORT_LEVELS.has(value)) {
+    throw new Error(`Invalid ${label}="${value}". Valid values: low, medium, high, max`);
+  }
+  return value as EffortLevel;
+}
+
 /** Validate and resolve effort level from request + environment. */
 export function resolveEffort(
   requestEffort: string | undefined,
@@ -29,17 +36,11 @@ export function resolveEffort(
   defaultEffort: EffortLevel = 'high',
 ): EffortLevel {
   if (requestEffort !== undefined) {
-    if (!VALID_EFFORT_LEVELS.has(requestEffort)) {
-      throw new Error(`Invalid effort="${requestEffort}". Valid values: low, medium, high, max`);
-    }
-    return requestEffort as EffortLevel;
+    return parseEffortLevel(requestEffort, 'effort');
   }
   const envEffort = env?.CORAL_EFFORT;
   if (envEffort !== undefined) {
-    if (!VALID_EFFORT_LEVELS.has(envEffort)) {
-      throw new Error(`Invalid CORAL_EFFORT="${envEffort}". Valid values: low, medium, high, max`);
-    }
-    return envEffort as EffortLevel;
+    return parseEffortLevel(envEffort, 'CORAL_EFFORT');
   }
   return defaultEffort;
 }

@@ -44,6 +44,11 @@ function isShuttingDownError(value: unknown): value is { error: 'backend_shuttin
   return isRecord(value) && value.error === 'backend_shutting_down';
 }
 
+function throwBackendCommunicationError(error: unknown): never {
+  if (error instanceof Error) throw error;
+  throw new Error(`Backend communication error: ${String(error)}`, { cause: error });
+}
+
 export async function getBackendStatus(pluginRoot: string): Promise<BackendStatus | null> {
   const status = await getBackendStatusFull(pluginRoot);
   if (status.status === 'ok') {
@@ -159,8 +164,7 @@ export async function proxyToolCall(
       return (await parseJsonResponse(response)) as ToolDomainResult;
     });
   } catch (error) {
-    if (error instanceof Error) throw error;
-    throw new Error(`Backend communication error: ${String(error)}`, { cause: error });
+    throwBackendCommunicationError(error);
   }
 }
 
@@ -237,8 +241,7 @@ export async function* streamWait(
     const finalEvent = parseWaitStreamEvent(finalBlock.event, finalBlock.data);
     if (finalEvent) yield finalEvent;
   } catch (error) {
-    if (error instanceof Error) throw error;
-    throw new Error(`Backend communication error: ${String(error)}`, { cause: error });
+    throwBackendCommunicationError(error);
   } finally {
     clearTimeout(timeout);
     signal?.removeEventListener('abort', onExternalAbort);

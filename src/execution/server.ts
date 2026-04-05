@@ -386,9 +386,10 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     }
 
     const authority: DiscussAuthority = isLiveDiscussSession(source, sessionId) ? 'live' : 'persisted';
-    return view === 'audit'
-      ? buildDiscussDetail(snapshot, 'audit', authority)
-      : buildDiscussDetail(snapshot, 'control', authority);
+    if (view === 'audit') {
+      return buildDiscussDetail(snapshot, 'audit', authority);
+    }
+    return buildDiscussDetail(snapshot, 'control', authority);
   }
 
   // -- Drain admission fence -------------------------------------------------

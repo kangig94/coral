@@ -39,32 +39,46 @@ export function buildNoteIndexEntry(meta: NoteIndexEntrySource): NoteEntry {
 }
 
 export function buildSourceIndexEntry(meta: SourceIndexEntrySource): SourceEntry {
-  return {
+  const entry: SourceEntry = {
     kind: 'source',
     slug: meta.slug,
     title: meta.title,
     type: meta.type,
     tags: [...meta.tags],
-    ...(meta.url === undefined ? {} : { url: meta.url }),
     importedAt: meta.importedAt,
     related: [...(meta.related ?? [])],
-    ...(meta.entrySeq === undefined ? {} : { entrySeq: meta.entrySeq }),
   };
+
+  if (meta.url !== undefined) {
+    entry.url = meta.url;
+  }
+  if (meta.entrySeq !== undefined) {
+    entry.entrySeq = meta.entrySeq;
+  }
+
+  return entry;
 }
 
 export function buildCommunityIndexEntry(meta: CommunityIndexEntrySource): CommunityEntry {
-  return {
+  const entry: CommunityEntry = {
     kind: 'community',
     slug: meta.slug,
     title: meta.title,
     level: meta.level,
     members: [...meta.members],
-    ...(meta.parent === undefined ? {} : { parent: meta.parent }),
-    ...(meta.summary === undefined ? {} : { summary: meta.summary }),
     generatedBy: 'curate',
     createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
   };
+
+  if (meta.parent !== undefined) {
+    entry.parent = meta.parent;
+  }
+  if (meta.summary !== undefined) {
+    entry.summary = meta.summary;
+  }
+
+  return entry;
 }
 
 export function writeFileAtomic(filePath: string, payload: string): void {

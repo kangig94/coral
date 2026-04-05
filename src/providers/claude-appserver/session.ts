@@ -528,16 +528,7 @@ class SingleSessionController {
     } catch (error) {
       const rpcError = this.asRpcError(error, 'Failed to auto-allow Claude tool request.');
       if (this.activeTurn) {
-        this.emitNotification({
-          method: 'turn/failed',
-          params: {
-            brokerTurnId: this.activeTurn.brokerTurnId,
-            message: rpcError.message,
-            sessionId: this.latestSessionId,
-            conversationRef: this.currentConversationRef(),
-            stderr: this.stderrRing || undefined,
-          },
-        });
+        this.emitTurnFailure(this.activeTurn.brokerTurnId, rpcError.message);
       }
     }
   }
@@ -629,19 +620,9 @@ class SingleSessionController {
 
     const turn = this.activeTurn;
     if (turn) {
-      const failed: ControllerNotificationMap['turn/failed'] = {
-        brokerTurnId: turn.brokerTurnId,
-        message: exitError.message,
-        sessionId: this.latestSessionId,
-        conversationRef: this.currentConversationRef(),
-        stderr: this.stderrRing || undefined,
-      };
       this.activeTurn = null;
       this.lastTerminalTurnId = turn.brokerTurnId;
-      this.emitNotification({
-        method: 'turn/failed',
-        params: failed,
-      });
+      this.emitTurnFailure(turn.brokerTurnId, exitError.message);
     }
 
     this.onUnexpectedExit?.();
@@ -795,6 +776,19 @@ class SingleSessionController {
     this.emitNotification({
       method: 'turn/progress',
       params: this.buildTurnProgress(brokerTurnId, message),
+    });
+  }
+
+  private emitTurnFailure(brokerTurnId: string, message: string): void {
+    this.emitNotification({
+      method: 'turn/failed',
+      params: {
+        brokerTurnId,
+        message,
+        sessionId: this.latestSessionId,
+        conversationRef: this.currentConversationRef(),
+        stderr: this.stderrRing || undefined,
+      },
     });
   }
 

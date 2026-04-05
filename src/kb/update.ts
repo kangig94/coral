@@ -32,8 +32,8 @@ export async function applyNoteUpdateLocked(
     (index) => {
       setEntry(index, noteEntryId(input.note), buildNoteIndexEntry({
         slug: input.note,
-        ...nextFrontmatter,
         title: nextTitle,
+        ...nextFrontmatter,
       }));
     },
     'KB text snapshot is stale after kb_update.',
@@ -53,8 +53,8 @@ export async function update(rt: KbRuntime, input: KbUpdateInput): Promise<{ pat
   return rt.withMutationLock(async () =>
     applyNoteUpdateLocked(rt, {
       note,
-      ...(requestedTitle === undefined ? {} : { title: requestedTitle }),
-      ...(requestedContent === undefined ? {} : { content: requestedContent }),
+      title: requestedTitle,
+      content: requestedContent,
     }),
   );
 }

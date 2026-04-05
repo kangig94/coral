@@ -107,18 +107,18 @@ export async function handleWorkflow(
   providerRegistry: ProviderRegistry = createBuiltInProviderRegistry(),
 ): Promise<LaunchDecision> {
   const input = workflowInputSchema.parse(rawArgs);
-  const normalizedAst = normalizeAst(parseExpression(input.expression), input.provider);
+  const ast = normalizeAst(parseExpression(input.expression), input.provider);
 
-  if (input.atoms) validateAtomConfigKeys(input.atoms, normalizedAst);
-  validateNamespaces(normalizedAst);
-  validateParallelDuplicates(normalizedAst);
+  if (input.atoms) validateAtomConfigKeys(input.atoms, ast);
+  validateNamespaces(ast);
+  validateParallelDuplicates(ast);
 
-  const unknownProviders = findUnknownProviders(normalizedAst, input.provider, providerRegistry);
+  const unknownProviders = findUnknownProviders(ast, input.provider, providerRegistry);
   if (unknownProviders.length > 0) {
     return unknownProviderDecision(unknownProviders);
   }
 
   const owner = isOwnerId(input.owner) ? input.owner : undefined;
   const effectiveContext = owner ? { ...ctx, coralEnv: { ...ctx.coralEnv, CORAL_OWNER: owner } } : ctx;
-  return executionSvc.executeWorkflow(input.provider, normalizedAst, input, effectiveContext, input.work_dir);
+  return executionSvc.executeWorkflow(input.provider, ast, input, effectiveContext, input.work_dir);
 }

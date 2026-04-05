@@ -268,6 +268,19 @@ function recordItem(
   }
 }
 
+function handleItemNotification(
+  state: CaptureState,
+  notification: { params?: Record<string, unknown> },
+  lifecycle: 'started' | 'completed',
+  describe: (item: Record<string, unknown>) => string | null,
+): void {
+  const params = notification.params as { item?: Record<string, unknown>; threadId?: string } | undefined;
+  if (!params?.item) return;
+
+  recordItem(state, params.item, lifecycle, params.threadId ?? null);
+  emitProgress(state, describe(params.item));
+}
+
 function applyNotification(state: CaptureState, message: AppServerNotification): void {
   const notification = message as { method: string; params?: Record<string, unknown> };
 
@@ -294,23 +307,11 @@ function applyNotification(state: CaptureState, message: AppServerNotification):
       return;
     }
     case 'item/started': {
-      const params = notification.params as { item?: Record<string, unknown>; threadId?: string } | undefined;
-      if (!params?.item) return;
-      recordItem(state, params.item, 'started', params.threadId ?? null);
-      const messageText = describeStartedItem(params.item);
-      if (messageText) {
-        emitProgress(state, messageText);
-      }
+      handleItemNotification(state, notification, 'started', describeStartedItem);
       return;
     }
     case 'item/completed': {
-      const params = notification.params as { item?: Record<string, unknown>; threadId?: string } | undefined;
-      if (!params?.item) return;
-      recordItem(state, params.item, 'completed', params.threadId ?? null);
-      const messageText = describeCompletedItem(params.item);
-      if (messageText) {
-        emitProgress(state, messageText);
-      }
+      handleItemNotification(state, notification, 'completed', describeCompletedItem);
       return;
     }
     case 'error': {
@@ -379,8 +380,6 @@ function continuityWithClearedTurnId(continuity: ProviderContinuityBlob | undefi
     threadId,
   };
 }
-
-
 
 async function rpc<M extends AppServerMethod>(
   lease: ProviderServerLease,

@@ -419,17 +419,10 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   }
 
-  async function closeOpenedVectorStore(opened: OpenedVectorStore): Promise<void> {
-    await opened.close();
-  }
-
   async function openVectorStore(
     dbPath: string,
     handleToken: string,
-  ): Promise<{
-    store: VectorStore;
-    close(): Promise<void>;
-  } | null> {
+  ): Promise<OpenedVectorStore | null> {
     if (vectorPluginRoot === null) {
       return null;
     }
@@ -488,7 +481,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     }
 
     retiredVectorHandles.delete(handle);
-    await closeOpenedVectorStore(handle);
+    await handle.close();
   }
 
   async function maybeCloseRetiredVectorHandle(handle: RuntimeVectorHandle): Promise<void> {

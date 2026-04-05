@@ -61,6 +61,11 @@ function isCallerContext(value: unknown): value is CallerContext {
   );
 }
 
+function throwBackendCommunicationError(error: unknown): never {
+  if (error instanceof Error) throw error;
+  throw new Error(`Backend communication error: ${String(error)}`, { cause: error });
+}
+
 export class BackendToolHttpError extends Error {
   constructor(
     message: string,
@@ -73,9 +78,6 @@ export class BackendToolHttpError extends Error {
   }
 }
 
-/**
- * Typed HTTP wrapper around the Coral backend endpoints used by coral-reef.
- */
 export class BackendClient {
   private readonly ensureBackendHandle: (pluginRoot?: string) => Promise<BackendHandle>;
   private readonly defaultContext?: CallerContext;
@@ -92,38 +94,23 @@ export class BackendClient {
       options.ensureBackend ?? ((pluginRoot?: string) => defaultEnsureBackend(pluginRoot ?? defaultPluginRoot));
   }
 
-  /**
-   * Starts a new Codex execution.
-   */
   async exec(prompt: string, options: ProviderToolOptions = {}): Promise<ToolDomainResult> {
     return this.providerExec('codex', prompt, options);
   }
 
-  /**
-   * Resumes an existing Codex session.
-   */
   async resume(session: string, prompt: string, options: ProviderToolOptions = {}): Promise<ToolDomainResult> {
     const { context, ...args } = options;
     return this.proxyToolCall('codex', { op: 'resume', session, prompt, ...args }, this.resolveContext(context));
   }
 
-  /**
-   * Forks a Codex session, optionally with a follow-up prompt.
-   */
   async fork(source: string, prompt?: string, options: ProviderToolOptions = {}): Promise<ToolDomainResult> {
     return this.providerFork('codex', source, prompt, options);
   }
 
-  /**
-   * Aborts a single backend job.
-   */
   async abort(jobId: string, context?: CallerContext): Promise<ToolDomainResult> {
     return this.abortJobs([jobId], context);
   }
 
-  /**
-   * Executes a workflow expression through the backend workflow tool.
-   */
   async workflow(expression: string, options: WorkflowOptions): Promise<ToolDomainResult>;
   async workflow(expression: string, context: CallerContext, options: WorkflowOptions): Promise<ToolDomainResult>;
   async workflow(
@@ -284,9 +271,6 @@ export class BackendClient {
     return this.proxyToolCall('kb_reindex', args, this.resolveContext(context));
   }
 
-  /**
-   * Returns backend health metadata when the daemon responds with a valid payload.
-   */
   async health(): Promise<BackendHealth | null> {
     const { port, host, token } = await this.resolveBackendHandle();
 
@@ -310,9 +294,6 @@ export class BackendClient {
     }
   }
 
-  /**
-   * Requests backend shutdown.
-   */
   async shutdown(): Promise<{ ok: boolean }> {
     const { port, host, token } = await this.resolveBackendHandle();
 
@@ -331,9 +312,6 @@ export class BackendClient {
     }
   }
 
-  /**
-   * Lists the tool descriptors currently served by the backend.
-   */
   async listTools(): Promise<unknown> {
     const { port, host, token } = await this.resolveBackendHandle();
 
@@ -352,8 +330,7 @@ export class BackendClient {
         return parseJsonResponse(response);
       });
     } catch (error) {
-      if (error instanceof Error) throw error;
-      throw new Error(`Backend communication error: ${String(error)}`, { cause: error });
+      throwBackendCommunicationError(error);
     }
   }
 
@@ -405,8 +382,7 @@ export class BackendClient {
         return responseBody as ToolDomainResult;
       });
     } catch (error) {
-      if (error instanceof Error) throw error;
-      throw new Error(`Backend communication error: ${String(error)}`, { cause: error });
+      throwBackendCommunicationError(error);
     }
   }
 }

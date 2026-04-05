@@ -96,10 +96,6 @@ function invalidRequest(message: string, detail?: unknown): ToolDomainResult {
   return domainError('invalid_request', message, detail);
 }
 
-function invalidRequestFromSchema(message: string): ToolDomainResult {
-  return invalidRequest(message);
-}
-
 function isCoralTargetError(error: unknown): error is Error {
   if (!(error instanceof Error)) return false;
   return (
@@ -360,13 +356,13 @@ export async function routeToolCall(
 
     if (op === 'fork') {
       const parsed = sharedForkSchema.extend(internalProviderFieldsShape).safeParse(request.args);
-      if (!parsed.success) return invalidRequestFromSchema(parsed.error.message);
+      if (!parsed.success) return invalidRequest(parsed.error.message);
       return launchDecisionToDomain(await service.fork(request.name, toProviderFields(parsed.data, true), request.context));
     }
 
     if (op === 'resume') {
       const parsed = sharedResumeSchema.extend(internalProviderFieldsShape).safeParse(request.args);
-      if (!parsed.success) return invalidRequestFromSchema(parsed.error.message);
+      if (!parsed.success) return invalidRequest(parsed.error.message);
       return launchDecisionToDomain(
         await service.resume(request.name, toProviderFields(parsed.data, true), request.context),
       );
@@ -374,7 +370,7 @@ export async function routeToolCall(
 
     if (op === 'exec' || op === 'bypass_exec') {
       const parsed = sharedExecSchema.extend(internalProviderFieldsShape).safeParse(request.args);
-      if (!parsed.success) return invalidRequestFromSchema(parsed.error.message);
+      if (!parsed.success) return invalidRequest(parsed.error.message);
 
       const bypassPermissions = op === 'bypass_exec';
 
@@ -399,7 +395,7 @@ export async function routeToolCall(
     if (op.startsWith(CORAL_OP_PREFIX)) {
       const parsed = coralAgentOpSchema.safeParse(request.args);
       if (!parsed.success) {
-        return invalidRequestFromSchema(parsed.error.message);
+        return invalidRequest(parsed.error.message);
       }
 
       const effectiveContext = parsed.data.owner

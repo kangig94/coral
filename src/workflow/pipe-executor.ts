@@ -133,6 +133,18 @@ type CheckpointState = {
   };
 };
 
+type PersistCheckpoint = (
+  stepIndex: number,
+  stepPrompt: string,
+  launchedAtoms: LaunchedAtom[],
+  completedOutputs: Map<string, string>,
+  cursor: WaitCursor,
+  lastActivityAt: Map<string, number>,
+  staleRetries: Map<string, number>,
+  expectedStaleAborts: Set<string>,
+  failureDrain?: CheckpointState['failureDrain'],
+) => void;
+
 /** Fire-and-forget checkpoint write, serialized through the mutex. */
 function writeCheckpoint(
   progressStore: ProgressStore,
@@ -179,6 +191,46 @@ function writeCheckpoint(
     .catch((e: unknown) => { backendLog.warn(`Checkpoint write failed for ${workflowJobId}: ${errorMessage(e)}`); });
 }
 
+function createCheckpointPersister(
+  workflowJobId: string | undefined,
+  progressStore: ProgressStore | undefined,
+  provider: string,
+  sessionId: string,
+  completedStepDetails: StepDetail[],
+): PersistCheckpoint {
+  if (workflowJobId === undefined || progressStore === undefined) {
+    return () => {};
+  }
+
+  const checkpointMutex = createAsyncMutex();
+  return (
+    stepIndex,
+    stepPrompt,
+    launchedAtoms,
+    completedOutputs,
+    cursor,
+    lastActivityAt,
+    staleRetries,
+    expectedStaleAborts,
+    failureDrain,
+  ) => {
+    writeCheckpoint(progressStore, workflowJobId, checkpointMutex, {
+      sessionId,
+      provider,
+      stepIndex,
+      stepPrompt,
+      launchedAtoms,
+      completedOutputs,
+      completedStepDetails,
+      cursor,
+      lastActivityAt,
+      staleRetries,
+      expectedStaleAborts,
+      failureDrain,
+    });
+  };
+}
+
 function stripElapsedPrefix(message: string): string {
   if (!message.startsWith('[')) return message;
   const closeBracket = message.indexOf('] ');
@@ -202,6 +254,10 @@ function atomDiagnosticLabel(atom: PipeAtom, atomIndex: number): string {
   if (atom.kind === 'agent') return atom.agent;
   const truncated = truncate(atom.text, 20);
   return `prompt#${atomIndex}(${truncated})`;
+}
+
+function formatAtomProgress(atom: LaunchedAtom, message: string): string {
+  return `${atom.stepIndex}-${atom.agent.slice(0, 3)} ${message}`;
 }
 
 function describeTerminalFailure(result: TerminalResult): string {
@@ -299,12 +355,11 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     // First-step prompt literals use the literal as the instruction body; shared
     // context still prepends when present. Later prompt literals prepend the
     // literal before the previous step output so instruction comes first.
-    atomPrompt =
-      stepIndex === 0
-        ? sharedContext
-          ? `${sharedContext}\n\n${atom.text}`
-          : atom.text
-        : [sharedContext, atom.text, stepPrompt].filter(Boolean).join('\n\n');
+    if (stepIndex === 0) {
+      atomPrompt = sharedContext ? `${sharedContext}\n\n${atom.text}` : atom.text;
+    } else {
+      atomPrompt = [sharedContext, atom.text, stepPrompt].filter(Boolean).join('\n\n');
+    }
   }
 
   if (signal?.aborted) {
@@ -394,7 +449,7 @@ async function recoverStaleAtom(
     }
 
     expectedStaleAborts.add(atom.jobId);
-    options.onProgress(`${atom.stepIndex}-${atom.agent.slice(0, 3)} stale, aborting`);
+    options.onProgress(formatAtomProgress(atom, 'stale, aborting'));
     executionSvc.abort([atom.jobId]);
 
     try {
@@ -458,7 +513,7 @@ async function recoverStaleAtom(
     }
 
     options.onStaleSwap?.();
-    options.onProgress(`${atom.stepIndex}-${atom.agent.slice(0, 3)} resumed`);
+    options.onProgress(formatAtomProgress(atom, 'resumed'));
     return true;
   }
 
@@ -533,54 +588,59 @@ export async function waitForAtoms(
       timeoutSeconds,
       cursor,
     })) {
-      if (event.type === 'queued') {
-        const atom = pending.get(event.jobId);
-        if (!atom) continue;
-        lastActivityAt.set(atom.atomKey, Date.now());
-        options.onProgress(`${atom.stepIndex}-${atom.agent.slice(0, 3)} queued (position ${event.queuePosition})`);
-        continue;
-      }
-
-      if (event.type === 'progress') {
-        cursor.jobs[event.jobId] = event.eventId;
-        const atom = pending.get(event.jobId);
-        if (!atom) continue;
-        lastActivityAt.set(atom.atomKey, Date.now());
-        options.onProgress(`${atom.stepIndex}-${atom.agent.slice(0, 3)} ${stripElapsedPrefix(event.message)}`);
-        continue;
-      }
-
-      if (event.type === 'terminal') {
-        const atom = pending.get(event.completedJobId);
-        if (!atom) continue;
-
-        pending.delete(event.completedJobId);
-        delete cursor.jobs[event.completedJobId];
-
-        const terminalState = event.result.aborted || event.result.notice ? 'error' : 'done';
-        options.onProgress(`${atom.stepIndex}-${atom.agent.slice(0, 3)} ${terminalState}`);
-
-        if (expectedStaleAborts.has(event.completedJobId)) {
-          expectedStaleAborts.delete(event.completedJobId);
+      switch (event.type) {
+        case 'queued': {
+          const atom = pending.get(event.jobId);
+          if (!atom) continue;
+          lastActivityAt.set(atom.atomKey, Date.now());
+          options.onProgress(formatAtomProgress(atom, `queued (position ${event.queuePosition})`));
           continue;
         }
 
-        if (event.result.aborted || event.result.notice) {
-          firstFailure ??= {
-            aborted: Boolean(event.result.aborted),
-            message: `Step ${atom.stepIndex}, atom '${atom.agent}' failed: ${describeTerminalFailure(event.result)}`,
-          };
-          if (!abortRequested) {
-            abortRequested = true;
-            drainDeadline = Date.now() + SIBLING_DRAIN_TIMEOUT_MS;
-            executionSvc.abort([...pending.keys()]);
+        case 'progress': {
+          cursor.jobs[event.jobId] = event.eventId;
+          const atom = pending.get(event.jobId);
+          if (!atom) continue;
+          lastActivityAt.set(atom.atomKey, Date.now());
+          options.onProgress(formatAtomProgress(atom, stripElapsedPrefix(event.message)));
+          continue;
+        }
+
+        case 'terminal': {
+          const atom = pending.get(event.completedJobId);
+          if (!atom) continue;
+
+          pending.delete(event.completedJobId);
+          delete cursor.jobs[event.completedJobId];
+
+          const terminalState = event.result.aborted || event.result.notice ? 'error' : 'done';
+          options.onProgress(formatAtomProgress(atom, terminalState));
+
+          if (expectedStaleAborts.has(event.completedJobId)) {
+            expectedStaleAborts.delete(event.completedJobId);
+            continue;
           }
+
+          if (event.result.aborted || event.result.notice) {
+            firstFailure ??= {
+              aborted: Boolean(event.result.aborted),
+              message: `Step ${atom.stepIndex}, atom '${atom.agent}' failed: ${describeTerminalFailure(event.result)}`,
+            };
+            if (!abortRequested) {
+              abortRequested = true;
+              drainDeadline = Date.now() + SIBLING_DRAIN_TIMEOUT_MS;
+              executionSvc.abort([...pending.keys()]);
+            }
+            continue;
+          }
+
+          results.set(atom.atomKey, event.result.content);
+          options.onAtomTerminal?.(snapshotWaitState());
           continue;
         }
 
-        results.set(atom.atomKey, event.result.content);
-        options.onAtomTerminal?.(snapshotWaitState());
-        continue;
+        default:
+          break;
       }
 
       if (firstFailure !== null || options.staleTimeoutMs <= 0) continue;
@@ -663,6 +723,23 @@ function requireStepResult(stepIndex: number, atom: LaunchedAtom, results: Map<s
   throw new Error(`Step ${stepIndex}, atom '${atom.agent}' completed without a result`);
 }
 
+function collectClaudeConversationRefs(
+  launchedAtoms: LaunchedAtom[],
+  executionSvc: WorkflowExecutionPort,
+): string[] {
+  const seen = new Set<string>();
+  const refs: string[] = [];
+
+  for (const atom of launchedAtoms) {
+    if (atom.providerName !== 'claude' || seen.has(atom.sessionId)) continue;
+    seen.add(atom.sessionId);
+    const ref = executionSvc.getConversationRef('claude', atom.sessionId);
+    if (ref) refs.push(ref);
+  }
+
+  return refs;
+}
+
 /**
  * Resume a workflow pipeline from a persisted checkpoint.
  * Reconstructs the active step's wait state and re-enters the wait loop,
@@ -723,38 +800,13 @@ export async function resumePipeline(
 
   allLaunchedAtoms.push(...activeAtoms);
 
-  // ── Checkpoint support ──────────────────────────────────────────────────
-  const checkpointMutex = createAsyncMutex();
-  const canCheckpoint = options.workflowJobId !== undefined && options.progressStore !== undefined;
-
-  const persistCheckpoint = (
-    stepIndex: number,
-    stepPromptSnap: string,
-    launchedAtoms: LaunchedAtom[],
-    completedOutputs: Map<string, string>,
-    cursor: WaitCursor,
-    lastActivityAt: Map<string, number>,
-    staleRetries: Map<string, number>,
-    expectedStaleAborts: Set<string>,
-    failureDrain?: CheckpointState['failureDrain'],
-  ): void => {
-    if (!canCheckpoint) return;
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by canCheckpoint (both defined)
-    writeCheckpoint(options.progressStore!, options.workflowJobId!, checkpointMutex, {
-      sessionId: checkpoint.sessionId,
-      provider: defaultProviderName,
-      stepIndex,
-      stepPrompt: stepPromptSnap,
-      launchedAtoms,
-      completedOutputs,
-      completedStepDetails: stepDetails,
-      cursor,
-      lastActivityAt,
-      staleRetries,
-      expectedStaleAborts,
-      failureDrain,
-    });
-  };
+  const persistCheckpoint = createCheckpointPersister(
+    options.workflowJobId,
+    options.progressStore,
+    defaultProviderName,
+    checkpoint.sessionId,
+    stepDetails,
+  );
 
   try {
     // Resume waiting on the active step if there are pending atoms
@@ -937,15 +989,7 @@ export async function resumePipeline(
       stepDetails,
     };
   } finally {
-    const seen = new Set<string>();
-    const refs: string[] = [];
-    for (const atom of allLaunchedAtoms) {
-      if (atom.providerName !== 'claude' || seen.has(atom.sessionId)) continue;
-      seen.add(atom.sessionId);
-      const ref = executionSvc.getConversationRef('claude', atom.sessionId);
-      if (ref) refs.push(ref);
-    }
-    cleanupClaudeSessions(refs);
+    cleanupClaudeSessions(collectClaudeConversationRefs(allLaunchedAtoms, executionSvc));
   }
 }
 
@@ -974,39 +1018,13 @@ export async function executePipeline(
   let stepPrompt = initialPrompt;
   const allLaunchedAtoms: LaunchedAtom[] = [];
 
-  // ── Checkpoint support ──────────────────────────────────────────────────
-  const checkpointMutex = createAsyncMutex();
-  const canCheckpoint = options.workflowJobId !== undefined && options.progressStore !== undefined;
-
-  /** Snapshot current coordinator state to durable storage (fire-and-forget). */
-  const persistCheckpoint = (
-    stepIndex: number,
-    stepPromptSnap: string,
-    launchedAtoms: LaunchedAtom[],
-    completedOutputs: Map<string, string>,
-    cursor: WaitCursor,
-    lastActivityAt: Map<string, number>,
-    staleRetries: Map<string, number>,
-    expectedStaleAborts: Set<string>,
-    failureDrain?: CheckpointState['failureDrain'],
-  ): void => {
-    if (!canCheckpoint) return;
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by canCheckpoint (both defined)
-    writeCheckpoint(options.progressStore!, options.workflowJobId!, checkpointMutex, {
-      sessionId: '',
-      provider: defaultProviderName,
-      stepIndex,
-      stepPrompt: stepPromptSnap,
-      launchedAtoms,
-      completedOutputs,
-      completedStepDetails: stepDetails,
-      cursor,
-      lastActivityAt,
-      staleRetries,
-      expectedStaleAborts,
-      failureDrain,
-    });
-  };
+  const persistCheckpoint = createCheckpointPersister(
+    options.workflowJobId,
+    options.progressStore,
+    defaultProviderName,
+    '',
+    stepDetails,
+  );
 
   // Initial checkpoint — coordinator start (empty state)
   const emptyCursor: WaitCursor = { jobs: {} };
@@ -1126,17 +1144,6 @@ export async function executePipeline(
       stepDetails,
     };
   } finally {
-    // Resolve conversationRefs at exit time — dedup by sessionId since stale
-    // recovery preserves sessionId (service.ts:389). If this assumption breaks,
-    // only consequence is leaked session files (no crash).
-    const seen = new Set<string>();
-    const refs: string[] = [];
-    for (const atom of allLaunchedAtoms) {
-      if (atom.providerName !== 'claude' || seen.has(atom.sessionId)) continue;
-      seen.add(atom.sessionId);
-      const ref = executionSvc.getConversationRef('claude', atom.sessionId);
-      if (ref) refs.push(ref);
-    }
-    cleanupClaudeSessions(refs);
+    cleanupClaudeSessions(collectClaudeConversationRefs(allLaunchedAtoms, executionSvc));
   }
 }

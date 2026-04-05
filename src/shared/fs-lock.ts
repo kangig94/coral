@@ -27,6 +27,12 @@ function tryRemoveLockDirectory(lockDir: string): void {
   }
 }
 
+function releaseDirectoryLock(lockDir: string): () => void {
+  return () => {
+    tryRemoveLockDirectory(lockDir);
+  };
+}
+
 function isStaleLock(lockDir: string): boolean {
   try {
     return Date.now() - statSync(lockDir).mtimeMs > STALE_LOCK_MS;
@@ -41,9 +47,7 @@ export async function acquireDirectoryLock(lockDir: string, timeoutMs = 5000): P
   while (Date.now() < deadline) {
     try {
       mkdirSync(lockDir);
-      return () => {
-        tryRemoveLockDirectory(lockDir);
-      };
+      return releaseDirectoryLock(lockDir);
     } catch (error: unknown) {
       if (!isAlreadyExistsError(error)) throw error;
     }
@@ -65,9 +69,7 @@ export function acquireDirectoryLockSync(lockDir: string, timeoutMs = 5000): () 
   while (Date.now() < deadline) {
     try {
       mkdirSync(lockDir);
-      return () => {
-        tryRemoveLockDirectory(lockDir);
-      };
+      return releaseDirectoryLock(lockDir);
     } catch (error: unknown) {
       if (!isAlreadyExistsError(error)) throw error;
     }

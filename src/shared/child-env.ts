@@ -107,11 +107,11 @@ export function buildChildEnv(extraEnv?: Record<string, string>): Record<string,
 }
 
 function shedIfOverBudget(base: Record<string, string>): Record<string, string> {
-  if (measureEnv(base) <= ENV_BUDGET_BYTES) return base;
+  const originalSize = measureEnv(base);
+  if (originalSize <= ENV_BUDGET_BYTES) return base;
 
   const passthrough = parsePassthrough();
   const originalCount = Object.keys(base).length;
-  const originalSize = measureEnv(base);
 
   // Sort entries by value size descending — drop the largest first.
   // Protected (passthrough) vars are never dropped.
@@ -131,11 +131,10 @@ function shedIfOverBudget(base: Record<string, string>): Record<string, string> 
     }
   }
 
-  const finalSize = measureEnv(kept);
   const shedList = shedNames.join(', ') + (shed > shedNames.length ? `, ... (+${shed - shedNames.length} more)` : '');
   backendLog.warn(
     `child-env: shed ${shed}/${originalCount} vars ` +
-      `(${(originalSize / 1024).toFixed(0)}KB → ${(finalSize / 1024).toFixed(0)}KB, ` +
+      `(${(originalSize / 1024).toFixed(0)}KB → ${(currentSize / 1024).toFixed(0)}KB, ` +
       `budget=${(ENV_BUDGET_BYTES / 1024).toFixed(0)}KB) [${shedList}]` +
       (shed > 0 ? ' — set CORAL_ENV_PASSTHROUGH=VAR1,VAR2 to protect specific vars' : ''),
   );

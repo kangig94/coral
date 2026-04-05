@@ -429,13 +429,11 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
 
     if (req.method === 'GET' && req.url === '/health') {
       const env = collectCoralEnv();
+      const lifecycleState = runtimeState.getLifecycle();
+      const status = idleTimer.isDraining ? 'draining' : lifecycleState === 'running' ? 'ok' : lifecycleState;
 
       sendJson(res, 200, {
-        status: idleTimer.isDraining
-          ? 'draining'
-          : runtimeState.getLifecycle() === 'running'
-            ? 'ok'
-            : runtimeState.getLifecycle(),
+        status,
         version: identity.version,
         bundleHash: identity.bundleHash,
         namespace: identity.namespace,

@@ -61,8 +61,8 @@ export async function promote(
       (index) => {
         setEntry(index, noteEntryId(note), buildNoteIndexEntry({
           slug: note,
-          ...noteMeta,
           title,
+          ...noteMeta,
         }));
       },
       'KB text snapshot is stale after kb_promote.',

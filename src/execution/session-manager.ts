@@ -14,10 +14,6 @@ export type SessionContinuityMutation =
   | { type: 'clear_non_resumable'; providerContinuity?: ProviderContinuityBlob }
   | { type: 'preserve'; providerContinuity?: ProviderContinuityBlob };
 
-type CachedSession = {
-  entry: SessionEntry;
-};
-
 function toSessionNamespace(dir: string): string {
   try {
     return pluginRootNamespace(dir);
@@ -40,7 +36,7 @@ export class SessionManager {
   private static readonly shardStamps = new Map<string, number>();
   private readonly sessionDir: string;
   private readonly eventBus: TypedEventBus;
-  private readonly cache = new Map<string, CachedSession>();
+  private readonly cache = new Map<string, SessionEntry>();
   private readonly knownSessionIds = new Set<string>();
   private shardStamp = 0;
   private cacheHydrated = false;
@@ -105,7 +101,7 @@ export class SessionManager {
   }
 
   private populateCache(sessionId: string, entry: SessionEntry): void {
-    this.cache.set(sessionId, { entry: { ...entry } });
+    this.cache.set(sessionId, { ...entry });
     this.knownSessionIds.add(sessionId);
   }
 
@@ -114,7 +110,7 @@ export class SessionManager {
 
     if (!options?.forceFresh) {
       const cached = this.cache.get(sessionId);
-      if (cached) return { ...cached.entry };
+      if (cached) return { ...cached };
     }
 
     try {

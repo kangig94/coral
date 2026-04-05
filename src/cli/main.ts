@@ -191,16 +191,15 @@ function makeClient(projectRoot: string): BackendClient {
 }
 
 function isToolDomainResult(value: unknown): value is ToolDomainResult {
-  return isJsonObject(value)
-    && typeof value.ok === 'boolean'
-    && (
-      (value.ok === true && 'data' in value)
-      || (
-        value.ok === false
-        && typeof value.code === 'string'
-        && typeof value.message === 'string'
-      )
-    );
+  if (!isJsonObject(value) || typeof value.ok !== 'boolean') {
+    return false;
+  }
+
+  if (value.ok) {
+    return 'data' in value;
+  }
+
+  return typeof value.code === 'string' && typeof value.message === 'string';
 }
 
 function normalizeResult(result: unknown): { output: unknown; isError: boolean } {
@@ -258,13 +257,23 @@ export function emitError(error: unknown, outputFormat: 'text' | 'json'): void {
 
   if (error instanceof BackendToolHttpError) {
     process.stderr.write(JSON.stringify({ error: true, statusCode: error.statusCode, body: error.body }) + '\n');
-  } else if (isToolDomainResult(error) && !error.ok) {
-    process.stderr.write(JSON.stringify(error) + '\n');
-  } else if (error instanceof Error) {
-    process.stderr.write(JSON.stringify({ error: true, message: error.message }) + '\n');
-  } else {
-    process.stderr.write(JSON.stringify({ error: true, message: String(error) }) + '\n');
+    process.exitCode = 1;
+    return;
   }
+
+  if (isToolDomainResult(error) && !error.ok) {
+    process.stderr.write(JSON.stringify(error) + '\n');
+    process.exitCode = 1;
+    return;
+  }
+
+  if (error instanceof Error) {
+    process.stderr.write(JSON.stringify({ error: true, message: error.message }) + '\n');
+    process.exitCode = 1;
+    return;
+  }
+
+  process.stderr.write(JSON.stringify({ error: true, message: String(error) }) + '\n');
   process.exitCode = 1;
 }
 

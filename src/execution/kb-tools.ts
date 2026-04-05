@@ -53,11 +53,8 @@ function readOptionalOwner(
     return { ok: false, error: domainError('invalid_request', 'owner must be a valid token-safe identifier') };
   }
 
-  try {
-    return { ok: true, value: assertOwnerId(rawOwner) };
-  } catch (error: unknown) {
-    return { ok: false, error: domainError('invalid_request', deriveLegacyErrorMessage('invalid_request', error)) };
-  }
+  const owner = readRequiredOwner(rawOwner);
+  return owner.ok ? { ok: true, value: owner.value } : owner;
 }
 
 export async function handleKbToolCall(request: ToolRequest, kbSubsystem: KbSubsystem): Promise<ToolDomainResult> {

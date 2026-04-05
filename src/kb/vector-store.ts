@@ -318,12 +318,6 @@ export class DuckDBVectorStore implements VectorStore {
 
   async buildIndex(engineName?: string): Promise<void> {
     this.ensureInitialized();
-
-    if (engineName === undefined) {
-      this.addon.buildIndex();
-      return;
-    }
-
     this.addon.buildIndex(engineName);
   }
 

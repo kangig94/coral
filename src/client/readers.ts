@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { isRecord, isStringArray } from '../shared/mcp-utils.js';
+import { isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
 import {
   discussSourcesPath,
   JOBS_DIR,
@@ -34,7 +34,6 @@ import {
   controlPhases,
   discussEventKinds,
 } from '../discuss/events.js';
-import { isNoEntryError } from '../shared/mcp-utils.js';
 
 const discussEventKindSet = new Set<string>(discussEventKinds);
 const discussStatusSet = new Set<string>(discussStatuses);
@@ -707,12 +706,7 @@ export function readDiscussSummaryIndex(projectRoot: string): DiscussSummaryInde
 }
 
 export function readDiscussSources(): string[] {
-  const registry = readJsonFile(discussSourcesPath());
-  const parsed = parseDiscussSourcesRegistry(registry);
-  if (!parsed) {
-    return [];
-  }
-  return parsed.sources;
+  return parseDiscussSourcesRegistry(readJsonFile(discussSourcesPath()))?.sources ?? [];
 }
 
 export function readDiscussProjectRoots(): string[] {

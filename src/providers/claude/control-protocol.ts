@@ -503,6 +503,10 @@ function parseWithSchema<T extends z.ZodTypeAny>(schema: T, value: unknown): z.i
   return parsed.success ? parsed.data : null;
 }
 
+function matchesSchema<T extends z.ZodTypeAny>(schema: T, value: unknown): value is z.infer<T> {
+  return schema.safeParse(value).success;
+}
+
 export function ndjsonSafeStringify(message: unknown): string {
   const json = JSON.stringify(message);
   if (json === undefined) {
@@ -546,29 +550,29 @@ export function parseClaudeStdoutLine(line: string): ClaudeStdoutMessage | null 
 }
 
 export function isAssistantMessage(message: unknown): message is SDKAssistantMessage {
-  return sdkAssistantMessageSchema.safeParse(message).success;
+  return matchesSchema(sdkAssistantMessageSchema, message);
 }
 
 export function isControlRequest(message: unknown): message is SDKControlRequest {
-  return sdkControlRequestSchema.safeParse(message).success;
+  return matchesSchema(sdkControlRequestSchema, message);
 }
 
 export function isPermissionRequest(message: unknown): message is SDKPermissionRequestMessage {
-  return sdkStdoutControlRequestSchema.safeParse(message).success;
+  return matchesSchema(sdkStdoutControlRequestSchema, message);
 }
 
 export function isControlResponse(message: unknown): message is SDKControlResponse {
-  return sdkControlResponseSchema.safeParse(message).success;
+  return matchesSchema(sdkControlResponseSchema, message);
 }
 
 export function isKeepAliveMessage(message: unknown): message is SDKKeepAlive {
-  return sdkKeepAliveSchema.safeParse(message).success;
+  return matchesSchema(sdkKeepAliveSchema, message);
 }
 
 export function isResultMessage(message: unknown): message is SDKResultMessage {
-  return sdkResultMessageSchema.safeParse(message).success;
+  return matchesSchema(sdkResultMessageSchema, message);
 }
 
 export function isSystemMessage(message: unknown): message is SDKSystemMessage {
-  return sdkSystemMessageSchema.safeParse(message).success;
+  return matchesSchema(sdkSystemMessageSchema, message);
 }
