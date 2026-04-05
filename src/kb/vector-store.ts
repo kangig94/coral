@@ -58,10 +58,11 @@ type NativeVectorStoreAddon = {
   closeStore(): void;
   upsertChunks(chunks: ChunkRecord[]): void;
   removeByEntryId(entryId: string): void;
-  searchVector(query: Float32Array, candidateK: number): Array<{ chunkId: string; entryId: string; score: number }>;
+  searchVector(query: Float32Array, candidateK: number): Array<{ chunkId: string; entryId: string; similarity: number }>;
   buildIndex(engineName?: string): void;
   getActiveSpec(): EmbeddingSpec | null;
   setActiveSpec(spec: EmbeddingSpec): void;
+  listEngines(): Array<{ name: string; available: boolean; description: string }>;
   getStats(): {
     chunkCount: number;
     specId: string | null;
@@ -105,6 +106,7 @@ function isNativeVectorStoreAddon(value: unknown): value is NativeVectorStoreAdd
     typeof value.removeByEntryId === 'function' &&
     typeof value.searchVector === 'function' &&
     typeof value.buildIndex === 'function' &&
+    typeof value.listEngines === 'function' &&
     typeof value.getActiveSpec === 'function' &&
     typeof value.setActiveSpec === 'function' &&
     typeof value.getStats === 'function'
@@ -167,12 +169,12 @@ function parseSearchResults(value: unknown): Array<{ chunkId: string; entryId: s
       throw new Error('Invalid search result entry from native vector store.');
     }
 
-    const { chunkId, entryId, score } = entry;
-    if (typeof chunkId !== 'string' || typeof entryId !== 'string' || typeof score !== 'number') {
+    const { chunkId, entryId, similarity } = entry;
+    if (typeof chunkId !== 'string' || typeof entryId !== 'string' || typeof similarity !== 'number') {
       throw new Error('Invalid search result entry from native vector store.');
     }
 
-    return { chunkId, entryId, score };
+    return { chunkId, entryId, score: similarity };
   });
 }
 

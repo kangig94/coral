@@ -6,7 +6,7 @@ import { gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const INSTALL_SCRIPT = join(process.cwd(), 'skills', 'equip', 'install.mjs');
-const KB_VERSION = '0.1.0';
+const KB_VERSION = '0.2.0';
 const createdRoots: string[] = [];
 
 interface InstallerChoice {
