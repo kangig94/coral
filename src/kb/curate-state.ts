@@ -581,13 +581,22 @@ function inferProcessedThrough(state: CurateState, scannedNotes: ScannedNote[]):
 }
 
 export function readCurateState(target: CurateStateTarget): CurateState {
+  let raw: unknown;
   try {
-    return parseCurateState(JSON.parse(readFileSync(curateStatePath(target), 'utf-8')) as unknown);
+    raw = JSON.parse(readFileSync(curateStatePath(target), 'utf-8')) as unknown;
   } catch (error: unknown) {
     if (isNoEntryError(error) || error instanceof SyntaxError) {
       return defaultCurateState();
     }
     throw error;
+  }
+
+  try {
+    return parseCurateState(raw);
+  } catch {
+    // Pre-migration or corrupt state — recover gracefully instead of crashing.
+    // migrateCurateStateIfNeeded will run later and write the canonical format.
+    return recoverCurateState(raw);
   }
 }
 
