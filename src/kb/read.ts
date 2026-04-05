@@ -8,6 +8,7 @@ import {
   parseFrontmatter,
   parseSourceFrontmatter,
 } from './frontmatter.js';
+import { parseMembersFromBody, parseSummaryFromBody } from './community-detection.js';
 import { communityPathFromName, memoDir, notePathFromName, principlePathFromName, sourcePathFromName } from './paths.js';
 import type { CommunityFrontmatter, KbNoteFrontmatter, KbReadInput, KbReadResult, KbSourceFrontmatter } from './types.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug } from './validation.js';
@@ -125,6 +126,8 @@ function readCommunityEntry(community: string): KbReadResult | null {
   }
 
   const { frontmatter, title, body } = loadKbCommunity(communityPath);
+  const members = parseMembersFromBody(body);
+  const summary = parseSummaryFromBody(body);
   return {
     kind: 'community',
     note: community,
@@ -132,8 +135,8 @@ function readCommunityEntry(community: string): KbReadResult | null {
     content: body,
     tags: [],
     principles: [],
-    members: frontmatter.members,
-    ...(frontmatter.summary === undefined ? {} : { summary: frontmatter.summary }),
+    members,
+    ...(summary === undefined ? {} : { summary }),
     updatedAt: frontmatter.updatedAt,
   };
 }

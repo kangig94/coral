@@ -102,23 +102,13 @@ updatedAt: 2026-03-23
     });
   });
 
-  it('parses and serializes community frontmatter separately from note frontmatter', () => {
+  it('parses and serializes community frontmatter (dates only)', () => {
     const serialized = serializeCommunityFrontmatter({
-      level: 1,
-      members: ['graph-rag', 'retrieval'],
-      parent: 'community:ai-systems',
-      summary: '  Shared retrieval patterns.  ',
-      generatedBy: 'curate',
       createdAt: '2026-04-02',
       updatedAt: '2026-04-03',
     });
 
     expect(parseCommunityFrontmatter(`${serialized}# Graph RAG\n\nBody.\n`)).toEqual({
-      level: 1,
-      members: ['graph-rag', 'retrieval'],
-      parent: 'community:ai-systems',
-      summary: 'Shared retrieval patterns.',
-      generatedBy: 'curate',
       createdAt: '2026-04-02',
       updatedAt: '2026-04-03',
     });

@@ -248,7 +248,9 @@ function resolveHit(hit: KbSearchHit, index: KbIndex): ResolvedKbSearchHit {
 
 function filterHitsByScope<T extends { kind: KbResult['kind'] }>(hits: T[], scope: KbSearchScope): T[] {
   if (scope === 'all') {
-    return hits;
+    // Communities are meta-documents — exclude from default results so they
+    // don't displace actual notes/sources. Use --scope communities explicitly.
+    return hits.filter((hit) => hit.kind !== 'community');
   }
 
   const targetKind = scope === 'notes' ? 'note' : scope === 'sources' ? 'source' : 'community';

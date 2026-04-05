@@ -179,19 +179,7 @@ export function parseSourceFrontmatter(content: string): KbSourceFrontmatter {
 
 export function parseCommunityFrontmatter(content: string): CommunityFrontmatter {
   const record = parseFrontmatterRecord(content);
-  const parent = normalizeCommunityParent(record.parent);
-  const summary = parseOptionalTrimmedString(record.summary, 'summary');
-
-  if (record.generatedBy !== 'curate') {
-    throw new Error("generatedBy must be 'curate'");
-  }
-
   return {
-    level: parseNonNegativeInteger(record.level, 'level'),
-    members: normalizeStringList(record.members, 'members'),
-    ...(parent === undefined ? {} : { parent }),
-    ...(summary === undefined ? {} : { summary }),
-    generatedBy: 'curate',
     createdAt: assertNonEmptyText(record.createdAt, 'createdAt'),
     updatedAt: assertNonEmptyText(record.updatedAt, 'updatedAt'),
   };
@@ -268,15 +256,7 @@ export function serializeSourceFrontmatter(meta: KbSourceFrontmatter): string {
 }
 
 export function serializeCommunityFrontmatter(meta: CommunityFrontmatter): string {
-  const parent = normalizeCommunityParent(meta.parent);
-  const summary = parseOptionalTrimmedString(meta.summary, 'summary');
-
   return serializeFrontmatterRecord({
-    level: parseNonNegativeInteger(meta.level, 'level'),
-    members: normalizeStringList(meta.members, 'members'),
-    ...(parent === undefined ? {} : { parent }),
-    ...(summary === undefined ? {} : { summary }),
-    generatedBy: 'curate',
     createdAt: assertNonEmptyText(meta.createdAt, 'createdAt'),
     updatedAt: assertNonEmptyText(meta.updatedAt, 'updatedAt'),
   });

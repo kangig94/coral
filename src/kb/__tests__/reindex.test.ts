@@ -150,16 +150,14 @@ Make the contract explicit first.
     writeFileSync(
       join(paths.communitiesDir(), 'graph-rag.md'),
       `---
-level: 0
-members:
-  - graph-rag
-  - retrieval
-summary: Shared retrieval patterns.
-generatedBy: curate
 createdAt: 2026-04-02
 updatedAt: 2026-04-02
 ---
 # Graph RAG
+
+## Summary
+
+Shared retrieval patterns.
 
 ## Members
 - #graph-rag
@@ -187,7 +185,6 @@ updatedAt: 2026-04-02
           level: 0,
           members: ['graph-rag', 'retrieval'],
           summary: 'Shared retrieval patterns.',
-          generatedBy: 'curate',
           createdAt: '2026-04-02',
           updatedAt: '2026-04-02',
         },

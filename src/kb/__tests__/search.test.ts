@@ -157,14 +157,13 @@ function writeCommunity(
   writeFileSync(
     join(communityDir, `${slug}.md`),
     `---
-level: 0
-members:
-${members.map((member) => `  - ${member}`).join('\n')}
-${summary === undefined ? '' : `summary: ${summary}\n`}generatedBy: curate
 createdAt: 2026-04-02
 updatedAt: 2026-04-02
 ---
 # ${title}
+
+${summary === undefined ? '' : `## Summary\n\n${summary}\n\n`}## Members
+${members.map((member) => `- #${member}`).join('\n')}
 
 ${body}
 `,

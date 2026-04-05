@@ -17,6 +17,7 @@ import {
   parseCommunityFrontmatter,
   parseSourceFrontmatter,
 } from './frontmatter.js';
+import { parseMembersFromBody, parseSummaryFromBody } from './community-detection.js';
 import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from './mutation-helpers.js';
 import { sortedMarkdownEntries } from './markdown-entries.js';
 import { stripMdExt } from './paths.js';
@@ -116,10 +117,15 @@ function loadSources(kb: KbRuntime, detectedAt: string): LoadedArtifacts<KbReind
 
 function loadCommunityDocument(communityPath: string): Omit<KbReindexCommunityRecord, 'path' | 'slug'> {
   const raw = readFileSync(communityPath, 'utf-8');
+  const frontmatter = parseCommunityFrontmatter(raw);
+  const body = extractBody(raw);
   return {
-    ...parseCommunityFrontmatter(raw),
+    ...frontmatter,
     title: extractTitle(raw),
-    body: extractBody(raw),
+    body,
+    level: 0,
+    members: parseMembersFromBody(body),
+    summary: parseSummaryFromBody(body),
   };
 }
 
@@ -202,7 +208,6 @@ function buildKbIndex(
       members: community.members,
       ...(community.parent === undefined ? {} : { parent: community.parent }),
       ...(community.summary === undefined ? {} : { summary: community.summary }),
-      generatedBy: community.generatedBy,
       createdAt: community.createdAt,
       updatedAt: community.updatedAt,
     });

@@ -54,11 +54,6 @@ export type SourceEntry = KbSourceFrontmatter & {
 };
 
 export interface CommunityFrontmatter {
-  level: number;
-  members: string[];
-  parent?: string;
-  summary?: string;
-  generatedBy: 'curate';
   createdAt: string;
   updatedAt: string;
 }
@@ -67,6 +62,10 @@ export type CommunityEntry = CommunityFrontmatter & {
   kind: 'community';
   slug: string;
   title: string;
+  level: number;
+  members: string[];
+  parent?: string;
+  summary?: string;
 };
 
 export type EntryRecord = NoteEntry | SourceEntry | CommunityEntry;
@@ -129,6 +128,10 @@ export type KbReindexCommunityRecord = CommunityFrontmatter & {
   path: string;
   title: string;
   body: string;
+  level: number;
+  members: string[];
+  parent?: string;
+  summary?: string;
 };
 
 // KB operation input types (plain types, no Zod dependency)
