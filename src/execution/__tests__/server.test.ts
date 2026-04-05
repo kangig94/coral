@@ -437,6 +437,8 @@ describe('execution backend server', () => {
       setKbSubsystem: vi.fn((kb: ReturnType<typeof createMockKbSubsystem> | null) => {
         kbSubsystem = kb;
       }),
+      getKbInitError: () => null,
+      setKbInitError: vi.fn(),
       setLaunchFenceActive: vi.fn((active: boolean) => {
         launchFenceActive = active;
       }),

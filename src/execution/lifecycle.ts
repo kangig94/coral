@@ -852,12 +852,18 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       await acquireLockFn(pluginRoot, instanceId, version, bundleHash);
       assertStartupStillActive();
       registerBuiltInProviders(providerRegistry);
-      const kbSub = await createKbSubsystemFn({
-        pluginRoot,
-        spawnCli: launchCoordinator.spawnCli.bind(launchCoordinator),
-      });
+      try {
+        const kbSub = await createKbSubsystemFn({
+          pluginRoot,
+          spawnCli: launchCoordinator.spawnCli.bind(launchCoordinator),
+        });
+        runtimeState.setKbSubsystem(kbSub);
+      } catch (error: unknown) {
+        const msg = errorMessage(error);
+        backendLog.error('KB subsystem failed to initialize — running in degraded mode', error);
+        runtimeState.setKbInitError(msg);
+      }
       assertStartupStillActive();
-      runtimeState.setKbSubsystem(kbSub);
       subscribeSessionIndex();
       sessionIndex.hydrate(SessionManager.listShards());
 
