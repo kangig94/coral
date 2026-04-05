@@ -75,19 +75,20 @@ Text indexing and vector search now split cleanly: Orama remains the text index,
 
 | Module | Responsibility |
 |--------|---------------|
-| `contracts.ts` | Leaf type module: `KbRuntime`, `KbIndexState`, `KbVectorSpecState`, `KbVectorLease`, etc. Breaks 4-node KB SCC. |
-| `runtime.ts` | `KbRuntime` factory — cached text index, Orama snapshot, mutation lock, vector-store lifecycle, split text/vector freshness. Implements `contracts.ts` interfaces. |
-| `curate-state.ts` | `CurateState` with `pendingRepair` field, repair frontier normalizer, lenient malformed-entry extractor, migration v3. |
-| `curate.ts` | Background curation scheduler — tag/principle classification, community detection, git sync. Frontier-capped `claimCurateRun()`, TOCTOU-safe `runPrincipleDiscovery()`. |
-| `community-detection.ts` | Tag-graph construction + Louvain community clustering for GraphRAG. |
-| `text-artifacts.ts` | Text index rebuild with malformed entry collection. Shared rebuild wrapper persists `pendingRepair`. |
+| `contracts.ts` | Leaf type module: `KbRuntime`, `KbIndexState`, `EntityGraph`, `EntityMeta`, `EntityRelationship`, `KbVectorSpecState`, `KbVectorLease`, etc. Breaks 4-node KB SCC. |
+| `runtime.ts` | `KbRuntime` factory — cached text index, Orama snapshot, entity graph I/O, mutation lock, vector-store lifecycle, 2-lane freshness (`contentSeq`/`metadataSeq`). Implements `contracts.ts` interfaces. |
+| `curate-state.ts` | `CurateState` with `pendingRepair` field, repair frontier normalizer, topology/summary fingerprints, lenient malformed-entry extractor. |
+| `curate.ts` | Background curation scheduler — entity/relationship extraction, principle discovery, hierarchical community detection, git sync. Sequential validate-as-you-go batch loop with entity vocabulary carry-forward. |
+| `entity-consolidation.ts` | Entity name normalization, plural/synonym merge, alias emission, relationship rewiring to canonical IDs. Replaces legacy `curate-tags.ts`. |
+| `community-detection.ts` | Entity-relationship graph construction + `louvain.detailed()` hierarchical community detection with dendrogram interpretation and resolution sweep. |
+| `text-artifacts.ts` | Text index rebuild with entity graph loading from `.entity-graph.json`, malformed entry collection, community staleness filtering. |
 | `markdown-entries.ts` | Sorted markdown entry scanning (extracted to avoid kb/curate-state→text-artifacts cycle). |
 | `source-store.ts` | KB source import, staging, and lifecycle. |
 | `vector-store.ts` | Node wrapper for the native addon — compatibility handshake, active snapshot resolution, DuckDB store access. |
 | `vector-sync.ts` | Immutable per-spec vector snapshot staging/publish, manifest diffing, lease-safe live store swaps. |
 | `embedding.ts` | Embedding provider selection and embedding-spec metadata. |
 | `chunking.ts` | Note/source chunk generation for vector indexing. |
-| `search.ts` | Orama full-text search plus hybrid vector fusion at the entry level. |
+| `search.ts` | Orama full-text search + entity graph ranking (third fusion channel) + hybrid vector fusion at the entry level. Graph-aware ranking resolves entities via exact/alias match, bounded 1-hop expansion, and capped contribution. |
 | `mutation-helpers.ts` | Atomic writes (unique `.tmp` names), index mutation under lock. |
 
 ## Native Vector Runtime

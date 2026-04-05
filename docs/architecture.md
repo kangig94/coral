@@ -407,8 +407,12 @@ Each file is a single `SessionEntry`. Corrupt files are skipped with a warning; 
 **Vector Search** (activated by `/coral:equip kb`):
 
 ```
+~/.coral/kb/
+├── .entity-graph.json      Entity metadata + relationships (git-tracked, LLM-generated)
+└── communities/            Community markdown files (Obsidian graph visualization)
+
 ~/.coral/data/kb/
-├── index.json              Text search index
+├── index.json              Derived cache (rebuilt from frontmatter + entity graph)
 ├── orama-index.json        Orama BM25 snapshot
 ├── curate-state.json       Curation progress
 └── vec/                    Vector search (installed by equip kb)
@@ -421,7 +425,7 @@ Each file is a single `SessionEntry`. Corrupt files are skipped with a warning; 
             └── engines/        Search engine index files
 ```
 
-Hybrid search pipeline: query → embed via EmbeddingProvider → vector chunk search (USearch HNSW) → aggregate chunks to entries → RRF fusion with Orama BM25 → merged `KbResult[]`. Falls back to text-only when addon is absent.
+Hybrid search pipeline: query → embed via EmbeddingProvider → vector chunk search (USearch HNSW) → aggregate chunks to entries → RRF fusion with Orama BM25 + entity graph ranking (third channel) → merged `KbResult[]`. Graph ranking resolves query terms to entity names/aliases, performs bounded 1-hop expansion via relationship edges, and contributes a capped score at the fusion boundary. Falls back to text-only when addon is absent; graph channel disabled when `.entity-graph.json` is missing.
 
 ## Directory Structure
 
@@ -452,7 +456,8 @@ coral/
 │   │   └── view-types.ts    #   Shared view DTOs (breaks views↔projections cycle)
 │   ├── kb/                  # L0 — Knowledge base (search, mutation, curation)
 │   │   ├── contracts.ts     #   KbRuntime interface, vector types (leaf, no cycles)
-│   │   ├── community-detection.ts # Tag-graph Louvain community clustering
+│   │   ├── entity-consolidation.ts # Entity name normalization, alias emission, relationship rewiring
+│   │   ├── community-detection.ts # Entity-graph hierarchical Louvain community detection
 │   │   └── markdown-entries.ts    # Sorted markdown entry scanning
 │   ├── workflow/            # L0 — Pipeline executor (parser, AST, retry)
 │   │   └── types.ts         #   WorkflowExecutionPort (standalone, no back-edges)
@@ -494,8 +499,9 @@ L0  providers/{codex,claude,claude-appserver}/ ──→ shared/ only
       view-types.ts is the leaf type module (views.ts + projections.ts both import from it)
     kb/ ──→ shared/ only
       contracts.ts is the leaf type module (runtime.ts implements, consumers type-import)
-      community-detection.ts: tag-graph Louvain clustering for GraphRAG
-      curate-state.ts: CurateState with pendingRepair + repair frontier normalizer
+      entity-consolidation.ts: entity name normalization, alias emission, relationship rewiring
+      community-detection.ts: entity-relationship graph → louvain.detailed() hierarchical communities
+      curate-state.ts: CurateState with pendingRepair + repair frontier normalizer + topology/summary fingerprints
     workflow/ ──→ shared/ only
       types.ts defines WorkflowExecutionPort (standalone interface, no execution imports)
     shared/, infra/, client/ ──→ (no upward imports)
