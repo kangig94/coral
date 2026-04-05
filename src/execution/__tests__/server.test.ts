@@ -506,6 +506,26 @@ describe('execution backend server', () => {
       queueDepth: 0,
     });
     expect(typeof body.uptimeMs).toBe('number');
+    expect((body as Record<string, unknown>).subsystems).toMatchObject({ kb: 'ok', discuss: 'ok' });
+  });
+
+  it('starts in degraded mode when KB init fails and reports kb unavailable in health', async () => {
+    const backend = await startBackendServer({
+      createKbSubsystemFn: async () => {
+        throw new Error('simulated KB init failure');
+      },
+    });
+
+    const response = await fetch(`${backend.baseUrl}/health`, {
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect(body.status).toBe('ok');
+    const subsystems = body.subsystems as Record<string, unknown>;
+    expect(subsystems.kb).toBe('unavailable');
+    expect(subsystems.kbError).toBe('simulated KB init failure');
   });
 
   it('includes durable pids in activeChildren count', async () => {
