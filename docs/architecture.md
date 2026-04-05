@@ -433,19 +433,32 @@ coral/
 │   ├── cli/                 # L2 — Commander CLI client (→ coral-cli.cjs)
 │   │   └── bootstrap.ts     #   Entry point
 │   ├── execution/           # L1 — Backend HTTP daemon (→ coral-backend.cjs)
-│   │   ├── server.ts        #   Composition root: HTTP server + routing
+│   │   ├── server.ts        #   Composition root: HTTP server + DI wiring
+│   │   ├── server-types.ts  #   Leaf types: LifecycleState, BackendServerInfo
 │   │   ├── lifecycle.ts     #   Singleton startup/shutdown state machine
 │   │   ├── service.ts       #   ExecutionService: launch/wait/abort/workflow
-│   │   ├── tool-router.ts   #   Top-level tool dispatch
-│   │   ├── engine.ts        #   CLI spawn, queue, child lifecycle
+│   │   ├── tool-router.ts   #   Top-level tool dispatch (ToolDomainResult)
+│   │   ├── tool-response.ts #   Unified domain result contract
+│   │   ├── engine.ts        #   LaunchCoordinator + CLI spawn/queue/child lifecycle
+│   │   ├── event-bus.ts     #   TypedEventBus class (backend-local, no singleton)
+│   │   ├── host-manager.ts  #   ProviderHostManager: provider server lifecycle + RPC
 │   │   └── discuss/         #   Discuss runtime (loop, subflows, persistence)
 │   ├── providers/           # L0 — Provider adapters
+│   │   ├── registry.ts      #   ProviderRegistry class (instance-scoped)
 │   │   ├── codex/           #   Codex CLI adapter
-│   │   └── claude/          #   Claude CLI adapter
+│   │   ├── claude/          #   Claude CLI adapter
+│   │   └── claude-appserver/#   Claude provider server (broker protocol)
 │   ├── discuss/             # L0 — Discuss domain (pure, zero I/O)
+│   │   └── view-types.ts    #   Shared view DTOs (breaks views↔projections cycle)
 │   ├── kb/                  # L0 — Knowledge base (search, mutation, curation)
+│   │   ├── contracts.ts     #   KbRuntime interface, vector types (leaf, no cycles)
+│   │   ├── community-detection.ts # Tag-graph Louvain community clustering
+│   │   └── markdown-entries.ts    # Sorted markdown entry scanning
 │   ├── workflow/            # L0 — Pipeline executor (parser, AST, retry)
+│   │   └── types.ts         #   WorkflowExecutionPort (standalone, no back-edges)
 │   ├── shared/              # L0 — Shared utilities (types, mcp-utils, schemas)
+│   │   ├── session-entry.ts #   SessionEntry validator + lenient reader
+│   │   └── fs-lock.ts       #   mkdir-based filesystem lock (cross-process)
 │   ├── infra/               # L0 — Path resolution, backend connection info
 │   └── client/              # L0 — Public barrel for external consumers
 ├── agents/                  # Agent protocol definitions (.md)
@@ -468,15 +481,26 @@ L2  bridge/server.ts ──→ shared/, client/, infra/
     cli/bootstrap.ts ──→ bridge/backend-client, client/, shared/
 
 L1  execution/server.ts ──→ execution/*, providers/, kb/, discuss/, workflow/, infra/, shared/
+      Creates and owns: LaunchCoordinator, TypedEventBus, ProviderRegistry,
+      DiscussContextRegistry, ProviderHostManager — all backend-local, no singletons
     execution/service.ts ──→ engine, progress-store, session-manager, providers/*, resolver
+      Receives coordinator/event-bus/registry via ExecutionServiceDeps
     execution/discuss/* ──→ discuss/ (domain), execution/service (provider turns)
+      session-store.ts uses per-session filesystem lock (shared/fs-lock.ts)
 
-L0  providers/{codex,claude}/ ──→ shared/ only
+L0  providers/{codex,claude,claude-appserver}/ ──→ shared/ only
+    providers/registry.ts ──→ ProviderRegistry class (instance-scoped, no module globals)
     discuss/ ──→ (pure, no imports from execution or bridge)
-    kb/ ──→ shared/ only (runtime.ts is the subsystem entry point;
-         vector-store.ts, vector-sync.ts, embedding.ts, chunking.ts, env.ts)
-    workflow/ ──→ shared/ only (dependency-injected via ExecutionService)
+      view-types.ts is the leaf type module (views.ts + projections.ts both import from it)
+    kb/ ──→ shared/ only
+      contracts.ts is the leaf type module (runtime.ts implements, consumers type-import)
+      community-detection.ts: tag-graph Louvain clustering for GraphRAG
+      curate-state.ts: CurateState with pendingRepair + repair frontier normalizer
+    workflow/ ──→ shared/ only
+      types.ts defines WorkflowExecutionPort (standalone interface, no execution imports)
     shared/, infra/, client/ ──→ (no upward imports)
+      shared/session-entry.ts: SessionEntry contract shared between client/ and execution/
+      shared/fs-lock.ts: cross-process mkdir-based lock used by discuss + session-manager
 ```
 
 Cross-cutting: `shared/types.ts` provides contracts across all layers. `client/index.ts` is the public barrel for external consumers (coral-reef).
