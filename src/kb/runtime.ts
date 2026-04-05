@@ -807,17 +807,40 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     });
   }
 
+  /** Build a vector text snapshot directly from rebuild output, avoiding N re-reads from disk. */
+  function snapshotFromRebuildResult(result: Awaited<ReturnType<typeof rebuildTextArtifactsAndPersistRepairState>>): KbVectorTextSnapshot {
+    const index = kbRuntime.readIndex() ?? emptyIndex();
+    const notes: KbVectorTextSnapshot['notes'] = [];
+    const sources: KbVectorTextSnapshot['sources'] = [];
+
+    for (const note of result.notes) {
+      const entry = index.entries[noteEntryId(note.note)];
+      if (entry !== undefined && isNoteEntry(entry)) {
+        notes.push({ entry, body: note.body });
+      }
+    }
+    for (const source of result.sources) {
+      const entry = index.entries[sourceEntryId(source.slug)];
+      if (entry !== undefined && isSourceEntry(entry)) {
+        sources.push({ entry, body: source.body });
+      }
+    }
+
+    return { index, notes, sources };
+  }
+
   async function ensureTextArtifactsFreshUnderLock(startSeq: number): Promise<KbVectorTextSnapshot> {
     if (textArtifactsNeedRebuild()) {
-      await rebuildTextArtifactsAndPersistRepairState(kbRuntime, startSeq);
-      return captureVectorTextSnapshot();
+      const result = await rebuildTextArtifactsAndPersistRepairState(kbRuntime, startSeq);
+      return snapshotFromRebuildResult(result);
     }
 
     if (cachedOramaIndex === null) {
       try {
         installOramaCache(await loadOramaSnapshot());
       } catch {
-        await rebuildTextArtifactsAndPersistRepairState(kbRuntime, startSeq);
+        const result = await rebuildTextArtifactsAndPersistRepairState(kbRuntime, startSeq);
+        return snapshotFromRebuildResult(result);
       }
     }
 
