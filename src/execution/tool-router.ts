@@ -334,7 +334,10 @@ export async function routeToolCall(
       return discussResult;
     }
 
-    if (request.name.startsWith('kb_') && kbSubsystem) {
+    if (request.name.startsWith('kb_')) {
+      if (!kbSubsystem) {
+        return domainError('kb_unavailable', 'Knowledge base is not available. Check backend health for details.');
+      }
       return handleKbToolCall(request, kbSubsystem);
     }
 

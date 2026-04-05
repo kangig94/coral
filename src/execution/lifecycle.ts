@@ -852,12 +852,18 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       await acquireLockFn(pluginRoot, instanceId, version, bundleHash);
       assertStartupStillActive();
       registerBuiltInProviders(providerRegistry);
-      const kbSub = await createKbSubsystemFn({
-        pluginRoot,
-        spawnCli: launchCoordinator.spawnCli.bind(launchCoordinator),
-      });
+      try {
+        const kbSub = await createKbSubsystemFn({
+          pluginRoot,
+          spawnCli: launchCoordinator.spawnCli.bind(launchCoordinator),
+        });
+        runtimeState.setKbSubsystem(kbSub);
+      } catch (error: unknown) {
+        const msg = errorMessage(error);
+        backendLog.error('KB subsystem failed to initialize — running in degraded mode', error);
+        runtimeState.setKbInitError(msg);
+      }
       assertStartupStillActive();
-      runtimeState.setKbSubsystem(kbSub);
       subscribeSessionIndex();
       sessionIndex.hydrate(SessionManager.listShards());
 
@@ -987,24 +993,28 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
 
       const recoveredDiscussResumes: discussOperations.RecoveredDiscussResume[] = [];
 
-      // Discuss session recovery
+      // Discuss session recovery — best-effort, never kills startup
       for (const source of knownDiscussSources()) {
-        recoveredDiscussResumes.push(
-          ...(await discussOperations.recoverPersistedSessionsFromStore(
-            getDiscussStoreForSource(source),
-            (snapshot) =>
-              getDiscussContext({
+        try {
+          recoveredDiscussResumes.push(
+            ...(await discussOperations.recoverPersistedSessionsFromStore(
+              getDiscussStoreForSource(source),
+              (snapshot) =>
+                getDiscussContext({
+                  projectRoot: snapshot.projectRoot,
+                  pluginRoot,
+                  coralEnv: {},
+                }),
+              (snapshot) => ({
                 projectRoot: snapshot.projectRoot,
                 pluginRoot,
                 coralEnv: {},
               }),
-            (snapshot) => ({
-              projectRoot: snapshot.projectRoot,
-              pluginRoot,
-              coralEnv: {},
-            }),
-          )),
-        );
+            )),
+          );
+        } catch (err) {
+          backendLog.warn(`Discuss recovery failed for source ${source}: ${errorMessage(err)}`);
+        }
         assertStartupStillActive();
       }
 
@@ -1087,7 +1097,11 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       ownershipCheckerInterval.unref();
 
       for (const recovered of recoveredDiscussResumes) {
-        discussLoop.resumeLoop(recovered.ctx, recovered.sessionId, recovered.callerCtx);
+        try {
+          discussLoop.resumeLoop(recovered.ctx, recovered.sessionId, recovered.callerCtx);
+        } catch (err) {
+          backendLog.warn(`Discuss resume failed for session ${recovered.sessionId}: ${errorMessage(err)}`);
+        }
       }
 
       return {

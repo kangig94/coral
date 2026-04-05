@@ -121,7 +121,7 @@ function parseNoteIndexEntry(entryId: string, value: Record<string, unknown>): N
     source: parseStringArray(value.source),
     createdAt: assertNonEmptyText(value.createdAt, 'KB index entry createdAt'),
     updatedAt: assertNonEmptyText(value.updatedAt, 'KB index entry updatedAt'),
-    entrySeq: parsePositiveInteger(value.entrySeq, 'entrySeq'),
+    ...(value.entrySeq !== undefined ? { entrySeq: parsePositiveInteger(value.entrySeq, 'entrySeq') } : {}),
     related: value.related === undefined ? [] : parseEntryIdArray(value.related),
   };
 }
@@ -148,7 +148,7 @@ function parseSourceIndexEntry(entryId: string, value: Record<string, unknown>):
     tags: parseStringArray(value.tags),
     ...(url === undefined ? {} : { url: assertNonEmptyText(url, 'KB index entry url') }),
     importedAt: assertNonEmptyText(value.importedAt, 'KB index entry importedAt'),
-    entrySeq: parsePositiveInteger(value.entrySeq, 'entrySeq'),
+    ...(value.entrySeq !== undefined ? { entrySeq: parsePositiveInteger(value.entrySeq, 'entrySeq') } : {}),
     related: value.related === undefined ? [] : parseEntryIdArray(value.related),
   };
 }

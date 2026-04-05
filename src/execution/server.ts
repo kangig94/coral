@@ -183,12 +183,14 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   let startedAt = now();
   let lifecycle: LifecycleState = 'starting';
   let kbSubsystem: KbSubsystem | null = null;
+  let kbInitError: string | null = null;
   let launchFenceActive = false;
 
   const runtimeState: MutableBackendRuntimeState = {
     getLifecycle: () => lifecycle,
     getStartedAt: () => startedAt,
     getKbSubsystem: () => kbSubsystem,
+    getKbInitError: () => kbInitError,
     getLaunchFenceActive: () => launchFenceActive,
     setLifecycle: (state) => {
       lifecycle = state;
@@ -198,6 +200,9 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     },
     setKbSubsystem: (kb) => {
       kbSubsystem = kb;
+    },
+    setKbInitError: (error) => {
+      kbInitError = error;
     },
     setLaunchFenceActive: (active) => {
       launchFenceActive = active;

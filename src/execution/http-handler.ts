@@ -432,6 +432,7 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
       const lifecycleState = runtimeState.getLifecycle();
       const status = idleTimer.isDraining ? 'draining' : lifecycleState === 'running' ? 'ok' : lifecycleState;
 
+      const kbInitError = runtimeState.getKbInitError();
       sendJson(res, 200, {
         status,
         version: identity.version,
@@ -444,6 +445,11 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
         liveDiscuss: deps.liveDiscussCount(),
         queueDepth: deps.queueDepth(),
         inflightRequests: idleTimer.inflightRequests,
+        subsystems: {
+          kb: kbInitError === null ? 'ok' : 'unavailable',
+          ...(kbInitError !== null ? { kbError: kbInitError } : {}),
+          discuss: 'ok',
+        },
         env,
       });
       return;

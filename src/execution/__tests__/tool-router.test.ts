@@ -207,4 +207,30 @@ describe('tool router domain contract', () => {
       detail: { name: 'kb_missing' },
     });
   });
+
+  it('returns kb_unavailable when kbSubsystem is null', async () => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'coral-tool-router-'));
+    const service = createExecutionService();
+    const helpers = createHelpers(service);
+    const request = createRequest(projectRoot, 'kb_search', { query: 'test' });
+
+    const result = await routeToolCall(request, helpers, null);
+    expectError(result, 'kb_unavailable');
+  });
+
+  it('routes kb tools through handler when kbSubsystem is present', async () => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'coral-tool-router-'));
+    const service = createExecutionService();
+    const helpers = createHelpers(service);
+    const request = createRequest(projectRoot, 'kb_search', { query: 'test' });
+    const kbSub = createKbSubsystem();
+
+    const result = await routeToolCall(request, helpers, kbSub);
+    // Reaches KB handler (validation error), not 'not_found' or 'kb_unavailable'
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).not.toBe('not_found');
+      expect(result.code).not.toBe('kb_unavailable');
+    }
+  });
 });

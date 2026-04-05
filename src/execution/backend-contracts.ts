@@ -41,6 +41,7 @@ export interface ReadonlyBackendRuntimeState {
   getLifecycle(): LifecycleState;
   getStartedAt(): number;
   getKbSubsystem(): KbSubsystem | null;
+  getKbInitError(): string | null;
   getLaunchFenceActive(): boolean;
 }
 
@@ -48,6 +49,7 @@ export interface MutableBackendRuntimeState extends ReadonlyBackendRuntimeState 
   setLifecycle(state: LifecycleState): void;
   setStartedAt(ts: number): void;
   setKbSubsystem(kb: KbSubsystem | null): void;
+  setKbInitError(error: string | null): void;
   setLaunchFenceActive(active: boolean): void;
 }
 
