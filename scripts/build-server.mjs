@@ -67,7 +67,6 @@ await esbuild.build({
   ...sharedOpts,
   entryPoints: ['src/providers/claude-appserver/server.ts'],
   outfile: 'bridge/coral-claude-appserver.cjs',
-  banner: { js: '#!/usr/bin/env node\n' + sharedOpts.banner.js },
 });
 console.log('Built bridge/coral-claude-appserver.cjs');
 
