@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { getBackendStatus, shutdownBackend } from './backend-client.js';
-import type { ToolDescriptor } from './server.js';
+import type { ToolDescriptor } from './bridge-types.js';
 import { textResult, type McpResult } from '../shared/mcp-utils.js';
 
 export const backendInputSchema = z.object({

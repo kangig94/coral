@@ -12,18 +12,13 @@ import { buildToolList, handleBackendToolCall } from './backend-tool.js';
 import { errorMessage, isRecord, isTransientStreamError, jsonResult, mcpError, textResult, type McpResult } from '../shared/mcp-utils.js';
 import { waitInputSchema, MAX_INLINE } from '../shared/schemas.js';
 import { domainToMcp } from '../execution/tool-response.js';
+import type { ToolDescriptor } from './bridge-types.js';
 
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
 const version = typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0';
 const BRIDGE_SHUTDOWN_TIMEOUT_MS = 2_000;
 const bridgeLifetime = new AbortController();
 let bridgeShuttingDown = false;
-
-export type ToolDescriptor = {
-  name: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
-};
 
 type ProgressNotification = {
   method: 'notifications/progress';

@@ -70,7 +70,7 @@ export function buildCommunityIndexEntry(meta: CommunityIndexEntrySource): Commu
 export function writeFileAtomic(filePath: string, payload: string): void {
   const dir = dirname(filePath);
   mkdirSync(dir, { recursive: true });
-  const tmpPath = `${filePath}.tmp`;
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
 
   try {
     writeFileSync(tmpPath, payload, 'utf-8');

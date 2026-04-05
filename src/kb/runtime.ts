@@ -287,6 +287,13 @@ function isFreshTextSnapshot(state: KbIndexState | null): state is KbIndexState 
   return state !== null && state.textIndexedSeq === state.mutationSeq && state.textStaleReason === undefined;
 }
 
+/**
+ * Rewrite legacy `mutationSeqAtPromote` frontmatter to `entrySeq`.
+ * Idempotent: rewrites only files that still have the legacy key, so
+ * a second invocation is a no-op and does not change directory mtimes.
+ * This means it cannot cause a rebuild loop even though it runs before
+ * the freshness check in `ensureIndex()`.
+ */
 export function runEntrySeqUpgradeGuard(target: EntrySeqGuardTarget): boolean {
   let changed = false;
 

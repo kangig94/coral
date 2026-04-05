@@ -2,7 +2,7 @@ import type {
   DiscussAuditView,
   DiscussControlTranscriptEntryDto,
   DiscussControlView,
-} from './views.js';
+} from './view-types.js';
 import type { WatchEvent } from './watch.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from './events.js';
 import type { TranscriptEntry } from './types.js';
