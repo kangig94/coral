@@ -147,7 +147,7 @@ type DiscussAbortOptions = {
 
 type KbSearchOptions = {
   topK?: string;
-  scope?: string;
+  scope?: 'notes' | 'communities' | 'sources' | 'all';
 };
 
 type KbPrinciplesOptions = {
@@ -844,9 +844,7 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
         const args = {
           query,
           ...(opts.topK !== undefined ? { top_k: parseIntegerFlag('--top-k', opts.topK) } : {}),
-          ...(opts.scope !== undefined
-            ? { scope: opts.scope as 'notes' | 'communities' | 'sources' | 'all' }
-            : {}),
+          ...(opts.scope !== undefined ? { scope: opts.scope } : {}),
         };
         const client = makeClient(process.cwd());
         const result = await client.kbSearch(args);

@@ -325,6 +325,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
   let mutationLock: Promise<void> = Promise.resolve();
   let vectorPluginRoot: string | null = null;
   let activeVectorHandle: RuntimeVectorHandle | null = null;
+  let upgradeGuardDone = false;
   let nextVectorGeneration = 1;
   const retiredVectorHandles = new Set<RuntimeVectorHandle>();
   const vectorDrainTimeoutMs = readVectorDrainTimeoutMs();
@@ -740,7 +741,10 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
   async function ensureIndex(): Promise<KbIndex> {
     if (textArtifactsNeedRebuild()) {
       await kbRuntime.withMutationLock(async () => {
-        runEntrySeqUpgradeGuard(kbRuntime);
+        if (!upgradeGuardDone) {
+          runEntrySeqUpgradeGuard(kbRuntime);
+          upgradeGuardDone = true;
+        }
         const state = readIndexStateIfPresent();
         const startSeq = state?.mutationSeq ?? 0;
         if (!textArtifactsNeedRebuild(state)) {
@@ -831,7 +835,10 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     await closeVectorStores();
     kbRuntime.vectorStore = null;
     mkdirSync(runtimeDir, { recursive: true });
-    runEntrySeqUpgradeGuard(kbRuntime);
+    if (!upgradeGuardDone) {
+      runEntrySeqUpgradeGuard(kbRuntime);
+      upgradeGuardDone = true;
+    }
 
     if (textArtifactsNeedRebuild()) {
       return;
@@ -1067,6 +1074,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
 
   mkdirSync(runtimeDir, { recursive: true });
   runEntrySeqUpgradeGuard(kbRuntime);
+  upgradeGuardDone = true;
 
   return kbRuntime;
 }

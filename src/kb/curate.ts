@@ -1858,7 +1858,7 @@ export function createCurateScheduler({
     }
   }
 
-  function armRetryWake(): void {
+  function armRetryWake(knownState?: CurateState): void {
     clearRetryWake();
 
     if (stopped) {
@@ -1868,7 +1868,7 @@ export function createCurateScheduler({
       return;
     }
 
-    const state = readCurateState(kb);
+    const state = knownState ?? readCurateState(kb);
     if (state.retryNotBefore === null) {
       return;
     }

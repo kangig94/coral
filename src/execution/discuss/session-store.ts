@@ -408,80 +408,91 @@ export class DiscussSessionStore {
     }
 
     tryWithPromiseChainLockSync(projectDiscoveryLocks, this.source, () => {
-      const flushedKeys: string[] = [];
-
-      if (this.dirtyDiscovery || this.dirtySummaryIndex) {
-        withFilesystemLockSync(sourceFilesystemLockPath(this.source), () => {
-          const mergedSessions = new Map<string, DiscussDiscoverySession>();
-          for (const session of listPersistedDiscussSessionsForSource(this.source)) {
-            mergedSessions.set(session.sessionId, session);
-          }
-
-          const mergedSummaryRows = new Map<string, DiscussSummaryIndexRow>();
-          for (const summary of readDiscussSummaryIndexForSource(this.source)?.sessions ?? []) {
-            mergedSummaryRows.set(summary.sessionId, summary);
-          }
-
-          let latestUpdatedAt = '';
-          for (const [sessionId, { sessionDir, snapshot }] of this.pendingSnapshots) {
-            mergedSessions.set(sessionId, toDiscoverySession(sessionDir, snapshot));
-            mergedSummaryRows.set(sessionId, toSummaryIndexRow(snapshot));
-            if (snapshot.updatedAt > latestUpdatedAt) {
-              latestUpdatedAt = snapshot.updatedAt;
-            }
-            flushedKeys.push(sessionId);
-          }
-
-          if (this.dirtyDiscovery) {
-            const discovery: DiscussDiscoveryData = {
-              source: this.source,
-              updatedAt: latestUpdatedAt,
-              sessions: [...mergedSessions.values()].sort((left, right) => {
-                if (left.createdAt !== right.createdAt) {
-                  return left.createdAt.localeCompare(right.createdAt);
-                }
-                return left.sessionId.localeCompare(right.sessionId);
-              }),
-            };
-            writeAtomicJson(discussDiscoveryPathForSource(this.source), discovery);
-            this.dirtyDiscovery = false;
-          }
-
-          if (this.dirtySummaryIndex) {
-            writeAtomicJson(
-              discussSummaryIndexPathForSource(this.source),
-              buildSummaryIndexData(this.source, [...mergedSummaryRows.values()]),
-            );
-            this.dirtySummaryIndex = false;
-          }
-        });
-      }
-
-      if (this.dirtySources) {
-        const latestSnapshot = [...this.pendingSnapshots.values()].reduce(
-          (latest, { snapshot }) => (snapshot.updatedAt > latest.updatedAt ? snapshot : latest),
-          { updatedAt: '' } as { updatedAt: string },
-        );
-        const wroteSources = tryWithPromiseChainLockSync(discussSourcesRegistryLocks, discussSourcesPath(), () => {
-          return withFilesystemLockSync(discussSourcesRegistryLockPath(), () => {
-            const sources = new Set(readDiscussSources());
-            sources.add(this.source);
-            writeAtomicJson(discussSourcesPath(), {
-              updatedAt: latestSnapshot.updatedAt,
-              sources: [...sources].sort(),
-            });
-            return true;
-          });
-        });
-        if (wroteSources !== null) {
-          this.dirtySources = false;
-        }
-      }
+      const flushedKeys = this.flushDiscoveryAndSummaryIndex();
+      this.flushSourcesRegistry();
 
       for (const key of flushedKeys) {
         this.pendingSnapshots.delete(key);
       }
     });
+  }
+
+  private flushDiscoveryAndSummaryIndex(): string[] {
+    if (!this.dirtyDiscovery && !this.dirtySummaryIndex) {
+      return [];
+    }
+
+    const flushedKeys: string[] = [];
+    withFilesystemLockSync(sourceFilesystemLockPath(this.source), () => {
+      const mergedSessions = new Map<string, DiscussDiscoverySession>();
+      for (const session of listPersistedDiscussSessionsForSource(this.source)) {
+        mergedSessions.set(session.sessionId, session);
+      }
+
+      const mergedSummaryRows = new Map<string, DiscussSummaryIndexRow>();
+      for (const summary of readDiscussSummaryIndexForSource(this.source)?.sessions ?? []) {
+        mergedSummaryRows.set(summary.sessionId, summary);
+      }
+
+      let latestUpdatedAt = '';
+      for (const [sessionId, { sessionDir, snapshot }] of this.pendingSnapshots) {
+        mergedSessions.set(sessionId, toDiscoverySession(sessionDir, snapshot));
+        mergedSummaryRows.set(sessionId, toSummaryIndexRow(snapshot));
+        if (snapshot.updatedAt > latestUpdatedAt) {
+          latestUpdatedAt = snapshot.updatedAt;
+        }
+        flushedKeys.push(sessionId);
+      }
+
+      if (this.dirtyDiscovery) {
+        const discovery: DiscussDiscoveryData = {
+          source: this.source,
+          updatedAt: latestUpdatedAt,
+          sessions: [...mergedSessions.values()].sort((left, right) => {
+            if (left.createdAt !== right.createdAt) {
+              return left.createdAt.localeCompare(right.createdAt);
+            }
+            return left.sessionId.localeCompare(right.sessionId);
+          }),
+        };
+        writeAtomicJson(discussDiscoveryPathForSource(this.source), discovery);
+        this.dirtyDiscovery = false;
+      }
+
+      if (this.dirtySummaryIndex) {
+        writeAtomicJson(
+          discussSummaryIndexPathForSource(this.source),
+          buildSummaryIndexData(this.source, [...mergedSummaryRows.values()]),
+        );
+        this.dirtySummaryIndex = false;
+      }
+    });
+    return flushedKeys;
+  }
+
+  private flushSourcesRegistry(): void {
+    if (!this.dirtySources) {
+      return;
+    }
+
+    const latestSnapshot = [...this.pendingSnapshots.values()].reduce(
+      (latest, { snapshot }) => (snapshot.updatedAt > latest.updatedAt ? snapshot : latest),
+      { updatedAt: '' } as { updatedAt: string },
+    );
+    const wroteSources = tryWithPromiseChainLockSync(discussSourcesRegistryLocks, discussSourcesPath(), () => {
+      return withFilesystemLockSync(discussSourcesRegistryLockPath(), () => {
+        const sources = new Set(readDiscussSources());
+        sources.add(this.source);
+        writeAtomicJson(discussSourcesPath(), {
+          updatedAt: latestSnapshot.updatedAt,
+          sources: [...sources].sort(),
+        });
+        return true;
+      });
+    });
+    if (wroteSources !== null) {
+      this.dirtySources = false;
+    }
   }
 
   dispose(): void {

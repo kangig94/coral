@@ -45,22 +45,18 @@ export class SessionManager {
   private shardStamp = 0;
   private cacheHydrated = false;
 
-  constructor(workingDirectory: string, eventBus: TypedEventBus = new TypedEventBus()) {
-    this.sessionDir = join(sessionBase(), toSessionNamespace(workingDirectory));
+  constructor(workingDirectory: string, eventBus: TypedEventBus = new TypedEventBus(), isRawShardPath = false) {
+    this.sessionDir = isRawShardPath ? workingDirectory : join(sessionBase(), toSessionNamespace(workingDirectory));
     this.eventBus = eventBus;
-    mkdirSync(this.sessionDir, { recursive: true });
+    if (!isRawShardPath) {
+      mkdirSync(this.sessionDir, { recursive: true });
+    }
     this.shardStamp = SessionManager.ensureShardStamp(this.sessionDir);
   }
 
+  /** Open an existing shard directory without creating it (recovery path). */
   static openShard(shardDir: string, eventBus: TypedEventBus = new TypedEventBus()): SessionManager {
-    const manager = Object.create(SessionManager.prototype) as SessionManager;
-    (manager as unknown as { sessionDir: string }).sessionDir = shardDir;
-    (manager as unknown as { eventBus: TypedEventBus }).eventBus = eventBus;
-    (manager as unknown as { cache: Map<string, CachedSession> }).cache = new Map();
-    (manager as unknown as { knownSessionIds: Set<string> }).knownSessionIds = new Set();
-    (manager as unknown as { shardStamp: number }).shardStamp = SessionManager.ensureShardStamp(shardDir);
-    (manager as unknown as { cacheHydrated: boolean }).cacheHydrated = false;
-    return manager;
+    return new SessionManager(shardDir, eventBus, true);
   }
 
   static listShards(): string[] {
